@@ -12,6 +12,10 @@ import path from 'path';
 import { enableOthersPool, ensureLoggedIn, setupPageErrorHandler, useLocalRelay, waitForAppReady, getTestRelayUrl, getCrosslangPort } from './test-utils.js';
 import { acquireRustLock, releaseRustLock } from './rust-lock.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const HASHTREE_RS_DIR = path.resolve(__dirname, '../../../rust');
 const hashtreeRsAvailable = (() => {

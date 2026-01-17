@@ -13,6 +13,10 @@ import { spawn, execSync, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { acquireRustLock, releaseRustLock } from './rust-lock.js';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Polyfill WebSocket for Node.js
 (globalThis as any).WebSocket = WebSocket;

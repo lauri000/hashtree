@@ -14,6 +14,10 @@ import path from 'path';
 import WebSocket from 'ws';
 import { createHash } from 'crypto';
 import { acquireRustLock, releaseRustLock } from './rust-lock.js';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Polyfill WebSocket for Node.js environment
 (globalThis as any).WebSocket = WebSocket;

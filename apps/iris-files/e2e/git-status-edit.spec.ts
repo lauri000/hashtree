@@ -6,6 +6,10 @@ import WebSocket from 'ws';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 // Tests use isolated page contexts with disableOthersPool - safe for parallel execution
 
 const HASHTREE_RS_DIR = path.resolve(__dirname, '../../../rust');

@@ -21,6 +21,10 @@ import * as os from 'os';
 import { nip19, getPublicKey } from 'nostr-tools';
 import { acquireRustLock, releaseRustLock } from './rust-lock.js';
 import { waitForAppReady } from './test-utils.js';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const HASHTREE_RS_DIR = path.resolve(__dirname, '../../../rust');
 
