@@ -113,7 +113,7 @@ fn dir_size(path: &Path) -> u64 {
 fn main() {
     println!("=== Git Storage Backend Benchmark ===");
 
-    // Collect source files from hashtree-rs
+    // Collect source files from rust
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()

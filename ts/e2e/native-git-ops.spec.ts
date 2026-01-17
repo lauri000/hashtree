@@ -4,19 +4,19 @@ import { setupPageErrorHandler, disableOthersPool, waitForAppReady, presetProduc
 test.describe.configure({ mode: 'serial' });
 
 /**
- * Test native git operations on the real hashtree-ts repo
- * This repo was pushed via git push htree://self/hashtree-ts
+ * Test native git operations on the real hashtree repo
+ * This repo was pushed via git push htree://self/hashtree
  */
 test.describe('Native git operations', () => {
-  test('should load commit info for hashtree-ts repo', async ({ page }) => {
+  test('should load commit info for hashtree repo', async ({ page }) => {
     setupPageErrorHandler(page);
     await page.goto('/');
     await presetProductionRelaysInDB(page);
     await page.reload();
     await waitForAppReady(page);
 
-    // Navigate to the hashtree-ts repo (pushed earlier)
-    const url = '/#/npub10ugptv2thshtaulx2kwkyq9n4vlhqawylxrtu5xga5zetdejq7ys6c8t9m/hashtree-ts';
+    // Navigate to the hashtree repo (pushed earlier)
+    const url = '/#/npub10ugptv2thshtaulx2kwkyq9n4vlhqawylxrtu5xga5zetdejq7ys6c8t9m/hashtree';
     await page.goto(url);
     await disableOthersPool(page);
 
@@ -46,7 +46,7 @@ test.describe('Native git operations', () => {
     await page.reload();
     await waitForAppReady(page);
 
-    const url = '/#/npub10ugptv2thshtaulx2kwkyq9n4vlhqawylxrtu5xga5zetdejq7ys6c8t9m/hashtree-ts';
+    const url = '/#/npub10ugptv2thshtaulx2kwkyq9n4vlhqawylxrtu5xga5zetdejq7ys6c8t9m/hashtree';
     await page.goto(url);
     await disableOthersPool(page);
 

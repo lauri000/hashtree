@@ -8,7 +8,7 @@ import * as path from 'path';
 import * as os from 'os';
 // Tests use isolated page contexts with disableOthersPool - safe for parallel execution
 
-const HASHTREE_RS_DIR = '/workspace/hashtree-rs';
+const HASHTREE_RS_DIR = path.resolve(__dirname, '../../rust');
 
 // Check if git-remote-htree is available
 function hasGitRemoteHtree(): boolean {

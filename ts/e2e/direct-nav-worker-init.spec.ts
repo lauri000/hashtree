@@ -9,7 +9,7 @@ import { waitForAppReady } from './test-utils';
 test('direct navigation initializes worker quickly', async ({ page }) => {
   test.slow();
 
-  await page.goto('/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree-ts');
+  await page.goto('/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree');
   await waitForAppReady(page);
 
   const startTime = Date.now();

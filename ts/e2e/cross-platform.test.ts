@@ -1,7 +1,7 @@
 /**
- * Cross-platform E2E test: hashtree-ts <-> nosta peer discovery
+ * Cross-platform E2E test: ts <-> nosta peer discovery
  *
- * This test verifies that hashtree-ts and nosta can discover each other
+ * This test verifies that ts and nosta can discover each other
  * using the iris-client WebRTC signaling protocol over Nostr relays.
  *
  * Protocol:
@@ -55,7 +55,7 @@ async function publishToRelays(pool: SimplePool, relays: string[], event: Event)
 test.describe('Cross-Platform WebRTC Discovery', () => {
   test.setTimeout(60000); // 60 second timeout for relay operations
 
-  test('hashtree-ts peer can send hello and receive from other peers', async () => {
+  test('ts peer can send hello and receive from other peers', async () => {
     const pool = new SimplePool();
 
     // Generate keys for our test peer
@@ -138,7 +138,7 @@ test.describe('Cross-Platform WebRTC Discovery', () => {
 
     // Verify we discovered at least one peer
     // Note: This test connects to live relays, so we should see other WebRTC peers
-    // (from nosta, hashtree-ts, or iris-client users)
+    // (from nosta, ts, or iris-client users)
     console.log(`\nTotal peers discovered: ${discoveredPeers.size}`);
 
     // Even if no other hashtree/nosta peers are online, we verify:
@@ -148,12 +148,12 @@ test.describe('Cross-Platform WebRTC Discovery', () => {
     expect(publishedTo).toBeGreaterThan(0);
   });
 
-  test('signaling protocol format is identical between hashtree-ts and nosta', async () => {
+  test('signaling protocol format is identical between ts and nosta', async () => {
     // Test that the JSON format used by both implementations is identical
 
     const uuid = 'test-uuid-12345';
 
-    // hashtree-ts format
+    // ts format
     const tsHello = JSON.stringify({ type: 'hello', peerId: uuid });
 
     // nosta format (verified from nosta/src/webrtc/types.rs tests)
@@ -182,7 +182,7 @@ test.describe('Cross-Platform WebRTC Discovery', () => {
     const msgUuid = generateUuid();
     const expiration = Math.floor((Date.now() + 15000) / 1000);
 
-    // Create event as hashtree-ts does
+    // Create event as ts does
     const tsEvent = finalizeEvent({
       kind: WEBRTC_KIND,
       created_at: Math.floor(Date.now() / 1000),

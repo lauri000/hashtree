@@ -1,8 +1,8 @@
 /**
- * Cross-language interoperability test: hashtree-ts <-> hashtree-rs
+ * Cross-language interoperability test: ts <-> rust
  *
- * This test runs a hashtree-rs instance in background and verifies that
- * hashtree-ts can discover it and exchange signaling messages via temp.iris.to
+ * This test runs a rust instance in background and verifies that
+ * ts can discover it and exchange signaling messages via temp.iris.to
  */
 
 import { test, expect } from './fixtures';
@@ -50,10 +50,10 @@ async function publishWithRetry(
   console.log('Publish failed:', lastError);
 }
 
-test.describe('hashtree-rs Interoperability', () => {
+test.describe('rust Interoperability', () => {
   test.setTimeout(90000); // 90 second timeout
 
-  test('hashtree-ts and hashtree-rs can exchange messages via temp.iris.to', async () => {
+  test('ts and rust can exchange messages via temp.iris.to', async () => {
     const pool = new SimplePool();
 
     // Generate keys for TypeScript peer
@@ -171,11 +171,11 @@ test.describe('hashtree-rs Interoperability', () => {
     // 1. We can publish to the relay
     // 2. We can subscribe and receive events
     // 3. Protocol format is correct
-    // Even if no hashtree-rs peers are currently online, the protocol works
+    // Even if no rust peers are currently online, the protocol works
     expect(true).toBeTruthy();
   });
 
-  test('two local hashtree-ts peers can discover each other', async () => {
+  test('two local ts peers can discover each other', async () => {
     const pool1 = new SimplePool();
     const pool2 = new SimplePool();
 

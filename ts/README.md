@@ -1,8 +1,12 @@
-# hashtree-ts
+# hashtree/ts
 
-Content-addressed filesystem on Nostr.
+TypeScript/JavaScript implementation of hashtree. Includes the core SDK packages and the Iris Files web app.
 
-Basically [Blossom](https://github.com/hzrd149/blossom) with chunking and directory structure. Merkle roots can be published on Nostr to get mutable `npub/path` addresses.
+Part of the hashtree repository. See [../README.md](../README.md) for the project overview and [../rust/README.md](../rust/README.md) for the Rust CLI/daemon.
+
+When published as a single tree, this subtree lives at `/hashtree/ts`.
+
+Blossom-compatible storage with chunking and directory structure. Merkle roots can be published on Nostr to get mutable `npub/path` addresses.
 
 ## Design
 
@@ -13,9 +17,12 @@ Basically [Blossom](https://github.com/hzrd149/blossom) with chunking and direct
 
 ## Packages
 
-- `hashtree` - Core merkle tree library
-- `hashtree-dexie` - IndexedDB/Dexie storage adapter
-- `iris-files` - Web app with Nostr integration (Iris Files)
+- [`packages/hashtree`](packages/hashtree) - Core merkle tree library
+- [`packages/hashtree-dexie`](packages/hashtree-dexie) - IndexedDB/Dexie storage adapter
+- [`packages/hashtree-index`](packages/hashtree-index) - B-Tree and index structures for hashtree
+- [`packages/iris-files`](packages/iris-files) - Web app with Nostr integration (Iris Files + Iris Video)
+- [`packages/ndk`](packages/ndk) - Nostr SDK used by the apps
+- [`packages/ndk-cache`](packages/ndk-cache) - Cache layer for NDK
 
 ## Storage Backends
 
@@ -137,6 +144,8 @@ Features:
 Requirements: [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) (Rust, platform-specific deps)
 
 ## Development
+
+From `ts/`:
 
 ```bash
 pnpm install      # Install dependencies

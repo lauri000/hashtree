@@ -23,7 +23,7 @@ test('measure tree loading time', async ({ page }) => {
 
   if (!isTestMode) {
     const startTime = Date.now();
-    await page.goto('/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree-ts');
+    await page.goto('/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree');
 
     // Wait for README content from production relays/Blossom
     await expect(page.getByText('Content-addressed filesystem')).toBeVisible({ timeout: 45000 });
@@ -102,7 +102,7 @@ test('direct nav loads repo on first page load', async ({ page }) => {
   await page.reload();
   await waitForAppReady(page);
 
-  await page.goto('/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree-ts');
+  await page.goto('/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree');
   await waitForAppReady(page);
 
   await expect(page.getByText('Content-addressed filesystem')).toBeVisible({ timeout: 45000 });

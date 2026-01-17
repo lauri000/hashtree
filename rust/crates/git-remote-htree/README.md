@@ -51,4 +51,4 @@ nsec1xyz789... work
 
 Use petnames in remote URLs: `htree://work/myproject`
 
-Part of [hashtree-rs](https://github.com/mmalmi/hashtree-rs).
+Part of [hashtree](https://github.com/mmalmi/hashtree).

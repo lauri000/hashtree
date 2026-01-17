@@ -1,8 +1,8 @@
 import fs from 'fs';
 
-const LOCK_PATH = '/tmp/hashtree-rs-e2e.lock';
+const LOCK_PATH = '/tmp/rust-e2e.lock';
 
-export async function acquireHashtreeRsLock(timeoutMs = 60000): Promise<number> {
+export async function acquireRustLock(timeoutMs = 60000): Promise<number> {
   const start = Date.now();
   while (true) {
     try {
@@ -20,14 +20,14 @@ export async function acquireHashtreeRsLock(timeoutMs = 60000): Promise<number> 
         // If we can't stat/remove, fall through to wait and retry.
       }
       if (Date.now() - start > timeoutMs) {
-        throw new Error('Timed out waiting for hashtree-rs lock');
+        throw new Error('Timed out waiting for rust lock');
       }
       await new Promise(r => setTimeout(r, 500));
     }
   }
 }
 
-export function releaseHashtreeRsLock(fd: number): void {
+export function releaseRustLock(fd: number): void {
   try {
     fs.closeSync(fd);
   } catch {

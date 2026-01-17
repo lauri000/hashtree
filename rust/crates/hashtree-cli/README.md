@@ -63,4 +63,4 @@ nsec1abc123... default
 nsec1xyz789... work
 ```
 
-Part of [hashtree-rs](https://github.com/mmalmi/hashtree-rs).
+Part of [hashtree](https://github.com/mmalmi/hashtree).

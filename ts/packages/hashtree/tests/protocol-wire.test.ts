@@ -1,5 +1,5 @@
 /**
- * Protocol wire format tests for hashtree-ts <-> hashtree-rs interop
+ * Protocol wire format tests for ts <-> rust interop
  *
  * These tests verify the binary MessagePack encoding is compatible between
  * TypeScript and Rust implementations.
@@ -186,7 +186,7 @@ describe('Protocol Wire Format', () => {
   });
 
   describe('Interop Test Vectors', () => {
-    // These vectors can be used to verify compatibility with hashtree-rs
+    // These vectors can be used to verify compatibility with rust
     // Run `cargo test -p hashtree-webrtc -- --nocapture test_encode_decode` to compare
 
     it('should produce expected request encoding', () => {

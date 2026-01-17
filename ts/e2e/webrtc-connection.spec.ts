@@ -11,7 +11,7 @@ import { setupPageErrorHandler, waitForAppReady, useLocalRelay, disableOthersPoo
 test.describe('WebRTC P2P Connection', () => {
   test.setTimeout(120000);
 
-  test('two hashtree-ts peers can exchange content by hash', async ({ browser }) => {
+  test('two ts peers can exchange content by hash', async ({ browser }) => {
     // Create two browser contexts (simulating two different peers)
     const context1 = await browser.newContext();
     const context2 = await browser.newContext();
@@ -76,7 +76,7 @@ test.describe('WebRTC P2P Connection', () => {
     await page1.waitForFunction(() => typeof (window as any).runWebRTCTestWithContent === 'function', { timeout: 10000 });
     await page2.waitForFunction(() => typeof (window as any).runWebRTCTest === 'function', { timeout: 10000 });
 
-    const testContent = 'Hello from hashtree-ts Peer 1!';
+    const testContent = 'Hello from ts Peer 1!';
 
     // Start peer 1 with content first, get the content hash
     const peer1Promise = page1.evaluate((content) => (window as any).runWebRTCTestWithContent(content), testContent);

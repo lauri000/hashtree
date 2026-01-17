@@ -1,5 +1,5 @@
 /**
- * E2E test for WebRTC signaling protocol compatibility between hashtree-ts and hashtree-rs
+ * E2E test for WebRTC signaling protocol compatibility between ts and rust
  *
  * This test verifies that:
  * 1. Signaling uses Nostr kind 25050 (ephemeral)
@@ -98,7 +98,7 @@ test.describe('WebRTC Signaling Protocol Compatibility', () => {
     const uuid2 = generateUuid();
     const peerId2 = `${pk2}:${uuid2}`;
 
-    // Create a hello message (as hashtree-ts would)
+    // Create a hello message (as ts would)
     const helloMsg: HelloMessage = { type: 'hello', peerId: uuid1 };
 
     const offerMsg: OfferMessage = {
@@ -164,7 +164,7 @@ test.describe('WebRTC Signaling Protocol Compatibility', () => {
 
     const expiration = Math.floor((Date.now() + 5 * 60 * 1000) / 1000);
 
-    // Create hello event format used by hashtree-ts/hashtree-rs
+    // Create hello event format used by ts/rust
     const eventTemplate = {
       kind: WEBRTC_KIND,
       created_at: Math.floor(Date.now() / 1000),

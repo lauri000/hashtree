@@ -1,12 +1,12 @@
 /**
- * E2E test: Git push to htree:// remote and view in hashtree-ts browser
+ * E2E test: Git push to htree:// remote and view in ts browser
  *
  * Flow:
  * 1. Create temp data directory for htree
  * 2. Start htree daemon (generates identity)
  * 3. Create a small test repo
  * 4. Add htree remote using daemon's npub and push
- * 5. Open hashtree-ts browser and navigate to the pushed tree
+ * 5. Open ts browser and navigate to the pushed tree
  * 6. Verify files are visible
  * 7. Cleanup
  *
@@ -19,10 +19,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { nip19, getPublicKey } from 'nostr-tools';
-import { acquireHashtreeRsLock, releaseHashtreeRsLock } from './hashtree-rs-lock.js';
+import { acquireRustLock, releaseRustLock } from './rust-lock.js';
 import { waitForAppReady } from './test-utils.js';
 
-const HASHTREE_RS_DIR = '/workspace/hashtree-rs';
+const HASHTREE_RS_DIR = path.resolve(__dirname, '../../rust');
 
 test.describe('Git push to htree:// and view in browser', () => {
   // Serial mode: WebRTC from parallel tests can interfere with local git state
@@ -66,17 +66,17 @@ test.describe('Git push to htree:// and view in browser', () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'htree-test-'));
     console.log(`Using temp directory: ${tempDir}`);
 
-    lockFd = await acquireHashtreeRsLock(240000);
+    lockFd = await acquireRustLock(240000);
 
     // Build htree CLI and git-remote-htree if needed
-    console.log('Building hashtree-rs...');
+    console.log('Building rust...');
     try {
       execSync('cargo build --release -p hashtree-cli -p git-remote-htree', {
         cwd: HASHTREE_RS_DIR,
         stdio: 'inherit',
       });
     } catch (e) {
-      console.error('Failed to build hashtree-rs:', e);
+      console.error('Failed to build rust:', e);
       throw e;
     }
   });
@@ -89,7 +89,7 @@ test.describe('Git push to htree:// and view in browser', () => {
       htreeProcess = null;
     }
     if (lockFd !== null) {
-      releaseHashtreeRsLock(lockFd);
+      releaseRustLock(lockFd);
       lockFd = null;
     }
 
@@ -224,8 +224,8 @@ test.describe('Git push to htree:// and view in browser', () => {
     console.log('Waiting for Nostr event propagation...');
     await new Promise(resolve => setTimeout(resolve, 5000));
 
-    // Navigate to hashtree-ts
-    console.log('Opening hashtree-ts...');
+    // Navigate to ts
+    console.log('Opening ts...');
     let serverReady = false;
     try {
       await page.goto('http://localhost:5173/', { waitUntil: 'domcontentloaded', timeout: 30000 });

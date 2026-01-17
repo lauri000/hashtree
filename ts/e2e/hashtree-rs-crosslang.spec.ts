@@ -1,8 +1,8 @@
 /**
- * Cross-language E2E test: hashtree-ts (browser) <-> hashtree-rs (Rust)
+ * Cross-language E2E test: ts (browser) <-> rust
  *
- * Runs a hashtree-rs WebRTC manager in background and verifies that
- * hashtree-ts running in a browser can discover and connect to it.
+ * Runs a rust WebRTC manager in background and verifies that
+ * ts running in a browser can discover and connect to it.
  */
 
 import { test, expect } from './fixtures';
@@ -12,14 +12,14 @@ import { SimplePool, finalizeEvent, generateSecretKey, getPublicKey, type Event,
 import { spawn, execSync, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { acquireHashtreeRsLock, releaseHashtreeRsLock } from './hashtree-rs-lock.js';
+import { acquireRustLock, releaseRustLock } from './rust-lock.js';
 
 // Polyfill WebSocket for Node.js
 (globalThis as any).WebSocket = WebSocket;
 
 const WEBRTC_KIND = 25050;
 const HELLO_TAG = 'hello';
-const HASHTREE_RS_DIR = '/workspace/hashtree-rs';
+const HASHTREE_RS_DIR = path.resolve(__dirname, '../../rust');
 const tsSecretKey = generateSecretKey();
 const tsPubkey = getPublicKey(tsSecretKey);
 const hashtreeRsAvailable = (() => {
@@ -39,7 +39,7 @@ function ensureHtreeBinary(): void {
     return;
   }
 
-  console.log('Building htree binary for hashtree-rs tests...');
+  console.log('Building htree binary for rust tests...');
   execSync('cargo build --bin htree --features p2p', { cwd: HASHTREE_RS_DIR, stdio: 'inherit' });
 
   if (!fs.existsSync(debugBin) && !fs.existsSync(releaseBin)) {
@@ -93,10 +93,10 @@ function unwrapGiftContent(
   }
 }
 
-test.describe('hashtree-rs Cross-Language', () => {
+test.describe('rust Cross-Language', () => {
   test.setTimeout(360000);
   test.describe.configure({ mode: 'serial', timeout: 360000 });
-  test.skip(!hashtreeRsAvailable, 'hashtree-rs repo or Rust toolchain not available');
+  test.skip(!hashtreeRsAvailable, 'rust toolchain or Rust toolchain not available');
 
   let rsPeerProcess: ChildProcess | null = null;
   let rsPeerPubkey: string | null = null;
@@ -108,12 +108,12 @@ test.describe('hashtree-rs Cross-Language', () => {
 
   test.beforeAll(async ({ relayUrl }, testInfo) => {
     testInfo.setTimeout(360000);
-    // Start hashtree-rs crosslang test in background
-    console.log('Starting hashtree-rs peer...');
+    // Start rust crosslang test in background
+    console.log('Starting rust peer...');
     ensureHtreeBinary();
     localRelay = relayUrl;
     crosslangPort = getCrosslangPort(testInfo.workerIndex);
-    lockFd = await acquireHashtreeRsLock(240000);
+    lockFd = await acquireRustLock(240000);
     try {
       rsPeerProcess = spawn(
         'cargo',
@@ -144,13 +144,13 @@ test.describe('hashtree-rs Cross-Language', () => {
       );
     } catch (err) {
       if (lockFd !== null) {
-        releaseHashtreeRsLock(lockFd);
+        releaseRustLock(lockFd);
         lockFd = null;
       }
       throw err;
     }
 
-    // Capture hashtree-rs pubkey and ready marker
+    // Capture rust pubkey and ready marker
     const pubkeyPromise = new Promise<string>((resolve, reject) => {
       const handler = (data: Buffer) => {
         const lines = data.toString().split('\n');
@@ -172,20 +172,20 @@ test.describe('hashtree-rs Cross-Language', () => {
       rsPeerProcess!.stderr?.on('data', handler);
 
       rsPeerProcess!.on('exit', (code, signal) => {
-        reject(new Error(`hashtree-rs exited before ready (code=${code}, signal=${signal}). Recent output:\n${outputLines.join('\n')}`));
+        reject(new Error(`rust exited before ready (code=${code}, signal=${signal}). Recent output:\n${outputLines.join('\n')}`));
       });
     });
 
     // Wait for pubkey with timeout
     rsPeerPubkey = await Promise.race([
       pubkeyPromise,
-      new Promise<string>((_, reject) => setTimeout(() => reject(new Error(`Timeout waiting for hashtree-rs pubkey. Recent output:\n${outputLines.join('\n')}`)), 30000))
+      new Promise<string>((_, reject) => setTimeout(() => reject(new Error(`Timeout waiting for rust pubkey. Recent output:\n${outputLines.join('\n')}`)), 30000))
     ]).catch(() => null);
 
     if (rsPeerPubkey) {
-      console.log(`hashtree-rs pubkey: ${rsPeerPubkey.slice(0, 16)}...`);
+      console.log(`rust pubkey: ${rsPeerPubkey.slice(0, 16)}...`);
     } else {
-      console.log('Warning: Could not capture hashtree-rs pubkey');
+      console.log('Warning: Could not capture rust pubkey');
     }
 
     await Promise.race([
@@ -197,13 +197,13 @@ test.describe('hashtree-rs Cross-Language', () => {
             resolve();
           } else if (Date.now() - start > 90000) {
             clearInterval(interval);
-            reject(new Error(`Timeout waiting for hashtree-rs ready. Recent output:\n${outputLines.join('\n')}`));
+            reject(new Error(`Timeout waiting for rust ready. Recent output:\n${outputLines.join('\n')}`));
           }
         }, 500);
       }),
       new Promise<void>((_, reject) => {
         rsPeerProcess!.once('exit', (code, signal) => {
-          reject(new Error(`hashtree-rs exited before ready (code=${code}, signal=${signal}). Recent output:\n${outputLines.join('\n')}`));
+          reject(new Error(`rust exited before ready (code=${code}, signal=${signal}). Recent output:\n${outputLines.join('\n')}`));
         });
       }),
     ]);
@@ -215,13 +215,13 @@ test.describe('hashtree-rs Cross-Language', () => {
       rsPeerProcess = null;
     }
     if (lockFd !== null) {
-      releaseHashtreeRsLock(lockFd);
+      releaseRustLock(lockFd);
     }
   });
 
-  test('hashtree-ts discovers hashtree-rs peer via relay', async () => {
+  test('ts discovers rust peer via relay', async () => {
     if (!rsPeerPubkey) {
-      throw new Error('hashtree-rs pubkey not captured');
+      throw new Error('rust pubkey not captured');
     }
 
     const pool = new SimplePool();
@@ -329,7 +329,7 @@ test.describe('hashtree-rs Cross-Language', () => {
 
       console.log(`Check ${i + 1}: Discovered ${discoveredPeers.size} peers, foundRsPeer=${foundRsPeer}`);
 
-      // Success if we found hashtree-rs or received an offer from it
+      // Success if we found rust or received an offer from it
       if (foundRsPeer || receivedOfferFromRsPeer) {
         break;
       }
@@ -341,13 +341,13 @@ test.describe('hashtree-rs Cross-Language', () => {
 
     console.log('\n=== Results ===');
     console.log(`Peers discovered: ${discoveredPeers.size}`);
-    console.log(`Found hashtree-rs: ${foundRsPeer}`);
-    console.log(`Received offer from hashtree-rs: ${receivedOfferFromRsPeer}`);
+    console.log(`Found rust: ${foundRsPeer}`);
+    console.log(`Received offer from rust: ${receivedOfferFromRsPeer}`);
 
-    // Verify hashtree-rs's peerId was correctly received
+    // Verify rust's peerId was correctly received
     if (rsPeerPubkey && foundRsPeer) {
       const rsPeer = discoveredPeers.get(rsPeerPubkey);
-      console.log(`hashtree-rs peerId: ${rsPeer?.peerId}`);
+      console.log(`rust peerId: ${rsPeer?.peerId}`);
       expect(rsPeer?.peerId).toBeTruthy();
       expect(typeof rsPeer?.peerId).toBe('string');
       expect(rsPeer?.peerId.length).toBeGreaterThan(5);
@@ -356,15 +356,15 @@ test.describe('hashtree-rs Cross-Language', () => {
     expect(foundRsPeer || receivedOfferFromRsPeer).toBe(true);
   });
 
-  test('hashtree-rs responds to hashtree-ts peer via relay', async () => {
+  test('rust responds to ts peer via relay', async () => {
     if (!rsPeerPubkey) {
-      throw new Error('hashtree-rs pubkey not captured');
+      throw new Error('rust pubkey not captured');
     }
 
     const pool = new SimplePool();
     const tsSk = tsSecretKey;
     const tsPk = tsPubkey;
-    // Use a high UUID so hashtree-rs (lower UUID) initiates the offer.
+    // Use a high UUID so rust (lower UUID) initiates the offer.
     const tsUuid = 'z'.repeat(30);
 
     console.log('TypeScript peer pubkey:', tsPk.slice(0, 16) + '...');
@@ -421,7 +421,7 @@ test.describe('hashtree-rs Cross-Language', () => {
 
     await new Promise(r => setTimeout(r, 1000));
 
-    // Send hellos to prompt an offer from hashtree-rs
+    // Send hellos to prompt an offer from rust
     for (let i = 0; i < 30; i++) {
       const expiration = Math.floor((Date.now() + 5 * 60 * 1000) / 1000);
       const helloEvent = finalizeEvent({
@@ -438,7 +438,7 @@ test.describe('hashtree-rs Cross-Language', () => {
       await publishWithRetry(pool, localRelay, helloEvent);
       await new Promise(r => setTimeout(r, 2000));
 
-      console.log(`Check ${i + 1}: received offer from hashtree-rs = ${receivedOfferFromRs}`);
+      console.log(`Check ${i + 1}: received offer from rust = ${receivedOfferFromRs}`);
 
       if (receivedOfferFromRs) {
         break;
@@ -449,7 +449,7 @@ test.describe('hashtree-rs Cross-Language', () => {
     pool.close([localRelay]);
 
     console.log('\n=== Results ===');
-    console.log(`Received offer from hashtree-rs: ${receivedOfferFromRs}`);
+    console.log(`Received offer from rust: ${receivedOfferFromRs}`);
 
     expect(receivedOfferFromRs).toBe(true);
   });

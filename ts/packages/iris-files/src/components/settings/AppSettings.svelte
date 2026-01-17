@@ -124,34 +124,14 @@
         </span>
       </div>
       <a
-        href={isFilesApp() ? "#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree-ts" : "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree-ts"}
+        href={isFilesApp() ? "#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree" : "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree"}
         target={isFilesApp() ? undefined : "_blank"}
         rel={isFilesApp() ? undefined : "noopener noreferrer"}
         class="btn-ghost w-full flex items-center justify-center gap-2 no-underline"
       >
         <span class="i-lucide-code text-sm"></span>
-        <span>hashtree-ts</span>
-        <span class="text-text-3 text-xs no-underline">(TypeScript library & this app)</span>
-      </a>
-      <a
-        href={isFilesApp() ? "#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree-rs" : "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree-rs"}
-        target={isFilesApp() ? undefined : "_blank"}
-        rel={isFilesApp() ? undefined : "noopener noreferrer"}
-        class="btn-ghost w-full flex items-center justify-center gap-2 no-underline"
-      >
-        <span class="i-lucide-terminal text-sm"></span>
-        <span>hashtree-rs</span>
-        <span class="text-text-3 text-xs no-underline">(Rust CLI & P2P daemon)</span>
-      </a>
-      <a
-        href={isFilesApp() ? "#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree-ci" : "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree-ci"}
-        target={isFilesApp() ? undefined : "_blank"}
-        rel={isFilesApp() ? undefined : "noopener noreferrer"}
-        class="btn-ghost w-full flex items-center justify-center gap-2 no-underline"
-      >
-        <span class="i-lucide-bot text-sm"></span>
-        <span>hashtree-ci</span>
-        <span class="text-text-3 text-xs no-underline">(CI/CD pipeline)</span>
+        <span>hashtree</span>
+        <span class="text-text-3 text-xs no-underline">(source code)</span>
       </a>
       <button
         onclick={() => window.location.reload()}

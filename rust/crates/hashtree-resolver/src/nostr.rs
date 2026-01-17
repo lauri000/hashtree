@@ -194,7 +194,7 @@ impl NostrRootResolver {
     /// subscribes and waits until a Cid is found. Caller should apply their
     /// own timeout if needed (e.g., via `tokio::time::timeout`).
     ///
-    /// This matches the behavior of hashtree-ts NostrRootResolver.
+    /// This matches the behavior of ts NostrRootResolver.
     pub async fn resolve_wait(&self, key: &str) -> Result<Cid, ResolverError> {
         // First try a quick resolve
         if let Some(cid) = self.resolve(key).await? {

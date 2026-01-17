@@ -1,10 +1,10 @@
 /**
- * Cross-language E2E sync test: hashtree-ts (browser) <-> hashtree-rs (Rust)
+ * Cross-language E2E sync test: ts (browser) <-> rust
  *
  * This test verifies actual content sync between TypeScript and Rust implementations:
  * 1. Pre-generates keypairs for both sides so they can mutually follow from start
- * 2. Spawns a hashtree-rs server with test content
- * 3. Uses Playwright to run hashtree-ts in a browser
+ * 2. Spawns a rust server with test content
+ * 3. Uses Playwright to run ts in a browser
  * 4. Establishes WebRTC connection between them
  * 5. Verifies content can be synced from Rust to TypeScript
  *
@@ -19,14 +19,14 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { nip19, generateSecretKey, getPublicKey } from 'nostr-tools';
 import fs from 'fs';
-import { acquireHashtreeRsLock, releaseHashtreeRsLock } from './hashtree-rs-lock.js';
+import { acquireRustLock, releaseRustLock } from './rust-lock.js';
 
 // Run tests in this file serially to avoid WebRTC/timing conflicts
 test.describe.configure({ mode: 'serial' });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const HASHTREE_RS_DIR = path.resolve(__dirname, '../../hashtree-rs');
+const HASHTREE_RS_DIR = path.resolve(__dirname, '../../rust');
 
 // Simple bytesToHex implementation
 function bytesToHex(bytes: Uint8Array): string {
@@ -84,7 +84,7 @@ function ensureHtreeBinary(): string | null {
 test.describe('Cross-Language Sync', () => {
   test.setTimeout(180000);
 
-  test('hashtree-ts syncs content from hashtree-rs via WebRTC', async ({ page }, testInfo) => {
+  test('ts syncs content from rust via WebRTC', async ({ page }, testInfo) => {
     // Skip if no Rust toolchain
     if (!hasRustToolchain()) {
       test.skip(true, 'Rust toolchain not available');
@@ -92,7 +92,7 @@ test.describe('Cross-Language Sync', () => {
     }
 
     if (!fs.existsSync(path.join(HASHTREE_RS_DIR, 'Cargo.toml'))) {
-      test.skip(true, 'hashtree-rs repo not available');
+      test.skip(true, 'rust toolchain not available');
       return;
     }
 
@@ -115,7 +115,7 @@ test.describe('Cross-Language Sync', () => {
     let tsPubkeyHex: string | null = null;
 
     try {
-      lockFd = await acquireHashtreeRsLock(90000);
+      lockFd = await acquireRustLock(90000);
       // ===== STEP 1: Start TS app and wait for full initialization =====
       console.log('[TS] Starting app...');
       await page.goto('/');
@@ -193,7 +193,7 @@ test.describe('Cross-Language Sync', () => {
       console.log('[TS] Config result:', configResult);
 
       // ===== STEP 3: Start Rust server with TS in follows =====
-      console.log('[Rust] Starting hashtree-rs server...');
+      console.log('[Rust] Starting rust server...');
 
       // Pass both keys via environment - Rust uses its key and follows TS
       // Also pass local relay URL for deterministic signaling
@@ -331,7 +331,7 @@ test.describe('Cross-Language Sync', () => {
       if (content) {
         console.log(`\n=== SUCCESS: Content synced via WebRTC! ===`);
         console.log(`Content: ${content.data}`);
-        expect(content.data).toContain('Hello from hashtree-rs');
+        expect(content.data).toContain('Hello from rust');
       } else {
         console.log('\n=== WebRTC sync failed ===');
         console.log(`Connected to Rust: ${connectedToRust}`);
@@ -345,7 +345,7 @@ test.describe('Cross-Language Sync', () => {
         rustProcess.kill();
       }
       if (lockFd !== null) {
-        releaseHashtreeRsLock(lockFd);
+        releaseRustLock(lockFd);
       }
     }
   });

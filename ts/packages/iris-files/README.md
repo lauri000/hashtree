@@ -75,7 +75,7 @@ To include the `htree` CLI tool in the desktop app:
 
 1. Build htree for target platforms:
    ```bash
-   cd /path/to/hashtree-rs
+   cd ../../../rust  # from ts/packages/iris-files
    cargo build --release -p hashtree-cli
    ```
 

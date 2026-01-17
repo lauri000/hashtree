@@ -1,8 +1,8 @@
 /**
- * Cross-language WebRTC CONNECTION test: hashtree-ts (browser) <-> hashtreeRs (Rust)
+ * Cross-language WebRTC CONNECTION test: ts (browser) <-> hashtreeRs (Rust)
  *
  * This test verifies actual WebRTC data channel connections, not just discovery.
- * Uses Playwright to run hashtree-ts WebRTCStore in a browser while hashtreeRs runs.
+ * Uses Playwright to run ts WebRTCStore in a browser while hashtreeRs runs.
  */
 
 import { test, expect } from './fixtures';
@@ -10,10 +10,10 @@ import { spawn, execSync, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { enableOthersPool, ensureLoggedIn, setupPageErrorHandler, useLocalRelay, waitForAppReady, getTestRelayUrl, getCrosslangPort } from './test-utils.js';
-import { acquireHashtreeRsLock, releaseHashtreeRsLock } from './hashtree-rs-lock.js';
+import { acquireRustLock, releaseRustLock } from './rust-lock.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
 
-const HASHTREE_RS_DIR = '/workspace/hashtree-rs';
+const HASHTREE_RS_DIR = path.resolve(__dirname, '../../rust');
 const hashtreeRsAvailable = (() => {
   try {
     execSync('cargo --version', { stdio: 'ignore' });
@@ -31,7 +31,7 @@ function ensureHtreeBinary(): void {
     return;
   }
 
-  console.log('Building htree binary for hashtree-rs tests...');
+  console.log('Building htree binary for rust tests...');
   execSync('cargo build --bin htree --features p2p', { cwd: HASHTREE_RS_DIR, stdio: 'inherit' });
 
   if (!fs.existsSync(debugBin) && !fs.existsSync(releaseBin)) {
@@ -44,10 +44,10 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 test.describe('hashtreeRs WebRTC Connection', () => {
-  test.skip(!hashtreeRsAvailable, 'hashtree-rs repo or Rust toolchain not available');
+  test.skip(!hashtreeRsAvailable, 'rust toolchain or Rust toolchain not available');
   test.setTimeout(420000);
 
-  test('hashtree-ts and hashtreeRs establish WebRTC connection', async ({ page }, testInfo) => {
+  test('ts and hashtreeRs establish WebRTC connection', async ({ page }, testInfo) => {
     ensureHtreeBinary();
     const localRelay = getTestRelayUrl();
     const crosslangPort = getCrosslangPort(testInfo.workerIndex);
@@ -76,7 +76,7 @@ test.describe('hashtreeRs WebRTC Connection', () => {
     const outputLines: string[] = [];
 
     try {
-      lockFd = await acquireHashtreeRsLock(240000);
+      lockFd = await acquireRustLock(240000);
       const followResult = await page.evaluate(async (rustPubkey) => {
         const getWorkerAdapter = (window as any).__getWorkerAdapter;
         if (!getWorkerAdapter) return { ok: false, reason: 'no __getWorkerAdapter' };
@@ -162,13 +162,13 @@ test.describe('hashtreeRs WebRTC Connection', () => {
 
       const exitPromise = new Promise<never>((_, reject) => {
         hashtreeRsProcess?.on('exit', (code, signal) => {
-          reject(new Error(`hashtree-rs exited before ready (code=${code}, signal=${signal}). Recent output:\n${outputLines.join('\n')}`));
+          reject(new Error(`rust exited before ready (code=${code}, signal=${signal}). Recent output:\n${outputLines.join('\n')}`));
         });
       });
 
       await Promise.race([
         new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error(`Timed out waiting for hashtree-rs markers. Recent output:\n${outputLines.join('\n')}`)), 240000);
+          const timeout = setTimeout(() => reject(new Error(`Timed out waiting for rust markers. Recent output:\n${outputLines.join('\n')}`)), 240000);
           const check = setInterval(() => {
             if (testContentHash && rustReady) {
               clearInterval(check);
@@ -243,7 +243,7 @@ test.describe('hashtreeRs WebRTC Connection', () => {
 
       console.log('hashtreeRs connected peers:', Array.from(hashtreeRsConnectedPeers));
       expect(content).toBeTruthy();
-      expect(content).toContain('Hello from hashtree-rs');
+      expect(content).toContain('Hello from rust');
     } finally {
       if (hashtreeRsProcess) {
         hashtreeRsProcess.kill('SIGTERM');
@@ -251,7 +251,7 @@ test.describe('hashtreeRs WebRTC Connection', () => {
         hashtreeRsProcess.kill('SIGKILL');
       }
       if (lockFd !== null) {
-        releaseHashtreeRsLock(lockFd);
+        releaseRustLock(lockFd);
       }
     }
   });

@@ -1,4 +1,4 @@
-//! Cross-language peer test: hashtree-rs exposing content for hashtree-ts to sync
+//! Cross-language peer test: rust exposing content for ts to sync
 //!
 //! This test starts an htree server with known test content and outputs markers
 //! that the TypeScript E2E test can capture to discover and sync from it.
@@ -148,7 +148,7 @@ fn test_crosslang_peer() {
     let npub = keys.public_key().to_bech32().expect("Failed to encode npub");
 
     // Test content that will be synced
-    let test_content = b"Hello from hashtree-rs! This content was synced cross-language.";
+    let test_content = b"Hello from rust! This content was synced cross-language.";
 
     // Check if we should follow a specific pubkey (from TS test)
     let follow_pubkeys: Vec<String> = std::env::var("CROSSLANG_FOLLOW_PUBKEY")

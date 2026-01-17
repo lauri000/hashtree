@@ -1,8 +1,8 @@
 /**
- * Cross-language WebSocket integration test: hashtree-ts <-> hashtree-rs
+ * Cross-language WebSocket integration test: ts <-> rust
  *
  * Tests that the TypeScript WebSocketPeer can communicate with the
- * Rust hashtree-rs /ws/data endpoint using the shared protocol:
+ * Rust rust /ws/data endpoint using the shared protocol:
  * - JSON messages: req, res
  * - Binary messages: [4-byte LE request_id][data]
  */
@@ -13,7 +13,7 @@ import fs from 'fs';
 import path from 'path';
 import WebSocket from 'ws';
 import { createHash } from 'crypto';
-import { acquireHashtreeRsLock, releaseHashtreeRsLock } from './hashtree-rs-lock.js';
+import { acquireRustLock, releaseRustLock } from './rust-lock.js';
 
 // Polyfill WebSocket for Node.js environment
 (globalThis as any).WebSocket = WebSocket;
@@ -230,7 +230,7 @@ class ServingWsClient extends TestWsClient {
   }
 }
 
-test.describe('hashtree-rs WebSocket Integration', () => {
+test.describe('rust WebSocket Integration', () => {
   // Serial mode: shares rust server process via beforeAll/afterAll
   test.describe.configure({ mode: 'serial', timeout: 180000 });
   test.setTimeout(180000);
@@ -242,16 +242,16 @@ test.describe('hashtree-rs WebSocket Integration', () => {
 
   test.beforeAll(async () => {
     test.setTimeout(180000);
-    // Check if hashtree-rs binary exists (skip tests if not built)
+    // Check if rust binary exists (skip tests if not built)
     try {
-      execSync('cargo metadata --manifest-path /workspace/hashtree-rs/Cargo.toml', { stdio: 'ignore' });
+      execSync(`cargo metadata --manifest-path ${path.resolve(__dirname, '../../rust/Cargo.toml')}`, { stdio: 'ignore' });
     } catch {
-      console.log('hashtree-rs not available, skipping ws-interop tests');
+      console.log('rust not available, skipping ws-interop tests');
       test.skip();
       return;
     }
 
-    lockFd = await acquireHashtreeRsLock(240000);
+    lockFd = await acquireRustLock(240000);
 
     // Create temp directory for Rust server storage
     tempDir = execSync('mktemp -d').toString().trim();
@@ -262,13 +262,13 @@ test.describe('hashtree-rs WebSocket Integration', () => {
     const configPath = path.join(configDir, 'config.toml');
     fs.writeFileSync(configPath, '[server]\nenable_auth = false\n', 'utf8');
 
-    // Start hashtree-rs server
-    console.log('Starting hashtree-rs server...');
+    // Start rust server
+    console.log('Starting rust server...');
     rustProcess = spawn(
       'cargo',
       ['run', '-p', 'hashtree-cli', '--release', '--', 'start', '--addr', `127.0.0.1:${RUST_SERVER_PORT}`, '--data-dir', tempDir],
       {
-        cwd: '/workspace/hashtree-rs',
+        cwd: path.resolve(__dirname, '../../rust'),
         env: { ...process.env, RUST_LOG: 'hashtree_cli=debug', HTREE_CONFIG_DIR: configDir },
         stdio: ['ignore', 'pipe', 'pipe'],
       }
@@ -276,10 +276,10 @@ test.describe('hashtree-rs WebSocket Integration', () => {
 
     // Log output
     rustProcess.stdout?.on('data', (data) => {
-      console.log('[hashtree-rs stdout]', data.toString().trim());
+      console.log('[rust stdout]', data.toString().trim());
     });
     rustProcess.stderr?.on('data', (data) => {
-      console.log('[hashtree-rs stderr]', data.toString().trim());
+      console.log('[rust stderr]', data.toString().trim());
     });
 
     // Wait for server to start (longer timeout for initial compilation)
@@ -290,7 +290,7 @@ test.describe('hashtree-rs WebSocket Integration', () => {
         const response = await fetch(`${HTTP_URL}/api/stats`);
         if (response.ok) {
           serverReady = true;
-          console.log('hashtree-rs server is ready');
+          console.log('rust server is ready');
           break;
         }
       } catch {
@@ -299,7 +299,7 @@ test.describe('hashtree-rs WebSocket Integration', () => {
     }
 
     if (!serverReady) {
-      throw new Error('hashtree-rs server failed to start within 60 seconds');
+      throw new Error('rust server failed to start within 60 seconds');
     }
   });
 
@@ -310,7 +310,7 @@ test.describe('hashtree-rs WebSocket Integration', () => {
       rustProcess.kill('SIGKILL');
     }
     if (lockFd !== null) {
-      releaseHashtreeRsLock(lockFd);
+      releaseRustLock(lockFd);
       lockFd = null;
     }
     if (tempDir) {
@@ -329,7 +329,7 @@ test.describe('hashtree-rs WebSocket Integration', () => {
     }
   });
 
-  test('TypeScript WebSocketPeer can connect to hashtree-rs /ws/data', async () => {
+  test('TypeScript WebSocketPeer can connect to rust /ws/data', async () => {
     const client = new TestWsClient();
     const connected = await client.connect(RUST_SERVER_URL);
     expect(connected).toBe(true);
