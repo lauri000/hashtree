@@ -1005,7 +1005,14 @@ async fn main() -> Result<()> {
                     if was_generated {
                         eprintln!("Generated new identity");
                     }
-                    println!("{}", npub);
+                    // Try to fetch profile name
+                    let config = Config::load()?;
+                    let profile_name = fetch_profile_name(&config.nostr.relays, &keys.public_key().to_hex()).await;
+                    if let Some(name) = profile_name {
+                        println!("{} ({})", npub, name);
+                    } else {
+                        println!("{}", npub);
+                    }
                 }
                 Some(id) => {
                     // Set identity - accept nsec or derive from input
@@ -1872,7 +1879,7 @@ async fn list_peers(addr: &str) -> Result<()> {
     Ok(())
 }
 
-/// Fetch profile name from Nostr relays (5s timeout)
+/// Fetch profile name from Nostr relays (2s timeout)
 async fn fetch_profile_name(relays: &[String], pubkey_hex: &str) -> Option<String> {
     use nostr::{Filter, Kind, PublicKey};
     use nostr_sdk::{ClientBuilder, EventSource};
@@ -1893,7 +1900,7 @@ async fn fetch_profile_name(relays: &[String], pubkey_hex: &str) -> Option<Strin
         .kind(Kind::Metadata)
         .limit(1);
 
-    let timeout = Duration::from_secs(5);
+    let timeout = Duration::from_secs(2);
     let events = tokio::time::timeout(
         timeout,
         client.get_events_of(vec![filter], EventSource::relays(None))
