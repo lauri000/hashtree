@@ -29,10 +29,25 @@ async function startLocalRelay(): Promise<void> {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
+    let settled = false;
+    let startupTimeout: ReturnType<typeof setTimeout> | null = null;
+    const finish = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (startupTimeout) {
+        clearTimeout(startupTimeout);
+      }
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    };
+
     relayProcess.stdout?.on('data', (data) => {
       const msg = data.toString();
       if (msg.includes('Running on')) {
-        resolve();
+        finish();
       }
     });
 
@@ -40,10 +55,38 @@ async function startLocalRelay(): Promise<void> {
       console.error('Relay stderr:', data.toString());
     });
 
-    relayProcess.on('error', reject);
+    relayProcess.on('error', (err) => finish(err instanceof Error ? err : new Error(String(err))));
+    relayProcess.on('exit', (code, signal) => {
+      if (settled) return;
+      const details = signal ? `signal ${signal}` : `code ${code}`;
+      finish(new Error(`Relay exited before ready (${details})`));
+    });
 
-    // Timeout after 5 seconds
-    setTimeout(() => reject(new Error('Relay startup timeout')), 5000);
+    const tryConnect = () => {
+      if (settled) return;
+      const ws = new WebSocket(TEST_RELAY);
+      const cleanup = () => {
+        ws.removeAllListeners();
+        try {
+          ws.close();
+        } catch {
+        }
+      };
+      ws.once('open', () => {
+        cleanup();
+        finish();
+      });
+      ws.once('error', () => {
+        cleanup();
+        setTimeout(tryConnect, 100);
+      });
+    };
+
+    startupTimeout = setTimeout(() => {
+      finish(new Error('Relay startup timeout'));
+    }, 10000);
+
+    tryConnect();
   });
 }
 
