@@ -14,7 +14,8 @@ import { DexieStore } from '../../../../ts/packages/hashtree/src/store/dexie';
 import { BlossomStore } from '../../../../ts/packages/hashtree/src/store/blossom';
 import { FallbackStore } from '../../../../ts/packages/hashtree/src/store/fallback';
 import type { WorkerRequest, WorkerResponse, WorkerConfig, SignedEvent, WebRTCCommand, BlossomUploadProgress, BlossomServerStatus } from './protocol';
-import { initTreeRootCache, getCachedRoot, clearMemoryCache } from './treeRootCache';
+import { initTreeRootCache, getCachedRoot, setCachedRoot, clearMemoryCache } from './treeRootCache';
+import { handleTreeRootEvent, isTreeRootEvent, setNotifyCallback as setTreeRootNotifyCallback } from './treeRootSubscription';
 import {
   initNdk,
   closeNdk,
@@ -502,6 +503,9 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       case 'resolveRoot':
         await handleResolveRoot(msg.id, msg.npub, msg.path);
         break;
+      case 'setTreeRootCache':
+        await handleSetTreeRootCache(msg.id, msg.npub, msg.treeName, msg.hash, msg.key, msg.visibility);
+        break;
 
       // Nostr (TODO: Phase 2)
       case 'subscribe':
@@ -762,6 +766,30 @@ async function handleInit(id: string, cfg: WorkerConfig) {
       if (subId.startsWith('socialgraph-') && event.kind === KIND_CONTACTS) {
         handleSocialGraphEvent(event);
       }
+
+      // Route to tree root handler (kind 30078 with #l=hashtree)
+      if (isTreeRootEvent(event)) {
+        handleTreeRootEvent(event).catch(err => {
+          console.warn('[Worker] Failed to handle tree root event:', err);
+        });
+      }
+    });
+
+    // Set up tree root notification callback to notify main thread
+    setTreeRootNotifyCallback((npub, treeName, record) => {
+      respond({
+        type: 'treeRootUpdate',
+        npub,
+        treeName,
+        hash: record.hash,
+        key: record.key,
+        visibility: record.visibility,
+        updatedAt: record.updatedAt,
+        encryptedKey: record.encryptedKey,
+        keyId: record.keyId,
+        selfEncryptedKey: record.selfEncryptedKey,
+        selfEncryptedLinkKey: record.selfEncryptedLinkKey,
+      });
     });
 
     // Set up EOSE handler
@@ -1202,6 +1230,22 @@ async function handleResolveRoot(id: string, npub: string, path?: string) {
     respond({ type: 'cid', id, cid: resolved?.cid });
   } catch (err) {
     respond({ type: 'cid', id, error: getErrorMessage(err) });
+  }
+}
+
+async function handleSetTreeRootCache(
+  id: string,
+  npub: string,
+  treeName: string,
+  hash: Uint8Array,
+  key: Uint8Array | undefined,
+  visibility: 'public' | 'link-visible' | 'private'
+) {
+  try {
+    await setCachedRoot(npub, treeName, { hash, key }, visibility);
+    respond({ type: 'void', id });
+  } catch (err) {
+    respond({ type: 'void', id, error: getErrorMessage(err) });
   }
 }
 

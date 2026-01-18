@@ -16,6 +16,9 @@ export type {
   SocialGraphEvent,
 } from '../../../../ts/packages/hashtree/src/worker/protocol';
 
+// Tree visibility levels
+export type TreeVisibility = 'public' | 'link-visible' | 'private';
+
 // Extended PeerStats with pool classification (iris-files specific)
 export interface PeerStats {
   peerId: string;
@@ -54,6 +57,9 @@ export type WorkerRequest =
   | { type: 'deleteFile'; id: string; parentCid: CID; path: string }
   | { type: 'listDir'; id: string; cid: CID }
   | { type: 'resolveRoot'; id: string; npub: string; path?: string }
+
+  // Tree root cache (push from main thread registry)
+  | { type: 'setTreeRootCache'; id: string; npub: string; treeName: string; hash: Uint8Array; key?: Uint8Array; visibility: TreeVisibility }
 
   // Nostr subscriptions
   | { type: 'subscribe'; id: string; filters: NostrFilter[] }
@@ -166,6 +172,9 @@ export type WorkerResponse =
   | { type: 'blossomPushStarted'; treeName: string; totalChunks: number }
   | { type: 'blossomPushProgress'; treeName: string; current: number; total: number }
   | { type: 'blossomPushComplete'; treeName: string; pushed: number; skipped: number; failed: number }
+
+  // Tree root updates (worker → main thread notification)
+  | { type: 'treeRootUpdate'; npub: string; treeName: string; hash: Uint8Array; key?: Uint8Array; visibility: TreeVisibility; updatedAt: number; encryptedKey?: string; keyId?: string; selfEncryptedKey?: string; selfEncryptedLinkKey?: string }
 
   // SocialGraph responses
   | { type: 'socialGraphInit'; id: string; version: number; size: number; error?: string }

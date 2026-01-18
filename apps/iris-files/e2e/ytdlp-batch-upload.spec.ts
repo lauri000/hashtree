@@ -187,7 +187,7 @@ test.describe('yt-dlp Batch Upload', () => {
     // Perform batch upload via page.evaluate to simulate the full flow
     const uploadResult = await page.evaluate(async () => {
       const { getTree } = await import('/src/store.ts');
-      const hashtree = await import('/node_modules/hashtree/dist/index.js');
+      const hashtree = await import('/src/lib/nhash.ts');
       const { toHex, videoChunker, cid } = hashtree;
 
       const tree = getTree();
@@ -293,7 +293,7 @@ test.describe('yt-dlp Batch Upload', () => {
     // Test that VideoUploadModal correctly extracts description and title from info.json
     const extractResult = await page.evaluate(async () => {
       const { getTree } = await import('/src/store.ts');
-      const hashtree = await import('/node_modules/hashtree/dist/index.js');
+      const hashtree = await import('/src/lib/nhash.ts');
       const { toHex, videoChunker, cid } = hashtree;
 
       const tree = getTree();
@@ -531,7 +531,7 @@ test.describe('yt-dlp Batch Upload', () => {
       const { getTree } = await import('/src/store.ts');
       const { nostrStore, saveHashtree } = await import('/src/nostr.ts');
       const { storeLinkKey } = await import('/src/stores/trees.ts');
-      const hashtree = await import('/node_modules/hashtree/dist/index.js');
+      const hashtree = await import('/src/lib/nhash.ts');
       const { toHex, videoChunker, cid, LinkType } = hashtree;
 
       const tree = getTree();
@@ -666,7 +666,7 @@ test.describe('yt-dlp Batch Upload', () => {
       const { getTree } = await import('/src/store.ts');
       const { nostrStore } = await import('/src/nostr.ts');
       const { updateLocalRootCacheHex } = await import('/src/treeRootCache.ts');
-      const hashtree = await import('/node_modules/hashtree/dist/index.js');
+      const hashtree = await import('/src/lib/nhash.ts');
       const { toHex, videoChunker, cid } = hashtree;
 
       const tree = getTree();
@@ -756,7 +756,7 @@ test.describe('yt-dlp Batch Upload', () => {
       const { getTree } = await import('/src/store.ts');
       const { nostrStore } = await import('/src/nostr.ts');
       const { updateLocalRootCacheHex } = await import('/src/treeRootCache.ts');
-      const hashtree = await import('/node_modules/hashtree/dist/index.js');
+      const hashtree = await import('/src/lib/nhash.ts');
       const { toHex, videoChunker, cid } = hashtree;
 
       const tree = getTree();
@@ -875,7 +875,7 @@ test.describe('yt-dlp Batch Upload', () => {
       const { getTree } = await import('/src/store.ts');
       const { nostrStore } = await import('/src/nostr.ts');
       const { updateLocalRootCacheHex } = await import('/src/treeRootCache.ts');
-      const hashtree = await import('/node_modules/hashtree/dist/index.js');
+      const hashtree = await import('/src/lib/nhash.ts');
       const { toHex, videoChunker, cid } = hashtree;
 
       const tree = getTree();

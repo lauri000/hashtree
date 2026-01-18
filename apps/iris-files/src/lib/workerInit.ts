@@ -17,6 +17,9 @@ import { initRelayTracking } from '../nostr/relays';
 import { isTauri, hasTauriInvoke } from '../tauri';
 import { getAppType } from '../appType';
 import { logHtreeDebug } from './htreeDebug';
+import { treeRootRegistry } from '../TreeRootRegistry';
+import { initializePublishFn } from '../treeRootCache';
+import { setupMediaStreaming } from './mediaStreamingSetup';
 import type { NDKEvent, NDKFilter, NDKSubscription } from 'ndk';
 import type { WorkerNostrFilter, WorkerSignedEvent } from 'hashtree';
 // Import worker using Vite's ?worker query - returns a Worker constructor
@@ -167,6 +170,83 @@ async function syncFollows(follows: string[]): Promise<void> {
 
 // Track follows store for cleanup
 let followsStoreDestroy: (() => void) | null = null;
+
+// Track tree root registry subscription and worker update listener
+let treeRootRegistryUnsubscribe: (() => void) | null = null;
+let workerTreeRootUnsubscribe: (() => void) | null = null;
+
+/**
+ * Set up bidirectional sync between tree root registry and worker.
+ * - Local writes (main→worker): For worker to publish to Nostr
+ * - Worker updates (worker→main): Nostr subscription results
+ */
+function setupTreeRootRegistryBridge(): void {
+  // Clean up previous subscriptions
+  if (treeRootRegistryUnsubscribe) {
+    treeRootRegistryUnsubscribe();
+    treeRootRegistryUnsubscribe = null;
+  }
+  if (workerTreeRootUnsubscribe) {
+    workerTreeRootUnsubscribe();
+    workerTreeRootUnsubscribe = null;
+  }
+
+  const adapter = getWorkerAdapter();
+  if (!adapter) return;
+
+  // 1. Sync local writes from main thread to worker (for publishing)
+  if ('setTreeRootCache' in adapter) {
+    treeRootRegistryUnsubscribe = treeRootRegistry.subscribeAll(async (key, record) => {
+      // Only sync local writes - worker handles its own Nostr updates
+      if (!record || record.source !== 'local-write') return;
+
+      const slashIndex = key.indexOf('/');
+      if (slashIndex <= 0) return;
+
+      const npub = key.slice(0, slashIndex);
+      const treeName = key.slice(slashIndex + 1);
+
+      try {
+        await (adapter as { setTreeRootCache: (npub: string, treeName: string, hash: Uint8Array, key?: Uint8Array, visibility?: 'public' | 'link-visible' | 'private') => Promise<void> })
+          .setTreeRootCache(npub, treeName, record.hash, record.key, record.visibility);
+      } catch (err) {
+        console.warn('[WorkerInit] Failed to sync local write to worker:', err);
+      }
+    });
+
+    // Sync existing local-write entries to worker
+    for (const [key, record] of treeRootRegistry.getAllRecords()) {
+      if (record.source !== 'local-write') continue;
+
+      const slashIndex = key.indexOf('/');
+      if (slashIndex <= 0) continue;
+
+      const npub = key.slice(0, slashIndex);
+      const treeName = key.slice(slashIndex + 1);
+
+      (adapter as { setTreeRootCache: (npub: string, treeName: string, hash: Uint8Array, key?: Uint8Array, visibility?: 'public' | 'link-visible' | 'private') => Promise<void> })
+        .setTreeRootCache(npub, treeName, record.hash, record.key, record.visibility)
+        .catch(err => console.warn('[WorkerInit] Failed to sync initial local write to worker:', err));
+    }
+  }
+
+  // 2. Listen for worker tree root updates (from Nostr subscriptions)
+  if ('onTreeRootUpdate' in adapter) {
+    workerTreeRootUnsubscribe = (adapter as { onTreeRootUpdate: (cb: (npub: string, treeName: string, hash: Uint8Array, updatedAt: number, options: { key?: Uint8Array; visibility: string; encryptedKey?: string; keyId?: string; selfEncryptedKey?: string; selfEncryptedLinkKey?: string }) => void) => () => void })
+      .onTreeRootUpdate((npub, treeName, hash, updatedAt, options) => {
+        treeRootRegistry.setFromWorker(npub, treeName, hash, updatedAt, {
+          key: options.key,
+          visibility: options.visibility as 'public' | 'link-visible' | 'private',
+          encryptedKey: options.encryptedKey,
+          keyId: options.keyId,
+          selfEncryptedKey: options.selfEncryptedKey,
+          selfEncryptedLinkKey: options.selfEncryptedLinkKey,
+        });
+      });
+  }
+
+  console.log('[WorkerInit] Tree root registry bridge set up (bidirectional)');
+}
 
 /**
  * Set up follows subscription for the current user.
@@ -429,6 +509,17 @@ export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<
 
       // Set up follows subscription for WebRTC peer classification
       setupFollowsSubscription(identity.pubkey);
+
+      // Set up tree root registry bridge to sync cache to worker
+      setupTreeRootRegistryBridge();
+
+      // Initialize the publish function now that all dependencies are ready
+      await initializePublishFn();
+
+      // Set up direct SW ↔ Worker communication for file streaming
+      setupMediaStreaming().catch(err => {
+        console.warn('[WorkerInit] Media streaming setup failed:', err);
+      });
     } catch (err) {
       console.error('[WorkerInit] Failed to initialize worker:', err);
       // Don't throw - app can still work without worker (fallback to main thread)

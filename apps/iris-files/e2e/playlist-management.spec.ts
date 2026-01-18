@@ -31,7 +31,7 @@ async function createTestPlaylist(page: any, playlistName: string) {
     const { getTree } = await import('/src/store.ts');
     const { nostrStore } = await import('/src/nostr.ts');
     const { updateLocalRootCacheHex } = await import('/src/treeRootCache.ts');
-    const hashtree = await import('/node_modules/hashtree/dist/index.js');
+    const hashtree = await import('/src/lib/nhash.ts');
     const { toHex, videoChunker, cid } = hashtree;
 
     const tree = getTree();
@@ -229,7 +229,7 @@ test.describe('Playlist Management', () => {
       const { getTree } = await import('/src/store.ts');
       const { nostrStore } = await import('/src/nostr.ts');
       const { updateLocalRootCacheHex } = await import('/src/treeRootCache.ts');
-      const hashtree = await import('/node_modules/hashtree/dist/index.js');
+      const hashtree = await import('/src/lib/nhash.ts');
       const { toHex, videoChunker, cid } = hashtree;
 
       const tree = getTree();
@@ -302,7 +302,7 @@ test.describe('Playlist Management', () => {
     const result = await page.evaluate(async () => {
       const { getTree } = await import('/src/store.ts');
       const { nostrStore, saveHashtree } = await import('/src/nostr.ts');
-      const hashtree = await import('/node_modules/hashtree/dist/index.js');
+      const hashtree = await import('/src/lib/nhash.ts');
       const { toHex, videoChunker, cid } = hashtree;
 
       const tree = getTree();
@@ -446,7 +446,7 @@ test.describe('Playlist Management', () => {
         const { getTreeRootSync } = await import('/src/stores/treeRoot.ts');
         const { getTree } = await import('/src/store.ts');
         const { findFirstVideoEntry } = await import('/src/stores/playlist.ts');
-        const hashtree = await import('/node_modules/hashtree/dist/index.js');
+        const hashtree = await import('/src/lib/nhash.ts');
 
         // Parse URL to get npub and treeName
         const hashPart = url.split('#')[1] || '';
@@ -540,7 +540,7 @@ test.describe('Playlist Management', () => {
       const playlist = await pageA.evaluate(async () => {
         const { getTree, getWebRTCStore } = await import('/src/store.ts');
         const { nostrStore, saveHashtree } = await import('/src/nostr.ts');
-        const hashtree = await import('/node_modules/hashtree/dist/index.js');
+        const hashtree = await import('/src/lib/nhash.ts');
         const { toHex, videoChunker, cid, BlossomStore } = hashtree;
 
         const tree = getTree();
@@ -754,7 +754,7 @@ test.describe('Playlist Management', () => {
 
     const result = await page.evaluate(async () => {
       const { getTree } = await import('/src/store.ts');
-      const hashtree = await import('/node_modules/hashtree/dist/index.js');
+      const hashtree = await import('/src/lib/nhash.ts');
       const { toHex, cid, LinkType } = hashtree;
 
       const tree = getTree();

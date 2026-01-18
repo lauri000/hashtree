@@ -12,7 +12,7 @@ async function createSidebarVideos(page: any, suffix: string): Promise<{ npub: s
   return page.evaluate(async ({ suffix }) => {
     const { getTree } = await import('/src/store.ts');
     const { saveHashtree, nostrStore } = await import('/src/nostr');
-    const hashtree = await import('/node_modules/hashtree/dist/index.js');
+    const hashtree = await import('/src/lib/nhash.ts');
     const { videoChunker, cid } = hashtree;
 
     const state = nostrStore.getState();

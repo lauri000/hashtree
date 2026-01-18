@@ -7,7 +7,7 @@
  * This test helps debug issues where nhash navigation shows empty directories.
  */
 import { test, expect, type Page } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay, waitForAppReady, followUser, waitForFollowInWorker } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay, waitForAppReady, followUser, waitForFollowInWorker, getCurrentDirNhash } from './test-utils.js';
 
 async function initUser(page: Page): Promise<{ npub: string; pubkeyHex: string }> {
   setupPageErrorHandler(page);
@@ -163,17 +163,7 @@ test.describe('nhash directory navigation', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'file2.txt' })).toBeVisible({ timeout: 10000 });
 
     // Get the folder's nhash
-    const nhash = await page.evaluate(async () => {
-      const { currentDirCidStore } = await import('/src/stores/index.ts');
-      const hashtree = await import('/node_modules/hashtree/dist/index.js');
-
-      let dirCid: { hash: Uint8Array; key?: Uint8Array } | null = null;
-      const unsub = currentDirCidStore.subscribe((v: { hash: Uint8Array; key?: Uint8Array } | null) => { dirCid = v; });
-      unsub();
-
-      if (!dirCid) return null;
-      return hashtree.nhashEncode(dirCid);
-    });
+    const nhash = await getCurrentDirNhash(page);
 
     expect(nhash).toBeTruthy();
     console.log('[test] Directory nhash:', nhash);
@@ -245,19 +235,7 @@ test.describe('nhash directory navigation', () => {
     await expect(page1.locator('[data-testid="file-list"] a').filter({ hasText: 'file2.txt' })).toBeVisible({ timeout: 15000 });
 
     // Get the directory nhash permalink
-    const nhash = await page1.evaluate(async () => {
-      const { currentDirCidStore } = await import('/src/stores/index.ts');
-      const hashtree = await import('/node_modules/hashtree/dist/index.js');
-
-      // Use store's subscribe synchronously
-      let dirCid: { hash: Uint8Array; key?: Uint8Array } | null = null;
-      const unsub = currentDirCidStore.subscribe((v: { hash: Uint8Array; key?: Uint8Array } | null) => { dirCid = v; });
-      unsub();
-
-      if (!dirCid) return null;
-
-      return hashtree.nhashEncode(dirCid);
-    });
+    const nhash = await getCurrentDirNhash(page1);
 
     expect(nhash).toBeTruthy();
     console.log('[test] Directory nhash:', nhash);
@@ -335,18 +313,7 @@ test.describe('nhash directory navigation', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'search-test.txt' })).toBeVisible({ timeout: 15000 });
 
     // Get current directory nhash
-    const nhash = await page.evaluate(async () => {
-      const { currentDirCidStore } = await import('/src/stores/index.ts');
-      const hashtree = await import('/node_modules/hashtree/dist/index.js');
-
-      // Use store's subscribe synchronously
-      let dirCid: { hash: Uint8Array; key?: Uint8Array } | null = null;
-      const unsub = currentDirCidStore.subscribe((v: { hash: Uint8Array; key?: Uint8Array } | null) => { dirCid = v; });
-      unsub();
-
-      if (!dirCid) return null;
-      return hashtree.nhashEncode(dirCid);
-    });
+    const nhash = await getCurrentDirNhash(page);
 
     expect(nhash).toBeTruthy();
     console.log('[test] Got nhash:', nhash);

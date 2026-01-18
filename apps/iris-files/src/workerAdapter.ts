@@ -74,6 +74,9 @@ export class WorkerAdapter {
   private blossomPushProgressCallback: ((treeName: string, current: number, total: number) => void) | null = null;
   private blossomPushCompleteCallback: ((treeName: string, pushed: number, skipped: number, failed: number) => void) | null = null;
 
+  // Tree root update callbacks (worker → main thread notifications)
+  private treeRootUpdateCallbacks = new Set<(npub: string, treeName: string, hash: Uint8Array, updatedAt: number, options: { key?: Uint8Array; visibility: string; encryptedKey?: string; keyId?: string; selfEncryptedKey?: string; selfEncryptedLinkKey?: string }) => void>();
+
   // Message queue for messages sent before worker is ready
   private messageQueue: WorkerRequest[] = [];
 
@@ -218,6 +221,22 @@ export class WorkerAdapter {
 
         case 'blossomPushComplete':
           this.blossomPushCompleteCallback?.(msg.treeName, msg.pushed, msg.skipped, msg.failed);
+          break;
+
+        // Tree root updates from worker (Nostr subscriptions)
+        case 'treeRootUpdate':
+          this.handleTreeRootUpdate(msg as unknown as {
+            npub: string;
+            treeName: string;
+            hash: Uint8Array;
+            key?: Uint8Array;
+            visibility: string;
+            updatedAt: number;
+            encryptedKey?: string;
+            keyId?: string;
+            selfEncryptedKey?: string;
+            selfEncryptedLinkKey?: string;
+          });
           break;
 
         case 'blossomPushResult':
@@ -504,6 +523,34 @@ export class WorkerAdapter {
   }
 
   // ============================================================================
+  // Tree Root Update Handler
+  // ============================================================================
+
+  private handleTreeRootUpdate(msg: {
+    npub: string;
+    treeName: string;
+    hash: Uint8Array;
+    key?: Uint8Array;
+    visibility: string;
+    updatedAt: number;
+    encryptedKey?: string;
+    keyId?: string;
+    selfEncryptedKey?: string;
+    selfEncryptedLinkKey?: string;
+  }) {
+    for (const callback of this.treeRootUpdateCallbacks) {
+      callback(msg.npub, msg.treeName, msg.hash, msg.updatedAt, {
+        key: msg.key,
+        visibility: msg.visibility,
+        encryptedKey: msg.encryptedKey,
+        keyId: msg.keyId,
+        selfEncryptedKey: msg.selfEncryptedKey,
+        selfEncryptedLinkKey: msg.selfEncryptedLinkKey,
+      });
+    }
+  }
+
+  // ============================================================================
   // Public API - Blossom Upload Sessions
   // ============================================================================
 
@@ -526,6 +573,17 @@ export class WorkerAdapter {
    */
   onBlossomPushComplete(callback: (treeName: string, pushed: number, skipped: number, failed: number) => void): void {
     this.blossomPushCompleteCallback = callback;
+  }
+
+  /**
+   * Subscribe to tree root updates from worker (Nostr subscription notifications).
+   * Returns an unsubscribe function.
+   */
+  onTreeRootUpdate(
+    callback: (npub: string, treeName: string, hash: Uint8Array, updatedAt: number, options: { key?: Uint8Array; visibility: string; encryptedKey?: string; keyId?: string; selfEncryptedKey?: string; selfEncryptedLinkKey?: string }) => void
+  ): () => void {
+    this.treeRootUpdateCallbacks.add(callback);
+    return () => this.treeRootUpdateCallbacks.delete(callback);
   }
 
   /**
@@ -924,6 +982,29 @@ export class WorkerAdapter {
     } as WorkerRequest);
   }
 
+  /**
+   * Update tree root cache in the worker.
+   * Called when TreeRootRegistry updates to keep worker cache in sync.
+   */
+  async setTreeRootCache(
+    npub: string,
+    treeName: string,
+    hash: Uint8Array,
+    key?: Uint8Array,
+    visibility: 'public' | 'link-visible' | 'private' = 'public'
+  ): Promise<void> {
+    const id = generateRequestId();
+    await this.request<{ error?: string }>({
+      type: 'setTreeRootCache',
+      id,
+      npub,
+      treeName,
+      hash,
+      key,
+      visibility,
+    } as WorkerRequest);
+  }
+
   // ============================================================================
   // Public API - Media Streaming
   // ============================================================================
@@ -1155,6 +1236,7 @@ export class WorkerAdapter {
     this.streamCallbacks.clear();
     this.messageQueue = [];
     this.socialGraphVersionCallback = null;
+    this.treeRootUpdateCallbacks.clear();
   }
 }
 

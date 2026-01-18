@@ -799,3 +799,21 @@ export async function navigateIntoFolder(page: any, folderName: string) {
   await folderLink.click();
   await page.waitForURL(new RegExp(folderName), { timeout: 10000 });
 }
+
+/**
+ * Get the current directory's nhash permalink.
+ * This uses the app's bundled hashtree module to avoid msgpack resolution issues.
+ */
+export async function getCurrentDirNhash(page: any): Promise<string | null> {
+  return page.evaluate(async () => {
+    const { currentDirCidStore } = await import('/src/stores/index.ts');
+    const { nhashEncode } = await import('/src/lib/nhash.ts');
+
+    let dirCid: { hash: Uint8Array; key?: Uint8Array } | null = null;
+    const unsub = currentDirCidStore.subscribe((v: { hash: Uint8Array; key?: Uint8Array } | null) => { dirCid = v; });
+    unsub();
+
+    if (!dirCid) return null;
+    return nhashEncode(dirCid);
+  });
+}

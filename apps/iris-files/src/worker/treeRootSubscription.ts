@@ -1,0 +1,161 @@
+/**
+ * Tree Root Subscription Handler
+ *
+ * Worker subscribes directly to tree root events (kind 30078 with #l=hashtree).
+ * Updates local cache and notifies main thread of changes.
+ */
+
+import { subscribe as ndkSubscribe, unsubscribe as ndkUnsubscribe } from './ndk';
+import { setCachedRoot } from './treeRootCache';
+import type { SignedEvent, TreeVisibility } from './protocol';
+import { nip19 } from 'nostr-tools';
+
+// Active subscriptions by pubkey
+const activeSubscriptions = new Map<string, string>(); // pubkeyHex -> subId
+
+// Callback to notify main thread
+let notifyCallback: ((npub: string, treeName: string, record: TreeRootRecord) => void) | null = null;
+
+export interface TreeRootRecord {
+  hash: Uint8Array;
+  key?: Uint8Array;
+  visibility: TreeVisibility;
+  updatedAt: number;
+  encryptedKey?: string;
+  keyId?: string;
+  selfEncryptedKey?: string;
+  selfEncryptedLinkKey?: string;
+}
+
+/**
+ * Set callback to notify main thread of tree root updates
+ */
+export function setNotifyCallback(
+  callback: (npub: string, treeName: string, record: TreeRootRecord) => void
+): void {
+  notifyCallback = callback;
+}
+
+/**
+ * Subscribe to tree roots for a specific pubkey
+ */
+export function subscribeToTreeRoots(pubkeyHex: string): () => void {
+  // Already subscribed?
+  if (activeSubscriptions.has(pubkeyHex)) {
+    return () => unsubscribeFromTreeRoots(pubkeyHex);
+  }
+
+  const subId = `tree-${pubkeyHex.slice(0, 8)}`;
+  activeSubscriptions.set(pubkeyHex, subId);
+
+  ndkSubscribe(subId, [{
+    kinds: [30078],
+    authors: [pubkeyHex],
+    '#l': ['hashtree'],
+  }]);
+
+  return () => unsubscribeFromTreeRoots(pubkeyHex);
+}
+
+/**
+ * Unsubscribe from tree roots for a specific pubkey
+ */
+export function unsubscribeFromTreeRoots(pubkeyHex: string): void {
+  const subId = activeSubscriptions.get(pubkeyHex);
+  if (subId) {
+    ndkUnsubscribe(subId);
+    activeSubscriptions.delete(pubkeyHex);
+  }
+}
+
+/**
+ * Handle incoming tree root event (kind 30078 with #l=hashtree)
+ * Called from worker.ts event router
+ */
+export async function handleTreeRootEvent(event: SignedEvent): Promise<void> {
+  // Extract tree name from #d tag
+  const dTag = event.tags.find(t => t[0] === 'd');
+  if (!dTag || !dTag[1]) return;
+  const treeName = dTag[1];
+
+  // Check #l tag is 'hashtree'
+  const lTag = event.tags.find(t => t[0] === 'l');
+  if (!lTag || lTag[1] !== 'hashtree') return;
+
+  // Parse content - should contain hash and optional encrypted data
+  let contentData: {
+    hash?: string;
+    key?: string;
+    visibility?: TreeVisibility;
+    encryptedKey?: string;
+    keyId?: string;
+    selfEncryptedKey?: string;
+    selfEncryptedLinkKey?: string;
+  };
+
+  try {
+    contentData = JSON.parse(event.content);
+  } catch {
+    // Content might be just the hash string for backward compat
+    contentData = { hash: event.content };
+  }
+
+  if (!contentData.hash) return;
+
+  // Convert pubkey to npub
+  const npub = nip19.npubEncode(event.pubkey);
+
+  // Parse hash and optional key
+  const hash = hexToBytes(contentData.hash);
+  const key = contentData.key ? hexToBytes(contentData.key) : undefined;
+  const visibility: TreeVisibility = contentData.visibility || 'public';
+
+  // Build record
+  const record: TreeRootRecord = {
+    hash,
+    key,
+    visibility,
+    updatedAt: event.created_at,
+    encryptedKey: contentData.encryptedKey,
+    keyId: contentData.keyId,
+    selfEncryptedKey: contentData.selfEncryptedKey,
+    selfEncryptedLinkKey: contentData.selfEncryptedLinkKey,
+  };
+
+  // Update cache
+  await setCachedRoot(npub, treeName, { hash, key }, visibility, {
+    encryptedKey: contentData.encryptedKey,
+    keyId: contentData.keyId,
+    selfEncryptedKey: contentData.selfEncryptedKey,
+  });
+
+  // Notify main thread
+  if (notifyCallback) {
+    notifyCallback(npub, treeName, record);
+  }
+}
+
+/**
+ * Check if an event is a tree root event
+ */
+export function isTreeRootEvent(event: SignedEvent): boolean {
+  if (event.kind !== 30078) return false;
+  const lTag = event.tags.find(t => t[0] === 'l');
+  return lTag?.[1] === 'hashtree';
+}
+
+/**
+ * Get all active subscription pubkeys
+ */
+export function getActiveSubscriptions(): string[] {
+  return Array.from(activeSubscriptions.keys());
+}
+
+// Helper: hex string to Uint8Array
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
