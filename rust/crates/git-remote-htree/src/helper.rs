@@ -103,7 +103,6 @@ fn create_local_store(path: &std::path::Path) -> Result<std::sync::Arc<dyn hasht
 
 /// Git remote helper state machine
 pub struct RemoteHelper {
-    remote_name: String,
     #[allow(dead_code)]
     pubkey: String,
     repo_name: String,
@@ -142,7 +141,6 @@ struct FetchSpec {
 
 impl RemoteHelper {
     pub fn new(
-        remote_name: &str,
         pubkey: &str,
         repo_name: &str,
         signing_key: Option<String>,
@@ -163,7 +161,6 @@ impl RemoteHelper {
         }
 
         Ok(Self {
-            remote_name: remote_name.to_string(),
             pubkey: pubkey.to_string(),
             repo_name: repo_name.to_string(),
             storage,
@@ -247,9 +244,7 @@ impl RemoteHelper {
                 if let Some(arg) = arg {
                     let mut parts = arg.split_whitespace();
                     let name = parts.next().unwrap_or("");
-                    let value = parts.next().unwrap_or("");
-                    if name == "progress" || name == "verbosity" || name == "followtags" {
-                        let _ = value;
+                    if name == "update-head-ok" {
                         return Ok(Some(vec!["ok".to_string()]));
                     }
                 }
@@ -269,12 +264,6 @@ impl RemoteHelper {
             "fetch".to_string(),
             "push".to_string(),
             "option".to_string(),
-            format!(
-                "refspec refs/heads/*:refs/remotes/{}/*",
-                self.remote_name
-            ),
-            format!("refspec HEAD:refs/remotes/{}/HEAD", self.remote_name),
-            "refspec refs/tags/*:refs/tags/*".to_string(),
             String::new(), // Empty line terminates
         ]
     }
@@ -1554,7 +1543,7 @@ mod tests {
 
     fn create_test_helper() -> Option<RemoteHelper> {
         let config = Config::default();
-        RemoteHelper::new("origin", TEST_PUBKEY, "test-repo", None, None, false, config).ok()
+        RemoteHelper::new(TEST_PUBKEY, "test-repo", None, None, false, config).ok()
     }
 
     #[test]
@@ -1617,7 +1606,7 @@ mod tests {
         let result = helper.handle_command("option verbosity 1").unwrap();
         assert!(result.is_some());
         let lines = result.unwrap();
-        assert!(lines.contains(&"ok".to_string()));
+        assert!(lines.contains(&"unsupported".to_string()));
     }
 
     #[test]

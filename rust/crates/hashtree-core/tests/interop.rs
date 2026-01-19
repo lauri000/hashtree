@@ -32,7 +32,6 @@ struct TestInput {
 #[serde(rename_all = "camelCase")]
 struct NodeInput {
     links: Vec<LinkInput>,
-    #[allow(dead_code)]
     total_size: Option<u64>,
     metadata: Option<HashMap<String, serde_json::Value>>,
 }

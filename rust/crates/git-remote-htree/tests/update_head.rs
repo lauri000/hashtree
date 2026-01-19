@@ -129,6 +129,7 @@ fn test_fetch_does_not_update_checked_out_branch() {
         String::from_utf8_lossy(&push2.stderr)
     );
 
+
     let set_fetch = Command::new("git")
         .args([
             "config",
@@ -140,6 +141,23 @@ fn test_fetch_does_not_update_checked_out_branch() {
         .status()
         .expect("Failed to set fetch refspec");
     assert!(set_fetch.success(), "Failed to set fetch refspec");
+
+    let fetch_specs = Command::new("git")
+        .args(["config", "--get-all", "remote.htree.fetch"])
+        .current_dir(repo.path())
+        .output()
+        .expect("Failed to read fetch refspec");
+    assert!(
+        fetch_specs.status.success(),
+        "Failed to read fetch refspec: {}",
+        String::from_utf8_lossy(&fetch_specs.stderr)
+    );
+    let specs_text = String::from_utf8_lossy(&fetch_specs.stdout);
+    let specs: Vec<_> = specs_text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert_eq!(specs.len(), 1, "Expected a single fetch refspec");
 
     let fetch = Command::new("git")
         .args(["fetch", "htree"])

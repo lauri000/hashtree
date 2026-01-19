@@ -97,7 +97,7 @@ export function sanitizeReleaseId(input: string): string {
 function ensureUniqueReleaseId(base: string, existing: Set<string>): string {
   if (!existing.has(base)) return base;
   const suffix = Date.now().toString(36).slice(-6);
-  let candidate = `${base}-${suffix}`;
+  const candidate = `${base}-${suffix}`;
   if (!existing.has(candidate)) return candidate;
   let i = 2;
   while (existing.has(`${base}-${i}`)) i += 1;
@@ -259,7 +259,7 @@ export function createReleasesStore(
     error: null,
   });
 
-  let releaseTreeName: string | null = repoPath ? buildReleaseTreeName(repoPath) : null;
+  const releaseTreeName: string | null = repoPath ? buildReleaseTreeName(repoPath) : null;
 
   async function refresh(): Promise<void> {
     if (!npub || !repoPath) {

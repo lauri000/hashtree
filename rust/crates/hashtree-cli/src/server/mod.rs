@@ -146,6 +146,7 @@ mod tests {
     use super::*;
     use crate::storage::HashtreeStore;
     use tempfile::TempDir;
+    use std::path::Path;
     use hashtree_core::from_hex;
 
     #[tokio::test]

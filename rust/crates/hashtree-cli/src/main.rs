@@ -262,6 +262,19 @@ async fn resolve_cid_input(input: &str) -> Result<ResolvedCid> {
         });
     }
 
+    // Check for hex CID format: "hash" or "hash:key", optionally with /path
+    let (cid_part, url_path) = if let Some(slash_pos) = input.find('/') {
+        (&input[..slash_pos], Some(&input[slash_pos + 1..]))
+    } else {
+        (input, None)
+    };
+    if let Ok(cid) = Cid::parse(cid_part) {
+        return Ok(ResolvedCid {
+            cid,
+            path: url_path.map(|p| p.to_string()),
+        });
+    }
+
     // Check if it looks like an npub path (npub1.../name or npub1.../name/path)
     if input.starts_with("npub1") && input.contains('/') {
         let parts: Vec<&str> = input.splitn(3, '/').collect();
@@ -292,7 +305,7 @@ async fn resolve_cid_input(input: &str) -> Result<ResolvedCid> {
         }
     }
 
-    anyhow::bail!("Invalid format. Use nhash1... or npub1.../name")
+    anyhow::bail!("Invalid format. Use nhash1..., <hash>, <hash:key>, or npub1.../name")
 }
 
 #[tokio::main]
@@ -2328,5 +2341,34 @@ mod tests {
         let resolved = resolve_cid_input(&htree_url).await.unwrap();
         assert_eq!(resolved.cid.hash, [0xbb; 32]);
         assert_eq!(resolved.path, Some("file.txt".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_hex_cid_with_key_and_path() {
+        let hash = [0x11; 32];
+        let key = [0x22; 32];
+        let hash_hex = hashtree_core::to_hex(&hash);
+        let key_hex = hashtree_core::to_hex(&key);
+        let cid = format!("{}:{}", hash_hex, key_hex);
+
+        let resolved = resolve_cid_input(&cid).await.unwrap();
+        assert_eq!(resolved.cid.hash, hash);
+        assert_eq!(resolved.cid.key, Some(key));
+        assert!(resolved.path.is_none());
+
+        let with_path = format!("{}/dir/file.txt", cid);
+        let resolved = resolve_cid_input(&with_path).await.unwrap();
+        assert_eq!(resolved.cid.hash, hash);
+        assert_eq!(resolved.cid.key, Some(key));
+        assert_eq!(resolved.path, Some("dir/file.txt".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_hex_cid_without_key() {
+        let hash = [0x33; 32];
+        let hash_hex = hashtree_core::to_hex(&hash);
+        let resolved = resolve_cid_input(&hash_hex).await.unwrap();
+        assert_eq!(resolved.cid.hash, hash);
+        assert!(resolved.cid.key.is_none());
     }
 }
