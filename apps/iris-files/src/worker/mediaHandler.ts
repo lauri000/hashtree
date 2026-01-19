@@ -10,6 +10,39 @@ import type { CID } from '../types';
 import type { MediaRequestByCid, MediaRequestByPath, MediaResponse } from './protocol';
 import { getCachedRoot } from './treeRootCache';
 import { getErrorMessage } from '../utils/errorMessage';
+import { nhashDecode } from '../../../../ts/packages/hashtree/src/nhash';
+
+// Thumbnail filename patterns to look for (in priority order)
+const THUMBNAIL_PATTERNS = ['thumbnail.jpg', 'thumbnail.webp', 'thumbnail.png', 'thumbnail.jpeg'];
+
+/**
+ * SW FileRequest format (from service worker)
+ */
+interface SwFileRequest {
+  type: 'hashtree-file';
+  requestId: string;
+  npub?: string;
+  nhash?: string;
+  treeName?: string;
+  path: string;
+  start: number;
+  end?: number;
+  mimeType: string;
+  download?: boolean;
+}
+
+/**
+ * Extended response with HTTP headers for SW
+ */
+interface SwFileResponse {
+  type: 'headers' | 'chunk' | 'done' | 'error';
+  requestId: string;
+  status?: number;
+  headers?: Record<string, string>;
+  totalSize?: number;
+  data?: Uint8Array;
+  message?: string;
+}
 
 // Timeout for considering a stream "done" (no updates)
 const LIVE_STREAM_TIMEOUT = 10000; // 10 seconds
@@ -47,7 +80,10 @@ export function registerMediaPort(port: MessagePort): void {
   port.onmessage = async (e: MessageEvent) => {
     const req = e.data;
 
-    if (req.type === 'media') {
+    if (req.type === 'hashtree-file') {
+      // SW file request format (direct from service worker)
+      await handleSwFileRequest(req);
+    } else if (req.type === 'media') {
       await handleMediaRequestByCid(req);
     } else if (req.type === 'mediaByPath') {
       await handleMediaRequestByPath(req);
@@ -299,4 +335,244 @@ function watchTreeRootForStream(
 
   // Start watching
   scheduleNext();
+}
+
+/**
+ * Handle file request from service worker (hashtree-file format)
+ * This is the main entry point for direct SW → Worker communication
+ */
+async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
+  if (!tree || !mediaPort) return;
+
+  const { requestId, npub, nhash, treeName, path, start, end, mimeType, download } = req;
+
+  try {
+    let cid: CID | null = null;
+
+    if (nhash) {
+      // Direct nhash request - decode to CID
+      const rootCid = nhashDecode(nhash);
+
+      // If path provided AND it contains a slash, navigate within the nhash directory
+      // Single filename without slashes is just a hint for MIME type - use rootCid directly
+      if (path && path.includes('/')) {
+        const entry = await tree.resolvePath(rootCid, path);
+        if (!entry) {
+          sendSwError(requestId, 404, `File not found: ${path}`);
+          return;
+        }
+        cid = entry.cid;
+      } else if (path && !path.includes('/')) {
+        // Try to resolve as file within directory first
+        const entry = await tree.resolvePath(rootCid, path);
+        cid = entry ? entry.cid : rootCid;
+      } else {
+        cid = rootCid;
+      }
+    } else if (npub && treeName) {
+      // Npub-based request - resolve through cached root
+      const rootCid = await getCachedRoot(npub, treeName);
+
+      if (!rootCid) {
+        sendSwError(requestId, 404, 'Tree not found');
+        return;
+      }
+
+      // Handle thumbnail requests without extension
+      let resolvedPath = path || '';
+      if (resolvedPath.endsWith('/thumbnail') || resolvedPath === 'thumbnail') {
+        const dirPath = resolvedPath.endsWith('/thumbnail')
+          ? resolvedPath.slice(0, -'/thumbnail'.length)
+          : '';
+        const actualPath = await findThumbnailInDir(rootCid, dirPath);
+        if (actualPath) {
+          resolvedPath = actualPath;
+        }
+      }
+
+      // Navigate to file
+      if (resolvedPath) {
+        const entry = await tree.resolvePath(rootCid, resolvedPath);
+        if (!entry) {
+          sendSwError(requestId, 404, 'File not found');
+          return;
+        }
+        cid = entry.cid;
+      } else {
+        cid = rootCid;
+      }
+    }
+
+    if (!cid) {
+      sendSwError(requestId, 400, 'Invalid request');
+      return;
+    }
+
+    // Get file size
+    const totalSize = await getFileSize(cid);
+    if (totalSize === null) {
+      sendSwError(requestId, 404, 'File data not found');
+      return;
+    }
+
+    // Stream the content
+    await streamSwResponse(requestId, cid, totalSize, {
+      npub,
+      path,
+      start,
+      end,
+      mimeType,
+      download,
+    });
+  } catch (err) {
+    sendSwError(requestId, 500, getErrorMessage(err));
+  }
+}
+
+/**
+ * Send error response to SW
+ */
+function sendSwError(requestId: string, status: number, message: string): void {
+  if (!mediaPort) return;
+  mediaPort.postMessage({
+    type: 'error',
+    requestId,
+    status,
+    message,
+  } as SwFileResponse);
+}
+
+/**
+ * Get file size from CID (handles both chunked and single blob files)
+ */
+async function getFileSize(cid: CID): Promise<number | null> {
+  if (!tree) return null;
+
+  const treeNode = await tree.getTreeNode(cid);
+  if (treeNode) {
+    // Chunked file - sum link sizes from decrypted tree node
+    return treeNode.links.reduce((sum, l) => sum + l.size, 0);
+  }
+
+  // Single blob - fetch to check existence and get size
+  const blob = await tree.getBlob(cid.hash);
+  if (!blob) return null;
+
+  // For encrypted blobs, decrypted size = encrypted size - 16 (nonce overhead)
+  return cid.key ? Math.max(0, blob.length - 16) : blob.length;
+}
+
+/**
+ * Find actual thumbnail file in a directory
+ */
+async function findThumbnailInDir(rootCid: CID, dirPath: string): Promise<string | null> {
+  if (!tree) return null;
+
+  try {
+    // Get directory CID
+    const dirEntry = dirPath
+      ? await tree.resolvePath(rootCid, dirPath)
+      : { cid: rootCid };
+    if (!dirEntry) return null;
+
+    // List directory contents
+    const entries = await tree.listDirectory(dirEntry.cid);
+    if (!entries) return null;
+
+    // Find first matching thumbnail pattern
+    for (const pattern of THUMBNAIL_PATTERNS) {
+      if (entries.some(e => e.name === pattern)) {
+        return dirPath ? `${dirPath}/${pattern}` : pattern;
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Stream response to SW with proper HTTP headers
+ */
+async function streamSwResponse(
+  requestId: string,
+  cid: CID,
+  totalSize: number,
+  options: {
+    npub?: string;
+    path?: string;
+    start?: number;
+    end?: number;
+    mimeType?: string;
+    download?: boolean;
+  }
+): Promise<void> {
+  if (!tree || !mediaPort) return;
+
+  const { npub, path, start = 0, end, mimeType = 'application/octet-stream', download } = options;
+
+  const rangeStart = start;
+  const rangeEnd = end !== undefined ? Math.min(end, totalSize - 1) : totalSize - 1;
+  const contentLength = rangeEnd - rangeStart + 1;
+
+  // Build cache control header
+  const isNpubRequest = !!npub;
+  const isImage = mimeType.startsWith('image/');
+  let cacheControl: string;
+  if (!isNpubRequest) {
+    cacheControl = 'public, max-age=31536000, immutable'; // nhash: immutable
+  } else if (isImage) {
+    cacheControl = 'public, max-age=60, stale-while-revalidate=86400';
+  } else {
+    cacheControl = 'no-cache, no-store, must-revalidate';
+  }
+
+  // Build headers
+  const headers: Record<string, string> = {
+    'Content-Type': mimeType,
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': cacheControl,
+    'Content-Length': String(contentLength),
+  };
+
+  if (download) {
+    const filename = path || 'file';
+    headers['Content-Disposition'] = `attachment; filename="${filename}"`;
+  }
+
+  // Determine status (206 for range requests)
+  const isRangeRequest = end !== undefined || start > 0;
+  const status = isRangeRequest ? 206 : 200;
+  if (isRangeRequest) {
+    headers['Content-Range'] = `bytes ${rangeStart}-${rangeEnd}/${totalSize}`;
+  }
+
+  // Send headers
+  mediaPort.postMessage({
+    type: 'headers',
+    requestId,
+    status,
+    headers,
+    totalSize,
+  } as SwFileResponse);
+
+  // Stream chunks
+  let offset = rangeStart;
+  while (offset <= rangeEnd) {
+    const chunkEnd = Math.min(offset + MEDIA_CHUNK_SIZE - 1, rangeEnd);
+    const chunk = await tree.readFileRange(cid, offset, chunkEnd + 1);
+
+    if (!chunk) break;
+
+    mediaPort.postMessage(
+      { type: 'chunk', requestId, data: chunk } as SwFileResponse,
+      [chunk.buffer]
+    );
+
+    offset = chunkEnd + 1;
+  }
+
+  // Signal done
+  mediaPort.postMessage({ type: 'done', requestId } as SwFileResponse);
 }

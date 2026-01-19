@@ -43,6 +43,134 @@ if (isTestMode) {
 // Request counter for unique IDs
 let requestId = 0;
 
+// Worker port for direct communication (set by main thread via REGISTER_WORKER_PORT)
+let workerPort: MessagePort | null = null;
+
+// Pending requests waiting for worker responses
+const pendingRequests = new Map<string, {
+  resolve: (response: Response) => void;
+  reject: (error: Error) => void;
+  controller?: ReadableStreamDefaultController<Uint8Array>;
+  stream?: ReadableStream<Uint8Array>;
+  totalSize?: number;
+  headers?: Record<string, string>;
+  status?: number;
+}>();
+
+/**
+ * Handle messages from main thread (port registration)
+ */
+self.addEventListener('message', (event: ExtendableMessageEvent) => {
+  if (event.data?.type === 'REGISTER_WORKER_PORT' && event.data.port) {
+    workerPort = event.data.port;
+    workerPort.onmessage = handleWorkerMessage;
+    console.log('[SW] Worker port registered');
+  }
+});
+
+/**
+ * Handle messages from worker via MessagePort
+ */
+function handleWorkerMessage(event: MessageEvent): void {
+  const msg = event.data;
+  if (!msg?.requestId) return;
+
+  const pending = pendingRequests.get(msg.requestId);
+  if (!pending) return;
+
+  switch (msg.type) {
+    case 'headers': {
+      // Got headers - create streaming response
+      pending.totalSize = msg.totalSize;
+      pending.status = msg.status || 200;
+      pending.headers = msg.headers || {};
+
+      // Create the stream for this response
+      const { readable, writable } = new TransformStream<Uint8Array>();
+      const writer = writable.getWriter();
+
+      // Store writer for chunk handling
+      (pending as { writer?: WritableStreamDefaultWriter<Uint8Array> }).writer = writer;
+
+      // Build response headers
+      const headers = new Headers(pending.headers);
+      headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
+      headers.set('Cross-Origin-Embedder-Policy', 'credentialless');
+
+      pending.resolve(new Response(readable, {
+        status: pending.status,
+        headers,
+      }));
+      break;
+    }
+
+    case 'chunk': {
+      const writer = (pending as { writer?: WritableStreamDefaultWriter<Uint8Array> }).writer;
+      if (writer && msg.data) {
+        writer.write(new Uint8Array(msg.data)).catch(() => {
+          // Stream closed, ignore
+        });
+      }
+      break;
+    }
+
+    case 'done': {
+      const writer = (pending as { writer?: WritableStreamDefaultWriter<Uint8Array> }).writer;
+      if (writer) {
+        writer.close().catch(() => {});
+      }
+      pendingRequests.delete(msg.requestId);
+      break;
+    }
+
+    case 'error': {
+      pending.reject(new Error(msg.message || 'Worker error'));
+      pendingRequests.delete(msg.requestId);
+      break;
+    }
+  }
+}
+
+/**
+ * Serve file via direct worker port (preferred path)
+ */
+function serveFileViaWorker(request: FileRequest): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    if (!workerPort) {
+      reject(new Error('Worker port not available'));
+      return;
+    }
+
+    // Register pending request
+    pendingRequests.set(request.requestId, { resolve, reject });
+
+    // Set timeout
+    const timeout = setTimeout(() => {
+      const pending = pendingRequests.get(request.requestId);
+      if (pending) {
+        pendingRequests.delete(request.requestId);
+        reject(new Error('Timeout waiting for worker response'));
+      }
+    }, PORT_TIMEOUT);
+
+    // Clean up timeout on resolution
+    const originalResolve = resolve;
+    const originalReject = reject;
+    const wrappedResolve = (response: Response) => {
+      clearTimeout(timeout);
+      originalResolve(response);
+    };
+    const wrappedReject = (error: Error) => {
+      clearTimeout(timeout);
+      originalReject(error);
+    };
+    pendingRequests.set(request.requestId, { resolve: wrappedResolve, reject: wrappedReject });
+
+    // Send request to worker
+    workerPort.postMessage(request);
+  });
+}
+
 // npub pattern: npub1 followed by 58 bech32 characters
 const NPUB_PATTERN = /^npub1[a-z0-9]{58}$/;
 
@@ -127,10 +255,27 @@ interface FileResponseHeaders {
 }
 
 /**
- * Request file from main thread via per-request MessageChannel
- * Based on WebTorrent's worker-server.js pattern
+ * Serve file - tries worker port first, falls back to client broadcast
  */
 async function serveFile(request: FileRequest): Promise<Response> {
+  // Try direct worker path first (faster, no main thread involvement)
+  if (workerPort) {
+    try {
+      return await serveFileViaWorker(request);
+    } catch (error) {
+      console.warn('[SW] Worker path failed, falling back to clients:', error);
+    }
+  }
+
+  // Fall back to client broadcast (legacy path)
+  return serveFileViaClients(request);
+}
+
+/**
+ * Request file from main thread via per-request MessageChannel
+ * Based on WebTorrent's worker-server.js pattern (legacy fallback)
+ */
+async function serveFileViaClients(request: FileRequest): Promise<Response> {
   const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
 
   if (clientList.length === 0) {

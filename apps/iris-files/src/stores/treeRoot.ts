@@ -5,6 +5,11 @@
  * - For tree routes (/npub/treeName/...), subscribes to the resolver
  * - For permalink routes (/nhash1.../...), extracts hash directly from URL
  * - Returns null when no tree context
+ *
+ * Data flow:
+ * - Local writes -> TreeRootRegistry (via treeRootCache.ts)
+ * - Resolver events -> TreeRootRegistry (via setFromResolver)
+ * - UI/SW reads -> TreeRootRegistry (via get/resolve)
  */
 import { writable, get, type Readable } from 'svelte/store';
 import { fromHex, toHex, cid, visibilityHex } from 'hashtree';
@@ -14,6 +19,7 @@ import { getRefResolver, getResolverKey } from '../refResolver';
 import { nostrStore, decrypt } from '../nostr';
 import { logHtreeDebug } from '../lib/htreeDebug';
 import { isTauri } from '../tauri';
+import { treeRootRegistry } from '../TreeRootRegistry';
 
 // Wait for worker to be ready before creating subscriptions
 // This ensures the NDK transport plugin is registered
@@ -51,15 +57,28 @@ function waitForWorkerReady(): Promise<void> {
   return workerReadyPromise;
 }
 
-// Shared subscription cache - stores raw resolver data, not decrypted CIDs
-const subscriptionCache = new Map<string, {
-  hash: Hash | null;
-  encryptionKey: Hash | undefined;
-  visibilityInfo: SubscribeVisibilityInfo | undefined;
+// Subscription state - manages resolver subscriptions and listeners
+// The actual data is stored in TreeRootRegistry
+const subscriptionState = new Map<string, {
   decryptedKey: Hash | undefined;
   listeners: Set<(hash: Hash | null, encryptionKey?: Hash, visibilityInfo?: SubscribeVisibilityInfo) => void>;
   unsubscribe: (() => void) | null;
 }>();
+
+/**
+ * Build SubscribeVisibilityInfo from registry record
+ */
+function getVisibilityInfoFromRegistry(key: string): SubscribeVisibilityInfo | undefined {
+  const record = treeRootRegistry.getByKey(key);
+  if (!record) return undefined;
+  return {
+    visibility: record.visibility,
+    encryptedKey: record.encryptedKey,
+    keyId: record.keyId,
+    selfEncryptedKey: record.selfEncryptedKey,
+    selfEncryptedLinkKey: record.selfEncryptedLinkKey,
+  };
+}
 
 const tauriRootCache = new Map<string, string>();
 
@@ -72,7 +91,12 @@ async function cacheTreeRootInTauri(key: string, hash: Hash, encryptionKey?: Has
   const treeName = key.slice(slashIndex + 1);
   const hashHex = toHex(hash);
   const keyHex = encryptionKey ? toHex(encryptionKey) : '';
-  const cacheSignature = `${hashHex}:${keyHex}`;
+
+  // Get visibility from registry
+  const record = treeRootRegistry.getByKey(key);
+  const visibility = record?.visibility ?? 'public';
+
+  const cacheSignature = `${hashHex}:${keyHex}:${visibility}`;
   if (tauriRootCache.get(key) === cacheSignature) return;
   tauriRootCache.set(key, cacheSignature);
 
@@ -83,6 +107,7 @@ async function cacheTreeRootInTauri(key: string, hash: Hash, encryptionKey?: Has
       treeName,
       hash: hashHex,
       key: keyHex || null,
+      visibility,
     });
   } catch (err) {
     console.warn('[treeRoot] Failed to cache tree root in Tauri:', err);
@@ -91,27 +116,38 @@ async function cacheTreeRootInTauri(key: string, hash: Hash, encryptionKey?: Has
 
 /**
  * Update the subscription cache directly (called from treeRootCache on local writes)
+ * @deprecated This is now handled by TreeRootRegistry - kept for backward compatibility
  */
 export function updateSubscriptionCache(key: string, hash: Hash, encryptionKey?: Hash): void {
-  let cached = subscriptionCache.get(key);
-  if (!cached) {
+  // Note: The registry is already updated by treeRootCache.ts via setLocal()
+  // This function now just notifies listeners and updates Tauri cache
+
+  let state = subscriptionState.get(key);
+  if (!state) {
     // Create entry if it doesn't exist (for newly created trees)
-    cached = {
-      hash: null,
-      encryptionKey: undefined,
-      visibilityInfo: undefined,
+    state = {
       decryptedKey: undefined,
       listeners: new Set(),
       unsubscribe: null,
     };
-    subscriptionCache.set(key, cached);
+    subscriptionState.set(key, state);
   }
-  cached.hash = hash;
-  cached.encryptionKey = encryptionKey;
-  cached.decryptedKey = encryptionKey;
-  cached.listeners.forEach(listener => listener(hash, encryptionKey, cached!.visibilityInfo));
+  state.decryptedKey = encryptionKey;
+  const visibilityInfo = getVisibilityInfoFromRegistry(key);
+  state.listeners.forEach(listener => listener(hash, encryptionKey, visibilityInfo));
   void cacheTreeRootInTauri(key, hash, encryptionKey);
 }
+
+// Subscribe to registry updates to bridge to Tauri and listeners
+treeRootRegistry.subscribeAll((key, record) => {
+  if (!record) return;
+  const state = subscriptionState.get(key);
+  if (state) {
+    const visibilityInfo = getVisibilityInfoFromRegistry(key);
+    state.listeners.forEach(listener => listener(record.hash, record.key, visibilityInfo));
+  }
+  void cacheTreeRootInTauri(key, record.hash, record.key);
+});
 
 /**
  * Subscribe to tree root updates for a specific npub/treeName
@@ -142,27 +178,42 @@ async function startResolverSubscription(
     console.warn('[treeRoot] Worker not ready yet - subscribing anyway');
   }
 
-  const cached = subscriptionCache.get(key);
-  if (!cached) return; // Entry was deleted before worker was ready
+  const state = subscriptionState.get(key);
+  if (!state) return; // Entry was deleted before worker was ready
 
   // Don't create subscription if one already exists unless forced
-  if (cached.unsubscribe) {
+  if (state.unsubscribe) {
     if (!options?.force) return;
-    cached.unsubscribe();
-    cached.unsubscribe = null;
+    state.unsubscribe();
+    state.unsubscribe = null;
   }
 
   const resolver = getRefResolver();
-  cached.unsubscribe = resolver.subscribe(key, (resolvedCid, visibilityInfo) => {
+  state.unsubscribe = resolver.subscribe(key, (resolvedCid, visibilityInfo) => {
     console.log('[treeRoot] Resolver callback for', key, {
       hasHash: !!resolvedCid?.hash,
       visibilityInfo: visibilityInfo ? JSON.stringify(visibilityInfo) : 'undefined'
     });
-    const entry = subscriptionCache.get(key);
+    const entry = subscriptionState.get(key);
     if (entry) {
-      entry.hash = resolvedCid?.hash ?? null;
-      entry.encryptionKey = resolvedCid?.key;
-      entry.visibilityInfo = visibilityInfo;
+      // Update registry with resolver data (only if newer)
+      if (resolvedCid?.hash) {
+        const slashIndex = key.indexOf('/');
+        const npub = key.slice(0, slashIndex);
+        const treeName = key.slice(slashIndex + 1);
+        // Use current time as updatedAt - the resolver doesn't provide created_at in subscribe callback
+        const updatedAt = Math.floor(Date.now() / 1000);
+
+        treeRootRegistry.setFromResolver(npub, treeName, resolvedCid.hash, updatedAt, {
+          key: resolvedCid.key,
+          visibility: visibilityInfo?.visibility ?? 'public',
+          encryptedKey: visibilityInfo?.encryptedKey,
+          keyId: visibilityInfo?.keyId,
+          selfEncryptedKey: visibilityInfo?.selfEncryptedKey,
+          selfEncryptedLinkKey: visibilityInfo?.selfEncryptedLinkKey,
+        });
+      }
+
       entry.listeners.forEach(listener => listener(resolvedCid?.hash ?? null, resolvedCid?.key, visibilityInfo));
     }
   });
@@ -172,35 +223,35 @@ function subscribeToResolver(
   key: string,
   callback: (hash: Hash | null, encryptionKey?: Hash, visibilityInfo?: SubscribeVisibilityInfo) => void
 ): () => void {
-  let entry = subscriptionCache.get(key);
+  let state = subscriptionState.get(key);
 
-  if (!entry) {
-    entry = {
-      hash: null,
-      encryptionKey: undefined,
-      visibilityInfo: undefined,
+  if (!state) {
+    state = {
       decryptedKey: undefined,
       listeners: new Set(),
       unsubscribe: null,
     };
-    subscriptionCache.set(key, entry);
+    subscriptionState.set(key, state);
 
     // Start the subscription asynchronously after worker is ready
     // This ensures the NDK transport plugin is registered before subscribing
     startResolverSubscription(key);
   }
 
-  entry.listeners.add(callback);
+  state.listeners.add(callback);
 
-  if (entry.hash) {
-    console.log('[treeRoot] Immediate callback from cache for', key, {
-      visibilityInfo: entry.visibilityInfo ? JSON.stringify(entry.visibilityInfo) : 'undefined'
+  // Emit current snapshot from registry if available
+  const record = treeRootRegistry.getByKey(key);
+  if (record) {
+    const visibilityInfo = getVisibilityInfoFromRegistry(key);
+    console.log('[treeRoot] Immediate callback from registry for', key, {
+      visibilityInfo: visibilityInfo ? JSON.stringify(visibilityInfo) : 'undefined'
     });
-    callback(entry.hash, entry.encryptionKey, entry.visibilityInfo);
+    queueMicrotask(() => callback(record.hash, record.key, visibilityInfo));
   }
 
   return () => {
-    const cached = subscriptionCache.get(key);
+    const cached = subscriptionState.get(key);
     if (cached) {
       cached.listeners.delete(callback);
       // Note: We don't delete the cache entry when the last listener unsubscribes
@@ -209,14 +260,14 @@ function subscribeToResolver(
       if (cached.listeners.size === 0) {
         cached.unsubscribe?.();
         // Keep the cached data, just stop the subscription
-        // subscriptionCache.delete(key);
+        // subscriptionState.delete(key);
       }
     }
   };
 }
 
 function refreshResolverSubscription(key: string): void {
-  if (!subscriptionCache.has(key)) return;
+  if (!subscriptionState.has(key)) return;
   startResolverSubscription(key, { force: true });
 }
 
@@ -408,8 +459,9 @@ function scheduleResolverRetry(resolverKey: string): void {
     resolverRetryTimer = null;
     if (resolverKey !== activeResolverKey) return;
 
-    const cached = subscriptionCache.get(resolverKey);
-    if (cached?.hash) {
+    // Check registry instead of subscriptionCache
+    const record = treeRootRegistry.getByKey(resolverKey);
+    if (record?.hash) {
       resetResolverRetry();
       return;
     }
@@ -518,9 +570,9 @@ export function createTreeRootStore(): Readable<CID | null> {
 
       // Cache the decrypted key
       if (decryptedKey) {
-        const cached = subscriptionCache.get(resolverKey);
-        if (cached) {
-          cached.decryptedKey = decryptedKey;
+        const state = subscriptionState.get(resolverKey);
+        if (state) {
+          state.decryptedKey = decryptedKey;
         }
       }
 
@@ -726,8 +778,6 @@ export function createTreeRootStore(): Readable<CID | null> {
         return;
       }
 
-      // Cache in Tauri BEFORE setting store - ensures htree server has root before video loads
-      await cacheTreeRootInTauri(resolverKey, hash, decryptedKey);
       treeRootStore.set(cid(hash, decryptedKey));
       logHtreeDebug('treeRoot:set', {
         resolverKey,
@@ -743,8 +793,8 @@ export function createTreeRootStore(): Readable<CID | null> {
   nostrStore.subscribe((state) => {
     const connected = state.connectedRelays;
     if (connected > 0 && lastConnectedRelays === 0 && activeResolverKey) {
-      const cached = subscriptionCache.get(activeResolverKey);
-      if (cached && !cached.hash) {
+      const record = treeRootRegistry.getByKey(activeResolverKey);
+      if (!record?.hash) {
         refreshResolverSubscription(activeResolverKey);
         scheduleResolverRetry(activeResolverKey);
       }
@@ -762,11 +812,19 @@ export function getTreeRootSync(npub: string | null | undefined, treeName: strin
   const key = getResolverKey(npub ?? undefined, treeName ?? undefined);
   if (!key) return null;
 
-  const cached = subscriptionCache.get(key);
-  if (!cached?.hash) return null;
+  // Check registry first
+  const record = treeRootRegistry.getByKey(key);
+  if (record?.hash) {
+    return cid(record.hash, record.key);
+  }
 
-  const encryptionKey = cached.decryptedKey ?? cached.encryptionKey;
-  return cid(cached.hash, encryptionKey);
+  // Fallback to subscription state for decrypted key
+  const state = subscriptionState.get(key);
+  if (state?.decryptedKey && record?.hash) {
+    return cid(record.hash, state.decryptedKey);
+  }
+
+  return null;
 }
 
 /**
@@ -779,10 +837,10 @@ export function waitForTreeRoot(
   timeoutMs: number = 10000
 ): Promise<CID | null> {
   return new Promise((resolve) => {
-    // Check cache first
-    const cached = getTreeRootSync(npub, treeName);
-    if (cached) {
-      resolve(cached);
+    // Check registry first
+    const record = treeRootRegistry.get(npub, treeName);
+    if (record) {
+      resolve(cid(record.hash, record.key));
       return;
     }
 

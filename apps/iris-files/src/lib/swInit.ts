@@ -4,7 +4,6 @@
  */
 
 import { registerSW } from 'virtual:pwa-register';
-import { setupSwFileHandler } from './swFileHandler';
 import { getHtreePrefix } from './mediaUrl';
 import { isTauri } from '../tauri';
 
@@ -40,7 +39,6 @@ export async function initServiceWorker(options: InitOptions = {}): Promise<void
   // Skip service worker when local htree server is available (Tauri host or desktop app)
   if (isTauri() || getHtreePrefix()) {
     console.log('[SW] Skipping service worker (native htree server)');
-    setupSwFileHandler();
     return;
   }
 
@@ -60,9 +58,6 @@ export async function initServiceWorker(options: InitOptions = {}): Promise<void
       console.error('[SW] Registration error:', error);
     },
   });
-
-  // Setup file request handler - listens for SW file requests
-  setupSwFileHandler();
 
   if (!('serviceWorker' in navigator)) {
     return;
