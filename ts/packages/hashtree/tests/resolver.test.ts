@@ -115,9 +115,13 @@ function createNostrFunctions(ndk: NDK) {
       const ndkFilter: NDKFilter = {
         kinds: filter.kinds,
         authors: filter.authors,
-        '#d': filter['#d'],
-        '#l': filter['#l'],
       };
+      if (filter['#d']) {
+        ndkFilter['#d'] = filter['#d'];
+      }
+      if (filter['#l']) {
+        ndkFilter['#l'] = filter['#l'];
+      }
       const opts: NDKSubscriptionOptions = {
         closeOnEose: false,
         cacheUsage: 4, // ONLY_RELAY - skip cache completely
@@ -242,6 +246,41 @@ describe('NostrRefResolver', () => {
 
     expect(resolvedCid).not.toBeNull();
     expect(toHex(resolvedCid!.hash)).toBe(toHex(testCid.hash));
+
+    unsubscribe();
+    resolver.stop?.();
+  });
+
+  it('should resolve legacy events without hashtree label', async () => {
+    const { subscribe, publish } = createNostrFunctions(ndk);
+    const resolver = createNostrRefResolver({
+      subscribe,
+      publish,
+      getPubkey: () => pubkey,
+      nip19,
+    });
+
+    const treeName = `legacy-tree-${Date.now()}`;
+    const key = `${npub}/${treeName}`;
+    const legacyHash = 'abcd'.repeat(16);
+
+    let resolvedCid: ReturnType<typeof cid> | null = null;
+    const unsubscribe = resolver.subscribe(key, (c) => {
+      if (c) resolvedCid = c;
+    });
+
+    await new Promise(r => setTimeout(r, 100));
+
+    const legacyEvent = new NDKEvent(ndk);
+    legacyEvent.kind = 30078;
+    legacyEvent.content = JSON.stringify({ hash: legacyHash });
+    legacyEvent.tags = [['d', treeName]];
+    await legacyEvent.publish();
+
+    await new Promise(r => setTimeout(r, 500));
+
+    expect(resolvedCid).not.toBeNull();
+    expect(toHex(resolvedCid!.hash)).toBe(legacyHash);
 
     unsubscribe();
     resolver.stop?.();
