@@ -361,7 +361,23 @@ export async function loadPlaylist(
     const entries = await tree.listDirectory(rootCid);
     if (!entries || entries.length === 0) return null;
 
-    const videoEntries = entries.filter(entry => entry.type === LinkType.Dir);
+    // Quick check: identify which entries are video directories
+    // Use short timeout for initial detection
+    const quickChecks = await Promise.all(
+      entries.map(async (entry): Promise<{ entry: typeof entries[0]; isVideo: boolean }> => {
+        try {
+          const subEntries = await Promise.race([
+            tree.listDirectory(entry.cid),
+            new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500))
+          ]);
+          return { entry, isVideo: subEntries ? hasVideoFile(subEntries) : false };
+        } catch {
+          return { entry, isVideo: false };
+        }
+      })
+    );
+
+    const videoEntries = quickChecks.filter(c => c.isVideo).map(c => c.entry);
 
     // Only show playlist sidebar if we have enough videos
     if (videoEntries.length < MIN_VIDEOS_FOR_SIDEBAR) return null;

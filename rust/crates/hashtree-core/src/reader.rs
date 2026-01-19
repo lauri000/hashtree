@@ -224,29 +224,84 @@ impl<S: Store> TreeReader<S> {
         start: u64,
         end: Option<u64>,
     ) -> Result<Vec<u8>, ReaderError> {
-        let stop_at = match end {
-            Some(end) if start >= end => return Ok(vec![]),
-            Some(end) => end,
-            None => u64::MAX,
-        };
-        let mut result = match end {
-            Some(end) if end > start => Vec::with_capacity((end - start) as usize),
-            _ => Vec::new(),
-        };
+        // First, flatten the tree to get all leaf chunks with their byte offsets
+        let chunks_info = self.collect_chunk_offsets(node).await?;
+
+        if chunks_info.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Calculate total size and actual end
+        let total_size: u64 = chunks_info.iter().map(|(_, _, size)| size).sum();
+        let actual_end = end.unwrap_or(total_size).min(total_size);
+
+        if start >= actual_end {
+            return Ok(vec![]);
+        }
+
+        // Find chunks that overlap with [start, actual_end)
+        let mut result = Vec::with_capacity((actual_end - start) as usize);
         let mut current_offset = 0u64;
 
-        for link in &node.links {
-            if current_offset >= stop_at {
+        for (chunk_hash, _chunk_offset, chunk_size) in &chunks_info {
+            let chunk_start = current_offset;
+            let chunk_end = current_offset + chunk_size;
+
+            // Check if this chunk overlaps with our range
+            if chunk_end > start && chunk_start < actual_end {
+                // Fetch this chunk
+                let chunk_data = self
+                    .store
+                    .get(chunk_hash)
+                    .await
+                    .map_err(|e| ReaderError::Store(e.to_string()))?
+                    .ok_or_else(|| ReaderError::MissingChunk(to_hex(chunk_hash)))?;
+
+                // Calculate slice bounds within this chunk
+                let slice_start = if start > chunk_start {
+                    (start - chunk_start) as usize
+                } else {
+                    0
+                };
+                let slice_end = if actual_end < chunk_end {
+                    (actual_end - chunk_start) as usize
+                } else {
+                    chunk_data.len()
+                };
+
+                result.extend_from_slice(&chunk_data[slice_start..slice_end]);
+            }
+
+            current_offset = chunk_end;
+
+            // Early exit if we've passed the requested range
+            if current_offset >= actual_end {
                 break;
             }
+        }
 
-            let mut link_size = link.size;
+        Ok(result)
+    }
 
-            if link_size > 0 && current_offset + link_size <= start {
-                current_offset += link_size;
-                continue;
-            }
+    /// Collect all leaf chunk hashes with their byte offsets
+    /// Returns Vec<(hash, offset, size)>
+    async fn collect_chunk_offsets(
+        &self,
+        node: &TreeNode,
+    ) -> Result<Vec<(Hash, u64, u64)>, ReaderError> {
+        let mut chunks = Vec::new();
+        let mut offset = 0u64;
+        self.collect_chunk_offsets_recursive(node, &mut chunks, &mut offset).await?;
+        Ok(chunks)
+    }
 
+    async fn collect_chunk_offsets_recursive(
+        &self,
+        node: &TreeNode,
+        chunks: &mut Vec<(Hash, u64, u64)>,
+        offset: &mut u64,
+    ) -> Result<(), ReaderError> {
+        for link in &node.links {
             let child_data = self
                 .store
                 .get(&link.hash)
@@ -254,48 +309,18 @@ impl<S: Store> TreeReader<S> {
                 .map_err(|e| ReaderError::Store(e.to_string()))?
                 .ok_or_else(|| ReaderError::MissingChunk(to_hex(&link.hash)))?;
 
-            let is_tree = link.link_type.is_tree() || is_tree_node(&child_data);
-            let mut child_node = None;
-            if is_tree {
-                let decoded = decode_tree_node(&child_data).map_err(ReaderError::Codec)?;
-                if link_size == 0 {
-                    link_size = Box::pin(self.tree_size_fallback(&decoded)).await?;
-                }
-                child_node = Some(decoded);
-            } else if link_size == 0 {
-                link_size = child_data.len() as u64;
-            }
-
-            let link_start = current_offset;
-            let link_end = current_offset + link_size;
-
-            if link_end <= start {
-                current_offset = link_end;
-                continue;
-            }
-            if link_start >= stop_at {
-                break;
-            }
-
-            let relative_start = start.saturating_sub(link_start);
-            let relative_end = stop_at.min(link_end) - link_start;
-
-            if let Some(child_node) = child_node {
-                let child_data =
-                    Box::pin(self.assemble_chunks_range(&child_node, relative_start, Some(relative_end))).await?;
-                result.extend_from_slice(&child_data);
+            if is_tree_node(&child_data) {
+                // Intermediate node - recurse
+                let child_node = decode_tree_node(&child_data).map_err(ReaderError::Codec)?;
+                Box::pin(self.collect_chunk_offsets_recursive(&child_node, chunks, offset)).await?;
             } else {
-                let slice_start = relative_start as usize;
-                let slice_end = (relative_end as usize).min(child_data.len());
-                if slice_start < slice_end {
-                    result.extend_from_slice(&child_data[slice_start..slice_end]);
-                }
+                // Leaf chunk
+                let size = child_data.len() as u64;
+                chunks.push((link.hash, *offset, size));
+                *offset += size;
             }
-
-            current_offset = link_end;
         }
-
-        Ok(result)
+        Ok(())
     }
 
     /// Recursively assemble chunks from tree (unencrypted)
@@ -481,41 +506,11 @@ impl<S: Store> TreeReader<S> {
         }
 
         let node = decode_tree_node(&data).map_err(ReaderError::Codec)?;
-        if node.node_type == LinkType::Dir {
-            return Ok(node.links.iter().map(|link| link.size).sum());
-        }
-
-        let has_unknown = node.links.iter().any(|link| link.size == 0);
-        if !has_unknown {
-            return Ok(node.links.iter().map(|link| link.size).sum());
-        }
-
-        Box::pin(self.tree_size_fallback(&node)).await
-    }
-
-    async fn tree_size_fallback(&self, node: &TreeNode) -> Result<u64, ReaderError> {
+        // Calculate from children
         let mut total = 0u64;
         for link in &node.links {
-            if link.size > 0 {
-                total += link.size;
-                continue;
-            }
-
-            let child_data = self
-                .store
-                .get(&link.hash)
-                .await
-                .map_err(|e| ReaderError::Store(e.to_string()))?
-                .ok_or_else(|| ReaderError::MissingChunk(to_hex(&link.hash)))?;
-
-            if is_tree_node(&child_data) {
-                let child_node = decode_tree_node(&child_data).map_err(ReaderError::Codec)?;
-                total += Box::pin(self.tree_size_fallback(&child_node)).await?;
-            } else {
-                total += child_data.len() as u64;
-            }
+            total += link.size;
         }
-
         Ok(total)
     }
 

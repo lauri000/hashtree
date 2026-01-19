@@ -10,15 +10,14 @@
 use axum::{
     body::Body,
     extract::{OriginalUri, State},
-    http::{header, HeaderMap, Method, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{any, get, post},
     Json, Router,
 };
 use hashtree_blossom::{BlossomClient, BlossomStore};
 use hashtree_core::{
-    from_hex, is_tree_node, nhash_decode, to_hex, Cid, HashTree, HashTreeConfig, HashTreeError,
-    LinkType, Store, StoreError,
+    from_hex, is_tree_node, nhash_decode, to_hex, Cid, HashTree, HashTreeConfig, Store, StoreError,
 };
 use hashtree_fs::FsBlobStore;
 use hashtree_resolver::{
@@ -68,8 +67,6 @@ fn is_npub(s: &str) -> bool {
 pub enum HtreeError {
     #[error("Invalid path: {0}")]
     InvalidPath(String),
-    #[error("Invalid range: {0}")]
-    InvalidRange(String),
     #[error("Tree not found: {0}")]
     TreeNotFound(String),
     #[error("File not found: {0}")]
@@ -92,10 +89,6 @@ impl IntoResponse for HtreeError {
             HtreeError::InvalidPath(_) => {
                 warn!("htree bad request: {}", self);
                 (StatusCode::BAD_REQUEST, self.to_string())
-            }
-            HtreeError::InvalidRange(_) => {
-                warn!("htree invalid range: {}", self);
-                (StatusCode::RANGE_NOT_SATISFIABLE, self.to_string())
             }
             _ => {
                 error!("htree error: {}", self);
@@ -511,15 +504,6 @@ impl HtreeState {
             .ok_or_else(|| HtreeError::FileNotFound(to_hex(&cid.hash)))
     }
 
-    fn map_range_error(err: HashTreeError) -> HtreeError {
-        match err {
-            HashTreeError::MissingLinkSize(msg) => {
-                HtreeError::InvalidRange(format!("Missing link size metadata: {}", msg))
-            }
-            _ => HtreeError::Store(err.to_string()),
-        }
-    }
-
     /// Read a byte range from a file (fetches only necessary chunks)
     /// This is more efficient than read_file() for partial reads of large files.
     async fn read_file_range(
@@ -530,9 +514,9 @@ impl HtreeState {
     ) -> Result<Vec<u8>, HtreeError> {
         let tree = HashTree::new(HashTreeConfig::new(self.store.clone()));
 
-        tree.read_file_range_cid(cid, start, end)
+        tree.read_file_range(&cid.hash, start, end)
             .await
-            .map_err(Self::map_range_error)?
+            .map_err(|e| HtreeError::Store(e.to_string()))?
             .ok_or_else(|| HtreeError::FileNotFound(to_hex(&cid.hash)))
     }
 
@@ -540,18 +524,9 @@ impl HtreeState {
     async fn get_file_size(&self, cid: &Cid) -> Result<u64, HtreeError> {
         let tree = HashTree::new(HashTreeConfig::new(self.store.clone()));
 
-        tree.get_size_cid(cid)
+        tree.get_size(&cid.hash)
             .await
             .map_err(|e| HtreeError::Store(e.to_string()))
-    }
-
-    /// Get the total size of a file without falling back to chunk reads.
-    async fn get_file_size_strict(&self, cid: &Cid) -> Result<u64, HtreeError> {
-        let tree = HashTree::new(HashTreeConfig::new(self.store.clone()));
-
-        tree.get_size_cid_strict(cid)
-            .await
-            .map_err(Self::map_range_error)
     }
 
     /// Resolve nhash to Cid and mime type (without reading content)
@@ -566,60 +541,21 @@ impl HtreeState {
             nhash_decode(nhash).map_err(|e| HtreeError::InvalidPath(e.to_string()))?;
 
         // Convert NHashData to Cid
-        let root_cid = Cid {
+        let cid = Cid {
             hash: nhash_data.hash,
             key: nhash_data.decrypt_key,
         };
 
-        let mut resolved_cid = root_cid.clone();
-
-        if !nhash_data.path.is_empty() {
+        // If nhash has a path, resolve it
+        let file_cid = if !nhash_data.path.is_empty() {
             let path = nhash_data.path.join("/");
-            resolved_cid = self.resolve_path(&root_cid, &path).await?;
-        } else if let Some(name) = filename {
-            let tree = HashTree::new(HashTreeConfig::new(self.store.clone()));
+            self.resolve_path(&cid, &path).await?
+        } else {
+            cid
+        };
 
-            if name.contains('/') {
-                let resolved = tree
-                    .resolve_path(&root_cid, name)
-                    .await
-                    .map_err(|e| HtreeError::Store(e.to_string()))?;
-
-                if let Some(cid) = resolved {
-                    resolved_cid = cid;
-                } else {
-                    return Err(HtreeError::FileNotFound(name.to_string()));
-                }
-            } else {
-                let is_dir = tree
-                    .get_node(&root_cid)
-                    .await
-                    .map_err(|e| HtreeError::Store(e.to_string()))?
-                    .map(|node| {
-                        node.node_type == LinkType::Dir
-                            || node.links.iter().any(|link| link.name.is_some())
-                    })
-                    .unwrap_or(false);
-
-                if is_dir {
-                    let resolved = tree
-                        .resolve_path(&root_cid, name)
-                        .await
-                        .map_err(|e| HtreeError::Store(e.to_string()))?;
-
-                    if let Some(cid) = resolved {
-                        resolved_cid = cid;
-                    }
-                }
-            }
-        }
-
-        let mime_name = filename
-            .and_then(|name| name.rsplit('/').next())
-            .or_else(|| nhash_data.path.last().map(|s| s.as_str()))
-            .unwrap_or("file");
-        let mime_type = guess_mime_type(mime_name);
-        Ok((resolved_cid, mime_type.to_string()))
+        let mime_type = guess_mime_type(filename.unwrap_or("file"));
+        Ok((file_cid, mime_type.to_string()))
     }
 
     /// Resolve npub path to Cid and mime type (without reading content)
@@ -708,33 +644,25 @@ fn parse_range_header(range_header: &str, total_size: usize) -> Option<(usize, u
     if total_size == 0 {
         return None;
     }
-    let trimmed = range_header.trim();
-    let range = trimmed.strip_prefix("bytes=").or_else(|| {
-        if trimmed.len() >= 6 && trimmed[..6].eq_ignore_ascii_case("bytes=") {
-            Some(&trimmed[6..])
-        } else {
-            None
-        }
-    })?;
-    let first_range = range.split(',').next()?.trim();
-    let parts: Vec<&str> = first_range.split('-').collect();
+    let range = range_header.strip_prefix("bytes=")?;
+    let parts: Vec<&str> = range.split('-').collect();
     if parts.len() != 2 {
         return None;
     }
 
     let start: usize = if parts[0].is_empty() {
         // Suffix range like "-500" means last 500 bytes
-        let suffix_len: usize = parts[1].trim().parse().ok()?;
+        let suffix_len: usize = parts[1].parse().ok()?;
         total_size.saturating_sub(suffix_len)
     } else {
-        parts[0].trim().parse().ok()?
+        parts[0].parse().ok()?
     };
 
     let end: usize = if parts[1].is_empty() {
         // Open-ended range like "500-" means from 500 to end
         total_size - 1
     } else {
-        parts[1].trim().parse().ok()?
+        parts[1].parse().ok()?
     };
 
     // Validate range
@@ -754,14 +682,22 @@ async fn read_range_or_full(
     range_header: Option<&str>,
 ) -> Result<(Vec<u8>, Option<(usize, usize, usize)>), HtreeError> {
     if let Some(range_str) = range_header {
-        let total_size = state.get_file_size_strict(file_cid).await? as usize;
+        if file_cid.key.is_some() {
+            let data = state.read_file(file_cid).await?;
+            let total_size = data.len();
+            if let Some((start, end)) = parse_range_header(range_str, total_size) {
+                return Ok((data[start..end + 1].to_vec(), Some((start, end, total_size))));
+            }
+            return Ok((data, None));
+        }
+
+        let total_size = state.get_file_size(file_cid).await? as usize;
         if let Some((start, end)) = parse_range_header(range_str, total_size) {
             let data = state
                 .read_file_range(file_cid, start as u64, Some((end + 1) as u64))
                 .await?;
             return Ok((data, Some((start, end, total_size))));
         }
-        return Err(HtreeError::InvalidRange(range_str.to_string()));
     }
 
     let data = state.read_file(file_cid).await?;
@@ -775,7 +711,6 @@ async fn handle_htree_request(
     State(state): State<HtreeState>,
     headers: HeaderMap,
     uri: OriginalUri,
-    method: Method,
 ) -> Response {
     // Get raw path from URI (preserves percent-encoding)
     let raw_path = uri.path();
@@ -790,51 +725,6 @@ async fn handle_htree_request(
     };
 
     let range_header = headers.get(header::RANGE).and_then(|h| h.to_str().ok());
-
-    if method == Method::HEAD {
-        if let Some(range_str) = range_header {
-            let total_size = match state.get_file_size_strict(&file_cid).await {
-                Ok(size) => size as usize,
-                Err(e) => return e.into_response(),
-            };
-
-            if let Some((start, end)) = parse_range_header(range_str, total_size) {
-                let content_length = end.saturating_sub(start) + 1;
-                let content_range = format!("bytes {}-{}/{}", start, end, total_size);
-
-                debug!(
-                    "htree head range response: {} bytes (range {}-{}/{}), type={}",
-                    content_length, start, end, total_size, content_type
-                );
-
-                return Response::builder()
-                    .status(StatusCode::PARTIAL_CONTENT)
-                    .header(header::CONTENT_TYPE, content_type)
-                    .header(header::CONTENT_LENGTH, content_length)
-                    .header(header::CONTENT_RANGE, content_range)
-                    .header(header::ACCEPT_RANGES, "bytes")
-                    .body(Body::empty())
-                    .unwrap();
-            }
-
-            return HtreeError::InvalidRange(range_str.to_string()).into_response();
-        }
-
-        let total_size = match state.get_file_size(&file_cid).await {
-            Ok(size) => size as usize,
-            Err(e) => return e.into_response(),
-        };
-
-        info!("htree head response: {} bytes, type={}", total_size, content_type);
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, content_type)
-            .header(header::CONTENT_LENGTH, total_size)
-            .header(header::ACCEPT_RANGES, "bytes")
-            .body(Body::empty())
-            .unwrap();
-    }
-
     let (data, range_info) = match read_range_or_full(&state, &file_cid, range_header).await {
         Ok(result) => result,
         Err(e) => return e.into_response(),
@@ -1261,7 +1151,11 @@ pub fn handle_htree_protocol<R: tauri::Runtime>(
         .next()
         .unwrap_or(path_with_query);
 
-    let range_header = request.headers().get("range").and_then(|v| v.to_str().ok());
+    let range_header = request
+        .headers()
+        .get("range")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
 
     info!("htree:// protocol request: raw_path={}, path={}", raw_path, path);
 
@@ -1281,7 +1175,8 @@ pub fn handle_htree_protocol<R: tauri::Runtime>(
         // First resolve the path to get CID and mime type (without loading file content)
         let (file_cid, content_type) = resolve_htree_inner(state, path).await?;
 
-        let (data, range_info) = read_range_or_full(state, &file_cid, range_header).await?;
+        let (data, range_info) =
+            read_range_or_full(state, &file_cid, range_header.as_deref()).await?;
         Ok((content_type, data, range_info))
     });
 
@@ -1318,7 +1213,6 @@ pub fn handle_htree_protocol<R: tauri::Runtime>(
             let (status, message) = match &e {
                 HtreeError::FileNotFound(msg) | HtreeError::TreeNotFound(msg) => (404, msg.clone()),
                 HtreeError::InvalidPath(msg) => (400, msg.clone()),
-                HtreeError::InvalidRange(msg) => (416, msg.clone()),
                 _ => (500, e.to_string()),
             };
             tauri::http::Response::builder()

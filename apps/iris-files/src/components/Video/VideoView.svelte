@@ -246,11 +246,6 @@
     logVideoDebug('player:error', {
       fileName: videoFileName,
       url: videoSrc,
-      mediaError: videoRef?.error
-        ? { code: videoRef.error.code, message: videoRef.error.message }
-        : null,
-      readyState: videoRef?.readyState,
-      networkState: videoRef?.networkState,
     });
     if (advanceVideoFallback()) {
       error = null;
@@ -260,6 +255,26 @@
       error = 'Video failed to load';
     }
     loading = false;
+  }
+
+  async function resolvePathWithTimeout(tree: ReturnType<typeof getTree>, cid: CID, path: string) {
+    try {
+      const startMs = performance.now();
+      const result = await Promise.race([
+        tree.resolvePath(cid, path),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), VIDEO_RESOLVE_TIMEOUT_MS)),
+      ]);
+      if (!result) {
+        logVideoDebug('resolve:timeout', {
+          path,
+          elapsedMs: Math.round(performance.now() - startMs),
+        });
+      }
+      return result ?? null;
+    } catch {
+      logVideoDebug('resolve:error', { path });
+      return null;
+    }
   }
 
   async function listDirectoryWithTimeout(tree: ReturnType<typeof getTree>, cid: CID) {
@@ -847,19 +862,37 @@
     // Store the video folder CID (for adding to other playlists)
     videoFolderCid = videoDirCid;
 
-    let dirEntries = await listDirectoryWithTimeout(tree, videoDirCid);
-    if (dirEntries && dirEntries.length > 0) {
-      const videoEntry = dirEntries.find(e =>
-        e.name.startsWith('video.') ||
-        e.name.endsWith('.webm') ||
-        e.name.endsWith('.mp4') ||
-        e.name.endsWith('.mov') ||
-        e.name.endsWith('.mkv')
-      );
+    // Try common video filenames immediately (don't wait for directory listing)
+    const commonNames = ['video.webm', 'video.mp4', 'video.mov', 'video.mkv'];
+    for (const name of commonNames) {
+      try {
+        const result = await resolvePathWithTimeout(tree, videoDirCid, name);
+        if (result) {
+          await applyResolvedVideo(result.cid, name);
+          break;
+        }
+      } catch {}
+    }
 
-      if (videoEntry) {
-        await applyResolvedVideo(videoEntry.cid, videoEntry.name);
-      }
+    // If common names didn't work, list directory to find video
+    if (!videoSrc) {
+      try {
+        const dir = await listDirectoryWithTimeout(tree, videoDirCid);
+        const videoEntry = dir?.find(e =>
+          e.name.startsWith('video.') ||
+          e.name.endsWith('.webm') ||
+          e.name.endsWith('.mp4') ||
+          e.name.endsWith('.mov') ||
+          e.name.endsWith('.mkv')
+        );
+
+        if (videoEntry) {
+          const videoResult = await resolvePathWithTimeout(tree, videoDirCid, videoEntry.name);
+          if (videoResult) {
+            await applyResolvedVideo(videoResult.cid, videoEntry.name);
+          }
+        }
+      } catch {}
     }
 
     // If still no video and NOT a playlist video, check if this is a playlist directory root
@@ -916,7 +949,7 @@
     // Load metadata in background (don't block video playback)
     // For playlist videos, load from the video subdirectory
     // Pass recentPath so we can update the label when title loads
-    loadMetadata(videoDirCid, tree, recentPath, dirEntries);
+    loadMetadata(videoDirCid, tree, recentPath);
 
     // Load playlist if this is a playlist video
     if (capturedIsPlaylistVideo && capturedVideoId) {
@@ -942,20 +975,11 @@
   }
 
   /** Load title and description in background */
-  async function loadMetadata(
-    rootCid: CID,
-    tree: ReturnType<typeof getTree>,
-    recentPath?: string,
-    entries?: Awaited<ReturnType<typeof tree.listDirectory>> | null
-  ) {
-    let dirEntries = entries ?? null;
-
+  async function loadMetadata(rootCid: CID, tree: ReturnType<typeof getTree>, recentPath?: string) {
     // Try video file's link entry meta first (new format)
     try {
-      if (!dirEntries) {
-        dirEntries = await tree.listDirectory(rootCid);
-      }
-      const videoEntry = dirEntries?.find(e =>
+      const entries = await tree.listDirectory(rootCid);
+      const videoEntry = entries?.find(e =>
         e.name.startsWith('video.') ||
         e.name.endsWith('.webm') ||
         e.name.endsWith('.mp4') ||
@@ -979,40 +1003,20 @@
 
     // Fall back to metadata.json (legacy format - will be migrated on login)
     try {
-      if (dirEntries) {
-        const metadataEntry = dirEntries.find(e => e.name === 'metadata.json');
-        if (metadataEntry) {
-          const metadataData = await tree.readFile(metadataEntry.cid);
-          if (metadataData) {
-            const metadata = JSON.parse(new TextDecoder().decode(metadataData));
-            if (metadata.title && typeof metadata.title === 'string') {
-              videoTitle = metadata.title;
-              if (recentPath) updateRecentLabel(recentPath, videoTitle);
-            }
-            if (metadata.description && typeof metadata.description === 'string') {
-              videoDescription = metadata.description;
-            }
-            if (!videoCreatedAt && metadata.createdAt && typeof metadata.createdAt === 'number') {
-              videoCreatedAt = metadata.createdAt;
-            }
+      const metadataResult = await tree.resolvePath(rootCid, 'metadata.json');
+      if (metadataResult) {
+        const metadataData = await tree.readFile(metadataResult.cid);
+        if (metadataData) {
+          const metadata = JSON.parse(new TextDecoder().decode(metadataData));
+          if (metadata.title && typeof metadata.title === 'string') {
+            videoTitle = metadata.title;
+            if (recentPath) updateRecentLabel(recentPath, videoTitle);
           }
-        }
-      } else {
-        const metadataResult = await tree.resolvePath(rootCid, 'metadata.json');
-        if (metadataResult) {
-          const metadataData = await tree.readFile(metadataResult.cid);
-          if (metadataData) {
-            const metadata = JSON.parse(new TextDecoder().decode(metadataData));
-            if (metadata.title && typeof metadata.title === 'string') {
-              videoTitle = metadata.title;
-              if (recentPath) updateRecentLabel(recentPath, videoTitle);
-            }
-            if (metadata.description && typeof metadata.description === 'string') {
-              videoDescription = metadata.description;
-            }
-            if (!videoCreatedAt && metadata.createdAt && typeof metadata.createdAt === 'number') {
-              videoCreatedAt = metadata.createdAt;
-            }
+          if (metadata.description && typeof metadata.description === 'string') {
+            videoDescription = metadata.description;
+          }
+          if (!videoCreatedAt && metadata.createdAt && typeof metadata.createdAt === 'number') {
+            videoCreatedAt = metadata.createdAt;
           }
         }
       }
@@ -1021,23 +1025,12 @@
     // Fall back to title.txt (legacy format)
     if (!videoTitle) {
       try {
-        if (dirEntries) {
-          const titleEntry = dirEntries.find(e => e.name === 'title.txt');
-          if (titleEntry) {
-            const titleData = await tree.readFile(titleEntry.cid);
-            if (titleData) {
-              videoTitle = new TextDecoder().decode(titleData).trim();
-              if (recentPath) updateRecentLabel(recentPath, videoTitle);
-            }
-          }
-        } else {
-          const titleResult = await tree.resolvePath(rootCid, 'title.txt');
-          if (titleResult) {
-            const titleData = await tree.readFile(titleResult.cid);
-            if (titleData) {
-              videoTitle = new TextDecoder().decode(titleData).trim();
-              if (recentPath) updateRecentLabel(recentPath, videoTitle);
-            }
+        const titleResult = await tree.resolvePath(rootCid, 'title.txt');
+        if (titleResult) {
+          const titleData = await tree.readFile(titleResult.cid);
+          if (titleData) {
+            videoTitle = new TextDecoder().decode(titleData).trim();
+            if (recentPath) updateRecentLabel(recentPath, videoTitle);
           }
         }
       } catch {}
@@ -1046,21 +1039,11 @@
     // Fall back to description.txt (legacy format)
     if (!videoDescription) {
       try {
-        if (dirEntries) {
-          const descEntry = dirEntries.find(e => e.name === 'description.txt');
-          if (descEntry) {
-            const descData = await tree.readFile(descEntry.cid);
-            if (descData) {
-              videoDescription = new TextDecoder().decode(descData).trim();
-            }
-          }
-        } else {
-          const descResult = await tree.resolvePath(rootCid, 'description.txt');
-          if (descResult) {
-            const descData = await tree.readFile(descResult.cid);
-            if (descData) {
-              videoDescription = new TextDecoder().decode(descData).trim();
-            }
+        const descResult = await tree.resolvePath(rootCid, 'description.txt');
+        if (descResult) {
+          const descData = await tree.readFile(descResult.cid);
+          if (descData) {
+            videoDescription = new TextDecoder().decode(descData).trim();
           }
         }
       } catch {}

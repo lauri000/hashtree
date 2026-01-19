@@ -25,12 +25,6 @@ fn make_tree_with_chunk_size(chunk_size: usize) -> (Arc<MemoryStore>, HashTree<M
     (store, tree)
 }
 
-fn make_encrypted_tree_with_chunk_size(chunk_size: usize) -> (Arc<MemoryStore>, HashTree<MemoryStore>) {
-    let store = Arc::new(MemoryStore::new());
-    let tree = HashTree::new(HashTreeConfig::new(store.clone()).with_chunk_size(chunk_size));
-    (store, tree)
-}
-
 // ============ CREATE TESTS ============
 
 mod create {

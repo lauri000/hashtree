@@ -124,6 +124,8 @@ pub struct RemoteHelper {
     is_private: bool,
     /// Start time for current operation (for conditional verbose logging)
     op_start: Option<Instant>,
+    /// Allow updating the currently checked-out branch during fetch
+    update_head_ok: bool,
 }
 
 #[derive(Debug)]
@@ -173,6 +175,7 @@ impl RemoteHelper {
             url_secret,
             is_private,
             op_start: None,
+            update_head_ok: false,
         })
     }
 
@@ -241,6 +244,15 @@ impl RemoteHelper {
             }
             "option" => {
                 // Options like "option verbosity 1"
+                if let Some(arg) = arg {
+                    let mut parts = arg.split_whitespace();
+                    let name = parts.next().unwrap_or("");
+                    let value = parts.next().unwrap_or("");
+                    if name == "update-head-ok" {
+                        self.update_head_ok = value.is_empty() || value == "true" || value == "1";
+                        return Ok(Some(vec!["ok".to_string()]));
+                    }
+                }
                 debug!("Ignoring option: {:?}", arg);
                 Ok(Some(vec!["unsupported".to_string()]))
             }
@@ -326,6 +338,24 @@ impl RemoteHelper {
         Ok(())
     }
 
+    fn current_head_ref(&self) -> Result<Option<String>> {
+        let output = Command::new("git")
+            .args(["symbolic-ref", "-q", "HEAD"])
+            .output()
+            .context("Failed to run git symbolic-ref")?;
+
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let head_ref = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if head_ref.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(head_ref))
+        }
+    }
+
     /// Execute queued fetch operations
     fn execute_fetch(&mut self) -> Result<()> {
         self.start_op(); // Start timing for conditional verbose logging
@@ -373,6 +403,18 @@ impl RemoteHelper {
 
         // Update local refs to point to the fetched commits
         // Use git update-ref since git sets GIT_DIR for the remote helper
+        if !self.update_head_ok {
+            if let Some(head_ref) = self.current_head_ref()? {
+                for spec in &self.fetch_specs {
+                    if spec.name == head_ref {
+                        bail!(
+                            "Refusing to update checked-out branch {} without update-head-ok",
+                            head_ref
+                        );
+                    }
+                }
+            }
+        }
         for spec in &self.fetch_specs {
             let output = Command::new("git")
                 .args(["update-ref", &spec.name, &spec.sha])
