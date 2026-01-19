@@ -6,6 +6,8 @@
 //! - TestEnv: Test environment with config and keys
 //! - Helper functions for creating test repos
 
+#![allow(dead_code)]
+
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;

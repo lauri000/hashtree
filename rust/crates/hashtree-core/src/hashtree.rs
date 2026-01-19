@@ -464,6 +464,45 @@ impl<S: Store> HashTree<S> {
         Ok(Some(decrypted))
     }
 
+    /// Read a byte range from encrypted content by hash and key
+    async fn read_file_range_encrypted(
+        &self,
+        hash: &Hash,
+        key: &EncryptionKey,
+        start: u64,
+        end: Option<u64>,
+    ) -> Result<Option<Vec<u8>>, HashTreeError> {
+        let encrypted_data = match self.store.get(hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        let decrypted = decrypt_chk(&encrypted_data, key)
+            .map_err(|e| HashTreeError::Encryption(e.to_string()))?;
+
+        if !is_tree_node(&decrypted) {
+            let start_idx = start as usize;
+            let end_idx = end.map(|e| e as usize).unwrap_or(decrypted.len());
+            if start_idx >= decrypted.len() {
+                return Ok(Some(vec![]));
+            }
+            let end_idx = end_idx.min(decrypted.len());
+            return Ok(Some(decrypted[start_idx..end_idx].to_vec()));
+        }
+
+        let node = decode_tree_node(&decrypted)?;
+        let total_size: u64 = node.links.iter().map(|link| link.size).sum();
+        let actual_end = end.unwrap_or(total_size).min(total_size);
+        if start >= actual_end {
+            return Ok(Some(vec![]));
+        }
+
+        let range = self
+            .assemble_encrypted_chunks_range(&node, start, actual_end)
+            .await?;
+        Ok(Some(range))
+    }
+
     /// Assemble encrypted chunks from tree
     async fn assemble_encrypted_chunks(&self, node: &TreeNode) -> Result<Vec<u8>, HashTreeError> {
         let mut parts: Vec<Vec<u8>> = Vec::new();
@@ -496,6 +535,75 @@ impl<S: Store> HashTree<S> {
         let mut result = Vec::with_capacity(total_len);
         for part in parts {
             result.extend_from_slice(&part);
+        }
+
+        Ok(result)
+    }
+
+    /// Assemble only the encrypted chunks needed for a byte range
+    async fn assemble_encrypted_chunks_range(
+        &self,
+        node: &TreeNode,
+        start: u64,
+        end: u64,
+    ) -> Result<Vec<u8>, HashTreeError> {
+        let mut result = Vec::with_capacity((end - start) as usize);
+        let mut current_offset = 0u64;
+
+        for link in &node.links {
+            let link_start = current_offset;
+            let link_end = current_offset + link.size;
+
+            if link_end <= start {
+                current_offset = link_end;
+                continue;
+            }
+            if link_start >= end {
+                break;
+            }
+
+            let chunk_key = link
+                .key
+                .ok_or_else(|| HashTreeError::Encryption("missing chunk key".to_string()))?;
+            let encrypted_child = self
+                .store
+                .get(&link.hash)
+                .await
+                .map_err(|e| HashTreeError::Store(e.to_string()))?
+                .ok_or_else(|| HashTreeError::MissingChunk(to_hex(&link.hash)))?;
+            let decrypted = decrypt_chk(&encrypted_child, &chunk_key)
+                .map_err(|e| HashTreeError::Encryption(e.to_string()))?;
+
+            if is_tree_node(&decrypted) {
+                let child_node = decode_tree_node(&decrypted)?;
+                let child_start = start.saturating_sub(link_start);
+                let child_end = (end - link_start).min(link.size);
+                let child_data = Box::pin(
+                    self.assemble_encrypted_chunks_range(&child_node, child_start, child_end),
+                )
+                .await?;
+                result.extend_from_slice(&child_data);
+            } else {
+                let slice_start = if start > link_start {
+                    (start - link_start) as usize
+                } else {
+                    0
+                };
+                let slice_end = if end < link_end {
+                    (end - link_start) as usize
+                } else {
+                    decrypted.len()
+                };
+                let slice_end = slice_end.min(decrypted.len());
+                if slice_start < slice_end {
+                    result.extend_from_slice(&decrypted[slice_start..slice_end]);
+                }
+            }
+
+            current_offset = link_end;
+            if current_offset >= end {
+                break;
+            }
         }
 
         Ok(result)
@@ -769,6 +877,20 @@ impl<S: Store> HashTree<S> {
         let node = decode_tree_node(&data)?;
         let range_data = self.assemble_chunks_range(&node, start, end).await?;
         Ok(Some(range_data))
+    }
+
+    /// Read a byte range from a file by Cid (handles decryption automatically)
+    pub async fn read_file_range_cid(
+        &self,
+        cid: &Cid,
+        start: u64,
+        end: Option<u64>,
+    ) -> Result<Option<Vec<u8>>, HashTreeError> {
+        if let Some(key) = cid.key {
+            self.read_file_range_encrypted(&cid.hash, &key, start, end).await
+        } else {
+            self.read_file_range(&cid.hash, start, end).await
+        }
     }
 
     /// Assemble only the chunks needed for a byte range
@@ -1194,6 +1316,33 @@ impl<S: Store> HashTree<S> {
 
         let node = decode_tree_node(&data)?;
         // Calculate from children
+        let mut total = 0u64;
+        for link in &node.links {
+            total += link.size;
+        }
+        Ok(total)
+    }
+
+    /// Get total size of a tree by Cid (handles decryption automatically)
+    pub async fn get_size_cid(&self, cid: &Cid) -> Result<u64, HashTreeError> {
+        if cid.key.is_none() {
+            return self.get_size(&cid.hash).await;
+        }
+
+        let key = cid.key.unwrap();
+        let encrypted_data = match self.store.get(&cid.hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+            Some(d) => d,
+            None => return Ok(0),
+        };
+
+        let decrypted = decrypt_chk(&encrypted_data, &key)
+            .map_err(|e| HashTreeError::Encryption(e.to_string()))?;
+
+        if !is_tree_node(&decrypted) {
+            return Ok(decrypted.len() as u64);
+        }
+
+        let node = decode_tree_node(&decrypted)?;
         let mut total = 0u64;
         for link in &node.links {
             total += link.size;

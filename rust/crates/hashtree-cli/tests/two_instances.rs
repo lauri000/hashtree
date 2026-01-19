@@ -316,7 +316,6 @@ struct TestInstance {
     process: Option<Child>,
     data_path: PathBuf,
     home_dir: PathBuf,
-    pubkey_hex: String,
 }
 
 impl TestInstance {
@@ -357,8 +356,6 @@ crawl_depth = 0
                 .expect("Failed to write contacts.json");
         }
 
-        let pubkey_hex = keys.public_key().to_hex();
-
         let process = Command::new(htree_bin)
             .arg("--data-dir")
             .arg(data_dir.path())
@@ -377,7 +374,6 @@ crawl_depth = 0
             process: Some(process),
             data_path,
             home_dir,
-            pubkey_hex,
         }
     }
 
@@ -391,7 +387,6 @@ crawl_depth = 0
             process: None,
             data_path,
             home_dir,
-            pubkey_hex: String::new(),
         }
     }
 
