@@ -19,6 +19,7 @@ import { indexVideo } from './searchIndex';
 import { clearFeedPlaylistInfo } from './homeFeedCache';
 import { getHtreePrefix } from '../lib/mediaUrl';
 import { LinkType, type CID } from 'hashtree';
+import { isTauri } from '../tauri';
 
 // Cache playlist detection results to avoid layout shift on revisit
 // Key: "npub/treeName", Value: PlaylistCardInfo or null (for single videos)
@@ -44,7 +45,10 @@ export const MIN_VIDEOS_FOR_SIDEBAR = 2;
 export const MIN_VIDEOS_FOR_STRUCTURE = 1;
 
 /** Limit deep metadata reads to avoid excessive IPC on huge playlists */
-const MAX_PLAYLIST_SUBDIR_READS = 200;
+const MAX_PLAYLIST_SUBDIR_READS = isTauri() ? 30 : 200;
+
+/** Limit total playlist metadata processing to avoid flooding Tauri IPC */
+const MAX_PLAYLIST_METADATA_ITEMS = isTauri() ? 60 : 400;
 
 /** Video file extensions we recognize */
 export const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mkv', '.mov', '.avi', '.m4v'] as const;
@@ -413,6 +417,8 @@ async function loadPlaylistMetadata(
   currentIndex: number
 ): Promise<void> {
   const tree = getTree();
+  const tauri = isTauri();
+  const currentEntryName = entries[currentIndex]?.name;
 
   // Load current video first for better UX
   const orderedEntries = [...entries];
@@ -421,8 +427,12 @@ async function loadPlaylistMetadata(
     orderedEntries.unshift(current);
   }
 
+  const entriesToProcess = orderedEntries.length > MAX_PLAYLIST_METADATA_ITEMS
+    ? orderedEntries.slice(0, MAX_PLAYLIST_METADATA_ITEMS)
+    : orderedEntries;
+
   // Process entries with limited concurrency to avoid overwhelming the system
-  const CONCURRENCY = 3;
+  const CONCURRENCY = tauri ? 2 : 3;
   let inFlight = 0;
   let entryIndex = 0;
   let subdirReads = 0;
@@ -446,8 +456,25 @@ async function loadPlaylistMetadata(
         thumbnailUrl = `${getHtreePrefix()}/htree/${entryMeta.thumbnail}`;
       }
 
-      // If we have title from parent entry meta, skip subdirectory reads
+      const isCurrentEntry = entry.name === currentEntryName;
+      const hasEntryMeta = title !== entry.name || duration !== undefined || thumbnailUrl !== undefined;
+
+      // If we have full metadata from parent entry meta, skip subdirectory reads
       if (title !== entry.name && duration && thumbnailUrl) {
+        currentPlaylist.update(playlist => {
+          if (!playlist) return playlist;
+          const items = playlist.items.map(item =>
+            item.id === entry.name
+              ? { ...item, title, duration, thumbnailUrl }
+              : item
+          );
+          return { ...playlist, items };
+        });
+        return;
+      }
+
+      // On Tauri, avoid deep reads unless this is the current item.
+      if (tauri && hasEntryMeta && !isCurrentEntry) {
         currentPlaylist.update(playlist => {
           if (!playlist) return playlist;
           const items = playlist.items.map(item =>
@@ -595,12 +622,12 @@ async function loadPlaylistMetadata(
 
   // Process with limited concurrency
   const processNext = async (): Promise<void> => {
-    while (entryIndex < orderedEntries.length) {
+    while (entryIndex < entriesToProcess.length) {
       if (inFlight >= CONCURRENCY) {
         await new Promise(r => setTimeout(r, 50));
         continue;
       }
-      const entry = orderedEntries[entryIndex++];
+      const entry = entriesToProcess[entryIndex++];
       inFlight++;
       processEntry(entry).finally(() => { inFlight--; });
     }

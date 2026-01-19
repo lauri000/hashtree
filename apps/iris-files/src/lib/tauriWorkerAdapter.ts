@@ -16,6 +16,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { hexEncode, hexDecode, base64Encode, base64Decode } from '../utils/encoding';
+import { LRUCache } from '../utils/lruCache';
 import type {
   WorkerConfig,
   WorkerNostrFilter as NostrFilter,
@@ -56,6 +57,12 @@ interface PendingRequest {
   timeoutId: ReturnType<typeof setTimeout>;
 }
 
+const BLOB_CACHE_SIZE = 400;
+const BLOB_CACHE_MAX_BYTES = 256 * 1024;
+const DIR_CACHE_SIZE = 200;
+const FILE_CACHE_SIZE = 100;
+const FILE_CACHE_MAX_BYTES = 128 * 1024;
+
 // Subscription callback handlers
 interface SubscriptionCallbacks {
   onEvent?: (event: SignedEvent) => void;
@@ -69,6 +76,14 @@ export class TauriWorkerAdapter {
   private unlisten: UnlistenFn | null = null;
   private subscriptions = new Map<string, SubscriptionCallbacks>();
   private globalEventCallback: ((event: SignedEvent) => void) | null = null;
+  private blobCache = new LRUCache<string, Uint8Array>(BLOB_CACHE_SIZE);
+  private blobInFlight = new Map<string, Promise<Uint8Array | null>>();
+  private dirCache = new LRUCache<string, DirEntry[]>(DIR_CACHE_SIZE);
+  private dirInFlight = new Map<string, Promise<DirEntry[]>>();
+  private fileCache = new LRUCache<string, Uint8Array>(FILE_CACHE_SIZE);
+  private fileInFlight = new Map<string, Promise<Uint8Array | null>>();
+  private requestStats = new Map<string, number>();
+  private requestTotal = 0;
 
   // Streaming callbacks
   private streamCallbacks = new Map<string, (chunk: Uint8Array, done: boolean) => void>();
@@ -112,6 +127,40 @@ export class TauriWorkerAdapter {
 
   private nextId(): string {
     return `tauri-${++this.requestId}`;
+  }
+
+  private trackRequest(type: string): void {
+    this.requestTotal += 1;
+    this.requestStats.set(type, (this.requestStats.get(type) ?? 0) + 1);
+  }
+
+  getRequestStats(): { total: number; byType: Record<string, number> } {
+    const byType: Record<string, number> = {};
+    for (const [type, count] of this.requestStats.entries()) {
+      byType[type] = count;
+    }
+    return { total: this.requestTotal, byType };
+  }
+
+  resetRequestStats(): void {
+    this.requestTotal = 0;
+    this.requestStats.clear();
+  }
+
+  private cidCacheKey(cid: CID): string {
+    const hash = hexEncode(cid.hash);
+    if (cid.key) {
+      return `${hash}:${hexEncode(cid.key)}`;
+    }
+    return hash;
+  }
+
+  private cloneDirEntries(entries: DirEntry[]): DirEntry[] {
+    return entries.map((entry) => ({ ...entry }));
+  }
+
+  private cloneFileData(data: Uint8Array): Uint8Array {
+    return data.slice();
   }
 
   private handleResponse(response: WorkerResponse): void {
@@ -190,6 +239,7 @@ export class TauriWorkerAdapter {
   }
 
   private async request<T>(msg: WorkerRequest): Promise<T> {
+    this.trackRequest(msg.type);
     return new Promise((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         this.pendingRequests.delete(msg.id);
@@ -215,21 +265,49 @@ export class TauriWorkerAdapter {
   // ============================================================================
 
   async get(hash: Uint8Array): Promise<Uint8Array | null> {
-    const res = await this.request<WorkerResponse>({
+    const cacheKey = hexEncode(hash);
+    const cached = this.blobCache.get(cacheKey);
+    if (cached) {
+      return this.cloneFileData(cached);
+    }
+
+    const inFlight = this.blobInFlight.get(cacheKey);
+    if (inFlight) {
+      const data = await inFlight;
+      return data ? this.cloneFileData(data) : null;
+    }
+
+    const fetchPromise = this.request<WorkerResponse>({
       type: 'get',
       id: this.nextId(),
-      hash: hexEncode(hash),
-    });
-    return res.data ? base64Decode(res.data) : null;
+      hash: cacheKey,
+    }).then((res) => (res.data ? base64Decode(res.data) : null));
+
+    this.blobInFlight.set(cacheKey, fetchPromise);
+
+    try {
+      const data = await fetchPromise;
+      if (data && data.length <= BLOB_CACHE_MAX_BYTES) {
+        this.blobCache.set(cacheKey, data);
+        return this.cloneFileData(data);
+      }
+      return data;
+    } finally {
+      this.blobInFlight.delete(cacheKey);
+    }
   }
 
   async put(hash: Uint8Array, data: Uint8Array): Promise<boolean> {
+    const cacheKey = hexEncode(hash);
     const res = await this.request<WorkerResponse>({
       type: 'put',
       id: this.nextId(),
-      hash: hexEncode(hash),
+      hash: cacheKey,
       data: base64Encode(data),
     });
+    if (data.length <= BLOB_CACHE_MAX_BYTES) {
+      this.blobCache.set(cacheKey, data.slice());
+    }
     return res.value ?? false;
   }
 
@@ -243,11 +321,14 @@ export class TauriWorkerAdapter {
   }
 
   async delete(hash: Uint8Array): Promise<boolean> {
+    const cacheKey = hexEncode(hash);
     const res = await this.request<WorkerResponse>({
       type: 'delete',
       id: this.nextId(),
-      hash: hexEncode(hash),
+      hash: cacheKey,
     });
+    this.blobCache.delete(cacheKey);
+    this.blobInFlight.delete(cacheKey);
     return res.value ?? false;
   }
 
@@ -270,12 +351,36 @@ export class TauriWorkerAdapter {
   }
 
   async readFile(cid: CID): Promise<Uint8Array | null> {
-    const res = await this.request<WorkerResponse>({
+    const cacheKey = this.cidCacheKey(cid);
+    const cached = this.fileCache.get(cacheKey);
+    if (cached) {
+      return this.cloneFileData(cached);
+    }
+
+    const inFlight = this.fileInFlight.get(cacheKey);
+    if (inFlight) {
+      const data = await inFlight;
+      return data ? this.cloneFileData(data) : null;
+    }
+
+    const fetchPromise = this.request<WorkerResponse>({
       type: 'readFile',
       id: this.nextId(),
       cid: this.cidToRust(cid),
-    });
-    return res.data ? base64Decode(res.data) : null;
+    }).then((res) => (res.data ? base64Decode(res.data) : null));
+
+    this.fileInFlight.set(cacheKey, fetchPromise);
+
+    try {
+      const data = await fetchPromise;
+      if (data && data.length <= FILE_CACHE_MAX_BYTES) {
+        this.fileCache.set(cacheKey, data);
+        return this.cloneFileData(data);
+      }
+      return data;
+    } finally {
+      this.fileInFlight.delete(cacheKey);
+    }
   }
 
   async readFileRange(cid: CID, start: number, end?: number): Promise<Uint8Array | null> {
@@ -303,6 +408,7 @@ export class TauriWorkerAdapter {
       resolveNext?.();
     });
 
+    this.trackRequest('readFileStream');
     // Fire off the stream request
     invoke('worker_message', {
       message: {
@@ -362,21 +468,44 @@ export class TauriWorkerAdapter {
   }
 
   async listDir(cid: CID): Promise<DirEntry[]> {
-    const res = await this.request<WorkerResponse>({
+    const cacheKey = this.cidCacheKey(cid);
+    const cached = this.dirCache.get(cacheKey);
+    if (cached) {
+      return this.cloneDirEntries(cached);
+    }
+
+    const inFlight = this.dirInFlight.get(cacheKey);
+    if (inFlight) {
+      const entries = await inFlight;
+      return this.cloneDirEntries(entries);
+    }
+
+    const fetchPromise = this.request<WorkerResponse>({
       type: 'listDir',
       id: this.nextId(),
       cid: this.cidToRust(cid),
+    }).then((res) => {
+      if (!res.entries) {
+        return [];
+      }
+      return res.entries.map((e) => ({
+        name: e.name,
+        hash: hexDecode(e.hash),
+        size: e.size,
+        linkType: e.linkType,
+        key: e.key ? hexDecode(e.key) : undefined,
+      }));
     });
-    if (!res.entries) {
-      return [];
+
+    this.dirInFlight.set(cacheKey, fetchPromise);
+
+    try {
+      const entries = await fetchPromise;
+      this.dirCache.set(cacheKey, entries);
+      return this.cloneDirEntries(entries);
+    } finally {
+      this.dirInFlight.delete(cacheKey);
     }
-    return res.entries.map((e) => ({
-      name: e.name,
-      hash: hexDecode(e.hash),
-      size: e.size,
-      linkType: e.linkType,
-      key: e.key ? hexDecode(e.key) : undefined,
-    }));
   }
 
   async resolveRoot(npub: string, path?: string): Promise<CID | null> {

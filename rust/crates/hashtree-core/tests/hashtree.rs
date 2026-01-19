@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use hashtree_core::{
-    Cid, DirEntry, HashTree, HashTreeConfig, HashTreeError, Link, LinkType, MemoryStore, Store, to_hex,
+    Cid, DirEntry, HashTree, HashTreeConfig, HashTreeError, Link, LinkType, MemoryStore, Store,
+    TreeNode, encode_tree_node, sha256, to_hex,
 };
 
 fn make_tree() -> (Arc<MemoryStore>, HashTree<MemoryStore>) {
@@ -348,6 +349,28 @@ mod read {
 
         let size = tree.get_size_cid(&cid).await.unwrap();
         assert_eq!(size, data.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn test_read_file_range_requires_link_sizes() {
+        let (store, tree) = make_tree();
+
+        let blob_hash = tree.put_blob(b"hello").await.unwrap();
+        let node = TreeNode::new(LinkType::File, vec![Link {
+            hash: blob_hash,
+            name: None,
+            size: 0,
+            key: None,
+            link_type: LinkType::Blob,
+            meta: None,
+        }]);
+        let encoded = encode_tree_node(&node).unwrap();
+        let node_hash = sha256(&encoded);
+
+        store.put(node_hash, encoded).await.unwrap();
+
+        let result = tree.read_file_range(&node_hash, 0, Some(1)).await;
+        assert!(matches!(result, Err(HashTreeError::MissingLinkSize(_))));
     }
 
     #[tokio::test]
