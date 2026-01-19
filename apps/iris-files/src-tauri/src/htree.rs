@@ -17,8 +17,7 @@ use axum::{
 };
 use hashtree_blossom::{BlossomClient, BlossomStore};
 use hashtree_core::{
-    decode_tree_node, decrypt_chk, from_hex, is_tree_node, nhash_decode, to_hex, Cid, HashTree,
-    HashTreeConfig, Store, StoreError,
+    from_hex, is_tree_node, nhash_decode, to_hex, Cid, HashTree, HashTreeConfig, Store, StoreError,
 };
 use hashtree_fs::FsBlobStore;
 use hashtree_resolver::{
@@ -174,10 +173,29 @@ fn is_thumbnail_request(path: &str) -> bool {
     path == "thumbnail" || path.ends_with("/thumbnail")
 }
 
+/// Tree visibility types (matches TypeScript TreeVisibility)
+#[derive(Clone, Debug, PartialEq)]
+pub enum TreeVisibility {
+    Public,
+    LinkVisible,
+    Private,
+}
+
+impl TreeVisibility {
+    fn from_str(s: &str) -> Self {
+        match s {
+            "link-visible" => TreeVisibility::LinkVisible,
+            "private" => TreeVisibility::Private,
+            _ => TreeVisibility::Public,
+        }
+    }
+}
+
 /// Cached tree root entry
 #[derive(Clone)]
 struct CachedRoot {
     cid: Cid,
+    visibility: TreeVisibility,
     #[allow(dead_code)]
     timestamp: std::time::Instant,
 }
@@ -289,13 +307,14 @@ impl HtreeState {
         }
     }
 
-    fn cache_root(&self, npub: &str, tree_name: &str, cid: Cid) {
+    fn cache_root(&self, npub: &str, tree_name: &str, cid: Cid, visibility: TreeVisibility) {
         let cache_key = format!("{}/{}", npub, tree_name);
         let mut cache = self.root_cache.write();
         cache.put(
             cache_key,
             CachedRoot {
                 cid,
+                visibility,
                 timestamp: std::time::Instant::now(),
             },
         );
@@ -374,13 +393,14 @@ impl HtreeState {
             .map_err(|e| HtreeError::Resolver(e.to_string()))?
             .ok_or_else(|| HtreeError::TreeNotFound(key.clone()))?;
 
-        // Cache the result
+        // Cache the result (default to Public visibility when resolved from Nostr)
         {
             let mut cache = self.root_cache.write();
             cache.put(
                 cache_key,
                 CachedRoot {
                     cid: cid.clone(),
+                    visibility: TreeVisibility::Public,
                     timestamp: std::time::Instant::now(),
                 },
             );
@@ -485,7 +505,7 @@ impl HtreeState {
     }
 
     /// Read a byte range from a file (fetches only necessary chunks)
-    /// Handles both encrypted and unencrypted content.
+    /// This is more efficient than read_file() for partial reads of large files.
     async fn read_file_range(
         &self,
         cid: &Cid,
@@ -494,39 +514,19 @@ impl HtreeState {
     ) -> Result<Vec<u8>, HtreeError> {
         let tree = HashTree::new(HashTreeConfig::new(self.store.clone()));
 
-        tree.get_range(cid, start, end)
+        tree.read_file_range(&cid.hash, start, end)
             .await
             .map_err(|e| HtreeError::Store(e.to_string()))?
             .ok_or_else(|| HtreeError::FileNotFound(to_hex(&cid.hash)))
     }
 
     /// Get the total size of a file without loading all its content
-    /// Handles encrypted files by decrypting the root node to read the tree structure
     async fn get_file_size(&self, cid: &Cid) -> Result<u64, HtreeError> {
-        // Get raw data from store
-        let data = self
-            .store
-            .get(&cid.hash)
+        let tree = HashTree::new(HashTreeConfig::new(self.store.clone()));
+
+        tree.get_size(&cid.hash)
             .await
-            .map_err(|e| HtreeError::Store(e.to_string()))?
-            .ok_or_else(|| HtreeError::FileNotFound(to_hex(&cid.hash)))?;
-
-        // Decrypt if key is present
-        let data = if let Some(key) = &cid.key {
-            decrypt_chk(&data, key).map_err(|e| HtreeError::Store(e.to_string()))?
-        } else {
-            data
-        };
-
-        // If not a tree node, return raw size
-        if !is_tree_node(&data) {
-            return Ok(data.len() as u64);
-        }
-
-        // Parse tree node and sum children's sizes
-        let node = decode_tree_node(&data).map_err(|e| HtreeError::Store(e.to_string()))?;
-        let total: u64 = node.links.iter().map(|link| link.size).sum();
-        Ok(total)
+            .map_err(|e| HtreeError::Store(e.to_string()))
     }
 
     /// Resolve nhash to Cid and mime type (without reading content)
@@ -641,6 +641,9 @@ impl HtreeState {
 
 /// Parse Range header value like "bytes=0-999" or "bytes=500-"
 fn parse_range_header(range_header: &str, total_size: usize) -> Option<(usize, usize)> {
+    if total_size == 0 {
+        return None;
+    }
     let range = range_header.strip_prefix("bytes=")?;
     let parts: Vec<&str> = range.split('-').collect();
     if parts.len() != 2 {
@@ -673,6 +676,34 @@ fn parse_range_header(range_header: &str, total_size: usize) -> Option<(usize, u
     Some((start, end))
 }
 
+async fn read_range_or_full(
+    state: &HtreeState,
+    file_cid: &Cid,
+    range_header: Option<&str>,
+) -> Result<(Vec<u8>, Option<(usize, usize, usize)>), HtreeError> {
+    if let Some(range_str) = range_header {
+        if file_cid.key.is_some() {
+            let data = state.read_file(file_cid).await?;
+            let total_size = data.len();
+            if let Some((start, end)) = parse_range_header(range_str, total_size) {
+                return Ok((data[start..end + 1].to_vec(), Some((start, end, total_size))));
+            }
+            return Ok((data, None));
+        }
+
+        let total_size = state.get_file_size(file_cid).await? as usize;
+        if let Some((start, end)) = parse_range_header(range_str, total_size) {
+            let data = state
+                .read_file_range(file_cid, start as u64, Some((end + 1) as u64))
+                .await?;
+            return Ok((data, Some((start, end, total_size))));
+        }
+    }
+
+    let data = state.read_file(file_cid).await?;
+    Ok((data, None))
+}
+
 // Axum handler for /htree/*path - catches all htree requests
 // Now supports efficient range requests that only fetch needed chunks
 #[axum::debug_handler]
@@ -693,50 +724,31 @@ async fn handle_htree_request(
         Err(e) => return e.into_response(),
     };
 
-    // Get file size (only fetches root node, not entire file)
-    let total_size = match state.get_file_size(&file_cid).await {
-        Ok(size) => size as usize,
+    let range_header = headers.get(header::RANGE).and_then(|h| h.to_str().ok());
+    let (data, range_info) = match read_range_or_full(&state, &file_cid, range_header).await {
+        Ok(result) => result,
         Err(e) => return e.into_response(),
     };
 
-    // Check for Range header - if present, use efficient range reading
-    if let Some(range_header) = headers.get(header::RANGE) {
-        if let Ok(range_str) = range_header.to_str() {
-            if let Some((start, end)) = parse_range_header(range_str, total_size) {
-                // Use read_file_range which handles both encrypted and unencrypted content
-                let data = match state.read_file_range(&file_cid, start as u64, Some((end + 1) as u64)).await {
-                    Ok(d) => d,
-                    Err(e) => return e.into_response(),
-                };
+    if let Some((start, end, total_size)) = range_info {
+        let content_length = data.len();
+        let content_range = format!("bytes {}-{}/{}", start, end, total_size);
 
-                let content_length = data.len();
-                let content_range = format!("bytes {}-{}/{}", start, end, total_size);
+        debug!(
+            "htree range response: {} bytes (range {}-{}/{}), type={}",
+            content_length, start, end, total_size, content_type
+        );
 
-                debug!(
-                    "htree range response: {} bytes (range {}-{}/{}), type={}",
-                    content_length, start, end, total_size, content_type
-                );
-
-                // Return partial content
-                return Response::builder()
-                    .status(StatusCode::PARTIAL_CONTENT)
-                    .header(header::CONTENT_TYPE, content_type)
-                    .header(header::CONTENT_LENGTH, content_length)
-                    .header(header::CONTENT_RANGE, content_range)
-                    .header(header::ACCEPT_RANGES, "bytes")
-                    .body(Body::from(data))
-                    .unwrap();
-            }
-        }
+        return Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_TYPE, content_type)
+            .header(header::CONTENT_LENGTH, content_length)
+            .header(header::CONTENT_RANGE, content_range)
+            .header(header::ACCEPT_RANGES, "bytes")
+            .body(Body::from(data))
+            .unwrap();
     }
 
-    // No range header - read full file
-    let data = match state.read_file(&file_cid).await {
-        Ok(d) => d,
-        Err(e) => return e.into_response(),
-    };
-
-    // Full content response
     info!("htree response: {} bytes, type={}", data.len(), content_type);
     Response::builder()
         .status(StatusCode::OK)
@@ -925,9 +937,7 @@ async fn handle_webview_event(
         }
     };
 
-    // For webview events (navigate, location), we just need to verify the token
-    // came from a webview we created - the origin may have changed after navigation
-    if !nip07_state.is_valid_token(session_token) {
+    if !nip07_state.validate_token(&request.origin, session_token) {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "Invalid session token" })),
@@ -1089,6 +1099,7 @@ pub fn cache_tree_root(
     tree_name: String,
     hash: String,
     key: Option<String>,
+    visibility: Option<String>,
 ) -> Result<(), String> {
     let hash = from_hex(&hash).map_err(|_| "Invalid hash".to_string())?;
     let key = match key {
@@ -1096,10 +1107,11 @@ pub fn cache_tree_root(
         _ => None,
     };
     let cid = Cid { hash, key };
+    let visibility = TreeVisibility::from_str(visibility.as_deref().unwrap_or("public"));
     let state = GLOBAL_HTREE_STATE
         .get()
         .ok_or_else(|| "htree state not initialized".to_string())?;
-    state.cache_root(&npub, &tree_name, cid);
+    state.cache_root(&npub, &tree_name, cid, visibility);
     Ok(())
 }
 
@@ -1139,12 +1151,7 @@ pub fn handle_htree_protocol<R: tauri::Runtime>(
         .next()
         .unwrap_or(path_with_query);
 
-    // Parse Range header if present
-    let range_header = request
-        .headers()
-        .get("range")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+    let range_header = request.headers().get("range").and_then(|v| v.to_str().ok());
 
     info!("htree:// protocol request: raw_path={}, path={}", raw_path, path);
 
@@ -1164,21 +1171,8 @@ pub fn handle_htree_protocol<R: tauri::Runtime>(
         // First resolve the path to get CID and mime type (without loading file content)
         let (file_cid, content_type) = resolve_htree_inner(state, path).await?;
 
-        // Get file size (only fetches root node, not entire file)
-        let total_size = state.get_file_size(&file_cid).await? as usize;
-
-        // Check for Range header - if present, use efficient range reading
-        if let Some(range_str) = &range_header {
-            if let Some((start, end)) = parse_range_header(range_str, total_size) {
-                // read_file_range handles both encrypted and unencrypted content
-                let data = state.read_file_range(&file_cid, start as u64, Some((end + 1) as u64)).await?;
-                return Ok((content_type, data, Some((start, end, total_size))));
-            }
-        }
-
-        // No range header - read full file
-        let data = state.read_file(&file_cid).await?;
-        Ok((content_type, data, None))
+        let (data, range_info) = read_range_or_full(state, &file_cid, range_header).await?;
+        Ok((content_type, data, range_info))
     });
 
     match result {

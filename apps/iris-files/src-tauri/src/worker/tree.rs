@@ -154,6 +154,21 @@ impl TreeManager {
         end: Option<u64>,
     ) -> Result<Vec<u8>, String> {
         let cid = Self::to_cid(cid)?;
+        if cid.key.is_some() {
+            let data = self
+                .tree
+                .get(&cid)
+                .await
+                .map_err(|e| format!("Range read error: {}", e))?
+                .ok_or_else(|| "File not found".to_string())?;
+            let start_idx = start as usize;
+            if start_idx >= data.len() {
+                return Ok(Vec::new());
+            }
+            let end_idx = end.map(|e| e as usize).unwrap_or(data.len()).min(data.len());
+            return Ok(data[start_idx..end_idx].to_vec());
+        }
+
         self.tree
             .read_file_range(&cid.hash, start, end)
             .await
