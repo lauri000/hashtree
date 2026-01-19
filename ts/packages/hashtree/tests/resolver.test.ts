@@ -286,6 +286,45 @@ describe('NostrRefResolver', () => {
     resolver.stop?.();
   });
 
+  it('should resolve tagged events published externally', async () => {
+    const { subscribe, publish } = createNostrFunctions(ndk);
+    const resolver = createNostrRefResolver({
+      subscribe,
+      publish,
+      getPubkey: () => pubkey,
+      nip19,
+    });
+
+    const treeName = `tagged-tree-${Date.now()}`;
+    const key = `${npub}/${treeName}`;
+    const hashHex = '1234'.repeat(16);
+
+    let resolvedCid: ReturnType<typeof cid> | null = null;
+    const unsubscribe = resolver.subscribe(key, (c) => {
+      if (c) resolvedCid = c;
+    });
+
+    await new Promise(r => setTimeout(r, 100));
+
+    const event = new NDKEvent(ndk);
+    event.kind = 30078;
+    event.content = '';
+    event.tags = [
+      ['d', treeName],
+      ['l', 'hashtree'],
+      ['hash', hashHex],
+    ];
+    await event.publish();
+
+    await new Promise(r => setTimeout(r, 500));
+
+    expect(resolvedCid).not.toBeNull();
+    expect(toHex(resolvedCid!.hash)).toBe(hashHex);
+
+    unsubscribe();
+    resolver.stop?.();
+  });
+
   it('should list trees for a user', async () => {
     const { subscribe, publish } = createNostrFunctions(ndk);
     const resolver = createNostrRefResolver({
