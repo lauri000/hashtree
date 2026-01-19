@@ -778,8 +778,6 @@ export function createTreeRootStore(): Readable<CID | null> {
         return;
       }
 
-      // Cache in Tauri BEFORE setting store - ensures htree server has root before video loads
-      await cacheTreeRootInTauri(resolverKey, hash, decryptedKey);
       treeRootStore.set(cid(hash, decryptedKey));
       logHtreeDebug('treeRoot:set', {
         resolverKey,
