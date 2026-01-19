@@ -65,6 +65,8 @@ pub enum HashTreeError {
     Codec(#[from] crate::codec::CodecError),
     #[error("Missing chunk: {0}")]
     MissingChunk(String),
+    #[error("Missing link size metadata for: {0}")]
+    MissingLinkSize(String),
     #[error("Path not found: {0}")]
     PathNotFound(String),
     #[error("Entry not found: {0}")]
@@ -501,6 +503,122 @@ impl<S: Store> HashTree<S> {
         Ok(result)
     }
 
+    async fn read_file_range_encrypted(
+        &self,
+        hash: &Hash,
+        key: &EncryptionKey,
+        start: u64,
+        end: Option<u64>,
+    ) -> Result<Option<Vec<u8>>, HashTreeError> {
+        let encrypted_data = match self.store.get(hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        let decrypted = decrypt_chk(&encrypted_data, key)
+            .map_err(|e| HashTreeError::Encryption(e.to_string()))?;
+
+        if !is_tree_node(&decrypted) {
+            let start_idx = start as usize;
+            if start_idx >= decrypted.len() {
+                return Ok(Some(vec![]));
+            }
+            let end_idx = end.map(|e| e as usize).unwrap_or(decrypted.len()).min(decrypted.len());
+            return Ok(Some(decrypted[start_idx..end_idx].to_vec()));
+        }
+
+        let node = decode_tree_node(&decrypted)?;
+        let range_data = self.assemble_encrypted_chunks_range(&node, start, end).await?;
+        Ok(Some(range_data))
+    }
+
+    async fn assemble_encrypted_chunks_range(
+        &self,
+        node: &TreeNode,
+        start: u64,
+        end: Option<u64>,
+    ) -> Result<Vec<u8>, HashTreeError> {
+        let stop_at = match end {
+            Some(end) if start >= end => return Ok(vec![]),
+            Some(end) => end,
+            None => u64::MAX,
+        };
+        let mut result = match end {
+            Some(end) if end > start => Vec::with_capacity((end - start) as usize),
+            _ => Vec::new(),
+        };
+        let mut current_offset = 0u64;
+
+        for link in &node.links {
+            let chunk_key = link.key.ok_or_else(|| HashTreeError::Encryption("missing decryption key".to_string()))?;
+            let link_size = link.size;
+            if link_size == 0 {
+                return Err(HashTreeError::MissingLinkSize(to_hex(&link.hash)));
+            }
+
+            if current_offset + link_size <= start {
+                current_offset += link_size;
+                continue;
+            }
+            if current_offset >= stop_at {
+                break;
+            }
+
+            let encrypted_child = self
+                .store
+                .get(&link.hash)
+                .await
+                .map_err(|e| HashTreeError::Store(e.to_string()))?
+                .ok_or_else(|| HashTreeError::MissingChunk(to_hex(&link.hash)))?;
+
+            let decrypted = decrypt_chk(&encrypted_child, &chunk_key)
+                .map_err(|e| HashTreeError::Encryption(e.to_string()))?;
+
+            let is_tree = link.link_type.is_tree() || is_tree_node(&decrypted);
+            let mut child_node = None;
+            if is_tree {
+                let decoded = decode_tree_node(&decrypted)?;
+                child_node = Some(decoded);
+            }
+
+            let link_start = current_offset;
+            let link_end = current_offset + link_size;
+
+            if link_end <= start {
+                current_offset = link_end;
+                continue;
+            }
+            if link_start >= stop_at {
+                break;
+            }
+
+            let relative_start = start.saturating_sub(link_start);
+            let relative_end = stop_at.min(link_end) - link_start;
+
+            if let Some(child_node) = child_node {
+                let child_data = Box::pin(
+                    self.assemble_encrypted_chunks_range(&child_node, relative_start, Some(relative_end)),
+                )
+                .await?;
+                result.extend_from_slice(&child_data);
+            } else {
+                let slice_start = relative_start as usize;
+                let slice_end = (relative_end as usize).min(decrypted.len());
+                if slice_start < slice_end {
+                    result.extend_from_slice(&decrypted[slice_start..slice_end]);
+                }
+            }
+
+            current_offset = link_end;
+
+            if current_offset >= stop_at {
+                break;
+            }
+        }
+
+        Ok(result)
+    }
+
     // ============ LOW-LEVEL CREATE ============
 
     /// Store a blob directly (small data, no encryption)
@@ -771,6 +889,20 @@ impl<S: Store> HashTree<S> {
         Ok(Some(range_data))
     }
 
+    /// Read a byte range from a file by CID (handles encrypted content).
+    pub async fn read_file_range_cid(
+        &self,
+        cid: &Cid,
+        start: u64,
+        end: Option<u64>,
+    ) -> Result<Option<Vec<u8>>, HashTreeError> {
+        if let Some(key) = cid.key {
+            return self.read_file_range_encrypted(&cid.hash, &key, start, end).await;
+        }
+
+        self.read_file_range(&cid.hash, start, end).await
+    }
+
     /// Assemble only the chunks needed for a byte range
     async fn assemble_chunks_range(
         &self,
@@ -778,84 +910,32 @@ impl<S: Store> HashTree<S> {
         start: u64,
         end: Option<u64>,
     ) -> Result<Vec<u8>, HashTreeError> {
-        // First, flatten the tree to get all leaf chunks with their byte offsets
-        let chunks_info = self.collect_chunk_offsets(node).await?;
-
-        if chunks_info.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // Calculate total size and actual end
-        let total_size: u64 = chunks_info.iter().map(|(_, _, size)| size).sum();
-        let actual_end = end.unwrap_or(total_size).min(total_size);
-
-        if start >= actual_end {
-            return Ok(vec![]);
-        }
-
-        // Find chunks that overlap with [start, actual_end)
-        let mut result = Vec::with_capacity((actual_end - start) as usize);
+        let stop_at = match end {
+            Some(end) if start >= end => return Ok(vec![]),
+            Some(end) => end,
+            None => u64::MAX,
+        };
+        let mut result = match end {
+            Some(end) if end > start => Vec::with_capacity((end - start) as usize),
+            _ => Vec::new(),
+        };
         let mut current_offset = 0u64;
 
-        for (chunk_hash, _chunk_offset, chunk_size) in &chunks_info {
-            let chunk_start = current_offset;
-            let chunk_end = current_offset + chunk_size;
-
-            // Check if this chunk overlaps with our range
-            if chunk_end > start && chunk_start < actual_end {
-                // Fetch this chunk
-                let chunk_data = self
-                    .store
-                    .get(chunk_hash)
-                    .await
-                    .map_err(|e| HashTreeError::Store(e.to_string()))?
-                    .ok_or_else(|| HashTreeError::MissingChunk(to_hex(chunk_hash)))?;
-
-                // Calculate slice bounds within this chunk
-                let slice_start = if start > chunk_start {
-                    (start - chunk_start) as usize
-                } else {
-                    0
-                };
-                let slice_end = if actual_end < chunk_end {
-                    (actual_end - chunk_start) as usize
-                } else {
-                    chunk_data.len()
-                };
-
-                result.extend_from_slice(&chunk_data[slice_start..slice_end]);
-            }
-
-            current_offset = chunk_end;
-
-            // Early exit if we've passed the requested range
-            if current_offset >= actual_end {
+        for link in &node.links {
+            if current_offset >= stop_at {
                 break;
             }
-        }
 
-        Ok(result)
-    }
+            let link_size = link.size;
+            if link_size == 0 {
+                return Err(HashTreeError::MissingLinkSize(to_hex(&link.hash)));
+            }
 
-    /// Collect all leaf chunk hashes with their byte offsets
-    /// Returns Vec<(hash, offset, size)>
-    async fn collect_chunk_offsets(
-        &self,
-        node: &TreeNode,
-    ) -> Result<Vec<(Hash, u64, u64)>, HashTreeError> {
-        let mut chunks = Vec::new();
-        let mut offset = 0u64;
-        self.collect_chunk_offsets_recursive(node, &mut chunks, &mut offset).await?;
-        Ok(chunks)
-    }
+            if current_offset + link_size <= start {
+                current_offset += link_size;
+                continue;
+            }
 
-    async fn collect_chunk_offsets_recursive(
-        &self,
-        node: &TreeNode,
-        chunks: &mut Vec<(Hash, u64, u64)>,
-        offset: &mut u64,
-    ) -> Result<(), HashTreeError> {
-        for link in &node.links {
             let child_data = self
                 .store
                 .get(&link.hash)
@@ -863,18 +943,43 @@ impl<S: Store> HashTree<S> {
                 .map_err(|e| HashTreeError::Store(e.to_string()))?
                 .ok_or_else(|| HashTreeError::MissingChunk(to_hex(&link.hash)))?;
 
-            if is_tree_node(&child_data) {
-                // Intermediate node - recurse
-                let child_node = decode_tree_node(&child_data)?;
-                Box::pin(self.collect_chunk_offsets_recursive(&child_node, chunks, offset)).await?;
-            } else {
-                // Leaf chunk
-                let size = child_data.len() as u64;
-                chunks.push((link.hash, *offset, size));
-                *offset += size;
+            let is_tree = link.link_type.is_tree() || is_tree_node(&child_data);
+            let mut child_node = None;
+            if is_tree {
+                let decoded = decode_tree_node(&child_data)?;
+                child_node = Some(decoded);
             }
+
+            let link_start = current_offset;
+            let link_end = current_offset + link_size;
+
+            if link_end <= start {
+                current_offset = link_end;
+                continue;
+            }
+            if link_start >= stop_at {
+                break;
+            }
+
+            let relative_start = start.saturating_sub(link_start);
+            let relative_end = stop_at.min(link_end) - link_start;
+
+            if let Some(child_node) = child_node {
+                let child_data =
+                    Box::pin(self.assemble_chunks_range(&child_node, relative_start, Some(relative_end))).await?;
+                result.extend_from_slice(&child_data);
+            } else {
+                let slice_start = relative_start as usize;
+                let slice_end = (relative_end as usize).min(child_data.len());
+                if slice_start < slice_end {
+                    result.extend_from_slice(&child_data[slice_start..slice_end]);
+                }
+            }
+
+            current_offset = link_end;
         }
-        Ok(())
+
+        Ok(result)
     }
 
     /// Recursively assemble chunks from tree
@@ -1193,11 +1298,160 @@ impl<S: Store> HashTree<S> {
         }
 
         let node = decode_tree_node(&data)?;
-        // Calculate from children
+        if node.node_type == LinkType::Dir {
+            return Ok(node.links.iter().map(|link| link.size).sum());
+        }
+
+        let has_unknown = node.links.iter().any(|link| link.size == 0);
+        if !has_unknown {
+            return Ok(node.links.iter().map(|link| link.size).sum());
+        }
+
+        Box::pin(self.tree_size_fallback(&node)).await
+    }
+
+    /// Get total size of a tree without falling back to chunk reads.
+    pub async fn get_size_strict(&self, hash: &Hash) -> Result<u64, HashTreeError> {
+        let data = match self.store.get(hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+            Some(d) => d,
+            None => return Ok(0),
+        };
+
+        if !is_tree_node(&data) {
+            return Ok(data.len() as u64);
+        }
+
+        let node = decode_tree_node(&data)?;
+        self.sum_link_sizes_strict(&node)
+    }
+
+    /// Get total size of a file by CID (handles encrypted content).
+    pub async fn get_size_cid(&self, cid: &Cid) -> Result<u64, HashTreeError> {
+        if let Some(key) = cid.key {
+            return self.get_size_encrypted(&cid.hash, &key).await;
+        }
+
+        self.get_size(&cid.hash).await
+    }
+
+    /// Get total size of a file by CID without falling back to chunk reads.
+    pub async fn get_size_cid_strict(&self, cid: &Cid) -> Result<u64, HashTreeError> {
+        if let Some(key) = cid.key {
+            return self.get_size_encrypted_strict(&cid.hash, &key).await;
+        }
+
+        self.get_size_strict(&cid.hash).await
+    }
+
+    fn sum_link_sizes_strict(&self, node: &TreeNode) -> Result<u64, HashTreeError> {
         let mut total = 0u64;
         for link in &node.links {
+            if link.size == 0 {
+                return Err(HashTreeError::MissingLinkSize(to_hex(&link.hash)));
+            }
             total += link.size;
         }
+        Ok(total)
+    }
+
+    async fn get_size_encrypted(&self, hash: &Hash, key: &EncryptionKey) -> Result<u64, HashTreeError> {
+        let encrypted_data = match self.store.get(hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+            Some(d) => d,
+            None => return Ok(0),
+        };
+
+        let decrypted = decrypt_chk(&encrypted_data, key)
+            .map_err(|e| HashTreeError::Encryption(e.to_string()))?;
+
+        if !is_tree_node(&decrypted) {
+            return Ok(decrypted.len() as u64);
+        }
+
+        let node = decode_tree_node(&decrypted)?;
+        if node.node_type == LinkType::Dir {
+            return Ok(node.links.iter().map(|link| link.size).sum());
+        }
+
+        let has_unknown = node.links.iter().any(|link| link.size == 0);
+        if !has_unknown {
+            return Ok(node.links.iter().map(|link| link.size).sum());
+        }
+
+        Box::pin(self.tree_size_encrypted_fallback(&node)).await
+    }
+
+    async fn get_size_encrypted_strict(&self, hash: &Hash, key: &EncryptionKey) -> Result<u64, HashTreeError> {
+        let encrypted_data = match self.store.get(hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+            Some(d) => d,
+            None => return Ok(0),
+        };
+
+        let decrypted = decrypt_chk(&encrypted_data, key)
+            .map_err(|e| HashTreeError::Encryption(e.to_string()))?;
+
+        if !is_tree_node(&decrypted) {
+            return Ok(decrypted.len() as u64);
+        }
+
+        let node = decode_tree_node(&decrypted)?;
+        self.sum_link_sizes_strict(&node)
+    }
+
+    async fn tree_size_fallback(&self, node: &TreeNode) -> Result<u64, HashTreeError> {
+        let mut total = 0u64;
+        for link in &node.links {
+            if link.size > 0 {
+                total += link.size;
+                continue;
+            }
+
+            let child_data = self
+                .store
+                .get(&link.hash)
+                .await
+                .map_err(|e| HashTreeError::Store(e.to_string()))?
+                .ok_or_else(|| HashTreeError::MissingChunk(to_hex(&link.hash)))?;
+
+            if is_tree_node(&child_data) {
+                let child_node = decode_tree_node(&child_data)?;
+                total += Box::pin(self.tree_size_fallback(&child_node)).await?;
+            } else {
+                total += child_data.len() as u64;
+            }
+        }
+
+        Ok(total)
+    }
+
+    async fn tree_size_encrypted_fallback(&self, node: &TreeNode) -> Result<u64, HashTreeError> {
+        let mut total = 0u64;
+        for link in &node.links {
+            if link.size > 0 {
+                total += link.size;
+                continue;
+            }
+
+            let key = link
+                .key
+                .ok_or_else(|| HashTreeError::Encryption("missing decryption key".to_string()))?;
+            let encrypted_child = self
+                .store
+                .get(&link.hash)
+                .await
+                .map_err(|e| HashTreeError::Store(e.to_string()))?
+                .ok_or_else(|| HashTreeError::MissingChunk(to_hex(&link.hash)))?;
+
+            let decrypted = decrypt_chk(&encrypted_child, &key)
+                .map_err(|e| HashTreeError::Encryption(e.to_string()))?;
+
+            if is_tree_node(&decrypted) {
+                let child_node = decode_tree_node(&decrypted)?;
+                total += Box::pin(self.tree_size_encrypted_fallback(&child_node)).await?;
+            } else {
+                total += decrypted.len() as u64;
+            }
+        }
+
         Ok(total)
     }
 

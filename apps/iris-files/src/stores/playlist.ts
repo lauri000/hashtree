@@ -18,7 +18,7 @@ import { LRUCache } from '../utils/lruCache';
 import { indexVideo } from './searchIndex';
 import { clearFeedPlaylistInfo } from './homeFeedCache';
 import { getHtreePrefix } from '../lib/mediaUrl';
-import type { CID } from 'hashtree';
+import { LinkType, type CID } from 'hashtree';
 
 // Cache playlist detection results to avoid layout shift on revisit
 // Key: "npub/treeName", Value: PlaylistCardInfo or null (for single videos)
@@ -42,6 +42,9 @@ export const MIN_VIDEOS_FOR_SIDEBAR = 2;
 
 /** Minimum videos to consider a playlist structure */
 export const MIN_VIDEOS_FOR_STRUCTURE = 1;
+
+/** Limit deep metadata reads to avoid excessive IPC on huge playlists */
+const MAX_PLAYLIST_SUBDIR_READS = 200;
 
 /** Video file extensions we recognize */
 export const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mkv', '.mov', '.avi', '.m4v'] as const;
@@ -354,23 +357,7 @@ export async function loadPlaylist(
     const entries = await tree.listDirectory(rootCid);
     if (!entries || entries.length === 0) return null;
 
-    // Quick check: identify which entries are video directories
-    // Use short timeout for initial detection
-    const quickChecks = await Promise.all(
-      entries.map(async (entry): Promise<{ entry: typeof entries[0]; isVideo: boolean }> => {
-        try {
-          const subEntries = await Promise.race([
-            tree.listDirectory(entry.cid),
-            new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500))
-          ]);
-          return { entry, isVideo: subEntries ? hasVideoFile(subEntries) : false };
-        } catch {
-          return { entry, isVideo: false };
-        }
-      })
-    );
-
-    const videoEntries = quickChecks.filter(c => c.isVideo).map(c => c.entry);
+    const videoEntries = entries.filter(entry => entry.type === LinkType.Dir);
 
     // Only show playlist sidebar if we have enough videos
     if (videoEntries.length < MIN_VIDEOS_FOR_SIDEBAR) return null;
@@ -438,6 +425,7 @@ async function loadPlaylistMetadata(
   const CONCURRENCY = 3;
   let inFlight = 0;
   let entryIndex = 0;
+  let subdirReads = 0;
 
   const processEntry = async (entry: typeof entries[0]): Promise<void> => {
     try {
@@ -472,12 +460,28 @@ async function loadPlaylistMetadata(
         return;
       }
 
-      // Read subdirectory for title and fallback thumbnail
-      const subEntries = await Promise.race([
-        tree.listDirectory(entry.cid),
-        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
-      ]);
-      if (!subEntries) return;
+      let subEntries: Array<{ name: string; cid: CID; size: number; type: LinkType; meta?: Record<string, unknown> }> | null = null;
+      if (subdirReads < MAX_PLAYLIST_SUBDIR_READS) {
+        subdirReads++;
+        subEntries = await Promise.race([
+          tree.listDirectory(entry.cid),
+          new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
+        ]);
+      }
+      if (!subEntries) {
+        if (title !== entry.name || duration || thumbnailUrl) {
+          currentPlaylist.update(playlist => {
+            if (!playlist) return playlist;
+            const items = playlist.items.map(item =>
+              item.id === entry.name
+                ? { ...item, title, duration, thumbnailUrl }
+                : item
+            );
+            return { ...playlist, items };
+          });
+        }
+        return;
+      }
 
       // Try video file's link entry meta first (new format)
       if (title === entry.name) {

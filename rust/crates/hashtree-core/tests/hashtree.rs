@@ -24,6 +24,12 @@ fn make_tree_with_chunk_size(chunk_size: usize) -> (Arc<MemoryStore>, HashTree<M
     (store, tree)
 }
 
+fn make_encrypted_tree_with_chunk_size(chunk_size: usize) -> (Arc<MemoryStore>, HashTree<MemoryStore>) {
+    let store = Arc::new(MemoryStore::new());
+    let tree = HashTree::new(HashTreeConfig::new(store.clone()).with_chunk_size(chunk_size));
+    (store, tree)
+}
+
 // ============ CREATE TESTS ============
 
 mod create {
@@ -310,6 +316,38 @@ mod read {
         // Reconstruct
         let combined: Vec<u8> = chunks.into_iter().flatten().collect();
         assert_eq!(combined, data.to_vec());
+    }
+
+    #[tokio::test]
+    async fn test_read_file_range_encrypted_chunked() {
+        let (_store, tree) = make_encrypted_tree_with_chunk_size(64);
+
+        let data: Vec<u8> = (0..200).map(|i| (i % 256) as u8).collect();
+        let (cid, _) = tree.put_file(&data).await.unwrap();
+
+        let range = tree
+            .read_file_range_cid(&cid, 10, Some(30))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(range, data[10..30].to_vec());
+
+        let range = tree
+            .read_file_range_cid(&cid, 60, Some(130))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(range, data[60..130].to_vec());
+
+        let range = tree
+            .read_file_range_cid(&cid, 180, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(range, data[180..].to_vec());
+
+        let size = tree.get_size_cid(&cid).await.unwrap();
+        assert_eq!(size, data.len() as u64);
     }
 
     #[tokio::test]
