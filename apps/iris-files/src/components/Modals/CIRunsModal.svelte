@@ -1,22 +1,41 @@
 <script lang="ts" module>
   import type { CIStatus } from '../../stores/ci';
+  import type { Readable } from 'svelte/store';
 
   export interface CIRunsTarget {
     status: CIStatus;
     repoPath: string;
+    statusStore?: Readable<CIStatus>;
   }
 
   let show = $state(false);
   let target = $state<CIRunsTarget | null>(null);
+  let status = $state<CIStatus | null>(null);
+  let statusUnsub: (() => void) | null = null;
 
   export function open(t: CIRunsTarget) {
+    if (statusUnsub) {
+      statusUnsub();
+      statusUnsub = null;
+    }
     target = t;
+    status = t.status;
+    if (t.statusStore) {
+      statusUnsub = t.statusStore.subscribe(value => {
+        status = value;
+      });
+    }
     show = true;
   }
 
   export function close() {
     show = false;
     target = null;
+    status = null;
+    if (statusUnsub) {
+      statusUnsub();
+      statusUnsub = null;
+    }
   }
 </script>
 
@@ -35,7 +54,7 @@
   let logRequestId = 0;
   const RESOLVE_TIMEOUT_MS = 8000;
 
-  let jobs = $derived(target?.status.jobs ?? []);
+  let jobs = $derived(status?.jobs ?? []);
   let selectedJob = $derived(jobs[selectedJobIndex] ?? null);
   let steps = $derived(selectedJob?.steps ?? []);
   let selectedStep = $derived(steps[selectedStepIndex] ?? null);

@@ -3,6 +3,7 @@
    * FileTable - GitHub-style file listing with commit info
    */
   import { LinkType, type TreeEntry } from 'hashtree';
+  import type { Readable } from 'svelte/store';
   import type { CommitInfo } from '../../stores/git';
   import type { CIStatus } from '../../stores/ci';
   import CIStatusBadge from './CIStatusBadge.svelte';
@@ -19,11 +20,13 @@
     parentHref?: string | null;
     /** Optional CI status for the current commit */
     ciStatus?: CIStatus | null;
+    /** Optional CI status store for live updates */
+    ciStatusStore?: Readable<CIStatus> | null;
     /** Repo path for CI modal context */
     repoPath?: string;
   }
 
-  let { entries, fileCommits, buildEntryHref, buildCommitHref, latestCommit = null, commitsLoading = false, parentHref = null, ciStatus = null, repoPath = '' }: Props = $props();
+  let { entries, fileCommits, buildEntryHref, buildCommitHref, latestCommit = null, commitsLoading = false, parentHref = null, ciStatus = null, ciStatusStore = null, repoPath = '' }: Props = $props();
 
   // Sort entries: directories first, then files, alphabetically
   let sortedEntries = $derived([...entries].sort((a, b) => {
@@ -76,7 +79,7 @@
   function handleCIClick(event: MouseEvent) {
     event.stopPropagation();
     if (!ciStatus || ciStatus.loading || ciStatus.jobs.length === 0) return;
-    openCIRunsModal({ status: ciStatus, repoPath });
+    openCIRunsModal({ status: ciStatus, repoPath, statusStore: ciStatusStore ?? undefined });
   }
 </script>
 

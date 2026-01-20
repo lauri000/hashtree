@@ -27,6 +27,7 @@
 <script lang="ts">
   import { createGitLogStore, type CommitInfo } from '../../stores/git';
   import { createCIStatusStore, loadCIConfig, type CIStatus, type CIConfig } from '../../stores/ci';
+  import type { Readable } from 'svelte/store';
   import { routeStore } from '../../stores';
   import { nhashEncode } from 'hashtree';
   import { checkoutCommit, getBranches } from '../../utils/git';
@@ -93,6 +94,8 @@
   let ciStatusByCommit = $state<Map<string, CIStatus>>(new Map());
   // eslint-disable-next-line svelte/prefer-svelte-reactivity -- avoid reactive Map feedback loops in subscriptions
   let ciStatusMap = new Map<string, CIStatus>();
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- avoid reactive Map feedback loops in subscriptions
+  let ciStatusStores = new Map<string, Readable<CIStatus>>();
   // eslint-disable-next-line svelte/prefer-svelte-reactivity -- avoid reactive Map feedback loops in subscriptions
   let ciStatusUnsubs = new Map<string, () => void>();
   const CI_CONFIG_MAX_ATTEMPTS = 3;
@@ -199,6 +202,7 @@
   $effect(() => {
     ciStatusMap = new Map();
     ciStatusByCommit = new Map();
+    ciStatusStores = new Map();
     ciStatusUnsubs.forEach(unsub => unsub());
     ciStatusUnsubs.clear();
 
@@ -210,6 +214,7 @@
 
     for (const commit of allCommits) {
       const store = createCIStatusStore(repoPath, commit.oid, ciConfig.runners);
+      ciStatusStores.set(commit.oid, store);
       const unsub = store.subscribe(value => {
         ciStatusMap.set(commit.oid, value);
         ciStatusByCommit = new Map(ciStatusMap);
@@ -274,7 +279,7 @@
     event.stopPropagation();
     const status = ciStatusByCommit.get(commitOid);
     if (!status || status.loading || status.jobs.length === 0) return;
-    openCIRunsModal({ status, repoPath });
+    openCIRunsModal({ status, repoPath, statusStore: ciStatusStores.get(commitOid) });
   }
 
   // Handle checkout button click (for own repos)

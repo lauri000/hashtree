@@ -4,6 +4,7 @@
    * Shows branch info, file list table, then README.md in its own panel
    */
   import { LinkType, type CID, type TreeEntry } from 'hashtree';
+  import type { Readable } from 'svelte/store';
   import { getTree, decodeAsText } from '../../store';
   import { routeStore } from '../../stores';
   import { createGitLogStore, createGitStatusStore } from '../../stores/git';
@@ -74,6 +75,7 @@
   // CI config and status
   let ciConfig = $state<CIConfig | null>(null);
   let ciStatus = $state<CIStatus | null>(null);
+  let ciStatusStore = $state<Readable<CIStatus> | null>(null);
 
   $effect(() => {
     const store = gitLogStore;
@@ -298,15 +300,20 @@
 
   $effect(() => {
     ciStatus = null;
+    ciStatusStore = null;
     const commit = headOid ?? latestCommit?.oid ?? null;
     const path = repoPath;
     if (!ciConfig || !commit || !path) return;
     if (!ciConfig.runners || ciConfig.runners.length === 0) return;
     const store = createCIStatusStore(path, commit, ciConfig.runners);
+    ciStatusStore = store;
     const unsub = store.subscribe(value => {
       ciStatus = value;
     });
-    return unsub;
+    return () => {
+      ciStatusStore = null;
+      unsub();
+    };
   });
 
 
@@ -522,7 +529,7 @@
   <!-- Directory listing table - GitHub style -->
   <div class="b-1 b-surface-3 b-solid rounded-lg overflow-hidden bg-surface-0" data-testid="file-list">
     <!-- File table with commit info header -->
-    <FileTable {entries} {fileCommits} {buildEntryHref} {buildCommitHref} {latestCommit} {commitsLoading} {parentHref} {ciStatus} {repoPath} />
+    <FileTable {entries} {fileCommits} {buildEntryHref} {buildCommitHref} {latestCommit} {commitsLoading} {parentHref} {ciStatus} {ciStatusStore} {repoPath} />
   </div>
 
   <!-- README.md panel -->
