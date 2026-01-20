@@ -49,10 +49,6 @@
     return `${route.treeName}/${gitPath.join('/')}`;
   });
 
-  function bytesToHex(bytes: Uint8Array): string {
-    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-  }
-
   // Commit loading state - use a fixed initial depth store, manage "load more" separately
   const INITIAL_DEPTH = 50;
   const LOAD_MORE_BATCH = 100;
@@ -329,13 +325,12 @@
       // Checkout to get the CID at that commit
       const newCid = await checkoutCommit(target.dirCid, commitSha);
 
-      // Convert CID to nhash
-      const hashHex = bytesToHex(newCid.hash);
-      const keyHex = newCid.key ? bytesToHex(newCid.key) : undefined;
-      const nhash = nhashEncode({ hash: hashHex, decryptKey: keyHex });
+      // Convert CID to nhash - pass CID directly for proper encoding
+      const nhash = nhashEncode(newCid);
 
-      // Open in new tab
+      // Open in new tab and close modal
       window.open(`#/${nhash}`, '_blank');
+      close();
     } catch (err) {
       checkoutError = getErrorMessage(err);
     }
@@ -429,7 +424,9 @@
                         <span class="font-medium text-text-1 truncate" title={commit.message}>
                           {getCommitTitle(commit.message)}
                         </span>
-                        {#if ciStatus?.status}
+                        {#if ciStatus?.loading}
+                          <span class="i-lucide-loader-2 animate-spin text-text-3 text-sm" title="Loading CI status..."></span>
+                        {:else if ciStatus?.status}
                           <button
                             class="btn-circle btn-ghost"
                             onclick={(event) => handleCIClick(commit.oid, event)}
@@ -437,6 +434,15 @@
                           >
                             <CIStatusBadge status={ciStatus.status} compact />
                           </button>
+                        {:else if ciConfig?.runners && ciConfig.runners.length > 0}
+                          <a
+                            href="#/{ciConfig.runners[0].npub}/ci"
+                            class="text-text-3 hover:text-text-2"
+                            title="CI configured - no results yet"
+                            onclick={close}
+                          >
+                            <span class="i-lucide-circle text-sm"></span>
+                          </a>
                         {/if}
                         {#if isHead}
                           <span class="shrink-0 text-xs font-medium px-1.5 py-0.5 rounded bg-success/20 text-success flex items-center gap-1">

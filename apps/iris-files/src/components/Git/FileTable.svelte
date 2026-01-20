@@ -5,7 +5,7 @@
   import { LinkType, type TreeEntry } from 'hashtree';
   import type { Readable } from 'svelte/store';
   import type { CommitInfo } from '../../stores/git';
-  import type { CIStatus } from '../../stores/ci';
+  import type { CIStatus, CIConfig } from '../../stores/ci';
   import CIStatusBadge from './CIStatusBadge.svelte';
   import { open as openCIRunsModal } from '../Modals/CIRunsModal.svelte';
 
@@ -24,9 +24,18 @@
     ciStatusStore?: Readable<CIStatus> | null;
     /** Repo path for CI modal context */
     repoPath?: string;
+    /** CI config for building runner links */
+    ciConfig?: CIConfig | null;
   }
 
-  let { entries, fileCommits, buildEntryHref, buildCommitHref, latestCommit = null, commitsLoading = false, parentHref = null, ciStatus = null, ciStatusStore = null, repoPath = '' }: Props = $props();
+  let { entries, fileCommits, buildEntryHref, buildCommitHref, latestCommit = null, commitsLoading = false, parentHref = null, ciStatus = null, ciStatusStore = null, repoPath = '', ciConfig = null }: Props = $props();
+
+  // Build link to CI runner's tree
+  function getCIRunnerLink(): string | null {
+    if (!ciConfig?.runners || ciConfig.runners.length === 0) return null;
+    const runner = ciConfig.runners[0];
+    return `#/${runner.npub}/ci`;
+  }
 
   // Sort entries: directories first, then files, alphabetically
   let sortedEntries = $derived([...entries].sort((a, b) => {
@@ -105,7 +114,9 @@
           </a>
         </td>
         <td class="py-3 px-4 text-right whitespace-nowrap flex items-center justify-end gap-2">
-          {#if ciStatus?.status}
+          {#if ciStatus?.loading}
+            <span class="i-lucide-loader-2 animate-spin text-text-3 text-sm" title="Loading CI status..."></span>
+          {:else if ciStatus?.status}
             <button
               class="btn-circle btn-ghost"
               onclick={handleCIClick}
@@ -113,6 +124,18 @@
             >
               <CIStatusBadge status={ciStatus.status} compact />
             </button>
+          {:else if ciConfig?.runners && ciConfig.runners.length > 0}
+            {@const runnerLink = getCIRunnerLink()}
+            {#if runnerLink}
+              <a
+                href={runnerLink}
+                class="text-text-3 hover:text-text-2"
+                title="CI configured - no results yet"
+                onclick={(e) => e.stopPropagation()}
+              >
+                <span class="i-lucide-circle text-sm"></span>
+              </a>
+            {/if}
           {/if}
           <span class="text-text-3">{formatRelativeTime(latestCommit.timestamp)}</span>
         </td>

@@ -529,7 +529,7 @@
   <!-- Directory listing table - GitHub style -->
   <div class="b-1 b-surface-3 b-solid rounded-lg overflow-hidden bg-surface-0" data-testid="file-list">
     <!-- File table with commit info header -->
-    <FileTable {entries} {fileCommits} {buildEntryHref} {buildCommitHref} {latestCommit} {commitsLoading} {parentHref} {ciStatus} {ciStatusStore} {repoPath} />
+    <FileTable {entries} {fileCommits} {buildEntryHref} {buildCommitHref} {latestCommit} {commitsLoading} {parentHref} {ciStatus} {ciStatusStore} {repoPath} {ciConfig} />
   </div>
 
   <!-- README.md panel -->
