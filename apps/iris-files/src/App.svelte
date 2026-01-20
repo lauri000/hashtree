@@ -13,12 +13,6 @@
   import { currentPath, initRouter, getQueryParams } from './lib/router.svelte';
   import { settingsStore } from './stores/settings';
 
-  const isDev = import.meta.env.DEV;
-  let RenderScan: typeof import('svelte-render-scan').RenderScan | null = $state(null);
-  if (isDev) {
-    import('svelte-render-scan').then(m => RenderScan = m.RenderScan);
-  }
-
   // Modal components
   import CreateModal from './components/Modals/CreateModal.svelte';
   import RenameModal from './components/Modals/RenameModal.svelte';
@@ -26,7 +20,6 @@
   import ExtractModal from './components/Modals/ExtractModal.svelte';
   import GitignoreModal from './components/Modals/GitignoreModal.svelte';
   import GitHistoryModal from './components/Modals/GitHistoryModal.svelte';
-  import GitShellModal from './components/Modals/GitShellModal.svelte';
   import GitCommitModal from './components/Modals/GitCommitModal.svelte';
   import CIRunsModal from './components/Modals/CIRunsModal.svelte';
   import ShareModal from './components/Modals/ShareModal.svelte';
@@ -110,7 +103,6 @@
   <ExtractModal />
   <GitignoreModal />
   <GitHistoryModal />
-  <GitShellModal />
   <GitCommitModal />
   <CIRunsModal />
   <ShareModal />
@@ -120,9 +112,5 @@
   <NewIssueModal />
   <ReleaseModal />
   <BlossomPushModal />
-  <CIRunsModal />
   <Toast />
-  {#if RenderScan}
-    <RenderScan initialEnabled={false} />
-  {/if}
 </div>

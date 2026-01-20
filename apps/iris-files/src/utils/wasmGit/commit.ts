@@ -11,7 +11,7 @@ import { getErrorMessage } from '../errorMessage';
  * Initialize a git repository in a directory
  * Copies files to wasm-git, runs git init + add + commit, returns .git directory files
  */
-export async function initGitRepoWithWasmGit(
+export async function initRepoWasm(
   rootCid: CID,
   authorName: string,
   authorEmail: string,
@@ -66,7 +66,7 @@ export async function initGitRepoWithWasmGit(
  * Stage files and create a commit using wasm-git
  * Returns the updated .git directory files to be saved back to hashtree
  */
-export async function commitWithWasmGit(
+export async function commitWasm(
   rootCid: CID,
   message: string,
   authorName: string,

@@ -1,34 +1,39 @@
 /**
- * wasm-git wrapper for git operations
- * Uses libgit2 compiled to WebAssembly
+ * Git operations - mix of native (fast) and wasm-git (for writes)
+ *
+ * Native functions read directly from hashtree/pack files - fast for reads
+ * Wasm functions use libgit2 compiled to WebAssembly - needed for writes
  */
 
-// Re-export all public APIs
+// Native implementations (fast, read-only)
 export {
-  getHeadWithWasmGit,
-  getLogWithWasmGit,
+  getHead,
+  getLog,
+  getLogWasm,
   getCommitCount,
   getCommitCountFast,
-  getFileLastCommitsWithWasmGit,
-  getFileLastCommitsNative,
-  getDiffNative,
-  getFileAtCommitNative,
+  getFileLastCommits,
+  getDiff,
+  getFileAtCommit,
 } from './log';
 export type { CommitInfo, DiffEntry } from './log';
 
-export { getBranchesWithWasmGit, createBranchWithWasmGit } from './branch';
+export { getBranches } from './branch';
 
-export { getStatusWithWasmGit } from './status';
+// Wasm implementations (slower, but handle writes correctly)
+export { createBranchWasm } from './branch';
+
+export { getStatusWasm } from './status';
 export type { GitStatusEntry, GitStatusResult } from './status';
 
-export { initGitRepoWithWasmGit, commitWithWasmGit } from './commit';
+export { initRepoWasm, commitWasm } from './commit';
 
-export { checkoutWithWasmGit } from './checkout';
+export { checkoutWasm } from './checkout';
 
 export { runGitCommand } from './command';
 
-export { diffBranchesWithWasmGit, canMergeWithWasmGit } from './diff';
+export { diffBranchesWasm, canMergeWasm } from './diff';
 export type { BranchDiffStats, BranchDiffResult } from './diff';
 
-export { mergeWithWasmGit } from './merge';
+export { mergeWasm } from './merge';
 export type { MergeResult } from './merge';

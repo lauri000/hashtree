@@ -9,8 +9,7 @@
   import { createGitLogStore, createGitStatusStore } from '../../stores/git';
   import { createCIStatusStore, loadCIConfig, type CIStatus, type CIConfig } from '../../stores/ci';
   import { open as openGitHistoryModal } from '../Modals/GitHistoryModal.svelte';
-  import { open as openGitShellModal } from '../Modals/GitShellModal.svelte';
-  import { open as openGitCommitModal } from '../Modals/GitCommitModal.svelte';
+    import { open as openGitCommitModal } from '../Modals/GitCommitModal.svelte';
   import { getFileLastCommits } from '../../utils/git';
   import FolderActions from '../FolderActions.svelte';
   import ReadmePanel from '../Viewer/ReadmePanel.svelte';
@@ -440,38 +439,6 @@
     autosaveIfOwn(newRootCid);
   }
 
-  // Handle git shell changes (commits, etc.)
-  async function handleGitChange(newDirCid: CID): Promise<void> {
-    const { autosaveIfOwn } = await import('../../nostr');
-    const { getCurrentRootCid } = await import('../../actions/route');
-
-    // Get current tree root
-    const treeRootCid = getCurrentRootCid();
-    if (!treeRootCid) return;
-
-    const gitPath = getGitPath();
-    let newRootCid;
-    if (gitPath.length === 0) {
-      // Git repo is at tree root
-      newRootCid = newDirCid;
-    } else {
-      // Git repo is in a subdirectory - replace it at that path
-      const tree = getTree();
-      const parentPath = gitPath.slice(0, -1);
-      const dirName = gitPath[gitPath.length - 1];
-      newRootCid = await tree.setEntry(
-        treeRootCid,
-        parentPath,
-        dirName,
-        newDirCid,
-        0,
-        LinkType.Dir
-      );
-    }
-
-    // Save and publish
-    autosaveIfOwn(newRootCid);
-  }
 </script>
 
 <!-- Tab navigation for Code/PRs/Issues - show for any git repo (not just tree root) -->
@@ -532,24 +499,19 @@
     <!-- Spacer -->
     <div class="flex-1"></div>
 
-    <!-- Shell button -->
-    <button
-      onclick={() => openGitShellModal({ dirCid: gitCid, canEdit, onChange: canEdit ? handleGitChange : undefined })}
-      class="btn-ghost flex items-center gap-1 px-2 h-8 text-sm"
-      title="Git Shell"
-    >
-      <span class="i-lucide-terminal"></span>
-      <span class="hidden sm:inline">Shell</span>
-    </button>
-
     <!-- Commits count (clickable) -->
     <button
       onclick={() => openGitHistoryModal({ dirCid: gitCid, canEdit, onCheckout: canEdit ? handleCheckout : undefined })}
       class="flex items-center gap-1.5 text-sm text-text-2 hover:text-accent bg-transparent b-0 cursor-pointer"
     >
-      <span class="i-lucide-history text-text-3"></span>
-      <span>{totalCommitCount !== null ? `${totalCommitCount} commits` : 'Commits'}</span>
+      {#if totalCommitCount !== null}
+        <span class="i-lucide-history text-text-3"></span>
+        <span>{totalCommitCount} commits</span>
+      {:else}
+        <span class="i-lucide-loader-2 animate-spin text-text-3"></span>
+      {/if}
     </button>
+
 
     <!-- Code dropdown (clone instructions) - rightmost -->
     {#if route.npub}
@@ -558,7 +520,7 @@
   </div>
 
   <!-- Directory listing table - GitHub style -->
-  <div class="b-1 b-surface-3 b-solid rounded-lg overflow-hidden bg-surface-0">
+  <div class="b-1 b-surface-3 b-solid rounded-lg overflow-hidden bg-surface-0" data-testid="file-list">
     <!-- File table with commit info header -->
     <FileTable {entries} {fileCommits} {buildEntryHref} {buildCommitHref} {latestCommit} {commitsLoading} {parentHref} {ciStatus} {repoPath} />
   </div>
