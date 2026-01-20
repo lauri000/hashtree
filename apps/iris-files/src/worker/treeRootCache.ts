@@ -116,6 +116,7 @@ export async function setCachedRoot(
     encryptedKey?: string;
     keyId?: string;
     selfEncryptedKey?: string;
+    selfEncryptedLinkKey?: string;
   }
 ): Promise<void> {
   const cacheKey = `${npub}/${treeName}`;
@@ -129,6 +130,7 @@ export async function setCachedRoot(
     encryptedKey: options?.encryptedKey,
     keyId: options?.keyId,
     selfEncryptedKey: options?.selfEncryptedKey,
+    selfEncryptedLinkKey: options?.selfEncryptedLinkKey,
   };
 
   // Update memory cache
