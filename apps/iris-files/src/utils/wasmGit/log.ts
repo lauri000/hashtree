@@ -516,8 +516,7 @@ export async function getLogWithWasmGit(
 }
 
 /**
- * Fast commit count - only traverses parent pointers without parsing full commit data
- * Much faster than getLogWithWasmGit for large repos
+ * Fast commit count - traverses parent pointers without parsing full commit data
  */
 export async function getCommitCount(
   rootCid: CID,
@@ -540,7 +539,7 @@ export async function getCommitCount(
 
     const visited = new Set<string>();
     const queue = [headSha];
-    const BATCH_SIZE = 50; // Larger batch for counting
+    const BATCH_SIZE = 50;
 
     while (queue.length > 0 && visited.size < maxCount) {
       const batch = queue.splice(0, Math.min(BATCH_SIZE, maxCount - visited.size));
@@ -552,7 +551,6 @@ export async function getCommitCount(
         visited.add(sha);
       }
 
-      // Fetch commits in parallel, only extract parent SHAs
       const results = await Promise.all(
         newShas.map(async (sha) => {
           const obj = await readGitObject(tree, gitDirResult.cid, sha);
@@ -561,7 +559,6 @@ export async function getCommitCount(
         })
       );
 
-      // Add parent SHAs to queue
       for (const parents of results) {
         for (const parent of parents) {
           if (!visited.has(parent)) {
@@ -587,13 +584,126 @@ function extractParentShas(content: Uint8Array): string[] {
   const lines = text.split('\n');
 
   for (const line of lines) {
-    if (line === '') break; // End of headers
+    if (line === '') break;
     if (line.startsWith('parent ')) {
       parents.push(line.slice(7));
     }
   }
 
   return parents;
+}
+
+/**
+ * FAST commit count by scanning pack files directly
+ * Reads each pack file once and counts commit type bytes without decompression
+ */
+export async function getCommitCountFast(rootCid: CID): Promise<number> {
+  const tree = getTree();
+
+  const gitDirResult = await tree.resolvePath(rootCid, '.git');
+  if (!gitDirResult || gitDirResult.type !== LinkType.Dir) {
+    return 0;
+  }
+
+  let commitCount = 0;
+
+  try {
+    // 1. Count commits in pack files (most commits are packed)
+    const packDirResult = await tree.resolvePath(gitDirResult.cid, 'objects/pack');
+    if (packDirResult && packDirResult.type === LinkType.Dir) {
+      const entries = await tree.listDirectory(packDirResult.cid);
+      const idxFiles = entries.filter(e => e.name.endsWith('.idx'));
+
+      for (const idxFile of idxFiles) {
+        const packName = idxFile.name.replace('.idx', '.pack');
+
+        // Load index to get offsets
+        const idx = await loadPackIndex(tree, gitDirResult.cid, idxFile.name);
+        if (!idx) continue;
+
+        // Load pack file ONCE
+        const packResult = await tree.resolvePath(gitDirResult.cid, `objects/pack/${packName}`);
+        if (!packResult || packResult.type === LinkType.Dir) continue;
+
+        const packData = await tree.readFile(packResult.cid);
+        if (!packData) continue;
+
+        // Scan through all offsets, reading only type bytes
+        for (const offset of idx.offsets) {
+          const type = readPackObjectType(packData, offset);
+          if (type === 1) { // 1 = commit
+            commitCount++;
+          }
+        }
+      }
+    }
+
+    // 2. Count loose commits (scan .git/objects/?? directories)
+    const objectsResult = await tree.resolvePath(gitDirResult.cid, 'objects');
+    if (objectsResult && objectsResult.type === LinkType.Dir) {
+      const objEntries = await tree.listDirectory(objectsResult.cid);
+
+      // Look for 2-char hex directories (loose objects)
+      const hexDirs = objEntries.filter(e =>
+        e.type === LinkType.Dir && /^[0-9a-f]{2}$/.test(e.name)
+      );
+
+      for (const hexDir of hexDirs) {
+        const subDirResult = await tree.resolvePath(objectsResult.cid, hexDir.name);
+        if (!subDirResult || subDirResult.type !== LinkType.Dir) continue;
+
+        const looseFiles = await tree.listDirectory(subDirResult.cid);
+
+        for (const file of looseFiles) {
+          if (file.type === LinkType.Dir) continue;
+
+          // Read and decompress just enough to get the type
+          const objData = await tree.readFile(file.cid);
+          if (!objData) continue;
+
+          const type = await getLooseObjectType(objData);
+          if (type === 'commit') {
+            commitCount++;
+          }
+        }
+      }
+    }
+
+    return commitCount;
+  } catch (err) {
+    console.error('[git] getCommitCountFast failed:', err);
+    return 0;
+  }
+}
+
+/**
+ * Read object type from pack data at given offset (no decompression)
+ * Returns: 1=commit, 2=tree, 3=blob, 4=tag, 6=ofs_delta, 7=ref_delta
+ */
+function readPackObjectType(packData: Uint8Array, offset: number): number {
+  const byte = packData[offset];
+  return (byte >> 4) & 7;
+}
+
+/**
+ * Get type of loose object (requires decompression of header only)
+ */
+async function getLooseObjectType(compressedData: Uint8Array): Promise<string | null> {
+  try {
+    // Decompress - unfortunately need full decompression for zlib
+    // But loose objects are typically small or rare in packed repos
+    const decompressed = await decompressZlib(compressedData);
+
+    // Parse header: "<type> <size>\0"
+    const nullIndex = decompressed.indexOf(0);
+    if (nullIndex === -1) return null;
+
+    const header = new TextDecoder().decode(decompressed.slice(0, nullIndex));
+    const [type] = header.split(' ');
+    return type;
+  } catch {
+    return null;
+  }
 }
 
 // Use wasm-git for commit log (slow - copies entire .git)

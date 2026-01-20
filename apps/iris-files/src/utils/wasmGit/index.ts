@@ -8,6 +8,7 @@ export {
   getHeadWithWasmGit,
   getLogWithWasmGit,
   getCommitCount,
+  getCommitCountFast,
   getFileLastCommitsWithWasmGit,
   getFileLastCommitsNative,
   getDiffNative,

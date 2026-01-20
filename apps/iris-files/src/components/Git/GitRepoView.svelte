@@ -45,6 +45,27 @@
   let headOid = $state<string | null>(null);
   let commitsLoading = $state(true);
 
+  // Total commit count (loaded fast via pack scanning)
+  let totalCommitCount = $state<number | null>(null);
+
+  // Load total commit count in background
+  $effect(() => {
+    const cid = gitCid;
+    totalCommitCount = null;
+    let cancelled = false;
+
+    import('../../utils/wasmGit').then(({ getCommitCountFast }) => {
+      if (cancelled) return;
+      getCommitCountFast(cid).then(count => {
+        if (!cancelled && count > 0) {
+          totalCommitCount = count;
+        }
+      });
+    });
+
+    return () => { cancelled = true; };
+  });
+
   // Latest commit for the header row
   let latestCommit = $derived(commits.length > 0 ? commits[0] : null);
 
@@ -527,7 +548,7 @@
       class="flex items-center gap-1.5 text-sm text-text-2 hover:text-accent bg-transparent b-0 cursor-pointer"
     >
       <span class="i-lucide-history text-text-3"></span>
-      <span>{commits.length > 0 ? `${commits.length}${commits.length >= 50 ? '+' : ''} commits` : 'Commits'}</span>
+      <span>{totalCommitCount !== null ? `${totalCommitCount} commits` : 'Commits'}</span>
     </button>
 
     <!-- Code dropdown (clone instructions) - rightmost -->
