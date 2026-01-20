@@ -10,7 +10,7 @@ import { withWasmGitLock, loadWasmGit, copyToWasmFS, runSilent, rmRf, createRepo
  * Checkout a specific commit using wasm-git
  * Returns files from that commit as a directory listing, plus the updated .git directory
  */
-export async function checkoutWithWasmGit(
+export async function checkoutWasm(
   rootCid: CID,
   commitSha: string,
   onProgress?: (file: string) => void

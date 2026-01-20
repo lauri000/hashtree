@@ -99,16 +99,16 @@ export async function getLog(rootCid: CID, options?: { depth?: number; debug?: b
   }
 
   try {
-    const { getLogWithWasmGit, getLogWithWasmGitSlow, getHeadWithWasmGit } = await import('./wasmGit');
+    const { getLog, getLogWasm, getHead } = await import('./wasmGit');
     debugInfo.push('Using wasm-git');
-    let commits = await getLogWithWasmGit(rootCid, { depth });
+    let commits = await getLog(rootCid, { depth });
     debugInfo.push(`Found ${commits.length} commits`);
 
     if (commits.length === 0) {
-      const head = await getHeadWithWasmGit(rootCid);
+      const head = await getHead(rootCid);
       if (head) {
         debugInfo.push('Fast log empty with HEAD present, falling back to wasm-git slow path');
-        commits = await getLogWithWasmGitSlow(rootCid, { depth });
+        commits = await getLogWasm(rootCid, { depth });
         debugInfo.push(`Slow path found ${commits.length} commits`);
       }
     }
@@ -118,7 +118,7 @@ export async function getLog(rootCid: CID, options?: { depth?: number; debug?: b
       const hasMissingParent = commits.some(commit => commit.parent.some(parent => !commitIds.has(parent)));
       if (hasMissingParent) {
         debugInfo.push('Fast log missing parent commits, falling back to wasm-git slow path');
-        commits = await getLogWithWasmGitSlow(rootCid, { depth });
+        commits = await getLogWasm(rootCid, { depth });
         debugInfo.push(`Slow path found ${commits.length} commits`);
       }
     }
@@ -159,8 +159,8 @@ export async function getBranches(rootCid: CID) {
   }
 
   try {
-    const { getBranchesWithWasmGit } = await import('./wasmGit');
-    const result = await getBranchesWithWasmGit(rootCid);
+    const { getBranches } = await import('./wasmGit');
+    const result = await getBranches(rootCid);
     if (result.branches.length > 0 || result.currentBranch) {
       gitBranchesCache.set(cacheKey, result);
     } else {
@@ -186,8 +186,8 @@ export async function getHead(rootCid: CID): Promise<string | null> {
   }
 
   try {
-    const { getHeadWithWasmGit } = await import('./wasmGit');
-    const result = await getHeadWithWasmGit(rootCid);
+    const { getHead } = await import('./wasmGit');
+    const result = await getHead(rootCid);
     if (result) {
       gitHeadCache.set(cacheKey, result);
     } else {
@@ -216,8 +216,8 @@ export async function getStatus(rootCid: CID) {
 
   console.log('[git] getStatus CACHE MISS for:', cacheKey.slice(0, 16), '- calling wasm-git');
   try {
-    const { getStatusWithWasmGit } = await import('./wasmGit');
-    const result = await getStatusWithWasmGit(rootCid);
+    const { getStatusWasm } = await import('./wasmGit');
+    const result = await getStatusWasm(rootCid);
     console.log('[git] getStatus result: hasChanges:', result.hasChanges, 'staged:', result.staged.length, 'unstaged:', result.unstaged.length, 'untracked:', result.untracked.length);
     gitStatusCache.set(cacheKey, result);
     return result;
@@ -237,8 +237,8 @@ export async function createBranch(rootCid: CID, branchName: string, checkout: b
   error?: string;
   gitFiles?: Array<{ name: string; data: Uint8Array; isDir: boolean }>;
 }> {
-  const { createBranchWithWasmGit } = await import('./wasmGit');
-  return await createBranchWithWasmGit(rootCid, branchName, checkout);
+  const { createBranchWasm } = await import('./wasmGit');
+  return await createBranchWasm(rootCid, branchName, checkout);
 }
 
 /**
@@ -252,8 +252,8 @@ export async function commit(
   authorEmail: string,
   filesToStage?: string[]
 ) {
-  const { commitWithWasmGit } = await import('./wasmGit');
-  return await commitWithWasmGit(rootCid, message, authorName, authorEmail, filesToStage);
+  const { commitWasm } = await import('./wasmGit');
+  return await commitWasm(rootCid, message, authorName, authorEmail, filesToStage);
 }
 
 /**
@@ -263,8 +263,8 @@ export async function commit(
 export async function getDiff(rootCid: CID, fromCommit: string, toCommit: string): Promise<{
   entries: Array<{ path: string; status: 'added' | 'deleted' | 'modified'; oldHash?: string; newHash?: string }>;
 }> {
-  const { getDiffNative } = await import('./wasmGit');
-  const entries = await getDiffNative(rootCid, fromCommit, toCommit);
+  const { getDiff } = await import('./wasmGit');
+  const entries = await getDiff(rootCid, fromCommit, toCommit);
   return { entries };
 }
 
@@ -299,8 +299,8 @@ export async function getFileAtCommit(
   filepath: string,
   commitHash: string
 ): Promise<Uint8Array | null> {
-  const { getFileAtCommitNative } = await import('./wasmGit');
-  return getFileAtCommitNative(rootCid, commitHash, filepath);
+  const { getFileAtCommit } = await import('./wasmGit');
+  return getFileAtCommit(rootCid, commitHash, filepath);
 }
 
 /**
@@ -321,8 +321,8 @@ export async function initGitRepo(
   authorEmail: string,
   commitMessage: string = 'Initial commit'
 ): Promise<Array<{ name: string; data: Uint8Array; isDir: boolean }>> {
-  const { initGitRepoWithWasmGit } = await import('./wasmGit');
-  return await initGitRepoWithWasmGit(rootCid, authorName, authorEmail, commitMessage);
+  const { initRepoWasm } = await import('./wasmGit');
+  return await initRepoWasm(rootCid, authorName, authorEmail, commitMessage);
 }
 
 /**
@@ -363,8 +363,8 @@ export async function getFileLastCommits(
 
   // Fetch uncached files using native implementation (no wasm needed)
   try {
-    const { getFileLastCommitsNative } = await import('./wasmGit');
-    const freshData = await getFileLastCommitsNative(rootCid, uncachedFiles, subpath);
+    const { getFileLastCommits } = await import('./wasmGit');
+    const freshData = await getFileLastCommits(rootCid, uncachedFiles, subpath);
 
     // Initialize cache map if needed
     if (!cachedData) {
@@ -404,8 +404,8 @@ export async function checkoutCommit(
   }
 
   // Use wasm-git to checkout and get files + updated .git
-  const { checkoutWithWasmGit } = await import('./wasmGit');
-  const { files, gitFiles } = await checkoutWithWasmGit(rootCid, commitSha, onProgress);
+  const { checkoutWasm } = await import('./wasmGit');
+  const { files, gitFiles } = await checkoutWasm(rootCid, commitSha, onProgress);
 
   // Build hashtree entries from checkout result
   // First, organize files into a tree structure
@@ -563,16 +563,16 @@ export async function runGitCommand(
  * Returns diff output, stats, and whether fast-forward is possible
  */
 export async function diffBranches(rootCid: CID, baseBranch: string, headBranch: string) {
-  const { diffBranchesWithWasmGit } = await import('./wasmGit');
-  return await diffBranchesWithWasmGit(rootCid, baseBranch, headBranch);
+  const { diffBranchesWasm } = await import('./wasmGit');
+  return await diffBranchesWasm(rootCid, baseBranch, headBranch);
 }
 
 /**
  * Check if branches can be merged without conflicts
  */
 export async function canMerge(rootCid: CID, baseBranch: string, headBranch: string) {
-  const { canMergeWithWasmGit } = await import('./wasmGit');
-  return await canMergeWithWasmGit(rootCid, baseBranch, headBranch);
+  const { canMergeWasm } = await import('./wasmGit');
+  return await canMergeWasm(rootCid, baseBranch, headBranch);
 }
 
 /**
@@ -587,8 +587,8 @@ export async function mergeBranches(
   authorName: string = 'User',
   authorEmail: string = 'user@example.com'
 ) {
-  const { mergeWithWasmGit } = await import('./wasmGit');
-  return await mergeWithWasmGit(rootCid, baseBranch, headBranch, commitMessage, authorName, authorEmail);
+  const { mergeWasm } = await import('./wasmGit');
+  return await mergeWasm(rootCid, baseBranch, headBranch, commitMessage, authorName, authorEmail);
 }
 
 /**

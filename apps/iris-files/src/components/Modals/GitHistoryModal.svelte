@@ -52,30 +52,39 @@
     return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
   }
 
-  // Commit loading state
-  let currentDepth = $state(50);
-  let logStore = $derived(target ? createGitLogStore(target.dirCid, currentDepth) : null);
-  let logState = $state<{ commits: CommitInfo[]; headOid: string | null; loading: boolean; error: string | null }>({
+  // Commit loading state - use a fixed initial depth store, manage "load more" separately
+  const INITIAL_DEPTH = 50;
+  const LOAD_MORE_BATCH = 100;
+  let logStore = $derived(target ? createGitLogStore(target.dirCid, INITIAL_DEPTH) : null);
+  let initialLogState = $state<{ commits: CommitInfo[]; headOid: string | null; loading: boolean; error: string | null }>({
     commits: [],
     headOid: null,
     loading: true,
     error: null,
   });
+  // Additional commits loaded via "load more"
+  let extraCommits = $state<CommitInfo[]>([]);
   let loadingMore = $state(false);
+  let currentDepth = $state(INITIAL_DEPTH);
+  let noMoreCommits = $state(false);
+
+  // Combined commits from initial load + extra loads
+  let allCommits = $derived([...initialLogState.commits, ...extraCommits]);
+
   // Deduplicate commits by OID (can happen with merge commits in history)
   let uniqueCommits = $derived(() => {
     const seen = new Set<string>();
-    return logState.commits.filter(c => {
+    return allCommits.filter(c => {
       if (seen.has(c.oid)) return false;
       seen.add(c.oid);
       return true;
     });
   });
-  let hasMoreCommits = $derived(logState.commits.length >= currentDepth && !logState.loading);
+  let hasMoreCommits = $derived(!noMoreCommits && !initialLogState.loading && uniqueCommits().length >= currentDepth);
 
   // Branch info for detached HEAD detection
   let branchInfo = $state<{ branches: string[]; currentBranch: string | null }>({ branches: [], currentBranch: null });
-  let isDetachedHead = $derived(branchInfo.currentBranch === null && logState.commits.length > 0);
+  let isDetachedHead = $derived(branchInfo.currentBranch === null && allCommits.length > 0);
 
   let checkoutInProgress = $state<string | null>(null);
   let checkoutError = $state<string | null>(null);
@@ -93,26 +102,49 @@
 
   $effect(() => {
     if (!logStore) {
-      logState = { commits: [], headOid: null, loading: false, error: null };
+      initialLogState = { commits: [], headOid: null, loading: false, error: null };
       return;
     }
     const unsub = logStore.subscribe(value => {
-      logState = value;
-      loadingMore = false;
+      initialLogState = value;
     });
     return unsub;
   });
 
-  // Reset depth when modal closes
+  // Reset state when modal closes
   $effect(() => {
     if (!show) {
-      currentDepth = 50;
+      currentDepth = INITIAL_DEPTH;
+      extraCommits = [];
+      noMoreCommits = false;
+      loadingMore = false;
     }
   });
 
-  function loadMoreCommits() {
+  async function loadMoreCommits() {
+    if (loadingMore || !target) return;
     loadingMore = true;
-    currentDepth += 100;
+
+    try {
+      const newDepth = currentDepth + LOAD_MORE_BATCH;
+      const { getLog } = await import('../../utils/git');
+      const moreCommits = await getLog(target.dirCid, { depth: newDepth });
+
+      // Get commits beyond what we already have
+      const existingOids = new Set(allCommits.map(c => c.oid));
+      const newCommits = moreCommits.filter(c => !existingOids.has(c.oid));
+
+      if (newCommits.length === 0) {
+        noMoreCommits = true;
+      } else {
+        extraCommits = [...extraCommits, ...newCommits];
+        currentDepth = newDepth;
+      }
+    } catch (err) {
+      console.error('Failed to load more commits:', err);
+    } finally {
+      loadingMore = false;
+    }
   }
 
   // Fetch branch info when modal opens
@@ -174,9 +206,9 @@
       return;
     }
 
-    if (logState.commits.length === 0) return;
+    if (allCommits.length === 0) return;
 
-    for (const commit of logState.commits) {
+    for (const commit of allCommits) {
       const store = createCIStatusStore(repoPath, commit.oid, ciConfig.runners);
       const unsub = store.subscribe(value => {
         ciStatusMap.set(commit.oid, value);
@@ -323,17 +355,17 @@
 
       <!-- Content -->
       <div class="flex-1 overflow-auto p-4">
-        {#if logState.loading}
+        {#if initialLogState.loading && allCommits.length === 0}
           <div class="flex items-center justify-center py-8 text-text-3">
             <span class="i-lucide-loader-2 animate-spin mr-2"></span>
             Loading commits...
           </div>
-        {:else if logState.error}
+        {:else if initialLogState.error}
           <div class="flex items-center justify-center py-8 text-error">
             <span class="i-lucide-alert-circle mr-2"></span>
-            {logState.error}
+            {initialLogState.error}
           </div>
-        {:else if logState.commits.length === 0}
+        {:else if allCommits.length === 0}
           <div class="flex items-center justify-center py-8 text-text-3">
             No commits found
           </div>
@@ -374,7 +406,7 @@
           <InfiniteScroll onLoadMore={loadMoreCommits} loading={loadingMore || !hasMoreCommits}>
               <div class="flex flex-col">
                 {#each uniqueCommits() as commit, i (commit.oid)}
-                  {@const isHead = commit.oid === logState.headOid}
+                  {@const isHead = commit.oid === initialLogState.headOid}
                   {@const ciStatus = ciStatusByCommit.get(commit.oid) ?? null}
                   {@const commitsArray = uniqueCommits()}
                   <div class="flex gap-3 pb-4 {i < commitsArray.length - 1 || hasMoreCommits ? 'b-b-1 b-b-solid b-b-surface-3 mb-4' : ''} {isHead ? 'bg-accent/5 -mx-4 px-4 py-3 rounded-lg' : ''}">

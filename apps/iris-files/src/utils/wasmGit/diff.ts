@@ -51,7 +51,7 @@ function parseDiffStats(diff: string): BranchDiffStats {
 /**
  * Get diff between two branches
  */
-export async function diffBranchesWithWasmGit(
+export async function diffBranchesWasm(
   rootCid: CID,
   baseBranch: string,
   headBranch: string
@@ -122,7 +122,7 @@ export async function diffBranchesWithWasmGit(
 /**
  * Check if branches can be merged without conflicts
  */
-export async function canMergeWithWasmGit(
+export async function canMergeWasm(
   rootCid: CID,
   baseBranch: string,
   headBranch: string

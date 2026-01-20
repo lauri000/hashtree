@@ -36,7 +36,7 @@ export interface GitStatusResult {
  * Get git status using wasm-git
  * Returns parsed status with staged, unstaged, and untracked files
  */
-export async function getStatusWithWasmGit(
+export async function getStatusWasm(
   rootCid: CID
 ): Promise<GitStatusResult> {
   return withWasmGitLock(async () => {

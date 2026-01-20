@@ -11,7 +11,7 @@ import { getErrorMessage } from '../errorMessage';
  * Get list of branches by reading directly from hashtree
  * No wasm-git needed - just reads .git/HEAD and .git/refs/heads/
  */
-export async function getBranchesWithWasmGit(
+export async function getBranches(
   rootCid: CID
 ): Promise<{ branches: string[]; currentBranch: string | null }> {
   const tree = getTree();
@@ -99,7 +99,7 @@ export async function getBranchesWithWasmGit(
  * Create a new branch using wasm-git
  * Returns the updated .git files that must be persisted to hashtree
  */
-export async function createBranchWithWasmGit(
+export async function createBranchWasm(
   rootCid: CID,
   branchName: string,
   checkout: boolean = true

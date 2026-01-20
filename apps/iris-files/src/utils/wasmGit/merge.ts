@@ -30,7 +30,7 @@ export interface MergeResult {
  * 3. Checking out the head branch files
  * 4. Updating the index to match
  */
-export async function mergeWithWasmGit(
+export async function mergeWasm(
   rootCid: CID,
   baseBranch: string,
   headBranch: string,
