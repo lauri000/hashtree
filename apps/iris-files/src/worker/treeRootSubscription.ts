@@ -27,6 +27,93 @@ export interface TreeRootRecord {
   selfEncryptedLinkKey?: string;
 }
 
+interface LegacyContentPayload {
+  hash?: string;
+  key?: string;
+  visibility?: TreeVisibility;
+  encryptedKey?: string;
+  keyId?: string;
+  selfEncryptedKey?: string;
+  selfEncryptedLinkKey?: string;
+}
+
+export interface ParsedTreeRootEvent {
+  hash: string;
+  key?: string;
+  visibility: TreeVisibility;
+  encryptedKey?: string;
+  keyId?: string;
+  selfEncryptedKey?: string;
+  selfEncryptedLinkKey?: string;
+}
+
+function parseLegacyContent(event: SignedEvent): LegacyContentPayload | null {
+  const content = event.content?.trim();
+  if (!content) return null;
+
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed && typeof parsed === 'object') {
+      const payload = parsed as Record<string, unknown>;
+      return {
+        hash: typeof payload.hash === 'string' ? payload.hash : undefined,
+        key: typeof payload.key === 'string' ? payload.key : undefined,
+        visibility: typeof payload.visibility === 'string' ? payload.visibility as TreeVisibility : undefined,
+        encryptedKey: typeof payload.encryptedKey === 'string' ? payload.encryptedKey : undefined,
+        keyId: typeof payload.keyId === 'string' ? payload.keyId : undefined,
+        selfEncryptedKey: typeof payload.selfEncryptedKey === 'string' ? payload.selfEncryptedKey : undefined,
+        selfEncryptedLinkKey: typeof payload.selfEncryptedLinkKey === 'string' ? payload.selfEncryptedLinkKey : undefined,
+      };
+    }
+  } catch {
+    // Ignore JSON parse errors.
+  }
+
+  if (/^[0-9a-fA-F]{64}$/.test(content)) {
+    return { hash: content };
+  }
+
+  return null;
+}
+
+export function parseTreeRootEvent(event: SignedEvent): ParsedTreeRootEvent | null {
+  const hashTag = event.tags.find(t => t[0] === 'hash')?.[1];
+  const legacyContent = hashTag ? null : parseLegacyContent(event);
+  const hash = hashTag ?? legacyContent?.hash;
+  if (!hash) return null;
+
+  const keyTag = event.tags.find(t => t[0] === 'key')?.[1];
+  const encryptedKeyTag = event.tags.find(t => t[0] === 'encryptedKey')?.[1];
+  const keyIdTag = event.tags.find(t => t[0] === 'keyId')?.[1];
+  const selfEncryptedKeyTag = event.tags.find(t => t[0] === 'selfEncryptedKey')?.[1];
+  const selfEncryptedLinkKeyTag = event.tags.find(t => t[0] === 'selfEncryptedLinkKey')?.[1];
+
+  const key = keyTag ?? legacyContent?.key;
+  const encryptedKey = encryptedKeyTag ?? legacyContent?.encryptedKey;
+  const keyId = keyIdTag ?? legacyContent?.keyId;
+  const selfEncryptedKey = selfEncryptedKeyTag ?? legacyContent?.selfEncryptedKey;
+  const selfEncryptedLinkKey = selfEncryptedLinkKeyTag ?? legacyContent?.selfEncryptedLinkKey;
+
+  let visibility: TreeVisibility;
+  if (encryptedKey) {
+    visibility = 'link-visible';
+  } else if (selfEncryptedKey) {
+    visibility = 'private';
+  } else {
+    visibility = legacyContent?.visibility ?? 'public';
+  }
+
+  return {
+    hash,
+    key,
+    visibility,
+    encryptedKey,
+    keyId,
+    selfEncryptedKey,
+    selfEncryptedLinkKey,
+  };
+}
+
 /**
  * Set callback to notify main thread of tree root updates
  */
@@ -89,33 +176,16 @@ export async function handleTreeRootEvent(event: SignedEvent): Promise<void> {
   // Accept unlabeled legacy events, ignore other labeled apps.
   if (hasAnyLabel(event) && !hasLabel(event, 'hashtree')) return;
 
-  // Parse content - should contain hash and optional encrypted data
-  let contentData: {
-    hash?: string;
-    key?: string;
-    visibility?: TreeVisibility;
-    encryptedKey?: string;
-    keyId?: string;
-    selfEncryptedKey?: string;
-    selfEncryptedLinkKey?: string;
-  };
-
-  try {
-    contentData = JSON.parse(event.content);
-  } catch {
-    // Content might be just the hash string for backward compat
-    contentData = { hash: event.content };
-  }
-
-  if (!contentData.hash) return;
+  const parsed = parseTreeRootEvent(event);
+  if (!parsed) return;
 
   // Convert pubkey to npub
   const npub = nip19.npubEncode(event.pubkey);
 
   // Parse hash and optional key
-  const hash = hexToBytes(contentData.hash);
-  const key = contentData.key ? hexToBytes(contentData.key) : undefined;
-  const visibility: TreeVisibility = contentData.visibility || 'public';
+  const hash = hexToBytes(parsed.hash);
+  const key = parsed.key ? hexToBytes(parsed.key) : undefined;
+  const visibility: TreeVisibility = parsed.visibility || 'public';
 
   // Build record
   const record: TreeRootRecord = {
@@ -123,17 +193,18 @@ export async function handleTreeRootEvent(event: SignedEvent): Promise<void> {
     key,
     visibility,
     updatedAt: event.created_at,
-    encryptedKey: contentData.encryptedKey,
-    keyId: contentData.keyId,
-    selfEncryptedKey: contentData.selfEncryptedKey,
-    selfEncryptedLinkKey: contentData.selfEncryptedLinkKey,
+    encryptedKey: parsed.encryptedKey,
+    keyId: parsed.keyId,
+    selfEncryptedKey: parsed.selfEncryptedKey,
+    selfEncryptedLinkKey: parsed.selfEncryptedLinkKey,
   };
 
   // Update cache
   await setCachedRoot(npub, treeName, { hash, key }, visibility, {
-    encryptedKey: contentData.encryptedKey,
-    keyId: contentData.keyId,
-    selfEncryptedKey: contentData.selfEncryptedKey,
+    encryptedKey: parsed.encryptedKey,
+    keyId: parsed.keyId,
+    selfEncryptedKey: parsed.selfEncryptedKey,
+    selfEncryptedLinkKey: parsed.selfEncryptedLinkKey,
   });
 
   // Notify main thread
