@@ -515,6 +515,87 @@ export async function getLogWithWasmGit(
   }
 }
 
+/**
+ * Fast commit count - only traverses parent pointers without parsing full commit data
+ * Much faster than getLogWithWasmGit for large repos
+ */
+export async function getCommitCount(
+  rootCid: CID,
+  options?: { maxCount?: number }
+): Promise<number> {
+  const tree = getTree();
+  const maxCount = options?.maxCount ?? 10000;
+
+  // Check for .git directory
+  const gitDirResult = await tree.resolvePath(rootCid, '.git');
+  if (!gitDirResult || gitDirResult.type !== LinkType.Dir) {
+    return 0;
+  }
+
+  try {
+    const headSha = await getHeadWithWasmGit(rootCid);
+    if (!headSha) {
+      return 0;
+    }
+
+    const visited = new Set<string>();
+    const queue = [headSha];
+    const BATCH_SIZE = 50; // Larger batch for counting
+
+    while (queue.length > 0 && visited.size < maxCount) {
+      const batch = queue.splice(0, Math.min(BATCH_SIZE, maxCount - visited.size));
+      const newShas = batch.filter(sha => !visited.has(sha));
+
+      if (newShas.length === 0) continue;
+
+      for (const sha of newShas) {
+        visited.add(sha);
+      }
+
+      // Fetch commits in parallel, only extract parent SHAs
+      const results = await Promise.all(
+        newShas.map(async (sha) => {
+          const obj = await readGitObject(tree, gitDirResult.cid, sha);
+          if (!obj || obj.type !== 'commit') return [];
+          return extractParentShas(obj.content);
+        })
+      );
+
+      // Add parent SHAs to queue
+      for (const parents of results) {
+        for (const parent of parents) {
+          if (!visited.has(parent)) {
+            queue.push(parent);
+          }
+        }
+      }
+    }
+
+    return visited.size;
+  } catch (err) {
+    console.error('[git] getCommitCount failed:', err);
+    return 0;
+  }
+}
+
+/**
+ * Fast parent SHA extraction - doesn't parse full commit
+ */
+function extractParentShas(content: Uint8Array): string[] {
+  const text = new TextDecoder().decode(content);
+  const parents: string[] = [];
+  const lines = text.split('\n');
+
+  for (const line of lines) {
+    if (line === '') break; // End of headers
+    if (line.startsWith('parent ')) {
+      parents.push(line.slice(7));
+    }
+  }
+
+  return parents;
+}
+
 // Use wasm-git for commit log (slow - copies entire .git)
 export async function getLogWithWasmGitSlow(
   rootCid: CID,
