@@ -81,4 +81,37 @@ test.describe('README Panel', () => {
     // Edit button should be in the README panel header
     await expect(page.getByRole('button', { name: 'Edit' })).toBeVisible();
   });
+
+  test('should navigate relative links within the tree', async ({ page }) => {
+    // Create tree with a subdirectory and README linking to it
+    await createAndEnterTree(page, 'link-test');
+
+    // Create a subdir with its own README
+    await page.getByRole('button', { name: 'Folder' }).click();
+    await page.locator('input[placeholder="Folder name..."]').fill('subdir');
+    await page.getByRole('button', { name: 'Create' }).click();
+    await page.waitForTimeout(500);
+
+    // Create README in subdir
+    await createFile(page, 'README.md', '# Subdir Docs\n\nThis is the subdir readme.');
+
+    // Go back to parent
+    await page.locator('a[href*="link-test"]').filter({ hasText: 'link-test' }).first().click();
+    await page.waitForTimeout(500);
+
+    // Create root README with relative link
+    await createFile(page, 'README.md', '# Main\n\nSee [subdir docs](subdir/README.md) for more.');
+
+    // Navigate back to tree root to see the readme panel
+    await goToTreeList(page);
+    await page.locator('a:has-text("link-test")').first().click();
+    await page.waitForTimeout(1000);
+
+    // Click the relative link in the README
+    await page.locator('.prose a:has-text("subdir docs")').click();
+    await page.waitForTimeout(500);
+
+    // Should navigate to the subdir README file
+    await expect(page).toHaveURL(/#.*link-test.*subdir.*README\.md/);
+  });
 });
