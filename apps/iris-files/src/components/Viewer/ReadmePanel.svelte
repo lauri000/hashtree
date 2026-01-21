@@ -2,7 +2,7 @@
   /**
    * ReadmePanel - Bordered panel for displaying README.md content
    */
-  import { marked } from 'marked';
+  import { marked, type Token, type Tokens } from 'marked';
   import DOMPurify from 'dompurify';
   import { LinkType, type TreeEntry } from 'hashtree';
   import { routeStore } from '../../stores';
@@ -16,8 +16,27 @@
   let { content, entries, canEdit }: Props = $props();
   let route = $derived($routeStore);
 
-  // Convert markdown to HTML and sanitize to prevent XSS
-  let htmlContent = $derived(DOMPurify.sanitize(marked.parse(content, { async: false }) as string));
+  // Convert markdown to HTML, transforming relative links to hash URLs
+  let htmlContent = $derived.by(() => {
+    const tokens = marked.lexer(content);
+
+    // Transform relative links to full hash URLs
+    if (route.npub && route.treeName) {
+      const basePath = [route.npub, route.treeName, ...route.path];
+      marked.walkTokens(tokens, (token: Token) => {
+        if (token.type === 'link') {
+          const link = token as Tokens.Link;
+          const href = link.href;
+          if (href && !href.startsWith('http://') && !href.startsWith('https://') && !href.startsWith('#')) {
+            const resolved = [...basePath, ...href.split('/')].filter(Boolean);
+            link.href = '#/' + resolved.map(encodeURIComponent).join('/');
+          }
+        }
+      });
+    }
+
+    return DOMPurify.sanitize(marked.parser(tokens));
+  });
 
   function handleEdit() {
     const readmeEntry = entries.find(
@@ -33,25 +52,6 @@
     }
   }
 
-  function handleLinkClick(e: MouseEvent) {
-    const target = e.target as HTMLElement;
-    const anchor = target.closest('a');
-    if (!anchor) return;
-
-    const href = anchor.getAttribute('href');
-    if (!href) return;
-
-    // Skip external links and already-hash links
-    if (href.startsWith('http://') || href.startsWith('https://') || href.startsWith('#')) return;
-
-    // Relative link - resolve against current route
-    e.preventDefault();
-    if (route.npub && route.treeName) {
-      const basePath = [route.npub, route.treeName, ...route.path];
-      const resolved = [...basePath, ...href.split('/')].filter(Boolean);
-      window.location.hash = '/' + resolved.map(encodeURIComponent).join('/');
-    }
-  }
 </script>
 
 <div class="bg-surface-0 b-1 b-surface-3 b-solid rounded-lg overflow-hidden">
@@ -69,8 +69,7 @@
       </button>
     {/if}
   </div>
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="p-4 lg:p-6 prose prose-sm max-w-none text-text-1" onclick={handleLinkClick}>
+  <div class="p-4 lg:p-6 prose prose-sm max-w-none text-text-1">
     <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized with DOMPurify -->
     {@html htmlContent}
   </div>
