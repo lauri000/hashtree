@@ -547,12 +547,27 @@ impl HtreeState {
         };
 
         // If nhash has a path, resolve it
-        let file_cid = if !nhash_data.path.is_empty() {
+        let mut file_cid = if !nhash_data.path.is_empty() {
             let path = nhash_data.path.join("/");
             self.resolve_path(&cid, &path).await?
         } else {
             cid
         };
+
+        // Resolve filename within the nhash root when provided.
+        if let Some(path) = filename {
+            if !path.is_empty() {
+                if path.contains('/') {
+                    file_cid = self.resolve_path(&file_cid, path).await?;
+                } else {
+                    match self.resolve_path(&file_cid, path).await {
+                        Ok(resolved) => file_cid = resolved,
+                        Err(HtreeError::FileNotFound(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+        }
 
         let mime_type = guess_mime_type(filename.unwrap_or("file"));
         Ok((file_cid, mime_type.to_string()))
@@ -1276,5 +1291,39 @@ pub fn handle_htree_protocol<R: tauri::Runtime>(
                 .body(message.into_bytes())
                 .unwrap()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hashtree_core::{DirEntry, HashTree, HashTreeConfig, LinkType, nhash_encode};
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn resolve_nhash_uses_filename_path() {
+        let dir = tempdir().expect("tempdir should work");
+        let state = HtreeState::new(dir.path().to_path_buf());
+
+        let tree = HashTree::new(HashTreeConfig::new(state.store.clone()).public());
+        let data = b"<html>ok</html>";
+        let (file_cid, size) = tree.put(data).await.expect("put should work");
+
+        let entry = DirEntry::from_cid("index.html", &file_cid)
+            .with_size(size)
+            .with_link_type(LinkType::Blob);
+        let dir_cid = tree
+            .put_directory(vec![entry])
+            .await
+            .expect("put_directory should work");
+
+        let nhash = nhash_encode(&dir_cid.hash).expect("nhash should encode");
+        let (resolved, mime_type) = state
+            .resolve_nhash(&nhash, Some("index.html"))
+            .await
+            .expect("resolve_nhash should work");
+
+        assert_eq!(resolved.hash, file_cid.hash);
+        assert_eq!(mime_type, "text/html");
     }
 }

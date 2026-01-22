@@ -10,6 +10,43 @@ use tauri::{Emitter, Manager};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+#[cfg(test)]
+fn build_edit_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> tauri::Result<tauri::menu::Submenu<R>> {
+    let cut = MenuItemBuilder::with_id("edit_cut", "Cut")
+        .accelerator("CmdOrCtrl+X")
+        .build(app)?;
+    let copy = MenuItemBuilder::with_id("edit_copy", "Copy")
+        .accelerator("CmdOrCtrl+C")
+        .build(app)?;
+    let paste = MenuItemBuilder::with_id("edit_paste", "Paste")
+        .accelerator("CmdOrCtrl+V")
+        .build(app)?;
+    let select_all = MenuItemBuilder::with_id("edit_select_all", "Select All")
+        .accelerator("CmdOrCtrl+A")
+        .build(app)?;
+
+    SubmenuBuilder::with_id(app, "edit_menu", "Edit")
+        .item(&cut)
+        .item(&copy)
+        .item(&paste)
+        .item(&select_all)
+        .build()
+}
+
+#[cfg(not(test))]
+fn build_edit_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> tauri::Result<tauri::menu::Submenu<R>> {
+    SubmenuBuilder::with_id(app, "edit_menu", "Edit")
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()
+}
+
 fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     let app_name = app.package_info().name.clone();
     let quit = MenuItemBuilder::with_id("app_quit", "Quit")
@@ -29,7 +66,13 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<tau
         .item(&forward)
         .build()?;
 
-    MenuBuilder::new(app).item(&app_menu).item(&navigation).build()
+    let edit = build_edit_menu(app)?;
+
+    MenuBuilder::new(app)
+        .item(&app_menu)
+        .item(&edit)
+        .item(&navigation)
+        .build()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -212,6 +255,7 @@ pub fn run() {
 mod tests {
     use super::build_menu;
 
+    #[cfg_attr(target_os = "macos", ignore = "requires main thread for menu items")]
     #[test]
     fn app_menu_includes_quit_item() {
         let app = tauri::test::mock_app();
@@ -230,5 +274,33 @@ mod tests {
         }
 
         assert!(has_quit, "expected app_quit menu item");
+    }
+
+    #[cfg_attr(target_os = "macos", ignore = "requires main thread for menu items")]
+    #[test]
+    fn edit_menu_includes_paste_item() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle();
+        let menu = build_menu(&handle).expect("failed to build menu");
+        let mut has_edit = false;
+        let mut has_paste = false;
+
+        for item in menu.items().unwrap_or_default() {
+            if let tauri::menu::MenuItemKind::Submenu(submenu) = item {
+                if submenu.id().as_ref() == "edit_menu" {
+                    has_edit = true;
+                    for subitem in submenu.items().unwrap_or_default() {
+                        if let tauri::menu::MenuItemKind::MenuItem(menu_item) = subitem {
+                            if menu_item.id().as_ref() == "edit_paste" {
+                                has_paste = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(has_edit, "expected Edit menu");
+        assert!(has_paste, "expected Paste item in Edit menu");
     }
 }
