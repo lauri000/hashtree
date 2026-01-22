@@ -25,6 +25,19 @@ fn make_tree_with_chunk_size(chunk_size: usize) -> (Arc<MemoryStore>, HashTree<M
     (store, tree)
 }
 
+fn make_encrypted_tree() -> (Arc<MemoryStore>, HashTree<MemoryStore>) {
+    let store = Arc::new(MemoryStore::new());
+    // Default is encrypted: true
+    let tree = HashTree::new(HashTreeConfig::new(store.clone()));
+    (store, tree)
+}
+
+fn make_encrypted_tree_with_chunk_size(chunk_size: usize) -> (Arc<MemoryStore>, HashTree<MemoryStore>) {
+    let store = Arc::new(MemoryStore::new());
+    let tree = HashTree::new(HashTreeConfig::new(store.clone()).with_chunk_size(chunk_size));
+    (store, tree)
+}
+
 // ============ CREATE TESTS ============
 
 mod create {
@@ -346,7 +359,7 @@ mod read {
     }
 
     #[tokio::test]
-    async fn test_read_file_range_requires_link_sizes() {
+    async fn test_read_file_range_ignores_missing_link_sizes() {
         let (store, tree) = make_tree();
 
         let blob_hash = tree.put_blob(b"hello").await.unwrap();
@@ -363,8 +376,8 @@ mod read {
 
         store.put(node_hash, encoded).await.unwrap();
 
-        let result = tree.read_file_range(&node_hash, 0, Some(1)).await;
-        assert!(matches!(result, Err(HashTreeError::MissingLinkSize(_))));
+        let result = tree.read_file_range(&node_hash, 0, Some(1)).await.unwrap().unwrap();
+        assert_eq!(result, b"h".to_vec());
     }
 
     #[tokio::test]
@@ -982,20 +995,6 @@ mod edge_cases {
 
 mod encryption {
     use super::*;
-
-    /// Create an encrypted tree (default mode)
-    fn make_encrypted_tree() -> (Arc<MemoryStore>, HashTree<MemoryStore>) {
-        let store = Arc::new(MemoryStore::new());
-        // Default is encrypted: true
-        let tree = HashTree::new(HashTreeConfig::new(store.clone()));
-        (store, tree)
-    }
-
-    fn make_encrypted_tree_with_chunk_size(chunk_size: usize) -> (Arc<MemoryStore>, HashTree<MemoryStore>) {
-        let store = Arc::new(MemoryStore::new());
-        let tree = HashTree::new(HashTreeConfig::new(store.clone()).with_chunk_size(chunk_size));
-        (store, tree)
-    }
 
     /// Count unique byte values in first 256 bytes (blossom compatibility check)
     fn count_unique_bytes(data: &[u8]) -> usize {

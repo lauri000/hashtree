@@ -8,20 +8,23 @@
 //! - d-tag: tree name (NIP-33 replaceable)
 //! - l-tag: "hashtree" (for filtering)
 //! - hash-tag: content hash (always present)
-//! - key-tag: CHK decryption key (optional, for private content)
-//! - encrypted_key-tag: encrypted key (optional, for shared content)
+//! - key-tag: CHK decryption key (public)
+//! - encryptedKey-tag: XOR-masked key (link-visible)
+//! - selfEncryptedKey-tag: NIP-44 key encrypted to self (private)
+//! - encrypted_key-tag: legacy AES-GCM shared key (backwards compat)
 
 use crate::{ResolverEntry, ResolverError, RootResolver};
 use async_trait::async_trait;
 use hashtree_core::{from_hex, to_hex, Cid};
 use nostr_sdk::prelude::*;
+use nostr_sdk::prelude::nip44;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 
-use hashtree_core::{decrypt, encrypt};
+use hashtree_core::{decrypt, xor_keys};
 
 const HASHTREE_KIND: u16 = 30078;
 const HASHTREE_LABEL: &str = "hashtree";
@@ -54,8 +57,9 @@ impl Default for NostrResolverConfig {
 /// Tag names for hashtree events
 const TAG_HASH: &str = "hash";
 const TAG_KEY: &str = "key";
-#[allow(dead_code)]
-const TAG_ENCRYPTED_KEY: &str = "encrypted_key";
+const TAG_ENCRYPTED_KEY: &str = "encryptedKey";
+const TAG_SELF_ENCRYPTED_KEY: &str = "selfEncryptedKey";
+const TAG_ENCRYPTED_KEY_LEGACY: &str = "encrypted_key";
 
 fn has_label(event: &Event, label: &str) -> bool {
     event.tags.iter().any(|tag| {
@@ -163,9 +167,14 @@ impl NostrRootResolver {
     }
 
     /// Extract Cid from event tags
-    fn cid_from_event(event: &Event) -> Option<Cid> {
+    fn cid_from_event(&self, event: &Event) -> Option<Cid> {
+        Self::cid_from_event_with_keys(event, self.config.secret_key.as_ref())
+    }
+
+    fn cid_from_event_with_keys(event: &Event, keys: Option<&Keys>) -> Option<Cid> {
         let mut hash_hex: Option<String> = None;
         let mut key_hex: Option<String> = None;
+        let mut self_encrypted_key: Option<String> = None;
 
         for tag in event.tags.iter() {
             let tag_vec = tag.as_slice();
@@ -173,6 +182,7 @@ impl NostrRootResolver {
                 match tag_vec[0].as_str() {
                     "hash" => hash_hex = Some(tag_vec[1].clone()),
                     "key" => key_hex = Some(tag_vec[1].clone()),
+                    TAG_SELF_ENCRYPTED_KEY => self_encrypted_key = Some(tag_vec[1].clone()),
                     _ => {}
                 }
             }
@@ -191,7 +201,7 @@ impl NostrRootResolver {
         let hash = from_hex(&hash_hex?).ok()?;
 
         // key is optional
-        let key = key_hex.and_then(|k| {
+        let mut key = key_hex.and_then(|k| {
             let bytes = hex::decode(&k).ok()?;
             if bytes.len() == 32 {
                 let mut arr = [0u8; 32];
@@ -202,20 +212,38 @@ impl NostrRootResolver {
             }
         });
 
+        if key.is_none() {
+            if let (Some(ciphertext), Some(keys)) = (self_encrypted_key, keys) {
+                if let Ok(key_hex) = nip44::decrypt(keys.secret_key(), &keys.public_key(), &ciphertext) {
+                    if let Ok(bytes) = hex::decode(&key_hex) {
+                        if bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&bytes);
+                            key = Some(arr);
+                        }
+                    }
+                }
+            }
+        }
+
         Some(Cid { hash, key })
     }
 
-    /// Extract Cid from event with encrypted_key decryption
+    /// Extract Cid from event with encrypted key decryption
     fn cid_from_event_shared(event: &Event, share_secret: &[u8; 32]) -> Option<Cid> {
         let mut hash_hex: Option<String> = None;
+        let mut key_hex: Option<String> = None;
         let mut encrypted_key_hex: Option<String> = None;
+        let mut encrypted_key_legacy_hex: Option<String> = None;
 
         for tag in event.tags.iter() {
             let tag_vec = tag.as_slice();
             if tag_vec.len() >= 2 {
                 match tag_vec[0].as_str() {
                     "hash" => hash_hex = Some(tag_vec[1].clone()),
-                    "encrypted_key" => encrypted_key_hex = Some(tag_vec[1].clone()),
+                    "key" => key_hex = Some(tag_vec[1].clone()),
+                    TAG_ENCRYPTED_KEY => encrypted_key_hex = Some(tag_vec[1].clone()),
+                    TAG_ENCRYPTED_KEY_LEGACY => encrypted_key_legacy_hex = Some(tag_vec[1].clone()),
                     _ => {}
                 }
             }
@@ -229,8 +257,25 @@ impl NostrRootResolver {
 
         let hash = from_hex(&hash_hex?).ok()?;
 
-        // Decrypt the encrypted_key with share_secret
-        let key = if let Some(ek_hex) = encrypted_key_hex {
+        let key = if let Some(k_hex) = key_hex {
+            let bytes = hex::decode(&k_hex).ok()?;
+            if bytes.len() == 32 {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Some(arr)
+            } else {
+                None
+            }
+        } else if let Some(ek_hex) = encrypted_key_hex {
+            let masked = hex::decode(&ek_hex).ok()?;
+            if masked.len() == 32 {
+                let mut masked_arr = [0u8; 32];
+                masked_arr.copy_from_slice(&masked);
+                Some(xor_keys(&masked_arr, share_secret))
+            } else {
+                None
+            }
+        } else if let Some(ek_hex) = encrypted_key_legacy_hex {
             let encrypted_key = hex::decode(&ek_hex).ok()?;
             let decrypted = decrypt(&encrypted_key, share_secret).ok()?;
             if decrypted.len() == 32 {
@@ -271,6 +316,46 @@ impl NostrRootResolver {
         }
 
         Err(ResolverError::Stopped)
+    }
+
+    /// Publish a private root (selfEncryptedKey tag, NIP-44 to self)
+    pub async fn publish_private(&self, key: &str, cid: &Cid) -> Result<bool, ResolverError> {
+        let (pubkey, tree_name) = Self::parse_key(key)?;
+
+        let keys = self.config.secret_key.as_ref().ok_or(ResolverError::NotAuthorized)?;
+        if pubkey != keys.public_key() {
+            return Err(ResolverError::NotAuthorized);
+        }
+
+        let key_bytes = cid.key.ok_or_else(|| ResolverError::Other("Missing CHK key for private publish".into()))?;
+        let key_hex = hex::encode(key_bytes);
+
+        let encrypted = nip44::encrypt(
+            keys.secret_key(),
+            &keys.public_key(),
+            key_hex,
+            nip44::Version::V2,
+        ).map_err(|e| ResolverError::Other(format!("NIP-44 encryption failed: {}", e)))?;
+
+        let tags = vec![
+            Tag::identifier(tree_name.clone()),
+            Tag::custom(
+                TagKind::SingleLetter(SingleLetterTag::lowercase(Alphabet::L)),
+                vec![HASHTREE_LABEL],
+            ),
+            Tag::custom(TagKind::Custom(TAG_HASH.into()), vec![to_hex(&cid.hash)]),
+            Tag::custom(TagKind::Custom(TAG_SELF_ENCRYPTED_KEY.into()), vec![encrypted]),
+        ];
+
+        let event = EventBuilder::new(Kind::Custom(HASHTREE_KIND), "", tags);
+
+        let output = self
+            .client
+            .send_event_builder(event)
+            .await
+            .map_err(|e| ResolverError::Network(e.to_string()))?;
+
+        Ok(!output.failed.is_empty() || !output.success.is_empty())
     }
 }
 
@@ -326,7 +411,7 @@ impl RootResolver for NostrRootResolver {
 
         // Extract Cid from event tags
         match latest_event {
-            Some(event) => Ok(Self::cid_from_event(event)),
+            Some(event) => Ok(self.cid_from_event(event)),
             None => Ok(None),
         }
     }
@@ -427,6 +512,7 @@ impl RootResolver for NostrRootResolver {
         let subscriptions = self.subscriptions.clone();
         let key_clone = key.to_string();
         let tree_name_clone = tree_name.clone();
+        let secret_key = self.config.secret_key.clone();
 
         // Spawn subscription handler
         let client = self.client.clone();
@@ -461,7 +547,7 @@ impl RootResolver for NostrRootResolver {
 
                     let mut subs = subscriptions.write().await;
                     if let Some(sub) = subs.get_mut(&key_clone) {
-                        let new_cid = NostrRootResolver::cid_from_event(&event);
+                        let new_cid = NostrRootResolver::cid_from_event_with_keys(&event, secret_key.as_ref());
                         if event.created_at >= sub.latest_created_at && new_cid != sub.current_cid {
                             sub.current_cid = new_cid.clone();
                             sub.latest_created_at = event.created_at;
@@ -554,13 +640,12 @@ impl RootResolver for NostrRootResolver {
             Tag::custom(TagKind::Custom(TAG_HASH.into()), vec![to_hex(&cid.hash)]),
         ];
 
-        // Encrypt the key with share_secret
+        // Mask the key with share_secret (XOR)
         if let Some(key) = cid.key {
-            let encrypted_key = encrypt(&key, share_secret)
-                .map_err(|e| ResolverError::Other(format!("Encryption error: {}", e)))?;
+            let masked = xor_keys(&key, share_secret);
             tags.push(Tag::custom(
                 TagKind::Custom(TAG_ENCRYPTED_KEY.into()),
-                vec![hex::encode(encrypted_key)],
+                vec![hex::encode(masked)],
             ));
         }
 
@@ -574,6 +659,7 @@ impl RootResolver for NostrRootResolver {
 
         Ok(!output.failed.is_empty() || !output.success.is_empty())
     }
+
 
     async fn list(&self, prefix: &str) -> Result<Vec<ResolverEntry>, ResolverError> {
         let parts: Vec<&str> = prefix.split('/').collect();
@@ -624,7 +710,7 @@ impl RootResolver for NostrRootResolver {
         // Convert to entries
         let mut result = Vec::new();
         for (d_tag, event) in entries_by_d_tag {
-            if let Some(cid) = Self::cid_from_event(event) {
+            if let Some(cid) = self.cid_from_event(event) {
                 result.push(ResolverEntry {
                     key: format!("{}/{}", npub_str, d_tag),
                     cid,

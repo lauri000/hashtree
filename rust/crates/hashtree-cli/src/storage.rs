@@ -49,7 +49,7 @@ pub struct CachedRoot {
     pub key: Option<String>,
     /// Unix timestamp when this was cached (from event created_at)
     pub updated_at: u64,
-    /// Visibility: "public" or "private"
+    /// Visibility: "public", "link-visible", or "private"
     pub visibility: String,
 }
 
