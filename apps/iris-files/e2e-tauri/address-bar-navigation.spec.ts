@@ -173,6 +173,8 @@ describe('Address bar navigation', () => {
       });
     };
 
+    // Navigate to home first (previous tests may have left us elsewhere)
+    await browser.execute(() => { window.location.hash = '#/'; });
     await waitForHome();
 
     await submitAddress('example.com');
