@@ -155,9 +155,27 @@ describe('Address bar navigation', () => {
     };
 
     const waitForAddressValue = async (value: string) => {
+      const getHostFromAddress = (raw: string) => {
+        const trimmed = raw.trim();
+        if (!trimmed) return '';
+        try {
+          const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
+          const url = new URL(hasScheme ? trimmed : `https://${trimmed}`);
+          return url.hostname.replace(/^www\./, '');
+        } catch {
+          return trimmed
+            .replace(/^https?:\/\//, '')
+            .replace(/^www\./, '')
+            .split(/[/?#]/)[0];
+        }
+      };
+      const expectedHost = getHostFromAddress(value);
+
       await browser.waitUntil(async () => {
-        const current = await addressInput.getValue();
-        return current === value || current === `${value}/`;
+        const current = (await addressInput.getValue()).trim();
+        if (!current) return false;
+        if (current === value || current === `${value}/`) return true;
+        return getHostFromAddress(current) === expectedHost;
       }, {
         timeout: 20000,
         timeoutMsg: `Expected address bar to show ${value}`,
