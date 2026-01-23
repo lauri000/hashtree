@@ -21,6 +21,7 @@
   import YjsDocumentEditor from './YjsDocumentEditor.svelte';
   import ZipPreview from './ZipPreview.svelte';
   import DosBox from './DosBox.svelte';
+  import CodeViewer from './CodeViewer.svelte';
   import { TreeRow } from '../ui';
   import FileGitBar from '../Git/FileGitBar.svelte';
 
@@ -907,8 +908,8 @@
                 </span>
               {/if}
             </div>
-          {:else if fileContent !== null}
-            <pre class="text-sm text-text-1 font-mono whitespace-pre-wrap break-words">{fileContent}</pre>
+          {:else if fileContent !== null && urlFileName}
+            <CodeViewer content={fileContent} filename={urlFileName} />
           {:else if !loading && entryFromStore}
             <!-- Binary/unsupported format fallback - show download pane -->
             <!-- svelte-ignore a11y_click_events_have_key_events -->

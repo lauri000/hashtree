@@ -68,12 +68,14 @@
     "nostr-social-graph": "^1.0.33",
     "nostr-tools": "^2.18.2",
     "nostr-wasm": "^0.1.0",
+    "prismjs": "^1.29.0",
     "qrcode": "^1.5.4",
     "wasm-git": "^0.0.13",
     "yjs": "^13.6.27"
   },
   "devDependencies": {
     "@iconify-json/lucide": "^1.2.75",
+    "@types/prismjs": "^1.26.0",
     "@playwright/test": "^1.49.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@tauri-apps/api": "^2.5.0",
