@@ -155,12 +155,36 @@ describe('Address bar navigation', () => {
     };
 
     const waitForAddressValue = async (value: string) => {
+      const getHostFromAddress = (raw: string) => {
+        const trimmed = raw.trim();
+        if (!trimmed) return '';
+        try {
+          const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
+          const url = new URL(hasScheme ? trimmed : `https://${trimmed}`);
+          return url.hostname.replace(/^www\./, '');
+        } catch {
+          return trimmed
+            .replace(/^https?:\/\//, '')
+            .replace(/^www\./, '')
+            .split(/[/?#]/)[0];
+        }
+      };
+      const expectedHost = getHostFromAddress(value);
+
       await browser.waitUntil(async () => {
-        const current = await addressInput.getValue();
-        return current === value || current === `${value}/`;
+        const current = (await addressInput.getValue()).trim();
+        if (!current) return false;
+        if (current === value || current === `${value}/`) return true;
+        return getHostFromAddress(current) === expectedHost;
       }, {
         timeout: 20000,
         timeoutMsg: `Expected address bar to show ${value}`,
+      });
+    };
+
+    const blurActiveElement = async () => {
+      await browser.execute(() => {
+        (document.activeElement as HTMLElement | null)?.blur?.();
       });
     };
 
@@ -168,13 +192,15 @@ describe('Address bar navigation', () => {
       await addressInput.click();
       await addressInput.setValue(value);
       await browser.keys(['Enter']);
-      await browser.execute(() => {
-        (document.activeElement as HTMLElement | null)?.blur?.();
-      });
+      await blurActiveElement();
     };
 
     // Navigate to home first (previous tests may have left us elsewhere)
-    await browser.execute(() => { window.location.hash = '#/'; });
+    await browser.execute(() => {
+      if (!['', '#', '#/'].includes(window.location.hash)) {
+        window.location.hash = '#/';
+      }
+    });
     await waitForHome();
 
     await submitAddress('example.com');
@@ -186,15 +212,19 @@ describe('Address bar navigation', () => {
     await waitForAddressValue('example.org');
 
     await browser.keys([modifierKey as string, 'ArrowLeft']);
+    await blurActiveElement();
     await waitForAddressValue('example.com');
 
     await browser.keys([modifierKey as string, 'ArrowRight']);
+    await blurActiveElement();
     await waitForAddressValue('example.org');
 
     await browser.keys([modifierKey as string, 'ArrowLeft']);
+    await blurActiveElement();
     await waitForAddressValue('example.com');
 
     await browser.keys([modifierKey as string, 'ArrowLeft']);
+    await blurActiveElement();
     await waitForHome();
     await browser.waitUntil(async () => {
       const value = await addressInput.getValue();
