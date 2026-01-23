@@ -19,6 +19,7 @@ Blossom-compatible storage with chunking and directory structure. Merkle roots c
 
 **npm packages:**
 - [`@hashtree/core`](https://www.npmjs.com/package/@hashtree/core) - Core merkle tree library ([source](packages/hashtree))
+- [`@hashtree/nostr`](https://www.npmjs.com/package/@hashtree/nostr) - WebRTC P2P store and Nostr ref resolver ([source](packages/hashtree-nostr))
 - [`@hashtree/dexie`](https://www.npmjs.com/package/@hashtree/dexie) - IndexedDB/Dexie storage adapter ([source](packages/hashtree-dexie))
 - [`@hashtree/index`](https://www.npmjs.com/package/@hashtree/index) - B-Tree index structures ([source](packages/hashtree-index))
 
@@ -32,6 +33,7 @@ Blossom-compatible storage with chunking and directory structure. Merkle roots c
 ```bash
 npm install @hashtree/core
 # Optional:
+npm install @hashtree/nostr  # WebRTC P2P + Nostr resolver
 npm install @hashtree/dexie  # IndexedDB storage
 npm install @hashtree/index  # B-Tree indexes
 ```
@@ -40,11 +42,10 @@ npm install @hashtree/index  # B-Tree indexes
 
 The `Store` interface is just `get(hash) → bytes` and `put(hash, bytes)`. Implementations:
 
-- `MemoryStore` - In-memory
+- `MemoryStore` - In-memory (in `@hashtree/core`)
+- `BlossomStore` - Remote blossom server (in `@hashtree/core`)
 - `DexieStore` - IndexedDB via Dexie (in `@hashtree/dexie`)
-- `OpfsStore` - Origin Private File System
-- `BlossomStore` - Remote blossom server
-- `WebRTCStore` - P2P network (fetches from peers)
+- `WebRTCStore` - P2P network via WebRTC (in `@hashtree/nostr`)
 
 ## Usage
 
@@ -102,15 +103,15 @@ Wire format: `{t: LinkType, l: [{h: hash, s: size, n?: name, t: linkType, ...}]}
 
 ## P2P Transport (WebRTC)
 
-The core library is transport-agnostic—any system that can fetch bytes by hash works. `WebRTCStore` is one implementation using WebRTC with Nostr signaling:
+The core library is transport-agnostic—any system that can fetch bytes by hash works. `WebRTCStore` in `@hashtree/nostr` implements P2P fetching via WebRTC with Nostr signaling:
 
 ```typescript
-import { WebRTCStore } from '@hashtree/core';
+import { WebRTCStore } from '@hashtree/nostr';
 
 const store = new WebRTCStore({
   signer,           // NIP-07 compatible
   pubkey,
-  encrypt,          // NIP-04
+  encrypt,          // NIP-44
   decrypt,
   localStore,       // Fallback store
   relays: ['wss://relay.example.com'],
