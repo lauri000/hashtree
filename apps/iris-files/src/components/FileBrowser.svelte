@@ -3,7 +3,7 @@
    * FileBrowser - displays directory contents and tree list
    * Svelte port of the React component
    */
-  import { toHex, nhashEncode, LinkType, type TreeEntry as HashTreeEntry } from 'hashtree';
+  import { toHex, nhashEncode, LinkType, type TreeEntry as HashTreeEntry } from '@hashtree/core';
   import { formatBytes } from '../store';
   import { deleteEntry, moveEntry, moveToParent } from '../actions';
   import { open as openCreateModal } from './Modals/CreateModal.svelte';

@@ -8,7 +8,7 @@
  * See: https://github.com/w3c/webrtc-extensions/issues/77
  */
 
-import type { WebRTCCommand, WebRTCEvent } from 'hashtree';
+import type { WebRTCCommand, WebRTCEvent } from '@hashtree/core';
 import { BoundedQueue } from './utils/boundedQueue';
 import { getErrorMessage } from './utils/errorMessage';
 

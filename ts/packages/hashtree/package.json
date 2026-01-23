@@ -1,5 +1,5 @@
 {
-  "name": "hashtree",
+  "name": "@hashtree/core",
   "version": "0.1.0",
   "description": "Simple content-addressed merkle tree with KV storage",
   "type": "module",
@@ -11,14 +11,11 @@
       "import": "./dist/index.js"
     },
     "./worker": {
-      "types": "./dist/worker/worker.d.ts",
-      "import": "./dist/worker/worker.js"
+      "types": "./dist/worker/protocol.d.ts",
+      "import": "./dist/worker/protocol.js"
     }
   },
-  "sideEffects": [
-    "./src/worker/worker.ts",
-    "./dist/worker/worker.js"
-  ],
+  "sideEffects": false,
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
@@ -34,6 +31,12 @@
   ],
   "author": "Martti Malmi",
   "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree",
   "homepage": "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree",
   "dependencies": {

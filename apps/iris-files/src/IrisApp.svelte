@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { SvelteURL } from 'svelte/reactivity';
-  import { isNHash, isNPath } from 'hashtree';
+  import { isNHash, isNPath } from '@hashtree/core';
   import NostrLogin from './components/NostrLogin.svelte';
   import ConnectivityIndicator from './components/ConnectivityIndicator.svelte';
   import BandwidthIndicator from './components/BandwidthIndicator.svelte';

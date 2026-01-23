@@ -14,7 +14,7 @@
   import ShareButton from '../ShareButton.svelte';
   import { open as openBlossomPushModal } from '../Modals/BlossomPushModal.svelte';
   import { open as openAddToPlaylistModal } from '../Modals/AddToPlaylistModal.svelte';
-  import type { TreeVisibility } from 'hashtree';
+  import type { TreeVisibility } from '@hashtree/core';
   import { deleteTree } from '../../nostr';
   import { updateLocalRootCacheHex } from '../../treeRootCache';
   import {
@@ -37,8 +37,8 @@
   import { ambientColor } from '../../stores/ambientGlow';
   import { getFollowers, socialGraphStore } from '../../utils/socialGraph';
   import { currentPlaylist, loadPlaylist, playNext, repeatMode, shuffleEnabled } from '../../stores/playlist';
-  import type { CID } from 'hashtree';
-  import { toHex, nhashEncode } from 'hashtree';
+  import type { CID } from '@hashtree/core';
+  import { toHex, nhashEncode } from '@hashtree/core';
   import { appendHtreeCacheBust, getHtreePrefix, getNpubFileUrl, getNpubFileUrlAsync, getNhashFileUrl, getThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
   import { logHtreeDebug } from '../../lib/htreeDebug';
   import { NDKEvent, type NDKFilter } from 'ndk';

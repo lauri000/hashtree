@@ -5,7 +5,7 @@
  * Svelte version using stores
  */
 import { writable, get, type Readable } from 'svelte/store';
-import { type CID, type TreeEntry, toHex, LinkType } from 'hashtree';
+import { type CID, type TreeEntry, toHex, LinkType } from '@hashtree/core';
 import { getTree } from '../store';
 import { markFilesChanged } from './recentlyChanged';
 

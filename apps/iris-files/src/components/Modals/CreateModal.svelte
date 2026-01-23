@@ -2,7 +2,7 @@
   /**
    * Modal for creating new files, folders, or trees
    */
-  import type { TreeVisibility } from 'hashtree';
+  import type { TreeVisibility } from '@hashtree/core';
 
   export type ModalType = 'file' | 'folder' | 'tree' | 'document';
 

@@ -3,7 +3,7 @@
    * Viewer - main file viewer component
    * Port of React Viewer component
    */
-  import { toHex, nhashEncode, LinkType } from 'hashtree';
+  import { toHex, nhashEncode, LinkType } from '@hashtree/core';
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { routeStore, treeRootStore, currentDirCidStore, directoryEntriesStore, currentHash, createTreesStore, addRecent, isViewingFileStore, resolvingPathStore, recentlyChangedFiles } from '../../stores';
   import { getTree, decodeAsText, formatBytes } from '../../store';

@@ -5,7 +5,7 @@
  * Each release is a directory containing release.json, notes.md, and assets/.
  */
 import { writable, type Readable } from 'svelte/store';
-import { LinkType, type CID, type TreeEntry, type TreeVisibility } from 'hashtree';
+import { LinkType, type CID, type TreeEntry, type TreeVisibility } from '@hashtree/core';
 import { getTree, decodeAsText } from '../store';
 import { waitForTreeRoot } from './treeRoot';
 import { onCacheUpdate } from '../treeRootCache';

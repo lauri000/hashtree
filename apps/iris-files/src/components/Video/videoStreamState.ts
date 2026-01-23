@@ -6,8 +6,8 @@
  */
 
 import { writable, get } from 'svelte/store';
-import { cid, fixedChunker } from 'hashtree';
-import type { StreamWriter, CID, TreeVisibility } from 'hashtree';
+import { cid, fixedChunker } from '@hashtree/core';
+import type { StreamWriter, CID, TreeVisibility } from '@hashtree/core';
 import { getTree } from '../../store';
 import { saveHashtree } from '../../nostr';
 import { nostrStore } from '../../nostr';

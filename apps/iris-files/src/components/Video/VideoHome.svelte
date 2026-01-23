@@ -25,7 +25,7 @@
     getAllFeedPlaylistInfo,
     type PlaylistInfo,
   } from '../../stores/homeFeedCache';
-  import { fromHex, nhashEncode, toHex } from 'hashtree';
+  import { fromHex, nhashEncode, toHex } from '@hashtree/core';
   import InfiniteScroll from '../InfiniteScroll.svelte';
   import { DEFAULT_BOOTSTRAP_PUBKEY, DEFAULT_VIDEO_FEED_PUBKEYS } from '../../utils/constants';
   import { orderFeedWithInterleaving } from '../../utils/feedOrder';

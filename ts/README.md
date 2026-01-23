@@ -37,7 +37,7 @@ The `Store` interface is just `get(hash) → bytes` and `put(hash, bytes)`. Impl
 ## Usage
 
 ```typescript
-import { MemoryStore, HashTree, toHex } from 'hashtree';
+import { MemoryStore, HashTree, toHex } from '@hashtree/core';
 
 const store = new MemoryStore();
 const tree = new HashTree({ store });
@@ -93,7 +93,7 @@ Wire format: `{t: LinkType, l: [{h: hash, s: size, n?: name, t: linkType, ...}]}
 The core library is transport-agnostic—any system that can fetch bytes by hash works. `WebRTCStore` is one implementation using WebRTC with Nostr signaling:
 
 ```typescript
-import { WebRTCStore } from 'hashtree';
+import { WebRTCStore } from '@hashtree/core';
 
 const store = new WebRTCStore({
   signer,           // NIP-07 compatible

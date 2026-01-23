@@ -2,8 +2,8 @@
  * Compression utilities using fflate for ZIP creation and extraction
  */
 import { zipSync, unzipSync, type Zippable, type Unzipped } from 'fflate';
-import type { HashTree, CID } from 'hashtree';
-import { LinkType } from 'hashtree';
+import type { HashTree, CID } from '@hashtree/core';
+import { LinkType } from '@hashtree/core';
 
 export interface ZipProgress {
   current: number;

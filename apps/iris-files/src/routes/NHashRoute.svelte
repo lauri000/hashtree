@@ -4,7 +4,7 @@
   import Viewer from '../components/Viewer/Viewer.svelte';
   import { nostrStore } from '../nostr';
   import { isViewingFileStore, currentHash, currentDirCidStore, createGitInfoStore } from '../stores';
-  import { nhashDecode } from 'hashtree';
+  import { nhashDecode } from '@hashtree/core';
   import { getQueryParamsFromHash } from '../lib/router.svelte';
 
   interface Props {

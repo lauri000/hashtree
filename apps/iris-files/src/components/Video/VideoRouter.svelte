@@ -14,7 +14,7 @@
    * - /:npub : Profile with videos (channel)
    */
   import { matchRoute } from '../../lib/router.svelte';
-  import { isNHash } from 'hashtree';
+  import { isNHash } from '@hashtree/core';
   import VideoHome from './VideoHome.svelte';
   import VideoProfileView from './VideoProfileView.svelte';
   import VideoView from './VideoView.svelte';

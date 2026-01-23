@@ -3,8 +3,8 @@
  * More robust than raw IndexedDB - handles errors, upgrades, and stuck connections better
  */
 import Dexie, { type Table } from 'dexie';
-import type { Store, Hash } from 'hashtree';
-import { toHex, fromHex } from 'hashtree';
+import type { Store, Hash } from '@hashtree/core';
+import { toHex, fromHex } from '@hashtree/core';
 
 interface BlobEntry {
   hashHex: string;

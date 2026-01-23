@@ -2,7 +2,7 @@
  * Blossom operation log store
  */
 import { writable, get } from 'svelte/store';
-import type { BlossomLogEntry } from 'hashtree';
+import type { BlossomLogEntry } from '@hashtree/core';
 
 const MAX_LOG_ENTRIES = 50;
 

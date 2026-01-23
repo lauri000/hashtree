@@ -2,7 +2,7 @@
   /**
    * FileTable - GitHub-style file listing with commit info
    */
-  import { LinkType, type TreeEntry } from 'hashtree';
+  import { LinkType, type TreeEntry } from '@hashtree/core';
   import type { Readable } from 'svelte/store';
   import type { CommitInfo } from '../../stores/git';
   import type { CIStatus, CIConfig } from '../../stores/ci';

@@ -4,7 +4,7 @@
 import { get } from 'svelte/store';
 import { navigate } from '../utils/navigate';
 import { parseRoute } from '../utils/route';
-import type { CID } from 'hashtree';
+import type { CID } from '@hashtree/core';
 import { getTreeRootSync } from '../stores/treeRoot';
 import { isViewingFileStore } from '../stores/currentDirHash';
 

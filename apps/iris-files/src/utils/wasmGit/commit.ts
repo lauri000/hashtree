@@ -1,8 +1,8 @@
 /**
  * Git commit and init operations
  */
-import type { CID } from 'hashtree';
-import { LinkType } from 'hashtree';
+import type { CID } from '@hashtree/core';
+import { LinkType } from '@hashtree/core';
 import { getTree } from '../../store';
 import { withWasmGitLock, loadWasmGit, copyToWasmFS, readGitDirectory, runSilent, rmRf, createRepoPath } from './core';
 import { getErrorMessage } from '../errorMessage';

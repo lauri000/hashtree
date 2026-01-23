@@ -2,7 +2,7 @@
   /**
    * Modal for displaying git commit history
    */
-  import type { CID } from 'hashtree';
+  import type { CID } from '@hashtree/core';
 
   export interface GitHistoryTarget {
     dirCid: CID;
@@ -30,7 +30,7 @@
   import type { Readable } from 'svelte/store';
   import { SvelteSet } from 'svelte/reactivity';
   import { routeStore } from '../../stores';
-  import { nhashEncode } from 'hashtree';
+  import { nhashEncode } from '@hashtree/core';
   import { checkoutCommit, getBranches } from '../../utils/git';
   import { getErrorMessage } from '../../utils/errorMessage';
   import CIStatusBadge from '../Git/CIStatusBadge.svelte';

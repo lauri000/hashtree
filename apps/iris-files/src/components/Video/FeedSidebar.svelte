@@ -5,7 +5,7 @@
    */
   import { onMount } from 'svelte';
   import { feedStore, fetchFeedVideos } from '../../stores/feedStore';
-  import { toHex } from 'hashtree';
+  import { toHex } from '@hashtree/core';
   import { formatTimeAgo } from '../../utils/format';
   import { Name } from '../User';
   import { getThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';

@@ -4,12 +4,12 @@
  * Svelte version using stores
  */
 import { writable, derived, get, type Readable } from 'svelte/store';
-import { toHex, LinkType } from 'hashtree';
+import { toHex, LinkType } from '@hashtree/core';
 import { appStore, getTree } from '../store';
 import { routeStore } from './route';
 import { treeRootStore } from './treeRoot';
 import { isWorkerReady } from '../lib/workerInit';
-import type { CID, Hash } from 'hashtree';
+import type { CID, Hash } from '@hashtree/core';
 
 // Store for current directory CID
 const currentDirCidStore = writable<CID | null>(null);

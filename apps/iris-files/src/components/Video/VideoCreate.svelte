@@ -5,7 +5,7 @@
    * Supports file upload with transcoding and live streaming with comments
    */
   import { nostrStore, saveHashtree } from '../../nostr';
-  import { videoChunker, LinkType, type CID } from 'hashtree';
+  import { videoChunker, LinkType, type CID } from '@hashtree/core';
   import { getTree } from '../../store';
   import { addRecent } from '../../stores/recents';
   import { storeLinkKey } from '../../stores/trees';

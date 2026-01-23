@@ -5,7 +5,7 @@ import { navigate } from '../utils/navigate';
 import { parseRoute } from '../utils/route';
 import { autosaveIfOwn } from '../nostr';
 import { getTree } from '../store';
-import { LinkType } from 'hashtree';
+import { LinkType } from '@hashtree/core';
 import { getCurrentRootCid, getCurrentPathFromUrl, buildRouteUrl, updateRoute } from './route';
 
 // Rename entry

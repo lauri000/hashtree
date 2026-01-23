@@ -1,5 +1,5 @@
 {
-  "name": "hashtree-index",
+  "name": "@hashtree/index",
   "version": "0.1.0",
   "description": "B-Tree and index structures for hashtree",
   "type": "module",
@@ -24,8 +24,14 @@
   ],
   "author": "",
   "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
-    "hashtree": "workspace:*"
+    "@hashtree/core": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.3.0",

@@ -27,7 +27,7 @@ import type {
   WorkerBlossomUploadProgress as BlossomUploadProgress,
   WorkerBlossomServerConfig as BlossomServerConfig,
   CID,
-} from 'hashtree';
+} from '@hashtree/core';
 
 // Worker request/response types matching Rust types
 interface WorkerRequest {

@@ -7,7 +7,7 @@
  * - Main thread: UI coordination only
  */
 import { writable, get } from 'svelte/store';
-import { HashTree, LinkType } from 'hashtree';
+import { HashTree, LinkType } from '@hashtree/core';
 import { getWorkerStore } from './stores/workerStore';
 import { closeWorkerAdapter } from './workerAdapter';
 import { getWorkerAdapter } from './lib/workerInit';

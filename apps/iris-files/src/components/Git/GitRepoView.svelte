@@ -3,7 +3,7 @@
    * GitRepoView - GitHub-style directory listing with README below
    * Shows branch info, file list table, then README.md in its own panel
    */
-  import { LinkType, type CID, type TreeEntry } from 'hashtree';
+  import { LinkType, type CID, type TreeEntry } from '@hashtree/core';
   import type { Readable } from 'svelte/store';
   import { getTree, decodeAsText } from '../../store';
   import { routeStore } from '../../stores';

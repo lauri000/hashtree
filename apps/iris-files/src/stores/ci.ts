@@ -4,7 +4,7 @@
  * CI results are stored at: npub1runner/ci/<repoPath>/<commit>/result.json
  */
 import { writable, type Readable } from 'svelte/store';
-import type { CID } from 'hashtree';
+import type { CID } from '@hashtree/core';
 import { getWorkerAdapter, waitForWorkerAdapter } from '../lib/workerInit';
 import { getRefResolver } from '../refResolver';
 import { getLocalRootCache, getLocalRootKey, onCacheUpdate } from '../treeRootCache';

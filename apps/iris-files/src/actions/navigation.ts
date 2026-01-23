@@ -3,7 +3,7 @@
  */
 import { navigate } from '../utils/navigate';
 import { parseRoute } from '../utils/route';
-import { LinkType, type Hash } from 'hashtree';
+import { LinkType, type Hash } from '@hashtree/core';
 import { updateRoute, buildRouteUrl, getCurrentPathFromUrl } from './route';
 
 // Clear file selection (navigate to current directory without file)

@@ -1,7 +1,7 @@
 /**
  * Maps store - manages places, annotations, and audience filter state
  */
-import { cid, fromHex, toHex, LinkType, type CID } from 'hashtree';
+import { cid, fromHex, toHex, LinkType, type CID } from '@hashtree/core';
 import { getTree } from '../store';
 import { getRefResolver } from '../refResolver';
 import { updateLocalRootCache } from '../treeRootCache';

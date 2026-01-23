@@ -2,14 +2,14 @@
  * Image Attachments Module
  * Handles image upload, storage, and retrieval for Yjs documents
  */
-import { LinkType } from 'hashtree';
-import type { CID } from 'hashtree';
+import { LinkType } from '@hashtree/core';
+import type { CID } from '@hashtree/core';
 import { getTree } from '../../store';
 import { getTreeRootSync } from '../../stores';
 import { getRefResolver } from '../../refResolver';
 import { autosaveIfOwn } from '../../nostr';
 import { updateLocalRootCacheHex } from '../../treeRootCache';
-import { toHex } from 'hashtree';
+import { toHex } from '@hashtree/core';
 
 const ATTACHMENTS_DIR = 'attachments';
 

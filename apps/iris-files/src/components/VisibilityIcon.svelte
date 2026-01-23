@@ -3,7 +3,7 @@
    * VisibilityIcon - displays icon for tree visibility level
    * Shows nothing if visibility is undefined (not yet resolved)
    */
-  import type { TreeVisibility } from 'hashtree';
+  import type { TreeVisibility } from '@hashtree/core';
 
   interface Props {
     visibility: TreeVisibility | undefined;

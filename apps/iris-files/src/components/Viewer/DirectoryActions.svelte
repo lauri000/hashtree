@@ -11,7 +11,7 @@
   import ReadmePanel from './ReadmePanel.svelte';
   import ViewerHeader from './ViewerHeader.svelte';
   import { uploadFiles } from '../../stores/upload';
-  import { LinkType, type TreeEntry as HashTreeEntry } from 'hashtree';
+  import { LinkType, type TreeEntry as HashTreeEntry } from '@hashtree/core';
 
   let route = $derived($routeStore);
   let rootCid = $derived($treeRootStore);

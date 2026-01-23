@@ -1,8 +1,8 @@
 /**
  * Git utilities using wasm-git (libgit2 compiled to WebAssembly)
  */
-import type { CID } from 'hashtree';
-import { LinkType, toHex } from 'hashtree';
+import type { CID } from '@hashtree/core';
+import { LinkType, toHex } from '@hashtree/core';
 import { getTree } from '../store';
 import { LRUCache } from './lruCache';
 

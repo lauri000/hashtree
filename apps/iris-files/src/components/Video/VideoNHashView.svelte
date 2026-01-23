@@ -4,7 +4,7 @@
    * The nhash points to the video file content; directory metadata is optional.
    */
   import { untrack } from 'svelte';
-  import { nhashDecode, type CID } from 'hashtree';
+  import { nhashDecode, type CID } from '@hashtree/core';
   import { getTree } from '../../store';
   import ShareButton from '../ShareButton.svelte';
   import { getNhashFileUrl } from '../../lib/mediaUrl';

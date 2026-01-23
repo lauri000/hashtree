@@ -3,8 +3,8 @@
  * Handles loading Yjs deltas and state from tree entries
  */
 import * as Y from 'yjs';
-import { LinkType, cid } from 'hashtree';
-import type { TreeEntry } from 'hashtree';
+import { LinkType, cid } from '@hashtree/core';
+import type { TreeEntry } from '@hashtree/core';
 import { getTree, decodeAsText } from '../../store';
 import { subscribeToTreeRoot, waitForTreeRoot } from '../../stores/treeRoot';
 

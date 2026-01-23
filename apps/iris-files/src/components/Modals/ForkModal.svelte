@@ -2,7 +2,7 @@
   /**
    * Modal for forking a directory as a new tree
    */
-  import type { CID, TreeVisibility } from 'hashtree';
+  import type { CID, TreeVisibility } from '@hashtree/core';
 
   export interface ForkTarget {
     dirCid: CID;
@@ -27,7 +27,7 @@
 </script>
 
 <script lang="ts">
-  import type { TreeVisibility } from 'hashtree';
+  import type { TreeVisibility } from '@hashtree/core';
   import { forkTree } from '../../actions/tree';
   import VisibilityPicker from './VisibilityPicker.svelte';
 

@@ -8,7 +8,7 @@
   import ProfileView from './ProfileView.svelte';
   import EditProfilePage from './EditProfilePage.svelte';
   import UsersPage from './UsersPage.svelte';
-  import { isNHash } from 'hashtree';
+  import { isNHash } from '@hashtree/core';
 
   // Parse the current path to determine what to render
   function parseRoute(path: string) {

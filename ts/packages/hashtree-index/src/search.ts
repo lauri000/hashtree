@@ -1,4 +1,4 @@
-import type { CID, Store } from 'hashtree';
+import type { CID, Store } from '@hashtree/core';
 import { BTree } from './btree.js';
 
 export interface SearchIndexOptions {

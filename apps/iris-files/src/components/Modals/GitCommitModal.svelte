@@ -3,7 +3,7 @@
    * Modal for creating git commits
    * Shows status (staged, unstaged, untracked files) and allows commit
    */
-  import type { CID } from 'hashtree';
+  import type { CID } from '@hashtree/core';
 
   export interface GitCommitTarget {
     dirCid: CID;
@@ -25,7 +25,7 @@
 </script>
 
 <script lang="ts">
-  import { LinkType } from 'hashtree';
+  import { LinkType } from '@hashtree/core';
   import { SvelteMap } from 'svelte/reactivity';
   import { createGitStatusStore } from '../../stores/git';
   import { commit } from '../../utils/git';

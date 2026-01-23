@@ -44,7 +44,7 @@
   import { getWorkerAdapter, waitForWorkerAdapter } from '../../lib/workerInit';
   import { getRefResolver } from '../../refResolver';
   import { getLocalRootCache, getLocalRootKey } from '../../treeRootCache';
-  import { toHex, type CID } from 'hashtree';
+  import { toHex, type CID } from '@hashtree/core';
 
   let selectedJobIndex = $state(0);
   let selectedStepIndex = $state(0);

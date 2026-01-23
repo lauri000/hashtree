@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { BTree, escapeKey, unescapeKey } from '../src/btree.js';
-import { MemoryStore, HashTree, type CID } from 'hashtree';
+import { MemoryStore, HashTree, type CID } from '@hashtree/core';
 
 describe('BTree', () => {
   let store: MemoryStore;

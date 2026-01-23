@@ -3,8 +3,8 @@
  */
 import { navigate } from '../utils/navigate';
 import { parseRoute } from '../utils/route';
-import { verifyTree, toHex, LinkType } from 'hashtree';
-import type { CID } from 'hashtree';
+import { verifyTree, toHex, LinkType } from '@hashtree/core';
+import type { CID } from '@hashtree/core';
 import { linkKeyUtils, saveHashtree, useNostrStore } from '../nostr';
 import { nip19 } from 'nostr-tools';
 import { localStore, getTree } from '../store';

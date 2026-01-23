@@ -10,7 +10,7 @@
  * - Value: float (duration in milliseconds * timecode scale)
  */
 
-import type { CID, HashTree } from 'hashtree';
+import type { CID, HashTree } from '@hashtree/core';
 
 /**
  * Find the byte offset of the Duration element in a WebM file

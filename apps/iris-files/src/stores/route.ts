@@ -4,7 +4,7 @@
  */
 import { writable, derived, get } from 'svelte/store';
 import { getQueryParamsFromHash } from '../lib/router.svelte';
-import { isNHash, isNPath, nhashDecode, npathDecode } from 'hashtree';
+import { isNHash, isNPath, nhashDecode, npathDecode } from '@hashtree/core';
 import { nip19 } from 'nostr-tools';
 import type { RouteInfo } from '../utils/route';
 

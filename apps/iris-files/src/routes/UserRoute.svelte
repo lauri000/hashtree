@@ -4,7 +4,7 @@
   import NHashRoute from './NHashRoute.svelte';
   import NPathRoute from './NPathRoute.svelte';
   import { nostrStore } from '../nostr';
-  import { isNHash, isNPath } from 'hashtree';
+  import { isNHash, isNPath } from '@hashtree/core';
 
   interface Props {
     id?: string;

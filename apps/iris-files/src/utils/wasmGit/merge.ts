@@ -4,8 +4,8 @@
  * Note: wasm-git's merge command only works with remote-tracking branches (origin/master etc).
  * For local branch merges, we implement fast-forward merge manually by updating refs.
  */
-import type { CID } from 'hashtree';
-import { LinkType } from 'hashtree';
+import type { CID } from '@hashtree/core';
+import { LinkType } from '@hashtree/core';
 import { getTree } from '../../store';
 import { withWasmGitLock, loadWasmGit, copyToWasmFS, readGitDirectory, runSilent, rmRf, createRepoPath } from './core';
 import { getErrorMessage } from '../errorMessage';

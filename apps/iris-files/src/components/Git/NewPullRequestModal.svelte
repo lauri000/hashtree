@@ -34,7 +34,7 @@
   import { createGitInfoStore } from '../../stores/git';
   import { getLocalRootCache, getLocalRootKey } from '../../treeRootCache';
   import { waitForTreeRoot } from '../../stores/treeRoot';
-  import type { CID } from 'hashtree';
+  import type { CID } from '@hashtree/core';
 
   // Available branches from the target (destination) repo
   let branches = $derived(target?.branches || []);

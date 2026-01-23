@@ -17,8 +17,8 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
   import { nostrStore, saveHashtree } from '../../nostr';
-  import { videoChunker, cid, LinkType, nhashEncode, type WorkerBlossomUploadProgress } from 'hashtree';
-  import type { CID } from 'hashtree';
+  import { videoChunker, cid, LinkType, nhashEncode, type WorkerBlossomUploadProgress } from '@hashtree/core';
+  import type { CID } from '@hashtree/core';
   import { getTree } from '../../store';
   import { waitForWorkerAdapter } from '../../lib/workerInit';
   import { storeLinkKey } from '../../stores/trees';

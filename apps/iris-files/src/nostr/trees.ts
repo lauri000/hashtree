@@ -7,7 +7,7 @@ import {
   fromHex,
   type CID,
   type TreeVisibility,
-} from 'hashtree';
+} from '@hashtree/core';
 import { nostrStore } from './store';
 import { ndk } from './ndk';
 import { updateLocalRootCache } from '../treeRootCache';
@@ -15,7 +15,7 @@ import { parseRoute } from '../utils/route';
 import { getRefResolver } from '../refResolver';
 
 // Re-export visibility hex helpers from hashtree lib
-export { visibilityHex as linkKeyUtils } from 'hashtree';
+export { visibilityHex as linkKeyUtils } from '@hashtree/core';
 
 export interface SaveHashtreeOptions {
   visibility?: TreeVisibility;

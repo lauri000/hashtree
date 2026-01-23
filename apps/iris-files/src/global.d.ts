@@ -6,7 +6,7 @@
 import type { NostrStore } from './nostr';
 import type { LocalStore } from './store';
 import type { SocialGraph } from './utils/socialGraph';
-import type { TreeEntry } from 'hashtree';
+import type { TreeEntry } from '@hashtree/core';
 
 declare global {
   interface Window {

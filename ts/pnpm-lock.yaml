@@ -74,6 +74,12 @@ importers:
       '@ffmpeg/util':
         specifier: ^0.12.2
         version: 0.12.2
+      '@hashtree/core':
+        specifier: workspace:*
+        version: link:../../ts/packages/hashtree
+      '@hashtree/index':
+        specifier: workspace:*
+        version: link:../../ts/packages/hashtree-index
       '@msgpack/msgpack':
         specifier: ^3.1.2
         version: 3.1.2
@@ -128,12 +134,6 @@ importers:
       fflate:
         specifier: ^0.8.2
         version: 0.8.2
-      hashtree:
-        specifier: workspace:*
-        version: link:../../ts/packages/hashtree
-      hashtree-index:
-        specifier: workspace:*
-        version: link:../../ts/packages/hashtree-index
       jsqr:
         specifier: ^1.4.0
         version: 1.4.0
@@ -334,12 +334,12 @@ importers:
 
   packages/hashtree-dexie:
     dependencies:
+      '@hashtree/core':
+        specifier: workspace:*
+        version: link:../hashtree
       dexie:
         specifier: ^4.0.11
         version: 4.2.1
-      hashtree:
-        specifier: workspace:*
-        version: link:../hashtree
     devDependencies:
       fake-indexeddb:
         specifier: ^6.0.0
@@ -356,7 +356,7 @@ importers:
 
   packages/hashtree-index:
     dependencies:
-      hashtree:
+      '@hashtree/core':
         specifier: workspace:*
         version: link:../hashtree
     devDependencies:

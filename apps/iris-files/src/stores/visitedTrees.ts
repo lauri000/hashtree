@@ -5,8 +5,8 @@
  * so it can be synced in the background for offline access.
  */
 import Dexie, { type Table } from 'dexie';
-import type { CID } from 'hashtree';
-import { toHex, fromHex, cid } from 'hashtree';
+import type { CID } from '@hashtree/core';
+import { toHex, fromHex, cid } from '@hashtree/core';
 
 /**
  * Record of a visited link-visible tree

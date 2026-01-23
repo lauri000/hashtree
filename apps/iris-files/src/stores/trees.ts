@@ -6,7 +6,7 @@
  */
 import { writable, get, type Readable } from 'svelte/store';
 import { getRefResolver } from '../refResolver';
-import { toHex, type Hash, type TreeVisibility } from 'hashtree';
+import { toHex, type Hash, type TreeVisibility } from '@hashtree/core';
 import { nostrStore } from '../nostr';
 import Dexie from 'dexie';
 

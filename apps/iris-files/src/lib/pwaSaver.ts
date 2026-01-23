@@ -3,7 +3,7 @@
  */
 
 import { getTree } from '../store';
-import { nhashEncode, LinkType, type CID } from 'hashtree';
+import { nhashEncode, LinkType, type CID } from '@hashtree/core';
 import type { PWAInfo, PWAAsset } from './pwaFetcher';
 
 interface DirectoryEntry {

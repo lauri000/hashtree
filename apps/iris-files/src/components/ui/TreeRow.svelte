@@ -3,7 +3,7 @@
    * TreeRow - reusable row component for displaying trees/folders
    * Used in FileBrowser, RecentsView, FollowsTreesView
    */
-  import type { TreeVisibility } from 'hashtree';
+  import type { TreeVisibility } from '@hashtree/core';
   import { Avatar } from '../User';
   import VisibilityIcon from '../VisibilityIcon.svelte';
   import { getFileIcon } from '../../utils/fileIcon';

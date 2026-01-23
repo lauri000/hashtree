@@ -3,7 +3,7 @@
  * Persists to localStorage, uses Svelte stores
  */
 import { writable, get } from 'svelte/store';
-import type { TreeVisibility } from 'hashtree';
+import type { TreeVisibility } from '@hashtree/core';
 import { routeStore } from './route';
 
 const STORAGE_KEY = 'hashtree:recents';

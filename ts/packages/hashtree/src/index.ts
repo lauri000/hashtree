@@ -122,7 +122,7 @@ export {
 
 // BEP52 (BitTorrent v2) compatible merkle tree
 // Main API: Bep52TreeBuilder, Bep52StreamBuilder
-// Low-level functions available via: import { bep52 } from 'hashtree'
+// Low-level functions available via: import { bep52 } from '@hashtree/core'
 export {
   BEP52_BLOCK_SIZE,
   ZERO_HASH,

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { nhashEncode, isNHash, isNPath } from 'hashtree';
+  import { nhashEncode, isNHash, isNPath } from '@hashtree/core';
   import { nip19 } from 'nostr-tools';
   import { nostrStore } from '../nostr';
   import { follows } from '../utils/socialGraph';

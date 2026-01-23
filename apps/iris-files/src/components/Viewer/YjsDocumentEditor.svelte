@@ -13,8 +13,8 @@
   import Image from '@tiptap/extension-image';
   import * as Y from 'yjs';
   import Collaboration from '@tiptap/extension-collaboration';
-  import { toHex, LinkType } from 'hashtree';
-  import type { CID, TreeEntry } from 'hashtree';
+  import { toHex, LinkType } from '@hashtree/core';
+  import type { CID, TreeEntry } from '@hashtree/core';
   import { getTree } from '../../store';
   import { routeStore, createTreesStore, getTreeRootSync } from '../../stores';
   import { open as openForkModal } from '../Modals/ForkModal.svelte';

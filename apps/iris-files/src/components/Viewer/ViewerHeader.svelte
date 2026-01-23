@@ -4,7 +4,7 @@
    * Shows back button, avatar, visibility, and name
    * Used by directory viewer (git repos, regular dirs)
    */
-  import type { CID, TreeVisibility } from 'hashtree';
+  import type { CID, TreeVisibility } from '@hashtree/core';
   import type { Snippet } from 'svelte';
   import { npubToPubkey } from '../../nostr';
   import { Avatar } from '../User';

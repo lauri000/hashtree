@@ -5,7 +5,7 @@
   import StreamView from '../components/stream/StreamView.svelte';
   import { nostrStore } from '../nostr';
   import { routeStore, addRecent, isViewingFileStore, currentHash, directoryEntriesStore } from '../stores';
-  import { LinkType } from 'hashtree';
+  import { LinkType } from '@hashtree/core';
   import { updateRecentVisibility } from '../stores/recents';
   import { nip19 } from 'nostr-tools';
   import { getQueryParamsFromHash } from '../lib/router.svelte';

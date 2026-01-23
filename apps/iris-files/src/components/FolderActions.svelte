@@ -3,8 +3,8 @@
    * Shared folder action buttons - used in FileBrowser and Viewer
    * Port of React FolderActions component
    */
-  import { nhashEncode, toHex, LinkType } from 'hashtree';
-  import type { CID } from 'hashtree';
+  import { nhashEncode, toHex, LinkType } from '@hashtree/core';
+  import type { CID } from '@hashtree/core';
   import { SvelteMap } from 'svelte/reactivity';
   import { open as openCreateModal } from './Modals/CreateModal.svelte';
   import { open as openRenameModal } from './Modals/RenameModal.svelte';

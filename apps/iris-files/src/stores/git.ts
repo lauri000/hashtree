@@ -2,7 +2,7 @@
  * Git-related stores for detecting and interacting with git repos
  */
 import { writable, get, type Readable } from 'svelte/store';
-import type { CID } from 'hashtree';
+import type { CID } from '@hashtree/core';
 import { isGitRepo, getBranches, getLog, getStatus, getHead } from '../utils/git';
 import type { GitStatusResult } from '../utils/wasmGit';
 import { nostrStore } from '../nostr';

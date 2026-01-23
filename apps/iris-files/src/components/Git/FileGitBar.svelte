@@ -3,7 +3,7 @@
    * FileGitBar - Shows git commit info for a file being viewed
    * Displays last commit that modified the file, when, and link to history
    */
-  import type { CID } from 'hashtree';
+  import type { CID } from '@hashtree/core';
   import { getFileLastCommits } from '../../utils/wasmGit';
   import { open as openGitHistoryModal } from '../Modals/GitHistoryModal.svelte';
 

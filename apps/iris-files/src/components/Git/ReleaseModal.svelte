@@ -2,7 +2,7 @@
   /**
    * Modal for creating or editing a release.
    */
-  import type { TreeVisibility } from 'hashtree';
+  import type { TreeVisibility } from '@hashtree/core';
   import type { ReleaseDetail, ReleaseSummary } from '../../stores/releases';
 
   export interface ReleaseModalTarget {

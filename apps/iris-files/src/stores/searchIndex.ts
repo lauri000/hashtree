@@ -6,8 +6,8 @@
  * - Users by name/npub/nip05: "u:" prefix
  */
 import { writable, get } from 'svelte/store';
-import { SearchIndex } from 'hashtree-index';
-import { cid, toHex, fromHex, type CID } from 'hashtree';
+import { SearchIndex } from '@hashtree/index';
+import { cid, toHex, fromHex, type CID } from '@hashtree/core';
 import { localStore } from '../store';
 import { DEFAULT_BOOTSTRAP_PUBKEY } from '../utils/constants';
 

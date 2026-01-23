@@ -11,8 +11,8 @@
  * @see tree-root-caching-plan.md for architecture details
  */
 
-import type { Hash, TreeVisibility } from 'hashtree';
-import { fromHex, toHex } from 'hashtree';
+import type { Hash, TreeVisibility } from '@hashtree/core';
+import { fromHex, toHex } from '@hashtree/core';
 
 /**
  * Source of the tree root update

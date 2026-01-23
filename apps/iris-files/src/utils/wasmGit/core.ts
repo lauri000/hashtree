@@ -1,8 +1,8 @@
 /**
  * Core wasm-git utilities - module loading, locking, filesystem operations
  */
-import type { CID } from 'hashtree';
-import { LinkType } from 'hashtree';
+import type { CID } from '@hashtree/core';
+import { LinkType } from '@hashtree/core';
 import { getTree } from '../../store';
 
 // Module type from wasm-git

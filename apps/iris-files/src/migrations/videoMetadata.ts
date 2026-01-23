@@ -7,8 +7,8 @@
 
 import { getTree } from '../store';
 import { updateLocalRootCacheHex } from '../treeRootCache';
-import { toHex, LinkType, nhashEncode } from 'hashtree';
-import type { CID, Hash, TreeVisibility } from 'hashtree';
+import { toHex, LinkType, nhashEncode } from '@hashtree/core';
+import type { CID, Hash, TreeVisibility } from '@hashtree/core';
 import { getRefResolver } from '../refResolver';
 import { getWorkerAdapter } from '../lib/workerInit';
 

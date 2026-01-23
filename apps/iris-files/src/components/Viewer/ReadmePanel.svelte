@@ -4,7 +4,7 @@
    */
   import { marked, type Token, type Tokens } from 'marked';
   import DOMPurify from 'dompurify';
-  import { LinkType, type TreeEntry } from 'hashtree';
+  import { LinkType, type TreeEntry } from '@hashtree/core';
   import { routeStore } from '../../stores';
 
   interface Props {

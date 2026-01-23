@@ -2,7 +2,7 @@
  * Nostr Store - Svelte store for Nostr state
  */
 import { writable, get } from 'svelte/store';
-import type { TreeVisibility } from 'hashtree';
+import type { TreeVisibility } from '@hashtree/core';
 import { DEFAULT_NETWORK_SETTINGS } from '../stores/settings';
 
 export interface HashTreeEvent {

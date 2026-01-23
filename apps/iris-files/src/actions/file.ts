@@ -1,7 +1,7 @@
 /**
  * File operations - create, save, upload files
  */
-import { LinkType, type CID } from 'hashtree';
+import { LinkType, type CID } from '@hashtree/core';
 import { autosaveIfOwn } from '../nostr';
 import { getTree } from '../store';
 import { markFilesChanged } from '../stores/recentlyChanged';

@@ -5,7 +5,7 @@
  * storage without knowing about the worker details.
  */
 
-import type { Store, Hash } from 'hashtree';
+import type { Store, Hash } from '@hashtree/core';
 import { getWorkerAdapter } from '../lib/workerInit';
 
 /**

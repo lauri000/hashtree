@@ -8,8 +8,8 @@
  *
  * @see TreeRootRegistry.ts for the underlying implementation
  */
-import type { Hash, TreeVisibility } from 'hashtree';
-import { fromHex } from 'hashtree';
+import type { Hash, TreeVisibility } from '@hashtree/core';
+import { fromHex } from '@hashtree/core';
 import { treeRootRegistry } from './TreeRootRegistry';
 import { parseRoute } from './utils/route';
 

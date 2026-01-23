@@ -2,7 +2,7 @@
   /**
    * Visibility picker for selecting tree visibility (public/link-visible/private)
    */
-  import type { TreeVisibility } from 'hashtree';
+  import type { TreeVisibility } from '@hashtree/core';
 
   interface Props {
     value: TreeVisibility;

@@ -4,7 +4,7 @@
    * Uses CID (hash + key) to create a reference to the video
    * Shows which playlists already contain the video (like YouTube)
    */
-  import type { CID } from 'hashtree';
+  import type { CID } from '@hashtree/core';
 
   export interface AddToPlaylistTarget {
     videoCid: CID;
@@ -30,7 +30,7 @@
   import { nostrStore, saveHashtree } from '../../nostr';
   import { getTree } from '../../store';
   import { createTreesStore, type TreeEntry } from '../../stores/trees';
-  import { LinkType, cid as makeCid } from 'hashtree';
+  import { LinkType, cid as makeCid } from '@hashtree/core';
   import { hasVideoFile, MIN_VIDEOS_FOR_STRUCTURE } from '../../stores/playlist';
 
   let npub = $derived($nostrStore.npub);

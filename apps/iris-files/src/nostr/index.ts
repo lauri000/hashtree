@@ -4,7 +4,7 @@
  */
 
 // Re-export TreeVisibility from hashtree lib
-export type { TreeVisibility } from 'hashtree';
+export type { TreeVisibility } from '@hashtree/core';
 
 // Store exports
 export {

@@ -15,7 +15,7 @@
 
 <script lang="ts">
   import { nostrStore, saveHashtree } from '../../nostr';
-  import { videoChunker, LinkType, nhashEncode, type CID, type WorkerBlossomUploadProgress } from 'hashtree';
+  import { videoChunker, LinkType, nhashEncode, type CID, type WorkerBlossomUploadProgress } from '@hashtree/core';
   import { getTree } from '../../store';
   import { addRecent } from '../../stores/recents';
   import { storeLinkKey } from '../../stores/trees';

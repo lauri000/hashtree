@@ -3,13 +3,13 @@
  * Populated by VideoHome, consumed by FeedSidebar
  */
 import { writable, get } from 'svelte/store';
-import type { CID } from 'hashtree';
+import type { CID } from '@hashtree/core';
 import { ndk, pubkeyToNpub, nostrStore } from '../nostr';
 import { createFollowsStore, getFollowsSync } from './follows';
 import { getFollows as getSocialGraphFollows } from '../utils/socialGraph';
 import { getWorkerAdapter, waitForWorkerAdapter } from '../lib/workerInit';
 import { DEFAULT_BOOTSTRAP_PUBKEY, DEFAULT_VIDEO_FEED_PUBKEYS } from '../utils/constants';
-import { fromHex } from 'hashtree';
+import { fromHex } from '@hashtree/core';
 import { orderFeedWithInterleaving } from '../utils/feedOrder';
 import { clearDeletedVideo, getDeletedVideoTimestamp, recordDeletedVideo } from './videoDeletes';
 import { isHtreeDebugEnabled, logHtreeDebug } from '../lib/htreeDebug';

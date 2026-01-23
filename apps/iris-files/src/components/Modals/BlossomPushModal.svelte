@@ -3,7 +3,7 @@
    * BlossomPushModal - Push directory/file contents to Blossom servers
    * Optionally republishes tree event to Nostr if pubkey+treeName provided
    */
-  import type { CID } from 'hashtree';
+  import type { CID } from '@hashtree/core';
 
   export interface BlossomPushTarget {
     cid: CID;

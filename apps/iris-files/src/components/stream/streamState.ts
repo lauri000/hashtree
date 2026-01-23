@@ -1,6 +1,6 @@
 import { writable, get } from 'svelte/store';
-import { cid } from 'hashtree';
-import type { StreamWriter, CID } from 'hashtree';
+import { cid } from '@hashtree/core';
+import type { StreamWriter, CID } from '@hashtree/core';
 import { getTree } from '../../store';
 import { autosaveIfOwn, nostrStore } from '../../nostr';
 import { parseRoute } from '../../utils/route';

@@ -21,7 +21,7 @@ import { treeRootRegistry } from '../TreeRootRegistry';
 import { initializePublishFn } from '../treeRootCache';
 import { setupMediaStreaming } from './mediaStreamingSetup';
 import type { NDKEvent, NDKFilter, NDKSubscription } from 'ndk';
-import type { WorkerNostrFilter, WorkerSignedEvent } from 'hashtree';
+import type { WorkerNostrFilter, WorkerSignedEvent } from '@hashtree/core';
 // Import worker using Vite's ?worker query - returns a Worker constructor
 import HashtreeWorker from '../workers/hashtree.worker.ts?worker';
 

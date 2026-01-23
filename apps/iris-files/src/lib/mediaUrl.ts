@@ -9,7 +9,7 @@
  * - Tauri: http://127.0.0.1:21417/htree/{...} (same path structure, fixed port)
  */
 
-import { nhashEncode, type CID } from 'hashtree';
+import { nhashEncode, type CID } from '@hashtree/core';
 import { isTauri } from '../tauri';
 import { logHtreeDebug } from './htreeDebug';
 

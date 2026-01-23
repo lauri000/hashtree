@@ -5,8 +5,8 @@
  * All uploads use encryption by default (CHK - Content Hash Key).
  */
 import { writable, get } from 'svelte/store';
-import { toHex, nhashEncode, cid, LinkType, videoChunker } from 'hashtree';
-import type { CID } from 'hashtree';
+import { toHex, nhashEncode, cid, LinkType, videoChunker } from '@hashtree/core';
+import type { CID } from '@hashtree/core';
 import { getTree } from '../store';
 import { autosaveIfOwn, saveHashtree, nostrStore } from '../nostr';
 import { navigate } from '../utils/navigate';

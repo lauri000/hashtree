@@ -2,8 +2,8 @@
  * Filesystem adapter for isomorphic-git that uses hashtree as storage
  * Implements the fs interface expected by isomorphic-git
  */
-import type { CID, HashTree } from 'hashtree';
-import { LinkType } from 'hashtree';
+import type { CID, HashTree } from '@hashtree/core';
+import { LinkType } from '@hashtree/core';
 import { getTree } from '../store';
 
 interface Stats {

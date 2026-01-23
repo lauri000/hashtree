@@ -1,4 +1,4 @@
-import { HashTree, LinkType, type CID, type Store, type TreeEntry } from 'hashtree';
+import { HashTree, LinkType, type CID, type Store, type TreeEntry } from '@hashtree/core';
 
 export interface BTreeOptions {
   /** Max entries per node before splitting. Default: 32 */

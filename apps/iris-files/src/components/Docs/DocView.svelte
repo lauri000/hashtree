@@ -5,7 +5,7 @@
    */
   import { routeStore, treeRootStore, createTreesStore } from '../../stores';
   import { getTree } from '../../store';
-  import { type CID, type TreeEntry } from 'hashtree';
+  import { type CID, type TreeEntry } from '@hashtree/core';
   import YjsDocumentEditor from '../Viewer/YjsDocumentEditor.svelte';
   import { nostrStore } from '../../nostr';
   import { nip19 } from 'nostr-tools';

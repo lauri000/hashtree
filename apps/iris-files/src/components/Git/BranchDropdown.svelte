@@ -2,8 +2,8 @@
   /**
    * BranchDropdown - Git branch selector with new branch creation and comparison
    */
-  import type { CID } from 'hashtree';
-  import { LinkType } from 'hashtree';
+  import type { CID } from '@hashtree/core';
+  import { LinkType } from '@hashtree/core';
   import { createBranch, applyGitChanges } from '../../utils/git';
   import { getErrorMessage } from '../../utils/errorMessage';
   import { navigate } from '../../lib/router.svelte';

@@ -1,4 +1,4 @@
-import type { Hash, Store, CID } from 'hashtree';
+import type { Hash, Store, CID } from '@hashtree/core';
 
 export type { Hash, Store, CID };
 

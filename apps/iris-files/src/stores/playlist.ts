@@ -18,7 +18,7 @@ import { LRUCache } from '../utils/lruCache';
 import { indexVideo } from './searchIndex';
 import { clearFeedPlaylistInfo } from './homeFeedCache';
 import { getHtreePrefix } from '../lib/mediaUrl';
-import { LinkType, type CID } from 'hashtree';
+import { LinkType, type CID } from '@hashtree/core';
 import { isTauri } from '../tauri';
 
 // Cache playlist detection results to avoid layout shift on revisit

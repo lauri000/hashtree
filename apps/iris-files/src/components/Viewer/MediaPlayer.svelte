@@ -13,7 +13,7 @@
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { recentlyChangedFiles } from '../../stores/recentlyChanged';
   import { currentHash } from '../../stores';
-  import type { CID } from 'hashtree';
+  import type { CID } from '@hashtree/core';
   import { getCidFileUrl, getNpubFileUrlAsync } from '../../lib/mediaUrl';
   import { getQueryParamsFromHash } from '../../lib/router.svelte';
 

@@ -21,8 +21,8 @@ import type {
   WorkerBlossomServerConfig as BlossomServerConfig,
   CID,
   WebRTCCommand,
-} from 'hashtree';
-import { generateRequestId } from 'hashtree';
+} from '@hashtree/core';
+import { generateRequestId } from '@hashtree/core';
 import { WebRTCProxy } from './webrtcProxy';
 import { getErrorMessage } from './utils/errorMessage';
 import type { TreeRootInfo } from './worker/protocol';

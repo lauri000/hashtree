@@ -5,7 +5,7 @@
    * Lazy loads emulators package only when an executable is opened.
    * Mounts the parent directory from hashtree as the DOS C: drive.
    */
-  import { LinkType, toHex, type CID } from 'hashtree';
+  import { LinkType, toHex, type CID } from '@hashtree/core';
   import { SvelteMap } from 'svelte/reactivity';
   import { getTree } from '../../store';
   import { saveBinaryFile } from '../../actions/file';

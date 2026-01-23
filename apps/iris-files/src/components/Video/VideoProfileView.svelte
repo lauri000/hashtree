@@ -17,7 +17,7 @@
   import { getFollowers, fetchUserFollows, fetchUserFollowers, socialGraphStore } from '../../utils/socialGraph';
   import { getLocalRootCache, getLocalRootKey } from '../../treeRootCache';
   import { detectPlaylistForCard, MIN_VIDEOS_FOR_STRUCTURE } from '../../stores/playlist';
-  import type { CID } from 'hashtree';
+  import type { CID } from '@hashtree/core';
 
   interface PlaylistInfo {
     key: string;

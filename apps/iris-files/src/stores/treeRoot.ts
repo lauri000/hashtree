@@ -13,8 +13,8 @@
  * - UI reads -> TreeRootRegistry (via get/resolve)
  */
 import { writable, get, type Readable } from 'svelte/store';
-import { fromHex, toHex, cid, visibilityHex } from 'hashtree';
-import type { CID, SubscribeVisibilityInfo, Hash, TreeVisibility } from 'hashtree';
+import { fromHex, toHex, cid, visibilityHex } from '@hashtree/core';
+import type { CID, SubscribeVisibilityInfo, Hash, TreeVisibility } from '@hashtree/core';
 import { routeStore, parseRouteFromHash } from './route';
 import { getRefResolver, getResolverKey } from '../refResolver';
 import { nostrStore, decrypt } from '../nostr';
