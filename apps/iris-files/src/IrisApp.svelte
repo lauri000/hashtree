@@ -226,23 +226,82 @@
     return isNHash(firstSegment) || isNPath(firstSegment) || (firstSegment.startsWith('npub1') && firstSegment.length >= 63);
   }
 
+  function extractHashRoute(value: string): string | null {
+    if (value.startsWith('#/')) {
+      return value.slice(1);
+    }
+
+    try {
+      const url = new URL(value);
+      if (url.hash && url.hash.startsWith('#/')) {
+        return url.hash.slice(1);
+      }
+    } catch {
+      // Not a URL
+    }
+
+    return null;
+  }
+
+  function extractHashtreePath(value: string): string | null {
+    let trimmed = value.trim();
+    if (!trimmed) return null;
+
+    if (trimmed.startsWith('htree://')) {
+      trimmed = trimmed.slice('htree://'.length);
+    }
+
+    // Avoid treating full URLs as internal routes.
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) return null;
+
+    const normalized = trimmed.replace(/^\/+/, '');
+    const prefixes = ['nhash1', 'npath1', 'npub1'];
+    let start = -1;
+    for (const prefix of prefixes) {
+      const idx = normalized.lastIndexOf(prefix);
+      if (idx > start) start = idx;
+    }
+    if (start === -1) return null;
+
+    const candidate = normalized.slice(start);
+    if (!isHashtreeIdentifier(candidate)) return null;
+    return `/${candidate}`;
+  }
+
   function handleAddressSubmit() {
     const value = addressValue.trim();
-    if (value) {
-      if (value.startsWith('http://') || value.startsWith('https://')) {
-        navigate(`/app/${encodeURIComponent(value)}`);
-      } else if (value.startsWith('/')) {
-        navigate(value);
-      } else if (isHashtreeIdentifier(value)) {
-        // nhash1.../path, npath1..., npub1.../treename/path - navigate as internal route
-        navigate(`/${value}`);
-      } else if (value.includes('.') && !value.includes(' ')) {
-        navigate(`/app/${encodeURIComponent('https://' + value)}`);
-      } else {
-        navigate(`/${value}`);
-      }
-    } else {
+    if (!value) {
       navigate('/');
+      addressInputEl?.blur();
+      isAddressFocused = false;
+      return;
+    }
+
+    const hashRoute = extractHashRoute(value);
+    if (hashRoute) {
+      navigate(hashRoute);
+      addressInputEl?.blur();
+      isAddressFocused = false;
+      return;
+    }
+
+    const hashtreePath = extractHashtreePath(value);
+    if (hashtreePath) {
+      // nhash1.../path, npath1..., npub1.../treename/path - navigate as internal route
+      navigate(hashtreePath);
+      addressInputEl?.blur();
+      isAddressFocused = false;
+      return;
+    }
+
+    if (value.startsWith('http://') || value.startsWith('https://')) {
+      navigate(`/app/${encodeURIComponent(value)}`);
+    } else if (value.startsWith('/')) {
+      navigate(value);
+    } else if (value.includes('.') && !value.includes(' ')) {
+      navigate(`/app/${encodeURIComponent('https://' + value)}`);
+    } else {
+      navigate(`/${value}`);
     }
     addressInputEl?.blur();
     isAddressFocused = false;

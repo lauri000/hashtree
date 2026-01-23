@@ -67,6 +67,26 @@ describe('Address bar navigation', () => {
     });
   });
 
+  it('normalizes npub file paths even with extra prefix text', async () => {
+    const addressInput = await browser.$('input[placeholder="Search or enter address"]');
+    await addressInput.waitForExist({ timeout: 30000 });
+
+    const npub = 'npub1wj6a4ex6hsp7rq4g3h9fzqwezt9f0478vnku9wzzkl25w2uudnds4z3upt';
+    const npubWithPath = `${npub}/public/jumble/dist/index.html`;
+
+    await addressInput.click();
+    await addressInput.setValue(`/${npub}${npubWithPath}`);
+    await browser.keys(['Enter']);
+
+    await browser.waitUntil(async () => {
+      const hash = await browser.execute(() => window.location.hash);
+      return hash === `#/${npubWithPath}`;
+    }, {
+      timeout: 20000,
+      timeoutMsg: 'Expected npub/path to normalize to the file route',
+    });
+  });
+
   // Test npath URLs
   it('navigates to npath URLs', async () => {
     const addressInput = await browser.$('input[placeholder="Search or enter address"]');
@@ -85,6 +105,26 @@ describe('Address bar navigation', () => {
     }, {
       timeout: 20000,
       timeoutMsg: 'Expected npath to navigate as internal route',
+    });
+  });
+
+  it('normalizes nhash file paths even with extra prefix text', async () => {
+    const addressInput = await browser.$('input[placeholder="Search or enter address"]');
+    await addressInput.waitForExist({ timeout: 30000 });
+
+    const nhash = 'nhash1qqsxxmj54ga6x42vskde630ew272w6jyfjy5ykezvu7mgc3xhxp7nks9yr8a0xh9mrhwnu5u0kpky8n36j9tjjev6gq68ut8yd4f3022jsnrz9pnqm9';
+    const nhashWithPath = `${nhash}/index.html`;
+
+    await addressInput.click();
+    await addressInput.setValue(`/settings${nhashWithPath}`);
+    await browser.keys(['Enter']);
+
+    await browser.waitUntil(async () => {
+      const hash = await browser.execute(() => window.location.hash);
+      return hash === `#/${nhashWithPath}`;
+    }, {
+      timeout: 20000,
+      timeoutMsg: 'Expected nhash/path to normalize to the file route',
     });
   });
 
