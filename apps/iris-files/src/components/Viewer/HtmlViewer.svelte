@@ -9,6 +9,8 @@
   import { untrack } from 'svelte';
   import { routeStore, currentDirCidStore } from '../../stores';
   import { getTree } from '../../store';
+  import { getHtreePrefix } from '../../lib/mediaUrl';
+  import { isTauri } from '../../tauri';
 
   interface Props {
     content: string;
@@ -37,8 +39,14 @@
     }
     base += '/';
 
-    if (typeof window !== 'undefined' && window.location?.origin) {
-      return new URL(base, window.location.origin).toString();
+    if (typeof window !== 'undefined') {
+      const prefix = isTauri() ? getHtreePrefix() : '';
+      if (prefix) {
+        return new URL(base, prefix).toString();
+      }
+      if (window.location?.origin) {
+        return new URL(base, window.location.origin).toString();
+      }
     }
     return base;
   });
@@ -840,7 +848,7 @@
   });
 </script>
 
-<div class="flex-1 flex flex-col min-h-0">
+<div class="flex-1 flex flex-col min-h-0" data-testid="html-viewer" data-htree-base={baseUrl}>
   {#if iframeSrc}
     <iframe
       src={iframeSrc}
