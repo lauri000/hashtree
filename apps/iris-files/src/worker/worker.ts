@@ -9,10 +9,8 @@
  * NIP-07 signing/encryption delegated back to main thread.
  */
 
-import { HashTree } from '../../../../ts/packages/hashtree/src/hashtree';
-import { DexieStore } from '../../../../ts/packages/hashtree/src/store/dexie';
-import { BlossomStore } from '../../../../ts/packages/hashtree/src/store/blossom';
-import { FallbackStore } from '../../../../ts/packages/hashtree/src/store/fallback';
+import { HashTree, BlossomStore, FallbackStore } from '@hashtree/core';
+import { DexieStore } from '@hashtree/dexie';
 import type { WorkerRequest, WorkerResponse, WorkerConfig, SignedEvent, WebRTCCommand, BlossomUploadProgress, BlossomServerStatus } from './protocol';
 import { initTreeRootCache, getCachedRoot, getCachedRootInfo, setCachedRoot, mergeCachedRootKey, clearMemoryCache } from './treeRootCache';
 import { handleTreeRootEvent, isTreeRootEvent, setNotifyCallback as setTreeRootNotifyCallback, subscribeToTreeRoots, unsubscribeFromTreeRoots } from './treeRootSubscription';

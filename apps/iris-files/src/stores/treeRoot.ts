@@ -774,7 +774,7 @@ export function createTreeRootStore(): Readable<CID | null> {
               // Migration: old event without selfEncryptedLinkKey
               // Try to derive linkKey from contentKey and encryptedKey (XOR)
               const treeName = resolverKey.split('/').slice(1).join('/');
-              const { toHex, visibilityHex } = await import('hashtree');
+              const { toHex, visibilityHex } = await import('@hashtree/core');
 
               // Get encryptedKey from visibilityInfo or list
               let encryptedKeyHex = visibilityInfo?.encryptedKey;
@@ -819,7 +819,7 @@ export function createTreeRootStore(): Readable<CID | null> {
                     // Optionally republish with selfEncryptedLinkKey for future URL recovery
                     try {
                       const resolver = getRefResolver();
-                      const { fromHex } = await import('hashtree');
+                      const { fromHex } = await import('@hashtree/core');
                       await resolver.publish(treeName, hash, {
                         visibility: 'link-visible',
                         key: fromHex(contentKeyHex),

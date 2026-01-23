@@ -3,6 +3,10 @@ export { Peer } from './peer.js';
 export {
   PeerId,
   generateUuid,
+  MAX_HTL,
+  MSG_TYPE_REQUEST,
+  MSG_TYPE_RESPONSE,
+  FRAGMENT_SIZE,
   type SignalingMessage,
   type WebRTCStoreConfig,
   type PeerStatus,
@@ -19,4 +23,23 @@ export {
   type PoolConfig,
   type WebRTCStats,
   type BandwidthSample,
+  type DataRequest,
+  type DataResponse,
 } from './types.js';
+
+// Protocol functions
+export {
+  encodeRequest,
+  encodeResponse,
+  parseMessage,
+  createRequest,
+  createResponse,
+  createFragmentResponse,
+  hashToKey,
+  verifyHash,
+  generatePeerHTLConfig,
+  decrementHTL,
+  shouldForward,
+  type PeerHTLConfig,
+  type PendingRequest,
+} from './protocol.js';

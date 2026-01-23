@@ -21,7 +21,7 @@ import { parseRoute } from './utils/route';
 export async function initializePublishFn(): Promise<void> {
   // Dynamic imports for modules that may cause circular dependencies
   const { getRefResolver } = await import('./refResolver');
-  const { cid: makeCid, fromHex: hexToBytes } = await import('hashtree');
+  const { cid: makeCid, fromHex: hexToBytes } = await import('@hashtree/core');
 
   treeRootRegistry.setPublishFn(async (_npub, treeName, record) => {
     // Get the resolver

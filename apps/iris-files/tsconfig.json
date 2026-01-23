@@ -13,9 +13,7 @@
     "noImplicitAny": true,
     "noEmit": true,
     "paths": {
-      "$lib/*": ["./src/lib/*"],
-      "hashtree": ["../hashtree/src/index.ts"],
-      "hashtree/webrtc": ["../hashtree/src/webrtc/index.ts"]
+      "$lib/*": ["./src/lib/*"]
     },
     "baseUrl": "."
   },

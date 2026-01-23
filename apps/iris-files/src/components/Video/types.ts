@@ -26,7 +26,7 @@ export interface VideoItem {
   /** For playlist videos: the video folder name within the playlist tree */
   videoId?: string;
   /** Root CID for playlist detection */
-  rootCid?: import('hashtree').CID;
+  rootCid?: import('@hashtree/core').CID;
   visibility?: string;
   href: string;
   timestamp?: number;

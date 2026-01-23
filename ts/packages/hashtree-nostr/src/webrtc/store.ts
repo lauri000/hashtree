@@ -15,8 +15,8 @@
  * Each pool has its own connection limits.
  */
 import { SimplePool, type Event } from 'nostr-tools';
-import type { Store, Hash } from '../types.js';
-import { toHex } from '../types.js';
+import type { Store, Hash } from '@hashtree/core';
+import { toHex } from '@hashtree/core';
 import {
   PeerId,
   generateUuid,
@@ -1212,7 +1212,7 @@ export class WebRTCStore implements Store {
         r.triedPeers.add(peerIdStr);
       }
 
-  
+
       const data = await peer.request(hash);
       if (data) {
         // Store locally

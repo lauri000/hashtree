@@ -6,7 +6,7 @@
  * Main thread owns: UI, NIP-07 extension access (signing/encryption)
  */
 
-import type { CID } from '../../../../ts/packages/hashtree/src/types';
+import type { CID } from '@hashtree/core';
 
 // Re-export common types from hashtree's worker protocol
 export type {

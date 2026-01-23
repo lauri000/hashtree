@@ -6,7 +6,8 @@
  */
 import { nip19 } from 'nostr-tools';
 import { NDKEvent, type NDKFilter, type NDKSubscriptionOptions, NDKSubscriptionCacheUsage } from 'ndk';
-import { createNostrRefResolver, fromHex, toHex, type RefResolver, type NostrFilter, type NostrEvent, type VisibilityCallbacks } from '@hashtree/core';
+import { fromHex, toHex, type RefResolver } from '@hashtree/core';
+import { createNostrRefResolver, type NostrFilter, type NostrEvent, type VisibilityCallbacks } from '@hashtree/nostr';
 import { ndk, useNostrStore, encrypt, decrypt } from './nostr';
 import { parseRoute } from './utils/route';
 

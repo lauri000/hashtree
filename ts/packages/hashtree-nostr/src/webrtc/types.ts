@@ -4,6 +4,8 @@
  * These types match the Rust hashtree-webrtc crate for interoperability.
  */
 
+import type { Store } from '@hashtree/core';
+
 // ICE candidate format (matches Rust IceCandidate)
 export interface IceCandidate {
   candidate: string;
@@ -156,7 +158,7 @@ export interface WebRTCStoreConfig {
   requestTimeout?: number;        // default 500ms - fast fallback to Blossom
   peerQueryDelay?: number;        // default 500ms - delay between sequential peer queries
   relays?: string[];
-  localStore?: import('../types.js').Store;
+  localStore?: Store;
   debug?: boolean;
   // Pool-based peer management
   peerClassifier?: PeerClassifier;
@@ -170,7 +172,7 @@ export interface WebRTCStoreConfig {
   // Fallback stores to try when WebRTC peers don't have the data
   // Tried in order after all WebRTC peers fail
   // Example: [new BlossomStore({ servers: ['https://hashtree.iris.to'] })]
-  fallbackStores?: import('../types.js').Store[];
+  fallbackStores?: Store[];
   // Function to check if a peer is blocked (by pubkey)
   // Blocked peers won't be connected to
   isPeerBlocked?: (pubkey: string) => boolean;

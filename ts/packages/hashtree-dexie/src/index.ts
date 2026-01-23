@@ -51,7 +51,8 @@ export class DexieStore implements Store {
   async put(hash: Hash, data: Uint8Array): Promise<boolean> {
     const hashHex = toHex(hash);
     try {
-      await this.db.blobs.put({ hashHex, data: new Uint8Array(data), lastAccess: Date.now() });
+      // Store directly - IDB will clone the data internally
+      await this.db.blobs.put({ hashHex, data, lastAccess: Date.now() });
       return true;
     } catch (e) {
       console.error('[DexieStore] put error:', e);
@@ -70,9 +71,13 @@ export class DexieStore implements Store {
       // We need to re-put the entry to avoid fake-indexeddb corruption issues with partial updates
       this.db.blobs.put({ ...entry, lastAccess: Date.now() }).catch(() => {});
 
-      // Use slice to ensure we get exact data without extra buffer bytes
-      // IndexedDB can store the entire backing ArrayBuffer of a view
+      // Return directly - IDB returns a fresh copy already
+      // Only slice if the view doesn't match the buffer (rare edge case)
       const data = entry.data;
+      if (data.byteOffset === 0 && data.byteLength === data.buffer.byteLength) {
+        return data;
+      }
+      // Rare: view is a subset of a larger buffer, need to copy
       return new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
     } catch (e) {
       console.error('[DexieStore] get error:', e);
@@ -83,8 +88,9 @@ export class DexieStore implements Store {
   async has(hash: Hash): Promise<boolean> {
     const hashHex = toHex(hash);
     try {
-      const entry = await this.db.blobs.get(hashHex);
-      return entry !== undefined;
+      // Use count with where clause - doesn't load the blob data
+      const count = await this.db.blobs.where('hashHex').equals(hashHex).count();
+      return count > 0;
     } catch (e) {
       console.error('[DexieStore] has error:', e);
       return false;
@@ -111,8 +117,9 @@ export class DexieStore implements Store {
    */
   async keys(): Promise<Hash[]> {
     try {
-      const hexKeys = await this.db.blobs.toCollection().primaryKeys();
-      return hexKeys.map(hex => fromHex(hex));
+      // Only fetch the primary keys, not the blob data
+      const hashHexes = await this.db.blobs.toCollection().primaryKeys();
+      return hashHexes.map(hex => fromHex(hex));
     } catch (e) {
       console.error('[DexieStore] keys error:', e);
       return [];
@@ -144,12 +151,13 @@ export class DexieStore implements Store {
 
   /**
    * Get total bytes stored
+   * Uses cursor to avoid loading all blobs into memory at once
    */
   async totalBytes(): Promise<number> {
     try {
       let total = 0;
-      await this.db.blobs.each(e => {
-        total += e.data.length;
+      await this.db.blobs.each(entry => {
+        total += entry.data.byteLength;
       });
       return total;
     } catch (e) {
@@ -178,7 +186,7 @@ export class DexieStore implements Store {
         if (bytesRemoved >= targetRemoval) break;
 
         await this.db.blobs.delete(entry.hashHex);
-        bytesRemoved += entry.data.length;
+        bytesRemoved += entry.data.byteLength;
         entriesRemoved++;
       }
 

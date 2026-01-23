@@ -7,14 +7,14 @@
  * render cycle. Components can subscribe to hash changes and update directly
  * (e.g., MediaSource append) without triggering re-renders.
  */
-import type { RefResolver, CID, RefResolverListEntry, SubscribeVisibilityInfo, PublishOptions, PublishResult } from '../types.js';
-import { fromHex, toHex, cid } from '../types.js';
+import type { RefResolver, CID, RefResolverListEntry, SubscribeVisibilityInfo, PublishOptions, PublishResult } from '@hashtree/core';
+import { fromHex, toHex, cid } from '@hashtree/core';
 import {
   encryptKeyForLink,
   computeKeyId,
   generateLinkKey,
   type TreeVisibility,
-} from '../visibility.js';
+} from '@hashtree/core';
 
 // Nostr event structure (minimal)
 export interface NostrEvent {

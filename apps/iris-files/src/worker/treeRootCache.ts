@@ -10,10 +10,9 @@
  * - Value: MessagePack { hash, key?, visibility, updatedAt }
  */
 
-import type { CID, Store } from '../../../../ts/packages/hashtree/src/types';
-import { sha256 } from '../../../../ts/packages/hashtree/src/hash';
+import type { CID, Store, TreeVisibility } from '@hashtree/core';
+import { sha256 } from '@hashtree/core';
 import { encode, decode } from '@msgpack/msgpack';
-import type { TreeVisibility } from '../../../../ts/packages/hashtree/src/visibility';
 import { LRUCache } from '../utils/lruCache';
 
 // Cached root entry

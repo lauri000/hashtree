@@ -1,7 +1,7 @@
 {
-  "name": "@hashtree/dexie",
+  "name": "@hashtree/nostr",
   "version": "0.1.0",
-  "description": "Dexie-based IndexedDB store for hashtree",
+  "description": "Nostr integration for hashtree - WebRTC P2P store and ref resolver",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,15 +24,17 @@
   },
   "keywords": [
     "hashtree",
-    "dexie",
-    "indexeddb",
-    "storage"
+    "nostr",
+    "webrtc",
+    "p2p",
+    "merkle"
   ],
   "author": "Martti Malmi",
   "license": "MIT",
   "dependencies": {
     "@hashtree/core": "workspace:*",
-    "dexie": "^4.2.1"
+    "@msgpack/msgpack": "^3.1.2",
+    "nostr-tools": "^2.18.2"
   },
   "devDependencies": {
     "typescript": "^5.3.0",

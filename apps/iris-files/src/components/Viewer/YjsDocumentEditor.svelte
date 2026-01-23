@@ -193,7 +193,7 @@
       userNpub,
       route.treeName,
       isOwnTree,
-      isOwnTree ? undefined : (visibility as import('hashtree').TreeVisibility)
+      isOwnTree ? undefined : (visibility as import('@hashtree/core').TreeVisibility)
     );
   }
 
@@ -386,7 +386,7 @@
           route.treeName!,
           toHex(newRootCid.hash),
           newRootCid.key ? toHex(newRootCid.key) : undefined,
-          (visibility as import('hashtree').TreeVisibility) || 'public'
+          (visibility as import('@hashtree/core').TreeVisibility) || 'public'
         );
       }
 

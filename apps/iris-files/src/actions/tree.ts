@@ -136,7 +136,7 @@ export async function createDocument(name: string) {
 
 // Fork a directory as a new top-level tree
 // Re-encrypts if source is unencrypted to ensure all forked content is encrypted
-export async function forkTree(dirCid: CID, name: string, visibility: import('hashtree').TreeVisibility = 'public'): Promise<{ success: boolean; linkKey?: string }> {
+export async function forkTree(dirCid: CID, name: string, visibility: import('@hashtree/core').TreeVisibility = 'public'): Promise<{ success: boolean; linkKey?: string }> {
   if (!name) return { success: false };
 
   const { saveHashtree } = await import('../nostr');
@@ -210,7 +210,7 @@ export async function forkTree(dirCid: CID, name: string, visibility: import('ha
 // Create a new tree (top-level folder on nostr or local)
 // Creates encrypted trees by default
 // Set skipNavigation=true to create without navigating (for batch creation)
-export async function createTree(name: string, visibility: import('hashtree').TreeVisibility = 'public', skipNavigation = false): Promise<{ success: boolean; linkKey?: string }> {
+export async function createTree(name: string, visibility: import('@hashtree/core').TreeVisibility = 'public', skipNavigation = false): Promise<{ success: boolean; linkKey?: string }> {
   if (!name) return { success: false };
 
   const { saveHashtree } = await import('../nostr');
@@ -260,7 +260,7 @@ export async function createTree(name: string, visibility: import('hashtree').Tr
 // Used by docs app to create standalone documents
 export async function createDocumentTree(
   name: string,
-  visibility: import('hashtree').TreeVisibility = 'public'
+  visibility: import('@hashtree/core').TreeVisibility = 'public'
 ): Promise<{ success: boolean; npub?: string; treeName?: string; linkKey?: string }> {
   if (!name) return { success: false };
 

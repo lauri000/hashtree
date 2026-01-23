@@ -15,9 +15,8 @@
  * - Data channel I/O
  */
 
-import type { Store } from '../../../../ts/packages/hashtree/src/types';
+import type { Store } from '@hashtree/core';
 import type { WebRTCCommand, WebRTCEvent } from './protocol.js';
-import type { SignalingMessage, PeerPool, DataRequest, DataResponse } from '../../../../ts/packages/hashtree/src/webrtc/types';
 import {
   MAX_HTL,
   MSG_TYPE_REQUEST,
@@ -25,8 +24,6 @@ import {
   FRAGMENT_SIZE,
   PeerId,
   generateUuid,
-} from '../../../../ts/packages/hashtree/src/webrtc/types';
-import {
   encodeRequest,
   encodeResponse,
   parseMessage,
@@ -38,9 +35,13 @@ import {
   generatePeerHTLConfig,
   decrementHTL,
   shouldForward,
+  type SignalingMessage,
+  type PeerPool,
+  type DataRequest,
+  type DataResponse,
   type PeerHTLConfig,
   type PendingRequest,
-} from '../../../../ts/packages/hashtree/src/webrtc/protocol';
+} from '@hashtree/nostr';
 import { LRUCache } from '../utils/lruCache';
 
 // ============================================================================

@@ -8,7 +8,7 @@
  * Response: [0x01][msgpack: {id: u32, h: bytes32, d: bytes}]
  */
 import { encode, decode } from '@msgpack/msgpack';
-import { sha256 } from '../hash.js';
+import { sha256 } from '@hashtree/core';
 import type { DataRequest, DataResponse, DataMessage } from './types.js';
 import {
   MAX_HTL,

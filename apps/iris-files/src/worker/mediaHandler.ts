@@ -5,13 +5,12 @@
  * Supports both direct CID-based requests and path-based requests with live streaming.
  */
 
-import type { HashTree } from '../../../../ts/packages/hashtree/src/hashtree';
-import type { CID } from '../types';
+import type { HashTree, CID } from '@hashtree/core';
 import type { MediaRequestByCid, MediaRequestByPath, MediaResponse } from './protocol';
 import { getCachedRoot } from './treeRootCache';
 import { subscribeToTreeRoots } from './treeRootSubscription';
 import { getErrorMessage } from '../utils/errorMessage';
-import { nhashDecode } from '../../../../ts/packages/hashtree/src/nhash';
+import { nhashDecode } from '@hashtree/core';
 import { nip19 } from 'nostr-tools';
 
 // Thumbnail filename patterns to look for (in priority order)

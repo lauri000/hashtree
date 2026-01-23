@@ -116,7 +116,7 @@
   async function loadTree(npubStr: string, treeNameVal: string) {
     try {
       const { getRefResolver, getResolverKey } = await import('../refResolver');
-      const { toHex } = await import('hashtree');
+      const { toHex } = await import('@hashtree/core');
       const resolver = getRefResolver();
       const key = getResolverKey(npubStr, treeNameVal);
 
@@ -162,7 +162,7 @@
                 } else if (visibilityInfo.selfEncryptedKey && visibilityInfo.encryptedKey) {
                   // Migration: derive linkKey from contentKey and encryptedKey
                   try {
-                    const { visibilityHex } = await import('hashtree');
+                    const { visibilityHex } = await import('@hashtree/core');
                     const contentKeyHex = await decrypt(state.pubkey, visibilityInfo.selfEncryptedKey);
                     if (contentKeyHex && contentKeyHex.length === 64) {
                       // linkKey = XOR(encryptedKey, contentKey)

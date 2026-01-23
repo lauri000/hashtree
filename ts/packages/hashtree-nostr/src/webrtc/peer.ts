@@ -1,7 +1,7 @@
 /**
  * WebRTC peer connection for hashtree data exchange
  */
-import type { Store, Hash } from '../types.js';
+import type { Store, Hash } from '@hashtree/core';
 import type {
   SignalingMessage,
   DataRequest,

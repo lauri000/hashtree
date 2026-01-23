@@ -7,7 +7,7 @@
  */
 
 import type { SignedEvent } from './protocol';
-import type { SignalingMessage } from '../../../../ts/packages/hashtree/src/webrtc/types';
+import type { SignalingMessage } from '@hashtree/nostr';
 import type { WebRTCController } from './webrtc';
 import { subscribe as ndkSubscribe, publish as ndkPublish } from './ndk';
 import { signEvent, giftWrap, giftUnwrap } from './signing';

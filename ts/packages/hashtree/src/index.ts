@@ -62,7 +62,6 @@ export {
 
 // Storage adapters
 export { MemoryStore } from './store/memory.js';
-export { OpfsStore, type OpfsStoreOptions } from './store/opfs.js';
 export {
   BlossomStore,
   type BlossomStoreConfig,
@@ -73,7 +72,12 @@ export {
   type BlossomLogger,
   type BlossomUploadCallback,
 } from './store/blossom.js';
-export { DexieStore } from './store/dexie.js';
+export {
+  FallbackStore,
+  type FallbackStoreConfig,
+  type ReadableStore,
+  type WritableStore,
+} from './store/fallback.js';
 
 // HashTree - unified tree operations (create, read, edit, stream)
 export {
@@ -96,29 +100,6 @@ export {
   videoChunker,
 } from './builder.js';
 
-// WebRTC P2P store
-export {
-  WebRTCStore,
-  DEFAULT_RELAYS,
-  Peer,
-  PeerId,
-  generateUuid,
-  type SignalingMessage,
-  type WebRTCStoreConfig,
-  type PeerStatus,
-  type WebRTCStoreEvent,
-  type WebRTCStoreEventHandler,
-  type EventSigner,
-  type EventEncrypter,
-  type EventDecrypter,
-  type GiftWrapper,
-  type GiftUnwrapper,
-  type SignedEvent,
-  type PeerPool,
-  type PeerClassifier,
-  type PoolConfig,
-  type WebRTCStats,
-} from './webrtc/index.js';
 
 // BEP52 (BitTorrent v2) compatible merkle tree
 // Main API: Bep52TreeBuilder, Bep52StreamBuilder
@@ -135,19 +116,6 @@ export {
 // Re-export low-level BEP52 merkle functions as namespace
 export * as bep52 from './bep52.js';
 
-// Ref resolvers
-export {
-  createNostrRefResolver,
-  // Legacy alias
-  createNostrRefResolver as createNostrRootResolver,
-  type NostrRefResolverConfig,
-  // Legacy alias
-  type NostrRefResolverConfig as NostrRootResolverConfig,
-  type NostrEvent,
-  type NostrFilter,
-  type Nip19Like,
-  type VisibilityCallbacks,
-} from './resolver/index.js';
 
 // Bech32 identifiers (nhash, npath)
 export {

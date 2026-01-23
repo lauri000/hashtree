@@ -167,7 +167,7 @@
       if (result.gitFiles) {
         const { getCurrentRootCid } = await import('../../actions/route');
         const { getTree } = await import('../../store');
-        const { LinkType } = await import('hashtree');
+        const { LinkType } = await import('@hashtree/core');
 
         const tree = getTree();
         let newDirCid = await applyGitChanges(dirCid, result.gitFiles);

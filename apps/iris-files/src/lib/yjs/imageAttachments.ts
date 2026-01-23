@@ -184,7 +184,7 @@ export async function saveImageToTree(
   userNpub: string,
   treeName: string,
   isOwnTree: boolean,
-  visibility?: import('hashtree').TreeVisibility
+  visibility?: import('@hashtree/core').TreeVisibility
 ): Promise<string | null> {
   const tree = getTree();
 

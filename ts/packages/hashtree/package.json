@@ -41,12 +41,8 @@
   "homepage": "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree",
   "dependencies": {
     "@msgpack/msgpack": "^3.1.2",
-    "@nostr-dev-kit/ndk": "^3.0.0-beta.66",
     "@noble/hashes": "^2.0.1",
-    "@scure/base": "^2.0.0",
-    "dexie": "^4.0.11",
-    "nostr-social-graph": "^1.0.33",
-    "nostr-tools": "^2.18.2"
+    "@scure/base": "^2.0.0"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",

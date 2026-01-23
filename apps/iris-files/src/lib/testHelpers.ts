@@ -101,14 +101,14 @@ export async function setupTestHelpers(): Promise<void> {
     window.__getMyPubkey = () => useNostrStore.getState().pubkey;
   });
 
-  const hashtreePromise = import('hashtree').then((hashtree) => {
+  const hashtreePromise = import('@hashtree/core').then((hashtree) => {
     window.__hashtree = hashtree;
   });
 
   const treeRootPromise = Promise.all([
     import('../stores'),
     import('svelte/store'),
-    import('hashtree'),
+    import('@hashtree/core'),
   ]).then(([stores, svelteStore, hashtree]) => {
     window.__getTreeRoot = () => {
       const rootCid = svelteStore.get(stores.treeRootStore);
@@ -147,7 +147,7 @@ export async function setupTestHelpers(): Promise<void> {
 async function setupWebRTCTestFunctions(): Promise<void> {
   const { getWorkerAdapter } = await import('./workerInit');
   const { localStore } = await import('../store');
-  const { sha256, toHex, fromHex } = await import('hashtree');
+  const { sha256, toHex, fromHex } = await import('@hashtree/core');
 
   /**
    * Run WebRTC test - wait for peers and optionally request content
