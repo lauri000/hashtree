@@ -23,6 +23,7 @@ git-remote-htree = { version = "0.2.3", path = "../git-remote-htree" }
 # Core hashtree crates
 hashtree-core.workspace = true
 hashtree-fs.workspace = true
+hashtree-fuse = { version = "0.2.3", path = "../fuse", optional = true, features = ["fuse"] }
 hashtree-lmdb = { workspace = true, optional = true }
 hashtree-blossom.workspace = true
 hashtree-config.workspace = true
@@ -77,6 +78,7 @@ rand = "0.8"
 secp256k1 = { version = "0.29", features = ["global-context"] }
 lru.workspace = true
 libc = "0.2"
+fuser = { version = "0.14", optional = true }
 
 # CLI
 clap.workspace = true
@@ -95,6 +97,7 @@ default = ["p2p"]
 p2p = ["dep:hashtree-webrtc", "dep:webrtc", "dep:webrtc-stun"]
 s3 = ["dep:aws-sdk-s3", "dep:aws-config"]
 lmdb = ["dep:hashtree-lmdb"]
+fuse = ["dep:hashtree-fuse", "dep:fuser"]
 
 [dev-dependencies]
 tempfile.workspace = true

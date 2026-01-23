@@ -50,6 +50,7 @@ pub mod nhash;
 pub mod reader;
 pub mod store;
 pub mod types;
+pub mod visibility;
 
 // Re-exports for convenience
 // Main API - unified HashTree
@@ -81,6 +82,7 @@ pub use crypto::{
     encrypted_size_chk, generate_key, key_from_hex, key_to_hex, plaintext_size, CryptoError,
     EncryptionKey,
 };
+pub use visibility::{xor_keys, TreeVisibility};
 
 // Tree diff operations
 pub use diff::{collect_hashes, collect_hashes_with_progress, tree_diff, tree_diff_streaming, tree_diff_with_old_hashes, DiffStats, TreeDiff};

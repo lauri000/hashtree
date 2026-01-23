@@ -771,6 +771,30 @@ impl<S: Store> HashTree<S> {
         Ok(Some(range_data))
     }
 
+    /// Read a byte range from a file using a Cid (handles decryption if key present)
+    pub async fn read_file_range_cid(
+        &self,
+        cid: &Cid,
+        start: u64,
+        end: Option<u64>,
+    ) -> Result<Option<Vec<u8>>, HashTreeError> {
+        if let Some(_key) = cid.key {
+            let data = match self.get(cid).await? {
+                Some(d) => d,
+                None => return Ok(None),
+            };
+            let start_idx = start as usize;
+            let end_idx = end.map(|e| e as usize).unwrap_or(data.len());
+            if start_idx >= data.len() {
+                return Ok(Some(vec![]));
+            }
+            let end_idx = end_idx.min(data.len());
+            return Ok(Some(data[start_idx..end_idx].to_vec()));
+        }
+
+        self.read_file_range(&cid.hash, start, end).await
+    }
+
     /// Assemble only the chunks needed for a byte range
     async fn assemble_chunks_range(
         &self,
@@ -1199,6 +1223,19 @@ impl<S: Store> HashTree<S> {
             total += link.size;
         }
         Ok(total)
+    }
+
+    /// Get total size using a Cid (handles decryption if key present)
+    pub async fn get_size_cid(&self, cid: &Cid) -> Result<u64, HashTreeError> {
+        if cid.key.is_some() {
+            let data = match self.get(cid).await? {
+                Some(d) => d,
+                None => return Ok(0),
+            };
+            return Ok(data.len() as u64);
+        }
+
+        self.get_size(&cid.hash).await
     }
 
     /// Walk entire tree depth-first (returns Vec)
