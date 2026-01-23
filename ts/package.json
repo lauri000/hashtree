@@ -13,8 +13,8 @@
     ]
   },
   "scripts": {
-    "build": "pnpm --filter hashtree build && pnpm --filter iris-files build",
-    "build:hashtree": "pnpm --filter hashtree build",
+    "build": "pnpm --filter @hashtree/core build && pnpm --filter iris-files build",
+    "build:hashtree": "pnpm --filter @hashtree/core build",
     "build:web": "pnpm --filter iris-files build",
     "build:docs": "pnpm --filter iris-files build:docs",
     "build:maps": "pnpm --filter iris-files build:maps",
@@ -25,15 +25,16 @@
     "tauri": "pnpm --filter iris-files tauri",
     "tauri:dev": "pnpm --filter iris-files tauri:dev",
     "tauri:build": "pnpm --filter iris-files tauri:build",
-    "test": "pnpm --filter hashtree test",
-    "test:watch": "pnpm --filter hashtree test:watch",
+    "test": "pnpm --filter @hashtree/core test",
+    "test:watch": "pnpm --filter @hashtree/core test:watch",
     "test:e2e": "pnpm --filter iris-files test:e2e",
     "test:e2e:fast": "pnpm --filter iris-files test:e2e:fast",
     "test:e2e:slow": "pnpm --filter iris-files test:e2e:slow",
     "test:tauri": "pnpm --filter iris-files test:tauri",
     "lint": "eslint packages/hashtree/src && pnpm --filter iris-files lint",
     "lint:fix": "eslint packages/hashtree/src --fix && pnpm --filter iris-files lint:fix",
-    "maps:crawl": "pnpm --filter hashtree build && node scripts/maps/crawl-tiles.js"
+    "maps:crawl": "pnpm --filter @hashtree/core build && node scripts/maps/crawl-tiles.js",
+    "publish:packages": "pnpm --filter @hashtree/core build && pnpm --filter @hashtree/core publish && pnpm --filter @hashtree/index build && pnpm --filter @hashtree/index publish && pnpm --filter @hashtree/dexie build && pnpm --filter @hashtree/dexie publish"
   },
   "devDependencies": {
     "@esbuild/linux-arm64": "^0.27.0",
