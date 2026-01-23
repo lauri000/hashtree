@@ -8,6 +8,7 @@
   import ProfileView from './ProfileView.svelte';
   import EditProfilePage from './EditProfilePage.svelte';
   import UsersPage from './UsersPage.svelte';
+  import TreeRoute from '../routes/TreeRoute.svelte';
   import { isNHash } from '@hashtree/core';
 
   // Parse the current path to determine what to render
@@ -45,6 +46,13 @@
         // Check for /edit suffix
         if (remainder === '/edit') {
           return { type: 'editProfile' as const, npub };
+        }
+        // Check for tree path: /npub.../treeName/... (has content after npub)
+        if (remainder.startsWith('/') && remainder.length > 1) {
+          const pathParts = remainder.slice(1).split('/');
+          const treeName = pathParts[0];
+          const wild = pathParts.slice(1).join('/') || undefined;
+          return { type: 'tree' as const, npub, treeName, wild };
         }
         return { type: 'profile' as const, npub };
       }
@@ -106,4 +114,6 @@
   <EditProfilePage npub={route.npub} />
 {:else if route.type === 'users'}
   <UsersPage />
+{:else if route.type === 'tree'}
+  <TreeRoute npub={route.npub} treeName={route.treeName} wild={route.wild} />
 {/if}
