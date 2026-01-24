@@ -23,6 +23,7 @@
   import 'prismjs/components/prism-ini';
   import 'prismjs/components/prism-diff';
   import 'prismjs/components/prism-ruby';
+  import 'prismjs/components/prism-markup-templating';
   import 'prismjs/components/prism-php';
   import 'prismjs/components/prism-swift';
   import 'prismjs/components/prism-kotlin';
