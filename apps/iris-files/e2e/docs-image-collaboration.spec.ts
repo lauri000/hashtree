@@ -7,7 +7,7 @@
  * 3. Images use /htree/ service worker URLs (not blob URLs)
  */
 import { test, expect, Page } from './fixtures';
-import { setupPageErrorHandler, disableOthersPool, configureBlossomServers, waitForWebRTCConnection, waitForRelayConnected, waitForAppReady, clearAllStorage, navigateToPublicFolder, safeReload, safeGoto, flushPendingPublishes, waitForFollowInWorker } from './test-utils.js';
+import { setupPageErrorHandler, disableOthersPool, configureBlossomServers, waitForWebRTCConnection, waitForRelayConnected, waitForAppReady, clearAllStorage, navigateToPublicFolder, safeReload, safeGoto, flushPendingPublishes, waitForFollowInWorker, useLocalRelay } from './test-utils.js';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -355,6 +355,8 @@ async function setupFreshUser(page: Page) {
   await safeReload(page, { waitUntil: 'domcontentloaded', timeoutMs: 60000, url: 'http://localhost:5173' });
   await waitForAppReady(page); // Wait for page to load after reload
   await disableOthersPool(page);
+  await useLocalRelay(page);
+  await waitForRelayConnected(page, 30000);
   await configureBlossomServers(page);
 
   await waitForRelayConnected(page, 30000);
