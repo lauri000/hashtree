@@ -24,6 +24,7 @@ pub const DEFAULT_RELAYS: &[&str] = &[
     "wss://relay.damus.io",
     "wss://nos.lol",
     "wss://relay.primal.net",
+    "wss://offchain.pub",
 ];
 
 /// Top-level config structure

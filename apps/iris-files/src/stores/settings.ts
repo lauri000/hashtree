@@ -141,6 +141,7 @@ export const DEFAULT_NETWORK_SETTINGS: NetworkSettings = {
         'wss://relay.nostr.band',
         'wss://relay.snort.social',
         'wss://temp.iris.to',
+        'wss://offchain.pub',
       ],
   blossomServers: isTestMode
     ? []
