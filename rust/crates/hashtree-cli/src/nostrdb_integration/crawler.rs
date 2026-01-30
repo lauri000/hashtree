@@ -171,7 +171,10 @@ mod tests {
     #[tokio::test]
     async fn test_crawler_no_relays() {
         let tmp = TempDir::new().unwrap();
-        let ndb = super::super::init_ndb(tmp.path()).unwrap();
+        let ndb = {
+            let _guard = super::super::test_lock();
+            super::super::init_ndb(tmp.path()).unwrap()
+        };
         let keys = nostr::Keys::generate();
         let crawler = SocialGraphCrawler::new(ndb, keys, vec![], 2);
         let (_tx, rx) = watch::channel(false);
@@ -182,7 +185,10 @@ mod tests {
     #[tokio::test]
     async fn test_crawler_shutdown_signal() {
         let tmp = TempDir::new().unwrap();
-        let ndb = super::super::init_ndb(tmp.path()).unwrap();
+        let ndb = {
+            let _guard = super::super::test_lock();
+            super::super::init_ndb(tmp.path()).unwrap()
+        };
         let keys = nostr::Keys::generate();
         let crawler =
             SocialGraphCrawler::new(ndb, keys, vec!["wss://localhost:1".to_string()], 2);

@@ -4,7 +4,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use tracing::{debug, error, info, warn};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
@@ -13,6 +13,7 @@ use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
+use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
@@ -21,7 +22,9 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 
+use crate::nostr_relay::NostrRelay;
 use super::types::{DataMessage, DataRequest, DataResponse, PeerDirection, PeerId, PeerStateEvent, SignalingMessage, encode_message, encode_request, encode_response, parse_message, hash_to_hex};
+use nostr::{ClientMessage as NostrClientMessage, JsonUtil as NostrJsonUtil};
 
 /// Trait for content storage that can be used by WebRTC peers
 pub trait ContentStore: Send + Sync + 'static {
@@ -62,6 +65,9 @@ pub struct Peer {
 
     // Optional channel to notify signaling layer of state changes
     state_event_tx: Option<mpsc::Sender<PeerStateEvent>>,
+
+    // Optional Nostr relay for text messages over data channel
+    nostr_relay: Option<Arc<NostrRelay>>,
 }
 
 impl Peer {
@@ -73,7 +79,17 @@ impl Peer {
         signaling_tx: mpsc::Sender<SignalingMessage>,
         stun_servers: Vec<String>,
     ) -> Result<Self> {
-        Self::new_with_store_and_events(peer_id, direction, my_peer_id, signaling_tx, stun_servers, None, None).await
+        Self::new_with_store_and_events(
+            peer_id,
+            direction,
+            my_peer_id,
+            signaling_tx,
+            stun_servers,
+            None,
+            None,
+            None,
+        )
+        .await
     }
 
     /// Create a new peer connection with content store
@@ -85,7 +101,17 @@ impl Peer {
         stun_servers: Vec<String>,
         store: Option<Arc<dyn ContentStore>>,
     ) -> Result<Self> {
-        Self::new_with_store_and_events(peer_id, direction, my_peer_id, signaling_tx, stun_servers, store, None).await
+        Self::new_with_store_and_events(
+            peer_id,
+            direction,
+            my_peer_id,
+            signaling_tx,
+            stun_servers,
+            store,
+            None,
+            None,
+        )
+        .await
     }
 
     /// Create a new peer connection with content store and state event channel
@@ -97,6 +123,7 @@ impl Peer {
         stun_servers: Vec<String>,
         store: Option<Arc<dyn ContentStore>>,
         state_event_tx: Option<mpsc::Sender<PeerStateEvent>>,
+        nostr_relay: Option<Arc<NostrRelay>>,
     ) -> Result<Self> {
         // Create WebRTC API
         let mut m = MediaEngine::default();
@@ -146,6 +173,7 @@ impl Peer {
             message_tx,
             message_rx: Some(message_rx),
             state_event_tx,
+            nostr_relay,
         })
     }
 
@@ -293,6 +321,8 @@ impl Peer {
         let pending_requests = self.pending_requests.clone();
         let store = self.store.clone();
         let data_channel_holder = self.data_channel.clone();
+        let nostr_relay = self.nostr_relay.clone();
+        let peer_pubkey = Some(self.peer_id.pubkey.clone());
 
         self.pc
             .on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
@@ -301,6 +331,8 @@ impl Peer {
                 let pending_requests = pending_requests.clone();
                 let store = store.clone();
                 let data_channel_holder = data_channel_holder.clone();
+                let nostr_relay = nostr_relay.clone();
+                let peer_pubkey = peer_pubkey.clone();
 
                 // Work MUST be inside the returned future
                 Box::pin(async move {
@@ -319,6 +351,8 @@ impl Peer {
                         message_tx,
                         pending_requests,
                         store,
+                        nostr_relay,
+                        peer_pubkey,
                     )
                     .await;
                 })
@@ -408,8 +442,19 @@ impl Peer {
         let message_tx = self.message_tx.clone();
         let pending_requests = self.pending_requests.clone();
         let store = self.store.clone();
+        let nostr_relay = self.nostr_relay.clone();
+        let peer_pubkey = Some(self.peer_id.pubkey.clone());
 
-        Self::setup_dc_handlers(dc, peer_id, message_tx, pending_requests, store).await;
+        Self::setup_dc_handlers(
+            dc,
+            peer_id,
+            message_tx,
+            pending_requests,
+            store,
+            nostr_relay,
+            peer_pubkey,
+        )
+        .await;
         Ok(())
     }
 
@@ -420,6 +465,8 @@ impl Peer {
         message_tx: mpsc::Sender<(DataMessage, Option<Vec<u8>>)>,
         pending_requests: Arc<Mutex<HashMap<String, PendingRequest>>>,
         store: Option<Arc<dyn ContentStore>>,
+        nostr_relay: Option<Arc<NostrRelay>>,
+        peer_pubkey: Option<String>,
     ) {
         let label = dc.label().to_string();
         let peer_short = peer_id.short();
@@ -427,15 +474,55 @@ impl Peer {
         // Track pending binary data (request_id -> expected after response)
         let _pending_binary: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
 
-        let _dc_for_open = dc.clone();
+        let open_notify = nostr_relay.as_ref().map(|_| Arc::new(Notify::new()));
+        if let Some(ref notify) = open_notify {
+            if dc.ready_state() == RTCDataChannelState::Open {
+                notify.notify_waiters();
+            }
+        }
+
+        let mut nostr_client_id: Option<u64> = None;
+        if let Some(relay) = nostr_relay.clone() {
+            let client_id = relay.next_client_id();
+            let (nostr_tx, mut nostr_rx) = mpsc::unbounded_channel::<String>();
+            relay.register_client(client_id, nostr_tx, peer_pubkey.clone()).await;
+            nostr_client_id = Some(client_id);
+
+            if let Some(notify) = open_notify.clone() {
+                let dc_for_send = dc.clone();
+                tokio::spawn(async move {
+                    notify.notified().await;
+                    while let Some(text) = nostr_rx.recv().await {
+                        if dc_for_send.send_text(text).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        }
+
+        if let (Some(relay), Some(client_id)) = (nostr_relay.clone(), nostr_client_id) {
+            dc.on_close(Box::new(move || {
+                let relay = relay.clone();
+                Box::pin(async move {
+                    relay.unregister_client(client_id).await;
+                })
+            }));
+        }
+
+        let open_notify_clone = open_notify.clone();
         let peer_short_open = peer_short.clone();
         let label_clone = label.clone();
         dc.on_open(Box::new(move || {
             let peer_short_open = peer_short_open.clone();
             let label_clone = label_clone.clone();
+            let open_notify = open_notify_clone.clone();
             // Work MUST be inside the returned future
             Box::pin(async move {
                 info!("[Peer {}] Data channel '{}' open", peer_short_open, label_clone);
+                if let Some(notify) = open_notify {
+                    notify.notify_waiters();
+                }
             })
         }));
 
@@ -443,6 +530,8 @@ impl Peer {
         let peer_short_msg = peer_short.clone();
         let _pending_binary_clone = _pending_binary.clone();
         let store_clone = store.clone();
+        let nostr_relay_for_msg = nostr_relay.clone();
+        let nostr_client_id_for_msg = nostr_client_id;
 
         dc.on_message(Box::new(move |msg: DataChannelMessage| {
             let dc = dc_for_msg.clone();
@@ -451,10 +540,24 @@ impl Peer {
             let _pending_binary = _pending_binary_clone.clone();
             let _message_tx = message_tx.clone();
             let store = store_clone.clone();
+            let nostr_relay = nostr_relay_for_msg.clone();
+            let nostr_client_id = nostr_client_id_for_msg;
             let msg_data = msg.data.clone();
 
             // Work MUST be inside the returned future
             Box::pin(async move {
+                if msg.is_string {
+                    if let Some(relay) = nostr_relay {
+                        if let Ok(text) = std::str::from_utf8(&msg_data) {
+                            if let Ok(nostr_msg) = NostrClientMessage::from_json(text) {
+                                if let Some(client_id) = nostr_client_id {
+                                    relay.handle_client_message(client_id, nostr_msg).await;
+                                }
+                            }
+                        }
+                    }
+                    return;
+                }
                 // All messages are binary with type prefix + MessagePack body
                 debug!("[Peer {}] Received {} bytes on data channel", peer_short, msg_data.len());
                 match parse_message(&msg_data) {

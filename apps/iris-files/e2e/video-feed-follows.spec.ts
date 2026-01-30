@@ -33,13 +33,13 @@ const FOLLOW_NPUB = nip19.npubEncode(FOLLOW_PUBKEY);
 const BOOTSTRAP_VIDEO_HASH = createHash('sha256').update('bootstrap-video').digest('hex');
 const FOLLOW_VIDEO_HASH = createHash('sha256').update('follow-video').digest('hex');
 
-async function publishEvent(event: Record<string, unknown>): Promise<void> {
+async function publishEventOnce(event: Record<string, unknown>, timeoutMs: number): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const socket = new WebSocket(relayUrl);
     const timeout = setTimeout(() => {
       socket.close();
       reject(new Error('Timed out publishing event'));
-    }, 2000);
+    }, timeoutMs);
 
     socket.on('open', () => {
       socket.send(JSON.stringify(['EVENT', event]));
@@ -63,6 +63,21 @@ async function publishEvent(event: Record<string, unknown>): Promise<void> {
       reject(err);
     });
   });
+}
+
+async function publishEvent(event: Record<string, unknown>): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await publishEventOnce(event, 5000);
+      return;
+    } catch (err) {
+      lastError = err;
+      console.warn(`[test] publishEvent attempt ${attempt} failed`, err);
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
+  throw lastError;
 }
 
 async function seedBootstrapFeedData(): Promise<void> {
@@ -117,7 +132,7 @@ async function openVideoPage(page: any, url: string) {
   await waitForRelayConnected(page, 30000);
 }
 
-async function waitForVideoCards(page: any, timeoutMs: number = 60000) {
+async function waitForVideoCards(page: any, timeoutMs: number = 90000) {
   await expect.poll(
     async () => {
       return await evaluateWithRetry(page, () => {

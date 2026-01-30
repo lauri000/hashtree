@@ -866,12 +866,13 @@ test.describe('Yjs Collaborative Document Editing', () => {
     await expect(editorA).toContainText(markerA, { timeout: 10000 });
     await waitForSave(pageA);
     await flushPublishes(pageA);
+    const rootHashAfter = await getTreeRootHash(pageA, npubA, 'public');
 
-    await openRemoteDocumentFast(pageB, npubA, 'public', docName, linkKeyA, rootHashBefore);
+    await openRemoteDocumentFast(pageB, npubA, 'public', docName, linkKeyA, rootHashAfter);
 
     const editorB = pageB.locator('.ProseMirror');
     await expect(editorB).toBeVisible({ timeout: 15000 });
-    await expect(editorB).toContainText(markerA, { timeout: 30000 });
+    await waitForEditorContent(pageB, markerA, 60000);
     await waitForEditorBadge(pageB, 30000);
     await Promise.all([
       waitForWebRTCConnection(pageA, 15000, pubkeyB),

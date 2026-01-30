@@ -146,6 +146,13 @@ pub struct NostrConfig {
     pub relays: Vec<String>,
     #[serde(default)]
     pub allowed_npubs: Vec<String>,
+    /// Max size for trusted nostrdb in GB (default: 10)
+    #[serde(default = "default_nostr_db_max_size_gb")]
+    pub db_max_size_gb: u64,
+    /// Max size for spambox nostrdb in GB (default: 1)
+    /// Set to 0 for memory-only spambox (no on-disk DB)
+    #[serde(default = "default_nostr_spambox_max_size_gb")]
+    pub spambox_max_size_gb: u64,
 }
 
 impl Default for NostrConfig {
@@ -153,8 +160,18 @@ impl Default for NostrConfig {
         Self {
             relays: default_relays(),
             allowed_npubs: vec![],
+            db_max_size_gb: default_nostr_db_max_size_gb(),
+            spambox_max_size_gb: default_nostr_spambox_max_size_gb(),
         }
     }
+}
+
+fn default_nostr_db_max_size_gb() -> u64 {
+    10
+}
+
+fn default_nostr_spambox_max_size_gb() -> u64 {
+    1
 }
 
 fn default_relays() -> Vec<String> {

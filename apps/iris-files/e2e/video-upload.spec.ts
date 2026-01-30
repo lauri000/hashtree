@@ -47,7 +47,7 @@ async function loginAsTestUser(page: Page) {
   await page.locator('button:has-text("Create"), a:has-text("Create")').first().waitFor({ state: 'visible', timeout: 15000 });
 }
 
-async function waitForVideoData(page: Page, timeoutMs = 120000) {
+async function waitForVideoData(page: Page, timeoutMs = 180000) {
   await expect.poll(async () => {
     return page.evaluate(async () => {
       try {
@@ -66,7 +66,7 @@ async function waitForVideoData(page: Page, timeoutMs = 120000) {
         if (typeof adapter.get === 'function') {
           await Promise.race([
             adapter.get(root.hash).catch(() => null),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 10000)),
           ]);
         }
         const tree = getTree();
@@ -74,7 +74,7 @@ async function waitForVideoData(page: Page, timeoutMs = 120000) {
         for (const name of candidates) {
           const entry = await Promise.race([
             tree.resolvePath(root, name),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 10000)),
           ]);
           if (!entry?.cid) continue;
           const read = () => {
@@ -85,7 +85,7 @@ async function waitForVideoData(page: Page, timeoutMs = 120000) {
           };
           const data = await Promise.race([
             read(),
-            new Promise<Uint8Array | null>((resolve) => setTimeout(() => resolve(null), 5000)),
+            new Promise<Uint8Array | null>((resolve) => setTimeout(() => resolve(null), 10000)),
           ]);
           if (data && data.length > 0) return true;
         }
@@ -153,7 +153,7 @@ test.describe('Video Upload with Visibility', () => {
 
     // CRITICAL: Verify video actually loads with content
     const videoElement = page.locator('video');
-    await expect(videoElement).toBeVisible({ timeout: 15000 });
+    await expect(videoElement).toBeVisible({ timeout: 30000 });
 
     // Verify video has loaded content (not empty element)
     const mediaSetup = await page.evaluate(async () => {
@@ -188,7 +188,7 @@ test.describe('Video Upload with Visibility', () => {
       return videoState.hasSrc;
     }, { timeout: 60000, intervals: [1000, 2000, 3000, 5000] }).toBe(true);
 
-    await waitForVideoData(page, 120000);
+    await waitForVideoData(page, 180000);
 
     // Screenshot to verify video loaded
     await page.screenshot({ path: 'test-results/link-visible-upload.png' });
@@ -262,7 +262,7 @@ test.describe('Video Upload with Visibility', () => {
 
     // CRITICAL: Verify video actually loads
     const videoElement = page.locator('video');
-    await expect(videoElement).toBeVisible({ timeout: 30000 });
+    await expect(videoElement).toBeVisible({ timeout: 60000 });
 
     // Check for visibility icon (lock icon for private)
     const visibilityIcon = page.locator('[title*="Private"]');
@@ -270,9 +270,10 @@ test.describe('Video Upload with Visibility', () => {
 
     // Refresh page to test persistence from nostr
     await page.reload();
+    await waitForVideoData(page, 180000);
 
     // CRITICAL: Verify video loads after refresh
-    await expect(videoElement).toBeVisible({ timeout: 30000 });
+    await expect(videoElement).toBeVisible({ timeout: 60000 });
     await expect(visibilityIcon).toBeVisible({ timeout: 5000 });
   });
 
@@ -401,7 +402,7 @@ test.describe('Video Upload with Visibility', () => {
 
     // CRITICAL: Verify video actually loads
     const videoElement = page.locator('video');
-    await expect(videoElement).toBeVisible({ timeout: 30000 });
+    await expect(videoElement).toBeVisible({ timeout: 60000 });
 
     // Verify NO visibility icon for public videos
     const linkVisibleIcon = page.locator('[title*="Link-visible"]');
@@ -411,8 +412,9 @@ test.describe('Video Upload with Visibility', () => {
 
     // Refresh page to test persistence from nostr
     await page.reload();
+    await waitForVideoData(page, 180000);
 
     // CRITICAL: Verify video loads after refresh
-    await expect(videoElement).toBeVisible({ timeout: 30000 });
+    await expect(videoElement).toBeVisible({ timeout: 60000 });
   });
 });

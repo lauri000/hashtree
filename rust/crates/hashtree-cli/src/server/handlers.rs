@@ -1,23 +1,426 @@
 use axum::{
     body::Body,
-    extract::{Multipart, Path, State},
+    extract::{Multipart, Path, Query, State},
     http::{header, Response, StatusCode},
     response::{IntoResponse, Json},
 };
 use bytes::Bytes;
 use futures::stream::{self, StreamExt};
-use hashtree_core::{from_hex, to_hex};
+use hashtree_core::{from_hex, to_hex, nhash_decode, Cid, HashTree, HashTreeConfig, LinkType, Store};
 use hashtree_resolver::{nostr::{NostrRootResolver, NostrResolverConfig}, RootResolver};
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use super::auth::AppState;
+use super::mime::get_mime_type;
 use super::ui::root_page;
 use crate::webrtc::{ConnectionState, WebRTCState};
 
 pub async fn serve_root() -> impl IntoResponse {
     root_page()
+}
+
+pub async fn htree_test() -> impl IntoResponse {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .body(Body::from("ok"))
+        .unwrap()
+}
+
+async fn list_directory_json(
+    state: &AppState,
+    cid: &Cid,
+    is_immutable: bool,
+    is_localhost: bool,
+) -> Response<Body> {
+    let store = state.store.store_arc();
+    let tree = HashTree::new(HashTreeConfig::new(store).public());
+    let entries = match tree.list_directory(cid).await {
+        Ok(list) => list,
+        Err(e) => {
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from(format!("Error: {}", e)))
+                .unwrap();
+        }
+    };
+
+    let payload = json!({
+        "entries": entries.into_iter().map(|entry| {
+            json!({
+                "name": entry.name,
+                "hash": to_hex(&entry.hash),
+                "key": entry.key.map(|key| to_hex(&key)),
+                "size": entry.size,
+                "type": match entry.link_type {
+                    LinkType::Blob => "blob",
+                    LinkType::File => "file",
+                    LinkType::Dir => "dir",
+                },
+            })
+        }).collect::<Vec<_>>(),
+    });
+
+    build_json_response(payload, is_immutable, is_localhost)
+}
+
+async fn resolve_npub_root(
+    key: &str,
+    resolver: &NostrRootResolver,
+    share_secret: Option<[u8; 32]>,
+) -> Result<Cid, hashtree_resolver::ResolverError> {
+    if let Some(secret) = share_secret {
+        loop {
+            if let Some(cid) = resolver.resolve_shared(key, &secret).await? {
+                return Ok(cid);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    resolver.resolve_wait(key).await
+}
+
+async fn htree_nhash_impl(
+    State(state): State<AppState>,
+    nhash: String,
+    path: Option<String>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> Response<Body> {
+    let is_localhost = connect_info.0.ip().is_loopback();
+
+    let nhash_data = match nhash_decode(&nhash) {
+        Ok(data) => data,
+        Err(e) => {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from(format!("Invalid nhash: {}", e)))
+                .unwrap();
+        }
+    };
+
+    let mut cid = Cid {
+        hash: nhash_data.hash,
+        key: nhash_data.decrypt_key,
+    };
+
+    if cid.key.is_none() {
+        if let Some(k) = parse_hex_key(params.get("k")) {
+            cid.key = Some(k);
+        }
+    }
+
+    let mut effective_path = path.filter(|p| !p.is_empty());
+    if effective_path.is_none() && !nhash_data.path.is_empty() {
+        effective_path = Some(nhash_data.path.join("/"));
+    }
+
+    let store = state.store.store_arc();
+    let tree = HashTree::new(HashTreeConfig::new(store).public());
+    let is_dir = tree.is_dir(&cid).await.unwrap_or(false);
+
+    if is_dir {
+        if let Some(path) = effective_path.clone() {
+            let entry = match tree.resolve_path(&cid, &path).await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => {
+                    return Response::builder()
+                        .status(StatusCode::NOT_FOUND)
+                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .body(Body::from("File not found"))
+                        .unwrap();
+                }
+                Err(e) => {
+                    return Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .body(Body::from(format!("Error: {}", e)))
+                        .unwrap();
+                }
+            };
+            return serve_cid_with_range(&state, &entry, headers, true, is_localhost, Some(&path)).await;
+        }
+
+        return list_directory_json(&state, &cid, true, is_localhost).await;
+    }
+
+    if let Some(path) = effective_path.clone() {
+        if path.contains('/') {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from("Not found"))
+                .unwrap();
+        }
+    }
+
+    serve_cid_with_range(&state, &cid, headers, true, is_localhost, effective_path.as_deref()).await
+}
+
+pub async fn htree_nhash(
+    State(state): State<AppState>,
+    Path(nhash): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> impl IntoResponse {
+    let full = format!("nhash1{}", nhash);
+    htree_nhash_impl(State(state), full, None, Query(params), headers, connect_info).await
+}
+
+pub async fn htree_nhash_path(
+    State(state): State<AppState>,
+    Path((nhash, path)): Path<(String, String)>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> impl IntoResponse {
+    let full = format!("nhash1{}", nhash);
+    htree_nhash_impl(
+        State(state),
+        full,
+        Some(path),
+        Query(params),
+        headers,
+        connect_info,
+    )
+    .await
+}
+
+const THUMBNAIL_PATTERNS: &[&str] = &[
+    "thumbnail.jpg",
+    "thumbnail.webp",
+    "thumbnail.png",
+    "thumbnail.jpeg",
+];
+
+const VIDEO_EXTENSIONS: &[&str] = &[".mp4", ".webm", ".mkv", ".mov", ".avi", ".m4v"];
+
+fn is_video_filename(name: &str) -> bool {
+    name.starts_with("video.")
+        || VIDEO_EXTENSIONS.iter().any(|ext| name.ends_with(ext))
+}
+
+fn is_metadata_filename(name: &str) -> bool {
+    name.ends_with(".json") || name.ends_with(".txt")
+}
+
+fn is_thumbnail_request(path: &str) -> bool {
+    path == "thumbnail" || path.ends_with("/thumbnail")
+}
+
+async fn resolve_thumbnail_path<S: Store>(
+    tree: &HashTree<S>,
+    root: &Cid,
+    path: &str,
+) -> Option<String> {
+    if !is_thumbnail_request(path) {
+        return None;
+    }
+
+    let dir_path = if path == "thumbnail" {
+        ""
+    } else {
+        path.strip_suffix("/thumbnail").unwrap_or("")
+    };
+
+    let dir_entry = if dir_path.is_empty() {
+        Some(root.clone())
+    } else {
+        tree.resolve_path(root, dir_path).await.ok().flatten()
+    }?;
+
+    let entries = tree.list_directory(&dir_entry).await.ok()?;
+
+    for pattern in THUMBNAIL_PATTERNS {
+        if entries.iter().any(|e| e.name == *pattern) {
+            return Some(if dir_path.is_empty() {
+                (*pattern).to_string()
+            } else {
+                format!("{}/{}", dir_path, pattern)
+            });
+        }
+    }
+
+    let has_video_file = entries.iter().any(|e| is_video_filename(&e.name));
+    if !has_video_file && !entries.is_empty() {
+        let mut sorted: Vec<_> = entries.iter().collect();
+        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+
+        for entry in sorted.into_iter().take(3) {
+            if is_metadata_filename(&entry.name) {
+                continue;
+            }
+
+            let sub_cid = Cid {
+                hash: entry.hash,
+                key: entry.key,
+            };
+            let sub_entries = match tree.list_directory(&sub_cid).await {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+
+            for pattern in THUMBNAIL_PATTERNS {
+                if sub_entries.iter().any(|e| e.name == *pattern) {
+                    let prefix = if dir_path.is_empty() {
+                        entry.name.clone()
+                    } else {
+                        format!("{}/{}", dir_path, entry.name)
+                    };
+                    return Some(format!("{}/{}", prefix, pattern));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+async fn htree_npub_impl(
+    State(state): State<AppState>,
+    npub: String,
+    treename: String,
+    path: Option<String>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> Response<Body> {
+    let is_localhost = connect_info.0.ip().is_loopback();
+    let key = format!("{}/{}", npub, treename);
+    let link_key = parse_hex_key(params.get("k"));
+
+    let resolver = match NostrRootResolver::new(resolver_config()).await {
+        Ok(r) => r,
+        Err(e) => {
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from(format!("Failed to create resolver: {}", e)))
+                .unwrap();
+        }
+    };
+
+    let resolved = match tokio::time::timeout(
+        HTTP_RESOLVER_TIMEOUT,
+        resolve_npub_root(&key, &resolver, link_key),
+    )
+    .await
+    {
+        Ok(Ok(cid)) => cid,
+        Ok(Err(e)) => {
+            let _ = resolver.stop().await;
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from(format!("Resolution failed: {}", e)))
+                .unwrap();
+        }
+        Err(_) => {
+            let _ = resolver.stop().await;
+            return Response::builder()
+                .status(StatusCode::GATEWAY_TIMEOUT)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from("Resolution timeout"))
+                .unwrap();
+        }
+    };
+    let _ = resolver.stop().await;
+
+    let mut cid = resolved;
+    if cid.key.is_none() {
+        if let Some(k) = link_key {
+            cid.key = Some(k);
+        }
+    }
+
+    let store = state.store.store_arc();
+    let tree = HashTree::new(HashTreeConfig::new(store).public());
+
+    let mut effective_path = path.filter(|p| !p.is_empty());
+    if let Some(path) = effective_path.clone() {
+        if path == "thumbnail" || path.ends_with("/thumbnail") {
+            if let Some(resolved_path) = resolve_thumbnail_path(&tree, &cid, &path).await {
+                effective_path = Some(resolved_path);
+            }
+        }
+    }
+
+    let is_dir = tree.is_dir(&cid).await.unwrap_or(false);
+    if is_dir {
+        if let Some(path) = effective_path.clone() {
+            let entry = match tree.resolve_path(&cid, &path).await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => {
+                    return Response::builder()
+                        .status(StatusCode::NOT_FOUND)
+                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .body(Body::from("File not found"))
+                        .unwrap();
+                }
+                Err(e) => {
+                    return Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .body(Body::from(format!("Error: {}", e)))
+                        .unwrap();
+                }
+            };
+            return serve_cid_with_range(&state, &entry, headers, false, is_localhost, Some(&path)).await;
+        }
+
+        return list_directory_json(&state, &cid, false, is_localhost).await;
+    }
+
+    serve_cid_with_range(&state, &cid, headers, false, is_localhost, effective_path.as_deref()).await
+}
+
+pub async fn htree_npub(
+    State(state): State<AppState>,
+    Path((npub, treename)): Path<(String, String)>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> impl IntoResponse {
+    let full = format!("npub1{}", npub);
+    htree_npub_impl(
+        State(state),
+        full,
+        treename,
+        None,
+        Query(params),
+        headers,
+        connect_info,
+    )
+    .await
+}
+
+pub async fn htree_npub_path(
+    State(state): State<AppState>,
+    Path((npub, treename, path)): Path<(String, String, String)>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> impl IntoResponse {
+    let full = format!("npub1{}", npub);
+    htree_npub_impl(
+        State(state),
+        full,
+        treename,
+        Some(path),
+        Query(params),
+        headers,
+        connect_info,
+    )
+    .await
 }
 
 /// Cache-Control header for immutable content-addressed data (1 year)
@@ -56,6 +459,168 @@ fn build_blob_response(
 
     if is_localhost {
         builder = builder.header("X-Source", source.to_header_value());
+    }
+
+    builder.body(Body::from(data)).unwrap()
+}
+
+fn parse_hex_key(value: Option<&String>) -> Option<[u8; 32]> {
+    let hex = value?;
+    if hex.len() != 64 {
+        return None;
+    }
+    from_hex(hex).ok()
+}
+
+fn content_type_for_path(path: Option<&str>) -> &'static str {
+    let filename = path.and_then(|p| p.rsplit('/').next()).unwrap_or("");
+    if filename.is_empty() {
+        return "application/octet-stream";
+    }
+    get_mime_type(filename)
+}
+
+fn build_json_response(
+    payload: serde_json::Value,
+    is_immutable: bool,
+    is_localhost: bool,
+) -> Response<Body> {
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+    if is_immutable {
+        builder = builder.header(header::CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL);
+    }
+    if is_localhost {
+        builder = builder.header("X-Source", "local");
+    }
+    builder.body(Body::from(payload.to_string())).unwrap()
+}
+
+async fn serve_cid_with_range(
+    state: &AppState,
+    cid: &Cid,
+    headers: axum::http::HeaderMap,
+    is_immutable: bool,
+    is_localhost: bool,
+    filename_hint: Option<&str>,
+) -> Response<Body> {
+    let store = state.store.store_arc();
+    let tree = HashTree::new(HashTreeConfig::new(store).public());
+    let content_type = content_type_for_path(filename_hint);
+
+    let range_header = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+    if let Some(range_str) = range_header {
+        if let Some(bytes_range) = range_str.strip_prefix("bytes=") {
+            let parts: Vec<&str> = bytes_range.split('-').collect();
+            if parts.len() == 2 {
+                let start = parts[0].parse::<u64>().unwrap_or(0);
+                let end_opt = if parts[1].is_empty() {
+                    None
+                } else {
+                    parts[1].parse::<u64>().ok()
+                };
+
+                let total_size = match tree.get_size_cid(cid).await {
+                    Ok(size) => size,
+                    Err(e) => {
+                        return Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                            .body(Body::from(format!("Error: {}", e)))
+                            .unwrap();
+                    }
+                };
+
+                if total_size == 0 || start >= total_size {
+                    return Response::builder()
+                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                        .header(header::CONTENT_TYPE, "text/plain")
+                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .body(Body::from("Range not satisfiable"))
+                        .unwrap();
+                }
+
+                let end_inclusive = end_opt.unwrap_or(total_size - 1).min(total_size - 1);
+                if end_inclusive < start {
+                    return Response::builder()
+                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                        .header(header::CONTENT_TYPE, "text/plain")
+                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .body(Body::from("Range not satisfiable"))
+                        .unwrap();
+                }
+
+                let end_exclusive = end_inclusive.saturating_add(1);
+                let data = match tree.read_file_range_cid(cid, start, Some(end_exclusive)).await {
+                    Ok(Some(d)) => d,
+                    Ok(None) => {
+                        return Response::builder()
+                            .status(StatusCode::NOT_FOUND)
+                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                            .body(Body::from("Not found"))
+                            .unwrap();
+                    }
+                    Err(e) => {
+                        return Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                            .body(Body::from(format!("Error: {}", e)))
+                            .unwrap();
+                    }
+                };
+
+                let content_length = data.len();
+                let content_range = format!("bytes {}-{}/{}", start, end_inclusive, total_size);
+
+                let mut builder = Response::builder()
+                    .status(StatusCode::PARTIAL_CONTENT)
+                    .header(header::CONTENT_TYPE, content_type)
+                    .header(header::CONTENT_LENGTH, content_length)
+                    .header(header::CONTENT_RANGE, content_range)
+                    .header(header::ACCEPT_RANGES, "bytes")
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+                if is_immutable {
+                    builder = builder.header(header::CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL);
+                }
+                if is_localhost {
+                    builder = builder.header("X-Source", "local");
+                }
+                return builder.body(Body::from(data)).unwrap();
+            }
+        }
+    }
+
+    let data = match tree.get(cid).await {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from("Not found"))
+                .unwrap();
+        }
+        Err(e) => {
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from(format!("Error: {}", e)))
+                .unwrap();
+        }
+    };
+
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, data.len())
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+    if is_immutable {
+        builder = builder.header(header::CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL);
+    }
+    if is_localhost {
+        builder = builder.header("X-Source", "local");
     }
 
     builder.body(Body::from(data)).unwrap()
@@ -1002,6 +1567,7 @@ async fn query_upstream_blossom(servers: &[String], hash_hex: &str) -> Option<(V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hashtree_core::{DirEntry, MemoryStore};
 
     #[tokio::test]
     async fn test_query_upstream_blossom_no_servers() {
@@ -1024,5 +1590,59 @@ mod tests {
         let hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         let result = query_upstream_blossom(&servers, hash).await;
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_thumbnail_path_prefers_root_thumbnail() {
+        let store = Arc::new(MemoryStore::new());
+        let tree = HashTree::new(HashTreeConfig::new(store));
+
+        let (thumb_cid, _size) = tree.put(b"thumb").await.unwrap();
+        let root_cid = tree
+            .put_directory(vec![
+                DirEntry::from_cid("thumbnail.jpg", &thumb_cid)
+                    .with_link_type(LinkType::File),
+            ])
+            .await
+            .unwrap();
+
+        let resolved = resolve_thumbnail_path(&tree, &root_cid, "thumbnail").await;
+        assert_eq!(resolved.as_deref(), Some("thumbnail.jpg"));
+    }
+
+    #[tokio::test]
+    async fn resolve_thumbnail_path_falls_back_to_subdir() {
+        let store = Arc::new(MemoryStore::new());
+        let tree = HashTree::new(HashTreeConfig::new(store));
+
+        let (thumb_cid, _size) = tree.put(b"thumb").await.unwrap();
+        let subdir_cid = tree
+            .put_directory(vec![
+                DirEntry::from_cid("thumbnail.png", &thumb_cid)
+                    .with_link_type(LinkType::File),
+            ])
+            .await
+            .unwrap();
+
+        let (meta_cid, _size) = tree.put(b"{}").await.unwrap();
+        let root_cid = tree
+            .put_directory(vec![
+                DirEntry::from_cid("clip", &subdir_cid)
+                    .with_link_type(LinkType::Dir),
+                DirEntry::from_cid("meta.json", &meta_cid)
+                    .with_link_type(LinkType::File),
+            ])
+            .await
+            .unwrap();
+
+        let resolved = resolve_thumbnail_path(&tree, &root_cid, "thumbnail").await;
+        assert_eq!(resolved.as_deref(), Some("clip/thumbnail.png"));
+    }
+
+    #[test]
+    fn content_type_for_path_uses_extension() {
+        assert_eq!(content_type_for_path(Some("dir/video.mp4")), "video/mp4");
+        assert_eq!(content_type_for_path(Some("image.jpeg")), "image/jpeg");
+        assert_eq!(content_type_for_path(None), "application/octet-stream");
     }
 }

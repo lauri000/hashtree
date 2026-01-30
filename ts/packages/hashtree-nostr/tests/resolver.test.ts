@@ -10,7 +10,7 @@ import { join } from 'path';
 import NDK, { NDKEvent, NDKPrivateKeySigner, type NDKFilter, type NDKSubscriptionOptions } from '@nostr-dev-kit/ndk';
 import { nip19, generateSecretKey, getPublicKey } from 'nostr-tools';
 import { createNostrRefResolver, type NostrFilter, type NostrEvent } from '../src/resolver/nostr.js';
-import { toHex, fromHex, cid } from '../src/types.js';
+import { toHex, fromHex, cid } from '@hashtree/core';
 
 // NDK requires WebSocket to be available globally in Node.js
 // @ts-ignore

@@ -5,9 +5,7 @@ import {
   generatePeerHTLConfig,
 } from '../src/webrtc/protocol.js';
 import { MAX_HTL } from '../src/webrtc/types.js';
-import { MemoryStore } from '../src/store/memory.js';
-import { sha256 } from '../src/hash.js';
-import { toHex, fromHex } from '../src/types.js';
+import { MemoryStore, sha256, toHex, fromHex } from '@hashtree/core';
 
 /**
  * Unit tests for WebRTC data protocol

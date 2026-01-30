@@ -2,7 +2,7 @@
  * Cross-language WebSocket integration test: ts <-> rust
  *
  * Tests that the TypeScript WebSocketPeer can communicate with the
- * Rust rust /ws/data endpoint using the shared protocol:
+ * Rust rust /ws endpoint using the shared protocol:
  * - JSON messages: req, res
  * - Binary messages: [4-byte LE request_id][data]
  */
@@ -13,6 +13,7 @@ import fs from 'fs';
 import path from 'path';
 import WebSocket from 'ws';
 import { createHash } from 'crypto';
+import { encode as msgpackEncode, decode as msgpackDecode } from '@msgpack/msgpack';
 import { acquireRustLock, releaseRustLock } from './rust-lock.js';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -23,7 +24,7 @@ const __dirname = dirname(__filename);
 (globalThis as any).WebSocket = WebSocket;
 
 const RUST_SERVER_PORT = 18787;
-const RUST_SERVER_URL = `ws://127.0.0.1:${RUST_SERVER_PORT}/ws/data`;
+const RUST_SERVER_URL = `ws://127.0.0.1:${RUST_SERVER_PORT}/ws`;
 const HTTP_URL = `http://127.0.0.1:${RUST_SERVER_PORT}`;
 
 /**
@@ -234,6 +235,113 @@ class ServingWsClient extends TestWsClient {
   }
 }
 
+/**
+ * WebSocket client that speaks the WebRTC-style msgpack protocol:
+ * [type byte][msgpack body], where body is { h: bytes, d?: bytes }
+ */
+class MsgpackWsClient {
+  private ws: WebSocket | null = null;
+  private pendingRequests = new Map<string, {
+    resolve: (data: Uint8Array | null) => void;
+    timeout: ReturnType<typeof setTimeout>;
+  }>();
+  private name: string;
+
+  constructor(name = 'MsgpackWsClient') {
+    this.name = name;
+  }
+
+  async connect(url: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      try {
+        this.ws = new WebSocket(url);
+        this.ws.binaryType = 'arraybuffer';
+
+        const timeout = setTimeout(() => {
+          this.ws?.close();
+          resolve(false);
+        }, 5000);
+
+        this.ws.onopen = () => {
+          clearTimeout(timeout);
+          console.log(`[${this.name}] Connected`);
+          resolve(true);
+        };
+
+        this.ws.onerror = (err) => {
+          clearTimeout(timeout);
+          console.log(`[${this.name}] Error:`, err);
+          resolve(false);
+        };
+
+        this.ws.onmessage = (event) => {
+          if (event.data instanceof ArrayBuffer) {
+            this.handleBinaryMessage(event.data);
+          }
+        };
+      } catch {
+        resolve(false);
+      }
+    });
+  }
+
+  close(): void {
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    for (const pending of this.pendingRequests.values()) {
+      clearTimeout(pending.timeout);
+      pending.resolve(null);
+    }
+    this.pendingRequests.clear();
+  }
+
+  async request(hashHex: string, timeoutMs = 5000): Promise<Uint8Array | null> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return null;
+    }
+
+    const hashBytes = Buffer.from(hashHex, 'hex');
+    const requestBody = msgpackEncode({ h: hashBytes });
+    const packet = new Uint8Array(1 + requestBody.length);
+    packet[0] = 0x00; // MSG_TYPE_REQUEST
+    packet.set(requestBody, 1);
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        this.pendingRequests.delete(hashHex);
+        console.log(`[${this.name}] Request timeout for`, hashHex.slice(0, 16));
+        resolve(null);
+      }, timeoutMs);
+
+      this.pendingRequests.set(hashHex, { resolve, timeout });
+      this.ws!.send(packet);
+      console.log(`[${this.name}] Sent msgpack request:`, hashHex.slice(0, 16));
+    });
+  }
+
+  private handleBinaryMessage(data: ArrayBuffer): void {
+    const bytes = new Uint8Array(data);
+    if (bytes.length < 2) return;
+    const msgType = bytes[0];
+    if (msgType !== 0x01) return; // MSG_TYPE_RESPONSE
+
+    try {
+      const body = msgpackDecode(bytes.slice(1)) as { h: Uint8Array; d: Uint8Array };
+      const hashHex = Buffer.from(body.h).toString('hex');
+      const pending = this.pendingRequests.get(hashHex);
+      if (!pending) return;
+
+      clearTimeout(pending.timeout);
+      this.pendingRequests.delete(hashHex);
+      pending.resolve(body.d);
+    } catch (err) {
+      console.log(`[${this.name}] Error parsing msgpack:`, err);
+    }
+  }
+}
+
 test.describe('rust WebSocket Integration', () => {
   // Serial mode: shares rust server process via beforeAll/afterAll
   test.describe.configure({ mode: 'serial', timeout: 180000 });
@@ -344,7 +452,7 @@ test.describe('rust WebSocket Integration', () => {
     }
   });
 
-  test('TypeScript WebSocketPeer can connect to rust /ws/data', async () => {
+  test('TypeScript WebSocketPeer can connect to rust /ws', async () => {
     const client = new TestWsClient();
     const connected = await client.connect(RUST_SERVER_URL);
     expect(connected).toBe(true);
@@ -428,6 +536,26 @@ test.describe('rust WebSocket Integration', () => {
     expect(response.id).toBe(requestId);
     expect(response.hash).toBe(testHash);
     expect(response.found).toBe(false);
+  });
+
+  test('msgpack WebRTC-style protocol works over /ws', async () => {
+    const serving = new ServingWsClient('ServingClient');
+    const servingConnected = await serving.connect(RUST_SERVER_URL);
+    expect(servingConnected).toBe(true);
+
+    const payload = new TextEncoder().encode('Hello from msgpack client');
+    const hash = serving.addData(payload);
+
+    const client = new MsgpackWsClient();
+    const connected = await client.connect(RUST_SERVER_URL);
+    expect(connected).toBe(true);
+
+    const received = await client.request(hash, 5000);
+    expect(received).not.toBeNull();
+    expect(Buffer.from(received!).toString('hex')).toBe(Buffer.from(payload).toString('hex'));
+
+    client.close();
+    serving.close();
   });
 
   test('WebSocket relay: Browser B gets file from Browser A via Rust server', async () => {

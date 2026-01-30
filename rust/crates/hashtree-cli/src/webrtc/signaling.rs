@@ -19,6 +19,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
+use crate::nostr_relay::NostrRelay;
 use super::peer::{ContentStore, Peer, PendingRequest};
 use super::types::{
     PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus, SignalingMessage, WebRTCConfig, WEBRTC_KIND, HELLO_TAG,
@@ -219,6 +220,8 @@ pub struct WebRTCManager {
     store: Option<Arc<dyn ContentStore>>,
     /// Peer classifier for pool assignment
     peer_classifier: PeerClassifier,
+    /// Optional Nostr relay for data-channel relay messages
+    nostr_relay: Option<Arc<NostrRelay>>,
     /// Channel for peer state events (connection success/failure)
     state_event_tx: mpsc::Sender<PeerStateEvent>,
     state_event_rx: Option<mpsc::Receiver<PeerStateEvent>>,
@@ -247,6 +250,7 @@ impl WebRTCManager {
             signaling_rx: Some(signaling_rx),
             store: None,
             peer_classifier,
+            nostr_relay: None,
             state_event_tx,
             state_event_rx: Some(state_event_rx),
         }
@@ -287,6 +291,11 @@ impl WebRTCManager {
     /// Set the peer classifier
     pub fn set_peer_classifier(&mut self, classifier: PeerClassifier) {
         self.peer_classifier = classifier;
+    }
+
+    /// Set the Nostr relay for data-channel relay messages
+    pub fn set_nostr_relay(&mut self, relay: Arc<NostrRelay>) {
+        self.nostr_relay = Some(relay);
     }
 
     /// Get my peer ID
@@ -962,6 +971,7 @@ impl WebRTCManager {
             self.config.stun_servers.clone(),
             self.store.clone(),
             Some(self.state_event_tx.clone()),
+            self.nostr_relay.clone(),
         )
         .await?;
 
@@ -1047,6 +1057,7 @@ impl WebRTCManager {
             self.config.stun_servers.clone(),
             self.store.clone(),
             Some(self.state_event_tx.clone()),
+            self.nostr_relay.clone(),
         )
         .await?;
         debug!("Peer connection created for {}", full_peer_id.short());

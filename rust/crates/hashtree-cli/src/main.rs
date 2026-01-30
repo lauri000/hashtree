@@ -654,6 +654,8 @@ async fn main() -> Result<()> {
 
             // Convert max_size_gb to bytes
             let max_size_bytes = config.storage.max_size_gb * 1024 * 1024 * 1024;
+            let nostr_db_max_bytes = config.nostr.db_max_size_gb.saturating_mul(1024 * 1024 * 1024);
+            let spambox_db_max_bytes = config.nostr.spambox_max_size_gb.saturating_mul(1024 * 1024 * 1024);
             let store = Arc::new(HashtreeStore::with_options(&data_dir, config.storage.s3.as_ref(), max_size_bytes)?);
 
             // Ensure nsec exists (generate if needed)
@@ -676,7 +678,7 @@ async fn main() -> Result<()> {
             }
 
             // Initialize social graph (nostrdb)
-            let ndb = hashtree_cli::socialgraph::init_ndb(&data_dir)
+            let ndb = hashtree_cli::socialgraph::init_ndb_with_mapsize(&data_dir, Some(nostr_db_max_bytes))
                 .context("Failed to initialize nostrdb")?;
 
             // Set social graph root (configured npub or own key)
@@ -693,6 +695,20 @@ async fn main() -> Result<()> {
                 config.nostr.max_write_distance,
                 allowed_pubkeys.clone(),
             ));
+
+            let nostr_relay_config = hashtree_cli::nostr_relay::NostrRelayConfig {
+                spambox_db_max_bytes: spambox_db_max_bytes,
+                ..Default::default()
+            };
+            let nostr_relay = Arc::new(
+                hashtree_cli::nostr_relay::NostrRelay::new(
+                    Arc::clone(&ndb),
+                    data_dir.clone(),
+                    Some(social_graph.clone()),
+                    nostr_relay_config,
+                )
+                .context("Failed to initialize Nostr relay")?,
+            );
 
             // Spawn social graph crawler with 5s startup delay
             let crawler_ndb = Arc::clone(&ndb);
@@ -766,6 +782,7 @@ async fn main() -> Result<()> {
                         Arc::clone(&store) as Arc<dyn hashtree_cli::ContentStore>,
                         peer_classifier,
                     );
+                    manager.set_nostr_relay(nostr_relay.clone());
 
                     // Get the WebRTC state before spawning (for HTTP handler to query peers)
                     let webrtc_state = manager.state();
@@ -799,6 +816,7 @@ async fn main() -> Result<()> {
 
             // Add social graph to server
             server = server.with_social_graph(social_graph);
+            server = server.with_nostr_relay(nostr_relay.clone());
 
             // Add WebRTC peer state for P2P queries from HTTP handler
             if let Some(ref webrtc_state) = webrtc_state {

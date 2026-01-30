@@ -71,6 +71,7 @@ mod tests {
 
     #[test]
     fn test_allowed_pubkey_passes() {
+        let _guard = super::super::test_lock();
         let (_tmp, ndb) = setup();
         let pk_hex = "aa".repeat(32);
         let mut allowed = HashSet::new();
@@ -82,6 +83,7 @@ mod tests {
 
     #[test]
     fn test_unknown_pubkey_denied() {
+        let _guard = super::super::test_lock();
         let (_tmp, ndb) = setup();
         let root_pk = [1u8; 32];
         super::super::set_social_graph_root(&ndb, &root_pk);
@@ -94,6 +96,7 @@ mod tests {
 
     #[test]
     fn test_root_pubkey_within_distance() {
+        let _guard = super::super::test_lock();
         let (_tmp, ndb) = setup();
         let root_pk = [1u8; 32];
         super::super::set_social_graph_root(&ndb, &root_pk);
@@ -106,6 +109,7 @@ mod tests {
 
     #[test]
     fn test_stats_enabled() {
+        let _guard = super::super::test_lock();
         let (_tmp, ndb) = setup();
         let ac = SocialGraphAccessControl::new(ndb, 3, HashSet::new());
         let stats = ac.stats();

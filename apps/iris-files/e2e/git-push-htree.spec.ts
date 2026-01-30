@@ -72,10 +72,10 @@ test.describe('Git push to htree:// and view in browser', () => {
 
     lockFd = await acquireRustLock(240000);
 
-    // Build htree CLI and git-remote-htree if needed
+    // Build htree CLI (includes git-remote-htree wrapper binary)
     console.log('Building rust...');
     try {
-      execSync('cargo build --release -p hashtree-cli -p git-remote-htree', {
+      execSync('cargo build --release -p hashtree-cli', {
         cwd: HASHTREE_RS_DIR,
         stdio: 'inherit',
       });

@@ -9,8 +9,29 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct NdbStub;
 
+/// Alias to mirror nostrdb::Ndb when feature is disabled
+pub type Ndb = NdbStub;
+
+#[cfg(test)]
+pub struct TestLockGuard;
+
+#[cfg(test)]
+pub fn test_lock() -> TestLockGuard {
+    TestLockGuard
+}
+
 /// Initialize nostrdb - returns stub when feature is disabled
 pub fn init_ndb(_data_dir: &Path) -> anyhow::Result<Arc<NdbStub>> {
+    Ok(Arc::new(NdbStub))
+}
+
+/// Initialize nostrdb with optional mapsize - stubbed.
+pub fn init_ndb_with_mapsize(_data_dir: &Path, _mapsize_bytes: Option<u64>) -> anyhow::Result<Arc<NdbStub>> {
+    Ok(Arc::new(NdbStub))
+}
+
+/// Initialize nostrdb at a specific directory - stubbed.
+pub fn init_ndb_at_path(_db_dir: &Path, _mapsize_bytes: Option<u64>) -> anyhow::Result<Arc<NdbStub>> {
     Ok(Arc::new(NdbStub))
 }
 

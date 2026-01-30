@@ -95,6 +95,13 @@ pub struct NostrConfig {
     /// Max follow distance for write access (default: 3)
     #[serde(default = "default_max_write_distance")]
     pub max_write_distance: u32,
+    /// Max size for trusted nostrdb in GB (default: 10)
+    #[serde(default = "default_nostr_db_max_size_gb")]
+    pub db_max_size_gb: u64,
+    /// Max size for spambox nostrdb in GB (default: 1)
+    /// Set to 0 for memory-only spambox (no on-disk DB)
+    #[serde(default = "default_nostr_spambox_max_size_gb")]
+    pub spambox_max_size_gb: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,6 +188,14 @@ fn default_max_write_distance() -> u32 {
     3
 }
 
+fn default_nostr_db_max_size_gb() -> u64 {
+    10
+}
+
+fn default_nostr_spambox_max_size_gb() -> u64 {
+    1
+}
+
 fn default_relays() -> Vec<String> {
     vec![
         "wss://relay.damus.io".to_string(),
@@ -247,6 +262,8 @@ impl Default for NostrConfig {
             socialgraph_root: None,
             crawl_depth: default_crawl_depth(),
             max_write_distance: default_max_write_distance(),
+            db_max_size_gb: default_nostr_db_max_size_gb(),
+            spambox_max_size_gb: default_nostr_spambox_max_size_gb(),
         }
     }
 }
@@ -498,6 +515,8 @@ mod tests {
         assert_eq!(config.storage.max_size_gb, 10);
         assert_eq!(config.nostr.crawl_depth, 2);
         assert_eq!(config.nostr.max_write_distance, 3);
+        assert_eq!(config.nostr.db_max_size_gb, 10);
+        assert_eq!(config.nostr.spambox_max_size_gb, 1);
         assert!(config.nostr.socialgraph_root.is_none());
     }
 
@@ -511,6 +530,8 @@ relays = ["wss://relay.damus.io"]
         assert_eq!(config.nostr.relays, vec!["wss://relay.damus.io"]);
         assert_eq!(config.nostr.crawl_depth, 2);
         assert_eq!(config.nostr.max_write_distance, 3);
+        assert_eq!(config.nostr.db_max_size_gb, 10);
+        assert_eq!(config.nostr.spambox_max_size_gb, 1);
         assert!(config.nostr.socialgraph_root.is_none());
     }
 
@@ -527,6 +548,8 @@ max_write_distance = 5
         assert_eq!(config.nostr.socialgraph_root, Some("npub1test".to_string()));
         assert_eq!(config.nostr.crawl_depth, 3);
         assert_eq!(config.nostr.max_write_distance, 5);
+        assert_eq!(config.nostr.db_max_size_gb, 10);
+        assert_eq!(config.nostr.spambox_max_size_gb, 1);
     }
 
     #[test]

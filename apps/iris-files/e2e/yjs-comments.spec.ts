@@ -67,7 +67,8 @@ test.describe('Yjs Document Comments', () => {
     await page.waitForTimeout(500);
 
     // Select some text
-    await page.keyboard.press('Control+a');
+    const selectAllShortcut = process.platform === 'darwin' ? 'Meta+a' : 'Control+a';
+    await page.keyboard.press(selectAllShortcut);
     await page.waitForTimeout(200);
 
     // Comment button should now be enabled

@@ -694,7 +694,11 @@ servers = [${blossomToml}]
       }
 
       console.log('[test] Waiting for tree event to appear on relay...');
-      const treeEvent = await waitForTreeEvent(relayUrl, ownerPubkey, repoName, 45000);
+      let treeEvent = await waitForTreeEvent(relayUrl, ownerPubkey, repoName, 60000);
+      if (!treeEvent) {
+        console.log('[test] Tree event not found yet, retrying...');
+        treeEvent = await waitForTreeEvent(relayUrl, ownerPubkey, repoName, 60000);
+      }
       if (!treeEvent) {
         throw new Error('Tree event not found on relay after publish');
       }

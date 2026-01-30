@@ -1,5 +1,6 @@
 pub mod config;
 pub mod fetch;
+pub mod nostr_relay;
 pub mod server;
 pub mod storage;
 pub mod sync;

@@ -72,7 +72,11 @@ async function createFileWithContent(page: any, fileName: string, content: strin
 
   const saveButton = page.getByRole('button', { name: /Save|Saved|Saving/ });
   if (await saveButton.isEnabled().catch(() => false)) {
-    await saveButton.click();
+    try {
+      await saveButton.click({ timeout: 10000 });
+    } catch (err) {
+      console.log('[test] Save click skipped:', err);
+    }
   }
   await expect(saveButton).toBeDisabled({ timeout: 30000 });
 

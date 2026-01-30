@@ -6,22 +6,33 @@ use axum::{
     extract::ws::Message,
 };
 use crate::socialgraph;
+use crate::nostr_relay::NostrRelay;
 use crate::storage::HashtreeStore;
 use crate::webrtc::WebRTCState;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::{Arc, atomic::{AtomicU32, AtomicU64, Ordering}};
 use tokio::sync::{mpsc, Mutex};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WsProtocol {
+    HashtreeJson,
+    HashtreeMsgpack,
+    Unknown,
+}
 
 pub struct PendingRequest {
     pub origin_id: u64,
     pub hash: String,
     pub found: bool,
+    pub origin_protocol: WsProtocol,
 }
 
 pub struct WsRelayState {
     pub clients: Mutex<HashMap<u64, mpsc::UnboundedSender<Message>>>,
     pub pending: Mutex<HashMap<(u64, u32), PendingRequest>>,
+    pub client_protocols: Mutex<HashMap<u64, WsProtocol>>,
     pub next_client_id: AtomicU64,
+    pub next_request_id: AtomicU32,
 }
 
 impl WsRelayState {
@@ -29,12 +40,18 @@ impl WsRelayState {
         Self {
             clients: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
+            client_protocols: Mutex::new(HashMap::new()),
             next_client_id: AtomicU64::new(1),
+            next_request_id: AtomicU32::new(1),
         }
     }
 
     pub fn next_id(&self) -> u64 {
         self.next_client_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    pub fn next_request_id(&self) -> u32 {
+        self.next_request_id.fetch_add(1, Ordering::SeqCst)
     }
 }
 
@@ -44,7 +61,7 @@ pub struct AppState {
     pub auth: Option<AuthCredentials>,
     /// WebRTC peer state for forwarding requests to connected P2P peers
     pub webrtc_peers: Option<Arc<WebRTCState>>,
-    /// WebSocket relay state for /ws/data clients
+    /// WebSocket relay state for /ws clients
     pub ws_relay: Arc<WsRelayState>,
     /// Maximum upload size in bytes for Blossom uploads (default: 5 MB)
     pub max_upload_bytes: usize,
@@ -57,6 +74,8 @@ pub struct AppState {
     pub upstream_blossom: Vec<String>,
     /// Social graph access control (nostrdb-backed when feature enabled)
     pub social_graph: Option<Arc<socialgraph::SocialGraphAccessControl>>,
+    /// Nostr relay state for /ws and WebRTC Nostr messages
+    pub nostr_relay: Option<Arc<NostrRelay>>,
 }
 
 #[derive(Clone)]

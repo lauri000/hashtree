@@ -139,9 +139,16 @@ test.describe('Livestream Viewer Updates', () => {
     return true;
   }
 
-  async function waitForStreamPreview(page: Page, timeoutMs: number = 30000): Promise<void> {
+  async function waitForStreamPreview(page: Page, timeoutMs: number = 60000): Promise<void> {
     const filenameInput = page.locator('input[placeholder="filename"]');
-    await expect(filenameInput).toBeVisible({ timeout: timeoutMs });
+    const startCameraBtn = page.getByRole('button', { name: 'Start Camera' });
+    await expect.poll(async () => {
+      if (await filenameInput.isVisible().catch(() => false)) return true;
+      if (await startCameraBtn.isVisible().catch(() => false)) {
+        await startCameraBtn.click().catch(() => {});
+      }
+      return false;
+    }, { timeout: timeoutMs, intervals: [500, 1000, 2000] }).toBe(true);
   }
 
   async function waitForStreamRecording(page: Page, timeoutMs: number = 30000): Promise<void> {

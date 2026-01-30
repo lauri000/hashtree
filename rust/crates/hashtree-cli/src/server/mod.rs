@@ -17,6 +17,7 @@ use axum::{
 use crate::socialgraph;
 use crate::storage::HashtreeStore;
 use crate::webrtc::WebRTCState;
+use crate::nostr_relay::NostrRelay;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -40,6 +41,7 @@ impl HashtreeServer {
                 allowed_pubkeys: HashSet::new(), // No pubkeys allowed by default (use public_writes)
                 upstream_blossom: Vec::new(),
                 social_graph: None,
+                nostr_relay: None,
             },
             addr,
         }
@@ -87,13 +89,26 @@ impl HashtreeServer {
         self
     }
 
+    /// Set Nostr relay state (shared for /ws and WebRTC)
+    pub fn with_nostr_relay(mut self, relay: Arc<NostrRelay>) -> Self {
+        self.state.nostr_relay = Some(relay);
+        self
+    }
+
     pub async fn run(self) -> Result<()> {
         // Public endpoints (no auth required)
         // Note: /:id serves both CID and blossom SHA256 hash lookups
         // The handler differentiates based on hash format (64 char hex = blossom)
         let public_routes = Router::new()
             .route("/", get(handlers::serve_root))
-            .route("/ws/data", get(ws_relay::ws_data))
+            .route("/ws", get(ws_relay::ws_data))
+            .route("/htree/test", get(handlers::htree_test).head(handlers::htree_test))
+            // /htree/nhash1...[/path] - content-addressed (immutable)
+            .route("/htree/nhash1:nhash", get(handlers::htree_nhash))
+            .route("/htree/nhash1:nhash/*path", get(handlers::htree_nhash_path))
+            // /htree/npub1.../tree[/path] - mutable (resolver-backed)
+            .route("/htree/npub1:npub/:treename", get(handlers::htree_npub))
+            .route("/htree/npub1:npub/:treename/*path", get(handlers::htree_npub_path))
             // Nostr resolver endpoints - resolve npub/treename to content
             .route("/n/:pubkey/:treename", get(handlers::resolve_and_serve))
             // Direct npub route (clients should parse nhash and request by hex hash)

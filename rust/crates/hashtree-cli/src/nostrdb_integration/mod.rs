@@ -3,9 +3,24 @@
 pub mod access;
 pub mod crawler;
 
-use nostrdb::{Config as NdbConfig, Ndb, Transaction};
+pub use nostrdb::Ndb;
+use nostrdb::{Config as NdbConfig, Transaction};
 use std::path::Path;
 use std::sync::Arc;
+
+#[cfg(test)]
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+#[cfg(test)]
+pub type TestLockGuard = MutexGuard<'static, ()>;
+
+#[cfg(test)]
+static NDB_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[cfg(test)]
+pub fn test_lock() -> TestLockGuard {
+    NDB_TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
 
 pub use access::SocialGraphAccessControl;
 pub use crawler::SocialGraphCrawler;
@@ -21,11 +36,25 @@ pub struct SocialGraphStats {
 
 /// Initialize nostrdb with the given data directory.
 pub fn init_ndb(data_dir: &Path) -> anyhow::Result<Arc<Ndb>> {
+    init_ndb_with_mapsize(data_dir, None)
+}
+
+/// Initialize nostrdb with optional mapsize (bytes).
+pub fn init_ndb_with_mapsize(data_dir: &Path, mapsize_bytes: Option<u64>) -> anyhow::Result<Arc<Ndb>> {
     let ndb_dir = data_dir.join("nostrdb");
-    std::fs::create_dir_all(&ndb_dir)?;
-    let config = NdbConfig::new()
+    init_ndb_at_path(&ndb_dir, mapsize_bytes)
+}
+
+/// Initialize nostrdb at a specific directory (used for spambox).
+pub fn init_ndb_at_path(db_dir: &Path, mapsize_bytes: Option<u64>) -> anyhow::Result<Arc<Ndb>> {
+    std::fs::create_dir_all(db_dir)?;
+    let mut config = NdbConfig::new()
         .set_ingester_threads(2);
-    let ndb = Ndb::new(ndb_dir.to_str().unwrap_or("."), &config)?;
+    if let Some(bytes) = mapsize_bytes {
+        let mapsize = usize::try_from(bytes).unwrap_or(usize::MAX);
+        config = config.set_mapsize(mapsize);
+    }
+    let ndb = Ndb::new(db_dir.to_str().unwrap_or("."), &config)?;
     Ok(Arc::new(ndb))
 }
 
@@ -71,6 +100,7 @@ mod tests {
 
     #[test]
     fn test_init_ndb() {
+        let _guard = test_lock();
         let tmp = TempDir::new().unwrap();
         let ndb = init_ndb(tmp.path()).unwrap();
         assert!(Arc::strong_count(&ndb) == 1);
@@ -78,6 +108,7 @@ mod tests {
 
     #[test]
     fn test_set_root_and_get_follow_distance() {
+        let _guard = test_lock();
         let tmp = TempDir::new().unwrap();
         let ndb = init_ndb(tmp.path()).unwrap();
         let root_pk = [1u8; 32];
@@ -90,6 +121,7 @@ mod tests {
 
     #[test]
     fn test_unknown_pubkey_follow_distance() {
+        let _guard = test_lock();
         let tmp = TempDir::new().unwrap();
         let ndb = init_ndb(tmp.path()).unwrap();
         let root_pk = [1u8; 32];
@@ -101,6 +133,7 @@ mod tests {
 
     #[test]
     fn test_ingest_event_no_panic() {
+        let _guard = test_lock();
         let tmp = TempDir::new().unwrap();
         let ndb = init_ndb(tmp.path()).unwrap();
         // Pass invalid event - should not panic, just log warning
@@ -109,6 +142,7 @@ mod tests {
 
     #[test]
     fn test_get_follows_empty() {
+        let _guard = test_lock();
         let tmp = TempDir::new().unwrap();
         let ndb = init_ndb(tmp.path()).unwrap();
         let pk = [1u8; 32];
