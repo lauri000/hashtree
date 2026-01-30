@@ -11,6 +11,15 @@ pub mod webrtc_stub;
 #[cfg(not(feature = "p2p"))]
 pub use webrtc_stub as webrtc;
 
+#[cfg(feature = "nostrdb")]
+pub mod nostrdb_integration;
+#[cfg(not(feature = "nostrdb"))]
+pub mod nostrdb_stub;
+#[cfg(feature = "nostrdb")]
+pub use nostrdb_integration as socialgraph;
+#[cfg(not(feature = "nostrdb"))]
+pub use nostrdb_stub as socialgraph;
+
 pub use config::Config;
 pub use hashtree_resolver::nostr::{NostrRootResolver, NostrResolverConfig};
 pub use hashtree_resolver::{Keys as NostrKeys, ResolverEntry, ResolverError, RootResolver, ToBech32 as NostrToBech32};

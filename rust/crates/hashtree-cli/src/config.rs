@@ -86,6 +86,15 @@ pub struct NostrConfig {
     /// List of npubs allowed to write (blossom uploads). If empty, uses public_writes setting.
     #[serde(default)]
     pub allowed_npubs: Vec<String>,
+    /// Social graph root pubkey (npub). Defaults to own key if not set.
+    #[serde(default)]
+    pub socialgraph_root: Option<String>,
+    /// How many hops to crawl the follow graph (default: 2)
+    #[serde(default = "default_crawl_depth")]
+    pub crawl_depth: u32,
+    /// Max follow distance for write access (default: 3)
+    #[serde(default = "default_max_write_distance")]
+    pub max_write_distance: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +173,14 @@ fn default_blossom_timeout_ms() -> u64 {
     10000
 }
 
+fn default_crawl_depth() -> u32 {
+    2
+}
+
+fn default_max_write_distance() -> u32 {
+    3
+}
+
 fn default_relays() -> Vec<String> {
     vec![
         "wss://relay.damus.io".to_string(),
@@ -227,6 +244,9 @@ impl Default for NostrConfig {
         Self {
             relays: default_relays(),
             allowed_npubs: Vec::new(),
+            socialgraph_root: None,
+            crawl_depth: default_crawl_depth(),
+            max_write_distance: default_max_write_distance(),
         }
     }
 }
@@ -476,6 +496,37 @@ mod tests {
         assert_eq!(config.server.bind_address, "127.0.0.1:8080");
         assert_eq!(config.server.enable_auth, true);
         assert_eq!(config.storage.max_size_gb, 10);
+        assert_eq!(config.nostr.crawl_depth, 2);
+        assert_eq!(config.nostr.max_write_distance, 3);
+        assert!(config.nostr.socialgraph_root.is_none());
+    }
+
+    #[test]
+    fn test_nostr_config_deserialize_with_defaults() {
+        let toml_str = r#"
+[nostr]
+relays = ["wss://relay.damus.io"]
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.nostr.relays, vec!["wss://relay.damus.io"]);
+        assert_eq!(config.nostr.crawl_depth, 2);
+        assert_eq!(config.nostr.max_write_distance, 3);
+        assert!(config.nostr.socialgraph_root.is_none());
+    }
+
+    #[test]
+    fn test_nostr_config_deserialize_with_socialgraph() {
+        let toml_str = r#"
+[nostr]
+relays = ["wss://relay.damus.io"]
+socialgraph_root = "npub1test"
+crawl_depth = 3
+max_write_distance = 5
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.nostr.socialgraph_root, Some("npub1test".to_string()));
+        assert_eq!(config.nostr.crawl_depth, 3);
+        assert_eq!(config.nostr.max_write_distance, 5);
     }
 
     #[test]

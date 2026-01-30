@@ -694,11 +694,42 @@ pub async fn garbage_collect(State(state): State<AppState>) -> impl IntoResponse
     }
 }
 
-pub async fn socialgraph_stats(State(_state): State<AppState>) -> impl IntoResponse {
-    // Social graph via nostrdb has been removed - return empty stats
-    Json(json!({
-        "message": "Social graph stats not available (nostrdb removed)"
-    }))
+pub async fn socialgraph_stats(State(state): State<AppState>) -> impl IntoResponse {
+    match &state.social_graph {
+        Some(sg) => {
+            let stats = sg.stats();
+            Json(json!(stats))
+        }
+        None => Json(json!({
+            "enabled": false,
+            "message": "Social graph not active"
+        })),
+    }
+}
+
+pub async fn follow_distance(
+    State(state): State<AppState>,
+    Path(pubkey): Path<String>,
+) -> impl IntoResponse {
+    if pubkey.len() != 64 || !pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Json(json!({
+            "error": "Invalid pubkey format (expected 64 hex chars)"
+        }));
+    }
+
+    match &state.social_graph {
+        Some(sg) => {
+            let allowed = sg.check_write_access(&pubkey);
+            Json(json!({
+                "pubkey": pubkey,
+                "write_access": allowed,
+            }))
+        }
+        None => Json(json!({
+            "pubkey": pubkey,
+            "error": "Social graph not active",
+        })),
+    }
 }
 
 /// Timeout for HTTP resolver requests
@@ -892,7 +923,7 @@ async fn query_webrtc_peers(webrtc_state: &Arc<WebRTCState>, hash_hex: &str) -> 
                         peer_id,
                         &hash_hex[..16.min(hash_hex.len())]
                     );
-                    return Some((data, peer_id));
+                    return Some((data, peer_id.to_string()));
                 }
                 Ok(None) => {
                     tracing::debug!(

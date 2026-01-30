@@ -14,6 +14,7 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
+use crate::socialgraph;
 use crate::storage::HashtreeStore;
 use crate::webrtc::WebRTCState;
 use std::collections::HashSet;
@@ -38,6 +39,7 @@ impl HashtreeServer {
                 public_writes: true, // Allow anyone with valid Nostr auth by default
                 allowed_pubkeys: HashSet::new(), // No pubkeys allowed by default (use public_writes)
                 upstream_blossom: Vec::new(),
+                social_graph: None,
             },
             addr,
         }
@@ -79,6 +81,12 @@ impl HashtreeServer {
         self
     }
 
+    /// Set social graph access control
+    pub fn with_social_graph(mut self, sg: Arc<socialgraph::SocialGraphAccessControl>) -> Self {
+        self.state.social_graph = Some(sg);
+        self
+    }
+
     pub async fn run(self) -> Result<()> {
         // Public endpoints (no auth required)
         // Note: /:id serves both CID and blossom SHA256 hash lookups
@@ -106,6 +114,7 @@ impl HashtreeServer {
             .route("/api/peers", get(handlers::webrtc_peers))
             .route("/api/status", get(handlers::daemon_status))
             .route("/api/socialgraph", get(handlers::socialgraph_stats))
+            .route("/api/socialgraph/distance/:pubkey", get(handlers::follow_distance))
             // Resolver API endpoints
             .route("/api/resolve/:pubkey/:treename", get(handlers::resolve_to_hash))
             .route("/api/trees/:pubkey", get(handlers::list_trees))
@@ -146,7 +155,6 @@ mod tests {
     use super::*;
     use crate::storage::HashtreeStore;
     use tempfile::TempDir;
-    use std::path::Path;
     use hashtree_core::from_hex;
 
     #[tokio::test]

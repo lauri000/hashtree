@@ -5,6 +5,7 @@ use axum::{
     middleware::Next,
     extract::ws::Message,
 };
+use crate::socialgraph;
 use crate::storage::HashtreeStore;
 use crate::webrtc::WebRTCState;
 use std::collections::{HashMap, HashSet};
@@ -54,6 +55,8 @@ pub struct AppState {
     pub allowed_pubkeys: HashSet<String>,
     /// Upstream Blossom servers for cascade fetching
     pub upstream_blossom: Vec<String>,
+    /// Social graph access control (nostrdb-backed when feature enabled)
+    pub social_graph: Option<Arc<socialgraph::SocialGraphAccessControl>>,
 }
 
 #[derive(Clone)]

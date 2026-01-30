@@ -675,6 +675,42 @@ async fn main() -> Result<()> {
                 }
             }
 
+            // Initialize social graph (nostrdb)
+            let ndb = hashtree_cli::socialgraph::init_ndb(&data_dir)
+                .context("Failed to initialize nostrdb")?;
+
+            // Set social graph root (configured npub or own key)
+            let social_graph_root_bytes = if let Some(ref root_npub) = config.nostr.socialgraph_root {
+                parse_npub(root_npub).unwrap_or(pk_bytes)
+            } else {
+                pk_bytes
+            };
+            hashtree_cli::socialgraph::set_social_graph_root(&ndb, &social_graph_root_bytes);
+
+            // Build social graph access control
+            let social_graph = Arc::new(hashtree_cli::socialgraph::SocialGraphAccessControl::new(
+                Arc::clone(&ndb),
+                config.nostr.max_write_distance,
+                allowed_pubkeys.clone(),
+            ));
+
+            // Spawn social graph crawler with 5s startup delay
+            let crawler_ndb = Arc::clone(&ndb);
+            let crawler_keys = keys.clone();
+            let crawler_relays = config.nostr.relays.clone();
+            let crawler_depth = config.nostr.crawl_depth;
+            let (crawler_shutdown_tx, crawler_shutdown_rx) = tokio::sync::watch::channel(false);
+            let crawler_handle = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let crawler = hashtree_cli::socialgraph::SocialGraphCrawler::new(
+                    crawler_ndb,
+                    crawler_keys,
+                    crawler_relays,
+                    crawler_depth,
+                );
+                crawler.crawl(crawler_shutdown_rx).await;
+            });
+
             // Start STUN server and WebRTC if P2P feature enabled
             #[cfg(feature = "p2p")]
             let (stun_handle, webrtc_handle, webrtc_state) = {
@@ -696,14 +732,26 @@ async fn main() -> Result<()> {
                         ..Default::default()
                     };
 
-                    // Create peer classifier based on local contacts file
+                    // Create peer classifier using contacts file + social graph fallback
                     let contacts_file = data_dir.join("contacts.json");
+                    let classifier_ndb = Arc::clone(&ndb);
                     let peer_classifier: hashtree_cli::PeerClassifier = Arc::new(move |pubkey_hex: &str| {
-                        // Check local contacts.json file (updated by htree follow command)
+                        // Check local contacts.json file first (updated by htree follow command)
                         if contacts_file.exists() {
                             if let Ok(data) = std::fs::read_to_string(&contacts_file) {
                                 if let Ok(contacts) = serde_json::from_str::<Vec<String>>(&data) {
                                     if contacts.contains(&pubkey_hex.to_string()) {
+                                        return PeerPool::Follows;
+                                    }
+                                }
+                            }
+                        }
+                        // Fallback: check social graph via nostrdb
+                        if let Ok(pk_bytes) = hex::decode(pubkey_hex) {
+                            if pk_bytes.len() == 32 {
+                                let pk: [u8; 32] = pk_bytes.try_into().unwrap();
+                                if let Some(dist) = hashtree_cli::socialgraph::get_follow_distance(&classifier_ndb, &pk) {
+                                    if dist <= 2 {
                                         return PeerPool::Follows;
                                     }
                                 }
@@ -748,6 +796,9 @@ async fn main() -> Result<()> {
                 .with_max_upload_bytes((config.blossom.max_upload_mb as usize) * 1024 * 1024)
                 .with_public_writes(config.server.public_writes)
                 .with_upstream_blossom(upstream_blossom);
+
+            // Add social graph to server
+            server = server.with_social_graph(social_graph);
 
             // Add WebRTC peer state for P2P queries from HTTP handler
             if let Some(ref webrtc_state) = webrtc_state {
@@ -836,6 +887,8 @@ async fn main() -> Result<()> {
             if config.server.enable_webrtc {
                 println!("WebRTC: enabled (P2P connections)");
             }
+            println!("Social graph: enabled (crawl_depth={}, max_write_distance={})",
+                config.nostr.crawl_depth, config.nostr.max_write_distance);
             println!("Storage limit: {} GB", config.storage.max_size_gb);
             if config.sync.enabled {
                 let mut sync_features = Vec::new();
@@ -859,6 +912,10 @@ async fn main() -> Result<()> {
             }
 
             server.run().await?;
+
+            // Shutdown social graph crawler
+            let _ = crawler_shutdown_tx.send(true);
+            crawler_handle.abort();
 
             // Shutdown background eviction
             eviction_handle.abort();

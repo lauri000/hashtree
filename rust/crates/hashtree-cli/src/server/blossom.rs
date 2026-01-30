@@ -27,7 +27,7 @@ const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 /// Default maximum upload size in bytes (5 MB)
 pub const DEFAULT_MAX_UPLOAD_SIZE: usize = 5 * 1024 * 1024;
 
-/// Check if a pubkey has write access based on allowed_npubs config
+/// Check if a pubkey has write access based on allowed_npubs config or social graph
 /// Returns Ok(()) if allowed, Err with JSON error body if denied
 fn check_write_access(state: &AppState, pubkey: &str) -> Result<(), Response<Body>> {
     // Check if pubkey is in the allowed list (converted from npub to hex)
@@ -36,8 +36,16 @@ fn check_write_access(state: &AppState, pubkey: &str) -> Result<(), Response<Bod
         return Ok(());
     }
 
-    // Not in allowed list
-    tracing::info!("Blossom write denied for {}... (not in allowed_npubs)", &pubkey[..8.min(pubkey.len())]);
+    // Check social graph (nostrdb follow distance)
+    if let Some(ref sg) = state.social_graph {
+        if sg.check_write_access(pubkey) {
+            tracing::debug!("Blossom write allowed for {}... (social graph)", &pubkey[..8.min(pubkey.len())]);
+            return Ok(());
+        }
+    }
+
+    // Not in allowed list or social graph
+    tracing::info!("Blossom write denied for {}... (not in allowed_npubs or social graph)", &pubkey[..8.min(pubkey.len())]);
     Err(Response::builder()
         .status(StatusCode::FORBIDDEN)
         .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")

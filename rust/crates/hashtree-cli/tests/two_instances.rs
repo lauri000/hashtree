@@ -311,6 +311,7 @@ mod test_relay {
     }
 }
 
+#[allow(dead_code)]
 struct TestInstance {
     _data_dir: TempDir,
     process: Option<Child>,
@@ -931,6 +932,7 @@ fn extract_cid(text: &str) -> Option<String> {
 }
 
 #[test]
+#[cfg_attr(not(feature = "p2p"), ignore = "requires p2p feature for WebRTC data channels")]
 fn test_two_instances_connect_local_relay() -> Result<()> {
     let htree_bin = find_htree_binary();
     let relay = test_relay::TestRelay::new(19110);
