@@ -5,10 +5,13 @@ Hashtree daemon and CLI - content-addressed storage with P2P sync.
 ## Installation
 
 ```bash
-# With P2P enabled (default)
+# Full install with P2P and social graph (default)
 cargo install hashtree-cli
 
-# Minimal install without P2P/WebRTC (smaller binary)
+# Without social graph (nostrdb)
+cargo install hashtree-cli --no-default-features --features p2p
+
+# Minimal install without P2P or social graph
 cargo install hashtree-cli --no-default-features
 ```
 
@@ -46,6 +49,12 @@ htree stop                              # Stop background daemon
 htree status                            # Check daemon status
 ```
 
+## Social Graph
+
+The daemon embeds [nostrdb](https://github.com/damus-io/nostrdb) to maintain a local social graph. On startup it crawls follow lists (kind 3) from Nostr relays and uses follow distance to control write access to your Blossom server -- no allow-lists needed for people in your social circle.
+
+The social graph API is available at `/api/socialgraph/distance/:pubkey`.
+
 ## Configuration
 
 Config file: `~/.hashtree/config.toml`
@@ -57,6 +66,9 @@ write_servers = ["https://hashtree.iris.to"]
 
 [nostr]
 relays = ["wss://relay.damus.io", "wss://nos.lol"]
+socialgraph_root = "npub1..."   # defaults to own key
+crawl_depth = 2                 # BFS depth for follow graph crawl
+max_write_distance = 3          # max follow distance for write access
 ```
 
 Keys file: `~/.hashtree/keys`
