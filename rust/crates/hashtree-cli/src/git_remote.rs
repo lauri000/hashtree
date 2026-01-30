@@ -1,6 +1,6 @@
 //! Git remote helper binary - thin wrapper around git-remote-htree crate
 //!
-//! This allows `cargo install hashtree-cli` to install both `htree` and `git-remote-htree`
+//! Build with `--features git-remote-wrapper` to install alongside `htree`
 
 fn main() {
     git_remote_htree::main_entry();

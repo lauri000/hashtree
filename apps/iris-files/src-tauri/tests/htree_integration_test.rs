@@ -21,8 +21,14 @@ const DEFAULT_BLOSSOM_SERVERS: &[&str] = &[
     "https://cdn.iris.to",
 ];
 
+fn ensure_rustls() {
+    app_lib::ensure_rustls_provider();
+}
+
 #[tokio::test]
 async fn test_nostr_resolver_connects() {
+    ensure_rustls();
+
     let config = NostrResolverConfig {
         relays: vec![
             "wss://relay.damus.io".into(),
@@ -41,6 +47,8 @@ async fn test_nostr_resolver_connects() {
 
 #[tokio::test]
 async fn test_resolve_npub_tree() {
+    ensure_rustls();
+
     let config = NostrResolverConfig {
         relays: vec![
             "wss://relay.damus.io".into(),
@@ -79,6 +87,8 @@ async fn test_resolve_npub_tree() {
 
 #[tokio::test]
 async fn test_list_npub_trees() {
+    ensure_rustls();
+
     let config = NostrResolverConfig {
         relays: vec![
             "wss://relay.damus.io".into(),
@@ -112,6 +122,8 @@ async fn test_list_npub_trees() {
 /// Test fetching user's Blossom server list from kind 10063
 #[tokio::test]
 async fn test_fetch_user_blossom_servers() {
+    ensure_rustls();
+
     use nostr_sdk::{Client, Filter, Kind, PublicKey, client::EventSource};
 
     let npub = TEST_NPUB;
@@ -156,6 +168,8 @@ async fn test_fetch_user_blossom_servers() {
 /// Test direct Blossom fetch with BlossomStore
 #[tokio::test]
 async fn test_direct_blossom_fetch() {
+    ensure_rustls();
+
     let keys = Keys::generate();
     let blossom_client = BlossomClient::new_empty(keys)
         .with_read_servers(vec!["https://cdn.iris.to".to_string()]);
@@ -185,6 +199,8 @@ async fn test_direct_blossom_fetch() {
 /// This is the specific regression test for the "empty directory" bug
 #[tokio::test]
 async fn test_media_directory_not_empty() {
+    ensure_rustls();
+
     // 1. Set up Nostr resolver
     let config = NostrResolverConfig {
         relays: vec![
@@ -244,6 +260,8 @@ async fn test_media_directory_not_empty() {
 /// Test the full flow: resolve npub/tree -> fetch tree root -> resolve path -> fetch file
 #[tokio::test]
 async fn test_full_file_fetch() {
+    ensure_rustls();
+
     // 1. Set up Nostr resolver
     let config = NostrResolverConfig {
         relays: vec![

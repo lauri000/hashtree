@@ -1,4 +1,5 @@
 pub mod config;
+pub mod daemon;
 pub mod fetch;
 pub mod nostr_relay;
 pub mod server;

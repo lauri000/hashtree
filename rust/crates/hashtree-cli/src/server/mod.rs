@@ -14,6 +14,7 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
+use tower_http::cors::CorsLayer;
 use crate::socialgraph;
 use crate::storage::HashtreeStore;
 use crate::webrtc::WebRTCState;
@@ -26,6 +27,8 @@ pub use auth::{AppState, AuthCredentials};
 pub struct HashtreeServer {
     state: AppState,
     addr: String,
+    extra_routes: Option<Router<AppState>>,
+    cors: Option<CorsLayer>,
 }
 
 impl HashtreeServer {
@@ -44,6 +47,8 @@ impl HashtreeServer {
                 nostr_relay: None,
             },
             addr,
+            extra_routes: None,
+            cors: None,
         }
     }
 
@@ -95,10 +100,31 @@ impl HashtreeServer {
         self
     }
 
+    /// Merge extra routes into the daemon router (e.g. Tauri embeds /nip07).
+    pub fn with_extra_routes(mut self, routes: Router<AppState>) -> Self {
+        self.extra_routes = Some(routes);
+        self
+    }
+
+    /// Apply a CORS layer to all routes (used by embedded clients like Tauri).
+    pub fn with_cors(mut self, cors: CorsLayer) -> Self {
+        self.cors = Some(cors);
+        self
+    }
+
     pub async fn run(self) -> Result<()> {
+        let listener = tokio::net::TcpListener::bind(&self.addr).await?;
+        let _ = self.run_with_listener(listener).await?;
+        Ok(())
+    }
+
+    pub async fn run_with_listener(self, listener: tokio::net::TcpListener) -> Result<u16> {
+        let local_addr = listener.local_addr()?;
+
         // Public endpoints (no auth required)
         // Note: /:id serves both CID and blossom SHA256 hash lookups
         // The handler differentiates based on hash format (64 char hex = blossom)
+        let state = self.state.clone();
         let public_routes = Router::new()
             .route("/", get(handlers::serve_root))
             .route("/ws", get(ws_relay::ws_data))
@@ -133,7 +159,7 @@ impl HashtreeServer {
             // Resolver API endpoints
             .route("/api/resolve/:pubkey/:treename", get(handlers::resolve_to_hash))
             .route("/api/trees/:pubkey", get(handlers::list_trees))
-            .with_state(self.state.clone());
+            .with_state(state.clone());
 
         // Protected endpoints (require auth if enabled)
         let protected_routes = Router::new()
@@ -142,22 +168,29 @@ impl HashtreeServer {
             .route("/api/unpin/:cid", post(handlers::unpin_cid))
             .route("/api/gc", post(handlers::garbage_collect))
             .layer(middleware::from_fn_with_state(
-                self.state.clone(),
+                state.clone(),
                 auth::auth_middleware,
             ))
-            .with_state(self.state);
+            .with_state(state.clone());
 
-        let app = public_routes
+        let mut app = public_routes
             .merge(protected_routes)
             .layer(DefaultBodyLimit::max(10 * 1024 * 1024 * 1024)); // 10GB limit
 
-        let listener = tokio::net::TcpListener::bind(&self.addr).await?;
+        if let Some(extra) = self.extra_routes {
+            app = app.merge(extra.with_state(state));
+        }
+
+        if let Some(cors) = self.cors {
+            app = app.layer(cors);
+        }
+
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
         ).await?;
 
-        Ok(())
+        Ok(local_addr.port())
     }
 
     pub fn addr(&self) -> &str {

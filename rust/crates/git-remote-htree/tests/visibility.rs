@@ -12,12 +12,13 @@ use tempfile::TempDir;
 
 /// Generate a random 32-byte secret key as hex
 fn random_secret() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("{:0>64x}", seed)
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use sha2::{Digest, Sha256};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let digest = Sha256::digest(n.to_be_bytes());
+    hex::encode(digest)
 }
 
 /// Test that link-visible repos (#k=secret) can be pushed and cloned with the secret

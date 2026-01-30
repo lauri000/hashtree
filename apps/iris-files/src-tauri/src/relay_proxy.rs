@@ -4,14 +4,12 @@
 //! Apps can connect to ws://localhost:{port}/relay and use standard Nostr protocol.
 
 use axum::{
-    extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
-    },
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
     response::IntoResponse,
 };
 use futures::{SinkExt, StreamExt};
 use nostr_sdk::{Client, Event, Filter, Kind, RelayPoolNotification};
+use once_cell::sync::OnceCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -64,11 +62,22 @@ impl Default for RelayProxyState {
     }
 }
 
+static RELAY_PROXY_STATE: OnceCell<RelayProxyState> = OnceCell::new();
+
+pub fn init_relay_proxy_state() {
+    let _ = RELAY_PROXY_STATE.set(RelayProxyState::new());
+}
+
+fn relay_proxy_state() -> RelayProxyState {
+    RELAY_PROXY_STATE
+        .get()
+        .cloned()
+        .unwrap_or_else(RelayProxyState::new)
+}
+
 /// Handle WebSocket upgrade for /relay endpoint
-pub async fn handle_relay_websocket(
-    ws: WebSocketUpgrade,
-    State(state): State<RelayProxyState>,
-) -> impl IntoResponse {
+pub async fn handle_relay_websocket(ws: WebSocketUpgrade) -> impl IntoResponse {
+    let state = relay_proxy_state();
     ws.on_upgrade(|socket| handle_connection(socket, state))
 }
 

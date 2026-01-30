@@ -337,7 +337,6 @@ pub enum S3StoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hashtree_core::store::MemoryStore;
     use hashtree_core::hash::sha256;
 
     #[test]

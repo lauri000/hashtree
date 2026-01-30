@@ -12,9 +12,11 @@ use axum::{
     extract::{OriginalUri, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{any, get, post},
+    routing::{any, post},
     Json, Router,
 };
+use hashtree_cli::daemon::{EmbeddedDaemonInfo, EmbeddedDaemonOptions};
+use hashtree_cli::server::AppState;
 use hashtree_blossom::{BlossomClient, BlossomStore};
 use hashtree_core::{
     from_hex, is_tree_node, nhash_decode, to_hex, Cid, HashTree, HashTreeConfig, Store, StoreError,
@@ -35,11 +37,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use thiserror::Error;
-use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info, warn};
 
-use crate::relay_proxy::{handle_relay_websocket, RelayProxyState};
+use crate::relay_proxy::{handle_relay_websocket, init_relay_proxy_state};
 
 /// Default Blossom servers for fetching blobs (matches web app defaults)
 const DEFAULT_BLOSSOM_SERVERS: &[&str] = &[
@@ -195,6 +196,7 @@ impl TreeVisibility {
 #[derive(Clone)]
 struct CachedRoot {
     cid: Cid,
+    #[allow(dead_code)]
     visibility: TreeVisibility,
     #[allow(dead_code)]
     timestamp: std::time::Instant,
@@ -722,6 +724,7 @@ async fn read_range_or_full(
 // Axum handler for /htree/*path - catches all htree requests
 // Now supports efficient range requests that only fetch needed chunks
 #[axum::debug_handler]
+#[allow(dead_code)]
 async fn handle_htree_request(
     State(state): State<HtreeState>,
     headers: HeaderMap,
@@ -858,6 +861,7 @@ pub fn resolve_htree_url_to_path(host: &str, raw_path: &str) -> String {
 /// Global server port - set when server starts
 static SERVER_PORT: once_cell::sync::OnceCell<u16> = once_cell::sync::OnceCell::new();
 static APP_HANDLE: once_cell::sync::OnceCell<AppHandle> = once_cell::sync::OnceCell::new();
+static DAEMON_INFO: once_cell::sync::OnceCell<EmbeddedDaemonInfo> = once_cell::sync::OnceCell::new();
 
 pub fn set_app_handle(app: AppHandle) {
     let _ = APP_HANDLE.set(app);
@@ -1106,30 +1110,25 @@ pub async fn webview_event(
 /// Returns the port number the server is listening on
 /// data_dir is the Tauri app data directory where blobs are stored
 pub async fn start_server(data_dir: PathBuf) -> Result<u16, HtreeError> {
-    // Bind to a fixed port on localhost for predictable URL
-    let listener = TcpListener::bind(("127.0.0.1", 21417))
-        .await
-        .map_err(|e| HtreeError::Io(e.to_string()))?;
-    start_server_with_listener(data_dir, listener).await
+    start_server_on_port(data_dir, 21417).await
 }
 
 /// Start the htree HTTP server on a specific port (use 0 for ephemeral)
 pub async fn start_server_on_port(data_dir: PathBuf, port: u16) -> Result<u16, HtreeError> {
-    let listener = TcpListener::bind(("127.0.0.1", port))
-        .await
+    init_relay_proxy_state();
+
+    let mut config = hashtree_cli::Config::load()
         .map_err(|e| HtreeError::Io(e.to_string()))?;
-    start_server_with_listener(data_dir, listener).await
-}
+    config.storage.data_dir = data_dir.to_string_lossy().to_string();
+    config.server.bind_address = format!("127.0.0.1:{}", port);
+    config.server.enable_auth = false;
+    config.server.stun_port = 0;
 
-async fn start_server_with_listener(
-    data_dir: PathBuf,
-    listener: TcpListener,
-) -> Result<u16, HtreeError> {
-    let state = GLOBAL_HTREE_STATE
-        .get_or_init(|| HtreeState::new(data_dir.clone()))
-        .clone();
+    let extra_routes = Router::<AppState>::new()
+        .route("/relay", any(handle_relay_websocket))
+        .route("/nip07", post(handle_nip07_request))
+        .route("/webview", post(handle_webview_event));
 
-    // CORS configuration to allow requests from the Tauri app
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -1141,42 +1140,20 @@ async fn start_server_with_listener(
             header::CONTENT_TYPE,
         ]);
 
-    // Create relay proxy state
-    let relay_state = RelayProxyState::new();
+    let info = hashtree_cli::daemon::start_embedded(EmbeddedDaemonOptions {
+        config,
+        data_dir: data_dir.clone(),
+        bind_address: format!("127.0.0.1:{}", port),
+        relays: None,
+        extra_routes: Some(extra_routes),
+        cors: Some(cors),
+    })
+    .await
+    .map_err(|e| HtreeError::Io(e.to_string()))?;
 
-    // Build the combined app with htree, relay, and nip07 routes
-    let htree_router = Router::new()
-        .route("/htree/{*path}", get(handle_htree_request))
-        .with_state(state);
-
-    let relay_router = Router::new()
-        .route("/relay", any(handle_relay_websocket))
-        .with_state(relay_state);
-
-    let nip07_router = Router::new().route("/nip07", post(handle_nip07_request));
-    let webview_router = Router::new().route("/webview", post(handle_webview_event));
-
-    let app = htree_router
-        .merge(relay_router)
-        .merge(nip07_router)
-        .merge(webview_router)
-        .layer(cors);
-
-    let addr = listener
-        .local_addr()
-        .map_err(|e| HtreeError::Io(e.to_string()))?;
-
-    let port = addr.port();
+    let port = info.port;
     SERVER_PORT.set(port).ok();
-
-    info!("htree server listening on http://127.0.0.1:{}", port);
-
-    // Spawn the server in the background
-    tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
-            error!("htree server error: {}", e);
-        }
-    });
+    DAEMON_INFO.set(info).ok();
 
     Ok(port)
 }
@@ -1185,8 +1162,8 @@ async fn start_server_with_listener(
 /// Returns the custom protocol URL for htree:// scheme
 #[tauri::command]
 pub fn get_htree_server_url() -> Option<String> {
-    // Return fixed HTTP server URL - bind uses IPv4 loopback
-    Some("http://127.0.0.1:21417".to_string())
+    let port = SERVER_PORT.get().copied().unwrap_or(21417);
+    Some(format!("http://127.0.0.1:{}", port))
 }
 
 /// Cache tree roots from the frontend for faster /thumbnail resolution.
@@ -1205,10 +1182,32 @@ pub fn cache_tree_root(
     };
     let cid = Cid { hash, key };
     let visibility = TreeVisibility::from_str(visibility.as_deref().unwrap_or("public"));
-    let state = GLOBAL_HTREE_STATE
-        .get()
-        .ok_or_else(|| "htree state not initialized".to_string())?;
-    state.cache_root(&npub, &tree_name, cid, visibility);
+    if let Some(state) = GLOBAL_HTREE_STATE.get() {
+        state.cache_root(&npub, &tree_name, cid.clone(), visibility.clone());
+    }
+
+    if let Some(info) = DAEMON_INFO.get() {
+        if let Ok(pubkey) = nostr_sdk::PublicKey::parse(&npub) {
+            let pubkey_hex = pubkey.to_hex();
+            let updated_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let key_hex = cid.key.as_ref().map(|k| hex::encode(k));
+            let _ = info.store.set_cached_root(
+                &pubkey_hex,
+                &tree_name,
+                &to_hex(&cid.hash),
+                key_hex.as_deref(),
+                match visibility {
+                    TreeVisibility::LinkVisible => "link-visible",
+                    TreeVisibility::Private => "private",
+                    TreeVisibility::Public => "public",
+                },
+                updated_at,
+            );
+        }
+    }
     Ok(())
 }
 

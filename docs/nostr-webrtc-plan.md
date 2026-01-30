@@ -12,6 +12,7 @@
 ### Done
 - Consolidated `/ws` (removed `/ws/data`) while keeping existing TS JSON + msgpack hashtree interop intact.
 - Implemented `/htree` routes for nhash/npub with range requests, thumbnail lookup, and JSON directory listings.
+- Iris-files Tauri now embeds the hashtree daemon in-process (no sidecar); `/relay`, `/nip07`, `/webview` are added via extra routes.
 - Added Nostr relay core: trusted storage + spambox (memory fallback), REQ/COUNT querying, OK/EOSE responses, and subscription broadcasting.
 - WebRTC data-channel Nostr support using standard NIP-01 JSON framing (same as `/ws`).
 - Configurable nostrdb size limits (trusted + spambox) via config.

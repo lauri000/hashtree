@@ -1087,7 +1087,7 @@ mod tests {
     #[test]
     fn test_fetch_refs_empty() {
         let config = test_config();
-        let mut client = NostrClient::new(TEST_PUBKEY, None, None, false, &config).unwrap();
+        let client = NostrClient::new(TEST_PUBKEY, None, None, false, &config).unwrap();
         // This will timeout/return empty without real relays
         let refs = client.cached_refs.get("new-repo");
         assert!(refs.is_none());
@@ -1262,8 +1262,6 @@ mod tests {
 
         // Mode 2: Link-visible (XOR masked - in practice, the key passed to publish_repo
         // is already XOR'd with url_secret, so we just store hex of that)
-        let link_visible_value = plaintext_hex.clone(); // Same format, different actual key
-
         // Mode 3: Private (NIP-44 encrypted)
         let private_value = nip44::encrypt(
             keys.secret_key(),

@@ -14,6 +14,7 @@ use blossom::BlossomManager;
 use nostr::NostrManager;
 use webrtc::WebRTCManager;
 use nostrdb::{Config, Ndb, Transaction};
+use nostr_sdk::prelude::ToBech32;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use std::path::PathBuf;
@@ -607,6 +608,18 @@ pub async fn worker_message(
                 };
                 if let Some(sk) = secret_key {
                     let keys = nostr_sdk::Keys::new(sk.clone());
+
+                    // Persist keys for embedded daemon usage
+                    if let Ok(nsec_bech32) = keys.secret_key().to_bech32() {
+                        let keys_path = hashtree_cli::config::get_keys_path();
+                        if let Some(parent) = keys_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        if let Err(e) = std::fs::write(&keys_path, format!("{} tauri\n", nsec_bech32)) {
+                            warn!("Failed to persist keys for daemon: {}", e);
+                        }
+                    }
+
                     state.blossom.set_keys(keys);
 
                     // Initialize WebRTC with shared Nostr client (run in background to not block)
@@ -1465,6 +1478,8 @@ mod resolve_root_tests {
 
     #[tokio::test]
     async fn test_resolve_media_tree() {
+        crate::ensure_rustls_provider();
+
         // This test specifically queries for the media tree
         let npub = "npub1g53mukxnjkcmr94fhryzkqutdz2ukq4ks0gvy5af25rgmwsl4ngq43drvk";
         let public_key = nostr_sdk::PublicKey::parse(npub).unwrap();

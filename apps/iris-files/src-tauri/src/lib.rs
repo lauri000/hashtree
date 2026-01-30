@@ -8,8 +8,17 @@ pub mod worker;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{Emitter, Manager};
 use std::path::PathBuf;
+use std::sync::Once;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+
+static RUSTLS_PROVIDER_INIT: Once = Once::new();
+
+pub fn ensure_rustls_provider() {
+    RUSTLS_PROVIDER_INIT.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
 
 #[cfg(test)]
 fn build_edit_menu<R: tauri::Runtime>(
@@ -78,6 +87,8 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<tau
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    ensure_rustls_provider();
+
     // Initialize tracing with env filter (RUST_LOG=iris=debug)
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -158,6 +169,10 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
 
             info!("App data directory: {:?}", data_dir);
+
+            // Keep hashtree config/data local to the app sandbox
+            std::env::set_var("HTREE_CONFIG_DIR", &data_dir);
+            std::env::set_var("HTREE_DATA_DIR", &data_dir);
 
             // Initialize htree state for URI scheme protocol (must be before webview loads)
             htree::init_htree_state(data_dir.clone());
