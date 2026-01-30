@@ -9,10 +9,14 @@
 
 pub mod webrtc_sim;
 pub mod ws_relay;
+#[cfg(feature = "nostr")]
+pub mod nostr_mesh;
 
 // Re-export main types from webrtc_sim
 pub use webrtc_sim::{SimConfig, SimEvent, SimStats, Simulation, TopologyStats};
 pub use ws_relay::WsRelay;
+#[cfg(feature = "nostr")]
+pub use nostr_mesh::NostrMesh;
 
 // Re-export types from hashtree-webrtc for convenience
 pub use hashtree_webrtc::{PoolConfig, PoolSettings, SignalingMessage};

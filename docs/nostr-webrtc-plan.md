@@ -15,15 +15,16 @@
 - Added Nostr relay core: trusted storage + spambox (memory fallback), REQ/COUNT querying, OK/EOSE responses, and subscription broadcasting.
 - WebRTC data-channel Nostr support using standard NIP-01 JSON framing (same as `/ws`).
 - Configurable nostrdb size limits (trusted + spambox) via config.
+- Added hashtree-sim Nostr mesh scenarios for publish/REQ resolution + WebRTC signaling over multi-hop.
 
 ### In progress
 - NDR integration (session bootstrap + message framing).
-- hashtree-sim Nostr scenarios.
 
 ### Next
 - Spambox promotion/scoring + persistence tuning (LRU/TTL).
 - NDR handshake + storage separation.
-- hashtree-sim Nostr scenarios (p2p/hybrid/spam/partition).
+- Expand hashtree-sim Nostr scenarios (hybrid/partition/spam).
+- Relay ingest path for Nostr events into trusted/spambox stores + p2p subscriptions.
 
 ## Non-goals (for now)
 - DNS-based identity (no NIP-05 usage).

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Shared test infrastructure for git-remote-htree integration tests
 //!
 //! Provides:
