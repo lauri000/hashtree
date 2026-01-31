@@ -48,6 +48,23 @@ use hashtree_config::Config;
 use helper::RemoteHelper;
 use nostr_client::resolve_identity;
 
+fn htree_binary_available() -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&path) {
+        let candidate = if cfg!(windows) {
+            dir.join("htree.exe")
+        } else {
+            dir.join("htree")
+        };
+        if candidate.is_file() {
+            return true;
+        }
+    }
+    false
+}
+
 /// Entry point for the git remote helper
 /// Call this from main() to run the helper
 pub fn main_entry() {
@@ -195,7 +212,11 @@ fn run() -> Result<()> {
         // Show hint once per session (git may call us multiple times)
         static HINT_SHOWN: std::sync::Once = std::sync::Once::new();
         HINT_SHOWN.call_once(|| {
-            eprintln!("Tip: run 'htree start' for P2P sharing");
+            if htree_binary_available() {
+                eprintln!("Tip: run 'htree start' for P2P sharing");
+            } else {
+                eprintln!("Tip: install htree (cargo install hashtree-cli) to enable P2P sharing");
+            }
         });
     }
 

@@ -33,8 +33,8 @@ htree get nhash1qqsw9hdps3pkyjm7nlg9783xazg4cnmuj8sp4wnddsa8lzku6qt457c9yzckwsv3
 # 1. Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# 2. Install git-remote-htree
-cargo install git-remote-htree
+# 2. Install hashtree CLI + git helper
+cargo install hashtree-cli git-remote-htree
 
 # 3. Clone a repo
 git clone htree://npub1dxs2pygtfxsah77yuncsmu3ttqr274qr56xz3gsvetxzq2vjfnxsy6knkn/hashtree/rust
@@ -125,7 +125,8 @@ WebRTC transport falls back to Blossom servers when data isn't found on peers or
 Push/pull git repos via hashtree:
 
 ```bash
-# Install
+# Install (local path)
+cargo install --path crates/hashtree-cli
 cargo install --path crates/git-remote-htree
 
 # Configure keys in ~/.hashtree/keys

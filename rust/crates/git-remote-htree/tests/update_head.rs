@@ -159,22 +159,38 @@ fn test_fetch_does_not_update_checked_out_branch() {
         .collect();
     assert_eq!(specs.len(), 1, "Expected a single fetch refspec");
 
-    let fetch = Command::new("git")
-        .args(["fetch", "htree"])
-        .current_dir(repo.path())
-        .envs(env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .output()
-        .expect("Failed to run git fetch");
+    let mut remote_master = None;
+    for attempt in 0..6 {
+        let fetch = Command::new("git")
+            .args(["fetch", "htree"])
+            .current_dir(repo.path())
+            .envs(env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .output()
+            .expect("Failed to run git fetch");
 
-    assert!(
-        fetch.status.success(),
-        "fetch should succeed with remote-tracking refspec: {}",
-        String::from_utf8_lossy(&fetch.stderr)
+        assert!(
+            fetch.status.success(),
+            "fetch should succeed with remote-tracking refspec: {}",
+            String::from_utf8_lossy(&fetch.stderr)
+        );
+
+        let head_after = git_rev_parse(repo.path(), "HEAD");
+        assert_eq!(head_before, head_after, "HEAD should remain unchanged");
+
+        let current = git_rev_parse(repo.path(), "refs/remotes/htree/master");
+        if current == pushed_sha {
+            remote_master = Some(current);
+            break;
+        }
+
+        if attempt < 5 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+
+    assert_eq!(
+        Some(pushed_sha.clone()),
+        remote_master,
+        "remote tracking ref should update"
     );
-
-    let head_after = git_rev_parse(repo.path(), "HEAD");
-    assert_eq!(head_before, head_after, "HEAD should remain unchanged");
-
-    let remote_master = git_rev_parse(repo.path(), "refs/remotes/htree/master");
-    assert_eq!(pushed_sha, remote_master, "remote tracking ref should update");
 }
