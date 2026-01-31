@@ -47,7 +47,7 @@ tower-http.workspace = true
 # Nostr
 nostr.workspace = true
 nostr-sdk.workspace = true
-nostrdb = { git = "https://github.com/mmalmi/nostrdb-rs", optional = true }
+nostrdb = { version = "0.9.0", git = "https://github.com/mmalmi/nostrdb-rs", optional = true }
 
 # WebRTC (optional, for P2P)
 webrtc = { version = "0.11", optional = true }
