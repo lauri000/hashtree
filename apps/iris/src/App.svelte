@@ -175,17 +175,20 @@
           await createNip07Webview(CHILD_LABEL, url, x, y, width, height);
         }
         g.__irisChildReady = true;
+        scheduleWebviewBoundsUpdate();
       } catch (e) {
         console.warn('[Iris] create webview failed, trying navigate:', e);
         try {
           await navigateWebview(CHILD_LABEL, url);
           g.__irisChildReady = true;
+          scheduleWebviewBoundsUpdate();
         } catch (e2) {
           console.error('[Iris] navigate also failed:', e2);
         }
       }
     } else {
       await navigateWebview(CHILD_LABEL, url);
+      scheduleWebviewBoundsUpdate();
     }
 
     if (pushHistory) {
@@ -325,6 +328,11 @@
   }
 
   function handleGlobalKeyDown(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'l') {
+      event.preventDefault();
+      addressInputEl?.focus();
+      return;
+    }
     if ((event.key !== 'Escape' && event.key !== 'Esc') || !showDropdown) return;
     isAddressFocused = false;
     closeDropdown();
@@ -408,7 +416,7 @@
       </button>
     </div>
 
-    <div data-tauri-drag-region class="flex-1 flex justify-center relative">
+    <div class="flex-1 flex justify-center relative">
       <div class="w-full max-w-lg flex items-center gap-2 px-3 py-1 rounded-full bg-surface-0 b-1 b-solid b-surface-3 transition-colors {isAddressFocused ? 'b-accent' : ''}">
         {#if currentUrl}
           <button
@@ -419,15 +427,16 @@
             <span class="i-lucide-refresh-cw text-sm"></span>
           </button>
         {/if}
-        <span data-tauri-drag-region class="i-lucide-search text-sm text-muted shrink-0"></span>
+        <span class="i-lucide-search text-sm text-muted shrink-0"></span>
         <input
           type="text"
+          data-tauri-drag-region="false"
           bind:this={addressInputEl}
           bind:value={addressValue}
           onfocus={handleAddressFocus}
           onblur={handleAddressBlur}
           oninput={() => {
-            if (!isAddressFocused) return;
+            if (!isAddressFocused) isAddressFocused = true;
             showDropdown = true;
             debouncedSearch(addressValue);
           }}
@@ -463,30 +472,34 @@
         </button>
       </div>
 
-      {#if showDropdown && dropdownItems.length > 0}
+      {#if showDropdown}
         <div bind:this={dropdownEl} class="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-full max-w-lg bg-surface-1 b-1 b-solid b-surface-3 rounded-lg overflow-hidden z-50 max-h-80 overflow-y-auto" role="listbox">
-          {#each dropdownItems as item, i}
-            <div
-              class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors cursor-pointer {i === selectedIndex ? 'bg-surface-2' : ''}"
-              onmousedown={() => handleDropdownSelect(item)}
-              role="option"
-              aria-selected={i === selectedIndex}
-              tabindex="-1"
-            >
-              <span class="i-lucide-clock text-sm text-text-3 shrink-0"></span>
-              <div class="flex-1 min-w-0">
-                <div class="text-sm text-text-1 truncate">{item.label}</div>
-                <div class="text-xs text-text-3 truncate">{urlToDisplay(item.path)}</div>
-              </div>
-              <button
-                class="shrink-0 text-text-3 hover:text-danger p-1"
-                onmousedown={(e) => handleDeleteHistoryItem(e, item.path)}
-                title="Delete"
+          {#if dropdownItems.length === 0}
+            <div class="px-3 py-3 text-sm text-text-3">No history yet.</div>
+          {:else}
+            {#each dropdownItems as item, i}
+              <div
+                class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors cursor-pointer {i === selectedIndex ? 'bg-surface-2' : ''}"
+                onmousedown={() => handleDropdownSelect(item)}
+                role="option"
+                aria-selected={i === selectedIndex}
+                tabindex="-1"
               >
-                <span class="i-lucide-x text-sm"></span>
-              </button>
-            </div>
-          {/each}
+                <span class="i-lucide-clock text-sm text-text-3 shrink-0"></span>
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm text-text-1 truncate">{item.label}</div>
+                  <div class="text-xs text-text-3 truncate">{urlToDisplay(item.path)}</div>
+                </div>
+                <button
+                  class="shrink-0 text-text-3 hover:text-danger p-1"
+                  onmousedown={(e) => handleDeleteHistoryItem(e, item.path)}
+                  title="Delete"
+                >
+                  <span class="i-lucide-x text-sm"></span>
+                </button>
+              </div>
+            {/each}
+          {/if}
         </div>
       {/if}
     </div>
