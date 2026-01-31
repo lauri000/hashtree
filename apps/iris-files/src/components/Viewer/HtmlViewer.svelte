@@ -10,7 +10,6 @@
   import { routeStore, currentDirCidStore } from '../../stores';
   import { getTree } from '../../store';
   import { getHtreePrefix } from '../../lib/mediaUrl';
-  import { isTauri } from '../../tauri';
 
   interface Props {
     content: string;
@@ -40,7 +39,7 @@
     base += '/';
 
     if (typeof window !== 'undefined') {
-      const prefix = isTauri() ? getHtreePrefix() : '';
+      const prefix = getHtreePrefix();
       if (prefix) {
         return new URL(base, prefix).toString();
       }

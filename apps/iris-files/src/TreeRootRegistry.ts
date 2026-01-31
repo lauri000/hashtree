@@ -17,7 +17,7 @@ import { fromHex, toHex } from '@hashtree/core';
 /**
  * Source of the tree root update
  */
-export type TreeRootSource = 'local-write' | 'nostr' | 'prefetch' | 'tauri' | 'worker';
+export type TreeRootSource = 'local-write' | 'nostr' | 'prefetch' | 'worker';
 
 /**
  * Core record format - single source of truth for all root data

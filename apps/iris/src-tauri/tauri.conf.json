@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "to.iris.browser",
   "build": {
-    "frontendDist": "../dist-iris",
+    "frontendDist": "../../iris-files/dist-iris",
     "devUrl": "http://localhost:5174",
-    "beforeDevCommand": "npm run dev:iris",
-    "beforeBuildCommand": "npm run build:iris"
+    "beforeDevCommand": "cd ../iris-files && npm run dev:iris",
+    "beforeBuildCommand": "cd ../iris-files && npm run build:iris"
   },
   "app": {
     "windows": [

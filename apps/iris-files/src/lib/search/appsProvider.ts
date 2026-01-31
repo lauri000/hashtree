@@ -1,13 +1,12 @@
 /**
  * Apps search provider
  *
- * Provides suggestions for local apps in Tauri (Files, Video, Docs)
+ * Provides suggestions for local apps (Files, Video, Docs)
  */
 
-import { isTauri } from '../../tauri';
 import type { SearchProvider, SearchResult } from './types';
 
-// Local apps available in Tauri
+// Local apps
 const localApps: SearchResult[] = [
   {
     id: 'app:files',
@@ -45,7 +44,7 @@ export const appsProvider: SearchProvider = {
   priority: 3,
 
   isAvailable(): boolean {
-    return isTauri();
+    return true;
   },
 
   async search(query: string, limit: number): Promise<SearchResult[]> {
@@ -63,6 +62,5 @@ export const appsProvider: SearchProvider = {
 
 /** Get app suggestions (for empty query) */
 export function getAppSuggestions(): SearchResult[] {
-  if (!isTauri()) return [];
   return localApps;
 }

@@ -20,7 +20,6 @@ import { getRefResolver, getResolverKey } from '../refResolver';
 import { nostrStore, decrypt } from '../nostr';
 import { npubToPubkey } from '../nostr/trees';
 import { logHtreeDebug } from '../lib/htreeDebug';
-import { isTauri } from '../tauri';
 import { treeRootRegistry } from '../TreeRootRegistry';
 
 // Wait for worker to be ready before creating subscriptions
@@ -83,40 +82,7 @@ function getVisibilityInfoFromRegistry(key: string): SubscribeVisibilityInfo | u
   };
 }
 
-const tauriRootCache = new Map<string, string>();
 const workerKeyMergeCache = new Map<string, string>();
-
-async function cacheTreeRootInTauri(key: string, hash: Hash, encryptionKey?: Hash): Promise<void> {
-  if (!isTauri()) return;
-  const slashIndex = key.indexOf('/');
-  if (slashIndex <= 0 || slashIndex === key.length - 1) return;
-
-  const npub = key.slice(0, slashIndex);
-  const treeName = key.slice(slashIndex + 1);
-  const hashHex = toHex(hash);
-  const keyHex = encryptionKey ? toHex(encryptionKey) : '';
-
-  // Get visibility from registry
-  const record = treeRootRegistry.getByKey(key);
-  const visibility = record?.visibility ?? 'public';
-
-  const cacheSignature = `${hashHex}:${keyHex}:${visibility}`;
-  if (tauriRootCache.get(key) === cacheSignature) return;
-  tauriRootCache.set(key, cacheSignature);
-
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('cache_tree_root', {
-      npub,
-      treeName,
-      hash: hashHex,
-      key: keyHex || null,
-      visibility,
-    });
-  } catch (err) {
-    console.warn('[treeRoot] Failed to cache tree root in Tauri:', err);
-  }
-}
 
 async function mergeTreeRootKeyToWorker(
   npub: string,
@@ -136,8 +102,6 @@ async function mergeTreeRootKeyToWorker(
 }
 
 async function ensureWorkerTreeRootSubscription(npub: string): Promise<boolean> {
-  if (isTauri()) return false;
-
   try {
     const { getWorkerAdapter, waitForWorkerAdapter } = await import('../lib/workerInit');
     const adapter = getWorkerAdapter() ?? await waitForWorkerAdapter(2000);
@@ -153,8 +117,6 @@ async function ensureWorkerTreeRootSubscription(npub: string): Promise<boolean> 
 }
 
 async function unsubscribeWorkerTreeRootSubscription(npub: string): Promise<void> {
-  if (isTauri()) return;
-
   try {
     const { getWorkerAdapter } = await import('../lib/workerInit');
     const adapter = getWorkerAdapter();
@@ -168,8 +130,6 @@ async function unsubscribeWorkerTreeRootSubscription(npub: string): Promise<void
 }
 
 async function hydrateTreeRootFromWorker(npub: string, treeName: string): Promise<boolean> {
-  if (isTauri()) return false;
-
   try {
     const { getWorkerAdapter, waitForWorkerAdapter } = await import('../lib/workerInit');
     const adapter = getWorkerAdapter() ?? await waitForWorkerAdapter(2000);
@@ -231,7 +191,6 @@ export function updateSubscriptionCache(
   state.decryptedKey = encryptionKey;
   const visibilityInfo = getVisibilityInfoFromRegistry(key);
   state.listeners.forEach(listener => listener(hash, encryptionKey, visibilityInfo));
-  void cacheTreeRootInTauri(key, hash, encryptionKey);
 }
 
 // Subscribe to registry updates to bridge to Tauri and listeners
@@ -291,15 +250,13 @@ async function startResolverSubscription(
   const npub = key.slice(0, slashIndex);
   const treeName = key.slice(slashIndex + 1);
 
-  if (!isTauri()) {
-    const subscribed = await ensureWorkerTreeRootSubscription(npub);
-    const hydrated = await hydrateTreeRootFromWorker(npub, treeName);
-    if (subscribed || hydrated) {
-      state.unsubscribeWorker = () => {
-        void unsubscribeWorkerTreeRootSubscription(npub);
-      };
-      return;
-    }
+  const subscribed = await ensureWorkerTreeRootSubscription(npub);
+  const hydrated = await hydrateTreeRootFromWorker(npub, treeName);
+  if (subscribed || hydrated) {
+    state.unsubscribeWorker = () => {
+      void unsubscribeWorkerTreeRootSubscription(npub);
+    };
+    return;
   }
 
   const resolver = getRefResolver();
@@ -324,19 +281,17 @@ async function startResolverSubscription(
     }
   });
 
-  if (!isTauri()) {
-    void waitForWorkerReady().then(async () => {
-      const active = subscriptionState.get(key);
-      if (!active || active.unsubscribeWorker) return;
-      const subscribed = await ensureWorkerTreeRootSubscription(npub);
-      const hydrated = await hydrateTreeRootFromWorker(npub, treeName);
-      if (subscribed || hydrated) {
-        active.unsubscribeWorker = () => {
-          void unsubscribeWorkerTreeRootSubscription(npub);
-        };
-      }
-    });
-  }
+  void waitForWorkerReady().then(async () => {
+    const active = subscriptionState.get(key);
+    if (!active || active.unsubscribeWorker) return;
+    const subscribed = await ensureWorkerTreeRootSubscription(npub);
+    const hydrated = await hydrateTreeRootFromWorker(npub, treeName);
+    if (subscribed || hydrated) {
+      active.unsubscribeWorker = () => {
+        void unsubscribeWorkerTreeRootSubscription(npub);
+      };
+    }
+  });
 }
 
 function subscribeToResolver(

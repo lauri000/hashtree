@@ -10,7 +10,6 @@
  */
 
 import { get } from 'svelte/store';
-import { isTauri } from '../tauri';
 import { nostrStore } from '../nostr/store';
 import { getHtreePrefix, initHtreePrefix, onHtreePrefixReady } from './mediaUrl';
 
@@ -117,7 +116,7 @@ function buildApi(): HtreeAPI {
 
   return {
     version: '1.0.0',
-    isTauri: isTauri(),
+    isTauri: false,
     htreeBaseUrl: getHtreePrefix(),
     npub: state.npub,
     pubkey: state.pubkey,

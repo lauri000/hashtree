@@ -6,7 +6,6 @@
  */
 
 import { initWorkerAdapter, getWorkerAdapter as getWebWorkerAdapter, type WorkerAdapter } from '../workerAdapter';
-import { initTauriWorkerAdapter, getTauriWorkerAdapter, closeTauriWorkerAdapter, type TauriWorkerAdapter } from './tauriWorkerAdapter';
 import { settingsStore, waitForSettingsLoaded } from '../stores/settings';
 import { refreshWebRTCStats } from '../store';
 import { get } from 'svelte/store';
@@ -14,7 +13,7 @@ import { createFollowsStore, getFollowsSync } from '../stores/follows';
 import { setupVersionCallback } from '../utils/socialGraph';
 import { ndk } from '../nostr/ndk';
 import { initRelayTracking } from '../nostr/relays';
-import { isTauri, hasTauriInvoke } from '../tauri';
+import { isTauri } from '../tauri';
 import { getAppType } from '../appType';
 import { logHtreeDebug } from './htreeDebug';
 import { treeRootRegistry } from '../TreeRootRegistry';
@@ -25,27 +24,20 @@ import type { WorkerNostrFilter, WorkerSignedEvent } from '@hashtree/core';
 // Import worker using Vite's ?worker query - returns a Worker constructor
 import HashtreeWorker from '../workers/hashtree.worker.ts?worker';
 
-// Unified adapter type - both implement the same interface
-type UnifiedAdapter = WorkerAdapter | TauriWorkerAdapter;
-// Track which backend is in use
-let usingTauriBackend = false;
 const isTestMode = !!import.meta.env.VITE_TEST_MODE;
 
 /**
- * Get the active worker adapter (either web worker or Tauri backend)
+ * Get the active worker adapter
  */
-export function getWorkerAdapter(): UnifiedAdapter | null {
-  if (usingTauriBackend) {
-    return getTauriWorkerAdapter();
-  }
+export function getWorkerAdapter(): WorkerAdapter | null {
   return getWebWorkerAdapter();
 }
 
 if (typeof window !== 'undefined') {
-  (window as typeof window & { __getWorkerAdapter?: () => UnifiedAdapter | null }).__getWorkerAdapter = getWorkerAdapter;
+  (window as typeof window & { __getWorkerAdapter?: () => WorkerAdapter | null }).__getWorkerAdapter = getWorkerAdapter;
 }
 
-export async function waitForWorkerAdapter(maxWaitMs = 5000): Promise<UnifiedAdapter | null> {
+export async function waitForWorkerAdapter(maxWaitMs = 5000): Promise<WorkerAdapter | null> {
   const start = Date.now();
   let adapter = getWorkerAdapter();
   while (!adapter && Date.now() - start < maxWaitMs) {
@@ -115,7 +107,6 @@ function syncRelays(): void {
   const adapter = getWorkerAdapter();
   if (!adapter) return;
 
-  // Both WorkerAdapter and TauriWorkerAdapter now support setRelays
   if (!('setRelays' in adapter)) return;
 
   const settings = get(settingsStore);
@@ -177,8 +168,8 @@ let workerTreeRootUnsubscribe: (() => void) | null = null;
 
 /**
  * Set up bidirectional sync between tree root registry and worker.
- * - Local writes (main→worker): For worker to publish to Nostr
- * - Worker updates (worker→main): Nostr subscription results
+ * - Local writes (main->worker): For worker to publish to Nostr
+ * - Worker updates (worker->main): Nostr subscription results
  */
 function setupTreeRootRegistryBridge(): void {
   // Clean up previous subscriptions
@@ -292,12 +283,10 @@ export interface WorkerInitIdentity {
  * Wait for service worker to be ready (needed for COOP/COEP headers)
  */
 async function waitForServiceWorker(maxWaitMs?: number): Promise<boolean> {
-  // Skip in Tauri - no service worker needed
   if (isTauri()) return true;
   if (!('serviceWorker' in navigator)) return true;
 
   try {
-    // Wait for service worker to be ready
     if (navigator.serviceWorker.controller) {
       return true;
     }
@@ -313,7 +302,6 @@ async function waitForServiceWorker(maxWaitMs?: number): Promise<boolean> {
 
     return await Promise.race([readyPromise, timeoutPromise]);
   } catch {
-    // Service worker not available, continue anyway
     return false;
   }
 }
@@ -332,22 +320,12 @@ export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<
   initPromise = (async () => {
     const t0 = performance.now();
     const logT = (msg: string) => console.log(`[initHashtreeWorker] ${msg}: ${Math.round(performance.now() - t0)}ms`);
-    const protocol = typeof window !== 'undefined' ? window.location?.protocol || '' : '';
-    const hasTauriGlobals = typeof window !== 'undefined'
-      ? ('__TAURI_INTERNALS__' in window || '__TAURI__' in window || '__TAURI_IPC__' in window || '__TAURI_METADATA__' in window)
-      : false;
-    const tauriInvokeAvailable = hasTauriInvoke();
     logHtreeDebug('worker:init:start', {
       appType: getAppType(),
-      protocol,
-      hasTauriGlobals,
-      isTauri: isTauri(),
-      hasTauriInvoke: tauriInvokeAvailable,
     });
 
     try {
       // Wait for service worker to be ready before loading workers
-      // This ensures COOP/COEP headers are in place
       const appType = getAppType();
       const swWaitMs = appType === 'video' ? undefined : 500;
       const serviceWorkerPromise = waitForServiceWorker(swWaitMs).then((ready) => {
@@ -355,7 +333,6 @@ export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<
       });
 
       // Load settings before worker init so relays/blossom match persisted config.
-      // In production, don't block for long if IndexedDB is slow.
       const settingsReady = waitForSettingsLoaded().then(() => {
         logT('waitForSettingsLoaded done');
         return true;
@@ -374,7 +351,6 @@ export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<
 
       await Promise.all([serviceWorkerPromise, settingsPromise]);
 
-      // Get settings (may still be defaults if IndexedDB hasn't loaded yet)
       const settings = get(settingsStore);
 
       const config = {
@@ -385,40 +361,19 @@ export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<
         nsec: identity.nsec,
       };
 
-      // Use Tauri backend in desktop app when invoke is available; otherwise fall back to web worker.
-      if (isTauri() && tauriInvokeAvailable) {
-        logT('Starting Tauri native backend');
-        try {
-          await initTauriWorkerAdapter(config);
-          usingTauriBackend = true;
-          logT('Tauri native backend ready');
-          logHtreeDebug('worker:init:ready', { backend: 'tauri' });
-        } catch (err) {
-          usingTauriBackend = false;
-          closeTauriWorkerAdapter();
-          console.error('[initHashtreeWorker] initTauriWorkerAdapter FAILED:', err);
-          logHtreeDebug('worker:init:error', { backend: 'tauri', error: String(err) });
-        }
-      } else if (isTauri() && !tauriInvokeAvailable) {
-        logHtreeDebug('worker:init:tauri-missing', { protocol, hasTauriGlobals });
-      }
-
-      if (!usingTauriBackend) {
-        logT('Starting web worker');
-        await initWorkerAdapter(HashtreeWorker, config);
-        logT('Web worker ready');
-        logHtreeDebug('worker:init:ready', { backend: 'worker' });
-      }
+      logT('Starting web worker');
+      await initWorkerAdapter(HashtreeWorker, config);
+      logT('Web worker ready');
+      logHtreeDebug('worker:init:ready', { backend: 'worker' });
 
       initialized = true;
-      logHtreeDebug('worker:init:done', { backend: usingTauriBackend ? 'tauri' : 'worker' });
+      logHtreeDebug('worker:init:done', { backend: 'worker' });
 
       // Register worker as transport plugin for NDK publishes and subscriptions
       const adapter = getWorkerAdapter();
       if (adapter) {
         // Set up event dispatch from worker to NDK subscriptions
         adapter.onEvent((event: WorkerSignedEvent) => {
-          // Dispatch to all matching subscriptions via subManager
           ndk.subManager.dispatchEvent(event as unknown as NDKEvent, undefined, false);
         });
 
@@ -428,12 +383,10 @@ export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<
             filters as unknown as WorkerNostrFilter[],
             undefined, // events use global onEvent callback
             () => {
-              // Forward EOSE to NDK subscription
               subscription.emit('eose', subscription);
             }
           );
           workerSubscriptionIds.set(subscription, subId);
-          // Clean up when subscription closes
           subscription.on('close', () => {
             adapter.unsubscribe(subId);
             workerSubscriptionIds.delete(subscription);
@@ -443,7 +396,6 @@ export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<
         ndk.transportPlugins.push({
           name: 'worker',
           onPublish: async (event) => {
-            // Route publish through worker (optimistic - don't throw on failure)
             try {
               await adapter.publish({
                 id: event.id!,
@@ -455,12 +407,10 @@ export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<
                 sig: event.sig!,
               });
             } catch (err) {
-              // Log but don't throw - optimistic publishing
               console.warn('[WorkerInit] Publish failed:', err);
             }
           },
           onSubscribe: (subscription, filters) => {
-            // Route subscription through worker (which has relay connections)
             attachWorkerSubscription(subscription, filters);
           },
         });
@@ -477,7 +427,6 @@ export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<
         }
 
         // Signal that the worker is ready for tree root subscriptions
-        // This allows deferred subscriptions to start
         import('../stores/treeRoot').then(({ signalWorkerReady }) => {
           signalWorkerReady();
         });
@@ -501,7 +450,7 @@ export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<
         }
       });
 
-      // Initial sync of all settings to worker (critical for WebRTC startup)
+      // Initial sync of all settings to worker
       syncPoolSettings();
       syncBlossomServers();
       syncRelays();
@@ -516,13 +465,12 @@ export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<
       // Initialize the publish function now that all dependencies are ready
       await initializePublishFn();
 
-      // Set up direct SW ↔ Worker communication for file streaming
+      // Set up direct SW <-> Worker communication for file streaming
       setupMediaStreaming().catch(err => {
         console.warn('[WorkerInit] Media streaming setup failed:', err);
       });
     } catch (err) {
       console.error('[WorkerInit] Failed to initialize worker:', err);
-      // Don't throw - app can still work without worker (fallback to main thread)
     }
   })();
 
@@ -566,5 +514,3 @@ export async function waitForRelayConnection(maxWait = 5000): Promise<boolean> {
 
   return false;
 }
-
-// getWorkerAdapter is now defined locally and exported above

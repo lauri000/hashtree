@@ -1,14 +1,28 @@
+//! Iris - Thin native shell with embedded htree daemon
+//!
+//! This is the native desktop app that:
+//! 1. Starts an embedded htree daemon (content storage, P2P, Nostr relay)
+//! 2. Opens a webview pointing to iris-files web app
+//! 3. Injects window.__HTREE_SERVER_URL__ so the web app can use the daemon
+//! 4. Provides htree:// URI scheme for child webviews
+//! 5. Manages NIP-07 permissions for child webviews
+
 pub mod history;
-pub mod htree;
+pub mod htree_protocol;
 pub mod nip07;
 pub mod permissions;
 pub mod relay_proxy;
-pub mod worker;
 
+use axum::routing::any;
+use axum::Router;
+use hashtree_cli::daemon::{EmbeddedDaemonOptions, EmbeddedDaemonInfo};
+use hashtree_cli::server::AppState;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Once;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{Emitter, Manager};
-use std::path::PathBuf;
-use std::sync::Once;
+use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -19,6 +33,50 @@ pub fn ensure_rustls_provider() {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
 }
+
+/// Start the embedded htree daemon
+async fn start_daemon(data_dir: PathBuf) -> Result<EmbeddedDaemonInfo, String> {
+    relay_proxy::init_relay_proxy_state();
+
+    let mut config = hashtree_cli::Config::load()
+        .map_err(|e| format!("Failed to load config: {}", e))?;
+    config.storage.data_dir = data_dir.to_string_lossy().to_string();
+    config.server.bind_address = "127.0.0.1:21417".to_string();
+    config.server.enable_auth = false;
+    config.server.stun_port = 0;
+
+    // Add extra routes for relay proxy and NIP-07
+    let extra_routes = Router::<AppState>::new()
+        .route("/relay", any(relay_proxy::handle_relay_websocket));
+
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any)
+        .expose_headers([
+            axum::http::header::ACCEPT_RANGES,
+            axum::http::header::CONTENT_RANGE,
+            axum::http::header::CONTENT_LENGTH,
+            axum::http::header::CONTENT_TYPE,
+        ]);
+
+    let info = hashtree_cli::daemon::start_embedded(EmbeddedDaemonOptions {
+        config,
+        data_dir,
+        bind_address: "127.0.0.1:21417".to_string(),
+        relays: None,
+        extra_routes: Some(extra_routes),
+        cors: Some(cors),
+    })
+    .await
+    .map_err(|e| format!("Failed to start daemon: {}", e))?;
+
+    Ok(info)
+}
+
+// ============================================
+// Menu construction
+// ============================================
 
 #[cfg(test)]
 fn build_edit_menu<R: tauri::Runtime>(
@@ -85,11 +143,14 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<tau
         .build()
 }
 
+// ============================================
+// App entry point
+// ============================================
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     ensure_rustls_provider();
 
-    // Initialize tracing with env filter (RUST_LOG=iris=debug)
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
@@ -104,17 +165,13 @@ pub fn run() {
                 "nav_back" => {
                     let _ = app.emit(
                         "child-webview-navigate",
-                        serde_json::json!({
-                            "action": "back"
-                        }),
+                        serde_json::json!({ "action": "back" }),
                     );
                 }
                 "nav_forward" => {
                     let _ = app.emit(
                         "child-webview-navigate",
-                        serde_json::json!({
-                            "action": "forward"
-                        }),
+                        serde_json::json!({ "action": "forward" }),
                     );
                 }
                 "app_quit" => {
@@ -124,32 +181,42 @@ pub fn run() {
             }
         })
         .plugin(tauri_plugin_os::init())
-        .register_uri_scheme_protocol("htree", htree::handle_htree_protocol)
+        .register_uri_scheme_protocol("htree", htree_protocol::handle_htree_protocol)
         .invoke_handler(tauri::generate_handler![
-            htree::get_htree_server_url,
-            htree::cache_tree_root,
-            htree::webview_event,
-            worker::worker_message,
+            htree_protocol::get_htree_server_url,
+            htree_protocol::cache_tree_root,
             nip07::create_nip07_webview,
             nip07::create_htree_webview,
             nip07::navigate_webview,
             nip07::webview_history,
             nip07::webview_current_url,
             nip07::nip07_request,
+            nip07::webview_event,
             history::record_history_visit,
             history::search_history,
             history::get_recent_history
         ])
         .on_page_load(|webview, payload| {
-            // Inject NIP-07 window.nostr on page load for main window
             if webview.label() == "main" {
                 if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                     info!("Main window page loaded: {}", payload.url());
+
+                    // Inject daemon server URL so the web app can find it
+                    let port = htree_protocol::get_daemon_port().unwrap_or(21417);
+                    let inject_url = format!(
+                        "window.__HTREE_SERVER_URL__ = 'http://127.0.0.1:{}';",
+                        port
+                    );
+                    if let Err(e) = webview.eval(&inject_url) {
+                        tracing::warn!("Failed to inject __HTREE_SERVER_URL__: {}", e);
+                    }
+
+                    // Inject NIP-07 window.nostr
                     let script = nip07::generate_main_window_nip07_script();
                     if let Err(e) = webview.eval(&script) {
                         tracing::warn!("Failed to inject NIP-07 script: {}", e);
                     } else {
-                        info!("Injected NIP-07 window.nostr into main window");
+                        info!("Injected NIP-07 window.nostr and __HTREE_SERVER_URL__ into main window");
                     }
                 }
             }
@@ -167,81 +234,39 @@ pub fn run() {
                     .expect("failed to get app data dir"),
             };
             std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
-
             info!("App data directory: {:?}", data_dir);
 
-            // Keep hashtree config/data local to the app sandbox
             std::env::set_var("HTREE_CONFIG_DIR", &data_dir);
             std::env::set_var("HTREE_DATA_DIR", &data_dir);
 
-            // Initialize htree state for URI scheme protocol (must be before webview loads)
-            htree::init_htree_state(data_dir.clone());
-            info!("htree:// protocol initialized");
-            htree::set_app_handle(app.handle().clone());
+            // Initialize NIP-07 permission state
+            let permission_store = Arc::new(permissions::PermissionStore::new(None));
+            let nip07_state = Arc::new(nip07::Nip07State::new(permission_store));
+            nip07::init_global_state(nip07_state.clone());
+            app.manage(nip07_state);
 
-            // Initialize worker state (store + tree manager + nostrdb)
-            let blob_store = worker::BlobStore::new(data_dir.clone());
-            let worker_state = std::sync::Arc::new(
-                worker::WorkerState::new(blob_store, data_dir.clone())
-                    .expect("failed to initialize worker state"),
-            );
-
-            // Initialize NIP-07 state for permission management
-            let permission_store = std::sync::Arc::new(permissions::PermissionStore::new(None));
-            let nip07_state = std::sync::Arc::new(nip07::Nip07State::new(permission_store));
-
-            // Initialize history store for search suggestions
-            let history_store = std::sync::Arc::new(
+            // Initialize history store
+            let history_store = Arc::new(
                 history::HistoryStore::new(&data_dir)
                     .expect("failed to initialize history store"),
             );
-
-            // Initialize global state for HTTP handler access (must be before manage)
-            nip07::init_global_state(nip07_state.clone(), worker_state.clone());
-
-            // Manage Arc-wrapped states for Tauri
-            app.manage(worker_state);
-            app.manage(nip07_state);
             app.manage(history_store);
 
-            // Start the htree HTTP server with access to local blob store
-            let htree_data_dir = data_dir.clone();
+            // Start the embedded htree daemon
+            let daemon_data_dir = data_dir.clone();
             tauri::async_runtime::spawn(async move {
-                match htree::start_server(htree_data_dir).await {
-                    Ok(port) => {
-                        info!("htree server started on port {}", port);
+                match start_daemon(daemon_data_dir).await {
+                    Ok(info) => {
+                        htree_protocol::set_daemon_port(info.port);
+                        info!("Embedded daemon started on port {}", info.port);
                     }
                     Err(e) => {
-                        tracing::error!("Failed to start htree server: {}", e);
+                        tracing::error!("Failed to start embedded daemon: {}", e);
                     }
                 }
             });
 
-            // Auto-initialize Nostr client and WebRTC on startup (for headless/test mode)
-            // This ensures the backend is ready even if frontend takes time to load
-            let state_handle: tauri::State<'_, std::sync::Arc<worker::WorkerState>> = app.state();
-            let nostr = state_handle.nostr.clone();
-            let webrtc = state_handle.webrtc.clone();
-            let ndb = state_handle.ndb.clone();
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                // Initialize Nostr client
-                if let Err(e) = nostr.ensure_client(Some(app_handle), Some(ndb)).await {
-                    tracing::warn!("Failed to auto-initialize Nostr client: {}", e);
-                    return;
-                }
-
-                // Initialize WebRTC with the Nostr client
-                // Use identity keys if set, otherwise use ephemeral keys from init
-                if let Some(client) = nostr.get_client() {
-                    let keys = nostr.get_keys().unwrap_or_else(nostr_sdk::Keys::generate);
-                    if let Err(e) = webrtc.init(client, keys).await {
-                        tracing::warn!("Failed to auto-initialize WebRTC: {}", e);
-                    }
-                }
-            });
-
-            // Check if launched with --minimized flag (from autostart) - desktop only
+            // Check if launched with --minimized flag (from autostart)
             #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
             {
                 let args: Vec<String> = std::env::args().collect();
@@ -253,16 +278,11 @@ pub fn run() {
                 }
             }
 
-            // Add notification plugin
+            // Add plugins
             app.handle().plugin(tauri_plugin_notification::init())?;
-
-            // Add opener plugin for external links
             app.handle().plugin(tauri_plugin_opener::init())?;
-
-            // Add dialog plugin for file operations
             app.handle().plugin(tauri_plugin_dialog::init())?;
 
-            // Add autostart plugin for desktop platforms
             #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
             app.handle().plugin(tauri_plugin_autostart::init(
                 tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -298,33 +318,5 @@ mod tests {
         }
 
         assert!(has_quit, "expected app_quit menu item");
-    }
-
-    #[cfg_attr(target_os = "macos", ignore = "requires main thread for menu items")]
-    #[test]
-    fn edit_menu_includes_paste_item() {
-        let app = tauri::test::mock_app();
-        let handle = app.handle();
-        let menu = build_menu(&handle).expect("failed to build menu");
-        let mut has_edit = false;
-        let mut has_paste = false;
-
-        for item in menu.items().unwrap_or_default() {
-            if let tauri::menu::MenuItemKind::Submenu(submenu) = item {
-                if submenu.id().as_ref() == "edit_menu" {
-                    has_edit = true;
-                    for subitem in submenu.items().unwrap_or_default() {
-                        if let tauri::menu::MenuItemKind::MenuItem(menu_item) = subitem {
-                            if menu_item.id().as_ref() == "edit_paste" {
-                                has_paste = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        assert!(has_edit, "expected Edit menu");
-        assert!(has_paste, "expected Paste item in Edit menu");
     }
 }

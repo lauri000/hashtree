@@ -3,7 +3,6 @@
   import { nostrStore } from '../../nostr';
   import { appStore, formatBytes, updateStorageStats } from '../../store';
   import { settingsStore, DEFAULT_STORAGE_SETTINGS } from '../../stores/settings';
-  import { isTauri } from '../../tauri';
 
   let isLoggedIn = $derived($nostrStore.isLoggedIn);
   let myPubkey = $derived($nostrStore.pubkey);
@@ -17,7 +16,7 @@
   let stats = $derived(appState.stats);
 
   // Worker backend info
-  let workerBackend = $derived(isTauri() ? 'Tauri (Rust)' : 'Web Worker');
+  let workerBackend = 'Web Worker';
 
   // Republish state
   let isRepublishing = $state(false);
@@ -114,11 +113,7 @@
       <div class="flex justify-between">
         <span class="text-muted">Type</span>
         <span class="text-text-1 flex items-center gap-1.5">
-          {#if isTauri()}
-            <span class="w-2 h-2 rounded-full bg-success"></span>
-          {:else}
-            <span class="w-2 h-2 rounded-full bg-info"></span>
-          {/if}
+          <span class="w-2 h-2 rounded-full bg-info"></span>
           {workerBackend}
         </span>
       </div>

@@ -14,7 +14,7 @@
   import { isTauri, isAutostartEnabled, toggleAutostart } from '../tauri';
   import { isFilesApp } from '../appType';
   // Worker backend info
-  let workerBackend = $derived(isTauri() ? 'Tauri (Rust)' : 'Web Worker');
+  let workerBackend = 'Web Worker';
 
   // Check if user is logged in with nsec (can copy secret key)
   let nsec = $derived(getNsec());
@@ -960,11 +960,7 @@
         <div class="flex justify-between">
           <span class="text-muted">Type</span>
           <span class="text-text-1 flex items-center gap-1.5">
-            {#if isTauri()}
-              <span class="w-2 h-2 rounded-full bg-success"></span>
-            {:else}
-              <span class="w-2 h-2 rounded-full bg-info"></span>
-            {/if}
+            <span class="w-2 h-2 rounded-full bg-info"></span>
             {workerBackend}
           </span>
         </div>

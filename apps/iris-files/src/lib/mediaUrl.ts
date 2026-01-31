@@ -10,29 +10,27 @@
  */
 
 import { nhashEncode, type CID } from '@hashtree/core';
-import { isTauri } from '../tauri';
 import { getMediaClientId } from './mediaClient';
 import { logHtreeDebug } from './htreeDebug';
 
-/** Fixed port for Tauri htree server */
-const TAURI_HTREE_PORT = 21417;
 const LOCAL_PROBE_TIMEOUT_MS = 500;
 const LOCAL_PROBE_INTERVAL_MS = 1000;
 const PREFIX_READY_TIMEOUT_MS = 15000;
-const LOCAL_HTREE_PREFIXES = new Set([
-  `http://127.0.0.1:${TAURI_HTREE_PORT}`,
-  `http://localhost:${TAURI_HTREE_PORT}`,
-]);
 
 let cachedPrefix = '';
-let loggedMissingPrefix = false;
 const prefixListeners = new Set<(prefix: string) => void>();
 let localProbePromise: Promise<boolean> | null = null;
 let prefixReady = false;
 let prefixEpoch = 0;
 
+function isLocalHtreePrefix(prefix: string): boolean {
+  // Treat any 127.0.0.1 / localhost URL as a local prefix
+  return /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(prefix);
+}
+
 function allowLocalPrefix(): boolean {
-  return isTauri();
+  // Allow local prefix when the native app injects __HTREE_SERVER_URL__
+  return !!getHtreeServerOverride();
 }
 
 async function probeLocalHtreeServer(baseUrl: string): Promise<boolean> {
@@ -54,10 +52,6 @@ async function probeLocalHtreeServer(baseUrl: string): Promise<boolean> {
     });
 
   return localProbePromise;
-}
-
-function isLocalHtreePrefix(prefix: string): boolean {
-  return LOCAL_HTREE_PREFIXES.has(prefix);
 }
 
 function notifyPrefixReady(source: string): void {
@@ -133,22 +127,6 @@ export function getHtreePrefix(): string {
       }
     }
   }
-  if (allowLocal) {
-    const prefix = `http://127.0.0.1:${TAURI_HTREE_PORT}`;
-    updateCachedPrefix(prefix, 'tauri');
-    return cachedPrefix;
-  }
-  if (!loggedMissingPrefix && typeof window !== 'undefined') {
-    const protocol = window.location?.protocol || '';
-    const hasTauriGlobals = '__TAURI_INTERNALS__' in window || '__TAURI__' in window;
-    if (protocol === 'tauri:' || hasTauriGlobals) {
-      loggedMissingPrefix = true;
-      logHtreeDebug('prefix:missing', {
-        protocol,
-        hasTauriGlobals,
-      });
-    }
-  }
   return '';
 }
 
@@ -199,13 +177,15 @@ export async function initHtreePrefix(): Promise<void> {
     return;
   }
 
-  // Tauri globals may appear slightly after page load; poll briefly.
+  // Native app sets __HTREE_SERVER_URL__; poll until the server is reachable.
+  const override = getHtreeServerOverride();
+  if (!override) return;
+
   const start = Date.now();
   const maxWaitMs = 60000;
   const intervalMs = 100;
   const maxAttempts = Math.ceil(maxWaitMs / intervalMs);
   let lastProbeAt = 0;
-  const localBaseUrl = `http://127.0.0.1:${TAURI_HTREE_PORT}`;
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise(resolve => setTimeout(resolve, intervalMs));
     const nextPrefix = getHtreePrefix();
@@ -216,9 +196,9 @@ export async function initHtreePrefix(): Promise<void> {
     const now = Date.now();
     if (now - lastProbeAt >= LOCAL_PROBE_INTERVAL_MS) {
       lastProbeAt = now;
-      const reachable = await probeLocalHtreeServer(localBaseUrl);
+      const reachable = await probeLocalHtreeServer(override);
       if (reachable) {
-        updateCachedPrefix(localBaseUrl, 'local-probe');
+        updateCachedPrefix(override, 'local-probe');
         notifyPrefixReady('local-probe');
         return;
       }
@@ -319,9 +299,8 @@ export function getThumbnailUrl(npub: string, treeName: string, videoId?: string
  * - Web: Requires service worker to be ready
  */
 export async function isFileStreamingAvailable(): Promise<boolean> {
-  if (isTauri()) {
-    return true; // Server always runs on fixed port
-  }
+  // If a local htree server is available (injected by native app), always ready
+  if (getHtreeServerOverride()) return true;
 
   // In browser, check service worker
   if (!('serviceWorker' in navigator)) return false;

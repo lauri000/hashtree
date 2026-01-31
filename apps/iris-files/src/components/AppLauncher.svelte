@@ -1,22 +1,13 @@
 <script lang="ts">
   import { appsStore, type AppBookmark } from '../stores/apps';
   import { navigate } from '../lib/router.svelte';
-  import { isTauri } from '../tauri';
 
-  // Default suggested apps - use Tauri asset URLs locally, remote URLs in browser
-  const TAURI_ORIGIN = 'tauri://localhost';
-  const suggestions: AppBookmark[] = isTauri()
-    ? [
-        { url: `${TAURI_ORIGIN}/files.html`, name: 'Iris Files', icon: '/iris-logo.png', addedAt: 0 },
-        { url: `${TAURI_ORIGIN}/video.html`, name: 'Iris Video', icon: '/iris-logo.png', addedAt: 0 },
-        { url: `${TAURI_ORIGIN}/docs.html`, name: 'Iris Docs', icon: '/iris-logo.png', addedAt: 0 },
-        { url: 'https://iris.to', name: 'Iris Social', icon: '/iris-logo.png', addedAt: 0 },
-      ]
-    : [
-        { url: 'https://files.iris.to', name: 'Iris Files', icon: '/iris-logo.png', addedAt: 0 },
-        { url: 'https://video.iris.to', name: 'Iris Video', icon: '/iris-logo.png', addedAt: 0 },
-        { url: 'https://iris.to', name: 'Iris Social', icon: '/iris-logo.png', addedAt: 0 },
-      ];
+  // Default suggested apps
+  const suggestions: AppBookmark[] = [
+    { url: 'https://files.iris.to', name: 'Iris Files', icon: '/iris-logo.png', addedAt: 0 },
+    { url: 'https://video.iris.to', name: 'Iris Video', icon: '/iris-logo.png', addedAt: 0 },
+    { url: 'https://iris.to', name: 'Iris Social', icon: '/iris-logo.png', addedAt: 0 },
+  ];
 
   let favorites = $derived($appsStore);
 

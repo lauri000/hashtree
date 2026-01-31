@@ -7,7 +7,6 @@
   import { getProfileSync } from '../stores/profile';
   import { UserRow } from './User';
   import { search, getSuggestions, recordHistoryVisit, type SearchResult } from '../lib/search';
-  import { isTauri } from '../tauri';
 
   interface Props {
     fullWidth?: boolean;
@@ -70,7 +69,7 @@
 
     if (query.length < 1) {
       // Show recent history when focused with empty query
-      if (focused && isTauri()) {
+      if (focused) {
         getSuggestions(8).then((results) => {
           searchResults = results;
         });

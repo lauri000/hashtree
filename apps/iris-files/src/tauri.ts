@@ -1,9 +1,10 @@
 /**
  * Tauri integration utilities
- * Provides type-safe wrappers for Tauri APIs with graceful fallbacks when running in browser
+ *
+ * When running inside the native Iris shell, Tauri globals are present and
+ * these helpers return meaningful values. When running as a standalone web
+ * app they all return safe defaults (false / null / browser fallbacks).
  */
-
-import { logHtreeDebug } from './lib/htreeDebug';
 
 export function hasTauriInvoke(): boolean {
   if (typeof window === 'undefined') return false;
@@ -17,7 +18,6 @@ export function hasTauriInvoke(): boolean {
 }
 
 // Check if running in Tauri (desktop app)
-let tauriCheckLogged = false;
 export const isTauri = (): boolean => {
   if (typeof window === 'undefined') return false;
   const hasTauriGlobals =
@@ -27,35 +27,20 @@ export const isTauri = (): boolean => {
     '__TAURI_METADATA__' in window;
   const hasInvoke = hasTauriInvoke();
 
-  // Tauri webviews always use the tauri:// protocol even if globals are hidden.
   const protocol = window.location?.protocol || '';
   const normalizedProtocol = protocol.endsWith(':') ? protocol.slice(0, -1) : protocol;
   const href = window.location?.href || '';
   const hostname = window.location?.hostname || '';
   const isTauriHost = hostname === 'tauri.localhost' || hostname.endsWith('.tauri.localhost');
   const userAgent = navigator.userAgent || '';
-  const result =
+  return (
     (hasTauriGlobals && hasInvoke) ||
     normalizedProtocol === 'tauri' ||
     normalizedProtocol === 'asset' ||
     href.startsWith('tauri://') ||
     isTauriHost ||
-    userAgent.includes('Tauri');
-
-  if (!tauriCheckLogged) {
-    tauriCheckLogged = true;
-    logHtreeDebug('tauri:detect', {
-      hasTauriGlobals,
-      hasInvoke,
-      protocol,
-      href,
-      hostname,
-      isTauriHost,
-      userAgent,
-      result,
-    });
-  }
-  return result;
+    userAgent.includes('Tauri')
+  );
 };
 
 // Check if running on macOS (sync check using navigator)
@@ -79,53 +64,34 @@ export interface AutostartAPI {
   disable: () => Promise<void>;
 }
 
-let autostartAPI: AutostartAPI | null = null;
-
-async function getAutostartAPI(): Promise<AutostartAPI | null> {
-  if (!isTauri()) return null;
-  if (autostartAPI) return autostartAPI;
-
-  try {
-    const { isEnabled, enable, disable } = await import('@tauri-apps/plugin-autostart');
-    autostartAPI = { isEnabled, enable, disable };
-    return autostartAPI;
-  } catch (e) {
-    console.warn('Autostart plugin not available:', e);
-    return null;
-  }
-}
-
 export async function isAutostartEnabled(): Promise<boolean> {
-  const api = await getAutostartAPI();
-  if (!api) return false;
+  if (!isTauri()) return false;
   try {
-    return await api.isEnabled();
-  } catch (e) {
-    console.error('Failed to check autostart status:', e);
+    const { isEnabled } = await import('@tauri-apps/plugin-autostart');
+    return await isEnabled();
+  } catch {
     return false;
   }
 }
 
 export async function enableAutostart(): Promise<boolean> {
-  const api = await getAutostartAPI();
-  if (!api) return false;
+  if (!isTauri()) return false;
   try {
-    await api.enable();
+    const { enable } = await import('@tauri-apps/plugin-autostart');
+    await enable();
     return true;
-  } catch (e) {
-    console.error('Failed to enable autostart:', e);
+  } catch {
     return false;
   }
 }
 
 export async function disableAutostart(): Promise<boolean> {
-  const api = await getAutostartAPI();
-  if (!api) return false;
+  if (!isTauri()) return false;
   try {
-    await api.disable();
+    const { disable } = await import('@tauri-apps/plugin-autostart');
+    await disable();
     return true;
-  } catch (e) {
-    console.error('Failed to disable autostart:', e);
+  } catch {
     return false;
   }
 }
@@ -155,8 +121,7 @@ export async function getOSInfo(): Promise<OSInfo | null> {
       version: version(),
       arch: arch(),
     };
-  } catch (e) {
-    console.warn('OS plugin not available:', e);
+  } catch {
     return null;
   }
 }
@@ -179,8 +144,7 @@ export async function openFile(options?: {
 
     if (!result) return null;
     return Array.isArray(result) ? result : [result];
-  } catch (e) {
-    console.error('Failed to open file dialog:', e);
+  } catch {
     return null;
   }
 }
@@ -197,8 +161,7 @@ export async function saveFile(options?: {
       defaultPath: options?.defaultPath,
       filters: options?.filters,
     });
-  } catch (e) {
-    console.error('Failed to open save dialog:', e);
+  } catch {
     return null;
   }
 }
@@ -206,7 +169,6 @@ export async function saveFile(options?: {
 // External URL opener
 export async function openExternal(url: string): Promise<boolean> {
   if (!isTauri()) {
-    // Fallback to window.open in browser
     window.open(url, '_blank', 'noopener,noreferrer');
     return true;
   }
@@ -215,9 +177,7 @@ export async function openExternal(url: string): Promise<boolean> {
     const { openUrl } = await import('@tauri-apps/plugin-opener');
     await openUrl(url);
     return true;
-  } catch (e) {
-    console.error('Failed to open external URL:', e);
-    // Fallback
+  } catch {
     window.open(url, '_blank', 'noopener,noreferrer');
     return false;
   }
@@ -249,8 +209,7 @@ export async function sendNotification(options: {
     const { sendNotification: tauriNotify } = await import('@tauri-apps/plugin-notification');
     tauriNotify(options);
     return true;
-  } catch (e) {
-    console.error('Failed to send notification:', e);
+  } catch {
     return false;
   }
 }

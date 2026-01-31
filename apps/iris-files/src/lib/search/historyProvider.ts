@@ -1,83 +1,25 @@
 /**
  * History search provider
  *
- * Tauri: Uses heed-backed history with fuzzy search
- * Web: Falls back to recents store (simple prefix match)
+ * Uses recents store (simple prefix match on recent visits)
  */
 
-import { isTauri } from '../../tauri';
 import { getRecentsSync } from '../../stores/recents';
 import { parseKeywords } from '../../stores/searchIndex';
 import type { SearchProvider, SearchResult } from './types';
 
-/** History entry from Tauri backend */
-interface TauriHistoryEntry {
-  path: string;
-  label: string;
-  entry_type: string;
-  npub?: string;
-  tree_name?: string;
-  visit_count: number;
-  last_visited: number;
-  first_visited: number;
-}
-
-/** Search result from Tauri backend */
-interface TauriHistorySearchResult {
-  entry: TauriHistoryEntry;
-  score: number;
-}
-
-/** Record a history visit (Tauri only) */
+/** Record a history visit (no-op in web - recents store handles this) */
 export async function recordHistoryVisit(
-  path: string,
-  label: string,
-  entryType: string,
-  npub?: string,
-  treeName?: string
+  _path: string,
+  _label: string,
+  _entryType: string,
+  _npub?: string,
+  _treeName?: string
 ): Promise<void> {
-  if (!isTauri()) return;
-
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('record_history_visit', {
-      path,
-      label,
-      entryType,
-      npub: npub ?? null,
-      treeName: treeName ?? null,
-    });
-  } catch (e) {
-    console.warn('[history] Failed to record visit:', e);
-  }
+  // History recording is handled by the recents store in the web app
 }
 
-/** Search history (Tauri) */
-async function searchHistoryTauri(query: string, limit: number): Promise<SearchResult[]> {
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    const results = await invoke<TauriHistorySearchResult[]>('search_history', {
-      query,
-      limit,
-    });
-
-    return results.map((r) => ({
-      id: `history:${r.entry.path}`,
-      type: mapEntryType(r.entry.entry_type),
-      label: r.entry.label,
-      sublabel: formatTimeAgo(r.entry.last_visited),
-      path: r.entry.path,
-      score: normalizeScore(r.score),
-      icon: getIconForType(r.entry.entry_type),
-      timestamp: r.entry.last_visited,
-    }));
-  } catch (e) {
-    console.warn('[history] Search failed:', e);
-    return [];
-  }
-}
-
-/** Search history (Web fallback - simple prefix match on recents) */
+/** Search history (simple prefix match on recents) */
 function searchHistoryWeb(query: string, limit: number): SearchResult[] {
   // Filter stop words from query - if no keywords remain, return empty
   const keywords = parseKeywords(query);
@@ -151,12 +93,6 @@ function getIconForType(entryType: string): string {
   }
 }
 
-/** Normalize Tauri score to 0-1 range */
-function normalizeScore(score: number): number {
-  // Tauri scores can be 0-10+, normalize to 0-1
-  return Math.min(1, score / 10);
-}
-
 /** Format timestamp as relative time */
 function formatTimeAgo(timestamp: number): string {
   const now = Date.now();
@@ -180,41 +116,16 @@ export const historyProvider: SearchProvider = {
   priority: 10, // Show history first
 
   isAvailable(): boolean {
-    return true; // Always available (web has fallback)
+    return true;
   },
 
   async search(query: string, limit: number): Promise<SearchResult[]> {
-    if (isTauri()) {
-      return searchHistoryTauri(query, limit);
-    }
     return searchHistoryWeb(query, limit);
   },
 };
 
 /** Get recent history without search (for empty query) */
 export async function getRecentHistory(limit: number): Promise<SearchResult[]> {
-  if (isTauri()) {
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const entries = await invoke<TauriHistoryEntry[]>('get_recent_history', { limit });
-
-      return entries.map((entry) => ({
-        id: `history:${entry.path}`,
-        type: mapEntryType(entry.entry_type),
-        label: entry.label,
-        sublabel: formatTimeAgo(entry.last_visited),
-        path: entry.path,
-        score: 1,
-        icon: getIconForType(entry.entry_type),
-        timestamp: entry.last_visited,
-      }));
-    } catch (e) {
-      console.warn('[history] Failed to get recent:', e);
-      return [];
-    }
-  }
-
-  // Web fallback
   return getRecentsSync()
     .slice(0, limit)
     .map((r) => ({

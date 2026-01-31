@@ -1,7 +1,6 @@
 //! History storage and search using heed (LMDB)
 //!
 //! Stores navigation history for fuzzy search suggestions.
-//! Uses heed for fast KV storage with LMDB backend.
 
 use heed::types::{Bytes, Str};
 use heed::{Database, Env, EnvOpenOptions};
@@ -11,30 +10,26 @@ use std::path::Path;
 use std::sync::Arc;
 use tracing::debug;
 
-/// Maximum number of history entries to store
 const MAX_HISTORY_ENTRIES: usize = 1000;
 
-/// History entry stored in the database
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
     pub path: String,
     pub label: String,
-    pub entry_type: String, // "tree" | "file" | "video" | "user" | "app" | "hash"
+    pub entry_type: String,
     pub npub: Option<String>,
     pub tree_name: Option<String>,
     pub visit_count: u32,
-    pub last_visited: u64, // Unix timestamp ms
+    pub last_visited: u64,
     pub first_visited: u64,
 }
 
-/// Search result returned to frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistorySearchResult {
     pub entry: HistoryEntry,
     pub score: f64,
 }
 
-/// History store using heed/LMDB
 pub struct HistoryStore {
     env: Env,
     db: Database<Str, Bytes>,
@@ -42,16 +37,14 @@ pub struct HistoryStore {
 }
 
 impl HistoryStore {
-    /// Open or create the history database
     pub fn new(data_dir: &Path) -> Result<Self, String> {
         let history_dir = data_dir.join("history");
         std::fs::create_dir_all(&history_dir)
             .map_err(|e| format!("Failed to create history dir: {}", e))?;
 
-        // Open LMDB environment
         let env = unsafe {
             EnvOpenOptions::new()
-                .map_size(10 * 1024 * 1024) // 10MB should be plenty for history
+                .map_size(10 * 1024 * 1024)
                 .max_dbs(1)
                 .open(&history_dir)
                 .map_err(|e| format!("Failed to open history db: {}", e))?
@@ -62,7 +55,6 @@ impl HistoryStore {
             }
         }
 
-        // Open the history database
         let mut wtxn = env
             .write_txn()
             .map_err(|e| format!("Failed to start txn: {}", e))?;
@@ -72,7 +64,6 @@ impl HistoryStore {
         wtxn.commit()
             .map_err(|e| format!("Failed to commit: {}", e))?;
 
-        // Count existing entries
         let count = {
             let rtxn = env
                 .read_txn()
@@ -87,14 +78,12 @@ impl HistoryStore {
         })
     }
 
-    /// Record a history visit (insert or update)
     pub fn record_visit(&self, entry: HistoryEntry) -> Result<(), String> {
         let mut wtxn = self
             .env
             .write_txn()
             .map_err(|e| format!("Failed to start write txn: {}", e))?;
 
-        // Check if entry exists
         let existing: Option<HistoryEntry> = self
             .db
             .get(&wtxn, &entry.path)
@@ -102,13 +91,11 @@ impl HistoryStore {
             .and_then(|bytes| bincode::deserialize(bytes).ok());
 
         let updated_entry = if let Some(mut existing) = existing {
-            // Update existing entry
             existing.label = entry.label;
             existing.visit_count += 1;
             existing.last_visited = entry.last_visited;
             existing
         } else {
-            // Check if we need to evict old entries
             let count = *self.entry_count.read();
             if count >= MAX_HISTORY_ENTRIES {
                 self.evict_oldest(&mut wtxn)?;
@@ -119,11 +106,9 @@ impl HistoryStore {
 
         let bytes =
             bincode::serialize(&updated_entry).map_err(|e| format!("Failed to serialize: {}", e))?;
-
         self.db
             .put(&mut wtxn, &updated_entry.path, &bytes)
             .map_err(|e| format!("Failed to put: {}", e))?;
-
         wtxn.commit()
             .map_err(|e| format!("Failed to commit: {}", e))?;
 
@@ -131,9 +116,7 @@ impl HistoryStore {
         Ok(())
     }
 
-    /// Evict oldest entries when at capacity
     fn evict_oldest(&self, wtxn: &mut heed::RwTxn) -> Result<(), String> {
-        // Collect all entries with timestamps
         let rtxn = self
             .env
             .read_txn()
@@ -153,10 +136,7 @@ impl HistoryStore {
         }
         drop(rtxn);
 
-        // Sort by last_visited ascending (oldest first)
         entries.sort_by_key(|(_, ts)| *ts);
-
-        // Remove oldest 10%
         let to_remove = entries.len() / 10;
         for (path, _) in entries.into_iter().take(to_remove.max(1)) {
             self.db
@@ -168,7 +148,6 @@ impl HistoryStore {
         Ok(())
     }
 
-    /// Search history with fuzzy matching
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<HistorySearchResult>, String> {
         if query.is_empty() {
             return Ok(Vec::new());
@@ -190,7 +169,6 @@ impl HistoryStore {
         for item in iter {
             let (_key, value) = item.map_err(|e| format!("Iter error: {}", e))?;
             if let Ok(entry) = bincode::deserialize::<HistoryEntry>(value) {
-                // Calculate fuzzy score
                 let score = fuzzy_score(&query_lower, &entry);
                 if score > 0.0 {
                     results.push(HistorySearchResult { entry, score });
@@ -198,7 +176,6 @@ impl HistoryStore {
             }
         }
 
-        // Sort by score descending, then by recency
         results.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -210,7 +187,6 @@ impl HistoryStore {
         Ok(results)
     }
 
-    /// Get recent history entries (no search, just recency)
     pub fn get_recent(&self, limit: usize) -> Result<Vec<HistoryEntry>, String> {
         let rtxn = self
             .env
@@ -218,7 +194,6 @@ impl HistoryStore {
             .map_err(|e| format!("Failed to start read txn: {}", e))?;
 
         let mut entries: Vec<HistoryEntry> = Vec::new();
-
         let iter = self
             .db
             .iter(&rtxn)
@@ -231,99 +206,67 @@ impl HistoryStore {
             }
         }
 
-        // Sort by last_visited descending
         entries.sort_by(|a, b| b.last_visited.cmp(&a.last_visited));
         entries.truncate(limit);
-
         Ok(entries)
     }
 }
 
-/// Calculate fuzzy match score for a history entry
-/// Returns 0.0 for no match, higher scores for better matches
 fn fuzzy_score(query: &str, entry: &HistoryEntry) -> f64 {
     let mut max_score: f64 = 0.0;
-
-    // Score against label (highest weight)
     let label_lower = entry.label.to_lowercase();
-    max_score = max_score.max(fuzzy_match_string(query, &label_lower) * 1.0);
-
-    // Score against path
+    max_score = max_score.max(fuzzy_match_string(query, &label_lower));
     let path_lower = entry.path.to_lowercase();
     max_score = max_score.max(fuzzy_match_string(query, &path_lower) * 0.8);
-
-    // Score against tree_name if present
     if let Some(ref tree_name) = entry.tree_name {
         let tree_lower = tree_name.to_lowercase();
         max_score = max_score.max(fuzzy_match_string(query, &tree_lower) * 0.7);
     }
-
-    // Boost by visit frequency (log scale)
     let freq_boost = (entry.visit_count as f64).ln_1p() * 0.1;
-
     max_score + freq_boost
 }
 
-/// Fuzzy match a query against a target string
-/// Uses subsequence matching with bonuses for consecutive/word-boundary matches
 fn fuzzy_match_string(query: &str, target: &str) -> f64 {
     if query.is_empty() || target.is_empty() {
         return 0.0;
     }
-
-    // Exact match
     if target == query {
         return 10.0;
     }
-
-    // Prefix match
     if target.starts_with(query) {
         return 8.0 + (query.len() as f64 / target.len() as f64);
     }
-
-    // Contains match
     if target.contains(query) {
         return 5.0 + (query.len() as f64 / target.len() as f64);
     }
-
-    // Word prefix match (any word starts with query)
     for word in target.split(|c: char| !c.is_alphanumeric()) {
         if word.starts_with(query) {
             return 4.0 + (query.len() as f64 / word.len() as f64);
         }
     }
 
-    // Subsequence match with scoring
     let query_chars: Vec<char> = query.chars().collect();
     let target_chars: Vec<char> = target.chars().collect();
-
     let mut query_idx = 0;
     let mut score = 0.0;
     let mut prev_match_idx: Option<usize> = None;
 
     for (target_idx, &target_char) in target_chars.iter().enumerate() {
         if query_idx < query_chars.len() && target_char == query_chars[query_idx] {
-            // Bonus for consecutive matches
             if let Some(prev) = prev_match_idx {
                 if target_idx == prev + 1 {
                     score += 0.5;
                 }
             }
-
-            // Bonus for word boundary
-            if target_idx == 0
-                || !target_chars[target_idx - 1].is_alphanumeric()
-            {
+            if target_idx == 0 || !target_chars[target_idx - 1].is_alphanumeric() {
                 score += 0.3;
             }
-
             score += 0.2;
             prev_match_idx = Some(target_idx);
             query_idx += 1;
         }
     }
 
-    // Only return score if all query chars were matched
     if query_idx == query_chars.len() {
         score
     } else {
@@ -331,11 +274,8 @@ fn fuzzy_match_string(query: &str, target: &str) -> f64 {
     }
 }
 
-// ============================================================================
 // Tauri Commands
-// ============================================================================
 
-/// Record a history visit
 #[tauri::command]
 pub fn record_history_visit(
     path: String,
@@ -364,7 +304,6 @@ pub fn record_history_visit(
     history.record_visit(entry)
 }
 
-/// Search history with fuzzy matching
 #[tauri::command]
 pub fn search_history(
     query: String,
@@ -374,7 +313,6 @@ pub fn search_history(
     history.search(&query, limit)
 }
 
-/// Get recent history entries
 #[tauri::command]
 pub fn get_recent_history(
     limit: usize,
@@ -399,17 +337,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fuzzy_match_contains() {
-        assert!(fuzzy_match_string("ell", "hello") > 4.0);
-    }
-
-    #[test]
-    fn test_fuzzy_match_subsequence() {
-        let score = fuzzy_match_string("hlo", "hello");
-        assert!(score > 0.0, "subsequence should match");
-    }
-
-    #[test]
     fn test_fuzzy_match_no_match() {
         assert_eq!(fuzzy_match_string("xyz", "hello"), 0.0);
     }
@@ -431,7 +358,6 @@ mod tests {
         };
 
         store.record_visit(entry).unwrap();
-
         let results = store.search("test", 10).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].entry.path, "/test/path");

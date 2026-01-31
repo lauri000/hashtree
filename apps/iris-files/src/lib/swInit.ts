@@ -5,7 +5,6 @@
 
 import { registerSW } from 'virtual:pwa-register';
 import { getHtreePrefix } from './mediaUrl';
-import { isTauri } from '../tauri';
 
 interface InitOptions {
   /** Require cross-origin isolation (for SharedArrayBuffer/FFmpeg) */
@@ -36,8 +35,8 @@ export async function initServiceWorker(options: InitOptions = {}): Promise<void
     }
   }
 
-  // Skip service worker when local htree server is available (Tauri host or desktop app)
-  if (isTauri() || getHtreePrefix()) {
+  // Skip service worker when local htree server is available (native app host)
+  if (getHtreePrefix()) {
     console.log('[SW] Skipping service worker (native htree server)');
     return;
   }
