@@ -18,7 +18,8 @@
   // Build the git clone command
   let cloneCommand = $derived(`git clone htree://${npub}/${repoPath}`);
   const rustCommand = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh";
-  const cargoCommand = "cargo install git-remote-htree";
+  const cargoCommand = "cargo install hashtree-cli git-remote-htree";
+  const helperOnlyCommand = "cargo install git-remote-htree";
 
   function handleClickOutside(event: MouseEvent) {
     const target = event.target as HTMLElement;
@@ -98,10 +99,14 @@
         <!-- Requirements -->
         <div class="space-y-2">
           <p class="text-xs text-text-3">
-            Requires <a href="https://rustup.rs" target="_blank" rel="noopener" class="text-accent hover:underline">Rust</a> and <a href="#/npub1g53mukxnjkcmr94fhryzkqutdz2ukq4ks0gvy5af25rgmwsl4ngq43drvk/hashtree" class="text-accent hover:underline">hashtree-cli</a>
+            Requires <a href="https://rustup.rs" target="_blank" rel="noopener" class="text-accent hover:underline">Rust</a>, <a href="#/npub1g53mukxnjkcmr94fhryzkqutdz2ukq4ks0gvy5af25rgmwsl4ngq43drvk/hashtree" class="text-accent hover:underline">hashtree-cli</a>, and git-remote-htree
           </p>
           <CopyInput text={rustCommand} />
           <CopyInput text={cargoCommand} />
+          <p class="text-xs text-text-3">
+            Already have hashtree-cli? Install just the helper:
+          </p>
+          <CopyInput text={helperOnlyCommand} />
         </div>
       </div>
     </div>
