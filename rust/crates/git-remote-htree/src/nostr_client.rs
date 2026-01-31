@@ -298,10 +298,15 @@ impl NostrClient {
         tracing::info!("BlossomClient created with read_servers: {:?}, write_servers: {:?}",
             blossom.read_servers(), blossom.write_servers());
 
+        let relays = hashtree_config::resolve_relays(
+            &config.nostr.relays,
+            Some(config.server.bind_address.as_str()),
+        );
+
         Ok(Self {
             pubkey: pubkey.to_string(),
             keys,
-            relays: config.nostr.relays.clone(),
+            relays,
             blossom,
             cached_refs: HashMap::new(),
             cached_root_hash: HashMap::new(),

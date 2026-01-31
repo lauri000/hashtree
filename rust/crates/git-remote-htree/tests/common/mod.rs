@@ -491,6 +491,10 @@ crawl_depth = 0
                 self.home_dir.to_string_lossy().to_string(),
             ),
             (
+                "NOSTR_PREFER_LOCAL".to_string(),
+                "0".to_string(),
+            ),
+            (
                 "HTREE_CONFIG_DIR".to_string(),
                 config_dir.to_string_lossy().to_string(),
             ),
