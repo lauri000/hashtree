@@ -247,6 +247,9 @@ impl RemoteHelper {
                     if name == "update-head-ok" {
                         return Ok(Some(vec!["ok".to_string()]));
                     }
+                    if name == "progress" || name == "verbosity" {
+                        return Ok(Some(vec!["ok".to_string()]));
+                    }
                 }
                 debug!("Ignoring option: {:?}", arg);
                 Ok(Some(vec!["unsupported".to_string()]))
@@ -1606,7 +1609,7 @@ mod tests {
         let result = helper.handle_command("option verbosity 1").unwrap();
         assert!(result.is_some());
         let lines = result.unwrap();
-        assert!(lines.contains(&"unsupported".to_string()));
+        assert!(lines.contains(&"ok".to_string()));
     }
 
     #[test]

@@ -61,22 +61,23 @@ pub fn main_entry() {
 }
 
 fn run() -> Result<()> {
-    // Suppress broken pipe panics - git may close the pipe early
+    // Suppress broken pipe signals - git may close the pipe early
     #[cfg(unix)]
     {
         unsafe {
-            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+            libc::signal(libc::SIGPIPE, libc::SIG_IGN);
         }
     }
 
     // Initialize logging - only show errors by default
     // Set RUST_LOG=debug for verbose output
+    let env_filter = if std::env::var_os("RUST_LOG").is_some() {
+        tracing_subscriber::EnvFilter::from_default_env()
+    } else {
+        tracing_subscriber::EnvFilter::new("git_remote_htree=error,nostr_relay_pool=off")
+    };
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("git_remote_htree=error".parse().unwrap())
-                .add_directive("nostr_relay_pool=off".parse().unwrap()),
-        )
+        .with_env_filter(env_filter)
         .with_writer(std::io::stderr)
         .init();
 
@@ -207,6 +208,8 @@ fn run() -> Result<()> {
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
 
+    let trace_protocol = std::env::var_os("HTREE_TRACE_PROTOCOL").is_some();
+
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(l) => l,
@@ -219,11 +222,17 @@ fn run() -> Result<()> {
         };
 
         debug!("< {}", line);
+        if trace_protocol {
+            eprintln!("[htree-proto] < {}", line);
+        }
 
         match helper.handle_command(&line) {
             Ok(Some(responses)) => {
                 for response in responses {
                     debug!("> {}", response);
+                    if trace_protocol {
+                        eprintln!("[htree-proto] > {}", response);
+                    }
                     if let Err(e) = writeln!(stdout, "{}", response) {
                         if e.kind() == std::io::ErrorKind::BrokenPipe {
                             break;
