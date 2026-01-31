@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: Hashtree.Hashtree
+PackageVersion: 0.2.4
+PackageLocale: en-US
+Publisher: Hashtree
+PublisherUrl: https://github.com/mmalmi/hashtree
+PackageName: hashtree
+PackageUrl: https://github.com/mmalmi/hashtree
+License: MIT
+LicenseUrl: https://github.com/mmalmi/hashtree/blob/master/LICENSE
+ShortDescription: Git over Nostr via Merkle trees
+Tags:
+  - git
+  - nostr
+  - p2p
+  - merkle
+  - content-addressed
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

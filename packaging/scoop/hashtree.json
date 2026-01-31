@@ -1,0 +1,27 @@
+{
+  "version": "0.2.4",
+  "description": "Git over Nostr via Merkle trees",
+  "homepage": "https://github.com/mmalmi/hashtree",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/mmalmi/hashtree/releases/download/v0.2.4/hashtree-x86_64-pc-windows-msvc.zip",
+      "hash": "REPLACE_WITH_SHA256"
+    }
+  },
+  "extract_dir": "hashtree",
+  "bin": [
+    "htree.exe",
+    "git-remote-htree.exe"
+  ],
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/mmalmi/hashtree/releases/download/v$version/hashtree-x86_64-pc-windows-msvc.zip",
+        "hash": {
+          "url": "https://github.com/mmalmi/hashtree/releases/download/v$version/hashtree-x86_64-pc-windows-msvc.sha256"
+        }
+      }
+    }
+  }
+}
