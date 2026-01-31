@@ -79,10 +79,16 @@ jobs:
           cross build --release --target ${{ matrix.target }} -p hashtree-cli
 
       - name: Build (native)
-        if: "!matrix.cross"
+        if: "!matrix.cross && matrix.target != 'x86_64-pc-windows-msvc'"
         run: |
           cargo build --release --target ${{ matrix.target }} -p git-remote-htree
           cargo build --release --target ${{ matrix.target }} -p hashtree-cli
+
+      - name: Build (native Windows, nostrdb disabled)
+        if: "matrix.target == 'x86_64-pc-windows-msvc'"
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p git-remote-htree
+          cargo build --release --target ${{ matrix.target }} -p hashtree-cli --no-default-features --features p2p
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
