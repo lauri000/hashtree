@@ -144,6 +144,11 @@ jobs:
           
           cd dist
           tar -czvf hashtree-${{ matrix.target }}.tar.gz hashtree
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum hashtree-${{ matrix.target }}.tar.gz > hashtree-${{ matrix.target }}.sha256
+          else
+            shasum -a 256 hashtree-${{ matrix.target }}.tar.gz > hashtree-${{ matrix.target }}.sha256
+          fi
           rm -rf hashtree
 
       - name: Package (Windows)
@@ -177,6 +182,8 @@ jobs:
           "@ | Out-File -FilePath dist/hashtree/README.txt -Encoding UTF8
           
           Compress-Archive -Path dist/hashtree -DestinationPath dist/hashtree-${{ matrix.target }}.zip
+          $hash = (Get-FileHash dist/hashtree-${{ matrix.target }}.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  hashtree-${{ matrix.target }}.zip" | Out-File -FilePath dist/hashtree-${{ matrix.target }}.sha256 -Encoding ASCII
           Remove-Item -Recurse dist/hashtree
 
       - name: Upload artifacts
