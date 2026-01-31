@@ -64,6 +64,16 @@ export async function reloadWebview(label: string): Promise<void> {
   return invoke<void>('reload_webview', { label });
 }
 
+export async function setWebviewBounds(
+  label: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): Promise<void> {
+  return invoke<void>('set_webview_bounds', { label, x, y, width, height });
+}
+
 export async function webviewCurrentUrl(label: string): Promise<string> {
   return invoke<string>('webview_current_url', { label });
 }

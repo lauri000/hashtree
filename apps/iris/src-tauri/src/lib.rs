@@ -189,6 +189,7 @@ pub fn run() {
             nip07::create_htree_webview,
             nip07::close_webview,
             nip07::navigate_webview,
+            nip07::set_webview_bounds,
             nip07::webview_history,
             nip07::reload_webview,
             nip07::webview_current_url,

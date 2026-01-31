@@ -7,6 +7,7 @@
     navigateWebview,
     webviewHistory,
     reloadWebview,
+    setWebviewBounds,
     onChildWebviewLocation,
     recordHistoryVisit,
     searchHistory,
@@ -36,6 +37,8 @@
   let selectedIndex = $state(-1);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let blurTimer: ReturnType<typeof setTimeout> | null = null;
+  let boundsRaf: number | null = null;
+  let dropdownEl: HTMLDivElement | null = $state(null);
 
   // Shell-level navigation history
   let historyStack: string[] = $state([]);  // URLs visited
@@ -251,6 +254,7 @@
       dropdownItems = [];
     }
     selectedIndex = -1;
+    scheduleWebviewBoundsUpdate();
   }
 
   function debouncedSearch(query: string) {
@@ -263,6 +267,7 @@
     dropdownItems = [];
     selectedIndex = -1;
     if (debounceTimer) clearTimeout(debounceTimer);
+    scheduleWebviewBoundsUpdate();
   }
 
   function handleDropdownSelect(entry: HistoryEntry) {
@@ -289,6 +294,7 @@
     }
     showDropdown = true;
     fetchDropdownItems(addressValue);
+    scheduleWebviewBoundsUpdate();
     // Select all text for easy replacement
     requestAnimationFrame(() => addressInputEl?.select());
   }
@@ -300,6 +306,22 @@
     }
     // Delay to allow mousedown on dropdown items to fire first
     blurTimer = setTimeout(() => { blurTimer = null; closeDropdown(); }, 150);
+  }
+
+  function scheduleWebviewBoundsUpdate() {
+    if (boundsRaf !== null) cancelAnimationFrame(boundsRaf);
+    boundsRaf = requestAnimationFrame(async () => {
+      boundsRaf = null;
+      if (currentView !== 'webview' || !g.__irisChildReady) return;
+      const extra = showDropdown ? (dropdownEl?.getBoundingClientRect().height ?? 0) : 0;
+      const top = TOOLBAR_HEIGHT + extra;
+      const height = Math.max(0, window.innerHeight - top);
+      try {
+        await setWebviewBounds(CHILD_LABEL, 0, top, window.innerWidth, height);
+      } catch {
+        // If the webview is gone or not ready, ignore.
+      }
+    });
   }
 
   function handleGlobalKeyDown(event: KeyboardEvent) {
@@ -358,8 +380,10 @@
   onMount(async () => {
     const unlisten = await onChildWebviewLocation(handleLocationChange);
     window.addEventListener('keydown', handleGlobalKeyDown);
+    window.addEventListener('resize', scheduleWebviewBoundsUpdate);
     return () => {
       window.removeEventListener('keydown', handleGlobalKeyDown);
+      window.removeEventListener('resize', scheduleWebviewBoundsUpdate);
       unlisten();
     };
   });
@@ -440,7 +464,7 @@
       </div>
 
       {#if showDropdown && dropdownItems.length > 0}
-        <div class="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-full max-w-lg bg-surface-1 b-1 b-solid b-surface-3 rounded-lg overflow-hidden z-50 max-h-80 overflow-y-auto" role="listbox">
+        <div bind:this={dropdownEl} class="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-full max-w-lg bg-surface-1 b-1 b-solid b-surface-3 rounded-lg overflow-hidden z-50 max-h-80 overflow-y-auto" role="listbox">
           {#each dropdownItems as item, i}
             <div
               class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors cursor-pointer {i === selectedIndex ? 'bg-surface-2' : ''}"

@@ -32,6 +32,7 @@ async function mockTauriIPC(page: Page) {
           case 'navigate_webview':
           case 'webview_history':
           case 'reload_webview':
+          case 'set_webview_bounds':
             return Promise.resolve();
           case 'record_history_visit': {
             const now = Date.now();

@@ -268,4 +268,21 @@ test.describe('Address Bar Autocomplete', () => {
     const calls = await getInvocationsFor(page, 'delete_history_entry');
     expect(calls.length).toBe(1);
   });
+
+  test('opening dropdown adjusts webview bounds', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill('https://example.com');
+    await input.press('Enter');
+
+    const before = await getInvocationsFor(page, 'set_webview_bounds');
+
+    await input.click();
+    await expect(page.locator('[role="listbox"]')).toBeVisible();
+
+    await expect.poll(async () => (await getInvocationsFor(page, 'set_webview_bounds')).length)
+      .toBeGreaterThan(before.length);
+  });
 });

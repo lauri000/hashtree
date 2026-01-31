@@ -10,7 +10,10 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewBuilder, WebviewUrl};
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, Runtime, WebviewBuilder,
+    WebviewUrl,
+};
 use tracing::{debug, error, info, warn};
 
 // ============================================
@@ -665,6 +668,28 @@ pub fn navigate_webview<R: Runtime>(
     webview
         .navigate(parsed)
         .map_err(|e| format!("Failed to navigate: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_webview_bounds<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| format!("Webview {} not found", label))?;
+    let bounds = Rect {
+        position: LogicalPosition::new(x, y).into(),
+        size: LogicalSize::new(width.max(0.0), height.max(0.0)).into(),
+    };
+    webview
+        .set_bounds(bounds)
+        .map_err(|e| format!("Failed to set bounds: {}", e))?;
     Ok(())
 }
 
