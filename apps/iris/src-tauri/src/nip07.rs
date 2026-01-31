@@ -532,6 +532,7 @@ pub async fn create_nip07_webview<R: Runtime>(
     let webview_builder = WebviewBuilder::new(&label, webview_url)
         .initialization_script(&init_script)
         .auto_resize()
+        .background_color(tauri::utils::config::Color(15, 15, 15, 255))
         .on_navigation(move |nav_url| {
             let url_str = nav_url.to_string();
             debug!("[NIP-07] Child webview navigating to: {}", url_str);
@@ -610,6 +611,7 @@ pub async fn create_htree_webview<R: Runtime>(
     let webview_builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed_url))
         .initialization_script(&init_script)
         .auto_resize()
+        .background_color(tauri::utils::config::Color(15, 15, 15, 255))
         .on_navigation(move |nav_url| {
             let url_str = nav_url.to_string();
             debug!("[htree] Child webview navigating to: {}", url_str);
@@ -683,6 +685,20 @@ pub fn webview_history<R: Runtime>(
     webview
         .eval(script)
         .map_err(|e| format!("Failed to navigate history: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reload_webview<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+) -> Result<(), String> {
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| format!("Webview {} not found", label))?;
+    webview
+        .eval("location.reload()")
+        .map_err(|e| format!("Failed to reload webview: {}", e))?;
     Ok(())
 }
 

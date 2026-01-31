@@ -60,6 +60,10 @@ export async function webviewHistory(label: string, direction: 'back' | 'forward
   return invoke<void>('webview_history', { label, direction });
 }
 
+export async function reloadWebview(label: string): Promise<void> {
+  return invoke<void>('reload_webview', { label });
+}
+
 export async function webviewCurrentUrl(label: string): Promise<string> {
   return invoke<string>('webview_current_url', { label });
 }
@@ -87,12 +91,25 @@ export async function recordHistoryVisit(entry: {
   return invoke<void>('record_history_visit', entry);
 }
 
-export async function searchHistory(query: string, limit?: number): Promise<HistoryEntry[]> {
-  return invoke<HistoryEntry[]>('search_history', { query, limit: limit ?? 10 });
+export interface HistorySearchResult {
+  entry: HistoryEntry;
+  score: number;
+}
+
+export async function searchHistory(query: string, limit?: number): Promise<HistorySearchResult[]> {
+  return invoke<HistorySearchResult[]>('search_history', { query, limit: limit ?? 10 });
 }
 
 export async function getRecentHistory(limit?: number): Promise<HistoryEntry[]> {
   return invoke<HistoryEntry[]>('get_recent_history', { limit: limit ?? 20 });
+}
+
+export async function deleteHistoryEntry(path: string): Promise<boolean> {
+  return invoke<boolean>('delete_history_entry', { path });
+}
+
+export async function clearHistory(): Promise<void> {
+  return invoke<void>('clear_history');
 }
 
 // ── Autostart ──

@@ -154,7 +154,7 @@ pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("iris=info")),
+                .unwrap_or_else(|_| EnvFilter::new("iris=info,hashtree_cli::server=info")),
         )
         .init();
 
@@ -190,12 +190,15 @@ pub fn run() {
             nip07::close_webview,
             nip07::navigate_webview,
             nip07::webview_history,
+            nip07::reload_webview,
             nip07::webview_current_url,
             nip07::nip07_request,
             nip07::webview_event,
             history::record_history_visit,
             history::search_history,
-            history::get_recent_history
+            history::get_recent_history,
+            history::delete_history_entry,
+            history::clear_history
         ])
         .on_page_load(|webview, payload| {
             if webview.label() == "main" {

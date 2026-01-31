@@ -35,16 +35,18 @@ pub fn get_htree_server_url() -> Option<String> {
 
 /// Resolve htree:// URL to internal path for daemon proxy
 fn resolve_htree_url_to_path(host: &str, raw_path: &str) -> String {
+    // Strip bare root "/" so we don't get a trailing slash
+    let path_suffix = if raw_path == "/" { "" } else { raw_path };
     if host.starts_with("nhash1") {
-        format!("/{}{}", host, raw_path)
+        format!("/{}{}", host, path_suffix)
     } else if host.starts_with("npub1") {
         // npub is always 63 chars (npub1 + 58 bech32 chars)
         if host.len() > 63 && host.chars().nth(63) == Some('.') {
             let npub = &host[..63];
             let treename = &host[64..];
-            format!("/{}/{}{}", npub, treename, raw_path)
+            format!("/{}/{}{}", npub, treename, path_suffix)
         } else {
-            format!("/{}{}", host, raw_path)
+            format!("/{}{}", host, path_suffix)
         }
     } else {
         // Legacy path-based format: strip /htree/ prefix
@@ -213,6 +215,13 @@ mod tests {
     fn test_resolve_htree_url_to_path_nhash_host() {
         let path = resolve_htree_url_to_path("nhash1abc123xyz", "/index.html");
         assert_eq!(path, "/nhash1abc123xyz/index.html");
+    }
+
+    #[test]
+    fn test_resolve_htree_url_to_path_nhash_root() {
+        // Root path "/" should not produce trailing slash
+        let path = resolve_htree_url_to_path("nhash1abc123xyz", "/");
+        assert_eq!(path, "/nhash1abc123xyz");
     }
 
     #[test]

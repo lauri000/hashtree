@@ -187,6 +187,47 @@ impl HistoryStore {
         Ok(results)
     }
 
+    pub fn delete_entry(&self, path: &str) -> Result<bool, String> {
+        let mut wtxn = self
+            .env
+            .write_txn()
+            .map_err(|e| format!("Failed to start write txn: {}", e))?;
+
+        let existed = self
+            .db
+            .delete(&mut wtxn, path)
+            .map_err(|e| format!("Failed to delete: {}", e))?;
+
+        wtxn.commit()
+            .map_err(|e| format!("Failed to commit: {}", e))?;
+
+        if existed {
+            *self.entry_count.write() -= 1;
+            debug!("Deleted history entry: {}", path);
+        }
+
+        Ok(existed)
+    }
+
+    pub fn clear(&self) -> Result<(), String> {
+        let mut wtxn = self
+            .env
+            .write_txn()
+            .map_err(|e| format!("Failed to start write txn: {}", e))?;
+
+        self.db
+            .clear(&mut wtxn)
+            .map_err(|e| format!("Failed to clear: {}", e))?;
+
+        wtxn.commit()
+            .map_err(|e| format!("Failed to commit: {}", e))?;
+
+        *self.entry_count.write() = 0;
+        debug!("Cleared all history entries");
+
+        Ok(())
+    }
+
     pub fn get_recent(&self, limit: usize) -> Result<Vec<HistoryEntry>, String> {
         let rtxn = self
             .env
@@ -314,6 +355,21 @@ pub fn search_history(
 }
 
 #[tauri::command]
+pub fn delete_history_entry(
+    path: String,
+    history: tauri::State<'_, Arc<HistoryStore>>,
+) -> Result<bool, String> {
+    history.delete_entry(&path)
+}
+
+#[tauri::command]
+pub fn clear_history(
+    history: tauri::State<'_, Arc<HistoryStore>>,
+) -> Result<(), String> {
+    history.clear()
+}
+
+#[tauri::command]
 pub fn get_recent_history(
     limit: usize,
     history: tauri::State<'_, Arc<HistoryStore>>,
@@ -361,6 +417,73 @@ mod tests {
         let results = store.search("test", 10).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].entry.path, "/test/path");
+    }
+
+    #[test]
+    fn test_delete_entry() {
+        let dir = tempdir().unwrap();
+        let store = HistoryStore::new(dir.path()).unwrap();
+
+        let entry = HistoryEntry {
+            path: "/delete/me".to_string(),
+            label: "Delete Me".to_string(),
+            entry_type: "tree".to_string(),
+            npub: None,
+            tree_name: None,
+            visit_count: 1,
+            last_visited: 1000,
+            first_visited: 1000,
+        };
+
+        store.record_visit(entry).unwrap();
+        assert_eq!(store.get_recent(10).unwrap().len(), 1);
+
+        let deleted = store.delete_entry("/delete/me").unwrap();
+        assert!(deleted);
+        assert_eq!(store.get_recent(10).unwrap().len(), 0);
+
+        // Deleting non-existent entry returns false
+        let deleted_again = store.delete_entry("/delete/me").unwrap();
+        assert!(!deleted_again);
+    }
+
+    #[test]
+    fn test_clear() {
+        let dir = tempdir().unwrap();
+        let store = HistoryStore::new(dir.path()).unwrap();
+
+        for i in 0..5 {
+            let entry = HistoryEntry {
+                path: format!("/path/{}", i),
+                label: format!("Entry {}", i),
+                entry_type: "tree".to_string(),
+                npub: None,
+                tree_name: None,
+                visit_count: 1,
+                last_visited: 1000 + i as u64,
+                first_visited: 1000 + i as u64,
+            };
+            store.record_visit(entry).unwrap();
+        }
+
+        assert_eq!(store.get_recent(10).unwrap().len(), 5);
+
+        store.clear().unwrap();
+        assert_eq!(store.get_recent(10).unwrap().len(), 0);
+
+        // Can add entries after clear
+        let entry = HistoryEntry {
+            path: "/after/clear".to_string(),
+            label: "After Clear".to_string(),
+            entry_type: "tree".to_string(),
+            npub: None,
+            tree_name: None,
+            visit_count: 1,
+            last_visited: 2000,
+            first_visited: 2000,
+        };
+        store.record_visit(entry).unwrap();
+        assert_eq!(store.get_recent(10).unwrap().len(), 1);
     }
 
     #[test]

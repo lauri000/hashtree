@@ -8,6 +8,10 @@ export default defineConfig({
     'i-lucide-settings',
     'i-lucide-search',
     'i-lucide-loader-2',
+    'i-lucide-refresh-cw',
+    'i-lucide-star',
+    'i-lucide-clock',
+    'i-lucide-x',
   ],
   presets: [
     presetUno(),

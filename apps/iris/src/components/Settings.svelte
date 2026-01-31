@@ -4,10 +4,12 @@
     isAutostartEnabled,
     toggleAutostart,
     getHtreeServerUrl,
+    clearHistory,
   } from '../lib/tauri';
 
   let autostart = $state(false);
   let daemonUrl = $state('');
+  let historyCleared = $state(false);
 
   onMount(async () => {
     autostart = await isAutostartEnabled();
@@ -22,6 +24,12 @@
     const newValue = !autostart;
     const ok = await toggleAutostart(newValue);
     if (ok) autostart = newValue;
+  }
+
+  async function handleClearHistory() {
+    await clearHistory();
+    historyCleared = true;
+    setTimeout(() => { historyCleared = false; }, 2000);
   }
 </script>
 
@@ -45,6 +53,28 @@
             <span class="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform {autostart ? 'translate-x-5' : ''}"></span>
           </button>
         </label>
+      </div>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="text-lg font-semibold text-text-1 mb-4">Privacy</h2>
+      <div class="flex flex-col gap-4">
+        <div class="flex items-center justify-between p-4 bg-surface-1 rounded-xl">
+          <div>
+            <div class="text-sm font-medium text-text-1">Browsing history</div>
+            <div class="text-xs text-text-3">Clear all saved browsing history</div>
+          </div>
+          {#if historyCleared}
+            <span class="text-sm text-success font-medium">Cleared!</span>
+          {:else}
+            <button
+              class="btn btn-ghost text-sm"
+              onclick={handleClearHistory}
+            >
+              Clear history
+            </button>
+          {/if}
+        </div>
       </div>
     </section>
 

@@ -1,8 +1,13 @@
-import { test, expect } from './fixtures';
+import { test, expect, setupPageErrorHandler, gotoHome } from './fixtures';
+
+async function openHome(page: import('@playwright/test').Page) {
+  setupPageErrorHandler(page);
+  await gotoHome(page);
+}
 
 test.describe('App Launcher', () => {
   test('shows launcher on startup', async ({ tauriPage: page }) => {
-    await page.goto('/');
+    await openHome(page);
 
     // Favourites section visible
     await expect(page.getByRole('heading', { name: 'Favourites' })).toBeVisible();
@@ -16,7 +21,7 @@ test.describe('App Launcher', () => {
   });
 
   test('clicking suggestion triggers webview creation', async ({ tauriPage: page }) => {
-    await page.goto('/');
+    await openHome(page);
 
     await page.getByText('Iris Files').click();
 
@@ -29,9 +34,10 @@ test.describe('App Launcher', () => {
 
   test('add to favourites button works', async ({ tauriPage: page }) => {
     // Clear any stored favourites
-    await page.goto('/');
+    await openHome(page);
     await page.evaluate(() => localStorage.removeItem('iris:apps'));
     await page.reload();
+    await gotoHome(page);
 
     // Click the + button on the first suggestion
     await page.locator('button[title="Add to favourites"]').first().click();
