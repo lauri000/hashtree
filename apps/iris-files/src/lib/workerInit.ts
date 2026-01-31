@@ -13,7 +13,6 @@ import { createFollowsStore, getFollowsSync } from '../stores/follows';
 import { setupVersionCallback } from '../utils/socialGraph';
 import { ndk } from '../nostr/ndk';
 import { initRelayTracking } from '../nostr/relays';
-import { isTauri } from '../tauri';
 import { getAppType } from '../appType';
 import { logHtreeDebug } from './htreeDebug';
 import { treeRootRegistry } from '../TreeRootRegistry';
@@ -283,7 +282,7 @@ export interface WorkerInitIdentity {
  * Wait for service worker to be ready (needed for COOP/COEP headers)
  */
 async function waitForServiceWorker(maxWaitMs?: number): Promise<boolean> {
-  if (isTauri()) return true;
+  if (typeof window !== 'undefined' && window.__HTREE_SERVER_URL__) return true;
   if (!('serviceWorker' in navigator)) return true;
 
   try {

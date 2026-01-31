@@ -17,9 +17,6 @@ export interface HtreeAPI {
   /** API version for compatibility checks */
   version: string;
 
-  /** Whether running in Tauri desktop app */
-  isTauri: boolean;
-
   /**
    * Base URL for /htree/* paths
    * - Web (SW): "" (empty string, use relative paths)
@@ -116,7 +113,6 @@ function buildApi(): HtreeAPI {
 
   return {
     version: '1.0.0',
-    isTauri: false,
     htreeBaseUrl: getHtreePrefix(),
     npub: state.npub,
     pubkey: state.pubkey,
@@ -166,7 +162,6 @@ export async function initHtreeApi(): Promise<void> {
 
   console.log('[htree] API initialized:', {
     version: api.version,
-    isTauri: api.isTauri,
     htreeBaseUrl: api.htreeBaseUrl,
     isLoggedIn: api.isLoggedIn,
     npub: api.npub?.slice(0, 20) + '...',

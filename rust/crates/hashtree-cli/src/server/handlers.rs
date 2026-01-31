@@ -86,6 +86,42 @@ async fn resolve_npub_root(
     resolver.resolve_wait(key).await
 }
 
+/// Try to fetch a blob from WebRTC peers and upstream Blossom servers, caching locally.
+/// Returns true if the blob was fetched and cached, false otherwise.
+async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool {
+    let hash_hex = hex::encode(hash);
+    tracing::info!("[htree-fetch] Trying to fetch blob {} from upstream", &hash_hex[..16.min(hash_hex.len())]);
+
+    // Try WebRTC peers first
+    if let Some(ref webrtc_state) = state.webrtc_peers {
+        tracing::info!("[htree-fetch] Querying WebRTC peers for {}", &hash_hex[..16.min(hash_hex.len())]);
+        if let Some((data, peer_id)) = query_webrtc_peers(webrtc_state, &hash_hex).await {
+            tracing::info!("[htree-fetch] Got {} bytes from peer {} for {}", data.len(), peer_id, &hash_hex[..16.min(hash_hex.len())]);
+            if let Err(e) = state.store.put_blob(&data) {
+                tracing::warn!("[htree-fetch] Failed to cache peer data: {}", e);
+            }
+            return true;
+        }
+    }
+
+    // Try upstream Blossom servers
+    if !state.upstream_blossom.is_empty() {
+        tracing::info!("[htree-fetch] Querying {} Blossom servers for {}", state.upstream_blossom.len(), &hash_hex[..16.min(hash_hex.len())]);
+        if let Some((data, server)) = query_upstream_blossom(&state.upstream_blossom, &hash_hex).await {
+            tracing::info!("[htree-fetch] Got {} bytes from upstream {} for {}", data.len(), server, &hash_hex[..16.min(hash_hex.len())]);
+            if let Err(e) = state.store.put_blob(&data) {
+                tracing::warn!("[htree-fetch] Failed to cache upstream data: {}", e);
+            }
+            return true;
+        }
+        tracing::info!("[htree-fetch] No upstream had {}", &hash_hex[..16.min(hash_hex.len())]);
+    } else {
+        tracing::info!("[htree-fetch] No upstream Blossom servers configured");
+    }
+
+    false
+}
+
 async fn htree_nhash_impl(
     State(state): State<AppState>,
     nhash: String,
@@ -125,6 +161,12 @@ async fn htree_nhash_impl(
 
     let store = state.store.store_arc();
     let tree = HashTree::new(HashTreeConfig::new(store).public());
+
+    // If root not in local store, try fetching from upstream
+    if tree.get(&cid).await.ok().flatten().is_none() {
+        fetch_and_cache_blob(&state, &cid.hash).await;
+    }
+
     let is_dir = tree.is_dir(&cid).await.unwrap_or(false);
 
     if is_dir {
@@ -344,6 +386,11 @@ async fn htree_npub_impl(
 
     let store = state.store.store_arc();
     let tree = HashTree::new(HashTreeConfig::new(store).public());
+
+    // If root not in local store, try fetching from upstream
+    if tree.get(&cid).await.ok().flatten().is_none() {
+        fetch_and_cache_blob(&state, &cid.hash).await;
+    }
 
     let mut effective_path = path.filter(|p| !p.is_empty());
     if let Some(path) = effective_path.clone() {
@@ -595,11 +642,25 @@ async fn serve_cid_with_range(
     let data = match tree.get(cid).await {
         Ok(Some(d)) => d,
         Ok(None) => {
-            return Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .body(Body::from("Not found"))
-                .unwrap();
+            // Try fetching from upstream
+            if fetch_and_cache_blob(state, &cid.hash).await {
+                match tree.get(cid).await {
+                    Ok(Some(d)) => d,
+                    _ => {
+                        return Response::builder()
+                            .status(StatusCode::NOT_FOUND)
+                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                            .body(Body::from("Not found"))
+                            .unwrap();
+                    }
+                }
+            } else {
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from("Not found"))
+                    .unwrap();
+            }
         }
         Err(e) => {
             return Response::builder()

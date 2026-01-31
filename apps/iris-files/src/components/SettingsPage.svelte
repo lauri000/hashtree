@@ -11,7 +11,6 @@
   import { blossomLogStore } from '../stores/blossomLog';
   import { BackButton } from './ui';
   import { UserRow } from './User';
-  import { isTauri, isAutostartEnabled, toggleAutostart } from '../tauri';
   import { isFilesApp } from '../appType';
   // Worker backend info
   let workerBackend = 'Web Worker';
@@ -130,32 +129,6 @@
 
   // Collapsible state for discovered relays
   let showDiscoveredRelays = $state(false);
-
-  // Tauri desktop app settings
-  let isDesktopApp = $state(false);
-  let autostartEnabled = $state(false);
-  let autostartLoading = $state(false);
-
-  // Initialize Tauri state
-  $effect(() => {
-    isDesktopApp = isTauri();
-    if (isDesktopApp) {
-      isAutostartEnabled().then((enabled) => {
-        autostartEnabled = enabled;
-      });
-    }
-  });
-
-  async function handleAutostartToggle() {
-    if (autostartLoading) return;
-    autostartLoading = true;
-    const newValue = !autostartEnabled;
-    const success = await toggleAutostart(newValue);
-    if (success) {
-      autostartEnabled = newValue;
-    }
-    autostartLoading = false;
-  }
 
   // Network settings
   let networkSettings = $derived($settingsStore.network);
@@ -1071,35 +1044,6 @@
               <span>Uploading {blossomProgress.treeName}: {blossomProgress.current} chunks...</span>
             </div>
           {/if}
-        </div>
-      </div>
-    {/if}
-
-    <!-- Desktop App Settings (only show in Tauri) -->
-    {#if isDesktopApp}
-      <div>
-        <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-3">
-          Desktop App
-        </h3>
-        <div class="bg-surface-2 rounded divide-y divide-surface-3">
-          <div class="flex items-center justify-between p-3">
-            <div class="flex flex-col gap-1">
-              <span class="text-sm text-text-1">Start on login</span>
-              <span class="text-xs text-text-3">Launch Iris Files when you log in</span>
-            </div>
-            <button
-              onclick={handleAutostartToggle}
-              disabled={autostartLoading}
-              class="relative w-11 h-6 rounded-full transition-colors {autostartEnabled ? 'bg-accent' : 'bg-surface-3'}"
-              aria-checked={autostartEnabled}
-              aria-label="Toggle start on login"
-              role="switch"
-            >
-              <span
-                class="absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform shadow-sm {autostartEnabled ? 'translate-x-5' : 'translate-x-0'}"
-              ></span>
-            </button>
-          </div>
         </div>
       </div>
     {/if}

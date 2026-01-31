@@ -171,7 +171,7 @@ function isLocalRelay(url: string): boolean {
 function shouldApplyProductionFallback(): boolean {
   if (isTestMode) return false;
   if (typeof window === 'undefined') return false;
-  if ('__TAURI_INTERNALS__' in window || '__TAURI__' in window) return false;
+  if (typeof window.__HTREE_SERVER_URL__ === 'string') return false;
   return !isLocalHostname(window.location.hostname);
 }
 

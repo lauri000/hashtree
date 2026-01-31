@@ -1,8 +1,12 @@
 <script lang="ts">
   import { appsStore, type AppBookmark } from '../stores/apps';
-  import { navigate } from '../lib/router.svelte';
 
-  // Default suggested apps
+  interface Props {
+    onnavigate: (url: string) => void;
+  }
+
+  let { onnavigate }: Props = $props();
+
   const suggestions: AppBookmark[] = [
     { url: 'https://files.iris.to', name: 'Iris Files', icon: '/iris-logo.png', addedAt: 0 },
     { url: 'https://video.iris.to', name: 'Iris Video', icon: '/iris-logo.png', addedAt: 0 },
@@ -12,8 +16,7 @@
   let favorites = $derived($appsStore);
 
   function openApp(app: AppBookmark) {
-    const encoded = encodeURIComponent(app.url);
-    navigate(`/app/${encoded}`);
+    onnavigate(app.url);
   }
 
   function removeFromFavorites(url: string) {
@@ -39,12 +42,10 @@
       'bg-red-500',
       'bg-teal-500',
     ];
-    const index = name.charCodeAt(0) % colors.length;
-    return colors[index];
+    return colors[name.charCodeAt(0) % colors.length];
   }
 
   function getHostname(url: string): string {
-    if (url.startsWith('/')) return 'Local';
     try {
       return new URL(url).hostname;
     } catch {
@@ -78,7 +79,7 @@
                 <span class="text-xs text-text-2 truncate w-full text-center">{app.name}</span>
               </button>
               <button
-                class="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-surface-2 text-text-3 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-xs hover:bg-danger hover:text-white"
+                class="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-surface-2 text-text-3 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-xs hover:bg-red-600 hover:text-white"
                 onclick={(e) => { e.stopPropagation(); removeFromFavorites(app.url); }}
                 title="Remove"
               >
@@ -95,9 +96,12 @@
       <h2 class="text-lg font-semibold text-text-1 mb-4">Suggestions</h2>
       <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
         {#each suggestions as app (app.url)}
-          <button
-            class="flex items-center gap-3 p-3 bg-surface-1 hover:bg-surface-2 rounded-xl transition-colors text-left"
+          <div
+            role="button"
+            tabindex="0"
+            class="flex items-center gap-3 p-3 bg-surface-1 hover:bg-surface-2 rounded-xl transition-colors text-left cursor-pointer"
             onclick={() => openApp(app)}
+            onkeydown={(e) => e.key === 'Enter' && openApp(app)}
           >
             <div class="w-12 h-12 rounded-xl bg-surface-2 flex items-center justify-center shrink-0">
               {#if app.icon}
@@ -112,14 +116,14 @@
             </div>
             {#if !favorites.some(f => f.url === app.url)}
               <button
-                class="shrink-0 p-1 btn-ghost rounded"
+                class="shrink-0 p-1 rounded hover:bg-surface-3"
                 onclick={(e) => { e.stopPropagation(); addToFavorites(app); }}
                 title="Add to favourites"
               >
                 <span class="i-lucide-plus text-text-3"></span>
               </button>
             {/if}
-          </button>
+          </div>
         {/each}
       </div>
     </section>

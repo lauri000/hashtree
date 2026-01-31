@@ -80,21 +80,11 @@ export default defineConfig({
     reportCompressedSize: true,
     chunkSizeWarningLimit: 2000,
     rollupOptions: {
-      // Externalize Tauri plugins for web builds - they're dynamically imported with isTauri() checks
-      external: [
-        '@tauri-apps/plugin-autostart',
-        '@tauri-apps/plugin-dialog',
-        '@tauri-apps/plugin-notification',
-        '@tauri-apps/plugin-opener',
-        '@tauri-apps/plugin-os',
-        '@tauri-apps/api',
-      ],
       onLog(level, log, handler) {
         if (log.code === 'CIRCULAR_DEPENDENCY') return;
         const message = typeof log.message === 'string' ? log.message : '';
         if (message.includes('dynamic import will not move module into another chunk')) return;
         if (message.includes('Use of eval in') && message.includes('tseep')) return;
-        if (message.includes('has been externalized for browser compatibility')) return;
         handler(level, log);
       },
       output: {
@@ -159,7 +149,7 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    port: 5173,
+    port: 5174,
     allowedHosts: ['mayhem2.iris.to', 'mayhem1.iris.to', 'mayhem3.iris.to', 'mayhem4.iris.to'],
     hmr: {
       // Ensure HMR websocket connection is stable

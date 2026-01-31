@@ -193,7 +193,7 @@ export function updateSubscriptionCache(
   state.listeners.forEach(listener => listener(hash, encryptionKey, visibilityInfo));
 }
 
-// Subscribe to registry updates to bridge to Tauri and listeners
+// Subscribe to registry updates to notify listeners
 treeRootRegistry.subscribeAll((key, record) => {
   if (!record) return;
   const state = subscriptionState.get(key);
@@ -201,7 +201,6 @@ treeRootRegistry.subscribeAll((key, record) => {
     const visibilityInfo = getVisibilityInfoFromRegistry(key);
     state.listeners.forEach(listener => listener(record.hash, record.key, visibilityInfo));
   }
-  void cacheTreeRootInTauri(key, record.hash, record.key);
 });
 
 /**

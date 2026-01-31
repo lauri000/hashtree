@@ -637,6 +637,20 @@ pub async fn create_htree_webview<R: Runtime>(
 }
 
 #[tauri::command]
+pub fn close_webview<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+) -> Result<(), String> {
+    if let Some(webview) = app.get_webview(&label) {
+        webview
+            .close()
+            .map_err(|e| format!("Failed to close webview: {}", e))?;
+        info!("[NIP-07] Closed webview {}", label);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub fn navigate_webview<R: Runtime>(
     app: AppHandle<R>,
     label: String,
