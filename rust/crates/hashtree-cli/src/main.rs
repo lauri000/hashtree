@@ -26,7 +26,8 @@ use hashtree_cli::{
 use hashtree_fuse::{FsError as FuseFsError, HashtreeFuse, RootPublisher};
 #[cfg(feature = "p2p")]
 use hashtree_cli::{PeerPool, WebRTCConfig, WebRTCManager};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 #[cfg(feature = "fuse")]
 use std::str::FromStr;
@@ -202,6 +203,11 @@ enum Commands {
     Following,
     /// List users you mute
     Muted,
+    /// Social graph utilities
+    Socialgraph {
+        #[command(subcommand)]
+        command: SocialGraphCommands,
+    },
     /// Show or update your Nostr profile
     Profile {
         /// Set display name
@@ -251,6 +257,19 @@ enum StorageCommands {
         /// Also verify R2/S3 storage (slower)
         #[arg(long)]
         r2: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SocialGraphCommands {
+    /// Filter JSONL Nostr events to those within the social graph
+    Filter {
+        /// Max follow distance to allow (default: config nostr.max_write_distance)
+        #[arg(long)]
+        max_distance: Option<u32>,
+        /// Overmute threshold (muters * threshold > followers)
+        #[arg(long, default_value_t = 1.0)]
+        overmute_threshold: f64,
     },
 }
 
@@ -371,6 +390,120 @@ async fn resolve_cid_input_with_opts(input: &str, opts: &ResolveOptions) -> Resu
     }
 
     anyhow::bail!("Invalid format. Use nhash1..., <hash>, <hash:key>, or npub1.../name")
+}
+
+fn parse_pubkey_hex(hex_str: &str) -> Option<[u8; 32]> {
+    if hex_str.len() != 64 {
+        return None;
+    }
+    let mut bytes = [0u8; 32];
+    if hex::decode_to_slice(hex_str, &mut bytes).is_err() {
+        return None;
+    }
+    Some(bytes)
+}
+
+fn run_socialgraph_filter(
+    data_dir: PathBuf,
+    max_distance: Option<u32>,
+    overmute_threshold: f64,
+) -> Result<()> {
+    let config = Config::load()?;
+    let max_distance = max_distance.unwrap_or(config.nostr.max_write_distance);
+    let nostr_db_max_bytes = config
+        .nostr
+        .db_max_size_gb
+        .saturating_mul(1024 * 1024 * 1024);
+
+    let (keys, _was_generated) = ensure_keys()?;
+    let pk_bytes = pubkey_bytes(&keys);
+    let social_graph_root_bytes = if let Some(ref root_npub) = config.nostr.socialgraph_root {
+        match parse_npub(root_npub) {
+            Ok(pk) => pk,
+            Err(_) => {
+                tracing::warn!("Invalid npub in socialgraph_root: {}", root_npub);
+                pk_bytes
+            }
+        }
+    } else {
+        pk_bytes
+    };
+
+    let ndb = hashtree_cli::socialgraph::init_ndb_with_mapsize(&data_dir, Some(nostr_db_max_bytes))
+        .context("Failed to initialize nostrdb")?;
+    hashtree_cli::socialgraph::set_social_graph_root(&ndb, &social_graph_root_bytes);
+
+    let mut distance_cache: HashMap<[u8; 32], Option<u32>> = HashMap::new();
+    let mut overmute_cache: HashMap<[u8; 32], bool> = HashMap::new();
+
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+    for line in stdin.lock().lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let event_value: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(value) => value,
+            Err(err) => {
+                eprintln!("Skipping invalid JSON line: {}", err);
+                continue;
+            }
+        };
+
+        let event_obj = match &event_value {
+            serde_json::Value::Object(obj) => Some(obj),
+            serde_json::Value::Array(items) if items.len() >= 3 => match &items[2] {
+                serde_json::Value::Object(obj) => Some(obj),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(event_obj) = event_obj else {
+            eprintln!("Skipping JSON line without event object");
+            continue;
+        };
+
+        let Some(pubkey_hex) = event_obj.get("pubkey").and_then(|value| value.as_str()) else {
+            eprintln!("Skipping JSON line without pubkey");
+            continue;
+        };
+        let Some(pk_bytes) = parse_pubkey_hex(pubkey_hex) else {
+            eprintln!("Skipping invalid pubkey hex: {}", pubkey_hex);
+            continue;
+        };
+
+        let distance = *distance_cache.entry(pk_bytes).or_insert_with(|| {
+            hashtree_cli::socialgraph::get_follow_distance(&ndb, &pk_bytes)
+        });
+        let Some(distance) = distance else {
+            continue;
+        };
+        if distance > max_distance {
+            continue;
+        }
+
+        if overmute_threshold > 0.0 {
+            let overmuted = *overmute_cache.entry(pk_bytes).or_insert_with(|| {
+                hashtree_cli::socialgraph::is_overmuted(
+                    &ndb,
+                    &social_graph_root_bytes,
+                    &pk_bytes,
+                    overmute_threshold,
+                )
+            });
+            if overmuted {
+                continue;
+            }
+        }
+
+        stdout.write_all(trimmed.as_bytes())?;
+        stdout.write_all(b"\n")?;
+    }
+
+    Ok(())
 }
 
 #[cfg(feature = "fuse")]
@@ -1554,6 +1687,13 @@ async fn main() -> Result<()> {
         }
         Commands::Muted => {
             list_muted(&data_dir).await?;
+        }
+        Commands::Socialgraph { command } => {
+            match command {
+                SocialGraphCommands::Filter { max_distance, overmute_threshold } => {
+                    run_socialgraph_filter(data_dir, max_distance, overmute_threshold)?;
+                }
+            }
         }
         Commands::Profile { name, about, picture } => {
             update_profile(name, about, picture).await?;

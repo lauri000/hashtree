@@ -48,6 +48,11 @@ pub fn get_follows(_ndb: &NdbStub, _pk_bytes: &[u8; 32]) -> Vec<[u8; 32]> {
     Vec::new()
 }
 
+/// Check if a user is overmuted - always false when nostrdb is disabled
+pub fn is_overmuted(_ndb: &NdbStub, _root_pk: &[u8; 32], _user_pk: &[u8; 32], _threshold: f64) -> bool {
+    false
+}
+
 /// Ingest a Nostr event - no-op when nostrdb is disabled
 pub fn ingest_event(_ndb: &NdbStub, _sub_id: &str, _event_json: &str) {}
 

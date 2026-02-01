@@ -5,6 +5,7 @@ pub mod crawler;
 
 pub use nostrdb::Ndb;
 use nostrdb::{Config as NdbConfig, Transaction};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -82,6 +83,86 @@ pub fn get_follows(ndb: &Ndb, pk_bytes: &[u8; 32]) -> Vec<[u8; 32]> {
         Err(_) => return Vec::new(),
     };
     nostrdb::socialgraph::get_followed(&txn, ndb, pk_bytes, 10000)
+}
+
+fn clamp_socialgraph_list(count: usize) -> usize {
+    let max = i32::MAX as usize;
+    if count > max {
+        max
+    } else {
+        count
+    }
+}
+
+/// Check if a user is overmuted based on muters vs followers at the closest distance
+/// where there is any opinion. Mirrors nostr-social-graph logic.
+pub fn is_overmuted(ndb: &Ndb, root_pk: &[u8; 32], user_pk: &[u8; 32], threshold: f64) -> bool {
+    if threshold <= 0.0 {
+        return false;
+    }
+    if user_pk == root_pk {
+        return false;
+    }
+
+    let txn = match Transaction::new(ndb) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+
+    let muter_count = nostrdb::socialgraph::muter_count(&txn, ndb, user_pk);
+    if muter_count == 0 {
+        return false;
+    }
+
+    if nostrdb::socialgraph::is_muting(&txn, ndb, root_pk, user_pk) {
+        return true;
+    }
+
+    let follower_count = nostrdb::socialgraph::follower_count(&txn, ndb, user_pk);
+
+    let mut stats: HashMap<u32, (usize, usize)> = HashMap::new();
+
+    let followers = nostrdb::socialgraph::get_followers(
+        &txn,
+        ndb,
+        user_pk,
+        clamp_socialgraph_list(follower_count),
+    );
+    for follower_pk in followers {
+        let distance = nostrdb::socialgraph::get_follow_distance(&txn, ndb, &follower_pk);
+        if distance >= 1000 {
+            continue;
+        }
+        let entry = stats.entry(distance).or_insert((0, 0));
+        entry.0 += 1;
+    }
+
+    let muters = nostrdb::socialgraph::get_muters(
+        &txn,
+        ndb,
+        user_pk,
+        clamp_socialgraph_list(muter_count),
+    );
+    for muter_pk in muters {
+        let distance = nostrdb::socialgraph::get_follow_distance(&txn, ndb, &muter_pk);
+        if distance >= 1000 {
+            continue;
+        }
+        let entry = stats.entry(distance).or_insert((0, 0));
+        entry.1 += 1;
+    }
+
+    let mut distances: Vec<u32> = stats.keys().cloned().collect();
+    distances.sort_unstable();
+
+    for distance in distances {
+        let (followers, muters) = stats[&distance];
+        if followers + muters > 0 {
+            return (muters as f64) * threshold > (followers as f64);
+        }
+    }
+
+    false
 }
 
 /// Ingest a Nostr event JSON string into nostrdb.
