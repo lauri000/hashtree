@@ -19,6 +19,27 @@ Content-addressed filesystem on Nostr. Merkle roots can be published to get muta
 - Nostr-published roots for mutable addresses
 - WebRTC fetches with Blossom fallback
 
+## Installation
+
+### Quick install (macOS/Linux)
+
+```bash
+curl -fsSL https://github.com/mmalmi/hashtree/releases/latest/download/hashtree-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/apple-darwin/' | sed 's/linux/unknown-linux-musl/').tar.gz | tar -xz && cd hashtree && ./install.sh
+```
+
+### Cargo (requires Rust)
+
+```bash
+# CLI + daemon
+cargo install hashtree-cli
+
+# Minimal install without P2P/WebRTC (smaller binary)
+cargo install hashtree-cli --no-default-features
+
+# Git remote helper
+cargo install git-remote-htree
+```
+
 ## Getting started
 
 - Web app + JS SDK: follow [`ts/README.md`](ts/README.md)

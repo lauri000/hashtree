@@ -10,19 +10,12 @@ Blossom-compatible storage with chunking and directory structure. Merkle roots c
 
 ## Store & retrieve files
 ```bash
-# 1. Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# Install the CLI (see ../README.md#installation)
 
-# 2. Install hashtree-cli (with P2P enabled by default)
-cargo install hashtree-cli
-
-# Or minimal install without P2P/WebRTC (smaller binary)
-cargo install hashtree-cli --no-default-features
-
-# 3. Add file or dir
+# Add file or dir
 htree add file.txt
 
-# 4. Download bitcoin.pdf
+# Download bitcoin.pdf
 htree get nhash1qqsw9hdps3pkyjm7nlg9783xazg4cnmuj8sp4wnddsa8lzku6qt457c9yzckwsv34z8vtnwhx0jzgz5psqcsthzp94kxwzx482u5lsjg7n64x5rckap/bitcoin.pdf
 
 ```
@@ -30,13 +23,9 @@ htree get nhash1qqsw9hdps3pkyjm7nlg9783xazg4cnmuj8sp4wnddsa8lzku6qt457c9yzckwsv3
 ## Git on hashtree
 
 ```bash
-# 1. Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# Install the CLI + git helper (see ../README.md#installation)
 
-# 2. Install hashtree CLI + git helper
-cargo install hashtree-cli git-remote-htree
-
-# 3. Clone a repo
+# Clone a repo
 git clone htree://npub1dxs2pygtfxsah77yuncsmu3ttqr274qr56xz3gsvetxzq2vjfnxsy6knkn/hashtree/rust
 
 # Or push your own repo
