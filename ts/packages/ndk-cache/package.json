@@ -1,6 +1,6 @@
 {
   "name": "ndk-cache",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "private": true,
   "description": "Dexie IndexedDB cache adapter for NDK",
