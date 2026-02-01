@@ -10,6 +10,7 @@ use tokio::sync::watch;
 /// and ingesting them into nostrdb.
 pub struct SocialGraphCrawler {
     ndb: Arc<Ndb>,
+    spambox: Option<Arc<Ndb>>,
     keys: nostr::Keys,
     relays: Vec<String>,
     max_depth: u32,
@@ -24,9 +25,54 @@ impl SocialGraphCrawler {
     ) -> Self {
         Self {
             ndb,
+            spambox: None,
             keys,
             relays,
             max_depth,
+        }
+    }
+
+    pub fn with_spambox(mut self, spambox: Arc<Ndb>) -> Self {
+        self.spambox = Some(spambox);
+        self
+    }
+
+    fn is_within_social_graph(&self, pk_bytes: &[u8; 32]) -> bool {
+        if pk_bytes == &self.keys.public_key().to_bytes() {
+            return true;
+        }
+        super::get_follow_distance(&self.ndb, pk_bytes)
+            .map(|distance| distance <= self.max_depth)
+            .unwrap_or(false)
+    }
+
+    fn ingest_event_into(&self, ndb: &Ndb, sub_id: &str, event: &nostr::Event) {
+        if let Ok(json) = serde_json::to_string(event) {
+            super::ingest_event(ndb, sub_id, &json);
+        }
+    }
+
+    pub(crate) fn handle_incoming_event(&self, event: &nostr::Event) {
+        let is_contact_list = event.kind == nostr::Kind::ContactList;
+        let is_mute_list = event.kind == nostr::Kind::Custom(10000);
+        if !is_contact_list && !is_mute_list {
+            return;
+        }
+
+        let pk_bytes = event.pubkey.to_bytes();
+        if self.is_within_social_graph(&pk_bytes) {
+            self.ingest_event_into(&self.ndb, "live", event);
+            return;
+        }
+
+        if let Some(spambox) = &self.spambox {
+            self.ingest_event_into(spambox, "spambox", event);
+        } else {
+            tracing::debug!(
+                "Social graph crawler: dropping untrusted {} from {}...",
+                if is_contact_list { "contact list" } else { "mute list" },
+                &event.pubkey.to_hex()[..8.min(event.pubkey.to_hex().len())]
+            );
         }
     }
 
@@ -35,9 +81,16 @@ impl SocialGraphCrawler {
     #[allow(deprecated)] // nostr 0.35 deprecates kind()/tags() but we use this version
     pub async fn crawl(&self, shutdown_rx: watch::Receiver<bool>) {
         use nostr::nips::nip19::ToBech32;
+        use nostr_sdk::prelude::RelayPoolNotification;
 
         if self.relays.is_empty() {
             tracing::warn!("Social graph crawler: no relays configured, skipping");
+            return;
+        }
+
+        let mut shutdown_rx = shutdown_rx;
+        if *shutdown_rx.borrow() {
+            tracing::info!("Social graph crawler: shutdown requested before start");
             return;
         }
 
@@ -112,9 +165,7 @@ impl SocialGraphCrawler {
                     Ok(Ok(events)) => {
                         for event in &events {
                             // Ingest into nostrdb
-                            if let Ok(json) = serde_json::to_string(event) {
-                                super::ingest_event(&self.ndb, "crawl", &json);
-                            }
+                            self.ingest_event_into(&self.ndb, "crawl", event);
 
                             // Extract follows for next level
                             if event.kind() == nostr::Kind::ContactList {
@@ -152,6 +203,38 @@ impl SocialGraphCrawler {
             current_level = next_level;
         }
 
+        let filter = nostr::Filter::new()
+            .kinds(vec![nostr::Kind::ContactList, nostr::Kind::Custom(10000)])
+            .since(nostr::Timestamp::now());
+
+        match client.subscribe(vec![filter], None).await {
+            Ok(_) => tracing::info!("Social graph crawler: subscribed to contact and mute lists"),
+            Err(e) => tracing::warn!("Social graph crawler: failed to subscribe: {}", e),
+        }
+
+        let mut notifications = client.notifications();
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                }
+                notification = notifications.recv() => {
+                    match notification {
+                        Ok(RelayPoolNotification::Event { event, .. }) => {
+                            self.handle_incoming_event(&event);
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!("Social graph crawler notification error: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         if let Err(e) = client.disconnect().await {
             tracing::debug!("Error disconnecting crawler client: {}", e);
         }
@@ -166,7 +249,87 @@ impl SocialGraphCrawler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr::{EventBuilder, Kind, Tag, PublicKey};
+    use std::sync::Arc;
     use tempfile::TempDir;
+
+    async fn wait_for_follow(ndb: &Ndb, owner: &[u8; 32], target: &[u8; 32]) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+        loop {
+            let follows = super::super::get_follows(ndb, owner);
+            if follows.iter().any(|pk| pk == target) {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_crawler_routes_untrusted_to_spambox() {
+        let _guard = super::super::test_lock();
+        let tmp = TempDir::new().unwrap();
+        let ndb = super::super::init_ndb(tmp.path()).unwrap();
+        let spambox = super::super::init_ndb_at_path(&tmp.path().join("nostrdb_spambox"), None).unwrap();
+
+        let root_keys = nostr::Keys::generate();
+        let root_pk = root_keys.public_key().to_bytes();
+        super::super::set_social_graph_root(&ndb, &root_pk);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let crawler = SocialGraphCrawler::new(
+            Arc::clone(&ndb),
+            root_keys.clone(),
+            vec![],
+            2,
+        ).with_spambox(Arc::clone(&spambox));
+
+        let unknown_keys = nostr::Keys::generate();
+        let follow_tag = Tag::public_key(PublicKey::from_slice(&root_pk).unwrap());
+        let event = EventBuilder::new(Kind::ContactList, "", vec![follow_tag])
+            .to_event(&unknown_keys)
+            .unwrap();
+
+        crawler.handle_incoming_event(&event);
+
+        let unknown_pk = unknown_keys.public_key().to_bytes();
+        assert!(!wait_for_follow(&ndb, &unknown_pk, &root_pk).await);
+        assert!(wait_for_follow(&spambox, &unknown_pk, &root_pk).await);
+    }
+
+    #[tokio::test]
+    async fn test_crawler_routes_trusted_to_main_db() {
+        let _guard = super::super::test_lock();
+        let tmp = TempDir::new().unwrap();
+        let ndb = super::super::init_ndb(tmp.path()).unwrap();
+        let spambox = super::super::init_ndb_at_path(&tmp.path().join("nostrdb_spambox"), None).unwrap();
+
+        let root_keys = nostr::Keys::generate();
+        let root_pk = root_keys.public_key().to_bytes();
+        super::super::set_social_graph_root(&ndb, &root_pk);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let crawler = SocialGraphCrawler::new(
+            Arc::clone(&ndb),
+            root_keys.clone(),
+            vec![],
+            2,
+        ).with_spambox(Arc::clone(&spambox));
+
+        let target_keys = nostr::Keys::generate();
+        let target_pk = target_keys.public_key().to_bytes();
+        let follow_tag = Tag::public_key(PublicKey::from_slice(&target_pk).unwrap());
+        let event = EventBuilder::new(Kind::ContactList, "", vec![follow_tag])
+            .to_event(&root_keys)
+            .unwrap();
+
+        crawler.handle_incoming_event(&event);
+
+        assert!(wait_for_follow(&ndb, &root_pk, &target_pk).await);
+        assert!(!wait_for_follow(&spambox, &root_pk, &target_pk).await);
+    }
 
     #[tokio::test]
     async fn test_crawler_no_relays() {

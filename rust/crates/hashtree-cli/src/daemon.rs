@@ -106,19 +106,36 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         .context("Failed to initialize Nostr relay")?,
     );
 
+    let crawler_spambox = if spambox_db_max_bytes == 0 {
+        None
+    } else {
+        let spam_dir = opts.data_dir.join("nostrdb_spambox");
+        match socialgraph::init_ndb_at_path(&spam_dir, Some(spambox_db_max_bytes)) {
+            Ok(db) => Some(db),
+            Err(err) => {
+                tracing::warn!("Failed to open spambox nostrdb for crawler: {}", err);
+                None
+            }
+        }
+    };
+
     let crawler_ndb = Arc::clone(&ndb);
     let crawler_keys = keys.clone();
     let crawler_relays = config.nostr.relays.clone();
     let crawler_depth = config.nostr.crawl_depth;
+    let crawler_spambox = crawler_spambox.clone();
     let (_crawler_shutdown_tx, crawler_shutdown_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(5)).await;
-        let crawler = socialgraph::SocialGraphCrawler::new(
+        let mut crawler = socialgraph::SocialGraphCrawler::new(
             crawler_ndb,
             crawler_keys,
             crawler_relays,
             crawler_depth,
         );
+        if let Some(spambox) = crawler_spambox {
+            crawler = crawler.with_spambox(spambox);
+        }
         crawler.crawl(crawler_shutdown_rx).await;
     });
 

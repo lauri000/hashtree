@@ -27,7 +27,7 @@ use hashtree_fuse::{FsError as FuseFsError, HashtreeFuse, RootPublisher};
 #[cfg(feature = "p2p")]
 use hashtree_cli::{PeerPool, WebRTCConfig, WebRTCManager};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(feature = "fuse")]
 use std::str::FromStr;
 use std::sync::Arc;
@@ -188,8 +188,20 @@ enum Commands {
         /// npub of user to unfollow
         npub: String,
     },
+    /// Mute a user (adds to your mute list)
+    Mute {
+        /// npub of user to mute
+        npub: String,
+    },
+    /// Unmute a user (removes from your mute list)
+    Unmute {
+        /// npub of user to unmute
+        npub: String,
+    },
     /// List users you follow
     Following,
+    /// List users you mute
+    Muted,
     /// Show or update your Nostr profile
     Profile {
         /// Set display name
@@ -710,20 +722,37 @@ async fn main() -> Result<()> {
                 .context("Failed to initialize Nostr relay")?,
             );
 
+            let crawler_spambox = if spambox_db_max_bytes == 0 {
+                None
+            } else {
+                let spam_dir = data_dir.join("nostrdb_spambox");
+                match hashtree_cli::socialgraph::init_ndb_at_path(&spam_dir, Some(spambox_db_max_bytes)) {
+                    Ok(db) => Some(db),
+                    Err(err) => {
+                        tracing::warn!("Failed to open spambox nostrdb for crawler: {}", err);
+                        None
+                    }
+                }
+            };
+
             // Spawn social graph crawler with 5s startup delay
             let crawler_ndb = Arc::clone(&ndb);
             let crawler_keys = keys.clone();
             let crawler_relays = config.nostr.relays.clone();
             let crawler_depth = config.nostr.crawl_depth;
+            let crawler_spambox = crawler_spambox.clone();
             let (crawler_shutdown_tx, crawler_shutdown_rx) = tokio::sync::watch::channel(false);
             let crawler_handle = tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(5)).await;
-                let crawler = hashtree_cli::socialgraph::SocialGraphCrawler::new(
+                let mut crawler = hashtree_cli::socialgraph::SocialGraphCrawler::new(
                     crawler_ndb,
                     crawler_keys,
                     crawler_relays,
                     crawler_depth,
                 );
+                if let Some(spambox) = crawler_spambox {
+                    crawler = crawler.with_spambox(spambox);
+                }
                 crawler.crawl(crawler_shutdown_rx).await;
             });
 
@@ -1514,8 +1543,17 @@ async fn main() -> Result<()> {
         Commands::Unfollow { npub } => {
             follow_user(&data_dir, &npub, false).await?;
         }
+        Commands::Mute { npub } => {
+            mute_user(&data_dir, &npub, true).await?;
+        }
+        Commands::Unmute { npub } => {
+            mute_user(&data_dir, &npub, false).await?;
+        }
         Commands::Following => {
             list_following(&data_dir).await?;
+        }
+        Commands::Muted => {
+            list_muted(&data_dir).await?;
         }
         Commands::Profile { name, about, picture } => {
             update_profile(name, about, picture).await?;
@@ -1954,9 +1992,76 @@ fn stop_daemon(pid_file: Option<&PathBuf>) -> Result<()> {
     }
 }
 
+fn load_hex_list(path: &Path) -> Result<Vec<String>> {
+    if path.exists() {
+        let data = std::fs::read_to_string(path)?;
+        Ok(serde_json::from_str(&data).unwrap_or_default())
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+fn save_hex_list(path: &Path, list: &[String]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(list)?)?;
+    Ok(())
+}
+
+fn update_hex_list_file_with_status(
+    path: &Path,
+    target_hex: &str,
+    add: bool,
+) -> Result<(Vec<String>, bool)> {
+    let mut list = load_hex_list(path)?;
+    let changed = if add {
+        if list.contains(&target_hex.to_string()) {
+            false
+        } else {
+            list.push(target_hex.to_string());
+            true
+        }
+    } else if let Some(pos) = list.iter().position(|x| x == target_hex) {
+        list.remove(pos);
+        true
+    } else {
+        false
+    };
+
+    if changed {
+        save_hex_list(path, &list)?;
+    }
+
+    Ok((list, changed))
+}
+
+#[cfg(test)]
+fn update_hex_list_file(path: &Path, target_hex: &str, add: bool) -> Result<Vec<String>> {
+    let (list, _changed) = update_hex_list_file_with_status(path, target_hex, add)?;
+    Ok(list)
+}
+
+fn build_pubkey_list_event(
+    kind: nostr::Kind,
+    pubkeys: &[String],
+    keys: &nostr::Keys,
+) -> Result<nostr::Event> {
+    use nostr::{EventBuilder, PublicKey, Tag};
+
+    let tags: Vec<Tag> = pubkeys
+        .iter()
+        .filter_map(|pk_hex| PublicKey::from_hex(pk_hex).ok().map(Tag::public_key))
+        .collect();
+
+    EventBuilder::new(kind, "", tags)
+        .to_event(keys)
+        .context("Failed to sign list event")
+}
+
 /// Follow or unfollow a user by publishing an updated kind 3 contact list
 async fn follow_user(data_dir: &PathBuf, npub_str: &str, follow: bool) -> Result<()> {
-    use nostr::{EventBuilder, Kind, Tag, PublicKey, Keys, JsonUtil, ClientMessage};
+    use nostr::{Kind, Keys, JsonUtil, ClientMessage};
     use tokio_tungstenite::connect_async;
     use futures::sink::SinkExt;
 
@@ -1971,47 +2076,26 @@ async fn follow_user(data_dir: &PathBuf, npub_str: &str, follow: bool) -> Result
     let target_pubkey = parse_npub(npub_str).context("Invalid npub")?;
     let target_pubkey_hex = hex::encode(target_pubkey);
 
-    // Load existing contact list from local storage
+    // Update contact list locally
     let contacts_file = data_dir.join("contacts.json");
-    let mut contacts: Vec<String> = if contacts_file.exists() {
-        let data = std::fs::read_to_string(&contacts_file)?;
-        serde_json::from_str(&data).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let (contacts, changed) =
+        update_hex_list_file_with_status(&contacts_file, &target_pubkey_hex, follow)?;
 
-    // Update contacts
     if follow {
-        if !contacts.contains(&target_pubkey_hex) {
-            contacts.push(target_pubkey_hex.clone());
+        if changed {
             println!("Following: {}", npub_str);
         } else {
             println!("Already following: {}", npub_str);
             return Ok(());
         }
+    } else if changed {
+        println!("Unfollowed: {}", npub_str);
     } else {
-        if let Some(pos) = contacts.iter().position(|x| x == &target_pubkey_hex) {
-            contacts.remove(pos);
-            println!("Unfollowed: {}", npub_str);
-        } else {
-            println!("Not following: {}", npub_str);
-            return Ok(());
-        }
+        println!("Not following: {}", npub_str);
+        return Ok(());
     }
 
-    // Save updated contacts locally
-    std::fs::write(&contacts_file, serde_json::to_string_pretty(&contacts)?)?;
-
-    // Build kind 3 contact list event
-    let tags: Vec<Tag> = contacts.iter()
-        .filter_map(|pk_hex| {
-            PublicKey::from_hex(pk_hex).ok().map(|pk| Tag::public_key(pk))
-        })
-        .collect();
-
-    let event = EventBuilder::new(Kind::ContactList, "", tags)
-        .to_event(&keys)
-        .context("Failed to sign contact list event")?;
+    let event = build_pubkey_list_event(Kind::ContactList, &contacts, &keys)?;
 
     let event_json = ClientMessage::event(event).as_json();
 
@@ -2030,6 +2114,58 @@ async fn follow_user(data_dir: &PathBuf, npub_str: &str, follow: bool) -> Result
     }
 
     println!("Published contact list to {} relays", success_count);
+    Ok(())
+}
+
+/// Mute or unmute a user by publishing an updated kind 10000 mute list
+async fn mute_user(data_dir: &PathBuf, npub_str: &str, mute: bool) -> Result<()> {
+    use nostr::{Kind, Keys, JsonUtil, ClientMessage};
+    use tokio_tungstenite::connect_async;
+    use futures::sink::SinkExt;
+
+    let config = Config::load()?;
+
+    let (nsec_str, _) = ensure_keys_string()?;
+    let keys = Keys::parse(&nsec_str).context("Failed to parse nsec")?;
+
+    let target_pubkey = parse_npub(npub_str).context("Invalid npub")?;
+    let target_pubkey_hex = hex::encode(target_pubkey);
+
+    let mutes_file = data_dir.join("mutes.json");
+    let (mutes, changed) =
+        update_hex_list_file_with_status(&mutes_file, &target_pubkey_hex, mute)?;
+
+    if mute {
+        if changed {
+            println!("Muted: {}", npub_str);
+        } else {
+            println!("Already muted: {}", npub_str);
+            return Ok(());
+        }
+    } else if changed {
+        println!("Unmuted: {}", npub_str);
+    } else {
+        println!("Not muted: {}", npub_str);
+        return Ok(());
+    }
+
+    let event = build_pubkey_list_event(Kind::Custom(10000), &mutes, &keys)?;
+    let event_json = ClientMessage::event(event).as_json();
+
+    let mut success_count = 0;
+    for relay in &config.nostr.relays {
+        match connect_async(relay).await {
+            Ok((mut ws, _)) => {
+                if ws.send(tokio_tungstenite::tungstenite::Message::Text(event_json.clone().into())).await.is_ok() {
+                    success_count += 1;
+                }
+                let _ = ws.close(None).await;
+            }
+            Err(_) => {}
+        }
+    }
+
+    println!("Published mute list to {} relays", success_count);
     Ok(())
 }
 
@@ -2169,6 +2305,40 @@ async fn list_following(data_dir: &PathBuf) -> Result<()> {
 
     println!("Following {} users:", contacts.len());
     for pk_hex in &contacts {
+        if let Ok(pk) = PublicKey::from_hex(pk_hex) {
+            if let Ok(npub) = pk.to_bech32() {
+                println!("  {}", npub);
+            } else {
+                println!("  {}", pk_hex);
+            }
+        } else {
+            println!("  {} (invalid)", pk_hex);
+        }
+    }
+
+    Ok(())
+}
+
+/// List users we mute
+async fn list_muted(data_dir: &PathBuf) -> Result<()> {
+    use nostr::PublicKey;
+    use nostr::nips::nip19::ToBech32;
+
+    let mutes_file = data_dir.join("mutes.json");
+    let mutes: Vec<String> = if mutes_file.exists() {
+        let data = std::fs::read_to_string(&mutes_file)?;
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    if mutes.is_empty() {
+        println!("Not muting anyone");
+        return Ok(());
+    }
+
+    println!("Muted {} users:", mutes.len());
+    for pk_hex in &mutes {
         if let Ok(pk) = PublicKey::from_hex(pk_hex) {
             if let Ok(npub) = pk.to_bech32() {
                 println!("  {}", npub);
@@ -2642,6 +2812,7 @@ fn dir_size(path: &std::path::Path) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr::{Kind, TagStandard};
 
     fn args_to_strings(args: Vec<std::ffi::OsString>) -> Vec<String> {
         args.into_iter()
@@ -2691,6 +2862,50 @@ mod tests {
         write_pid_file(&path, 42).unwrap();
         let pid = read_pid_file(&path).unwrap();
         assert_eq!(pid, 42);
+    }
+
+    #[test]
+    fn test_update_hex_list_file_add_remove() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("mutes.json");
+        let pk1 = "aa".repeat(32);
+        let pk2 = "bb".repeat(32);
+
+        let list = update_hex_list_file(&path, &pk1, true).unwrap();
+        assert_eq!(list, vec![pk1.clone()]);
+
+        let list = update_hex_list_file(&path, &pk1, true).unwrap();
+        assert_eq!(list, vec![pk1.clone()]);
+
+        let list = update_hex_list_file(&path, &pk2, true).unwrap();
+        assert_eq!(list, vec![pk1.clone(), pk2.clone()]);
+
+        let list = update_hex_list_file(&path, &pk1, false).unwrap();
+        assert_eq!(list, vec![pk2.clone()]);
+    }
+
+    #[test]
+    fn test_build_mute_list_event_tags() {
+        let keys = nostr::Keys::generate();
+        let pk1 = nostr::Keys::generate().public_key().to_hex();
+        let pk2 = nostr::Keys::generate().public_key().to_hex();
+        let list = vec![pk1.clone(), pk2.clone()];
+        let event = build_pubkey_list_event(Kind::Custom(10000), &list, &keys).unwrap();
+
+        assert_eq!(event.kind, Kind::Custom(10000));
+
+        let tags: Vec<String> = event
+            .tags
+            .iter()
+            .filter_map(|tag| match tag.as_standardized() {
+                Some(TagStandard::PublicKey { public_key, .. }) => Some(public_key.to_hex()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(tags.len(), 2);
+        assert!(tags.contains(&pk1));
+        assert!(tags.contains(&pk2));
     }
 
     #[tokio::test]
