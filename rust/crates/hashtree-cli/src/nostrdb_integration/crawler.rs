@@ -52,6 +52,90 @@ impl SocialGraphCrawler {
         }
     }
 
+    #[allow(deprecated)] // nostr 0.35 deprecates tags() but we use this version
+    fn collect_missing_root_follows(
+        &self,
+        event: &nostr::Event,
+        fetched_contact_lists: &mut HashSet<[u8; 32]>,
+    ) -> Vec<[u8; 32]> {
+        if self.max_depth < 2 {
+            return Vec::new();
+        }
+        if event.kind != nostr::Kind::ContactList {
+            return Vec::new();
+        }
+
+        let root_pk = self.keys.public_key().to_bytes();
+        if event.pubkey.to_bytes() != root_pk {
+            return Vec::new();
+        }
+
+        let mut missing = Vec::new();
+        for tag in event.tags().iter() {
+            if let Some(nostr::TagStandard::PublicKey { public_key, .. }) = tag.as_standardized()
+            {
+                let pk_bytes = public_key.to_bytes();
+                if fetched_contact_lists.contains(&pk_bytes) {
+                    continue;
+                }
+
+                let existing_follows = super::get_follows(&self.ndb, &pk_bytes);
+                if !existing_follows.is_empty() {
+                    fetched_contact_lists.insert(pk_bytes);
+                    continue;
+                }
+
+                fetched_contact_lists.insert(pk_bytes);
+                missing.push(pk_bytes);
+            }
+        }
+
+        missing
+    }
+
+    async fn fetch_contact_lists_for_pubkeys(
+        &self,
+        client: &nostr_sdk::Client,
+        pubkeys: &[[u8; 32]],
+        shutdown_rx: &watch::Receiver<bool>,
+        sub_id: &str,
+    ) {
+        for pk_bytes in pubkeys {
+            if *shutdown_rx.borrow() {
+                break;
+            }
+
+            let pk = match nostr::PublicKey::from_slice(pk_bytes) {
+                Ok(pk) => pk,
+                Err(_) => continue,
+            };
+
+            let filter = nostr::Filter::new()
+                .author(pk)
+                .kinds(vec![nostr::Kind::ContactList, nostr::Kind::Custom(10000)]);
+
+            let source = nostr_sdk::EventSource::relays(Some(Duration::from_secs(5)));
+            match tokio::time::timeout(
+                Duration::from_secs(10),
+                client.get_events_of(vec![filter], source),
+            )
+            .await
+            {
+                Ok(Ok(events)) => {
+                    for event in &events {
+                        self.ingest_event_into(&self.ndb, sub_id, event);
+                    }
+                }
+                Ok(Err(e)) => {
+                    tracing::debug!("Failed to fetch events for {}...: {}", &pk.to_hex()[..8], e);
+                }
+                Err(_) => {
+                    tracing::debug!("Timeout fetching events for {}...", &pk.to_hex()[..8]);
+                }
+            }
+        }
+    }
+
     pub(crate) fn handle_incoming_event(&self, event: &nostr::Event) {
         let is_contact_list = event.kind == nostr::Kind::ContactList;
         let is_mute_list = event.kind == nostr::Kind::Custom(10000);
@@ -122,6 +206,7 @@ impl SocialGraphCrawler {
         // BFS: start from root, fetch contact lists at each depth
         let root_pk = self.keys.public_key().to_bytes();
         let mut visited: HashSet<[u8; 32]> = HashSet::new();
+        let mut fetched_contact_lists: HashSet<[u8; 32]> = HashSet::new();
         let mut current_level = vec![root_pk];
         visited.insert(root_pk);
 
@@ -142,6 +227,8 @@ impl SocialGraphCrawler {
                 if *shutdown_rx.borrow() {
                     break;
                 }
+
+                fetched_contact_lists.insert(*pk_bytes);
 
                 let pk_hex = hex::encode(pk_bytes);
 
@@ -224,6 +311,15 @@ impl SocialGraphCrawler {
                     match notification {
                         Ok(RelayPoolNotification::Event { event, .. }) => {
                             self.handle_incoming_event(&event);
+
+                            let missing = self.collect_missing_root_follows(&event, &mut fetched_contact_lists);
+                            if !missing.is_empty() {
+                                tracing::info!(
+                                    "Root follow list updated: fetching {} missing contact lists",
+                                    missing.len()
+                                );
+                                self.fetch_contact_lists_for_pubkeys(&client, &missing, &shutdown_rx, "recrawl").await;
+                            }
                         }
                         Ok(_) => {}
                         Err(e) => {
@@ -250,6 +346,7 @@ impl SocialGraphCrawler {
 mod tests {
     use super::*;
     use nostr::{EventBuilder, Kind, Tag, PublicKey};
+    use std::collections::HashSet;
     use std::sync::Arc;
     use tempfile::TempDir;
 
@@ -357,5 +454,81 @@ mod tests {
             SocialGraphCrawler::new(ndb, keys, vec!["wss://localhost:1".to_string()], 2);
         let (_tx, rx) = watch::channel(true); // Already shutdown
         crawler.crawl(rx).await;
+    }
+
+    #[tokio::test]
+    async fn test_collect_missing_root_follows_skips_known_and_fetched() {
+        let _guard = super::super::test_lock();
+        let tmp = TempDir::new().unwrap();
+        let ndb = super::super::init_ndb(tmp.path()).unwrap();
+
+        let root_keys = nostr::Keys::generate();
+        let root_pk = root_keys.public_key().to_bytes();
+        super::super::set_social_graph_root(&ndb, &root_pk);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let crawler = SocialGraphCrawler::new(Arc::clone(&ndb), root_keys.clone(), vec![], 2);
+
+        let known_keys = nostr::Keys::generate();
+        let known_pk = known_keys.public_key().to_bytes();
+        let known_follow_tag = Tag::public_key(PublicKey::from_slice(&root_pk).unwrap());
+        let known_event = EventBuilder::new(Kind::ContactList, "", vec![known_follow_tag])
+            .to_event(&known_keys)
+            .unwrap();
+        crawler.ingest_event_into(&ndb, "test", &known_event);
+        assert!(wait_for_follow(&ndb, &known_pk, &root_pk).await);
+
+        let missing_keys = nostr::Keys::generate();
+        let missing_pk = missing_keys.public_key().to_bytes();
+
+        let fetched_keys = nostr::Keys::generate();
+        let fetched_pk = fetched_keys.public_key().to_bytes();
+
+        let tags = vec![
+            Tag::public_key(PublicKey::from_slice(&known_pk).unwrap()),
+            Tag::public_key(PublicKey::from_slice(&missing_pk).unwrap()),
+            Tag::public_key(PublicKey::from_slice(&fetched_pk).unwrap()),
+        ];
+        let root_event = EventBuilder::new(Kind::ContactList, "", tags)
+            .to_event(&root_keys)
+            .unwrap();
+
+        let mut fetched = HashSet::new();
+        fetched.insert(fetched_pk);
+
+        let missing = crawler.collect_missing_root_follows(&root_event, &mut fetched);
+
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0], missing_pk);
+        assert!(fetched.contains(&known_pk));
+        assert!(fetched.contains(&missing_pk));
+        assert!(fetched.contains(&fetched_pk));
+    }
+
+    #[tokio::test]
+    async fn test_collect_missing_root_follows_ignores_non_root() {
+        let _guard = super::super::test_lock();
+        let tmp = TempDir::new().unwrap();
+        let ndb = super::super::init_ndb(tmp.path()).unwrap();
+
+        let root_keys = nostr::Keys::generate();
+        let root_pk = root_keys.public_key().to_bytes();
+        super::super::set_social_graph_root(&ndb, &root_pk);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let crawler = SocialGraphCrawler::new(Arc::clone(&ndb), root_keys.clone(), vec![], 2);
+
+        let other_keys = nostr::Keys::generate();
+        let other_pk = other_keys.public_key().to_bytes();
+        let tag = Tag::public_key(PublicKey::from_slice(&other_pk).unwrap());
+        let event = EventBuilder::new(Kind::ContactList, "", vec![tag])
+            .to_event(&other_keys)
+            .unwrap();
+
+        let mut fetched = HashSet::new();
+        let missing = crawler.collect_missing_root_follows(&event, &mut fetched);
+
+        assert!(missing.is_empty());
+        assert!(fetched.is_empty());
     }
 }
