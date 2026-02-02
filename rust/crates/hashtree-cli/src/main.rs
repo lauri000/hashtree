@@ -29,6 +29,7 @@ use hashtree_cli::{PeerPool, WebRTCConfig, WebRTCManager};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use serde::{Deserialize, Serialize};
 #[cfg(feature = "fuse")]
 use std::str::FromStr;
 use std::sync::Arc;
@@ -193,6 +194,9 @@ enum Commands {
     Mute {
         /// npub of user to mute
         npub: String,
+        /// Optional reason to include in the mute list
+        #[arg(long)]
+        reason: Option<String>,
     },
     /// Unmute a user (removes from your mute list)
     Unmute {
@@ -1758,11 +1762,11 @@ async fn main() -> Result<()> {
         Commands::Unfollow { npub } => {
             follow_user(&data_dir, &npub, false).await?;
         }
-        Commands::Mute { npub } => {
-            mute_user(&data_dir, &npub, true).await?;
+        Commands::Mute { npub, reason } => {
+            mute_user(&data_dir, &npub, reason.as_deref(), true).await?;
         }
         Commands::Unmute { npub } => {
-            mute_user(&data_dir, &npub, false).await?;
+            mute_user(&data_dir, &npub, None, false).await?;
         }
         Commands::Following => {
             list_following(&data_dir).await?;
@@ -2247,6 +2251,128 @@ fn save_hex_list(path: &Path, list: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct MuteEntry {
+    pubkey: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum MuteUpdate {
+    Added,
+    Updated,
+    Removed,
+    Unchanged,
+}
+
+fn normalize_reason(reason: Option<&str>) -> Option<String> {
+    reason
+        .map(|r| r.trim())
+        .filter(|r| !r.is_empty())
+        .map(|r| r.to_string())
+}
+
+fn load_mute_entries(path: &Path) -> Result<Vec<MuteEntry>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let data = std::fs::read_to_string(path)?;
+    let value: serde_json::Value = match serde_json::from_str(&data) {
+        Ok(v) => v,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let Some(items) = value.as_array() else {
+        return Ok(Vec::new());
+    };
+
+    let mut entries = Vec::new();
+    for item in items {
+        match item {
+            serde_json::Value::String(pk) => entries.push(MuteEntry {
+                pubkey: pk.to_string(),
+                reason: None,
+            }),
+            serde_json::Value::Object(obj) => {
+                let pubkey = obj.get("pubkey").and_then(|v| v.as_str());
+                if let Some(pubkey) = pubkey {
+                    let reason = obj.get("reason").and_then(|v| v.as_str());
+                    entries.push(MuteEntry {
+                        pubkey: pubkey.to_string(),
+                        reason: normalize_reason(reason),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(entries)
+}
+
+fn save_mute_entries(path: &Path, entries: &[MuteEntry]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let data = if entries.iter().all(|entry| entry.reason.is_none()) {
+        let pubkeys: Vec<String> = entries.iter().map(|entry| entry.pubkey.clone()).collect();
+        serde_json::to_string_pretty(&pubkeys)?
+    } else {
+        serde_json::to_string_pretty(entries)?
+    };
+
+    std::fs::write(path, data)?;
+    Ok(())
+}
+
+fn update_mute_list_file_with_status(
+    path: &Path,
+    target_hex: &str,
+    reason: Option<&str>,
+    add: bool,
+) -> Result<(Vec<MuteEntry>, MuteUpdate)> {
+    let mut entries = load_mute_entries(path)?;
+    let normalized_reason = normalize_reason(reason);
+
+    let update = if add {
+        if let Some(entry) = entries.iter_mut().find(|entry| entry.pubkey == target_hex) {
+            if let Some(new_reason) = normalized_reason {
+                if entry.reason.as_deref() != Some(new_reason.as_str()) {
+                    entry.reason = Some(new_reason);
+                    MuteUpdate::Updated
+                } else {
+                    MuteUpdate::Unchanged
+                }
+            } else {
+                MuteUpdate::Unchanged
+            }
+        } else {
+            entries.push(MuteEntry {
+                pubkey: target_hex.to_string(),
+                reason: normalized_reason,
+            });
+            MuteUpdate::Added
+        }
+    } else if let Some(pos) = entries.iter().position(|entry| entry.pubkey == target_hex) {
+        entries.remove(pos);
+        MuteUpdate::Removed
+    } else {
+        MuteUpdate::Unchanged
+    };
+
+    if matches!(
+        update,
+        MuteUpdate::Added | MuteUpdate::Updated | MuteUpdate::Removed
+    ) {
+        save_mute_entries(path, &entries)?;
+    }
+
+    Ok((entries, update))
+}
+
 fn update_hex_list_file_with_status(
     path: &Path,
     target_hex: &str,
@@ -2295,6 +2421,27 @@ fn build_pubkey_list_event(
     EventBuilder::new(kind, "", tags)
         .to_event(keys)
         .context("Failed to sign list event")
+}
+
+fn build_mute_list_event(mutes: &[MuteEntry], keys: &nostr::Keys) -> Result<nostr::Event> {
+    use nostr::{EventBuilder, PublicKey, Tag};
+
+    let mut tags: Vec<Tag> = Vec::new();
+    for entry in mutes {
+        let Ok(pubkey) = PublicKey::from_hex(&entry.pubkey) else {
+            continue;
+        };
+
+        if let Some(reason) = entry.reason.as_ref().filter(|r| !r.is_empty()) {
+            tags.push(Tag::parse(&["p", &pubkey.to_hex(), reason])?);
+        } else {
+            tags.push(Tag::public_key(pubkey));
+        }
+    }
+
+    EventBuilder::new(nostr::Kind::Custom(10000), "", tags)
+        .to_event(keys)
+        .context("Failed to sign mute list event")
 }
 
 /// Follow or unfollow a user by publishing an updated kind 3 contact list
@@ -2356,8 +2503,13 @@ async fn follow_user(data_dir: &PathBuf, npub_str: &str, follow: bool) -> Result
 }
 
 /// Mute or unmute a user by publishing an updated kind 10000 mute list
-async fn mute_user(data_dir: &PathBuf, npub_str: &str, mute: bool) -> Result<()> {
-    use nostr::{Kind, Keys, JsonUtil, ClientMessage};
+async fn mute_user(
+    data_dir: &PathBuf,
+    npub_str: &str,
+    reason: Option<&str>,
+    mute: bool,
+) -> Result<()> {
+    use nostr::{Keys, JsonUtil, ClientMessage};
     use tokio_tungstenite::connect_async;
     use futures::sink::SinkExt;
 
@@ -2370,24 +2522,26 @@ async fn mute_user(data_dir: &PathBuf, npub_str: &str, mute: bool) -> Result<()>
     let target_pubkey_hex = hex::encode(target_pubkey);
 
     let mutes_file = data_dir.join("mutes.json");
-    let (mutes, changed) =
-        update_hex_list_file_with_status(&mutes_file, &target_pubkey_hex, mute)?;
+    let (mutes, update) =
+        update_mute_list_file_with_status(&mutes_file, &target_pubkey_hex, reason, mute)?;
 
     if mute {
-        if changed {
+        if update == MuteUpdate::Added {
             println!("Muted: {}", npub_str);
+        } else if update == MuteUpdate::Updated {
+            println!("Updated mute reason for: {}", npub_str);
         } else {
             println!("Already muted: {}", npub_str);
             return Ok(());
         }
-    } else if changed {
+    } else if update == MuteUpdate::Removed {
         println!("Unmuted: {}", npub_str);
     } else {
         println!("Not muted: {}", npub_str);
         return Ok(());
     }
 
-    let event = build_pubkey_list_event(Kind::Custom(10000), &mutes, &keys)?;
+    let event = build_mute_list_event(&mutes, &keys)?;
     let event_json = ClientMessage::event(event).as_json();
 
     let mut success_count = 0;
@@ -2563,12 +2717,7 @@ async fn list_muted(data_dir: &PathBuf) -> Result<()> {
     use nostr::nips::nip19::ToBech32;
 
     let mutes_file = data_dir.join("mutes.json");
-    let mutes: Vec<String> = if mutes_file.exists() {
-        let data = std::fs::read_to_string(&mutes_file)?;
-        serde_json::from_str(&data).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let mutes = load_mute_entries(&mutes_file)?;
 
     if mutes.is_empty() {
         println!("Not muting anyone");
@@ -2576,15 +2725,20 @@ async fn list_muted(data_dir: &PathBuf) -> Result<()> {
     }
 
     println!("Muted {} users:", mutes.len());
-    for pk_hex in &mutes {
-        if let Ok(pk) = PublicKey::from_hex(pk_hex) {
+    for entry in &mutes {
+        let label = if let Ok(pk) = PublicKey::from_hex(&entry.pubkey) {
             if let Ok(npub) = pk.to_bech32() {
-                println!("  {}", npub);
+                npub
             } else {
-                println!("  {}", pk_hex);
+                entry.pubkey.clone()
             }
         } else {
-            println!("  {} (invalid)", pk_hex);
+            format!("{} (invalid)", entry.pubkey)
+        };
+        if let Some(reason) = entry.reason.as_ref() {
+            println!("  {} - {}", label, reason);
+        } else {
+            println!("  {}", label);
         }
     }
 
@@ -3050,7 +3204,7 @@ fn dir_size(path: &std::path::Path) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostr::{Kind, TagStandard};
+    use nostr::Kind;
 
     fn args_to_strings(args: Vec<std::ffi::OsString>) -> Vec<String> {
         args.into_iter()
@@ -3127,23 +3281,86 @@ mod tests {
         let keys = nostr::Keys::generate();
         let pk1 = nostr::Keys::generate().public_key().to_hex();
         let pk2 = nostr::Keys::generate().public_key().to_hex();
-        let list = vec![pk1.clone(), pk2.clone()];
-        let event = build_pubkey_list_event(Kind::Custom(10000), &list, &keys).unwrap();
+        let list = vec![
+            MuteEntry {
+                pubkey: pk1.clone(),
+                reason: Some("spam".to_string()),
+            },
+            MuteEntry {
+                pubkey: pk2.clone(),
+                reason: None,
+            },
+        ];
+        let event = build_mute_list_event(&list, &keys).unwrap();
 
         assert_eq!(event.kind, Kind::Custom(10000));
 
         let tags: Vec<String> = event
             .tags
             .iter()
-            .filter_map(|tag| match tag.as_standardized() {
-                Some(TagStandard::PublicKey { public_key, .. }) => Some(public_key.to_hex()),
-                _ => None,
+            .filter_map(|tag| {
+                let slice = tag.as_slice();
+                if slice.first().map(|v| v.as_str()) == Some("p") {
+                    slice.get(1).cloned()
+                } else {
+                    None
+                }
             })
             .collect();
 
         assert_eq!(tags.len(), 2);
         assert!(tags.contains(&pk1));
         assert!(tags.contains(&pk2));
+
+        let reason_tag = event
+            .tags
+            .iter()
+            .find(|tag| tag.as_slice().get(1).map(|v| v.as_str()) == Some(pk1.as_str()))
+            .expect("reason tag missing");
+        assert_eq!(reason_tag.as_slice().get(2).map(|v| v.as_str()), Some("spam"));
+    }
+
+    #[test]
+    fn test_update_mute_list_with_reason() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("mutes.json");
+        let pk1 = "aa".repeat(32);
+        let pk2 = "bb".repeat(32);
+
+        let (list, update) =
+            update_mute_list_file_with_status(&path, &pk1, Some("spam"), true).unwrap();
+        assert_eq!(update, MuteUpdate::Added);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].reason.as_deref(), Some("spam"));
+
+        let (list, update) =
+            update_mute_list_file_with_status(&path, &pk1, Some("abuse"), true).unwrap();
+        assert_eq!(update, MuteUpdate::Updated);
+        assert_eq!(list[0].reason.as_deref(), Some("abuse"));
+
+        let (_list, update) =
+            update_mute_list_file_with_status(&path, &pk2, None, true).unwrap();
+        assert_eq!(update, MuteUpdate::Added);
+
+        let (list, update) =
+            update_mute_list_file_with_status(&path, &pk1, None, false).unwrap();
+        assert_eq!(update, MuteUpdate::Removed);
+        assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn test_load_mute_entries_legacy_format() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("mutes.json");
+        let pk1 = "aa".repeat(32);
+        let pk2 = "bb".repeat(32);
+        std::fs::write(&path, serde_json::to_string_pretty(&vec![pk1.clone(), pk2.clone()]).unwrap())
+            .unwrap();
+
+        let entries = load_mute_entries(&path).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].pubkey, pk1);
+        assert_eq!(entries[0].reason, None);
     }
 
     #[tokio::test]
