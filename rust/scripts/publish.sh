@@ -18,6 +18,8 @@ fi
 # Wait time between publishes for crates.io indexing (seconds)
 WAIT_TIME=30
 
+FAILED_CRATES=()
+
 publish_crate() {
     local crate=$1
     local extra_flags=${2:-""}
@@ -36,6 +38,7 @@ publish_crate() {
         fi
     else
         echo "✗ Failed to publish $crate (continuing...)"
+        FAILED_CRATES+=("$crate")
     fi
 }
 
@@ -59,6 +62,7 @@ publish_crate "hashtree-config"
 # Tier 2: Depends on hashtree-core only
 publish_crate "hashtree-lmdb"
 publish_crate "hashtree-fs"
+publish_crate "hashtree-fuse"
 publish_crate "hashtree-s3"
 publish_crate "hashtree-blossom"  # optional deps on core, config
 publish_crate "hashtree-resolver"
@@ -73,5 +77,10 @@ publish_crate "hashtree-cli"  # depends on git-remote-htree
 
 echo ""
 echo "=========================================="
-echo "✓ All crates published successfully!"
+if [[ ${#FAILED_CRATES[@]} -eq 0 ]]; then
+    echo "✓ All crates published successfully!"
+else
+    echo "✗ Failed to publish: ${FAILED_CRATES[*]}"
+    exit 1
+fi
 echo "=========================================="
