@@ -120,6 +120,9 @@ importers:
       '@hashtree/dexie':
         specifier: workspace:*
         version: link:../../ts/packages/hashtree-dexie
+      '@hashtree/git':
+        specifier: workspace:*
+        version: link:../../ts/packages/hashtree-git
       '@hashtree/index':
         specifier: workspace:*
         version: link:../../ts/packages/hashtree-index
@@ -347,6 +350,19 @@ importers:
       dexie:
         specifier: ^4.2.1
         version: 4.2.1
+    devDependencies:
+      typescript:
+        specifier: ^5.3.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@24.10.1)(happy-dom@15.11.7)(jsdom@26.1.0)(terser@5.44.1)
+
+  packages/hashtree-git:
+    dependencies:
+      '@hashtree/core':
+        specifier: workspace:*
+        version: link:../hashtree
     devDependencies:
       typescript:
         specifier: ^5.3.0

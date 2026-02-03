@@ -20,6 +20,7 @@ Blossom-compatible storage with chunking and directory structure. Merkle roots c
 **npm packages:**
 - [`@hashtree/core`](https://www.npmjs.com/package/@hashtree/core) - Core merkle tree library ([source](packages/hashtree))
 - [`@hashtree/nostr`](https://www.npmjs.com/package/@hashtree/nostr) - WebRTC P2P store and Nostr ref resolver ([source](packages/hashtree-nostr))
+- [`@hashtree/git`](https://www.npmjs.com/package/@hashtree/git) - Git/htree interoperability helpers ([source](packages/hashtree-git))
 - [`@hashtree/dexie`](https://www.npmjs.com/package/@hashtree/dexie) - IndexedDB/Dexie storage adapter ([source](packages/hashtree-dexie))
 - [`@hashtree/index`](https://www.npmjs.com/package/@hashtree/index) - B-Tree index structures ([source](packages/hashtree-index))
 

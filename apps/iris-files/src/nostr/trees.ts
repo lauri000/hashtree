@@ -2,6 +2,7 @@
  * Tree Publishing and Management
  */
 import { nip19 } from 'nostr-tools';
+import { parseHtreeVisibility } from '@hashtree/git';
 import {
   toHex,
   fromHex,
@@ -28,25 +29,7 @@ export interface SaveHashtreeOptions {
 /**
  * Parse visibility from Nostr event tags
  */
-export function parseVisibility(tags: string[][]): { visibility: TreeVisibility; rootKey?: string; encryptedKey?: string; keyId?: string; selfEncryptedKey?: string; selfEncryptedLinkKey?: string } {
-  const rootKey = tags.find(t => t[0] === 'key')?.[1];
-  const encryptedKey = tags.find(t => t[0] === 'encryptedKey')?.[1];
-  const keyId = tags.find(t => t[0] === 'keyId')?.[1];
-  const selfEncryptedKey = tags.find(t => t[0] === 'selfEncryptedKey')?.[1];
-  const selfEncryptedLinkKey = tags.find(t => t[0] === 'selfEncryptedLinkKey')?.[1];
-
-  let visibility: TreeVisibility;
-  // link-visible has encryptedKey but also selfEncryptedLinkKey (for owner to recover link key)
-  if (encryptedKey) {
-    visibility = 'link-visible';
-  } else if (selfEncryptedKey) {
-    visibility = 'private';
-  } else {
-    visibility = 'public';
-  }
-
-  return { visibility, rootKey, encryptedKey, keyId, selfEncryptedKey, selfEncryptedLinkKey };
-}
+export const parseVisibility = parseHtreeVisibility;
 
 /**
  * Save/publish hashtree to relays

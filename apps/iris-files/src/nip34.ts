@@ -3,6 +3,7 @@
  * Handles pull requests, issues, and their statuses for git repositories
  * Uses htree://npub/reponame style repository addresses
  */
+import { buildHtreeUrl as buildHtreeUrlLib, type HtreeUrlOptions } from '@hashtree/git';
 import { ndk, nostrStore, pubkeyToNpub, npubToPubkey } from './nostr';
 import { NDKEvent, type NDKFilter } from 'ndk';
 import { nip19 } from 'nostr-tools';
@@ -102,23 +103,8 @@ export function buildRepoAddress(npub: string, repoName: string): string {
  * @param options.visibility - Tree visibility: 'public', 'link-visible', or 'private'
  * @param options.linkKey - Link key for link-visible trees (hex string)
  */
-export function buildHtreeUrl(
-  npub: string,
-  repoName: string,
-  options?: {
-    visibility?: 'public' | 'link-visible' | 'private';
-    linkKey?: string;
-  }
-): string {
-  let url = `htree://${npub}/${repoName}`;
-
-  if (options?.visibility === 'private') {
-    url += '#private';
-  } else if (options?.visibility === 'link-visible' && options.linkKey) {
-    url += `#k=${options.linkKey}`;
-  }
-
-  return url;
+export function buildHtreeUrl(npub: string, repoName: string, options?: HtreeUrlOptions): string {
+  return buildHtreeUrlLib(npub, repoName, options);
 }
 
 /**
