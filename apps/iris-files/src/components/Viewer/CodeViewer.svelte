@@ -105,20 +105,92 @@
 
   let language = $derived(getLanguage(filename));
 
-  let highlightedHtml = $derived.by(() => {
+  // Parse line range from URL query param (e.g., ?L=10 or ?L=10-15)
+  function parseLineRange(search: string): { start: number; end: number } | null {
+    const params = new URLSearchParams(search);
+    const lineParam = params.get('L');
+    if (!lineParam) return null;
+    const match = lineParam.match(/^(\d+)(?:-(\d+))?$/);
+    if (!match) return null;
+    const start = parseInt(match[1], 10);
+    const end = match[2] ? parseInt(match[2], 10) : start;
+    return { start: Math.min(start, end), end: Math.max(start, end) };
+  }
+
+  // Extract query string from hash URL (e.g., #/path?L=3 -> L=3)
+  function getQueryFromHash(): string {
+    const hash = window.location.hash;
+    const qIndex = hash.indexOf('?');
+    return qIndex >= 0 ? hash.slice(qIndex + 1) : '';
+  }
+
+  let highlightedRange = $state<{ start: number; end: number } | null>(null);
+  let selectedLine = $state<number | null>(null);
+
+  // Track hash/query changes
+  $effect(() => {
+    function updateFromHash() {
+      highlightedRange = parseLineRange(getQueryFromHash());
+    }
+    updateFromHash();
+    window.addEventListener('hashchange', updateFromHash);
+    return () => window.removeEventListener('hashchange', updateFromHash);
+  });
+
+  // Split highlighted HTML into lines while preserving tags
+  let lines = $derived.by(() => {
     const grammar = Prism.languages[language];
+    let highlighted: string;
     if (!grammar) {
-      // Fallback: escape HTML and return plain
-      return content
+      highlighted = content
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
+    } else {
+      highlighted = Prism.highlight(content, grammar, language);
     }
-    return Prism.highlight(content, grammar, language);
+    // Split by newlines - each becomes a line
+    return highlighted.split('\n');
   });
+
+  function isLineHighlighted(lineNum: number): boolean {
+    if (!highlightedRange) return false;
+    return lineNum >= highlightedRange.start && lineNum <= highlightedRange.end;
+  }
+
+  function handleLineClick(lineNum: number, event: MouseEvent) {
+    const hash = window.location.hash;
+    const qIndex = hash.indexOf('?');
+    const basePath = qIndex >= 0 ? hash.slice(0, qIndex) : hash;
+    const currentParams = new URLSearchParams(qIndex >= 0 ? hash.slice(qIndex + 1) : '');
+
+    if (event.shiftKey && selectedLine !== null) {
+      // Shift-click: select range
+      const start = Math.min(selectedLine, lineNum);
+      const end = Math.max(selectedLine, lineNum);
+      currentParams.set('L', `${start}-${end}`);
+    } else {
+      // Regular click: select single line
+      selectedLine = lineNum;
+      currentParams.set('L', String(lineNum));
+    }
+
+    window.location.hash = `${basePath}?${currentParams.toString()}`;
+  }
 </script>
 
-<pre class="code-viewer"><code class="language-{language}">{@html highlightedHtml}</code></pre>
+<pre class="code-viewer"><code class="language-{language}">{#each lines as line, i}{@const lineNum = i + 1}<span
+  class="code-line"
+  class:line-highlighted={isLineHighlighted(lineNum)}
+  data-line={lineNum}
+><span
+  class="line-number"
+  role="button"
+  tabindex="0"
+  onclick={(e) => handleLineClick(lineNum, e)}
+  onkeydown={(e) => e.key === 'Enter' && handleLineClick(lineNum, e as unknown as MouseEvent)}
+>{lineNum}</span><span class="line-content">{@html line || ' '}</span>
+</span>{/each}</code></pre>
 
 <style>
   .code-viewer {
@@ -127,14 +199,42 @@
     font-size: 0.875rem;
     line-height: 1.5;
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
-    white-space: pre-wrap;
-    word-break: break-word;
     color: var(--text-1, #f1f1f1);
     background: transparent;
+    counter-reset: line;
   }
 
   .code-viewer code {
     font-family: inherit;
+    display: block;
+  }
+
+  .code-line {
+    display: block;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .code-line.line-highlighted {
+    background: rgba(118, 71, 254, 0.15);
+  }
+
+  .line-number {
+    display: inline-block;
+    width: 3.5em;
+    padding-right: 1em;
+    text-align: right;
+    color: var(--text-3, #666);
+    user-select: none;
+    cursor: pointer;
+  }
+
+  .line-number:hover {
+    color: var(--text-1, #f1f1f1);
+  }
+
+  .line-content {
+    display: inline;
   }
 
   /* Dark theme - matches app colors */

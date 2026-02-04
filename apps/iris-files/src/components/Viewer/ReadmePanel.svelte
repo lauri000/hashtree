@@ -16,6 +16,45 @@
   let { content, entries, canEdit }: Props = $props();
   let route = $derived($routeStore);
 
+  // Slugify text for anchor IDs (GitHub-style)
+  function slugify(text: string): string {
+    return text
+      .toLowerCase()
+      .trim()
+      .replace(/[^\w\s-]/g, '')
+      .replace(/\s+/g, '-');
+  }
+
+  // Custom renderer for headings with anchor links
+  const renderer = new marked.Renderer();
+  renderer.heading = ({ text, depth }: { text: string; depth: number }) => {
+    const id = slugify(text);
+    const anchor = `<a class="heading-anchor" data-anchor="${id}" href="#" aria-label="Link to this section"></a>`;
+    return `<h${depth} id="${id}">${text}${anchor}</h${depth}>`;
+  };
+
+  function handleAnchorClick(event: MouseEvent) {
+    const target = event.target as HTMLElement;
+    const anchor = target.closest('.heading-anchor') as HTMLAnchorElement | null;
+    if (!anchor) return;
+
+    event.preventDefault();
+    const anchorId = anchor.dataset.anchor;
+    if (!anchorId) return;
+
+    // Update URL with anchor query param
+    const hash = window.location.hash;
+    const qIndex = hash.indexOf('?');
+    const basePath = qIndex >= 0 ? hash.slice(0, qIndex) : hash;
+    const params = new URLSearchParams(qIndex >= 0 ? hash.slice(qIndex + 1) : '');
+    params.set('anchor', anchorId);
+    history.replaceState(null, '', `${basePath}?${params.toString()}`);
+
+    // Scroll to element
+    const el = document.getElementById(anchorId);
+    el?.scrollIntoView();
+  }
+
   // Convert markdown to HTML, transforming relative links to hash URLs
   let htmlContent = $derived.by(() => {
     const tokens = marked.lexer(content);
@@ -35,7 +74,9 @@
       });
     }
 
-    return DOMPurify.sanitize(marked.parser(tokens));
+    return DOMPurify.sanitize(marked.parser(tokens, { renderer }), {
+      ADD_ATTR: ['id', 'data-anchor'],
+    });
   });
 
   function handleEdit() {
@@ -69,8 +110,42 @@
       </button>
     {/if}
   </div>
-  <div class="p-4 lg:p-6 prose prose-sm max-w-none text-text-1">
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div class="readme-content p-4 lg:p-6 prose prose-sm max-w-none text-text-1" onclick={handleAnchorClick}>
     <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized with DOMPurify -->
     {@html htmlContent}
   </div>
 </div>
+
+<style>
+  .readme-content :global(h1),
+  .readme-content :global(h2),
+  .readme-content :global(h3),
+  .readme-content :global(h4),
+  .readme-content :global(h5),
+  .readme-content :global(h6) {
+    position: relative;
+  }
+
+  .readme-content :global(.heading-anchor) {
+    margin-left: 0.5em;
+    opacity: 0;
+    text-decoration: none;
+    color: var(--text-2);
+    transition: opacity 0.15s;
+  }
+
+  .readme-content :global(.heading-anchor)::before {
+    content: '#';
+  }
+
+  .readme-content :global(h1:hover .heading-anchor),
+  .readme-content :global(h2:hover .heading-anchor),
+  .readme-content :global(h3:hover .heading-anchor),
+  .readme-content :global(h4:hover .heading-anchor),
+  .readme-content :global(h5:hover .heading-anchor),
+  .readme-content :global(h6:hover .heading-anchor),
+  .readme-content :global(.heading-anchor:focus) {
+    opacity: 1;
+  }
+</style>
