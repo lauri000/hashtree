@@ -6,6 +6,7 @@
  */
 
 import { getMediaClientId } from './mediaClient';
+import { isHtreeDebugEnabled, logHtreeDebug } from './htreeDebug';
 import { getWorkerAdapter, waitForWorkerAdapter } from './workerInit';
 
 let isSetup = false;
@@ -31,16 +32,22 @@ function ensureControllerListener(): void {
  * The service worker can then request media data directly from the worker.
  */
 export async function setupMediaStreaming(): Promise<boolean> {
+  logHtreeDebug('media:setup:begin', {
+    isSetup,
+    hasController: typeof navigator !== 'undefined' && !!navigator.serviceWorker?.controller,
+  });
   if ('serviceWorker' in navigator) {
     ensureControllerListener();
     const controller = navigator.serviceWorker.controller;
     if (isSetup && activeController && controller && controller !== activeController) {
+      logHtreeDebug('media:setup:controller-change');
       resetMediaStreaming();
     } else if (isSetup && controller) {
       const clientKey = getMediaClientId();
       if (clientKey) {
         const ok = await pingWorkerPort(clientKey, controller);
         if (!ok) {
+          logHtreeDebug('media:setup:ping-failed', { clientKey });
           resetMediaStreaming();
         }
       }
@@ -59,12 +66,17 @@ export async function setupMediaStreaming(): Promise<boolean> {
 
 export async function ensureMediaStreamingReady(attempts = 3, delayMs = 500): Promise<boolean> {
   for (let attempt = 0; attempt < attempts; attempt++) {
+    logHtreeDebug('media:ensure:attempt', { attempt: attempt + 1, attempts });
     const ready = await setupMediaStreaming().catch(() => false);
-    if (ready) return true;
+    if (ready) {
+      logHtreeDebug('media:ensure:ready', { attempt: attempt + 1 });
+      return true;
+    }
     if (attempt < attempts - 1) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
+  logHtreeDebug('media:ensure:failed', { attempts });
   return false;
 }
 
@@ -113,9 +125,11 @@ async function pingWorkerPort(clientKey: string, controller: ServiceWorker): Pro
 }
 
 async function doSetup(): Promise<boolean> {
+  const debugEnabled = isHtreeDebugEnabled();
   // Check service worker support
   if (!('serviceWorker' in navigator)) {
     console.warn('[MediaStreaming] Service workers not supported');
+    logHtreeDebug('media:setup:no-sw');
     return false;
   }
 
@@ -123,6 +137,10 @@ async function doSetup(): Promise<boolean> {
     // Get current registration status
     const currentReg = await navigator.serviceWorker.getRegistration();
     console.log('[MediaStreaming] Current registration:', currentReg?.scope, 'active:', !!currentReg?.active);
+    logHtreeDebug('media:setup:registration', {
+      scope: currentReg?.scope ?? null,
+      hasActive: !!currentReg?.active,
+    });
 
     // If no registration, wait for it with retries
     let registration: ServiceWorkerRegistration | null = null;
@@ -148,12 +166,14 @@ async function doSetup(): Promise<boolean> {
 
     if (!registration?.active) {
       console.warn('[MediaStreaming] No active service worker after retries');
+      logHtreeDebug('media:setup:no-active-sw');
       return false;
     }
 
     const controller = await waitForController(5000);
     if (!controller) {
       console.warn('[MediaStreaming] No controlling service worker');
+      logHtreeDebug('media:setup:no-controller');
       return false;
     }
 
@@ -163,6 +183,7 @@ async function doSetup(): Promise<boolean> {
     const adapter = getWorkerAdapter() ?? await waitForWorkerAdapter(10000);
     if (!adapter) {
       console.warn('[MediaStreaming] Worker adapter not initialized');
+      logHtreeDebug('media:setup:no-worker-adapter');
       return false;
     }
 
@@ -197,25 +218,29 @@ async function doSetup(): Promise<boolean> {
 
     // Send one port to the service worker
     controller.postMessage(
-      { type: 'REGISTER_WORKER_PORT', port: channel.port1, requestId: setupId, clientKey },
+      { type: 'REGISTER_WORKER_PORT', port: channel.port1, requestId: setupId, clientKey, debug: debugEnabled },
       [channel.port1]
     );
 
     // Send the other port to the hashtree worker
-    adapter.registerMediaPort(channel.port2);
+    adapter.registerMediaPort(channel.port2, debugEnabled);
+    logHtreeDebug('media:setup:register', { clientKey: clientKey ?? null, debug: debugEnabled });
 
     const acked = await ackPromise;
     if (!acked) {
       console.warn('[MediaStreaming] No ack from service worker');
+      logHtreeDebug('media:setup:no-ack');
       return false;
     }
 
     isSetup = true;
     activeController = controller;
     console.log('[MediaStreaming] Setup complete');
+    logHtreeDebug('media:setup:complete');
     return true;
   } catch (error) {
     console.error('[MediaStreaming] Setup failed:', error);
+    logHtreeDebug('media:setup:error', { error: error instanceof Error ? error.message : String(error) });
     return false;
   }
 }

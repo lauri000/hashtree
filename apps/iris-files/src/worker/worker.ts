@@ -532,7 +532,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 
       // Media streaming
       case 'registerMediaPort':
-        registerMediaPort(msg.port);
+        registerMediaPort(msg.port, msg.debug);
         break;
 
       // Stats

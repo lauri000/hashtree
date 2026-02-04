@@ -82,7 +82,7 @@ export type WorkerRequest =
   | { type: 'publish'; id: string; event: SignedEvent }
 
   // Media streaming (service worker registers a MessagePort)
-  | { type: 'registerMediaPort'; port: MessagePort }
+  | { type: 'registerMediaPort'; port: MessagePort; debug?: boolean }
 
   // Stats
   | { type: 'getPeerStats'; id: string }

@@ -59,6 +59,26 @@ const pendingRequests = new Map<string, {
   status?: number;
 }>();
 
+// Debug state (enabled per client)
+const debugByClientId = new Map<string, boolean>();
+const debugByClientKey = new Map<string, boolean>();
+let defaultDebug = false;
+
+function resolveDebug(clientId?: string | null, clientKey?: string | null): boolean {
+  if (clientKey && debugByClientKey.get(clientKey)) return true;
+  if (clientId && debugByClientId.get(clientId)) return true;
+  return defaultDebug;
+}
+
+function swLog(enabled: boolean, message: string, data?: Record<string, unknown>): void {
+  if (!enabled) return;
+  if (data) {
+    console.log(`[SW] ${message}`, data);
+  } else {
+    console.log(`[SW] ${message}`);
+  }
+}
+
 /**
  * Handle messages from main thread (port registration)
  */
@@ -93,8 +113,21 @@ self.addEventListener('message', (event: ExtendableMessageEvent) => {
     if (clientKey) {
       workerPortsByClientKey.set(clientKey, port);
     }
+    const debugEnabled = !!event.data?.debug;
+    if (clientId) {
+      if (debugEnabled) debugByClientId.set(clientId, true);
+      else debugByClientId.delete(clientId);
+    }
+    if (clientKey) {
+      if (debugEnabled) debugByClientKey.set(clientKey, true);
+      else debugByClientKey.delete(clientKey);
+    }
+    if (!clientId && !clientKey && debugEnabled) {
+      defaultDebug = true;
+    }
     port.onmessage = handleWorkerMessage;
     console.log('[SW] Worker port registered', clientId ? `for ${clientId}` : '(default)');
+    swLog(debugEnabled, 'debug:enabled', { clientId: clientId ?? null, clientKey: clientKey ?? null });
     const requestId = event.data?.requestId;
     if (requestId && source?.postMessage) {
       source.postMessage({ type: 'WORKER_PORT_READY', requestId });
@@ -169,7 +202,7 @@ function handleWorkerMessage(event: MessageEvent): void {
 /**
  * Serve file via direct worker port (preferred path)
  */
-function serveFileViaWorker(request: FileRequest, port: MessagePort): Promise<Response> {
+function serveFileViaWorker(request: FileRequest, port: MessagePort, debug = false): Promise<Response> {
   return new Promise((resolve, reject) => {
     if (!port) {
       reject(new Error('Worker port not available for client'));
@@ -184,6 +217,7 @@ function serveFileViaWorker(request: FileRequest, port: MessagePort): Promise<Re
       const pending = pendingRequests.get(request.requestId);
       if (pending) {
         pendingRequests.delete(request.requestId);
+        swLog(debug, 'worker:timeout', { requestId: request.requestId });
         reject(new Error('Timeout waiting for worker response'));
       }
     }, PORT_TIMEOUT);
@@ -202,6 +236,15 @@ function serveFileViaWorker(request: FileRequest, port: MessagePort): Promise<Re
     pendingRequests.set(request.requestId, { resolve: wrappedResolve, reject: wrappedReject });
 
     // Send request to worker
+    swLog(debug, 'worker:request', {
+      requestId: request.requestId,
+      npub: request.npub ?? null,
+      nhash: request.nhash ?? null,
+      treeName: request.treeName ?? null,
+      path: request.path,
+      start: request.start,
+      end: request.end ?? null,
+    });
     port.postMessage(request);
   });
 }
@@ -334,26 +377,45 @@ async function serveFile(
   const directPort = clientKey ? workerPortsByClientKey.get(clientKey) : null;
   const resolvedClientId = await resolveClientId(clientId, referrer);
   const port = directPort ?? await getWorkerPortForClient(resolvedClientId);
+  const debug = resolveDebug(resolvedClientId ?? clientId ?? null, clientKey);
+  swLog(debug, 'request:start', {
+    requestId: request.requestId,
+    npub: request.npub ?? null,
+    nhash: request.nhash ?? null,
+    treeName: request.treeName ?? null,
+    path: request.path,
+    start: request.start,
+    end: request.end ?? null,
+    clientId: resolvedClientId ?? clientId ?? null,
+    clientKey: clientKey ?? null,
+  });
   if (port) {
     try {
-      return await serveFileViaWorker(request, port);
+      return await serveFileViaWorker(request, port, debug);
     } catch (error) {
       console.warn('[SW] Worker path failed, falling back to clients:', error);
+      swLog(debug, 'request:worker-failed', {
+        requestId: request.requestId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
+  } else {
+    swLog(debug, 'request:no-port', { requestId: request.requestId });
   }
 
   // Fall back to client broadcast (legacy path)
-  return serveFileViaClients(request);
+  return serveFileViaClients(request, debug);
 }
 
 /**
  * Request file from main thread via per-request MessageChannel
  * Based on WebTorrent's worker-server.js pattern (legacy fallback)
  */
-async function serveFileViaClients(request: FileRequest): Promise<Response> {
+async function serveFileViaClients(request: FileRequest, debug = false): Promise<Response> {
   const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
 
   if (clientList.length === 0) {
+    swLog(debug, 'clients:none', { requestId: request.requestId });
     return new Response('No clients available', { status: 503 });
   }
 
@@ -363,6 +425,7 @@ async function serveFileViaClients(request: FileRequest): Promise<Response> {
     const timeout = setTimeout(() => {
       if (!resolved) {
         resolved = true;
+        swLog(debug, 'clients:timeout', { requestId: request.requestId });
         reject(new Error('Timeout waiting for client response'));
       }
     }, PORT_TIMEOUT);

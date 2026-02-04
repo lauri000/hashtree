@@ -269,6 +269,10 @@
     logVideoDebug('player:error', {
       fileName: videoFileName,
       url: videoSrc,
+      readyState: videoRef?.readyState ?? null,
+      networkState: videoRef?.networkState ?? null,
+      errorCode: videoRef?.error?.code ?? null,
+      errorMessage: videoRef?.error?.message ?? null,
     });
     if (advanceVideoFallback()) {
       error = null;

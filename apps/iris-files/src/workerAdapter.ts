@@ -1058,12 +1058,12 @@ export class WorkerAdapter {
   /**
    * Register a MessagePort from the service worker for media streaming
    */
-  registerMediaPort(port: MessagePort): void {
+  registerMediaPort(port: MessagePort, debug?: boolean): void {
     if (!this.worker) {
       console.warn('[WorkerAdapter] Cannot register media port - worker not ready');
       return;
     }
-    this.worker.postMessage({ type: 'registerMediaPort', port } as WorkerRequest, [port]);
+    this.worker.postMessage({ type: 'registerMediaPort', port, debug } as WorkerRequest, [port]);
   }
 
   // ============================================================================

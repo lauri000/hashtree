@@ -66,6 +66,16 @@ const activeMediaStreams = new Map<string, ActiveStream>();
 
 let mediaPort: MessagePort | null = null;
 let tree: HashTree | null = null;
+let mediaDebugEnabled = false;
+
+function logMediaDebug(event: string, data?: Record<string, unknown>): void {
+  if (!mediaDebugEnabled) return;
+  if (data) {
+    console.log(`[WorkerMedia] ${event}`, data);
+  } else {
+    console.log(`[WorkerMedia] ${event}`);
+  }
+}
 
 /**
  * Initialize the media handler with the HashTree instance
@@ -77,8 +87,9 @@ export function initMediaHandler(hashTree: HashTree): void {
 /**
  * Register a MessagePort from the service worker for media streaming
  */
-export function registerMediaPort(port: MessagePort): void {
+export function registerMediaPort(port: MessagePort, debug?: boolean): void {
   mediaPort = port;
+  mediaDebugEnabled = !!debug;
 
   port.onmessage = async (e: MessageEvent) => {
     const req = e.data;
@@ -101,6 +112,7 @@ export function registerMediaPort(port: MessagePort): void {
   };
 
   console.log('[Worker] Media port registered');
+  logMediaDebug('port:registered', { debug: mediaDebugEnabled });
 }
 
 /**
@@ -345,6 +357,17 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
   if (!tree || !mediaPort) return;
 
   const { requestId, npub, nhash, treeName, path, start, end, mimeType, download } = req;
+  logMediaDebug('sw:request', {
+    requestId,
+    npub: npub ?? null,
+    nhash: nhash ?? null,
+    treeName: treeName ?? null,
+    path,
+    start,
+    end: end ?? null,
+    mimeType,
+    download: !!download,
+  });
 
   try {
     let cid: CID | null = null;
@@ -444,6 +467,7 @@ async function waitForCachedRoot(npub: string, treeName: string): Promise<CID | 
     if (cached) return cached;
   }
 
+  logMediaDebug('root:timeout', { npub, treeName });
   return null;
 }
 
@@ -463,6 +487,7 @@ function decodeNpubToPubkey(npub: string): string | null {
  */
 function sendSwError(requestId: string, status: number, message: string): void {
   if (!mediaPort) return;
+  logMediaDebug('sw:error', { requestId, status, message });
   mediaPort.postMessage({
     type: 'error',
     requestId,
@@ -576,6 +601,14 @@ async function streamSwResponse(
   if (isRangeRequest) {
     headers['Content-Range'] = `bytes ${rangeStart}-${rangeEnd}/${totalSize}`;
   }
+
+  logMediaDebug('sw:response', {
+    requestId,
+    status,
+    totalSize,
+    rangeStart,
+    rangeEnd,
+  });
 
   // Send headers
   mediaPort.postMessage({
