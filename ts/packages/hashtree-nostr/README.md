@@ -30,7 +30,36 @@ const data = await store.get(hash);
 
 ## Nostr Ref Resolver
 
-Resolve `npub/treename` to merkle root hashes:
+Resolve `npub/treename` references to merkle root hashes via Nostr events.
+
+### Event Format
+
+Trees are published as **kind 30078** (parameterized replaceable with label):
+
+```
+npub1abc.../treename/path/to/file.ext
+      │        │           │
+      │        │           └── Path within merkle tree (client-side traversal)
+      │        └── d-tag value (tree identifier)
+      └── Author pubkey (bech32 → hex for event)
+```
+
+**Tags:**
+| Tag | Purpose |
+|-----|---------|
+| `d` | Tree name (replaceable event key) |
+| `l` | `"hashtree"` label for discovery |
+| `hash` | Merkle root SHA256 (64 hex chars) |
+| `key` | Decryption key (public trees) |
+| `encryptedKey` | XOR'd key (link-visible trees) |
+| `selfEncryptedKey` | NIP-44 encrypted (private/link-visible) |
+
+**Visibility:**
+- **Public**: plaintext `key` tag
+- **Link-visible**: `encryptedKey` + link key in share URL
+- **Private**: only `selfEncryptedKey` (owner access)
+
+### Usage
 
 ```typescript
 import { createNostrRefResolver } from '@hashtree/nostr';
