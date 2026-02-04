@@ -20,13 +20,31 @@ let entry = resolver.resolve("npub1.../myrepo").await?;
 println!("Root hash: {}", entry.root_hash);
 ```
 
-## Nostr Events
+## Event Format
 
-Uses Nostr kind 30078 (NIP-78) events to store tree references:
-- `d` tag: tree name
-- `l` tag: `hashtree` label (for filtering)
-- `hash` tag: content hash
-- `key` tag: CHK decryption key (optional, public)
-- `encrypted_key` tag: encrypted key (optional, shared)
+Trees are published as **kind 30078** (parameterized replaceable with label):
+
+```
+npub1abc.../treename/path/to/file.ext
+      │        │           │
+      │        │           └── Path within merkle tree (client-side traversal)
+      │        └── d-tag value (tree identifier)
+      └── Author pubkey (bech32 → hex for event)
+```
+
+**Tags:**
+| Tag | Purpose |
+|-----|---------|
+| `d` | Tree name (replaceable event key) |
+| `l` | `"hashtree"` label for discovery |
+| `hash` | Merkle root SHA256 (64 hex chars) |
+| `key` | Decryption key (public trees) |
+| `encryptedKey` | XOR'd key (link-visible trees) |
+| `selfEncryptedKey` | NIP-44 encrypted (private/link-visible) |
+
+**Visibility:**
+- **Public**: plaintext `key` tag
+- **Link-visible**: `encryptedKey` + link key in share URL
+- **Private**: only `selfEncryptedKey` (owner access)
 
 Part of [hashtree-rs](https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree).
