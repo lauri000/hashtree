@@ -29,7 +29,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'pnpm run dev',
+    command: 'pnpm run dev --port 5173 --strictPort',
     url: 'http://localhost:5173',
     reuseExistingServer: true,
     timeout: 15000,

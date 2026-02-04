@@ -57,6 +57,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         let mut clients = state.ws_relay.clients.lock().await;
         clients.insert(client_id, tx);
     }
+    {
+        let mut protocols = state.ws_relay.client_protocols.lock().await;
+        protocols.insert(client_id, WsProtocol::HashtreeJson);
+    }
 
     // Register Nostr relay client if enabled
     if let Some(relay) = state.nostr_relay.clone() {

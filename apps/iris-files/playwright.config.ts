@@ -74,7 +74,7 @@ export default defineConfig({
       timeout: 5000,
     },
     {
-      command: 'pnpm run dev',
+      command: 'pnpm run dev --port 5173 --strictPort',
       url: 'http://localhost:5173',
       reuseExistingServer: !process.env.CI,
       timeout: 15000,

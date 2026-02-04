@@ -17,6 +17,9 @@ export interface HtreeAPI {
   /** API version for compatibility checks */
   version: string;
 
+  /** True when running inside Tauri */
+  isTauri: boolean;
+
   /**
    * Base URL for /htree/* paths
    * - Web (SW): "" (empty string, use relative paths)
@@ -110,9 +113,12 @@ async function detectLocalRelay(): Promise<string | null> {
  */
 function buildApi(): HtreeAPI {
   const state = get(nostrStore);
+  const isTauri = typeof window !== 'undefined' &&
+    !!((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__);
 
   return {
     version: '1.0.0',
+    isTauri,
     htreeBaseUrl: getHtreePrefix(),
     npub: state.npub,
     pubkey: state.pubkey,

@@ -616,6 +616,13 @@ export function createTreeRootStore(): Readable<CID | null> {
     logHtreeDebug('treeRoot:subscribe', { resolverKey });
     logHtreeDebug('treeRoot:subscribe', { resolverKey });
 
+    // Use cached registry value immediately if available (offline-first / test stability)
+    const cachedRoot = getTreeRootSync(route.npub, route.treeName);
+    if (cachedRoot) {
+      treeRootStore.set(cachedRoot);
+      logHtreeDebug('treeRoot:set', { source: 'registry' });
+    }
+
     // Subscribe to resolver
     activeUnsubscribe = subscribeToResolver(resolverKey, async (hash, encryptionKey, visibilityInfo) => {
       if (!hash) {

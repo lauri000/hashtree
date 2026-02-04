@@ -34,6 +34,7 @@ let forceRetry = false;
 const PATH_RETRY_DELAY_MS = 1500;
 const PERMALINK_MAX_RETRIES = 8;
 const TREE_PATH_MAX_RETRIES = 24;
+const TREE_PATH_MAX_RETRIES_WITH_PEERS = 80;
 
 // Wait for worker to be ready (with timeout to avoid blocking forever)
 async function waitForWorker(timeoutMs = 10000): Promise<boolean> {
@@ -196,7 +197,10 @@ async function updateCurrentDirCid() {
 
 function schedulePathRetry(route: { isPermalink: boolean; path: string[] }): void {
   if (route.path.length === 0) return;
-  const maxRetries = route.isPermalink ? PERMALINK_MAX_RETRIES : TREE_PATH_MAX_RETRIES;
+  const hasPeers = get(appStore).peerCount > 0;
+  const maxRetries = route.isPermalink
+    ? PERMALINK_MAX_RETRIES
+    : (hasPeers ? TREE_PATH_MAX_RETRIES_WITH_PEERS : TREE_PATH_MAX_RETRIES);
   if (pathRetryTimer || pathRetryAttempts >= maxRetries) {
     return;
   }

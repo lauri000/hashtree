@@ -248,8 +248,14 @@ test.describe('Video Direct Navigation', () => {
 
     // === Direct navigate to the video file ===
     const videoUrl = `http://localhost:5173/#/${page1Npub}/public/${videoFileName}`;
+    const videoHash = `#/${page1Npub}/public/${videoFileName}`;
     console.log(`Direct navigating to: ${videoUrl}`);
-    await page2.goto(videoUrl);
+    await page2.evaluate((hash: string) => {
+      if (window.location.hash !== hash) {
+        window.location.hash = hash;
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      }
+    }, videoHash);
     const videoUrlPattern = new RegExp(videoFileName.replace(/\./g, '\\.'));
     await page2.waitForURL(videoUrlPattern, { timeout: 20000 }).catch(async () => {
       const nextHash = `/${page1Npub}/public/${videoFileName}`;
@@ -259,8 +265,13 @@ test.describe('Video Direct Navigation', () => {
     });
 
     await waitForAppReady(page2);
+    await disableOthersPool(page2);
+    await useLocalRelay(page2);
+    await configureBlossomServers(page2);
     await waitForRelayConnected(page2, 30000);
     await waitForTreeRootHash(page2, page1Npub, 'public', rootHashAfterUpload!);
+    await waitForFollowInWorker(page2, page1Pubkey, 30000);
+    await waitForWebRTCConnection(page2, 30000, page1Pubkey);
     await page2.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
 
     // Check that video element exists (fallback to list navigation if needed)
@@ -481,10 +492,19 @@ test.describe('Video Direct Navigation', () => {
     // === Direct navigate to the video file ===
     // Page2 does NOT follow page1 - the only way to get the video is via Blossom
     const videoUrl = `http://localhost:5173/#/${page1Npub}/public/${videoFileName}`;
+    const videoHash = `#/${page1Npub}/public/${videoFileName}`;
     console.log(`Direct navigating to: ${videoUrl}`);
-    await page2.goto(videoUrl);
+    await page2.evaluate((hash: string) => {
+      if (window.location.hash !== hash) {
+        window.location.hash = hash;
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      }
+    }, videoHash);
 
     await waitForAppReady(page2);
+    await disableOthersPool(page2);
+    await useLocalRelay(page2);
+    await configureBlossomServers(page2);
     await waitForTreeRootHash(page2, page1Npub, 'public', rootHashAfterUpload!, 90000);
     await page2.evaluate(async () => {
       const { ensureMediaStreamingReady } = await import('/src/lib/mediaStreamingSetup.ts');
