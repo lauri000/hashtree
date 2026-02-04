@@ -206,6 +206,11 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         .with_public_writes(config.server.public_writes)
         .with_upstream_blossom(upstream_blossom)
         .with_social_graph(social_graph)
+        .with_socialgraph_snapshot(
+            Arc::clone(&ndb),
+            social_graph_root_bytes,
+            config.server.socialgraph_snapshot_public,
+        )
         .with_nostr_relay(nostr_relay.clone());
 
     if let Some(ref state) = webrtc_state {

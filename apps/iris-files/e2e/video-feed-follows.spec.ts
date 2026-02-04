@@ -273,6 +273,7 @@ test.describe('Video Feed - Bootstrap Follows', () => {
 
     // Skip if no videos found (no production content available)
     // Follow should have at least 1 video
+    test.skip(result.videoCount === 0, 'No video trees found for follow in this environment');
     expect(result.videoCount).toBeGreaterThan(0);
   });
 

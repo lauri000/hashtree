@@ -34,10 +34,17 @@ pub struct ServerConfig {
     /// When false, only social graph members can write
     #[serde(default = "default_public_writes")]
     pub public_writes: bool,
+    /// Allow public access to social graph snapshot endpoint (default: false)
+    #[serde(default = "default_socialgraph_snapshot_public")]
+    pub socialgraph_snapshot_public: bool,
 }
 
 fn default_public_writes() -> bool {
     true
+}
+
+fn default_socialgraph_snapshot_public() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +247,7 @@ impl Default for ServerConfig {
             stun_port: default_stun_port(),
             enable_webrtc: default_enable_webrtc(),
             public_writes: default_public_writes(),
+            socialgraph_snapshot_public: default_socialgraph_snapshot_public(),
         }
     }
 }
@@ -518,6 +526,7 @@ mod tests {
         assert_eq!(config.nostr.db_max_size_gb, 10);
         assert_eq!(config.nostr.spambox_max_size_gb, 1);
         assert!(config.nostr.socialgraph_root.is_none());
+        assert_eq!(config.server.socialgraph_snapshot_public, false);
     }
 
     #[test]

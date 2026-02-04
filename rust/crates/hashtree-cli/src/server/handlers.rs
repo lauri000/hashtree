@@ -8,6 +8,7 @@ use bytes::Bytes;
 use futures::stream::{self, StreamExt};
 use hashtree_core::{from_hex, to_hex, nhash_decode, Cid, HashTree, HashTreeConfig, LinkType, Store};
 use hashtree_resolver::{nostr::{NostrRootResolver, NostrResolverConfig}, RootResolver};
+use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,6 +17,7 @@ use tokio::io::AsyncWriteExt;
 use super::auth::AppState;
 use super::mime::get_mime_type;
 use super::ui::root_page;
+use crate::socialgraph;
 use crate::webrtc::{ConnectionState, WebRTCState};
 
 pub async fn serve_root() -> impl IntoResponse {
@@ -1331,6 +1333,79 @@ pub async fn socialgraph_stats(State(state): State<AppState>) -> impl IntoRespon
             "message": "Social graph not active"
         })),
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SocialGraphSnapshotQuery {
+    #[serde(rename = "maxNodes")]
+    pub max_nodes: Option<usize>,
+    #[serde(rename = "maxEdges")]
+    pub max_edges: Option<usize>,
+    #[serde(rename = "maxDistance")]
+    pub max_distance: Option<u32>,
+    #[serde(rename = "maxEdgesPerNode")]
+    pub max_edges_per_node: Option<usize>,
+}
+
+pub async fn socialgraph_snapshot(
+    State(state): State<AppState>,
+    Query(params): Query<SocialGraphSnapshotQuery>,
+    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> impl IntoResponse {
+    let ip = connect_info.0.ip();
+    if !state.socialgraph_snapshot_public && !ip.is_loopback() {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "localhost only"}))).into_response();
+    }
+
+    let ndb = match &state.social_graph_ndb {
+        Some(ndb) => Arc::clone(ndb),
+        None => {
+            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "social graph not initialized"}))).into_response();
+        }
+    };
+    let root = match state.social_graph_root {
+        Some(root) => root,
+        None => {
+            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "social graph root missing"}))).into_response();
+        }
+    };
+
+    let options = socialgraph::snapshot::SnapshotOptions {
+        max_nodes: params.max_nodes,
+        max_edges: params.max_edges,
+        max_distance: params.max_distance,
+        max_edges_per_node: params.max_edges_per_node,
+    };
+
+    let chunks = match tokio::task::spawn_blocking(move || {
+        socialgraph::snapshot::build_snapshot_chunks(&ndb, &root, &options)
+    }).await {
+        Ok(Ok(chunks)) => chunks,
+        Ok(Err(err)) => {
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from(format!("Error generating snapshot: {err}")))
+                .unwrap();
+        }
+        Err(err) => {
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from(format!("Error generating snapshot: {err}")))
+                .unwrap();
+        }
+    };
+
+    let stream = stream::iter(chunks.into_iter().map(Ok::<Bytes, std::io::Error>));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_DISPOSITION, "attachment; filename=\"social-graph.bin\"")
+        .header(header::CACHE_CONTROL, "public, max-age=60, stale-while-revalidate=60")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .body(Body::from_stream(stream))
+        .unwrap()
 }
 
 pub async fn follow_distance(

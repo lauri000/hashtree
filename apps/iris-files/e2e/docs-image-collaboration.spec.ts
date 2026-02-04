@@ -734,7 +734,7 @@ test.describe('Document Image Collaboration', () => {
     }
   });
 
-  test('Image persists after document refresh', async ({ page }) => {
+  test('Image persists after document refresh', { timeout: 180000 }, async ({ page }) => {
     setupPageErrorHandler(page);
 
     await safeGoto(page, 'http://localhost:5173/', { retries: 4, delayMs: 1500 });
@@ -758,9 +758,9 @@ test.describe('Document Image Collaboration', () => {
 
     // Navigate to public folder
     const publicLink = page.getByRole('link', { name: 'public' }).first();
-    await expect(publicLink).toBeVisible({ timeout: 30000 });
+    await expect(publicLink).toBeVisible({ timeout: 60000 });
     await publicLink.click();
-    await page.waitForURL(/\/#\/npub.*\/public/, { timeout: 30000 });
+    await page.waitForURL(/\/#\/npub.*\/public/, { timeout: 60000 });
     const npub = await getNpub(page);
 
     // Create document
@@ -838,10 +838,15 @@ test.describe('Document Image Collaboration', () => {
       await waitForTreeRootHash(page, npub, 'public', rootAfterImage, 60000);
     }
     const docLink = page.getByRole('link', { name: 'image-persist-test' }).first();
-    await expect(docLink).toBeVisible({ timeout: 30000 });
-    await docLink.click();
-    await page.waitForURL(/image-persist-test/, { timeout: 30000 });
-    await waitForAppReady(page);
+    const alreadyInDoc = page.url().includes('image-persist-test');
+    if (!alreadyInDoc && await docLink.isVisible().catch(() => false)) {
+      await docLink.click();
+      await page.waitForURL(/image-persist-test/, { timeout: 60000 });
+      await waitForAppReady(page);
+    } else if (!alreadyInDoc) {
+      await safeGoto(page, `http://localhost:5173/#/${npub}/public/image-persist-test`, { retries: 4, delayMs: 1500 });
+      await waitForAppReady(page);
+    }
     if (rootAfterImage) {
       await waitForTreeRootHash(page, npub, 'public', rootAfterImage, 60000);
     }

@@ -1,5 +1,5 @@
 import { test, expect, Page } from './fixtures';
-import { setupPageErrorHandler, disableOthersPool, configureBlossomServers } from './test-utils';
+import { setupPageErrorHandler, disableOthersPool, configureBlossomServers, getTestBlossomUrl } from './test-utils';
 // Run tests in this file serially to avoid WebRTC/timing conflicts
 test.describe.configure({ mode: 'serial' });
 
@@ -537,7 +537,8 @@ test.describe('Playlist Management', () => {
       console.log('User A npub:', userANpub);
 
       // Create a playlist with 2 videos, publish to Nostr, and push to Blossom
-      const playlist = await pageA.evaluate(async () => {
+      const blossomUrl = getTestBlossomUrl();
+      const playlist = await pageA.evaluate(async (blossomServer: string) => {
         const { getTree, getWebRTCStore } = await import('/src/store.ts');
         const { nostrStore, saveHashtree } = await import('/src/nostr.ts');
         const hashtree = await import('/src/lib/nhash.ts');
@@ -594,7 +595,7 @@ test.describe('Playlist Management', () => {
         // Create BlossomStore for push (same pattern as BlossomPushModal)
         const { signEvent } = await import('/src/nostr.ts');
         const blossomStore = new BlossomStore({
-          servers: [{ url: 'https://upload.iris.to', write: true }],
+          servers: [{ url: blossomServer, write: true }],
           signer: async (event: any) => signEvent({ ...event, pubkey: '', id: '', sig: '' }),
         });
 
@@ -618,7 +619,7 @@ test.describe('Playlist Management', () => {
           rootCid: rootDirResult.cid,
           pushResult,
         };
-      });
+      }, blossomUrl);
 
       console.log('User A created and pushed playlist:', playlist);
 

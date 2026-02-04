@@ -44,6 +44,9 @@ impl HashtreeServer {
                 allowed_pubkeys: HashSet::new(), // No pubkeys allowed by default (use public_writes)
                 upstream_blossom: Vec::new(),
                 social_graph: None,
+                social_graph_ndb: None,
+                social_graph_root: None,
+                socialgraph_snapshot_public: false,
                 nostr_relay: None,
             },
             addr,
@@ -91,6 +94,19 @@ impl HashtreeServer {
     /// Set social graph access control
     pub fn with_social_graph(mut self, sg: Arc<socialgraph::SocialGraphAccessControl>) -> Self {
         self.state.social_graph = Some(sg);
+        self
+    }
+
+    /// Configure social graph snapshot export (nostrdb handle + root)
+    pub fn with_socialgraph_snapshot(
+        mut self,
+        ndb: Arc<socialgraph::Ndb>,
+        root: [u8; 32],
+        public: bool,
+    ) -> Self {
+        self.state.social_graph_ndb = Some(ndb);
+        self.state.social_graph_root = Some(root);
+        self.state.socialgraph_snapshot_public = public;
         self
     }
 
@@ -155,6 +171,7 @@ impl HashtreeServer {
             .route("/api/peers", get(handlers::webrtc_peers))
             .route("/api/status", get(handlers::daemon_status))
             .route("/api/socialgraph", get(handlers::socialgraph_stats))
+            .route("/api/socialgraph/snapshot", get(handlers::socialgraph_snapshot))
             .route("/api/socialgraph/distance/:pubkey", get(handlers::follow_distance))
             // Resolver API endpoints
             .route("/api/resolve/:pubkey/:treename", get(handlers::resolve_to_hash))

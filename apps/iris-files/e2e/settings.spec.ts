@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, configureBlossomServers, navigateToPublicFolder, disableOthersPool, waitForAppReady } from './test-utils.js';
+import { setupPageErrorHandler, configureBlossomServers, navigateToPublicFolder, disableOthersPool, waitForAppReady, getTestBlossomUrl } from './test-utils.js';
 
 test.describe('Settings page', () => {
   test('can navigate to settings page', async ({ page }) => {
@@ -62,7 +62,8 @@ test.describe('Settings page', () => {
     await expect(editBtn).toBeVisible({ timeout: 5000 });
     await editBtn.click();
 
-    const firstServerRow = page.locator('div').filter({ hasText: /upload\.iris\.to/ }).first();
+    const blossomHost = new URL(getTestBlossomUrl()).hostname.replace(/\./g, '\\.');
+    const firstServerRow = page.locator('div').filter({ hasText: new RegExp(blossomHost) }).first();
     await expect(firstServerRow).toBeVisible({ timeout: 5000 });
 
     const readCheckbox = firstServerRow.locator('input[type="checkbox"]').first();

@@ -34,6 +34,8 @@ const fastMode = process.env.E2E_FAST === '1';
 
 const testBootstrapPubkey = process.env.VITE_TEST_BOOTSTRAP_PUBKEY ?? getPublicKey(BOOTSTRAP_SECKEY_HEX);
 process.env.VITE_TEST_BOOTSTRAP_PUBKEY = testBootstrapPubkey;
+const testBlossomUrl = process.env.PW_TEST_BLOSSOM_URL ?? 'http://127.0.0.1:18780';
+process.env.PW_TEST_BLOSSOM_URL = testBlossomUrl;
 
 /**
  * Playwright E2E test configuration.
@@ -67,6 +69,12 @@ export default defineConfig({
     },
   ],
   webServer: [
+    {
+      command: 'bash e2e/htree-blossom.sh',
+      url: 'http://127.0.0.1:18780/health',
+      reuseExistingServer: !process.env.CI,
+      timeout: 120000,
+    },
     {
       command: 'node e2e/relay/index.js',
       url: 'http://localhost:4736',

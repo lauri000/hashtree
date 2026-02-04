@@ -452,6 +452,10 @@ export function getTestRelayUrl(): string {
   return process.env.PW_TEST_RELAY_URL || process.env.VITE_TEST_RELAY || 'ws://localhost:4736';
 }
 
+export function getTestBlossomUrl(): string {
+  return process.env.PW_TEST_BLOSSOM_URL || process.env.VITE_TEST_BLOSSOM_URL || 'http://127.0.0.1:18780';
+}
+
 export function getCrosslangPort(workerIndex: number): number {
   const baseEnv = Number(process.env.CROSSLANG_BASE_PORT);
   const basePort = Number.isFinite(baseEnv) && baseEnv > 0 ? baseEnv : 19090;
@@ -634,23 +638,23 @@ export async function useLocalRelay(page: any) {
 
 /**
  * Configure Blossom servers for tests that need them.
- * By default, test mode disables Blossom servers to avoid external HTTP requests.
+ * In e2e, this points at the local hashtree Blossom server (no external HTTP).
  * Call this for tests that specifically test Blossom functionality.
  *
  * Uses a global function exposed by the settings module to avoid Vite module duplication issues.
  */
 export async function configureBlossomServers(page: any) {
   await waitForTestHelpers(page);
-  await evaluateWithRetry(page, async () => {
+  const blossomUrl = getTestBlossomUrl();
+  await evaluateWithRetry(page, async (url: string) => {
     const configure = (window as unknown as { __configureBlossomServers?: (servers: unknown[]) => void }).__configureBlossomServers;
     if (!configure) {
       throw new Error('__configureBlossomServers not found - settings module may not be loaded');
     }
     configure([
-      { url: 'https://upload.iris.to', read: false, write: true },
-      { url: 'https://cdn.iris.to', read: true, write: false },
+      { url, read: true, write: true },
     ]);
-  }, undefined);
+  }, blossomUrl);
 }
 
 /**

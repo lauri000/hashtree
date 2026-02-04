@@ -8,17 +8,14 @@
 import { test, expect, Page, Request } from './fixtures';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, configureBlossomServers, waitForAppReady } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, configureBlossomServers, waitForAppReady, getTestBlossomUrl } from './test-utils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const TEST_VIDEO = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
 
-// Blossom server domains to monitor
-const BLOSSOM_DOMAINS = [
-  'cdn.iris.to',
-  'blossom.iris.to',
-];
+const BLOSSOM_URL = getTestBlossomUrl();
+const BLOSSOM_HOST = new URL(BLOSSOM_URL).host;
 
 interface BlossomRequest {
   url: string;
@@ -79,7 +76,7 @@ async function setupFreshUser(page: Page) {
 }
 
 function isBlossomRequest(url: string): boolean {
-  return BLOSSOM_DOMAINS.some(domain => url.includes(domain));
+  return url.includes(BLOSSOM_HOST);
 }
 
 test.describe('Blossom Fallback Behavior', () => {

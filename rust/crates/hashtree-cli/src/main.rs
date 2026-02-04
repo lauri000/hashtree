@@ -978,6 +978,11 @@ async fn main() -> Result<()> {
 
             // Add social graph to server
             server = server.with_social_graph(social_graph);
+            server = server.with_socialgraph_snapshot(
+                Arc::clone(&ndb),
+                social_graph_root_bytes,
+                config.server.socialgraph_snapshot_public,
+            );
             server = server.with_nostr_relay(nostr_relay.clone());
 
             // Add WebRTC peer state for P2P queries from HTTP handler

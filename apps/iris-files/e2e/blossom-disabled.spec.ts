@@ -1,5 +1,5 @@
-import { test, expect, type Route } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool } from './test-utils.js';
+import { test, expect } from './fixtures';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, getTestBlossomUrl } from './test-utils.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -10,12 +10,13 @@ test.describe('Blossom Disabled', () => {
     setupPageErrorHandler(page);
     // Track all blossom requests
     const blossomRequests: string[] = [];
-    await page.route('**/*.iris.to/**', async (route: Route) => {
-      const url = route.request().url();
-      console.log('[Test] Intercepted blossom request:', url);
-      blossomRequests.push(url);
-      // Let the request fail - we just want to track it
-      await route.abort();
+    const blossomHost = new URL(getTestBlossomUrl()).host;
+    page.on('request', (request) => {
+      const url = request.url();
+      if (url.includes(blossomHost)) {
+        console.log('[Test] Intercepted blossom request:', url);
+        blossomRequests.push(url);
+      }
     });
 
     // Go to home page
@@ -65,34 +66,36 @@ test.describe('Blossom Disabled', () => {
 
     // Track all blossom requests
     const blossomRequests: string[] = [];
-    await page.route('**/*.iris.to/**', async (route: Route) => {
-      const url = route.request().url();
-      console.log('[Test] Intercepted blossom request:', url);
-      blossomRequests.push(url);
-      await route.abort();
+    const blossomHost = new URL(getTestBlossomUrl()).host;
+    page.on('request', (request) => {
+      const url = request.url();
+      if (url.includes(blossomHost)) {
+        console.log('[Test] Intercepted blossom request:', url);
+        blossomRequests.push(url);
+      }
     });
 
     await page.goto('/');
     await disableOthersPool(page);
 
     // Configure servers with read/write disabled
-    await page.evaluate(() => {
+    const blossomUrl = getTestBlossomUrl();
+    await page.evaluate((url) => {
       const configure = (window as unknown as { __configureBlossomServers?: (servers: unknown[]) => void }).__configureBlossomServers;
       if (!configure) {
         throw new Error('__configureBlossomServers not found');
       }
       // Servers exist but with read/write disabled
       configure([
-        { url: 'https://upload.iris.to', read: false, write: false },
-        { url: 'https://cdn.iris.to', read: false, write: false },
+        { url, read: false, write: false },
       ]);
-    });
+    }, blossomUrl);
 
     await page.waitForFunction(() => {
       const settings = (window as any).__settingsStore?.getState?.();
       const servers = settings?.network?.blossomServers;
       return Array.isArray(servers)
-        && servers.length === 2
+        && servers.length === 1
         && servers.every((server: { read?: boolean; write?: boolean }) => server.read === false && server.write === false);
     }, null, { timeout: 5000 });
 

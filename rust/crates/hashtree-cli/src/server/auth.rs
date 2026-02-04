@@ -74,6 +74,12 @@ pub struct AppState {
     pub upstream_blossom: Vec<String>,
     /// Social graph access control (nostrdb-backed when feature enabled)
     pub social_graph: Option<Arc<socialgraph::SocialGraphAccessControl>>,
+    /// Social graph nostrdb handle for snapshot export
+    pub social_graph_ndb: Option<Arc<socialgraph::Ndb>>,
+    /// Social graph root pubkey bytes for snapshot export
+    pub social_graph_root: Option<[u8; 32]>,
+    /// Allow public access to social graph snapshot endpoint
+    pub socialgraph_snapshot_public: bool,
     /// Nostr relay state for /ws and WebRTC Nostr messages
     pub nostr_relay: Option<Arc<NostrRelay>>,
 }

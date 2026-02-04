@@ -2,6 +2,7 @@
 
 pub mod access;
 pub mod crawler;
+pub mod snapshot;
 
 pub use nostrdb_social::Ndb;
 use nostrdb_social::{Config as NdbConfig, Transaction};

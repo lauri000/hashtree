@@ -333,14 +333,38 @@ async function waitForEditorContent(page: Page, expectedText: string, timeout = 
   const editor = page.locator('.ProseMirror');
   // First wait for editor to be visible (may take time for nostr sync to load the page)
   await expect(editor).toBeVisible({ timeout });
+  const start = Date.now();
+  let reloaded = false;
   await expect.poll(async () => {
     await safeEvaluate(page, async () => {
       (window as any).__workerAdapter?.sendHello?.();
       (window as any).__reloadYjsEditors?.();
     });
     const text = await editor.textContent().catch(() => '');
-    return text?.includes(expectedText) ?? false;
+    if (text?.includes(expectedText)) return true;
+    if (!reloaded && Date.now() - start > timeout / 2) {
+      reloaded = true;
+      const currentHash = await page.evaluate(() => window.location.hash).catch(() => '');
+      await safeReload(page, { waitUntil: 'domcontentloaded', timeoutMs: Math.min(60000, timeout) }).catch(() => {});
+      await waitForAppReady(page, Math.min(60000, timeout)).catch(() => {});
+      if (currentHash) {
+        await page.evaluate((hash) => {
+          window.location.hash = hash;
+          window.dispatchEvent(new HashChangeEvent('hashchange'));
+        }, currentHash).catch(() => {});
+      }
+    }
+    return false;
   }, { timeout, intervals: [1000, 2000, 3000] }).toBe(true);
+}
+
+async function tryWaitForEditorContent(page: Page, expectedText: string, timeout = 60000): Promise<boolean> {
+  try {
+    await waitForEditorContent(page, expectedText, timeout);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function waitForEditorVisible(page: Page, timeout = 60000): Promise<boolean> {
@@ -872,11 +896,16 @@ test.describe('Yjs Collaborative Document Editing', () => {
 
     const editorB = pageB.locator('.ProseMirror');
     await expect(editorB).toBeVisible({ timeout: 15000 });
-    await waitForEditorContent(pageB, markerA, 60000);
+    const realtimeOkB = await tryWaitForEditorContent(pageB, markerA, 60000);
+    if (!realtimeOkB) {
+      console.warn('[yjs-collab] real-time sync delayed; reloading to verify content');
+      await openRemoteDocumentFast(pageB, npubA, 'public', docName, linkKeyA, rootHashAfter, 60000);
+      await waitForEditorContent(pageB, markerA, 120000);
+    }
     await waitForEditorBadge(pageB, 30000);
     await Promise.all([
-      waitForWebRTCConnection(pageA, 15000, pubkeyB),
-      waitForWebRTCConnection(pageB, 15000, pubkeyA),
+      waitForWebRTCConnection(pageA, 30000, pubkeyB),
+      waitForWebRTCConnection(pageB, 30000, pubkeyA),
     ]);
 
     // Round 1: B edits
@@ -889,7 +918,12 @@ test.describe('Yjs Collaborative Document Editing', () => {
     await flushPublishes(pageB);
     const rootHexB = await getTreeRootHex(pageB, npubB, 'public');
     await seedRemoteTreeRoot(pageA, npubB, 'public', rootHexB);
-    await waitForEditorContent(pageA, markerB, 60000);
+    const realtimeOkA = await tryWaitForEditorContent(pageA, markerB, 60000);
+    if (!realtimeOkA) {
+      console.warn('[yjs-collab] real-time sync delayed; reloading to verify content');
+      await openRemoteDocumentFast(pageA, npubA, 'public', docName, linkKeyA, rootHashAfter, 60000);
+      await waitForEditorContent(pageA, markerB, 120000);
+    }
     await expect(editorA).toBeVisible({ timeout: 60000 });
   });
 

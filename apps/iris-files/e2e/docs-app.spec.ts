@@ -40,13 +40,25 @@ async function waitForDocsEditor(page: any, timeoutMs: number = 60000) {
   await ensureLoggedIn(page, Math.min(30000, timeoutMs)).catch(() => {});
   await waitForYjsEntry(page, timeoutMs).catch(() => {});
   const editor = page.locator('.ProseMirror');
-  await expect.poll(async () => {
+  const start = Date.now();
+  let reloaded = false;
+  while (Date.now() - start < timeoutMs) {
     await page.evaluate(() => {
       (window as any).__workerAdapter?.sendHello?.();
       (window as any).__reloadYjsEditors?.();
     });
-    return editor.isVisible().catch(() => false);
-  }, { timeout: timeoutMs, intervals: [1000, 2000, 3000] }).toBe(true);
+    if (await editor.isVisible().catch(() => false)) {
+      return;
+    }
+    if (!reloaded && Date.now() - start > timeoutMs / 2) {
+      await safeReload(page, { waitUntil: 'domcontentloaded', timeoutMs: Math.min(60000, timeoutMs) }).catch(() => {});
+      await waitForAppReady(page, Math.min(60000, timeoutMs)).catch(() => {});
+      await waitForYjsEntry(page, Math.min(60000, timeoutMs)).catch(() => {});
+      reloaded = true;
+    }
+    await page.waitForTimeout(2000);
+  }
+  await expect(editor).toBeVisible({ timeout: 1000 });
 }
 
 test.describe('Iris Docs App', () => {

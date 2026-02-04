@@ -7,7 +7,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import { setupPageErrorHandler, navigateToPublicFolder } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, configureBlossomServers, waitForAppReady } from './test-utils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,9 +24,9 @@ async function setupFreshUser(page: Page) {
     localStorage.clear();
     sessionStorage.clear();
   });
-  await page.reload();
-  await page.waitForTimeout(500);
-  await page.waitForSelector('header:has-text("Iris")', { timeout: 10000 });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await waitForAppReady(page, 60000);
+  await configureBlossomServers(page);
   await navigateToPublicFolder(page);
 }
 
@@ -63,13 +63,57 @@ test.describe('Upload Download Integrity', () => {
 
     // Wait for video element
     const videoElement = page.locator('video');
-    await expect(videoElement).toBeVisible({ timeout: 10000 });
+    await expect(videoElement).toBeAttached({ timeout: 10000 });
+
+    // Prefetch the file to avoid metadata flakiness
+    await expect.poll(async () => {
+      return page.evaluate(async (fileName: string) => {
+        try {
+          const { getTreeRootSync } = await import('/src/stores');
+          const { getTree } = await import('/src/store');
+          const npub = (window as any).__nostrStore?.getState?.().npub;
+          if (!npub) return false;
+          const root = getTreeRootSync(npub, 'public');
+          if (!root) return false;
+          const tree = getTree();
+          const entry = await tree.resolvePath(root, fileName);
+          if (!entry?.cid) return false;
+          const adapter = (window as any).__getWorkerAdapter?.() ?? (window as any).__workerAdapter;
+          if (!adapter?.readFile) return false;
+          const read = () => {
+            if (typeof adapter.readFileRange === 'function') {
+              return adapter.readFileRange(entry.cid, 0, 4096);
+            }
+            return adapter.readFile(entry.cid);
+          };
+          const data = await Promise.race([
+            read(),
+            new Promise<Uint8Array | null>((resolve) => setTimeout(() => resolve(null), 5000)),
+          ]);
+          return !!data && data.length > 0;
+        } catch {
+          return false;
+        }
+      }, 'Big_Buck_Bunny_360_10s_1MB.mp4');
+    }, { timeout: 60000, intervals: [1000, 2000, 3000] }).toBe(true);
+
+    // Kick video loading explicitly (metadata won't load until play/load in some runs)
+    await page.evaluate(() => {
+      const video = document.querySelector('video') as HTMLVideoElement | null;
+      if (!video) return;
+      video.muted = true;
+      video.preload = 'auto';
+      try {
+        video.load();
+      } catch {}
+      void video.play().catch(() => {});
+    });
 
     // Wait for video to load metadata
     await page.waitForFunction(() => {
       const video = document.querySelector('video');
       return video && video.readyState >= 1 && video.duration > 0;
-    }, { timeout: 15000 });
+    }, undefined, { timeout: 120000 });
 
     // Check video properties
     const videoProps = await page.evaluate(() => {

@@ -12,6 +12,28 @@ pub struct NdbStub;
 /// Alias to mirror nostrdb::Ndb when feature is disabled
 pub type Ndb = NdbStub;
 
+pub mod snapshot {
+    use bytes::Bytes;
+
+    use super::NdbStub;
+
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct SnapshotOptions {
+        pub max_nodes: Option<usize>,
+        pub max_edges: Option<usize>,
+        pub max_distance: Option<u32>,
+        pub max_edges_per_node: Option<usize>,
+    }
+
+    pub fn build_snapshot_chunks(
+        _ndb: &NdbStub,
+        _root: &[u8; 32],
+        _options: &SnapshotOptions,
+    ) -> anyhow::Result<Vec<Bytes>> {
+        anyhow::bail!("nostrdb feature disabled")
+    }
+}
+
 #[cfg(test)]
 pub struct TestLockGuard;
 

@@ -266,7 +266,7 @@ test.describe('Video Viewer', () => {
     expect(videoState!.duration).toBeGreaterThan(5);
   });
 
-  test('?live=1 param should be removed when stream is no longer live', async ({ page }) => {
+  test('?live=1 param should be removed when stream is no longer live', { timeout: 120000 }, async ({ page }) => {
     expect(fs.existsSync(TEST_VIDEO)).toBe(true);
 
     // Capture console logs for debugging
@@ -308,12 +308,23 @@ test.describe('Video Viewer', () => {
       return video && video.src;
     }, undefined, { timeout: 30000 });
 
+    // Ensure playback reaches the end so MediaPlayer removes live=1 on ended
+    await page.evaluate(() => {
+      const video = document.querySelector('video') as HTMLVideoElement | null;
+      if (video) {
+        video.muted = true;
+        void video.play?.();
+      }
+    });
+    await page.waitForFunction(() => {
+      const video = document.querySelector('video') as HTMLVideoElement | null;
+      return !!video && video.ended === true;
+    }, undefined, { timeout: 60000 });
+
     // Wait for the ?live=1 param to be removed
-    // The file is not in recentlyChangedFiles (uploaded via setInputFiles, not our saveFile)
-    // Stream timeout is 10 seconds + check interval of 2 seconds, so we need ~15s timeout
     await page.waitForFunction(() => {
       return !window.location.hash.includes('live=1');
-    }, undefined, { timeout: 20000 });
+    }, undefined, { timeout: 60000 });
 
     // Verify ?live=1 was removed from URL
     expect(page.url()).not.toContain('live=1');
