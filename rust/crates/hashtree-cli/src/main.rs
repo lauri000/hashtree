@@ -271,6 +271,24 @@ enum SocialGraphCommands {
         #[arg(long, default_value_t = 1.0)]
         overmute_threshold: f64,
     },
+    /// Save a social graph snapshot (nostr-social-graph binary format)
+    Snapshot {
+        /// Output file path (use "-" for stdout)
+        #[arg(long, short)]
+        out: PathBuf,
+        /// Maximum number of nodes
+        #[arg(long)]
+        max_nodes: Option<usize>,
+        /// Maximum number of edges
+        #[arg(long)]
+        max_edges: Option<usize>,
+        /// Maximum follow distance
+        #[arg(long)]
+        max_distance: Option<u32>,
+        /// Maximum edges per node
+        #[arg(long)]
+        max_edges_per_node: Option<usize>,
+    },
 }
 
 
@@ -506,6 +524,65 @@ fn run_socialgraph_filter(
     Ok(())
 }
 
+fn run_socialgraph_snapshot(
+    data_dir: PathBuf,
+    out: PathBuf,
+    max_nodes: Option<usize>,
+    max_edges: Option<usize>,
+    max_distance: Option<u32>,
+    max_edges_per_node: Option<usize>,
+) -> Result<()> {
+    let config = Config::load()?;
+    let nostr_db_max_bytes = config
+        .nostr
+        .db_max_size_gb
+        .saturating_mul(1024 * 1024 * 1024);
+
+    let (keys, _was_generated) = ensure_keys()?;
+    let pk_bytes = pubkey_bytes(&keys);
+    let social_graph_root_bytes = if let Some(ref root_npub) = config.nostr.socialgraph_root {
+        match parse_npub(root_npub) {
+            Ok(pk) => pk,
+            Err(_) => {
+                tracing::warn!("Invalid npub in socialgraph_root: {}", root_npub);
+                pk_bytes
+            }
+        }
+    } else {
+        pk_bytes
+    };
+
+    let ndb = hashtree_cli::socialgraph::init_ndb_with_mapsize(&data_dir, Some(nostr_db_max_bytes))
+        .context("Failed to initialize nostrdb")?;
+    hashtree_cli::socialgraph::set_social_graph_root(&ndb, &social_graph_root_bytes);
+
+    let options = hashtree_cli::socialgraph::snapshot::SnapshotOptions {
+        max_nodes,
+        max_edges,
+        max_distance,
+        max_edges_per_node,
+    };
+
+    let chunks = hashtree_cli::socialgraph::snapshot::build_snapshot_chunks(
+        &ndb,
+        &social_graph_root_bytes,
+        &options,
+    )
+    .context("Failed to build social graph snapshot")?;
+
+    let mut writer: Box<dyn Write> = if out.as_os_str() == "-" {
+        Box::new(io::stdout())
+    } else {
+        Box::new(std::fs::File::create(&out).context("Failed to create output file")?)
+    };
+
+    for chunk in chunks {
+        writer.write_all(&chunk)?;
+    }
+    writer.flush()?;
+
+    Ok(())
+}
 #[cfg(feature = "fuse")]
 struct MountVisibility {
     visibility: hashtree_core::TreeVisibility,
@@ -1697,6 +1774,22 @@ async fn main() -> Result<()> {
             match command {
                 SocialGraphCommands::Filter { max_distance, overmute_threshold } => {
                     run_socialgraph_filter(data_dir, max_distance, overmute_threshold)?;
+                }
+                SocialGraphCommands::Snapshot {
+                    out,
+                    max_nodes,
+                    max_edges,
+                    max_distance,
+                    max_edges_per_node,
+                } => {
+                    run_socialgraph_snapshot(
+                        data_dir,
+                        out,
+                        max_nodes,
+                        max_edges,
+                        max_distance,
+                        max_edges_per_node,
+                    )?;
                 }
             }
         }
