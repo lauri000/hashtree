@@ -1,6 +1,6 @@
 //! Social graph-based write access control using nostrdb.
 
-use nostrdb::Ndb;
+use nostrdb_social::Ndb;
 use std::collections::HashSet;
 use std::sync::Arc;
 

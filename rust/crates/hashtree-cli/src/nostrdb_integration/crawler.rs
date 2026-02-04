@@ -1,6 +1,6 @@
 //! Social graph crawler - BFS crawl of follow lists via Nostr relays.
 
-use nostrdb::Ndb;
+use nostrdb_social::Ndb;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;

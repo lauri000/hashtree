@@ -36,7 +36,7 @@ impl Default for NostrRelayConfig {
 mod imp {
     use super::*;
     use anyhow::Result;
-    use nostrdb::{Filter as NdbFilter, Transaction};
+    use nostrdb_social::{Filter as NdbFilter, Transaction};
 
     use crate::socialgraph::{Ndb, SocialGraphAccessControl};
     use tracing::warn;

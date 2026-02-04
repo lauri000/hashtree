@@ -29,14 +29,19 @@ publish_crate() {
     echo "Publishing: $crate"
     echo "=========================================="
 
-    if cargo publish -p "$crate" $DRY_RUN $ALLOW_DIRTY $extra_flags; then
+    local output
+    if output=$(cargo publish -p "$crate" $DRY_RUN $ALLOW_DIRTY $extra_flags 2>&1); then
+        echo "$output"
         echo "✓ $crate published successfully"
 
         if [[ -z "$DRY_RUN" ]]; then
             echo "Waiting ${WAIT_TIME}s for crates.io to index..."
             sleep $WAIT_TIME
         fi
+    elif echo "$output" | grep -q "already exists"; then
+        echo "✓ $crate already published at this version (skipping)"
     else
+        echo "$output"
         echo "✗ Failed to publish $crate (continuing...)"
         FAILED_CRATES+=("$crate")
     fi
