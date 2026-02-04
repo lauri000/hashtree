@@ -171,5 +171,29 @@ test.describe('Anchor Links', () => {
 
       await expect(page).toHaveURL(/[?&]L=3-5/);
     });
+
+    test('opening URL with ?L= should scroll to and highlight that line', async ({ page }) => {
+      await createAndEnterTree(page, 'scroll-line-test');
+      // Generate enough lines to require scrolling
+      const lines = Array.from({ length: 100 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n');
+      await createFile(page, 'long.ts', lines);
+
+      // Click on file first to get the URL pattern
+      await page.locator('a:has-text("long.ts")').first().click();
+      await expect(page.locator('[data-line="1"]')).toBeVisible({ timeout: 10000 });
+
+      // Now navigate to the same file with ?L=80
+      const currentHash = await page.evaluate(() => window.location.hash);
+      const baseHash = currentHash.replace(/\?.*$/, '');
+      await page.evaluate((hash) => { window.location.hash = hash; }, `${baseHash}?L=80`);
+
+      // Line 80 should be highlighted and scrolled into viewport
+      await expect(page.locator('[data-line="80"]')).toHaveClass(/line-highlighted/, { timeout: 10000 });
+      const isInViewport = await page.locator('[data-line="80"]').evaluate((el: Element) => {
+        const rect = el.getBoundingClientRect();
+        return rect.top >= 0 && rect.bottom <= window.innerHeight;
+      });
+      expect(isInViewport).toBe(true);
+    });
   });
 });

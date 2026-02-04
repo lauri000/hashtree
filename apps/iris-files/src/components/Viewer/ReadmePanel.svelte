@@ -79,6 +79,20 @@
     });
   });
 
+  // Scroll to anchor from URL on load
+  $effect(() => {
+    const hash = window.location.hash;
+    const qIndex = hash.indexOf('?');
+    if (qIndex < 0) return;
+    const params = new URLSearchParams(hash.slice(qIndex + 1));
+    const anchorId = params.get('anchor');
+    if (!anchorId) return;
+    requestAnimationFrame(() => {
+      const el = document.getElementById(anchorId);
+      el?.scrollIntoView({ block: 'center' });
+    });
+  });
+
   function handleEdit() {
     const readmeEntry = entries.find(
       e => e.name.toLowerCase() === 'readme.md' && e.type !== LinkType.Dir

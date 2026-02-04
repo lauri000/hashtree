@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import Prism from 'prismjs';
   // Import popular languages
   import 'prismjs/components/prism-markup';
@@ -135,6 +136,16 @@
     updateFromHash();
     window.addEventListener('hashchange', updateFromHash);
     return () => window.removeEventListener('hashchange', updateFromHash);
+  });
+
+  // Scroll to highlighted line after DOM updates
+  $effect(() => {
+    const range = highlightedRange;
+    if (!range) return;
+    tick().then(() => {
+      const el = document.querySelector(`[data-line="${range.start}"]`);
+      el?.scrollIntoView({ block: 'center' });
+    });
   });
 
   // Split highlighted HTML into lines while preserving tags
