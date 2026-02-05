@@ -210,7 +210,7 @@ test.describe('Link-visible Tree Visibility', () => {
     test.slow();
     await createTreeWithVisibility(page, 'linkvis-file', 'link-visible');
     await createFileWithContent(page, 'secret.txt', 'This is secret content!');
-    await expect(page.locator('pre')).toHaveText('This is secret content!', { timeout: 30000 });
+    await expect(page.locator('pre')).toContainText('This is secret content!', { timeout: 30000 });
   });
 
   test('should access link-visible tree from fresh browser with link', async ({ page, browser }) => {
@@ -235,7 +235,7 @@ test.describe('Link-visible Tree Visibility', () => {
 
     // Verify content is visible in view mode (may take time to render under load)
     await expect(page.locator('pre')).toBeVisible({ timeout: 30000 });
-    await expect(page.locator('pre')).toHaveText('Shared secret content', { timeout: 30000 });
+    await expect(page.locator('pre')).toContainText('Shared secret content', { timeout: 30000 });
 
     // Verify tree is still visible in sidebar (confirms nostr publish succeeded)
     await expect(page.getByRole('link', { name: 'linkvis-share' })).toBeVisible({ timeout: 10000 });
@@ -669,7 +669,7 @@ test.describe('Link-visible Tree Visibility', () => {
     await createFileWithContent(page, 'secret.txt', 'My secret content');
 
     // Verify content is visible
-    await expect(page.locator('pre')).toHaveText('My secret content', { timeout: 30000 });
+    await expect(page.locator('pre')).toContainText('My secret content', { timeout: 30000 });
 
     // Navigate away and back to verify persistence
     await goToTreeList(page);

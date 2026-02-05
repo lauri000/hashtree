@@ -645,6 +645,7 @@ export async function useLocalRelay(page: any, relayOverride?: string) {
  */
 export async function configureBlossomServers(page: any) {
   await waitForTestHelpers(page);
+  await waitForWorkerAdapter(page).catch(() => {});
   const blossomUrl = getTestBlossomUrl();
   await evaluateWithRetry(page, async (url: string) => {
     const configure = (window as unknown as { __configureBlossomServers?: (servers: unknown[]) => void }).__configureBlossomServers;
@@ -654,6 +655,10 @@ export async function configureBlossomServers(page: any) {
     configure([
       { url, read: true, write: true },
     ]);
+    const adapter = (window as any).__getWorkerAdapter?.() ?? (window as any).__workerAdapter;
+    if (adapter?.setBlossomServers) {
+      await adapter.setBlossomServers([{ url, read: true, write: true }]);
+    }
   }, blossomUrl);
 }
 

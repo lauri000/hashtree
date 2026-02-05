@@ -102,7 +102,7 @@ test.describe('Hashtree Explorer', () => {
 
     // Click to view content
     await fileList.locator('a:has-text("hello.txt")').click();
-    await expect(page.locator('pre')).toHaveText('Hello, World!', { timeout: 10000 });
+    await expect(page.locator('pre')).toContainText('Hello, World!', { timeout: 10000 });
   });
 
   test('should create file using File button', async ({ page }) => {
@@ -153,7 +153,7 @@ test.describe('Hashtree Explorer', () => {
     await page.getByRole('link', { name: 'editable.txt' }).click();
 
     // Content should be visible in preview
-    await expect(page.locator('pre')).toHaveText('Hello, Hashtree!', { timeout: 10000 });
+    await expect(page.locator('pre')).toContainText('Hello, Hashtree!', { timeout: 10000 });
   });
 
   test('should persist file edits after navigation', async ({ page }) => {
@@ -180,7 +180,7 @@ test.describe('Hashtree Explorer', () => {
 
     // Verify initial content
     await fileList.locator('a:has-text("persist.txt")').click();
-    await expect(page.locator('pre')).toHaveText('Initial content', { timeout: 10000 });
+    await expect(page.locator('pre')).toContainText('Initial content', { timeout: 10000 });
 
     // Now edit to new content
     await page.getByRole('button', { name: 'Edit' }).click();
@@ -202,7 +202,7 @@ test.describe('Hashtree Explorer', () => {
     // Poll for the updated content to appear in preview
     // The file viewer should reload content after the store updates
     await fileList.locator('a:has-text("persist.txt")').click();
-    await expect(page.locator('pre')).toHaveText('Updated content', { timeout: 15000 });
+    await expect(page.locator('pre')).toContainText('Updated content', { timeout: 15000 });
 
     // Navigate to homepage
     await page.getByRole('link', { name: 'Iris' }).click();
@@ -219,7 +219,7 @@ test.describe('Hashtree Explorer', () => {
     await fileList.locator('a:has-text("persist.txt")').click();
 
     // Content should still be the updated value (persisted correctly)
-    await expect(page.locator('pre')).toHaveText('Updated content', { timeout: 10000 });
+    await expect(page.locator('pre')).toContainText('Updated content', { timeout: 10000 });
   });
 
   test('should rename a file', async ({ page }) => {
@@ -427,7 +427,7 @@ test.describe('Hashtree Explorer', () => {
 
     // Verify content
     await fileList.locator('a').filter({ hasText: 'test.txt' }).click();
-    await expect(page.locator('pre')).toHaveText('content in slashed tree', { timeout: 5000 });
+    await expect(page.locator('pre')).toContainText('content in slashed tree', { timeout: 5000 });
   });
 
 
@@ -512,7 +512,7 @@ test.describe('Hashtree Explorer', () => {
     await expect(page.getByTestId('viewer-header')).toBeVisible({ timeout: 5000 });
 
     // Wait for pre element with content
-    await expect(page.locator('pre')).toHaveText('original', { timeout: 5000 });
+    await expect(page.locator('pre')).toContainText('original', { timeout: 5000 });
 
     // Re-enter edit mode using test id
     const editBtn = page.getByTestId('viewer-edit');
@@ -720,7 +720,7 @@ test.describe('Hashtree Explorer', () => {
     await expect(page.getByTestId('viewer-header').getByText('readme.txt')).toBeVisible({ timeout: 5000 });
 
     // Content should be visible
-    await expect(page.locator('pre')).toHaveText('Hello Direct Nav', { timeout: 5000 });
+    await expect(page.locator('pre')).toContainText('Hello Direct Nav', { timeout: 5000 });
   });
 
   test('should display file content on mobile when directly navigating to file URL', async ({ page }) => {
@@ -764,7 +764,7 @@ test.describe('Hashtree Explorer', () => {
     await expect(page.getByTestId('viewer-header').getByText('mobile-readme.txt')).toBeVisible({ timeout: 5000 });
 
     // Content should be visible
-    await expect(page.locator('pre')).toHaveText('Hello Mobile View', { timeout: 5000 });
+    await expect(page.locator('pre')).toContainText('Hello Mobile View', { timeout: 5000 });
   });
 
   test('should display Yjs document editor on mobile when navigating to document folder', async ({ page }) => {

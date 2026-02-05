@@ -64,6 +64,15 @@ export class FallbackStore implements Store {
     for (const store of this.fallbacks) {
       try {
         const fetchPromise = store.get(hash);
+        fetchPromise.then((lateData) => {
+          if (lateData) {
+            this.primary.put(hash, lateData).catch(() => {
+              // Ignore cache errors for late data
+            });
+          }
+        }).catch(() => {
+          // Ignore fallback errors
+        });
         const timeoutPromise = new Promise<null>(resolve =>
           setTimeout(() => resolve(null), this.timeout)
         );

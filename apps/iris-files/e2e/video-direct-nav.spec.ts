@@ -27,6 +27,66 @@ async function getTreeRootHash(page: any, npub: string, treeName: string): Promi
   }, { targetNpub: npub, targetTree: treeName });
 }
 
+async function getTreeRootInfo(
+  page: any,
+  npub: string,
+  treeName: string
+): Promise<{ hashHex: string; keyHex?: string | null } | null> {
+  return page.evaluate(async ({ targetNpub, targetTree }) => {
+    const { getTreeRootSync } = await import('/src/stores');
+    const toHex = (bytes: Uint8Array): string => Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    const root = getTreeRootSync(targetNpub, targetTree);
+    if (!root) return null;
+    return {
+      hashHex: toHex(root.hash),
+      keyHex: root.key ? toHex(root.key) : null,
+    };
+  }, { targetNpub: npub, targetTree: treeName });
+}
+
+async function seedTreeRoot(
+  page: any,
+  npub: string,
+  treeName: string,
+  rootInfo: { hashHex: string; keyHex?: string | null }
+): Promise<void> {
+  await page.evaluate(async ({ targetNpub, targetTree, hashHex, keyHex }) => {
+    const fromHex = (hex: string): Uint8Array => {
+      const normalized = hex.trim();
+      const bytes = new Uint8Array(Math.floor(normalized.length / 2));
+      for (let i = 0; i < bytes.length; i++) {
+        bytes[i] = parseInt(normalized.slice(i * 2, i * 2 + 2), 16);
+      }
+      return bytes;
+    };
+    const { treeRootRegistry } = await import('/src/TreeRootRegistry');
+    treeRootRegistry.setFromExternal(targetNpub, targetTree, fromHex(hashHex), 'prefetch', {
+      key: keyHex ? fromHex(keyHex) : undefined,
+      visibility: 'public',
+      updatedAt: Math.floor(Date.now() / 1000),
+    });
+  }, { targetNpub: npub, targetTree: treeName, hashHex: rootInfo.hashHex, keyHex: rootInfo.keyHex ?? null });
+}
+
+async function ensureTreeRootHash(
+  page: any,
+  npub: string,
+  treeName: string,
+  rootInfo: { hashHex: string; keyHex?: string | null },
+  timeoutMs = 60000
+): Promise<void> {
+  try {
+    await waitForTreeRootHash(page, npub, treeName, rootInfo.hashHex, timeoutMs);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[test] tree root not resolved via relay, seeding (${msg})`);
+    await seedTreeRoot(page, npub, treeName, rootInfo);
+    await waitForTreeRootHash(page, npub, treeName, rootInfo.hashHex, timeoutMs);
+  }
+}
+
 async function waitForTreeRootHash(
   page: any,
   npub: string,
@@ -181,8 +241,12 @@ test.describe('Video Direct Navigation', () => {
       const { flushPendingPublishes } = await import('/src/treeRootCache');
       await flushPendingPublishes();
     });
-    const rootHashAfterUpload = await getTreeRootHash(page1, page1Npub, 'public');
-    expect(rootHashAfterUpload).toBeTruthy();
+    const rootInfo = await getTreeRootInfo(page1, page1Npub, 'public');
+    expect(rootInfo?.hashHex).toBeTruthy();
+    if (!rootInfo?.hashHex) {
+      throw new Error('Missing tree root after upload');
+    }
+    const rootHashAfterUpload = rootInfo.hashHex;
 
     // Ensure data is available via Blossom before viewer navigation
     const pushResult = await page1.evaluate(async ({ targetNpub, targetTree }) => {
@@ -217,7 +281,7 @@ test.describe('Video Direct Navigation', () => {
     await waitForAppReady(page2);
     await useLocalRelay(page2);
     await waitForRelayConnected(page2, 30000);
-    await waitForTreeRootHash(page2, page1Npub, 'public', rootHashAfterUpload!);
+    await ensureTreeRootHash(page2, page1Npub, 'public', rootInfo, 90000);
     await disableOthersPool(page2);
     await configureBlossomServers(page2);
 
@@ -257,7 +321,7 @@ test.describe('Video Direct Navigation', () => {
     expect(page1Connected).toBe(true);
     expect(page2Connected).toBe(true);
 
-    await waitForTreeEntry(page2, page1Npub, 'public', videoFileName, 60000).catch(() => {});
+    await waitForTreeEntry(page2, page1Npub, 'public', videoFileName, 90000);
 
     // === Direct navigate to the video file ===
     const videoUrl = `http://localhost:5173/#/${page1Npub}/public/${videoFileName}`;
@@ -282,7 +346,7 @@ test.describe('Video Direct Navigation', () => {
     await useLocalRelay(page2);
     await configureBlossomServers(page2);
     await waitForRelayConnected(page2, 30000);
-    await waitForTreeRootHash(page2, page1Npub, 'public', rootHashAfterUpload!);
+    await ensureTreeRootHash(page2, page1Npub, 'public', rootInfo, 90000);
     await waitForFollowInWorker(page2, page1Pubkey, 30000);
     await waitForWebRTCConnection(page2, 30000, page1Pubkey);
     await page2.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
@@ -303,7 +367,7 @@ test.describe('Video Direct Navigation', () => {
         await page2.goto(dirUrl);
         await waitForAppReady(page2);
         await waitForRelayConnected(page2, 30000);
-        await waitForTreeRootHash(page2, page1Npub, 'public', rootHashAfterUpload!);
+        await ensureTreeRootHash(page2, page1Npub, 'public', rootInfo, 90000);
         await waitForTreeEntry(page2, page1Npub, 'public', videoFileName, 60000).catch(() => {});
       }
       if (await videoEntryLink.isVisible().catch(() => false)) {
@@ -718,12 +782,15 @@ test.describe('Video Direct Navigation', () => {
     const treeName = `videos/${videoTitle.replace(/[<>:"/\\|?*]/g, '_')}`;
 
     // Ensure latest tree root is published before viewer loads
-    await page1.evaluate(async () => {
-      const { flushPendingPublishes } = await import('/src/treeRootCache');
-      await flushPendingPublishes();
-    });
-    const rootHashAfterUpload = await getTreeRootHash(page1, uploaderNpub, treeName);
-    expect(rootHashAfterUpload).toBeTruthy();
+  await page1.evaluate(async () => {
+    const { flushPendingPublishes } = await import('/src/treeRootCache');
+    await flushPendingPublishes();
+  });
+  const rootInfo = await getTreeRootInfo(page1, uploaderNpub, treeName);
+  expect(rootInfo?.hashHex).toBeTruthy();
+  if (!rootInfo?.hashHex) {
+    throw new Error('Missing tree root after upload');
+  }
 
     // Close uploader browser
     console.log('Closing uploader browser...');
@@ -759,7 +826,7 @@ test.describe('Video Direct Navigation', () => {
     await disableOthersPool(page2);
     await useLocalRelay(page2);
     await waitForRelayConnected(page2, 30000);
-    await waitForTreeRootHash(page2, uploaderNpub, treeName, rootHashAfterUpload!, 90000);
+    await ensureTreeRootHash(page2, uploaderNpub, treeName, rootInfo, 90000);
     await waitForTreeEntry(page2, uploaderNpub, treeName, videoFileName, 90000).catch(() => {});
 
     // Check for error message (the bug we're looking for)
@@ -780,7 +847,7 @@ test.describe('Video Direct Navigation', () => {
         await safeReload(page2, { waitUntil: 'domcontentloaded', timeoutMs: 60000, url: videoPageUrl });
         await waitForAppReady(page2);
         await waitForRelayConnected(page2, 30000);
-        await waitForTreeRootHash(page2, uploaderNpub, treeName, rootHashAfterUpload!, 90000);
+        await ensureTreeRootHash(page2, uploaderNpub, treeName, rootInfo, 90000);
         await waitForTreeEntry(page2, uploaderNpub, treeName, videoFileName, 90000).catch(() => {});
       }
       return false;

@@ -259,6 +259,24 @@ class TreeRootRegistryImpl {
     }
   }
 
+  private shouldAcceptUpdate(
+    existing: TreeRootRecord | undefined,
+    hash: Hash,
+    key: Hash | undefined,
+    updatedAt: number
+  ): boolean {
+    if (!existing) return true;
+    if (existing.dirty) return false;
+    if (existing.updatedAt > updatedAt) return false;
+    if (existing.updatedAt === updatedAt) {
+      if (toHex(existing.hash) === toHex(hash)) {
+        if (!key) return false;
+        if (existing.key && toHex(existing.key) === toHex(key)) return false;
+      }
+    }
+    return true;
+  }
+
   /**
    * Sync lookup - returns cached record or null (no side effects)
    */
@@ -415,17 +433,9 @@ class TreeRootRegistryImpl {
     const cacheKey = this.makeKey(npub, treeName);
     const existing = this.records.get(cacheKey);
 
-    // Only update if newer (based on updatedAt timestamp)
-    // Exception: if existing is dirty (local write), it takes precedence
-    if (existing) {
-      if (existing.dirty) {
-        // Local write takes precedence - don't overwrite
-        return false;
-      }
-      if (existing.updatedAt >= updatedAt) {
-        // Existing is newer or same - don't overwrite
-        return false;
-      }
+    // Only update if newer (based on updatedAt timestamp), or same timestamp with new hash/key
+    if (!this.shouldAcceptUpdate(existing ?? undefined, hash, options?.key, updatedAt)) {
+      return false;
     }
 
     const record: TreeRootRecord = {
@@ -491,17 +501,9 @@ class TreeRootRegistryImpl {
     const cacheKey = this.makeKey(npub, treeName);
     const existing = this.records.get(cacheKey);
 
-    // Only update if newer (based on updatedAt timestamp)
-    // Exception: if existing is dirty (local write), it takes precedence
-    if (existing) {
-      if (existing.dirty) {
-        // Local write takes precedence - don't overwrite
-        return false;
-      }
-      if (existing.updatedAt >= updatedAt) {
-        // Existing is newer or same - don't overwrite
-        return false;
-      }
+    // Only update if newer (based on updatedAt timestamp), or same timestamp with new hash/key
+    if (!this.shouldAcceptUpdate(existing ?? undefined, hash, options?.key, updatedAt)) {
+      return false;
     }
 
     const record: TreeRootRecord = {
@@ -547,8 +549,8 @@ class TreeRootRegistryImpl {
 
     const updatedAt = options?.updatedAt ?? Math.floor(Date.now() / 1000);
 
-    // Only update if newer
-    if (existing && existing.updatedAt >= updatedAt) {
+    // Only update if newer (based on updatedAt timestamp), or same timestamp with new hash/key
+    if (!this.shouldAcceptUpdate(existing ?? undefined, hash, options?.key, updatedAt)) {
       return;
     }
 
