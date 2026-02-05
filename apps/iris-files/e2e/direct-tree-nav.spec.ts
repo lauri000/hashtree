@@ -9,15 +9,29 @@
  * - Data can be fetched when connections are established
  */
 import { test, expect, type Page } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay, waitForAppReady, waitForFollowInWorker, presetLocalRelayInDB, safeReload, flushPendingPublishes, waitForRelayConnected, safeGoto } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay, waitForAppReady, waitForFollowInWorker, presetLocalRelayInDB, safeReload, flushPendingPublishes, waitForRelayConnected, safeGoto, getTestRelayUrl } from './test-utils.js';
 
-async function initUser(page: Page): Promise<{ npub: string; pubkeyHex: string }> {
+function withRelayNamespace(baseUrl: string, namespace: string): string {
+  try {
+    const url = new URL(baseUrl);
+    let path = url.pathname || '/';
+    if (!path.endsWith('/')) path += '/';
+    path += namespace;
+    url.pathname = path;
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    const trimmed = baseUrl.replace(/\/$/, '');
+    return `${trimmed}/${namespace}`;
+  }
+}
+
+async function initUser(page: Page, relayUrl: string): Promise<{ npub: string; pubkeyHex: string }> {
   setupPageErrorHandler(page);
   await safeGoto(page, 'http://localhost:5173/', { retries: 4, delayMs: 1500 });
-  await presetLocalRelayInDB(page);
+  await presetLocalRelayInDB(page, relayUrl);
   await safeReload(page, { waitUntil: 'domcontentloaded', timeoutMs: 60000 });
   await disableOthersPool(page);
-  await useLocalRelay(page);
+  await useLocalRelay(page, relayUrl);
   await waitForAppReady(page);
   await waitForRelayConnected(page, 30000);
   await navigateToPublicFolder(page);
@@ -32,22 +46,17 @@ async function initUser(page: Page): Promise<{ npub: string; pubkeyHex: string }
   return { npub: npubMatch[0], pubkeyHex };
 }
 
-async function waitForPeerConnection(page: Page, pubkeyHex: string, timeoutMs: number = 60000): Promise<boolean> {
-  try {
-    await page.waitForFunction(
-      async (pk: string) => {
-        const adapter = (window as any).__workerAdapter;
-        if (!adapter) return false;
-        const stats = await adapter.getPeerStats();
-        return stats.some((peer: { connected?: boolean; pubkey?: string }) => peer.connected && peer.pubkey === pk);
-      },
-      pubkeyHex,
-      { timeout: timeoutMs, polling: 500 }
-    );
-    return true;
-  } catch {
-    return false;
-  }
+async function waitForPeerConnection(page: Page, pubkeyHex: string, timeoutMs: number = 60000): Promise<void> {
+  await page.waitForFunction(
+    async (pk: string) => {
+      const adapter = (window as any).__workerAdapter;
+      if (!adapter) return false;
+      const stats = await adapter.getPeerStats();
+      return stats.some((peer: { connected?: boolean; pubkey?: string }) => peer.connected && peer.pubkey === pk);
+    },
+    pubkeyHex,
+    { timeout: timeoutMs, polling: 500 }
+  );
 }
 
 async function waitForTreeRoot(page: Page, npub: string, treeName: string, timeoutMs: number = 60000): Promise<void> {
@@ -290,9 +299,12 @@ test.describe.serial('Direct Tree Navigation', () => {
     test.slow();
     test.setTimeout(240000);
 
+    const relayNamespace = `direct-tree-nav-file-${test.info().workerIndex}-${Date.now()}`;
+    const relayUrl = withRelayNamespace(getTestRelayUrl(), relayNamespace);
+
     const context1 = await browser.newContext();
     const page1 = await context1.newPage();
-    const user1 = await initUser(page1);
+    const user1 = await initUser(page1, relayUrl);
 
     // Create a folder and file
     await page1.getByRole('button', { name: 'New Folder' }).click();
@@ -344,7 +356,7 @@ test.describe.serial('Direct Tree Navigation', () => {
 
     const context2 = await browser.newContext();
     const page2 = await context2.newPage();
-    const user2 = await initUser(page2);
+    const user2 = await initUser(page2, relayUrl);
 
     // Follow each other without navigating away
     await page1.waitForFunction(() => (window as any).__testHelpers?.followPubkey);
@@ -355,15 +367,8 @@ test.describe.serial('Direct Tree Navigation', () => {
     await waitForFollowInWorker(page2, user1.pubkeyHex);
     await page1.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
     await page2.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
-    const peer1Connected = await waitForPeerConnection(page1, user2.pubkeyHex, 60000);
-    const peer2Connected = await waitForPeerConnection(page2, user1.pubkeyHex, 60000);
-    if (!peer1Connected || !peer2Connected) {
-      console.warn('[direct-tree-nav] WebRTC peers not connected in time; skipping');
-      await context2.close();
-      await context1.close();
-      test.skip(true, 'WebRTC peers not connected in time');
-      return;
-    }
+    await waitForPeerConnection(page1, user2.pubkeyHex, 90000);
+    await waitForPeerConnection(page2, user1.pubkeyHex, 90000);
     await page2.evaluate(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
     await ensureTreeRootHash(page2, user1.npub, 'public', rootInfo, 60000);
 
@@ -390,7 +395,7 @@ test.describe.serial('Direct Tree Navigation', () => {
     await expect(page2).toHaveURL(/webrtc-nav-test\/test\.txt/, { timeout: 15000 });
     await waitForAppReady(page2);
     await disableOthersPool(page2);
-    await useLocalRelay(page2);
+    await useLocalRelay(page2, relayUrl);
     await waitForRelayConnected(page2, 30000);
     await page2.evaluate((hash) => {
       if (window.location.hash !== hash) {
@@ -401,15 +406,8 @@ test.describe.serial('Direct Tree Navigation', () => {
     await waitForFollowInWorker(page2, user1.pubkeyHex);
     await page1.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
     await page2.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
-    const peer1ConnectedAgain = await waitForPeerConnection(page1, user2.pubkeyHex, 60000);
-    const peer2ConnectedAgain = await waitForPeerConnection(page2, user1.pubkeyHex, 60000);
-    if (!peer1ConnectedAgain || !peer2ConnectedAgain) {
-      console.warn('[direct-tree-nav] WebRTC peers not connected after navigation; skipping');
-      await context2.close();
-      await context1.close();
-      test.skip(true, 'WebRTC peers not connected after navigation');
-      return;
-    }
+    await waitForPeerConnection(page1, user2.pubkeyHex, 90000);
+    await waitForPeerConnection(page2, user1.pubkeyHex, 90000);
     await page2.evaluate(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
     await ensureTreeRootHash(page2, user1.npub, 'public', rootInfo, 60000);
 
@@ -475,11 +473,10 @@ test.describe.serial('Direct Tree Navigation', () => {
     }
 
     if (!contentReady) {
-      console.warn('[direct-tree-nav] WebRTC content not available in time; skipping to avoid flake');
+      console.warn('[direct-tree-nav] WebRTC content not available in time');
       await context2.close();
       await context1.close();
-      test.skip(true, 'WebRTC content not available in this run');
-      return;
+      throw new Error('WebRTC content not available in time');
     }
 
     await context2.close();
@@ -489,9 +486,12 @@ test.describe.serial('Direct Tree Navigation', () => {
   test('can access directory listing from second context via WebRTC', { timeout: 120000 }, async ({ browser }) => {
     test.slow();
 
+    const relayNamespace = `direct-tree-nav-dir-${test.info().workerIndex}-${Date.now()}`;
+    const relayUrl = withRelayNamespace(getTestRelayUrl(), relayNamespace);
+
     const context1 = await browser.newContext();
     const page1 = await context1.newPage();
-    const user1 = await initUser(page1);
+    const user1 = await initUser(page1, relayUrl);
 
     // Create folder
     await page1.getByRole('button', { name: 'New Folder' }).click();
@@ -536,7 +536,7 @@ test.describe.serial('Direct Tree Navigation', () => {
 
     const context2 = await browser.newContext();
     const page2 = await context2.newPage();
-    const user2 = await initUser(page2);
+    const user2 = await initUser(page2, relayUrl);
 
     await page1.waitForFunction(() => (window as any).__testHelpers?.followPubkey);
     await page2.waitForFunction(() => (window as any).__testHelpers?.followPubkey);
@@ -546,34 +546,20 @@ test.describe.serial('Direct Tree Navigation', () => {
     await waitForFollowInWorker(page2, user1.pubkeyHex);
     await page1.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
     await page2.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
-    const dirPeer1Connected = await waitForPeerConnection(page1, user2.pubkeyHex, 60000);
-    const dirPeer2Connected = await waitForPeerConnection(page2, user1.pubkeyHex, 60000);
-    if (!dirPeer1Connected || !dirPeer2Connected) {
-      console.warn('[direct-tree-nav] WebRTC peers not connected for dir listing; skipping');
-      await context2.close();
-      await context1.close();
-      test.skip(true, 'WebRTC peers not connected for dir listing');
-      return;
-    }
+    await waitForPeerConnection(page1, user2.pubkeyHex, 90000);
+    await waitForPeerConnection(page2, user1.pubkeyHex, 90000);
 
     await safeGoto(page2, dirUrl, { retries: 4, delayMs: 1500 });
     await expect(page2).toHaveURL(/webrtc-dir-test/, { timeout: 15000 });
     await waitForAppReady(page2);
     await disableOthersPool(page2);
-    await useLocalRelay(page2);
+    await useLocalRelay(page2, relayUrl);
 
     await waitForFollowInWorker(page2, user1.pubkeyHex);
     await page1.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
     await page2.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
-    const dirPeer1ConnectedAgain = await waitForPeerConnection(page1, user2.pubkeyHex, 60000);
-    const dirPeer2ConnectedAgain = await waitForPeerConnection(page2, user1.pubkeyHex, 60000);
-    if (!dirPeer1ConnectedAgain || !dirPeer2ConnectedAgain) {
-      console.warn('[direct-tree-nav] WebRTC peers not connected after dir nav; skipping');
-      await context2.close();
-      await context1.close();
-      test.skip(true, 'WebRTC peers not connected after dir nav');
-      return;
-    }
+    await waitForPeerConnection(page1, user2.pubkeyHex, 90000);
+    await waitForPeerConnection(page2, user1.pubkeyHex, 90000);
 
     const dirRouteState = await page2.evaluate(async () => {
       const { currentPath } = await import('/src/lib/router.svelte');

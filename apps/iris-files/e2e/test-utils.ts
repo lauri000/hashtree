@@ -606,10 +606,10 @@ export async function presetProductionRelaysInDB(page: any) {
  * Updates both settings store (for future store creations) and the
  * existing WebRTC store (for immediate effect on current connections).
  */
-export async function useLocalRelay(page: any) {
+export async function useLocalRelay(page: any, relayOverride?: string) {
   await waitForTestHelpers(page);
   await waitForWorkerAdapter(page);
-  const localRelay = getTestRelayUrl();
+  const localRelay = relayOverride || getTestRelayUrl();
   await evaluateWithRetry(page, async (relay) => {
     // Update settings store for future store creations
     const { settingsStore } = await import('/src/stores/settings');
