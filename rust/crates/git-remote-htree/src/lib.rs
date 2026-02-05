@@ -209,9 +209,13 @@ fn run() -> Result<()> {
         // Prepend local daemon to read servers for cascade fetching
         config.blossom.read_servers.insert(0, url.clone());
     } else {
-        // Show hint once per session (git may call us multiple times)
+        // Show hint once per session (git may call us multiple times).
+        // Keep this opt-in to avoid noisy stderr during git operations.
         static HINT_SHOWN: std::sync::Once = std::sync::Once::new();
         HINT_SHOWN.call_once(|| {
+            if std::env::var_os("HTREE_SHOW_TIP").is_none() {
+                return;
+            }
             if htree_binary_available() {
                 eprintln!("Tip: run 'htree start' for P2P sharing");
             } else {
