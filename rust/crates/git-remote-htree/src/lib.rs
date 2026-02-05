@@ -210,16 +210,13 @@ fn run() -> Result<()> {
         config.blossom.read_servers.insert(0, url.clone());
     } else {
         // Show hint once per session (git may call us multiple times).
-        // Keep this opt-in to avoid noisy stderr during git operations.
+        // Use logger so it only appears when RUST_LOG enables info/debug output.
         static HINT_SHOWN: std::sync::Once = std::sync::Once::new();
         HINT_SHOWN.call_once(|| {
-            if std::env::var_os("HTREE_SHOW_TIP").is_none() {
-                return;
-            }
             if htree_binary_available() {
-                eprintln!("Tip: run 'htree start' for P2P sharing");
+                info!("Tip: run 'htree start' for P2P sharing");
             } else {
-                eprintln!("Tip: install htree (cargo install hashtree-cli) to enable P2P sharing");
+                info!("Tip: install htree (cargo install hashtree-cli) to enable P2P sharing");
             }
         });
     }
