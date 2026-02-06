@@ -138,7 +138,8 @@ impl ChunkWriter {
                 continue;
             }
             let to_write = remaining.min(bytes.len() - offset);
-            self.buf.extend_from_slice(&bytes[offset..offset + to_write]);
+            self.buf
+                .extend_from_slice(&bytes[offset..offset + to_write]);
             offset += to_write;
         }
     }

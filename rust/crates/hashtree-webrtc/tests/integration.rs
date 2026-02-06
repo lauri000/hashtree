@@ -18,7 +18,10 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Helper to run classifier that treats specific pubkeys as "follows"
-async fn run_classifier(mut rx: hashtree_webrtc::ClassifierRx, follows: Arc<RwLock<HashSet<String>>>) {
+async fn run_classifier(
+    mut rx: hashtree_webrtc::ClassifierRx,
+    follows: Arc<RwLock<HashSet<String>>>,
+) {
     while let Some(req) = rx.recv().await {
         let is_follow = follows.read().await.contains(&req.pubkey);
         let pool = if is_follow {
@@ -59,7 +62,10 @@ async fn test_connect_to_local_relay() {
 
     // Local relay should have received the hello event
     let event_count = relay.event_count().await;
-    assert!(event_count >= 1, "Relay should have received at least one hello event");
+    assert!(
+        event_count >= 1,
+        "Relay should have received at least one hello event"
+    );
 
     store.stop().await;
     relay.stop().await;
@@ -170,7 +176,10 @@ async fn test_peer_discovery() {
     store2.stop().await;
     relay.stop().await;
 
-    assert!(found_peer, "Peers should discover and connect to each other");
+    assert!(
+        found_peer,
+        "Peers should discover and connect to each other"
+    );
 }
 
 /// Test HTL-based forwarding across 3 nodes.
@@ -217,8 +226,10 @@ async fn test_three_node_forwarding() {
 
     let follows_a: Arc<RwLock<HashSet<String>>> =
         Arc::new(RwLock::new(HashSet::from([pubkey_b.clone()])));
-    let follows_b: Arc<RwLock<HashSet<String>>> =
-        Arc::new(RwLock::new(HashSet::from([pubkey_a.clone(), pubkey_c.clone()])));
+    let follows_b: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::from([
+        pubkey_a.clone(),
+        pubkey_c.clone(),
+    ])));
     let follows_c: Arc<RwLock<HashSet<String>>> =
         Arc::new(RwLock::new(HashSet::from([pubkey_b.clone()])));
 
@@ -270,11 +281,20 @@ async fn test_three_node_forwarding() {
     let mut store_c = WebRTCStore::new(store_c_local.clone(), config_c);
 
     // Start all stores with delays
-    store_a.start(keys_a).await.expect("Store A failed to start");
+    store_a
+        .start(keys_a)
+        .await
+        .expect("Store A failed to start");
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    store_b.start(keys_b).await.expect("Store B failed to start");
+    store_b
+        .start(keys_b)
+        .await
+        .expect("Store B failed to start");
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    store_c.start(keys_c).await.expect("Store C failed to start");
+    store_c
+        .start(keys_c)
+        .await
+        .expect("Store C failed to start");
 
     // Wait for all connections to establish
     // A-B and B-C should connect
@@ -286,7 +306,10 @@ async fn test_three_node_forwarding() {
         let count_c = store_c.peer_count().await;
         println!(
             "Connection attempt {}/30: A={}, B={}, C={}",
-            i + 1, count_a, count_b, count_c
+            i + 1,
+            count_a,
+            count_b,
+            count_c
         );
         // B should have 2 peers (A and C), A and C should have 1 each (B)
         if count_a >= 1 && count_b >= 2 && count_c >= 1 {
@@ -405,7 +428,12 @@ async fn test_data_transfer_between_peers() {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         let count1 = store1.peer_count().await;
         let count2 = store2.peer_count().await;
-        println!("Connection attempt {}/20: store1={}, store2={}", i + 1, count1, count2);
+        println!(
+            "Connection attempt {}/20: store1={}, store2={}",
+            i + 1,
+            count1,
+            count2
+        );
         if count1 > 0 && count2 > 0 {
             connected = true;
             break;

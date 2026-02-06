@@ -49,10 +49,22 @@ mod tests {
 
     #[test]
     fn test_visibility_parse() {
-        assert_eq!(TreeVisibility::from_str("public").unwrap(), TreeVisibility::Public);
-        assert_eq!(TreeVisibility::from_str("link-visible").unwrap(), TreeVisibility::LinkVisible);
-        assert_eq!(TreeVisibility::from_str("link_visible").unwrap(), TreeVisibility::LinkVisible);
-        assert_eq!(TreeVisibility::from_str("private").unwrap(), TreeVisibility::Private);
+        assert_eq!(
+            TreeVisibility::from_str("public").unwrap(),
+            TreeVisibility::Public
+        );
+        assert_eq!(
+            TreeVisibility::from_str("link-visible").unwrap(),
+            TreeVisibility::LinkVisible
+        );
+        assert_eq!(
+            TreeVisibility::from_str("link_visible").unwrap(),
+            TreeVisibility::LinkVisible
+        );
+        assert_eq!(
+            TreeVisibility::from_str("private").unwrap(),
+            TreeVisibility::Private
+        );
         assert!(TreeVisibility::from_str("unknown").is_err());
     }
 

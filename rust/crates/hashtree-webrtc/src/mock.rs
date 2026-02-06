@@ -336,9 +336,7 @@ impl PeerConnectionFactory for MockConnectionFactory {
             .write()
             .await
             .remove(target_peer_id)
-            .ok_or_else(|| {
-                TransportError::ConnectionFailed("No pending connection".to_string())
-            })?;
+            .ok_or_else(|| TransportError::ConnectionFailed("No pending connection".to_string()))?;
 
         Ok(channel)
     }

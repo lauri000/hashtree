@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{test_relay::TestRelay, TestServer, TestEnv, create_test_repo, skip_if_no_binary};
+use common::{create_test_repo, skip_if_no_binary, test_relay::TestRelay, TestEnv, TestServer};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 

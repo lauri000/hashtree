@@ -19,7 +19,7 @@ use hashtree_core::{Cid, DirEntry, HashTree, HashTreeConfig, LinkType};
 use hashtree_fs::FsBlobStore;
 #[cfg(feature = "lmdb")]
 use hashtree_lmdb::LmdbBlobStore;
-use sha1::{Sha1, Digest};
+use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -61,16 +61,14 @@ impl LocalStore {
     pub fn new<P: AsRef<Path>>(path: P) -> std::result::Result<Self, StoreError> {
         let config = Config::load_or_default();
         match config.storage.backend {
-            StorageBackend::Fs => {
-                Ok(LocalStore::Fs(FsBlobStore::new(path)?))
-            }
+            StorageBackend::Fs => Ok(LocalStore::Fs(FsBlobStore::new(path)?)),
             #[cfg(feature = "lmdb")]
-            StorageBackend::Lmdb => {
-                Ok(LocalStore::Lmdb(LmdbBlobStore::new(path)?))
-            }
+            StorageBackend::Lmdb => Ok(LocalStore::Lmdb(LmdbBlobStore::new(path)?)),
             #[cfg(not(feature = "lmdb"))]
             StorageBackend::Lmdb => {
-                warn!("LMDB backend requested but lmdb feature not enabled, using filesystem storage");
+                warn!(
+                    "LMDB backend requested but lmdb feature not enabled, using filesystem storage"
+                );
                 Ok(LocalStore::Fs(FsBlobStore::new(path)?))
             }
         }
@@ -183,7 +181,9 @@ impl GitStorage {
         encoder.write_all(&loose)?;
         let compressed = encoder.finish()?;
 
-        let mut objects = self.objects.write()
+        let mut objects = self
+            .objects
+            .write()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
         objects.insert(key, compressed);
 
@@ -205,7 +205,9 @@ impl GitStorage {
     #[allow(dead_code)]
     fn read_object(&self, oid: &ObjectId) -> Result<GitObject> {
         let key = oid.to_hex();
-        let objects = self.objects.read()
+        let objects = self
+            .objects
+            .read()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
         let compressed = objects
             .get(&key)
@@ -227,7 +229,9 @@ impl GitStorage {
             Ref::Symbolic(target) => format!("ref: {}", target),
         };
 
-        let mut refs = self.refs.write()
+        let mut refs = self
+            .refs
+            .write()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
         refs.insert(name.to_string(), value);
 
@@ -242,7 +246,9 @@ impl GitStorage {
     /// Read a ref
     #[allow(dead_code)]
     pub fn read_ref(&self, name: &str) -> Result<Option<Ref>> {
-        let refs = self.refs.read()
+        let refs = self
+            .refs
+            .read()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
 
         match refs.get(name) {
@@ -262,14 +268,18 @@ impl GitStorage {
     /// List all refs
     #[allow(dead_code)]
     pub fn list_refs(&self) -> Result<HashMap<String, String>> {
-        let refs = self.refs.read()
+        let refs = self
+            .refs
+            .read()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
         Ok(refs.clone())
     }
 
     /// Delete a ref
     pub fn delete_ref(&self, name: &str) -> Result<bool> {
-        let mut refs = self.refs.write()
+        let mut refs = self
+            .refs
+            .write()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
         let existed = refs.remove(name).is_some();
 
@@ -284,7 +294,9 @@ impl GitStorage {
     /// Import a raw git object (already in loose format, zlib compressed)
     /// Used when fetching existing objects from remote before push
     pub fn import_compressed_object(&self, oid: &str, compressed_data: Vec<u8>) -> Result<()> {
-        let mut objects = self.objects.write()
+        let mut objects = self
+            .objects
+            .write()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
         objects.insert(oid.to_string(), compressed_data);
 
@@ -298,7 +310,9 @@ impl GitStorage {
 
     /// Import a ref directly (used when loading existing refs from remote)
     pub fn import_ref(&self, name: &str, value: &str) -> Result<()> {
-        let mut refs = self.refs.write()
+        let mut refs = self
+            .refs
+            .write()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
         refs.insert(name.to_string(), value.to_string());
 
@@ -313,7 +327,9 @@ impl GitStorage {
     /// Check if a ref exists
     #[cfg(test)]
     pub fn has_ref(&self, name: &str) -> Result<bool> {
-        let refs = self.refs.read()
+        let refs = self
+            .refs
+            .read()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
         Ok(refs.contains_key(name))
     }
@@ -321,7 +337,9 @@ impl GitStorage {
     /// Get count of objects in storage
     #[cfg(test)]
     pub fn object_count(&self) -> Result<usize> {
-        let objects = self.objects.read()
+        let objects = self
+            .objects
+            .read()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
         Ok(objects.len())
     }
@@ -329,7 +347,9 @@ impl GitStorage {
     /// Get the cached root CID (returns None if tree hasn't been built)
     #[allow(dead_code)]
     pub fn get_root_cid(&self) -> Result<Option<Cid>> {
-        let root = self.root_cid.read()
+        let root = self
+            .root_cid
+            .read()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
         Ok(root.clone())
     }
@@ -337,7 +357,9 @@ impl GitStorage {
     /// Get the default branch name
     #[allow(dead_code)]
     pub fn default_branch(&self) -> Result<Option<String>> {
-        let refs = self.refs.read()
+        let refs = self
+            .refs
+            .read()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
 
         if let Some(head) = refs.get("HEAD") {
@@ -349,7 +371,11 @@ impl GitStorage {
     }
 
     /// Get the tree SHA from a commit object
-    fn get_commit_tree(&self, commit_oid: &str, objects: &HashMap<String, Vec<u8>>) -> Option<String> {
+    fn get_commit_tree(
+        &self,
+        commit_oid: &str,
+        objects: &HashMap<String, Vec<u8>>,
+    ) -> Option<String> {
         let compressed = objects.get(commit_oid)?;
 
         // Decompress the object
@@ -372,7 +398,11 @@ impl GitStorage {
     }
 
     /// Get git object content (decompressed, without header)
-    fn get_object_content(&self, oid: &str, objects: &HashMap<String, Vec<u8>>) -> Option<(ObjectType, Vec<u8>)> {
+    fn get_object_content(
+        &self,
+        oid: &str,
+        objects: &HashMap<String, Vec<u8>>,
+    ) -> Option<(ObjectType, Vec<u8>)> {
         let compressed = objects.get(oid)?;
 
         // Decompress the object
@@ -405,9 +435,13 @@ impl GitStorage {
             }
         }
 
-        let objects = self.objects.read()
+        let objects = self
+            .objects
+            .read()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
-        let refs = self.refs.read()
+        let refs = self
+            .refs
+            .read()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
 
         // Get default branch from HEAD or find first branch ref
@@ -431,7 +465,8 @@ impl GitStorage {
         };
 
         // Get tree SHA from commit
-        let tree_sha = commit_sha.as_ref()
+        let tree_sha = commit_sha
+            .as_ref()
             .and_then(|sha| self.get_commit_tree(sha, &objects));
 
         // Clone objects for async block
@@ -533,11 +568,15 @@ impl GitStorage {
         let mut entries = Vec::new();
 
         // Get tree content
-        let (obj_type, content) = self.get_object_content(tree_oid, objects)
+        let (obj_type, content) = self
+            .get_object_content(tree_oid, objects)
             .ok_or_else(|| Error::ObjectNotFound(tree_oid.to_string()))?;
 
         if obj_type != ObjectType::Tree {
-            return Err(Error::InvalidObjectType(format!("expected tree, got {:?}", obj_type)));
+            return Err(Error::InvalidObjectType(format!(
+                "expected tree, got {:?}",
+                obj_type
+            )));
         }
 
         // Parse tree entries
@@ -548,29 +587,31 @@ impl GitStorage {
 
             if entry.is_tree() {
                 // Recursively build subdirectory
-                let sub_entries = self.build_working_tree_entries_boxed(&oid_hex, objects).await?;
+                let sub_entries = self
+                    .build_working_tree_entries_boxed(&oid_hex, objects)
+                    .await?;
 
                 // Create subdirectory in hashtree
-                let dir_cid = self.tree.put_directory(sub_entries).await
-                    .map_err(|e| Error::StorageError(format!("put dir {}: {}", entry.name, e)))?;
+                let dir_cid =
+                    self.tree.put_directory(sub_entries).await.map_err(|e| {
+                        Error::StorageError(format!("put dir {}: {}", entry.name, e))
+                    })?;
 
                 // Use from_cid to preserve encryption key
-                entries.push(
-                    DirEntry::from_cid(&entry.name, &dir_cid)
-                        .with_link_type(LinkType::Dir)
-                );
+                entries
+                    .push(DirEntry::from_cid(&entry.name, &dir_cid).with_link_type(LinkType::Dir));
             } else {
                 // Get blob content
-                if let Some((ObjectType::Blob, blob_content)) = self.get_object_content(&oid_hex, objects) {
+                if let Some((ObjectType::Blob, blob_content)) =
+                    self.get_object_content(&oid_hex, objects)
+                {
                     // Use put() instead of put_blob() to chunk large files
-                    let (cid, size) = self.tree.put(&blob_content).await
-                        .map_err(|e| Error::StorageError(format!("put blob {}: {}", entry.name, e)))?;
+                    let (cid, size) = self.tree.put(&blob_content).await.map_err(|e| {
+                        Error::StorageError(format!("put blob {}: {}", entry.name, e))
+                    })?;
 
                     // Use from_cid to preserve encryption key
-                    entries.push(
-                        DirEntry::from_cid(&entry.name, &cid)
-                            .with_size(size)
-                    );
+                    entries.push(DirEntry::from_cid(&entry.name, &cid).with_size(size));
                 }
             }
         }
@@ -594,7 +635,10 @@ impl GitStorage {
     async fn build_objects_dir(&self, objects: &HashMap<String, Vec<u8>>) -> Result<Cid> {
         if objects.is_empty() {
             // Return empty directory Cid
-            let empty_cid = self.tree.put_directory(vec![]).await
+            let empty_cid = self
+                .tree
+                .put_directory(vec![])
+                .await
                 .map_err(|e| Error::StorageError(format!("put empty objects: {}", e)))?;
             return Ok(empty_cid);
         }
@@ -605,7 +649,8 @@ impl GitStorage {
         for (oid, data) in objects {
             let prefix = &oid[..2];
             let suffix = &oid[2..];
-            buckets.entry(prefix.to_string())
+            buckets
+                .entry(prefix.to_string())
                 .or_default()
                 .push((suffix.to_string(), data.clone()));
         }
@@ -617,15 +662,19 @@ impl GitStorage {
             for (suffix, data) in objs {
                 // Use put() instead of put_blob() to chunk large objects
                 // Git blobs can be >5MB which exceeds blossom server limits
-                let (cid, size) = self.tree.put(&data).await
-                    .map_err(|e| Error::StorageError(format!("put object {}{}: {}", prefix, suffix, e)))?;
+                let (cid, size) = self.tree.put(&data).await.map_err(|e| {
+                    Error::StorageError(format!("put object {}{}: {}", prefix, suffix, e))
+                })?;
                 // Use from_cid to preserve encryption key
                 sub_entries.push(DirEntry::from_cid(suffix, &cid).with_size(size));
             }
             // Sort for deterministic ordering
             sub_entries.sort_by(|a, b| a.name.cmp(&b.name));
 
-            let sub_cid = self.tree.put_directory(sub_entries).await
+            let sub_cid = self
+                .tree
+                .put_directory(sub_entries)
+                .await
                 .map_err(|e| Error::StorageError(format!("put objects/{}: {}", prefix, e)))?;
             top_entries.push(DirEntry::from_cid(prefix, &sub_cid).with_link_type(LinkType::Dir));
         }
@@ -634,10 +683,17 @@ impl GitStorage {
         top_entries.sort_by(|a, b| a.name.cmp(&b.name));
 
         let bucket_count = top_entries.len();
-        let cid = self.tree.put_directory(top_entries).await
+        let cid = self
+            .tree
+            .put_directory(top_entries)
+            .await
             .map_err(|e| Error::StorageError(format!("put objects dir: {}", e)))?;
 
-        debug!("Built objects dir with {} buckets: {}", bucket_count, hex::encode(cid.hash));
+        debug!(
+            "Built objects dir with {} buckets: {}",
+            bucket_count,
+            hex::encode(cid.hash)
+        );
         Ok(cid)
     }
 
@@ -651,7 +707,10 @@ impl GitStorage {
             if parts.len() >= 3 && parts[0] == "refs" {
                 let category = parts[1].to_string();
                 let name = parts[2..].join("/");
-                groups.entry(category).or_default().push((name, value.clone()));
+                groups
+                    .entry(category)
+                    .or_default()
+                    .push((name, value.clone()));
             }
         }
 
@@ -661,15 +720,26 @@ impl GitStorage {
             let mut cat_entries = Vec::new();
             for (name, value) in refs_in_category {
                 // Use put() to get Cid with encryption key
-                let (cid, _size) = self.tree.put(value.as_bytes()).await
+                let (cid, _size) = self
+                    .tree
+                    .put(value.as_bytes())
+                    .await
                     .map_err(|e| Error::StorageError(format!("put ref: {}", e)))?;
-                debug!("refs/{}/{} -> blob {}", category, name, hex::encode(cid.hash));
+                debug!(
+                    "refs/{}/{} -> blob {}",
+                    category,
+                    name,
+                    hex::encode(cid.hash)
+                );
                 cat_entries.push(DirEntry::from_cid(name, &cid));
             }
 
             cat_entries.sort_by(|a, b| a.name.cmp(&b.name));
 
-            let cat_cid = self.tree.put_directory(cat_entries).await
+            let cat_cid = self
+                .tree
+                .put_directory(cat_entries)
+                .await
                 .map_err(|e| Error::StorageError(format!("put {} dir: {}", category, e)))?;
             debug!("refs/{} dir -> {}", category, hex::encode(cat_cid.hash));
             ref_entries.push(DirEntry::from_cid(category, &cat_cid).with_link_type(LinkType::Dir));
@@ -677,14 +747,20 @@ impl GitStorage {
 
         if ref_entries.is_empty() {
             // Return empty directory Cid
-            let empty_cid = self.tree.put_directory(vec![]).await
+            let empty_cid = self
+                .tree
+                .put_directory(vec![])
+                .await
                 .map_err(|e| Error::StorageError(format!("put empty refs: {}", e)))?;
             return Ok(empty_cid);
         }
 
         ref_entries.sort_by(|a, b| a.name.cmp(&b.name));
 
-        let refs_cid = self.tree.put_directory(ref_entries).await
+        let refs_cid = self
+            .tree
+            .put_directory(ref_entries)
+            .await
             .map_err(|e| Error::StorageError(format!("put refs dir: {}", e)))?;
         debug!("refs dir -> {}", hex::encode(refs_cid.hash));
         Ok(refs_cid)
@@ -763,7 +839,11 @@ impl GitStorage {
         let checksum = hasher.finalize();
         index_data.extend_from_slice(&checksum);
 
-        debug!("Built git index: {} bytes, {} entries", index_data.len(), entry_count);
+        debug!(
+            "Built git index: {} bytes, {} entries",
+            index_data.len(),
+            entry_count
+        );
         Ok(index_data)
     }
 
@@ -775,11 +855,15 @@ impl GitStorage {
         prefix: &str,
         entries: &mut Vec<(String, [u8; 20], u32, u32)>,
     ) -> Result<()> {
-        let (obj_type, content) = self.get_object_content(tree_oid, objects)
+        let (obj_type, content) = self
+            .get_object_content(tree_oid, objects)
             .ok_or_else(|| Error::ObjectNotFound(tree_oid.to_string()))?;
 
         if obj_type != ObjectType::Tree {
-            return Err(Error::InvalidObjectType(format!("expected tree, got {:?}", obj_type)));
+            return Err(Error::InvalidObjectType(format!(
+                "expected tree, got {:?}",
+                obj_type
+            )));
         }
 
         let tree_entries = parse_tree(&content)?;
@@ -798,7 +882,9 @@ impl GitStorage {
                 self.collect_tree_entries_for_index(&oid_hex, objects, &path, entries)?;
             } else {
                 // Get blob content for size and SHA-1
-                if let Some((ObjectType::Blob, blob_content)) = self.get_object_content(&oid_hex, objects) {
+                if let Some((ObjectType::Blob, blob_content)) =
+                    self.get_object_content(&oid_hex, objects)
+                {
                     // Convert hex SHA to bytes
                     let mut sha1_bytes = [0u8; 20];
                     if let Ok(bytes) = hex::decode(&oid_hex) {
@@ -836,7 +922,9 @@ impl GitStorage {
         &self,
         blossom: &hashtree_blossom::BlossomClient,
     ) -> Result<(usize, usize)> {
-        let hashes = self.store.list()
+        let hashes = self
+            .store
+            .list()
             .map_err(|e| Error::StorageError(format!("list hashes: {}", e)))?;
 
         info!("Pushing {} blobs to file servers", hashes.len());
@@ -867,18 +955,27 @@ impl GitStorage {
             }
         });
 
-        info!("Upload complete: {} new, {} already existed", uploaded, existed);
+        info!(
+            "Upload complete: {} new, {} already existed",
+            uploaded, existed
+        );
         Ok((uploaded, existed))
     }
 
     /// Clear all state (for testing or re-initialization)
     #[allow(dead_code)]
     pub fn clear(&self) -> Result<()> {
-        let mut objects = self.objects.write()
+        let mut objects = self
+            .objects
+            .write()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
-        let mut refs = self.refs.write()
+        let mut refs = self
+            .refs
+            .write()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
-        let mut root = self.root_cid.write()
+        let mut root = self
+            .root_cid
+            .write()
             .map_err(|e| Error::StorageError(format!("lock: {}", e)))?;
 
         objects.clear();
@@ -904,14 +1001,19 @@ mod tests {
         let (storage, _temp) = create_test_storage();
 
         // Import a ref
-        storage.import_ref("refs/heads/main", "abc123def456").unwrap();
+        storage
+            .import_ref("refs/heads/main", "abc123def456")
+            .unwrap();
 
         // Check it exists
         assert!(storage.has_ref("refs/heads/main").unwrap());
 
         // Check value via list_refs
         let refs = storage.list_refs().unwrap();
-        assert_eq!(refs.get("refs/heads/main"), Some(&"abc123def456".to_string()));
+        assert_eq!(
+            refs.get("refs/heads/main"),
+            Some(&"abc123def456".to_string())
+        );
     }
 
     #[test]
@@ -921,7 +1023,9 @@ mod tests {
         // Import multiple refs (simulating loading from remote)
         storage.import_ref("refs/heads/main", "sha_main").unwrap();
         storage.import_ref("refs/heads/dev", "sha_dev").unwrap();
-        storage.import_ref("refs/heads/feature", "sha_feature").unwrap();
+        storage
+            .import_ref("refs/heads/feature", "sha_feature")
+            .unwrap();
 
         // All should exist
         assert!(storage.has_ref("refs/heads/main").unwrap());
@@ -929,9 +1033,14 @@ mod tests {
         assert!(storage.has_ref("refs/heads/feature").unwrap());
 
         // Now write a new ref (simulating push)
-        storage.write_ref("refs/heads/new-branch", &Ref::Direct(
-            ObjectId::from_hex("0123456789abcdef0123456789abcdef01234567").unwrap()
-        )).unwrap();
+        storage
+            .write_ref(
+                "refs/heads/new-branch",
+                &Ref::Direct(
+                    ObjectId::from_hex("0123456789abcdef0123456789abcdef01234567").unwrap(),
+                ),
+            )
+            .unwrap();
 
         // Original refs should still exist
         let refs = storage.list_refs().unwrap();
@@ -949,7 +1058,9 @@ mod tests {
         // Create a fake compressed object
         let fake_compressed = vec![0x78, 0x9c, 0x01, 0x02, 0x03]; // fake zlib data
 
-        storage.import_compressed_object("abc123def456", fake_compressed.clone()).unwrap();
+        storage
+            .import_compressed_object("abc123def456", fake_compressed.clone())
+            .unwrap();
 
         // Check object count
         assert_eq!(storage.object_count().unwrap(), 1);
@@ -963,14 +1074,21 @@ mod tests {
         storage.import_ref("refs/heads/main", "old_sha").unwrap();
 
         // Write same ref with new value
-        storage.write_ref("refs/heads/main", &Ref::Direct(
-            ObjectId::from_hex("0123456789abcdef0123456789abcdef01234567").unwrap()
-        )).unwrap();
+        storage
+            .write_ref(
+                "refs/heads/main",
+                &Ref::Direct(
+                    ObjectId::from_hex("0123456789abcdef0123456789abcdef01234567").unwrap(),
+                ),
+            )
+            .unwrap();
 
         // Should have new value
         let refs = storage.list_refs().unwrap();
-        assert_eq!(refs.get("refs/heads/main"),
-            Some(&"0123456789abcdef0123456789abcdef01234567".to_string()));
+        assert_eq!(
+            refs.get("refs/heads/main"),
+            Some(&"0123456789abcdef0123456789abcdef01234567".to_string())
+        );
     }
 
     #[test]
@@ -995,7 +1113,9 @@ mod tests {
 
         // Import refs and objects
         storage.import_ref("refs/heads/main", "sha_main").unwrap();
-        storage.import_compressed_object("obj1", vec![1, 2, 3]).unwrap();
+        storage
+            .import_compressed_object("obj1", vec![1, 2, 3])
+            .unwrap();
 
         // Clear
         storage.clear().unwrap();

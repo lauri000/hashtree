@@ -30,12 +30,20 @@ struct SnapshotData {
     mute_created_at: HashMap<[u8; 32], u64>,
 }
 
-pub fn build_snapshot_chunks(ndb: &Ndb, root: &[u8; 32], options: &SnapshotOptions) -> Result<Vec<Bytes>> {
+pub fn build_snapshot_chunks(
+    ndb: &Ndb,
+    root: &[u8; 32],
+    options: &SnapshotOptions,
+) -> Result<Vec<Bytes>> {
     let data = build_snapshot_data(ndb, root, options)?;
     Ok(encode_snapshot_chunks(&data))
 }
 
-fn build_snapshot_data(ndb: &Ndb, root: &[u8; 32], options: &SnapshotOptions) -> Result<SnapshotData> {
+fn build_snapshot_data(
+    ndb: &Ndb,
+    root: &[u8; 32],
+    options: &SnapshotOptions,
+) -> Result<SnapshotData> {
     let txn = Transaction::new(ndb).context("create nostrdb transaction")?;
 
     let users_by_distance = compute_users_by_distance(&txn, ndb, root, options.max_distance);
@@ -288,12 +296,7 @@ fn get_muted_full(
     }
 }
 
-fn latest_created_at(
-    txn: &Transaction,
-    ndb: &Ndb,
-    owner: &[u8; 32],
-    kind: Kind,
-) -> Result<u64> {
+fn latest_created_at(txn: &Transaction, ndb: &Ndb, owner: &[u8; 32], kind: Kind) -> Result<u64> {
     let pubkey = match PublicKey::from_slice(owner) {
         Ok(pk) => pk,
         Err(_) => return Ok(0),
@@ -411,7 +414,8 @@ impl ChunkWriter {
                 continue;
             }
             let to_write = remaining.min(bytes.len() - offset);
-            self.buf.extend_from_slice(&bytes[offset..offset + to_write]);
+            self.buf
+                .extend_from_slice(&bytes[offset..offset + to_write]);
             offset += to_write;
         }
     }

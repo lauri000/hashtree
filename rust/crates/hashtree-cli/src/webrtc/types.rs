@@ -5,15 +5,15 @@ use serde::{Deserialize, Serialize};
 
 // HTL (Hops To Live) constants - Freenet-style probabilistic decrement
 pub const MAX_HTL: u8 = 10;
-pub const DECREMENT_AT_MAX_PROB: f64 = 0.5;  // 50% chance to decrement at max
+pub const DECREMENT_AT_MAX_PROB: f64 = 0.5; // 50% chance to decrement at max
 pub const DECREMENT_AT_MIN_PROB: f64 = 0.25; // 25% chance to decrement at 1
 
 /// Per-peer HTL decrement configuration (Freenet-style)
 /// Stored per peer connection to prevent probing attacks
 #[derive(Debug, Clone)]
 pub struct PeerHTLConfig {
-    pub decrement_at_max: bool,  // Whether to decrement when HTL is at max
-    pub decrement_at_min: bool,  // Whether to decrement when HTL is 1
+    pub decrement_at_max: bool, // Whether to decrement when HTL is at max
+    pub decrement_at_min: bool, // Whether to decrement when HTL is 1
 }
 
 impl PeerHTLConfig {
@@ -51,7 +51,11 @@ pub fn decrement_htl(htl: u8, config: &PeerHTLConfig) -> u8 {
 
     // At max: probabilistic decrement
     if htl == MAX_HTL {
-        return if config.decrement_at_max { htl - 1 } else { htl };
+        return if config.decrement_at_max {
+            htl - 1
+        } else {
+            htl
+        };
     }
 
     // At min (1): probabilistic decrement
@@ -84,8 +88,12 @@ pub fn generate_uuid() -> String {
     let mut rng = rand::thread_rng();
     format!(
         "{}{}",
-        (0..15).map(|_| char::from_digit(rng.gen_range(0..36), 36).unwrap()).collect::<String>(),
-        (0..15).map(|_| char::from_digit(rng.gen_range(0..36), 36).unwrap()).collect::<String>()
+        (0..15)
+            .map(|_| char::from_digit(rng.gen_range(0..36), 36).unwrap())
+            .collect::<String>(),
+        (0..15)
+            .map(|_| char::from_digit(rng.gen_range(0..36), 36).unwrap())
+            .collect::<String>()
     )
 }
 
@@ -117,7 +125,11 @@ impl PeerId {
     }
 
     pub fn short(&self) -> String {
-        format!("{}:{}", &self.pubkey[..8.min(self.pubkey.len())], &self.uuid[..6.min(self.uuid.len())])
+        format!(
+            "{}:{}",
+            &self.pubkey[..8.min(self.pubkey.len())],
+            &self.uuid[..6.min(self.uuid.len())]
+        )
     }
 }
 
@@ -185,7 +197,10 @@ pub struct CandidatesMessage {
 #[serde(tag = "type")]
 pub enum SignalingMessage {
     #[serde(rename = "hello")]
-    Hello { #[serde(rename = "peerId")] peer_id: String },
+    Hello {
+        #[serde(rename = "peerId")]
+        peer_id: String,
+    },
     #[serde(rename = "offer")]
     Offer {
         offer: serde_json::Value,
@@ -425,7 +440,7 @@ pub const MSG_TYPE_RESPONSE: u8 = 0x01;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataRequest {
     #[serde(with = "serde_bytes")]
-    pub h: Vec<u8>,  // 32-byte hash
+    pub h: Vec<u8>, // 32-byte hash
     #[serde(default = "default_htl", skip_serializing_if = "is_max_htl")]
     pub htl: u8,
 }
@@ -433,9 +448,9 @@ pub struct DataRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataResponse {
     #[serde(with = "serde_bytes")]
-    pub h: Vec<u8>,  // 32-byte hash
+    pub h: Vec<u8>, // 32-byte hash
     #[serde(with = "serde_bytes")]
-    pub d: Vec<u8>,  // Data
+    pub d: Vec<u8>, // Data
 }
 
 #[derive(Debug, Clone)]

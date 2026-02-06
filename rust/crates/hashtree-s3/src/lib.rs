@@ -24,8 +24,8 @@
 //! ```
 
 use async_trait::async_trait;
-use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::Client as S3Client;
 use hashtree_core::store::{Store, StoreError};
 use hashtree_core::types::{to_hex, Hash};
 use std::sync::Arc;
@@ -81,7 +81,8 @@ impl<L: Store + 'static> S3Store<L> {
         let mut aws_config_loader = aws_config::from_env();
 
         if let Some(ref region) = config.region {
-            aws_config_loader = aws_config_loader.region(aws_sdk_s3::config::Region::new(region.clone()));
+            aws_config_loader =
+                aws_config_loader.region(aws_sdk_s3::config::Region::new(region.clone()));
         }
 
         let aws_config = aws_config_loader.load().await;
@@ -112,7 +113,10 @@ impl<L: Store + 'static> S3Store<L> {
             Self::sync_task(sync_rx, sync_client, sync_bucket, sync_prefix).await;
         });
 
-        info!("S3Store initialized with bucket: {}, prefix: {}", bucket, prefix);
+        info!(
+            "S3Store initialized with bucket: {}, prefix: {}",
+            bucket, prefix
+        );
 
         Ok(Self {
             local,
@@ -136,7 +140,11 @@ impl<L: Store + 'static> S3Store<L> {
             match msg {
                 SyncMessage::Upload { hash, data } => {
                     let key = format!("{}{}", prefix, to_hex(&hash));
-                    debug!("S3 uploading {} ({} bytes)", &key[..16.min(key.len())], data.len());
+                    debug!(
+                        "S3 uploading {} ({} bytes)",
+                        &key[..16.min(key.len())],
+                        data.len()
+                    );
 
                     match client
                         .put_object()
@@ -190,7 +198,8 @@ impl<L: Store + 'static> S3Store<L> {
     async fn fetch_from_s3(&self, hash: &Hash) -> Result<Option<Vec<u8>>, S3StoreError> {
         let key = self.s3_key(hash);
 
-        match self.s3_client
+        match self
+            .s3_client
             .get_object()
             .bucket(&self.bucket)
             .key(&key)
@@ -198,7 +207,10 @@ impl<L: Store + 'static> S3Store<L> {
             .await
         {
             Ok(output) => {
-                let data = output.body.collect().await
+                let data = output
+                    .body
+                    .collect()
+                    .await
                     .map_err(|e| S3StoreError::S3(format!("Failed to read body: {}", e)))?;
                 Ok(Some(data.into_bytes().to_vec()))
             }
@@ -218,7 +230,8 @@ impl<L: Store + 'static> S3Store<L> {
     async fn exists_in_s3(&self, hash: &Hash) -> Result<bool, S3StoreError> {
         let key = self.s3_key(hash);
 
-        match self.s3_client
+        match self
+            .s3_client
             .head_object()
             .bucket(&self.bucket)
             .key(&key)

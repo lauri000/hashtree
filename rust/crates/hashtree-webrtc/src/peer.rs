@@ -8,13 +8,13 @@
 //! - Response: [0x01][msgpack: {h: bytes32, d: bytes, i?: u32, n?: u32}]
 
 use crate::protocol::{
-    bytes_to_hash, create_request, create_response, create_fragment_response,
-    encode_request, encode_response, hash_to_key, is_fragmented, parse_message,
-    DataMessage as ProtoMessage, DataResponse, FRAGMENT_SIZE,
+    bytes_to_hash, create_fragment_response, create_request, create_response, encode_request,
+    encode_response, hash_to_key, is_fragmented, parse_message, DataMessage as ProtoMessage,
+    DataResponse, FRAGMENT_SIZE,
 };
 use crate::types::{
-    should_forward, ForwardRequest, ForwardTx, PeerId, PeerHTLConfig, PeerState,
-    SignalingMessage, DATA_CHANNEL_LABEL, MAX_HTL,
+    should_forward, ForwardRequest, ForwardTx, PeerHTLConfig, PeerId, PeerState, SignalingMessage,
+    DATA_CHANNEL_LABEL, MAX_HTL,
 };
 use bytes::Bytes;
 use hashtree_core::{Hash, Store};
@@ -177,8 +177,15 @@ impl<S: Store + 'static> Peer<S> {
         local_store: Arc<S>,
         debug: bool,
     ) -> Result<Self, PeerError> {
-        Self::with_forward_channel(remote_id, local_peer_id, signaling_tx, local_store, debug, None)
-            .await
+        Self::with_forward_channel(
+            remote_id,
+            local_peer_id,
+            signaling_tx,
+            local_store,
+            debug,
+            None,
+        )
+        .await
     }
 
     /// Create a new peer connection with a forwarding channel
@@ -258,8 +265,8 @@ impl<S: Store + 'static> Peer<S> {
 
         // Handle connection state changes
         let state_clone = state.clone();
-        self.connection
-            .on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
+        self.connection.on_peer_connection_state_change(Box::new(
+            move |s: RTCPeerConnectionState| {
                 let state = state_clone.clone();
                 Box::pin(async move {
                     if debug {
@@ -284,7 +291,8 @@ impl<S: Store + 'static> Peer<S> {
                         _ => {}
                     }
                 })
-            }));
+            },
+        ));
 
         // Handle incoming data channels
         let data_channel_clone = data_channel.clone();
@@ -528,12 +536,7 @@ impl<S: Store + 'static> Peer<S> {
                         // Handle fragmented vs unfragmented responses
                         let final_data = if is_fragmented(&res) {
                             // Fragmented response - reassemble
-                            Self::handle_fragment_response(
-                                &res,
-                                &pending_reassemblies,
-                                debug,
-                            )
-                            .await
+                            Self::handle_fragment_response(&res, &pending_reassemblies, debug).await
                         } else {
                             // Unfragmented response - use directly
                             Some(res.d)
@@ -592,10 +595,7 @@ impl<S: Store + 'static> Peer<S> {
                 let _ = dc.send(&Bytes::from(encoded)).await;
 
                 if debug && i == 0 {
-                    println!(
-                        "[Peer] Sending {} fragments for hash",
-                        total_fragments
-                    );
+                    println!("[Peer] Sending {} fragments for hash", total_fragments);
                 }
             }
         }
@@ -732,9 +732,17 @@ impl<S: Store + 'static> Peer<S> {
                 self.connection.set_remote_description(offer).await?;
 
                 // Add any pending candidates
-                let candidates = self.pending_candidates.write().await.drain(..).collect::<Vec<_>>();
+                let candidates = self
+                    .pending_candidates
+                    .write()
+                    .await
+                    .drain(..)
+                    .collect::<Vec<_>>();
                 if self.debug && !candidates.is_empty() {
-                    println!("[Peer] Adding {} pending candidates after offer", candidates.len());
+                    println!(
+                        "[Peer] Adding {} pending candidates after offer",
+                        candidates.len()
+                    );
                 }
                 for candidate in candidates {
                     self.connection.add_ice_candidate(candidate).await?;
@@ -742,7 +750,9 @@ impl<S: Store + 'static> Peer<S> {
 
                 // Create and send answer
                 let answer = self.connection.create_answer(None).await?;
-                self.connection.set_local_description(answer.clone()).await?;
+                self.connection
+                    .set_local_description(answer.clone())
+                    .await?;
 
                 let msg = SignalingMessage::Answer {
                     peer_id: self.local_peer_id.clone(),
@@ -764,9 +774,17 @@ impl<S: Store + 'static> Peer<S> {
                 self.connection.set_remote_description(answer).await?;
 
                 // Add any pending candidates
-                let candidates = self.pending_candidates.write().await.drain(..).collect::<Vec<_>>();
+                let candidates = self
+                    .pending_candidates
+                    .write()
+                    .await
+                    .drain(..)
+                    .collect::<Vec<_>>();
                 if self.debug && !candidates.is_empty() {
-                    println!("[Peer] Adding {} pending candidates after answer", candidates.len());
+                    println!(
+                        "[Peer] Adding {} pending candidates after answer",
+                        candidates.len()
+                    );
                 }
                 for candidate in candidates {
                     self.connection.add_ice_candidate(candidate).await?;
@@ -788,7 +806,10 @@ impl<S: Store + 'static> Peer<S> {
                 // Check if remote description is set
                 if self.connection.remote_description().await.is_some() {
                     if self.debug {
-                        println!("[Peer] Adding ICE candidate: {}...", &candidate[..candidate.len().min(50)]);
+                        println!(
+                            "[Peer] Adding ICE candidate: {}...",
+                            &candidate[..candidate.len().min(50)]
+                        );
                     }
                     self.connection.add_ice_candidate(init).await?;
                 } else {
@@ -827,7 +848,11 @@ impl<S: Store + 'static> Peer<S> {
 
     /// Request data by hash with specified HTL
     /// Uses binary MessagePack protocol compatible with hashtree-ts
-    pub async fn request_with_htl(&self, hash: &Hash, htl: u8) -> Result<Option<Vec<u8>>, PeerError> {
+    pub async fn request_with_htl(
+        &self,
+        hash: &Hash,
+        htl: u8,
+    ) -> Result<Option<Vec<u8>>, PeerError> {
         let state = *self.state.read().await;
         if state != PeerState::Ready {
             return Err(PeerError::NotReady);
@@ -923,7 +948,10 @@ impl<S: Store + 'static> Peer<S> {
     /// Parameters: (hash, exclude_peer_id, htl)
     pub fn set_on_forward_request<F>(&mut self, callback: F)
     where
-        F: Fn(Hash, String, u8) -> futures::future::BoxFuture<'static, Option<Vec<u8>>> + Send + Sync + 'static,
+        F: Fn(Hash, String, u8) -> futures::future::BoxFuture<'static, Option<Vec<u8>>>
+            + Send
+            + Sync
+            + 'static,
     {
         self.on_forward_request = Some(Arc::new(callback));
     }
@@ -952,7 +980,10 @@ impl<S: Store + 'static> Peer<S> {
         Self::send_response(dc, &their_req.hash, data.to_vec(), self.debug).await;
 
         if self.debug {
-            println!("[Peer] Sent data for hash: {}...", &hash_hex[..16.min(hash_hex.len())]);
+            println!(
+                "[Peer] Sent data for hash: {}...",
+                &hash_hex[..16.min(hash_hex.len())]
+            );
         }
 
         Ok(true)

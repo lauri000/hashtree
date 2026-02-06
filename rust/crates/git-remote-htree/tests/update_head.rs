@@ -129,7 +129,6 @@ fn test_fetch_does_not_update_checked_out_branch() {
         String::from_utf8_lossy(&push2.stderr)
     );
 
-
     let set_fetch = Command::new("git")
         .args([
             "config",

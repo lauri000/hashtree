@@ -3,8 +3,8 @@
 use hashtree_webrtc::{
     bytes_to_hash, create_fragment_response, create_request, create_response, encode_request,
     encode_response, is_fragmented, parse_message, should_forward, DataMessage, PeerHTLConfig,
-    PeerId, PeerState, SignalingMessage, WebRTCStats, WebRTCStoreConfig, MSG_TYPE_REQUEST,
-    MSG_TYPE_RESPONSE, MAX_HTL,
+    PeerId, PeerState, SignalingMessage, WebRTCStats, WebRTCStoreConfig, MAX_HTL, MSG_TYPE_REQUEST,
+    MSG_TYPE_RESPONSE,
 };
 
 #[test]
@@ -67,7 +67,11 @@ fn test_signaling_message_roundtrip() {
     let parsed: SignalingMessage = serde_json::from_str(&json).unwrap();
 
     match parsed {
-        SignalingMessage::Answer { peer_id, target_peer_id, sdp } => {
+        SignalingMessage::Answer {
+            peer_id,
+            target_peer_id,
+            sdp,
+        } => {
             assert_eq!(peer_id, "peer1");
             assert_eq!(target_peer_id, "peer2");
             assert_eq!(sdp, "v=0\r\ntest sdp");

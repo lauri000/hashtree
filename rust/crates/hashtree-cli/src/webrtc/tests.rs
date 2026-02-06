@@ -10,7 +10,10 @@ fn test_peer_id_display() {
 
 #[test]
 fn test_peer_id_short() {
-    let peer_id = PeerId::new("abc123def456ghijklmnop".to_string(), Some("uuid-12345678".to_string()));
+    let peer_id = PeerId::new(
+        "abc123def456ghijklmnop".to_string(),
+        Some("uuid-12345678".to_string()),
+    );
     assert_eq!(peer_id.short(), "abc123de:uuid-1");
 }
 

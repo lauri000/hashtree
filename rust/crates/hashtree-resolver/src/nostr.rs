@@ -16,8 +16,8 @@
 use crate::{ResolverEntry, ResolverError, RootResolver};
 use async_trait::async_trait;
 use hashtree_core::{from_hex, to_hex, Cid};
-use nostr_sdk::prelude::*;
 use nostr_sdk::prelude::nip44;
+use nostr_sdk::prelude::*;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -214,7 +214,9 @@ impl NostrRootResolver {
 
         if key.is_none() {
             if let (Some(ciphertext), Some(keys)) = (self_encrypted_key, keys) {
-                if let Ok(key_hex) = nip44::decrypt(keys.secret_key(), &keys.public_key(), &ciphertext) {
+                if let Ok(key_hex) =
+                    nip44::decrypt(keys.secret_key(), &keys.public_key(), &ciphertext)
+                {
                     if let Ok(bytes) = hex::decode(&key_hex) {
                         if bytes.len() == 32 {
                             let mut arr = [0u8; 32];
@@ -322,12 +324,18 @@ impl NostrRootResolver {
     pub async fn publish_private(&self, key: &str, cid: &Cid) -> Result<bool, ResolverError> {
         let (pubkey, tree_name) = Self::parse_key(key)?;
 
-        let keys = self.config.secret_key.as_ref().ok_or(ResolverError::NotAuthorized)?;
+        let keys = self
+            .config
+            .secret_key
+            .as_ref()
+            .ok_or(ResolverError::NotAuthorized)?;
         if pubkey != keys.public_key() {
             return Err(ResolverError::NotAuthorized);
         }
 
-        let key_bytes = cid.key.ok_or_else(|| ResolverError::Other("Missing CHK key for private publish".into()))?;
+        let key_bytes = cid
+            .key
+            .ok_or_else(|| ResolverError::Other("Missing CHK key for private publish".into()))?;
         let key_hex = hex::encode(key_bytes);
 
         let encrypted = nip44::encrypt(
@@ -335,7 +343,8 @@ impl NostrRootResolver {
             &keys.public_key(),
             key_hex,
             nip44::Version::V2,
-        ).map_err(|e| ResolverError::Other(format!("NIP-44 encryption failed: {}", e)))?;
+        )
+        .map_err(|e| ResolverError::Other(format!("NIP-44 encryption failed: {}", e)))?;
 
         let tags = vec![
             Tag::identifier(tree_name.clone()),
@@ -344,7 +353,10 @@ impl NostrRootResolver {
                 vec![HASHTREE_LABEL],
             ),
             Tag::custom(TagKind::Custom(TAG_HASH.into()), vec![to_hex(&cid.hash)]),
-            Tag::custom(TagKind::Custom(TAG_SELF_ENCRYPTED_KEY.into()), vec![encrypted]),
+            Tag::custom(
+                TagKind::Custom(TAG_SELF_ENCRYPTED_KEY.into()),
+                vec![encrypted],
+            ),
         ];
 
         let event = EventBuilder::new(Kind::Custom(HASHTREE_KIND), "", tags);
@@ -547,7 +559,10 @@ impl RootResolver for NostrRootResolver {
 
                     let mut subs = subscriptions.write().await;
                     if let Some(sub) = subs.get_mut(&key_clone) {
-                        let new_cid = NostrRootResolver::cid_from_event_with_keys(&event, secret_key.as_ref());
+                        let new_cid = NostrRootResolver::cid_from_event_with_keys(
+                            &event,
+                            secret_key.as_ref(),
+                        );
                         if event.created_at >= sub.latest_created_at && new_cid != sub.current_cid {
                             sub.current_cid = new_cid.clone();
                             sub.latest_created_at = event.created_at;
@@ -659,7 +674,6 @@ impl RootResolver for NostrRootResolver {
 
         Ok(!output.failed.is_empty() || !output.success.is_empty())
     }
-
 
     async fn list(&self, prefix: &str) -> Result<Vec<ResolverEntry>, ResolverError> {
         let parts: Vec<&str> = prefix.split('/').collect();

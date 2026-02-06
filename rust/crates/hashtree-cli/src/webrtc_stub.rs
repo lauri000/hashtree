@@ -41,9 +41,15 @@ impl PeerId {
 pub struct DummyPeer;
 
 impl DummyPeer {
-    pub fn has_data_channel(&self) -> bool { false }
-    pub fn state(&self) -> &str { "Disabled" }
-    pub async fn request(&self, _hash: &str) -> Result<Option<Vec<u8>>> { Ok(None) }
+    pub fn has_data_channel(&self) -> bool {
+        false
+    }
+    pub fn state(&self) -> &str {
+        "Disabled"
+    }
+    pub async fn request(&self, _hash: &str) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
 }
 
 /// Peer pool stub

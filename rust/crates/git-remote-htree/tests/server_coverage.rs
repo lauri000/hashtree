@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{test_relay::TestRelay, TestServer, TestEnv, create_test_repo, skip_if_no_binary};
+use common::{create_test_repo, skip_if_no_binary, test_relay::TestRelay, TestEnv, TestServer};
 use std::process::{Command, Stdio};
 
 /// Test that adding a new blossom server triggers full upload to it
@@ -75,14 +75,14 @@ fn test_server_coverage_full_upload() {
 
     // Now update config to include BOTH servers
     println!("\n=== Adding server B to config ===");
-    test_env.update_blossom_servers(
-        &[&server_a.base_url(), &server_b.base_url()],
-        &relay.url(),
-    );
+    test_env.update_blossom_servers(&[&server_a.base_url(), &server_b.base_url()], &relay.url());
 
     // Make a small change
-    std::fs::write(repo.path().join("new-file.txt"), "Testing server coverage\n")
-        .expect("Failed to write file");
+    std::fs::write(
+        repo.path().join("new-file.txt"),
+        "Testing server coverage\n",
+    )
+    .expect("Failed to write file");
 
     Command::new("git")
         .args(["add", "new-file.txt"])
@@ -123,7 +123,10 @@ fn test_server_coverage_full_upload() {
     // Also check if diff was used (for server A) - shows optimization is working per-server
     let diff_used = stderr2.contains("unchanged") || stderr2.contains("Computing diff");
 
-    println!("\nFull upload to new server detected: {}", full_upload_detected);
+    println!(
+        "\nFull upload to new server detected: {}",
+        full_upload_detected
+    );
     println!("Diff optimization for existing server: {}", diff_used);
 
     // At minimum, the push should succeed and show upload activity
@@ -133,7 +136,10 @@ fn test_server_coverage_full_upload() {
     let server_a_host = server_a_url.trim_start_matches("http://");
     let server_b_host = server_b_url.trim_start_matches("http://");
     assert!(
-        stderr2.contains(server_a_host) || stderr2.contains(server_b_host) || stderr2.contains("Blossom") || stderr2.contains("Uploading"),
+        stderr2.contains(server_a_host)
+            || stderr2.contains(server_b_host)
+            || stderr2.contains("Blossom")
+            || stderr2.contains("Uploading"),
         "Push should show blossom server activity"
     );
 

@@ -3,17 +3,17 @@
 //! This module uses the exact same signaling and data transfer code
 //! as production WebRTCStore, just with mock transports.
 
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use rand::{Rng, SeedableRng};
-use rand::rngs::StdRng;
 use tokio::sync::RwLock;
 
 use hashtree_core::{HashTree, HashTreeConfig, MemoryStore};
 use hashtree_webrtc::{
-    GenericStore, MockConnectionFactory, MockRelay, MockRelayTransport,
-    PoolConfig, PoolSettings, RelayTransport, SignalingManager,
+    GenericStore, MockConnectionFactory, MockRelay, MockRelayTransport, PoolConfig, PoolSettings,
+    RelayTransport, SignalingManager,
 };
 
 /// Simulation configuration
@@ -55,10 +55,24 @@ impl Default for SimConfig {
 /// Simulation event for logging/analysis
 #[derive(Debug, Clone)]
 pub enum SimEvent {
-    NodeJoined { node_id: String, time_ms: u64 },
-    NodeLeft { node_id: String, time_ms: u64 },
-    ConnectionFormed { from: String, to: String, time_ms: u64 },
-    ConnectionLost { from: String, to: String, time_ms: u64 },
+    NodeJoined {
+        node_id: String,
+        time_ms: u64,
+    },
+    NodeLeft {
+        node_id: String,
+        time_ms: u64,
+    },
+    ConnectionFormed {
+        from: String,
+        to: String,
+        time_ms: u64,
+    },
+    ConnectionLost {
+        from: String,
+        to: String,
+        time_ms: u64,
+    },
 }
 
 /// Type alias for the store used in simulation
@@ -157,7 +171,8 @@ impl Simulation {
             let elapsed_ms = tick * tick_ms;
 
             // Spawn nodes scheduled for this tick
-            while next_spawn_idx < spawn_schedule.len() && spawn_schedule[next_spawn_idx].0 <= tick {
+            while next_spawn_idx < spawn_schedule.len() && spawn_schedule[next_spawn_idx].0 <= tick
+            {
                 self.spawn_node(elapsed_ms).await;
                 next_spawn_idx += 1;
             }
@@ -169,7 +184,11 @@ impl Simulation {
             // Periodic topology snapshot
             if tick > 0 && tick % snapshot_interval_ticks == 0 {
                 let stats = self.analyze_topology().await;
-                self.stats.write().await.topology_snapshots.push((elapsed_ms, stats));
+                self.stats
+                    .write()
+                    .await
+                    .topology_snapshots
+                    .push((elapsed_ms, stats));
             }
         }
 
@@ -179,7 +198,11 @@ impl Simulation {
         }
 
         let final_stats = self.analyze_topology().await;
-        self.stats.write().await.topology_snapshots.push((total_ms, final_stats));
+        self.stats
+            .write()
+            .await
+            .topology_snapshots
+            .push((total_ms, final_stats));
     }
 
     async fn spawn_node(&self, time_ms: u64) {
@@ -191,7 +214,10 @@ impl Simulation {
         };
 
         // Create transport connected to shared relay
-        let transport = Arc::new(self.relay.create_transport(node_id.clone(), node_id.clone()));
+        let transport = Arc::new(
+            self.relay
+                .create_transport(node_id.clone(), node_id.clone()),
+        );
 
         // Create connection factory for this node
         let conn_factory = Arc::new(MockConnectionFactory::new(
@@ -201,7 +227,10 @@ impl Simulation {
 
         // Create pool settings (simulation only uses "other" pool)
         let pools = PoolSettings {
-            follows: PoolConfig { max_connections: 0, satisfied_connections: 0 },
+            follows: PoolConfig {
+                max_connections: 0,
+                satisfied_connections: 0,
+            },
             other: self.config.pool.clone(),
         };
 
@@ -357,7 +386,8 @@ impl Simulation {
         let active_adjacency: HashMap<String, HashSet<String>> = adjacency
             .iter()
             .map(|(k, v)| {
-                let active_peers: HashSet<String> = v.iter()
+                let active_peers: HashSet<String> = v
+                    .iter()
                     .filter(|p| active_nodes.contains(*p))
                     .cloned()
                     .collect();
@@ -482,11 +512,20 @@ impl Simulation {
         println!("Nodes: {}", stats.node_count);
         println!("Connections: {}", stats.connection_count);
         println!("Avg degree: {:.2}", stats.avg_degree);
-        println!("Min/Max degree: {} / {}", stats.min_degree, stats.max_degree);
+        println!(
+            "Min/Max degree: {} / {}",
+            stats.min_degree, stats.max_degree
+        );
         println!("Isolated nodes: {}", stats.isolated_nodes);
         println!("Connected: {}", stats.is_connected);
-        println!("Components: {} (largest: {})", stats.component_count, stats.largest_component);
-        println!("Clustering coefficient: {:.4}", stats.clustering_coefficient);
+        println!(
+            "Components: {} (largest: {})",
+            stats.component_count, stats.largest_component
+        );
+        println!(
+            "Clustering coefficient: {:.4}",
+            stats.clustering_coefficient
+        );
         println!("Degree distribution: {:?}", stats.degree_distribution);
     }
 
@@ -511,7 +550,10 @@ mod tests {
             node_count: 10,
             duration: Duration::from_secs(2),
             seed: 42,
-            pool: PoolConfig { max_connections: 5, satisfied_connections: 3 },
+            pool: PoolConfig {
+                max_connections: 5,
+                satisfied_connections: 3,
+            },
             discovery_interval_ms: 100,
             churn_rate: 0.0,
             allow_rejoin: false,
@@ -535,7 +577,10 @@ mod tests {
             node_count: 20,
             duration: Duration::from_secs(3),
             seed: 123,
-            pool: PoolConfig { max_connections: 5, satisfied_connections: 3 },
+            pool: PoolConfig {
+                max_connections: 5,
+                satisfied_connections: 3,
+            },
             discovery_interval_ms: 100,
             churn_rate: 0.05,
             allow_rejoin: true,
@@ -552,7 +597,10 @@ mod tests {
         Simulation::print_topology_stats(&stats);
         Simulation::print_sim_stats(&sim_stats);
 
-        assert!(sim_stats.total_joins >= 20, "Should have at least initial joins");
+        assert!(
+            sim_stats.total_joins >= 20,
+            "Should have at least initial joins"
+        );
     }
 
     #[tokio::test]
@@ -561,7 +609,10 @@ mod tests {
             node_count: 200,
             duration: Duration::from_secs(15),
             seed: 42,
-            pool: PoolConfig { max_connections: 20, satisfied_connections: 10 },
+            pool: PoolConfig {
+                max_connections: 20,
+                satisfied_connections: 10,
+            },
             discovery_interval_ms: 100,
             churn_rate: 0.0,
             allow_rejoin: false,

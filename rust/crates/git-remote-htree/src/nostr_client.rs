@@ -131,7 +131,10 @@ pub fn resolve_identity(identifier: &str) -> Result<(String, Option<String>)> {
             return Ok((key.pubkey_hex.clone(), Some(key.secret_hex.clone())));
         }
         // Then try "default"
-        if let Some(key) = keys.iter().find(|k| k.petname.as_deref() == Some("default")) {
+        if let Some(key) = keys
+            .iter()
+            .find(|k| k.petname.as_deref() == Some("default"))
+        {
             return Ok((key.pubkey_hex.clone(), Some(key.secret_hex.clone())));
         }
         // Then use first available key
@@ -153,8 +156,8 @@ pub fn resolve_identity(identifier: &str) -> Result<(String, Option<String>)> {
 
     // Check if it's an npub
     if identifier.starts_with("npub1") {
-        let pk =
-            PublicKey::parse(identifier).map_err(|e| anyhow::anyhow!("Invalid npub format: {}", e))?;
+        let pk = PublicKey::parse(identifier)
+            .map_err(|e| anyhow::anyhow!("Invalid npub format: {}", e))?;
         let pubkey_hex = hex::encode(pk.to_bytes());
 
         // Check if we have the secret for this pubkey
@@ -206,11 +209,16 @@ fn generate_and_save_key(petname: &str) -> Result<StoredKey> {
         .open(&keys_path)?;
 
     // Write as nsec with petname
-    let nsec = keys.secret_key().to_bech32()
+    let nsec = keys
+        .secret_key()
+        .to_bech32()
         .map_err(|e| anyhow::anyhow!("Failed to encode nsec: {}", e))?;
     writeln!(file, "{} {}", nsec, petname)?;
 
-    info!("Saved new key to {:?} with petname '{}'", keys_path, petname);
+    info!(
+        "Saved new key to {:?} with petname '{}'",
+        keys_path, petname
+    );
 
     Ok(StoredKey {
         secret_hex,
@@ -226,7 +234,9 @@ where
     I: IntoIterator<Item = &'a Event>,
 {
     // Use NIP-16 replaceable event ordering: created_at, then event id.
-    events.into_iter().max_by_key(|event| (event.created_at, event.id))
+    events
+        .into_iter()
+        .max_by_key(|event| (event.created_at, event.id))
 }
 
 /// Result of publishing to relays
@@ -275,7 +285,13 @@ pub struct NostrClient {
 
 impl NostrClient {
     /// Create a new client with pubkey, optional secret key, url secret, is_private flag, and config
-    pub fn new(pubkey: &str, secret_key: Option<String>, url_secret: Option<[u8; 32]>, is_private: bool, config: &Config) -> Result<Self> {
+    pub fn new(
+        pubkey: &str,
+        secret_key: Option<String>,
+        url_secret: Option<[u8; 32]>,
+        is_private: bool,
+        config: &Config,
+    ) -> Result<Self> {
         // Use provided secret, or try environment variable
         let secret_key = secret_key.or_else(|| std::env::var("NOSTR_SECRET_KEY").ok());
 
@@ -292,11 +308,13 @@ impl NostrClient {
         // Create BlossomClient (needs keys for upload auth)
         // BlossomClient auto-loads servers from config
         let blossom_keys = keys.clone().unwrap_or_else(Keys::generate);
-        let blossom = BlossomClient::new(blossom_keys)
-            .with_timeout(Duration::from_secs(30));
+        let blossom = BlossomClient::new(blossom_keys).with_timeout(Duration::from_secs(30));
 
-        tracing::info!("BlossomClient created with read_servers: {:?}, write_servers: {:?}",
-            blossom.read_servers(), blossom.write_servers());
+        tracing::info!(
+            "BlossomClient created with read_servers: {:?}, write_servers: {:?}",
+            blossom.read_servers(),
+            blossom.write_servers()
+        );
 
         let relays = hashtree_config::resolve_relays(
             &config.nostr.relays,
@@ -340,13 +358,23 @@ impl NostrClient {
     /// Fetch refs and root hash info from nostr
     /// Returns (refs, root_hash, encryption_key)
     #[allow(dead_code)]
-    pub fn fetch_refs_with_root(&mut self, repo_name: &str) -> Result<(HashMap<String, String>, Option<String>, Option<[u8; 32]>)> {
+    pub fn fetch_refs_with_root(
+        &mut self,
+        repo_name: &str,
+    ) -> Result<(HashMap<String, String>, Option<String>, Option<[u8; 32]>)> {
         self.fetch_refs_with_timeout(repo_name, 10)
     }
 
     /// Fetch refs with configurable timeout
-    fn fetch_refs_with_timeout(&mut self, repo_name: &str, timeout_secs: u64) -> Result<(HashMap<String, String>, Option<String>, Option<[u8; 32]>)> {
-        debug!("Fetching refs for {} from {} (timeout {}s)", repo_name, self.pubkey, timeout_secs);
+    fn fetch_refs_with_timeout(
+        &mut self,
+        repo_name: &str,
+        timeout_secs: u64,
+    ) -> Result<(HashMap<String, String>, Option<String>, Option<[u8; 32]>)> {
+        debug!(
+            "Fetching refs for {} from {} (timeout {}s)",
+            repo_name, self.pubkey, timeout_secs
+        );
 
         // Check cache first
         if let Some(refs) = self.cached_refs.get(repo_name) {
@@ -362,18 +390,25 @@ impl NostrClient {
             .build()
             .context("Failed to create tokio runtime")?;
 
-        let (refs, root_hash, encryption_key) = rt.block_on(self.fetch_refs_async_with_timeout(repo_name, timeout_secs))?;
+        let (refs, root_hash, encryption_key) =
+            rt.block_on(self.fetch_refs_async_with_timeout(repo_name, timeout_secs))?;
         self.cached_refs.insert(repo_name.to_string(), refs.clone());
         if let Some(ref root) = root_hash {
-            self.cached_root_hash.insert(repo_name.to_string(), root.clone());
+            self.cached_root_hash
+                .insert(repo_name.to_string(), root.clone());
         }
         if let Some(key) = encryption_key {
-            self.cached_encryption_key.insert(repo_name.to_string(), key);
+            self.cached_encryption_key
+                .insert(repo_name.to_string(), key);
         }
         Ok((refs, root_hash, encryption_key))
     }
 
-    async fn fetch_refs_async_with_timeout(&self, repo_name: &str, timeout_secs: u64) -> Result<(HashMap<String, String>, Option<String>, Option<[u8; 32]>)> {
+    async fn fetch_refs_async_with_timeout(
+        &self,
+        repo_name: &str,
+        timeout_secs: u64,
+    ) -> Result<(HashMap<String, String>, Option<String>, Option<[u8; 32]>)> {
         // Create nostr-sdk client
         let client = Client::default();
 
@@ -404,12 +439,21 @@ impl NostrClient {
                 }
             }
             if connected > 0 {
-                debug!("Connected to {}/{} relay(s) in {:?}", connected, total, start.elapsed());
+                debug!(
+                    "Connected to {}/{} relay(s) in {:?}",
+                    connected,
+                    total,
+                    start.elapsed()
+                );
                 break;
             }
             // Log progress every 500ms so user knows something is happening
             if last_log.elapsed() > Duration::from_millis(500) {
-                debug!("Connecting to relays... (0/{} after {:?})", total, start.elapsed());
+                debug!(
+                    "Connecting to relays... (0/{} after {:?})",
+                    total,
+                    start.elapsed()
+                );
                 last_log = std::time::Instant::now();
             }
             if start.elapsed() > connect_timeout {
@@ -428,7 +472,10 @@ impl NostrClient {
             .kind(Kind::Custom(KIND_APP_DATA))
             .author(author)
             .custom_tag(SingleLetterTag::lowercase(Alphabet::D), vec![repo_name])
-            .custom_tag(SingleLetterTag::lowercase(Alphabet::L), vec![LABEL_HASHTREE])
+            .custom_tag(
+                SingleLetterTag::lowercase(Alphabet::L),
+                vec![LABEL_HASHTREE],
+            )
             .limit(50);
 
         debug!("Querying relays for repo {} events", repo_name);
@@ -466,12 +513,22 @@ impl NostrClient {
 
         let Some(event) = event else {
             let npub = PublicKey::from_hex(&self.pubkey)
-                .map(|pk| pk.to_bech32().unwrap_or_else(|_| self.pubkey[..12].to_string()))
-                .map(|s| format!("{}...{}", &s[..12], &s[s.len()-6..]))
+                .map(|pk| {
+                    pk.to_bech32()
+                        .unwrap_or_else(|_| self.pubkey[..12].to_string())
+                })
+                .map(|s| format!("{}...{}", &s[..12], &s[s.len() - 6..]))
                 .unwrap_or_else(|_| self.pubkey[..12].to_string());
-            anyhow::bail!("Repository '{}' not found (no hashtree event published by {})", repo_name, npub);
+            anyhow::bail!(
+                "Repository '{}' not found (no hashtree event published by {})",
+                repo_name,
+                npub
+            );
         };
-        debug!("Found event with root hash: {}", &event.content[..12.min(event.content.len())]);
+        debug!(
+            "Found event with root hash: {}",
+            &event.content[..12.min(event.content.len())]
+        );
 
         // Get root hash from content or "hash" tag
         let root_hash = event
@@ -552,8 +609,8 @@ impl NostrClient {
                         let pubkey = keys.public_key();
                         match nip44::decrypt(keys.secret_key(), &pubkey, &ciphertext) {
                             Ok(key_hex) => {
-                                let key_bytes = hex::decode(&key_hex)
-                                    .context("Invalid decrypted key hex")?;
+                                let key_bytes =
+                                    hex::decode(&key_hex).context("Invalid decrypted key hex")?;
                                 if key_bytes.len() != 32 {
                                     anyhow::bail!("Decrypted key wrong length");
                                 }
@@ -590,23 +647,34 @@ impl NostrClient {
             }
         };
 
-        info!("Found root hash {} for {} (encrypted: {}, link_visible: {})",
-              &root_hash[..12.min(root_hash.len())], repo_name, unmasked_key.is_some(), self.url_secret.is_some());
+        info!(
+            "Found root hash {} for {} (encrypted: {}, link_visible: {})",
+            &root_hash[..12.min(root_hash.len())],
+            repo_name,
+            unmasked_key.is_some(),
+            self.url_secret.is_some()
+        );
 
         // Fetch refs from hashtree structure at root_hash
-        let refs = self.fetch_refs_from_hashtree(&root_hash, unmasked_key.as_ref()).await?;
+        let refs = self
+            .fetch_refs_from_hashtree(&root_hash, unmasked_key.as_ref())
+            .await?;
         Ok((refs, Some(root_hash), unmasked_key))
     }
 
     /// Decrypt data if encryption key is provided, then decode as tree node
-    fn decrypt_and_decode(&self, data: &[u8], key: Option<&[u8; 32]>) -> Option<hashtree_core::TreeNode> {
+    fn decrypt_and_decode(
+        &self,
+        data: &[u8],
+        key: Option<&[u8; 32]>,
+    ) -> Option<hashtree_core::TreeNode> {
         let decrypted_data: Vec<u8>;
         let data_to_decode = if let Some(k) = key {
             match decrypt_chk(data, k) {
                 Ok(d) => {
                     decrypted_data = d;
                     &decrypted_data
-                },
+                }
                 Err(e) => {
                     debug!("Decryption failed: {}", e);
                     return None;
@@ -627,9 +695,16 @@ impl NostrClient {
 
     /// Fetch git refs from hashtree structure
     /// Structure: root -> .git/ -> refs/ -> heads/main -> <sha>
-    async fn fetch_refs_from_hashtree(&self, root_hash: &str, encryption_key: Option<&[u8; 32]>) -> Result<HashMap<String, String>> {
+    async fn fetch_refs_from_hashtree(
+        &self,
+        root_hash: &str,
+        encryption_key: Option<&[u8; 32]>,
+    ) -> Result<HashMap<String, String>> {
         let mut refs = HashMap::new();
-        debug!("fetch_refs_from_hashtree: downloading root {}", &root_hash[..12]);
+        debug!(
+            "fetch_refs_from_hashtree: downloading root {}",
+            &root_hash[..12]
+        );
 
         // Download root directory from Blossom - propagate errors properly
         let root_data = match self.blossom.download(root_hash).await {
@@ -638,7 +713,11 @@ impl NostrClient {
                 data
             }
             Err(e) => {
-                anyhow::bail!("Failed to download root hash {}: {}", &root_hash[..12.min(root_hash.len())], e);
+                anyhow::bail!(
+                    "Failed to download root hash {}: {}",
+                    &root_hash[..12.min(root_hash.len())],
+                    e
+                );
             }
         };
 
@@ -649,14 +728,27 @@ impl NostrClient {
                 node
             }
             None => {
-                debug!("Failed to decode root node (encryption_key: {})", encryption_key.is_some());
+                debug!(
+                    "Failed to decode root node (encryption_key: {})",
+                    encryption_key.is_some()
+                );
                 return Ok(refs);
             }
         };
 
         // Find .git directory
-        debug!("Root links: {:?}", root_node.links.iter().map(|l| l.name.as_deref()).collect::<Vec<_>>());
-        let git_link = root_node.links.iter().find(|l| l.name.as_deref() == Some(".git"));
+        debug!(
+            "Root links: {:?}",
+            root_node
+                .links
+                .iter()
+                .map(|l| l.name.as_deref())
+                .collect::<Vec<_>>()
+        );
+        let git_link = root_node
+            .links
+            .iter()
+            .find(|l| l.name.as_deref() == Some(".git"));
         let (git_hash, git_key) = match git_link {
             Some(link) => {
                 debug!("Found .git link with key: {}", link.key.is_some());
@@ -672,13 +764,24 @@ impl NostrClient {
         let git_data = match self.blossom.download(&git_hash).await {
             Ok(data) => data,
             Err(e) => {
-                anyhow::bail!("Failed to download .git directory ({}): {}", &git_hash[..12], e);
+                anyhow::bail!(
+                    "Failed to download .git directory ({}): {}",
+                    &git_hash[..12],
+                    e
+                );
             }
         };
 
         let git_node = match self.decrypt_and_decode(&git_data, git_key.as_ref()) {
             Some(node) => {
-                debug!("Decoded .git node with {} links: {:?}", node.links.len(), node.links.iter().map(|l| l.name.as_deref()).collect::<Vec<_>>());
+                debug!(
+                    "Decoded .git node with {} links: {:?}",
+                    node.links.len(),
+                    node.links
+                        .iter()
+                        .map(|l| l.name.as_deref())
+                        .collect::<Vec<_>>()
+                );
                 node
             }
             None => {
@@ -688,7 +791,10 @@ impl NostrClient {
         };
 
         // Find refs directory
-        let refs_link = git_node.links.iter().find(|l| l.name.as_deref() == Some("refs"));
+        let refs_link = git_node
+            .links
+            .iter()
+            .find(|l| l.name.as_deref() == Some("refs"));
         let (refs_hash, refs_key) = match refs_link {
             Some(link) => (hex::encode(link.hash), link.key),
             None => {
@@ -714,7 +820,11 @@ impl NostrClient {
         };
 
         // Look for HEAD in .git directory
-        if let Some(head_link) = git_node.links.iter().find(|l| l.name.as_deref() == Some("HEAD")) {
+        if let Some(head_link) = git_node
+            .links
+            .iter()
+            .find(|l| l.name.as_deref() == Some("HEAD"))
+        {
             let head_hash = hex::encode(head_link.hash);
             if let Some(head_data) = self.blossom.try_download(&head_hash).await {
                 // HEAD is a blob, decrypt if needed
@@ -746,7 +856,8 @@ impl NostrClient {
                 subdir_link.key.as_ref(),
                 &format!("refs/{}", subdir_name),
                 &mut refs,
-            ).await;
+            )
+            .await;
         }
 
         debug!("Found {} refs from hashtree", refs.len());
@@ -781,7 +892,13 @@ impl NostrClient {
 
             if link.link_type == LinkType::Dir {
                 // Recurse into subdirectory
-                Box::pin(self.collect_refs_recursive(&link_hash, link.key.as_ref(), &ref_path, refs)).await;
+                Box::pin(self.collect_refs_recursive(
+                    &link_hash,
+                    link.key.as_ref(),
+                    &ref_path,
+                    refs,
+                ))
+                .await;
             } else {
                 // This is a ref file - read the SHA
                 if let Some(ref_data) = self.blossom.try_download(&link_hash).await {
@@ -866,14 +983,23 @@ impl NostrClient {
     ///   content: <merkle-root-hash>
     /// Returns: (npub URL, relay result with connected/failed details)
     /// If is_private is true, uses "encryptedKey" tag (XOR masked); otherwise uses "key" tag (plaintext CHK)
-    pub fn publish_repo(&self, repo_name: &str, root_hash: &str, encryption_key: Option<(&[u8; 32], bool, bool)>) -> Result<(String, RelayResult)> {
+    pub fn publish_repo(
+        &self,
+        repo_name: &str,
+        root_hash: &str,
+        encryption_key: Option<(&[u8; 32], bool, bool)>,
+    ) -> Result<(String, RelayResult)> {
         let keys = self.keys.as_ref().context(format!(
             "Cannot push: no secret key for {}. You can only push to your own repos.",
             &self.pubkey[..16]
         ))?;
 
-        info!("Publishing repo {} with root hash {} (encrypted: {})",
-            repo_name, root_hash, encryption_key.is_some());
+        info!(
+            "Publishing repo {} with root hash {} (encrypted: {})",
+            repo_name,
+            root_hash,
+            encryption_key.is_some()
+        );
 
         // Create a new multi-threaded runtime for nostr-sdk which spawns background tasks
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -881,7 +1007,8 @@ impl NostrClient {
             .build()
             .context("Failed to create tokio runtime")?;
 
-        let result = rt.block_on(self.publish_repo_async(keys, repo_name, root_hash, encryption_key));
+        let result =
+            rt.block_on(self.publish_repo_async(keys, repo_name, root_hash, encryption_key));
 
         // Give nostr-sdk background tasks time to clean up gracefully
         // This prevents "runtime is shutting down" panics from timer tasks
@@ -953,16 +1080,19 @@ impl NostrClient {
                 // NIP-44 encrypt to self
                 let pubkey = keys.public_key();
                 let key_hex = hex::encode(key);
-                let encrypted = nip44::encrypt(
-                    keys.secret_key(),
-                    &pubkey,
-                    &key_hex,
-                    nip44::Version::V2
-                ).map_err(|e| anyhow::anyhow!("NIP-44 encryption failed: {}", e))?;
-                tags.push(Tag::custom(TagKind::custom("selfEncryptedKey"), vec![encrypted]));
+                let encrypted =
+                    nip44::encrypt(keys.secret_key(), &pubkey, &key_hex, nip44::Version::V2)
+                        .map_err(|e| anyhow::anyhow!("NIP-44 encryption failed: {}", e))?;
+                tags.push(Tag::custom(
+                    TagKind::custom("selfEncryptedKey"),
+                    vec![encrypted],
+                ));
             } else if is_link_visible {
                 // XOR masked key
-                tags.push(Tag::custom(TagKind::custom("encryptedKey"), vec![hex::encode(key)]));
+                tags.push(Tag::custom(
+                    TagKind::custom("encryptedKey"),
+                    vec![hex::encode(key)],
+                ));
             } else {
                 // Public: plaintext CHK
                 tags.push(Tag::custom(TagKind::custom("key"), vec![hex::encode(key)]));
@@ -1001,7 +1131,12 @@ impl NostrClient {
                         }
                     }
                 }
-                info!("Sent event {} to {} relays ({} failed)", output.id(), output.success.len(), output.failed.len());
+                info!(
+                    "Sent event {} to {} relays ({} failed)",
+                    output.id(),
+                    output.success.len(),
+                    output.failed.len()
+                );
             }
             Err(e) => {
                 warn!("Failed to send event: {}", e);
@@ -1015,7 +1150,9 @@ impl NostrClient {
         };
 
         // Build the full htree:// URL with npub
-        let npub_url = keys.public_key().to_bech32()
+        let npub_url = keys
+            .public_key()
+            .to_bech32()
             .map(|npub| format!("htree://{}/{}", npub, repo_name))
             .unwrap_or_else(|_| format!("htree://{}/{}", &self.pubkey[..16], repo_name));
 
@@ -1023,7 +1160,14 @@ impl NostrClient {
         let _ = client.disconnect().await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        Ok((npub_url, RelayResult { configured, connected, failed }))
+        Ok((
+            npub_url,
+            RelayResult {
+                configured,
+                connected,
+                failed,
+            },
+        ))
     }
 
     /// Upload blob to blossom server
@@ -1066,8 +1210,7 @@ impl NostrClient {
 mod tests {
     use super::*;
 
-    const TEST_PUBKEY: &str =
-        "4523be58d395b1b196a9b8c82b038b6895cb02b683d0c253a955068dba1facd0";
+    const TEST_PUBKEY: &str = "4523be58d395b1b196a9b8c82b038b6895cb02b683d0c253a955068dba1facd0";
 
     fn test_config() -> Config {
         Config::default()
@@ -1085,7 +1228,8 @@ mod tests {
     fn test_new_client_with_secret() {
         let config = test_config();
         let secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let client = NostrClient::new(TEST_PUBKEY, Some(secret.to_string()), None, false, &config).unwrap();
+        let client =
+            NostrClient::new(TEST_PUBKEY, Some(secret.to_string()), None, false, &config).unwrap();
         assert!(client.can_sign());
     }
 
@@ -1144,7 +1288,11 @@ mod tests {
             .to_event(&keys)
             .unwrap();
 
-        let expected_id = if event_a.id > event_b.id { event_a.id } else { event_b.id };
+        let expected_id = if event_a.id > event_b.id {
+            event_a.id
+        } else {
+            event_b.id
+        };
         let picked = pick_latest_event([&event_a, &event_b]).unwrap();
         assert_eq!(picked.id, expected_id);
     }
@@ -1202,7 +1350,7 @@ mod tests {
     /// Verify that private repo encryption (NIP-44) produces ciphertext, not plaintext CHK
     #[test]
     fn test_private_key_is_nip44_encrypted_not_plaintext() {
-        use nostr_sdk::prelude::{Keys, nip44};
+        use nostr_sdk::prelude::{nip44, Keys};
 
         // Create test keys
         let keys = Keys::generate();
@@ -1210,10 +1358,9 @@ mod tests {
 
         // Test CHK key (32 bytes)
         let chk_key: [u8; 32] = [
-            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
-            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
-            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
-            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0xab, 0xcd, 0xef,
         ];
         let plaintext_hex = hex::encode(&chk_key);
 
@@ -1222,8 +1369,9 @@ mod tests {
             keys.secret_key(),
             &pubkey,
             &plaintext_hex,
-            nip44::Version::V2
-        ).expect("NIP-44 encryption should succeed");
+            nip44::Version::V2,
+        )
+        .expect("NIP-44 encryption should succeed");
 
         // Critical security check: encrypted value must NOT be plaintext
         assert_ne!(
@@ -1238,11 +1386,8 @@ mod tests {
         );
 
         // Verify we can decrypt it back (round-trip)
-        let decrypted = nip44::decrypt(
-            keys.secret_key(),
-            &pubkey,
-            &encrypted
-        ).expect("NIP-44 decryption should succeed");
+        let decrypted = nip44::decrypt(keys.secret_key(), &pubkey, &encrypted)
+            .expect("NIP-44 decryption should succeed");
 
         assert_eq!(
             decrypted, plaintext_hex,
@@ -1253,7 +1398,7 @@ mod tests {
     /// Verify that different encryption modes produce different tag values
     #[test]
     fn test_encryption_modes_produce_different_values() {
-        use nostr_sdk::prelude::{Keys, nip44};
+        use nostr_sdk::prelude::{nip44, Keys};
 
         let keys = Keys::generate();
         let pubkey = keys.public_key();
@@ -1272,8 +1417,9 @@ mod tests {
             keys.secret_key(),
             &pubkey,
             &plaintext_hex,
-            nip44::Version::V2
-        ).expect("NIP-44 encryption should succeed");
+            nip44::Version::V2,
+        )
+        .expect("NIP-44 encryption should succeed");
 
         // Private value must be different from public
         assert_ne!(

@@ -5,16 +5,16 @@
 //! Run with: cargo test --package hashtree-cli --test profile -- --nocapture
 
 use anyhow::Result;
-use nostr::{Keys, ToBech32, EventBuilder, Kind, Filter};
+use nostr::{EventBuilder, Filter, Keys, Kind, ToBech32};
 use nostr_sdk::{ClientBuilder, EventSource};
 use std::time::Duration;
 
 mod test_relay {
+    use futures::{SinkExt, StreamExt};
+    use nostr::Filter;
     use std::collections::HashMap;
     use std::net::TcpListener;
-    use nostr::Filter;
     use std::sync::Arc;
-    use futures::{SinkExt, StreamExt};
     use tokio::net::TcpStream;
     use tokio::sync::{broadcast, RwLock};
     use tokio_tungstenite::{accept_async, tungstenite::Message};
@@ -26,7 +26,8 @@ mod test_relay {
 
     impl TestRelay {
         pub fn new(port: u16) -> Self {
-            let events: Arc<RwLock<HashMap<String, serde_json::Value>>> = Arc::new(RwLock::new(HashMap::new()));
+            let events: Arc<RwLock<HashMap<String, serde_json::Value>>> =
+                Arc::new(RwLock::new(HashMap::new()));
             let (shutdown, _) = broadcast::channel(1);
             let (event_tx, _) = broadcast::channel::<serde_json::Value>(1000);
 
@@ -97,7 +98,8 @@ mod test_relay {
         let (write, mut read) = ws_stream.split();
         let write = Arc::new(tokio::sync::Mutex::new(write));
 
-        let subscriptions: Arc<RwLock<HashMap<String, Filter>>> = Arc::new(RwLock::new(HashMap::new()));
+        let subscriptions: Arc<RwLock<HashMap<String, Filter>>> =
+            Arc::new(RwLock::new(HashMap::new()));
 
         // Broadcast task for live events
         let write_clone = write.clone();
@@ -166,7 +168,10 @@ mod test_relay {
                         let sub_id = parsed[1].as_str().unwrap_or("sub").to_string();
 
                         // Store subscription
-                        subscriptions.write().await.insert(sub_id.clone(), Filter::new());
+                        subscriptions
+                            .write()
+                            .await
+                            .insert(sub_id.clone(), Filter::new());
 
                         // Send matching stored events
                         let stored = events.read().await;
@@ -214,8 +219,7 @@ async fn test_profile_publish_and_fetch() -> Result<()> {
         "about": "A test profile"
     });
 
-    let event = EventBuilder::new(Kind::Metadata, profile.to_string(), [])
-        .to_event(&keys)?;
+    let event = EventBuilder::new(Kind::Metadata, profile.to_string(), []).to_event(&keys)?;
 
     // Publish using nostr-sdk client
     let client = ClientBuilder::default().build();
@@ -236,8 +240,9 @@ async fn test_profile_publish_and_fetch() -> Result<()> {
 
     let events = tokio::time::timeout(
         Duration::from_secs(5),
-        client.get_events_of(vec![filter], EventSource::relays(None))
-    ).await??;
+        client.get_events_of(vec![filter], EventSource::relays(None)),
+    )
+    .await??;
 
     client.disconnect().await?;
 
@@ -247,8 +252,14 @@ async fn test_profile_publish_and_fetch() -> Result<()> {
     let fetched = events.into_iter().next().unwrap();
     let fetched_profile: serde_json::Value = serde_json::from_str(&fetched.content)?;
 
-    assert_eq!(fetched_profile.get("name").and_then(|v| v.as_str()), Some("Test User"));
-    assert_eq!(fetched_profile.get("about").and_then(|v| v.as_str()), Some("A test profile"));
+    assert_eq!(
+        fetched_profile.get("name").and_then(|v| v.as_str()),
+        Some("Test User")
+    );
+    assert_eq!(
+        fetched_profile.get("about").and_then(|v| v.as_str()),
+        Some("A test profile")
+    );
 
     println!("Profile published and fetched successfully for {}", npub);
     Ok(())
@@ -269,8 +280,7 @@ async fn test_profile_update_merges_fields() -> Result<()> {
         "about": "Original bio"
     });
 
-    let event1 = EventBuilder::new(Kind::Metadata, profile1.to_string(), [])
-        .to_event(&keys)?;
+    let event1 = EventBuilder::new(Kind::Metadata, profile1.to_string(), []).to_event(&keys)?;
 
     let client = ClientBuilder::default().build();
     client.add_relay(&relay_url).await?;
@@ -289,8 +299,9 @@ async fn test_profile_update_merges_fields() -> Result<()> {
 
     let events = tokio::time::timeout(
         Duration::from_secs(5),
-        client.get_events_of(vec![filter.clone()], EventSource::relays(None))
-    ).await??;
+        client.get_events_of(vec![filter.clone()], EventSource::relays(None)),
+    )
+    .await??;
 
     let existing: serde_json::Map<String, serde_json::Value> = events
         .into_iter()
@@ -300,26 +311,28 @@ async fn test_profile_update_merges_fields() -> Result<()> {
 
     // Merge: keep existing fields, add picture
     let mut updated = existing.clone();
-    updated.insert("picture".to_string(), serde_json::Value::String("https://example.com/pic.jpg".to_string()));
+    updated.insert(
+        "picture".to_string(),
+        serde_json::Value::String("https://example.com/pic.jpg".to_string()),
+    );
 
     // Wait to ensure different timestamp
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    let event2 = EventBuilder::new(Kind::Metadata, serde_json::to_string(&updated)?, [])
-        .to_event(&keys)?;
+    let event2 =
+        EventBuilder::new(Kind::Metadata, serde_json::to_string(&updated)?, []).to_event(&keys)?;
 
     client.send_event(event2).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Fetch final profile - get all events and take the most recent one
-    let filter = Filter::new()
-        .author(keys.public_key())
-        .kind(Kind::Metadata);
+    let filter = Filter::new().author(keys.public_key()).kind(Kind::Metadata);
 
     let events = tokio::time::timeout(
         Duration::from_secs(5),
-        client.get_events_of(vec![filter], EventSource::relays(None))
-    ).await??;
+        client.get_events_of(vec![filter], EventSource::relays(None)),
+    )
+    .await??;
 
     // Take the most recent event (highest created_at)
     let final_profile: serde_json::Value = events
@@ -329,9 +342,18 @@ async fn test_profile_update_merges_fields() -> Result<()> {
         .unwrap();
 
     // Verify all fields are present
-    assert_eq!(final_profile.get("name").and_then(|v| v.as_str()), Some("Original Name"));
-    assert_eq!(final_profile.get("about").and_then(|v| v.as_str()), Some("Original bio"));
-    assert_eq!(final_profile.get("picture").and_then(|v| v.as_str()), Some("https://example.com/pic.jpg"));
+    assert_eq!(
+        final_profile.get("name").and_then(|v| v.as_str()),
+        Some("Original Name")
+    );
+    assert_eq!(
+        final_profile.get("about").and_then(|v| v.as_str()),
+        Some("Original bio")
+    );
+    assert_eq!(
+        final_profile.get("picture").and_then(|v| v.as_str()),
+        Some("https://example.com/pic.jpg")
+    );
 
     client.disconnect().await?;
     println!("Profile update merge test passed");
@@ -356,8 +378,7 @@ async fn test_fetch_peer_profile_name() -> Result<()> {
         "about": "A peer user"
     });
 
-    let event = EventBuilder::new(Kind::Metadata, profile.to_string(), [])
-        .to_event(&peer_keys)?;
+    let event = EventBuilder::new(Kind::Metadata, profile.to_string(), []).to_event(&peer_keys)?;
 
     // Publish peer's profile
     let client = ClientBuilder::default().build();
@@ -374,8 +395,9 @@ async fn test_fetch_peer_profile_name() -> Result<()> {
 
     let events = tokio::time::timeout(
         Duration::from_secs(5),
-        client.get_events_of(vec![filter], EventSource::relays(None))
-    ).await??;
+        client.get_events_of(vec![filter], EventSource::relays(None)),
+    )
+    .await??;
 
     // Extract name using same logic as fetch_profile_name
     let profile_name = events
@@ -394,7 +416,10 @@ async fn test_fetch_peer_profile_name() -> Result<()> {
     client.disconnect().await?;
 
     assert_eq!(profile_name, Some("Alice Wonder".to_string()));
-    println!("Peer profile name fetched successfully for {}", peer_pubkey_hex);
+    println!(
+        "Peer profile name fetched successfully for {}",
+        peer_pubkey_hex
+    );
     Ok(())
 }
 
@@ -420,8 +445,9 @@ async fn test_fetch_missing_profile_returns_none() -> Result<()> {
 
     let events = tokio::time::timeout(
         Duration::from_secs(2),
-        client.get_events_of(vec![filter], EventSource::relays(None))
-    ).await??;
+        client.get_events_of(vec![filter], EventSource::relays(None)),
+    )
+    .await??;
 
     client.disconnect().await?;
 

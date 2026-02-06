@@ -49,8 +49,7 @@ impl Fetcher {
     pub fn new(config: FetchConfig) -> Self {
         // Generate ephemeral keys for downloads (no signing needed)
         let keys = Keys::generate();
-        let blossom = BlossomClient::new(keys)
-            .with_timeout(config.blossom_timeout);
+        let blossom = BlossomClient::new(keys).with_timeout(config.blossom_timeout);
         let blossom = with_local_daemon_read(blossom);
 
         Self { config, blossom }
@@ -58,8 +57,7 @@ impl Fetcher {
 
     /// Create a new fetcher with specific keys (for authenticated uploads)
     pub fn with_keys(config: FetchConfig, keys: Keys) -> Self {
-        let blossom = BlossomClient::new(keys)
-            .with_timeout(config.blossom_timeout);
+        let blossom = BlossomClient::new(keys).with_timeout(config.blossom_timeout);
         let blossom = with_local_daemon_read(blossom);
 
         Self { config, blossom }
@@ -106,7 +104,11 @@ impl Fetcher {
             }
             Err(e) => {
                 debug!("Blossom download failed for {}: {}", short_hash, e);
-                Err(anyhow::anyhow!("Failed to fetch {} from any source: {}", short_hash, e))
+                Err(anyhow::anyhow!(
+                    "Failed to fetch {} from any source: {}",
+                    short_hash,
+                    e
+                ))
             }
         }
     }
@@ -138,7 +140,8 @@ impl Fetcher {
         webrtc_state: Option<&Arc<WebRTCState>>,
         root_hash: &[u8; 32],
     ) -> Result<(usize, u64)> {
-        self.fetch_tree_parallel(store, webrtc_state, root_hash, 1).await
+        self.fetch_tree_parallel(store, webrtc_state, root_hash, 1)
+            .await
     }
 
     /// Fetch an entire tree with parallel downloads
@@ -190,11 +193,9 @@ impl Fetcher {
                     let fut = async move {
                         // Try WebRTC first
                         if let Some(state) = &webrtc {
-                            if let Ok(Some(data)) = tokio::time::timeout(
-                                timeout,
-                                state.request_from_peers(&hash_hex),
-                            )
-                            .await
+                            if let Ok(Some(data)) =
+                                tokio::time::timeout(timeout, state.request_from_peers(&hash_hex))
+                                    .await
                             {
                                 return (hash, Ok(data));
                             }

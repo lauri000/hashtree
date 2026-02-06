@@ -11,7 +11,10 @@
 
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
-use nostr::{nips::nip44, ClientMessage, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey, RelayMessage, Tag};
+use nostr::{
+    nips::nip44, ClientMessage, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey,
+    RelayMessage, Tag,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -19,11 +22,12 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
-use crate::nostr_relay::NostrRelay;
 use super::peer::{ContentStore, Peer, PendingRequest};
 use super::types::{
-    PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus, SignalingMessage, WebRTCConfig, WEBRTC_KIND, HELLO_TAG,
+    PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus, SignalingMessage, WebRTCConfig,
+    HELLO_TAG, WEBRTC_KIND,
 };
+use crate::nostr_relay::NostrRelay;
 
 /// Callback type for classifying peers into pools
 pub type PeerClassifier = Arc<dyn Fn(&str) -> PeerPool + Send + Sync>;
@@ -84,13 +88,15 @@ impl WebRTCState {
     pub fn get_bandwidth(&self) -> (u64, u64) {
         (
             self.bytes_sent.load(std::sync::atomic::Ordering::Relaxed),
-            self.bytes_received.load(std::sync::atomic::Ordering::Relaxed),
+            self.bytes_received
+                .load(std::sync::atomic::Ordering::Relaxed),
         )
     }
 
     /// Record bytes sent (global + per-peer)
     pub async fn record_sent(&self, peer_id: &str, bytes: u64) {
-        self.bytes_sent.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+        self.bytes_sent
+            .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
         if let Some(entry) = self.peers.write().await.get_mut(peer_id) {
             entry.bytes_sent += bytes;
         }
@@ -98,7 +104,8 @@ impl WebRTCState {
 
     /// Record bytes received (global + per-peer)
     pub async fn record_received(&self, peer_id: &str, bytes: u64) {
-        self.bytes_received.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+        self.bytes_received
+            .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
         if let Some(entry) = self.peers.write().await.get_mut(peer_id) {
             entry.bytes_received += bytes;
         }
@@ -108,7 +115,7 @@ impl WebRTCState {
     /// Queries peers sequentially with 500ms intervals until one responds
     /// Returns the first successful response, or None if no peer has it
     pub async fn request_from_peers(&self, hash_hex: &str) -> Option<Vec<u8>> {
-        use super::types::{DataRequest, MAX_HTL, encode_request};
+        use super::types::{encode_request, DataRequest, MAX_HTL};
 
         let peers = self.peers.read().await;
 
@@ -119,7 +126,11 @@ impl WebRTCState {
             .filter(|p| p.state == ConnectionState::Connected && p.peer.is_some())
             .filter_map(|p| {
                 p.peer.as_ref().map(|peer| {
-                    (p.peer_id.short(), peer.data_channel.clone(), peer.pending_requests.clone())
+                    (
+                        p.peer_id.short(),
+                        peer.data_channel.clone(),
+                        peer.pending_requests.clone(),
+                    )
                 })
             })
             .collect();
@@ -127,7 +138,11 @@ impl WebRTCState {
         drop(peers); // Release the read lock
 
         // Now acquire locks and filter to peers with active data channels
-        let mut connected_peers: Vec<(String, Arc<Mutex<HashMap<String, PendingRequest>>>, Arc<webrtc::data_channel::RTCDataChannel>)> = Vec::new();
+        let mut connected_peers: Vec<(
+            String,
+            Arc<Mutex<HashMap<String, PendingRequest>>>,
+            Arc<webrtc::data_channel::RTCDataChannel>,
+        )> = Vec::new();
         for (peer_id, dc_mutex, pending) in peer_refs {
             let dc_guard = dc_mutex.lock().await;
             if let Some(dc) = dc_guard.as_ref() {
@@ -136,7 +151,10 @@ impl WebRTCState {
         }
 
         if connected_peers.is_empty() {
-            debug!("No connected peers to query for {}", &hash_hex[..8.min(hash_hex.len())]);
+            debug!(
+                "No connected peers to query for {}",
+                &hash_hex[..8.min(hash_hex.len())]
+            );
             return None;
         }
 
@@ -154,7 +172,11 @@ impl WebRTCState {
 
         // Query peers sequentially with 500ms delay between each
         for (_i, (peer_id, pending_requests, dc)) in connected_peers.into_iter().enumerate() {
-            debug!("Querying peer {} for {}", peer_id, &hash_hex[..8.min(hash_hex.len())]);
+            debug!(
+                "Querying peer {} for {}",
+                peer_id,
+                &hash_hex[..8.min(hash_hex.len())]
+            );
 
             // Create response channel
             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -184,12 +206,20 @@ impl WebRTCState {
                     match tokio::time::timeout(std::time::Duration::from_millis(500), rx).await {
                         Ok(Ok(Some(data))) => {
                             self.record_received(&peer_id, data.len() as u64).await;
-                            debug!("Got response from peer {} for {}", peer_id, &hash_hex[..8.min(hash_hex.len())]);
+                            debug!(
+                                "Got response from peer {} for {}",
+                                peer_id,
+                                &hash_hex[..8.min(hash_hex.len())]
+                            );
                             return Some(data);
                         }
                         _ => {
                             // Timeout or no data - clean up and try next peer
-                            debug!("No response from peer {} for {}", peer_id, &hash_hex[..8.min(hash_hex.len())]);
+                            debug!(
+                                "No response from peer {} for {}",
+                                peer_id,
+                                &hash_hex[..8.min(hash_hex.len())]
+                            );
                         }
                     }
                 }
@@ -200,7 +230,10 @@ impl WebRTCState {
             pending.remove(hash_hex);
         }
 
-        debug!("No peer had data for {}", &hash_hex[..8.min(hash_hex.len())]);
+        debug!(
+            "No peer had data for {}",
+            &hash_hex[..8.min(hash_hex.len())]
+        );
         None
     }
 }
@@ -257,7 +290,11 @@ impl WebRTCManager {
     }
 
     /// Create a new WebRTC manager with a peer classifier
-    pub fn new_with_classifier(keys: Keys, config: WebRTCConfig, classifier: PeerClassifier) -> Self {
+    pub fn new_with_classifier(
+        keys: Keys,
+        config: WebRTCConfig,
+        classifier: PeerClassifier,
+    ) -> Self {
         let mut manager = Self::new(keys, config);
         manager.peer_classifier = classifier;
         manager
@@ -374,7 +411,12 @@ impl WebRTCManager {
             }
         }
 
-        (follows_connected, follows_active, other_connected, other_active)
+        (
+            follows_connected,
+            follows_active,
+            other_connected,
+            other_active,
+        )
     }
 
     /// Check if we can accept a peer in a given pool
@@ -388,10 +430,16 @@ impl WebRTCManager {
 
     /// Check if a pool is satisfied
     #[allow(dead_code)]
-    fn is_pool_satisfied(&self, pool: PeerPool, pool_counts: &(usize, usize, usize, usize)) -> bool {
+    fn is_pool_satisfied(
+        &self,
+        pool: PeerPool,
+        pool_counts: &(usize, usize, usize, usize),
+    ) -> bool {
         let (follows_connected, _, other_connected, _) = *pool_counts;
         match pool {
-            PeerPool::Follows => follows_connected >= self.config.pools.follows.satisfied_connections,
+            PeerPool::Follows => {
+                follows_connected >= self.config.pools.follows.satisfied_connections
+            }
             PeerPool::Other => other_connected >= self.config.pools.other.satisfied_connections,
         }
     }
@@ -419,10 +467,16 @@ impl WebRTCManager {
         let (event_tx, mut event_rx) = mpsc::channel::<(String, nostr::Event)>(100);
 
         // Take the signaling receiver
-        let mut signaling_rx = self.signaling_rx.take().expect("signaling_rx already taken");
+        let mut signaling_rx = self
+            .signaling_rx
+            .take()
+            .expect("signaling_rx already taken");
 
         // Take the state event receiver
-        let mut state_event_rx = self.state_event_rx.take().expect("state_event_rx already taken");
+        let mut state_event_rx = self
+            .state_event_rx
+            .take()
+            .expect("state_event_rx already taken");
 
         // Create a shared write channel for all relay tasks
         let (relay_write_tx, _) = tokio::sync::broadcast::channel::<SignalingMessage>(100);
@@ -527,7 +581,10 @@ impl WebRTCManager {
         let sub_msg = ClientMessage::req(sub_id.clone(), vec![hello_filter, directed_filter]);
         write.send(Message::Text(sub_msg.as_json().into())).await?;
 
-        info!("Subscribed to {} for WebRTC events (kind {})", url, WEBRTC_KIND);
+        info!(
+            "Subscribed to {} for WebRTC events (kind {})",
+            url, WEBRTC_KIND
+        );
 
         let mut last_hello = Instant::now() - hello_interval; // Send immediately
         let mut hello_ticker = tokio::time::interval(Duration::from_secs(1));
@@ -617,7 +674,7 @@ impl WebRTCManager {
                     ephemeral_keys.secret_key(),
                     &recipient_pubkey,
                     &seal.to_string(),
-                    nip44::Version::V2
+                    nip44::Version::V2,
                 )?;
 
                 // Create wrapper event with ephemeral key
@@ -629,8 +686,9 @@ impl WebRTCManager {
                     Tag::parse(&["expiration", &expiration.as_u64().to_string()])?,
                 ];
 
-                let event = EventBuilder::new(Kind::Ephemeral(WEBRTC_KIND as u16), encrypted_content, tags)
-                    .to_event(&ephemeral_keys)?;
+                let event =
+                    EventBuilder::new(Kind::Ephemeral(WEBRTC_KIND as u16), encrypted_content, tags)
+                        .to_event(&ephemeral_keys)?;
 
                 return Ok(event);
             }
@@ -642,8 +700,8 @@ impl WebRTCManager {
             Tag::parse(&["peerId", msg.peer_id()])?,
         ];
 
-        let event = EventBuilder::new(Kind::Ephemeral(WEBRTC_KIND as u16), "", tags)
-            .to_event(keys)?;
+        let event =
+            EventBuilder::new(Kind::Ephemeral(WEBRTC_KIND as u16), "", tags).to_event(keys)?;
 
         Ok(event)
     }
@@ -707,21 +765,21 @@ impl WebRTCManager {
         }
 
         // Try to unwrap the gift - decrypt with our key and the ephemeral sender's pubkey
-        let seal: serde_json::Value = match nip44::decrypt(self.keys.secret_key(), &event.pubkey, &event.content) {
-            Ok(plaintext) => {
-                match serde_json::from_str(&plaintext) {
+        let seal: serde_json::Value =
+            match nip44::decrypt(self.keys.secret_key(), &event.pubkey, &event.content) {
+                Ok(plaintext) => match serde_json::from_str(&plaintext) {
                     Ok(v) => v,
                     Err(_) => return Ok(()),
+                },
+                Err(_) => {
+                    // Can't decrypt - not for us or invalid
+                    return Ok(());
                 }
-            }
-            Err(_) => {
-                // Can't decrypt - not for us or invalid
-                return Ok(());
-            }
-        };
+            };
 
         // Extract the actual sender's pubkey and content from the seal
-        let sender_pubkey = seal.get("pubkey")
+        let sender_pubkey = seal
+            .get("pubkey")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing pubkey in seal"))?;
 
@@ -730,7 +788,8 @@ impl WebRTCManager {
             return Ok(());
         }
 
-        let content = seal.get("content")
+        let content = seal
+            .get("content")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing content in seal"))?;
 
@@ -752,24 +811,36 @@ impl WebRTCManager {
 
             match msg_type {
                 "offer" => {
-                    let sdp = raw_msg.get("sdp").and_then(|v| v.as_str()).ok_or_else(|| anyhow::anyhow!("Missing SDP in offer"))?;
+                    let sdp = raw_msg
+                        .get("sdp")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing SDP in offer"))?;
                     let offer = serde_json::json!({ "type": "offer", "sdp": sdp });
-                    self.handle_offer(&sender_pubkey, their_uuid, offer, relay_write_tx).await?;
+                    self.handle_offer(&sender_pubkey, their_uuid, offer, relay_write_tx)
+                        .await?;
                 }
                 "answer" => {
-                    let sdp = raw_msg.get("sdp").and_then(|v| v.as_str()).ok_or_else(|| anyhow::anyhow!("Missing SDP in answer"))?;
+                    let sdp = raw_msg
+                        .get("sdp")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing SDP in answer"))?;
                     let answer = serde_json::json!({ "type": "answer", "sdp": sdp });
-                    self.handle_answer(&sender_pubkey, their_uuid, answer).await?;
+                    self.handle_answer(&sender_pubkey, their_uuid, answer)
+                        .await?;
                 }
                 "candidate" => {
-                    let candidate = raw_msg.get("candidate").and_then(|v| v.as_str()).unwrap_or("");
+                    let candidate = raw_msg
+                        .get("candidate")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     if !candidate.is_empty() {
                         let candidate_json = serde_json::json!({
                             "candidate": candidate,
                             "sdpMid": raw_msg.get("sdpMid"),
                             "sdpMLineIndex": raw_msg.get("sdpMLineIndex"),
                         });
-                        self.handle_candidate(&sender_pubkey, their_uuid, candidate_json).await?;
+                        self.handle_candidate(&sender_pubkey, their_uuid, candidate_json)
+                            .await?;
                     }
                 }
                 "candidates" => {
@@ -777,20 +848,28 @@ impl WebRTCManager {
                         .get("candidates")
                         .and_then(|v| v.as_array())
                         .map(|entries| {
-                            entries.iter().filter_map(|entry| {
-                                if let Some(candidate_str) = entry.get("candidate").and_then(|v| v.as_str()).or_else(|| entry.as_str()) {
-                                    Some(serde_json::json!({
-                                        "candidate": candidate_str,
-                                        "sdpMid": entry.get("sdpMid"),
-                                        "sdpMLineIndex": entry.get("sdpMLineIndex"),
-                                    }))
-                                } else {
-                                    None
-                                }
-                            }).collect::<Vec<_>>()
+                            entries
+                                .iter()
+                                .filter_map(|entry| {
+                                    if let Some(candidate_str) = entry
+                                        .get("candidate")
+                                        .and_then(|v| v.as_str())
+                                        .or_else(|| entry.as_str())
+                                    {
+                                        Some(serde_json::json!({
+                                            "candidate": candidate_str,
+                                            "sdpMid": entry.get("sdpMid"),
+                                            "sdpMLineIndex": entry.get("sdpMLineIndex"),
+                                        }))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
-                    self.handle_candidates(&sender_pubkey, their_uuid, candidates).await?;
+                    self.handle_candidates(&sender_pubkey, their_uuid, candidates)
+                        .await?;
                 }
                 _ => {}
             }
@@ -820,9 +899,16 @@ impl WebRTCManager {
                 if recipient != self.my_peer_id.to_string() {
                     return Ok(()); // Not for us
                 }
-                if let Err(e) = self.handle_offer(&sender_pubkey, &their_uuid, offer, relay_write_tx)
-                    .await {
-                    error!("handle_offer FAILED: sender={}, uuid={}, error={:?}", &sender_pubkey[..8.min(sender_pubkey.len())], their_uuid, e);
+                if let Err(e) = self
+                    .handle_offer(&sender_pubkey, &their_uuid, offer, relay_write_tx)
+                    .await
+                {
+                    error!(
+                        "handle_offer FAILED: sender={}, uuid={}, error={:?}",
+                        &sender_pubkey[..8.min(sender_pubkey.len())],
+                        their_uuid,
+                        e
+                    );
                     return Err(e);
                 }
             }
@@ -893,7 +979,11 @@ impl WebRTCManager {
         // Check pool limits
         let pool_counts = self.get_pool_counts().await;
         if !self.can_accept_peer(pool, &pool_counts) {
-            debug!("Ignoring hello from {} - pool {:?} is full", full_peer_id.short(), pool);
+            debug!(
+                "Ignoring hello from {} - pool {:?} is full",
+                full_peer_id.short(),
+                pool
+            );
             return Ok(());
         }
 
@@ -916,7 +1006,11 @@ impl WebRTCManager {
         // If we're not initiating and pool is satisfied, don't even add to discovered
         // (we won't accept their offer either since pool check happens in handle_offer)
         if !will_initiate && pool_satisfied {
-            debug!("Pool {:?} is satisfied, not tracking peer {}", pool, full_peer_id.short());
+            debug!(
+                "Pool {:?} is satisfied, not tracking peer {}",
+                pool,
+                full_peer_id.short()
+            );
             return Ok(());
         }
 
@@ -960,7 +1054,11 @@ impl WebRTCManager {
     ) -> Result<()> {
         let peer_key = peer_id.to_string();
 
-        info!("Initiating connection to {} (pool: {:?})", peer_id.short(), pool);
+        info!(
+            "Initiating connection to {} (pool: {:?})",
+            peer_id.short(),
+            pool
+        );
 
         // Create peer connection with content store and state events
         let mut peer = Peer::new_with_store_and_events(
@@ -1013,36 +1111,64 @@ impl WebRTCManager {
         offer: serde_json::Value,
         relay_write_tx: &tokio::sync::broadcast::Sender<SignalingMessage>,
     ) -> Result<()> {
-        debug!("handle_offer ENTRY: sender={}, uuid={}", &sender_pubkey[..8.min(sender_pubkey.len())], their_uuid);
+        debug!(
+            "handle_offer ENTRY: sender={}, uuid={}",
+            &sender_pubkey[..8.min(sender_pubkey.len())],
+            their_uuid
+        );
         let full_peer_id = PeerId::new(sender_pubkey.to_string(), Some(their_uuid.to_string()));
         let peer_key = full_peer_id.to_string();
 
         // Classify the peer into a pool
         let pool = (self.peer_classifier)(sender_pubkey);
 
-        info!("Received offer from {} (pool: {:?})", full_peer_id.short(), pool);
+        info!(
+            "Received offer from {} (pool: {:?})",
+            full_peer_id.short(),
+            pool
+        );
 
         // Check if we already have this peer with an actual connection
         {
             let peers = self.state.peers.read().await;
-            debug!("Checking for existing peer, peer_key: {}, known_peers: {}", peer_key, peers.len());
+            debug!(
+                "Checking for existing peer, peer_key: {}, known_peers: {}",
+                peer_key,
+                peers.len()
+            );
             if let Some(entry) = peers.get(&peer_key) {
                 // Only skip if we have an actual peer connection (not just discovered)
                 if entry.peer.is_some() {
-                    debug!("Already have peer {} with connection, skipping offer", full_peer_id.short());
+                    debug!(
+                        "Already have peer {} with connection, skipping offer",
+                        full_peer_id.short()
+                    );
                     return Ok(());
                 }
-                debug!("Peer {} exists but has no connection, proceeding", full_peer_id.short());
+                debug!(
+                    "Peer {} exists but has no connection, proceeding",
+                    full_peer_id.short()
+                );
             } else {
-                debug!("Peer {} not found in peers map, will create new entry", full_peer_id.short());
+                debug!(
+                    "Peer {} not found in peers map, will create new entry",
+                    full_peer_id.short()
+                );
             }
         }
 
         // Check pool limits
         let pool_counts = self.get_pool_counts().await;
-        debug!("Pool counts: {:?}, checking can_accept_peer for {:?}", pool_counts, pool);
+        debug!(
+            "Pool counts: {:?}, checking can_accept_peer for {:?}",
+            pool_counts, pool
+        );
         if !self.can_accept_peer(pool, &pool_counts) {
-            warn!("Rejecting offer from {} - pool {:?} is full", full_peer_id.short(), pool);
+            warn!(
+                "Rejecting offer from {} - pool {:?} is full",
+                full_peer_id.short(),
+                pool
+            );
             return Ok(());
         }
         debug!("Pool check passed for {}", full_peer_id.short());
@@ -1119,7 +1245,10 @@ impl WebRTCManager {
         if let Some(entry) = peers.get_mut(&peer_key) {
             // Skip if already connected - duplicate answers from multiple relays
             if entry.state == ConnectionState::Connected {
-                debug!("Ignoring duplicate answer from {} - already connected", full_peer_id.short());
+                debug!(
+                    "Ignoring duplicate answer from {} - already connected",
+                    full_peer_id.short()
+                );
                 return Ok(());
             }
             if let Some(ref mut peer) = entry.peer {
@@ -1209,18 +1338,25 @@ impl WebRTCManager {
                         info!("Peer {} connected (via state event)", peer_id.short());
                         entry.state = ConnectionState::Connected;
                         // Update connected count
-                        self.state.connected_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        self.state
+                            .connected_count
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
             PeerStateEvent::Failed(peer_id) => {
                 let peer_key = peer_id.to_string();
-                info!("Peer {} connection failed - removing from pool", peer_id.short());
+                info!(
+                    "Peer {} connection failed - removing from pool",
+                    peer_id.short()
+                );
                 let mut peers = self.state.peers.write().await;
                 if let Some(entry) = peers.remove(&peer_key) {
                     // Decrement connected count if was connected
                     if entry.state == ConnectionState::Connected {
-                        self.state.connected_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        self.state
+                            .connected_count
+                            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     // Close the peer connection if it exists
                     if let Some(peer) = entry.peer {
@@ -1235,7 +1371,9 @@ impl WebRTCManager {
                 if let Some(entry) = peers.remove(&peer_key) {
                     // Decrement connected count if was connected
                     if entry.state == ConnectionState::Connected {
-                        self.state.connected_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        self.state
+                            .connected_count
+                            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     // Close the peer connection if it exists
                     if let Some(peer) = entry.peer {
@@ -1258,16 +1396,27 @@ impl WebRTCManager {
                 // Sync connected state as fallback (in case event was missed)
                 if peer.is_connected() {
                     if entry.state != ConnectionState::Connected {
-                        info!("Peer {} is now connected (sync fallback)", entry.peer_id.short());
+                        info!(
+                            "Peer {} is now connected (sync fallback)",
+                            entry.peer_id.short()
+                        );
                         entry.state = ConnectionState::Connected;
                     }
                     connected_count += 1;
-                } else if entry.state == ConnectionState::Connecting && entry.last_seen.elapsed() > stale_timeout {
+                } else if entry.state == ConnectionState::Connecting
+                    && entry.last_seen.elapsed() > stale_timeout
+                {
                     // Peer stuck in Connecting for too long - mark for removal
-                    info!("Removing stale peer {} (stuck in Connecting for {:?})", entry.peer_id.short(), entry.last_seen.elapsed());
+                    info!(
+                        "Removing stale peer {} (stuck in Connecting for {:?})",
+                        entry.peer_id.short(),
+                        entry.last_seen.elapsed()
+                    );
                     to_remove.push(key.clone());
                 }
-            } else if entry.state == ConnectionState::Discovered && entry.last_seen.elapsed() > stale_timeout {
+            } else if entry.state == ConnectionState::Discovered
+                && entry.last_seen.elapsed() > stale_timeout
+            {
                 // Discovered peer with no actual connection - remove
                 debug!("Removing stale discovered peer {}", entry.peer_id.short());
                 to_remove.push(key.clone());

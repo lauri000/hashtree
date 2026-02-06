@@ -3,10 +3,10 @@
 //! Implements the stateless git remote helper protocol.
 //! See: https://git-scm.com/docs/gitremote-helpers
 
-use anyhow::{bail, Context, Result};
 use crate::git::object::ObjectType;
 use crate::git::refs::Ref;
 use crate::git::storage::GitStorage;
+use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
@@ -17,8 +17,8 @@ use tracing::{debug, info, warn};
 /// Threshold for showing detailed progress (3 seconds)
 const VERBOSE_THRESHOLD: Duration = Duration::from_secs(3);
 
-use hashtree_config::Config;
 use crate::nostr_client::{BlossomResult, NostrClient, RelayResult};
+use hashtree_config::Config;
 
 // CachedStore: local store first, then Blossom fallback
 mod cached_store {
@@ -80,19 +80,19 @@ fn get_hashtree_data_dir() -> PathBuf {
 }
 
 /// Create local blob store based on config
-fn create_local_store(path: &std::path::Path) -> Result<std::sync::Arc<dyn hashtree_core::Store + Send + Sync>> {
+fn create_local_store(
+    path: &std::path::Path,
+) -> Result<std::sync::Arc<dyn hashtree_core::Store + Send + Sync>> {
     use hashtree_config::StorageBackend;
     use hashtree_fs::FsBlobStore;
 
     let config = Config::load_or_default();
     match config.storage.backend {
-        StorageBackend::Fs => {
-            Ok(std::sync::Arc::new(FsBlobStore::new(path)?))
-        }
+        StorageBackend::Fs => Ok(std::sync::Arc::new(FsBlobStore::new(path)?)),
         #[cfg(feature = "lmdb")]
-        StorageBackend::Lmdb => {
-            Ok(std::sync::Arc::new(hashtree_lmdb::LmdbBlobStore::new(path)?))
-        }
+        StorageBackend::Lmdb => Ok(std::sync::Arc::new(hashtree_lmdb::LmdbBlobStore::new(
+            path,
+        )?)),
         #[cfg(not(feature = "lmdb"))]
         StorageBackend::Lmdb => {
             warn!("LMDB backend requested but lmdb feature not enabled, using filesystem storage");
@@ -343,10 +343,12 @@ impl RemoteHelper {
             info!("Loaded {} git objects from hashtree", objects.len());
 
             // Batch check which objects git already has
-            let existing = self.git_batch_check_objects(objects.iter().map(|(oid, _)| oid.as_str()))?;
+            let existing =
+                self.git_batch_check_objects(objects.iter().map(|(oid, _)| oid.as_str()))?;
 
             // Filter to only objects git doesn't have
-            let to_write: Vec<_> = objects.into_iter()
+            let to_write: Vec<_> = objects
+                .into_iter()
                 .filter(|(oid, _)| !existing.contains(oid))
                 .collect();
 
@@ -382,10 +384,17 @@ impl RemoteHelper {
     fn fetch_all_git_objects(&self, root_hash: &str) -> Result<Vec<(String, Vec<u8>)>> {
         // NostrClient now handles unmasking for link-visible repos (url_secret)
         // The cached key is already the real CHK key
-        let encryption_key = self.nostr.get_cached_encryption_key(&self.repo_name).cloned();
+        let encryption_key = self
+            .nostr
+            .get_cached_encryption_key(&self.repo_name)
+            .cloned();
 
-        info!("fetch_all_git_objects: root={}, has encryption_key: {}, link_visible: {}",
-              &root_hash[..12], encryption_key.is_some(), self.url_secret.is_some());
+        info!(
+            "fetch_all_git_objects: root={}, has encryption_key: {}, link_visible: {}",
+            &root_hash[..12],
+            encryption_key.is_some(),
+            self.url_secret.is_some()
+        );
 
         // Create tokio runtime for async blossom downloads
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -410,13 +419,16 @@ impl RemoteHelper {
 
         // Log the servers being used
         let servers = blossom.read_servers().to_vec();
-        info!("Creating CachedStore with local + Blossom (servers: {:?})", servers);
+        info!(
+            "Creating CachedStore with local + Blossom (servers: {:?})",
+            servers
+        );
 
         // Create local blob store based on config
         let data_dir = get_hashtree_data_dir();
         let blobs_path = data_dir.join("blobs");
-        let local_store = create_local_store(&blobs_path)
-            .context("Failed to create local blob store")?;
+        let local_store =
+            create_local_store(&blobs_path).context("Failed to create local blob store")?;
 
         // Create Blossom store for remote fallback
         let blossom_store = BlossomStore::with_servers(
@@ -429,9 +441,9 @@ impl RemoteHelper {
         let tree = HashTree::new(HashTreeConfig::new(std::sync::Arc::new(store)));
 
         // Parse root hash and create Cid with encryption key
-        let root_bytes = hex::decode(root_hash)
-            .context("Invalid root hash hex")?;
-        let root_arr: [u8; 32] = root_bytes.try_into()
+        let root_bytes = hex::decode(root_hash).context("Invalid root hash hex")?;
+        let root_arr: [u8; 32] = root_bytes
+            .try_into()
             .map_err(|_| anyhow::anyhow!("Root hash must be 32 bytes"))?;
 
         let root_cid = Cid {
@@ -455,10 +467,10 @@ impl RemoteHelper {
         info!("Resolved .git/objects: {}", hex::encode(objects_cid.hash));
 
         use futures::stream::{self, StreamExt};
-        use std::io::Write;
-        use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
-        use std::sync::Arc as StdArc;
         use hashtree_core::LinkType;
+        use std::io::Write;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
 
         // Walk the objects tree with parallel fetching and progress reporting
         let progress = StdArc::new(AtomicUsize::new(0));
@@ -484,7 +496,10 @@ impl RemoteHelper {
         });
 
         const WALK_CONCURRENCY: usize = 32;
-        let walk_entries = match tree.walk_parallel_with_progress(&objects_cid, "", WALK_CONCURRENCY, Some(&progress)).await {
+        let walk_entries = match tree
+            .walk_parallel_with_progress(&objects_cid, "", WALK_CONCURRENCY, Some(&progress))
+            .await
+        {
             Ok(entries) => entries,
             Err(e) => {
                 done.store(true, Ordering::Relaxed);
@@ -498,9 +513,13 @@ impl RemoteHelper {
         let _ = progress_task.await;
         let walk_done_time = std::time::Instant::now();
         if self.is_slow() {
-            eprintln!("\r  Loading objects tree... done ({} entries)        ", walk_entries.len());
+            eprintln!(
+                "\r  Loading objects tree... done ({} entries)        ",
+                walk_entries.len()
+            );
         } else {
-            eprint!("\r                                                        \r"); // Clear the line
+            eprint!("\r                                                        \r");
+            // Clear the line
         }
 
         // Extract git objects from walk entries (files with 40 char hex names like "ab/cdef..." -> "abcdef...")
@@ -615,17 +634,25 @@ impl RemoteHelper {
                         missing_objects.push((oid.clone(), hash_hex));
                     }
                     Err(e) => {
-                        eprintln!("\n  ERROR: Failed to fetch {}: {} (hash: {})", oid, e, hash_hex);
+                        eprintln!(
+                            "\n  ERROR: Failed to fetch {}: {} (hash: {})",
+                            oid, e, hash_hex
+                        );
                         missing_objects.push((oid.clone(), hash_hex));
                     }
                 }
             }
-            eprintln!("\r  Retried: {}/{} objects available        ", objects.len(), total_objects);
+            eprintln!(
+                "\r  Retried: {}/{} objects available        ",
+                objects.len(),
+                total_objects
+            );
         }
 
         // Fail if any objects are missing - git clone will fail anyway
         if !missing_objects.is_empty() {
-            let obj_list: Vec<String> = missing_objects.iter()
+            let obj_list: Vec<String> = missing_objects
+                .iter()
                 .take(5)
                 .map(|(oid, hash)| format!("{} ({})", oid, hash))
                 .collect();
@@ -641,7 +668,10 @@ impl RemoteHelper {
     }
 
     /// Batch check which objects git already has (returns set of existing oids)
-    fn git_batch_check_objects<'a>(&self, oids: impl Iterator<Item = &'a str>) -> Result<HashSet<String>> {
+    fn git_batch_check_objects<'a>(
+        &self,
+        oids: impl Iterator<Item = &'a str>,
+    ) -> Result<HashSet<String>> {
         let mut existing = HashSet::new();
         let oids: Vec<_> = oids.collect();
 
@@ -663,7 +693,9 @@ impl RemoteHelper {
                 }
             }
 
-            let output = child.wait_with_output().context("Failed to read git cat-file output")?;
+            let output = child
+                .wait_with_output()
+                .context("Failed to read git cat-file output")?;
 
             // Parse output - valid objects return just the oid, missing ones return "oid missing"
             for line in String::from_utf8_lossy(&output.stdout).lines() {
@@ -686,7 +718,9 @@ impl RemoteHelper {
 
         let git_dir = std::env::var("GIT_DIR").unwrap_or_else(|_| ".git".to_string());
         let (dir_name, file_name) = oid.split_at(2);
-        let obj_dir = std::path::Path::new(&git_dir).join("objects").join(dir_name);
+        let obj_dir = std::path::Path::new(&git_dir)
+            .join("objects")
+            .join(dir_name);
         std::fs::create_dir_all(&obj_dir).context("Failed to create object directory")?;
 
         let obj_path = obj_dir.join(file_name);
@@ -727,7 +761,10 @@ impl RemoteHelper {
         // First, load existing refs and objects from remote to preserve other branches
         // Check if any push is a force push
         let has_force_push = self.push_specs.iter().any(|s| s.force);
-        debug!(force = has_force_push, "About to call load_existing_remote_state");
+        debug!(
+            force = has_force_push,
+            "About to call load_existing_remote_state"
+        );
 
         if let Err(e) = self.load_existing_remote_state() {
             let err_str = e.to_string();
@@ -752,7 +789,10 @@ impl RemoteHelper {
                 eprintln!("  Proceeding with force push (may overwrite other branches)");
             } else if is_likely_new_repo {
                 debug!("Error loading remote state (likely new repo): {}", e);
-                info!("Could not load existing remote state: {} (likely new repo)", e);
+                info!(
+                    "Could not load existing remote state: {} (likely new repo)",
+                    e
+                );
             } else {
                 // There's an existing remote but we can't load it - warn user
                 eprintln!("  Warning: Could not load existing remote state: {}", e);
@@ -823,10 +863,14 @@ impl RemoteHelper {
     /// This preserves branches that aren't being pushed
     fn load_existing_remote_state(&mut self) -> Result<()> {
         let data_dir = get_hashtree_data_dir();
-        self.detail(&format!("  Loading existing remote state... (data_dir: {:?})", data_dir));
+        self.detail(&format!(
+            "  Loading existing remote state... (data_dir: {:?})",
+            data_dir
+        ));
 
         // Fetch refs from nostr (this also caches root hash)
-        let (refs, root_hash, _encryption_key) = self.nostr.fetch_refs_with_root(&self.repo_name)?;
+        let (refs, root_hash, _encryption_key) =
+            self.nostr.fetch_refs_with_root(&self.repo_name)?;
 
         if refs.is_empty() {
             self.detail("  No existing refs found (new repository)");
@@ -850,7 +894,11 @@ impl RemoteHelper {
             let is_being_pushed = self.push_specs.iter().any(|s| s.dst == *ref_name);
             if !is_being_pushed {
                 self.storage.import_ref(ref_name, ref_value)?;
-                debug!("Imported existing ref: {} -> {}", ref_name, &ref_value[..12.min(ref_value.len())]);
+                debug!(
+                    "Imported existing ref: {} -> {}",
+                    ref_name,
+                    &ref_value[..12.min(ref_value.len())]
+                );
             }
         }
 
@@ -928,7 +976,8 @@ impl RemoteHelper {
         // Set HEAD to point to this branch if it's a branch ref
         // This is needed for wasm-git to detect the current branch
         if dst_ref.starts_with("refs/heads/") {
-            self.storage.write_ref("HEAD", &Ref::Symbolic(dst_ref.to_string()))?;
+            self.storage
+                .write_ref("HEAD", &Ref::Symbolic(dst_ref.to_string()))?;
             debug!("Set HEAD -> {}", dst_ref);
         }
 
@@ -950,7 +999,12 @@ impl RemoteHelper {
         let chk_key = root_cid.key;
         let is_link_visible = self.url_secret.is_some();
         if self.is_slow() {
-            eprintln!(" done (encrypted: {}, link_visible: {}, private: {})", chk_key.is_some(), is_link_visible, self.is_private);
+            eprintln!(
+                " done (encrypted: {}, link_visible: {}, private: {})",
+                chk_key.is_some(),
+                is_link_visible,
+                self.is_private
+            );
         }
 
         // For private repos: XOR the CHK key with url_secret so only URL holders can decrypt
@@ -970,7 +1024,10 @@ impl RemoteHelper {
         // This makes content available before we advertise the hash
         // Get old root hash if it exists (for efficient diff-based upload)
         let old_root_hash = self.nostr.get_cached_root_hash(&self.repo_name).cloned();
-        let old_encryption_key = self.nostr.get_cached_encryption_key(&self.repo_name).copied();
+        let old_encryption_key = self
+            .nostr
+            .get_cached_encryption_key(&self.repo_name)
+            .copied();
         let blossom_result = self.push_to_file_servers_with_diff(
             &root_hash_hex,
             chk_key.as_ref(),
@@ -981,17 +1038,30 @@ impl RemoteHelper {
         // Then publish to nostr (kind 30078 with hashtree label)
         // Include masked key (encryptedKey tag) for private or raw CHK key (key tag) for public repos
         // Don't fail push if relay publish fails - it's just distribution
-        let key_with_privacy = key_to_publish.as_ref().map(|k| (k, is_link_visible, self.is_private));
-        let (npub_url, relay_result) = match self.nostr.publish_repo(&self.repo_name, &root_hash_hex, key_with_privacy) {
-            Ok((url, result)) => (url, result),
-            Err(e) => {
-                warn!("Failed to publish to relays: {}", e);
-                // Construct URL anyway for display using npub
-                let url = format!("htree://{}/{}", self.nostr.npub(), &self.repo_name);
-                let configured = self.nostr.relay_urls();
-                (url, RelayResult { configured: configured.clone(), connected: vec![], failed: configured })
-            }
-        };
+        let key_with_privacy = key_to_publish
+            .as_ref()
+            .map(|k| (k, is_link_visible, self.is_private));
+        let (npub_url, relay_result) =
+            match self
+                .nostr
+                .publish_repo(&self.repo_name, &root_hash_hex, key_with_privacy)
+            {
+                Ok((url, result)) => (url, result),
+                Err(e) => {
+                    warn!("Failed to publish to relays: {}", e);
+                    // Construct URL anyway for display using npub
+                    let url = format!("htree://{}/{}", self.nostr.npub(), &self.repo_name);
+                    let configured = self.nostr.relay_urls();
+                    (
+                        url,
+                        RelayResult {
+                            configured: configured.clone(),
+                            connected: vec![],
+                            failed: configured,
+                        },
+                    )
+                }
+            };
 
         // Build full URL with secret fragment if private
         let full_url = if let Some(secret) = self.url_secret {
@@ -1050,8 +1120,8 @@ impl RemoteHelper {
         old_root_hash: Option<&str>,
         old_encryption_key: Option<&[u8; 32]>,
     ) -> BlossomResult {
-        use hashtree_core::try_decode_tree_node;
         use hashtree_core::crypto::decrypt_chk;
+        use hashtree_core::try_decode_tree_node;
 
         let store = self.storage.store();
         let blossom = self.nostr.blossom();
@@ -1403,8 +1473,7 @@ impl RemoteHelper {
         let mut visited: HashSet<[u8; 32]> = HashSet::new();
 
         // Parse root hash
-        let root_bytes = hex::decode(root_hash)
-            .context("Invalid root hash hex")?;
+        let root_bytes = hex::decode(root_hash).context("Invalid root hash hex")?;
         if root_bytes.len() != 32 {
             bail!("Root hash must be 32 bytes");
         }
@@ -1435,7 +1504,11 @@ impl RemoteHelper {
             }
         }
 
-        debug!("Collected {} hashes from tree {}", hashes.len(), &root_hash[..12]);
+        debug!(
+            "Collected {} hashes from tree {}",
+            hashes.len(),
+            &root_hash[..12]
+        );
         Ok(hashes)
     }
 
@@ -1483,8 +1556,14 @@ impl RemoteHelper {
                 .stdout(Stdio::piped())
                 .spawn()?;
 
-            let mut stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
-            let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("Failed to open stdout"))?;
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("Failed to open stdout"))?;
 
             // Write batch OIDs to stdin
             for oid in batch {
@@ -1640,7 +1719,9 @@ mod tests {
         };
 
         // Queue a fetch
-        let result = helper.handle_command("fetch abc123def456 refs/heads/main").unwrap();
+        let result = helper
+            .handle_command("fetch abc123def456 refs/heads/main")
+            .unwrap();
         assert!(result.is_none()); // fetch queues, doesn't respond immediately
 
         assert_eq!(helper.fetch_specs.len(), 1);
@@ -1654,8 +1735,12 @@ mod tests {
             return;
         };
 
-        helper.handle_command("fetch abc123 refs/heads/main").unwrap();
-        helper.handle_command("fetch def456 refs/heads/feature").unwrap();
+        helper
+            .handle_command("fetch abc123 refs/heads/main")
+            .unwrap();
+        helper
+            .handle_command("fetch def456 refs/heads/feature")
+            .unwrap();
 
         assert_eq!(helper.fetch_specs.len(), 2);
     }
@@ -1677,7 +1762,9 @@ mod tests {
             return;
         };
 
-        let result = helper.handle_command("push refs/heads/main:refs/heads/main").unwrap();
+        let result = helper
+            .handle_command("push refs/heads/main:refs/heads/main")
+            .unwrap();
         assert!(result.is_none()); // push queues, doesn't respond immediately
 
         assert_eq!(helper.push_specs.len(), 1);
@@ -1692,7 +1779,9 @@ mod tests {
             return;
         };
 
-        helper.handle_command("push +refs/heads/main:refs/heads/main").unwrap();
+        helper
+            .handle_command("push +refs/heads/main:refs/heads/main")
+            .unwrap();
 
         assert_eq!(helper.push_specs.len(), 1);
         assert!(helper.push_specs[0].force);
@@ -1705,7 +1794,9 @@ mod tests {
         };
 
         // Empty src means delete
-        helper.handle_command("push :refs/heads/old-branch").unwrap();
+        helper
+            .handle_command("push :refs/heads/old-branch")
+            .unwrap();
 
         assert_eq!(helper.push_specs.len(), 1);
         assert_eq!(helper.push_specs[0].src, "");
@@ -1757,7 +1848,9 @@ mod tests {
             return;
         };
 
-        helper.queue_fetch("abc123def456789 refs/heads/main").unwrap();
+        helper
+            .queue_fetch("abc123def456789 refs/heads/main")
+            .unwrap();
 
         assert_eq!(helper.fetch_specs[0].sha, "abc123def456789");
         assert_eq!(helper.fetch_specs[0].name, "refs/heads/main");
@@ -1807,7 +1900,9 @@ mod tests {
         };
 
         // Add some dummy refs
-        helper.remote_refs.insert("refs/heads/old".to_string(), "abc".to_string());
+        helper
+            .remote_refs
+            .insert("refs/heads/old".to_string(), "abc".to_string());
 
         // list should clear and repopulate
         helper.handle_command("list").unwrap();

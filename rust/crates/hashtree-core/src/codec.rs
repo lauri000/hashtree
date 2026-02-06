@@ -109,14 +109,18 @@ pub fn encode_tree_node(node: &TreeNode) -> Result<Vec<u8>, CodecError> {
             .iter()
             .map(|link| {
                 // Convert HashMap to BTreeMap for deterministic key ordering
-                let sorted_meta = link.meta.as_ref().map(|m| m.iter().collect::<BTreeMap<_, _>>());
+                let sorted_meta = link
+                    .meta
+                    .as_ref()
+                    .map(|m| m.iter().collect::<BTreeMap<_, _>>());
                 WireLink {
                     h: link.hash.to_vec(),
                     t: link.link_type as u8,
                     n: link.name.clone(),
                     s: link.size,
                     k: link.key.map(|k| k.to_vec()),
-                    m: sorted_meta.map(|m| m.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+                    m: sorted_meta
+                        .map(|m| m.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
                 }
             })
             .collect(),
@@ -168,10 +172,7 @@ pub fn decode_tree_node(data: &[u8]) -> Result<TreeNode, CodecError> {
         });
     }
 
-    Ok(TreeNode {
-        node_type,
-        links,
-    })
+    Ok(TreeNode { node_type, links })
 }
 
 /// Encode a tree node and compute its hash
@@ -269,12 +270,10 @@ mod tests {
         meta.insert("createdAt".to_string(), serde_json::json!(1234567890));
         meta.insert("mimeType".to_string(), serde_json::json!("image/png"));
 
-        let node = TreeNode::dir(vec![
-            Link::new([1u8; 32])
-                .with_name("file.png")
-                .with_size(1024)
-                .with_meta(meta.clone())
-        ]);
+        let node = TreeNode::dir(vec![Link::new([1u8; 32])
+            .with_name("file.png")
+            .with_size(1024)
+            .with_meta(meta.clone())]);
 
         let encoded = encode_tree_node(&node).unwrap();
         let decoded = decode_tree_node(&encoded).unwrap();
@@ -406,16 +405,14 @@ mod tests {
         // This is critical for content-addressed storage where hash must be stable
         let hash = [42u8; 32];
 
-        let node = TreeNode::dir(vec![
-            Link {
-                hash,
-                name: Some("file.txt".to_string()),
-                size: 100,
-                key: None,
-                link_type: LinkType::Blob,
-                meta: None,
-            },
-        ]);
+        let node = TreeNode::dir(vec![Link {
+            hash,
+            name: Some("file.txt".to_string()),
+            size: 100,
+            key: None,
+            link_type: LinkType::Blob,
+            meta: None,
+        }]);
 
         // Encode multiple times and verify identical output
         let encoded1 = encode_tree_node(&node).unwrap();
@@ -443,8 +440,14 @@ mod tests {
         meta2.insert("middle".to_string(), serde_json::json!("mid"));
         meta2.insert("zebra".to_string(), serde_json::json!("last"));
 
-        let node1 = TreeNode::dir(vec![Link::new(hash).with_name("file").with_size(100).with_meta(meta1)]);
-        let node2 = TreeNode::dir(vec![Link::new(hash).with_name("file").with_size(100).with_meta(meta2)]);
+        let node1 = TreeNode::dir(vec![Link::new(hash)
+            .with_name("file")
+            .with_size(100)
+            .with_meta(meta1)]);
+        let node2 = TreeNode::dir(vec![Link::new(hash)
+            .with_name("file")
+            .with_size(100)
+            .with_meta(meta2)]);
 
         let encoded1 = encode_tree_node(&node1).unwrap();
         let encoded2 = encode_tree_node(&node2).unwrap();

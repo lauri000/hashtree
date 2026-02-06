@@ -1,11 +1,17 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, Mutex};
 
-use nostr::{ClientMessage as NostrClientMessage, Event, EventId, Filter as NostrFilter, JsonUtil, RelayMessage as NostrRelayMessage, SubscriptionId};
+use nostr::{
+    ClientMessage as NostrClientMessage, Event, EventId, Filter as NostrFilter, JsonUtil,
+    RelayMessage as NostrRelayMessage, SubscriptionId,
+};
 
 use crate::socialgraph;
 
@@ -237,14 +243,21 @@ mod imp {
             config: NostrRelayConfig,
         ) -> Result<Self> {
             let spambox = if config.spambox_db_max_bytes == 0 {
-                Some(SpamboxStore::Memory(MemorySpambox::new(config.max_query_limit * 2)))
+                Some(SpamboxStore::Memory(MemorySpambox::new(
+                    config.max_query_limit * 2,
+                )))
             } else {
                 let spam_dir = data_dir.join("nostrdb_spambox");
                 match socialgraph::init_ndb_at_path(&spam_dir, Some(config.spambox_db_max_bytes)) {
                     Ok(ndb) => Some(SpamboxStore::Ndb(NostrStore::new(ndb))),
                     Err(err) => {
-                        warn!("Failed to open spambox nostrdb (falling back to memory): {}", err);
-                        Some(SpamboxStore::Memory(MemorySpambox::new(config.max_query_limit * 2)))
+                        warn!(
+                            "Failed to open spambox nostrdb (falling back to memory): {}",
+                            err
+                        );
+                        Some(SpamboxStore::Memory(MemorySpambox::new(
+                            config.max_query_limit * 2,
+                        )))
                     }
                 }
             };
@@ -297,10 +310,16 @@ mod imp {
                 NostrClientMessage::Event(event) => {
                     self.handle_event(client_id, *event).await;
                 }
-                NostrClientMessage::Req { subscription_id, filters } => {
+                NostrClientMessage::Req {
+                    subscription_id,
+                    filters,
+                } => {
                     self.handle_req(client_id, subscription_id, filters).await;
                 }
-                NostrClientMessage::Count { subscription_id, filters } => {
+                NostrClientMessage::Count {
+                    subscription_id,
+                    filters,
+                } => {
                     self.handle_count(client_id, subscription_id, filters).await;
                 }
                 NostrClientMessage::Close(subscription_id) => {
@@ -312,7 +331,11 @@ mod imp {
                 NostrClientMessage::NegOpen { .. }
                 | NostrClientMessage::NegMsg { .. }
                 | NostrClientMessage::NegClose { .. } => {
-                    self.send_to_client(client_id, NostrRelayMessage::notice("negentropy not supported")).await;
+                    self.send_to_client(
+                        client_id,
+                        NostrRelayMessage::notice("negentropy not supported"),
+                    )
+                    .await;
                 }
             }
         }
@@ -320,7 +343,8 @@ mod imp {
         async fn handle_auth(&self, client_id: u64, event: Event) {
             let ok = event.verify().is_ok();
             let message = if ok { "" } else { "invalid auth" };
-            self.send_to_client(client_id, NostrRelayMessage::ok(event.id, ok, message)).await;
+            self.send_to_client(client_id, NostrRelayMessage::ok(event.id, ok, message))
+                .await;
         }
 
         async fn handle_close(&self, client_id: u64, subscription_id: SubscriptionId) {
@@ -369,14 +393,20 @@ mod imp {
                 };
 
                 if !stored {
-                    let message = if trusted { "store failed" } else { "spambox full" };
-                    self.send_to_client(client_id, NostrRelayMessage::ok(event.id, false, message)).await;
+                    let message = if trusted {
+                        "store failed"
+                    } else {
+                        "spambox full"
+                    };
+                    self.send_to_client(client_id, NostrRelayMessage::ok(event.id, false, message))
+                        .await;
                     return;
                 }
             }
 
             let message = if trusted { "" } else { "spambox" };
-            self.send_to_client(client_id, NostrRelayMessage::ok(event.id, true, message)).await;
+            self.send_to_client(client_id, NostrRelayMessage::ok(event.id, true, message))
+                .await;
 
             if trusted {
                 self.broadcast_event(&event).await;
@@ -453,7 +483,8 @@ mod imp {
                 }
             }
 
-            self.send_to_client(client_id, NostrRelayMessage::eose(subscription_id)).await;
+            self.send_to_client(client_id, NostrRelayMessage::eose(subscription_id))
+                .await;
         }
 
         async fn handle_count(
@@ -505,7 +536,9 @@ mod imp {
             }
             let client_pubkey = {
                 let clients = self.clients.lock().await;
-                clients.get(&client_id).and_then(|state| state.pubkey.clone())
+                clients
+                    .get(&client_id)
+                    .and_then(|state| state.pubkey.clone())
             };
             if let Some(pubkey) = client_pubkey {
                 return pubkey == event.pubkey.to_hex();
@@ -564,8 +597,8 @@ mod imp {
 #[cfg(not(feature = "nostrdb"))]
 mod imp {
     use super::*;
-    use anyhow::Result;
     use crate::socialgraph::{Ndb, SocialGraphAccessControl};
+    use anyhow::Result;
 
     pub struct NostrRelay {
         clients: Mutex<HashMap<u64, mpsc::UnboundedSender<String>>>,
@@ -628,10 +661,14 @@ mod imp {
                 let message = if ok { "" } else { "invalid: signature" };
                 vec![NostrRelayMessage::ok(event.id, ok, message)]
             }
-            NostrClientMessage::Req { subscription_id, .. } => {
+            NostrClientMessage::Req {
+                subscription_id, ..
+            } => {
                 vec![NostrRelayMessage::eose(subscription_id.clone())]
             }
-            NostrClientMessage::Count { subscription_id, .. } => {
+            NostrClientMessage::Count {
+                subscription_id, ..
+            } => {
                 vec![NostrRelayMessage::count(subscription_id.clone(), 0)]
             }
             NostrClientMessage::Close(_) => Vec::new(),
@@ -660,10 +697,9 @@ mod tests {
     use tempfile::TempDir;
     use tokio::time::{timeout, Duration};
 
-    async fn recv_relay_message(
-        rx: &mut mpsc::UnboundedReceiver<String>,
-    ) -> Result<RelayMessage> {
-        let msg = timeout(Duration::from_secs(1), rx.recv()).await?
+    async fn recv_relay_message(rx: &mut mpsc::UnboundedReceiver<String>) -> Result<RelayMessage> {
+        let msg = timeout(Duration::from_secs(1), rx.recv())
+            .await?
             .ok_or_else(|| anyhow::anyhow!("channel closed"))?;
         Ok(RelayMessage::from_json(msg)?)
     }
@@ -716,11 +752,17 @@ mod tests {
         let mut got_event = false;
         for _ in 0..3 {
             relay
-                .handle_client_message(1, NostrClientMessage::req(sub_id.clone(), vec![filter.clone()]))
+                .handle_client_message(
+                    1,
+                    NostrClientMessage::req(sub_id.clone(), vec![filter.clone()]),
+                )
                 .await;
 
             match recv_relay_message(&mut rx).await? {
-                RelayMessage::Event { subscription_id, event: ev } => {
+                RelayMessage::Event {
+                    subscription_id,
+                    event: ev,
+                } => {
                     assert_eq!(subscription_id, sub_id);
                     assert_eq!(ev.id, event.id);
                     got_event = true;

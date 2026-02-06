@@ -320,7 +320,13 @@ impl Store for MemoryStore {
 
     fn pin_count(&self, hash: &Hash) -> u32 {
         let key = to_hex(hash);
-        self.inner.read().unwrap().pins.get(&key).copied().unwrap_or(0)
+        self.inner
+            .read()
+            .unwrap()
+            .pins
+            .get(&key)
+            .copied()
+            .unwrap_or(0)
     }
 }
 

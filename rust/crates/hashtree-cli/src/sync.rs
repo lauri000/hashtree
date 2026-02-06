@@ -17,7 +17,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::fetch::{FetchConfig, Fetcher};
-use crate::storage::{HashtreeStore, PRIORITY_OWN, PRIORITY_FOLLOWED};
+use crate::storage::{HashtreeStore, PRIORITY_FOLLOWED, PRIORITY_OWN};
 use crate::webrtc::WebRTCState;
 
 /// Sync priority levels
@@ -343,7 +343,10 @@ impl BackgroundSync {
                 );
             }
             Err(e) => {
-                warn!("Failed to subscribe to own trees (will retry on reconnect): {}", e);
+                warn!(
+                    "Failed to subscribe to own trees (will retry on reconnect): {}",
+                    e
+                );
             }
         }
 
@@ -386,7 +389,10 @@ impl BackgroundSync {
                 info!("Subscribed to {} followed users' trees", pubkeys.len());
             }
             Err(e) => {
-                warn!("Failed to subscribe to followed trees (will retry on reconnect): {}", e);
+                warn!(
+                    "Failed to subscribe to followed trees (will retry on reconnect): {}",
+                    e
+                );
             }
         }
 
@@ -458,7 +464,10 @@ impl BackgroundSync {
         let cid = Cid { hash, key };
 
         // Build key
-        let npub = event.pubkey.to_bech32().unwrap_or_else(|_| event.pubkey.to_hex());
+        let npub = event
+            .pubkey
+            .to_bech32()
+            .unwrap_or_else(|_| event.pubkey.to_hex());
         let key = format!("{}/{}", npub, tree_name);
 
         // Determine priority
@@ -489,7 +498,11 @@ impl BackgroundSync {
         };
 
         if should_sync {
-            info!("New tree update: {} -> {}", key, to_hex(&cid.hash)[..12].to_string());
+            info!(
+                "New tree update: {} -> {}",
+                key,
+                to_hex(&cid.hash)[..12].to_string()
+            );
 
             // Add to sync queue
             let task = SyncTask {

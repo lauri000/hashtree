@@ -42,7 +42,10 @@ pub fn init_ndb(data_dir: &Path) -> anyhow::Result<Arc<Ndb>> {
 }
 
 /// Initialize nostrdb_social with optional mapsize (bytes).
-pub fn init_ndb_with_mapsize(data_dir: &Path, mapsize_bytes: Option<u64>) -> anyhow::Result<Arc<Ndb>> {
+pub fn init_ndb_with_mapsize(
+    data_dir: &Path,
+    mapsize_bytes: Option<u64>,
+) -> anyhow::Result<Arc<Ndb>> {
     let ndb_dir = data_dir.join("nostrdb_social");
     init_ndb_at_path(&ndb_dir, mapsize_bytes)
 }
@@ -50,8 +53,7 @@ pub fn init_ndb_with_mapsize(data_dir: &Path, mapsize_bytes: Option<u64>) -> any
 /// Initialize nostrdb_social at a specific directory (used for spambox).
 pub fn init_ndb_at_path(db_dir: &Path, mapsize_bytes: Option<u64>) -> anyhow::Result<Arc<Ndb>> {
     std::fs::create_dir_all(db_dir)?;
-    let mut config = NdbConfig::new()
-        .set_ingester_threads(2);
+    let mut config = NdbConfig::new().set_ingester_threads(2);
     if let Some(bytes) = mapsize_bytes {
         let mapsize = usize::try_from(bytes).unwrap_or(usize::MAX);
         config = config.set_mapsize(mapsize);

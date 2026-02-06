@@ -12,8 +12,8 @@ use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_state::RTCDataChannelState;
+use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
@@ -22,8 +22,11 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 
+use super::types::{
+    encode_message, encode_request, encode_response, hash_to_hex, parse_message, DataMessage,
+    DataRequest, DataResponse, PeerDirection, PeerId, PeerStateEvent, SignalingMessage,
+};
 use crate::nostr_relay::NostrRelay;
-use super::types::{DataMessage, DataRequest, DataResponse, PeerDirection, PeerId, PeerStateEvent, SignalingMessage, encode_message, encode_request, encode_response, parse_message, hash_to_hex};
 use nostr::{ClientMessage as NostrClientMessage, JsonUtil as NostrJsonUtil};
 
 /// Trait for content storage that can be used by WebRTC peers
@@ -214,7 +217,10 @@ impl Peer {
                 Box::pin(async move {
                     if let Some(c) = candidate {
                         if let Some(init) = c.to_json().ok() {
-                            info!("ICE candidate generated: {}", &init.candidate[..init.candidate.len().min(60)]);
+                            info!(
+                                "ICE candidate generated: {}",
+                                &init.candidate[..init.candidate.len().min(60)]
+                            );
                             let msg = SignalingMessage::candidate(
                                 serde_json::to_value(&init).unwrap_or_default(),
                                 &recipient,
@@ -241,9 +247,12 @@ impl Peer {
                     // Notify signaling layer of state changes
                     if let Some(tx) = state_event_tx {
                         let event = match state {
-                            RTCPeerConnectionState::Connected => Some(PeerStateEvent::Connected(peer_id)),
+                            RTCPeerConnectionState::Connected => {
+                                Some(PeerStateEvent::Connected(peer_id))
+                            }
                             RTCPeerConnectionState::Failed => Some(PeerStateEvent::Failed(peer_id)),
-                            RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Closed => {
+                            RTCPeerConnectionState::Disconnected
+                            | RTCPeerConnectionState::Closed => {
                                 Some(PeerStateEvent::Disconnected(peer_id))
                             }
                             _ => None,
@@ -269,10 +278,19 @@ impl Peer {
             ordered: Some(false),
             ..Default::default()
         };
-        let dc = self.pc.create_data_channel("hashtree", Some(dc_init)).await?;
-        println!("[Peer {}] Data channel created, setting up handlers...", self.peer_id.short());
+        let dc = self
+            .pc
+            .create_data_channel("hashtree", Some(dc_init))
+            .await?;
+        println!(
+            "[Peer {}] Data channel created, setting up handlers...",
+            self.peer_id.short()
+        );
         self.setup_data_channel(dc.clone()).await?;
-        println!("[Peer {}] Handlers set up, storing data channel...", self.peer_id.short());
+        println!(
+            "[Peer {}] Handlers set up, storing data channel...",
+            self.peer_id.short()
+        );
         {
             let mut dc_guard = self.data_channel.lock().await;
             *dc_guard = Some(dc);
@@ -288,15 +306,22 @@ impl Peer {
         // Wait for ICE gathering to complete (with timeout)
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            gathering_complete.recv()
-        ).await;
+            gathering_complete.recv(),
+        )
+        .await;
 
         // Get the local description with ICE candidates embedded
-        let local_desc = self.pc.local_description().await
+        let local_desc = self
+            .pc
+            .local_description()
+            .await
             .ok_or_else(|| anyhow::anyhow!("No local description after gathering"))?;
 
-        debug!("Offer created, SDP len: {}, ice_gathering: {:?}",
-            local_desc.sdp.len(), self.pc.ice_gathering_state());
+        debug!(
+            "Offer created, SDP len: {}, ice_gathering: {:?}",
+            local_desc.sdp.len(),
+            self.pc.ice_gathering_state()
+        );
 
         // Return offer as JSON
         let offer_json = serde_json::json!({
@@ -336,7 +361,11 @@ impl Peer {
 
                 // Work MUST be inside the returned future
                 Box::pin(async move {
-                    info!("Peer {} received data channel: {}", peer_id.short(), dc.label());
+                    info!(
+                        "Peer {} received data channel: {}",
+                        peer_id.short(),
+                        dc.label()
+                    );
 
                     // Store the received data channel
                     {
@@ -371,15 +400,22 @@ impl Peer {
         // Wait for ICE gathering to complete (with timeout)
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            gathering_complete.recv()
-        ).await;
+            gathering_complete.recv(),
+        )
+        .await;
 
         // Get the local description with ICE candidates embedded
-        let local_desc = self.pc.local_description().await
+        let local_desc = self
+            .pc
+            .local_description()
+            .await
             .ok_or_else(|| anyhow::anyhow!("No local description after gathering"))?;
 
-        debug!("Answer created, SDP len: {}, ice_gathering: {:?}",
-            local_desc.sdp.len(), self.pc.ice_gathering_state());
+        debug!(
+            "Answer created, SDP len: {}, ice_gathering: {:?}",
+            local_desc.sdp.len(),
+            self.pc.ice_gathering_state()
+        );
 
         let answer_json = serde_json::json!({
             "type": local_desc.sdp_type.to_string().to_lowercase(),
@@ -485,7 +521,9 @@ impl Peer {
         if let Some(relay) = nostr_relay.clone() {
             let client_id = relay.next_client_id();
             let (nostr_tx, mut nostr_rx) = mpsc::unbounded_channel::<String>();
-            relay.register_client(client_id, nostr_tx, peer_pubkey.clone()).await;
+            relay
+                .register_client(client_id, nostr_tx, peer_pubkey.clone())
+                .await;
             nostr_client_id = Some(client_id);
 
             if let Some(notify) = open_notify.clone() {
@@ -519,7 +557,10 @@ impl Peer {
             let open_notify = open_notify_clone.clone();
             // Work MUST be inside the returned future
             Box::pin(async move {
-                info!("[Peer {}] Data channel '{}' open", peer_short_open, label_clone);
+                info!(
+                    "[Peer {}] Data channel '{}' open",
+                    peer_short_open, label_clone
+                );
                 if let Some(notify) = open_notify {
                     notify.notify_waiters();
                 }
@@ -559,45 +600,54 @@ impl Peer {
                     return;
                 }
                 // All messages are binary with type prefix + MessagePack body
-                debug!("[Peer {}] Received {} bytes on data channel", peer_short, msg_data.len());
+                debug!(
+                    "[Peer {}] Received {} bytes on data channel",
+                    peer_short,
+                    msg_data.len()
+                );
                 match parse_message(&msg_data) {
                     Ok(data_msg) => match data_msg {
                         DataMessage::Request(req) => {
                             let hash_hex = hash_to_hex(&req.h);
                             let hash_short = &hash_hex[..8.min(hash_hex.len())];
-                            info!(
-                                "[Peer {}] Received request for {}",
-                                peer_short, hash_short
-                            );
+                            info!("[Peer {}] Received request for {}", peer_short, hash_short);
 
                             // Handle request - look up in store
                             let data = if let Some(ref store) = store {
                                 match store.get(&hash_hex) {
                                     Ok(Some(data)) => {
-                                        info!("[Peer {}] Found {} in store ({} bytes)", peer_short, hash_short, data.len());
+                                        info!(
+                                            "[Peer {}] Found {} in store ({} bytes)",
+                                            peer_short,
+                                            hash_short,
+                                            data.len()
+                                        );
                                         Some(data)
-                                    },
+                                    }
                                     Ok(None) => {
-                                        info!("[Peer {}] Hash {} not in store", peer_short, hash_short);
+                                        info!(
+                                            "[Peer {}] Hash {} not in store",
+                                            peer_short, hash_short
+                                        );
                                         None
-                                    },
+                                    }
                                     Err(e) => {
                                         warn!("[Peer {}] Store error: {}", peer_short, e);
                                         None
                                     }
                                 }
                             } else {
-                                warn!("[Peer {}] No store configured - cannot serve requests", peer_short);
+                                warn!(
+                                    "[Peer {}] No store configured - cannot serve requests",
+                                    peer_short
+                                );
                                 None
                             };
 
                             // Send response only if we have data
                             if let Some(data) = data {
                                 let data_len = data.len();
-                                let response = DataResponse {
-                                    h: req.h,
-                                    d: data,
-                                };
+                                let response = DataResponse { h: req.h, d: data };
                                 if let Ok(wire) = encode_response(&response) {
                                     if let Err(e) = dc.send(&Bytes::from(wire)).await {
                                         error!(
@@ -620,7 +670,9 @@ impl Peer {
                             let hash_short = &hash_hex[..8.min(hash_hex.len())];
                             debug!(
                                 "[Peer {}] Received response for {} ({} bytes)",
-                                peer_short, hash_short, res.d.len()
+                                peer_short,
+                                hash_short,
+                                res.d.len()
                             );
 
                             // Resolve the pending request by hash
@@ -633,7 +685,11 @@ impl Peer {
                     Err(e) => {
                         warn!("[Peer {}] Failed to parse message: {:?}", peer_short, e);
                         // Log hex dump of first 50 bytes for debugging
-                        let hex_dump: String = msg_data.iter().take(50).map(|b| format!("{:02x}", b)).collect();
+                        let hex_dump: String = msg_data
+                            .iter()
+                            .take(50)
+                            .map(|b| format!("{:02x}", b))
+                            .collect();
                         warn!("[Peer {}] Message hex: {}", peer_short, hex_dump);
                     }
                 }
@@ -657,11 +713,10 @@ impl Peer {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No data channel"))?
             .clone();
-        drop(dc_guard);  // Release lock before async operations
+        drop(dc_guard); // Release lock before async operations
 
         // Convert hex to binary hash
-        let hash = hex::decode(hash_hex)
-            .map_err(|e| anyhow::anyhow!("Invalid hex hash: {}", e))?;
+        let hash = hex::decode(hash_hex).map_err(|e| anyhow::anyhow!("Invalid hex hash: {}", e))?;
 
         // Create response channel
         let (tx, rx) = oneshot::channel();

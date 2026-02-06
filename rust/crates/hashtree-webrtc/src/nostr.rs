@@ -93,10 +93,17 @@ impl NostrRelayTransport {
                     Ok(notification) => {
                         if let RelayPoolNotification::Event { event, .. } = notification {
                             if event.kind == Kind::Custom(NOSTR_KIND_HASHTREE) {
-                                info!("[NostrTransport] Received kind={} event from {}", NOSTR_KIND_HASHTREE, &event.pubkey.to_hex()[..8]);
+                                info!(
+                                    "[NostrTransport] Received kind={} event from {}",
+                                    NOSTR_KIND_HASHTREE,
+                                    &event.pubkey.to_hex()[..8]
+                                );
                                 // Handle the event - may be hello (plain) or directed (encrypted)
-                                if let Some(msg) = Self::handle_event(&event, &peer_id, &pubkey, &keys, debug) {
-                                    info!("[NostrTransport] Forwarding message to recv channel: {}",
+                                if let Some(msg) =
+                                    Self::handle_event(&event, &peer_id, &pubkey, &keys, debug)
+                                {
+                                    info!(
+                                        "[NostrTransport] Forwarding message to recv channel: {}",
                                         match &msg {
                                             SignalingMessage::Hello { .. } => "hello",
                                             SignalingMessage::Offer { .. } => "offer",
@@ -154,7 +161,10 @@ impl NostrRelayTransport {
 
             if let Some(their_uuid) = get_tag("peerId") {
                 let their_peer_id = format!("{}:{}", sender_pubkey, their_uuid);
-                info!("[NostrTransport] Received hello from {}", &sender_pubkey[..8.min(sender_pubkey.len())]);
+                info!(
+                    "[NostrTransport] Received hello from {}",
+                    &sender_pubkey[..8.min(sender_pubkey.len())]
+                );
                 return Some(SignalingMessage::Hello {
                     peer_id: their_peer_id,
                     roots: vec![],
@@ -176,30 +186,27 @@ impl NostrRelayTransport {
         }
 
         // Try to unwrap the gift - decrypt with our key and the ephemeral sender's pubkey
-        let seal: serde_json::Value = match nip44::decrypt(keys.secret_key(), &event.pubkey, &event.content) {
-            Ok(plaintext) => {
-                match serde_json::from_str(&plaintext) {
+        let seal: serde_json::Value =
+            match nip44::decrypt(keys.secret_key(), &event.pubkey, &event.content) {
+                Ok(plaintext) => match serde_json::from_str(&plaintext) {
                     Ok(v) => v,
                     Err(_) => return None,
+                },
+                Err(_) => {
+                    // Can't decrypt - not for us or invalid
+                    return None;
                 }
-            }
-            Err(_) => {
-                // Can't decrypt - not for us or invalid
-                return None;
-            }
-        };
+            };
 
         // Extract the actual sender's pubkey from the seal
-        let sender_pubkey = seal.get("pubkey")
-            .and_then(|v| v.as_str())?;
+        let sender_pubkey = seal.get("pubkey").and_then(|v| v.as_str())?;
 
         // Skip our own messages
         if sender_pubkey == my_pubkey {
             return None;
         }
 
-        let content = seal.get("content")
-            .and_then(|v| v.as_str())?;
+        let content = seal.get("content").and_then(|v| v.as_str())?;
 
         let msg: SignalingMessage = serde_json::from_str(content).ok()?;
 
@@ -269,7 +276,10 @@ impl RelayTransport for NostrRelayTransport {
             .await
             .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
 
-        info!("[NostrTransport] Subscriptions created for kind={}", NOSTR_KIND_HASHTREE);
+        info!(
+            "[NostrTransport] Subscriptions created for kind={}",
+            NOSTR_KIND_HASHTREE
+        );
 
         // Start event handler
         self.start_event_handler();
@@ -292,13 +302,13 @@ impl RelayTransport for NostrRelayTransport {
         // Check if message has a target (needs gift wrapping)
         if let Some(target_peer_id) = msg.target_peer_id() {
             // Parse target peer ID to get their pubkey (format: pubkey:uuid)
-            let recipient_pubkey = target_peer_id
-                .split(':')
-                .next()
-                .ok_or_else(|| TransportError::SendFailed("Invalid target peer ID format".to_string()))?;
+            let recipient_pubkey = target_peer_id.split(':').next().ok_or_else(|| {
+                TransportError::SendFailed("Invalid target peer ID format".to_string())
+            })?;
 
-            let recipient_pk = PublicKey::from_hex(recipient_pubkey)
-                .map_err(|e| TransportError::SendFailed(format!("Invalid recipient pubkey: {}", e)))?;
+            let recipient_pk = PublicKey::from_hex(recipient_pubkey).map_err(|e| {
+                TransportError::SendFailed(format!("Invalid recipient pubkey: {}", e))
+            })?;
 
             // Create seal with sender's actual pubkey (the "rumor")
             let seal = serde_json::json!({
@@ -317,16 +327,14 @@ impl RelayTransport for NostrRelayTransport {
                 ephemeral_keys.secret_key(),
                 &recipient_pk,
                 &seal.to_string(),
-                nip44::Version::V2
-            ).map_err(|e| TransportError::SendFailed(format!("Encryption failed: {}", e)))?;
+                nip44::Version::V2,
+            )
+            .map_err(|e| TransportError::SendFailed(format!("Encryption failed: {}", e)))?;
 
             // Create wrapper event with ephemeral key
             let expiration = Timestamp::now() + Duration::from_secs(5 * 60); // 5 minutes
 
-            let tags = vec![
-                Tag::public_key(recipient_pk),
-                Tag::expiration(expiration),
-            ];
+            let tags = vec![Tag::public_key(recipient_pk), Tag::expiration(expiration)];
 
             info!(
                 "[NostrTransport] Publishing {} to {} (gift-wrapped)",
@@ -340,7 +348,8 @@ impl RelayTransport for NostrRelayTransport {
                 &recipient_pubkey[..8.min(recipient_pubkey.len())]
             );
 
-            let builder = EventBuilder::new(Kind::Custom(NOSTR_KIND_HASHTREE), encrypted_content, tags);
+            let builder =
+                EventBuilder::new(Kind::Custom(NOSTR_KIND_HASHTREE), encrypted_content, tags);
             let event = builder
                 .to_event(&ephemeral_keys)
                 .map_err(|e| TransportError::SendFailed(e.to_string()))?;
@@ -349,9 +358,14 @@ impl RelayTransport for NostrRelayTransport {
                 Ok(output) => {
                     if output.success.is_empty() {
                         warn!("[NostrTransport] Directed message rejected - no relay accepted");
-                        return Err(TransportError::SendFailed("No relay accepted event".to_string()));
+                        return Err(TransportError::SendFailed(
+                            "No relay accepted event".to_string(),
+                        ));
                     }
-                    info!("[NostrTransport] Directed message sent to {} relays", output.success.len());
+                    info!(
+                        "[NostrTransport] Directed message sent to {} relays",
+                        output.success.len()
+                    );
                     Ok(())
                 }
                 Err(e) => {
@@ -362,23 +376,27 @@ impl RelayTransport for NostrRelayTransport {
         } else {
             // Hello message - broadcast with #l: "hello" tag
             // Extract UUID from our peer_id (format: pubkey:uuid)
-            let our_uuid = self.peer_id
-                .split(':')
-                .nth(1)
-                .unwrap_or(&self.peer_id);
+            let our_uuid = self.peer_id.split(':').nth(1).unwrap_or(&self.peer_id);
 
-            debug!("[NostrTransport] Publishing hello (kind={}, uuid={}, pubkey={})", NOSTR_KIND_HASHTREE, our_uuid, &self.pubkey[..8]);
+            debug!(
+                "[NostrTransport] Publishing hello (kind={}, uuid={}, pubkey={})",
+                NOSTR_KIND_HASHTREE,
+                our_uuid,
+                &self.pubkey[..8]
+            );
 
             // Add expiration tag (5 minutes) to match browser behavior
             let expiration = Timestamp::now() + Duration::from_secs(5 * 60);
             let tags = vec![
                 Tag::custom(
-                    nostr_sdk::TagKind::SingleLetter(nostr_sdk::SingleLetterTag::lowercase(nostr_sdk::Alphabet::L)),
-                    vec![HELLO_TAG.to_string()]
+                    nostr_sdk::TagKind::SingleLetter(nostr_sdk::SingleLetterTag::lowercase(
+                        nostr_sdk::Alphabet::L,
+                    )),
+                    vec![HELLO_TAG.to_string()],
                 ),
                 Tag::custom(
                     nostr_sdk::TagKind::Custom(std::borrow::Cow::Borrowed("peerId")),
-                    vec![our_uuid.to_string()]
+                    vec![our_uuid.to_string()],
                 ),
                 Tag::expiration(expiration),
             ];
@@ -394,9 +412,14 @@ impl RelayTransport for NostrRelayTransport {
                 Ok(output) => {
                     if output.success.is_empty() {
                         warn!("[NostrTransport] Hello rejected - no relay accepted event");
-                        return Err(TransportError::SendFailed("No relay accepted event".to_string()));
+                        return Err(TransportError::SendFailed(
+                            "No relay accepted event".to_string(),
+                        ));
                     }
-                    info!("[NostrTransport] Hello sent successfully to {} relays", output.success.len());
+                    info!(
+                        "[NostrTransport] Hello sent successfully to {} relays",
+                        output.success.len()
+                    );
                     Ok(())
                 }
                 Err(e) => {

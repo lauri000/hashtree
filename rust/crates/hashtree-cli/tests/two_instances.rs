@@ -18,10 +18,10 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 mod test_relay {
+    use futures::{SinkExt, StreamExt};
     use std::collections::HashMap;
     use std::net::TcpListener;
     use std::sync::Arc;
-    use futures::{SinkExt, StreamExt};
     use tokio::net::TcpStream;
     use tokio::sync::{broadcast, RwLock};
     use tokio_tungstenite::{accept_async, tungstenite::Message};
@@ -51,15 +51,18 @@ mod test_relay {
             }
 
             if let Some(ref p) = self.p_tag {
-                let has_p = event.get("tags")
+                let has_p = event
+                    .get("tags")
                     .and_then(|t| t.as_array())
                     .map(|tags| {
                         tags.iter().any(|tag| {
-                            tag.as_array().map(|arr| {
-                                arr.len() >= 2 &&
-                                arr[0].as_str() == Some("p") &&
-                                arr[1].as_str() == Some(p.as_str())
-                            }).unwrap_or(false)
+                            tag.as_array()
+                                .map(|arr| {
+                                    arr.len() >= 2
+                                        && arr[0].as_str() == Some("p")
+                                        && arr[1].as_str() == Some(p.as_str())
+                                })
+                                .unwrap_or(false)
                         })
                     })
                     .unwrap_or(false);
@@ -69,15 +72,18 @@ mod test_relay {
             }
 
             if let Some(ref l) = self.l_tag {
-                let has_l = event.get("tags")
+                let has_l = event
+                    .get("tags")
                     .and_then(|t| t.as_array())
                     .map(|tags| {
                         tags.iter().any(|tag| {
-                            tag.as_array().map(|arr| {
-                                arr.len() >= 2 &&
-                                arr[0].as_str() == Some("l") &&
-                                arr[1].as_str() == Some(l.as_str())
-                            }).unwrap_or(false)
+                            tag.as_array()
+                                .map(|arr| {
+                                    arr.len() >= 2
+                                        && arr[0].as_str() == Some("l")
+                                        && arr[1].as_str() == Some(l.as_str())
+                                })
+                                .unwrap_or(false)
                         })
                     })
                     .unwrap_or(false);
@@ -97,7 +103,8 @@ mod test_relay {
 
     impl TestRelay {
         pub fn new(port: u16) -> Self {
-            let events: Arc<RwLock<HashMap<String, serde_json::Value>>> = Arc::new(RwLock::new(HashMap::new()));
+            let events: Arc<RwLock<HashMap<String, serde_json::Value>>> =
+                Arc::new(RwLock::new(HashMap::new()));
             let (shutdown, _) = broadcast::channel(1);
             let (event_tx, _) = broadcast::channel::<serde_json::Value>(1000);
 
@@ -168,7 +175,8 @@ mod test_relay {
         let (write, mut read) = ws_stream.split();
         let write = Arc::new(tokio::sync::Mutex::new(write));
 
-        let subscriptions: Arc<RwLock<HashMap<String, Vec<StoredFilter>>>> = Arc::new(RwLock::new(HashMap::new()));
+        let subscriptions: Arc<RwLock<HashMap<String, Vec<StoredFilter>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
 
         let write_clone = write.clone();
         let subs_clone = subscriptions.clone();
@@ -180,7 +188,8 @@ mod test_relay {
                         for (_, filters) in subs.iter() {
                             for filter in filters {
                                 if filter.matches(&event) {
-                                    let event_msg = serde_json::json!(["EVENT", &filter.sub_id, &event]);
+                                    let event_msg =
+                                        serde_json::json!(["EVENT", &filter.sub_id, &event]);
                                     let mut w = write_clone.lock().await;
                                     let _ = w.send(Message::Text(event_msg.to_string())).await;
                                     break;
@@ -243,25 +252,31 @@ mod test_relay {
                         for i in 2..parsed.len() {
                             let filter = &parsed[i];
 
-                            let kind = filter.get("kinds")
+                            let kind = filter
+                                .get("kinds")
                                 .and_then(|k| k.as_array())
                                 .and_then(|a| a.first())
                                 .and_then(|v| v.as_u64());
 
-                            let authors: Vec<String> = filter.get("authors")
+                            let authors: Vec<String> = filter
+                                .get("authors")
                                 .and_then(|a| a.as_array())
-                                .map(|arr| arr.iter()
-                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                    .collect())
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                        .collect()
+                                })
                                 .unwrap_or_default();
 
-                            let p_tag = filter.get("#p")
+                            let p_tag = filter
+                                .get("#p")
                                 .and_then(|p| p.as_array())
                                 .and_then(|a| a.first())
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string());
 
-                            let l_tag = filter.get("#l")
+                            let l_tag = filter
+                                .get("#l")
                                 .and_then(|l| l.as_array())
                                 .and_then(|a| a.first())
                                 .and_then(|v| v.as_str())
@@ -276,7 +291,10 @@ mod test_relay {
                             });
                         }
 
-                        subscriptions.write().await.insert(sub_id.clone(), filters.clone());
+                        subscriptions
+                            .write()
+                            .await
+                            .insert(sub_id.clone(), filters.clone());
 
                         let events_lock = events.read().await;
                         let mut w = write.lock().await;
@@ -346,14 +364,16 @@ crawl_depth = 0
             .expect("Failed to write config");
 
         // Write pre-generated keys file
-        let nsec = keys.secret_key().to_bech32().expect("Failed to encode nsec");
-        std::fs::write(config_dir.join("keys"), &nsec)
-            .expect("Failed to write keys");
+        let nsec = keys
+            .secret_key()
+            .to_bech32()
+            .expect("Failed to encode nsec");
+        std::fs::write(config_dir.join("keys"), &nsec).expect("Failed to write keys");
 
         // Write contacts.json with follow_pubkeys so peer classifier puts them in Follows pool
         if !follow_pubkeys.is_empty() {
-            let contacts_json = serde_json::to_string(&follow_pubkeys)
-                .expect("Failed to serialize contacts");
+            let contacts_json =
+                serde_json::to_string(&follow_pubkeys).expect("Failed to serialize contacts");
             std::fs::write(data_dir.path().join("contacts.json"), &contacts_json)
                 .expect("Failed to write contacts.json");
         }
@@ -444,12 +464,15 @@ impl DaemonInstance {
         fs::create_dir_all(&config_dir).context("Failed to create config dir")?;
         write_test_config(&config_dir, relay_url)?;
 
-        let nsec = keys.secret_key().to_bech32().context("Failed to encode nsec")?;
+        let nsec = keys
+            .secret_key()
+            .to_bech32()
+            .context("Failed to encode nsec")?;
         fs::write(config_dir.join("keys"), &nsec).context("Failed to write keys")?;
 
         if !follow_pubkeys.is_empty() {
-            let contacts_json = serde_json::to_string(follow_pubkeys)
-                .context("Failed to serialize contacts")?;
+            let contacts_json =
+                serde_json::to_string(follow_pubkeys).context("Failed to serialize contacts")?;
             fs::write(data_path.join("contacts.json"), &contacts_json)
                 .context("Failed to write contacts.json")?;
         }
@@ -555,11 +578,7 @@ fn create_test_directory() -> TempDir {
     std::fs::write(path.join("file1.txt"), "Hello from file 1\n").unwrap();
     std::fs::write(path.join("file2.txt"), "Hello from file 2\n").unwrap();
     std::fs::write(path.join("subdir/nested.txt"), "Nested content\n").unwrap();
-    std::fs::write(
-        path.join("data.json"),
-        r#"{"key": "value", "number": 42}"#,
-    )
-    .unwrap();
+    std::fs::write(path.join("data.json"), r#"{"key": "value", "number": 42}"#).unwrap();
 
     dir
 }
@@ -585,8 +604,7 @@ write_servers = []
 enabled = false
 "#
     );
-    fs::write(config_dir.join("config.toml"), config_content)
-        .context("Failed to write config")?;
+    fs::write(config_dir.join("config.toml"), config_content).context("Failed to write config")?;
     Ok(())
 }
 
@@ -681,7 +699,9 @@ fn fetch_bytes(url: &str) -> Result<Vec<u8>> {
         .build()
         .context("Failed to build HTTP client")?;
     let resp = client.get(url).send().context("HTTP request failed")?;
-    let resp = resp.error_for_status().context("Non-success HTTP response")?;
+    let resp = resp
+        .error_for_status()
+        .context("Non-success HTTP response")?;
     let bytes = resp.bytes().context("Failed to read response body")?;
     Ok(bytes.to_vec())
 }
@@ -720,8 +740,10 @@ fn test_two_instances_discover_and_sync() {
     std::thread::sleep(Duration::from_secs(5));
 
     // Verify they have different data directories
-    assert_ne!(instance_a.data_path, instance_b.data_path,
-        "Instances must have different data directories");
+    assert_ne!(
+        instance_a.data_path, instance_b.data_path,
+        "Instances must have different data directories"
+    );
 
     // Add directory on instance A via HTTP upload (not CLI, so server sees it)
     println!("\nAdding directory on Instance A via HTTP upload...");
@@ -730,8 +752,10 @@ fn test_two_instances_discover_and_sync() {
     let test_file = test_data.path().join("file1.txt");
     let add_output = Command::new("curl")
         .arg("-s")
-        .arg("-X").arg("POST")
-        .arg("-F").arg(format!("file=@{}", test_file.display()))
+        .arg("-X")
+        .arg("POST")
+        .arg("-F")
+        .arg(format!("file=@{}", test_file.display()))
         .arg("http://127.0.0.1:18081/upload")
         .output()
         .expect("Failed to upload file");
@@ -763,11 +787,15 @@ fn test_two_instances_discover_and_sync() {
     println!("\nPinning on Instance A...");
     let pin_output = Command::new("curl")
         .arg("-s")
-        .arg("-X").arg("POST")
+        .arg("-X")
+        .arg("POST")
         .arg(format!("http://127.0.0.1:18081/api/pin/{}", cid))
         .output()
         .expect("Failed to pin");
-    println!("Pin response: {}", String::from_utf8_lossy(&pin_output.stdout));
+    println!(
+        "Pin response: {}",
+        String::from_utf8_lossy(&pin_output.stdout)
+    );
 
     // Verify data is stored on instance A
     println!("\nVerifying data on Instance A...");
@@ -780,26 +808,44 @@ fn test_two_instances_discover_and_sync() {
         .arg("-s")
         .arg("http://127.0.0.1:18081/api/stats")
         .output();
-    println!("Instance A stats: {}", check_a.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_else(|e| e.to_string()));
+    println!(
+        "Instance A stats: {}",
+        check_a
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_else(|e| e.to_string())
+    );
 
     let check_b = Command::new("curl")
         .arg("-s")
         .arg("http://127.0.0.1:18082/api/stats")
         .output();
-    println!("Instance B stats: {}", check_b.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_else(|e| e.to_string()));
+    println!(
+        "Instance B stats: {}",
+        check_b
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_else(|e| e.to_string())
+    );
 
     // Also verify Instance A can serve the content locally
     println!("\nVerifying Instance A can serve content via HTTP...");
     let check_content_a = Command::new("curl")
         .arg("-s")
-        .arg("-w").arg("\nHTTP_CODE:%{http_code}")
+        .arg("-w")
+        .arg("\nHTTP_CODE:%{http_code}")
         .arg(format!("http://127.0.0.1:18081/{}", cid))
         .output();
-    println!("Instance A content check: {}", check_content_a.map(|o| {
-        format!("stdout={} stderr={}",
-            String::from_utf8_lossy(&o.stdout),
-            String::from_utf8_lossy(&o.stderr))
-    }).unwrap_or_else(|e| e.to_string()));
+    println!(
+        "Instance A content check: {}",
+        check_content_a
+            .map(|o| {
+                format!(
+                    "stdout={} stderr={}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                )
+            })
+            .unwrap_or_else(|e| e.to_string())
+    );
 
     // Wait for P2P discovery and sync with peer status checking
     // Hello messages sent every 10s, need time for: discovery -> offer/answer -> ICE -> connect
@@ -821,22 +867,36 @@ fn test_two_instances_discover_and_sync() {
             .arg("http://127.0.0.1:18082/api/peers")
             .output();
 
-        let peers_a_json = peers_a.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
-        let peers_b_json = peers_b.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+        let peers_a_json = peers_a
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        let peers_b_json = peers_b
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
 
-        println!("  {} seconds - Instance A peers: {}", wait_attempt * 5, peers_a_json);
-        println!("  {} seconds - Instance B peers: {}", wait_attempt * 5, peers_b_json);
+        println!(
+            "  {} seconds - Instance A peers: {}",
+            wait_attempt * 5,
+            peers_a_json
+        );
+        println!(
+            "  {} seconds - Instance B peers: {}",
+            wait_attempt * 5,
+            peers_b_json
+        );
 
         // Parse Instance B's peers to check if A is connected with data channel
         // We need to check that the specific peer entry for A has has_data_channel: true
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&peers_b_json) {
             if let Some(peers) = json.get("peers").and_then(|p| p.as_array()) {
                 for peer in peers {
-                    let has_pubkey_a = peer.get("pubkey")
+                    let has_pubkey_a = peer
+                        .get("pubkey")
                         .and_then(|p| p.as_str())
                         .map(|s| s == pubkey_a)
                         .unwrap_or(false);
-                    let has_data_channel = peer.get("has_data_channel")
+                    let has_data_channel = peer
+                        .get("has_data_channel")
                         .and_then(|d| d.as_bool())
                         .unwrap_or(false);
 
@@ -855,7 +915,9 @@ fn test_two_instances_discover_and_sync() {
     }
 
     if !b_has_a_datachannel {
-        println!("\nWARNING: Instance B did not establish data channel to Instance A after 120 seconds");
+        println!(
+            "\nWARNING: Instance B did not establish data channel to Instance A after 120 seconds"
+        );
         println!("This may be due to relay issues or network configuration");
     }
 
@@ -865,12 +927,16 @@ fn test_two_instances_discover_and_sync() {
     let mut retrieved_content = String::new();
 
     for attempt in 1..=10 {
-        println!("\nAttempt {}/10: Fetching via Instance B's HTTP API...", attempt);
+        println!(
+            "\nAttempt {}/10: Fetching via Instance B's HTTP API...",
+            attempt
+        );
 
         // Use curl to fetch from instance B's server (with verbose HTTP code output)
         let curl_output = Command::new("curl")
             .arg("-s")
-            .arg("-w").arg("\n__HTTP_CODE:%{http_code}__")
+            .arg("-w")
+            .arg("\n__HTTP_CODE:%{http_code}__")
             .arg(format!("http://127.0.0.1:18082/{}", cid))
             .output();
 
@@ -882,7 +948,11 @@ fn test_two_instances_discover_and_sync() {
                 // Check if we got the content (HTTP 200)
                 if full_output.contains("__HTTP_CODE:200__") {
                     retrieved_content = full_output.replace("\n__HTTP_CODE:200__", "").to_string();
-                    println!("Got content ({} bytes): {}", retrieved_content.len(), &retrieved_content[..50.min(retrieved_content.len())]);
+                    println!(
+                        "Got content ({} bytes): {}",
+                        retrieved_content.len(),
+                        &retrieved_content[..50.min(retrieved_content.len())]
+                    );
                     success = true;
                     break;
                 }
@@ -899,7 +969,10 @@ fn test_two_instances_discover_and_sync() {
     }
 
     // MUST succeed - this is the whole point of the test
-    assert!(success, "Instance B MUST be able to get content from Instance A via P2P");
+    assert!(
+        success,
+        "Instance B MUST be able to get content from Instance A via P2P"
+    );
 
     println!("\n=== SUCCESS: Content retrieved via P2P! ===");
     println!("Retrieved {} bytes", retrieved_content.len());
@@ -911,7 +984,8 @@ fn extract_cid(text: &str) -> Option<String> {
     // First try to find nhash format (preferred)
     // Note: output may be "nhash1.../filename" URL format, extract just the nhash part
     if let Some(nhash) = text.lines().find_map(|line| {
-        line.split_whitespace().find(|word| word.starts_with("nhash1"))
+        line.split_whitespace()
+            .find(|word| word.starts_with("nhash1"))
             .map(|s| {
                 // Strip /filename suffix if present
                 if let Some(slash_pos) = s.find('/') {
@@ -925,14 +999,17 @@ fn extract_cid(text: &str) -> Option<String> {
     }
     // Fall back to 64-char hex format
     text.lines().find_map(|line| {
-        line.split_whitespace().find(|word| {
-            word.len() == 64 && word.chars().all(|c| c.is_ascii_hexdigit())
-        }).map(|s| s.to_string())
+        line.split_whitespace()
+            .find(|word| word.len() == 64 && word.chars().all(|c| c.is_ascii_hexdigit()))
+            .map(|s| s.to_string())
     })
 }
 
 #[test]
-#[cfg_attr(not(feature = "p2p"), ignore = "requires p2p feature for WebRTC data channels")]
+#[cfg_attr(
+    not(feature = "p2p"),
+    ignore = "requires p2p feature for WebRTC data channels"
+)]
 fn test_two_instances_connect_local_relay() -> Result<()> {
     let htree_bin = find_htree_binary();
     let relay = test_relay::TestRelay::new(19110);
@@ -950,12 +1027,20 @@ fn test_two_instances_connect_local_relay() -> Result<()> {
     assert!(is_process_running(instance_a.pid));
     assert!(is_process_running(instance_b.pid));
 
-    wait_for_peer_data_channel(&instance_a.addr, &instance_b.pubkey_hex, Duration::from_secs(30))?;
-    wait_for_peer_data_channel(&instance_b.addr, &instance_a.pubkey_hex, Duration::from_secs(30))?;
+    wait_for_peer_data_channel(
+        &instance_a.addr,
+        &instance_b.pubkey_hex,
+        Duration::from_secs(30),
+    )?;
+    wait_for_peer_data_channel(
+        &instance_b.addr,
+        &instance_a.pubkey_hex,
+        Duration::from_secs(30),
+    )?;
 
     let expected = b"hello world\n".to_vec();
-    let store = HashtreeStore::new(&instance_a.data_path)
-        .context("Failed to open instance A store")?;
+    let store =
+        HashtreeStore::new(&instance_a.data_path).context("Failed to open instance A store")?;
     let cid = store.put_blob(&expected).context("Failed to store blob")?;
     let url = format!("{}/{}", instance_b.base_url(), cid);
 
@@ -985,9 +1070,15 @@ fn test_local_add_and_get() {
     let instance = TestInstance::new_without_server();
 
     // Add directory (--local to skip file server push in tests)
-    let add_output = instance.run_command(htree_bin_str, &[
-        "add", test_data.path().to_str().unwrap(), "--public", "--local"
-    ]);
+    let add_output = instance.run_command(
+        htree_bin_str,
+        &[
+            "add",
+            test_data.path().to_str().unwrap(),
+            "--public",
+            "--local",
+        ],
+    );
 
     let add_stdout = String::from_utf8_lossy(&add_output.stdout);
     println!("Add output: {}", add_stdout);
@@ -1000,12 +1091,19 @@ fn test_local_add_and_get() {
     let output_dir = TempDir::new().expect("Failed to create output dir");
     let output_path = output_dir.path().join("retrieved");
 
-    let get_output = instance.run_command(htree_bin_str, &[
-        "get", &cid, "-o", output_path.to_str().unwrap()
-    ]);
+    let get_output = instance.run_command(
+        htree_bin_str,
+        &["get", &cid, "-o", output_path.to_str().unwrap()],
+    );
 
-    println!("Get output: {}", String::from_utf8_lossy(&get_output.stdout));
-    println!("Get stderr: {}", String::from_utf8_lossy(&get_output.stderr));
+    println!(
+        "Get output: {}",
+        String::from_utf8_lossy(&get_output.stdout)
+    );
+    println!(
+        "Get stderr: {}",
+        String::from_utf8_lossy(&get_output.stderr)
+    );
 
     // Verify
     assert!(output_path.exists(), "Output path should exist");

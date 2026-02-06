@@ -26,7 +26,13 @@ struct CrosslangServer {
 }
 
 impl CrosslangServer {
-    fn new(port: u16, htree_bin: &str, keys: &Keys, test_content: &[u8], follow_pubkeys: &[String]) -> Self {
+    fn new(
+        port: u16,
+        htree_bin: &str,
+        keys: &Keys,
+        test_content: &[u8],
+        follow_pubkeys: &[String],
+    ) -> Self {
         let data_dir = TempDir::new().expect("Failed to create temp dir");
         let data_path = data_dir.path();
         let home_dir = data_dir.path();
@@ -37,11 +43,12 @@ impl CrosslangServer {
 
         // Use local test relay (started by playwright) for reliable testing
         // Falls back to public relays if LOCAL_RELAY env var not set
-        let relay_url = std::env::var("LOCAL_RELAY")
-            .unwrap_or_else(|_| "wss://temp.iris.to".to_string());
+        let relay_url =
+            std::env::var("LOCAL_RELAY").unwrap_or_else(|_| "wss://temp.iris.to".to_string());
         println!("CROSSLANG_RELAY:{}", relay_url);
         println!("CROSSLANG_CONFIG_DIR:{}", config_dir.display());
-        let config_content = format!(r#"
+        let config_content = format!(
+            r#"
 [server]
 enable_auth = false
 stun_port = 0
@@ -49,22 +56,28 @@ stun_port = 0
 [nostr]
 relays = ["{}"]
 crawl_depth = 0
-"#, relay_url);
+"#,
+            relay_url
+        );
         let config_path = config_dir.join("config.toml");
-        std::fs::write(&config_path, &config_content)
-            .expect("Failed to write config");
+        std::fs::write(&config_path, &config_content).expect("Failed to write config");
         println!("CROSSLANG_CONFIG_WRITTEN:{}", config_path.display());
-        println!("CROSSLANG_CONFIG_CONTENT:{}", config_content.replace('\n', " "));
+        println!(
+            "CROSSLANG_CONFIG_CONTENT:{}",
+            config_content.replace('\n', " ")
+        );
 
         // Write pre-generated keys file
-        let nsec = keys.secret_key().to_bech32().expect("Failed to encode nsec");
-        std::fs::write(config_dir.join("keys"), &nsec)
-            .expect("Failed to write keys");
+        let nsec = keys
+            .secret_key()
+            .to_bech32()
+            .expect("Failed to encode nsec");
+        std::fs::write(config_dir.join("keys"), &nsec).expect("Failed to write keys");
 
         // Write contacts.json with pubkeys to follow (for WebRTC peer classification)
         if !follow_pubkeys.is_empty() {
-            let contacts_json = serde_json::to_string(&follow_pubkeys)
-                .expect("Failed to serialize contacts");
+            let contacts_json =
+                serde_json::to_string(&follow_pubkeys).expect("Failed to serialize contacts");
             std::fs::write(data_path.join("contacts.json"), &contacts_json)
                 .expect("Failed to write contacts.json");
             println!("Following pubkeys: {:?}", follow_pubkeys);
@@ -86,9 +99,13 @@ crawl_depth = 0
             .arg("--relays")
             .arg(&relay_url)
             .env("HOME", home_dir)
-            .env("RUST_LOG", std::env::var("RUST_LOG").unwrap_or_else(|_| "warn,hashtree_cli::webrtc=info".to_string()))
-            .stdout(Stdio::inherit())  // Forward stdout to test output
-            .stderr(Stdio::inherit())  // Forward stderr to test output
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG")
+                    .unwrap_or_else(|_| "warn,hashtree_cli::webrtc=info".to_string()),
+            )
+            .stdout(Stdio::inherit()) // Forward stdout to test output
+            .stderr(Stdio::inherit()) // Forward stderr to test output
             .spawn()
             .expect("Failed to start htree server");
 
@@ -145,7 +162,10 @@ fn test_crosslang_peer() {
         Keys::generate()
     };
     let pubkey_hex = keys.public_key().to_hex();
-    let npub = keys.public_key().to_bech32().expect("Failed to encode npub");
+    let npub = keys
+        .public_key()
+        .to_bech32()
+        .expect("Failed to encode npub");
 
     // Test content that will be synced
     let test_content = b"Hello from rust! This content was synced cross-language.";
@@ -179,8 +199,13 @@ fn test_crosslang_peer() {
     // Upload test content via HTTP
     let upload_output = Command::new("curl")
         .arg("-s")
-        .arg("-X").arg("POST")
-        .arg("-F").arg(format!("file=@{}", server._data_dir.path().join("test-content.txt").display()))
+        .arg("-X")
+        .arg("POST")
+        .arg("-F")
+        .arg(format!(
+            "file=@{}",
+            server._data_dir.path().join("test-content.txt").display()
+        ))
         .arg(format!("http://127.0.0.1:{}/upload", port))
         .output()
         .expect("Failed to upload file");
@@ -207,11 +232,15 @@ fn test_crosslang_peer() {
     // Pin the content
     let pin_output = Command::new("curl")
         .arg("-s")
-        .arg("-X").arg("POST")
+        .arg("-X")
+        .arg("POST")
         .arg(format!("http://127.0.0.1:{}/api/pin/{}", port, hash))
         .output()
         .expect("Failed to pin");
-    println!("Pin response: {}", String::from_utf8_lossy(&pin_output.stdout));
+    println!(
+        "Pin response: {}",
+        String::from_utf8_lossy(&pin_output.stdout)
+    );
 
     // Signal ready
     println!("CROSSLANG_READY");
@@ -241,7 +270,8 @@ fn test_crosslang_peer() {
                     if let Some(peers) = json.get("peers").and_then(|p| p.as_array()) {
                         for peer in peers {
                             if let Some(pk) = peer.get("pubkey").and_then(|p| p.as_str()) {
-                                let has_dc = peer.get("has_data_channel")
+                                let has_dc = peer
+                                    .get("has_data_channel")
                                     .and_then(|d| d.as_bool())
                                     .unwrap_or(false);
                                 if has_dc {

@@ -11,11 +11,11 @@
 //!
 //! Run with: cargo test --package hashtree-cli --test blossom_access -- --nocapture
 
+use nostr::{Keys, ToBech32};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tempfile::TempDir;
-use nostr::{Keys, ToBech32};
 
 struct TestServer {
     _data_dir: TempDir,
@@ -44,7 +44,8 @@ impl TestServer {
         } else {
             String::new()
         };
-        let config_content = format!(r#"
+        let config_content = format!(
+            r#"
 [server]
 enable_auth = {}
 stun_port = 0
@@ -52,15 +53,19 @@ enable_webrtc = false
 
 [nostr]
 relays = []
-{}"#, enable_auth, upstream_config);
+{}"#,
+            enable_auth, upstream_config
+        );
         std::fs::write(config_dir.join("config.toml"), config_content)
             .expect("Failed to write config");
 
         // Generate and write keys file
         let keys = Keys::generate();
-        let nsec = keys.secret_key().to_bech32().expect("Failed to encode nsec");
-        std::fs::write(config_dir.join("keys"), &nsec)
-            .expect("Failed to write keys");
+        let nsec = keys
+            .secret_key()
+            .to_bech32()
+            .expect("Failed to encode nsec");
+        std::fs::write(config_dir.join("keys"), &nsec).expect("Failed to write keys");
 
         let process = Command::new(htree_bin)
             .arg("--data-dir")
@@ -126,8 +131,8 @@ fn find_htree_binary() -> PathBuf {
 /// Create a blossom auth header for upload
 /// Kind 24242 event with "upload" action tag
 fn create_blossom_auth(keys: &Keys) -> String {
-    use nostr::{EventBuilder, Kind, Tag, TagKind, Timestamp};
     use base64::Engine;
+    use nostr::{EventBuilder, Kind, Tag, TagKind, Timestamp};
 
     let now = Timestamp::now();
     let expiration = Timestamp::from(now.as_u64() + 300); // 5 minutes
@@ -135,7 +140,10 @@ fn create_blossom_auth(keys: &Keys) -> String {
     // Create kind 24242 event with tags
     let tags = vec![
         Tag::custom(TagKind::Custom("t".into()), vec!["upload".to_string()]),
-        Tag::custom(TagKind::Custom("expiration".into()), vec![expiration.to_string()]),
+        Tag::custom(
+            TagKind::Custom("expiration".into()),
+            vec![expiration.to_string()],
+        ),
     ];
     let event = EventBuilder::new(Kind::Custom(24242), "", tags)
         .to_event(keys)
@@ -155,10 +163,14 @@ fn test_upload_requires_auth() {
     // Try to upload without auth header
     let output = Command::new("curl")
         .arg("-s")
-        .arg("-w").arg("\n%{http_code}")
-        .arg("-X").arg("PUT")
-        .arg("-H").arg("Content-Type: application/octet-stream")
-        .arg("--data-binary").arg("test content")
+        .arg("-w")
+        .arg("\n%{http_code}")
+        .arg("-X")
+        .arg("PUT")
+        .arg("-H")
+        .arg("Content-Type: application/octet-stream")
+        .arg("--data-binary")
+        .arg("test content")
         .arg(format!("{}/upload", server.base_url()))
         .output()
         .expect("Failed to run curl");
@@ -167,8 +179,10 @@ fn test_upload_requires_auth() {
     println!("Response: {}", response);
 
     // Should get 401 Unauthorized
-    assert!(response.contains("401") || response.contains("error"),
-        "Upload without auth should be rejected");
+    assert!(
+        response.contains("401") || response.contains("error"),
+        "Upload without auth should be rejected"
+    );
 }
 
 /// Test that uploads with valid auth are processed
@@ -185,11 +199,16 @@ fn test_upload_with_auth_header() {
 
     let output = Command::new("curl")
         .arg("-s")
-        .arg("-w").arg("\n%{http_code}")
-        .arg("-X").arg("PUT")
-        .arg("-H").arg("Content-Type: application/octet-stream")
-        .arg("-H").arg(format!("Authorization: {}", auth_header))
-        .arg("--data-binary").arg("test content for upload")
+        .arg("-w")
+        .arg("\n%{http_code}")
+        .arg("-X")
+        .arg("PUT")
+        .arg("-H")
+        .arg("Content-Type: application/octet-stream")
+        .arg("-H")
+        .arg(format!("Authorization: {}", auth_header))
+        .arg("--data-binary")
+        .arg("test content for upload")
         .arg(format!("{}/upload", server.base_url()))
         .output()
         .expect("Failed to run curl");
@@ -200,10 +219,10 @@ fn test_upload_with_auth_header() {
     // Should get either success (200/201) or forbidden (403) based on social graph
     // We're testing that auth header is processed correctly
     assert!(
-        response.contains("200") ||
-        response.contains("201") ||
-        response.contains("403") ||
-        response.contains("error"),
+        response.contains("200")
+            || response.contains("201")
+            || response.contains("403")
+            || response.contains("error"),
         "Should get a valid response (success or forbidden)"
     );
 }
@@ -217,9 +236,12 @@ fn test_get_blob_no_auth_required() {
     let test_content = "Hello, Blossom!";
     let upload_output = Command::new("curl")
         .arg("-s")
-        .arg("-X").arg("PUT")
-        .arg("-H").arg("Content-Type: text/plain")
-        .arg("--data-binary").arg(test_content)
+        .arg("-X")
+        .arg("PUT")
+        .arg("-H")
+        .arg("Content-Type: text/plain")
+        .arg("--data-binary")
+        .arg(test_content)
         .arg(format!("{}/upload", server.base_url()))
         .output()
         .expect("Failed to upload");
@@ -230,7 +252,11 @@ fn test_get_blob_no_auth_required() {
     // Extract sha256 from response
     let sha256: Option<String> = serde_json::from_str::<serde_json::Value>(&upload_response)
         .ok()
-        .and_then(|v| v.get("sha256").and_then(|s| s.as_str()).map(|s| s.to_string()));
+        .and_then(|v| {
+            v.get("sha256")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string())
+        });
 
     if let Some(hash) = sha256 {
         println!("Uploaded blob hash: {}", hash);
@@ -238,7 +264,8 @@ fn test_get_blob_no_auth_required() {
         // GET should work without auth
         let get_output = Command::new("curl")
             .arg("-s")
-            .arg("-w").arg("\n%{http_code}")
+            .arg("-w")
+            .arg("\n%{http_code}")
             .arg(format!("{}/{}", server.base_url(), hash))
             .output()
             .expect("Failed to get blob");
@@ -246,8 +273,10 @@ fn test_get_blob_no_auth_required() {
         let get_response = String::from_utf8_lossy(&get_output.stdout);
         println!("GET response: {}", get_response);
 
-        assert!(get_response.contains(test_content) || get_response.contains("200"),
-            "GET should return the blob content");
+        assert!(
+            get_response.contains(test_content) || get_response.contains("200"),
+            "GET should return the blob content"
+        );
     }
 }
 
@@ -259,9 +288,12 @@ fn test_head_blob() {
     // Upload a blob
     let upload_output = Command::new("curl")
         .arg("-s")
-        .arg("-X").arg("PUT")
-        .arg("-H").arg("Content-Type: text/plain")
-        .arg("--data-binary").arg("HEAD test content")
+        .arg("-X")
+        .arg("PUT")
+        .arg("-H")
+        .arg("Content-Type: text/plain")
+        .arg("--data-binary")
+        .arg("HEAD test content")
         .arg(format!("{}/upload", server.base_url()))
         .output()
         .expect("Failed to upload");
@@ -271,14 +303,19 @@ fn test_head_blob() {
 
     let sha256: Option<String> = serde_json::from_str::<serde_json::Value>(&upload_response)
         .ok()
-        .and_then(|v| v.get("sha256").and_then(|s| s.as_str()).map(|s| s.to_string()));
+        .and_then(|v| {
+            v.get("sha256")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string())
+        });
 
     if let Some(hash) = sha256 {
         // HEAD should return 200 for existing blob
         let head_output = Command::new("curl")
             .arg("-s")
             .arg("-I") // HEAD request
-            .arg("-w").arg("\n%{http_code}")
+            .arg("-w")
+            .arg("\n%{http_code}")
             .arg(format!("{}/{}", server.base_url(), hash))
             .output()
             .expect("Failed to HEAD blob");
@@ -286,14 +323,18 @@ fn test_head_blob() {
         let head_response = String::from_utf8_lossy(&head_output.stdout);
         println!("HEAD response: {}", head_response);
 
-        assert!(head_response.contains("200"), "HEAD should return 200 for existing blob");
+        assert!(
+            head_response.contains("200"),
+            "HEAD should return 200 for existing blob"
+        );
 
         // HEAD for non-existent blob should return 404
         let fake_hash = "0000000000000000000000000000000000000000000000000000000000000000";
         let head_404 = Command::new("curl")
             .arg("-s")
             .arg("-I")
-            .arg("-w").arg("\n%{http_code}")
+            .arg("-w")
+            .arg("\n%{http_code}")
             .arg(format!("{}/{}", server.base_url(), fake_hash))
             .output()
             .expect("Failed to HEAD blob");
@@ -301,7 +342,10 @@ fn test_head_blob() {
         let head_404_response = String::from_utf8_lossy(&head_404.stdout);
         println!("HEAD 404 response: {}", head_404_response);
 
-        assert!(head_404_response.contains("404"), "HEAD should return 404 for non-existent blob");
+        assert!(
+            head_404_response.contains("404"),
+            "HEAD should return 404 for non-existent blob"
+        );
     }
 }
 
@@ -312,11 +356,15 @@ fn test_cors_preflight() {
 
     let output = Command::new("curl")
         .arg("-s")
-        .arg("-X").arg("OPTIONS")
+        .arg("-X")
+        .arg("OPTIONS")
         .arg("-I")
-        .arg("-H").arg("Origin: https://example.com")
-        .arg("-H").arg("Access-Control-Request-Method: PUT")
-        .arg("-H").arg("Access-Control-Request-Headers: Authorization, Content-Type")
+        .arg("-H")
+        .arg("Origin: https://example.com")
+        .arg("-H")
+        .arg("Access-Control-Request-Method: PUT")
+        .arg("-H")
+        .arg("Access-Control-Request-Headers: Authorization, Content-Type")
         .arg(format!("{}/upload", server.base_url()))
         .output()
         .expect("Failed to send OPTIONS");
@@ -325,8 +373,10 @@ fn test_cors_preflight() {
     println!("OPTIONS response: {}", response);
 
     // Should have CORS headers
-    assert!(response.contains("Access-Control-Allow-Origin") || response.contains("204"),
-        "Should return CORS headers");
+    assert!(
+        response.contains("Access-Control-Allow-Origin") || response.contains("204"),
+        "Should return CORS headers"
+    );
 }
 
 /// Test list endpoint returns user's blobs
@@ -339,9 +389,12 @@ fn test_list_blobs() {
         let content = format!("Blob content {}", i);
         Command::new("curl")
             .arg("-s")
-            .arg("-X").arg("PUT")
-            .arg("-H").arg("Content-Type: text/plain")
-            .arg("--data-binary").arg(&content)
+            .arg("-X")
+            .arg("PUT")
+            .arg("-H")
+            .arg("Content-Type: text/plain")
+            .arg("--data-binary")
+            .arg(&content)
             .arg(format!("{}/upload", server.base_url()))
             .output()
             .expect("Failed to upload");
@@ -352,7 +405,8 @@ fn test_list_blobs() {
     // This is expected behavior - list is per-user
     let list_output = Command::new("curl")
         .arg("-s")
-        .arg("-w").arg("\n%{http_code}")
+        .arg("-w")
+        .arg("\n%{http_code}")
         .arg(format!("{}/list", server.base_url()))
         .output()
         .expect("Failed to list");
@@ -363,11 +417,14 @@ fn test_list_blobs() {
     // List without pubkey may return 404 (Not found) or empty array
     // Both are valid responses
     assert!(
-        list_response.contains("404") ||
-        list_response.contains("Not found") ||
-        list_response.contains("[]") ||
-        list_response.is_empty() ||
-        serde_json::from_str::<Vec<serde_json::Value>>(&list_response.lines().next().unwrap_or("")).is_ok(),
+        list_response.contains("404")
+            || list_response.contains("Not found")
+            || list_response.contains("[]")
+            || list_response.is_empty()
+            || serde_json::from_str::<Vec<serde_json::Value>>(
+                &list_response.lines().next().unwrap_or("")
+            )
+            .is_ok(),
         "List should return 404, empty array, or valid JSON"
     );
 }
@@ -387,10 +444,14 @@ fn test_cache_control_immutable_header() {
     let test_content = "Cache control test content";
     let upload_output = Command::new("curl")
         .arg("-s")
-        .arg("-X").arg("PUT")
-        .arg("-H").arg("Content-Type: text/plain")
-        .arg("-H").arg(format!("Authorization: {}", auth_header))
-        .arg("--data-binary").arg(test_content)
+        .arg("-X")
+        .arg("PUT")
+        .arg("-H")
+        .arg("Content-Type: text/plain")
+        .arg("-H")
+        .arg(format!("Authorization: {}", auth_header))
+        .arg("--data-binary")
+        .arg(test_content)
         .arg(format!("{}/upload", server.base_url()))
         .output()
         .expect("Failed to upload");
@@ -400,7 +461,11 @@ fn test_cache_control_immutable_header() {
 
     let sha256: Option<String> = serde_json::from_str::<serde_json::Value>(&upload_response)
         .ok()
-        .and_then(|v| v.get("sha256").and_then(|s| s.as_str()).map(|s| s.to_string()));
+        .and_then(|v| {
+            v.get("sha256")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string())
+        });
 
     if let Some(hash) = sha256 {
         println!("Uploaded blob hash: {}", hash);
@@ -416,18 +481,25 @@ fn test_cache_control_immutable_header() {
         let get_headers = String::from_utf8_lossy(&get_output.stdout);
         println!("GET headers: {}", get_headers);
 
-        assert!(get_headers.contains("cache-control:") || get_headers.contains("Cache-Control:"),
-            "Response should include Cache-Control header");
-        assert!(get_headers.to_lowercase().contains("immutable"),
-            "Cache-Control should include 'immutable' directive");
-        assert!(get_headers.to_lowercase().contains("max-age=31536000"),
-            "Cache-Control should include max-age=31536000 (1 year)");
+        assert!(
+            get_headers.contains("cache-control:") || get_headers.contains("Cache-Control:"),
+            "Response should include Cache-Control header"
+        );
+        assert!(
+            get_headers.to_lowercase().contains("immutable"),
+            "Cache-Control should include 'immutable' directive"
+        );
+        assert!(
+            get_headers.to_lowercase().contains("max-age=31536000"),
+            "Cache-Control should include max-age=31536000 (1 year)"
+        );
 
         // HEAD request should also include Cache-Control: immutable header
         let head_output = Command::new("curl")
             .arg("-s")
             .arg("-I")
-            .arg("-X").arg("HEAD")
+            .arg("-X")
+            .arg("HEAD")
             .arg(format!("{}/{}", server.base_url(), hash))
             .output()
             .expect("Failed to HEAD blob");
@@ -435,8 +507,10 @@ fn test_cache_control_immutable_header() {
         let head_headers = String::from_utf8_lossy(&head_output.stdout);
         println!("HEAD headers: {}", head_headers);
 
-        assert!(head_headers.to_lowercase().contains("immutable"),
-            "HEAD response should include Cache-Control: immutable");
+        assert!(
+            head_headers.to_lowercase().contains("immutable"),
+            "HEAD response should include Cache-Control: immutable"
+        );
     } else {
         // Skip test if upload failed (may happen in some CI environments)
         println!("Upload failed (possibly auth issue), skipping cache header test");
@@ -456,10 +530,14 @@ fn test_x_source_header_upstream() {
     let test_content = "X-Source upstream test content";
     let upload_output = Command::new("curl")
         .arg("-s")
-        .arg("-X").arg("PUT")
-        .arg("-H").arg("Content-Type: text/plain")
-        .arg("-H").arg(format!("Authorization: {}", auth_header))
-        .arg("--data-binary").arg(test_content)
+        .arg("-X")
+        .arg("PUT")
+        .arg("-H")
+        .arg("Content-Type: text/plain")
+        .arg("-H")
+        .arg(format!("Authorization: {}", auth_header))
+        .arg("--data-binary")
+        .arg(test_content)
         .arg(format!("{}/upload", upstream_server.base_url()))
         .output()
         .expect("Failed to upload to upstream");
@@ -469,13 +547,18 @@ fn test_x_source_header_upstream() {
 
     let sha256: Option<String> = serde_json::from_str::<serde_json::Value>(&upload_response)
         .ok()
-        .and_then(|v| v.get("sha256").and_then(|s| s.as_str()).map(|s| s.to_string()));
+        .and_then(|v| {
+            v.get("sha256")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string())
+        });
 
     if let Some(hash) = sha256 {
         println!("Uploaded blob hash: {}", hash);
 
         // Start downstream server with upstream configured (does NOT have the blob locally)
-        let downstream_server = TestServer::new_with_upstream(19010, false, Some(&upstream_server.base_url()));
+        let downstream_server =
+            TestServer::new_with_upstream(19010, false, Some(&upstream_server.base_url()));
 
         // Wait a bit for downstream server to fully start
         std::thread::sleep(Duration::from_millis(500));
@@ -493,8 +576,10 @@ fn test_x_source_header_upstream() {
         println!("GET response from downstream: {}", get_response);
 
         // Should have X-Source header showing upstream source
-        assert!(get_response.to_lowercase().contains("x-source:"),
-            "Response should include X-Source header for localhost requests");
+        assert!(
+            get_response.to_lowercase().contains("x-source:"),
+            "Response should include X-Source header for localhost requests"
+        );
         assert!(get_response.to_lowercase().contains("x-source: upstream:"),
             "X-Source header should indicate 'upstream:' source for blobs fetched from upstream server");
     } else {
@@ -515,10 +600,14 @@ fn test_x_source_header_local() {
     let test_content = "X-Source test content";
     let upload_output = Command::new("curl")
         .arg("-s")
-        .arg("-X").arg("PUT")
-        .arg("-H").arg("Content-Type: text/plain")
-        .arg("-H").arg(format!("Authorization: {}", auth_header))
-        .arg("--data-binary").arg(test_content)
+        .arg("-X")
+        .arg("PUT")
+        .arg("-H")
+        .arg("Content-Type: text/plain")
+        .arg("-H")
+        .arg(format!("Authorization: {}", auth_header))
+        .arg("--data-binary")
+        .arg(test_content)
         .arg(format!("{}/upload", server.base_url()))
         .output()
         .expect("Failed to upload");
@@ -528,7 +617,11 @@ fn test_x_source_header_local() {
 
     let sha256: Option<String> = serde_json::from_str::<serde_json::Value>(&upload_response)
         .ok()
-        .and_then(|v| v.get("sha256").and_then(|s| s.as_str()).map(|s| s.to_string()));
+        .and_then(|v| {
+            v.get("sha256")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string())
+        });
 
     if let Some(hash) = sha256 {
         println!("Uploaded blob hash: {}", hash);
@@ -545,10 +638,14 @@ fn test_x_source_header_local() {
         println!("GET response: {}", get_response);
 
         // Should have X-Source: local header for localhost requests
-        assert!(get_response.to_lowercase().contains("x-source:"),
-            "Response should include X-Source header for localhost requests");
-        assert!(get_response.to_lowercase().contains("x-source: local"),
-            "X-Source header should be 'local' for locally stored blobs");
+        assert!(
+            get_response.to_lowercase().contains("x-source:"),
+            "Response should include X-Source header for localhost requests"
+        );
+        assert!(
+            get_response.to_lowercase().contains("x-source: local"),
+            "X-Source header should be 'local' for locally stored blobs"
+        );
     } else {
         // Skip test if upload failed (may happen in some CI environments)
         println!("Upload failed (possibly auth issue), skipping X-Source header test");
@@ -569,19 +666,24 @@ fn test_htree_add_with_blossom_push() {
     let config_dir = home_dir.path().join(".hashtree");
     std::fs::create_dir_all(&config_dir).expect("Failed to create config dir");
 
-    let config_content = format!(r#"
+    let config_content = format!(
+        r#"
 [blossom]
 write_servers = ["{}"]
 read_servers = ["{}"]
-"#, server.base_url(), server.base_url());
-    std::fs::write(config_dir.join("config.toml"), config_content)
-        .expect("Failed to write config");
+"#,
+        server.base_url(),
+        server.base_url()
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("Failed to write config");
 
     // Generate keys
     let keys = Keys::generate();
-    let nsec = keys.secret_key().to_bech32().expect("Failed to encode nsec");
-    std::fs::write(config_dir.join("keys"), &nsec)
-        .expect("Failed to write keys");
+    let nsec = keys
+        .secret_key()
+        .to_bech32()
+        .expect("Failed to encode nsec");
+    std::fs::write(config_dir.join("keys"), &nsec).expect("Failed to write keys");
 
     // Create a test file to add
     let test_file = data_dir.path().join("test.txt");
@@ -607,24 +709,32 @@ read_servers = ["{}"]
     assert!(add_output.status.success(), "htree add should succeed");
 
     // Check that blossom push happened
-    assert!(stdout.contains("file servers:") || stdout.contains("uploaded"),
-        "Output should mention file server upload");
+    assert!(
+        stdout.contains("file servers:") || stdout.contains("uploaded"),
+        "Output should mention file server upload"
+    );
 
     // Extract hex hash from output (line starts with "  hash:")
-    let hash = stdout.lines()
+    let hash = stdout
+        .lines()
         .find(|l| l.trim().starts_with("hash:"))
         .and_then(|l| l.split_whitespace().last())
         .expect("Should have hash in output");
 
     println!("Uploaded hash: {}", hash);
-    assert!(hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()),
-        "Hash should be 64 hex chars, got: {}", hash);
+    assert!(
+        hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()),
+        "Hash should be 64 hex chars, got: {}",
+        hash
+    );
 
     // Verify the blob exists on the server
     let check_output = Command::new("curl")
         .arg("-s")
-        .arg("-o").arg("/dev/null")
-        .arg("-w").arg("%{http_code}")
+        .arg("-o")
+        .arg("/dev/null")
+        .arg("-w")
+        .arg("%{http_code}")
         .arg(format!("{}/{}.bin", server.base_url(), hash))
         .output()
         .expect("Failed to check blob");
@@ -632,5 +742,9 @@ read_servers = ["{}"]
     let status_code = String::from_utf8_lossy(&check_output.stdout);
     println!("Server check status: {}", status_code);
 
-    assert_eq!(status_code.trim(), "200", "Blob should exist on server after htree add");
+    assert_eq!(
+        status_code.trim(),
+        "200",
+        "Blob should exist on server after htree add"
+    );
 }

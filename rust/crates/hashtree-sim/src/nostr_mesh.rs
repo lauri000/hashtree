@@ -121,7 +121,8 @@ impl NostrMesh {
             ),
             Tag::custom(TagKind::Custom("hash".into()), vec![hash_hex.to_string()]),
         ];
-        let event = EventBuilder::new(Kind::Custom(HASHTREE_KIND), "", tags).to_event(&node.keys)?;
+        let event =
+            EventBuilder::new(Kind::Custom(HASHTREE_KIND), "", tags).to_event(&node.keys)?;
         self.publish_event(node_id, event, ttl);
         Ok(())
     }
@@ -256,12 +257,16 @@ impl NostrMesh {
         let is_new = self.store_event(node_id, &event);
         if is_new && ttl > 0 {
             self.stats.forwarded_events += 1;
-            self.enqueue_forward(node_id, sender, Envelope::Publish {
-                origin: origin.to_string(),
-                sender: node_id.to_string(),
-                event,
-                ttl: ttl - 1,
-            });
+            self.enqueue_forward(
+                node_id,
+                sender,
+                Envelope::Publish {
+                    origin: origin.to_string(),
+                    sender: node_id.to_string(),
+                    event,
+                    ttl: ttl - 1,
+                },
+            );
         }
     }
 

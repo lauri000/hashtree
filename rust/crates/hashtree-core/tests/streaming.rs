@@ -1,7 +1,7 @@
 //! Streaming tests for HashTree put_stream and get_stream API
 
-use hashtree_core::{HashTree, HashTreeConfig, MemoryStore};
 use futures::StreamExt;
+use hashtree_core::{HashTree, HashTreeConfig, MemoryStore};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -11,7 +11,10 @@ async fn test_put_stream_small() {
 
     let data: Vec<u8> = (0..50).collect();
     let cursor = std::io::Cursor::new(data.clone());
-    let (cid, size) = tree.put_stream(futures::io::AllowStdIo::new(cursor)).await.unwrap();
+    let (cid, size) = tree
+        .put_stream(futures::io::AllowStdIo::new(cursor))
+        .await
+        .unwrap();
 
     assert_eq!(size, 50);
     assert!(cid.key.is_none()); // public mode
@@ -29,7 +32,10 @@ async fn test_put_stream_chunked() {
     // Data larger than chunk size
     let data: Vec<u8> = (0..500).map(|i| (i % 256) as u8).collect();
     let cursor = std::io::Cursor::new(data.clone());
-    let (cid, size) = tree.put_stream(futures::io::AllowStdIo::new(cursor)).await.unwrap();
+    let (cid, size) = tree
+        .put_stream(futures::io::AllowStdIo::new(cursor))
+        .await
+        .unwrap();
 
     assert_eq!(size, 500);
 
@@ -78,7 +84,10 @@ async fn test_put_stream_encrypted() {
 
     let data: Vec<u8> = (0..500).map(|i| (i % 256) as u8).collect();
     let cursor = std::io::Cursor::new(data.clone());
-    let (cid, size) = tree.put_stream(futures::io::AllowStdIo::new(cursor)).await.unwrap();
+    let (cid, size) = tree
+        .put_stream(futures::io::AllowStdIo::new(cursor))
+        .await
+        .unwrap();
 
     assert_eq!(size, 500);
     assert!(cid.key.is_some()); // encrypted
@@ -112,7 +121,10 @@ async fn test_put_stream_empty() {
 
     let data: Vec<u8> = vec![];
     let cursor = std::io::Cursor::new(data.clone());
-    let (cid, size) = tree.put_stream(futures::io::AllowStdIo::new(cursor)).await.unwrap();
+    let (cid, size) = tree
+        .put_stream(futures::io::AllowStdIo::new(cursor))
+        .await
+        .unwrap();
 
     assert_eq!(size, 0);
 
@@ -126,9 +138,12 @@ async fn test_put_stream_large() {
     let tree = HashTree::new(HashTreeConfig::new(store).public().with_chunk_size(1024));
 
     // 1MB of data
-    let data: Vec<u8> = (0..1024*1024).map(|i| (i % 256) as u8).collect();
+    let data: Vec<u8> = (0..1024 * 1024).map(|i| (i % 256) as u8).collect();
     let cursor = std::io::Cursor::new(data.clone());
-    let (cid, size) = tree.put_stream(futures::io::AllowStdIo::new(cursor)).await.unwrap();
+    let (cid, size) = tree
+        .put_stream(futures::io::AllowStdIo::new(cursor))
+        .await
+        .unwrap();
 
     assert_eq!(size, 1024 * 1024);
 

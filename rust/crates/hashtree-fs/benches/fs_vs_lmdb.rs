@@ -2,8 +2,8 @@
 //!
 //! Run with: cargo bench -p hashtree-fs --features lmdb
 
-use hashtree_core::store::Store;
 use hashtree_core::sha256;
+use hashtree_core::store::Store;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -58,7 +58,11 @@ fn format_throughput(bytes: usize, duration: Duration) -> String {
     }
 }
 
-async fn benchmark_store<S: Store>(store: &S, files: &[(String, Vec<u8>)], name: &str) -> (Duration, Duration, usize) {
+async fn benchmark_store<S: Store>(
+    store: &S,
+    files: &[(String, Vec<u8>)],
+    name: &str,
+) -> (Duration, Duration, usize) {
     let mut total_bytes = 0usize;
     let mut hashes = Vec::new();
 
@@ -81,9 +85,20 @@ async fn benchmark_store<S: Store>(store: &S, files: &[(String, Vec<u8>)], name:
 
     println!("\n{}:", name);
     println!("  Files: {}", files.len());
-    println!("  Total size: {:.2} MB", total_bytes as f64 / (1024.0 * 1024.0));
-    println!("  Write: {} ({})", format_duration(write_duration), format_throughput(total_bytes, write_duration));
-    println!("  Read:  {} ({})", format_duration(read_duration), format_throughput(total_bytes, read_duration));
+    println!(
+        "  Total size: {:.2} MB",
+        total_bytes as f64 / (1024.0 * 1024.0)
+    );
+    println!(
+        "  Write: {} ({})",
+        format_duration(write_duration),
+        format_throughput(total_bytes, write_duration)
+    );
+    println!(
+        "  Read:  {} ({})",
+        format_duration(read_duration),
+        format_throughput(total_bytes, read_duration)
+    );
 
     (write_duration, read_duration, total_bytes)
 }
@@ -93,7 +108,11 @@ async fn main() {
     println!("=== Hashtree Storage Backend Benchmark ===\n");
 
     // Find repo root
-    let repo_path = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let repo_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
     println!("Benchmarking with: {}", repo_path.display());
 
     // Collect files
@@ -106,7 +125,8 @@ async fn main() {
 
     // Benchmark FsBlobStore
     let fs_store = hashtree_fs::FsBlobStore::new(fs_temp.path().join("blobs")).unwrap();
-    let (fs_write, fs_read, total_bytes) = benchmark_store(&fs_store, &files, "FsBlobStore (filesystem)").await;
+    let (fs_write, fs_read, total_bytes) =
+        benchmark_store(&fs_store, &files, "FsBlobStore (filesystem)").await;
 
     // Benchmark LmdbBlobStore
     let lmdb_store = hashtree_lmdb::LmdbBlobStore::new(lmdb_temp.path().join("blobs")).unwrap();
@@ -114,14 +134,18 @@ async fn main() {
 
     // Summary
     println!("\n=== Summary ===");
-    println!("Write speedup: {:.2}x (FS {} vs LMDB {})",
+    println!(
+        "Write speedup: {:.2}x (FS {} vs LMDB {})",
         lmdb_write.as_secs_f64() / fs_write.as_secs_f64().max(0.001),
         format_duration(fs_write),
-        format_duration(lmdb_write));
-    println!("Read speedup:  {:.2}x (FS {} vs LMDB {})",
+        format_duration(lmdb_write)
+    );
+    println!(
+        "Read speedup:  {:.2}x (FS {} vs LMDB {})",
         lmdb_read.as_secs_f64() / fs_read.as_secs_f64().max(0.001),
         format_duration(fs_read),
-        format_duration(lmdb_read));
+        format_duration(lmdb_read)
+    );
 
     // Random access benchmark
     println!("\n=== Random Access Benchmark (1000 reads) ===");
@@ -145,7 +169,18 @@ async fn main() {
     }
     let lmdb_random = start.elapsed();
 
-    println!("FS:   {} ({:.0} ops/sec)", format_duration(fs_random), iterations as f64 / fs_random.as_secs_f64());
-    println!("LMDB: {} ({:.0} ops/sec)", format_duration(lmdb_random), iterations as f64 / lmdb_random.as_secs_f64());
-    println!("Random read speedup: {:.2}x", lmdb_random.as_secs_f64() / fs_random.as_secs_f64().max(0.001));
+    println!(
+        "FS:   {} ({:.0} ops/sec)",
+        format_duration(fs_random),
+        iterations as f64 / fs_random.as_secs_f64()
+    );
+    println!(
+        "LMDB: {} ({:.0} ops/sec)",
+        format_duration(lmdb_random),
+        iterations as f64 / lmdb_random.as_secs_f64()
+    );
+    println!(
+        "Random read speedup: {:.2}x",
+        lmdb_random.as_secs_f64() / fs_random.as_secs_f64().max(0.001)
+    );
 }

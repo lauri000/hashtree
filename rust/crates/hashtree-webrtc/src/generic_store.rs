@@ -12,10 +12,13 @@ use tokio::sync::{oneshot, RwLock};
 
 use hashtree_core::{Hash, Store, StoreError};
 
-use crate::protocol::{create_request, create_response, encode_request, encode_response, hash_to_key, parse_message, DataMessage};
+use crate::protocol::{
+    create_request, create_response, encode_request, encode_response, hash_to_key, parse_message,
+    DataMessage,
+};
 use crate::signaling::SignalingManager;
 use crate::transport::{PeerConnectionFactory, RelayTransport, TransportError};
-use crate::types::{SignalingMessage, MAX_HTL, PeerHTLConfig};
+use crate::types::{PeerHTLConfig, SignalingMessage, MAX_HTL};
 
 /// Pending request awaiting response
 struct PendingRequest {
@@ -136,7 +139,10 @@ where
             // Get HTL config for this peer
             let htl_config = {
                 let configs = self.htl_configs.read().await;
-                configs.get(&peer_id).cloned().unwrap_or_else(PeerHTLConfig::random)
+                configs
+                    .get(&peer_id)
+                    .cloned()
+                    .unwrap_or_else(PeerHTLConfig::random)
             };
 
             // Create request
@@ -266,7 +272,12 @@ where
 }
 
 /// Type alias for simulation store
-pub type SimStore<S> = GenericStore<S, crate::mock::MockRelayTransport, crate::mock::MockConnectionFactory>;
+pub type SimStore<S> =
+    GenericStore<S, crate::mock::MockRelayTransport, crate::mock::MockConnectionFactory>;
 
 /// Type alias for production store (using real WebRTC)
-pub type ProductionStore<S> = GenericStore<S, crate::nostr::NostrRelayTransport, crate::real_factory::RealPeerConnectionFactory>;
+pub type ProductionStore<S> = GenericStore<
+    S,
+    crate::nostr::NostrRelayTransport,
+    crate::real_factory::RealPeerConnectionFactory,
+>;

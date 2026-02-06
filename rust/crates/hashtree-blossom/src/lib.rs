@@ -76,9 +76,14 @@ impl BlossomClient {
         let mut read_servers = config.blossom.all_read_servers();
 
         // Prioritize local daemon if running
-        if let Some(local_url) = hashtree_config::detect_local_daemon_url(Some(&config.server.bind_address)) {
+        if let Some(local_url) =
+            hashtree_config::detect_local_daemon_url(Some(&config.server.bind_address))
+        {
             if !read_servers.iter().any(|s| s == &local_url) {
-                debug!("Local daemon detected at {}, prioritizing for reads", local_url);
+                debug!(
+                    "Local daemon detected at {}, prioritizing for reads",
+                    local_url
+                );
                 read_servers.insert(0, local_url);
             }
         }
@@ -146,10 +151,7 @@ impl BlossomClient {
     /// Set request timeout
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
-        self.http = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .unwrap();
+        self.http = reqwest::Client::builder().timeout(timeout).build().unwrap();
         self
     }
 
@@ -189,7 +191,10 @@ impl BlossomClient {
         let auth_header = self.create_upload_auth(&hash).await?;
 
         for server in &self.write_servers {
-            match self.upload_to_server(server, data, &hash, &auth_header).await {
+            match self
+                .upload_to_server(server, data, &hash, &auth_header)
+                .await
+            {
                 Ok(_) => {
                     debug!("Uploaded {} to {}", &hash[..12], server);
                     return Ok(hash);
@@ -236,8 +241,13 @@ impl BlossomClient {
             if attempt > 0 {
                 // Exponential backoff: 100ms, 200ms, 400ms
                 let delay = Duration::from_millis(100 * (1 << (attempt - 1)));
-                debug!("Retrying upload {} (attempt {}/{}), waiting {:?}",
-                       &hash[..12], attempt + 1, MAX_RETRIES, delay);
+                debug!(
+                    "Retrying upload {} (attempt {}/{}), waiting {:?}",
+                    &hash[..12],
+                    attempt + 1,
+                    MAX_RETRIES,
+                    delay
+                );
                 tokio::time::sleep(delay).await;
             }
 
@@ -245,7 +255,10 @@ impl BlossomClient {
             let auth_header = self.create_upload_auth(&hash).await?;
 
             for server in &self.write_servers {
-                match self.upload_to_server(server, data, &hash, &auth_header).await {
+                match self
+                    .upload_to_server(server, data, &hash, &auth_header)
+                    .await
+                {
                     Ok(was_new) => {
                         if was_new {
                             debug!("Uploaded {} to {}", &hash[..12], server);
@@ -309,7 +322,12 @@ impl BlossomClient {
     }
 
     /// Check if server has a tree by sampling hashes (parallel checks)
-    pub async fn server_has_tree_samples(&self, server: &str, hashes: &[&str], sample_size: usize) -> bool {
+    pub async fn server_has_tree_samples(
+        &self,
+        server: &str,
+        hashes: &[&str],
+        sample_size: usize,
+    ) -> bool {
         use futures::future::join_all;
         if hashes.is_empty() {
             return false;
@@ -317,19 +335,27 @@ impl BlossomClient {
         // Spread samples across the hash list
         let step = (hashes.len() / sample_size.min(hashes.len())).max(1);
         let samples: Vec<_> = hashes.iter().step_by(step).take(sample_size).collect();
-        let checks: Vec<_> = samples.iter().map(|h| self.exists_on_server(h, server)).collect();
+        let checks: Vec<_> = samples
+            .iter()
+            .map(|h| self.exists_on_server(h, server))
+            .collect();
         join_all(checks).await.iter().all(|&exists| exists)
     }
 
     /// Upload to all write servers in parallel, returns (hash, success_count)
-    pub async fn upload_to_all_servers(&self, data: &[u8]) -> Result<(String, usize), BlossomError> {
+    pub async fn upload_to_all_servers(
+        &self,
+        data: &[u8],
+    ) -> Result<(String, usize), BlossomError> {
         use futures::future::join_all;
         if self.write_servers.is_empty() {
             return Err(BlossomError::NoServers);
         }
         let hash = compute_sha256(data);
         let auth = self.create_upload_auth(&hash).await?;
-        let uploads: Vec<_> = self.write_servers.iter()
+        let uploads: Vec<_> = self
+            .write_servers
+            .iter()
             .map(|s| self.upload_to_server(s, data, &hash, &auth))
             .collect();
         let results = join_all(uploads).await;
@@ -354,7 +380,8 @@ impl BlossomClient {
             match self.http.get(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     // Capture X-Source header before consuming body (if from local daemon)
-                    let x_source = resp.headers()
+                    let x_source = resp
+                        .headers()
                         .get("x-source")
                         .and_then(|v| v.to_str().ok())
                         .map(|s| s.to_string());
@@ -364,18 +391,32 @@ impl BlossomClient {
                             let computed = compute_sha256(&bytes);
                             if computed == hash {
                                 if let Some(source) = x_source {
-                                    debug!("Downloaded {} ({} bytes) via {} [source: {}]",
-                                        &hash[..12.min(hash.len())], bytes.len(), server, source);
+                                    debug!(
+                                        "Downloaded {} ({} bytes) via {} [source: {}]",
+                                        &hash[..12.min(hash.len())],
+                                        bytes.len(),
+                                        server,
+                                        source
+                                    );
                                 } else {
-                                    debug!("Downloaded {} ({} bytes) from {}",
-                                        &hash[..12.min(hash.len())], bytes.len(), server);
+                                    debug!(
+                                        "Downloaded {} ({} bytes) from {}",
+                                        &hash[..12.min(hash.len())],
+                                        bytes.len(),
+                                        server
+                                    );
                                 }
                                 return Ok(bytes.to_vec());
                             } else {
                                 last_error = format!("hash mismatch from {}: expected {}, got {} ({} bytes received)",
                                     server, hash, computed, bytes.len());
-                                warn!("Hash mismatch downloading {} from {}: got {} ({} bytes)",
-                                    hash, server, &computed[..12.min(computed.len())], bytes.len());
+                                warn!(
+                                    "Hash mismatch downloading {} from {}: got {} ({} bytes)",
+                                    hash,
+                                    server,
+                                    &computed[..12.min(computed.len())],
+                                    bytes.len()
+                                );
                             }
                         }
                         Err(e) => {
@@ -385,7 +426,12 @@ impl BlossomClient {
                 }
                 Ok(resp) => {
                     last_error = format!("{} returned {}", server, resp.status());
-                    debug!("Download {} from {} returned status {}", hash, server, resp.status());
+                    debug!(
+                        "Download {} from {} returned status {}",
+                        hash,
+                        server,
+                        resp.status()
+                    );
                 }
                 Err(e) => {
                     last_error = e.to_string();
@@ -443,10 +489,7 @@ impl BlossomClient {
         let tags = vec![
             Tag::custom(TagKind::custom("t"), vec!["upload".to_string()]),
             Tag::custom(TagKind::custom("x"), vec![hash.to_string()]),
-            Tag::custom(
-                TagKind::custom("expiration"),
-                vec![expiration.to_string()],
-            ),
+            Tag::custom(TagKind::custom("expiration"), vec![expiration.to_string()]),
         ];
         let event = EventBuilder::new(Kind::Custom(24242), "Upload", tags)
             .to_event(&self.keys)
@@ -592,31 +635,35 @@ mod tests {
     #[tokio::test]
     async fn test_exists_on_server() {
         let keys = Keys::generate();
-        let client = BlossomClient::new(keys)
-            .with_servers(vec!["https://example.com".to_string()]);
+        let client = BlossomClient::new(keys).with_servers(vec!["https://example.com".to_string()]);
 
         // Method should exist and return bool
-        let result = client.exists_on_server("abc123", "https://example.com").await;
+        let result = client
+            .exists_on_server("abc123", "https://example.com")
+            .await;
         assert!(!result); // Non-existent hash
     }
 
     #[tokio::test]
     async fn test_server_has_tree_samples() {
         let keys = Keys::generate();
-        let client = BlossomClient::new(keys)
-            .with_servers(vec!["https://example.com".to_string()]);
+        let client = BlossomClient::new(keys).with_servers(vec!["https://example.com".to_string()]);
 
         let hashes = vec!["hash1", "hash2", "hash3"];
         // Method should exist and check samples
-        let result = client.server_has_tree_samples("https://example.com", &hashes, 3).await;
+        let result = client
+            .server_has_tree_samples("https://example.com", &hashes, 3)
+            .await;
         assert!(!result); // Non-existent hashes
     }
 
     #[tokio::test]
     async fn test_upload_to_all_servers() {
         let keys = Keys::generate();
-        let client = BlossomClient::new(keys)
-            .with_servers(vec!["https://example1.com".to_string(), "https://example2.com".to_string()]);
+        let client = BlossomClient::new(keys).with_servers(vec![
+            "https://example1.com".to_string(),
+            "https://example2.com".to_string(),
+        ]);
 
         // Method should exist and return (hash, server_count)
         // Will fail since servers don't exist, but should compile
@@ -628,7 +675,10 @@ mod tests {
     fn test_local_daemon_priority() {
         let keys = Keys::generate();
         let client = BlossomClient::new_empty(keys)
-            .with_servers(vec!["https://remote1.com".to_string(), "https://remote2.com".to_string()])
+            .with_servers(vec![
+                "https://remote1.com".to_string(),
+                "https://remote2.com".to_string(),
+            ])
             .with_local_daemon("http://127.0.0.1:8080".to_string());
 
         // Local daemon should be first in read_servers
@@ -643,7 +693,10 @@ mod tests {
         let keys = Keys::generate();
         // If local daemon is already in servers, don't add it again
         let client = BlossomClient::new_empty(keys)
-            .with_servers(vec!["http://127.0.0.1:8080".to_string(), "https://remote.com".to_string()])
+            .with_servers(vec![
+                "http://127.0.0.1:8080".to_string(),
+                "https://remote.com".to_string(),
+            ])
             .with_local_daemon("http://127.0.0.1:8080".to_string());
 
         // Should not duplicate

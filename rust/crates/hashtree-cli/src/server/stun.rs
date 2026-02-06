@@ -10,8 +10,7 @@ mod enabled {
     use tokio::net::UdpSocket;
     use tracing::{debug, error, info};
     use webrtc_stun::message::{
-        Message, MessageType, Setter, BINDING_REQUEST,
-        CLASS_SUCCESS_RESPONSE, METHOD_BINDING,
+        Message, MessageType, Setter, BINDING_REQUEST, CLASS_SUCCESS_RESPONSE, METHOD_BINDING,
     };
     use webrtc_stun::xoraddr::XORMappedAddress;
 
@@ -91,7 +90,10 @@ mod enabled {
 
         // Check if it's a binding request
         if msg.typ != BINDING_REQUEST {
-            debug!("Received non-binding STUN message type {:?} from {}", msg.typ, src_addr);
+            debug!(
+                "Received non-binding STUN message type {:?} from {}",
+                msg.typ, src_addr
+            );
             return Ok(());
         }
 
@@ -116,7 +118,10 @@ mod enabled {
         response.encode();
         socket.send_to(&response.raw, src_addr).await?;
 
-        debug!("STUN binding response sent to {} (mapped: {})", src_addr, src_addr);
+        debug!(
+            "STUN binding response sent to {} (mapped: {})",
+            src_addr, src_addr
+        );
 
         Ok(())
     }
@@ -144,7 +149,9 @@ mod enabled {
             // Build binding request
             let mut request = Message::new();
             request.typ = BINDING_REQUEST;
-            request.new_transaction_id().expect("Failed to generate transaction ID");
+            request
+                .new_transaction_id()
+                .expect("Failed to generate transaction ID");
             request.encode();
 
             // Send request
@@ -152,10 +159,8 @@ mod enabled {
 
             // Receive response
             let mut buf = vec![0u8; 1500];
-            let result = tokio::time::timeout(
-                Duration::from_secs(2),
-                client.recv_from(&mut buf)
-            ).await;
+            let result =
+                tokio::time::timeout(Duration::from_secs(2), client.recv_from(&mut buf)).await;
 
             let (len, _) = result.expect("Timeout waiting for response").unwrap();
 
@@ -171,7 +176,9 @@ mod enabled {
 
             // Extract XOR-MAPPED-ADDRESS
             let mut xor_addr = XORMappedAddress::default();
-            xor_addr.get_from(&response).expect("Failed to get XOR-MAPPED-ADDRESS");
+            xor_addr
+                .get_from(&response)
+                .expect("Failed to get XOR-MAPPED-ADDRESS");
 
             // The mapped address should match our client's address
             assert_eq!(xor_addr.ip, client_addr.ip());

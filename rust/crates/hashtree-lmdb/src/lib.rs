@@ -1,10 +1,10 @@
 //! LMDB-backed content-addressed blob storage.
 
 use async_trait::async_trait;
-use heed::types::*;
-use heed::{Database, EnvOpenOptions};
 use hashtree_core::store::{Store, StoreError};
 use hashtree_core::types::Hash;
+use heed::types::*;
+use heed::{Database, EnvOpenOptions};
 use std::path::Path;
 
 // Re-export sha256 for convenience
@@ -71,8 +71,7 @@ impl LmdbBlobStore {
         let count = self
             .blobs
             .len(&rtxn)
-            .map_err(|e| StoreError::Other(e.to_string()))?
-            as usize;
+            .map_err(|e| StoreError::Other(e.to_string()))? as usize;
 
         let mut total_bytes = 0u64;
         for item in self

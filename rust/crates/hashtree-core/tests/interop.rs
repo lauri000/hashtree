@@ -4,8 +4,8 @@
 //! hashes and MessagePack encodings as the TypeScript implementation.
 
 use hashtree_core::{
-    sha256, encode_tree_node, to_hex, from_hex, Link, LinkType, TreeNode,
-    HashTree, HashTreeConfig, MemoryStore,
+    encode_tree_node, from_hex, sha256, to_hex, HashTree, HashTreeConfig, Link, LinkType,
+    MemoryStore, TreeNode,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -73,7 +73,10 @@ fn load_vectors() -> Vec<TestVector> {
 fn test_sha256_vectors() {
     let vectors = load_vectors();
 
-    for vector in vectors.iter().filter(|v| v.input.input_type == "blob" && v.input.data.is_some()) {
+    for vector in vectors
+        .iter()
+        .filter(|v| v.input.input_type == "blob" && v.input.data.is_some())
+    {
         let data = hex::decode(vector.input.data.as_ref().unwrap()).unwrap();
         let hash = sha256(&data);
 
@@ -95,23 +98,35 @@ fn test_tree_node_encoding_vectors() {
         let node_input = vector.input.node.as_ref().unwrap();
 
         // Build the tree node
-        let links: Vec<Link> = node_input.links.iter().map(|l| {
-            let hash = from_hex(&l.hash).unwrap();
-            Link {
-                hash,
-                name: l.name.clone(),
-                size: l.size.unwrap_or(0),
-                key: None,
-                // is_tree_node: true means it's a Dir, false means Blob (for interop with old format)
-                link_type: if l.is_tree_node { LinkType::Dir } else { LinkType::Blob },
-                meta: l.meta.clone(),
-            }
-        }).collect();
+        let links: Vec<Link> = node_input
+            .links
+            .iter()
+            .map(|l| {
+                let hash = from_hex(&l.hash).unwrap();
+                Link {
+                    hash,
+                    name: l.name.clone(),
+                    size: l.size.unwrap_or(0),
+                    key: None,
+                    // is_tree_node: true means it's a Dir, false means Blob (for interop with old format)
+                    link_type: if l.is_tree_node {
+                        LinkType::Dir
+                    } else {
+                        LinkType::Blob
+                    },
+                    meta: l.meta.clone(),
+                }
+            })
+            .collect();
 
         // Determine node type based on test name:
         // - "unnamed_links" tests are File type (chunked file nodes)
         // - All others are Dir type
-        let node_type = if vector.name.contains("unnamed_links") { LinkType::File } else { LinkType::Dir };
+        let node_type = if vector.name.contains("unnamed_links") {
+            LinkType::File
+        } else {
+            LinkType::Dir
+        };
         let node = TreeNode::new(node_type, links);
         // Note: TreeNode no longer has totalSize - sizes are on links
         // The interop vectors with total_size are for the old format
@@ -125,7 +140,10 @@ fn test_tree_node_encoding_vectors() {
 
         // Skip vectors with metadata - those are for the old format
         if node_input.metadata.is_some() {
-            println!("⊘ {}: skipped (old format with TreeNode.metadata)", vector.name);
+            println!(
+                "⊘ {}: skipped (old format with TreeNode.metadata)",
+                vector.name
+            );
             continue;
         }
 
@@ -162,7 +180,9 @@ async fn test_file_vectors() {
         // Use public() since interop vectors are for unencrypted content
         let store = Arc::new(MemoryStore::new());
         let config = if vector.name == "chunked_file" {
-            HashTreeConfig::new(store.clone()).with_chunk_size(10).public()
+            HashTreeConfig::new(store.clone())
+                .with_chunk_size(10)
+                .public()
         } else {
             HashTreeConfig::new(store.clone()).public()
         };
@@ -178,7 +198,11 @@ async fn test_file_vectors() {
         );
 
         if let Some(expected_size) = vector.expected.size {
-            assert_eq!(size, expected_size, "File size mismatch for {}", vector.name);
+            assert_eq!(
+                size, expected_size,
+                "File size mismatch for {}",
+                vector.name
+            );
         }
 
         println!("✓ {}: hash and size match", vector.name);
@@ -189,8 +213,14 @@ async fn test_file_vectors() {
 fn test_known_sha256_vectors() {
     // Standard SHA256 test vectors
     let cases = vec![
-        ("", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
-        ("hello world", "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"),
+        (
+            "",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ),
+        (
+            "hello world",
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+        ),
     ];
 
     for (input, expected) in cases {
@@ -201,8 +231,10 @@ fn test_known_sha256_vectors() {
 
 #[test]
 fn test_hex_roundtrip() {
-    let original = [0u8, 1, 127, 128, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let original = [
+        0u8, 1, 127, 128, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0,
+    ];
     let hex = to_hex(&original);
     let result = from_hex(&hex).unwrap();
     assert_eq!(result, original);
@@ -210,7 +242,7 @@ fn test_hex_roundtrip() {
 
 #[test]
 fn test_chk_encryption_vectors() {
-    use hashtree_core::crypto::{encrypt_chk, decrypt_chk};
+    use hashtree_core::crypto::{decrypt_chk, encrypt_chk};
 
     let vectors = load_vectors();
 
@@ -241,7 +273,11 @@ fn test_chk_encryption_vectors() {
 
         // Verify decryption works
         let decrypted = decrypt_chk(&ciphertext, &key).unwrap();
-        assert_eq!(decrypted, plaintext, "CHK decrypt mismatch for {}", vector.name);
+        assert_eq!(
+            decrypted, plaintext,
+            "CHK decrypt mismatch for {}",
+            vector.name
+        );
 
         println!("✓ {}: key, ciphertext, and decrypt match", vector.name);
     }
@@ -265,15 +301,19 @@ fn generate_msgpack_vectors() {
     println!();
 
     // Single link
-    let hash1: [u8; 32] = from_hex("abababababababababababababababababababababababababababababababab").unwrap();
-    let node = TreeNode::new(LinkType::Dir, vec![Link {
-        hash: hash1,
-        name: Some("test.txt".to_string()),
-        size: 100,
-        key: None,
-        link_type: LinkType::Blob,
-        meta: None,
-    }]);
+    let hash1: [u8; 32] =
+        from_hex("abababababababababababababababababababababababababababababababab").unwrap();
+    let node = TreeNode::new(
+        LinkType::Dir,
+        vec![Link {
+            hash: hash1,
+            name: Some("test.txt".to_string()),
+            size: 100,
+            key: None,
+            link_type: LinkType::Blob,
+            meta: None,
+        }],
+    );
     let encoded = encode_tree_node(&node).unwrap();
     let hash = sha256(&encoded);
     println!("tree_node_single_link:");
@@ -285,11 +325,35 @@ fn generate_msgpack_vectors() {
     let h1 = from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap();
     let h2 = from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
     let h3 = from_hex("0303030303030303030303030303030303030303030303030303030303030303").unwrap();
-    let node = TreeNode::new(LinkType::Dir, vec![
-        Link { hash: h1, name: Some("a.txt".to_string()), size: 10, key: None, link_type: LinkType::Blob, meta: None },
-        Link { hash: h2, name: Some("b.txt".to_string()), size: 20, key: None, link_type: LinkType::Blob, meta: None },
-        Link { hash: h3, name: Some("c.txt".to_string()), size: 30, key: None, link_type: LinkType::Blob, meta: None },
-    ]);
+    let node = TreeNode::new(
+        LinkType::Dir,
+        vec![
+            Link {
+                hash: h1,
+                name: Some("a.txt".to_string()),
+                size: 10,
+                key: None,
+                link_type: LinkType::Blob,
+                meta: None,
+            },
+            Link {
+                hash: h2,
+                name: Some("b.txt".to_string()),
+                size: 20,
+                key: None,
+                link_type: LinkType::Blob,
+                meta: None,
+            },
+            Link {
+                hash: h3,
+                name: Some("c.txt".to_string()),
+                size: 30,
+                key: None,
+                link_type: LinkType::Blob,
+                meta: None,
+            },
+        ],
+    );
     let encoded = encode_tree_node(&node).unwrap();
     let hash = sha256(&encoded);
     println!("tree_node_multiple_links:");
@@ -300,10 +364,27 @@ fn generate_msgpack_vectors() {
     // Unnamed links
     let ha = from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
     let hb = from_hex("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
-    let node = TreeNode::new(LinkType::File, vec![
-        Link { hash: ha, name: None, size: 100, key: None, link_type: LinkType::Blob, meta: None },
-        Link { hash: hb, name: None, size: 50, key: None, link_type: LinkType::Blob, meta: None },
-    ]);
+    let node = TreeNode::new(
+        LinkType::File,
+        vec![
+            Link {
+                hash: ha,
+                name: None,
+                size: 100,
+                key: None,
+                link_type: LinkType::Blob,
+                meta: None,
+            },
+            Link {
+                hash: hb,
+                name: None,
+                size: 50,
+                key: None,
+                link_type: LinkType::Blob,
+                meta: None,
+            },
+        ],
+    );
     let encoded = encode_tree_node(&node).unwrap();
     let hash = sha256(&encoded);
     println!("tree_node_unnamed_links:");
@@ -316,9 +397,17 @@ fn generate_msgpack_vectors() {
     let mut link_meta = HashMap::new();
     link_meta.insert("author".to_string(), serde_json::json!("test"));
     link_meta.insert("version".to_string(), serde_json::json!(1));
-    let node = TreeNode::new(LinkType::Dir, vec![
-        Link { hash: hc, name: None, size: 0, key: None, link_type: LinkType::Blob, meta: Some(link_meta) },
-    ]);
+    let node = TreeNode::new(
+        LinkType::Dir,
+        vec![Link {
+            hash: hc,
+            name: None,
+            size: 0,
+            key: None,
+            link_type: LinkType::Blob,
+            meta: Some(link_meta),
+        }],
+    );
     let encoded = encode_tree_node(&node).unwrap();
     let hash = sha256(&encoded);
     println!("tree_node_with_link_meta:");
@@ -336,7 +425,10 @@ fn generate_chk_vectors() {
         ("chk_empty", ""),
         ("chk_hello", "hello"),
         ("chk_binary", "\x01\x02\x03\x04\x05"),
-        ("chk_longer", "This is a longer message for testing CHK encryption interoperability."),
+        (
+            "chk_longer",
+            "This is a longer message for testing CHK encryption interoperability.",
+        ),
     ];
 
     println!("\n// Add these to interop-vectors.json:");
@@ -344,7 +436,8 @@ fn generate_chk_vectors() {
         let data = plaintext.as_bytes();
         let (ciphertext, key) = encrypt_chk(data).unwrap();
 
-        println!(r#"  {{
+        println!(
+            r#"  {{
     "name": "{}",
     "input": {{
       "type": "chk",
@@ -354,6 +447,11 @@ fn generate_chk_vectors() {
       "hash": "{}",
       "ciphertext": "{}"
     }}
-  }},"#, name, hex::encode(data), hex::encode(&key), hex::encode(&ciphertext));
+  }},"#,
+            name,
+            hex::encode(data),
+            hex::encode(&key),
+            hex::encode(&ciphertext)
+        );
     }
 }

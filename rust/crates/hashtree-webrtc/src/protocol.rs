@@ -81,16 +81,12 @@ pub fn parse_message(data: &[u8]) -> Option<DataMessage> {
     let body = &data[1..];
 
     match msg_type {
-        MSG_TYPE_REQUEST => {
-            rmp_serde::from_slice::<DataRequest>(body)
-                .ok()
-                .map(DataMessage::Request)
-        }
-        MSG_TYPE_RESPONSE => {
-            rmp_serde::from_slice::<DataResponse>(body)
-                .ok()
-                .map(DataMessage::Response)
-        }
+        MSG_TYPE_REQUEST => rmp_serde::from_slice::<DataRequest>(body)
+            .ok()
+            .map(DataMessage::Request),
+        MSG_TYPE_RESPONSE => rmp_serde::from_slice::<DataResponse>(body)
+            .ok()
+            .map(DataMessage::Response),
         _ => None,
     }
 }
@@ -114,7 +110,12 @@ pub fn create_response(hash: &Hash, data: Vec<u8>) -> DataResponse {
 }
 
 /// Create a fragmented response
-pub fn create_fragment_response(hash: &Hash, data: Vec<u8>, index: u32, total: u32) -> DataResponse {
+pub fn create_fragment_response(
+    hash: &Hash,
+    data: Vec<u8>,
+    index: u32,
+    total: u32,
+) -> DataResponse {
     DataResponse {
         h: hash.to_vec(),
         d: data,

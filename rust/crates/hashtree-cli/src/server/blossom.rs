@@ -32,25 +32,36 @@ pub const DEFAULT_MAX_UPLOAD_SIZE: usize = 5 * 1024 * 1024;
 fn check_write_access(state: &AppState, pubkey: &str) -> Result<(), Response<Body>> {
     // Check if pubkey is in the allowed list (converted from npub to hex)
     if state.allowed_pubkeys.contains(pubkey) {
-        tracing::debug!("Blossom write allowed for {}... (allowed npub)", &pubkey[..8.min(pubkey.len())]);
+        tracing::debug!(
+            "Blossom write allowed for {}... (allowed npub)",
+            &pubkey[..8.min(pubkey.len())]
+        );
         return Ok(());
     }
 
     // Check social graph (nostrdb follow distance)
     if let Some(ref sg) = state.social_graph {
         if sg.check_write_access(pubkey) {
-            tracing::debug!("Blossom write allowed for {}... (social graph)", &pubkey[..8.min(pubkey.len())]);
+            tracing::debug!(
+                "Blossom write allowed for {}... (social graph)",
+                &pubkey[..8.min(pubkey.len())]
+            );
             return Ok(());
         }
     }
 
     // Not in allowed list or social graph
-    tracing::info!("Blossom write denied for {}... (not in allowed_npubs or social graph)", &pubkey[..8.min(pubkey.len())]);
+    tracing::info!(
+        "Blossom write denied for {}... (not in allowed_npubs or social graph)",
+        &pubkey[..8.min(pubkey.len())]
+    );
     Err(Response::builder()
         .status(StatusCode::FORBIDDEN)
         .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(r#"{"error":"Write access denied. Your pubkey is not in the allowed list."}"#))
+        .body(Body::from(
+            r#"{"error":"Write access denied. Your pubkey is not in the allowed list."}"#,
+        ))
         .unwrap())
 }
 
@@ -81,9 +92,9 @@ pub struct BlossomAuth {
     pub kind: u16,
     pub created_at: u64,
     pub expiration: Option<u64>,
-    pub action: Option<String>,       // "upload", "delete", "list", "get"
-    pub blob_hashes: Vec<String>,     // x tags
-    pub server: Option<String>,       // server tag
+    pub action: Option<String>,   // "upload", "delete", "list", "get"
+    pub blob_hashes: Vec<String>, // x tags
+    pub server: Option<String>,   // server tag
 }
 
 /// Parse and verify Nostr authorization from header
@@ -98,9 +109,10 @@ pub fn verify_blossom_auth(
         .and_then(|v| v.to_str().ok())
         .ok_or((StatusCode::UNAUTHORIZED, "Missing Authorization header"))?;
 
-    let nostr_event = auth_header
-        .strip_prefix("Nostr ")
-        .ok_or((StatusCode::UNAUTHORIZED, "Invalid auth scheme, expected 'Nostr'"))?;
+    let nostr_event = auth_header.strip_prefix("Nostr ").ok_or((
+        StatusCode::UNAUTHORIZED,
+        "Invalid auth scheme, expected 'Nostr'",
+    ))?;
 
     // Decode base64 event
     let engine = base64::engine::general_purpose::STANDARD;
@@ -117,7 +129,10 @@ pub fn verify_blossom_auth(
         .ok_or((StatusCode::BAD_REQUEST, "Missing kind in event"))?;
 
     if kind != BLOSSOM_AUTH_KIND as u64 {
-        return Err((StatusCode::BAD_REQUEST, "Invalid event kind, expected 24242"));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Invalid event kind, expected 24242",
+        ));
     }
 
     let pubkey = event_json["pubkey"]
@@ -212,7 +227,7 @@ pub fn verify_blossom_auth(
 
 /// Verify Nostr event signature using secp256k1
 fn verify_nostr_signature(event: &serde_json::Value, pubkey: &str, sig: &str) -> bool {
-    use secp256k1::{Message, Secp256k1, schnorr::Signature, XOnlyPublicKey};
+    use secp256k1::{schnorr::Signature, Message, Secp256k1, XOnlyPublicKey};
 
     // Compute event ID (sha256 of serialized event)
     let content = event["content"].as_str().unwrap_or("");
@@ -257,7 +272,8 @@ fn verify_nostr_signature(event: &serde_json::Value, pubkey: &str, sig: &str) ->
         Err(_) => return false,
     };
 
-    secp.verify_schnorr(&signature, &message, &xonly_pubkey).is_ok()
+    secp.verify_schnorr(&signature, &message, &xonly_pubkey)
+        .is_ok()
 }
 
 /// Escape string for JSON serialization
@@ -297,7 +313,10 @@ pub async fn cors_preflight(headers: HeaderMap) -> impl IntoResponse {
     Response::builder()
         .status(StatusCode::NO_CONTENT)
         .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-        .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, HEAD, PUT, DELETE, OPTIONS")
+        .header(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            "GET, HEAD, PUT, DELETE, OPTIONS",
+        )
         .header(header::ACCESS_CONTROL_ALLOW_HEADERS, full_allowed)
         .header(header::ACCESS_CONTROL_MAX_AGE, "86400")
         .body(Body::empty())
@@ -325,12 +344,14 @@ pub async fn head_blob(
     let sha256_hex = hash_part.to_lowercase();
     let sha256_bytes: [u8; 32] = match from_hex(&sha256_hex) {
         Ok(b) => b,
-        Err(_) => return Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-            .header("X-Reason", "Invalid SHA256 format")
-            .body(Body::empty())
-            .unwrap(),
+        Err(_) => {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header("X-Reason", "Invalid SHA256 format")
+                .body(Body::empty())
+                .unwrap()
+        }
     };
 
     // Blossom only serves raw blobs (not merkle tree structures)
@@ -433,7 +454,10 @@ pub async fn upload_blob(
         return Response::builder()
             .status(StatusCode::FORBIDDEN)
             .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-            .header("X-Reason", "Uploaded blob hash does not match authorized hash")
+            .header(
+                "X-Reason",
+                "Uploaded blob hash does not match authorized hash",
+            )
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(r#"{"error":"Hash mismatch"}"#))
             .unwrap();
@@ -594,14 +618,20 @@ pub async fn delete_blob(
     }
 
     // Remove this user's ownership (blob only deleted when no owners remain)
-    match state.store.delete_blossom_blob(&sha256_bytes, &pubkey_bytes) {
+    match state
+        .store
+        .delete_blossom_blob(&sha256_bytes, &pubkey_bytes)
+    {
         Ok(fully_deleted) => {
             // Return 200 OK whether blob was fully deleted or just removed from user's list
             // The client doesn't need to know if other owners still exist
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header("X-Blob-Deleted", if fully_deleted { "true" } else { "false" })
+                .header(
+                    "X-Blob-Deleted",
+                    if fully_deleted { "true" } else { "false" },
+                )
                 .body(Body::empty())
                 .unwrap()
         }
@@ -634,13 +664,15 @@ pub async fn list_blobs(
     let pubkey_hex = pubkey.to_lowercase();
     let pubkey_bytes: [u8; 32] = match from_hex(&pubkey_hex) {
         Ok(b) => b,
-        Err(_) => return Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-            .header("X-Reason", "Invalid pubkey format")
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from("[]"))
-            .unwrap(),
+        Err(_) => {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header("X-Reason", "Invalid pubkey format")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("[]"))
+                .unwrap()
+        }
     };
 
     // Optional auth verification for list
@@ -749,15 +781,23 @@ mod tests {
 
     #[test]
     fn test_is_valid_sha256() {
-        assert!(is_valid_sha256("e2bab35b5296ec2242ded0a01f6d6723a5cd921239280c0a5f0b5589303336b6"));
-        assert!(is_valid_sha256("0000000000000000000000000000000000000000000000000000000000000000"));
+        assert!(is_valid_sha256(
+            "e2bab35b5296ec2242ded0a01f6d6723a5cd921239280c0a5f0b5589303336b6"
+        ));
+        assert!(is_valid_sha256(
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        ));
 
         // Too short
         assert!(!is_valid_sha256("e2bab35b5296ec2242ded0a01f6d6723"));
         // Too long
-        assert!(!is_valid_sha256("e2bab35b5296ec2242ded0a01f6d6723a5cd921239280c0a5f0b5589303336b6aa"));
+        assert!(!is_valid_sha256(
+            "e2bab35b5296ec2242ded0a01f6d6723a5cd921239280c0a5f0b5589303336b6aa"
+        ));
         // Invalid chars
-        assert!(!is_valid_sha256("zzbab35b5296ec2242ded0a01f6d6723a5cd921239280c0a5f0b5589303336b6"));
+        assert!(!is_valid_sha256(
+            "zzbab35b5296ec2242ded0a01f6d6723a5cd921239280c0a5f0b5589303336b6"
+        ));
         // Empty
         assert!(!is_valid_sha256(""));
     }

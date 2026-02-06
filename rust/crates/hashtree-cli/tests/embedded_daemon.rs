@@ -17,16 +17,14 @@ async fn embedded_daemon_serves_htree_test() {
     config.server.enable_webrtc = false;
     config.server.stun_port = 0;
 
-    let info = hashtree_cli::daemon::start_embedded(
-        hashtree_cli::daemon::EmbeddedDaemonOptions {
-            config,
-            data_dir: data_dir.clone(),
-            bind_address: "127.0.0.1:0".to_string(),
-            relays: None,
-            extra_routes: None,
-            cors: None,
-        },
-    )
+    let info = hashtree_cli::daemon::start_embedded(hashtree_cli::daemon::EmbeddedDaemonOptions {
+        config,
+        data_dir: data_dir.clone(),
+        bind_address: "127.0.0.1:0".to_string(),
+        relays: None,
+        extra_routes: None,
+        cors: None,
+    })
     .await
     .expect("start embedded daemon");
 

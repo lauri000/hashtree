@@ -128,14 +128,12 @@ fn run() -> Result<()> {
 
         // We need npub for the shareable URL, resolve identity first
         let npub = match resolve_identity(&identifier) {
-            Ok((pubkey, _)) => {
-                hex::decode(&pubkey)
-                    .ok()
-                    .filter(|b| b.len() == 32)
-                    .and_then(|pk_bytes| nostr_sdk::PublicKey::from_slice(&pk_bytes).ok())
-                    .and_then(|pk| pk.to_bech32().ok())
-                    .unwrap_or(pubkey)
-            }
+            Ok((pubkey, _)) => hex::decode(&pubkey)
+                .ok()
+                .filter(|b| b.len() == 32)
+                .and_then(|pk_bytes| nostr_sdk::PublicKey::from_slice(&pk_bytes).ok())
+                .and_then(|pk| pk.to_bech32().ok())
+                .unwrap_or(pubkey),
             Err(_) => identifier.clone(),
         };
 
@@ -198,9 +196,11 @@ fn run() -> Result<()> {
 
     // Load config
     let mut config = Config::load_or_default();
-    debug!("Loaded config with {} read servers, {} write servers",
-           config.blossom.read_servers.len(),
-           config.blossom.write_servers.len());
+    debug!(
+        "Loaded config with {} read servers, {} write servers",
+        config.blossom.read_servers.len(),
+        config.blossom.write_servers.len()
+    );
 
     // Check for local daemon and use it if available
     let daemon_url = detect_local_daemon(Some(&config.server.bind_address));
@@ -222,8 +222,14 @@ fn run() -> Result<()> {
     }
 
     // Create helper and run protocol
-    let mut helper =
-        RemoteHelper::new(&pubkey, &repo_name, signing_key, url_secret, is_private, config)?;
+    let mut helper = RemoteHelper::new(
+        &pubkey,
+        &repo_name,
+        signing_key,
+        url_secret,
+        is_private,
+        config,
+    )?;
 
     // Read commands from stdin, write responses to stdout
     let stdin = std::io::stdin();
@@ -309,7 +315,9 @@ fn parse_htree_url(url: &str) -> Result<ParsedUrl> {
         .context("URL must start with htree://")?;
 
     // Split off fragment (#k=secret, #link-visible, or #private) if present
-    let (url_path, secret_key, is_private, auto_generate_secret) = if let Some((path, fragment)) = url.split_once('#') {
+    let (url_path, secret_key, is_private, auto_generate_secret) = if let Some((path, fragment)) =
+        url.split_once('#')
+    {
         if fragment == "private" {
             // #private - self-only visibility
             (path, None, true, false)
@@ -318,8 +326,7 @@ fn parse_htree_url(url: &str) -> Result<ParsedUrl> {
             (path, None, false, true)
         } else if let Some(key_hex) = fragment.strip_prefix("k=") {
             // #k=<hex> - link-visible with explicit key
-            let bytes = hex::decode(key_hex)
-                .context("Invalid secret key hex in URL fragment")?;
+            let bytes = hex::decode(key_hex).context("Invalid secret key hex in URL fragment")?;
             if bytes.len() != 32 {
                 bail!("Secret key must be 32 bytes (64 hex chars)");
             }
@@ -398,9 +405,10 @@ mod tests {
 
     #[test]
     fn test_parse_htree_url_npub() {
-        let parsed =
-            parse_htree_url("htree://npub1qvmu0aru530g6yu3kmlhw33fh68r75wf3wuml3vk4ekg0p4m4t6s7fuhxx/test")
-                .unwrap();
+        let parsed = parse_htree_url(
+            "htree://npub1qvmu0aru530g6yu3kmlhw33fh68r75wf3wuml3vk4ekg0p4m4t6s7fuhxx/test",
+        )
+        .unwrap();
         assert!(parsed.identifier.starts_with("npub1"));
         assert_eq!(parsed.repo_name, "test");
         assert!(parsed.secret_key.is_none());
@@ -452,7 +460,8 @@ mod tests {
     #[test]
     fn test_parse_htree_url_invalid_secret_hex() {
         // Invalid hex characters
-        let url = "htree://test/repo#k=ghij456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let url =
+            "htree://test/repo#k=ghij456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         assert!(parse_htree_url(url).is_err());
     }
 

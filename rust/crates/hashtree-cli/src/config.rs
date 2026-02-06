@@ -129,7 +129,10 @@ pub struct BlossomConfig {
 
 // Keep in sync with hashtree-config/src/lib.rs
 fn default_read_servers() -> Vec<String> {
-    vec!["https://cdn.iris.to".to_string(), "https://hashtree.iris.to".to_string()]
+    vec![
+        "https://cdn.iris.to".to_string(),
+        "https://hashtree.iris.to".to_string(),
+    ]
 }
 
 fn default_write_servers() -> Vec<String> {
@@ -161,7 +164,6 @@ pub struct SyncConfig {
     #[serde(default = "default_blossom_timeout_ms")]
     pub blossom_timeout_ms: u64,
 }
-
 
 fn default_sync_enabled() -> bool {
     true
@@ -318,8 +320,7 @@ impl Config {
         let config_path = get_config_path();
 
         if config_path.exists() {
-            let content = fs::read_to_string(&config_path)
-                .context("Failed to read config file")?;
+            let content = fs::read_to_string(&config_path).context("Failed to read config file")?;
             toml::from_str(&content).context("Failed to parse config file")
         } else {
             let config = Config::default();
@@ -361,8 +362,7 @@ pub fn ensure_auth_cookie() -> Result<(String, String)> {
 /// Read existing auth cookie
 pub fn read_auth_cookie() -> Result<(String, String)> {
     let cookie_path = get_auth_cookie_path();
-    let content = fs::read_to_string(&cookie_path)
-        .context("Failed to read auth cookie")?;
+    let content = fs::read_to_string(&cookie_path).context("Failed to read auth cookie")?;
 
     let parts: Vec<&str> = content.trim().split(':').collect();
     if parts.len() != 2 {
@@ -378,14 +378,14 @@ pub fn ensure_keys() -> Result<(Keys, bool)> {
     let keys_path = get_keys_path();
 
     if keys_path.exists() {
-        let content = fs::read_to_string(&keys_path)
-            .context("Failed to read keys file")?;
+        let content = fs::read_to_string(&keys_path).context("Failed to read keys file")?;
         let entries = hashtree_config::parse_keys_file(&content);
-        let nsec_str = entries.into_iter().next()
+        let nsec_str = entries
+            .into_iter()
+            .next()
             .map(|e| e.secret)
             .context("Keys file is empty")?;
-        let secret_key = SecretKey::from_bech32(&nsec_str)
-            .context("Invalid nsec format")?;
+        let secret_key = SecretKey::from_bech32(&nsec_str).context("Invalid nsec format")?;
         let keys = Keys::new(secret_key);
         Ok((keys, false))
     } else {
@@ -397,14 +397,14 @@ pub fn ensure_keys() -> Result<(Keys, bool)> {
 /// Read existing keys
 pub fn read_keys() -> Result<Keys> {
     let keys_path = get_keys_path();
-    let content = fs::read_to_string(&keys_path)
-        .context("Failed to read keys file")?;
+    let content = fs::read_to_string(&keys_path).context("Failed to read keys file")?;
     let entries = hashtree_config::parse_keys_file(&content);
-    let nsec_str = entries.into_iter().next()
+    let nsec_str = entries
+        .into_iter()
+        .next()
         .map(|e| e.secret)
         .context("Keys file is empty")?;
-    let secret_key = SecretKey::from_bech32(&nsec_str)
-        .context("Invalid nsec format")?;
+    let secret_key = SecretKey::from_bech32(&nsec_str).context("Invalid nsec format")?;
     Ok(Keys::new(secret_key))
 }
 
@@ -414,16 +414,19 @@ pub fn ensure_keys_string() -> Result<(String, bool)> {
     let keys_path = get_keys_path();
 
     if keys_path.exists() {
-        let content = fs::read_to_string(&keys_path)
-            .context("Failed to read keys file")?;
+        let content = fs::read_to_string(&keys_path).context("Failed to read keys file")?;
         let entries = hashtree_config::parse_keys_file(&content);
-        let nsec_str = entries.into_iter().next()
+        let nsec_str = entries
+            .into_iter()
+            .next()
             .map(|e| e.secret)
             .context("Keys file is empty")?;
         Ok((nsec_str, false))
     } else {
         let keys = generate_keys()?;
-        let nsec = keys.secret_key().to_bech32()
+        let nsec = keys
+            .secret_key()
+            .to_bech32()
             .context("Failed to encode nsec")?;
         Ok((nsec, true))
     }
@@ -440,7 +443,9 @@ pub fn generate_keys() -> Result<Keys> {
 
     // Generate new keys
     let keys = Keys::generate();
-    let nsec = keys.secret_key().to_bech32()
+    let nsec = keys
+        .secret_key()
+        .to_bech32()
         .context("Failed to encode nsec")?;
 
     // Save to file
@@ -465,8 +470,7 @@ pub fn pubkey_bytes(keys: &Keys) -> [u8; 32] {
 /// Parse npub to 32-byte pubkey
 pub fn parse_npub(npub: &str) -> Result<[u8; 32]> {
     use nostr::PublicKey;
-    let pk = PublicKey::from_bech32(npub)
-        .context("Invalid npub format")?;
+    let pk = PublicKey::from_bech32(npub).context("Invalid npub format")?;
     Ok(pk.to_bytes())
 }
 

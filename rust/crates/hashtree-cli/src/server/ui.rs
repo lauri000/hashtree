@@ -1,7 +1,8 @@
 use axum::response::Html;
 
 pub fn root_page() -> Html<&'static str> {
-    Html(r#"<!DOCTYPE html>
+    Html(
+        r#"<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
@@ -328,5 +329,6 @@ pub fn root_page() -> Html<&'static str> {
         loadGitRepos();
     </script>
 </body>
-</html>"#)
+</html>"#,
+    )
 }

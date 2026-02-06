@@ -1,16 +1,19 @@
+use crate::nostr_relay::NostrRelay;
+use crate::socialgraph;
+use crate::storage::HashtreeStore;
+use crate::webrtc::WebRTCState;
 use axum::{
     body::Body,
+    extract::ws::Message,
     extract::State,
     http::{header, Request, Response, StatusCode},
     middleware::Next,
-    extract::ws::Message,
 };
-use crate::socialgraph;
-use crate::nostr_relay::NostrRelay;
-use crate::storage::HashtreeStore;
-use crate::webrtc::WebRTCState;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, atomic::{AtomicU32, AtomicU64, Ordering}};
+use std::sync::{
+    atomic::{AtomicU32, AtomicU64, Ordering},
+    Arc,
+};
 use tokio::sync::{mpsc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

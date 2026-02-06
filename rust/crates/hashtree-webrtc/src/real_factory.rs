@@ -149,10 +149,9 @@ impl RealPeerConnectionFactory {
         let _ = tokio::time::timeout(Duration::from_secs(10), gathering_complete.recv()).await;
 
         // Get the local description with ICE candidates embedded
-        let local_desc = connection
-            .local_description()
-            .await
-            .ok_or_else(|| TransportError::ConnectionFailed("No local description after ICE gathering".to_string()))?;
+        let local_desc = connection.local_description().await.ok_or_else(|| {
+            TransportError::ConnectionFailed("No local description after ICE gathering".to_string())
+        })?;
 
         Ok(local_desc.sdp)
     }
@@ -255,8 +254,12 @@ impl PeerConnectionFactory for RealPeerConnectionFactory {
         // Wait for data channel from remote peer (with timeout)
         let dc = tokio::time::timeout(Duration::from_secs(30), dc_rx)
             .await
-            .map_err(|_| TransportError::ConnectionFailed("Timeout waiting for data channel".to_string()))?
-            .map_err(|_| TransportError::ConnectionFailed("Data channel sender dropped".to_string()))?;
+            .map_err(|_| {
+                TransportError::ConnectionFailed("Timeout waiting for data channel".to_string())
+            })?
+            .map_err(|_| {
+                TransportError::ConnectionFailed("Data channel sender dropped".to_string())
+            })?;
 
         // Store connection for potential future use
         self.inbound.write().await.insert(

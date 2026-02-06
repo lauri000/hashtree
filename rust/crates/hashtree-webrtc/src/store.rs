@@ -185,8 +185,12 @@ impl<S: Store + 'static> WebRTCStore<S> {
                         if let Some(entry) = peers_read.get(peer_id) {
                             if entry.peer.state().await == PeerState::Ready {
                                 match entry.pool {
-                                    PeerPool::Follows => follows_peers.push((peer_id.clone(), entry.peer.clone())),
-                                    PeerPool::Other => other_peers.push((peer_id.clone(), entry.peer.clone())),
+                                    PeerPool::Follows => {
+                                        follows_peers.push((peer_id.clone(), entry.peer.clone()))
+                                    }
+                                    PeerPool::Other => {
+                                        other_peers.push((peer_id.clone(), entry.peer.clone()))
+                                    }
                                 }
                             }
                         }
@@ -201,7 +205,10 @@ impl<S: Store + 'static> WebRTCStore<S> {
                 let mut result = None;
                 for (peer_id, peer) in follows_peers.into_iter().chain(other_peers.into_iter()) {
                     // Record request being sent
-                    peer_selector.write().await.record_request(&peer_id, request_bytes);
+                    peer_selector
+                        .write()
+                        .await
+                        .record_request(&peer_id, request_bytes);
                     let start_time = std::time::Instant::now();
 
                     // Use request_with_htl to forward with the given HTL
@@ -216,7 +223,11 @@ impl<S: Store + 'static> WebRTCStore<S> {
                             if hashtree_core::sha256(&data) == req.hash {
                                 // Record success with RTT
                                 let rtt_ms = start_time.elapsed().as_millis() as u64;
-                                peer_selector.write().await.record_success(&peer_id, rtt_ms, data.len() as u64);
+                                peer_selector.write().await.record_success(
+                                    &peer_id,
+                                    rtt_ms,
+                                    data.len() as u64,
+                                );
 
                                 // Store locally for future requests
                                 let _ = local_store.put(req.hash, data.clone()).await;
@@ -390,7 +401,12 @@ impl<S: Store + 'static> WebRTCStore<S> {
     }
 
     /// Check if we can accept a new peer in a given pool
-    fn can_accept_peer(pool: PeerPool, follows_count: usize, other_count: usize, config: &WebRTCStoreConfig) -> bool {
+    fn can_accept_peer(
+        pool: PeerPool,
+        follows_count: usize,
+        other_count: usize,
+        config: &WebRTCStoreConfig,
+    ) -> bool {
         match pool {
             PeerPool::Follows => follows_count < config.pools.follows.max_connections,
             PeerPool::Other => other_count < config.pools.other.max_connections,
@@ -398,7 +414,12 @@ impl<S: Store + 'static> WebRTCStore<S> {
     }
 
     /// Check if a pool needs more connections
-    fn pool_needs_peers(pool: PeerPool, follows_count: usize, other_count: usize, config: &WebRTCStoreConfig) -> bool {
+    fn pool_needs_peers(
+        pool: PeerPool,
+        follows_count: usize,
+        other_count: usize,
+        config: &WebRTCStoreConfig,
+    ) -> bool {
         match pool {
             PeerPool::Follows => follows_count < config.pools.follows.satisfied_connections,
             PeerPool::Other => other_count < config.pools.other.satisfied_connections,
@@ -437,7 +458,10 @@ impl<S: Store + 'static> WebRTCStore<S> {
 
                 if !Self::can_accept_peer(pool, follows_count, other_count, config) {
                     if config.debug {
-                        println!("[Store] Ignoring hello from {} - {:?} pool full", peer_id, pool);
+                        println!(
+                            "[Store] Ignoring hello from {} - {:?} pool full",
+                            peer_id, pool
+                        );
                     }
                     return;
                 }
@@ -447,7 +471,10 @@ impl<S: Store + 'static> WebRTCStore<S> {
                 }
 
                 // Store peer roots
-                peer_roots.write().await.insert(peer_id.clone(), roots.clone());
+                peer_roots
+                    .write()
+                    .await
+                    .insert(peer_id.clone(), roots.clone());
 
                 // Perfect negotiation: send offer if we NEED more peers
                 // Both sides may send offers - collisions handled in offer handler
@@ -455,7 +482,10 @@ impl<S: Store + 'static> WebRTCStore<S> {
                     if let Some(remote_id) = PeerId::from_peer_string(peer_id) {
                         if !peers.read().await.contains_key(peer_id) {
                             if config.debug {
-                                println!("[Store] Initiating connection to {} (pool: {:?})", peer_id, pool);
+                                println!(
+                                    "[Store] Initiating connection to {} (pool: {:?})",
+                                    peer_id, pool
+                                );
                             }
                             // Create peer and add to map BEFORE connecting to avoid race with incoming answer
                             if let Ok(peer) = Peer::with_forward_channel(
@@ -469,7 +499,13 @@ impl<S: Store + 'static> WebRTCStore<S> {
                             .await
                             {
                                 let peer = Arc::new(peer);
-                                peers.write().await.insert(peer_id.clone(), PeerEntry { peer: peer.clone(), pool });
+                                peers.write().await.insert(
+                                    peer_id.clone(),
+                                    PeerEntry {
+                                        peer: peer.clone(),
+                                        pool,
+                                    },
+                                );
                                 stats.write().await.connected_peers += 1;
 
                                 // Add to peer selector for adaptive selection
@@ -521,7 +557,10 @@ impl<S: Store + 'static> WebRTCStore<S> {
 
                 if !Self::can_accept_peer(pool, follows_count, other_count, config) {
                     if config.debug {
-                        println!("[Store] Ignoring signaling from {} - {:?} pool full", peer_id, pool);
+                        println!(
+                            "[Store] Ignoring signaling from {} - {:?} pool full",
+                            peer_id, pool
+                        );
                     }
                     return;
                 }
@@ -547,7 +586,13 @@ impl<S: Store + 'static> WebRTCStore<S> {
                             .await
                             {
                                 let p = Arc::new(p);
-                                peers.write().await.insert(peer_id.clone(), PeerEntry { peer: p.clone(), pool });
+                                peers.write().await.insert(
+                                    peer_id.clone(),
+                                    PeerEntry {
+                                        peer: p.clone(),
+                                        pool,
+                                    },
+                                );
                                 stats.write().await.connected_peers += 1;
 
                                 // Add to peer selector for adaptive selection
@@ -579,9 +624,11 @@ impl<S: Store + 'static> WebRTCStore<S> {
                 }
 
                 let json = serde_json::to_string(&msg).unwrap();
-                println!("[Store] Sending signaling: {}", &json[..json.len().min(100)]);
-                let builder =
-                    EventBuilder::new(Kind::Custom(NOSTR_KIND_HASHTREE), json, []);
+                println!(
+                    "[Store] Sending signaling: {}",
+                    &json[..json.len().min(100)]
+                );
+                let builder = EventBuilder::new(Kind::Custom(NOSTR_KIND_HASHTREE), json, []);
 
                 match client.send_event_builder(builder).await {
                     Ok(output) => {
@@ -607,8 +654,7 @@ impl<S: Store + 'static> WebRTCStore<S> {
         let running = self.running.clone();
 
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
 
             loop {
                 interval.tick().await;
@@ -678,7 +724,9 @@ impl<S: Store + 'static> WebRTCStore<S> {
             if let Some(entry) = peers.get(peer_id) {
                 if entry.peer.state().await == PeerState::Ready {
                     match entry.pool {
-                        PeerPool::Follows => follows_peers.push((peer_id.clone(), entry.peer.clone())),
+                        PeerPool::Follows => {
+                            follows_peers.push((peer_id.clone(), entry.peer.clone()))
+                        }
                         PeerPool::Other => other_peers.push((peer_id.clone(), entry.peer.clone())),
                     }
                 }
@@ -692,7 +740,10 @@ impl<S: Store + 'static> WebRTCStore<S> {
         // Try follows first, then others (in selector order within each pool)
         for (peer_id, peer) in follows_peers.into_iter().chain(other_peers.into_iter()) {
             // Record request being sent
-            self.peer_selector.write().await.record_request(&peer_id, request_bytes);
+            self.peer_selector
+                .write()
+                .await
+                .record_request(&peer_id, request_bytes);
             let start_time = std::time::Instant::now();
 
             match peer.request(hash).await {
@@ -701,7 +752,11 @@ impl<S: Store + 'static> WebRTCStore<S> {
                     if hashtree_core::sha256(&data) == *hash {
                         // Record success with RTT
                         let rtt_ms = start_time.elapsed().as_millis() as u64;
-                        self.peer_selector.write().await.record_success(&peer_id, rtt_ms, data.len() as u64);
+                        self.peer_selector.write().await.record_success(
+                            &peer_id,
+                            rtt_ms,
+                            data.len() as u64,
+                        );
 
                         // Store locally for future requests
                         let _ = self.local_store.put(*hash, data.clone()).await;

@@ -3,7 +3,6 @@
 //! Core principle: Every node is stored by SHA256(msgpack(node)) -> msgpack(node)
 //! This enables pure KV content-addressed storage.
 
-
 /// Link type - distinguishes blobs, chunked files, and directories
 /// Uses small integer values for efficient MessagePack encoding
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -140,10 +139,7 @@ pub struct TreeNode {
 impl TreeNode {
     /// Create a new tree node with specified type
     pub fn new(node_type: LinkType, links: Vec<Link>) -> Self {
-        Self {
-            node_type,
-            links,
-        }
+        Self { node_type, links }
     }
 
     /// Create a File node (chunked file)
@@ -199,7 +195,10 @@ impl Cid {
 
     /// Create a new CID for encrypted content
     pub fn encrypted(hash: Hash, key: [u8; 32]) -> Self {
-        Self { hash, key: Some(key) }
+        Self {
+            hash,
+            key: Some(key),
+        }
     }
 
     /// Check if this CID refers to encrypted content
@@ -213,7 +212,10 @@ impl Cid {
         if let Some((hash_hex, key_hex)) = s.split_once(':') {
             let hash = from_hex(hash_hex).map_err(|_| CidParseError::InvalidHash)?;
             let key = from_hex(key_hex).map_err(|_| CidParseError::InvalidKey)?;
-            Ok(Self { hash, key: Some(key) })
+            Ok(Self {
+                hash,
+                key: Some(key),
+            })
         } else {
             let hash = from_hex(s).map_err(|_| CidParseError::InvalidHash)?;
             Ok(Self { hash, key: None })
@@ -316,7 +318,10 @@ mod tests {
     fn test_to_hex_empty() {
         let hash = [0u8; 32];
         let hex = to_hex(&hash);
-        assert_eq!(hex, "0000000000000000000000000000000000000000000000000000000000000000");
+        assert_eq!(
+            hex,
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        );
     }
 
     #[test]

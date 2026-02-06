@@ -1,24 +1,23 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use heed::{Database, EnvOpenOptions};
-use heed::types::*;
+use futures::executor::block_on as sync_block_on;
+use hashtree_config::StorageBackend;
+use hashtree_core::store::{Store, StoreError};
+use hashtree_core::{
+    from_hex, sha256, to_hex, types::Hash, Cid, DirEntry as HashTreeDirEntry, HashTree,
+    HashTreeConfig, TreeNode,
+};
 use hashtree_fs::FsBlobStore;
 #[cfg(feature = "lmdb")]
 use hashtree_lmdb::LmdbBlobStore;
-use hashtree_core::{
-    HashTree, HashTreeConfig, Cid,
-    sha256, to_hex, from_hex, TreeNode, DirEntry as HashTreeDirEntry,
-    types::Hash,
-};
-use hashtree_core::store::{Store, StoreError};
-use hashtree_config::StorageBackend;
+use heed::types::*;
+use heed::{Database, EnvOpenOptions};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::collections::HashSet;
 use std::io::Read;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use futures::executor::block_on as sync_block_on;
 
 /// Priority levels for tree eviction
 pub const PRIORITY_OTHER: u8 = 64;
@@ -71,16 +70,14 @@ impl LocalStore {
     /// Create a new local store based on config
     pub fn new<P: AsRef<Path>>(path: P, backend: &StorageBackend) -> Result<Self, StoreError> {
         match backend {
-            StorageBackend::Fs => {
-                Ok(LocalStore::Fs(FsBlobStore::new(path)?))
-            }
+            StorageBackend::Fs => Ok(LocalStore::Fs(FsBlobStore::new(path)?)),
             #[cfg(feature = "lmdb")]
-            StorageBackend::Lmdb => {
-                Ok(LocalStore::Lmdb(LmdbBlobStore::new(path)?))
-            }
+            StorageBackend::Lmdb => Ok(LocalStore::Lmdb(LmdbBlobStore::new(path)?)),
             #[cfg(not(feature = "lmdb"))]
             StorageBackend::Lmdb => {
-                tracing::warn!("LMDB backend requested but lmdb feature not enabled, using filesystem storage");
+                tracing::warn!(
+                    "LMDB backend requested but lmdb feature not enabled, using filesystem storage"
+                );
                 Ok(LocalStore::Fs(FsBlobStore::new(path)?))
             }
         }
@@ -226,7 +223,8 @@ impl StorageRouter {
 
         // Build AWS config
         let mut aws_config_loader = aws_config::from_env();
-        aws_config_loader = aws_config_loader.region(aws_sdk_s3::config::Region::new(config.region.clone()));
+        aws_config_loader =
+            aws_config_loader.region(aws_sdk_s3::config::Region::new(config.region.clone()));
         let aws_config = aws_config_loader.load().await;
 
         // Build S3 client with custom endpoint
@@ -305,7 +303,11 @@ impl StorageRouter {
             }
         });
 
-        tracing::info!("S3 storage initialized: bucket={}, prefix={}", bucket, prefix);
+        tracing::info!(
+            "S3 storage initialized: bucket={}, prefix={}",
+            bucket,
+            prefix
+        );
 
         Ok(Self {
             local,
@@ -325,9 +327,16 @@ impl StorageRouter {
         // Always upload to S3 (even if not new locally) to ensure S3 has all blobs
         #[cfg(feature = "s3")]
         if let Some(ref tx) = self.sync_tx {
-            tracing::info!("Queueing S3 upload for {} ({} bytes, is_new={})",
-                crate::storage::to_hex(&hash)[..16].to_string(), data.len(), is_new);
-            if let Err(e) = tx.send(S3SyncMessage::Upload { hash, data: data.to_vec() }) {
+            tracing::info!(
+                "Queueing S3 upload for {} ({} bytes, is_new={})",
+                crate::storage::to_hex(&hash)[..16].to_string(),
+                data.len(),
+                is_new
+            );
+            if let Err(e) = tx.send(S3SyncMessage::Upload {
+                hash,
+                data: data.to_vec(),
+            }) {
                 tracing::error!("Failed to queue S3 upload: {}", e);
             }
         }
@@ -347,13 +356,8 @@ impl StorageRouter {
         if let (Some(ref client), Some(ref bucket)) = (&self.s3_client, &self.s3_bucket) {
             let key = format!("{}{}.bin", self.s3_prefix, to_hex(hash));
 
-            match sync_block_on(async {
-                client.get_object()
-                    .bucket(bucket)
-                    .key(&key)
-                    .send()
-                    .await
-            }) {
+            match sync_block_on(async { client.get_object().bucket(bucket).key(&key).send().await })
+            {
                 Ok(output) => {
                     if let Ok(body) = sync_block_on(output.body.collect()) {
                         let data = body.into_bytes().to_vec();
@@ -387,11 +391,7 @@ impl StorageRouter {
             let key = format!("{}{}.bin", self.s3_prefix, to_hex(hash));
 
             match sync_block_on(async {
-                client.head_object()
-                    .bucket(bucket)
-                    .key(&key)
-                    .send()
-                    .await
+                client.head_object().bucket(bucket).key(&key).send().await
             }) {
                 Ok(_) => return Ok(true),
                 Err(e) => {
@@ -496,14 +496,18 @@ impl HashtreeStore {
     }
 
     /// Create a new store with optional S3 backend and custom size limit
-    pub fn with_options<P: AsRef<Path>>(path: P, s3_config: Option<&S3Config>, max_size_bytes: u64) -> Result<Self> {
+    pub fn with_options<P: AsRef<Path>>(
+        path: P,
+        s3_config: Option<&S3Config>,
+        max_size_bytes: u64,
+    ) -> Result<Self> {
         let path = path.as_ref();
         std::fs::create_dir_all(path)?;
 
         let env = unsafe {
             EnvOpenOptions::new()
                 .map_size(10 * 1024 * 1024 * 1024) // 10GB virtual address space
-                .max_dbs(8)  // pins, blob_owners, pubkey_blobs, tree_meta, blob_trees, tree_refs, cached_roots, blobs
+                .max_dbs(8) // pins, blob_owners, pubkey_blobs, tree_meta, blob_trees, tree_refs, cached_roots, blobs
                 .open(path)?
         };
 
@@ -522,18 +526,21 @@ impl HashtreeStore {
         let backend = &config.storage.backend;
 
         // Create local blob store based on configured backend
-        let local_store = Arc::new(LocalStore::new(path.join("blobs"), backend)
-            .map_err(|e| anyhow::anyhow!("Failed to create blob store: {}", e))?);
+        let local_store = Arc::new(
+            LocalStore::new(path.join("blobs"), backend)
+                .map_err(|e| anyhow::anyhow!("Failed to create blob store: {}", e))?,
+        );
 
         // Create storage router with optional S3
         #[cfg(feature = "s3")]
         let router = Arc::new(if let Some(s3_cfg) = s3_config {
-            tracing::info!("Initializing S3 storage backend: bucket={}, endpoint={}",
-                s3_cfg.bucket, s3_cfg.endpoint);
+            tracing::info!(
+                "Initializing S3 storage backend: bucket={}, endpoint={}",
+                s3_cfg.bucket,
+                s3_cfg.endpoint
+            );
 
-            sync_block_on(async {
-                StorageRouter::with_s3(local_store, s3_cfg).await
-            })?
+            sync_block_on(async { StorageRouter::with_s3(local_store, s3_cfg).await })?
         } else {
             StorageRouter::new(local_store)
         });
@@ -541,7 +548,9 @@ impl HashtreeStore {
         #[cfg(not(feature = "s3"))]
         let router = Arc::new({
             if s3_config.is_some() {
-                tracing::warn!("S3 config provided but S3 feature not enabled. Using local storage only.");
+                tracing::warn!(
+                    "S3 config provided but S3 feature not enabled. Using local storage only."
+                );
             }
             StorageRouter::new(local_store)
         });
@@ -589,9 +598,8 @@ impl HashtreeStore {
         let store = self.store_arc();
         let tree = HashTree::new(HashTreeConfig::new(store).public());
 
-        let (cid, _size) = sync_block_on(async {
-            tree.put(&file_content).await
-        }).context("Failed to store file")?;
+        let (cid, _size) = sync_block_on(async { tree.put(&file_content).await })
+            .context("Failed to store file")?;
 
         // Only pin if requested (htree add = pin, blossom upload = no pin)
         if pin {
@@ -620,9 +628,8 @@ impl HashtreeStore {
         let store = self.store_arc();
         let tree = HashTree::new(HashTreeConfig::new(store).public());
 
-        let (cid, _size) = sync_block_on(async {
-            tree.put(&data).await
-        }).context("Failed to store file")?;
+        let (cid, _size) =
+            sync_block_on(async { tree.put(&data).await }).context("Failed to store file")?;
 
         let root_hex = to_hex(&cid.hash);
         callback(&root_hex);
@@ -642,15 +649,21 @@ impl HashtreeStore {
     }
 
     /// Upload a directory with options (public mode - no encryption)
-    pub fn upload_dir_with_options<P: AsRef<Path>>(&self, dir_path: P, respect_gitignore: bool) -> Result<String> {
+    pub fn upload_dir_with_options<P: AsRef<Path>>(
+        &self,
+        dir_path: P,
+        respect_gitignore: bool,
+    ) -> Result<String> {
         let dir_path = dir_path.as_ref();
 
         let store = self.store_arc();
         let tree = HashTree::new(HashTreeConfig::new(store).public());
 
         let root_cid = sync_block_on(async {
-            self.upload_dir_recursive(&tree, dir_path, dir_path, respect_gitignore).await
-        }).context("Failed to upload directory")?;
+            self.upload_dir_recursive(&tree, dir_path, dir_path, respect_gitignore)
+                .await
+        })
+        .context("Failed to upload directory")?;
 
         let root_hex = to_hex(&root_cid.hash);
 
@@ -691,19 +704,21 @@ impl HashtreeStore {
                 continue;
             }
 
-            let relative = path.strip_prefix(current_path)
-                .unwrap_or(path);
+            let relative = path.strip_prefix(current_path).unwrap_or(path);
 
             if path.is_file() {
                 let content = std::fs::read(path)?;
-                let (cid, _size) = tree.put(&content).await
-                    .map_err(|e| anyhow::anyhow!("Failed to upload file {}: {}", path.display(), e))?;
+                let (cid, _size) = tree.put(&content).await.map_err(|e| {
+                    anyhow::anyhow!("Failed to upload file {}: {}", path.display(), e)
+                })?;
 
                 // Get parent directory path and file name
-                let parent = relative.parent()
+                let parent = relative
+                    .parent()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default();
-                let name = relative.file_name()
+                let name = relative
+                    .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
 
@@ -737,7 +752,8 @@ impl HashtreeStore {
         for dir_path in dirs {
             let files = dir_contents.get(&dir_path).cloned().unwrap_or_default();
 
-            let mut entries: Vec<HashTreeDirEntry> = files.into_iter()
+            let mut entries: Vec<HashTreeDirEntry> = files
+                .into_iter()
                 .map(|(name, cid)| HashTreeDirEntry::from_cid(name, &cid))
                 .collect();
 
@@ -757,14 +773,17 @@ impl HashtreeStore {
                 }
             }
 
-            let cid = tree.put_directory(entries).await
+            let cid = tree
+                .put_directory(entries)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to create directory node: {}", e))?;
 
             dir_cids.insert(dir_path, cid);
         }
 
         // Return root Cid
-        dir_cids.get("")
+        dir_cids
+            .get("")
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("No root directory"))
     }
@@ -778,9 +797,8 @@ impl HashtreeStore {
         let store = self.store_arc();
         let tree = HashTree::new(HashTreeConfig::new(store));
 
-        let (cid, _size) = sync_block_on(async {
-            tree.put(&file_content).await
-        }).map_err(|e| anyhow::anyhow!("Failed to encrypt file: {}", e))?;
+        let (cid, _size) = sync_block_on(async { tree.put(&file_content).await })
+            .map_err(|e| anyhow::anyhow!("Failed to encrypt file: {}", e))?;
 
         let cid_str = cid.to_string();
 
@@ -799,7 +817,11 @@ impl HashtreeStore {
 
     /// Upload a directory with CHK encryption and options
     /// Returns CID as "hash:key" format for encrypted directories
-    pub fn upload_dir_encrypted_with_options<P: AsRef<Path>>(&self, dir_path: P, respect_gitignore: bool) -> Result<String> {
+    pub fn upload_dir_encrypted_with_options<P: AsRef<Path>>(
+        &self,
+        dir_path: P,
+        respect_gitignore: bool,
+    ) -> Result<String> {
         let dir_path = dir_path.as_ref();
         let store = self.store_arc();
 
@@ -807,8 +829,10 @@ impl HashtreeStore {
         let tree = HashTree::new(HashTreeConfig::new(store));
 
         let root_cid = sync_block_on(async {
-            self.upload_dir_recursive(&tree, dir_path, dir_path, respect_gitignore).await
-        }).context("Failed to upload encrypted directory")?;
+            self.upload_dir_recursive(&tree, dir_path, dir_path, respect_gitignore)
+                .await
+        })
+        .context("Failed to upload encrypted directory")?;
 
         let cid_str = root_cid.to_string(); // Returns "hash:key" or "hash"
 
@@ -826,7 +850,8 @@ impl HashtreeStore {
         let tree = HashTree::new(HashTreeConfig::new(store).public());
 
         sync_block_on(async {
-            tree.get_tree_node(hash).await
+            tree.get_tree_node(hash)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to get tree node: {}", e))
         })
     }
@@ -834,20 +859,23 @@ impl HashtreeStore {
     /// Store a raw blob, returns SHA256 hash as hex.
     pub fn put_blob(&self, data: &[u8]) -> Result<String> {
         let hash = sha256(data);
-        self.router.put_sync(hash, data)
+        self.router
+            .put_sync(hash, data)
             .map_err(|e| anyhow::anyhow!("Failed to store blob: {}", e))?;
         Ok(to_hex(&hash))
     }
 
     /// Get a raw blob by SHA256 hash (raw bytes).
     pub fn get_blob(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>> {
-        self.router.get_sync(hash)
+        self.router
+            .get_sync(hash)
             .map_err(|e| anyhow::anyhow!("Failed to get blob: {}", e))
     }
 
     /// Check if a blob exists by SHA256 hash (raw bytes).
     pub fn blob_exists(&self, hash: &[u8; 32]) -> Result<bool> {
-        self.router.exists(hash)
+        self.router
+            .exists(hash)
             .map_err(|e| anyhow::anyhow!("Failed to check blob: {}", e))
     }
 
@@ -1007,7 +1035,10 @@ impl HashtreeStore {
     }
 
     /// List all blobs owned by a pubkey (for Blossom /list endpoint)
-    pub fn list_blobs_by_pubkey(&self, pubkey: &[u8; 32]) -> Result<Vec<crate::server::blossom::BlobDescriptor>> {
+    pub fn list_blobs_by_pubkey(
+        &self,
+        pubkey: &[u8; 32],
+    ) -> Result<Vec<crate::server::blossom::BlobDescriptor>> {
         let rtxn = self.env.read_txn()?;
 
         let blobs: Vec<BlobMetadata> = self
@@ -1030,7 +1061,8 @@ impl HashtreeStore {
 
     /// Get a single chunk/blob by hash (raw bytes)
     pub fn get_chunk(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>> {
-        self.router.get_sync(hash)
+        self.router
+            .get_sync(hash)
             .map_err(|e| anyhow::anyhow!("Failed to get chunk: {}", e))
     }
 
@@ -1041,7 +1073,8 @@ impl HashtreeStore {
         let tree = HashTree::new(HashTreeConfig::new(store).public());
 
         sync_block_on(async {
-            tree.read_file(hash).await
+            tree.read_file(hash)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))
         })
     }
@@ -1053,7 +1086,8 @@ impl HashtreeStore {
         let tree = HashTree::new(HashTreeConfig::new(store).public());
 
         sync_block_on(async {
-            tree.get(cid).await
+            tree.get(cid)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))
         })
     }
@@ -1064,7 +1098,8 @@ impl HashtreeStore {
         let tree = HashTree::new(HashTreeConfig::new(store).public());
 
         sync_block_on(async {
-            tree.resolve_path(cid, path).await
+            tree.resolve_path(cid, path)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to resolve path: {}", e))
         })
     }
@@ -1077,7 +1112,9 @@ impl HashtreeStore {
         sync_block_on(async {
             // First check if the hash exists in the store at all
             // (either as a blob or tree node)
-            let exists = store.has(&hash).await
+            let exists = store
+                .has(&hash)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to check existence: {}", e))?;
 
             if !exists {
@@ -1085,11 +1122,15 @@ impl HashtreeStore {
             }
 
             // Get total size
-            let total_size = tree.get_size(&hash).await
+            let total_size = tree
+                .get_size(&hash)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to get size: {}", e))?;
 
             // Check if it's a tree (chunked) or blob
-            let is_tree_node = tree.is_tree(&hash).await
+            let is_tree_node = tree
+                .is_tree(&hash)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to check tree: {}", e))?;
 
             if !is_tree_node {
@@ -1103,14 +1144,19 @@ impl HashtreeStore {
             }
 
             // Get tree node to extract chunk info
-            let node = match tree.get_tree_node(&hash).await
-                .map_err(|e| anyhow::anyhow!("Failed to get tree node: {}", e))? {
+            let node = match tree
+                .get_tree_node(&hash)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to get tree node: {}", e))?
+            {
                 Some(n) => n,
                 None => return Ok(None),
             };
 
             // Check if it's a directory (has named links)
-            let is_directory = tree.is_directory(&hash).await
+            let is_directory = tree
+                .is_directory(&hash)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to check directory: {}", e))?;
 
             if is_directory {
@@ -1131,7 +1177,12 @@ impl HashtreeStore {
     }
 
     /// Get byte range from file
-    pub fn get_file_range(&self, hash: &[u8; 32], start: u64, end: Option<u64>) -> Result<Option<(Vec<u8>, u64)>> {
+    pub fn get_file_range(
+        &self,
+        hash: &[u8; 32],
+        start: u64,
+        end: Option<u64>,
+    ) -> Result<Option<(Vec<u8>, u64)>> {
         let metadata = match self.get_file_chunk_metadata(hash)? {
             Some(m) => m,
             None => return Ok(None),
@@ -1145,7 +1196,9 @@ impl HashtreeStore {
             return Ok(None);
         }
 
-        let end = end.unwrap_or(metadata.total_size - 1).min(metadata.total_size - 1);
+        let end = end
+            .unwrap_or(metadata.total_size - 1)
+            .min(metadata.total_size - 1);
 
         // For non-chunked files, load entire file
         if !metadata.is_chunked {
@@ -1235,7 +1288,9 @@ impl HashtreeStore {
 
         sync_block_on(async {
             // Check if it's a directory
-            let is_dir = tree.is_directory(&hash).await
+            let is_dir = tree
+                .is_directory(&hash)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to check directory: {}", e))?;
 
             if !is_dir {
@@ -1244,15 +1299,20 @@ impl HashtreeStore {
 
             // Get directory entries (public Cid - no encryption key)
             let cid = hashtree_core::Cid::public(*hash);
-            let tree_entries = tree.list_directory(&cid).await
+            let tree_entries = tree
+                .list_directory(&cid)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to list directory: {}", e))?;
 
-            let entries: Vec<DirEntry> = tree_entries.into_iter().map(|e| DirEntry {
-                name: e.name,
-                cid: to_hex(&e.hash),
-                is_directory: e.link_type.is_tree(),
-                size: e.size,
-            }).collect();
+            let entries: Vec<DirEntry> = tree_entries
+                .into_iter()
+                .map(|e| DirEntry {
+                    name: e.name,
+                    cid: to_hex(&e.hash),
+                    is_directory: e.link_type.is_tree(),
+                    size: e.size,
+                })
+                .collect();
 
             Ok(Some(DirectoryListing {
                 dir_name: String::new(),
@@ -1316,9 +1376,8 @@ impl HashtreeStore {
             hash.copy_from_slice(hash_bytes);
 
             // Try to determine if it's a directory
-            let is_directory = sync_block_on(async {
-                tree.is_directory(&hash).await.unwrap_or(false)
-            });
+            let is_directory =
+                sync_block_on(async { tree.is_directory(&hash).await.unwrap_or(false) });
 
             pins.push(PinnedItem {
                 cid: to_hex(&hash),
@@ -1351,7 +1410,8 @@ impl HashtreeStore {
             let rtxn = self.env.read_txn()?;
             if let Some(old_hash_bytes) = self.tree_refs.get(&rtxn, key)? {
                 if old_hash_bytes != root_hash.as_slice() {
-                    let old_hash: Hash = old_hash_bytes.try_into()
+                    let old_hash: Hash = old_hash_bytes
+                        .try_into()
                         .map_err(|_| anyhow::anyhow!("Invalid hash in tree_refs"))?;
                     drop(rtxn);
                     // Unindex old tree (will delete orphaned blobs)
@@ -1365,9 +1425,8 @@ impl HashtreeStore {
         let tree = HashTree::new(HashTreeConfig::new(store).public());
 
         // Walk tree and collect all blob hashes + compute total size
-        let (blob_hashes, total_size) = sync_block_on(async {
-            self.collect_tree_blobs(&tree, root_hash).await
-        })?;
+        let (blob_hashes, total_size) =
+            sync_block_on(async { self.collect_tree_blobs(&tree, root_hash).await })?;
 
         let mut wtxn = self.env.write_txn()?;
 
@@ -1392,7 +1451,8 @@ impl HashtreeStore {
         };
         let meta_bytes = rmp_serde::to_vec(&meta)
             .map_err(|e| anyhow::anyhow!("Failed to serialize TreeMeta: {}", e))?;
-        self.tree_meta.put(&mut wtxn, root_hash.as_slice(), &meta_bytes)?;
+        self.tree_meta
+            .put(&mut wtxn, root_hash.as_slice(), &meta_bytes)?;
 
         // Store ref -> hash mapping if ref_key provided
         if let Some(key) = ref_key {
@@ -1424,12 +1484,16 @@ impl HashtreeStore {
 
         while let Some(hash) = stack.pop() {
             // Check if it's a tree node
-            let is_tree = tree.is_tree(&hash).await
+            let is_tree = tree
+                .is_tree(&hash)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to check tree: {}", e))?;
 
             if is_tree {
                 // Get tree node and add children to stack
-                if let Some(node) = tree.get_tree_node(&hash).await
+                if let Some(node) = tree
+                    .get_tree_node(&hash)
+                    .await
                     .map_err(|e| anyhow::anyhow!("Failed to get tree node: {}", e))?
                 {
                     for link in &node.links {
@@ -1438,7 +1502,9 @@ impl HashtreeStore {
                 }
             } else {
                 // It's a blob - get its size
-                if let Some(data) = self.router.get_sync(&hash)
+                if let Some(data) = self
+                    .router
+                    .get_sync(&hash)
                     .map_err(|e| anyhow::anyhow!("Failed to get blob: {}", e))?
                 {
                     total_size += data.len() as u64;
@@ -1459,9 +1525,8 @@ impl HashtreeStore {
         let tree = HashTree::new(HashTreeConfig::new(store).public());
 
         // Walk tree and collect all blob hashes
-        let (blob_hashes, _) = sync_block_on(async {
-            self.collect_tree_blobs(&tree, root_hash).await
-        })?;
+        let (blob_hashes, _) =
+            sync_block_on(async { self.collect_tree_blobs(&tree, root_hash).await })?;
 
         let mut wtxn = self.env.write_txn()?;
         let mut freed = 0u64;
@@ -1488,24 +1553,30 @@ impl HashtreeStore {
 
             // If orphaned, delete the blob
             if !has_other_tree {
-                if let Some(data) = self.router.get_sync(blob_hash)
+                if let Some(data) = self
+                    .router
+                    .get_sync(blob_hash)
                     .map_err(|e| anyhow::anyhow!("Failed to get blob: {}", e))?
                 {
                     freed += data.len() as u64;
                     // Delete locally only - keep S3 as archive
-                    self.router.delete_local_only(blob_hash)
+                    self.router
+                        .delete_local_only(blob_hash)
                         .map_err(|e| anyhow::anyhow!("Failed to delete blob: {}", e))?;
                 }
             }
         }
 
         // Delete tree node itself if exists
-        if let Some(data) = self.router.get_sync(root_hash)
+        if let Some(data) = self
+            .router
+            .get_sync(root_hash)
             .map_err(|e| anyhow::anyhow!("Failed to get tree node: {}", e))?
         {
             freed += data.len() as u64;
             // Delete locally only - keep S3 as archive
-            self.router.delete_local_only(root_hash)
+            self.router
+                .delete_local_only(root_hash)
                 .map_err(|e| anyhow::anyhow!("Failed to delete tree node: {}", e))?;
         }
 
@@ -1514,11 +1585,7 @@ impl HashtreeStore {
 
         wtxn.commit()?;
 
-        tracing::debug!(
-            "Unindexed tree {} ({} bytes freed)",
-            &root_hex[..8],
-            freed
-        );
+        tracing::debug!("Unindexed tree {} ({} bytes freed)", &root_hex[..8], freed);
 
         Ok(freed)
     }
@@ -1542,7 +1609,8 @@ impl HashtreeStore {
 
         for item in self.tree_meta.iter(&rtxn)? {
             let (hash_bytes, meta_bytes) = item?;
-            let hash: Hash = hash_bytes.try_into()
+            let hash: Hash = hash_bytes
+                .try_into()
                 .map_err(|_| anyhow::anyhow!("Invalid hash in tree_meta"))?;
             let meta: TreeMeta = rmp_serde::from_slice(meta_bytes)
                 .map_err(|e| anyhow::anyhow!("Failed to deserialize TreeMeta: {}", e))?;
@@ -1572,11 +1640,9 @@ impl HashtreeStore {
         let mut trees = self.list_indexed_trees()?;
 
         // Sort by priority (lower first), then by synced_at (older first)
-        trees.sort_by(|a, b| {
-            match a.1.priority.cmp(&b.1.priority) {
-                std::cmp::Ordering::Equal => a.1.synced_at.cmp(&b.1.synced_at),
-                other => other,
-            }
+        trees.sort_by(|a, b| match a.1.priority.cmp(&b.1.priority) {
+            std::cmp::Ordering::Equal => a.1.synced_at.cmp(&b.1.synced_at),
+            other => other,
         });
 
         Ok(trees)
@@ -1590,7 +1656,9 @@ impl HashtreeStore {
     /// 2. Trees by priority (lowest first) and age (oldest first)
     pub fn evict_if_needed(&self) -> Result<u64> {
         // Get actual storage used
-        let stats = self.router.stats()
+        let stats = self
+            .router
+            .stats()
             .map_err(|e| anyhow::anyhow!("Failed to get stats: {}", e))?;
         let current = stats.total_bytes;
 
@@ -1661,12 +1729,16 @@ impl HashtreeStore {
         let mut freed = 0u64;
 
         // Get all blob hashes from store
-        let all_hashes = self.router.list()
+        let all_hashes = self
+            .router
+            .list()
             .map_err(|e| anyhow::anyhow!("Failed to list hashes: {}", e))?;
 
         // Get pinned hashes as raw bytes
         let rtxn = self.env.read_txn()?;
-        let pinned: HashSet<Hash> = self.pins.iter(&rtxn)?
+        let pinned: HashSet<Hash> = self
+            .pins
+            .iter(&rtxn)?
             .filter_map(|item| item.ok())
             .filter_map(|(hash_bytes, _)| {
                 if hash_bytes.len() == 32 {
@@ -1708,7 +1780,11 @@ impl HashtreeStore {
             if let Ok(Some(data)) = self.router.get_sync(&hash) {
                 freed += data.len() as u64;
                 let _ = self.router.delete_local_only(&hash);
-                tracing::debug!("Deleted orphaned blob {} ({} bytes)", &to_hex(&hash)[..8], data.len());
+                tracing::debug!(
+                    "Deleted orphaned blob {} ({} bytes)",
+                    &to_hex(&hash)[..8],
+                    data.len()
+                );
             }
         }
 
@@ -1741,7 +1817,11 @@ impl HashtreeStore {
             }
         }
 
-        Ok(StorageByPriority { own, followed, other })
+        Ok(StorageByPriority {
+            own,
+            followed,
+            other,
+        })
     }
 
     /// Get storage statistics
@@ -1749,7 +1829,9 @@ impl HashtreeStore {
         let rtxn = self.env.read_txn()?;
         let total_pins = self.pins.len(&rtxn)? as usize;
 
-        let stats = self.router.stats()
+        let stats = self
+            .router
+            .stats()
             .map_err(|e| anyhow::anyhow!("Failed to get stats: {}", e))?;
 
         Ok(StorageStats {
@@ -1832,7 +1914,9 @@ impl HashtreeStore {
         let rtxn = self.env.read_txn()?;
 
         // Get all pinned hashes as raw bytes
-        let pinned: HashSet<Hash> = self.pins.iter(&rtxn)?
+        let pinned: HashSet<Hash> = self
+            .pins
+            .iter(&rtxn)?
             .filter_map(|item| item.ok())
             .filter_map(|(hash_bytes, _)| {
                 if hash_bytes.len() == 32 {
@@ -1848,7 +1932,9 @@ impl HashtreeStore {
         drop(rtxn);
 
         // Get all stored hashes
-        let all_hashes = self.router.list()
+        let all_hashes = self
+            .router
+            .list()
             .map_err(|e| anyhow::anyhow!("Failed to list hashes: {}", e))?;
 
         // Delete unpinned hashes
@@ -1875,7 +1961,9 @@ impl HashtreeStore {
     /// Verify LMDB blob integrity - checks that stored data matches its key hash
     /// Returns verification statistics and optionally deletes corrupted entries
     pub fn verify_lmdb_integrity(&self, delete: bool) -> Result<VerifyResult> {
-        let all_hashes = self.router.list()
+        let all_hashes = self
+            .router
+            .list()
             .map_err(|e| anyhow::anyhow!("Failed to list hashes: {}", e))?;
 
         let total = all_hashes.len();
@@ -1897,8 +1985,12 @@ impl HashtreeStore {
                     } else {
                         corrupted += 1;
                         let actual_hex = to_hex(&actual_hash);
-                        println!("  CORRUPTED: key={} actual={} size={}",
-                            &hash_hex[..16], &actual_hex[..16], data.len());
+                        println!(
+                            "  CORRUPTED: key={} actual={} size={}",
+                            &hash_hex[..16],
+                            &actual_hex[..16],
+                            data.len()
+                        );
                         corrupted_hashes.push(*hash);
                     }
                 }
@@ -1947,7 +2039,9 @@ impl HashtreeStore {
         // Get S3 client from router (we need to access it directly)
         // For now, we'll create a new client from config
         let config = crate::config::Config::load()?;
-        let s3_config = config.storage.s3
+        let s3_config = config
+            .storage
+            .s3
             .ok_or_else(|| anyhow::anyhow!("S3 not configured"))?;
 
         // Build AWS config
@@ -1960,7 +2054,7 @@ impl HashtreeStore {
             aws_sdk_s3::config::Builder::from(&aws_config)
                 .endpoint_url(&s3_config.endpoint)
                 .force_path_style(true)
-                .build()
+                .build(),
         );
 
         let bucket = &s3_config.bucket;
@@ -1976,15 +2070,15 @@ impl HashtreeStore {
         let mut continuation_token: Option<String> = None;
 
         loop {
-            let mut list_req = s3_client.list_objects_v2()
-                .bucket(bucket)
-                .prefix(prefix);
+            let mut list_req = s3_client.list_objects_v2().bucket(bucket).prefix(prefix);
 
             if let Some(ref token) = continuation_token {
                 list_req = list_req.continuation_token(token);
             }
 
-            let list_resp = list_req.send().await
+            let list_resp = list_req
+                .send()
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to list S3 objects: {}", e))?;
 
             for object in list_resp.contents() {
@@ -2020,35 +2114,32 @@ impl HashtreeStore {
                 };
 
                 // Download and verify content
-                match s3_client.get_object()
-                    .bucket(bucket)
-                    .key(key)
-                    .send()
-                    .await
-                {
-                    Ok(resp) => {
-                        match resp.body.collect().await {
-                            Ok(bytes) => {
-                                let data = bytes.into_bytes();
-                                let actual_hash = sha256(&data);
+                match s3_client.get_object().bucket(bucket).key(key).send().await {
+                    Ok(resp) => match resp.body.collect().await {
+                        Ok(bytes) => {
+                            let data = bytes.into_bytes();
+                            let actual_hash = sha256(&data);
 
-                                if actual_hash == expected_hash {
-                                    valid += 1;
-                                } else {
-                                    corrupted += 1;
-                                    let actual_hex = to_hex(&actual_hash);
-                                    println!("  CORRUPTED: key={} actual={} size={}",
-                                        &expected_hash_hex[..16], &actual_hex[..16], data.len());
-                                    corrupted_keys.push(key.to_string());
-                                }
-                            }
-                            Err(e) => {
+                            if actual_hash == expected_hash {
+                                valid += 1;
+                            } else {
                                 corrupted += 1;
-                                println!("  READ ERROR: {} - {}", key, e);
+                                let actual_hex = to_hex(&actual_hash);
+                                println!(
+                                    "  CORRUPTED: key={} actual={} size={}",
+                                    &expected_hash_hex[..16],
+                                    &actual_hex[..16],
+                                    data.len()
+                                );
                                 corrupted_keys.push(key.to_string());
                             }
                         }
-                    }
+                        Err(e) => {
+                            corrupted += 1;
+                            println!("  READ ERROR: {} - {}", key, e);
+                            corrupted_keys.push(key.to_string());
+                        }
+                    },
                     Err(e) => {
                         corrupted += 1;
                         println!("  FETCH ERROR: {} - {}", key, e);
@@ -2058,7 +2149,10 @@ impl HashtreeStore {
 
                 // Progress indicator every 100 objects
                 if total % 100 == 0 {
-                    println!("  Progress: {} objects checked, {} corrupted so far", total, corrupted);
+                    println!(
+                        "  Progress: {} objects checked, {} corrupted so far",
+                        total, corrupted
+                    );
                 }
             }
 
@@ -2073,7 +2167,8 @@ impl HashtreeStore {
         // Delete corrupted entries if requested
         if delete {
             for key in &corrupted_keys {
-                match s3_client.delete_object()
+                match s3_client
+                    .delete_object()
                     .bucket(bucket)
                     .key(key)
                     .send()
@@ -2173,7 +2268,10 @@ impl Iterator for FileRangeChunksOwned {
         let chunk_content = match self.store.get_chunk(chunk_hash) {
             Ok(Some(content)) => content,
             Ok(None) => {
-                return Some(Err(anyhow::anyhow!("Chunk {} not found", to_hex(chunk_hash))));
+                return Some(Err(anyhow::anyhow!(
+                    "Chunk {} not found",
+                    to_hex(chunk_hash)
+                )));
             }
             Err(e) => {
                 return Some(Err(e));
@@ -2238,8 +2336,7 @@ pub struct BlobMetadata {
 // Implement ContentStore trait for WebRTC data exchange
 impl crate::webrtc::ContentStore for HashtreeStore {
     fn get(&self, hash_hex: &str) -> Result<Option<Vec<u8>>> {
-        let hash = from_hex(hash_hex)
-            .map_err(|e| anyhow::anyhow!("Invalid hash: {}", e))?;
+        let hash = from_hex(hash_hex).map_err(|e| anyhow::anyhow!("Invalid hash: {}", e))?;
         self.get_chunk(&hash)
     }
 }

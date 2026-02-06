@@ -103,10 +103,13 @@ impl<S: Store> TreeBuilder<S> {
 
     /// Store a chunk with optional encryption
     /// Returns (hash, optional_key) where hash is of stored data
-    async fn put_chunk_internal(&self, data: &[u8]) -> Result<(Hash, Option<EncryptionKey>), BuilderError> {
+    async fn put_chunk_internal(
+        &self,
+        data: &[u8],
+    ) -> Result<(Hash, Option<EncryptionKey>), BuilderError> {
         if self.encrypted {
-            let (encrypted, key) = encrypt_chk(data)
-                .map_err(|e| BuilderError::Encryption(e.to_string()))?;
+            let (encrypted, key) =
+                encrypt_chk(data).map_err(|e| BuilderError::Encryption(e.to_string()))?;
             let hash = sha256(&encrypted);
             self.store
                 .put(hash, encrypted)
@@ -156,7 +159,13 @@ impl<S: Store> TreeBuilder<S> {
         // Build tree from chunks
         let (root_hash, root_key) = self.build_tree_internal(links, Some(size)).await?;
 
-        Ok((Cid { hash: root_hash, key: root_key }, size))
+        Ok((
+            Cid {
+                hash: root_hash,
+                key: root_key,
+            },
+            size,
+        ))
     }
 
     /// Build tree and return (hash, optional_key)
@@ -183,8 +192,8 @@ impl<S: Store> TreeBuilder<S> {
             let (data, _) = encode_and_hash(&node)?;
 
             if self.encrypted {
-                let (encrypted, key) = encrypt_chk(&data)
-                    .map_err(|e| BuilderError::Encryption(e.to_string()))?;
+                let (encrypted, key) =
+                    encrypt_chk(&data).map_err(|e| BuilderError::Encryption(e.to_string()))?;
                 let hash = sha256(&encrypted);
                 self.store
                     .put(hash, encrypted)
@@ -206,7 +215,8 @@ impl<S: Store> TreeBuilder<S> {
         let mut sub_links = Vec::new();
         for batch in links.chunks(self.max_links) {
             let batch_size: u64 = batch.iter().map(|l| l.size).sum();
-            let (hash, key) = Box::pin(self.build_tree_internal(batch.to_vec(), Some(batch_size))).await?;
+            let (hash, key) =
+                Box::pin(self.build_tree_internal(batch.to_vec(), Some(batch_size))).await?;
             sub_links.push(Link {
                 hash,
                 name: None,
@@ -223,7 +233,11 @@ impl<S: Store> TreeBuilder<S> {
     /// Build a balanced tree from links
     /// Handles fanout by creating intermediate nodes
     #[allow(dead_code)]
-    async fn build_tree(&self, links: Vec<Link>, total_size: Option<u64>) -> Result<Hash, BuilderError> {
+    async fn build_tree(
+        &self,
+        links: Vec<Link>,
+        total_size: Option<u64>,
+    ) -> Result<Hash, BuilderError> {
         // Single link with matching size - return it directly
         if links.len() == 1 {
             if let Some(ts) = total_size {
@@ -279,10 +293,7 @@ impl<S: Store> TreeBuilder<S> {
 
     /// Build a directory from entries
     /// Entries can be files or subdirectories
-    pub async fn put_directory(
-        &self,
-        entries: Vec<DirEntry>,
-    ) -> Result<Hash, BuilderError> {
+    pub async fn put_directory(&self, entries: Vec<DirEntry>) -> Result<Hash, BuilderError> {
         // Sort entries by name for deterministic hashing
         let mut sorted = entries;
         sorted.sort_by(|a, b| a.name.cmp(&b.name));
@@ -332,9 +343,7 @@ impl<S: Store> TreeBuilder<S> {
         // If groups are still too large, split numerically
         let max_group_size = groups.values().map(|g| g.len()).max().unwrap_or(0);
         if groups.len() == 1 || max_group_size > self.max_links {
-            return self
-                .build_directory_by_chunks(links, total_size)
-                .await;
+            return self.build_directory_by_chunks(links, total_size).await;
         }
 
         // Build sub-tree for each group
@@ -431,10 +440,7 @@ impl<S: Store> TreeBuilder<S> {
     }
 
     /// Create a tree node
-    pub async fn put_tree_node(
-        &self,
-        links: Vec<Link>,
-    ) -> Result<Hash, BuilderError> {
+    pub async fn put_tree_node(&self, links: Vec<Link>) -> Result<Hash, BuilderError> {
         let node = TreeNode {
             node_type: LinkType::Dir,
             links,
@@ -483,7 +489,8 @@ impl<S: Store> StreamBuilder<S> {
             let space = self.chunk_size - self.buffer.len();
             let to_write = space.min(data.len() - offset);
 
-            self.buffer.extend_from_slice(&data[offset..offset + to_write]);
+            self.buffer
+                .extend_from_slice(&data[offset..offset + to_write]);
             offset += to_write;
 
             // Flush full chunk
@@ -548,7 +555,9 @@ impl<S: Store> StreamBuilder<S> {
             });
         }
 
-        let hash = self.build_tree_from_chunks(&temp_chunks, self.total_size).await?;
+        let hash = self
+            .build_tree_from_chunks(&temp_chunks, self.total_size)
+            .await?;
         Ok(Some(hash))
     }
 
@@ -567,7 +576,9 @@ impl<S: Store> StreamBuilder<S> {
             return Ok((empty_hash, 0));
         }
 
-        let hash = self.build_tree_from_chunks(&self.chunks, self.total_size).await?;
+        let hash = self
+            .build_tree_from_chunks(&self.chunks, self.total_size)
+            .await?;
         Ok((hash, self.total_size))
     }
 
@@ -705,7 +716,9 @@ mod tests {
     #[tokio::test]
     async fn test_put_chunked() {
         let store = make_store();
-        let config = BuilderConfig::new(store.clone()).with_chunk_size(1024).public();
+        let config = BuilderConfig::new(store.clone())
+            .with_chunk_size(1024)
+            .public();
         let builder = TreeBuilder::new(config);
 
         let mut data = vec![0u8; 1024 * 2 + 100];
@@ -732,12 +745,10 @@ mod tests {
         let hash2 = builder.put_blob(&file2).await.unwrap();
 
         let dir_hash = builder
-            .put_directory(
-                vec![
-                    DirEntry::new("a.txt", hash1).with_size(file1.len() as u64),
-                    DirEntry::new("b.txt", hash2).with_size(file2.len() as u64),
-                ],
-            )
+            .put_directory(vec![
+                DirEntry::new("a.txt", hash1).with_size(file1.len() as u64),
+                DirEntry::new("b.txt", hash2).with_size(file2.len() as u64),
+            ])
             .await
             .unwrap();
 
@@ -752,13 +763,11 @@ mod tests {
         let hash = builder.put_blob(&[1u8]).await.unwrap();
 
         let dir_hash = builder
-            .put_directory(
-                vec![
-                    DirEntry::new("zebra", hash),
-                    DirEntry::new("apple", hash),
-                    DirEntry::new("mango", hash),
-                ],
-            )
+            .put_directory(vec![
+                DirEntry::new("zebra", hash),
+                DirEntry::new("apple", hash),
+                DirEntry::new("mango", hash),
+            ])
             .await
             .unwrap();
 
@@ -781,16 +790,14 @@ mod tests {
         meta.insert("created".to_string(), serde_json::json!("2024-01-01"));
 
         let node_hash = builder
-            .put_tree_node(
-                vec![Link {
-                    hash,
-                    name: Some("test".to_string()),
-                    size: 1,
-                    key: None,
-                    link_type: LinkType::Blob,
-                    meta: Some(meta.clone()),
-                }],
-            )
+            .put_tree_node(vec![Link {
+                hash,
+                name: Some("test".to_string()),
+                size: 1,
+                key: None,
+                link_type: LinkType::Blob,
+                meta: Some(meta.clone()),
+            }])
             .await
             .unwrap();
 

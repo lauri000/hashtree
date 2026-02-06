@@ -3,7 +3,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use bytes::Bytes;
-use nostr::{EventBuilder, JsonUtil, Kind, Keys, Tag, Timestamp};
+use nostr::{EventBuilder, JsonUtil, Keys, Kind, Tag, Timestamp};
 use tempfile::TempDir;
 
 #[cfg(feature = "nostrdb")]
@@ -27,23 +27,15 @@ fn snapshot_includes_list_timestamps() {
     let follow_created_at = 1_700_000_111;
     let mute_created_at = 1_700_000_222;
 
-    let follow_event = EventBuilder::new(
-        Kind::ContactList,
-        "",
-        [Tag::public_key(bob_pk)],
-    )
-    .custom_created_at(Timestamp::from_secs(follow_created_at))
-    .to_event(&root_keys)
-    .unwrap();
+    let follow_event = EventBuilder::new(Kind::ContactList, "", [Tag::public_key(bob_pk)])
+        .custom_created_at(Timestamp::from_secs(follow_created_at))
+        .to_event(&root_keys)
+        .unwrap();
 
-    let mute_event = EventBuilder::new(
-        Kind::MuteList,
-        "",
-        [Tag::public_key(carol_pk)],
-    )
-    .custom_created_at(Timestamp::from_secs(mute_created_at))
-    .to_event(&root_keys)
-    .unwrap();
+    let mute_event = EventBuilder::new(Kind::MuteList, "", [Tag::public_key(carol_pk)])
+        .custom_created_at(Timestamp::from_secs(mute_created_at))
+        .to_event(&root_keys)
+        .unwrap();
 
     hashtree_cli::socialgraph::ingest_event(&ndb, "follow", &follow_event.as_json());
     hashtree_cli::socialgraph::ingest_event(&ndb, "mute", &mute_event.as_json());
@@ -64,17 +56,11 @@ fn snapshot_includes_list_timestamps() {
     let bob_id = find_id(&parsed.id_to_pubkey, &bob_pk.to_bytes()).expect("bob id");
     let carol_id = find_id(&parsed.id_to_pubkey, &carol_pk.to_bytes()).expect("carol id");
 
-    let (follow_ts, follow_targets) = parsed
-        .follow_lists
-        .get(&root_id)
-        .expect("root follow list");
+    let (follow_ts, follow_targets) = parsed.follow_lists.get(&root_id).expect("root follow list");
     assert_eq!(*follow_ts, follow_created_at as u64);
     assert!(follow_targets.contains(&bob_id));
 
-    let (mute_ts, mute_targets) = parsed
-        .mute_lists
-        .get(&root_id)
-        .expect("root mute list");
+    let (mute_ts, mute_targets) = parsed.mute_lists.get(&root_id).expect("root mute list");
     assert_eq!(*mute_ts, mute_created_at as u64);
     assert!(mute_targets.contains(&carol_id));
 }
@@ -161,5 +147,6 @@ fn read_varint(data: &[u8], offset: &mut usize) -> u64 {
 }
 
 fn find_id(map: &HashMap<u32, [u8; 32]>, pk: &[u8; 32]) -> Option<u32> {
-    map.iter().find_map(|(id, value)| if value == pk { Some(*id) } else { None })
+    map.iter()
+        .find_map(|(id, value)| if value == pk { Some(*id) } else { None })
 }

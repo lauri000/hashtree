@@ -6,14 +6,14 @@
 
 mod common;
 
-use common::{test_relay::TestRelay, TestServer, TestEnv, create_test_repo, skip_if_no_binary};
+use common::{create_test_repo, skip_if_no_binary, test_relay::TestRelay, TestEnv, TestServer};
 use std::process::Command;
 use tempfile::TempDir;
 
 /// Generate a random 32-byte secret key as hex
 fn random_secret() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
     use sha2::{Digest, Sha256};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -88,7 +88,10 @@ fn test_link_visible_push_and_clone_with_secret() {
 
     let clone_stderr = String::from_utf8_lossy(&clone.stderr);
     println!("{}", clone_stderr);
-    assert!(clone.status.success(), "Clone with correct secret should succeed");
+    assert!(
+        clone.status.success(),
+        "Clone with correct secret should succeed"
+    );
 
     // Verify files
     assert_eq!(
@@ -211,7 +214,10 @@ fn test_link_visible_cannot_clone_with_wrong_secret() {
     let remote_url = format!("htree://self/link-visible-wrongkey#k={}", correct_secret);
 
     println!("Pushing with correct secret: {}...", &correct_secret[..16]);
-    println!("Will try cloning with wrong secret: {}...", &wrong_secret[..16]);
+    println!(
+        "Will try cloning with wrong secret: {}...",
+        &wrong_secret[..16]
+    );
 
     Command::new("git")
         .args(["remote", "add", "htree", &remote_url])

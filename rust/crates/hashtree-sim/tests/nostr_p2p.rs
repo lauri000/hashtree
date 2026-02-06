@@ -2,7 +2,7 @@
 mod nostr_p2p {
     use hashtree_sim::nostr_mesh::NostrMesh;
     use hashtree_webrtc::{SignalingMessage, NOSTR_KIND_HASHTREE};
-    use nostr::{Filter, Kind, SingleLetterTag, Alphabet};
+    use nostr::{Alphabet, Filter, Kind, SingleLetterTag};
 
     #[tokio::test]
     async fn nostr_publish_and_req_over_one_hop_resolves_tree() {

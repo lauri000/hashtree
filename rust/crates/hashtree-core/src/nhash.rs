@@ -140,14 +140,12 @@ fn encode_bech32(hrp: &str, data: &[u8]) -> Result<String, NHashError> {
     use bech32::{Bech32, Hrp};
 
     let hrp = Hrp::parse(hrp).map_err(|e| NHashError::Bech32(e.to_string()))?;
-    bech32::encode::<Bech32>(hrp, data)
-        .map_err(|e| NHashError::Bech32(e.to_string()))
+    bech32::encode::<Bech32>(hrp, data).map_err(|e| NHashError::Bech32(e.to_string()))
 }
 
 /// Decode bech32 and return (hrp, data)
 fn decode_bech32(s: &str) -> Result<(String, Vec<u8>), NHashError> {
-    let (hrp, data) = bech32::decode(s)
-        .map_err(|e| NHashError::Bech32(e.to_string()))?;
+    let (hrp, data) = bech32::decode(s).map_err(|e| NHashError::Bech32(e.to_string()))?;
 
     Ok((hrp.to_string(), data))
 }
@@ -251,7 +249,11 @@ pub fn nhash_decode(code: &str) -> Result<NHashData, NHashError> {
         None
     };
 
-    Ok(NHashData { hash, path, decrypt_key })
+    Ok(NHashData {
+        hash,
+        path,
+        decrypt_key,
+    })
 }
 
 // ============================================================================
@@ -392,10 +394,9 @@ mod tests {
     #[test]
     fn test_nhash_simple() {
         let hash: Hash = [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-            0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
         ];
 
         let encoded = nhash_encode(&hash).unwrap();

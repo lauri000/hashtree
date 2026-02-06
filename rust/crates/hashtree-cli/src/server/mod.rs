@@ -1,12 +1,16 @@
 mod auth;
 pub mod blossom;
 mod handlers;
-mod ws_relay;
 mod mime;
 #[cfg(feature = "p2p")]
 pub mod stun;
 mod ui;
+mod ws_relay;
 
+use crate::nostr_relay::NostrRelay;
+use crate::socialgraph;
+use crate::storage::HashtreeStore;
+use crate::webrtc::WebRTCState;
 use anyhow::Result;
 use axum::{
     extract::DefaultBodyLimit,
@@ -14,13 +18,9 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
-use tower_http::cors::CorsLayer;
-use crate::socialgraph;
-use crate::storage::HashtreeStore;
-use crate::webrtc::WebRTCState;
-use crate::nostr_relay::NostrRelay;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tower_http::cors::CorsLayer;
 
 pub use auth::{AppState, AuthCredentials};
 
@@ -40,7 +40,7 @@ impl HashtreeServer {
                 webrtc_peers: None,
                 ws_relay: Arc::new(auth::WsRelayState::new()),
                 max_upload_bytes: 5 * 1024 * 1024, // 5 MB default
-                public_writes: true, // Allow anyone with valid Nostr auth by default
+                public_writes: true,               // Allow anyone with valid Nostr auth by default
                 allowed_pubkeys: HashSet::new(), // No pubkeys allowed by default (use public_writes)
                 upstream_blossom: Vec::new(),
                 social_graph: None,
@@ -144,26 +144,39 @@ impl HashtreeServer {
         let public_routes = Router::new()
             .route("/", get(handlers::serve_root))
             .route("/ws", get(ws_relay::ws_data))
-            .route("/htree/test", get(handlers::htree_test).head(handlers::htree_test))
+            .route(
+                "/htree/test",
+                get(handlers::htree_test).head(handlers::htree_test),
+            )
             // /htree/nhash1...[/path] - content-addressed (immutable)
             .route("/htree/nhash1:nhash", get(handlers::htree_nhash))
             .route("/htree/nhash1:nhash/*path", get(handlers::htree_nhash_path))
             // /htree/npub1.../tree[/path] - mutable (resolver-backed)
             .route("/htree/npub1:npub/:treename", get(handlers::htree_npub))
-            .route("/htree/npub1:npub/:treename/*path", get(handlers::htree_npub_path))
+            .route(
+                "/htree/npub1:npub/:treename/*path",
+                get(handlers::htree_npub_path),
+            )
             // Nostr resolver endpoints - resolve npub/treename to content
             .route("/n/:pubkey/:treename", get(handlers::resolve_and_serve))
             // Direct npub route (clients should parse nhash and request by hex hash)
             .route("/npub1:rest", get(handlers::serve_npub))
             // Blossom endpoints (BUD-01, BUD-02)
-            .route("/:id", get(handlers::serve_content_or_blob)
-                .head(blossom::head_blob)
-                .delete(blossom::delete_blob)
-                .options(blossom::cors_preflight))
-            .route("/upload", put(blossom::upload_blob)
-                .options(blossom::cors_preflight))
-            .route("/list/:pubkey", get(blossom::list_blobs)
-                .options(blossom::cors_preflight))
+            .route(
+                "/:id",
+                get(handlers::serve_content_or_blob)
+                    .head(blossom::head_blob)
+                    .delete(blossom::delete_blob)
+                    .options(blossom::cors_preflight),
+            )
+            .route(
+                "/upload",
+                put(blossom::upload_blob).options(blossom::cors_preflight),
+            )
+            .route(
+                "/list/:pubkey",
+                get(blossom::list_blobs).options(blossom::cors_preflight),
+            )
             // Hashtree API endpoints
             .route("/health", get(handlers::health_check))
             .route("/api/pins", get(handlers::list_pins))
@@ -171,10 +184,19 @@ impl HashtreeServer {
             .route("/api/peers", get(handlers::webrtc_peers))
             .route("/api/status", get(handlers::daemon_status))
             .route("/api/socialgraph", get(handlers::socialgraph_stats))
-            .route("/api/socialgraph/snapshot", get(handlers::socialgraph_snapshot))
-            .route("/api/socialgraph/distance/:pubkey", get(handlers::follow_distance))
+            .route(
+                "/api/socialgraph/snapshot",
+                get(handlers::socialgraph_snapshot),
+            )
+            .route(
+                "/api/socialgraph/distance/:pubkey",
+                get(handlers::follow_distance),
+            )
             // Resolver API endpoints
-            .route("/api/resolve/:pubkey/:treename", get(handlers::resolve_to_hash))
+            .route(
+                "/api/resolve/:pubkey/:treename",
+                get(handlers::resolve_to_hash),
+            )
             .route("/api/trees/:pubkey", get(handlers::list_trees))
             .with_state(state.clone());
 
@@ -205,7 +227,8 @@ impl HashtreeServer {
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        ).await?;
+        )
+        .await?;
 
         Ok(local_addr.port())
     }
@@ -219,8 +242,8 @@ impl HashtreeServer {
 mod tests {
     use super::*;
     use crate::storage::HashtreeStore;
-    use tempfile::TempDir;
     use hashtree_core::from_hex;
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_server_serve_file() -> Result<()> {

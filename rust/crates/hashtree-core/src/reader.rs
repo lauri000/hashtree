@@ -57,7 +57,12 @@ impl<S: Store> TreeReader<S> {
 
     /// Get and decode a tree node
     pub async fn get_tree_node(&self, hash: &Hash) -> Result<Option<TreeNode>, ReaderError> {
-        let data = match self.store.get(hash).await.map_err(|e| ReaderError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| ReaderError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -72,7 +77,12 @@ impl<S: Store> TreeReader<S> {
 
     /// Check if hash points to a tree node or blob
     pub async fn is_tree(&self, hash: &Hash) -> Result<bool, ReaderError> {
-        let data = match self.store.get(hash).await.map_err(|e| ReaderError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| ReaderError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(false),
         };
@@ -82,7 +92,12 @@ impl<S: Store> TreeReader<S> {
     /// Check if hash points to a directory (tree with named links)
     /// vs a chunked file (tree with unnamed links) or raw blob
     pub async fn is_directory(&self, hash: &Hash) -> Result<bool, ReaderError> {
-        let data = match self.store.get(hash).await.map_err(|e| ReaderError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| ReaderError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(false),
         };
@@ -107,7 +122,12 @@ impl<S: Store> TreeReader<S> {
         hash: &Hash,
         key: &EncryptionKey,
     ) -> Result<Option<Vec<u8>>, ReaderError> {
-        let encrypted_data = match self.store.get(hash).await.map_err(|e| ReaderError::Store(e.to_string()))? {
+        let encrypted_data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| ReaderError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -167,7 +187,12 @@ impl<S: Store> TreeReader<S> {
     /// Read a complete file (reassemble chunks if needed)
     /// For unencrypted content only - use `get()` for unified access
     pub async fn read_file(&self, hash: &Hash) -> Result<Option<Vec<u8>>, ReaderError> {
-        let data = match self.store.get(hash).await.map_err(|e| ReaderError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| ReaderError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -195,7 +220,12 @@ impl<S: Store> TreeReader<S> {
         start: u64,
         end: Option<u64>,
     ) -> Result<Option<Vec<u8>>, ReaderError> {
-        let data = match self.store.get(hash).await.map_err(|e| ReaderError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| ReaderError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -291,7 +321,8 @@ impl<S: Store> TreeReader<S> {
     ) -> Result<Vec<(Hash, u64, u64)>, ReaderError> {
         let mut chunks = Vec::new();
         let mut offset = 0u64;
-        self.collect_chunk_offsets_recursive(node, &mut chunks, &mut offset).await?;
+        self.collect_chunk_offsets_recursive(node, &mut chunks, &mut offset)
+            .await?;
         Ok(chunks)
     }
 
@@ -357,7 +388,12 @@ impl<S: Store> TreeReader<S> {
 
     /// Read a file with streaming (returns chunks as vec)
     pub async fn read_file_chunks(&self, hash: &Hash) -> Result<Vec<Vec<u8>>, ReaderError> {
-        let data = match self.store.get(hash).await.map_err(|e| ReaderError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| ReaderError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(vec![]),
         };
@@ -435,7 +471,11 @@ impl<S: Store> TreeReader<S> {
 
     /// Resolve a path within a tree
     /// e.g., resolve_path("root/foo/bar.txt")
-    pub async fn resolve_path(&self, root_hash: &Hash, path: &str) -> Result<Option<Hash>, ReaderError> {
+    pub async fn resolve_path(
+        &self,
+        root_hash: &Hash,
+        path: &str,
+    ) -> Result<Option<Hash>, ReaderError> {
         let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
 
         let mut current_hash = *root_hash;
@@ -469,10 +509,19 @@ impl<S: Store> TreeReader<S> {
     }
 
     /// Search for name in internal subtrees
-    async fn find_in_subtrees(&self, node: &TreeNode, name: &str) -> Result<Option<Hash>, ReaderError> {
+    async fn find_in_subtrees(
+        &self,
+        node: &TreeNode,
+        name: &str,
+    ) -> Result<Option<Hash>, ReaderError> {
         for link in &node.links {
             // Only search internal nodes
-            if !link.name.as_ref().map(|n| n.starts_with('_')).unwrap_or(false) {
+            if !link
+                .name
+                .as_ref()
+                .map(|n| n.starts_with('_'))
+                .unwrap_or(false)
+            {
                 continue;
             }
 
@@ -496,7 +545,12 @@ impl<S: Store> TreeReader<S> {
 
     /// Get total size of a tree
     pub async fn get_size(&self, hash: &Hash) -> Result<u64, ReaderError> {
-        let data = match self.store.get(hash).await.map_err(|e| ReaderError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| ReaderError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(0),
         };
@@ -527,7 +581,12 @@ impl<S: Store> TreeReader<S> {
         path: &str,
         entries: &mut Vec<WalkEntry>,
     ) -> Result<(), ReaderError> {
-        let data = match self.store.get(hash).await.map_err(|e| ReaderError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| ReaderError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(()),
         };
@@ -581,7 +640,10 @@ impl<S: Store> TreeReader<S> {
 
 /// Verify tree integrity
 /// Checks that all referenced hashes exist
-pub async fn verify_tree<S: Store>(store: Arc<S>, root_hash: &Hash) -> Result<VerifyResult, ReaderError> {
+pub async fn verify_tree<S: Store>(
+    store: Arc<S>,
+    root_hash: &Hash,
+) -> Result<VerifyResult, ReaderError> {
     let mut missing = Vec::new();
     let mut visited = std::collections::HashSet::new();
 
@@ -605,7 +667,11 @@ async fn verify_recursive<S: Store>(
     }
     visited.insert(hex);
 
-    let data = match store.get(hash).await.map_err(|e| ReaderError::Store(e.to_string()))? {
+    let data = match store
+        .get(hash)
+        .await
+        .map_err(|e| ReaderError::Store(e.to_string()))?
+    {
         Some(d) => d,
         None => {
             missing.push(*hash);
@@ -616,7 +682,13 @@ async fn verify_recursive<S: Store>(
     if is_tree_node(&data) {
         let node = decode_tree_node(&data).map_err(ReaderError::Codec)?;
         for link in &node.links {
-            Box::pin(verify_recursive(store.clone(), &link.hash, missing, visited)).await?;
+            Box::pin(verify_recursive(
+                store.clone(),
+                &link.hash,
+                missing,
+                visited,
+            ))
+            .await?;
         }
     }
 
@@ -740,7 +812,9 @@ mod tests {
     #[tokio::test]
     async fn test_read_file_chunked() {
         let store = make_store();
-        let config = BuilderConfig::new(store.clone()).with_chunk_size(100).public();
+        let config = BuilderConfig::new(store.clone())
+            .with_chunk_size(100)
+            .public();
         let builder = TreeBuilder::new(config);
         let reader = TreeReader::new(store);
 
@@ -765,12 +839,10 @@ mod tests {
         let h2 = builder.put_blob(&[2u8]).await.unwrap();
 
         let dir_hash = builder
-            .put_directory(
-                vec![
-                    DirEntry::new("first.txt", h1).with_size(1),
-                    DirEntry::new("second.txt", h2).with_size(1),
-                ],
-            )
+            .put_directory(vec![
+                DirEntry::new("first.txt", h1).with_size(1),
+                DirEntry::new("second.txt", h2).with_size(1),
+            ])
             .await
             .unwrap();
 
@@ -856,12 +928,10 @@ mod tests {
             .unwrap();
 
         let root_dir = builder
-            .put_directory(
-                vec![
-                    DirEntry::new("root.txt", f1).with_size(1),
-                    DirEntry::new("sub", sub_dir),
-                ],
-            )
+            .put_directory(vec![
+                DirEntry::new("root.txt", f1).with_size(1),
+                DirEntry::new("sub", sub_dir),
+            ])
             .await
             .unwrap();
 
@@ -877,7 +947,9 @@ mod tests {
     #[tokio::test]
     async fn test_verify_tree_valid() {
         let store = make_store();
-        let config = BuilderConfig::new(store.clone()).with_chunk_size(100).public();
+        let config = BuilderConfig::new(store.clone())
+            .with_chunk_size(100)
+            .public();
         let builder = TreeBuilder::new(config);
 
         let data = vec![0u8; 350];
@@ -891,7 +963,9 @@ mod tests {
     #[tokio::test]
     async fn test_verify_tree_missing() {
         let store = make_store();
-        let config = BuilderConfig::new(store.clone()).with_chunk_size(100).public();
+        let config = BuilderConfig::new(store.clone())
+            .with_chunk_size(100)
+            .public();
         let builder = TreeBuilder::new(config);
 
         let data = vec![0u8; 350];
@@ -934,7 +1008,9 @@ mod tests {
     async fn test_read_file_range_chunked() {
         let store = make_store();
         // Small chunk size to force chunking
-        let config = BuilderConfig::new(store.clone()).with_chunk_size(100).public();
+        let config = BuilderConfig::new(store.clone())
+            .with_chunk_size(100)
+            .public();
         let builder = TreeBuilder::new(config);
         let reader = TreeReader::new(store);
 
@@ -947,17 +1023,29 @@ mod tests {
         let (cid, _size) = builder.put(&data).await.unwrap();
 
         // Read bytes 50-150 (spans chunk boundary at 100)
-        let result = reader.read_file_range(&cid.hash, 50, Some(150)).await.unwrap().unwrap();
+        let result = reader
+            .read_file_range(&cid.hash, 50, Some(150))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.len(), 100);
         assert_eq!(result, data[50..150].to_vec());
 
         // Read bytes 200-300 (within third and fourth chunks)
-        let result = reader.read_file_range(&cid.hash, 200, Some(300)).await.unwrap().unwrap();
+        let result = reader
+            .read_file_range(&cid.hash, 200, Some(300))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.len(), 100);
         assert_eq!(result, data[200..300].to_vec());
 
         // Read last 50 bytes
-        let result = reader.read_file_range(&cid.hash, 300, None).await.unwrap().unwrap();
+        let result = reader
+            .read_file_range(&cid.hash, 300, None)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.len(), 50);
         assert_eq!(result, data[300..].to_vec());
     }
@@ -965,7 +1053,9 @@ mod tests {
     #[tokio::test]
     async fn test_read_file_range_entire_file() {
         let store = make_store();
-        let config = BuilderConfig::new(store.clone()).with_chunk_size(100).public();
+        let config = BuilderConfig::new(store.clone())
+            .with_chunk_size(100)
+            .public();
         let builder = TreeBuilder::new(config);
         let reader = TreeReader::new(store);
 
@@ -977,7 +1067,11 @@ mod tests {
         let (cid, _size) = builder.put(&data).await.unwrap();
 
         // Read entire file using range
-        let result = reader.read_file_range(&cid.hash, 0, None).await.unwrap().unwrap();
+        let result = reader
+            .read_file_range(&cid.hash, 0, None)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result, data);
     }
 
@@ -1002,7 +1096,9 @@ mod tests {
     #[tokio::test]
     async fn test_read_file_range_single_byte() {
         let store = make_store();
-        let config = BuilderConfig::new(store.clone()).with_chunk_size(100).public();
+        let config = BuilderConfig::new(store.clone())
+            .with_chunk_size(100)
+            .public();
         let builder = TreeBuilder::new(config);
         let reader = TreeReader::new(store);
 
@@ -1014,7 +1110,11 @@ mod tests {
         let (cid, _size) = builder.put(&data).await.unwrap();
 
         // Read single byte at chunk boundary
-        let result = reader.read_file_range(&cid.hash, 100, Some(101)).await.unwrap().unwrap();
+        let result = reader
+            .read_file_range(&cid.hash, 100, Some(101))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], 100);
     }

@@ -6,12 +6,14 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures::stream::{self, Stream};
 use futures::io::AsyncRead;
+use futures::stream::{self, Stream};
 use futures::AsyncReadExt;
 
 use crate::builder::{BuilderError, DEFAULT_CHUNK_SIZE, DEFAULT_MAX_LINKS};
-use crate::codec::{decode_tree_node, encode_and_hash, is_directory_node, is_tree_node, try_decode_tree_node};
+use crate::codec::{
+    decode_tree_node, encode_and_hash, is_directory_node, is_tree_node, try_decode_tree_node,
+};
 use crate::hash::sha256;
 use crate::reader::{ReaderError, TreeEntry, WalkEntry};
 use crate::store::Store;
@@ -92,7 +94,9 @@ impl From<ReaderError> for HashTreeError {
             ReaderError::Codec(c) => HashTreeError::Codec(c),
             ReaderError::MissingChunk(s) => HashTreeError::MissingChunk(s),
             ReaderError::Decryption(s) => HashTreeError::Encryption(s),
-            ReaderError::MissingKey => HashTreeError::Encryption("missing decryption key".to_string()),
+            ReaderError::MissingKey => {
+                HashTreeError::Encryption("missing decryption key".to_string())
+            }
         }
     }
 }
@@ -155,7 +159,13 @@ impl<S: Store> HashTree<S> {
 
         // Build tree from chunks
         let (root_hash, root_key) = self.build_tree_internal(links, Some(size)).await?;
-        Ok((Cid { hash: root_hash, key: root_key }, size))
+        Ok((
+            Cid {
+                hash: root_hash,
+                key: root_key,
+            },
+            size,
+        ))
     }
 
     /// Get content by Cid (handles decryption automatically)
@@ -172,7 +182,10 @@ impl<S: Store> HashTree<S> {
     /// Reads data in chunks and builds a merkle tree incrementally.
     /// Useful for large files or streaming data sources.
     /// Returns (Cid, size) where Cid is hash + optional key
-    pub async fn put_stream<R: AsyncRead + Unpin>(&self, mut reader: R) -> Result<(Cid, u64), HashTreeError> {
+    pub async fn put_stream<R: AsyncRead + Unpin>(
+        &self,
+        mut reader: R,
+    ) -> Result<(Cid, u64), HashTreeError> {
         let mut buffer = vec![0u8; self.chunk_size];
         let mut links = Vec::new();
         let mut total_size: u64 = 0;
@@ -184,7 +197,9 @@ impl<S: Store> HashTree<S> {
 
             // Read until we have a full chunk or EOF
             while bytes_read < self.chunk_size {
-                let n = reader.read(&mut buffer[..self.chunk_size - bytes_read]).await
+                let n = reader
+                    .read(&mut buffer[..self.chunk_size - bytes_read])
+                    .await
                     .map_err(|e| HashTreeError::Store(format!("read error: {}", e)))?;
                 if n == 0 {
                     break; // EOF
@@ -227,7 +242,13 @@ impl<S: Store> HashTree<S> {
 
         // Build tree from chunks
         let (root_hash, root_key) = self.build_tree_internal(links, Some(total_size)).await?;
-        Ok((Cid { hash: root_hash, key: root_key }, total_size))
+        Ok((
+            Cid {
+                hash: root_hash,
+                key: root_key,
+            },
+            total_size,
+        ))
     }
 
     /// Read content as a stream of chunks by Cid (handles decryption automatically)
@@ -257,20 +278,34 @@ impl<S: Store> HashTree<S> {
         key: EncryptionKey,
     ) -> impl Stream<Item = Result<Vec<u8>, HashTreeError>> + Send + '_ {
         stream::unfold(
-            EncryptedStreamState::Init { hash, key, tree: self },
+            EncryptedStreamState::Init {
+                hash,
+                key,
+                tree: self,
+            },
             |state| async move {
                 match state {
                     EncryptedStreamState::Init { hash, key, tree } => {
                         let data = match tree.store.get(&hash).await {
                             Ok(Some(d)) => d,
                             Ok(None) => return None,
-                            Err(e) => return Some((Err(HashTreeError::Store(e.to_string())), EncryptedStreamState::Done)),
+                            Err(e) => {
+                                return Some((
+                                    Err(HashTreeError::Store(e.to_string())),
+                                    EncryptedStreamState::Done,
+                                ))
+                            }
                         };
 
                         // Try to decrypt
                         let decrypted = match decrypt_chk(&data, &key) {
                             Ok(d) => d,
-                            Err(e) => return Some((Err(HashTreeError::Decryption(e.to_string())), EncryptedStreamState::Done)),
+                            Err(e) => {
+                                return Some((
+                                    Err(HashTreeError::Decryption(e.to_string())),
+                                    EncryptedStreamState::Done,
+                                ))
+                            }
                         };
 
                         if !is_tree_node(&decrypted) {
@@ -281,12 +316,20 @@ impl<S: Store> HashTree<S> {
                         // Tree node - parse and traverse
                         let node = match decode_tree_node(&decrypted) {
                             Ok(n) => n,
-                            Err(e) => return Some((Err(HashTreeError::Codec(e)), EncryptedStreamState::Done)),
+                            Err(e) => {
+                                return Some((
+                                    Err(HashTreeError::Codec(e)),
+                                    EncryptedStreamState::Done,
+                                ))
+                            }
                         };
 
                         let mut stack: Vec<EncryptedStackItem> = Vec::new();
                         for link in node.links.into_iter().rev() {
-                            stack.push(EncryptedStackItem { hash: link.hash, key: link.key });
+                            stack.push(EncryptedStackItem {
+                                hash: link.hash,
+                                key: link.key,
+                            });
                         }
 
                         tree.process_encrypted_stream_stack(&mut stack).await
@@ -341,20 +384,23 @@ impl<S: Store> HashTree<S> {
                 let node = match decode_tree_node(&decrypted) {
                     Ok(n) => n,
                     Err(e) => {
-                        return Some((
-                            Err(HashTreeError::Codec(e)),
-                            EncryptedStreamState::Done,
-                        ))
+                        return Some((Err(HashTreeError::Codec(e)), EncryptedStreamState::Done))
                     }
                 };
                 for link in node.links.into_iter().rev() {
-                    stack.push(EncryptedStackItem { hash: link.hash, key: link.key });
+                    stack.push(EncryptedStackItem {
+                        hash: link.hash,
+                        key: link.key,
+                    });
                 }
             } else {
                 // Leaf chunk - yield decrypted data
                 return Some((
                     Ok(decrypted),
-                    EncryptedStreamState::Processing { stack: std::mem::take(stack), tree: self },
+                    EncryptedStreamState::Processing {
+                        stack: std::mem::take(stack),
+                        tree: self,
+                    },
                 ));
             }
         }
@@ -362,10 +408,13 @@ impl<S: Store> HashTree<S> {
     }
 
     /// Store a chunk with optional encryption
-    async fn put_chunk_internal(&self, data: &[u8]) -> Result<(Hash, Option<EncryptionKey>), HashTreeError> {
+    async fn put_chunk_internal(
+        &self,
+        data: &[u8],
+    ) -> Result<(Hash, Option<EncryptionKey>), HashTreeError> {
         if self.encrypted {
-            let (encrypted, key) = encrypt_chk(data)
-                .map_err(|e| HashTreeError::Encryption(e.to_string()))?;
+            let (encrypted, key) =
+                encrypt_chk(data).map_err(|e| HashTreeError::Encryption(e.to_string()))?;
             let hash = sha256(&encrypted);
             self.store
                 .put(hash, encrypted)
@@ -401,8 +450,8 @@ impl<S: Store> HashTree<S> {
             let (data, _) = encode_and_hash(&node)?;
 
             if self.encrypted {
-                let (encrypted, key) = encrypt_chk(&data)
-                    .map_err(|e| HashTreeError::Encryption(e.to_string()))?;
+                let (encrypted, key) =
+                    encrypt_chk(&data).map_err(|e| HashTreeError::Encryption(e.to_string()))?;
                 let hash = sha256(&encrypted);
                 self.store
                     .put(hash, encrypted)
@@ -424,7 +473,8 @@ impl<S: Store> HashTree<S> {
         let mut sub_links = Vec::new();
         for batch in links.chunks(self.max_links) {
             let batch_size: u64 = batch.iter().map(|l| l.size).sum();
-            let (hash, key) = Box::pin(self.build_tree_internal(batch.to_vec(), Some(batch_size))).await?;
+            let (hash, key) =
+                Box::pin(self.build_tree_internal(batch.to_vec(), Some(batch_size))).await?;
             sub_links.push(Link {
                 hash,
                 name: None,
@@ -444,7 +494,12 @@ impl<S: Store> HashTree<S> {
         hash: &Hash,
         key: &EncryptionKey,
     ) -> Result<Option<Vec<u8>>, HashTreeError> {
-        let encrypted_data = match self.store.get(hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+        let encrypted_data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| HashTreeError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -469,7 +524,9 @@ impl<S: Store> HashTree<S> {
         let mut parts: Vec<Vec<u8>> = Vec::new();
 
         for link in &node.links {
-            let chunk_key = link.key.ok_or_else(|| HashTreeError::Encryption("missing chunk key".to_string()))?;
+            let chunk_key = link
+                .key
+                .ok_or_else(|| HashTreeError::Encryption("missing chunk key".to_string()))?;
 
             let encrypted_child = self
                 .store
@@ -548,7 +605,13 @@ impl<S: Store> HashTree<S> {
 
         // Build tree from chunks (uses encryption if enabled)
         let (root_hash, root_key) = self.build_tree_internal(links, Some(size)).await?;
-        Ok((Cid { hash: root_hash, key: root_key }, size))
+        Ok((
+            Cid {
+                hash: root_hash,
+                key: root_key,
+            },
+            size,
+        ))
     }
 
     /// Build a directory from entries
@@ -556,10 +619,7 @@ impl<S: Store> HashTree<S> {
     ///
     /// For large directories, the messagepack-encoded TreeNode is stored via put()
     /// which automatically chunks the data. The reader uses read_file() to reassemble.
-    pub async fn put_directory(
-        &self,
-        entries: Vec<DirEntry>,
-    ) -> Result<Cid, HashTreeError> {
+    pub async fn put_directory(&self, entries: Vec<DirEntry>) -> Result<Cid, HashTreeError> {
         // Sort entries by name for deterministic hashing
         let mut sorted = entries;
         sorted.sort_by(|a, b| a.name.cmp(&b.name));
@@ -592,10 +652,7 @@ impl<S: Store> HashTree<S> {
     }
 
     /// Create a tree node with custom links
-    pub async fn put_tree_node(
-        &self,
-        links: Vec<Link>,
-    ) -> Result<Hash, HashTreeError> {
+    pub async fn put_tree_node(&self, links: Vec<Link>) -> Result<Hash, HashTreeError> {
         let node = TreeNode {
             node_type: LinkType::Dir,
             links,
@@ -621,7 +678,12 @@ impl<S: Store> HashTree<S> {
 
     /// Get and decode a tree node (unencrypted)
     pub async fn get_tree_node(&self, hash: &Hash) -> Result<Option<TreeNode>, HashTreeError> {
-        let data = match self.store.get(hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| HashTreeError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -636,15 +698,19 @@ impl<S: Store> HashTree<S> {
 
     /// Get and decode a tree node using Cid (with decryption if key present)
     pub async fn get_node(&self, cid: &Cid) -> Result<Option<TreeNode>, HashTreeError> {
-        let data = match self.store.get(&cid.hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(&cid.hash)
+            .await
+            .map_err(|e| HashTreeError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(None),
         };
 
         // Decrypt if key is present
         let decrypted = if let Some(key) = &cid.key {
-            decrypt_chk(&data, key)
-                .map_err(|e| HashTreeError::Decryption(e.to_string()))?
+            decrypt_chk(&data, key).map_err(|e| HashTreeError::Decryption(e.to_string()))?
         } else {
             data
         };
@@ -660,15 +726,19 @@ impl<S: Store> HashTree<S> {
     /// Get directory node, handling chunked directory data
     /// Use this when you know the target is a directory (from parent link_type)
     pub async fn get_directory_node(&self, cid: &Cid) -> Result<Option<TreeNode>, HashTreeError> {
-        let data = match self.store.get(&cid.hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(&cid.hash)
+            .await
+            .map_err(|e| HashTreeError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(None),
         };
 
         // Decrypt if key is present
         let decrypted = if let Some(key) = &cid.key {
-            decrypt_chk(&data, key)
-                .map_err(|e| HashTreeError::Decryption(e.to_string()))?
+            decrypt_chk(&data, key).map_err(|e| HashTreeError::Decryption(e.to_string()))?
         } else {
             data
         };
@@ -693,7 +763,12 @@ impl<S: Store> HashTree<S> {
 
     /// Check if hash points to a tree node (no decryption)
     pub async fn is_tree(&self, hash: &Hash) -> Result<bool, HashTreeError> {
-        let data = match self.store.get(hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| HashTreeError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(false),
         };
@@ -707,12 +782,22 @@ impl<S: Store> HashTree<S> {
             None => return Ok(false),
         };
         // Directory has named links (not just internal chunks)
-        Ok(node.links.iter().any(|l| l.name.as_ref().map(|n| !n.starts_with('_')).unwrap_or(false)))
+        Ok(node.links.iter().any(|l| {
+            l.name
+                .as_ref()
+                .map(|n| !n.starts_with('_'))
+                .unwrap_or(false)
+        }))
     }
 
     /// Check if hash points to a directory (tree with named links, no decryption)
     pub async fn is_directory(&self, hash: &Hash) -> Result<bool, HashTreeError> {
-        let data = match self.store.get(hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| HashTreeError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(false),
         };
@@ -721,7 +806,12 @@ impl<S: Store> HashTree<S> {
 
     /// Read a complete file (reassemble chunks if needed)
     pub async fn read_file(&self, hash: &Hash) -> Result<Option<Vec<u8>>, HashTreeError> {
-        let data = match self.store.get(hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| HashTreeError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -749,7 +839,12 @@ impl<S: Store> HashTree<S> {
         start: u64,
         end: Option<u64>,
     ) -> Result<Option<Vec<u8>>, HashTreeError> {
-        let data = match self.store.get(hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| HashTreeError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -869,7 +964,8 @@ impl<S: Store> HashTree<S> {
     ) -> Result<Vec<(Hash, u64, u64)>, HashTreeError> {
         let mut chunks = Vec::new();
         let mut offset = 0u64;
-        self.collect_chunk_offsets_recursive(node, &mut chunks, &mut offset).await?;
+        self.collect_chunk_offsets_recursive(node, &mut chunks, &mut offset)
+            .await?;
         Ok(chunks)
     }
 
@@ -945,7 +1041,12 @@ impl<S: Store> HashTree<S> {
                         let data = match tree.store.get(&hash).await {
                             Ok(Some(d)) => d,
                             Ok(None) => return None,
-                            Err(e) => return Some((Err(HashTreeError::Store(e.to_string())), ReadStreamState::Done)),
+                            Err(e) => {
+                                return Some((
+                                    Err(HashTreeError::Store(e.to_string())),
+                                    ReadStreamState::Done,
+                                ))
+                            }
                         };
 
                         if !is_tree_node(&data) {
@@ -956,7 +1057,9 @@ impl<S: Store> HashTree<S> {
                         // Tree node - start streaming chunks
                         let node = match decode_tree_node(&data) {
                             Ok(n) => n,
-                            Err(e) => return Some((Err(HashTreeError::Codec(e)), ReadStreamState::Done)),
+                            Err(e) => {
+                                return Some((Err(HashTreeError::Codec(e)), ReadStreamState::Done))
+                            }
                         };
 
                         // Create stack with all links to process
@@ -1004,14 +1107,22 @@ impl<S: Store> HashTree<S> {
                         // Nested tree - push its children to stack
                         let node = match decode_tree_node(&data) {
                             Ok(n) => n,
-                            Err(e) => return Some((Err(HashTreeError::Codec(e)), ReadStreamState::Done)),
+                            Err(e) => {
+                                return Some((Err(HashTreeError::Codec(e)), ReadStreamState::Done))
+                            }
                         };
                         for link in node.links.into_iter().rev() {
                             stack.push(StreamStackItem::Hash(link.hash));
                         }
                     } else {
                         // Leaf blob - yield it
-                        return Some((Ok(data), ReadStreamState::Processing { stack: std::mem::take(stack), tree: self }));
+                        return Some((
+                            Ok(data),
+                            ReadStreamState::Processing {
+                                stack: std::mem::take(stack),
+                                tree: self,
+                            },
+                        ));
                     }
                 }
             }
@@ -1021,7 +1132,12 @@ impl<S: Store> HashTree<S> {
 
     /// Read file chunks as Vec (non-streaming version)
     pub async fn read_file_chunks(&self, hash: &Hash) -> Result<Vec<Vec<u8>>, HashTreeError> {
-        let data = match self.store.get(hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| HashTreeError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(vec![]),
         };
@@ -1069,7 +1185,10 @@ impl<S: Store> HashTree<S> {
             // Skip internal chunk nodes - recurse into them
             if let Some(ref name) = link.name {
                 if name.starts_with("_chunk_") || name.starts_with('_') {
-                    let chunk_cid = Cid { hash: link.hash, key: link.key };
+                    let chunk_cid = Cid {
+                        hash: link.hash,
+                        key: link.key,
+                    };
                     let sub_entries = Box::pin(self.list(&chunk_cid)).await?;
                     entries.extend(sub_entries);
                     continue;
@@ -1105,7 +1224,10 @@ impl<S: Store> HashTree<S> {
             if let Some(ref name) = link.name {
                 if name.starts_with("_chunk_") || name.starts_with('_') {
                     // Internal nodes inherit parent's key for decryption
-                    let sub_cid = Cid { hash: link.hash, key: cid.key };
+                    let sub_cid = Cid {
+                        hash: link.hash,
+                        key: cid.key,
+                    };
                     let sub_entries = Box::pin(self.list_directory(&sub_cid)).await?;
                     entries.extend(sub_entries);
                     continue;
@@ -1148,7 +1270,10 @@ impl<S: Store> HashTree<S> {
                 };
             } else {
                 // Check internal nodes
-                match self.find_link_in_subtrees_cid(&node, part, &current_cid).await? {
+                match self
+                    .find_link_in_subtrees_cid(&node, part, &current_cid)
+                    .await?
+                {
                     Some(link) => {
                         current_cid = Cid {
                             hash: link.hash,
@@ -1176,9 +1301,19 @@ impl<S: Store> HashTree<S> {
     }
 
     /// Find a link in subtrees using Cid (with decryption support)
-    async fn find_link_in_subtrees_cid(&self, node: &TreeNode, name: &str, _parent_cid: &Cid) -> Result<Option<Link>, HashTreeError> {
+    async fn find_link_in_subtrees_cid(
+        &self,
+        node: &TreeNode,
+        name: &str,
+        _parent_cid: &Cid,
+    ) -> Result<Option<Link>, HashTreeError> {
         for link in &node.links {
-            if !link.name.as_ref().map(|n| n.starts_with('_')).unwrap_or(false) {
+            if !link
+                .name
+                .as_ref()
+                .map(|n| n.starts_with('_'))
+                .unwrap_or(false)
+            {
                 continue;
             }
 
@@ -1197,7 +1332,9 @@ impl<S: Store> HashTree<S> {
                 return Ok(Some(found));
             }
 
-            if let Some(deep_found) = Box::pin(self.find_link_in_subtrees_cid(&sub_node, name, &sub_cid)).await? {
+            if let Some(deep_found) =
+                Box::pin(self.find_link_in_subtrees_cid(&sub_node, name, &sub_cid)).await?
+            {
                 return Ok(Some(deep_found));
             }
         }
@@ -1207,7 +1344,12 @@ impl<S: Store> HashTree<S> {
 
     /// Get total size of a tree
     pub async fn get_size(&self, hash: &Hash) -> Result<u64, HashTreeError> {
-        let data = match self.store.get(hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| HashTreeError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(0),
         };
@@ -1251,7 +1393,12 @@ impl<S: Store> HashTree<S> {
         path: &str,
         entries: &mut Vec<WalkEntry>,
     ) -> Result<(), HashTreeError> {
-        let data = match self.store.get(&cid.hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+        let data = match self
+            .store
+            .get(&cid.hash)
+            .await
+            .map_err(|e| HashTreeError::Store(e.to_string()))?
+        {
             Some(d) => d,
             None => return Ok(()),
         };
@@ -1291,7 +1438,10 @@ impl<S: Store> HashTree<S> {
                 Some(name) => {
                     if name.starts_with("_chunk_") || name.starts_with('_') {
                         // Internal nodes inherit parent's key
-                        let sub_cid = Cid { hash: link.hash, key: cid.key };
+                        let sub_cid = Cid {
+                            hash: link.hash,
+                            key: cid.key,
+                        };
                         Box::pin(self.walk_recursive(&sub_cid, path, entries)).await?;
                         continue;
                     }
@@ -1305,7 +1455,10 @@ impl<S: Store> HashTree<S> {
             };
 
             // Child nodes use their own key from link
-            let child_cid = Cid { hash: link.hash, key: link.key };
+            let child_cid = Cid {
+                hash: link.hash,
+                key: link.key,
+            };
             Box::pin(self.walk_recursive(&child_cid, &child_path, entries)).await?;
         }
 
@@ -1314,8 +1467,14 @@ impl<S: Store> HashTree<S> {
 
     /// Walk entire tree with parallel fetching
     /// Uses a work-stealing approach: always keeps `concurrency` requests in flight
-    pub async fn walk_parallel(&self, cid: &Cid, path: &str, concurrency: usize) -> Result<Vec<WalkEntry>, HashTreeError> {
-        self.walk_parallel_with_progress(cid, path, concurrency, None).await
+    pub async fn walk_parallel(
+        &self,
+        cid: &Cid,
+        path: &str,
+        concurrency: usize,
+    ) -> Result<Vec<WalkEntry>, HashTreeError> {
+        self.walk_parallel_with_progress(cid, path, concurrency, None)
+            .await
     }
 
     /// Walk entire tree with parallel fetching and optional progress counter
@@ -1348,7 +1507,9 @@ impl<S: Store> HashTree<S> {
                 if let Some((node_cid, node_path)) = pending.pop_front() {
                     let store = &self.store;
                     let fut = async move {
-                        let data = store.get(&node_cid.hash).await
+                        let data = store
+                            .get(&node_cid.hash)
+                            .await
                             .map_err(|e| HashTreeError::Store(e.to_string()))?;
                         Ok::<_, HashTreeError>((node_cid, node_path, data))
                     };
@@ -1415,7 +1576,10 @@ impl<S: Store> HashTree<S> {
                         Some(name) => {
                             if name.starts_with("_chunk_") || name.starts_with('_') {
                                 // Internal chunked nodes - inherit parent's key, same path
-                                let sub_cid = Cid { hash: link.hash, key: node_cid.key };
+                                let sub_cid = Cid {
+                                    hash: link.hash,
+                                    key: node_cid.key,
+                                };
                                 pending.push_back((sub_cid, node_path.clone()));
                                 continue;
                             }
@@ -1445,7 +1609,10 @@ impl<S: Store> HashTree<S> {
                     }
 
                     // For tree nodes (File/Dir), we need to fetch to see their children
-                    let child_cid = Cid { hash: link.hash, key: link.key };
+                    let child_cid = Cid {
+                        hash: link.hash,
+                        key: link.key,
+                    };
                     pending.push_back((child_cid, child_path));
                 }
             }
@@ -1461,7 +1628,11 @@ impl<S: Store> HashTree<S> {
         initial_path: String,
     ) -> Pin<Box<dyn Stream<Item = Result<WalkEntry, HashTreeError>> + Send + '_>> {
         Box::pin(stream::unfold(
-            WalkStreamState::Init { cid, path: initial_path, tree: self },
+            WalkStreamState::Init {
+                cid,
+                path: initial_path,
+                tree: self,
+            },
             |state| async move {
                 match state {
                     WalkStreamState::Init { cid, path, tree } => {
@@ -1480,7 +1651,12 @@ impl<S: Store> HashTree<S> {
                         let data = if let Some(key) = &cid.key {
                             match decrypt_chk(&data, key) {
                                 Ok(d) => d,
-                                Err(e) => return Some((Err(HashTreeError::Decryption(e.to_string())), WalkStreamState::Done)),
+                                Err(e) => {
+                                    return Some((
+                                        Err(HashTreeError::Decryption(e.to_string())),
+                                        WalkStreamState::Done,
+                                    ))
+                                }
                             }
                         } else {
                             data
@@ -1524,7 +1700,11 @@ impl<S: Store> HashTree<S> {
                                 _ => path.clone(),
                             };
                             // Child nodes use their own key from link
-                            stack.push(WalkStackItem { hash: link.hash, path: child_path, key: link.key });
+                            stack.push(WalkStackItem {
+                                hash: link.hash,
+                                path: child_path,
+                                key: link.key,
+                            });
                         }
 
                         Some((Ok(entry), WalkStreamState::Processing { stack, tree }))
@@ -1565,7 +1745,13 @@ impl<S: Store> HashTree<S> {
                         size: data.len() as u64,
                         key: item.key,
                     };
-                    return Some((Ok(entry), WalkStreamState::Processing { stack: std::mem::take(stack), tree: self }));
+                    return Some((
+                        Ok(entry),
+                        WalkStreamState::Processing {
+                            stack: std::mem::take(stack),
+                            tree: self,
+                        },
+                    ));
                 }
             };
 
@@ -1590,10 +1776,20 @@ impl<S: Store> HashTree<S> {
                     }
                     _ => item.path.clone(),
                 };
-                stack.push(WalkStackItem { hash: link.hash, path: child_path, key: link.key });
+                stack.push(WalkStackItem {
+                    hash: link.hash,
+                    path: child_path,
+                    key: link.key,
+                });
             }
 
-            return Some((Ok(entry), WalkStreamState::Processing { stack: std::mem::take(stack), tree: self }));
+            return Some((
+                Ok(entry),
+                WalkStreamState::Processing {
+                    stack: std::mem::take(stack),
+                    tree: self,
+                },
+            ));
         }
         None
     }
@@ -1733,7 +1929,8 @@ impl<S: Store> HashTree<S> {
         target_path: &[&str],
     ) -> Result<Cid, HashTreeError> {
         let source_dir_cid = self.resolve_path_array(root, source_path).await?;
-        let source_dir_cid = source_dir_cid.ok_or_else(|| HashTreeError::PathNotFound(source_path.join("/")))?;
+        let source_dir_cid =
+            source_dir_cid.ok_or_else(|| HashTreeError::PathNotFound(source_path.join("/")))?;
 
         let source_entries = self.list_directory(&source_dir_cid).await?;
         let entry = source_entries
@@ -1752,10 +1949,22 @@ impl<S: Store> HashTree<S> {
         let new_root = self.remove_entry(root, source_path, name).await?;
 
         // Add to target
-        self.set_entry(&new_root, target_path, name, &entry_cid, entry_size, entry_link_type).await
+        self.set_entry(
+            &new_root,
+            target_path,
+            name,
+            &entry_cid,
+            entry_size,
+            entry_link_type,
+        )
+        .await
     }
 
-    async fn resolve_path_array(&self, root: &Cid, path: &[&str]) -> Result<Option<Cid>, HashTreeError> {
+    async fn resolve_path_array(
+        &self,
+        root: &Cid,
+        path: &[&str],
+    ) -> Result<Option<Cid>, HashTreeError> {
         if path.is_empty() {
             return Ok(Some(root.clone()));
         }
@@ -1844,8 +2053,14 @@ enum StreamStackItem {
 }
 
 enum ReadStreamState<'a, S: Store> {
-    Init { hash: Hash, tree: &'a HashTree<S> },
-    Processing { stack: Vec<StreamStackItem>, tree: &'a HashTree<S> },
+    Init {
+        hash: Hash,
+        tree: &'a HashTree<S>,
+    },
+    Processing {
+        stack: Vec<StreamStackItem>,
+        tree: &'a HashTree<S>,
+    },
     Done,
 }
 
@@ -1856,8 +2071,15 @@ struct WalkStackItem {
 }
 
 enum WalkStreamState<'a, S: Store> {
-    Init { cid: Cid, path: String, tree: &'a HashTree<S> },
-    Processing { stack: Vec<WalkStackItem>, tree: &'a HashTree<S> },
+    Init {
+        cid: Cid,
+        path: String,
+        tree: &'a HashTree<S>,
+    },
+    Processing {
+        stack: Vec<WalkStackItem>,
+        tree: &'a HashTree<S>,
+    },
     Done,
 }
 
@@ -1868,8 +2090,15 @@ struct EncryptedStackItem {
 }
 
 enum EncryptedStreamState<'a, S: Store> {
-    Init { hash: Hash, key: [u8; 32], tree: &'a HashTree<S> },
-    Processing { stack: Vec<EncryptedStackItem>, tree: &'a HashTree<S> },
+    Init {
+        hash: Hash,
+        key: [u8; 32],
+        tree: &'a HashTree<S>,
+    },
+    Processing {
+        stack: Vec<EncryptedStackItem>,
+        tree: &'a HashTree<S>,
+    },
     Done,
 }
 
@@ -1901,7 +2130,11 @@ async fn verify_recursive<S: Store>(
     }
     visited.insert(hex);
 
-    let data = match store.get(hash).await.map_err(|e| HashTreeError::Store(e.to_string()))? {
+    let data = match store
+        .get(hash)
+        .await
+        .map_err(|e| HashTreeError::Store(e.to_string()))?
+    {
         Some(d) => d,
         None => {
             missing.push(*hash);
@@ -1912,7 +2145,13 @@ async fn verify_recursive<S: Store>(
     if is_tree_node(&data) {
         let node = decode_tree_node(&data)?;
         for link in &node.links {
-            Box::pin(verify_recursive(store.clone(), &link.hash, missing, visited)).await?;
+            Box::pin(verify_recursive(
+                store.clone(),
+                &link.hash,
+                missing,
+                visited,
+            ))
+            .await?;
         }
     }
 
@@ -1963,12 +2202,10 @@ mod tests {
         let file2 = tree.put_blob(b"content2").await.unwrap();
 
         let dir_cid = tree
-            .put_directory(
-                vec![
-                    DirEntry::new("a.txt", file1).with_size(8),
-                    DirEntry::new("b.txt", file2).with_size(8),
-                ],
-            )
+            .put_directory(vec![
+                DirEntry::new("a.txt", file1).with_size(8),
+                DirEntry::new("b.txt", file2).with_size(8),
+            ])
             .await
             .unwrap();
 
@@ -1995,14 +2232,19 @@ mod tests {
         let (_store, tree) = make_tree();
 
         let file_hash = tree.put_blob(b"nested").await.unwrap();
-        let sub_dir = tree.put_directory(
-            vec![DirEntry::new("file.txt", file_hash).with_size(6)],
-        ).await.unwrap();
-        let root_dir = tree.put_directory(
-            vec![DirEntry::new("subdir", sub_dir.hash)],
-        ).await.unwrap();
+        let sub_dir = tree
+            .put_directory(vec![DirEntry::new("file.txt", file_hash).with_size(6)])
+            .await
+            .unwrap();
+        let root_dir = tree
+            .put_directory(vec![DirEntry::new("subdir", sub_dir.hash)])
+            .await
+            .unwrap();
 
-        let resolved = tree.resolve_path(&root_dir, "subdir/file.txt").await.unwrap();
+        let resolved = tree
+            .resolve_path(&root_dir, "subdir/file.txt")
+            .await
+            .unwrap();
         assert_eq!(resolved.map(|c| c.hash), Some(file_hash));
     }
 

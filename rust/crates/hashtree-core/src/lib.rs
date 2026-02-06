@@ -54,7 +54,7 @@ pub mod visibility;
 
 // Re-exports for convenience
 // Main API - unified HashTree
-pub use hashtree::{HashTree, HashTreeConfig, HashTreeError, verify_tree as hashtree_verify_tree};
+pub use hashtree::{verify_tree as hashtree_verify_tree, HashTree, HashTreeConfig, HashTreeError};
 
 // Constants
 pub use builder::{BEP52_CHUNK_SIZE, DEFAULT_CHUNK_SIZE, DEFAULT_MAX_LINKS};
@@ -70,11 +70,14 @@ pub use hash::{sha256, verify};
 pub use reader::{verify_tree, ReaderError, TreeEntry, VerifyResult, WalkEntry};
 
 // Store
-pub use store::{MemoryStore, Store, StoreError};
-pub use types::{from_hex, hash_equals, to_hex, Cid, CidParseError, DirEntry, Hash, Link, LinkType, PutResult, TreeNode};
 pub use nhash::{
     decode as nhash_or_nref_decode, is_nhash, is_nref, nhash_decode, nhash_encode,
     nhash_encode_full, nref_decode, nref_encode, DecodeResult, NHashData, NHashError, NRefData,
+};
+pub use store::{MemoryStore, Store, StoreError};
+pub use types::{
+    from_hex, hash_equals, to_hex, Cid, CidParseError, DirEntry, Hash, Link, LinkType, PutResult,
+    TreeNode,
 };
 
 pub use crypto::{
@@ -85,4 +88,7 @@ pub use crypto::{
 pub use visibility::{xor_keys, TreeVisibility};
 
 // Tree diff operations
-pub use diff::{collect_hashes, collect_hashes_with_progress, tree_diff, tree_diff_streaming, tree_diff_with_old_hashes, DiffStats, TreeDiff};
+pub use diff::{
+    collect_hashes, collect_hashes_with_progress, tree_diff, tree_diff_streaming,
+    tree_diff_with_old_hashes, DiffStats, TreeDiff,
+};

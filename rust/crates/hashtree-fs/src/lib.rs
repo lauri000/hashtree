@@ -558,7 +558,11 @@ mod tests {
         let rest = &hex[2..];
         let expected_path = blobs_path.join(prefix).join(rest);
 
-        assert!(expected_path.exists(), "Blob should be at {:?}", expected_path);
+        assert!(
+            expected_path.exists(),
+            "Blob should be at {:?}",
+            expected_path
+        );
         assert_eq!(fs::read(&expected_path).unwrap(), data);
     }
 
@@ -577,7 +581,11 @@ mod tests {
         let path_str = path.to_string_lossy();
 
         // Should have "00" as directory prefix
-        assert!(path_str.contains("/00/"), "Path should contain /00/ directory: {}", path_str);
+        assert!(
+            path_str.contains("/00/"),
+            "Path should contain /00/ directory: {}",
+            path_str
+        );
         // File name should be remaining 62 chars
         assert!(path.file_name().unwrap().len() == 62);
     }
@@ -739,7 +747,10 @@ mod tests {
         // Pinned item should still exist
         assert!(store.has(&h1).await.unwrap(), "Pinned item should exist");
         // Oldest unpinned (h2) should be evicted
-        assert!(!store.has(&h2).await.unwrap(), "Oldest unpinned should be evicted");
+        assert!(
+            !store.has(&h2).await.unwrap(),
+            "Oldest unpinned should be evicted"
+        );
         // Newest should exist
         assert!(store.has(&h5).await.unwrap(), "Newest should exist");
     }

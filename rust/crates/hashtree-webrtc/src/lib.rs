@@ -51,6 +51,11 @@ pub mod transport;
 pub mod types;
 
 pub use channel::{ChannelError, LatencyChannel, MockChannel, PeerChannel};
+pub use generic_store::{GenericStore, ProductionStore, SimStore};
+pub use mock::{
+    clear_channel_registry, MockConnectionFactory, MockDataChannel, MockRelay, MockRelayTransport,
+};
+pub use nostr::NostrRelayTransport;
 pub use peer::{ForwardRequestCallback, Peer, PeerError};
 pub use peer_selector::{PeerSelector, PeerStats, SelectionStrategy, SelectorSummary};
 pub use protocol::{
@@ -58,20 +63,15 @@ pub use protocol::{
     encode_response, hash_to_bytes, hash_to_key, is_fragmented, parse_message, DataMessage,
     DataRequest, DataResponse, FRAGMENT_SIZE, MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE,
 };
+pub use real_factory::RealPeerConnectionFactory;
+pub use signaling::{PeerEntry, SignalingManager};
 pub use store::{WebRTCStore, WebRTCStoreError};
-pub use types::{
-    classifier_channel, is_polite_peer, should_forward, ClassifierRx, ClassifierTx,
-    ClassifyRequest, ForwardRequest, ForwardRx, ForwardTx, IceCandidate, PeerId, PeerHTLConfig,
-    PeerPool, PeerState, PoolConfig, PoolSettings, SignalingMessage, WebRTCStats,
-    WebRTCStoreConfig, DATA_CHANNEL_LABEL, MAX_HTL, NOSTR_KIND_HASHTREE,
-};
 pub use transport::{
     DataChannel, PeerConnectionFactory, RelayTransport, SignalingConfig, TransportError,
 };
-pub use mock::{
-    clear_channel_registry, MockConnectionFactory, MockDataChannel, MockRelay, MockRelayTransport,
+pub use types::{
+    classifier_channel, is_polite_peer, should_forward, ClassifierRx, ClassifierTx,
+    ClassifyRequest, ForwardRequest, ForwardRx, ForwardTx, IceCandidate, PeerHTLConfig, PeerId,
+    PeerPool, PeerState, PoolConfig, PoolSettings, SignalingMessage, WebRTCStats,
+    WebRTCStoreConfig, DATA_CHANNEL_LABEL, MAX_HTL, NOSTR_KIND_HASHTREE,
 };
-pub use nostr::NostrRelayTransport;
-pub use real_factory::RealPeerConnectionFactory;
-pub use signaling::{PeerEntry, SignalingManager};
-pub use generic_store::{GenericStore, SimStore, ProductionStore};

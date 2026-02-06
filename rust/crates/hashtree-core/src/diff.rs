@@ -488,7 +488,9 @@ mod tests {
         let old_root = tree
             .put_directory(vec![
                 DirEntry::new("file.txt", file1).with_size(9),
-                DirEntry::new("subdir", subdir.hash).with_size(0).with_link_type(LinkType::Dir),
+                DirEntry::new("subdir", subdir.hash)
+                    .with_size(0)
+                    .with_link_type(LinkType::Dir),
             ])
             .await
             .unwrap();
@@ -498,12 +500,16 @@ mod tests {
         let new_root = tree
             .put_directory(vec![
                 DirEntry::new("file.txt", file1_new).with_size(17),
-                DirEntry::new("subdir", subdir.hash).with_size(0).with_link_type(LinkType::Dir),
+                DirEntry::new("subdir", subdir.hash)
+                    .with_size(0)
+                    .with_link_type(LinkType::Dir),
             ])
             .await
             .unwrap();
 
-        let diff = tree_diff(&tree, Some(&old_root), &new_root, 4).await.unwrap();
+        let diff = tree_diff(&tree, Some(&old_root), &new_root, 4)
+            .await
+            .unwrap();
 
         // Should NOT include subdir or its contents
         assert!(diff.added.contains(&new_root.hash));
@@ -535,12 +541,16 @@ mod tests {
         let new_root = tree
             .put_directory(vec![
                 DirEntry::new("a.txt", file1).with_size(5),
-                DirEntry::new("newdir", new_dir.hash).with_size(0).with_link_type(LinkType::Dir),
+                DirEntry::new("newdir", new_dir.hash)
+                    .with_size(0)
+                    .with_link_type(LinkType::Dir),
             ])
             .await
             .unwrap();
 
-        let diff = tree_diff(&tree, Some(&old_root), &new_root, 4).await.unwrap();
+        let diff = tree_diff(&tree, Some(&old_root), &new_root, 4)
+            .await
+            .unwrap();
 
         // Should include new root, new dir, and new file
         assert!(diff.added.contains(&new_root.hash));
@@ -697,7 +707,8 @@ mod tests {
         for i in 0..100 {
             let data = format!("content {}", i);
             let hash = tree.put_blob(data.as_bytes()).await.unwrap();
-            entries.push(DirEntry::new(format!("file{}.txt", i), hash).with_size(data.len() as u64));
+            entries
+                .push(DirEntry::new(format!("file{}.txt", i), hash).with_size(data.len() as u64));
             old_hashes_vec.push(hash);
         }
 
@@ -713,7 +724,9 @@ mod tests {
 
         let new_root = tree.put_directory(entries).await.unwrap();
 
-        let diff = tree_diff(&tree, Some(&old_root), &new_root, 8).await.unwrap();
+        let diff = tree_diff(&tree, Some(&old_root), &new_root, 8)
+            .await
+            .unwrap();
 
         // Should have 6 new items: new root + 5 modified files
         assert_eq!(diff.added_count(), 6);

@@ -195,8 +195,7 @@ impl<S: Store> HashtreeFuse<S> {
         }
 
         if entry.cid.key.is_some() {
-            let data = block_on(self.tree.get(&entry.cid))?
-                .ok_or(FsError::NotFound)?;
+            let data = block_on(self.tree.get(&entry.cid))?.ok_or(FsError::NotFound)?;
             let start = usize::try_from(offset).unwrap_or(usize::MAX);
             if start >= data.len() {
                 return Ok(vec![]);
@@ -210,8 +209,11 @@ impl<S: Store> HashtreeFuse<S> {
         }
 
         let end = offset.saturating_add(read_len);
-        let data = block_on(self.tree.read_file_range(&entry.cid.hash, offset, Some(end)))?
-            .ok_or(FsError::NotFound)?;
+        let data = block_on(
+            self.tree
+                .read_file_range(&entry.cid.hash, offset, Some(end)),
+        )?
+        .ok_or(FsError::NotFound)?;
         Ok(data)
     }
 
@@ -378,7 +380,13 @@ impl<S: Store> HashtreeFuse<S> {
         Ok(())
     }
 
-    pub fn rename(&self, parent: u64, name: &str, new_parent: u64, new_name: &str) -> Result<(), FsError> {
+    pub fn rename(
+        &self,
+        parent: u64,
+        name: &str,
+        new_parent: u64,
+        new_name: &str,
+    ) -> Result<(), FsError> {
         self.ensure_valid_name(name)?;
         self.ensure_valid_name(new_name)?;
         let _guard = self.modify_lock.lock().unwrap();
@@ -482,8 +490,7 @@ impl<S: Store> HashtreeFuse<S> {
 
         let root = self.current_root();
         let path_str = path.join("/");
-        let cid = block_on(self.tree.resolve(&root, &path_str))?
-            .ok_or(FsError::NotFound)?;
+        let cid = block_on(self.tree.resolve(&root, &path_str))?.ok_or(FsError::NotFound)?;
 
         let is_dir = block_on(self.tree.is_dir(&cid))?;
         if !is_dir {
@@ -493,7 +500,11 @@ impl<S: Store> HashtreeFuse<S> {
         Ok(cid)
     }
 
-    fn entry_attr_from_resolved(&self, inode: u64, entry: ResolvedEntry) -> Result<EntryAttr, FsError> {
+    fn entry_attr_from_resolved(
+        &self,
+        inode: u64,
+        entry: ResolvedEntry,
+    ) -> Result<EntryAttr, FsError> {
         let kind = Self::kind_from_link(entry.link_type);
         let size = if kind == EntryKind::Directory {
             0
@@ -512,8 +523,7 @@ impl<S: Store> HashtreeFuse<S> {
             return Ok(entry.size);
         }
 
-        let data = block_on(self.tree.get(&entry.cid))?
-            .ok_or(FsError::NotFound)?;
+        let data = block_on(self.tree.get(&entry.cid))?.ok_or(FsError::NotFound)?;
         Ok(data.len() as u64)
     }
 
@@ -522,8 +532,7 @@ impl<S: Store> HashtreeFuse<S> {
         if entry.link_type == LinkType::Dir {
             return Err(FsError::IsDir);
         }
-        let data = block_on(self.tree.get(&entry.cid))?
-            .ok_or(FsError::NotFound)?;
+        let data = block_on(self.tree.get(&entry.cid))?.ok_or(FsError::NotFound)?;
         Ok(data)
     }
 
@@ -585,10 +594,10 @@ impl<S: Store> HashtreeFuse<S> {
         let inode = self.next_inode.fetch_add(1, Ordering::Relaxed);
         self.paths.write().unwrap().insert(inode, path);
         self.parents.write().unwrap().insert(inode, parent);
-        self.children.write().unwrap().insert(
-            ChildKey { parent, name },
-            inode,
-        );
+        self.children
+            .write()
+            .unwrap()
+            .insert(ChildKey { parent, name }, inode);
         inode
     }
 
@@ -597,7 +606,13 @@ impl<S: Store> HashtreeFuse<S> {
             .read()
             .unwrap()
             .iter()
-            .find_map(|(inode, inode_path)| if inode_path == path { Some(*inode) } else { None })
+            .find_map(|(inode, inode_path)| {
+                if inode_path == path {
+                    Some(*inode)
+                } else {
+                    None
+                }
+            })
     }
 
     fn update_paths_prefix(&self, old_prefix: &[String], new_prefix: &[String]) {
@@ -630,9 +645,18 @@ impl<S: Store> HashtreeFuse<S> {
         }
 
         let remove_set: std::collections::HashSet<u64> = to_remove.into_iter().collect();
-        self.paths.write().unwrap().retain(|inode, _| !remove_set.contains(inode));
-        self.parents.write().unwrap().retain(|inode, _| !remove_set.contains(inode));
-        self.children.write().unwrap().retain(|_, inode| !remove_set.contains(inode));
+        self.paths
+            .write()
+            .unwrap()
+            .retain(|inode, _| !remove_set.contains(inode));
+        self.parents
+            .write()
+            .unwrap()
+            .retain(|inode, _| !remove_set.contains(inode));
+        self.children
+            .write()
+            .unwrap()
+            .retain(|_, inode| !remove_set.contains(inode));
     }
 
     fn drop_inode(&self, inode: u64) {
@@ -708,7 +732,10 @@ impl<S: Store> HashtreeFuse<S> {
 #[cfg(feature = "fuse")]
 mod fuse_impl {
     use super::*;
-    use fuser::{FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyStatfs, ReplyWrite, Request};
+    use fuser::{
+        FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyCreate, ReplyData,
+        ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyStatfs, ReplyWrite, Request,
+    };
     use std::ffi::OsStr;
     use std::path::Path;
     use std::time::{Duration, SystemTime};
@@ -730,7 +757,11 @@ mod fuse_impl {
     }
 
     impl<S: Store + Send + Sync + 'static> HashtreeFuse<S> {
-        pub fn mount(self, mountpoint: impl AsRef<Path>, options: &[MountOption]) -> std::io::Result<()> {
+        pub fn mount(
+            self,
+            mountpoint: impl AsRef<Path>,
+            options: &[MountOption],
+        ) -> std::io::Result<()> {
             fuser::mount2(self, mountpoint, options)
         }
 
@@ -1078,7 +1109,8 @@ mod tests {
         let file = fs.create_file(dir.inode, "draft.txt").unwrap();
         fs.write_file(file.inode, 0, b"data").unwrap();
 
-        fs.rename(dir.inode, "draft.txt", dir.inode, "final.txt").unwrap();
+        fs.rename(dir.inode, "draft.txt", dir.inode, "final.txt")
+            .unwrap();
         let entries = fs.read_dir(dir.inode).unwrap();
         let names: Vec<String> = entries.into_iter().map(|e| e.name).collect();
         assert!(names.contains(&"final.txt".to_string()));

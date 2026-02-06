@@ -17,12 +17,7 @@ pub struct SocialGraphCrawler {
 }
 
 impl SocialGraphCrawler {
-    pub fn new(
-        ndb: Arc<Ndb>,
-        keys: nostr::Keys,
-        relays: Vec<String>,
-        max_depth: u32,
-    ) -> Self {
+    pub fn new(ndb: Arc<Ndb>, keys: nostr::Keys, relays: Vec<String>, max_depth: u32) -> Self {
         Self {
             ndb,
             spambox: None,
@@ -72,8 +67,7 @@ impl SocialGraphCrawler {
 
         let mut missing = Vec::new();
         for tag in event.tags().iter() {
-            if let Some(nostr::TagStandard::PublicKey { public_key, .. }) = tag.as_standardized()
-            {
+            if let Some(nostr::TagStandard::PublicKey { public_key, .. }) = tag.as_standardized() {
                 let pk_bytes = public_key.to_bytes();
                 if fetched_contact_lists.contains(&pk_bytes) {
                     continue;
@@ -154,7 +148,11 @@ impl SocialGraphCrawler {
         } else {
             tracing::debug!(
                 "Social graph crawler: dropping untrusted {} from {}...",
-                if is_contact_list { "contact list" } else { "mute list" },
+                if is_contact_list {
+                    "contact list"
+                } else {
+                    "mute list"
+                },
                 &event.pubkey.to_hex()[..8.min(event.pubkey.to_hex().len())]
             );
         }
@@ -184,15 +182,14 @@ impl SocialGraphCrawler {
             self.relays.len()
         );
 
-        let sdk_keys = match nostr_sdk::Keys::parse(
-            &self.keys.secret_key().to_bech32().unwrap_or_default(),
-        ) {
-            Ok(k) => k,
-            Err(e) => {
-                tracing::error!("Failed to parse keys for crawler: {}", e);
-                return;
-            }
-        };
+        let sdk_keys =
+            match nostr_sdk::Keys::parse(&self.keys.secret_key().to_bech32().unwrap_or_default()) {
+                Ok(k) => k,
+                Err(e) => {
+                    tracing::error!("Failed to parse keys for crawler: {}", e);
+                    return;
+                }
+            };
 
         let client = nostr_sdk::Client::new(&sdk_keys);
 
@@ -258,8 +255,7 @@ impl SocialGraphCrawler {
                             if event.kind() == nostr::Kind::ContactList {
                                 for tag in event.tags().iter() {
                                     if let Some(nostr::TagStandard::PublicKey {
-                                        public_key,
-                                        ..
+                                        public_key, ..
                                     }) = tag.as_standardized()
                                     {
                                         let follow_bytes = public_key.to_bytes();
@@ -345,7 +341,7 @@ impl SocialGraphCrawler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostr::{EventBuilder, Kind, Tag, PublicKey};
+    use nostr::{EventBuilder, Kind, PublicKey, Tag};
     use std::collections::HashSet;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -369,19 +365,16 @@ mod tests {
         let _guard = super::super::test_lock();
         let tmp = TempDir::new().unwrap();
         let ndb = super::super::init_ndb(tmp.path()).unwrap();
-        let spambox = super::super::init_ndb_at_path(&tmp.path().join("nostrdb_spambox"), None).unwrap();
+        let spambox =
+            super::super::init_ndb_at_path(&tmp.path().join("nostrdb_spambox"), None).unwrap();
 
         let root_keys = nostr::Keys::generate();
         let root_pk = root_keys.public_key().to_bytes();
         super::super::set_social_graph_root(&ndb, &root_pk);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let crawler = SocialGraphCrawler::new(
-            Arc::clone(&ndb),
-            root_keys.clone(),
-            vec![],
-            2,
-        ).with_spambox(Arc::clone(&spambox));
+        let crawler = SocialGraphCrawler::new(Arc::clone(&ndb), root_keys.clone(), vec![], 2)
+            .with_spambox(Arc::clone(&spambox));
 
         let unknown_keys = nostr::Keys::generate();
         let follow_tag = Tag::public_key(PublicKey::from_slice(&root_pk).unwrap());
@@ -401,19 +394,16 @@ mod tests {
         let _guard = super::super::test_lock();
         let tmp = TempDir::new().unwrap();
         let ndb = super::super::init_ndb(tmp.path()).unwrap();
-        let spambox = super::super::init_ndb_at_path(&tmp.path().join("nostrdb_spambox"), None).unwrap();
+        let spambox =
+            super::super::init_ndb_at_path(&tmp.path().join("nostrdb_spambox"), None).unwrap();
 
         let root_keys = nostr::Keys::generate();
         let root_pk = root_keys.public_key().to_bytes();
         super::super::set_social_graph_root(&ndb, &root_pk);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let crawler = SocialGraphCrawler::new(
-            Arc::clone(&ndb),
-            root_keys.clone(),
-            vec![],
-            2,
-        ).with_spambox(Arc::clone(&spambox));
+        let crawler = SocialGraphCrawler::new(Arc::clone(&ndb), root_keys.clone(), vec![], 2)
+            .with_spambox(Arc::clone(&spambox));
 
         let target_keys = nostr::Keys::generate();
         let target_pk = target_keys.public_key().to_bytes();
@@ -450,8 +440,7 @@ mod tests {
             super::super::init_ndb(tmp.path()).unwrap()
         };
         let keys = nostr::Keys::generate();
-        let crawler =
-            SocialGraphCrawler::new(ndb, keys, vec!["wss://localhost:1".to_string()], 2);
+        let crawler = SocialGraphCrawler::new(ndb, keys, vec!["wss://localhost:1".to_string()], 2);
         let (_tx, rx) = watch::channel(true); // Already shutdown
         crawler.crawl(rx).await;
     }

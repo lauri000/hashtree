@@ -15,11 +15,7 @@ pub struct SocialGraphAccessControl {
 }
 
 impl SocialGraphAccessControl {
-    pub fn new(
-        ndb: Arc<Ndb>,
-        max_write_distance: u32,
-        allowed_pubkeys: HashSet<String>,
-    ) -> Self {
+    pub fn new(ndb: Arc<Ndb>, max_write_distance: u32, allowed_pubkeys: HashSet<String>) -> Self {
         Self {
             ndb,
             max_write_distance,

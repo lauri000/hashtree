@@ -16,7 +16,9 @@ use crate::socialgraph;
 use crate::storage::HashtreeStore;
 
 #[cfg(feature = "p2p")]
-use crate::webrtc::{ContentStore, PeerClassifier, PeerPool, WebRTCConfig, WebRTCManager, WebRTCState};
+use crate::webrtc::{
+    ContentStore, PeerClassifier, PeerPool, WebRTCConfig, WebRTCManager, WebRTCState,
+};
 
 pub struct EmbeddedDaemonOptions {
     pub config: Config,

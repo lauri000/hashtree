@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use hashtree_core::{
-    Cid, DirEntry, HashTree, HashTreeConfig, HashTreeError, Link, LinkType, MemoryStore, Store,
-    to_hex,
+    to_hex, Cid, DirEntry, HashTree, HashTreeConfig, HashTreeError, Link, LinkType, MemoryStore,
+    Store,
 };
 
 fn make_tree() -> (Arc<MemoryStore>, HashTree<MemoryStore>) {
@@ -21,7 +21,11 @@ fn make_tree() -> (Arc<MemoryStore>, HashTree<MemoryStore>) {
 fn make_tree_with_chunk_size(chunk_size: usize) -> (Arc<MemoryStore>, HashTree<MemoryStore>) {
     let store = Arc::new(MemoryStore::new());
     // Use public (unencrypted) mode for these tests
-    let tree = HashTree::new(HashTreeConfig::new(store.clone()).public().with_chunk_size(chunk_size));
+    let tree = HashTree::new(
+        HashTreeConfig::new(store.clone())
+            .public()
+            .with_chunk_size(chunk_size),
+    );
     (store, tree)
 }
 
@@ -32,7 +36,9 @@ fn make_encrypted_tree() -> (Arc<MemoryStore>, HashTree<MemoryStore>) {
     (store, tree)
 }
 
-fn make_encrypted_tree_with_chunk_size(chunk_size: usize) -> (Arc<MemoryStore>, HashTree<MemoryStore>) {
+fn make_encrypted_tree_with_chunk_size(
+    chunk_size: usize,
+) -> (Arc<MemoryStore>, HashTree<MemoryStore>) {
     let store = Arc::new(MemoryStore::new());
     let tree = HashTree::new(HashTreeConfig::new(store.clone()).with_chunk_size(chunk_size));
     (store, tree)
@@ -87,12 +93,10 @@ mod create {
         let (file2_cid, _) = tree.put_file(b"content2").await.unwrap();
 
         let dir_cid = tree
-            .put_directory(
-                vec![
-                    DirEntry::new("a.txt", file1_cid.hash).with_size(8),
-                    DirEntry::new("b.txt", file2_cid.hash).with_size(8),
-                ],
-            )
+            .put_directory(vec![
+                DirEntry::new("a.txt", file1_cid.hash).with_size(8),
+                DirEntry::new("b.txt", file2_cid.hash).with_size(8),
+            ])
             .await
             .unwrap();
 
@@ -111,13 +115,11 @@ mod create {
         let file_hash = tree.put_blob(b"data").await.unwrap();
 
         let dir_hash = tree
-            .put_directory(
-                vec![
-                    DirEntry::new("zebra", file_hash),
-                    DirEntry::new("apple", file_hash),
-                    DirEntry::new("mango", file_hash),
-                ],
-            )
+            .put_directory(vec![
+                DirEntry::new("zebra", file_hash),
+                DirEntry::new("apple", file_hash),
+                DirEntry::new("mango", file_hash),
+            ])
             .await
             .unwrap();
 
@@ -138,9 +140,10 @@ mod create {
         link_meta.insert("author".to_string(), serde_json::json!("test"));
 
         let node_hash = tree
-            .put_tree_node(
-                vec![Link::new(file_hash).with_name("file.txt").with_size(4).with_meta(link_meta)],
-            )
+            .put_tree_node(vec![Link::new(file_hash)
+                .with_name("file.txt")
+                .with_size(4)
+                .with_meta(link_meta)])
             .await
             .unwrap();
 
@@ -164,7 +167,11 @@ mod create {
         // Store should have fewer items due to deduplication
         // (1 unique chunk + tree nodes)
         let store_size = store.size();
-        assert!(store_size < 5, "Expected deduplication, got {} items", store_size);
+        assert!(
+            store_size < 5,
+            "Expected deduplication, got {} items",
+            store_size
+        );
 
         // Verify can still read back
         let retrieved = tree.read_file(&cid.hash).await.unwrap().unwrap();
@@ -193,7 +200,10 @@ mod create {
             .unwrap();
 
         // Verify structure
-        let resolved = tree.resolve_path(&root_dir, "mid/deep/file.txt").await.unwrap();
+        let resolved = tree
+            .resolve_path(&root_dir, "mid/deep/file.txt")
+            .await
+            .unwrap();
         assert_eq!(resolved.map(|c| c.hash), Some(file_hash));
     }
 }
@@ -252,7 +262,10 @@ mod read {
             .await
             .unwrap();
 
-        let resolved = tree.resolve_path(&root_cid, "subdir/file.txt").await.unwrap();
+        let resolved = tree
+            .resolve_path(&root_cid, "subdir/file.txt")
+            .await
+            .unwrap();
         assert!(resolved.is_some());
         assert_eq!(to_hex(&resolved.unwrap().hash), to_hex(&file_cid.hash));
     }
@@ -263,7 +276,10 @@ mod read {
 
         let dir_cid = tree.put_directory(vec![]).await.unwrap();
 
-        let resolved = tree.resolve_path(&dir_cid, "nonexistent/path").await.unwrap();
+        let resolved = tree
+            .resolve_path(&dir_cid, "nonexistent/path")
+            .await
+            .unwrap();
         assert!(resolved.is_none());
     }
 
@@ -339,12 +355,10 @@ mod read {
             .unwrap();
 
         let root_dir = tree
-            .put_directory(
-                vec![
-                    DirEntry::new("root.txt", f1).with_size(1),
-                    DirEntry::new("sub", sub_dir.hash),
-                ],
-            )
+            .put_directory(vec![
+                DirEntry::new("root.txt", f1).with_size(1),
+                DirEntry::new("sub", sub_dir.hash),
+            ])
             .await
             .unwrap();
 
@@ -462,12 +476,10 @@ mod streaming {
             .unwrap();
 
         let root_dir = tree
-            .put_directory(
-                vec![
-                    DirEntry::new("root.txt", f1).with_size(1),
-                    DirEntry::new("sub", sub_dir.hash),
-                ],
-            )
+            .put_directory(vec![
+                DirEntry::new("root.txt", f1).with_size(1),
+                DirEntry::new("sub", sub_dir.hash),
+            ])
             .await
             .unwrap();
 
@@ -518,7 +530,14 @@ mod edit {
         let (file_cid, file_size) = tree.put_file(b"hello").await.unwrap();
 
         let new_root = tree
-            .set_entry(&root_cid, &[], "test.txt", &file_cid, file_size, LinkType::File)
+            .set_entry(
+                &root_cid,
+                &[],
+                "test.txt",
+                &file_cid,
+                file_size,
+                LinkType::File,
+            )
             .await
             .unwrap();
 
@@ -539,7 +558,14 @@ mod edit {
 
         let (file2_cid, file2_size) = tree.put_file(b"v2 updated").await.unwrap();
         let new_root = tree
-            .set_entry(&root_cid, &[], "file.txt", &file2_cid, file2_size, LinkType::File)
+            .set_entry(
+                &root_cid,
+                &[],
+                "file.txt",
+                &file2_cid,
+                file2_size,
+                LinkType::File,
+            )
             .await
             .unwrap();
 
@@ -555,12 +581,10 @@ mod edit {
         let (file1_cid, _) = tree.put_file(b"a").await.unwrap();
         let (file2_cid, _) = tree.put_file(b"b").await.unwrap();
         let root_cid = tree
-            .put_directory(
-                vec![
-                    DirEntry::new("a.txt", file1_cid.hash).with_size(1),
-                    DirEntry::new("b.txt", file2_cid.hash).with_size(1),
-                ],
-            )
+            .put_directory(vec![
+                DirEntry::new("a.txt", file1_cid.hash).with_size(1),
+                DirEntry::new("b.txt", file2_cid.hash).with_size(1),
+            ])
             .await
             .unwrap();
 
@@ -621,12 +645,10 @@ mod edit {
             .unwrap();
         let dir2_cid = tree.put_directory(vec![]).await.unwrap();
         let root_cid = tree
-            .put_directory(
-                vec![
-                    DirEntry::new("dir1", dir1_cid.hash).with_size(7),
-                    DirEntry::new("dir2", dir2_cid.hash).with_size(0),
-                ],
-            )
+            .put_directory(vec![
+                DirEntry::new("dir1", dir1_cid.hash).with_size(7),
+                DirEntry::new("dir2", dir2_cid.hash).with_size(0),
+            ])
             .await
             .unwrap();
 
@@ -672,13 +694,26 @@ mod edit {
 
         let (file_cid, file_size) = tree.put_file(b"deep").await.unwrap();
         let new_root = tree
-            .set_entry(&root_cid, &["a", "b", "c"], "file.txt", &file_cid, file_size, LinkType::File)
+            .set_entry(
+                &root_cid,
+                &["a", "b", "c"],
+                "file.txt",
+                &file_cid,
+                file_size,
+                LinkType::File,
+            )
             .await
             .unwrap();
 
         // Verify nested file
         let entries = tree
-            .list_directory(&tree.resolve_path(&new_root, "a/b/c").await.unwrap().unwrap())
+            .list_directory(
+                &tree
+                    .resolve_path(&new_root, "a/b/c")
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(entries.len(), 1);
@@ -701,7 +736,14 @@ mod edit {
         let (file_cid, file_size) = tree.put_file(b"data").await.unwrap();
 
         let result = tree
-            .set_entry(&root_cid, &["nonexistent"], "file.txt", &file_cid, file_size, LinkType::File)
+            .set_entry(
+                &root_cid,
+                &["nonexistent"],
+                "file.txt",
+                &file_cid,
+                file_size,
+                LinkType::File,
+            )
             .await;
 
         assert!(matches!(result, Err(HashTreeError::PathNotFound(_))));
@@ -732,7 +774,14 @@ mod edit {
 
         let (file2_cid, file2_size) = tree.put_file(b"modified").await.unwrap();
         let new_root = tree
-            .set_entry(&original_root, &[], "file.txt", &file2_cid, file2_size, LinkType::File)
+            .set_entry(
+                &original_root,
+                &[],
+                "file.txt",
+                &file2_cid,
+                file2_size,
+                LinkType::File,
+            )
             .await
             .unwrap();
 
@@ -850,14 +899,12 @@ mod edge_cases {
         let file_hash = tree.put_blob(b"data").await.unwrap();
 
         let dir_cid = tree
-            .put_directory(
-                vec![
-                    DirEntry::new("file with spaces.txt", file_hash),
-                    DirEntry::new("file-with-dashes.txt", file_hash),
-                    DirEntry::new("file_with_underscores.txt", file_hash),
-                    DirEntry::new("file.multiple.dots.txt", file_hash),
-                ],
-            )
+            .put_directory(vec![
+                DirEntry::new("file with spaces.txt", file_hash),
+                DirEntry::new("file-with-dashes.txt", file_hash),
+                DirEntry::new("file_with_underscores.txt", file_hash),
+                DirEntry::new("file.multiple.dots.txt", file_hash),
+            ])
             .await
             .unwrap();
 
@@ -872,13 +919,11 @@ mod edge_cases {
         let file_hash = tree.put_blob(b"data").await.unwrap();
 
         let dir_cid = tree
-            .put_directory(
-                vec![
-                    DirEntry::new("日本語.txt", file_hash),
-                    DirEntry::new("émoji🎉.txt", file_hash),
-                    DirEntry::new("中文文件.txt", file_hash),
-                ],
-            )
+            .put_directory(vec![
+                DirEntry::new("日本語.txt", file_hash),
+                DirEntry::new("émoji🎉.txt", file_hash),
+                DirEntry::new("中文文件.txt", file_hash),
+            ])
             .await
             .unwrap();
 
@@ -909,7 +954,8 @@ mod edge_cases {
                 .unwrap();
         }
 
-        let path = "level1/level2/level3/level4/level5/level6/level7/level8/level9/level10/file.txt";
+        let path =
+            "level1/level2/level3/level4/level5/level6/level7/level8/level9/level10/file.txt";
         let resolved = tree.resolve_path(&current_cid, path).await.unwrap();
         assert_eq!(resolved.map(|c| c.hash), Some(file_hash));
     }
@@ -990,7 +1036,8 @@ mod encryption {
         // Check all stored blobs look encrypted
         for key in store.keys() {
             let blob = store.get(&key).await.unwrap().unwrap();
-            if blob.len() >= 28 { // Min CHK size
+            if blob.len() >= 28 {
+                // Min CHK size
                 let unique_bytes = count_unique_bytes(&blob);
                 let threshold = (blob.len().min(256) as f64 * 0.55) as usize;
                 assert!(
@@ -1031,7 +1078,6 @@ mod encryption {
         let stored = store.get(&cid.hash).await.unwrap().unwrap();
         assert_eq!(stored, plaintext.to_vec());
     }
-
 }
 
 // ============ INTEROPERABILITY TESTS ============
@@ -1062,24 +1108,20 @@ mod interop {
         let (file1_1_cid, _) = tree1.put_file(b"content1").await.unwrap();
         let (file1_2_cid, _) = tree1.put_file(b"content2").await.unwrap();
         let dir1 = tree1
-            .put_directory(
-                vec![
-                    DirEntry::new("a.txt", file1_1_cid.hash).with_size(8),
-                    DirEntry::new("b.txt", file1_2_cid.hash).with_size(8),
-                ],
-            )
+            .put_directory(vec![
+                DirEntry::new("a.txt", file1_1_cid.hash).with_size(8),
+                DirEntry::new("b.txt", file1_2_cid.hash).with_size(8),
+            ])
             .await
             .unwrap();
 
         let (file2_1_cid, _) = tree2.put_file(b"content1").await.unwrap();
         let (file2_2_cid, _) = tree2.put_file(b"content2").await.unwrap();
         let dir2 = tree2
-            .put_directory(
-                vec![
-                    DirEntry::new("b.txt", file2_2_cid.hash).with_size(8), // Different order
-                    DirEntry::new("a.txt", file2_1_cid.hash).with_size(8),
-                ],
-            )
+            .put_directory(vec![
+                DirEntry::new("b.txt", file2_2_cid.hash).with_size(8), // Different order
+                DirEntry::new("a.txt", file2_1_cid.hash).with_size(8),
+            ])
             .await
             .unwrap();
 

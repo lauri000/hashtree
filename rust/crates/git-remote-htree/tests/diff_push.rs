@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{test_relay::TestRelay, TestServer, TestEnv, create_test_repo, skip_if_no_binary};
+use common::{create_test_repo, skip_if_no_binary, test_relay::TestRelay, TestEnv, TestServer};
 use std::process::{Command, Stdio};
 
 /// Test diff-based push - second push should upload fewer blobs
@@ -25,7 +25,11 @@ fn test_diff_based_push() {
     };
 
     println!("=== Diff-Based Push Test ===\n");
-    println!("Local relay: {}, blossom: {}\n", relay.url(), server.base_url());
+    println!(
+        "Local relay: {}, blossom: {}\n",
+        relay.url(),
+        server.base_url()
+    );
 
     let test_env = TestEnv::new(Some(&server.base_url()), Some(&relay.url()));
     let env_vars: Vec<_> = test_env.env();
@@ -60,8 +64,11 @@ fn test_diff_based_push() {
 
     // Make a small change
     println!("\n=== Making small change ===");
-    std::fs::write(repo.path().join("small-change.txt"), "Just a small change\n")
-        .expect("Failed to write file");
+    std::fs::write(
+        repo.path().join("small-change.txt"),
+        "Just a small change\n",
+    )
+    .expect("Failed to write file");
 
     Command::new("git")
         .args(["add", "small-change.txt"])
@@ -114,15 +121,22 @@ fn test_diff_based_push() {
     let no_changes = stderr3.contains("No changes") || stderr3.contains("same root");
     let minimal_upload = stderr3.contains("unchanged") && {
         // Parse "X new" from output - should be small (< 10)
-        stderr3.split_whitespace()
+        stderr3
+            .split_whitespace()
             .zip(stderr3.split_whitespace().skip(1))
             .find(|(_, word)| *word == "new,")
             .and_then(|(num, _)| num.strip_prefix('(').unwrap_or(num).parse::<u32>().ok())
             .map(|n| n < 10)
             .unwrap_or(false)
     };
-    println!("No-change optimization used: {} (minimal_upload: {})", no_changes, minimal_upload);
-    assert!(no_changes || minimal_upload, "Third push should detect no changes or upload minimal blobs");
+    println!(
+        "No-change optimization used: {} (minimal_upload: {})",
+        no_changes, minimal_upload
+    );
+    assert!(
+        no_changes || minimal_upload,
+        "Third push should detect no changes or upload minimal blobs"
+    );
 
     println!("\n=== SUCCESS: Diff-based push test passed! ===");
 }

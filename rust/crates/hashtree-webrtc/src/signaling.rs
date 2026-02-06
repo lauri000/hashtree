@@ -148,9 +148,7 @@ impl<R: RelayTransport + 'static, F: PeerConnectionFactory + 'static> SignalingM
     /// This is the core signaling logic shared between production and simulation.
     pub async fn handle_message(&self, msg: SignalingMessage) -> Result<(), TransportError> {
         match &msg {
-            SignalingMessage::Hello { peer_id, roots } => {
-                self.handle_hello(peer_id, roots).await
-            }
+            SignalingMessage::Hello { peer_id, roots } => self.handle_hello(peer_id, roots).await,
             SignalingMessage::Offer {
                 peer_id,
                 target_peer_id,
@@ -248,10 +246,10 @@ impl<R: RelayTransport + 'static, F: PeerConnectionFactory + 'static> SignalingM
             let (channel, sdp) = self.conn_factory.create_offer(from_peer_id).await?;
 
             // Add peer (will be confirmed when we get answer)
-            self.peers.write().await.insert(
-                from_peer_id.to_string(),
-                PeerEntry { channel, pool },
-            );
+            self.peers
+                .write()
+                .await
+                .insert(from_peer_id.to_string(), PeerEntry { channel, pool });
 
             // Send offer
             let offer_msg = SignalingMessage::Offer {
@@ -330,10 +328,10 @@ impl<R: RelayTransport + 'static, F: PeerConnectionFactory + 'static> SignalingM
         let (channel, answer_sdp) = self.conn_factory.accept_offer(from_peer_id, sdp).await?;
 
         // Add peer
-        self.peers.write().await.insert(
-            from_peer_id.to_string(),
-            PeerEntry { channel, pool },
-        );
+        self.peers
+            .write()
+            .await
+            .insert(from_peer_id.to_string(), PeerEntry { channel, pool });
 
         // Send answer
         let answer_msg = SignalingMessage::Answer {
@@ -373,7 +371,11 @@ impl<R: RelayTransport + 'static, F: PeerConnectionFactory + 'static> SignalingM
 
     /// Get a peer's channel
     pub async fn get_channel(&self, peer_id: &str) -> Option<Arc<dyn DataChannel>> {
-        self.peers.read().await.get(peer_id).map(|e| e.channel.clone())
+        self.peers
+            .read()
+            .await
+            .get(peer_id)
+            .map(|e| e.channel.clone())
     }
 
     /// Check if we need more peers (below satisfied in any pool)

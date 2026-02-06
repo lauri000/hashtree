@@ -8,15 +8,10 @@ use std::fs;
 use std::path::PathBuf;
 
 /// Default read-only file servers
-pub const DEFAULT_READ_SERVERS: &[&str] = &[
-    "https://cdn.iris.to",
-    "https://hashtree.iris.to",
-];
+pub const DEFAULT_READ_SERVERS: &[&str] = &["https://cdn.iris.to", "https://hashtree.iris.to"];
 
 /// Default write-enabled file servers
-pub const DEFAULT_WRITE_SERVERS: &[&str] = &[
-    "https://upload.iris.to",
-];
+pub const DEFAULT_WRITE_SERVERS: &[&str] = &["https://upload.iris.to"];
 
 /// Default nostr relays
 pub const DEFAULT_RELAYS: &[&str] = &[
@@ -215,7 +210,10 @@ fn default_read_servers() -> Vec<String> {
 }
 
 fn default_write_servers() -> Vec<String> {
-    DEFAULT_WRITE_SERVERS.iter().map(|s| s.to_string()).collect()
+    DEFAULT_WRITE_SERVERS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn default_max_upload_mb() -> u64 {
@@ -290,8 +288,7 @@ impl Config {
         let config_path = get_config_path();
 
         if config_path.exists() {
-            let content = fs::read_to_string(&config_path)
-                .context("Failed to read config file")?;
+            let content = fs::read_to_string(&config_path).context("Failed to read config file")?;
             toml::from_str(&content).context("Failed to parse config file")
         } else {
             let config = Config::default();
@@ -411,8 +408,8 @@ pub fn detect_local_daemon_url(bind_address: Option<&str>) -> Option<String> {
 pub fn detect_local_relay_urls(bind_address: Option<&str>) -> Vec<String> {
     let mut relays = Vec::new();
 
-    if let Some(list) = parse_env_list("NOSTR_LOCAL_RELAY")
-        .or_else(|| parse_env_list("HTREE_LOCAL_RELAY"))
+    if let Some(list) =
+        parse_env_list("NOSTR_LOCAL_RELAY").or_else(|| parse_env_list("HTREE_LOCAL_RELAY"))
     {
         for raw in list {
             if let Some(url) = normalize_relay_url(&raw) {
@@ -507,7 +504,11 @@ fn parse_env_list(var: &str) -> Option<Vec<String>> {
             items.push(trimmed.to_string());
         }
     }
-    if items.is_empty() { None } else { Some(items) }
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
 }
 
 fn parse_env_ports(var: &str) -> Vec<u16> {

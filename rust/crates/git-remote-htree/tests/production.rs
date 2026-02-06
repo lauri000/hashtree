@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{TestEnv, create_test_repo, find_git_remote_htree_dir};
+use common::{create_test_repo, find_git_remote_htree_dir, TestEnv};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
@@ -56,7 +56,10 @@ fn test_git_push_and_clone_production() {
         .expect("Failed to clone");
 
     if !clone.status.success() {
-        panic!("git clone failed: {}", String::from_utf8_lossy(&clone.stderr));
+        panic!(
+            "git clone failed: {}",
+            String::from_utf8_lossy(&clone.stderr)
+        );
     }
 
     assert_eq!(
@@ -107,9 +110,17 @@ fn test_diff_based_push_production() {
     // Make small change
     println!("\n=== Making small change ===");
     std::fs::write(repo.path().join("new-file.txt"), "Small change\n").unwrap();
-    Command::new("git").args(["add", "."]).current_dir(repo.path()).output().unwrap();
-    Command::new("git").args(["commit", "-m", "Add file"]).current_dir(repo.path())
-        .stdout(Stdio::null()).output().unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "Add file"])
+        .current_dir(repo.path())
+        .stdout(Stdio::null())
+        .output()
+        .unwrap();
 
     // Second push - should use diff
     println!("\n=== Second push (should use diff) ===");

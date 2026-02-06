@@ -1,17 +1,25 @@
 use axum::{
-    extract::{State, ws::{WebSocketUpgrade, WebSocket, Message}},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        State,
+    },
     response::IntoResponse,
 };
 use futures::{SinkExt, StreamExt};
 use hashtree_core::from_hex;
-use nostr::{ClientMessage as NostrClientMessage, JsonUtil as NostrJsonUtil, RelayMessage as NostrRelayMessage};
+use nostr::{
+    ClientMessage as NostrClientMessage, JsonUtil as NostrJsonUtil,
+    RelayMessage as NostrRelayMessage,
+};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, time::Duration};
 use tokio::sync::mpsc;
 
-use crate::webrtc::types::{DataMessage, DataRequest, DataResponse, MAX_HTL, encode_request, encode_response, parse_message};
-use hex::encode as hex_encode;
 use super::auth::{AppState, PendingRequest, WsProtocol};
+use crate::webrtc::types::{
+    encode_request, encode_response, parse_message, DataMessage, DataRequest, DataResponse, MAX_HTL,
+};
+use hex::encode as hex_encode;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
@@ -144,7 +152,14 @@ async fn handle_message(client_id: u64, msg: Message, state: &AppState) {
                         set_client_protocol(state, client_id, WsProtocol::HashtreeJson).await;
                         match msg {
                             WsClientMessage::Request { id, hash } => {
-                                handle_request(client_id, id, hash, WsProtocol::HashtreeJson, state).await;
+                                handle_request(
+                                    client_id,
+                                    id,
+                                    hash,
+                                    WsProtocol::HashtreeJson,
+                                    state,
+                                )
+                                .await;
                             }
                             WsClientMessage::Response { id, hash, found } => {
                                 handle_response(client_id, id, hash, found, state).await;
@@ -184,8 +199,14 @@ async fn handle_request(
                 send_json(
                     state,
                     client_id,
-                    WsResponse { kind: "res", id: request_id, hash, found: false },
-                ).await;
+                    WsResponse {
+                        kind: "res",
+                        id: request_id,
+                        hash,
+                        found: false,
+                    },
+                )
+                .await;
             }
             return;
         }
@@ -197,8 +218,14 @@ async fn handle_request(
                 send_json(
                     state,
                     client_id,
-                    WsResponse { kind: "res", id: request_id, hash: hash.clone(), found: true },
-                ).await;
+                    WsResponse {
+                        kind: "res",
+                        id: request_id,
+                        hash: hash.clone(),
+                        found: true,
+                    },
+                )
+                .await;
                 send_binary(state, client_id, request_id, data).await;
             }
             WsProtocol::HashtreeMsgpack => {
@@ -232,8 +259,14 @@ async fn handle_request(
             send_json(
                 state,
                 client_id,
-                WsResponse { kind: "res", id: request_id, hash, found: false },
-            ).await;
+                WsResponse {
+                    kind: "res",
+                    id: request_id,
+                    hash,
+                    found: false,
+                },
+            )
+            .await;
         }
         return;
     }
@@ -257,7 +290,8 @@ async fn handle_request(
         kind: "req".to_string(),
         id: request_id,
         hash: hash.clone(),
-    }).unwrap_or_else(|_| String::new());
+    })
+    .unwrap_or_else(|_| String::new());
     for (peer_id, tx, protocol) in peers {
         match protocol {
             WsProtocol::HashtreeMsgpack => {
@@ -275,8 +309,12 @@ async fn handle_request(
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(1500)).await;
         let mut pending = timeout_state.ws_relay.pending.lock().await;
-        let still_pending = pending.iter().any(|((_, id), p)| *id == request_id && p.origin_id == client_id);
-        let already_found = pending.iter().any(|((_, id), p)| *id == request_id && p.origin_id == client_id && p.found);
+        let still_pending = pending
+            .iter()
+            .any(|((_, id), p)| *id == request_id && p.origin_id == client_id);
+        let already_found = pending
+            .iter()
+            .any(|((_, id), p)| *id == request_id && p.origin_id == client_id && p.found);
         if !still_pending || already_found {
             return;
         }
@@ -291,8 +329,14 @@ async fn handle_request(
             send_json(
                 &timeout_state,
                 client_id,
-                WsResponse { kind: "res", id: request_id, hash: timeout_hash, found: false },
-            ).await;
+                WsResponse {
+                    kind: "res",
+                    id: request_id,
+                    hash: timeout_hash,
+                    found: false,
+                },
+            )
+            .await;
         }
     });
 }
@@ -333,8 +377,14 @@ async fn handle_response(
             send_json(
                 state,
                 origin_id,
-                WsResponse { kind: "res", id: request_id, hash: pending_hash, found: true },
-            ).await;
+                WsResponse {
+                    kind: "res",
+                    id: request_id,
+                    hash: pending_hash,
+                    found: true,
+                },
+            )
+            .await;
         }
         return;
     }
@@ -350,8 +400,14 @@ async fn handle_response(
         send_json(
             state,
             origin_id,
-            WsResponse { kind: "res", id: request_id, hash: pending_hash, found: false },
-        ).await;
+            WsResponse {
+                kind: "res",
+                id: request_id,
+                hash: pending_hash,
+                found: false,
+            },
+        )
+        .await;
     }
 }
 
@@ -362,7 +418,14 @@ async fn handle_binary(client_id: u64, data: Vec<u8>, state: &AppState) {
             DataMessage::Request(req) => {
                 let hash_hex = hex_encode(&req.h);
                 let request_id = state.ws_relay.next_request_id();
-                handle_request(client_id, request_id, hash_hex, WsProtocol::HashtreeMsgpack, state).await;
+                handle_request(
+                    client_id,
+                    request_id,
+                    hash_hex,
+                    WsProtocol::HashtreeMsgpack,
+                    state,
+                )
+                .await;
             }
             DataMessage::Response(res) => {
                 handle_msgpack_response(client_id, res, state).await;
@@ -403,11 +466,7 @@ async fn handle_binary(client_id: u64, data: Vec<u8>, state: &AppState) {
     pending.retain(|(_, id), p| !(*id == request_id && p.origin_id == origin_id));
 }
 
-async fn handle_nostr_message(
-    client_id: u64,
-    msg: NostrClientMessage,
-    state: &AppState,
-) {
+async fn handle_nostr_message(client_id: u64, msg: NostrClientMessage, state: &AppState) {
     let replies = nostr_responses_for(&msg);
     for reply in replies {
         send_nostr(state, client_id, reply).await;
@@ -421,10 +480,14 @@ fn nostr_responses_for(msg: &NostrClientMessage) -> Vec<NostrRelayMessage> {
             let message = if ok { "" } else { "invalid: signature" };
             vec![NostrRelayMessage::ok(event.id, ok, message)]
         }
-        NostrClientMessage::Req { subscription_id, .. } => {
+        NostrClientMessage::Req {
+            subscription_id, ..
+        } => {
             vec![NostrRelayMessage::eose(subscription_id.clone())]
         }
-        NostrClientMessage::Count { subscription_id, .. } => {
+        NostrClientMessage::Count {
+            subscription_id, ..
+        } => {
             vec![NostrRelayMessage::count(subscription_id.clone(), 0)]
         }
         NostrClientMessage::Close(_) => Vec::new(),
@@ -498,8 +561,14 @@ async fn handle_msgpack_response(client_id: u64, res: DataResponse, state: &AppS
                 send_json(
                     state,
                     *origin_id,
-                    WsResponse { kind: "res", id: *request_id, hash: hash_hex.clone(), found: true },
-                ).await;
+                    WsResponse {
+                        kind: "res",
+                        id: *request_id,
+                        hash: hash_hex.clone(),
+                        found: true,
+                    },
+                )
+                .await;
                 send_binary(state, *origin_id, *request_id, data.clone()).await;
             }
             WsProtocol::HashtreeMsgpack => {
@@ -528,14 +597,20 @@ async fn send_msgpack_request(
     client_id: u64,
     hash: &[u8],
 ) -> Result<(), rmp_serde::encode::Error> {
-    let req = DataRequest { h: hash.to_vec(), htl: MAX_HTL };
+    let req = DataRequest {
+        h: hash.to_vec(),
+        htl: MAX_HTL,
+    };
     let wire = encode_request(&req)?;
     send_to_client(state, client_id, Message::Binary(wire)).await;
     Ok(())
 }
 
 async fn send_msgpack_response(state: &AppState, client_id: u64, hash: &[u8], data: &[u8]) {
-    let res = DataResponse { h: hash.to_vec(), d: data.to_vec() };
+    let res = DataResponse {
+        h: hash.to_vec(),
+        d: data.to_vec(),
+    };
     if let Ok(wire) = encode_response(&res) {
         send_to_client(state, client_id, Message::Binary(wire)).await;
     }
@@ -566,8 +641,8 @@ async fn set_client_protocol(state: &AppState, client_id: u64, protocol: WsProto
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostr::{EventBuilder, Keys, Kind, SubscriptionId};
     use nostr::secp256k1::schnorr::Signature;
+    use nostr::{EventBuilder, Keys, Kind, SubscriptionId};
 
     #[test]
     fn parse_ws_text_message_detects_nostr_req() {
@@ -602,12 +677,16 @@ mod tests {
     #[test]
     fn nostr_replies_for_event_ok() {
         let keys = Keys::generate();
-        let event = EventBuilder::new(Kind::TextNote, "hello", []).to_event(&keys).unwrap();
+        let event = EventBuilder::new(Kind::TextNote, "hello", [])
+            .to_event(&keys)
+            .unwrap();
         let msg = NostrClientMessage::event(event.clone());
         let replies = nostr_responses_for(&msg);
         assert_eq!(replies.len(), 1);
         match &replies[0] {
-            NostrRelayMessage::Ok { event_id, status, .. } => {
+            NostrRelayMessage::Ok {
+                event_id, status, ..
+            } => {
                 assert_eq!(event_id, &event.id);
                 assert!(*status);
             }
@@ -618,7 +697,9 @@ mod tests {
     #[test]
     fn nostr_replies_for_invalid_event_is_not_ok() {
         let keys = Keys::generate();
-        let mut event = EventBuilder::new(Kind::TextNote, "hello", []).to_event(&keys).unwrap();
+        let mut event = EventBuilder::new(Kind::TextNote, "hello", [])
+            .to_event(&keys)
+            .unwrap();
         event.sig = Signature::from_slice(&[0u8; 64]).unwrap();
         let msg = NostrClientMessage::event(event);
         let replies = nostr_responses_for(&msg);

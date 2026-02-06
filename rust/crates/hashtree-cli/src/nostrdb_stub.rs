@@ -48,12 +48,18 @@ pub fn init_ndb(_data_dir: &Path) -> anyhow::Result<Arc<NdbStub>> {
 }
 
 /// Initialize nostrdb with optional mapsize - stubbed.
-pub fn init_ndb_with_mapsize(_data_dir: &Path, _mapsize_bytes: Option<u64>) -> anyhow::Result<Arc<NdbStub>> {
+pub fn init_ndb_with_mapsize(
+    _data_dir: &Path,
+    _mapsize_bytes: Option<u64>,
+) -> anyhow::Result<Arc<NdbStub>> {
     Ok(Arc::new(NdbStub))
 }
 
 /// Initialize nostrdb at a specific directory - stubbed.
-pub fn init_ndb_at_path(_db_dir: &Path, _mapsize_bytes: Option<u64>) -> anyhow::Result<Arc<NdbStub>> {
+pub fn init_ndb_at_path(
+    _db_dir: &Path,
+    _mapsize_bytes: Option<u64>,
+) -> anyhow::Result<Arc<NdbStub>> {
     Ok(Arc::new(NdbStub))
 }
 
@@ -71,7 +77,12 @@ pub fn get_follows(_ndb: &NdbStub, _pk_bytes: &[u8; 32]) -> Vec<[u8; 32]> {
 }
 
 /// Check if a user is overmuted - always false when nostrdb is disabled
-pub fn is_overmuted(_ndb: &NdbStub, _root_pk: &[u8; 32], _user_pk: &[u8; 32], _threshold: f64) -> bool {
+pub fn is_overmuted(
+    _ndb: &NdbStub,
+    _root_pk: &[u8; 32],
+    _user_pk: &[u8; 32],
+    _threshold: f64,
+) -> bool {
     false
 }
 

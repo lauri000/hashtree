@@ -2,8 +2,8 @@
 //!
 //! Run with: cargo bench -p git-remote-htree
 
-use git_remote_htree::git::storage::GitStorage;
 use git_remote_htree::git::object::ObjectType;
+use git_remote_htree::git::storage::GitStorage;
 use std::path::Path;
 use std::time::Instant;
 use tempfile::TempDir;
@@ -132,37 +132,51 @@ fn main() {
     println!("--- Filesystem Backend ---");
     let (fs_open, fs_write, fs_read, fs_size) = run_benchmark("fs", &files);
     println!("  Open:  {}", format_duration(fs_open));
-    println!("  Write: {} ({:.1} MB/s)",
+    println!(
+        "  Write: {} ({:.1} MB/s)",
         format_duration(fs_write),
-        total_size as f64 / (1024.0 * 1024.0) / (fs_write.max(1) as f64 / 1000.0));
-    println!("  Read:  {} ({:.1} MB/s)",
+        total_size as f64 / (1024.0 * 1024.0) / (fs_write.max(1) as f64 / 1000.0)
+    );
+    println!(
+        "  Read:  {} ({:.1} MB/s)",
         format_duration(fs_read),
-        total_size as f64 / (1024.0 * 1024.0) / (fs_read.max(1) as f64 / 1000.0));
+        total_size as f64 / (1024.0 * 1024.0) / (fs_read.max(1) as f64 / 1000.0)
+    );
     println!("  Size:  {:.2} MB", fs_size as f64 / (1024.0 * 1024.0));
 
     // Run LMDB benchmark
     println!("\n--- LMDB Backend ---");
     let (lmdb_open, lmdb_write, lmdb_read, lmdb_size) = run_benchmark("lmdb", &files);
     println!("  Open:  {}", format_duration(lmdb_open));
-    println!("  Write: {} ({:.1} MB/s)",
+    println!(
+        "  Write: {} ({:.1} MB/s)",
         format_duration(lmdb_write),
-        total_size as f64 / (1024.0 * 1024.0) / (lmdb_write.max(1) as f64 / 1000.0));
-    println!("  Read:  {} ({:.1} MB/s)",
+        total_size as f64 / (1024.0 * 1024.0) / (lmdb_write.max(1) as f64 / 1000.0)
+    );
+    println!(
+        "  Read:  {} ({:.1} MB/s)",
         format_duration(lmdb_read),
-        total_size as f64 / (1024.0 * 1024.0) / (lmdb_read.max(1) as f64 / 1000.0));
+        total_size as f64 / (1024.0 * 1024.0) / (lmdb_read.max(1) as f64 / 1000.0)
+    );
     println!("  Size:  {:.2} MB", lmdb_size as f64 / (1024.0 * 1024.0));
 
     // Summary
     println!("\n=== Summary ===");
-    println!("Write: FS {} vs LMDB {} ({:.2}x)",
+    println!(
+        "Write: FS {} vs LMDB {} ({:.2}x)",
         format_duration(fs_write),
         format_duration(lmdb_write),
-        lmdb_write as f64 / fs_write.max(1) as f64);
-    println!("Read:  FS {} vs LMDB {} ({:.2}x)",
+        lmdb_write as f64 / fs_write.max(1) as f64
+    );
+    println!(
+        "Read:  FS {} vs LMDB {} ({:.2}x)",
         format_duration(fs_read),
         format_duration(lmdb_read),
-        lmdb_read as f64 / fs_read.max(1) as f64);
-    println!("Size:  FS {:.2} MB vs LMDB {:.2} MB",
+        lmdb_read as f64 / fs_read.max(1) as f64
+    );
+    println!(
+        "Size:  FS {:.2} MB vs LMDB {:.2} MB",
         fs_size as f64 / (1024.0 * 1024.0),
-        lmdb_size as f64 / (1024.0 * 1024.0));
+        lmdb_size as f64 / (1024.0 * 1024.0)
+    );
 }

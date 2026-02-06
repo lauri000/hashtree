@@ -52,7 +52,11 @@ pub trait RootResolver: Send + Sync {
     async fn resolve(&self, key: &str) -> Result<Option<Cid>, ResolverError>;
 
     /// Resolve with a share secret (for encrypted_key decryption)
-    async fn resolve_shared(&self, key: &str, share_secret: &[u8; 32]) -> Result<Option<Cid>, ResolverError> {
+    async fn resolve_shared(
+        &self,
+        key: &str,
+        share_secret: &[u8; 32],
+    ) -> Result<Option<Cid>, ResolverError> {
         let _ = share_secret;
         self.resolve(key).await
     }
@@ -76,7 +80,12 @@ pub trait RootResolver: Send + Sync {
     /// Publish with encrypted key for sharing
     ///
     /// The key is encrypted with share_secret, allowing anyone with the secret to decrypt.
-    async fn publish_shared(&self, key: &str, cid: &Cid, share_secret: &[u8; 32]) -> Result<bool, ResolverError> {
+    async fn publish_shared(
+        &self,
+        key: &str,
+        cid: &Cid,
+        share_secret: &[u8; 32],
+    ) -> Result<bool, ResolverError> {
         let _ = (key, cid, share_secret);
         Err(ResolverError::NotAuthorized)
     }

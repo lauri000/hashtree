@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::{test_relay::TestRelay, TestServer, TestEnv, create_test_repo, skip_if_no_binary};
+use common::{create_test_repo, skip_if_no_binary, test_relay::TestRelay, TestEnv, TestServer};
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -106,7 +106,10 @@ fn test_git_push_and_clone_local() {
     println!("Clone took: {:?}", clone_duration);
 
     if !clone.status.success() {
-        panic!("git clone failed: {}", String::from_utf8_lossy(&clone.stderr));
+        panic!(
+            "git clone failed: {}",
+            String::from_utf8_lossy(&clone.stderr)
+        );
     }
     println!("Clone successful!\n");
 

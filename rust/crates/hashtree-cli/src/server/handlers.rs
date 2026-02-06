@@ -1,3 +1,8 @@
+use super::auth::AppState;
+use super::mime::get_mime_type;
+use super::ui::root_page;
+use crate::socialgraph;
+use crate::webrtc::{ConnectionState, WebRTCState};
 use axum::{
     body::Body,
     extract::{Multipart, Path, Query, State},
@@ -6,19 +11,19 @@ use axum::{
 };
 use bytes::Bytes;
 use futures::stream::{self, StreamExt};
-use hashtree_core::{from_hex, to_hex, nhash_decode, Cid, HashTree, HashTreeConfig, LinkType, Store};
-use hashtree_resolver::{nostr::{NostrRootResolver, NostrResolverConfig}, RootResolver};
+use hashtree_core::{
+    from_hex, nhash_decode, to_hex, Cid, HashTree, HashTreeConfig, LinkType, Store,
+};
+use hashtree_resolver::{
+    nostr::{NostrResolverConfig, NostrRootResolver},
+    RootResolver,
+};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
-use super::auth::AppState;
-use super::mime::get_mime_type;
-use super::ui::root_page;
-use crate::socialgraph;
-use crate::webrtc::{ConnectionState, WebRTCState};
 
 pub async fn serve_root() -> impl IntoResponse {
     root_page()
@@ -92,13 +97,24 @@ async fn resolve_npub_root(
 /// Returns true if the blob was fetched and cached, false otherwise.
 async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool {
     let hash_hex = hex::encode(hash);
-    tracing::info!("[htree-fetch] Trying to fetch blob {} from upstream", &hash_hex[..16.min(hash_hex.len())]);
+    tracing::info!(
+        "[htree-fetch] Trying to fetch blob {} from upstream",
+        &hash_hex[..16.min(hash_hex.len())]
+    );
 
     // Try WebRTC peers first
     if let Some(ref webrtc_state) = state.webrtc_peers {
-        tracing::info!("[htree-fetch] Querying WebRTC peers for {}", &hash_hex[..16.min(hash_hex.len())]);
+        tracing::info!(
+            "[htree-fetch] Querying WebRTC peers for {}",
+            &hash_hex[..16.min(hash_hex.len())]
+        );
         if let Some((data, peer_id)) = query_webrtc_peers(webrtc_state, &hash_hex).await {
-            tracing::info!("[htree-fetch] Got {} bytes from peer {} for {}", data.len(), peer_id, &hash_hex[..16.min(hash_hex.len())]);
+            tracing::info!(
+                "[htree-fetch] Got {} bytes from peer {} for {}",
+                data.len(),
+                peer_id,
+                &hash_hex[..16.min(hash_hex.len())]
+            );
             if let Err(e) = state.store.put_blob(&data) {
                 tracing::warn!("[htree-fetch] Failed to cache peer data: {}", e);
             }
@@ -108,15 +124,29 @@ async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool {
 
     // Try upstream Blossom servers
     if !state.upstream_blossom.is_empty() {
-        tracing::info!("[htree-fetch] Querying {} Blossom servers for {}", state.upstream_blossom.len(), &hash_hex[..16.min(hash_hex.len())]);
-        if let Some((data, server)) = query_upstream_blossom(&state.upstream_blossom, &hash_hex).await {
-            tracing::info!("[htree-fetch] Got {} bytes from upstream {} for {}", data.len(), server, &hash_hex[..16.min(hash_hex.len())]);
+        tracing::info!(
+            "[htree-fetch] Querying {} Blossom servers for {}",
+            state.upstream_blossom.len(),
+            &hash_hex[..16.min(hash_hex.len())]
+        );
+        if let Some((data, server)) =
+            query_upstream_blossom(&state.upstream_blossom, &hash_hex).await
+        {
+            tracing::info!(
+                "[htree-fetch] Got {} bytes from upstream {} for {}",
+                data.len(),
+                server,
+                &hash_hex[..16.min(hash_hex.len())]
+            );
             if let Err(e) = state.store.put_blob(&data) {
                 tracing::warn!("[htree-fetch] Failed to cache upstream data: {}", e);
             }
             return true;
         }
-        tracing::info!("[htree-fetch] No upstream had {}", &hash_hex[..16.min(hash_hex.len())]);
+        tracing::info!(
+            "[htree-fetch] No upstream had {}",
+            &hash_hex[..16.min(hash_hex.len())]
+        );
     } else {
         tracing::info!("[htree-fetch] No upstream Blossom servers configured");
     }
@@ -190,7 +220,8 @@ async fn htree_nhash_impl(
                         .unwrap();
                 }
             };
-            return serve_cid_with_range(&state, &entry, headers, true, is_localhost, Some(&path)).await;
+            return serve_cid_with_range(&state, &entry, headers, true, is_localhost, Some(&path))
+                .await;
         }
 
         return list_directory_json(&state, &cid, true, is_localhost).await;
@@ -206,7 +237,15 @@ async fn htree_nhash_impl(
         }
     }
 
-    serve_cid_with_range(&state, &cid, headers, true, is_localhost, effective_path.as_deref()).await
+    serve_cid_with_range(
+        &state,
+        &cid,
+        headers,
+        true,
+        is_localhost,
+        effective_path.as_deref(),
+    )
+    .await
 }
 
 pub async fn htree_nhash(
@@ -217,7 +256,15 @@ pub async fn htree_nhash(
     connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
 ) -> impl IntoResponse {
     let full = format!("nhash1{}", nhash);
-    htree_nhash_impl(State(state), full, None, Query(params), headers, connect_info).await
+    htree_nhash_impl(
+        State(state),
+        full,
+        None,
+        Query(params),
+        headers,
+        connect_info,
+    )
+    .await
 }
 
 pub async fn htree_nhash_path(
@@ -249,8 +296,7 @@ const THUMBNAIL_PATTERNS: &[&str] = &[
 const VIDEO_EXTENSIONS: &[&str] = &[".mp4", ".webm", ".mkv", ".mov", ".avi", ".m4v"];
 
 fn is_video_filename(name: &str) -> bool {
-    name.starts_with("video.")
-        || VIDEO_EXTENSIONS.iter().any(|ext| name.ends_with(ext))
+    name.starts_with("video.") || VIDEO_EXTENSIONS.iter().any(|ext| name.ends_with(ext))
 }
 
 fn is_metadata_filename(name: &str) -> bool {
@@ -423,13 +469,22 @@ async fn htree_npub_impl(
                         .unwrap();
                 }
             };
-            return serve_cid_with_range(&state, &entry, headers, false, is_localhost, Some(&path)).await;
+            return serve_cid_with_range(&state, &entry, headers, false, is_localhost, Some(&path))
+                .await;
         }
 
         return list_directory_json(&state, &cid, false, is_localhost).await;
     }
 
-    serve_cid_with_range(&state, &cid, headers, false, is_localhost, effective_path.as_deref()).await
+    serve_cid_with_range(
+        &state,
+        &cid,
+        headers,
+        false,
+        is_localhost,
+        effective_path.as_deref(),
+    )
+    .await
 }
 
 pub async fn htree_npub(
@@ -494,11 +549,7 @@ impl BlobSource {
 }
 
 /// Build a blob response with optional X-Source header (only for localhost)
-fn build_blob_response(
-    data: Vec<u8>,
-    source: BlobSource,
-    is_localhost: bool,
-) -> Response<Body> {
+fn build_blob_response(data: Vec<u8>, source: BlobSource, is_localhost: bool) -> Response<Body> {
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
@@ -602,7 +653,10 @@ async fn serve_cid_with_range(
                 }
 
                 let end_exclusive = end_inclusive.saturating_add(1);
-                let data = match tree.read_file_range_cid(cid, start, Some(end_exclusive)).await {
+                let data = match tree
+                    .read_file_range_cid(cid, start, Some(end_exclusive))
+                    .await
+                {
                     Ok(Some(d)) => d,
                     Ok(None) => {
                         return Response::builder()
@@ -743,11 +797,16 @@ async fn serve_content_internal(
 
                             let end_actual = end.unwrap_or(total_size - 1).min(total_size - 1);
                             let content_length = end_actual - start + 1;
-                            let content_range = format!("bytes {}-{}/{}", start, end_actual, total_size);
+                            let content_range =
+                                format!("bytes {}-{}/{}", start, end_actual, total_size);
 
                             // Use streaming for chunked files
                             if metadata.is_chunked {
-                                match state.store.clone().stream_file_range_chunks_owned(&hash, start, end_actual) {
+                                match state
+                                    .store
+                                    .clone()
+                                    .stream_file_range_chunks_owned(&hash, start, end_actual)
+                                {
                                     Ok(Some(chunks_iter)) => {
                                         let stream = stream::iter(chunks_iter)
                                             .map(|result| result.map(Bytes::from));
@@ -760,7 +819,10 @@ async fn serve_content_internal(
                                             .header(header::ACCEPT_RANGES, "bytes")
                                             .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
                                         if is_immutable {
-                                            builder = builder.header(header::CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL);
+                                            builder = builder.header(
+                                                header::CACHE_CONTROL,
+                                                IMMUTABLE_CACHE_CONTROL,
+                                            );
                                         }
                                         if is_localhost {
                                             builder = builder.header("X-Source", "local");
@@ -799,7 +861,10 @@ async fn serve_content_internal(
                                             .header(header::ACCEPT_RANGES, "bytes")
                                             .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
                                         if is_immutable {
-                                            builder = builder.header(header::CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL);
+                                            builder = builder.header(
+                                                header::CACHE_CONTROL,
+                                                IMMUTABLE_CACHE_CONTROL,
+                                            );
                                         }
                                         if is_localhost {
                                             builder = builder.header("X-Source", "local");
@@ -868,10 +933,7 @@ async fn serve_content_internal(
             if is_localhost {
                 builder = builder.header("X-Source", "local");
             }
-            builder
-                .body(Body::from(content))
-                .unwrap()
-                .into_response()
+            builder.body(Body::from(content)).unwrap().into_response()
         }
         Ok(None) => Response::builder()
             .status(StatusCode::NOT_FOUND)
@@ -929,7 +991,13 @@ pub async fn serve_content_or_blob(
     // Try file tree lookup (serves reassembled file content)
     // (hashtree hashes are 64 hex chars, same as blossom SHA256)
     if let Ok(hash) = from_hex(&id) {
-        if state.store.get_file_chunk_metadata(&hash).ok().flatten().is_some() {
+        if state
+            .store
+            .get_file_chunk_metadata(&hash)
+            .ok()
+            .flatten()
+            .is_some()
+        {
             return serve_content_internal(&state, &hash, headers, true, is_localhost).await;
         }
     }
@@ -940,7 +1008,10 @@ pub async fn serve_content_or_blob(
 
         // Try WebRTC peers first
         if let Some(ref webrtc_state) = state.webrtc_peers {
-            tracing::info!("Hash {} not found locally, querying WebRTC peers", &hash_hex[..16.min(hash_hex.len())]);
+            tracing::info!(
+                "Hash {} not found locally, querying WebRTC peers",
+                &hash_hex[..16.min(hash_hex.len())]
+            );
 
             // Query connected WebRTC peers
             if let Some((data, peer_id)) = query_webrtc_peers(webrtc_state, &hash_hex).await {
@@ -949,21 +1020,28 @@ pub async fn serve_content_or_blob(
                     tracing::warn!("Failed to cache peer data: {}", e);
                 }
 
-                return build_blob_response(data, BlobSource::WebRtcPeer { peer_id }, is_localhost).into_response();
+                return build_blob_response(data, BlobSource::WebRtcPeer { peer_id }, is_localhost)
+                    .into_response();
             }
         }
 
         // Try upstream Blossom servers
         if !state.upstream_blossom.is_empty() {
-            tracing::info!("Hash {} not found via WebRTC, trying upstream Blossom", &hash_hex[..16.min(hash_hex.len())]);
+            tracing::info!(
+                "Hash {} not found via WebRTC, trying upstream Blossom",
+                &hash_hex[..16.min(hash_hex.len())]
+            );
 
-            if let Some((data, server)) = query_upstream_blossom(&state.upstream_blossom, &hash_hex).await {
+            if let Some((data, server)) =
+                query_upstream_blossom(&state.upstream_blossom, &hash_hex).await
+            {
                 // Cache locally for future requests
                 if let Err(e) = state.store.put_blob(&data) {
                     tracing::warn!("Failed to cache upstream data: {}", e);
                 }
 
-                return build_blob_response(data, BlobSource::Upstream { server }, is_localhost).into_response();
+                return build_blob_response(data, BlobSource::Upstream { server }, is_localhost)
+                    .into_response();
             }
         }
     }
@@ -1079,7 +1157,10 @@ pub async fn upload_file(
     };
 
     // Use streaming upload for files > 10MB
-    let file_size = std::fs::metadata(&temp_file).ok().map(|m| m.len()).unwrap_or(0);
+    let file_size = std::fs::metadata(&temp_file)
+        .ok()
+        .map(|m| m.len())
+        .unwrap_or(0);
     let use_streaming = file_size > 10 * 1024 * 1024;
 
     let cid_result = if use_streaming {
@@ -1136,16 +1217,15 @@ pub async fn list_pins(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-pub async fn pin_cid(
-    State(state): State<AppState>,
-    Path(cid): Path<String>,
-) -> impl IntoResponse {
+pub async fn pin_cid(State(state): State<AppState>, Path(cid): Path<String>) -> impl IntoResponse {
     let hash = match from_hex(&cid) {
         Ok(h) => h,
-        Err(e) => return Json(json!({
-            "success": false,
-            "error": format!("Invalid CID format: {}", e)
-        })),
+        Err(e) => {
+            return Json(json!({
+                "success": false,
+                "error": format!("Invalid CID format: {}", e)
+            }))
+        }
     };
     let store = &state.store;
     match store.pin(&hash) {
@@ -1166,10 +1246,12 @@ pub async fn unpin_cid(
 ) -> impl IntoResponse {
     let hash = match from_hex(&cid) {
         Ok(h) => h,
-        Err(e) => return Json(json!({
-            "success": false,
-            "error": format!("Invalid CID format: {}", e)
-        })),
+        Err(e) => {
+            return Json(json!({
+                "success": false,
+                "error": format!("Invalid CID format: {}", e)
+            }))
+        }
     };
     let store = &state.store;
     match store.unpin(&hash) {
@@ -1250,7 +1332,11 @@ pub async fn daemon_status(
     // Only allow localhost
     let ip = connect_info.0.ip();
     if !ip.is_loopback() {
-        return (StatusCode::FORBIDDEN, Json(json!({"error": "localhost only"}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "localhost only"})),
+        )
+            .into_response();
     }
 
     // Storage stats
@@ -1266,22 +1352,32 @@ pub async fn daemon_status(
     // WebRTC peers
     let webrtc = if let Some(ref webrtc_state) = state.webrtc_peers {
         let peers = webrtc_state.peers.read().await;
-        let connected = peers.values()
+        let connected = peers
+            .values()
             .filter(|e| e.state == ConnectionState::Connected)
             .count();
-        let with_data_channel = peers.values()
-            .filter(|e| e.state == ConnectionState::Connected
-                && e.peer.as_ref().map(|p| p.has_data_channel()).unwrap_or(false))
+        let with_data_channel = peers
+            .values()
+            .filter(|e| {
+                e.state == ConnectionState::Connected
+                    && e.peer
+                        .as_ref()
+                        .map(|p| p.has_data_channel())
+                        .unwrap_or(false)
+            })
             .count();
         let (bytes_sent, bytes_received) = webrtc_state.get_bandwidth();
         // Per-peer stats
-        let peer_stats: Vec<_> = peers.values()
-            .map(|e| json!({
-                "peer_id": e.peer_id.short(),
-                "pubkey": e.peer_id.pubkey.clone(),
-                "bytes_sent": e.bytes_sent,
-                "bytes_received": e.bytes_received,
-            }))
+        let peer_stats: Vec<_> = peers
+            .values()
+            .map(|e| {
+                json!({
+                    "peer_id": e.peer_id.short(),
+                    "pubkey": e.peer_id.pubkey.clone(),
+                    "bytes_sent": e.bytes_sent,
+                    "bytes_received": e.bytes_received,
+                })
+            })
             .collect();
         json!({
             "enabled": true,
@@ -1306,7 +1402,8 @@ pub async fn daemon_status(
         "storage": storage,
         "webrtc": webrtc,
         "upstream": upstream,
-    })).into_response()
+    }))
+    .into_response()
 }
 
 pub async fn garbage_collect(State(state): State<AppState>) -> impl IntoResponse {
@@ -1354,19 +1451,31 @@ pub async fn socialgraph_snapshot(
 ) -> impl IntoResponse {
     let ip = connect_info.0.ip();
     if !state.socialgraph_snapshot_public && !ip.is_loopback() {
-        return (StatusCode::FORBIDDEN, Json(json!({"error": "localhost only"}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "localhost only"})),
+        )
+            .into_response();
     }
 
     let ndb = match &state.social_graph_ndb {
         Some(ndb) => Arc::clone(ndb),
         None => {
-            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "social graph not initialized"}))).into_response();
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "social graph not initialized"})),
+            )
+                .into_response();
         }
     };
     let root = match state.social_graph_root {
         Some(root) => root,
         None => {
-            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "social graph root missing"}))).into_response();
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "social graph root missing"})),
+            )
+                .into_response();
         }
     };
 
@@ -1379,7 +1488,9 @@ pub async fn socialgraph_snapshot(
 
     let chunks = match tokio::task::spawn_blocking(move || {
         socialgraph::snapshot::build_snapshot_chunks(&ndb, &root, &options)
-    }).await {
+    })
+    .await
+    {
         Ok(Ok(chunks)) => chunks,
         Ok(Err(err)) => {
             return Response::builder()
@@ -1401,8 +1512,14 @@ pub async fn socialgraph_snapshot(
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
-        .header(header::CONTENT_DISPOSITION, "attachment; filename=\"social-graph.bin\"")
-        .header(header::CACHE_CONTROL, "public, max-age=60, stale-while-revalidate=60")
+        .header(
+            header::CONTENT_DISPOSITION,
+            "attachment; filename=\"social-graph.bin\"",
+        )
+        .header(
+            header::CACHE_CONTROL,
+            "public, max-age=60, stale-while-revalidate=60",
+        )
         .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .body(Body::from_stream(stream))
         .unwrap()
@@ -1461,10 +1578,13 @@ pub async fn resolve_and_serve(
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .body(Body::from(json!({
-                    "error": format!("Failed to create resolver: {}", e),
-                    "key": key
-                }).to_string()))
+                .body(Body::from(
+                    json!({
+                        "error": format!("Failed to create resolver: {}", e),
+                        "key": key
+                    })
+                    .to_string(),
+                ))
                 .unwrap()
                 .into_response();
         }
@@ -1483,10 +1603,13 @@ pub async fn resolve_and_serve(
                 .status(StatusCode::BAD_REQUEST)
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .body(Body::from(json!({
-                    "error": e.to_string(),
-                    "key": key
-                }).to_string()))
+                .body(Body::from(
+                    json!({
+                        "error": e.to_string(),
+                        "key": key
+                    })
+                    .to_string(),
+                ))
                 .unwrap()
                 .into_response()
         }
@@ -1496,10 +1619,13 @@ pub async fn resolve_and_serve(
                 .status(StatusCode::GATEWAY_TIMEOUT)
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .body(Body::from(json!({
-                    "error": "Resolution timeout",
-                    "key": key
-                }).to_string()))
+                .body(Body::from(
+                    json!({
+                        "error": "Resolution timeout",
+                        "key": key
+                    })
+                    .to_string(),
+                ))
                 .unwrap()
                 .into_response()
         }
@@ -1507,9 +1633,7 @@ pub async fn resolve_and_serve(
 }
 
 /// API endpoint to resolve npub/treename to hash (returns JSON)
-pub async fn resolve_to_hash(
-    Path(params): Path<(String, String)>,
-) -> impl IntoResponse {
+pub async fn resolve_to_hash(Path(params): Path<(String, String)>) -> impl IntoResponse {
     let (pubkey, treename) = params;
     let key = format!("{}/{}", pubkey, treename);
 
@@ -1523,36 +1647,29 @@ pub async fn resolve_to_hash(
         }
     };
 
-    let result = match tokio::time::timeout(HTTP_RESOLVER_TIMEOUT, resolver.resolve_wait(&key)).await {
-        Ok(Ok(cid)) => {
-            Json(json!({
+    let result =
+        match tokio::time::timeout(HTTP_RESOLVER_TIMEOUT, resolver.resolve_wait(&key)).await {
+            Ok(Ok(cid)) => Json(json!({
                 "key": key,
                 "hash": to_hex(&cid.hash),
                 "cid": cid.to_string()
-            }))
-        }
-        Ok(Err(e)) => {
-            Json(json!({
+            })),
+            Ok(Err(e)) => Json(json!({
                 "error": e.to_string(),
                 "key": key
-            }))
-        }
-        Err(_) => {
-            Json(json!({
+            })),
+            Err(_) => Json(json!({
                 "error": "Resolution timeout",
                 "key": key
-            }))
-        }
-    };
+            })),
+        };
 
     let _ = resolver.stop().await;
     result
 }
 
 /// List all trees for a pubkey
-pub async fn list_trees(
-    Path(pubkey): Path<String>,
-) -> impl IntoResponse {
+pub async fn list_trees(Path(pubkey): Path<String>) -> impl IntoResponse {
     let resolver = match NostrRootResolver::new(resolver_config()).await {
         Ok(r) => r,
         Err(e) => {
@@ -1565,22 +1682,18 @@ pub async fn list_trees(
 
     // list() uses the configured timeout internally
     let result = match resolver.list(&pubkey).await {
-        Ok(entries) => {
-            Json(json!({
-                "pubkey": pubkey,
-                "trees": entries.iter().map(|e| json!({
-                    "name": e.key.split('/').last().unwrap_or(&e.key),
-                    "hash": to_hex(&e.cid.hash),
-                    "cid": e.cid.to_string()
-                })).collect::<Vec<_>>()
-            }))
-        }
-        Err(e) => {
-            Json(json!({
-                "error": e.to_string(),
-                "pubkey": pubkey
-            }))
-        }
+        Ok(entries) => Json(json!({
+            "pubkey": pubkey,
+            "trees": entries.iter().map(|e| json!({
+                "name": e.key.split('/').last().unwrap_or(&e.key),
+                "hash": to_hex(&e.cid.hash),
+                "cid": e.cid.to_string()
+            })).collect::<Vec<_>>()
+        })),
+        Err(e) => Json(json!({
+            "error": e.to_string(),
+            "pubkey": pubkey
+        })),
     };
 
     let _ = resolver.stop().await;
@@ -1589,7 +1702,10 @@ pub async fn list_trees(
 
 /// Query connected WebRTC peers for content by hash
 /// Returns the first successful response with peer_id, or None if no peer has it
-async fn query_webrtc_peers(webrtc_state: &Arc<WebRTCState>, hash_hex: &str) -> Option<(Vec<u8>, String)> {
+async fn query_webrtc_peers(
+    webrtc_state: &Arc<WebRTCState>,
+    hash_hex: &str,
+) -> Option<(Vec<u8>, String)> {
     let peers = webrtc_state.peers.read().await;
 
     // Collect connected peers that have data channels
@@ -1597,7 +1713,11 @@ async fn query_webrtc_peers(webrtc_state: &Arc<WebRTCState>, hash_hex: &str) -> 
         .values()
         .filter(|entry| {
             entry.state == ConnectionState::Connected
-                && entry.peer.as_ref().map(|p| p.has_data_channel()).unwrap_or(false)
+                && entry
+                    .peer
+                    .as_ref()
+                    .map(|p| p.has_data_channel())
+                    .unwrap_or(false)
         })
         .collect();
 
@@ -1736,8 +1856,7 @@ mod tests {
         let (thumb_cid, _size) = tree.put(b"thumb").await.unwrap();
         let root_cid = tree
             .put_directory(vec![
-                DirEntry::from_cid("thumbnail.jpg", &thumb_cid)
-                    .with_link_type(LinkType::File),
+                DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File)
             ])
             .await
             .unwrap();
@@ -1754,8 +1873,7 @@ mod tests {
         let (thumb_cid, _size) = tree.put(b"thumb").await.unwrap();
         let subdir_cid = tree
             .put_directory(vec![
-                DirEntry::from_cid("thumbnail.png", &thumb_cid)
-                    .with_link_type(LinkType::File),
+                DirEntry::from_cid("thumbnail.png", &thumb_cid).with_link_type(LinkType::File)
             ])
             .await
             .unwrap();
@@ -1763,10 +1881,8 @@ mod tests {
         let (meta_cid, _size) = tree.put(b"{}").await.unwrap();
         let root_cid = tree
             .put_directory(vec![
-                DirEntry::from_cid("clip", &subdir_cid)
-                    .with_link_type(LinkType::Dir),
-                DirEntry::from_cid("meta.json", &meta_cid)
-                    .with_link_type(LinkType::File),
+                DirEntry::from_cid("clip", &subdir_cid).with_link_type(LinkType::Dir),
+                DirEntry::from_cid("meta.json", &meta_cid).with_link_type(LinkType::File),
             ])
             .await
             .unwrap();

@@ -7,21 +7,21 @@
 //! - TestEnv: Test environment with config and keys
 //! - Helper functions for creating test repos
 
+use nostr::ToBech32;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tempfile::TempDir;
-use nostr::ToBech32;
 
 /// Minimal in-memory nostr relay for testing with real-time event broadcasting
 pub mod test_relay {
+    use futures::{SinkExt, StreamExt};
     use std::collections::HashMap;
-    use std::sync::Arc;
     use std::net::TcpListener;
+    use std::sync::Arc;
     use tokio::net::TcpStream;
     use tokio::sync::{broadcast, RwLock};
     use tokio_tungstenite::{accept_async, tungstenite::Message};
-    use futures::{SinkExt, StreamExt};
 
     /// Stored filter for matching events
     #[derive(Clone)]
@@ -29,8 +29,8 @@ pub mod test_relay {
         sub_id: String,
         kind: Option<u64>,
         authors: Vec<String>,
-        p_tag: Option<String>,  // #p tag for directed messages
-        l_tag: Option<String>,  // #l tag for hello messages
+        p_tag: Option<String>, // #p tag for directed messages
+        l_tag: Option<String>, // #l tag for hello messages
     }
 
     impl StoredFilter {
@@ -52,15 +52,18 @@ pub mod test_relay {
 
             // Check #p tag
             if let Some(ref p) = self.p_tag {
-                let has_p = event.get("tags")
+                let has_p = event
+                    .get("tags")
                     .and_then(|t| t.as_array())
                     .map(|tags| {
                         tags.iter().any(|tag| {
-                            tag.as_array().map(|arr| {
-                                arr.len() >= 2 &&
-                                arr[0].as_str() == Some("p") &&
-                                arr[1].as_str() == Some(p.as_str())
-                            }).unwrap_or(false)
+                            tag.as_array()
+                                .map(|arr| {
+                                    arr.len() >= 2
+                                        && arr[0].as_str() == Some("p")
+                                        && arr[1].as_str() == Some(p.as_str())
+                                })
+                                .unwrap_or(false)
                         })
                     })
                     .unwrap_or(false);
@@ -71,15 +74,18 @@ pub mod test_relay {
 
             // Check #l tag
             if let Some(ref l) = self.l_tag {
-                let has_l = event.get("tags")
+                let has_l = event
+                    .get("tags")
                     .and_then(|t| t.as_array())
                     .map(|tags| {
                         tags.iter().any(|tag| {
-                            tag.as_array().map(|arr| {
-                                arr.len() >= 2 &&
-                                arr[0].as_str() == Some("l") &&
-                                arr[1].as_str() == Some(l.as_str())
-                            }).unwrap_or(false)
+                            tag.as_array()
+                                .map(|arr| {
+                                    arr.len() >= 2
+                                        && arr[0].as_str() == Some("l")
+                                        && arr[1].as_str() == Some(l.as_str())
+                                })
+                                .unwrap_or(false)
                         })
                     })
                     .unwrap_or(false);
@@ -99,7 +105,8 @@ pub mod test_relay {
 
     impl TestRelay {
         pub fn new(port: u16) -> Self {
-            let events: Arc<RwLock<HashMap<String, serde_json::Value>>> = Arc::new(RwLock::new(HashMap::new()));
+            let events: Arc<RwLock<HashMap<String, serde_json::Value>>> =
+                Arc::new(RwLock::new(HashMap::new()));
             let (shutdown, _) = broadcast::channel(1);
             // Broadcast channel for new events - larger buffer for busy relays
             let (event_tx, _) = broadcast::channel::<serde_json::Value>(1000);
@@ -175,7 +182,8 @@ pub mod test_relay {
         let write = Arc::new(tokio::sync::Mutex::new(write));
 
         // Track active subscriptions for this connection
-        let subscriptions: Arc<RwLock<HashMap<String, Vec<StoredFilter>>>> = Arc::new(RwLock::new(HashMap::new()));
+        let subscriptions: Arc<RwLock<HashMap<String, Vec<StoredFilter>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
 
         // Spawn task to handle incoming broadcast events
         let write_clone = write.clone();
@@ -188,7 +196,8 @@ pub mod test_relay {
                         for (_, filters) in subs.iter() {
                             for filter in filters {
                                 if filter.matches(&event) {
-                                    let event_msg = serde_json::json!(["EVENT", &filter.sub_id, &event]);
+                                    let event_msg =
+                                        serde_json::json!(["EVENT", &filter.sub_id, &event]);
                                     let mut w = write_clone.lock().await;
                                     let _ = w.send(Message::Text(event_msg.to_string())).await;
                                     break; // Only send once per subscription
@@ -256,25 +265,31 @@ pub mod test_relay {
                         for i in 2..parsed.len() {
                             let filter = &parsed[i];
 
-                            let kind = filter.get("kinds")
+                            let kind = filter
+                                .get("kinds")
                                 .and_then(|k| k.as_array())
                                 .and_then(|a| a.first())
                                 .and_then(|v| v.as_u64());
 
-                            let authors: Vec<String> = filter.get("authors")
+                            let authors: Vec<String> = filter
+                                .get("authors")
                                 .and_then(|a| a.as_array())
-                                .map(|arr| arr.iter()
-                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                    .collect())
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                        .collect()
+                                })
                                 .unwrap_or_default();
 
-                            let p_tag = filter.get("#p")
+                            let p_tag = filter
+                                .get("#p")
                                 .and_then(|p| p.as_array())
                                 .and_then(|a| a.first())
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string());
 
-                            let l_tag = filter.get("#l")
+                            let l_tag = filter
+                                .get("#l")
                                 .and_then(|l| l.as_array())
                                 .and_then(|a| a.first())
                                 .and_then(|v| v.as_str())
@@ -290,7 +305,10 @@ pub mod test_relay {
                         }
 
                         // Store subscription
-                        subscriptions.write().await.insert(sub_id.clone(), filters.clone());
+                        subscriptions
+                            .write()
+                            .await
+                            .insert(sub_id.clone(), filters.clone());
 
                         // Send matching historical events
                         let events_lock = events.read().await;
@@ -362,9 +380,11 @@ relays = []
 
         // Generate keys for server
         let keys = nostr::Keys::generate();
-        let nsec = keys.secret_key().to_bech32().expect("Failed to encode nsec");
-        std::fs::write(config_dir.join("keys"), &nsec)
-            .expect("Failed to write keys");
+        let nsec = keys
+            .secret_key()
+            .to_bech32()
+            .expect("Failed to encode nsec");
+        std::fs::write(config_dir.join("keys"), &nsec).expect("Failed to write keys");
 
         let process = Command::new(&htree_bin)
             .arg("--data-dir")
@@ -444,15 +464,18 @@ impl TestEnv {
         };
 
         let blossom = match blossom_server {
-            Some(url) => format!(r#"
+            Some(url) => format!(
+                r#"
 [blossom]
 read_servers = ["{url}"]
 write_servers = ["{url}"]
-"#),
+"#
+            ),
             None => String::new(),
         };
 
-        let config_content = format!(r#"
+        let config_content = format!(
+            r#"
 [server]
 enable_auth = false
 stun_port = 0
@@ -462,18 +485,24 @@ stun_port = 0
 crawl_depth = 0
 
 {blossom}
-"#);
+"#
+        );
 
         std::fs::write(config_dir.join("config.toml"), config_content)
             .expect("Failed to write config");
 
         // Generate a random test key for isolation
         let keys = nostr::Keys::generate();
-        let nsec = keys.secret_key().to_bech32().expect("Failed to encode nsec");
-        let npub = keys.public_key().to_bech32().expect("Failed to encode npub");
+        let nsec = keys
+            .secret_key()
+            .to_bech32()
+            .expect("Failed to encode nsec");
+        let npub = keys
+            .public_key()
+            .to_bech32()
+            .expect("Failed to encode npub");
         let key_line = format!("{} self\n", nsec);
-        std::fs::write(config_dir.join("keys"), &key_line)
-            .expect("Failed to write keys");
+        std::fs::write(config_dir.join("keys"), &key_line).expect("Failed to write keys");
         println!("Using test key: {} (petname: self)", &nsec[..20]);
 
         TestEnv {
@@ -490,10 +519,7 @@ crawl_depth = 0
                 "HOME".to_string(),
                 self.home_dir.to_string_lossy().to_string(),
             ),
-            (
-                "NOSTR_PREFER_LOCAL".to_string(),
-                "0".to_string(),
-            ),
+            ("NOSTR_PREFER_LOCAL".to_string(), "0".to_string()),
             (
                 "HTREE_CONFIG_DIR".to_string(),
                 config_dir.to_string_lossy().to_string(),
@@ -508,10 +534,7 @@ crawl_depth = 0
                     std::env::var("PATH").unwrap_or_default()
                 ),
             ),
-            (
-                "HTREE_VERBOSE".to_string(),
-                "1".to_string(),
-            ),
+            ("HTREE_VERBOSE".to_string(), "1".to_string()),
         ]
     }
 
@@ -521,7 +544,8 @@ crawl_depth = 0
         let servers_json: Vec<String> = servers.iter().map(|s| format!("\"{}\"", s)).collect();
         let servers_str = servers_json.join(", ");
 
-        let config_content = format!(r#"
+        let config_content = format!(
+            r#"
 [server]
 enable_auth = false
 stun_port = 0
@@ -533,7 +557,9 @@ crawl_depth = 0
 [blossom]
 read_servers = [{servers_str}]
 write_servers = [{servers_str}]
-"#, relay_url);
+"#,
+            relay_url
+        );
 
         std::fs::write(config_dir.join("config.toml"), config_content)
             .expect("Failed to update config");
@@ -590,7 +616,11 @@ pub fn create_test_repo() -> TempDir {
         .expect("Failed to configure git");
 
     // Create test files
-    std::fs::write(path.join("README.md"), "# Test Repository\n\nThis is a test.\n").unwrap();
+    std::fs::write(
+        path.join("README.md"),
+        "# Test Repository\n\nThis is a test.\n",
+    )
+    .unwrap();
     std::fs::write(path.join("hello.txt"), "Hello, World!\n").unwrap();
     std::fs::create_dir_all(path.join("src")).unwrap();
     std::fs::write(

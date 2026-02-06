@@ -1,7 +1,7 @@
 //! Hashing utilities using SHA256
 
-use sha2::{Sha256, Digest};
 use crate::types::Hash;
+use sha2::{Digest, Sha256};
 
 /// Compute SHA256 hash of data
 pub fn sha256(data: &[u8]) -> Hash {

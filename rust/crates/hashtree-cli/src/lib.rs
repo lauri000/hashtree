@@ -23,15 +23,20 @@ pub use nostrdb_integration as socialgraph;
 pub use nostrdb_stub as socialgraph;
 
 pub use config::Config;
-pub use hashtree_resolver::nostr::{NostrRootResolver, NostrResolverConfig};
-pub use hashtree_resolver::{Keys as NostrKeys, ResolverEntry, ResolverError, RootResolver, ToBech32 as NostrToBech32};
+pub use fetch::{FetchConfig, Fetcher};
+pub use hashtree_resolver::nostr::{NostrResolverConfig, NostrRootResolver};
+pub use hashtree_resolver::{
+    Keys as NostrKeys, ResolverEntry, ResolverError, RootResolver, ToBech32 as NostrToBech32,
+};
 pub use server::HashtreeServer;
 pub use storage::{
-    CachedRoot, HashtreeStore, TreeMeta, StorageByPriority,
-    PRIORITY_OWN, PRIORITY_FOLLOWED, PRIORITY_OTHER,
+    CachedRoot, HashtreeStore, StorageByPriority, TreeMeta, PRIORITY_FOLLOWED, PRIORITY_OTHER,
+    PRIORITY_OWN,
 };
-pub use fetch::{FetchConfig, Fetcher};
 pub use sync::{BackgroundSync, SyncConfig, SyncPriority, SyncStatus, SyncTask};
-pub use webrtc::{WebRTCState, ConnectionState};
+pub use webrtc::{ConnectionState, WebRTCState};
 #[cfg(feature = "p2p")]
-pub use webrtc::{ContentStore, DataMessage, PeerClassifier, PeerId, PeerPool, PoolConfig, PoolSettings, WebRTCConfig, WebRTCManager};
+pub use webrtc::{
+    ContentStore, DataMessage, PeerClassifier, PeerId, PeerPool, PoolConfig, PoolSettings,
+    WebRTCConfig, WebRTCManager,
+};
