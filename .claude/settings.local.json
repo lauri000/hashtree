@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo test:*)",
+      "Bash(pnpm exec tsc:*)",
+      "Bash(git pull:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(pnpm build:*)",
+      "Bash(cargo build:*)",
+      "Bash(pnpm test:e2e:*)",
+      "Bash(ls:*)",
+      "Bash(pnpm exec playwright test:*)",
+      "Bash(cargo search:*)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm install:*)",
+      "Bash(pnpm run test:e2e:*)",
+      "Bash(pnpm run build:*)",
+      "Bash(pnpm run lint:*)"
+    ]
+  }
+}
