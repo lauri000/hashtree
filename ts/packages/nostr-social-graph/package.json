@@ -23,16 +23,13 @@
     "prepack": "pnpm run prepare-npm-release",
     "docs": "typedoc"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/mmalmi/nostr-social-graph.git"
-  },
+  "repository": "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree",
   "author": "Martti Malmi",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/mmalmi/nostr-social-graph/issues"
   },
-  "homepage": "https://github.com/mmalmi/nostr-social-graph",
+  "homepage": "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree",
   "documentation": "https://mmalmi.github.io/nostr-social-graph/docs/",
   "files": [
     "src",
