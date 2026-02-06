@@ -6,6 +6,16 @@ import { join } from 'path';
 
 const pkgDir = join(__dirname, '..');
 
+function npmEnv(): NodeJS.ProcessEnv {
+  // pnpm sets extra npm_config_* env vars that npm warns about. Strip the known ones so test output stays clean.
+  const env = { ...process.env };
+  delete env.npm_config_npm_globalconfig;
+  delete env.npm_config_recursive;
+  delete env.npm_config_verify_deps_before_run;
+  delete env.npm_config__jsr_registry;
+  return env;
+}
+
 describe('npm pack', () => {
   let tempDir: string;
   let tarball: string;
@@ -18,6 +28,7 @@ describe('npm pack', () => {
     const filename = execSync('npm pack', {
       cwd: pkgDir,
       encoding: 'utf-8',
+      env: npmEnv(),
     }).trim();
     tarball = join(pkgDir, filename);
 
@@ -31,7 +42,7 @@ describe('npm pack', () => {
       join(tempDir, 'package.json'),
       JSON.stringify({ name: 'test', type: 'module' })
     );
-    execSync(`npm install ${tarball}`, { cwd: tempDir, stdio: 'pipe' });
+    execSync(`npm install ${tarball}`, { cwd: tempDir, stdio: 'pipe', env: npmEnv() });
   });
 
   afterAll(() => {
