@@ -2166,7 +2166,7 @@ dependencies = [
 
 [[package]]
 name = "git-remote-htree"
-version = "0.2.3"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2372,7 +2372,7 @@ checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
 name = "hashtree-blossom"
-version = "0.2.3"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2390,7 +2390,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-cli"
-version = "0.2.3"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2414,7 +2414,7 @@ dependencies = [
  "lru",
  "nostr",
  "nostr-sdk",
- "nostrdb",
+ "nostrdb-social",
  "rand 0.8.5",
  "reqwest",
  "rmp-serde",
@@ -2438,7 +2438,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-config"
-version = "0.2.3"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -2448,7 +2448,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-core"
-version = "0.2.3"
+version = "0.2.6"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2467,7 +2467,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-fs"
-version = "0.2.3"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "hashtree-core",
@@ -2479,7 +2479,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-resolver"
-version = "0.2.3"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "hashtree-core",
@@ -2491,7 +2491,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-webrtc"
-version = "0.2.3"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3674,9 +3674,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "nostrdb"
+name = "nostrdb-social"
 version = "0.8.0"
-source = "git+https://github.com/mmalmi/nostrdb-rs#6a9f839681d6c45e09637775897a6ff056a88df0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a73a319e3c8e92067e6bc5904dc4472eea3b7a8a9b9a6e6813242ae5b487ad4"
 dependencies = [
  "bindgen",
  "cc",
