@@ -30,14 +30,11 @@ curl -fsSL https://github.com/mmalmi/hashtree/releases/latest/download/hashtree-
 ### Cargo (requires Rust)
 
 ```bash
-# CLI + daemon
+# CLI + daemon + git remote helper (default)
 cargo install hashtree-cli
 
-# Minimal install without P2P/WebRTC (smaller binary)
+# Minimal install without P2P/WebRTC/git-remote (smaller binary)
 cargo install hashtree-cli --no-default-features
-
-# Git remote helper
-cargo install git-remote-htree
 ```
 
 ## Getting started
