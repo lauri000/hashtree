@@ -42,4 +42,8 @@ EOF
 export HTREE_CONFIG_DIR="${CONFIG_DIR}"
 
 cd "${ROOT_DIR}/rust"
+HTREE_BIN="${ROOT_DIR}/rust/target/debug/htree"
+if [[ -x "${HTREE_BIN}" ]]; then
+  exec "${HTREE_BIN}" start --addr "${ADDR}"
+fi
 exec cargo run -p hashtree-cli -- start --addr "${ADDR}"

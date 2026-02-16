@@ -92,6 +92,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Prebuild htree daemon for E2E
+        run: cargo build --manifest-path ../rust/Cargo.toml -p hashtree-cli
+
       - name: Install Playwright browsers
         run: pnpm exec playwright install chromium --with-deps
 
@@ -165,4 +171,4 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run integration tests
-        run: cargo test --workspace -- --ignored
+        run: cargo test --workspace --tests
