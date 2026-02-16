@@ -5,7 +5,10 @@ import { visualizer } from 'rollup-plugin-visualizer';
 import { VitePWA } from 'vite-plugin-pwa';
 import { resolve } from 'path';
 
+const isGithubPagesBuild = process.env.GITHUB_PAGES === 'true';
+
 export default defineConfig({
+  base: isGithubPagesBuild ? '/hashtree/' : '/',
   define: {
     'import.meta.env.VITE_BUILD_TIME': JSON.stringify(new Date().toISOString()),
   },
