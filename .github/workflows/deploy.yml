@@ -24,6 +24,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/configure-pages@v5
+
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: ts/package.json
