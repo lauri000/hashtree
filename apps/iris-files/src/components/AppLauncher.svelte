@@ -2,11 +2,14 @@
   import { appsStore, type AppBookmark } from '../stores/apps';
   import { navigate } from '../lib/router.svelte';
 
+  const baseUrl = import.meta.env.BASE_URL;
+  const irisLogoUrl = `${baseUrl}iris-logo.png`;
+
   // Default suggested apps
   const suggestions: AppBookmark[] = [
-    { url: 'https://files.iris.to', name: 'Iris Files', icon: '/iris-logo.png', addedAt: 0 },
-    { url: 'https://video.iris.to', name: 'Iris Video', icon: '/iris-logo.png', addedAt: 0 },
-    { url: 'https://iris.to', name: 'Iris Social', icon: '/iris-logo.png', addedAt: 0 },
+    { url: 'https://files.iris.to', name: 'Iris Files', icon: irisLogoUrl, addedAt: 0 },
+    { url: 'https://video.iris.to', name: 'Iris Video', icon: irisLogoUrl, addedAt: 0 },
+    { url: 'https://iris.to', name: 'Iris Social', icon: irisLogoUrl, addedAt: 0 },
   ];
 
   let favorites = $derived($appsStore);
@@ -22,6 +25,17 @@
 
   function addToFavorites(app: AppBookmark) {
     appsStore.add({ ...app, addedAt: Date.now() });
+  }
+
+  function resolveIcon(icon: string | undefined): string | undefined {
+    if (!icon) return undefined;
+    if (icon.startsWith('http://') || icon.startsWith('https://') || icon.startsWith('data:')) {
+      return icon;
+    }
+    if (icon.startsWith('/')) {
+      return `${baseUrl}${icon.slice(1)}`;
+    }
+    return icon;
   }
 
   function getInitial(name: string): string {
@@ -70,7 +84,7 @@
               >
                 <div class="w-14 h-14 rounded-xl {getColor(app.name)} flex items-center justify-center text-white text-xl font-semibold shadow-lg hover:scale-105 transition-transform">
                   {#if app.icon}
-                    <img src={app.icon} alt="" class="w-10 h-10 rounded-lg" />
+                    <img src={resolveIcon(app.icon)} alt="" class="w-10 h-10 rounded-lg" />
                   {:else}
                     {getInitial(app.name)}
                   {/if}
@@ -101,7 +115,7 @@
           >
             <div class="w-12 h-12 rounded-xl bg-surface-2 flex items-center justify-center shrink-0">
               {#if app.icon}
-                <img src={app.icon} alt="" class="w-8 h-8 rounded-lg" />
+                <img src={resolveIcon(app.icon)} alt="" class="w-8 h-8 rounded-lg" />
               {:else}
                 <span class="text-lg font-semibold text-text-2">{getInitial(app.name)}</span>
               {/if}

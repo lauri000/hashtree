@@ -42,7 +42,7 @@ async function loadNostrWasm(): Promise<void> {
 
   try {
     // Fetch wasm from public directory (not base64 inlined)
-    const response = fetch('/secp256k1.wasm');
+    const response = fetch(`${import.meta.env.BASE_URL}secp256k1.wasm`);
     wasmVerifier = await NostrWasm(response);
     console.log('[Worker NDK] nostr-wasm loaded from wasm file');
   } catch (err) {

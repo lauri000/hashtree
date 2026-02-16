@@ -101,7 +101,7 @@ export async function loadWasmGit(): Promise<WasmGitModule> {
     (globalThis as Record<string, unknown>).wasmGitModuleOverrides = {
       locateFile: (path: string) => {
         if (path.endsWith('.wasm')) {
-          return '/lg2_async.wasm';
+          return `${import.meta.env.BASE_URL}lg2_async.wasm`;
         }
         return path;
       },
