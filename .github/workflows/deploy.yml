@@ -43,7 +43,7 @@ jobs:
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: ts/packages/iris-files/dist
+          path: apps/iris-files/dist
 
   deploy:
     needs: build
