@@ -87,6 +87,7 @@ export interface WebRTCControllerConfig {
 }
 
 type PeerClassifier = (pubkey: string) => PeerPool;
+type PoolConnectionConfig = { maxConnections: number; satisfiedConnections: number };
 
 // ============================================================================
 // Controller
@@ -104,7 +105,7 @@ export class WebRTCController {
   private recentRequests = new LRUCache<string, number>(1000);
 
   // Pool configuration - reasonable defaults, settings sync will override
-  private poolConfig = {
+  private poolConfig: Record<PeerPool, PoolConnectionConfig> = {
     follows: { maxConnections: 20, satisfiedConnections: 10 },
     other: { maxConnections: 16, satisfiedConnections: 8 },
   };
@@ -834,7 +835,7 @@ export class WebRTCController {
 
         peer.pendingRequests.set(hashKey, {
           hash,
-          resolve: (data) => {
+          resolve: (data: Uint8Array | null) => {
             if (!resolved && data) {
               resolved = true;
               resolve(data);
