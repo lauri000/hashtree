@@ -115,7 +115,7 @@
   });
 </script>
 
-<section class="py-8 space-y-6 max-w-3xl" data-testid="settings-page">
+<section class="py-8 space-y-6 max-w-3xl mx-auto w-full" data-testid="settings-page">
   <div class="bg-surface-1 rounded-xl p-5 space-y-3">
     <h2 class="text-text-1 text-lg font-semibold">Storage</h2>
     <p class="text-text-3 text-sm">Local IndexedDB cache size limit</p>
