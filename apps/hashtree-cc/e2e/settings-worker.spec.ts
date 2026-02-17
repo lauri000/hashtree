@@ -1,20 +1,13 @@
 import { test, expect } from '@playwright/test';
 import { createHash } from 'crypto';
 
-test('settings page exposes connectivity toggle and persists server/storage settings', async ({ page }) => {
+test('settings page persists storage/server settings and allows relay updates', async ({ page }) => {
   await page.goto('/');
 
   await expect(page.getByTestId('connectivity-indicator')).toBeVisible();
-
-  await page.getByTestId('nav-settings').click();
+  await page.goto('/#/settings');
   await expect(page).toHaveURL(/#\/settings$/);
   await expect(page.getByTestId('settings-page')).toBeVisible();
-
-  const showConnectivity = page.getByTestId('settings-show-connectivity');
-  await showConnectivity.uncheck();
-  await expect(page.getByTestId('connectivity-indicator')).toHaveCount(0);
-  await showConnectivity.check();
-  await expect(page.getByTestId('connectivity-indicator')).toBeVisible();
 
   const storageLimit = page.getByTestId('settings-storage-limit-mb');
   await storageLimit.fill('2048');
@@ -26,10 +19,14 @@ test('settings page exposes connectivity toggle and persists server/storage sett
   await page.getByTestId('settings-add-server').click();
   await expect(page.getByTestId('settings-server-item').filter({ hasText: 'files.example.test' })).toBeVisible();
 
-  await page.goto('/#/dev');
-  await page.getByTestId('nav-settings').click();
+  await page.getByTestId('settings-new-relay').fill('wss://relay.example.test');
+  await page.getByTestId('settings-add-relay').click();
+  await expect(page.getByTestId('settings-relay-item').filter({ hasText: 'relay.example.test' })).toBeVisible();
+
+  await page.goto('/#/settings');
   await expect(storageLimit).toHaveValue('2048');
   await expect(page.getByTestId('settings-server-item').filter({ hasText: 'files.example.test' })).toBeVisible();
+  await expect(page.getByTestId('settings-relay-item').filter({ hasText: 'relay.example.test' })).toBeVisible();
 });
 
 test('uploaded file stays viewable after reload without blossom GET fallback', async ({ page }) => {

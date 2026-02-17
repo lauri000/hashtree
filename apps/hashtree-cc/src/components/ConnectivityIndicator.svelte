@@ -4,32 +4,37 @@
 
   let connectivity = $derived($connectivityStore);
   let p2p = $derived($p2pStore);
-  let totalServers = $derived(connectivity.totalReadServers > 0 ? connectivity.totalReadServers : connectivity.totalWriteServers);
-  let reachableServers = $derived(connectivity.totalReadServers > 0 ? connectivity.reachableReadServers : connectivity.reachableWriteServers);
   let peerCount = $derived(p2p.peerCount);
+  let configuredRelays = $derived(p2p.relayCount);
+  let connectedRelays = $derived(p2p.connectedRelayCount);
+  let displayRelays = $derived.by(() => connectedRelays > 0 ? connectedRelays : configuredRelays);
+  let totalConnections = $derived(displayRelays + peerCount);
 
   let color = $derived.by(() => {
     if (!connectivity.online) return '#ff5f56';
-    if (peerCount > 0) return '#2ba640';
-    if (totalServers === 0) return '#6a6a6a';
-    if (reachableServers === 0) return '#ff5f56';
-    if (reachableServers < totalServers) return '#f4bf4f';
+    if (connectedRelays === 0) return configuredRelays > 0 ? '#f4bf4f' : '#ff5f56';
+    if (peerCount === 0) return '#f4bf4f';
     return '#2ba640';
   });
 
   let title = $derived.by(() => {
     if (!connectivity.online) return 'Offline';
-    if (totalServers === 0) return `${peerCount} peers, no servers configured`;
-    return `${peerCount} peers, ${reachableServers}/${totalServers} servers reachable`;
+    if (connectedRelays === 0) {
+      return configuredRelays > 0
+        ? `Connecting to ${configuredRelays} relay${configuredRelays !== 1 ? 's' : ''}`
+        : 'No relays configured';
+    }
+    if (peerCount === 0) return `${connectedRelays} relay${connectedRelays !== 1 ? 's' : ''}, no peers`;
+    return `${peerCount} peer${peerCount !== 1 ? 's' : ''}, ${connectedRelays} relay${connectedRelays !== 1 ? 's' : ''}`;
   });
 </script>
 
 <a
   href="/#/settings"
-  class="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-surface-1/70 no-underline text-xs"
+  class="flex flex-col items-center px-2 py-1 no-underline text-sm"
   title={title}
   data-testid="connectivity-indicator"
 >
-  <span class="i-lucide-wifi text-sm" style="color: {color}"></span>
-  <span style="color: {color}">{peerCount}p {reachableServers}/{totalServers}s</span>
+  <span class="i-lucide-wifi" style="color: {color}"></span>
+  <span class="text-xs -mt-1" style="color: {color}">{totalConnections}</span>
 </a>

@@ -19,18 +19,40 @@ const DEFAULT_RELAYS = [
   'wss://relay.nostr.band',
 ];
 
+export type P2PRelayStatus = 'connected' | 'connecting' | 'disconnected';
+
+export interface P2PRelayState {
+  url: string;
+  status: P2PRelayStatus;
+}
+
+export interface P2PPeerState {
+  peerId: string;
+  pubkey: string;
+  connected: boolean;
+  pool: 'follows' | 'other';
+  bytesSent: number;
+  bytesReceived: number;
+}
+
 export interface P2PState {
   started: boolean;
   peerCount: number;
   relayCount: number;
+  connectedRelayCount: number;
   pubkey: string | null;
+  peers: P2PPeerState[];
+  relays: P2PRelayState[];
 }
 
 const DEFAULT_STATE: P2PState = {
   started: false,
   peerCount: 0,
   relayCount: 0,
+  connectedRelayCount: 0,
   pubkey: null,
+  peers: [],
+  relays: [],
 };
 
 export const p2pStore = writable<P2PState>(DEFAULT_STATE);
@@ -52,7 +74,10 @@ declare global {
       started: boolean;
       peerCount: number;
       relayCount: number;
+      connectedRelayCount: number;
       pubkey: string | null;
+      peers: P2PPeerState[];
+      relays: P2PRelayState[];
     };
   }
 }
@@ -72,12 +97,48 @@ function normalizeRelays(relays: string[] | undefined): string[] {
   return Array.from(unique);
 }
 
+function getRelayStates(): P2PRelayState[] {
+  const online = typeof navigator === 'undefined' ? true : navigator.onLine;
+  const statuses = pool?.listConnectionStatus() ?? new Map<string, boolean>();
+  const connected = new Set<string>();
+  for (const [relayUrl, isConnected] of statuses.entries()) {
+    if (isConnected) {
+      connected.add(normalizeRelay(relayUrl));
+    }
+  }
+
+  return currentRelays.map((relay) => {
+    const normalized = normalizeRelay(relay);
+    if (connected.has(normalized)) {
+      return { url: relay, status: 'connected' };
+    }
+    if (controller && online) {
+      return { url: relay, status: 'connecting' };
+    }
+    return { url: relay, status: 'disconnected' };
+  });
+}
+
 function updateDebugState(): void {
+  const peers = controller?.getPeerStats().map(peer => ({
+    peerId: peer.peerId,
+    pubkey: peer.pubkey,
+    connected: peer.connected,
+    pool: peer.pool,
+    bytesSent: peer.bytesSent,
+    bytesReceived: peer.bytesReceived,
+  })) ?? [];
+  const relays = getRelayStates();
+  const connectedRelayCount = relays.filter(relay => relay.status === 'connected').length;
+
   const state: P2PState = {
     started: !!controller,
-    peerCount: controller?.getConnectedCount() ?? 0,
+    peerCount: peers.filter(peer => peer.connected).length,
     relayCount: currentRelays.length,
+    connectedRelayCount,
     pubkey: publicKey,
+    peers,
+    relays,
   };
   p2pStore.set(state);
   if (typeof window !== 'undefined') {
@@ -132,7 +193,8 @@ function handleSignalingEvent(event: Event): void {
 
 async function publishEvent(event: Event): Promise<void> {
   if (!pool) return;
-  await pool.publish(currentRelays, event);
+  const publishes = pool.publish(currentRelays, event);
+  await Promise.allSettled(publishes);
 }
 
 async function sendSignaling(msg: SignalingMessage, recipientPubkey?: string): Promise<void> {
@@ -174,18 +236,18 @@ function setupSubscriptions(relays: string[]): void {
   subscriptions = [];
 
   const since = Math.floor((Date.now() - MAX_EVENT_AGE_SEC * 1000) / 1000);
-  const helloSub = pool.subscribe(relays, [{
+  const helloSub = pool.subscribe(relays, {
     kinds: [SIGNALING_KIND],
     '#l': [HELLO_TAG],
     since,
-  }], {
+  }, {
     onevent: handleSignalingEvent,
   });
-  const directedSub = pool.subscribe(relays, [{
+  const directedSub = pool.subscribe(relays, {
     kinds: [SIGNALING_KIND],
     '#p': [publicKey],
     since,
-  }], {
+  }, {
     onevent: handleSignalingEvent,
   });
   subscriptions = [helloSub, directedSub];

@@ -17,6 +17,8 @@
   let copiedText = $state(false);
   let editing = $state(false);
   let editText = $state('');
+  let fileSize = $state(0);
+  let activeObjectUrl = '';
 
   const ext = $derived(fileName.split('.').pop()?.toLowerCase() ?? '');
   const isImage = $derived(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp', 'avif'].includes(ext));
@@ -25,6 +27,14 @@
   const isText = $derived(['txt', 'md', 'json', 'csv', 'xml', 'html', 'css', 'js', 'ts', 'py', 'rs', 'go', 'sh', 'toml', 'yaml', 'yml', 'log', 'ini', 'cfg', 'conf', 'env', 'svelte', 'jsx', 'tsx'].includes(ext));
   const isPdf = $derived(ext === 'pdf');
 
+  const decodedFileName = $derived.by(() => {
+    try {
+      return decodeURIComponent(fileName);
+    } catch {
+      return fileName;
+    }
+  });
+  const htreeUrl = $derived(`/htree/${nhash}/${encodeURIComponent(decodedFileName)}`);
   const shareUrl = $derived(`${window.location.origin}/#/${nhash}/${encodeURIComponent(fileName)}`);
 
   function copyLink() {
@@ -33,20 +43,64 @@
     setTimeout(() => { copiedLink = false; }, 2000);
   }
 
+  function formatSize(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+
   function loadFromData(data: ArrayBuffer | Uint8Array) {
+    fileSize = data.byteLength;
     if (isText) {
       textContent = new TextDecoder().decode(data);
     } else {
+      if (activeObjectUrl) {
+        URL.revokeObjectURL(activeObjectUrl);
+        activeObjectUrl = '';
+      }
       const mimeType = getMimeType();
       const blob = new Blob([data], mimeType ? { type: mimeType } : undefined);
-      blobUrl = URL.createObjectURL(blob);
+      activeObjectUrl = URL.createObjectURL(blob);
+      blobUrl = activeObjectUrl;
     }
     status = 'loaded';
+  }
+
+  async function loadFromHtreeUrl(): Promise<boolean> {
+    if (isText) return false;
+    try {
+      const response = await fetch(htreeUrl, {
+        method: 'HEAD',
+        cache: 'no-store',
+      });
+      if (!response.ok) return false;
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+      if (contentType.includes('text/html')) return false;
+
+      const contentLength = Number.parseInt(response.headers.get('content-length') || '', 10);
+      if (Number.isFinite(contentLength) && contentLength >= 0) {
+        fileSize = contentLength;
+      }
+      if (activeObjectUrl) {
+        URL.revokeObjectURL(activeObjectUrl);
+        activeObjectUrl = '';
+      }
+      blobUrl = htreeUrl;
+      status = 'loaded';
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async function fetchBlob() {
     const cid = nhashDecode(nhash);
     const hashHex = toHex(cid.hash);
+
+    if (await loadFromHtreeUrl()) {
+      return;
+    }
 
     try {
       const data = await fetchBuffer(hashHex);
@@ -119,6 +173,10 @@
     const _nhash = nhash;
     status = 'loading';
     error = '';
+    if (activeObjectUrl) {
+      URL.revokeObjectURL(activeObjectUrl);
+      activeObjectUrl = '';
+    }
     blobUrl = '';
     textContent = '';
     editing = false;
@@ -131,7 +189,7 @@
 <div class="py-8" data-testid="file-viewer">
   <div class="mb-4 flex items-center justify-between gap-4">
     <div class="min-w-0">
-      <h2 class="text-text-1 text-lg font-medium truncate">{decodeURIComponent(fileName)}</h2>
+      <h2 class="text-text-1 text-lg font-medium truncate">{decodeURIComponent(fileName)}{#if fileSize > 0}<span class="text-text-3 text-sm font-normal ml-2">{formatSize(fileSize)}</span>{/if}</h2>
     </div>
     <div class="flex items-center gap-2 shrink-0">
       {#if isText && status === 'loaded' && !editing}
