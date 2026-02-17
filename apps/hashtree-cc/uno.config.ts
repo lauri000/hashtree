@@ -15,6 +15,8 @@ export default defineConfig({
     'i-lucide-x',
     'i-lucide-folder',
     'i-lucide-code',
+    'i-lucide-settings',
+    'i-lucide-wifi',
     'i-lucide-globe',
     'i-lucide-zap',
     'i-lucide-shield',

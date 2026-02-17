@@ -1,7 +1,6 @@
 <script lang="ts">
   import { nhashDecode, toHex } from '@hashtree/core';
-  import { getCachedBlob } from '../lib/blobCache';
-  import { uploadBuffer } from '../lib/blossomStore';
+  import { fetchBuffer, uploadBuffer } from '../lib/blossomStore';
 
   interface Props {
     nhash: string;
@@ -9,11 +8,6 @@
   }
 
   let { nhash, fileName }: Props = $props();
-
-  const BLOSSOM_SERVERS = [
-    'https://blossom.primal.net',
-    'https://upload.iris.to',
-  ];
 
   let status = $state<'loading' | 'loaded' | 'error'>('loading');
   let error = $state('');
@@ -39,7 +33,7 @@
     setTimeout(() => { copiedLink = false; }, 2000);
   }
 
-  function loadFromData(data: ArrayBuffer) {
+  function loadFromData(data: ArrayBuffer | Uint8Array) {
     if (isText) {
       textContent = new TextDecoder().decode(data);
     } else {
@@ -54,27 +48,15 @@
     const cid = nhashDecode(nhash);
     const hashHex = toHex(cid.hash);
 
-    // Check local cache first (just-uploaded files)
-    const cached = getCachedBlob(hashHex);
-    if (cached) {
-      loadFromData(cached.data);
+    try {
+      const data = await fetchBuffer(hashHex);
+      loadFromData(data);
       return;
+    } catch {
+      // Continue to error state.
     }
 
-    // Fetch from Blossom servers
-    for (const server of BLOSSOM_SERVERS) {
-      try {
-        const res = await fetch(`${server}/${hashHex}`);
-        if (res.ok) {
-          loadFromData(await res.arrayBuffer());
-          return;
-        }
-      } catch {
-        continue;
-      }
-    }
-
-    error = 'File not found on any server';
+    error = 'File not found in local cache or configured servers';
     status = 'error';
   }
 

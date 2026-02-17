@@ -68,6 +68,9 @@ importers:
       '@hashtree/core':
         specifier: workspace:*
         version: link:../../ts/packages/hashtree
+      '@hashtree/worker':
+        specifier: workspace:*
+        version: link:../../ts/packages/hashtree-worker
       nostr-tools:
         specifier: ^2.11.0
         version: 2.18.2(typescript@5.9.3)
@@ -448,6 +451,22 @@ importers:
       ws:
         specifier: ^8.18.3
         version: 8.18.3
+
+  packages/hashtree-worker:
+    dependencies:
+      '@hashtree/core':
+        specifier: workspace:*
+        version: link:../hashtree
+      '@hashtree/dexie':
+        specifier: workspace:*
+        version: link:../hashtree-dexie
+      nostr-tools:
+        specifier: ^2.18.2
+        version: 2.18.2(typescript@5.9.3)
+    devDependencies:
+      typescript:
+        specifier: ^5.3.0
+        version: 5.9.3
 
   packages/ndk:
     dependencies:

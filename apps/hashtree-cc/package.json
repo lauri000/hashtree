@@ -6,15 +6,15 @@
   "description": "hashtree.cc - decentralized file sharing & developer tools",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "pnpm --dir ../../ts --filter @hashtree/worker build && vite",
+    "build": "pnpm --dir ../../ts --filter @hashtree/worker build && vite build",
     "preview": "vite preview",
     "test": "playwright test",
     "test:e2e": "playwright test"
   },
   "dependencies": {
     "@hashtree/core": "workspace:*",
-    "nostr-tools": "^2.11.0"
+    "@hashtree/worker": "workspace:*"
   },
   "devDependencies": {
     "@iconify-json/lucide": "^1.2.75",
