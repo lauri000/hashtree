@@ -1,0 +1,23 @@
+{
+  "name": "hashtree-cc",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "description": "hashtree.cc - decentralized file sharing & developer tools",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@iconify-json/lucide": "^1.2.75",
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "@tsconfig/svelte": "^5.0.4",
+    "@unocss/preset-icons": "^66.5.9",
+    "svelte": "^5.16.0",
+    "typescript": "^5.3.0",
+    "unocss": "^66.5.9",
+    "vite": "^6.0.0"
+  }
+}

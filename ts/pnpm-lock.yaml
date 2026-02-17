@@ -63,6 +63,33 @@ importers:
         specifier: ^8.18.3
         version: 8.18.3
 
+  ../apps/hashtree-cc:
+    devDependencies:
+      '@iconify-json/lucide':
+        specifier: ^1.2.75
+        version: 1.2.77
+      '@sveltejs/vite-plugin-svelte':
+        specifier: ^5.0.3
+        version: 5.1.1(svelte@5.45.6)(vite@6.4.1(@types/node@24.10.1)(jiti@2.6.1)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.2))
+      '@tsconfig/svelte':
+        specifier: ^5.0.4
+        version: 5.0.6
+      '@unocss/preset-icons':
+        specifier: ^66.5.9
+        version: 66.5.10
+      svelte:
+        specifier: ^5.16.0
+        version: 5.45.6
+      typescript:
+        specifier: ^5.3.0
+        version: 5.9.3
+      unocss:
+        specifier: ^66.5.9
+        version: 66.5.10(postcss@8.5.6)(vite@6.4.1(@types/node@24.10.1)(jiti@2.6.1)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.2))
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.1(@types/node@24.10.1)(jiti@2.6.1)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.2)
+
   ../apps/iris:
     dependencies:
       '@tauri-apps/api':
