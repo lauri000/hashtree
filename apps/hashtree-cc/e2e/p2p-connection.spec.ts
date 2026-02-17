@@ -67,6 +67,11 @@ test('two isolated sessions connect to each other over p2p', async ({ browser })
       return peerCountA > 0 && peerCountB > 0;
     }, { timeout: 30000 }).toBe(true);
 
+    await expect.poll(async () => pageA.evaluate(() => {
+      const icon = document.querySelector<HTMLElement>('[data-testid="connectivity-indicator"] .i-lucide-wifi');
+      return icon ? getComputedStyle(icon).color : null;
+    }), { timeout: 30000 }).toBe('rgb(88, 166, 255)');
+
     await pageA.goto('/#/settings');
     await expect(pageA.getByTestId('settings-peer-item').first()).toBeVisible();
     await expect(pageA.getByTestId('settings-relay-item').first()).toContainText('localhost');

@@ -12,20 +12,20 @@
 
   let color = $derived.by(() => {
     if (!connectivity.online) return '#ff5f56';
+    if (peerCount > 0) return '#58a6ff';
     if (connectedRelays === 0) return configuredRelays > 0 ? '#f4bf4f' : '#ff5f56';
-    if (peerCount === 0) return '#f4bf4f';
-    return '#2ba640';
+    return '#f4bf4f';
   });
 
   let title = $derived.by(() => {
     if (!connectivity.online) return 'Offline';
+    if (peerCount > 0) return `${peerCount} peer${peerCount !== 1 ? 's' : ''}, ${connectedRelays} relay${connectedRelays !== 1 ? 's' : ''}`;
     if (connectedRelays === 0) {
       return configuredRelays > 0
         ? `Connecting to ${configuredRelays} relay${configuredRelays !== 1 ? 's' : ''}`
         : 'No relays configured';
     }
-    if (peerCount === 0) return `${connectedRelays} relay${connectedRelays !== 1 ? 's' : ''}, no peers`;
-    return `${peerCount} peer${peerCount !== 1 ? 's' : ''}, ${connectedRelays} relay${connectedRelays !== 1 ? 's' : ''}`;
+    return `${connectedRelays} relay${connectedRelays !== 1 ? 's' : ''}, no peers`;
   });
 </script>
 
