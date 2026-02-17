@@ -27,6 +27,7 @@ export type WorkerRequest =
   | { type: 'close'; id: string }
   | { type: 'putBlob'; id: string; data: Uint8Array; mimeType?: string; upload?: boolean }
   | { type: 'getBlob'; id: string; hashHex: string }
+  | { type: 'registerMediaPort'; id: string; port: MessagePort }
   | { type: 'setBlossomServers'; id: string; servers: BlossomServerConfig[] }
   | { type: 'setStorageMaxBytes'; id: string; maxBytes: number }
   | { type: 'getStorageStats'; id: string }

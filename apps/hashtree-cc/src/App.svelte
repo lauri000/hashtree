@@ -6,6 +6,7 @@
   import FileViewer from './components/FileViewer.svelte';
   import SettingsPage from './components/SettingsPage.svelte';
   import ConnectivityIndicator from './components/ConnectivityIndicator.svelte';
+  import BandwidthIndicator from './components/BandwidthIndicator.svelte';
   import Footer from './components/Footer.svelte';
   import { settingsStore } from './lib/settings';
 
@@ -15,8 +16,7 @@
     | { type: 'settings' }
     | { type: 'viewer'; nhash: string; fileName: string }
   >({ type: 'share' });
-  let showConnectivity = $derived($settingsStore.ui.showConnectivity);
-
+  let showBandwidthIndicator = $derived($settingsStore.ui.showBandwidthIndicator);
   function parseHash() {
     const hash = window.location.hash;
     if (!hash || hash.length < 3) {
@@ -55,15 +55,20 @@
 </script>
 
 <div class="min-h-full flex flex-col">
-  <header class="px-4 py-3 flex items-center justify-between max-w-5xl mx-auto w-full">
-    <a href="/" class="flex items-center gap-2 no-underline" onclick={navigate}>
-      <span class="text-xl font-bold text-accent font-mono"># hashtree</span>
-    </a>
-    <div class="flex items-center gap-2">
-      {#if showConnectivity}
+  <header class="px-4 py-3 flex flex-col items-center gap-2 max-w-5xl mx-auto w-full">
+    <div class="flex items-center justify-between w-full">
+      <a href="/" class="flex items-center gap-2 no-underline" onclick={navigate}>
+        <span class="text-xl font-bold text-accent font-mono"># hashtree</span>
+      </a>
+      <div class="flex items-center gap-2">
+        {#if showBandwidthIndicator}
+          <BandwidthIndicator />
+        {/if}
         <ConnectivityIndicator />
-      {/if}
-      {#if route.type !== 'viewer'}
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      {#if route.type === 'share' || route.type === 'dev'}
         <nav class="flex gap-1 bg-surface-1 rounded-lg p-1">
           <a
             href="/"
@@ -86,17 +91,7 @@
             <span class="i-lucide-code mr-1.5 text-xs"></span>
             For Developers
           </a>
-          <a
-            href="/#/settings"
-            class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors no-underline"
-            class:bg-surface-2={route.type === 'settings'}
-            class:text-text-1={route.type === 'settings'}
-            class:text-text-2={route.type !== 'settings'}
-            data-testid="nav-settings"
-          >
-            <span class="i-lucide-settings mr-1.5 text-xs"></span>
-            Settings
-          </a>
+
         </nav>
       {/if}
     </div>

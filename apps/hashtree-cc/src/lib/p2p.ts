@@ -16,7 +16,6 @@ const DEFAULT_RELAYS = [
   'wss://relay.primal.net',
   'wss://nos.lol',
   'wss://temp.iris.to',
-  'wss://relay.nostr.band',
 ];
 
 export type P2PRelayStatus = 'connected' | 'connecting' | 'disconnected';

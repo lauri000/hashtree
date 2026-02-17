@@ -8,8 +8,9 @@ test('settings page persists storage/server settings and allows relay updates', 
   await page.goto('/#/settings');
   await expect(page).toHaveURL(/#\/settings$/);
   await expect(page.getByTestId('settings-page')).toBeVisible();
-  await expect(page.getByText('HTTP servers as fallback when the content cannot be found from webrtc peers')).toBeVisible();
   await expect(page.getByTestId('settings-blossom-link')).toHaveAttribute('href', 'https://github.com/hzrd149/blossom');
+  await expect(page.getByRole('link', { name: 'Share Privately' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'For Developers' })).toHaveCount(0);
 
   const storageLimit = page.getByTestId('settings-storage-limit-mb');
   await storageLimit.fill('2048');

@@ -10,7 +10,7 @@ export interface HashtreeCcSettings {
     maxBytes: number;
   };
   ui: {
-    showConnectivity: boolean;
+    showBandwidthIndicator: boolean;
   };
 }
 
@@ -21,20 +21,22 @@ export const DEFAULT_SETTINGS: HashtreeCcSettings = {
   network: {
     relays: [
       'wss://relay.primal.net',
-      'wss://nos.lol',
       'wss://temp.iris.to',
-      'wss://relay.nostr.band',
+      'wss://relay.damus.io',
+      'wss://relay.snort.social',
+      'wss://offchain.pub',
     ],
     blossomServers: [
-      { url: 'https://blossom.primal.net', read: true, write: true },
+      { url: 'https://cdn.iris.to', read: true, write: false },
       { url: 'https://upload.iris.to', read: false, write: true },
+      { url: 'https://blossom.primal.net', read: true, write: true },
     ],
   },
   storage: {
     maxBytes: 1024 * MB,
   },
   ui: {
-    showConnectivity: true,
+    showBandwidthIndicator: false,
   },
 };
 
@@ -70,6 +72,9 @@ function normalizeSettings(raw: unknown): HashtreeCcSettings {
   const normalizedMaxBytes = Number.isFinite(maxBytes) && maxBytes >= 100 * MB
     ? Math.round(maxBytes)
     : DEFAULT_SETTINGS.storage.maxBytes;
+  const showBandwidthIndicator = typeof candidate.ui?.showBandwidthIndicator === 'boolean'
+    ? candidate.ui.showBandwidthIndicator
+    : DEFAULT_SETTINGS.ui.showBandwidthIndicator;
 
   return {
     network: {
@@ -80,7 +85,7 @@ function normalizeSettings(raw: unknown): HashtreeCcSettings {
       maxBytes: normalizedMaxBytes,
     },
     ui: {
-      showConnectivity: candidate.ui?.showConnectivity ?? DEFAULT_SETTINGS.ui.showConnectivity,
+      showBandwidthIndicator,
     },
   };
 }
@@ -122,13 +127,6 @@ function createSettingsStore() {
 
     getState: (): HashtreeCcSettings => get(store),
 
-    setShowConnectivity: (value: boolean) => {
-      commit((settings) => ({
-        ...settings,
-        ui: { ...settings.ui, showConnectivity: value },
-      }));
-    },
-
     setStorageLimitMb: (mb: number) => {
       const boundedMb = Math.min(10_000, Math.max(100, Math.round(mb || 0)));
       commit((settings) => ({
@@ -142,6 +140,16 @@ function createSettingsStore() {
       commit((settings) => ({
         ...settings,
         storage: { ...settings.storage, maxBytes: bounded },
+      }));
+    },
+
+    setShowBandwidthIndicator: (enabled: boolean) => {
+      commit((settings) => ({
+        ...settings,
+        ui: {
+          ...settings.ui,
+          showBandwidthIndicator: enabled,
+        },
       }));
     },
 

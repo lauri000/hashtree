@@ -15,87 +15,8 @@
 </script>
 
 <section class="py-12">
-  <div class="text-center mb-12">
-    <h2 class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
-      Git without GitHub
-    </h2>
-    <p class="text-lg text-text-2 max-w-xl mx-auto">
-      Push and pull git repos over content-addressed storage.
-      No server required. Sync over Blossom servers, WebRTC, or any transport.
-    </p>
-  </div>
-
-  <!-- Demo section -->
-  <div class="bg-surface-1 rounded-xl p-6 mb-8">
-    <h3 class="text-lg font-semibold text-text-1 mb-4">
-      <span class="i-lucide-terminal mr-2"></span>
-      Quick Start
-    </h3>
-
-    <div class="space-y-4">
-      <div>
-        <p class="text-text-2 text-sm mb-2">1. Install the CLI and git remote helper</p>
-        <div class="bg-surface-0 rounded-lg p-3 flex items-start justify-between gap-2 font-mono text-sm">
-          <code class="text-accent text-xs break-all whitespace-pre-wrap">{installCmd}</code>
-          <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors mt-0.5" onclick={() => copy(installCmd)}>
-            {#if copiedCmd === installCmd}
-              <span class="i-lucide-check text-success"></span>
-            {:else}
-              <span class="i-lucide-copy"></span>
-            {/if}
-          </button>
-        </div>
-        <p class="text-text-3 text-xs mt-2">Or with Cargo: <code class="text-accent">{cargoCmd}</code></p>
-      </div>
-
-      <div>
-        <p class="text-text-2 text-sm mb-2">2. Push a repo</p>
-        <div class="bg-surface-0 rounded-lg p-3 flex items-center justify-between gap-2 font-mono text-sm">
-          <code class="text-accent truncate">{pushCmd}</code>
-          <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors" onclick={() => copy(pushCmd)}>
-            {#if copiedCmd === pushCmd}
-              <span class="i-lucide-check text-success"></span>
-            {:else}
-              <span class="i-lucide-copy"></span>
-            {/if}
-          </button>
-        </div>
-        <p class="text-text-3 text-xs mt-2">Outputs a <code class="text-accent">htree://npub.../reponame</code> link you can share with anyone.</p>
-      </div>
-
-      <div>
-        <p class="text-text-2 text-sm mb-2">3. Clone from anyone</p>
-        <div class="bg-surface-0 rounded-lg p-3 flex items-center justify-between gap-2 font-mono text-sm">
-          <code class="text-accent truncate">{cloneCmd}</code>
-          <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors" onclick={() => copy(cloneCmd)}>
-            {#if copiedCmd === cloneCmd}
-              <span class="i-lucide-check text-success"></span>
-            {:else}
-              <span class="i-lucide-copy"></span>
-            {/if}
-          </button>
-        </div>
-      </div>
-
-      <div>
-        <p class="text-text-2 text-sm mb-2">4. Join the P2P network <span class="text-text-3">(optional)</span></p>
-        <div class="bg-surface-0 rounded-lg p-3 flex items-center justify-between gap-2 font-mono text-sm">
-          <code class="text-accent truncate">{daemonCmd}</code>
-          <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors" onclick={() => copy(daemonCmd)}>
-            {#if copiedCmd === daemonCmd}
-              <span class="i-lucide-check text-success"></span>
-            {:else}
-              <span class="i-lucide-copy"></span>
-            {/if}
-          </button>
-        </div>
-        <p class="text-text-3 text-xs mt-2">Serve your data over WebRTC directly to browsers and other peers — no servers needed.</p>
-      </div>
-    </div>
-  </div>
-
-  <!-- How it works -->
-  <div class="text-center mb-8 mt-16">
+  <!-- Content-Addressed Storage -->
+  <div class="text-center mb-8">
     <h2 class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
       Content-Addressed Storage
     </h2>
@@ -175,6 +96,85 @@
           <p class="text-text-1 text-sm font-medium">Iris Files</p>
           <p class="text-text-3 text-xs">Full-featured file manager at <a href="https://files.iris.to" class="text-accent hover:underline" target="_blank" rel="noopener">files.iris.to</a>.</p>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Git without GitHub -->
+  <div class="text-center mb-8 mt-16">
+    <h2 class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
+      Git without GitHub
+    </h2>
+    <p class="text-lg text-text-2 max-w-xl mx-auto">
+      Push and pull git repos over content-addressed storage.
+      No server required. Sync over Blossom servers, WebRTC, or any transport.
+    </p>
+  </div>
+
+  <div class="bg-surface-1 rounded-xl p-6 mb-8">
+    <h3 class="text-lg font-semibold text-text-1 mb-4">
+      <span class="i-lucide-terminal mr-2"></span>
+      Quick Start
+    </h3>
+
+    <div class="space-y-4">
+      <div>
+        <p class="text-text-2 text-sm mb-2">1. Install the CLI and git remote helper</p>
+        <div class="bg-surface-0 rounded-lg p-3 flex items-start justify-between gap-2 font-mono text-sm">
+          <code class="text-accent text-xs break-all whitespace-pre-wrap">{installCmd}</code>
+          <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors mt-0.5" onclick={() => copy(installCmd)}>
+            {#if copiedCmd === installCmd}
+              <span class="i-lucide-check text-success"></span>
+            {:else}
+              <span class="i-lucide-copy"></span>
+            {/if}
+          </button>
+        </div>
+        <p class="text-text-3 text-xs mt-2">Or with Cargo: <code class="text-accent">{cargoCmd}</code></p>
+      </div>
+
+      <div>
+        <p class="text-text-2 text-sm mb-2">2. Push a repo</p>
+        <div class="bg-surface-0 rounded-lg p-3 flex items-center justify-between gap-2 font-mono text-sm">
+          <code class="text-accent truncate">{pushCmd}</code>
+          <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors" onclick={() => copy(pushCmd)}>
+            {#if copiedCmd === pushCmd}
+              <span class="i-lucide-check text-success"></span>
+            {:else}
+              <span class="i-lucide-copy"></span>
+            {/if}
+          </button>
+        </div>
+        <p class="text-text-3 text-xs mt-2">Outputs a <code class="text-accent">htree://npub.../reponame</code> link you can share with anyone.</p>
+      </div>
+
+      <div>
+        <p class="text-text-2 text-sm mb-2">3. Clone from anyone</p>
+        <div class="bg-surface-0 rounded-lg p-3 flex items-center justify-between gap-2 font-mono text-sm">
+          <code class="text-accent truncate">{cloneCmd}</code>
+          <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors" onclick={() => copy(cloneCmd)}>
+            {#if copiedCmd === cloneCmd}
+              <span class="i-lucide-check text-success"></span>
+            {:else}
+              <span class="i-lucide-copy"></span>
+            {/if}
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <p class="text-text-2 text-sm mb-2">4. Join the P2P network <span class="text-text-3">(optional)</span></p>
+        <div class="bg-surface-0 rounded-lg p-3 flex items-center justify-between gap-2 font-mono text-sm">
+          <code class="text-accent truncate">{daemonCmd}</code>
+          <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors" onclick={() => copy(daemonCmd)}>
+            {#if copiedCmd === daemonCmd}
+              <span class="i-lucide-check text-success"></span>
+            {:else}
+              <span class="i-lucide-copy"></span>
+            {/if}
+          </button>
+        </div>
+        <p class="text-text-3 text-xs mt-2">Serve your data over WebRTC directly to browsers and other peers — no servers needed.</p>
       </div>
     </div>
   </div>

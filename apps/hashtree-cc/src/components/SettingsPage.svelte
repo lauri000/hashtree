@@ -2,11 +2,14 @@
   import { settingsStore, DEFAULT_SETTINGS } from '../lib/settings';
   import { getStorageStats } from '../lib/workerClient';
   import { p2pStore, type P2PRelayStatus } from '../lib/p2p';
+  import { minidenticon } from 'minidenticons';
+  import { animalName } from '../lib/animalName';
 
   const MB = 1024 * 1024;
 
   let settings = $derived($settingsStore);
   let p2p = $derived($p2pStore);
+  let connectedPeers = $derived(p2p.peers.filter((peer) => peer.connected));
   let newServerUrl = $state('');
   let newRelayUrl = $state('');
   let storageStats = $state({ items: 0, bytes: 0, maxBytes: settingsStore.getState().storage.maxBytes });
@@ -48,13 +51,6 @@
     }
   }
 
-  function readWriteLabel(read?: boolean, write?: boolean): string {
-    const modes: string[] = [];
-    if (read ?? true) modes.push('read');
-    if (write ?? false) modes.push('write');
-    return modes.length > 0 ? modes.join(' + ') : 'disabled';
-  }
-
   function relayStatusColor(status: P2PRelayStatus): string {
     switch (status) {
       case 'connected':
@@ -85,9 +81,20 @@
     }
   }
 
-  function shortPubkey(pubkey: string): string {
-    if (pubkey.length <= 16) return pubkey;
-    return `${pubkey.slice(0, 8)}...${pubkey.slice(-8)}`;
+  function serverLabel(url: string): string {
+    return url.replace(/^https?:\/\//, '');
+  }
+
+  function peerAnimalName(pubkey: string): string {
+    try {
+      return animalName(pubkey);
+    } catch {
+      return 'Unknown Peer';
+    }
+  }
+
+  function identiconUri(seed: string): string {
+    return `data:image/svg+xml;utf8,${encodeURIComponent(minidenticon(seed, 50, 50))}`;
   }
 
   $effect(() => {
@@ -117,44 +124,72 @@
 
 <section class="py-8 space-y-6 max-w-3xl mx-auto w-full" data-testid="settings-page">
   <div class="bg-surface-1 rounded-xl p-5 space-y-3">
-    <h2 class="text-text-1 text-lg font-semibold">Storage</h2>
-    <p class="text-text-3 text-sm">Local IndexedDB cache size limit</p>
-    <div class="grid grid-cols-2 gap-3 text-sm">
-      <div class="bg-surface-0 rounded-lg p-3">
-        <div class="text-text-3 text-xs mb-1">Items</div>
-        <div class="text-text-1 font-medium">{storageStats.items.toLocaleString()}</div>
-      </div>
-      <div class="bg-surface-0 rounded-lg p-3">
-        <div class="text-text-3 text-xs mb-1">Usage</div>
-        <div class="text-text-1 font-medium">{formatBytes(storageStats.bytes)}</div>
-      </div>
+    <div class="flex items-center justify-between">
+      <h2 class="text-text-1 text-lg font-semibold">Peers ({connectedPeers.length})</h2>
     </div>
-    <label class="flex items-center gap-3 text-sm">
-      <span class="text-text-2 whitespace-nowrap">Limit (MB)</span>
-      <input
-        type="number"
-        min="100"
-        max="10000"
-        step="100"
-        value={Math.round(settings.storage.maxBytes / MB)}
-        onchange={(e) => settingsStore.setStorageLimitMb(parseInt(e.currentTarget.value, 10) || 1024)}
-        class="bg-surface-0 text-text-1 border border-surface-3 rounded-lg px-3 py-2 w-42"
-        data-testid="settings-storage-limit-mb"
-      />
-      <span class="text-text-3 text-xs">Current: {formatBytes(settings.storage.maxBytes)}</span>
-    </label>
+    <p class="text-text-3 text-sm">Currently connected WebRTC peers discovered via Nostr signaling relays</p>
+
+    {#if p2p.pubkey}
+      {@const myPeerName = peerAnimalName(p2p.pubkey)}
+      <div class="bg-surface-0 border border-surface-3 rounded-lg p-3 flex items-center gap-3" title={p2p.pubkey}>
+        <div class="rounded-full flex items-center justify-center shrink-0 bg-surface-3 w-8 h-8">
+          <img src={identiconUri(p2p.pubkey)} alt="" width="24" height="24" />
+        </div>
+        <div class="min-w-0 flex-1">
+          <div class="text-text-3 text-xs">Your peer identity</div>
+          <div class="text-text-1 text-sm font-medium truncate">{myPeerName}</div>
+        </div>
+      </div>
+    {/if}
+
+    {#if connectedPeers.length === 0}
+      <div class="bg-surface-0 border border-surface-3 rounded-lg p-3 text-text-3 text-sm">
+        No peers connected
+      </div>
+    {:else}
+      <div class="space-y-2">
+        {#each connectedPeers as peer (peer.peerId)}
+          {@const peerStatusLabel = peer.connected ? 'Connected' : 'Connecting'}
+          <div
+            class="bg-surface-0 border border-surface-3 rounded-lg p-3 flex items-center gap-3"
+            data-testid="settings-peer-item"
+            title={peerStatusLabel + ' · ' + peer.pubkey}
+          >
+            <span
+              class="w-2 h-2 rounded-full shrink-0"
+              style={"background:" + (peer.connected ? '#2ba640' : '#f4bf4f')}
+              title={peerStatusLabel}
+            ></span>
+            <div class="min-w-0 flex-1 flex items-center gap-2">
+              <div class="rounded-full flex items-center justify-center shrink-0 bg-surface-3 w-8 h-8">
+                <img src={identiconUri(peer.pubkey)} alt="" width="24" height="24" />
+              </div>
+              <div class="text-text-1 text-sm font-medium truncate">{peerAnimalName(peer.pubkey)}</div>
+            </div>
+            <div class="text-xs text-text-3 text-right">
+              <div>↑ {formatBytes(peer.bytesSent)}</div>
+              <div>↓ {formatBytes(peer.bytesReceived)}</div>
+            </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
   </div>
 
   <div class="bg-surface-1 rounded-xl p-5 space-y-3">
     <div class="flex items-center justify-between">
       <h2 class="text-text-1 text-lg font-semibold">P2P Relays</h2>
     </div>
-    <p class="text-text-3 text-sm">Nostr relays used for WebRTC peer signaling</p>
+    <p class="text-text-3 text-sm">Nostr relays used to find and connect to WebRTC peers</p>
 
     <div class="space-y-2">
       {#each settings.network.relays as relay (relay)}
         {@const relayState = p2p.relays.find(entry => entry.url === relay)?.status ?? 'disconnected'}
-        <div class="bg-surface-0 border border-surface-3 rounded-lg p-3 flex items-center gap-3" data-testid="settings-relay-item">
+        <div
+          class="bg-surface-0 border border-surface-3 rounded-lg p-3 flex items-center gap-3"
+          data-testid="settings-relay-item"
+          title={relayStatusLabel(relayState)}
+        >
           <span
             class="w-2 h-2 rounded-full shrink-0"
             style={"background:" + relayStatusColor(relayState)}
@@ -163,7 +198,6 @@
           ></span>
           <div class="min-w-0 flex-1">
             <div class="text-text-1 text-sm truncate">{relayHost(relay)}</div>
-            <div class="text-text-3 text-xs">{relayStatusLabel(relayState)}</div>
           </div>
           <button
             class="btn-ghost text-xs px-2 py-1 text-danger"
@@ -191,43 +225,11 @@
 
   <div class="bg-surface-1 rounded-xl p-5 space-y-3">
     <div class="flex items-center justify-between">
-      <h2 class="text-text-1 text-lg font-semibold">Peers ({p2p.peers.length})</h2>
-    </div>
-    <p class="text-text-3 text-sm">Live WebRTC peers discovered via Nostr signaling relays</p>
-
-    {#if p2p.peers.length === 0}
-      <div class="bg-surface-0 border border-surface-3 rounded-lg p-3 text-text-3 text-sm">
-        No peers connected
-      </div>
-    {:else}
-      <div class="space-y-2">
-        {#each p2p.peers as peer (peer.peerId)}
-          <div class="bg-surface-0 border border-surface-3 rounded-lg p-3 flex items-center gap-3" data-testid="settings-peer-item">
-            <span
-              class="w-2 h-2 rounded-full shrink-0"
-              style={"background:" + (peer.connected ? '#2ba640' : '#f4bf4f')}
-            ></span>
-            <div class="min-w-0 flex-1">
-              <div class="text-text-1 text-sm font-mono truncate">{shortPubkey(peer.pubkey)}</div>
-              <div class="text-text-3 text-xs">{peer.connected ? 'connected' : 'connecting'} · {peer.pool}</div>
-            </div>
-            <div class="text-xs text-text-3 text-right">
-              <div>↑ {formatBytes(peer.bytesSent)}</div>
-              <div>↓ {formatBytes(peer.bytesReceived)}</div>
-            </div>
-          </div>
-        {/each}
-      </div>
-    {/if}
-  </div>
-
-  <div class="bg-surface-1 rounded-xl p-5 space-y-3">
-    <div class="flex items-center justify-between">
       <h2 class="text-text-1 text-lg font-semibold">Blossom Servers</h2>
       <button class="btn-ghost text-xs" onclick={() => settingsStore.reset()}>Reset All</button>
     </div>
     <p class="text-text-3 text-sm">
-      HTTP servers as fallback when the content cannot be found from webrtc peers.
+      HTTP fallback servers used when content is unavailable from WebRTC peers.
       <a
         href="https://github.com/hzrd149/blossom"
         target="_blank"
@@ -243,8 +245,7 @@
       {#each settings.network.blossomServers as server (server.url)}
         <div class="bg-surface-0 border border-surface-3 rounded-lg p-3 flex items-center gap-3" data-testid="settings-server-item">
           <div class="min-w-0 flex-1">
-            <div class="text-text-1 text-sm truncate">{server.url}</div>
-            <div class="text-text-3 text-xs">{readWriteLabel(server.read, server.write)}</div>
+            <div class="text-text-1 text-sm truncate" title={server.url}>{serverLabel(server.url)}</div>
           </div>
           <label class="text-xs text-text-3 flex items-center gap-1">
             <input
@@ -289,5 +290,51 @@
     <p class="text-text-3 text-xs">
       Default servers: {DEFAULT_SETTINGS.network.blossomServers.map(server => server.url).join(', ')}
     </p>
+  </div>
+
+  <div class="bg-surface-1 rounded-xl p-5 space-y-3">
+    <h2 class="text-text-1 text-lg font-semibold">Storage</h2>
+    <p class="text-text-3 text-sm">Local IndexedDB cache size limit</p>
+    <div class="grid grid-cols-2 gap-3 text-sm">
+      <div class="bg-surface-0 rounded-lg p-3">
+        <div class="text-text-3 text-xs mb-1">Items</div>
+        <div class="text-text-1 font-medium">{storageStats.items.toLocaleString()}</div>
+      </div>
+      <div class="bg-surface-0 rounded-lg p-3">
+        <div class="text-text-3 text-xs mb-1">Usage</div>
+        <div class="text-text-1 font-medium">{formatBytes(storageStats.bytes)}</div>
+      </div>
+    </div>
+    <label class="flex items-center gap-3 text-sm">
+      <span class="text-text-2 whitespace-nowrap">Limit (MB)</span>
+      <input
+        type="number"
+        min="100"
+        max="10000"
+        step="100"
+        value={Math.round(settings.storage.maxBytes / MB)}
+        onchange={(e) => settingsStore.setStorageLimitMb(parseInt(e.currentTarget.value, 10) || 1024)}
+        class="bg-surface-0 text-text-1 border border-surface-3 rounded-lg px-3 py-2 w-42"
+        data-testid="settings-storage-limit-mb"
+      />
+      <span class="text-text-3 text-xs">Current: {formatBytes(settings.storage.maxBytes)}</span>
+    </label>
+  </div>
+
+  <div class="bg-surface-1 rounded-xl p-5 space-y-3">
+    <h2 class="text-text-1 text-lg font-semibold">Header</h2>
+    <label class="flex items-center justify-between gap-3 text-sm">
+      <div>
+        <div class="text-text-1">Show bandwidth indicator in header</div>
+        <div class="text-text-3 text-xs">Display upload and download rates in the top bar</div>
+      </div>
+      <input
+        type="checkbox"
+        checked={settings.ui.showBandwidthIndicator}
+        onchange={(e) => settingsStore.setShowBandwidthIndicator(e.currentTarget.checked)}
+        class="accent-accent w-4 h-4"
+        data-testid="settings-show-bandwidth-toggle"
+      />
+    </label>
   </div>
 </section>

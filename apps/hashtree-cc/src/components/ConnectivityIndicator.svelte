@@ -13,8 +13,9 @@
   let color = $derived.by(() => {
     if (!connectivity.online) return '#ff5f56';
     if (peerCount > 0) return '#58a6ff';
-    if (connectedRelays === 0) return configuredRelays > 0 ? '#f4bf4f' : '#ff5f56';
-    return '#f4bf4f';
+    if (connectedRelays > 0) return '#2ba640';
+    if (configuredRelays > 0) return '#f4bf4f';
+    return '#ff5f56';
   });
 
   let title = $derived.by(() => {

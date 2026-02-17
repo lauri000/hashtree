@@ -103,3 +103,8 @@ export async function getStorageStats(): Promise<{ items: number; bytes: number;
   const worker = await ensureClient();
   return worker.getStorageStats();
 }
+
+export async function registerMediaPort(port: MessagePort): Promise<void> {
+  const worker = await ensureClient();
+  await worker.registerMediaPort(port);
+}

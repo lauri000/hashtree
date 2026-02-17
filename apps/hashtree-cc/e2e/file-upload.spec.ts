@@ -114,6 +114,9 @@ test('nhash URL shows image viewer', async ({ page }) => {
 
   await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10000 });
   await expect(page.getByTestId('viewer-image')).toBeVisible();
+  await expect.poll(async () => page.getByTestId('viewer-image').getAttribute('src')).toContain('/htree/');
+  const src = await page.getByTestId('viewer-image').getAttribute('src');
+  expect(src).not.toContain('blob:');
 });
 
 test('nhash URL shows download for unknown type', async ({ page }) => {

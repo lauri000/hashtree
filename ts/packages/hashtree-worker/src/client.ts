@@ -137,7 +137,8 @@ export class HashtreeWorkerClient {
 
   private async request(
     payload: WorkerRequestPayload,
-    timeoutMs = REQUEST_TIMEOUT_MS
+    timeoutMs = REQUEST_TIMEOUT_MS,
+    transfer: Transferable[] = []
   ): Promise<WorkerResponse> {
     await this.initIfNeeded();
     if (!this.worker) {
@@ -154,7 +155,7 @@ export class HashtreeWorkerClient {
       }, timeoutMs);
 
       this.pending.set(id, { resolve, reject, timeoutId });
-      this.worker?.postMessage(message);
+      this.worker?.postMessage(message, transfer);
     });
   }
 
@@ -192,6 +193,16 @@ export class HashtreeWorkerClient {
     const res = await this.request({ type: 'setBlossomServers', servers });
     if (res.type !== 'void') {
       throw new Error('Unexpected response for setBlossomServers');
+    }
+    if (res.error) {
+      throw new Error(res.error);
+    }
+  }
+
+  async registerMediaPort(port: MessagePort): Promise<void> {
+    const res = await this.request({ type: 'registerMediaPort', port }, REQUEST_TIMEOUT_MS, [port]);
+    if (res.type !== 'void') {
+      throw new Error('Unexpected response for registerMediaPort');
     }
     if (res.error) {
       throw new Error(res.error);
