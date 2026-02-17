@@ -20,6 +20,7 @@
   let blobUrl = $state('');
   let textContent = $state('');
   let copiedLink = $state(false);
+  let copiedText = $state(false);
   let editing = $state(false);
   let editText = $state('');
 
@@ -146,8 +147,15 @@
     </div>
     <div class="flex items-center gap-2 shrink-0">
       {#if isText && status === 'loaded' && !editing}
+        <button class="btn-ghost text-sm" onclick={() => { navigator.clipboard.writeText(textContent); copiedText = true; setTimeout(() => { copiedText = false; }, 2000); }} title="Copy text">
+          {#if copiedText}
+            <span class="i-lucide-check text-success"></span>
+          {:else}
+            <span class="i-lucide-copy"></span>
+          {/if}
+        </button>
         <button class="btn-ghost text-sm" onclick={startEdit} data-testid="edit-button" title="Edit">
-          <span class="i-lucide-pencil mr-1"></span> Edit
+          <span class="i-lucide-pencil"></span>
         </button>
       {/if}
       <button class="btn-ghost text-sm" onclick={copyLink} title="Copy link">

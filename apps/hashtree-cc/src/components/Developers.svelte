@@ -100,7 +100,8 @@
       Content-Addressed Storage
     </h2>
     <p class="text-lg text-text-2 max-w-xl mx-auto">
-      A general-purpose merkle tree that works for git repos, file sharing, and anything else.
+      A simple merkle tree for git repos, file sharing, and anything else.
+      Sync peer-to-peer between browsers and devices, or via servers.
     </p>
   </div>
 
@@ -131,17 +132,18 @@
     </div>
     <div class="bg-surface-1 rounded-xl p-5">
       <div class="i-lucide-globe text-2xl text-accent mb-3"></div>
-      <h3 class="text-text-1 font-semibold mb-2">Transport Agnostic</h3>
+      <h3 class="text-text-1 font-semibold mb-2">Peer-to-Peer</h3>
       <p class="text-text-2 text-sm">
-        Sync over Blossom servers, WebRTC, HTTP, or any custom transport.
+        Share directly between browsers and devices over WebRTC.
+        Also works with Blossom servers, HTTP, or any custom transport.
       </p>
     </div>
     <div class="bg-surface-1 rounded-xl p-5">
       <div class="i-lucide-shield text-2xl text-accent mb-3"></div>
       <h3 class="text-text-1 font-semibold mb-2">No Gatekeepers</h3>
       <p class="text-text-2 text-sm">
-        No DNS, no SSL certificates, no accounts.
-        Identity is a Nostr keypair. You own your data.
+        No DNS, no SSL certificates, no accounts — just a keypair.
+        Ideal for autonomous agents and humans alike.
       </p>
     </div>
   </div>
