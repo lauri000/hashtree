@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
+  import { SvelteURLSearchParams } from 'svelte/reactivity';
   import Prism from 'prismjs';
   // Import popular languages
   import 'prismjs/components/prism-markup';
@@ -173,7 +174,7 @@
     const hash = window.location.hash;
     const qIndex = hash.indexOf('?');
     const basePath = qIndex >= 0 ? hash.slice(0, qIndex) : hash;
-    const currentParams = new URLSearchParams(qIndex >= 0 ? hash.slice(qIndex + 1) : '');
+    const currentParams = new SvelteURLSearchParams(qIndex >= 0 ? hash.slice(qIndex + 1) : '');
 
     if (event.shiftKey && selectedLine !== null) {
       // Shift-click: select range
@@ -190,18 +191,23 @@
   }
 </script>
 
-<pre class="code-viewer"><code class="language-{language}">{#each lines as line, i}{@const lineNum = i + 1}<span
-  class="code-line"
-  class:line-highlighted={isLineHighlighted(lineNum)}
-  data-line={lineNum}
-><span
-  class="line-number"
-  role="button"
-  tabindex="0"
-  onclick={(e) => handleLineClick(lineNum, e)}
-  onkeydown={(e) => e.key === 'Enter' && handleLineClick(lineNum, e as unknown as MouseEvent)}
->{lineNum}</span><span class="line-content">{@html line || ' '}</span>
-</span>{/each}</code></pre>
+<pre class="code-viewer"><code class="language-{language}"
+  >{#each lines as line, i (i)}{@const lineNum = i + 1}<span
+    class="code-line"
+    class:line-highlighted={isLineHighlighted(lineNum)}
+    data-line={lineNum}
+  ><span
+      class="line-number"
+      role="button"
+      tabindex="0"
+      onclick={(e) => handleLineClick(lineNum, e)}
+      onkeydown={(e) => e.key === 'Enter' && handleLineClick(lineNum, e as unknown as MouseEvent)}
+    >{lineNum}</span><span class="line-content"
+      ><!-- eslint-disable-next-line svelte/no-at-html-tags -- Prism output escapes input and only adds token spans -->
+      {@html line || ' '}</span
+    >
+  </span>{/each}</code
+></pre>
 
 <style>
   .code-viewer {

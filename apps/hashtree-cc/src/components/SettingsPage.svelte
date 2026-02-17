@@ -6,6 +6,7 @@
 
   let settings = $derived($settingsStore);
   let newServerUrl = $state('');
+  let newRelayUrl = $state('');
   let storageStats = $state({ items: 0, bytes: 0, maxBytes: settingsStore.getState().storage.maxBytes });
 
   function formatBytes(bytes: number): string {
@@ -25,6 +26,21 @@
       }
       settingsStore.addBlossomServer(parsed.toString());
       newServerUrl = '';
+    } catch {
+      // Ignore invalid URL.
+    }
+  }
+
+  function addRelay() {
+    const url = newRelayUrl.trim();
+    if (!url) return;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'wss:' && parsed.protocol !== 'ws:') {
+        return;
+      }
+      settingsStore.addRelay(parsed.toString());
+      newRelayUrl = '';
     } catch {
       // Ignore invalid URL.
     }
@@ -104,6 +120,41 @@
       />
       <span class="text-text-3 text-xs">Current: {formatBytes(settings.storage.maxBytes)}</span>
     </label>
+  </div>
+
+  <div class="bg-surface-1 rounded-xl p-5 space-y-3">
+    <div class="flex items-center justify-between">
+      <h2 class="text-text-1 text-lg font-semibold">P2P Relays</h2>
+    </div>
+    <p class="text-text-3 text-sm">Nostr relays used for WebRTC peer signaling</p>
+
+    <div class="space-y-2">
+      {#each settings.network.relays as relay (relay)}
+        <div class="bg-surface-0 border border-surface-3 rounded-lg p-3 flex items-center gap-3">
+          <div class="min-w-0 flex-1">
+            <div class="text-text-1 text-sm truncate">{relay}</div>
+          </div>
+          <button
+            class="btn-ghost text-xs px-2 py-1 text-danger"
+            onclick={() => settingsStore.removeRelay(relay)}
+            title="Remove relay"
+          >
+            remove
+          </button>
+        </div>
+      {/each}
+    </div>
+
+    <div class="flex gap-2">
+      <input
+        type="text"
+        bind:value={newRelayUrl}
+        placeholder="wss://relay.example.com"
+        class="flex-1 bg-surface-0 text-text-1 border border-surface-3 rounded-lg px-3 py-2 text-sm"
+        onkeydown={(e) => e.key === 'Enter' && addRelay()}
+      />
+      <button class="btn-primary text-sm" onclick={addRelay}>Add</button>
+    </div>
   </div>
 
   <div class="bg-surface-1 rounded-xl p-5 space-y-3">

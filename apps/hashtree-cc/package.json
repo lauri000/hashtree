@@ -14,7 +14,9 @@
   },
   "dependencies": {
     "@hashtree/core": "workspace:*",
-    "@hashtree/worker": "workspace:*"
+    "@hashtree/nostr": "workspace:*",
+    "@hashtree/worker": "workspace:*",
+    "nostr-tools": "^2.18.2"
   },
   "devDependencies": {
     "@iconify-json/lucide": "^1.2.75",

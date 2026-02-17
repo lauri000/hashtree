@@ -3,6 +3,7 @@ import type { BlossomServerConfig } from '@hashtree/worker';
 
 export interface HashtreeCcSettings {
   network: {
+    relays: string[];
     blossomServers: BlossomServerConfig[];
   };
   storage: {
@@ -18,6 +19,12 @@ const MB = 1024 * 1024;
 
 export const DEFAULT_SETTINGS: HashtreeCcSettings = {
   network: {
+    relays: [
+      'wss://relay.primal.net',
+      'wss://nos.lol',
+      'wss://temp.iris.to',
+      'wss://relay.nostr.band',
+    ],
     blossomServers: [
       { url: 'https://blossom.primal.net', read: true, write: true },
       { url: 'https://upload.iris.to', read: false, write: true },
@@ -50,6 +57,10 @@ function normalizeSettings(raw: unknown): HashtreeCcSettings {
     return DEFAULT_SETTINGS;
   }
   const candidate = raw as Partial<HashtreeCcSettings>;
+  const rawRelays = candidate.network?.relays ?? [];
+  const relays = rawRelays
+    .map(normalizeUrl)
+    .filter(Boolean);
   const rawServers = candidate.network?.blossomServers ?? [];
   const servers = rawServers
     .map(normalizeServer)
@@ -62,6 +73,7 @@ function normalizeSettings(raw: unknown): HashtreeCcSettings {
 
   return {
     network: {
+      relays: relays.length > 0 ? relays : DEFAULT_SETTINGS.network.relays,
       blossomServers: servers.length > 0 ? servers : DEFAULT_SETTINGS.network.blossomServers,
     },
     storage: {
@@ -151,6 +163,34 @@ function createSettingsStore() {
           },
         };
       });
+    },
+
+    addRelay: (url: string) => {
+      const normalized = normalizeUrl(url);
+      if (!normalized) return;
+      commit((settings) => {
+        if (settings.network.relays.includes(normalized)) {
+          return settings;
+        }
+        return {
+          ...settings,
+          network: {
+            ...settings.network,
+            relays: [...settings.network.relays, normalized],
+          },
+        };
+      });
+    },
+
+    removeRelay: (url: string) => {
+      const normalized = normalizeUrl(url);
+      commit((settings) => ({
+        ...settings,
+        network: {
+          ...settings.network,
+          relays: settings.network.relays.filter(relay => relay !== normalized),
+        },
+      }));
     },
 
     removeBlossomServer: (url: string) => {

@@ -8,3 +8,13 @@ export type {
   ConnectivityState,
   BlobSource,
 } from './protocol.js';
+
+export {
+  WebRTCController,
+  WebRTCProxy,
+  initWebRTCProxy,
+  getWebRTCProxy,
+  closeWebRTCProxy,
+} from './p2p/index.js';
+
+export type { WebRTCControllerConfig } from './p2p/index.js';

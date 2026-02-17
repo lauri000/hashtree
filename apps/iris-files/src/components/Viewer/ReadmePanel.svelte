@@ -4,6 +4,7 @@
    */
   import { marked, type Token, type Tokens } from 'marked';
   import DOMPurify from 'dompurify';
+  import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { LinkType, type TreeEntry } from '@hashtree/core';
   import { routeStore } from '../../stores';
 
@@ -15,6 +16,7 @@
 
   let { content, entries, canEdit }: Props = $props();
   let route = $derived($routeStore);
+  let readmeContentEl: HTMLDivElement | undefined;
 
   // Slugify text for anchor IDs (GitHub-style)
   function slugify(text: string): string {
@@ -46,7 +48,7 @@
     const hash = window.location.hash;
     const qIndex = hash.indexOf('?');
     const basePath = qIndex >= 0 ? hash.slice(0, qIndex) : hash;
-    const params = new URLSearchParams(qIndex >= 0 ? hash.slice(qIndex + 1) : '');
+    const params = new SvelteURLSearchParams(qIndex >= 0 ? hash.slice(qIndex + 1) : '');
     params.set('anchor', anchorId);
     history.replaceState(null, '', `${basePath}?${params.toString()}`);
 
@@ -84,13 +86,23 @@
     const hash = window.location.hash;
     const qIndex = hash.indexOf('?');
     if (qIndex < 0) return;
-    const params = new URLSearchParams(hash.slice(qIndex + 1));
+    const params = new SvelteURLSearchParams(hash.slice(qIndex + 1));
     const anchorId = params.get('anchor');
     if (!anchorId) return;
     requestAnimationFrame(() => {
       const el = document.getElementById(anchorId);
       el?.scrollIntoView({ block: 'center' });
     });
+  });
+
+  // Attach delegated click handling without making the content container an interactive element.
+  $effect(() => {
+    const node = readmeContentEl;
+    if (!node) return;
+    node.addEventListener('click', handleAnchorClick);
+    return () => {
+      node.removeEventListener('click', handleAnchorClick);
+    };
   });
 
   function handleEdit() {
@@ -124,8 +136,10 @@
       </button>
     {/if}
   </div>
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div class="readme-content p-4 lg:p-6 prose prose-sm max-w-none text-text-1" onclick={handleAnchorClick}>
+  <div
+    bind:this={readmeContentEl}
+    class="readme-content p-4 lg:p-6 prose prose-sm max-w-none text-text-1"
+  >
     <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized with DOMPurify -->
     {@html htmlContent}
   </div>

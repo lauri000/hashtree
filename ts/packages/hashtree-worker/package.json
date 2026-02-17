@@ -10,6 +10,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./p2p": {
+      "types": "./dist/p2p/index.d.ts",
+      "import": "./dist/p2p/index.js"
+    },
     "./entry": {
       "types": "./dist/entry.d.ts",
       "import": "./dist/entry.js"
@@ -39,6 +43,7 @@
   "dependencies": {
     "@hashtree/core": "workspace:*",
     "@hashtree/dexie": "workspace:*",
+    "@hashtree/nostr": "workspace:*",
     "nostr-tools": "^2.18.2"
   },
   "devDependencies": {

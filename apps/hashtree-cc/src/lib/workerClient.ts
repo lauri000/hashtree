@@ -84,9 +84,13 @@ export async function getWorkerClient(): Promise<HashtreeWorkerClient> {
   return ensureClient();
 }
 
-export async function putBlob(data: Uint8Array, mimeType?: string): Promise<{ hashHex: string; nhash: string }> {
+export async function putBlob(
+  data: Uint8Array,
+  mimeType?: string,
+  upload = true
+): Promise<{ hashHex: string; nhash: string }> {
   const worker = await ensureClient();
-  return worker.putBlob(data, mimeType, true);
+  return worker.putBlob(data, mimeType, upload);
 }
 
 export async function getBlob(hashHex: string): Promise<Uint8Array> {

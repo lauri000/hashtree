@@ -23,7 +23,7 @@ Blossom-compatible storage with chunking and directory structure. Merkle roots c
 - [`@hashtree/git`](https://www.npmjs.com/package/@hashtree/git) - Git/htree interoperability helpers ([source](packages/hashtree-git))
 - [`@hashtree/dexie`](https://www.npmjs.com/package/@hashtree/dexie) - IndexedDB/Dexie storage adapter ([source](packages/hashtree-dexie))
 - [`@hashtree/index`](https://www.npmjs.com/package/@hashtree/index) - B-Tree index structures ([source](packages/hashtree-index))
-- [`@hashtree/worker`](https://www.npmjs.com/package/@hashtree/worker) - Modular browser worker client/runtime for IDB cache + Blossom ([source](packages/hashtree-worker))
+- [`@hashtree/worker`](https://www.npmjs.com/package/@hashtree/worker) - Modular browser worker + WebRTC P2P controller/proxy helpers ([source](packages/hashtree-worker))
 
 **Internal packages:**
 - [`../apps/iris-files`](../apps/iris-files) - Web/desktop app with Nostr integration (Iris Files + Iris Video)

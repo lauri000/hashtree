@@ -83,3 +83,23 @@ test('uploaded file stays viewable after reload without blossom GET fallback', a
   await expect(page.getByTestId('viewer-text')).toContainText(fileContent, { timeout: 10000 });
   expect(getRequests).toBe(0);
 });
+
+test('p2p module is initialized in hashtree-cc', async ({ page }) => {
+  await page.goto('/');
+
+  await expect.poll(async () => page.evaluate(() => {
+    const state = (window as unknown as { __hashtreeCcP2P?: { started: boolean } }).__hashtreeCcP2P;
+    return state?.started ?? false;
+  })).toBe(true);
+
+  const p2pState = await page.evaluate(() => {
+    const state = (window as unknown as { __hashtreeCcP2P?: { started: boolean; peerCount: number } }).__hashtreeCcP2P;
+    return {
+      started: state?.started ?? false,
+      peerCount: state?.peerCount ?? -1,
+    };
+  });
+
+  expect(p2pState.started).toBe(true);
+  expect(p2pState.peerCount).toBeGreaterThanOrEqual(0);
+});

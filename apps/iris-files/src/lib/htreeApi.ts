@@ -113,8 +113,14 @@ async function detectLocalRelay(): Promise<string | null> {
  */
 function buildApi(): HtreeAPI {
   const state = get(nostrStore);
-  const isTauri = typeof window !== 'undefined' &&
-    !!((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__);
+  type TauriWindow = Window & {
+    __TAURI__?: unknown;
+    __TAURI_INTERNALS__?: unknown;
+  };
+  const tauriWindow: TauriWindow | undefined = typeof window !== 'undefined'
+    ? (window as TauriWindow)
+    : undefined;
+  const isTauri = !!(tauriWindow?.__TAURI__ || tauriWindow?.__TAURI_INTERNALS__);
 
   return {
     version: '1.0.0',

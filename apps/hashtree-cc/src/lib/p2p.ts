@@ -1,0 +1,276 @@
+import { fromHex, toHex, type Store } from '@hashtree/core';
+import { WebRTCController, WebRTCProxy } from '@hashtree/worker/p2p';
+import type { SignalingMessage } from '@hashtree/nostr';
+import { SimplePool, type Event } from 'nostr-tools';
+import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { writable } from 'svelte/store';
+import { getBlob, putBlob } from './workerClient';
+import { settingsStore } from './settings';
+
+const SIGNALING_KIND = 25050;
+const HELLO_TAG = 'hello';
+const MAX_EVENT_AGE_SEC = 30;
+const STATS_INTERVAL_MS = 1000;
+
+const DEFAULT_RELAYS = [
+  'wss://relay.primal.net',
+  'wss://nos.lol',
+  'wss://temp.iris.to',
+  'wss://relay.nostr.band',
+];
+
+export interface P2PState {
+  started: boolean;
+  peerCount: number;
+  relayCount: number;
+  pubkey: string | null;
+}
+
+const DEFAULT_STATE: P2PState = {
+  started: false,
+  peerCount: 0,
+  relayCount: 0,
+  pubkey: null,
+};
+
+export const p2pStore = writable<P2PState>(DEFAULT_STATE);
+
+let controller: WebRTCController | null = null;
+let proxy: WebRTCProxy | null = null;
+let pool: SimplePool | null = null;
+let secretKey: Uint8Array | null = null;
+let publicKey: string | null = null;
+let currentRelays: string[] = DEFAULT_RELAYS;
+let subscriptions: Array<{ close: () => void }> = [];
+let statsTimer: ReturnType<typeof setInterval> | null = null;
+let settingsUnsubscribe: (() => void) | null = null;
+let initPromise: Promise<void> | null = null;
+
+declare global {
+  interface Window {
+    __hashtreeCcP2P?: {
+      started: boolean;
+      peerCount: number;
+      relayCount: number;
+      pubkey: string | null;
+    };
+  }
+}
+
+function normalizeRelay(relay: string): string {
+  return relay.trim().replace(/\/+$/, '');
+}
+
+function normalizeRelays(relays: string[] | undefined): string[] {
+  const source = relays && relays.length > 0 ? relays : DEFAULT_RELAYS;
+  const unique = new Set<string>();
+  for (const relay of source) {
+    const normalized = normalizeRelay(relay);
+    if (!normalized) continue;
+    unique.add(normalized);
+  }
+  return Array.from(unique);
+}
+
+function updateDebugState(): void {
+  const state: P2PState = {
+    started: !!controller,
+    peerCount: controller?.getConnectedCount() ?? 0,
+    relayCount: currentRelays.length,
+    pubkey: publicKey,
+  };
+  p2pStore.set(state);
+  if (typeof window !== 'undefined') {
+    window.__hashtreeCcP2P = state;
+  }
+}
+
+function eventExpired(event: Event): boolean {
+  const nowSec = Date.now() / 1000;
+  if (nowSec - event.created_at > MAX_EVENT_AGE_SEC) {
+    return true;
+  }
+  const expirationTag = event.tags.find(tag => tag[0] === 'expiration');
+  if (!expirationTag) return false;
+  const expiration = Number.parseInt(expirationTag[1], 10);
+  return Number.isFinite(expiration) && expiration < nowSec;
+}
+
+function parseDirectedMessage(event: Event): SignalingMessage | null {
+  if (!event.content) return null;
+  try {
+    const parsed = JSON.parse(event.content) as SignalingMessage;
+    if (!parsed || typeof parsed !== 'object' || !('type' in parsed)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function handleSignalingEvent(event: Event): void {
+  if (!controller) return;
+  if (eventExpired(event)) return;
+
+  const helloTag = event.tags.find(tag => tag[0] === 'l' && tag[1] === HELLO_TAG);
+  if (helloTag) {
+    const peerIdTag = event.tags.find(tag => tag[0] === 'peerId');
+    if (!peerIdTag) return;
+    const message: SignalingMessage = {
+      type: 'hello',
+      peerId: peerIdTag[1],
+    };
+    void controller.handleSignalingMessage(message, event.pubkey);
+    return;
+  }
+
+  const directed = parseDirectedMessage(event);
+  if (!directed) return;
+  void controller.handleSignalingMessage(directed, event.pubkey);
+}
+
+async function publishEvent(event: Event): Promise<void> {
+  if (!pool) return;
+  await pool.publish(currentRelays, event);
+}
+
+async function sendSignaling(msg: SignalingMessage, recipientPubkey?: string): Promise<void> {
+  if (!secretKey) return;
+  const expiration = Math.floor((Date.now() + 5 * 60 * 1000) / 1000);
+
+  if (recipientPubkey) {
+    const directedEvent = finalizeEvent({
+      kind: SIGNALING_KIND,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ['p', recipientPubkey],
+        ['expiration', expiration.toString()],
+      ],
+      content: JSON.stringify(msg),
+    }, secretKey);
+    await publishEvent(directedEvent as Event);
+    return;
+  }
+
+  const helloEvent = finalizeEvent({
+    kind: SIGNALING_KIND,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [
+      ['l', HELLO_TAG],
+      ['peerId', msg.peerId],
+      ['expiration', expiration.toString()],
+    ],
+    content: '',
+  }, secretKey);
+  await publishEvent(helloEvent as Event);
+}
+
+function setupSubscriptions(relays: string[]): void {
+  if (!pool || !publicKey) return;
+  for (const sub of subscriptions) {
+    sub.close();
+  }
+  subscriptions = [];
+
+  const since = Math.floor((Date.now() - MAX_EVENT_AGE_SEC * 1000) / 1000);
+  const helloSub = pool.subscribe(relays, [{
+    kinds: [SIGNALING_KIND],
+    '#l': [HELLO_TAG],
+    since,
+  }], {
+    onevent: handleSignalingEvent,
+  });
+  const directedSub = pool.subscribe(relays, [{
+    kinds: [SIGNALING_KIND],
+    '#p': [publicKey],
+    since,
+  }], {
+    onevent: handleSignalingEvent,
+  });
+  subscriptions = [helloSub, directedSub];
+}
+
+async function createLocalStoreAdapter(): Promise<Store> {
+  return {
+    put: async (hash, data) => {
+      const expectedHash = toHex(hash);
+      const stored = await putBlob(data, 'application/octet-stream', false);
+      return stored.hashHex === expectedHash;
+    },
+    get: async (hash) => {
+      try {
+        return await getBlob(toHex(hash));
+      } catch {
+        return null;
+      }
+    },
+    has: async (hash) => {
+      try {
+        const data = await getBlob(toHex(hash));
+        return !!data;
+      } catch {
+        return false;
+      }
+    },
+    delete: async () => false,
+  };
+}
+
+function setupSettingsSync(): void {
+  if (settingsUnsubscribe) return;
+  let lastRelaysKey = '';
+  settingsUnsubscribe = settingsStore.subscribe((settings) => {
+    const nextRelays = normalizeRelays(settings.network.relays);
+    const key = nextRelays.join(',');
+    if (key === lastRelaysKey) return;
+    lastRelaysKey = key;
+    currentRelays = nextRelays;
+    setupSubscriptions(currentRelays);
+    updateDebugState();
+  });
+}
+
+export async function initP2P(): Promise<void> {
+  if (initPromise) return initPromise;
+
+  initPromise = (async () => {
+    const settings = settingsStore.getState();
+    currentRelays = normalizeRelays(settings.network.relays);
+    secretKey = generateSecretKey();
+    publicKey = getPublicKey(secretKey);
+    pool = new SimplePool();
+
+    const localStore = await createLocalStoreAdapter();
+    proxy = new WebRTCProxy((event) => {
+      controller?.handleProxyEvent(event);
+    });
+    controller = new WebRTCController({
+      pubkey: publicKey,
+      localStore,
+      sendCommand: (cmd) => {
+        proxy?.handleCommand(cmd);
+      },
+      sendSignaling,
+      getFollows: () => new Set<string>(),
+      requestTimeout: 1500,
+      debug: false,
+    });
+    controller.start();
+    setupSubscriptions(currentRelays);
+    setupSettingsSync();
+
+    if (!statsTimer) {
+      statsTimer = setInterval(updateDebugState, STATS_INTERVAL_MS);
+    }
+    updateDebugState();
+  })();
+
+  return initPromise;
+}
+
+export async function getFromP2P(hashHex: string): Promise<Uint8Array | null> {
+  await initP2P();
+  if (!controller) return null;
+  return controller.get(fromHex(hashHex));
+}
