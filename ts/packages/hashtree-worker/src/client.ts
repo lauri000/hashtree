@@ -3,6 +3,7 @@ import type {
   BlossomServerConfig,
   BlobSource,
   ConnectivityState,
+  UploadProgressState,
   WorkerConfig,
   WorkerRequest,
   WorkerResponse,
@@ -30,6 +31,7 @@ export class HashtreeWorkerClient {
   private initPromise: Promise<void> | null = null;
   private pending = new Map<string, PendingRequest>();
   private connectivityListeners = new Set<(state: ConnectivityState) => void>();
+  private uploadProgressListeners = new Set<(progress: UploadProgressState) => void>();
 
   constructor(workerFactory: WorkerFactory, config: WorkerConfig = {}) {
     this.workerFactory = workerFactory;
@@ -92,6 +94,11 @@ export class HashtreeWorkerClient {
 
       if (message.type === 'connectivityUpdate') {
         this.connectivityListeners.forEach(listener => listener(message.state));
+        return;
+      }
+
+      if (message.type === 'uploadProgress') {
+        this.uploadProgressListeners.forEach(listener => listener(message.progress));
         return;
       }
 
@@ -249,6 +256,13 @@ export class HashtreeWorkerClient {
     this.connectivityListeners.add(listener);
     return () => {
       this.connectivityListeners.delete(listener);
+    };
+  }
+
+  onUploadProgress(listener: (progress: UploadProgressState) => void): () => void {
+    this.uploadProgressListeners.add(listener);
+    return () => {
+      this.uploadProgressListeners.delete(listener);
     };
   }
 

@@ -7,6 +7,7 @@
   import SettingsPage from './components/SettingsPage.svelte';
   import ConnectivityIndicator from './components/ConnectivityIndicator.svelte';
   import BandwidthIndicator from './components/BandwidthIndicator.svelte';
+  import UploadProgressToast from './components/UploadProgressToast.svelte';
   import Footer from './components/Footer.svelte';
   import { settingsStore } from './lib/settings';
 
@@ -112,3 +113,5 @@
 
   <Footer />
 </div>
+
+<UploadProgressToast />

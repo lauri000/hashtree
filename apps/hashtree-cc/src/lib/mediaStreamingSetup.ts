@@ -4,6 +4,41 @@ let isSetup = false;
 let setupPromise: Promise<boolean> | null = null;
 let activeController: ServiceWorker | null = null;
 let controllerListenerAttached = false;
+const CLIENT_KEY_STORAGE = 'hashtree-cc-media-client-key';
+let mediaClientKey = '';
+
+function generateClientKey(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function ensureClientKey(): string {
+  if (mediaClientKey) return mediaClientKey;
+
+  try {
+    const existing = sessionStorage.getItem(CLIENT_KEY_STORAGE);
+    if (existing) {
+      mediaClientKey = existing;
+      return mediaClientKey;
+    }
+  } catch {
+    // ignore sessionStorage errors
+  }
+
+  mediaClientKey = generateClientKey();
+  try {
+    sessionStorage.setItem(CLIENT_KEY_STORAGE, mediaClientKey);
+  } catch {
+    // ignore sessionStorage errors
+  }
+  return mediaClientKey;
+}
+
+export function getMediaClientKey(): string {
+  return ensureClientKey();
+}
 
 function attachControllerListener(): void {
   if (controllerListenerAttached || !('serviceWorker' in navigator)) return;
@@ -31,6 +66,7 @@ async function waitForController(timeoutMs: number): Promise<ServiceWorker | nul
 
 async function setupWithController(controller: ServiceWorker): Promise<boolean> {
   const setupId = `hashtree-cc-media-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const clientKey = ensureClientKey();
   const channel = new MessageChannel();
 
   const ackPromise = new Promise<boolean>((resolve) => {
@@ -56,6 +92,7 @@ async function setupWithController(controller: ServiceWorker): Promise<boolean> 
   controller.postMessage({
     type: 'REGISTER_WORKER_PORT',
     requestId: setupId,
+    clientKey,
     port: channel.port1,
   }, [channel.port1]);
 

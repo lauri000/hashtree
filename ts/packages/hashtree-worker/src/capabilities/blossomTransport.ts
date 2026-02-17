@@ -1,4 +1,4 @@
-import { BlossomStore, type BlossomSigner, sha256, toHex, fromHex } from '@hashtree/core';
+import { BlossomStore, type BlossomSigner, type BlossomUploadCallback, sha256, toHex, fromHex } from '@hashtree/core';
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import type { BlossomServerConfig } from '../protocol.js';
 
@@ -68,15 +68,26 @@ export class BlossomTransport {
     return this.servers;
   }
 
-  private createStore(servers: BlossomServerConfig[]): BlossomStore {
+  private createStore(servers: BlossomServerConfig[], onUploadProgress?: BlossomUploadCallback): BlossomStore {
     return new BlossomStore({
       servers,
       signer: this.signer,
+      onUploadProgress,
     });
   }
 
-  async upload(hashHex: string, data: Uint8Array, mimeType?: string): Promise<void> {
+  async upload(
+    hashHex: string,
+    data: Uint8Array,
+    mimeType?: string,
+    onUploadProgress?: BlossomUploadCallback
+  ): Promise<void> {
     if (!this.servers.some(server => server.write)) return;
+    if (onUploadProgress) {
+      const store = this.createStore(this.servers, onUploadProgress);
+      await store.put(fromHex(hashHex), data, mimeType);
+      return;
+    }
     await this.store.put(fromHex(hashHex), data, mimeType);
   }
 

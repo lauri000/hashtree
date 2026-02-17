@@ -1,7 +1,13 @@
 /// <reference lib="webworker" />
 
 import { nhashDecode, nhashEncode, toHex } from '@hashtree/core';
-import type { BlobSource, WorkerRequest, WorkerResponse, WorkerConfig } from './protocol.js';
+import type {
+  BlobSource,
+  UploadProgressState,
+  WorkerRequest,
+  WorkerResponse,
+  WorkerConfig,
+} from './protocol.js';
 import { IdbBlobStorage } from './capabilities/idbStorage.js';
 import { BlossomTransport, DEFAULT_BLOSSOM_SERVERS } from './capabilities/blossomTransport.js';
 import { probeConnectivity } from './capabilities/connectivity.js';
@@ -261,14 +267,63 @@ async function handleRequest(req: WorkerRequest): Promise<void> {
         return;
       }
       const hashHex = await storage.put(req.data);
+      const nhash = nhashEncode(hashHex);
       if (req.upload !== false) {
-        void blossom.upload(hashHex, req.data, req.mimeType).catch(() => {});
+        const writeServers = blossom.getServers().filter(server => server.write);
+        if (writeServers.length > 0) {
+          const processedServers = new Set<string>();
+          const progress: UploadProgressState = {
+            hashHex,
+            nhash,
+            totalServers: writeServers.length,
+            processedServers: 0,
+            uploadedServers: 0,
+            skippedServers: 0,
+            failedServers: 0,
+            complete: false,
+          };
+
+          respond({ type: 'uploadProgress', progress: { ...progress } });
+
+          const onUploadProgress = (serverUrl: string, status: 'uploaded' | 'skipped' | 'failed'): void => {
+            if (processedServers.has(serverUrl)) return;
+            processedServers.add(serverUrl);
+
+            switch (status) {
+              case 'uploaded':
+                progress.uploadedServers++;
+                break;
+              case 'skipped':
+                progress.skippedServers++;
+                break;
+              case 'failed':
+                progress.failedServers++;
+                break;
+            }
+
+            progress.processedServers = processedServers.size;
+            progress.complete = progress.processedServers >= progress.totalServers;
+            respond({ type: 'uploadProgress', progress: { ...progress } });
+          };
+
+          void blossom.upload(hashHex, req.data, req.mimeType, onUploadProgress).catch((err) => {
+            if (progress.complete) return;
+            const remaining = progress.totalServers - progress.processedServers;
+            if (remaining > 0) {
+              progress.failedServers += remaining;
+            }
+            progress.processedServers = progress.totalServers;
+            progress.complete = true;
+            progress.error = getErrorMessage(err);
+            respond({ type: 'uploadProgress', progress: { ...progress } });
+          });
+        }
       }
       respond({
         type: 'blobStored',
         id: req.id,
         hashHex,
-        nhash: nhashEncode(hashHex),
+        nhash,
       });
       return;
     }

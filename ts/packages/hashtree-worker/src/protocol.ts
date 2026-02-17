@@ -22,6 +22,18 @@ export interface ConnectivityState {
 
 export type BlobSource = 'idb' | 'blossom';
 
+export interface UploadProgressState {
+  hashHex: string;
+  nhash: string;
+  totalServers: number;
+  processedServers: number;
+  uploadedServers: number;
+  skippedServers: number;
+  failedServers: number;
+  complete: boolean;
+  error?: string;
+}
+
 export type WorkerRequest =
   | { type: 'init'; id: string; config: WorkerConfig }
   | { type: 'close'; id: string }
@@ -41,4 +53,5 @@ export type WorkerResponse =
   | { type: 'void'; id: string; error?: string }
   | { type: 'storageStats'; id: string; items: number; bytes: number; maxBytes: number; error?: string }
   | { type: 'connectivity'; id: string; state?: ConnectivityState; error?: string }
-  | { type: 'connectivityUpdate'; state: ConnectivityState };
+  | { type: 'connectivityUpdate'; state: ConnectivityState }
+  | { type: 'uploadProgress'; progress: UploadProgressState };

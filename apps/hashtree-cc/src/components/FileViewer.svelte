@@ -1,6 +1,7 @@
 <script lang="ts">
   import { nhashDecode, toHex } from '@hashtree/core';
   import { fetchBuffer, uploadBuffer } from '../lib/blossomStore';
+  import { getMediaClientKey, setupMediaStreaming } from '../lib/mediaStreamingSetup';
 
   interface Props {
     nhash: string;
@@ -34,7 +35,9 @@
       return fileName;
     }
   });
-  const htreeUrl = $derived(`/htree/${nhash}/${encodeURIComponent(decodedFileName)}`);
+  const htreeUrl = $derived(
+    `/htree/${nhash}/${encodeURIComponent(decodedFileName)}?htree_c=${encodeURIComponent(getMediaClientKey())}`
+  );
   const shareUrl = $derived(`${window.location.origin}/#/${nhash}/${encodeURIComponent(fileName)}`);
 
   function copyLink() {
@@ -97,6 +100,19 @@
   async function fetchBlob() {
     const cid = nhashDecode(nhash);
     const hashHex = toHex(cid.hash);
+
+    const streamingReady = await setupMediaStreaming().catch(() => false);
+    if (streamingReady && await loadFromHtreeUrl()) {
+      return;
+    }
+
+    if (!streamingReady) {
+      // Give service worker/controller a brief moment to settle on first load.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      if (await setupMediaStreaming().catch(() => false) && await loadFromHtreeUrl()) {
+        return;
+      }
+    }
 
     if (await loadFromHtreeUrl()) {
       return;

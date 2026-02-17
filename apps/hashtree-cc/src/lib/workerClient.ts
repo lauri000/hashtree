@@ -1,5 +1,6 @@
 import { HashtreeWorkerClient } from '@hashtree/worker';
 import type { ConnectivityState } from '@hashtree/worker';
+import type { UploadProgressState } from '@hashtree/worker';
 import { writable } from 'svelte/store';
 import HashtreeWorker from '@hashtree/worker/entry?worker';
 import { settingsStore } from './settings';
@@ -16,12 +17,15 @@ const DEFAULT_CONNECTIVITY: ConnectivityState = {
 const CONNECTIVITY_POLL_INTERVAL_MS = 15_000;
 
 export const connectivityStore = writable<ConnectivityState>(DEFAULT_CONNECTIVITY);
+export const uploadProgressStore = writable<UploadProgressState | null>(null);
 
 let client: HashtreeWorkerClient | null = null;
 let initPromise: Promise<HashtreeWorkerClient> | null = null;
 let settingsUnsubscribe: (() => void) | null = null;
 let connectivityUnsubscribe: (() => void) | null = null;
+let uploadProgressUnsubscribe: (() => void) | null = null;
 let connectivityTimer: ReturnType<typeof setInterval> | null = null;
+let clearUploadProgressTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function probeConnectivity(clientInstance: HashtreeWorkerClient): Promise<void> {
   try {
@@ -54,6 +58,27 @@ function startConnectivityPolling(clientInstance: HashtreeWorkerClient): void {
   }
 }
 
+function startUploadProgressUpdates(clientInstance: HashtreeWorkerClient): void {
+  if (uploadProgressUnsubscribe) return;
+  uploadProgressUnsubscribe = clientInstance.onUploadProgress((progress) => {
+    uploadProgressStore.set(progress);
+
+    if (clearUploadProgressTimer) {
+      clearTimeout(clearUploadProgressTimer);
+      clearUploadProgressTimer = null;
+    }
+
+    if (progress.complete) {
+      clearUploadProgressTimer = setTimeout(() => {
+        uploadProgressStore.update((current) => {
+          if (!current) return current;
+          return current.hashHex === progress.hashHex && current.complete ? null : current;
+        });
+      }, 3000);
+    }
+  });
+}
+
 async function ensureClient(): Promise<HashtreeWorkerClient> {
   if (client) return client;
   if (initPromise) return initPromise;
@@ -69,6 +94,7 @@ async function ensureClient(): Promise<HashtreeWorkerClient> {
     await created.init();
     syncSettingsToWorker(created);
     startConnectivityPolling(created);
+    startUploadProgressUpdates(created);
     client = created;
     return created;
   })();

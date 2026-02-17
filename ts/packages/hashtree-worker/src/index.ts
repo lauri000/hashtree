@@ -6,6 +6,7 @@ export type {
   WorkerRequest,
   WorkerResponse,
   ConnectivityState,
+  UploadProgressState,
   BlobSource,
 } from './protocol.js';
 
