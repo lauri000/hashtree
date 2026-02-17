@@ -7,9 +7,11 @@
     setTimeout(() => { copiedCmd = null; }, 2000);
   }
 
-  const installCmd = 'cargo install hashtree-cli';
-  const cloneCmd = 'git clone htree://npub1.../myrepo';
+  const installCmd = `curl -fsSL https://github.com/mmalmi/hashtree/releases/latest/download/hashtree-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/apple-darwin/' | sed 's/linux/unknown-linux-musl/').tar.gz | tar -xz && cd hashtree && ./install.sh`;
+  const cargoCmd = 'cargo install hashtree-cli';
+  const cloneCmd = 'git clone htree://npub1dqgr6ds2kdauzpqtvpt2ldc5ca4spemj4n4jnjcvn7496x45gnesls5j6g/hashtree';
   const pushCmd = 'git push htree://self/myrepo master';
+  const daemonCmd = 'htree start --daemon';
 </script>
 
 <section class="py-12">
@@ -19,7 +21,7 @@
     </h2>
     <p class="text-lg text-text-2 max-w-xl mx-auto">
       Push and pull git repos over content-addressed storage.
-      No server required. Sync over Nostr relays, Blossom servers, or USB drives.
+      No server required. Sync over Blossom servers, WebRTC, or any transport.
     </p>
   </div>
 
@@ -33,9 +35,9 @@
     <div class="space-y-4">
       <div>
         <p class="text-text-2 text-sm mb-2">1. Install the CLI</p>
-        <div class="bg-surface-0 rounded-lg p-3 flex items-center justify-between gap-2 font-mono text-sm">
-          <code class="text-accent truncate">{installCmd}</code>
-          <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors" onclick={() => copy(installCmd)}>
+        <div class="bg-surface-0 rounded-lg p-3 flex items-start justify-between gap-2 font-mono text-sm">
+          <code class="text-accent text-xs break-all whitespace-pre-wrap">{installCmd}</code>
+          <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors mt-0.5" onclick={() => copy(installCmd)}>
             {#if copiedCmd === installCmd}
               <span class="i-lucide-check text-success"></span>
             {:else}
@@ -43,6 +45,7 @@
             {/if}
           </button>
         </div>
+        <p class="text-text-3 text-xs mt-2">Or with Cargo: <code class="text-accent">{cargoCmd}</code></p>
       </div>
 
       <div>
@@ -57,6 +60,7 @@
             {/if}
           </button>
         </div>
+        <p class="text-text-3 text-xs mt-2">Outputs a <code class="text-accent">htree://npub.../reponame</code> link you can share with anyone.</p>
       </div>
 
       <div>
@@ -72,6 +76,21 @@
           </button>
         </div>
       </div>
+
+      <div>
+        <p class="text-text-2 text-sm mb-2">4. Join the P2P network <span class="text-text-3">(optional)</span></p>
+        <div class="bg-surface-0 rounded-lg p-3 flex items-center justify-between gap-2 font-mono text-sm">
+          <code class="text-accent truncate">{daemonCmd}</code>
+          <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors" onclick={() => copy(daemonCmd)}>
+            {#if copiedCmd === daemonCmd}
+              <span class="i-lucide-check text-success"></span>
+            {:else}
+              <span class="i-lucide-copy"></span>
+            {/if}
+          </button>
+        </div>
+        <p class="text-text-3 text-xs mt-2">Serve your data over WebRTC directly to browsers and other peers — no servers needed.</p>
+      </div>
     </div>
   </div>
 
@@ -81,15 +100,31 @@
       <div class="i-lucide-hard-drive text-2xl text-accent mb-3"></div>
       <h3 class="text-text-1 font-semibold mb-2">Content-Addressed</h3>
       <p class="text-text-2 text-sm">
-        Data is identified by its hash, not by location.
+        Files and directories stored as merkle trees, identified by hash.
         Verify integrity automatically. Deduplicate across repos.
+      </p>
+    </div>
+    <div class="bg-surface-1 rounded-xl p-5">
+      <div class="i-lucide-lock text-2xl text-accent mb-3"></div>
+      <h3 class="text-text-1 font-semibold mb-2">Encrypted by Default</h3>
+      <p class="text-text-2 text-sm">
+        Content Hash Key (CHK) encryption: the key is the hash of the plaintext.
+        Same content always produces the same ciphertext, enabling deduplication even on encrypted data.
+      </p>
+    </div>
+    <div class="bg-surface-1 rounded-xl p-5">
+      <div class="i-lucide-link text-2xl text-accent mb-3"></div>
+      <h3 class="text-text-1 font-semibold mb-2">Mutable References</h3>
+      <p class="text-text-2 text-sm">
+        Use <code class="text-accent">npub/path</code> URLs as stable permalinks.
+        The latest merkle root is published to Nostr relays, so links always resolve to the current version.
       </p>
     </div>
     <div class="bg-surface-1 rounded-xl p-5">
       <div class="i-lucide-globe text-2xl text-accent mb-3"></div>
       <h3 class="text-text-1 font-semibold mb-2">Transport Agnostic</h3>
       <p class="text-text-2 text-sm">
-        Sync over Nostr relays, Blossom servers, WebRTC, HTTP, USB drives, or any custom transport.
+        Sync over Blossom servers, WebRTC, HTTP, or any custom transport.
       </p>
     </div>
     <div class="bg-surface-1 rounded-xl p-5">
@@ -124,13 +159,6 @@
         </div>
       </div>
       <div class="flex gap-3">
-        <div class="i-lucide-zap text-lg text-accent shrink-0 mt-0.5"></div>
-        <div>
-          <p class="text-text-1 text-sm font-medium">Blossom Integration</p>
-          <p class="text-text-3 text-xs">Store and retrieve blobs from any Blossom-compatible server.</p>
-        </div>
-      </div>
-      <div class="flex gap-3">
         <div class="i-lucide-folder text-lg text-accent shrink-0 mt-0.5"></div>
         <div>
           <p class="text-text-1 text-sm font-medium">Iris Files</p>
@@ -143,7 +171,7 @@
   <!-- Links -->
   <div class="flex flex-wrap gap-3 justify-center">
     <a
-      href="https://github.com/mmalmi/hashtree"
+      href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree"
       class="btn-primary inline-flex items-center gap-2 no-underline"
       target="_blank"
       rel="noopener"

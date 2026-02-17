@@ -1,51 +1,64 @@
 <script lang="ts">
-  interface UploadedFile {
-    name: string;
-    size: number;
-    hash: string;
-    url: string;
-    type: string;
-  }
+  import { BlossomStore, nhashEncode, sha256, toHex, fromHex } from '@hashtree/core';
+  import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+  import type { BlossomSigner } from '@hashtree/core';
+  import { cacheBlob } from '../lib/blobCache';
+
+  const BLOSSOM_SERVERS = [
+    { url: 'https://blossom.primal.net', write: true },
+    { url: 'https://upload.iris.to', write: true, read: false },
+  ];
 
   let dragOver = $state(false);
-  let uploading = $state(false);
-  let uploadedFiles = $state<UploadedFile[]>([]);
-  let copiedHash = $state<string | null>(null);
 
-  function formatSize(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  }
+  // Generate ephemeral Nostr keypair (in-memory only)
+  const secretKey = generateSecretKey();
 
-  function toHex(buffer: ArrayBuffer): string {
-    return Array.from(new Uint8Array(buffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-  }
+  const signer: BlossomSigner = async (template) => {
+    const event = finalizeEvent({
+      ...template,
+      kind: template.kind as 24242,
+      created_at: template.created_at,
+      content: template.content,
+      tags: template.tags,
+    }, secretKey);
+    return {
+      kind: event.kind,
+      created_at: event.created_at,
+      content: event.content,
+      tags: event.tags,
+      pubkey: event.pubkey,
+      id: event.id,
+      sig: event.sig,
+    };
+  };
 
-  async function hashFile(file: File): Promise<string> {
-    const buffer = await file.arrayBuffer();
-    const hash = await crypto.subtle.digest('SHA-256', buffer);
-    return toHex(hash);
+  const store = new BlossomStore({
+    servers: BLOSSOM_SERVERS,
+    signer,
+  });
+
+  async function uploadFile(file: File) {
+    // Hash locally
+    const buffer = new Uint8Array(await file.arrayBuffer());
+    const hash = await sha256(buffer);
+    const hashHex = toHex(hash);
+    const nhash = nhashEncode(hashHex);
+
+    // Cache locally so viewer can display immediately
+    cacheBlob(hashHex, buffer, file.type || 'application/octet-stream');
+
+    // Navigate to viewer immediately
+    window.location.hash = `/${nhash}/${encodeURIComponent(file.name)}`;
+
+    // Upload to Blossom in background (fire-and-forget)
+    store.put(fromHex(hashHex), buffer, file.type || 'application/octet-stream').catch(() => {});
   }
 
   async function handleFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
-    uploading = true;
-
-    for (const file of files) {
-      const hash = await hashFile(file);
-      const blobUrl = URL.createObjectURL(file);
-      uploadedFiles = [...uploadedFiles, {
-        name: file.name,
-        size: file.size,
-        hash,
-        url: blobUrl,
-        type: file.type,
-      }];
-    }
-
-    uploading = false;
+    // Upload first file (navigate to its viewer)
+    uploadFile(files[0]);
   }
 
   function handleDrop(e: DragEvent) {
@@ -62,26 +75,6 @@
   function handleDragLeave() {
     dragOver = false;
   }
-
-  function copyHash(hash: string) {
-    navigator.clipboard.writeText(hash);
-    copiedHash = hash;
-    setTimeout(() => { copiedHash = null; }, 2000);
-  }
-
-  function removeFile(hash: string) {
-    const file = uploadedFiles.find(f => f.hash === hash);
-    if (file) URL.revokeObjectURL(file.url);
-    uploadedFiles = uploadedFiles.filter(f => f.hash !== hash);
-  }
-
-  function fileIcon(type: string): string {
-    if (type.startsWith('image/')) return 'i-lucide-image';
-    if (type.startsWith('video/')) return 'i-lucide-video';
-    if (type.startsWith('audio/')) return 'i-lucide-music';
-    if (type.startsWith('text/')) return 'i-lucide-file-text';
-    return 'i-lucide-file';
-  }
 </script>
 
 <section class="pb-12">
@@ -90,59 +83,16 @@
     ondrop={handleDrop}
     ondragover={handleDragOver}
     ondragleave={handleDragLeave}
+    data-testid="drop-zone"
   >
     <input
       type="file"
       multiple
       class="hidden"
+      data-testid="file-input"
       onchange={(e) => handleFiles((e.target as HTMLInputElement).files)}
     />
     <div class="i-lucide-upload text-4xl text-text-3 mx-auto mb-4"></div>
-    {#if uploading}
-      <p class="text-text-2">Processing...</p>
-    {:else}
-      <p class="text-text-1 text-lg font-medium mb-1">Drop files here or click to browse</p>
-      <p class="text-text-3 text-sm">Files are hashed locally. Nothing leaves your browser until you share.</p>
-    {/if}
+    <p class="text-text-1 text-lg font-medium mb-1">Drop files or browse</p>
   </label>
-
-  {#if uploadedFiles.length > 0}
-    <div class="mt-6 space-y-2">
-      {#each uploadedFiles as file (file.hash + file.name)}
-        <div class="bg-surface-1 rounded-lg p-4 flex items-center gap-4">
-          <div class="{fileIcon(file.type)} text-xl text-text-3 shrink-0"></div>
-          <div class="flex-1 min-w-0">
-            <p class="text-text-1 text-sm font-medium truncate">{file.name}</p>
-            <p class="text-text-3 text-xs mt-0.5">{formatSize(file.size)}</p>
-            <p class="text-text-3 text-xs mt-0.5 font-mono truncate">sha256: {file.hash}</p>
-          </div>
-          <div class="flex gap-2 shrink-0">
-            <button
-              class="btn-ghost text-xs !px-2 !py-1"
-              onclick={() => copyHash(file.hash)}
-              title="Copy hash"
-            >
-              {#if copiedHash === file.hash}
-                <span class="i-lucide-check text-success"></span>
-              {:else}
-                <span class="i-lucide-copy"></span>
-              {/if}
-            </button>
-            <button
-              class="btn-ghost text-xs !px-2 !py-1"
-              onclick={() => removeFile(file.hash)}
-              title="Remove"
-            >
-              <span class="i-lucide-x"></span>
-            </button>
-          </div>
-        </div>
-      {/each}
-    </div>
-    <p class="text-text-3 text-xs mt-4 text-center">
-      Blossom upload & WebRTC sharing coming soon.
-      For now, use <a href="https://files.iris.to" class="text-accent hover:underline" target="_blank" rel="noopener">files.iris.to</a>
-      or the <a href="https://github.com/mmalmi/hashtree" class="text-accent hover:underline" target="_blank" rel="noopener">CLI</a>.
-    </p>
-  {/if}
 </section>

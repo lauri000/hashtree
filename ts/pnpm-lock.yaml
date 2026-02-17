@@ -64,10 +64,20 @@ importers:
         version: 8.18.3
 
   ../apps/hashtree-cc:
+    dependencies:
+      '@hashtree/core':
+        specifier: workspace:*
+        version: link:../../ts/packages/hashtree
+      nostr-tools:
+        specifier: ^2.11.0
+        version: 2.18.2(typescript@5.9.3)
     devDependencies:
       '@iconify-json/lucide':
         specifier: ^1.2.75
         version: 1.2.77
+      '@playwright/test':
+        specifier: ^1.50.0
+        version: 1.58.1
       '@sveltejs/vite-plugin-svelte':
         specifier: ^5.0.3
         version: 5.1.1(svelte@5.45.6)(vite@6.4.1(@types/node@24.10.1)(jiti@2.6.1)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.2))

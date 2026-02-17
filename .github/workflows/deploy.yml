@@ -39,7 +39,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Build hashtree-cc
-        run: pnpm --filter hashtree-cc build
+        run: pnpm --filter @hashtree/core build && pnpm --filter hashtree-cc build
 
       - uses: actions/upload-pages-artifact@v3
         with:
