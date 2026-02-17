@@ -17,6 +17,7 @@ lerna-debug.log*
 *.local
 .claude/settings.local.json
 .pnpm-store
+test-results/
 
 # Editor directories and files
 .vscode/*
