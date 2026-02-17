@@ -96,10 +96,16 @@
   }
 
   function download() {
+    let url = blobUrl;
+    if (isText) {
+      const blob = new Blob([textContent], { type: getMimeType() || 'text/plain' });
+      url = URL.createObjectURL(blob);
+    }
     const a = document.createElement('a');
-    a.href = blobUrl;
-    a.download = fileName;
+    a.href = url;
+    a.download = decodeURIComponent(fileName);
     a.click();
+    if (isText) URL.revokeObjectURL(url);
   }
 
   function startEdit() {
@@ -156,6 +162,11 @@
         </button>
         <button class="btn-ghost text-sm" onclick={startEdit} data-testid="edit-button" title="Edit">
           <span class="i-lucide-pencil"></span>
+        </button>
+      {/if}
+      {#if status === 'loaded'}
+        <button class="btn-ghost text-sm" onclick={download} title="Download" data-testid="download-button">
+          <span class="i-lucide-download"></span>
         </button>
       {/if}
       <button class="btn-ghost text-sm" onclick={copyLink} title="Copy link">
