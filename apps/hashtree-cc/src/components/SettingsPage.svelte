@@ -226,7 +226,18 @@
       <h2 class="text-text-1 text-lg font-semibold">Blossom Servers</h2>
       <button class="btn-ghost text-xs" onclick={() => settingsStore.reset()}>Reset All</button>
     </div>
-    <p class="text-text-3 text-sm">Read/write storage backends for shared files</p>
+    <p class="text-text-3 text-sm">
+      HTTP servers as fallback when the content cannot be found from webrtc peers.
+      <a
+        href="https://github.com/hzrd149/blossom"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="text-accent underline ml-1"
+        data-testid="settings-blossom-link"
+      >
+        Blossom
+      </a>
+    </p>
 
     <div class="space-y-2">
       {#each settings.network.blossomServers as server (server.url)}
