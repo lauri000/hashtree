@@ -13,8 +13,16 @@ async function probe(url: string): Promise<boolean> {
   try {
     const res = await fetch(url, {
       method: 'HEAD',
+      // Connectivity checks should not fail just because cross-origin response
+      // headers are restricted. If the fetch resolves in no-cors mode, the
+      // endpoint is reachable.
+      mode: 'no-cors',
       signal: controller.signal,
+      cache: 'no-store',
     });
+    if (res.type === 'opaque') {
+      return true;
+    }
     return res.status >= 100;
   } catch {
     return false;

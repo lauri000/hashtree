@@ -161,9 +161,10 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (editing && (e.ctrlKey || e.metaKey) && e.key === 's') {
+    if (!editing || !(e.ctrlKey || e.metaKey)) return;
+    if (e.key === 's' || e.key === 'Enter') {
       e.preventDefault();
-      saveEdit();
+      void saveEdit();
     }
   }
 

@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { createHash } from 'crypto';
 
+const SAVE_WITH_ENTER = process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter';
+
 test('page loads with Share Privately tab active', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByTestId('drop-zone')).toBeVisible();
@@ -204,6 +206,20 @@ test('type text and save navigates to viewer with content', async ({ page }) => 
   await expect(page.getByTestId('viewer-text')).toContainText(text);
 });
 
+test('cmd/ctrl+enter saves pasted text', async ({ page }) => {
+  const text = 'Shortcut save from textarea';
+  const expectedHash = createHash('sha256').update(text).digest('hex');
+
+  await mockBlossom(page, expectedHash, text);
+  await page.goto('/');
+
+  await page.getByTestId('text-input').fill(text);
+  await page.getByTestId('text-input').press(SAVE_WITH_ENTER);
+
+  await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10000 });
+  await expect(page.getByTestId('viewer-text')).toContainText(text);
+});
+
 test('edit button visible for text files in viewer', async ({ page }) => {
   const fileContent = 'editable text';
   const expectedHash = createHash('sha256').update(fileContent).digest('hex');
@@ -255,6 +271,33 @@ test('edit text file and save creates new nhash URL', async ({ page }) => {
   await expect(page.getByTestId('viewer-text')).toContainText(editedText);
   expect(page.url()).not.toBe(originalUrl);
   expect(page.url()).toContain('nhash1');
+});
+
+test('cmd/ctrl+enter saves edited text', async ({ page }) => {
+  const originalText = 'original content from shortcut test';
+  const editedText = 'edited with keyboard shortcut';
+  const originalHash = createHash('sha256').update(originalText).digest('hex');
+  const editedHash = createHash('sha256').update(editedText).digest('hex');
+
+  await mockBlossom(page, originalHash, originalText);
+  await mockBlossom(page, editedHash, editedText);
+  await page.goto('/');
+
+  await page.getByTestId('file-input').setInputFiles({
+    name: 'doc.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from(originalText),
+  });
+
+  await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10000 });
+
+  await page.getByTestId('edit-button').click();
+  await expect(page.getByTestId('edit-textarea')).toBeVisible();
+
+  await page.getByTestId('edit-textarea').fill(editedText);
+  await page.getByTestId('edit-textarea').press(SAVE_WITH_ENTER);
+
+  await expect(page.getByTestId('viewer-text')).toContainText(editedText, { timeout: 10000 });
 });
 
 test('browser back after edit returns to previous nhash URL', async ({ page }) => {

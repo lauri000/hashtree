@@ -34,6 +34,13 @@
     const data = new TextEncoder().encode(textValue);
     await uploadBuffer(data, 'text.txt', 'text/plain');
   }
+
+  function handleTextKeydown(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && textValue.trim()) {
+      event.preventDefault();
+      void saveText();
+    }
+  }
 </script>
 
 <section class="pb-12">
@@ -60,6 +67,7 @@
       class="w-full bg-surface-1 text-text-1 rounded-xl p-4 pb-12 min-h-[120px] resize-y border border-surface-3 focus:border-accent focus:outline-none font-mono text-sm"
       placeholder="Paste or write text here..."
       bind:value={textValue}
+      onkeydown={handleTextKeydown}
       data-testid="text-input"
     ></textarea>
     <button

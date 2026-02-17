@@ -3,7 +3,7 @@
 
   let p2p = $derived($p2pStore);
   let rates = $state({ up: 0, down: 0 });
-  let previous = $state<{ sent: number; received: number; at: number } | null>(null);
+  let previous: { sent: number; received: number; at: number } | null = null;
 
   $effect(() => {
     const now = Date.now();
