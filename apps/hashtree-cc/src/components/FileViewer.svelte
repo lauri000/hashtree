@@ -169,12 +169,13 @@
           <span class="i-lucide-download"></span>
         </button>
       {/if}
-      <button class="btn-ghost text-sm" onclick={copyLink} title="Copy link">
-        {#if copiedLink}
-          <span class="i-lucide-check text-success mr-1"></span> Copied
-        {:else}
+      <button class="btn-ghost text-sm inline-grid" onclick={copyLink} title="Copy link">
+        <span class="col-start-1 row-start-1 flex items-center transition-opacity {copiedLink ? 'opacity-0' : 'opacity-100'}">
           <span class="i-lucide-link mr-1"></span> Copy Link
-        {/if}
+        </span>
+        <span class="col-start-1 row-start-1 flex items-center transition-opacity {copiedLink ? 'opacity-100' : 'opacity-0'}">
+          <span class="i-lucide-check text-success mr-1"></span> Copied!
+        </span>
       </button>
     </div>
   </div>
