@@ -74,6 +74,9 @@ importers:
       '@hashtree/worker':
         specifier: workspace:*
         version: link:../../ts/packages/hashtree-worker
+      minidenticons:
+        specifier: ^4.2.1
+        version: 4.2.1
       nostr-tools:
         specifier: ^2.18.2
         version: 2.18.2(typescript@5.9.3)
