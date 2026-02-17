@@ -19,6 +19,7 @@ export default defineConfig({
     'i-lucide-zap',
     'i-lucide-shield',
     'i-lucide-hard-drive',
+    'i-lucide-pencil',
   ],
   presets: [
     presetUno(),

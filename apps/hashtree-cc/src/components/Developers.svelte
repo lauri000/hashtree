@@ -94,7 +94,16 @@
     </div>
   </div>
 
-  <!-- Features grid -->
+  <!-- How it works -->
+  <div class="text-center mb-8 mt-16">
+    <h2 class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
+      Content-Addressed Storage
+    </h2>
+    <p class="text-lg text-text-2 max-w-xl mx-auto">
+      A general-purpose merkle tree that works for git repos, file sharing, and anything else.
+    </p>
+  </div>
+
   <div class="grid md:grid-cols-3 gap-4 mb-8">
     <div class="bg-surface-1 rounded-xl p-5">
       <div class="i-lucide-hard-drive text-2xl text-accent mb-3"></div>

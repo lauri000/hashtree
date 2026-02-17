@@ -157,10 +157,6 @@
           <span class="i-lucide-link mr-1"></span> Copy Link
         {/if}
       </button>
-      <a href="/" class="btn-ghost text-sm" onclick={() => history.pushState(null, '', '/')}>
-        <span class="i-lucide-arrow-left mr-1"></span>
-        Back
-      </a>
     </div>
   </div>
 
@@ -203,7 +199,7 @@
         </div>
       </div>
     {:else}
-      <pre class="bg-surface-1 rounded-xl p-6 text-text-1 text-sm overflow-auto max-h-[80vh] whitespace-pre-wrap" data-testid="viewer-text">{textContent}</pre>
+      <pre class="bg-surface-1 rounded-xl p-6 text-text-1 text-sm overflow-auto max-h-[80vh] whitespace-pre-wrap break-all" data-testid="viewer-text">{textContent}</pre>
     {/if}
   {:else}
     <div class="bg-surface-1 rounded-xl p-8 text-center" data-testid="viewer-download">

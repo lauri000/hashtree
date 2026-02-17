@@ -55,21 +55,20 @@
     <p class="text-text-1 text-lg font-medium mb-1">Drop files or browse</p>
   </label>
 
-  <div class="mt-6">
+  <div class="mt-6 relative">
     <textarea
-      class="w-full bg-surface-1 text-text-1 rounded-xl p-4 min-h-[120px] resize-y border border-surface-3 focus:border-accent focus:outline-none font-mono text-sm"
+      class="w-full bg-surface-1 text-text-1 rounded-xl p-4 pb-12 min-h-[120px] resize-y border border-surface-3 focus:border-accent focus:outline-none font-mono text-sm"
       placeholder="Paste or write text here..."
       bind:value={textValue}
       data-testid="text-input"
     ></textarea>
-    {#if textValue.trim()}
-      <button
-        class="btn-primary mt-2"
-        onclick={saveText}
-        data-testid="text-save"
-      >
-        Save
-      </button>
-    {/if}
+    <button
+      class="btn-primary absolute right-3 bottom-3 text-sm"
+      onclick={saveText}
+      disabled={!textValue.trim()}
+      data-testid="text-save"
+    >
+      Save
+    </button>
   </div>
 </section>

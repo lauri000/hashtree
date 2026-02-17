@@ -133,7 +133,7 @@ test('nhash URL shows download for unknown type', async ({ page }) => {
   await expect(page.getByTestId('viewer-download')).toBeVisible();
 });
 
-test('back button returns to upload page', async ({ page }) => {
+test('browser back returns to upload page', async ({ page }) => {
   const fileContent = 'nav test';
   const expectedHash = createHash('sha256').update(fileContent).digest('hex');
 
@@ -148,7 +148,7 @@ test('back button returns to upload page', async ({ page }) => {
 
   await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10000 });
 
-  await page.getByText('Back').click();
+  await page.goBack();
   await expect(page.getByTestId('drop-zone')).toBeVisible();
 });
 
@@ -178,9 +178,11 @@ function mockBlossomMulti(page: import('@playwright/test').Page) {
   ]);
 }
 
-test('textarea is visible on share page', async ({ page }) => {
+test('textarea and save button visible on share page', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByTestId('text-input')).toBeVisible();
+  await expect(page.getByTestId('text-save')).toBeVisible();
+  await expect(page.getByTestId('text-save')).toBeDisabled();
 });
 
 test('type text and save navigates to viewer with content', async ({ page }) => {
