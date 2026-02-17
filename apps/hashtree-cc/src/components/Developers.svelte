@@ -34,7 +34,7 @@
 
     <div class="space-y-4">
       <div>
-        <p class="text-text-2 text-sm mb-2">1. Install the CLI</p>
+        <p class="text-text-2 text-sm mb-2">1. Install the CLI and git remote helper</p>
         <div class="bg-surface-0 rounded-lg p-3 flex items-start justify-between gap-2 font-mono text-sm">
           <code class="text-accent text-xs break-all whitespace-pre-wrap">{installCmd}</code>
           <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors mt-0.5" onclick={() => copy(installCmd)}>
