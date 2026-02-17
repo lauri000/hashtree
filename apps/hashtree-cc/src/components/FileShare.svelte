@@ -1,63 +1,16 @@
 <script lang="ts">
-  import { BlossomStore, nhashEncode, sha256, toHex, fromHex } from '@hashtree/core';
-  import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
-  import type { BlossomSigner } from '@hashtree/core';
-  import { cacheBlob } from '../lib/blobCache';
-
-  const BLOSSOM_SERVERS = [
-    { url: 'https://blossom.primal.net', write: true },
-    { url: 'https://upload.iris.to', write: true, read: false },
-  ];
+  import { uploadBuffer } from '../lib/blossomStore';
 
   let dragOver = $state(false);
-
-  // Generate ephemeral Nostr keypair (in-memory only)
-  const secretKey = generateSecretKey();
-
-  const signer: BlossomSigner = async (template) => {
-    const event = finalizeEvent({
-      ...template,
-      kind: template.kind as 24242,
-      created_at: template.created_at,
-      content: template.content,
-      tags: template.tags,
-    }, secretKey);
-    return {
-      kind: event.kind,
-      created_at: event.created_at,
-      content: event.content,
-      tags: event.tags,
-      pubkey: event.pubkey,
-      id: event.id,
-      sig: event.sig,
-    };
-  };
-
-  const store = new BlossomStore({
-    servers: BLOSSOM_SERVERS,
-    signer,
-  });
+  let textValue = $state('');
 
   async function uploadFile(file: File) {
-    // Hash locally
     const buffer = new Uint8Array(await file.arrayBuffer());
-    const hash = await sha256(buffer);
-    const hashHex = toHex(hash);
-    const nhash = nhashEncode(hashHex);
-
-    // Cache locally so viewer can display immediately
-    cacheBlob(hashHex, buffer, file.type || 'application/octet-stream');
-
-    // Navigate to viewer immediately
-    window.location.hash = `/${nhash}/${encodeURIComponent(file.name)}`;
-
-    // Upload to Blossom in background (fire-and-forget)
-    store.put(fromHex(hashHex), buffer, file.type || 'application/octet-stream').catch(() => {});
+    await uploadBuffer(buffer, file.name, file.type || 'application/octet-stream');
   }
 
   async function handleFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
-    // Upload first file (navigate to its viewer)
     uploadFile(files[0]);
   }
 
@@ -74,6 +27,12 @@
 
   function handleDragLeave() {
     dragOver = false;
+  }
+
+  async function saveText() {
+    if (!textValue.trim()) return;
+    const data = new TextEncoder().encode(textValue);
+    await uploadBuffer(data, 'text.txt', 'text/plain');
   }
 </script>
 
@@ -95,4 +54,22 @@
     <div class="i-lucide-upload text-4xl text-text-3 mx-auto mb-4"></div>
     <p class="text-text-1 text-lg font-medium mb-1">Drop files or browse</p>
   </label>
+
+  <div class="mt-6">
+    <textarea
+      class="w-full bg-surface-1 text-text-1 rounded-xl p-4 min-h-[120px] resize-y border border-surface-3 focus:border-accent focus:outline-none font-mono text-sm"
+      placeholder="Paste or write text here..."
+      bind:value={textValue}
+      data-testid="text-input"
+    ></textarea>
+    {#if textValue.trim()}
+      <button
+        class="btn-primary mt-2"
+        onclick={saveText}
+        data-testid="text-save"
+      >
+        Save
+      </button>
+    {/if}
+  </div>
 </section>

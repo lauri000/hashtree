@@ -1,6 +1,7 @@
 <script lang="ts">
   import { nhashDecode, toHex } from '@hashtree/core';
   import { getCachedBlob } from '../lib/blobCache';
+  import { uploadBuffer } from '../lib/blossomStore';
 
   interface Props {
     nhash: string;
@@ -19,6 +20,8 @@
   let blobUrl = $state('');
   let textContent = $state('');
   let copiedLink = $state(false);
+  let editing = $state(false);
+  let editText = $state('');
 
   const ext = $derived(fileName.split('.').pop()?.toLowerCase() ?? '');
   const isImage = $derived(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp', 'avif'].includes(ext));
@@ -98,9 +101,43 @@
     a.click();
   }
 
-  // Fetch once on mount (nhash/fileName are immutable props from routing)
-  fetchBlob();
+  function startEdit() {
+    editText = textContent;
+    editing = true;
+  }
+
+  function cancelEdit() {
+    editing = false;
+  }
+
+  async function saveEdit() {
+    const data = new TextEncoder().encode(editText);
+    const mimeType = getMimeType() || 'text/plain';
+    editing = false;
+    await uploadBuffer(data, decodeURIComponent(fileName), mimeType);
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (editing && (e.ctrlKey || e.metaKey) && e.key === 's') {
+      e.preventDefault();
+      saveEdit();
+    }
+  }
+
+  // Re-fetch when nhash changes (e.g. after editing and saving)
+  $effect(() => {
+    // Access nhash to create reactive dependency
+    const _nhash = nhash;
+    status = 'loading';
+    error = '';
+    blobUrl = '';
+    textContent = '';
+    editing = false;
+    fetchBlob();
+  });
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <div class="py-8" data-testid="file-viewer">
   <div class="mb-4 flex items-center justify-between gap-4">
@@ -108,6 +145,11 @@
       <h2 class="text-text-1 text-lg font-medium truncate">{decodeURIComponent(fileName)}</h2>
     </div>
     <div class="flex items-center gap-2 shrink-0">
+      {#if isText && status === 'loaded' && !editing}
+        <button class="btn-ghost text-sm" onclick={startEdit} data-testid="edit-button" title="Edit">
+          <span class="i-lucide-pencil mr-1"></span> Edit
+        </button>
+      {/if}
       <button class="btn-ghost text-sm" onclick={copyLink} title="Copy link">
         {#if copiedLink}
           <span class="i-lucide-check text-success mr-1"></span> Copied
@@ -147,7 +189,22 @@
   {:else if isPdf}
     <iframe src={blobUrl} title={fileName} class="w-full h-[80vh] rounded-lg border border-surface-3" data-testid="viewer-pdf"></iframe>
   {:else if isText}
-    <pre class="bg-surface-1 rounded-xl p-6 text-text-1 text-sm overflow-auto max-h-[80vh] whitespace-pre-wrap" data-testid="viewer-text">{textContent}</pre>
+    {#if editing}
+      <div>
+        <textarea
+          class="w-full bg-surface-1 text-text-1 rounded-xl p-6 min-h-[60vh] resize-y border border-accent focus:outline-none font-mono text-sm whitespace-pre-wrap"
+          bind:value={editText}
+          spellcheck="false"
+          data-testid="edit-textarea"
+        ></textarea>
+        <div class="flex gap-2 mt-2">
+          <button class="btn-primary" onclick={saveEdit} data-testid="edit-save">Save</button>
+          <button class="btn-ghost" onclick={cancelEdit} data-testid="edit-cancel">Cancel</button>
+        </div>
+      </div>
+    {:else}
+      <pre class="bg-surface-1 rounded-xl p-6 text-text-1 text-sm overflow-auto max-h-[80vh] whitespace-pre-wrap" data-testid="viewer-text">{textContent}</pre>
+    {/if}
   {:else}
     <div class="bg-surface-1 rounded-xl p-8 text-center" data-testid="viewer-download">
       <div class="i-lucide-file text-4xl text-text-3 mx-auto mb-4"></div>

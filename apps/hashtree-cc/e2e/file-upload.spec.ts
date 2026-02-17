@@ -151,3 +151,136 @@ test('back button returns to upload page', async ({ page }) => {
   await page.getByText('Back').click();
   await expect(page.getByTestId('drop-zone')).toBeVisible();
 });
+
+// --- Pastebin / Text Editor tests ---
+
+function mockBlossomMulti(page: import('@playwright/test').Page) {
+  // Mock that accepts any hash - useful when we don't know the hash ahead of time (e.g. after editing)
+  return Promise.all([
+    page.route('https://*/upload', async (route) => {
+      if (route.request().method() === 'PUT') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ sha256: 'mock', size: 0 }),
+        });
+      } else {
+        await route.continue();
+      }
+    }),
+    page.route(/https:\/\/[^/]+\/[0-9a-f]{64}/, async (route) => {
+      if (route.request().method() === 'HEAD') {
+        await route.fulfill({ status: 404 });
+      } else {
+        await route.continue();
+      }
+    }),
+  ]);
+}
+
+test('textarea is visible on share page', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByTestId('text-input')).toBeVisible();
+});
+
+test('type text and save navigates to viewer with content', async ({ page }) => {
+  const text = 'Hello from the pastebin!';
+  const expectedHash = createHash('sha256').update(text).digest('hex');
+
+  await mockBlossom(page, expectedHash, text);
+  await page.goto('/');
+
+  await page.getByTestId('text-input').fill(text);
+  await page.getByTestId('text-save').click();
+
+  await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10000 });
+  expect(page.url()).toContain('nhash1');
+  expect(page.url()).toContain('/text.txt');
+  await expect(page.getByTestId('viewer-text')).toContainText(text);
+});
+
+test('edit button visible for text files in viewer', async ({ page }) => {
+  const fileContent = 'editable text';
+  const expectedHash = createHash('sha256').update(fileContent).digest('hex');
+
+  await mockBlossom(page, expectedHash, fileContent);
+  await page.goto('/');
+
+  await page.getByTestId('file-input').setInputFiles({
+    name: 'doc.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from(fileContent),
+  });
+
+  await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10000 });
+  await expect(page.getByTestId('edit-button')).toBeVisible();
+});
+
+test('edit text file and save creates new nhash URL', async ({ page }) => {
+  const originalText = 'original content';
+  const editedText = 'edited content';
+  const originalHash = createHash('sha256').update(originalText).digest('hex');
+  const editedHash = createHash('sha256').update(editedText).digest('hex');
+
+  // Mock both hashes
+  await mockBlossom(page, originalHash, originalText);
+  await mockBlossom(page, editedHash, editedText);
+  await page.goto('/');
+
+  // Upload original file
+  await page.getByTestId('file-input').setInputFiles({
+    name: 'doc.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from(originalText),
+  });
+
+  await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10000 });
+  const originalUrl = page.url();
+
+  // Enter edit mode
+  await page.getByTestId('edit-button').click();
+  await expect(page.getByTestId('edit-textarea')).toBeVisible();
+
+  // Edit and save
+  await page.getByTestId('edit-textarea').fill(editedText);
+  await page.getByTestId('edit-save').click();
+
+  // Should navigate to new URL
+  await expect(page.getByTestId('viewer-text')).toBeVisible({ timeout: 10000 });
+  await expect(page.getByTestId('viewer-text')).toContainText(editedText);
+  expect(page.url()).not.toBe(originalUrl);
+  expect(page.url()).toContain('nhash1');
+});
+
+test('browser back after edit returns to previous nhash URL', async ({ page }) => {
+  const originalText = 'before edit';
+  const editedText = 'after edit';
+  const originalHash = createHash('sha256').update(originalText).digest('hex');
+  const editedHash = createHash('sha256').update(editedText).digest('hex');
+
+  await mockBlossom(page, originalHash, originalText);
+  await mockBlossom(page, editedHash, editedText);
+  await page.goto('/');
+
+  // Upload original
+  await page.getByTestId('file-input').setInputFiles({
+    name: 'note.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from(originalText),
+  });
+
+  await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10000 });
+  const originalUrl = page.url();
+
+  // Edit and save
+  await page.getByTestId('edit-button').click();
+  await page.getByTestId('edit-textarea').fill(editedText);
+  await page.getByTestId('edit-save').click();
+
+  await expect(page.getByTestId('viewer-text')).toContainText(editedText, { timeout: 10000 });
+
+  // Go back
+  await page.goBack();
+  await expect(page.getByTestId('viewer-text')).toContainText(originalText, { timeout: 10000 });
+  expect(page.url()).toBe(originalUrl);
+});
