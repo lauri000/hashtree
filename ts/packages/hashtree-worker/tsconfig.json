@@ -3,6 +3,12 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "ndk": ["./src/iris/shims.d.ts"],
+      "ndk-cache": ["./src/iris/shims.d.ts"],
+      "nostr-social-graph": ["./src/iris/shims.d.ts"]
+    },
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,

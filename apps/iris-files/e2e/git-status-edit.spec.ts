@@ -643,7 +643,7 @@ servers = [${blossomToml}]
       // Create test repo with unique name to avoid conflicts
       const repoName = `test-${Date.now()}`;
       console.log('[test] Creating test repo:', repoName);
-      execSync('git init', { cwd: testRepoDir, env });
+      execSync('git init -b master', { cwd: testRepoDir, env });
       execSync('git config user.email "test@test.com"', { cwd: testRepoDir, env });
       execSync('git config user.name "Test User"', { cwd: testRepoDir, env });
 
@@ -662,7 +662,7 @@ servers = [${blossomToml}]
       console.log('[test] Pushing to htree://self...');
       let pushOutput: string;
       try {
-        pushOutput = execSync('git push htree master 2>&1', {
+        pushOutput = execSync('git push htree HEAD:master 2>&1', {
           cwd: testRepoDir,
           env,
           encoding: 'utf-8',

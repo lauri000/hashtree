@@ -75,6 +75,52 @@ test('file upload navigates to viewer with nhash URL', async ({ page }) => {
   await expect(page.getByTestId('viewer-text')).toContainText('hello hashtree test file');
 });
 
+test('uploads encrypted bytes to blossom (no plaintext body)', async ({ page }) => {
+  const plaintext = `NO_PLAINTEXT_UPLOAD_${Date.now()}_${'x'.repeat(2048)}`;
+  const plaintextBuffer = Buffer.from(plaintext, 'utf8');
+  const plaintextHash = createHash('sha256').update(plaintextBuffer).digest('hex');
+  const sentinel = Buffer.from(`NO_PLAINTEXT_UPLOAD_${Date.now()}`, 'utf8');
+  const uploads: Array<{ body: Buffer; shaHeader: string; contentType: string | null }> = [];
+
+  await page.route('https://*/upload', async (route) => {
+    if (route.request().method() !== 'PUT') {
+      await route.continue();
+      return;
+    }
+
+    const body = route.request().postDataBuffer() ?? Buffer.alloc(0);
+    const shaHeader = (await route.request().headerValue('x-sha-256')) ?? '';
+    const contentType = await route.request().headerValue('content-type');
+
+    uploads.push({ body, shaHeader, contentType });
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ sha256: shaHeader, size: body.length }),
+    });
+  });
+
+  await page.goto('/');
+  await page.getByTestId('file-input').setInputFiles({
+    name: 'encrypted-check.txt',
+    mimeType: 'text/plain',
+    buffer: plaintextBuffer,
+  });
+
+  await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10000 });
+  await expect.poll(() => uploads.length).toBeGreaterThan(0);
+
+  for (const upload of uploads) {
+    const uploadedHash = createHash('sha256').update(upload.body).digest('hex');
+    expect(upload.contentType ?? '').toContain('application/octet-stream');
+    expect(upload.shaHeader).toBe(uploadedHash);
+    expect(upload.shaHeader).not.toBe(plaintextHash);
+    expect(upload.body.equals(plaintextBuffer)).toBe(false);
+    expect(upload.body.includes(sentinel)).toBe(false);
+  }
+});
+
 test('viewer has copy link button', async ({ page, context }) => {
   const fileContent = 'copy test file';
   const expectedHash = createHash('sha256').update(fileContent).digest('hex');

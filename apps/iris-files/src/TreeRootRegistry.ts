@@ -432,6 +432,7 @@ class TreeRootRegistryImpl {
   ): boolean {
     const cacheKey = this.makeKey(npub, treeName);
     const existing = this.records.get(cacheKey);
+    const sameHash = !!existing && toHex(existing.hash) === toHex(hash);
 
     // Only update if newer (based on updatedAt timestamp), or same timestamp with new hash/key
     if (!this.shouldAcceptUpdate(existing ?? undefined, hash, options?.key, updatedAt)) {
@@ -440,15 +441,16 @@ class TreeRootRegistryImpl {
 
     const record: TreeRootRecord = {
       hash,
-      key: options?.key,
+      // Preserve known key when newer resolver updates omit it for the same hash.
+      key: options?.key ?? (sameHash ? existing?.key : undefined),
       visibility: options?.visibility ?? 'public',
       updatedAt,
       source: 'nostr',
       dirty: false,
-      encryptedKey: options?.encryptedKey,
-      keyId: options?.keyId,
-      selfEncryptedKey: options?.selfEncryptedKey,
-      selfEncryptedLinkKey: options?.selfEncryptedLinkKey,
+      encryptedKey: options?.encryptedKey ?? (sameHash ? existing?.encryptedKey : undefined),
+      keyId: options?.keyId ?? (sameHash ? existing?.keyId : undefined),
+      selfEncryptedKey: options?.selfEncryptedKey ?? (sameHash ? existing?.selfEncryptedKey : undefined),
+      selfEncryptedLinkKey: options?.selfEncryptedLinkKey ?? (sameHash ? existing?.selfEncryptedLinkKey : undefined),
     };
 
     this.records.set(cacheKey, record);
@@ -500,6 +502,7 @@ class TreeRootRegistryImpl {
   ): boolean {
     const cacheKey = this.makeKey(npub, treeName);
     const existing = this.records.get(cacheKey);
+    const sameHash = !!existing && toHex(existing.hash) === toHex(hash);
 
     // Only update if newer (based on updatedAt timestamp), or same timestamp with new hash/key
     if (!this.shouldAcceptUpdate(existing ?? undefined, hash, options?.key, updatedAt)) {
@@ -508,15 +511,16 @@ class TreeRootRegistryImpl {
 
     const record: TreeRootRecord = {
       hash,
-      key: options?.key,
+      // Preserve known key when worker updates omit it for the same hash.
+      key: options?.key ?? (sameHash ? existing?.key : undefined),
       visibility: options?.visibility ?? 'public',
       updatedAt,
       source: 'worker',
       dirty: false,
-      encryptedKey: options?.encryptedKey,
-      keyId: options?.keyId,
-      selfEncryptedKey: options?.selfEncryptedKey,
-      selfEncryptedLinkKey: options?.selfEncryptedLinkKey,
+      encryptedKey: options?.encryptedKey ?? (sameHash ? existing?.encryptedKey : undefined),
+      keyId: options?.keyId ?? (sameHash ? existing?.keyId : undefined),
+      selfEncryptedKey: options?.selfEncryptedKey ?? (sameHash ? existing?.selfEncryptedKey : undefined),
+      selfEncryptedLinkKey: options?.selfEncryptedLinkKey ?? (sameHash ? existing?.selfEncryptedLinkKey : undefined),
     };
 
     this.records.set(cacheKey, record);
@@ -541,6 +545,7 @@ class TreeRootRegistryImpl {
   ): void {
     const cacheKey = this.makeKey(npub, treeName);
     const existing = this.records.get(cacheKey);
+    const sameHash = !!existing && toHex(existing.hash) === toHex(hash);
 
     // Don't overwrite dirty local writes
     if (existing?.dirty) {
@@ -556,7 +561,7 @@ class TreeRootRegistryImpl {
 
     const record: TreeRootRecord = {
       hash,
-      key: options?.key,
+      key: options?.key ?? (sameHash ? existing?.key : undefined),
       visibility: options?.visibility ?? existing?.visibility ?? 'public',
       updatedAt,
       source,

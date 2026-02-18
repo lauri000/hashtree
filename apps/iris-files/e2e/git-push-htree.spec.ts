@@ -209,7 +209,7 @@ test.describe('Git push to htree:// and view in browser', () => {
     fs.mkdirSync(testRepoDir);
 
     console.log('Creating test repo...');
-    execSync('git init', { cwd: testRepoDir });
+    execSync('git init -b master', { cwd: testRepoDir });
     execSync('git config user.email "test@test.com"', { cwd: testRepoDir });
     execSync('git config user.name "Test User"', { cwd: testRepoDir });
 
@@ -228,7 +228,7 @@ test.describe('Git push to htree:// and view in browser', () => {
 
     console.log('Pushing to htree...');
     try {
-      const pushOutput = execSync('git push htree master 2>&1', {
+      const pushOutput = execSync('git push htree HEAD:master 2>&1', {
         cwd: testRepoDir,
         env,
         encoding: 'utf-8',

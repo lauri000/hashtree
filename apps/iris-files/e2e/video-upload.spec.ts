@@ -1,37 +1,18 @@
 import { test, expect, Page } from '@playwright/test';
 import fs from 'fs';
-import https from 'https';
+import path from 'path';
 
-const TEST_VIDEO_URL = 'https://sample-videos.com/video321/mp4/240/big_buck_bunny_240p_1mb.mp4';
-const TEST_VIDEO_PATH = '/tmp/big_buck_bunny_test.mp4';
+const TEST_VIDEO_PATH = path.resolve(process.cwd(), 'e2e/fixtures/Big_Buck_Bunny_360_10s_1MB.mp4');
 
-// Download test video if not exists
 async function ensureTestVideo(): Promise<string> {
-  if (fs.existsSync(TEST_VIDEO_PATH)) {
-    return TEST_VIDEO_PATH;
+  if (!fs.existsSync(TEST_VIDEO_PATH)) {
+    throw new Error(`Missing test video fixture: ${TEST_VIDEO_PATH}`);
   }
-
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(TEST_VIDEO_PATH);
-    https.get(TEST_VIDEO_URL, (response) => {
-      if (response.statusCode === 301 || response.statusCode === 302) {
-        // Follow redirect
-        https.get(response.headers.location!, (res) => {
-          res.pipe(file);
-          file.on('finish', () => {
-            file.close();
-            resolve(TEST_VIDEO_PATH);
-          });
-        }).on('error', reject);
-      } else {
-        response.pipe(file);
-        file.on('finish', () => {
-          file.close();
-          resolve(TEST_VIDEO_PATH);
-        });
-      }
-    }).on('error', reject);
-  });
+  const stat = fs.statSync(TEST_VIDEO_PATH);
+  if (stat.size <= 0) {
+    throw new Error(`Invalid empty test video fixture: ${TEST_VIDEO_PATH}`);
+  }
+  return TEST_VIDEO_PATH;
 }
 
 // Login as test user and wait for login to complete
@@ -48,53 +29,86 @@ async function loginAsTestUser(page: Page) {
 }
 
 async function waitForVideoData(page: Page, timeoutMs = 180000) {
-  await expect.poll(async () => {
-    return page.evaluate(async () => {
+  const started = Date.now();
+  let lastStatus: Record<string, unknown> | null = null;
+
+  while (Date.now() - started < timeoutMs) {
+    lastStatus = await page.evaluate(async () => {
+      const status: Record<string, unknown> = {};
       try {
         const hash = window.location.hash;
         const match = hash.match(/#\/(npub1[a-z0-9]+)\/([^/?]+)/);
-        if (!match) return false;
+        if (!match) return { ok: false, reason: 'route-parse-failed', hash };
+
         const npub = match[1];
         const treeName = decodeURIComponent(match[2]);
+        status.npub = npub;
+        status.treeName = treeName;
+
         const { getTreeRootSync } = await import('/src/stores');
         const { getTree } = await import('/src/store');
         const root = getTreeRootSync(npub, treeName);
-        if (!root) return false;
+        if (!root) return { ok: false, reason: 'missing-root', ...status };
+
+        status.hasRootKey = !!root.key;
         const adapter = (window as any).__getWorkerAdapter?.() ?? (window as any).__workerAdapter;
-        if (!adapter?.readFile && !adapter?.readFileRange) return false;
-        await adapter.sendHello?.();
-        if (typeof adapter.get === 'function') {
-          await Promise.race([
-            adapter.get(root.hash).catch(() => null),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 10000)),
-          ]);
+        if (!adapter?.readFile && !adapter?.readFileRange) {
+          return { ok: false, reason: 'adapter-not-ready', ...status };
         }
+
+        await adapter.sendHello?.();
         const tree = getTree();
         const candidates = ['video.mp4', 'video.webm', 'video.mov', 'video.mkv'];
+
         for (const name of candidates) {
-          const entry = await Promise.race([
-            tree.resolvePath(root, name),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 10000)),
-          ]);
+          let entry: { cid?: unknown } | null = null;
+          try {
+            entry = await Promise.race([
+              tree.resolvePath(root, name),
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), 10000)),
+            ]) as { cid?: unknown } | null;
+          } catch (err) {
+            return { ok: false, reason: 'resolve-path-error', fileName: name, error: String(err), ...status };
+          }
+
           if (!entry?.cid) continue;
-          const read = () => {
-            if (typeof adapter.readFileRange === 'function') {
-              return adapter.readFileRange(entry.cid, 0, 1024);
+          status.fileName = name;
+
+          try {
+            const read = () => {
+              if (typeof adapter.readFileRange === 'function') {
+                return adapter.readFileRange(entry!.cid, 0, 1024);
+              }
+              return adapter.readFile(entry!.cid);
+            };
+            const data = await Promise.race([
+              read(),
+              new Promise<Uint8Array | null>((resolve) => setTimeout(() => resolve(null), 10000)),
+            ]);
+            const len = data?.length ?? 0;
+            if (len > 0) {
+              return { ok: true, fileName: name, bytes: len, ...status };
             }
-            return adapter.readFile(entry.cid);
-          };
-          const data = await Promise.race([
-            read(),
-            new Promise<Uint8Array | null>((resolve) => setTimeout(() => resolve(null), 10000)),
-          ]);
-          if (data && data.length > 0) return true;
+            return { ok: false, reason: 'read-empty', fileName: name, bytes: len, ...status };
+          } catch (err) {
+            return { ok: false, reason: 'read-file-error', fileName: name, error: String(err), ...status };
+          }
         }
-        return false;
-      } catch {
-        return false;
+
+        return { ok: false, reason: 'video-entry-not-found', ...status };
+      } catch (err) {
+        return { ok: false, reason: 'unexpected-error', error: String(err), ...status };
       }
     });
-  }, { timeout: timeoutMs, intervals: [1000, 2000, 3000, 5000] }).toBe(true);
+
+    if (lastStatus?.ok === true) return;
+    const elapsed = Date.now() - started;
+    const remaining = timeoutMs - elapsed;
+    if (remaining <= 2500) break;
+    await page.waitForTimeout(Math.min(2000, remaining - 500));
+  }
+
+  throw new Error(`Video data unavailable after ${timeoutMs}ms: ${JSON.stringify(lastStatus)}`);
 }
 
 test.describe('Video Upload with Visibility', () => {
@@ -188,7 +202,7 @@ test.describe('Video Upload with Visibility', () => {
       return videoState.hasSrc;
     }, { timeout: 60000, intervals: [1000, 2000, 3000, 5000] }).toBe(true);
 
-    await waitForVideoData(page, 180000);
+    await waitForVideoData(page, 120000);
 
     // Screenshot to verify video loaded
     await page.screenshot({ path: 'test-results/link-visible-upload.png' });
@@ -270,6 +284,38 @@ test.describe('Video Upload with Visibility', () => {
 
     // Refresh page to test persistence from nostr
     await page.reload();
+    const debugAfterReload = await page.evaluate(async () => {
+      const hash = window.location.hash;
+      const match = hash.match(/#\/(npub1[a-z0-9]+)\/([^/?]+)/);
+      const npub = match?.[1] ?? null;
+      const treeName = match?.[2] ? decodeURIComponent(match[2]) : null;
+      const stores = await import('/src/stores');
+      const root = npub && treeName ? stores.getTreeRootSync(npub, treeName) : null;
+      const adapter = (window as any).__getWorkerAdapter?.() ?? (window as any).__workerAdapter ?? null;
+      let resolveVideo = null;
+      if (root) {
+        try {
+          const { getTree } = await import('/src/store');
+          const tree = getTree();
+          const entry = await tree.resolvePath(root, 'video.mp4').catch(() => null)
+            ?? await tree.resolvePath(root, 'video.webm').catch(() => null);
+          resolveVideo = entry ? { hasEntry: true, hasCidKey: !!entry.cid?.key } : { hasEntry: false };
+        } catch (err) {
+          resolveVideo = { error: String(err) };
+        }
+      }
+      return {
+        npub,
+        treeName,
+        hasRoot: !!root,
+        hasRootKey: !!root?.key,
+        adapterReady: !!adapter,
+        hasReadFileRange: !!adapter?.readFileRange,
+        hasReadFile: !!adapter?.readFile,
+        resolveVideo,
+      };
+    });
+    console.log('Debug after reload:', debugAfterReload);
     await waitForVideoData(page, 180000);
 
     // CRITICAL: Verify video loads after refresh

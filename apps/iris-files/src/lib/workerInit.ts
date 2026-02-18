@@ -204,10 +204,10 @@ function setupTreeRootRegistryBridge(): void {
       }
     });
 
-    // Sync existing local-write entries to worker
+    // Sync existing persisted entries to worker.
+    // This primes worker /htree fetches on reload even when the latest
+    // cached source is "worker"/"nostr" (not only "local-write").
     for (const [key, record] of treeRootRegistry.getAllRecords()) {
-      if (record.source !== 'local-write') continue;
-
       const slashIndex = key.indexOf('/');
       if (slashIndex <= 0) continue;
 

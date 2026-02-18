@@ -6,7 +6,7 @@
 
 console.log('[hashtree.worker] Loading worker module...');
 
-// Import worker module from same package
-import '../worker/worker';
+// Import shared worker module from @hashtree/worker package
+import '@hashtree/worker/iris-entry';
 
 console.log('[hashtree.worker] Worker module loaded');

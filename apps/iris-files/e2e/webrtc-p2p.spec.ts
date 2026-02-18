@@ -97,11 +97,10 @@ test.describe('WebRTC P2P Connection', () => {
 
       const testContent = `Hello from Peer 1! Timestamp: ${Date.now()}`;
 
-      // Start peer 1 with content first
+      // Start peer 1 first, but do not await completion yet:
+      // it can take up to 60s if no peers connect.
       console.log('\n=== Starting Peer 1 with content ===');
-
-      // Run the test and wait for result directly
-      const result1 = await page1.evaluate(async (content) => {
+      const peer1Promise = page1.evaluate(async (content) => {
         try {
           return await window.runWebRTCTestWithContent!(content);
         } catch (e) {
@@ -109,17 +108,21 @@ test.describe('WebRTC P2P Connection', () => {
         }
       }, testContent);
 
-      console.log('Peer 1 result:', JSON.stringify(result1, null, 2));
-
-      const contentHash = result1.contentHash;
-      const peer1Pubkey = result1.pubkey;
+      // Wait until peer 1 has published minimal metadata needed by peer 2.
+      await page1.waitForFunction(
+        () => (window as any).testResults?.pubkey && (window as any).testResults?.contentHash,
+        { timeout: 15000 }
+      );
+      const peer1Info = await page1.evaluate(() => (window as any).testResults || {});
+      const contentHash = peer1Info.contentHash;
+      const peer1Pubkey = peer1Info.pubkey;
 
       console.log(`Peer 1 pubkey: ${peer1Pubkey?.slice(0, 16) || 'null'}...`);
       console.log(`Content hash: ${contentHash?.slice(0, 16) || 'null'}...`);
 
-      // Start peer 2 to request content from peer 1
+      // Run peer 2 concurrently with peer 1 wait loop so total wall time stays bounded.
       console.log('\n=== Starting Peer 2 to find content ===');
-      const result2 = await page2.evaluate(
+      const peer2Promise = page2.evaluate(
         async ([pubkey, hash]) => {
           try {
             return await window.runWebRTCTest!(pubkey ?? undefined, hash ?? undefined);
@@ -129,6 +132,9 @@ test.describe('WebRTC P2P Connection', () => {
         },
         [peer1Pubkey, contentHash] as const
       );
+
+      const [result1, result2] = await Promise.all([peer1Promise, peer2Promise]);
+      console.log('Peer 1 result:', JSON.stringify(result1, null, 2));
 
       console.log('\n=== Results ===');
       console.log('Peer 1:', JSON.stringify(result1, null, 2));

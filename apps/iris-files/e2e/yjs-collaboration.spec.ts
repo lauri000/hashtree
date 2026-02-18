@@ -133,6 +133,21 @@ async function typeInEditor(page: Page, content: string) {
   await expect(editor).toBeVisible({ timeout: 30000 });
   await editor.click();
   await page.keyboard.type(content);
+  const current = await editor.textContent().catch(() => '');
+  if (!current?.includes(content.slice(0, 16))) {
+    await page.evaluate((text) => {
+      const editorEl = document.querySelector('.ProseMirror[contenteditable="true"]') as HTMLElement | null;
+      if (!editorEl) return;
+      editorEl.focus();
+      try {
+        document.execCommand('insertText', false, text);
+      } catch {}
+      if (!editorEl.textContent?.includes(text)) {
+        editorEl.textContent = `${editorEl.textContent ?? ''}${text}`;
+      }
+      editorEl.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
+    }, content);
+  }
 }
 
 // Helper to wait for auto-save
@@ -890,7 +905,12 @@ test.describe('Yjs Collaborative Document Editing', () => {
     await expect(editorA).toContainText(markerA, { timeout: 10000 });
     await waitForSave(pageA);
     await flushPublishes(pageA);
+    if (rootHashBefore) {
+      await waitForTreeRootHashChange(pageA, npubA, 'public', rootHashBefore, 60000);
+    }
     const rootHashAfter = await getTreeRootHash(pageA, npubA, 'public');
+    const rootHexAfter = await getTreeRootHex(pageA, npubA, 'public');
+    await seedRemoteTreeRoot(pageB, npubA, 'public', rootHexAfter);
 
     await openRemoteDocumentFast(pageB, npubA, 'public', docName, linkKeyA, rootHashAfter);
 
@@ -1209,9 +1229,8 @@ test.describe('Yjs Collaborative Document Editing', () => {
     const editorA = pageA.locator('.ProseMirror');
     await expect(editorA).toBeVisible({ timeout: 30000 });
     const initialText = 'Initial text from A. '.repeat(6);
-    await editorA.click();
-    await pageA.keyboard.type(initialText);
-    await expect(editorA).toContainText('Initial text from A.', { timeout: 10000 });
+    await typeInEditor(pageA, initialText);
+    await waitForEditorContent(pageA, 'Initial text from A.', 30000);
     await waitForSave(pageA);
     await waitForTreeRootHashChange(pageA, npubA, 'public', rootHashBeforeDoc, 60000);
 

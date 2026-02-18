@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { nhashDecode, toHex } from '@hashtree/core';
-  import { fetchBuffer, uploadBuffer } from '../lib/blossomStore';
+  import { uploadBuffer } from '../lib/blossomStore';
   import { getMediaClientKey, setupMediaStreaming } from '../lib/mediaStreamingSetup';
 
   interface Props {
@@ -19,7 +18,6 @@
   let editing = $state(false);
   let editText = $state('');
   let fileSize = $state(0);
-  let activeObjectUrl = '';
 
   const ext = $derived(fileName.split('.').pop()?.toLowerCase() ?? '');
   const isImage = $derived(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp', 'avif'].includes(ext));
@@ -38,6 +36,7 @@
   const htreeUrl = $derived(
     `/htree/${nhash}/${encodeURIComponent(decodedFileName)}?htree_c=${encodeURIComponent(getMediaClientKey())}`
   );
+  const htreeDownloadUrl = $derived(`${htreeUrl}&download=1`);
   const shareUrl = $derived(`${window.location.origin}/#/${nhash}/${encodeURIComponent(fileName)}`);
 
   function copyLink() {
@@ -53,25 +52,7 @@
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   }
 
-  function loadFromData(data: ArrayBuffer | Uint8Array) {
-    fileSize = data.byteLength;
-    if (isText) {
-      textContent = new TextDecoder().decode(data);
-    } else {
-      if (activeObjectUrl) {
-        URL.revokeObjectURL(activeObjectUrl);
-        activeObjectUrl = '';
-      }
-      const mimeType = getMimeType();
-      const blob = new Blob([data], mimeType ? { type: mimeType } : undefined);
-      activeObjectUrl = URL.createObjectURL(blob);
-      blobUrl = activeObjectUrl;
-    }
-    status = 'loaded';
-  }
-
-  async function loadFromHtreeUrl(): Promise<boolean> {
-    if (isText) return false;
+  async function loadBinaryFromHtreeUrl(): Promise<boolean> {
     try {
       const response = await fetch(htreeUrl, {
         method: 'HEAD',
@@ -85,10 +66,6 @@
       if (Number.isFinite(contentLength) && contentLength >= 0) {
         fileSize = contentLength;
       }
-      if (activeObjectUrl) {
-        URL.revokeObjectURL(activeObjectUrl);
-        activeObjectUrl = '';
-      }
       blobUrl = htreeUrl;
       status = 'loaded';
       return true;
@@ -97,37 +74,51 @@
     }
   }
 
-  async function fetchBlob() {
-    const cid = nhashDecode(nhash);
-    const hashHex = toHex(cid.hash);
+  async function loadTextFromHtreeUrl(): Promise<boolean> {
+    try {
+      const response = await fetch(htreeUrl, {
+        method: 'GET',
+        cache: 'no-store',
+      });
+      if (!response.ok) return false;
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+      if (contentType.includes('text/html')) return false;
 
-    const streamingReady = await setupMediaStreaming().catch(() => false);
-    if (streamingReady && await loadFromHtreeUrl()) {
-      return;
+      const text = await response.text();
+      textContent = text;
+
+      const contentLength = Number.parseInt(response.headers.get('content-length') || '', 10);
+      if (Number.isFinite(contentLength) && contentLength >= 0) {
+        fileSize = contentLength;
+      } else {
+        fileSize = new TextEncoder().encode(text).byteLength;
+      }
+
+      status = 'loaded';
+      return true;
+    } catch {
+      return false;
     }
+  }
 
-    if (!streamingReady) {
-      // Give service worker/controller a brief moment to settle on first load.
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      if (await setupMediaStreaming().catch(() => false) && await loadFromHtreeUrl()) {
-        return;
+  async function fetchBlob() {
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      const streamingReady = await setupMediaStreaming().catch(() => false);
+      if (!streamingReady) {
+        // Give service worker/controller a brief moment to settle on first load.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        await setupMediaStreaming().catch(() => false);
       }
     }
 
-    if (await loadFromHtreeUrl()) {
-      return;
-    }
+    const loaded = isText
+      ? await loadTextFromHtreeUrl()
+      : await loadBinaryFromHtreeUrl();
 
-    try {
-      const data = await fetchBuffer(hashHex);
-      loadFromData(data);
-      return;
-    } catch {
-      // Continue to error state.
+    if (!loaded) {
+      error = 'File not found via /htree route';
+      status = 'error';
     }
-
-    error = 'File not found in local cache or configured servers';
-    status = 'error';
   }
 
   function getMimeType(): string | undefined {
@@ -148,16 +139,10 @@
   }
 
   function download() {
-    let url = blobUrl;
-    if (isText) {
-      const blob = new Blob([textContent], { type: getMimeType() || 'text/plain' });
-      url = URL.createObjectURL(blob);
-    }
     const a = document.createElement('a');
-    a.href = url;
+    a.href = htreeDownloadUrl;
     a.download = decodeURIComponent(fileName);
     a.click();
-    if (isText) URL.revokeObjectURL(url);
   }
 
   function startEdit() {
@@ -190,10 +175,6 @@
     const _nhash = nhash;
     status = 'loading';
     error = '';
-    if (activeObjectUrl) {
-      URL.revokeObjectURL(activeObjectUrl);
-      activeObjectUrl = '';
-    }
     blobUrl = '';
     textContent = '';
     editing = false;
@@ -251,9 +232,11 @@
       <img src={blobUrl} alt={fileName} class="max-w-full max-h-[80vh] rounded-lg" data-testid="viewer-image" />
     </div>
   {:else if isVideo}
-    <video src={blobUrl} controls class="max-w-full max-h-[80vh] mx-auto rounded-lg" data-testid="viewer-video">
-      <track kind="captions" />
-    </video>
+    <div class="flex justify-center">
+      <video src={blobUrl} controls class="block max-w-full max-h-[80vh] mx-auto rounded-lg" data-testid="viewer-video">
+        <track kind="captions" />
+      </video>
+    </div>
   {:else if isAudio}
     <div class="bg-surface-1 rounded-xl p-8 flex flex-col items-center gap-4">
       <div class="i-lucide-music text-4xl text-accent"></div>

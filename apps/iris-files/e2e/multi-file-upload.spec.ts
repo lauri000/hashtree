@@ -10,14 +10,13 @@ test.describe('Multi-file upload', () => {
   ];
 
   async function uploadTestFiles(page: any) {
-    await page.evaluate(async (files: { name: string; content: string }[]) => {
-      const { uploadFiles } = await import('/src/stores/upload.ts');
-      const dataTransfer = new DataTransfer();
-      for (const file of files) {
-        dataTransfer.items.add(new File([file.content], file.name, { type: 'text/plain' }));
-      }
-      await uploadFiles(dataTransfer.files);
-    }, testFiles);
+    const payloads = testFiles.map((file) => ({
+      name: file.name,
+      mimeType: 'text/plain',
+      buffer: Buffer.from(file.content, 'utf-8'),
+    }));
+    const input = page.locator('input[type="file"]').first();
+    await input.setInputFiles(payloads);
   }
 
   test('should upload multiple files at once', async ({ page }) => {

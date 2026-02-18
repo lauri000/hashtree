@@ -69,11 +69,7 @@ export class BlossomTransport {
   }
 
   getWriteServers(): BlossomServerConfig[] {
-    return this.servers.filter(s => s.write);
-  }
-
-  createUploadStore(onUploadProgress?: BlossomUploadCallback): BlossomStore {
-    return this.createStore(this.servers, onUploadProgress);
+    return this.servers.filter(server => !!server.write);
   }
 
   private createStore(servers: BlossomServerConfig[], onUploadProgress?: BlossomUploadCallback): BlossomStore {
@@ -84,19 +80,25 @@ export class BlossomTransport {
     });
   }
 
+  createUploadStore(onUploadProgress?: BlossomUploadCallback): BlossomStore {
+    return this.createStore(this.servers, onUploadProgress);
+  }
+
   async upload(
     hashHex: string,
     data: Uint8Array,
-    mimeType?: string,
+    _mimeType?: string,
     onUploadProgress?: BlossomUploadCallback
   ): Promise<void> {
     if (!this.servers.some(server => server.write)) return;
+    const uploadMimeType = 'application/octet-stream';
     if (onUploadProgress) {
       const store = this.createStore(this.servers, onUploadProgress);
-      await store.put(fromHex(hashHex), data, mimeType);
+      await store.put(fromHex(hashHex), data, uploadMimeType);
       return;
     }
-    await this.store.put(fromHex(hashHex), data, mimeType);
+
+    await this.store.put(fromHex(hashHex), data, uploadMimeType);
   }
 
   async fetch(hashHex: string): Promise<Uint8Array | null> {

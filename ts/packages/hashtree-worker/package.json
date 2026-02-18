@@ -18,6 +18,10 @@
       "types": "./dist/entry.d.ts",
       "import": "./dist/entry.js"
     },
+    "./iris-entry": {
+      "types": "./dist/iris-entry.d.ts",
+      "import": "./dist/iris-entry.js"
+    },
     "./protocol": {
       "types": "./dist/protocol.d.ts",
       "import": "./dist/protocol.js"
@@ -41,9 +45,14 @@
   "author": "Martti Malmi",
   "license": "MIT",
   "dependencies": {
+    "@msgpack/msgpack": "^3.1.2",
     "@hashtree/core": "workspace:*",
     "@hashtree/dexie": "workspace:*",
     "@hashtree/nostr": "workspace:*",
+    "dexie": "^4.2.1",
+    "ndk": "workspace:*",
+    "ndk-cache": "workspace:*",
+    "nostr-social-graph": "workspace:*",
     "nostr-tools": "^2.18.2"
   },
   "devDependencies": {

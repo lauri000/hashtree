@@ -134,22 +134,35 @@
     logHtreeDebug(`video:${event}`, data);
   }
 
-  async function syncTreeRootToWorker(
-    npubValue: string,
-    treeNameValue: string,
-    rootCidValue: CID,
-    visibility: TreeVisibility
-  ): Promise<void> {
-    const signature = `${npubValue}/${treeNameValue}:${toHex(rootCidValue.hash)}:${rootCidValue.key ? toHex(rootCidValue.key) : ''}:${visibility}`;
-    if (workerRootSyncSignature === signature) return;
+async function syncTreeRootToWorker(
+  npubValue: string,
+  treeNameValue: string,
+  rootCidValue: CID,
+  visibility: TreeVisibility
+): Promise<void> {
+  const signature = `${npubValue}/${treeNameValue}:${toHex(rootCidValue.hash)}:${rootCidValue.key ? toHex(rootCidValue.key) : ''}:${visibility}`;
+  if (workerRootSyncSignature === signature) return;
 
-    try {
+  try {
       const { getWorkerAdapter, waitForWorkerAdapter } = await import('../../lib/workerInit');
-      const adapter = getWorkerAdapter() ?? await waitForWorkerAdapter(2000);
+      const adapter = getWorkerAdapter() ?? await waitForWorkerAdapter(10000);
       if (!adapter || !('setTreeRootCache' in adapter)) return;
-      await (adapter as { setTreeRootCache: (npub: string, treeName: string, hash: Uint8Array, key?: Uint8Array, visibility?: TreeVisibility) => Promise<void> })
-        .setTreeRootCache(npubValue, treeNameValue, rootCidValue.hash, rootCidValue.key, visibility);
-      workerRootSyncSignature = signature;
+
+      const setRoot = (adapter as { setTreeRootCache: (npub: string, treeName: string, hash: Uint8Array, key?: Uint8Array, visibility?: TreeVisibility) => Promise<void> })
+        .setTreeRootCache;
+
+      // Under heavy load worker bootstrap may race with initial media fetches.
+      // Retry once before giving up so /htree fetches have root context.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await setRoot(npubValue, treeNameValue, rootCidValue.hash, rootCidValue.key, visibility);
+          workerRootSyncSignature = signature;
+          return;
+        } catch (err) {
+          if (attempt === 1) throw err;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+      }
     } catch (err) {
       console.warn('[VideoView] Failed to sync tree root to worker:', err);
     }

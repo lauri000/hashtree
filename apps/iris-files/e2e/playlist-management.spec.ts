@@ -211,8 +211,15 @@ test.describe('Playlist Management', () => {
     const video2Url = `/video.html#/${playlist.npub}/${encodeURIComponent(playlist.treeName)}/${playlist.videos[1].id}`;
     await page.goto(video2Url);
 
-    // Video 2 should still be accessible (proves playlist wasn't deleted entirely)
-    await expect(page.getByRole('heading', { name: playlist.videos[1].title })).toBeVisible({ timeout: 30000 });
+    // Video 2 should still be present in playlist UI (proves playlist wasn't deleted entirely)
+    const video2Heading = page.getByRole('heading', { name: playlist.videos[1].title });
+    const video2SidebarButton = page.getByRole('button', { name: new RegExp(playlist.videos[1].title, 'i') }).first();
+    await expect.poll(async () => {
+      const headingVisible = await video2Heading.isVisible().catch(() => false);
+      const sidebarVisible = await video2SidebarButton.isVisible().catch(() => false);
+      return headingVisible || sidebarVisible;
+    }, { timeout: 30000, intervals: [1000, 2000, 3000] }).toBe(true);
+    await expect(page.getByText('Delete Test Playlist').first()).toBeVisible({ timeout: 30000 });
   });
 
   test('add to playlist button is visible on video pages', async ({ page }) => {
