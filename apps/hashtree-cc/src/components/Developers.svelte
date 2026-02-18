@@ -252,6 +252,34 @@
     </div>
   </div>
 
+  <div class="bg-surface-1 rounded-xl p-6 mb-8">
+    <h3 class="text-lg font-semibold text-text-1 mb-3">
+      <span class="i-lucide-git-pull-request mr-2"></span>
+      Nostr Pull Requests (NIP-34)
+    </h3>
+    <p class="text-text-2 text-sm mb-2">
+      Open, review, and merge git pull requests over Nostr using NIP-34, directly in the web app.
+    </p>
+    <p class="text-text-3 text-xs mb-1">
+      Spec:
+      <a
+        href="https://github.com/nostr-protocol/nips/blob/master/34.md"
+        class="text-accent hover:underline"
+        target="_blank"
+        rel="noopener"
+      >NIP-34</a>
+    </p>
+    <p class="text-text-3 text-xs">
+      Example:
+      <a
+        href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/iris-client?tab=pulls"
+        class="text-accent hover:underline break-all"
+        target="_blank"
+        rel="noopener"
+      >files.iris.to pull requests tab</a>
+    </p>
+  </div>
+
   <!-- CLI Commands -->
   <div class="bg-surface-1 rounded-xl p-6 mb-8">
     <h3 class="text-lg font-semibold text-text-1 mb-4">
@@ -292,6 +320,96 @@
           </tr>
         </tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- Web Apps -->
+  <div class="text-center mb-8 mt-16">
+    <h2 class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
+      Web Apps
+    </h2>
+    <p class="text-lg text-text-2 max-w-xl mx-auto mb-6">
+      Case Study: <code class="text-accent">hashtree.cc</code>
+    </p>
+    <div class="flex flex-wrap gap-3 justify-center">
+      <a
+        href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/apps/hashtree-cc"
+        class="btn-primary inline-flex items-center gap-2 no-underline"
+        target="_blank"
+        rel="noopener"
+      >
+        <span class="i-lucide-app-window"></span>
+        App Source
+      </a>
+      <a
+        href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/ts"
+        class="btn-ghost inline-flex items-center gap-2 no-underline"
+        target="_blank"
+        rel="noopener"
+      >
+        <span class="i-lucide-code"></span>
+        TypeScript Packages
+      </a>
+    </div>
+  </div>
+
+  <div class="bg-surface-1 rounded-xl p-6 mb-8">
+    <h3 class="text-lg font-semibold text-text-1 mb-4">
+      <span class="i-lucide-box mr-2"></span>
+      Package Usage
+    </h3>
+    <div class="space-y-3 text-xs text-text-3">
+      <p>
+        <code class="text-accent">@hashtree/core</code>:
+        content hash and <code class="text-accent">nhash</code> primitives, plus shared types for content-addressed storage.
+      </p>
+      <p>
+        <code class="text-accent">@hashtree/worker</code>:
+        worker API for IndexedDB persistence, Blossom transport, connectivity stats, and service-worker media streaming.
+      </p>
+      <p>
+        <code class="text-accent">@hashtree/worker/p2p</code>:
+        WebRTC controller/proxy and signaling helpers for browser-to-browser block transfer.
+      </p>
+      <p>
+        <code class="text-accent">@hashtree/nostr</code>:
+        Nostr signaling message types used by the WebRTC sync path.
+      </p>
+    </div>
+  </div>
+
+  <div class="bg-surface-1 rounded-xl p-6 mb-8">
+    <h3 class="text-lg font-semibold text-text-1 mb-4">
+      <span class="i-lucide-workflow mr-2"></span>
+      Data Flow
+    </h3>
+    <div class="space-y-4">
+      <div>
+        <p class="text-text-1 text-sm font-medium mb-1">Write path</p>
+        <p class="text-text-3 text-xs">
+          On upload, encrypted chunks are saved to local IndexedDB first and <code class="text-accent">nhash</code> is returned immediately.
+          Upload to configured Blossom write servers continues in the background.
+        </p>
+      </div>
+      <div>
+        <p class="text-text-1 text-sm font-medium mb-1">Read path (for nhash/content hash lookups)</p>
+        <ol class="text-text-3 text-xs space-y-1 pl-4 list-decimal">
+          <li>Check local IndexedDB cache.</li>
+          <li>If missing, fetch from Blossom read servers.</li>
+          <li>If still missing, ask connected WebRTC peers.</li>
+        </ol>
+        <p class="text-text-3 text-xs mt-2">
+          This order is applied per needed block, and remote hits are cached back to IndexedDB.
+        </p>
+      </div>
+      <div>
+        <p class="text-text-1 text-sm font-medium mb-1">Media streaming path</p>
+        <p class="text-text-3 text-xs">
+          The service worker captures <code class="text-accent">/htree/&lt;nhash&gt;/...</code> requests and forwards them to the hashtree worker.
+          The worker serves <code class="text-accent">HEAD</code> and byte-range requests, so video tags like
+          <code class="text-accent">src="/htree/&lt;nhash&gt;/video.mp4"</code> can seek efficiently using partial responses.
+        </p>
+      </div>
     </div>
   </div>
 
