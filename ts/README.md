@@ -132,7 +132,7 @@ Falls back to Blossom servers when data isn't found on peers or WebRTC isn't ava
 | Request | `0x00` | `{h: hash32, htl?: u8}` | Request data by hash |
 | Response | `0x01` | `{h: hash32, d: bytes}` | Return data |
 
-**Request forwarding**: Peers forward requests they can't fulfill locally. HTL (Hops-To-Live, default 10) limits propagation depth. Uses Freenet-style probabilistic decrement—each peer randomly decides whether to decrement at HTL boundaries, making it harder to infer request origin.
+**Request forwarding**: Peers forward requests they can't fulfill locally. HTL (Hops-To-Live, default `MAX_HTL`, currently 10) limits propagation depth. Uses Freenet-style probabilistic decrement—each peer randomly decides whether to decrement at HTL boundaries, making it harder to infer request origin.
 
 ## Desktop App (Tauri)
 

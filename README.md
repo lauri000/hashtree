@@ -42,6 +42,10 @@ cargo install hashtree-cli --no-default-features
 - Web app + JS SDK: follow [`ts/README.md`](ts/README.md)
 - CLI + daemon + git remote: follow [`rust/README.md`](rust/README.md)
 
+## Protocol spec
+
+- [`docs/HTS-01.md`](docs/HTS-01.md) - hashtree core protocol (draft)
+
 ## License
 
 MIT
