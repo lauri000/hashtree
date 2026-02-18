@@ -121,6 +121,50 @@ test('uploads encrypted bytes to blossom (no plaintext body)', async ({ page }) 
   }
 });
 
+test('shows progress while saving locally when blossom uploads are disabled (1GB scenario)', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem('hashtree-cc-settings-v1', JSON.stringify({
+      network: {
+        relays: ['wss://relay.primal.net'],
+        blossomServers: [
+          { url: 'https://cdn.iris.to', read: true, write: false },
+          { url: 'https://upload.iris.to', read: false, write: false },
+          { url: 'https://blossom.primal.net', read: true, write: false },
+        ],
+      },
+      storage: {
+        maxBytes: 2147483648,
+      },
+      ui: {
+        showBandwidthIndicator: false,
+      },
+    }));
+  });
+
+  let blossomPutRequests = 0;
+  await page.route('https://*/upload', async (route) => {
+    if (route.request().method() === 'PUT') {
+      blossomPutRequests += 1;
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto('/');
+  await page.getByTestId('file-input').setInputFiles({
+    name: 'local-only-large.bin',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.alloc(8 * 1024 * 1024, 1),
+  });
+
+  await expect(page.getByTestId('upload-progress-toast')).toBeVisible({ timeout: 10000 });
+  await expect(page.getByTestId('upload-progress-toast')).toContainText('Saving to local storage');
+
+  await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10000 });
+  expect(blossomPutRequests).toBe(0);
+});
+
 test('fails closed when secure local streaming is unavailable', async ({ browser }) => {
   const context = await browser.newContext({ serviceWorkers: 'block' });
   const page = await context.newPage();
@@ -149,7 +193,7 @@ test('fails closed when secure local streaming is unavailable', async ({ browser
   }
 });
 
-test('viewer has copy link button', async ({ page, context }) => {
+test('viewer share modal can copy link', async ({ page, context }) => {
   const fileContent = 'copy test file';
   const expectedHash = createHash('sha256').update(fileContent).digest('hex');
 
@@ -165,8 +209,9 @@ test('viewer has copy link button', async ({ page, context }) => {
 
   await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10000 });
 
-  // Click copy link in the viewer
-  await page.getByText('Copy Link').click();
+  await page.getByRole('button', { name: 'Share' }).click();
+  await expect(page.getByTestId('share-modal')).toBeVisible();
+  await page.getByTestId('share-copy-url').click();
   const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
   expect(clipboardText).toContain('nhash1');
   expect(clipboardText).toContain('/copy-test.txt');
