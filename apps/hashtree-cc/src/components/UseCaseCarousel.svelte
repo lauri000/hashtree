@@ -19,6 +19,12 @@
       href: 'https://video.iris.to',
     },
     {
+      src: '/screenshot-iris-chat.webp',
+      title: 'Iris Chat',
+      desc: 'Secure file sharing in a nostr-based encrypted chat.',
+      href: 'https://chat.iris.to',
+    },
+    {
       src: '/screenshot-git-push.webp',
       title: 'Decentralized Git',
       desc: 'Push and pull repos with htree:// URLs. No server required.',
