@@ -257,6 +257,30 @@ test('nhash URL shows download for unknown type', async ({ page }) => {
   await expect(page.getByTestId('viewer-download')).toBeVisible();
 });
 
+test('download button requests /htree with download=1 and starts browser download', async ({ page }) => {
+  const fileContent = Buffer.from('download-me-please');
+  const expectedHash = createHash('sha256').update(fileContent).digest('hex');
+
+  await mockBlossom(page, expectedHash, fileContent);
+
+  await page.goto('/');
+  await page.getByTestId('file-input').setInputFiles({
+    name: 'download.bin',
+    mimeType: 'application/octet-stream',
+    buffer: fileContent,
+  });
+
+  await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10000 });
+
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByTestId('download-button').click(),
+  ]);
+
+  expect(await download.failure()).toBeNull();
+  expect(download.suggestedFilename()).toContain('download');
+});
+
 test('browser back returns to upload page', async ({ page }) => {
   const fileContent = 'nav test';
   const expectedHash = createHash('sha256').update(fileContent).digest('hex');

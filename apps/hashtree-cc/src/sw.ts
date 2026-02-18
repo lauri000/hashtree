@@ -7,6 +7,7 @@
 
 /// <reference lib="webworker" />
 import { precacheAndRoute } from 'workbox-precaching';
+import { createInactivityTimer, type InactivityTimer } from './lib/inactivityTimeout';
 
 declare let self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<unknown>;
@@ -74,7 +75,7 @@ type WorkerMessage = WorkerHeadersMessage | WorkerChunkMessage | WorkerDoneMessa
 interface PendingRequest {
   resolve: (response: Response) => void;
   reject: (error: Error) => void;
-  timeoutId: ReturnType<typeof setTimeout>;
+  timeout: InactivityTimer;
   head: boolean;
   writer?: WritableStreamDefaultWriter<Uint8Array>;
 }
@@ -155,7 +156,7 @@ function getPort(clientId?: string | null, clientKey?: string | null): MessagePo
 function clearPending(requestId: string): PendingRequest | undefined {
   const pending = pendingRequests.get(requestId);
   if (!pending) return undefined;
-  clearTimeout(pending.timeoutId);
+  pending.timeout.clear();
   pendingRequests.delete(requestId);
   return pending;
 }
@@ -167,6 +168,7 @@ function handleWorkerMessage(event: MessageEvent<WorkerMessage>): void {
 
   switch (message.type) {
     case 'headers': {
+      pending.timeout.touch();
       const headers = new Headers(message.headers || {});
       headers.set('Access-Control-Allow-Origin', '*');
       headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
@@ -191,20 +193,21 @@ function handleWorkerMessage(event: MessageEvent<WorkerMessage>): void {
 
     case 'chunk': {
       if (!pending.writer) return;
+      pending.timeout.touch();
       pending.writer.write(new Uint8Array(message.data)).catch(() => {});
       return;
     }
 
     case 'done': {
-      pending.writer?.close().catch(() => {});
-      clearPending(message.requestId);
+      const finished = clearPending(message.requestId);
+      finished?.writer?.close().catch(() => {});
       return;
     }
 
     case 'error': {
-      pending.writer?.abort(message.message || 'Worker stream error').catch(() => {});
-      clearPending(message.requestId);
-      pending.reject(new Error(message.message || 'Worker stream error'));
+      const failed = clearPending(message.requestId);
+      failed?.writer?.abort(message.message || 'Worker stream error').catch(() => {});
+      failed?.reject(new Error(message.message || 'Worker stream error'));
       return;
     }
   }
@@ -212,15 +215,17 @@ function handleWorkerMessage(event: MessageEvent<WorkerMessage>): void {
 
 function serveViaWorker(request: HtreeFileRequest, port: MessagePort): Promise<Response> {
   return new Promise<Response>((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      clearPending(request.requestId);
-      reject(new Error('Timeout waiting for worker response'));
-    }, PORT_TIMEOUT_MS);
+    const timeout = createInactivityTimer(PORT_TIMEOUT_MS, () => {
+      const timedOut = clearPending(request.requestId);
+      if (!timedOut) return;
+      timedOut.writer?.abort('Timeout waiting for worker response').catch(() => {});
+      timedOut.reject(new Error('Timeout waiting for worker response'));
+    });
 
     pendingRequests.set(request.requestId, {
       resolve,
       reject,
-      timeoutId,
+      timeout,
       head: !!request.head,
     });
 

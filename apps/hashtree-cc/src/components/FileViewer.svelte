@@ -140,10 +140,7 @@
   }
 
   function download() {
-    const a = document.createElement('a');
-    a.href = htreeDownloadUrl;
-    a.download = decodeURIComponent(fileName);
-    a.click();
+    window.location.href = htreeDownloadUrl;
   }
 
   function startEdit() {
