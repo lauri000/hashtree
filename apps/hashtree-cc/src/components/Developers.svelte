@@ -76,7 +76,7 @@
       <h3 class="text-text-1 font-semibold mb-2">Peer-to-Peer</h3>
       <p class="text-text-2 text-sm">
         Share directly between browsers and devices over WebRTC.
-        Also works with Blossom servers, HTTP, or any custom transport.
+        Also works with <a href="https://github.com/hzrd149/blossom" class="text-accent hover:underline" target="_blank" rel="noopener">Blossom</a> servers, HTTP, or any custom transport.
       </p>
     </div>
     <div class="bg-surface-1 rounded-xl p-5">
@@ -412,6 +412,26 @@
         </p>
       </div>
     </div>
+  </div>
+
+  <div class="bg-surface-1 rounded-xl p-6 mb-8">
+    <h3 class="text-lg font-semibold text-text-1 mb-3">
+      <span class="i-lucide-radio mr-2"></span>
+      WebRTC Signaling (NIP-100)
+    </h3>
+    <p class="text-text-2 text-sm mb-2">
+      Peer-to-peer connections are established via Nostr ephemeral events (kind 25050).
+      Peers broadcast presence with <code class="text-accent">#l: "hello"</code> tags for discovery, then exchange WebRTC offers and answers encrypted with NIP-44.
+    </p>
+    <p class="text-text-3 text-xs">
+      Spec:
+      <a
+        href="https://github.com/nostr-protocol/nips/pull/363"
+        class="text-accent hover:underline"
+        target="_blank"
+        rel="noopener"
+      >NIP-100</a>
+    </p>
   </div>
 
   <!-- Links -->
