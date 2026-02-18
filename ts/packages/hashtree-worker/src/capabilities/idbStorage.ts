@@ -44,6 +44,14 @@ export class IdbBlobStorage {
     return this.store.get(fromHex(hashHex));
   }
 
+  async has(hashHex: string): Promise<boolean> {
+    return this.store.has(fromHex(hashHex));
+  }
+
+  async delete(hashHex: string): Promise<boolean> {
+    return this.store.delete(fromHex(hashHex));
+  }
+
   async getStats(): Promise<StorageStats> {
     const [items, bytes] = await Promise.all([
       this.store.count(),

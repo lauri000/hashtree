@@ -202,11 +202,7 @@
       tabindex="0"
       onclick={(e) => handleLineClick(lineNum, e)}
       onkeydown={(e) => e.key === 'Enter' && handleLineClick(lineNum, e as unknown as MouseEvent)}
-    >{lineNum}</span><span class="line-content"
-      ><!-- eslint-disable-next-line svelte/no-at-html-tags -- Prism output escapes input and only adds token spans -->
-      {@html line || ' '}</span
-    >
-  </span>{/each}</code
+    >{lineNum}</span><span class="line-content">{@html line || ' '}</span></span>{/each}</code
 ></pre>
 
 <style>

@@ -68,6 +68,14 @@ export class BlossomTransport {
     return this.servers;
   }
 
+  getWriteServers(): BlossomServerConfig[] {
+    return this.servers.filter(s => s.write);
+  }
+
+  createUploadStore(onUploadProgress?: BlossomUploadCallback): BlossomStore {
+    return this.createStore(this.servers, onUploadProgress);
+  }
+
   private createStore(servers: BlossomServerConfig[], onUploadProgress?: BlossomUploadCallback): BlossomStore {
     return new BlossomStore({
       servers,
