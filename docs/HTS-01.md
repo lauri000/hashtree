@@ -13,8 +13,6 @@ This spec defines:
 5. `htree://` Git URL profile.
 6. Optional WebRTC blob exchange profile.
 
-Identity is pubkey-based. DNS identity schemes are out of scope.
-
 ## 2. Content Addressing Model
 
 1. Hash function MUST be SHA-256.
