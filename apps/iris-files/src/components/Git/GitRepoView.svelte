@@ -241,7 +241,7 @@
     // Propagate gitRoot - if we're at git root (gitRootPath is null), use current path
     // If we're in subdirectory (gitRootPath is set), keep using it
     const effectiveGitRoot = gitRootPath !== null ? gitRootPath : (currentPath.length > 0 ? currentPath.join('/') : '');
-    if (effectiveGitRoot !== null) params.push(`g=${encodeURIComponent(effectiveGitRoot)}`);
+    if (effectiveGitRoot) params.push(`g=${encodeURIComponent(effectiveGitRoot)}`);
     return params.length > 0 ? '?' + params.join('&') : '';
   }
 

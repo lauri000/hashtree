@@ -446,22 +446,13 @@
       Source Code
     </a>
     <a
-      href="https://github.com/mmalmi/hashtree/releases"
+      href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/docs/HTS-01.md"
       class="btn-ghost inline-flex items-center gap-2 no-underline"
       target="_blank"
       rel="noopener"
     >
-      <span class="i-lucide-download"></span>
-      Releases
-    </a>
-    <a
-      href="https://files.iris.to"
-      class="btn-ghost inline-flex items-center gap-2 no-underline"
-      target="_blank"
-      rel="noopener"
-    >
-      <span class="i-lucide-folder"></span>
-      Iris Files
+      <span class="i-lucide-file-text"></span>
+      Protocol Spec
     </a>
   </div>
 </section>
