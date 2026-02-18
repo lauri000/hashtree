@@ -10,6 +10,10 @@ export interface StorageStats {
 export class IdbBlobStorage {
   private readonly store: DexieStore;
   private maxBytes: number;
+  private writesSinceEviction = 0;
+  private evictionPromise: Promise<void> | null = null;
+
+  private static readonly EVICTION_WRITE_INTERVAL = 32;
 
   constructor(dbName: string, maxBytes: number) {
     this.store = new DexieStore(dbName);
@@ -27,7 +31,7 @@ export class IdbBlobStorage {
   async put(data: Uint8Array): Promise<string> {
     const hashHex = toHex(await sha256(data));
     await this.store.put(fromHex(hashHex), data);
-    await this.store.evict(this.maxBytes);
+    void this.scheduleEviction();
     return hashHex;
   }
 
@@ -37,7 +41,12 @@ export class IdbBlobStorage {
       throw new Error('Hash mismatch while caching fetched blob');
     }
     await this.store.put(fromHex(hashHex), data);
-    await this.store.evict(this.maxBytes);
+    void this.scheduleEviction();
+  }
+
+  async putByHashTrusted(hashHex: string, data: Uint8Array): Promise<void> {
+    await this.store.put(fromHex(hashHex), data);
+    void this.scheduleEviction();
   }
 
   async get(hashHex: string): Promise<Uint8Array | null> {
@@ -62,5 +71,24 @@ export class IdbBlobStorage {
 
   close(): void {
     this.store.close();
+  }
+
+  private scheduleEviction(): void {
+    this.writesSinceEviction += 1;
+    if (this.writesSinceEviction < IdbBlobStorage.EVICTION_WRITE_INTERVAL) {
+      return;
+    }
+    this.writesSinceEviction = 0;
+
+    if (this.evictionPromise) {
+      return;
+    }
+
+    this.evictionPromise = this.store
+      .evict(this.maxBytes)
+      .then(() => {})
+      .finally(() => {
+        this.evictionPromise = null;
+      });
   }
 }

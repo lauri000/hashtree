@@ -19,6 +19,7 @@
   const localStatusText = $derived.by(() => {
     if (!localSaveProgress) return '';
     if (localSaveProgress.phase === 'finalizing') return 'Finalizing local save...';
+    if (localSaveProgress.phase === 'reading') return `Reading file (${localPercent}%)`;
     return `Saving to local storage (${localPercent}%)`;
   });
 

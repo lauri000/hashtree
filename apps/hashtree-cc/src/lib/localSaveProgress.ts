@@ -53,7 +53,7 @@ export function updateLocalSaveProgress(bytesSaved: number, totalBytes?: number)
   emitState({
     bytesSaved: nextBytes,
     totalBytes: nextTotal,
-    phase: 'writing',
+    phase: currentState.phase,
   });
 }
 

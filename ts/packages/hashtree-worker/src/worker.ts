@@ -205,7 +205,7 @@ function createWorkerStore(): Store {
   return {
     put: async (hash: Hash, data: Uint8Array): Promise<boolean> => {
       if (!storage) throw new Error('Worker storage not initialized');
-      await storage.putByHash(toHex(hash), data);
+      await storage.putByHashTrusted(toHex(hash), data);
       return true;
     },
     get: async (hash: Hash): Promise<Uint8Array | null> => {
