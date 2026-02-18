@@ -228,9 +228,6 @@ export function nhashDecode(code: string): CID {
     hash: tlv[TLV.HASH][0],
   };
 
-  // Legacy path tags inside nhash are ignored.
-  const _legacyPathTags = tlv[TLV.PATH];
-
   if (tlv[TLV.DECRYPT_KEY]?.[0]) {
     if (tlv[TLV.DECRYPT_KEY][0].length !== 32) {
       throw new Error('nhash: decrypt key must be 32 bytes');
