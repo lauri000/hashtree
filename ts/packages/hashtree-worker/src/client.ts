@@ -19,6 +19,8 @@ export type WorkerFactory = URL | string | (new () => Worker);
 export type P2PFetchHandler = (hashHex: string) => Promise<Uint8Array | null>;
 
 const REQUEST_TIMEOUT_MS = 30_000;
+const PUT_BLOB_TIMEOUT_MS = 15 * 60_000;
+const STREAM_APPEND_TIMEOUT_MS = 60_000;
 type WorkerRequestPayload = WorkerRequest extends infer T
   ? T extends { id: string }
     ? Omit<T, 'id'>
@@ -226,7 +228,7 @@ export class HashtreeWorkerClient {
   }
 
   async putBlob(data: Uint8Array, mimeType?: string, upload = true): Promise<{ hashHex: string; nhash: string }> {
-    const res = await this.request({ type: 'putBlob', data, mimeType, upload });
+    const res = await this.request({ type: 'putBlob', data, mimeType, upload }, PUT_BLOB_TIMEOUT_MS);
     if (res.type !== 'blobStored') {
       throw new Error('Unexpected response for putBlob');
     }
@@ -234,6 +236,52 @@ export class HashtreeWorkerClient {
       throw new Error('Failed to store blob');
     }
     return { hashHex: res.hashHex, nhash: res.nhash };
+  }
+
+  async beginPutBlobStream(mimeType?: string, upload = true): Promise<string> {
+    const res = await this.request({ type: 'beginPutBlobStream', mimeType, upload });
+    if (res.type !== 'blobStreamStarted') {
+      throw new Error('Unexpected response for beginPutBlobStream');
+    }
+    if (!res.streamId) {
+      throw new Error('Failed to start blob stream');
+    }
+    return res.streamId;
+  }
+
+  async appendPutBlobStream(streamId: string, chunk: Uint8Array): Promise<void> {
+    const res = await this.request(
+      { type: 'appendPutBlobStream', streamId, chunk },
+      STREAM_APPEND_TIMEOUT_MS,
+      [chunk.buffer]
+    );
+    if (res.type !== 'void') {
+      throw new Error('Unexpected response for appendPutBlobStream');
+    }
+    if (res.error) {
+      throw new Error(res.error);
+    }
+  }
+
+  async finishPutBlobStream(streamId: string): Promise<{ hashHex: string; nhash: string }> {
+    const res = await this.request({ type: 'finishPutBlobStream', streamId }, PUT_BLOB_TIMEOUT_MS);
+    if (res.type !== 'blobStored') {
+      throw new Error('Unexpected response for finishPutBlobStream');
+    }
+    if (!res.hashHex || !res.nhash) {
+      throw new Error('Failed to finalize blob stream');
+    }
+    return { hashHex: res.hashHex, nhash: res.nhash };
+  }
+
+  async cancelPutBlobStream(streamId: string): Promise<void> {
+    const res = await this.request({ type: 'cancelPutBlobStream', streamId });
+    if (res.type !== 'void') {
+      throw new Error('Unexpected response for cancelPutBlobStream');
+    }
+    if (res.error) {
+      throw new Error(res.error);
+    }
   }
 
   async getBlob(hashHex: string): Promise<{ data: Uint8Array; source: BlobSource }> {

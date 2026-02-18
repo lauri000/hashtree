@@ -75,6 +75,28 @@ test('file upload navigates to viewer with nhash URL', async ({ page }) => {
   await expect(page.getByTestId('viewer-text')).toContainText('hello hashtree test file');
 });
 
+test('file upload uses streaming path without File.arrayBuffer', async ({ page }) => {
+  const fileContent = 'streaming upload path';
+  const expectedHash = createHash('sha256').update(fileContent).digest('hex');
+
+  await mockBlossom(page, expectedHash, fileContent);
+  await page.addInitScript(() => {
+    File.prototype.arrayBuffer = function() {
+      throw new Error('arrayBuffer should not be used for file upload');
+    };
+  });
+
+  await page.goto('/');
+  await page.getByTestId('file-input').setInputFiles({
+    name: 'streamed.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from(fileContent),
+  });
+
+  await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10000 });
+  await expect(page.getByTestId('viewer-text')).toContainText(fileContent);
+});
+
 test('uploads encrypted bytes to blossom (no plaintext body)', async ({ page }) => {
   const plaintext = `NO_PLAINTEXT_UPLOAD_${Date.now()}_${'x'.repeat(2048)}`;
   const plaintextBuffer = Buffer.from(plaintext, 'utf8');

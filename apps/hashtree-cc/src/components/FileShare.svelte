@@ -1,18 +1,11 @@
 <script lang="ts">
-  import { uploadBuffer } from '../lib/blossomStore';
-  import { beginLocalSaveProgress, endLocalSaveProgress } from '../lib/localSaveProgress';
+  import { uploadBuffer, uploadFileStream } from '../lib/blossomStore';
 
   let dragOver = $state(false);
   let textValue = $state('');
 
   async function uploadFile(file: File) {
-    beginLocalSaveProgress();
-    try {
-      const buffer = new Uint8Array(await file.arrayBuffer());
-      await uploadBuffer(buffer, file.name, file.type || 'application/octet-stream');
-    } finally {
-      endLocalSaveProgress();
-    }
+    await uploadFileStream(file);
   }
 
   async function handleFiles(files: FileList | null) {

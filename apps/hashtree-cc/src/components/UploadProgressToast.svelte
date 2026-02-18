@@ -1,14 +1,32 @@
 <script lang="ts">
   import { uploadProgressStore } from '../lib/workerClient';
-  import { localSaveInProgressStore } from '../lib/localSaveProgress';
+  import { localSaveProgressStore } from '../lib/localSaveProgress';
 
   const blossomProgress = $derived($uploadProgressStore);
-  const localSaveInProgress = $derived($localSaveInProgressStore);
-  const showLocalSaveToast = $derived(localSaveInProgress && !blossomProgress);
+  const localSaveProgress = $derived($localSaveProgressStore);
+  const showLocalSaveToast = $derived(!!localSaveProgress && !blossomProgress);
   const percent = $derived.by(() => {
     if (!blossomProgress) return 0;
     if (blossomProgress.totalServers <= 0) return 0;
     return Math.round((blossomProgress.processedServers / blossomProgress.totalServers) * 100);
+  });
+  const localPercent = $derived.by(() => {
+    if (!localSaveProgress) return 0;
+    if (localSaveProgress.totalBytes <= 0) return 0;
+    return Math.min(100, Math.round((localSaveProgress.bytesSaved / localSaveProgress.totalBytes) * 100));
+  });
+
+  const localStatusText = $derived.by(() => {
+    if (!localSaveProgress) return '';
+    if (localSaveProgress.phase === 'finalizing') return 'Finalizing local save...';
+    return `Saving to local storage (${localPercent}%)`;
+  });
+
+  const localDetailText = $derived.by(() => {
+    if (!localSaveProgress) return 'IndexedDB';
+    const doneMb = Math.round(localSaveProgress.bytesSaved / 1024 / 1024);
+    const totalMb = Math.max(1, Math.round(localSaveProgress.totalBytes / 1024 / 1024));
+    return `${doneMb}MB / ${totalMb}MB`;
   });
 
   const statusText = $derived.by(() => {
@@ -49,10 +67,10 @@
     class="fixed right-4 bottom-4 z-40 w-[320px] max-w-[calc(100vw-2rem)] rounded-xl border border-surface-3 bg-surface-1/95 backdrop-blur px-4 py-3 shadow-lg"
     data-testid="upload-progress-toast"
   >
-    <div class="text-sm font-medium text-text-1">Saving to local storage...</div>
+    <div class="text-sm font-medium text-text-1">{localStatusText}</div>
     <div class="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
-      <div class="h-full w-full bg-accent animate-pulse"></div>
+      <div class="h-full bg-accent transition-all duration-150" style={`width:${Math.max(2, localPercent)}%`}></div>
     </div>
-    <div class="mt-2 text-xs text-text-3">IndexedDB</div>
+    <div class="mt-2 text-xs text-text-3">{localDetailText}</div>
   </aside>
 {/if}

@@ -122,6 +122,29 @@ export async function putBlob(
   return worker.putBlob(data, mimeType, upload);
 }
 
+export async function beginPutBlobStream(
+  mimeType?: string,
+  upload = true
+): Promise<string> {
+  const worker = await ensureClient();
+  return worker.beginPutBlobStream(mimeType, upload);
+}
+
+export async function appendPutBlobStream(streamId: string, chunk: Uint8Array): Promise<void> {
+  const worker = await ensureClient();
+  await worker.appendPutBlobStream(streamId, chunk);
+}
+
+export async function finishPutBlobStream(streamId: string): Promise<{ hashHex: string; nhash: string }> {
+  const worker = await ensureClient();
+  return worker.finishPutBlobStream(streamId);
+}
+
+export async function cancelPutBlobStream(streamId: string): Promise<void> {
+  const worker = await ensureClient();
+  await worker.cancelPutBlobStream(streamId);
+}
+
 export async function getBlob(hashHex: string): Promise<Uint8Array> {
   const worker = await ensureClient();
   const { data } = await worker.getBlob(hashHex);

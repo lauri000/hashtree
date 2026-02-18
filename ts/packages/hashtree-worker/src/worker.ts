@@ -42,6 +42,14 @@ const pendingP2PFetches = new Map<
   { resolve: (data: Uint8Array | null) => void; timeoutId: ReturnType<typeof setTimeout> }
 >();
 const peerShareableEncryptedHashes = new Set<string>();
+let putBlobStreamCounter = 0;
+const activePutBlobStreams = new Map<string, {
+  upload: boolean;
+  writer: {
+    append(data: Uint8Array): Promise<void>;
+    finalize(): Promise<{ hash: Hash; size: number; key?: Uint8Array }>;
+  };
+}>();
 
 interface MediaFileRequest {
   type: 'hashtree-file';
@@ -104,6 +112,7 @@ function resetState(): void {
   }
   pendingP2PFetches.clear();
   peerShareableEncryptedHashes.clear();
+  activePutBlobStreams.clear();
 }
 
 async function markEncryptedTreeHashesAsPeerShareable(id: CID): Promise<void> {
@@ -394,6 +403,105 @@ function init(config: WorkerConfig): void {
   void emitConnectivityUpdate();
 }
 
+function nextPutBlobStreamId(): string {
+  putBlobStreamCounter += 1;
+  return `pbs_${Date.now()}_${putBlobStreamCounter}`;
+}
+
+function startBlossomUploadProgress(hashHex: string, nhash: string, fileCid: CID): void {
+  if (!blossom || !tree) return;
+  const writeServers = blossom.getWriteServers();
+  if (writeServers.length === 0) return;
+
+  const progress: UploadProgressState = {
+    hashHex,
+    nhash,
+    totalServers: writeServers.length,
+    processedServers: 0,
+    uploadedServers: 0,
+    skippedServers: 0,
+    failedServers: 0,
+    complete: false,
+  };
+
+  const serverStats = new Map<string, { uploaded: number; skipped: number; failed: number }>();
+  for (const server of writeServers) {
+    serverStats.set(server.url, { uploaded: 0, skipped: 0, failed: 0 });
+  }
+
+  respond({ type: 'uploadProgress', progress: { ...progress } });
+
+  const onUploadProgress = (serverUrl: string, status: 'uploaded' | 'skipped' | 'failed'): void => {
+    const stats = serverStats.get(serverUrl);
+    if (!stats) return;
+    stats[status]++;
+  };
+
+  void (async () => {
+    const uploadStore = blossom.createUploadStore(onUploadProgress);
+    const result = await tree.push(fileCid, uploadStore, {
+      onProgress: (current, total) => {
+        if (total <= 0 || progress.complete) return;
+        const fraction = current / total;
+        const processedEstimate = Math.min(
+          progress.totalServers,
+          Math.max(0, Math.floor(fraction * progress.totalServers))
+        );
+        if (processedEstimate !== progress.processedServers) {
+          progress.processedServers = processedEstimate;
+          respond({ type: 'uploadProgress', progress: { ...progress } });
+        }
+      },
+    });
+
+    let uploadedServers = 0;
+    let skippedServers = 0;
+    let failedServers = 0;
+    for (const [, stats] of serverStats) {
+      if (stats.failed > 0) {
+        failedServers++;
+      } else if (stats.uploaded > 0) {
+        uploadedServers++;
+      } else {
+        skippedServers++;
+      }
+    }
+
+    progress.uploadedServers = uploadedServers;
+    progress.skippedServers = skippedServers;
+    progress.failedServers = failedServers;
+    progress.processedServers = progress.totalServers;
+    progress.complete = true;
+    if (result.failed > 0 && result.errors.length > 0) {
+      progress.error = result.errors[0].error.message;
+    }
+    respond({ type: 'uploadProgress', progress: { ...progress } });
+  })().catch((err) => {
+    if (progress.complete) return;
+    progress.failedServers = progress.totalServers;
+    progress.processedServers = progress.totalServers;
+    progress.complete = true;
+    progress.error = getErrorMessage(err);
+    respond({ type: 'uploadProgress', progress: { ...progress } });
+  });
+}
+
+function respondBlobStored(id: string, fileCid: CID, upload: boolean): void {
+  const hashHex = toHex(fileCid.hash);
+  const nhash = nhashEncode(fileCid);
+
+  if (upload) {
+    startBlossomUploadProgress(hashHex, nhash, fileCid);
+  }
+
+  respond({
+    type: 'blobStored',
+    id,
+    hashHex,
+    nhash,
+  });
+}
+
 async function handleRequest(req: WorkerRequest): Promise<void> {
   switch (req.type) {
     case 'init': {
@@ -425,91 +533,59 @@ async function handleRequest(req: WorkerRequest): Promise<void> {
         await markEncryptedTreeHashesAsPeerShareable(fileCid);
       }
 
-      const hashHex = toHex(fileCid.hash);
-      const nhash = nhashEncode(fileCid);
+      respondBlobStored(req.id, fileCid, req.upload !== false);
+      return;
+    }
 
-      if (req.upload !== false) {
-        const writeServers = blossom.getWriteServers();
-        if (writeServers.length > 0) {
-          const progress: UploadProgressState = {
-            hashHex,
-            nhash,
-            totalServers: writeServers.length,
-            processedServers: 0,
-            uploadedServers: 0,
-            skippedServers: 0,
-            failedServers: 0,
-            complete: false,
-          };
-
-          const serverStats = new Map<string, { uploaded: number; skipped: number; failed: number }>();
-          for (const server of writeServers) {
-            serverStats.set(server.url, { uploaded: 0, skipped: 0, failed: 0 });
-          }
-
-          respond({ type: 'uploadProgress', progress: { ...progress } });
-
-          const onUploadProgress = (serverUrl: string, status: 'uploaded' | 'skipped' | 'failed'): void => {
-            const stats = serverStats.get(serverUrl);
-            if (!stats) return;
-            stats[status]++;
-          };
-
-          void (async () => {
-            const uploadStore = blossom.createUploadStore(onUploadProgress);
-            const result = await tree.push(fileCid, uploadStore, {
-              onProgress: (current, total) => {
-                if (total <= 0 || progress.complete) return;
-                const fraction = current / total;
-                const processedEstimate = Math.min(
-                  progress.totalServers,
-                  Math.max(0, Math.floor(fraction * progress.totalServers))
-                );
-                if (processedEstimate !== progress.processedServers) {
-                  progress.processedServers = processedEstimate;
-                  respond({ type: 'uploadProgress', progress: { ...progress } });
-                }
-              },
-            });
-
-            let uploadedServers = 0;
-            let skippedServers = 0;
-            let failedServers = 0;
-            for (const [, stats] of serverStats) {
-              if (stats.failed > 0) {
-                failedServers++;
-              } else if (stats.uploaded > 0) {
-                uploadedServers++;
-              } else {
-                skippedServers++;
-              }
-            }
-
-            progress.uploadedServers = uploadedServers;
-            progress.skippedServers = skippedServers;
-            progress.failedServers = failedServers;
-            progress.processedServers = progress.totalServers;
-            progress.complete = true;
-            if (result.failed > 0 && result.errors.length > 0) {
-              progress.error = result.errors[0].error.message;
-            }
-            respond({ type: 'uploadProgress', progress: { ...progress } });
-          })().catch((err) => {
-            if (progress.complete) return;
-            progress.failedServers = progress.totalServers;
-            progress.processedServers = progress.totalServers;
-            progress.complete = true;
-            progress.error = getErrorMessage(err);
-            respond({ type: 'uploadProgress', progress: { ...progress } });
-          });
-        }
+    case 'beginPutBlobStream': {
+      if (!tree) {
+        respond({ type: 'error', id: req.id, error: 'Worker not initialized' });
+        return;
       }
-      respond({
-        type: 'blobStored',
-        id: req.id,
-        hashHex,
-        nhash,
-      });
+      const upload = req.upload !== false;
+      const streamId = nextPutBlobStreamId();
+      const writer = tree.createStream({ unencrypted: !upload });
+      activePutBlobStreams.set(streamId, { upload, writer });
+      respond({ type: 'blobStreamStarted', id: req.id, streamId });
+      return;
+    }
+
+    case 'appendPutBlobStream': {
+      const stream = activePutBlobStreams.get(req.streamId);
+      if (!stream) {
+        respond({ type: 'void', id: req.id, error: 'Upload stream not found' });
+        return;
+      }
+      await stream.writer.append(req.chunk);
+      respond({ type: 'void', id: req.id });
+      return;
+    }
+
+    case 'finishPutBlobStream': {
+      const stream = activePutBlobStreams.get(req.streamId);
+      if (!stream) {
+        respond({ type: 'error', id: req.id, error: 'Upload stream not found' });
+        return;
+      }
+      activePutBlobStreams.delete(req.streamId);
+
+      const finalized = await stream.writer.finalize();
+      const fileCid: CID = finalized.key
+        ? { hash: finalized.hash, key: finalized.key }
+        : { hash: finalized.hash };
+
+      if (stream.upload) {
+        assertEncryptedUploadCid(fileCid);
+        await markEncryptedTreeHashesAsPeerShareable(fileCid);
+      }
+
+      respondBlobStored(req.id, fileCid, stream.upload);
+      return;
+    }
+
+    case 'cancelPutBlobStream': {
+      activePutBlobStreams.delete(req.streamId);
+      respond({ type: 'void', id: req.id });
       return;
     }
 
