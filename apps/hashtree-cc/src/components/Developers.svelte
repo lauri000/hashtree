@@ -408,6 +408,7 @@
           The service worker captures <code class="text-accent">/htree/&lt;nhash&gt;/...</code> requests and forwards them to the hashtree worker.
           The worker serves <code class="text-accent">HEAD</code> and byte-range requests, so video tags like
           <code class="text-accent">src="/htree/&lt;nhash&gt;/video.mp4"</code> can seek efficiently using partial responses.
+          Large full downloads also stream chunk-by-chunk, without buffering the entire file in memory.
         </p>
       </div>
     </div>

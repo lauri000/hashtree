@@ -9,6 +9,10 @@ test('settings page persists storage/server settings and allows relay updates', 
   await expect(page).toHaveURL(/#\/settings$/);
   await expect(page.getByTestId('settings-page')).toBeVisible();
   await expect(page.getByTestId('settings-blossom-link')).toHaveAttribute('href', 'https://github.com/hzrd149/blossom');
+  await expect(page.getByTestId('settings-app-info')).toBeVisible();
+  await expect(page.getByTestId('settings-app-version')).toHaveText(/\S+/);
+  await expect(page.getByTestId('settings-build-time')).toHaveText(/\S+/);
+  await expect(page.getByTestId('settings-refresh-app')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Share Privately' })).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'For Developers' })).toHaveCount(0);
 

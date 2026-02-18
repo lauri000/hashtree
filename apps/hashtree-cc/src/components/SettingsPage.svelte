@@ -97,6 +97,16 @@
     return `data:image/svg+xml;utf8,${encodeURIComponent(minidenticon(seed, 50, 50))}`;
   }
 
+  function buildLabel(): string {
+    const buildTime = import.meta.env.VITE_BUILD_TIME;
+    if (!buildTime || buildTime === 'undefined') return 'development';
+    try {
+      return new Date(buildTime).toLocaleString();
+    } catch {
+      return buildTime;
+    }
+  }
+
   $effect(() => {
     let mounted = true;
     const refresh = async () => {
@@ -336,5 +346,30 @@
         data-testid="settings-show-bandwidth-toggle"
       />
     </label>
+  </div>
+
+  <div class="bg-surface-1 rounded-xl p-5 space-y-3" data-testid="settings-app-info">
+    <h2 class="text-text-1 text-lg font-semibold">About</h2>
+    <p class="text-text-3 text-sm">Version and build information</p>
+
+    <div class="bg-surface-0 rounded-lg p-3 text-sm space-y-2">
+      <div class="flex justify-between items-center gap-3">
+        <span class="text-text-3">Version</span>
+        <span class="text-text-1 font-mono text-xs" data-testid="settings-app-version">{import.meta.env.VITE_APP_VERSION || 'development'}</span>
+      </div>
+      <div class="flex justify-between items-center gap-3">
+        <span class="text-text-3">Build</span>
+        <span class="text-text-1 font-mono text-xs" data-testid="settings-build-time">{buildLabel()}</span>
+      </div>
+    </div>
+
+    <button
+      onclick={() => window.location.reload()}
+      class="btn-ghost w-full flex items-center justify-center gap-2"
+      data-testid="settings-refresh-app"
+    >
+      <span class="i-lucide-refresh-cw text-sm"></span>
+      <span>Refresh App</span>
+    </button>
   </div>
 </section>

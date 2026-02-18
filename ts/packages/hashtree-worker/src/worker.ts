@@ -22,6 +22,7 @@ import { IdbBlobStorage } from './capabilities/idbStorage.js';
 import { BlossomTransport, DEFAULT_BLOSSOM_SERVERS } from './capabilities/blossomTransport.js';
 import { probeConnectivity } from './capabilities/connectivity.js';
 import { assertEncryptedUploadCid, markEncryptedHashes, shouldServeHashToPeer } from './privacyGuards.js';
+import { streamFileRangeChunks } from './mediaStreaming.js';
 
 const DEFAULT_STORE_NAME = 'hashtree-worker';
 const DEFAULT_STORAGE_MAX_BYTES = 1024 * 1024 * 1024;
@@ -313,22 +314,12 @@ async function handleMediaFileRequest(port: MessagePort, request: MediaFileReque
   const end = Math.min(totalSize - 1, Math.max(start, requestedEnd));
   const isPartial = start !== 0 || end !== totalSize - 1;
 
-  let slice = new Uint8Array(0);
-  if (!request.head) {
-    const ranged = await tree.readFileRange(cid, start, end + 1);
-    if (ranged === null) {
-      postMediaError(port, request.requestId, 'File not found');
-      return;
-    }
-    slice = new Uint8Array(ranged);
-  }
-
   const expectedLength = end - start + 1;
 
   const responseHeaders: Record<string, string> = {
     'content-type': request.mimeType || 'application/octet-stream',
     'accept-ranges': 'bytes',
-    'content-length': String(request.head ? expectedLength : slice.byteLength),
+    'content-length': String(expectedLength),
   };
   if (isPartial) {
     responseHeaders['content-range'] = `bytes ${start}-${end}/${totalSize}`;
@@ -348,14 +339,13 @@ async function handleMediaFileRequest(port: MessagePort, request: MediaFileReque
   port.postMessage(headersMessage);
 
   if (!request.head) {
-    for (let offset = 0; offset < slice.byteLength; offset += MEDIA_CHUNK_SIZE) {
-      const chunk = slice.subarray(offset, Math.min(offset + MEDIA_CHUNK_SIZE, slice.byteLength));
+    for await (const chunk of streamFileRangeChunks(tree, cid, start, end, MEDIA_CHUNK_SIZE)) {
       const chunkMessage: MediaChunkResponse = {
         type: 'chunk',
         requestId: request.requestId,
         data: chunk,
       };
-      port.postMessage(chunkMessage);
+      port.postMessage(chunkMessage, [chunk.buffer]);
     }
   }
 

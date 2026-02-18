@@ -4,6 +4,10 @@ import UnoCSS from 'unocss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
+  define: {
+    'import.meta.env.VITE_BUILD_TIME': JSON.stringify(new Date().toISOString()),
+    'import.meta.env.VITE_APP_VERSION': JSON.stringify(process.env.npm_package_version || '0.1.0'),
+  },
   plugins: [
     UnoCSS(),
     svelte(),
