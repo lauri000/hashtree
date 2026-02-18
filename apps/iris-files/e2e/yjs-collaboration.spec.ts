@@ -22,6 +22,8 @@ let docCounter = 0;
 const nextDocName = (prefix: string) => `${prefix}-${++docCounter}`;
 let editCounter = 0;
 const nextEditMarker = (prefix: string) => `${prefix}-${++editCounter}`;
+// Run FULL_YJS_COLLAB=1 to execute extended long-running collaboration scenarios.
+const RUN_FULL_YJS_COLLAB = process.env.FULL_YJS_COLLAB === '1';
 
 let contextA: BrowserContext | null = null;
 let contextB: BrowserContext | null = null;
@@ -769,7 +771,8 @@ async function ensureSharedDocs() {
 test.describe('Yjs Collaborative Document Editing', () => {
   // Serial mode: multi-user tests connect via relay, parallel tests would cross-talk
   test.describe.configure({ mode: 'serial' });
-  test.setTimeout(300000); // 5 minutes for collaboration test
+  test.setTimeout(RUN_FULL_YJS_COLLAB ? 300000 : 180000);
+  const extendedTest = RUN_FULL_YJS_COLLAB ? test : test.skip;
 
   test.beforeAll(async ({ browser }) => {
     contextA = await browser.newContext();
@@ -947,7 +950,7 @@ test.describe('Yjs Collaborative Document Editing', () => {
     await expect(editorA).toBeVisible({ timeout: 60000 });
   });
 
-  test('when B edits A document, document appears in B directory', async () => {
+  extendedTest('when B edits A document, document appears in B directory', async () => {
     await ensureSharedDocs();
 
     const docName = sharedDocA;
@@ -996,7 +999,7 @@ test.describe('Yjs Collaborative Document Editing', () => {
     await expect(editorBOwn).toContainText(contributionMarker, { timeout: 15000 });
   });
 
-  test('editor can edit another users document and changes persist', async () => {
+  extendedTest('editor can edit another users document and changes persist', async () => {
     await ensureSharedDocs();
 
     const docName = sharedDocA;
@@ -1038,7 +1041,7 @@ test.describe('Yjs Collaborative Document Editing', () => {
     expect(contentA).toContain(editMarker);
   });
 
-  test('editors count badge shows correct count after document creation and adding collaborator', async () => {
+  extendedTest('editors count badge shows correct count after document creation and adding collaborator', async () => {
     // This test verifies:
     // 1. When creating a new document, owner's npub should be in .yjs and badge should show "1"
     // 2. After adding a collaborator, badge should show "2"
@@ -1128,7 +1131,7 @@ test.describe('Yjs Collaborative Document Editing', () => {
     console.log('\n=== Editors Count Badge Test Passed ===');
   });
 
-  test('document becomes editable without refresh when user is added as editor', async () => {
+  extendedTest('document becomes editable without refresh when user is added as editor', async () => {
     const docName = nextDocName('editor-test');
 
     await pageA.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
@@ -1208,7 +1211,7 @@ test.describe('Yjs Collaborative Document Editing', () => {
     expect(contentA).toContain('[B-EDIT]');
   });
 
-  test('long document collaboration persists after refresh for both users', async () => {
+  extendedTest('long document collaboration persists after refresh for both users', async () => {
     test.setTimeout(240000);
     // This test verifies:
     // 1. Two users can collaboratively write a longer document with edits at different positions
@@ -1315,7 +1318,7 @@ test.describe('Yjs Collaborative Document Editing', () => {
     expect(contentBAfterRefresh).toContain('A.');
   });
 
-  test('browser can view document via direct link without creator making more edits', async () => {
+  extendedTest('browser can view document via direct link without creator making more edits', async () => {
     // This test verifies that Browser 2 can view Browser 1's document via direct link
     // WITHOUT Browser 1 making additional edits to trigger sync.
     //
@@ -1342,7 +1345,7 @@ test.describe('Yjs Collaborative Document Editing', () => {
     await expect(editorB).toBeVisible({ timeout: 60000 });
   });
 
-  test('incognito browser views document via direct URL without prior WebRTC', async ({ browser }) => {
+  extendedTest('incognito browser views document via direct URL without prior WebRTC', async ({ browser }) => {
     await ensureSharedDocs();
 
     const docName = sharedDocDirect;
