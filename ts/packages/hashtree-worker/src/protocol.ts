@@ -20,7 +20,7 @@ export interface ConnectivityState {
   updatedAt: number;
 }
 
-export type BlobSource = 'idb' | 'blossom';
+export type BlobSource = 'idb' | 'blossom' | 'p2p';
 
 export interface UploadProgressState {
   hashHex: string;
@@ -38,6 +38,7 @@ export type WorkerRequest =
   | { type: 'init'; id: string; config: WorkerConfig }
   | { type: 'close'; id: string }
   | { type: 'putBlob'; id: string; data: Uint8Array; mimeType?: string; upload?: boolean }
+  | { type: 'p2pFetchResult'; id: string; requestId: string; data?: Uint8Array; error?: string }
   | { type: 'getBlob'; id: string; hashHex: string }
   | { type: 'registerMediaPort'; id: string; port: MessagePort }
   | { type: 'setBlossomServers'; id: string; servers: BlossomServerConfig[] }
@@ -48,6 +49,7 @@ export type WorkerRequest =
 export type WorkerResponse =
   | { type: 'ready'; id: string }
   | { type: 'error'; id?: string; error: string }
+  | { type: 'p2pFetch'; requestId: string; hashHex: string }
   | { type: 'blobStored'; id: string; hashHex: string; nhash: string }
   | { type: 'blob'; id: string; data?: Uint8Array; source?: BlobSource; error?: string }
   | { type: 'void'; id: string; error?: string }

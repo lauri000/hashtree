@@ -1,5 +1,5 @@
 export { HashtreeWorkerClient } from './client.js';
-export type { WorkerFactory } from './client.js';
+export type { WorkerFactory, P2PFetchHandler } from './client.js';
 export type {
   BlossomServerConfig,
   WorkerConfig,

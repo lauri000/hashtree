@@ -16,6 +16,7 @@ type PendingRequest = {
 };
 
 export type WorkerFactory = URL | string | (new () => Worker);
+export type P2PFetchHandler = (hashHex: string) => Promise<Uint8Array | null>;
 
 const REQUEST_TIMEOUT_MS = 30_000;
 type WorkerRequestPayload = WorkerRequest extends infer T
@@ -32,6 +33,7 @@ export class HashtreeWorkerClient {
   private pending = new Map<string, PendingRequest>();
   private connectivityListeners = new Set<(state: ConnectivityState) => void>();
   private uploadProgressListeners = new Set<(progress: UploadProgressState) => void>();
+  private p2pFetchHandler: P2PFetchHandler | null = null;
 
   constructor(workerFactory: WorkerFactory, config: WorkerConfig = {}) {
     this.workerFactory = workerFactory;
@@ -102,6 +104,11 @@ export class HashtreeWorkerClient {
         return;
       }
 
+      if (message.type === 'p2pFetch') {
+        void this.handleP2PFetch(message.requestId, message.hashHex);
+        return;
+      }
+
       if (message.type === 'error' && message.id) {
         this.rejectPending(message.id, new Error(message.error));
         return;
@@ -140,6 +147,50 @@ export class HashtreeWorkerClient {
     clearTimeout(pending.timeoutId);
     pending.reject(error);
     this.pending.delete(id);
+  }
+
+  private async handleP2PFetch(requestId: string, hashHex: string): Promise<void> {
+    if (!this.worker) return;
+    const id = generateRequestId();
+
+    if (!this.p2pFetchHandler) {
+      this.worker.postMessage({
+        type: 'p2pFetchResult',
+        id,
+        requestId,
+      } as WorkerRequest);
+      return;
+    }
+
+    try {
+      const data = await this.p2pFetchHandler(hashHex);
+      if (data && data.byteLength > 0) {
+        this.worker.postMessage(
+          {
+            type: 'p2pFetchResult',
+            id,
+            requestId,
+            data,
+          } as WorkerRequest,
+          [data.buffer]
+        );
+        return;
+      }
+
+      this.worker.postMessage({
+        type: 'p2pFetchResult',
+        id,
+        requestId,
+      } as WorkerRequest);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      this.worker.postMessage({
+        type: 'p2pFetchResult',
+        id,
+        requestId,
+        error,
+      } as WorkerRequest);
+    }
   }
 
   private async request(
@@ -264,6 +315,10 @@ export class HashtreeWorkerClient {
     return () => {
       this.uploadProgressListeners.delete(listener);
     };
+  }
+
+  setP2PFetchHandler(handler: P2PFetchHandler | null): void {
+    this.p2pFetchHandler = handler;
   }
 
   async close(): Promise<void> {

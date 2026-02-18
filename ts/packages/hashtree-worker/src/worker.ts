@@ -1,6 +1,16 @@
 /// <reference lib="webworker" />
 
-import { nhashDecode, nhashEncode, toHex } from '@hashtree/core';
+import {
+  HashTree,
+  decryptChk,
+  nhashDecode,
+  nhashEncode,
+  toHex,
+  tryDecodeTreeNode,
+  type CID,
+  type Hash,
+  type Store,
+} from '@hashtree/core';
 import type {
   BlobSource,
   UploadProgressState,
@@ -15,13 +25,20 @@ import { probeConnectivity } from './capabilities/connectivity.js';
 const DEFAULT_STORE_NAME = 'hashtree-worker';
 const DEFAULT_STORAGE_MAX_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_CONNECTIVITY_PROBE_INTERVAL_MS = 20_000;
+const P2P_FETCH_TIMEOUT_MS = 2_000;
 
 const ctx: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
 
 let storage: IdbBlobStorage | null = null;
 let blossom: BlossomTransport | null = null;
+let tree: HashTree | null = null;
 let probeInterval: ReturnType<typeof setInterval> | null = null;
 let probeIntervalMs = DEFAULT_CONNECTIVITY_PROBE_INTERVAL_MS;
+let p2pFetchCounter = 0;
+const pendingP2PFetches = new Map<
+  string,
+  { resolve: (data: Uint8Array | null) => void; timeoutId: ReturnType<typeof setTimeout> }
+>();
 
 interface MediaFileRequest {
   type: 'hashtree-file';
@@ -78,6 +95,11 @@ function resetState(): void {
   storage?.close();
   storage = null;
   blossom = null;
+  tree = null;
+  for (const pending of pendingP2PFetches.values()) {
+    clearTimeout(pending.timeoutId);
+  }
+  pendingP2PFetches.clear();
 }
 
 async function emitConnectivityUpdate(): Promise<void> {
@@ -96,18 +118,112 @@ function startConnectivityProbeLoop(): void {
   }, probeIntervalMs);
 }
 
+function nextP2PFetchRequestId(): string {
+  p2pFetchCounter += 1;
+  return `p2p_${Date.now()}_${p2pFetchCounter}`;
+}
+
+async function requestP2PBlob(hashHex: string): Promise<Uint8Array | null> {
+  const requestId = nextP2PFetchRequestId();
+  const data = await new Promise<Uint8Array | null>((resolve) => {
+    const timeoutId = setTimeout(() => {
+      pendingP2PFetches.delete(requestId);
+      resolve(null);
+    }, P2P_FETCH_TIMEOUT_MS);
+    pendingP2PFetches.set(requestId, { resolve, timeoutId });
+    respond({ type: 'p2pFetch', requestId, hashHex });
+  });
+
+  return data;
+}
+
+function resolveP2PFetch(requestId: string, data?: Uint8Array, error?: string): void {
+  const pending = pendingP2PFetches.get(requestId);
+  if (!pending) return;
+  clearTimeout(pending.timeoutId);
+  pendingP2PFetches.delete(requestId);
+
+  if (error || !data) {
+    pending.resolve(null);
+    return;
+  }
+
+  pending.resolve(data);
+}
+
 async function loadBlobData(hashHex: string): Promise<{ data: Uint8Array; source: BlobSource } | null> {
-  if (!storage || !blossom) return null;
+  if (!storage) return null;
   const cached = await storage.get(hashHex);
   if (cached) {
     return { data: cached, source: 'idb' };
   }
-  const fetched = await blossom.fetch(hashHex);
-  if (!fetched) {
+  if (blossom) {
+    const fetched = await blossom.fetch(hashHex);
+    if (fetched) {
+      await storage.putByHash(hashHex, fetched);
+      return { data: fetched, source: 'blossom' };
+    }
+  }
+
+  const p2pData = await requestP2PBlob(hashHex);
+  if (!p2pData) {
     return null;
   }
-  await storage.putByHash(hashHex, fetched);
-  return { data: fetched, source: 'blossom' };
+
+  try {
+    await storage.putByHash(hashHex, p2pData);
+  } catch {
+    return null;
+  }
+
+  return { data: p2pData, source: 'p2p' };
+}
+
+function createWorkerStore(): Store {
+  return {
+    put: async (hash: Hash, data: Uint8Array): Promise<boolean> => {
+      if (!storage) throw new Error('Worker storage not initialized');
+      await storage.putByHash(toHex(hash), data);
+      return true;
+    },
+    get: async (hash: Hash): Promise<Uint8Array | null> => {
+      const loaded = await loadBlobData(toHex(hash));
+      return loaded?.data ?? null;
+    },
+    has: async (hash: Hash): Promise<boolean> => {
+      if (!storage) return false;
+      return storage.has(toHex(hash));
+    },
+    delete: async (hash: Hash): Promise<boolean> => {
+      if (!storage) return false;
+      return storage.delete(toHex(hash));
+    },
+  };
+}
+
+async function getPlaintextFileSize(fileCid: CID): Promise<number | null> {
+  if (!tree) return null;
+
+  if (!fileCid.key) {
+    return tree.getSize(fileCid.hash);
+  }
+
+  const loaded = await loadBlobData(toHex(fileCid.hash));
+  if (!loaded) return null;
+
+  const decryptedRoot = await decryptChk(loaded.data, fileCid.key);
+  const rootNode = tryDecodeTreeNode(decryptedRoot);
+  if (!rootNode) {
+    return decryptedRoot.byteLength;
+  }
+
+  const summedSize = rootNode.links.reduce((sum, link) => sum + (link.size ?? 0), 0);
+  if (summedSize > 0) {
+    return summedSize;
+  }
+
+  const fullData = await tree.readFile(fileCid);
+  return fullData?.byteLength ?? 0;
 }
 
 function decodeDownloadName(path: string): string {
@@ -124,27 +240,44 @@ function postMediaError(port: MessagePort, requestId: string, message: string): 
 }
 
 async function handleMediaFileRequest(port: MessagePort, request: MediaFileRequest): Promise<void> {
-  if (!storage || !blossom) {
+  if (!tree) {
     postMediaError(port, request.requestId, 'Worker not initialized');
     return;
   }
 
-  let hashHex = '';
+  let cid: CID;
   try {
-    hashHex = toHex(nhashDecode(request.nhash).hash);
+    cid = nhashDecode(request.nhash);
   } catch {
     postMediaError(port, request.requestId, 'Invalid nhash');
     return;
   }
 
-  const loaded = await loadBlobData(hashHex);
-  if (!loaded) {
-    postMediaError(port, request.requestId, 'Blob not found');
+  const totalSize = await getPlaintextFileSize(cid);
+  if (totalSize === null) {
+    postMediaError(port, request.requestId, 'File not found');
     return;
   }
 
-  const totalSize = loaded.data.byteLength;
-  let start = Number.isFinite(request.start) ? Math.max(0, Math.floor(request.start)) : 0;
+  if (totalSize === 0) {
+    const headersMessage: MediaHeadersResponse = {
+      type: 'headers',
+      requestId: request.requestId,
+      status: 200,
+      totalSize,
+      headers: {
+        'content-type': request.mimeType || 'application/octet-stream',
+        'accept-ranges': 'bytes',
+        'content-length': '0',
+      },
+    };
+    port.postMessage(headersMessage);
+    const doneMessage: MediaDoneResponse = { type: 'done', requestId: request.requestId };
+    port.postMessage(doneMessage);
+    return;
+  }
+
+  const start = Number.isFinite(request.start) ? Math.max(0, Math.floor(request.start)) : 0;
   if (start >= totalSize) {
     const headers: MediaHeadersResponse = {
       type: 'headers',
@@ -167,12 +300,23 @@ async function handleMediaFileRequest(port: MessagePort, request: MediaFileReque
     : totalSize - 1;
   const end = Math.min(totalSize - 1, Math.max(start, requestedEnd));
   const isPartial = start !== 0 || end !== totalSize - 1;
-  const slice = loaded.data.subarray(start, end + 1);
+
+  let slice = new Uint8Array(0);
+  if (!request.head) {
+    const ranged = await tree.readFileRange(cid, start, end + 1);
+    if (ranged === null) {
+      postMediaError(port, request.requestId, 'File not found');
+      return;
+    }
+    slice = new Uint8Array(ranged);
+  }
+
+  const expectedLength = end - start + 1;
 
   const responseHeaders: Record<string, string> = {
     'content-type': request.mimeType || 'application/octet-stream',
     'accept-ranges': 'bytes',
-    'content-length': String(slice.byteLength),
+    'content-length': String(request.head ? expectedLength : slice.byteLength),
   };
   if (isPartial) {
     responseHeaders['content-range'] = `bytes ${start}-${end}/${totalSize}`;
@@ -242,6 +386,7 @@ function init(config: WorkerConfig): void {
 
   storage = new IdbBlobStorage(storeName, maxBytes);
   blossom = new BlossomTransport(config.blossomServers || DEFAULT_BLOSSOM_SERVERS);
+  tree = new HashTree({ store: createWorkerStore() });
 
   startConnectivityProbeLoop();
   void emitConnectivityUpdate();
@@ -262,16 +407,26 @@ async function handleRequest(req: WorkerRequest): Promise<void> {
     }
 
     case 'putBlob': {
-      if (!storage || !blossom) {
+      if (!storage || !blossom || !tree) {
         respond({ type: 'error', id: req.id, error: 'Worker not initialized' });
         return;
       }
-      const hashHex = await storage.put(req.data);
-      const nhash = nhashEncode(hashHex);
+
+      let fileCid: CID;
+      if (req.upload === false) {
+        const hash = await tree.putBlob(req.data);
+        fileCid = { hash };
+      } else {
+        const fileResult = await tree.putFile(req.data);
+        fileCid = fileResult.cid;
+      }
+
+      const hashHex = toHex(fileCid.hash);
+      const nhash = nhashEncode(fileCid);
+
       if (req.upload !== false) {
-        const writeServers = blossom.getServers().filter(server => server.write);
+        const writeServers = blossom.getWriteServers();
         if (writeServers.length > 0) {
-          const processedServers = new Set<string>();
           const progress: UploadProgressState = {
             hashHex,
             nhash,
@@ -283,35 +438,61 @@ async function handleRequest(req: WorkerRequest): Promise<void> {
             complete: false,
           };
 
+          const serverStats = new Map<string, { uploaded: number; skipped: number; failed: number }>();
+          for (const server of writeServers) {
+            serverStats.set(server.url, { uploaded: 0, skipped: 0, failed: 0 });
+          }
+
           respond({ type: 'uploadProgress', progress: { ...progress } });
 
           const onUploadProgress = (serverUrl: string, status: 'uploaded' | 'skipped' | 'failed'): void => {
-            if (processedServers.has(serverUrl)) return;
-            processedServers.add(serverUrl);
-
-            switch (status) {
-              case 'uploaded':
-                progress.uploadedServers++;
-                break;
-              case 'skipped':
-                progress.skippedServers++;
-                break;
-              case 'failed':
-                progress.failedServers++;
-                break;
-            }
-
-            progress.processedServers = processedServers.size;
-            progress.complete = progress.processedServers >= progress.totalServers;
-            respond({ type: 'uploadProgress', progress: { ...progress } });
+            const stats = serverStats.get(serverUrl);
+            if (!stats) return;
+            stats[status]++;
           };
 
-          void blossom.upload(hashHex, req.data, req.mimeType, onUploadProgress).catch((err) => {
-            if (progress.complete) return;
-            const remaining = progress.totalServers - progress.processedServers;
-            if (remaining > 0) {
-              progress.failedServers += remaining;
+          void (async () => {
+            const uploadStore = blossom.createUploadStore(onUploadProgress);
+            const result = await tree.push(fileCid, uploadStore, {
+              onProgress: (current, total) => {
+                if (total <= 0 || progress.complete) return;
+                const fraction = current / total;
+                const processedEstimate = Math.min(
+                  progress.totalServers,
+                  Math.max(0, Math.floor(fraction * progress.totalServers))
+                );
+                if (processedEstimate !== progress.processedServers) {
+                  progress.processedServers = processedEstimate;
+                  respond({ type: 'uploadProgress', progress: { ...progress } });
+                }
+              },
+            });
+
+            let uploadedServers = 0;
+            let skippedServers = 0;
+            let failedServers = 0;
+            for (const [, stats] of serverStats) {
+              if (stats.failed > 0) {
+                failedServers++;
+              } else if (stats.uploaded > 0) {
+                uploadedServers++;
+              } else {
+                skippedServers++;
+              }
             }
+
+            progress.uploadedServers = uploadedServers;
+            progress.skippedServers = skippedServers;
+            progress.failedServers = failedServers;
+            progress.processedServers = progress.totalServers;
+            progress.complete = true;
+            if (result.failed > 0 && result.errors.length > 0) {
+              progress.error = result.errors[0].error.message;
+            }
+            respond({ type: 'uploadProgress', progress: { ...progress } });
+          })().catch((err) => {
+            if (progress.complete) return;
+            progress.failedServers = progress.totalServers;
             progress.processedServers = progress.totalServers;
             progress.complete = true;
             progress.error = getErrorMessage(err);
@@ -328,8 +509,13 @@ async function handleRequest(req: WorkerRequest): Promise<void> {
       return;
     }
 
+    case 'p2pFetchResult': {
+      resolveP2PFetch(req.requestId, req.data, req.error);
+      return;
+    }
+
     case 'getBlob': {
-      if (!storage || !blossom) {
+      if (!storage) {
         respond({ type: 'blob', id: req.id, error: 'Worker not initialized' });
         return;
       }
@@ -343,7 +529,7 @@ async function handleRequest(req: WorkerRequest): Promise<void> {
     }
 
     case 'registerMediaPort': {
-      if (!storage || !blossom) {
+      if (!storage) {
         respond({ type: 'void', id: req.id, error: 'Worker not initialized' });
         return;
       }

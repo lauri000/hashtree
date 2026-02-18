@@ -1,6 +1,7 @@
 import { HashtreeWorkerClient } from '@hashtree/worker';
 import type { ConnectivityState } from '@hashtree/worker';
 import type { UploadProgressState } from '@hashtree/worker';
+import type { P2PFetchHandler } from '@hashtree/worker';
 import { writable } from 'svelte/store';
 import HashtreeWorker from '@hashtree/worker/entry?worker';
 import { settingsStore } from './settings';
@@ -26,6 +27,7 @@ let connectivityUnsubscribe: (() => void) | null = null;
 let uploadProgressUnsubscribe: (() => void) | null = null;
 let connectivityTimer: ReturnType<typeof setInterval> | null = null;
 let clearUploadProgressTimer: ReturnType<typeof setTimeout> | null = null;
+let p2pFetchHandler: P2PFetchHandler | null = null;
 
 async function probeConnectivity(clientInstance: HashtreeWorkerClient): Promise<void> {
   try {
@@ -91,6 +93,7 @@ async function ensureClient(): Promise<HashtreeWorkerClient> {
       storageMaxBytes: settings.storage.maxBytes,
       connectivityProbeIntervalMs: CONNECTIVITY_POLL_INTERVAL_MS,
     });
+    created.setP2PFetchHandler(p2pFetchHandler);
     await created.init();
     syncSettingsToWorker(created);
     startConnectivityPolling(created);
@@ -133,4 +136,9 @@ export async function getStorageStats(): Promise<{ items: number; bytes: number;
 export async function registerMediaPort(port: MessagePort): Promise<void> {
   const worker = await ensureClient();
   await worker.registerMediaPort(port);
+}
+
+export function setP2PFetchHandler(handler: P2PFetchHandler | null): void {
+  p2pFetchHandler = handler;
+  client?.setP2PFetchHandler(handler);
 }

@@ -4,7 +4,7 @@ import type { SignalingMessage } from '@hashtree/nostr';
 import { SimplePool, type Event } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { writable } from 'svelte/store';
-import { getBlob, putBlob } from './workerClient';
+import { getBlob, putBlob, setP2PFetchHandler } from './workerClient';
 import { settingsStore } from './settings';
 
 const SIGNALING_KIND = 25050;
@@ -66,6 +66,7 @@ let subscriptions: Array<{ close: () => void }> = [];
 let statsTimer: ReturnType<typeof setInterval> | null = null;
 let settingsUnsubscribe: (() => void) | null = null;
 let initPromise: Promise<void> | null = null;
+let localStoreReadDepth = 0;
 
 declare global {
   interface Window {
@@ -260,19 +261,23 @@ async function createLocalStoreAdapter(): Promise<Store> {
       return stored.hashHex === expectedHash;
     },
     get: async (hash) => {
-      try {
-        return await getBlob(toHex(hash));
-      } catch {
-        return null;
-      }
+      return withLocalStoreReadGuard(async () => {
+        try {
+          return await getBlob(toHex(hash));
+        } catch {
+          return null;
+        }
+      });
     },
     has: async (hash) => {
-      try {
-        const data = await getBlob(toHex(hash));
-        return !!data;
-      } catch {
-        return false;
-      }
+      return withLocalStoreReadGuard(async () => {
+        try {
+          const data = await getBlob(toHex(hash));
+          return !!data;
+        } catch {
+          return false;
+        }
+      });
     },
     delete: async () => false,
   };
@@ -291,6 +296,29 @@ function setupSettingsSync(): void {
     updateDebugState();
   });
 }
+
+async function withLocalStoreReadGuard<T>(read: () => Promise<T>): Promise<T> {
+  localStoreReadDepth += 1;
+  try {
+    return await read();
+  } finally {
+    localStoreReadDepth -= 1;
+  }
+}
+
+async function fetchFromPeersForWorker(hashHex: string): Promise<Uint8Array | null> {
+  if (localStoreReadDepth > 0) {
+    return null;
+  }
+
+  await initP2P();
+  if (!controller) {
+    return null;
+  }
+  return controller.get(fromHex(hashHex));
+}
+
+setP2PFetchHandler(fetchFromPeersForWorker);
 
 export async function initP2P(): Promise<void> {
   if (initPromise) return initPromise;
