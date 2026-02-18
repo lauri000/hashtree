@@ -51,7 +51,7 @@
 
 <section class="pb-12">
   <label
-    class="block border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-colors {dragOver ? 'border-accent bg-accent/5' : 'border-surface-3'}"
+    class="block border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-colors duration-300 {dragOver ? 'border-accent bg-accent/5' : 'border-surface-3 hover:bg-white/2'}"
     ondrop={handleDrop}
     ondragover={handleDragOver}
     ondragleave={handleDragLeave}
