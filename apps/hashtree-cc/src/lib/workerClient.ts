@@ -128,6 +128,11 @@ export async function getBlob(hashHex: string): Promise<Uint8Array> {
   return data;
 }
 
+export async function getBlobForPeer(hashHex: string): Promise<Uint8Array | null> {
+  const worker = await ensureClient();
+  return worker.getBlobForPeer(hashHex);
+}
+
 export async function getStorageStats(): Promise<{ items: number; bytes: number; maxBytes: number }> {
   const worker = await ensureClient();
   return worker.getStorageStats();

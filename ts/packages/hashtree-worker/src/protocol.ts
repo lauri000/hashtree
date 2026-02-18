@@ -39,7 +39,7 @@ export type WorkerRequest =
   | { type: 'close'; id: string }
   | { type: 'putBlob'; id: string; data: Uint8Array; mimeType?: string; upload?: boolean }
   | { type: 'p2pFetchResult'; id: string; requestId: string; data?: Uint8Array; error?: string }
-  | { type: 'getBlob'; id: string; hashHex: string }
+  | { type: 'getBlob'; id: string; hashHex: string; forPeer?: boolean }
   | { type: 'registerMediaPort'; id: string; port: MessagePort }
   | { type: 'setBlossomServers'; id: string; servers: BlossomServerConfig[] }
   | { type: 'setStorageMaxBytes'; id: string; maxBytes: number }

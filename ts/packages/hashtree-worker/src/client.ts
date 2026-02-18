@@ -247,6 +247,17 @@ export class HashtreeWorkerClient {
     return { data: res.data, source: res.source };
   }
 
+  async getBlobForPeer(hashHex: string): Promise<Uint8Array | null> {
+    const res = await this.request({ type: 'getBlob', hashHex, forPeer: true });
+    if (res.type !== 'blob') {
+      throw new Error('Unexpected response for getBlobForPeer');
+    }
+    if (res.error || !res.data) {
+      return null;
+    }
+    return res.data;
+  }
+
   async setBlossomServers(servers: BlossomServerConfig[]): Promise<void> {
     const res = await this.request({ type: 'setBlossomServers', servers });
     if (res.type !== 'void') {

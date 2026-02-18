@@ -21,6 +21,7 @@ import type {
 import { IdbBlobStorage } from './capabilities/idbStorage.js';
 import { BlossomTransport, DEFAULT_BLOSSOM_SERVERS } from './capabilities/blossomTransport.js';
 import { probeConnectivity } from './capabilities/connectivity.js';
+import { assertEncryptedUploadCid, markEncryptedHashes, shouldServeHashToPeer } from './privacyGuards.js';
 
 const DEFAULT_STORE_NAME = 'hashtree-worker';
 const DEFAULT_STORAGE_MAX_BYTES = 1024 * 1024 * 1024;
@@ -39,6 +40,7 @@ const pendingP2PFetches = new Map<
   string,
   { resolve: (data: Uint8Array | null) => void; timeoutId: ReturnType<typeof setTimeout> }
 >();
+const peerShareableEncryptedHashes = new Set<string>();
 
 interface MediaFileRequest {
   type: 'hashtree-file';
@@ -100,6 +102,16 @@ function resetState(): void {
     clearTimeout(pending.timeoutId);
   }
   pendingP2PFetches.clear();
+  peerShareableEncryptedHashes.clear();
+}
+
+async function markEncryptedTreeHashesAsPeerShareable(id: CID): Promise<void> {
+  if (!tree) return;
+  const hashes: string[] = [];
+  for await (const block of tree.walkBlocks(id)) {
+    hashes.push(toHex(block.hash));
+  }
+  markEncryptedHashes(hashes, peerShareableEncryptedHashes);
 }
 
 async function emitConnectivityUpdate(): Promise<void> {
@@ -419,6 +431,8 @@ async function handleRequest(req: WorkerRequest): Promise<void> {
       } else {
         const fileResult = await tree.putFile(req.data);
         fileCid = fileResult.cid;
+        assertEncryptedUploadCid(fileCid);
+        await markEncryptedTreeHashesAsPeerShareable(fileCid);
       }
 
       const hashHex = toHex(fileCid.hash);
@@ -517,6 +531,10 @@ async function handleRequest(req: WorkerRequest): Promise<void> {
     case 'getBlob': {
       if (!storage) {
         respond({ type: 'blob', id: req.id, error: 'Worker not initialized' });
+        return;
+      }
+      if (req.forPeer && !shouldServeHashToPeer(req.hashHex, peerShareableEncryptedHashes)) {
+        respond({ type: 'blob', id: req.id, error: 'Refusing to serve non-encrypted or untrusted blob to peer' });
         return;
       }
       const loaded = await loadBlobData(req.hashHex);

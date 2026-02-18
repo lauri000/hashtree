@@ -121,6 +121,34 @@ test('uploads encrypted bytes to blossom (no plaintext body)', async ({ page }) 
   }
 });
 
+test('fails closed when secure local streaming is unavailable', async ({ browser }) => {
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  const page = await context.newPage();
+  const fileContent = 'streaming should fail closed';
+  const expectedHash = createHash('sha256').update(fileContent).digest('hex');
+  let htreeRequests = 0;
+
+  try {
+    await page.route('**/htree/**', async (route) => {
+      htreeRequests += 1;
+      await route.continue();
+    });
+    await mockBlossom(page, expectedHash, fileContent);
+
+    await page.goto('/');
+    await page.getByTestId('file-input').setInputFiles({
+      name: 'no-sw.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from(fileContent),
+    });
+
+    await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10000 });
+    expect(htreeRequests).toBe(0);
+  } finally {
+    await context.close();
+  }
+});
+
 test('viewer has copy link button', async ({ page, context }) => {
   const fileContent = 'copy test file';
   const expectedHash = createHash('sha256').update(fileContent).digest('hex');

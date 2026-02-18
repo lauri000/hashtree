@@ -4,7 +4,7 @@ import type { SignalingMessage } from '@hashtree/nostr';
 import { SimplePool, type Event } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { writable } from 'svelte/store';
-import { getBlob, putBlob, setP2PFetchHandler } from './workerClient';
+import { getBlob, getBlobForPeer, putBlob, setP2PFetchHandler } from './workerClient';
 import { settingsStore } from './settings';
 
 const SIGNALING_KIND = 25050;
@@ -262,21 +262,13 @@ async function createLocalStoreAdapter(): Promise<Store> {
     },
     get: async (hash) => {
       return withLocalStoreReadGuard(async () => {
-        try {
-          return await getBlob(toHex(hash));
-        } catch {
-          return null;
-        }
+        return getBlobForPeer(toHex(hash));
       });
     },
     has: async (hash) => {
       return withLocalStoreReadGuard(async () => {
-        try {
-          const data = await getBlob(toHex(hash));
-          return !!data;
-        } catch {
-          return false;
-        }
+        const data = await getBlobForPeer(toHex(hash));
+        return !!data;
       });
     },
     delete: async () => false,

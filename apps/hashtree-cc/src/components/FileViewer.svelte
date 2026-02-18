@@ -96,13 +96,20 @@
   }
 
   async function fetchBlob() {
+    let streamingReady = false;
     if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
-      const streamingReady = await setupMediaStreaming().catch(() => false);
+      streamingReady = await setupMediaStreaming().catch(() => false);
       if (!streamingReady) {
         // Give service worker/controller a brief moment to settle on first load.
         await new Promise((resolve) => setTimeout(resolve, 200));
-        await setupMediaStreaming().catch(() => false);
+        streamingReady = await setupMediaStreaming().catch(() => false);
       }
+    }
+
+    if (!streamingReady) {
+      error = 'Secure local streaming unavailable';
+      status = 'error';
+      return;
     }
 
     const loaded = isText
