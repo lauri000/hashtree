@@ -85,7 +85,7 @@ Properties:
 
 1. Same plaintext => same key and ciphertext.
 2. CHK key is a capability; anyone with hash+key can decrypt.
-3. CHK leaks equality and size.
+3. CHK leaks equality: identical plaintext produces identical ciphertext.
 
 ## 6. CIDs and Bech32 IDs
 

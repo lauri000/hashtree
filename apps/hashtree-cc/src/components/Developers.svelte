@@ -20,10 +20,28 @@
     <h2 class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
       Content-Addressed Storage
     </h2>
-    <p class="text-lg text-text-2 max-w-xl mx-auto">
+    <p class="text-lg text-text-2 max-w-xl mx-auto mb-6">
       A simple merkle tree for git repos, file sharing, and anything else.
       Sync peer-to-peer between browsers and devices, or via servers.
     </p>
+    <div class="flex gap-3 justify-center">
+      <a
+        href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/rust"
+        class="btn-primary inline-flex items-center gap-2 no-underline"
+        target="_blank"
+        rel="noopener"
+      >
+        Rust
+      </a>
+      <a
+        href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/ts"
+        class="btn-primary inline-flex items-center gap-2 no-underline"
+        target="_blank"
+        rel="noopener"
+      >
+        TypeScript
+      </a>
+    </div>
   </div>
 
   <div class="grid md:grid-cols-3 gap-4 mb-8">
@@ -86,8 +104,8 @@
       <div class="flex gap-3">
         <div class="i-lucide-upload text-lg text-accent shrink-0 mt-0.5"></div>
         <div>
-          <p class="text-text-1 text-sm font-medium">File Sharing</p>
-          <p class="text-text-3 text-xs">Upload files and share via content hash. Recipients verify integrity automatically.</p>
+          <p class="text-text-1 text-sm font-medium">Private File Sharing</p>
+          <p class="text-text-3 text-xs">Upload files and share via content hash. Encrypted by default, verified automatically.</p>
         </div>
       </div>
       <div class="flex gap-3">
@@ -95,6 +113,20 @@
         <div>
           <p class="text-text-1 text-sm font-medium">Iris Files</p>
           <p class="text-text-3 text-xs">Full-featured file manager at <a href="https://files.iris.to" class="text-accent hover:underline" target="_blank" rel="noopener">files.iris.to</a>.</p>
+        </div>
+      </div>
+      <div class="flex gap-3">
+        <div class="i-lucide-video text-lg text-accent shrink-0 mt-0.5"></div>
+        <div>
+          <p class="text-text-1 text-sm font-medium">Iris Video</p>
+          <p class="text-text-3 text-xs">Video streaming at <a href="https://video.iris.to" class="text-accent hover:underline" target="_blank" rel="noopener">video.iris.to</a>.</p>
+        </div>
+      </div>
+      <div class="flex gap-3">
+        <div class="i-lucide-file-text text-lg text-accent shrink-0 mt-0.5"></div>
+        <div>
+          <p class="text-text-1 text-sm font-medium">Iris Docs</p>
+          <p class="text-text-3 text-xs">Collaborative documents at <a href="https://docs.iris.to" class="text-accent hover:underline" target="_blank" rel="noopener">docs.iris.to</a>.</p>
         </div>
       </div>
     </div>
