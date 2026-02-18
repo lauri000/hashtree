@@ -198,8 +198,9 @@ htree following                         # List followed users
 ## Development
 
 ```bash
-cargo test -p hashtree    # Run tests
-cargo bench -p hashtree   # Run benchmarks
+cargo test --workspace         # Run all tests
+cargo test -p hashtree-core    # Run core crate tests
+cargo bench -p hashtree-core   # Run core benchmarks
 ```
 
 ## License

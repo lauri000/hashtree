@@ -11,7 +11,9 @@
   const cargoCmd = 'cargo install hashtree-cli';
   const cloneCmd = 'git clone htree://npub1dqgr6ds2kdauzpqtvpt2ldc5ca4spemj4n4jnjcvn7496x45gnesls5j6g/hashtree';
   const pushCmd = 'git push htree://self/myrepo master';
-  const daemonCmd = 'htree start --daemon';
+  const publicCmd = 'htree://self/myrepo';
+  const linkVisibleCmd = 'htree://self/myrepo#link-visible';
+  const privateCmd = 'htree://self/myrepo#private';
 </script>
 
 <section class="py-12">
@@ -194,20 +196,102 @@
         </div>
       </div>
 
+    </div>
+  </div>
+
+  <!-- Visibility Modes -->
+  <div class="bg-surface-1 rounded-xl p-6 mb-8">
+    <h3 class="text-lg font-semibold text-text-1 mb-4">
+      <span class="i-lucide-eye mr-2"></span>
+      Visibility Modes
+    </h3>
+    <p class="text-text-2 text-sm mb-4">Control who can read your repos using the URL fragment.</p>
+
+    <div class="space-y-4">
       <div>
-        <p class="text-text-2 text-sm mb-2">4. Join the P2P network <span class="text-text-3">(optional)</span></p>
+        <p class="text-text-2 text-sm mb-1"><strong class="text-text-1">Public</strong> <span class="text-text-3">(default)</span> — anyone with the URL can read</p>
         <div class="bg-surface-0 rounded-lg p-3 flex items-center justify-between gap-2 font-mono text-sm">
-          <code class="text-accent truncate">{daemonCmd}</code>
-          <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors" onclick={() => copy(daemonCmd)}>
-            {#if copiedCmd === daemonCmd}
+          <code class="text-accent truncate">{publicCmd}</code>
+          <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors" onclick={() => copy(publicCmd)}>
+            {#if copiedCmd === publicCmd}
               <span class="i-lucide-check text-success"></span>
             {:else}
               <span class="i-lucide-copy"></span>
             {/if}
           </button>
         </div>
-        <p class="text-text-3 text-xs mt-2">Serve your data over WebRTC directly to browsers and other peers — no servers needed.</p>
       </div>
+
+      <div>
+        <p class="text-text-2 text-sm mb-1"><strong class="text-text-1">Link-visible</strong> — encrypted, only link holders can read</p>
+        <div class="bg-surface-0 rounded-lg p-3 flex items-center justify-between gap-2 font-mono text-sm">
+          <code class="text-accent truncate">{linkVisibleCmd}</code>
+          <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors" onclick={() => copy(linkVisibleCmd)}>
+            {#if copiedCmd === linkVisibleCmd}
+              <span class="i-lucide-check text-success"></span>
+            {:else}
+              <span class="i-lucide-copy"></span>
+            {/if}
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <p class="text-text-2 text-sm mb-1"><strong class="text-text-1">Private</strong> — encrypted to owner only</p>
+        <div class="bg-surface-0 rounded-lg p-3 flex items-center justify-between gap-2 font-mono text-sm">
+          <code class="text-accent truncate">{privateCmd}</code>
+          <button class="shrink-0 text-text-3 hover:text-text-1 transition-colors" onclick={() => copy(privateCmd)}>
+            {#if copiedCmd === privateCmd}
+              <span class="i-lucide-check text-success"></span>
+            {:else}
+              <span class="i-lucide-copy"></span>
+            {/if}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CLI Commands -->
+  <div class="bg-surface-1 rounded-xl p-6 mb-8">
+    <h3 class="text-lg font-semibold text-text-1 mb-4">
+      <span class="i-lucide-terminal mr-2"></span>
+      CLI Commands
+    </h3>
+
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <tbody>
+          <tr class="border-b border-surface-2">
+            <td class="py-2 pr-4 font-mono text-accent whitespace-nowrap">htree add &lt;path&gt;</td>
+            <td class="py-2 text-text-2">Add a file or directory to hashtree</td>
+          </tr>
+          <tr class="border-b border-surface-2">
+            <td class="py-2 pr-4 font-mono text-accent whitespace-nowrap">htree get &lt;cid&gt;</td>
+            <td class="py-2 text-text-2">Download content by CID</td>
+          </tr>
+          <tr class="border-b border-surface-2">
+            <td class="py-2 pr-4 font-mono text-accent whitespace-nowrap">htree cat &lt;cid&gt;</td>
+            <td class="py-2 text-text-2">Output file content to stdout</td>
+          </tr>
+          <tr class="border-b border-surface-2">
+            <td class="py-2 pr-4 font-mono text-accent whitespace-nowrap">htree start --daemon</td>
+            <td class="py-2 text-text-2">Join the P2P network over WebRTC</td>
+          </tr>
+          <tr class="border-b border-surface-2">
+            <td class="py-2 pr-4 font-mono text-accent whitespace-nowrap">htree status</td>
+            <td class="py-2 text-text-2">Show daemon status, peers, and storage</td>
+          </tr>
+          <tr class="border-b border-surface-2">
+            <td class="py-2 pr-4 font-mono text-accent whitespace-nowrap">htree push</td>
+            <td class="py-2 text-text-2">Push content to Blossom file servers</td>
+          </tr>
+          <tr>
+            <td class="py-2 pr-4 font-mono text-accent whitespace-nowrap">htree user</td>
+            <td class="py-2 text-text-2">Show or set your Nostr identity</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </div>
 

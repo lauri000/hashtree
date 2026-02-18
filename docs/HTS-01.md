@@ -1,47 +1,49 @@
 # HTS-01: hashtree Core Protocol
 
-This document defines the interoperable wire/data formats for hashtree.
+This spec defines the exact bytes and identifiers implementations must agree on.
+
+Plain-language model: hashtree stores immutable blobs and directory/file nodes by hash, then publishes mutable roots on Nostr.
 
 ## 1. Scope
 
-This spec defines:
+This document specifies:
 
-1. Content addressing and node encoding.
+1. Content addressing and tree-node encoding.
 2. CHK encryption.
 3. `nhash` identifiers and `npub/path` references.
 4. Mutable root publication on Nostr.
-5. `htree://` Git URL profile.
+5. `htree://` URL profile.
 6. Optional WebRTC blob exchange profile.
 
 ## 2. Content Addressing Model
 
 1. Hash function MUST be SHA-256.
-2. Hashes are 32 bytes.
+2. Hashes are always 32 bytes.
 3. Blob address is `SHA256(blob_bytes)`.
 4. Tree-node address is `SHA256(msgpack_tree_node_bytes)`.
-5. Storage interface is key-value by hash:
+5. Storage is key-value by hash:
    `put(hash, bytes)` and `get(hash) -> bytes?`.
 
 ## 3. Tree Node Wire Format
 
-Stored values are either:
+A stored object is one of:
 
-1. Blob: raw bytes (not wrapped).
+1. Blob: raw bytes (no wrapper).
 2. Tree node: MessagePack map with compact keys.
 
-Node map:
+Node map fields:
 
-- `t` (u8): node type. MUST be `1` (File) or `2` (Dir).
-- `l` (array): links.
+- `t` (`u8`): node type. MUST be `1` (File) or `2` (Dir).
+- `l` (array): links to child objects.
 
-Link map:
+Link map fields:
 
-- `h` (bytes32): child hash. REQUIRED.
-- `s` (u64): child size in bytes. REQUIRED.
-- `t` (u8): link type. Optional, default `0`.
-- `n` (utf8): entry name. Optional (used in directories).
-- `k` (bytes32): child CHK key. Optional.
-- `m` (map): metadata. Optional.
+- `h` (`bytes32`): child hash. REQUIRED.
+- `s` (`u64`): child byte size. REQUIRED.
+- `t` (`u8`): link type. OPTIONAL, default `0`.
+- `n` (`utf8`): entry name. OPTIONAL (mainly for directories).
+- `k` (`bytes32`): child CHK key. OPTIONAL.
+- `m` (map): metadata. OPTIONAL.
 
 Type values:
 
@@ -49,16 +51,16 @@ Type values:
 - `1` = File
 - `2` = Dir
 
-Determinism requirements:
+Determinism rules:
 
-1. Encoders MUST produce deterministic MessagePack for identical logical nodes.
+1. Identical logical nodes MUST encode to identical MessagePack bytes.
 2. Metadata map keys MUST be lexicographically sorted before encoding.
-3. Directory entry ordering MUST be deterministic (name sort is RECOMMENDED).
+3. Directory ordering MUST be deterministic (name sort is RECOMMENDED).
 
 Decoding rules:
 
-1. Unknown/missing link `t` MUST be treated as `Blob`.
-2. Node `t` other than `1`/`2` MUST be rejected as invalid tree node.
+1. Missing/unknown link `t` MUST be treated as `Blob` (`0`).
+2. Node `t` values other than `1` or `2` MUST be rejected.
 
 ## 4. Chunking and Fanout Defaults
 
@@ -67,7 +69,7 @@ Recommended defaults:
 1. Chunk size: `2 MiB`.
 2. Max links per node: `174`.
 
-These affect tree shape and root hash; they are defaults, not protocol constants.
+These are defaults, not protocol constants. Different values change tree shape and root hash.
 
 ## 5. CHK Encryption
 
@@ -78,93 +80,91 @@ For plaintext `P`:
 1. `content_hash = SHA256(P)` (32 bytes).
 2. `enc_key = HKDF-SHA256(ikm=content_hash, salt="hashtree-chk", info="encryption-key", L=32)`.
 3. `ciphertext = AES-256-GCM(enc_key, nonce=0x000000000000000000000000, aad="", plaintext=P)`.
-4. Stored bytes are AES-GCM output (`ciphertext || 16-byte tag`).
-5. The CID key is `content_hash` (not `enc_key`).
+4. Stored bytes are `ciphertext || 16-byte tag`.
+5. CID key is `content_hash` (not `enc_key`).
 
 Properties:
 
-1. Same plaintext => same key and ciphertext.
-2. CHK key is a capability; anyone with hash+key can decrypt.
-3. CHK leaks equality: identical plaintext produces identical ciphertext.
+1. Same plaintext produces same key and ciphertext.
+2. Hash+key is a capability: holders can decrypt.
+3. Equality leakage exists: identical plaintext -> identical ciphertext.
 
 ## 6. CIDs and Bech32 IDs
 
-CID (**Content Identifier**) is the tuple `{hash, key?}` where:
+CID (content identifier) is `{hash, key?}`:
 
-- `hash` is the 32-byte content address.
-- `key` is an optional 32-byte CHK decryption key.
+- `hash`: 32-byte content address.
+- `key`: optional 32-byte CHK decryption key.
 
-### 6.1 CID text form
+### 6.1 CID Text Form
 
-`<hash_hex>` or `<hash_hex>:<key_hex>` where each is 64 hex chars.
+`<hash_hex>` or `<hash_hex>:<key_hex>` (each part is 64 hex chars).
 
 ### 6.2 `nhash`
 
-Human-readable permalink. HRP MUST be `nhash` (Bech32, not Bech32m).
+`nhash` is a human-readable immutable permalink.
+HRP MUST be `nhash` (Bech32, not Bech32m).
 
-Payload is TLV (Type-Length-Value) bytes.
-TLV bytes are a sequence of repeated fields: `[type:1][len:1][value:len]`.
+Payload is TLV bytes:
 
-TLV types:
+- Field encoding: `[type:1][len:1][value:len]`
+- Type `0`: hash (`bytes32`), REQUIRED
+- Type `5`: decrypt key (`bytes32`), OPTIONAL
 
-- `0`: hash (bytes32), REQUIRED.
-- `5`: decrypt key (bytes32), OPTIONAL.
+### 6.3 Mutable Reference Form (`npub/path`)
 
-### 6.3 Mutable reference form (`npub/path`)
-
-Mutable references SHOULD use path form instead of a separate bech32 code:
+Mutable references SHOULD use path form:
 
 - `<npub>/<tree_or_repo_path>`
 
-For link-visible access, a key MAY be provided as query parameter:
+For link-visible access, a link secret MAY be passed:
 
 - `?k=<64-hex>`
-- `k` is the 32-byte link secret used to recover the root CHK key from the Nostr `encryptedKey` tag:
-  `root_key = encryptedKey XOR k`
+- Key recovery rule: `root_key = encryptedKey XOR k`
 
-`hashtree:` URI prefix MAY appear before `nhash` and MUST be ignored by decoders.
+`hashtree:` URI prefix MAY appear before `nhash` and decoders MUST ignore it.
 
 ## 7. Mutable Roots via Nostr
 
-Root events use kind `30078` and NIP-33 replaceable semantics (`d` tag).
+Root events use kind `30078` with NIP-33 replaceable semantics (`d` tag).
 
 Required tags:
 
 - `["d", "<tree_name>"]`
-- `["l", "hashtree"]` (legacy unlabeled events MAY be accepted for compatibility)
+- `["l", "hashtree"]` (legacy unlabeled events MAY be accepted)
 - `["hash", "<64-hex-root-hash>"]`
 
 Visibility tags (choose zero or one):
 
-- no visibility tag: unencrypted root/content
-- `["key", "<64-hex-chk-key>"]` for public CHK
-- `["encryptedKey", "<64-hex-xor-masked-key>"]` for link-visible (`encryptedKey = root_key XOR link_secret`)
-- `["selfEncryptedKey", "<nip44-v2-ciphertext>"]` for private
+- none: unencrypted root/content
+- `["key", "<64-hex-chk-key>"]`: public CHK
+- `["encryptedKey", "<64-hex-xor-masked-key>"]`: link-visible (`encryptedKey = root_key XOR link_secret`)
+- `["selfEncryptedKey", "<nip44-v2-ciphertext>"]`: private
 
-Event `content` is optional. Producers SHOULD set empty string or the root hash for legacy compatibility. Consumers MUST prefer `hash` tag and MAY fallback to legacy content.
+Event `content` is optional. Producers SHOULD use empty string or root hash for legacy compatibility. Consumers MUST prefer `hash` tag and MAY fall back to legacy content.
 
-When multiple events match author + `d`:
+If multiple events match author + `d`:
 
-1. Select newest `created_at`.
-2. If tied, select larger event id.
+1. Choose newest `created_at`.
+2. If tied, choose larger event id.
 
 ## 8. Visibility Modes
 
 ### 8.1 Unencrypted
 
-- No CHK key is required.
+- No CHK key required.
 - Event omits `key`, `encryptedKey`, and `selfEncryptedKey`.
 
 ### 8.2 Public (CHK)
 
 - Root CHK key is in `key` tag.
 
-### 8.3 Link-visible
+### 8.3 Link-Visible
 
 - Share secret `S` is 32 bytes.
 - Event stores `encryptedKey = root_key XOR S`.
-- Clone/share URL includes `?k=<hex(S)>`.
-- Client decryption flow is: `root_key = encryptedKey XOR k`.
+- Share URL carries `?k=<hex(S)>`.
+- Client derives `root_key = encryptedKey XOR k`.
 
 ### 8.4 Private
 
@@ -180,7 +180,7 @@ Syntax:
 Rules:
 
 1. `identifier` MAY be `npub1...`, 64-hex pubkey, petname alias, or `self`.
-2. Path after first `/` is repo/tree name and MAY include `/`.
+2. Everything after first `/` is repo/tree path and MAY include `/`.
 3. `:` separator form is invalid.
 
 Fragments:
@@ -194,7 +194,7 @@ Unknown fragments MUST be rejected.
 
 ## 10. Git Repository Profile (Optional)
 
-The current git profile maps git state into hashtree with root layout:
+Current git mapping at tree root:
 
 1. `/.git/HEAD`
 2. `/.git/refs/...`
@@ -206,34 +206,34 @@ Repository publication uses Section 7 with `d=<repo_path>`.
 
 Binary frame format:
 
-1. First byte = message type.
-2. Remaining bytes = MessagePack map body.
+1. First byte: message type.
+2. Remaining bytes: MessagePack map body.
 
 Types:
 
 - `0x00` request: `{h: bytes32, htl?: u8}`
 - `0x01` response: `{h: bytes32, d: bytes, i?: u32, n?: u32}`
 
-`i`/`n` are fragment index/total for chunked responses.
-Recommended fragment size is `32 KiB`.
+`i`/`n` are fragment index and total for chunked responses.
+Recommended fragment size: `32 KiB`.
 
-### 11.1 `htl` behavior
+### 11.1 `htl` Behavior
 
-`htl` (hops-to-live) is a request-scoped forwarding budget.
-`MAX_HTL` is the profile default maximum (currently `10`).
+`htl` (hops-to-live) is forwarding budget for one request.
+`MAX_HTL` is profile default max (currently `10`).
 
 Rules:
 
-1. If `htl` is omitted, receiver MUST treat it as `MAX_HTL`.
-2. A peer MAY forward only when `htl > 0`.
-3. A peer that forwards MUST decrement `htl` before sending to the next peer.
-4. Decrement policy is Freenet-style:
+1. If omitted, receiver MUST treat `htl` as `MAX_HTL`.
+2. Peer MAY forward only if `htl > 0`.
+3. Forwarder MUST decrement `htl` before forwarding.
+4. Freenet-style decrement policy:
    - `2..(MAX_HTL-1)`: decrement by `1`.
-   - `MAX_HTL`: decrement is probabilistic per peer (commonly 50%).
-   - `1`: decrement to `0` is probabilistic per peer (commonly 25%).
+   - `MAX_HTL`: probabilistic decrement per peer (commonly 50%).
+   - `1`: probabilistic decrement to `0` per peer (commonly 25%).
 5. `htl = 0` MUST NOT be forwarded.
 
-### 11.2 `htl` rationale
+### 11.2 `htl` Rationale
 
 `htl` bounds request spread so misses do not flood the network.
-Probabilistic decrement at boundary values (`MAX_HTL` and `1`) makes path length less predictable across peers, reducing simple origin/distance probing.
+Probabilistic decrement at `MAX_HTL` and `1` reduces simple origin/distance probing.
