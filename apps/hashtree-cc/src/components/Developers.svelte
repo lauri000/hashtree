@@ -78,7 +78,7 @@
       <h3 class="text-text-1 font-semibold mb-2">Peer-to-Peer</h3>
       <p class="text-text-2 text-sm">
         Share directly between browsers and devices over WebRTC.
-        No servers needed.
+        Queries are forwarded through the network with <a href="https://www.hyphanet.org/" class="text-accent hover:underline" target="_blank" rel="noopener">Hyphanet</a>-style hops-to-live.
       </p>
     </div>
     <div class="bg-surface-1 rounded-xl p-5">
