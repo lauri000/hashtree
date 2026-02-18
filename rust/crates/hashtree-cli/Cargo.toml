@@ -95,7 +95,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rustls = { version = "0.23", features = ["ring"] }
 
 [features]
-default = ["p2p", "nostrdb", "git-remote-wrapper"]
+default = ["p2p", "nostrdb"]
 p2p = ["dep:hashtree-webrtc", "dep:webrtc"]
 stun = ["p2p", "dep:webrtc-stun"]
 nostrdb = ["dep:nostrdb-social"]

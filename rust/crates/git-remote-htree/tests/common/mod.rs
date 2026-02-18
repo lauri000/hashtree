@@ -17,8 +17,9 @@ use tempfile::TempDir;
 pub mod test_relay {
     use futures::{SinkExt, StreamExt};
     use std::collections::HashMap;
-    use std::net::TcpListener;
+    use std::net::{TcpListener, TcpStream as StdTcpStream};
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
     use tokio::net::TcpStream;
     use tokio::sync::{broadcast, RwLock};
     use tokio_tungstenite::{accept_async, tungstenite::Message};
@@ -149,9 +150,16 @@ pub mod test_relay {
                 });
             });
 
-            // Wait for relay to start
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            relay
+            // Wait until the listener is actually bound before returning.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let addr = format!("127.0.0.1:{}", port);
+            while Instant::now() < deadline {
+                if StdTcpStream::connect(&addr).is_ok() {
+                    return relay;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            panic!("Test relay did not start on {}", addr);
         }
 
         pub fn url(&self) -> String {

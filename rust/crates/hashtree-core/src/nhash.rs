@@ -210,10 +210,7 @@ pub fn nhash_decode(code: &str) -> Result<NHashData, NHashError> {
         None
     };
 
-    Ok(NHashData {
-        hash,
-        decrypt_key,
-    })
+    Ok(NHashData { hash, decrypt_key })
 }
 
 // ============================================================================
