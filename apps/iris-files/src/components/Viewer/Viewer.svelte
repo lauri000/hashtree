@@ -22,6 +22,7 @@
   import ZipPreview from './ZipPreview.svelte';
   import DosBox from './DosBox.svelte';
   import CodeViewer from './CodeViewer.svelte';
+  import MarkdownViewer from './MarkdownViewer.svelte';
   import { TreeRow } from '../ui';
   import FileGitBar from '../Git/FileGitBar.svelte';
 
@@ -586,6 +587,13 @@
 
   let isDos = $derived(urlFileName ? isDosExecutable(urlFileName) : false);
 
+  function isMarkdownFile(filename: string): boolean {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    return ext === 'md' || ext === 'markdown';
+  }
+
+  let isMarkdown = $derived(urlFileName ? isMarkdownFile(urlFileName) : false);
+
   // Check if file is a live stream
   // Shows LIVE indicator when:
   // 1. URL has ?live=1 param, OR
@@ -899,6 +907,13 @@
       <!-- DOS executable - keyed by filename since dirCid changes on file updates -->
       {#key urlFileName}
         <DosBox directoryCid={currentDirCid} exeName={urlFileName} />
+      {/key}
+    {:else if isMarkdown && fileContent !== null}
+      <!-- Markdown viewer - keyed by CID -->
+      {#key cidKey}
+        <div class="flex-1 overflow-auto">
+          <MarkdownViewer content={fileContent} />
+        </div>
       {/key}
     {:else}
       <!-- Text/binary fallback - keyed by CID -->
