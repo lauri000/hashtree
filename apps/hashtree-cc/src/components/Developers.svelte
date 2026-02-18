@@ -1,4 +1,6 @@
 <script lang="ts">
+  import UseCaseCarousel from './UseCaseCarousel.svelte';
+
   let copiedCmd = $state<string | null>(null);
 
   function copy(text: string) {
@@ -48,7 +50,7 @@
 
   <div class="grid md:grid-cols-3 gap-4 mb-8">
     <div class="bg-surface-1 rounded-xl p-5">
-      <div class="i-lucide-hard-drive text-2xl text-accent mb-3"></div>
+      <div class="i-lucide-hard-drive text-2xl text-[#60a5fa] mb-3"></div>
       <h3 class="text-text-1 font-semibold mb-2">Content-Addressed</h3>
       <p class="text-text-2 text-sm">
         Files and directories stored as merkle trees, identified by hash.
@@ -56,7 +58,7 @@
       </p>
     </div>
     <div class="bg-surface-1 rounded-xl p-5">
-      <div class="i-lucide-lock text-2xl text-accent mb-3"></div>
+      <div class="i-lucide-lock text-2xl text-[#f59e0b] mb-3"></div>
       <h3 class="text-text-1 font-semibold mb-2">Encrypted by Default</h3>
       <p class="text-text-2 text-sm">
         Content Hash Key (CHK) encryption: the key is the hash of the plaintext.
@@ -64,7 +66,7 @@
       </p>
     </div>
     <div class="bg-surface-1 rounded-xl p-5">
-      <div class="i-lucide-link text-2xl text-accent mb-3"></div>
+      <div class="i-lucide-link text-2xl text-[#a78bfa] mb-3"></div>
       <h3 class="text-text-1 font-semibold mb-2">Mutable References</h3>
       <p class="text-text-2 text-sm">
         Use <code class="text-accent">npub/path</code> URLs as stable permalinks.
@@ -72,67 +74,33 @@
       </p>
     </div>
     <div class="bg-surface-1 rounded-xl p-5">
-      <div class="i-lucide-globe text-2xl text-accent mb-3"></div>
+      <div class="i-lucide-globe text-2xl text-[#34d399] mb-3"></div>
       <h3 class="text-text-1 font-semibold mb-2">Peer-to-Peer</h3>
       <p class="text-text-2 text-sm">
         Share directly between browsers and devices over WebRTC.
-        Also works with <a href="https://github.com/hzrd149/blossom" class="text-accent hover:underline" target="_blank" rel="noopener">Blossom</a> servers, HTTP, or any custom transport.
+        No servers needed.
       </p>
     </div>
     <div class="bg-surface-1 rounded-xl p-5">
-      <div class="i-lucide-shield text-2xl text-accent mb-3"></div>
+      <div class="i-lucide-shield text-2xl text-[#f87171] mb-3"></div>
       <h3 class="text-text-1 font-semibold mb-2">No Gatekeepers</h3>
       <p class="text-text-2 text-sm">
         No DNS, no SSL certificates, no accounts — just a keypair.
         Ideal for autonomous agents and humans alike.
       </p>
     </div>
-  </div>
-
-  <!-- Use cases -->
-  <div class="bg-surface-1 rounded-xl p-6 mb-8">
-    <h3 class="text-lg font-semibold text-text-1 mb-4">
-      <span class="i-lucide-package mr-2"></span>
-      What can you do with it?
-    </h3>
-    <div class="grid md:grid-cols-2 gap-4">
-      <div class="flex gap-3">
-        <div class="i-lucide-git-branch text-lg text-accent shrink-0 mt-0.5"></div>
-        <div>
-          <p class="text-text-1 text-sm font-medium">Decentralized Git</p>
-          <p class="text-text-3 text-xs">Push/pull repos using <code class="text-accent">htree://</code> URLs. Works as a git remote helper.</p>
-        </div>
-      </div>
-      <div class="flex gap-3">
-        <div class="i-lucide-upload text-lg text-accent shrink-0 mt-0.5"></div>
-        <div>
-          <p class="text-text-1 text-sm font-medium">Private File Sharing</p>
-          <p class="text-text-3 text-xs">Upload files and share via content hash. Encrypted by default, verified automatically.</p>
-        </div>
-      </div>
-      <div class="flex gap-3">
-        <div class="i-lucide-folder text-lg text-accent shrink-0 mt-0.5"></div>
-        <div>
-          <p class="text-text-1 text-sm font-medium">Iris Files</p>
-          <p class="text-text-3 text-xs">Full-featured file manager at <a href="https://files.iris.to" class="text-accent hover:underline" target="_blank" rel="noopener">files.iris.to</a>.</p>
-        </div>
-      </div>
-      <div class="flex gap-3">
-        <div class="i-lucide-video text-lg text-accent shrink-0 mt-0.5"></div>
-        <div>
-          <p class="text-text-1 text-sm font-medium">Iris Video</p>
-          <p class="text-text-3 text-xs">Video streaming at <a href="https://video.iris.to" class="text-accent hover:underline" target="_blank" rel="noopener">video.iris.to</a>.</p>
-        </div>
-      </div>
-      <div class="flex gap-3">
-        <div class="i-lucide-file-text text-lg text-accent shrink-0 mt-0.5"></div>
-        <div>
-          <p class="text-text-1 text-sm font-medium">Iris Docs</p>
-          <p class="text-text-3 text-xs">Collaborative documents at <a href="https://docs.iris.to" class="text-accent hover:underline" target="_blank" rel="noopener">docs.iris.to</a>.</p>
-        </div>
-      </div>
+    <div class="bg-surface-1 rounded-xl p-5">
+      <div class="i-lucide-truck text-2xl text-[#38bdf8] mb-3"></div>
+      <h3 class="text-text-1 font-semibold mb-2">Multi-Transport</h3>
+      <p class="text-text-2 text-sm">
+        Works over <a href="https://github.com/hzrd149/blossom" class="text-accent hover:underline" target="_blank" rel="noopener">Blossom</a> servers, WebRTC, HTTP, or any custom transport.
+        Mix and match as needed.
+      </p>
     </div>
   </div>
+
+  <!-- Use cases carousel -->
+  <UseCaseCarousel />
 
   <!-- Git without GitHub -->
   <div class="text-center mb-8 mt-16">
