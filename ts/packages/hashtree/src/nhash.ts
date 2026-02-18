@@ -138,6 +138,25 @@ function isCID(data: unknown): data is CID {
   );
 }
 
+function encodeNhashTlv(hashBytes: Uint8Array, keyBytes?: Uint8Array): Uint8Array {
+  if (hashBytes.length !== 32) {
+    throw new Error(`Hash must be 32 bytes, got ${hashBytes.length}`);
+  }
+
+  const tlv: Record<number, Uint8Array[]> = {
+    [TLV.HASH]: [hashBytes],
+  };
+
+  if (keyBytes) {
+    if (keyBytes.length !== 32) {
+      throw new Error(`Decrypt key must be 32 bytes, got ${keyBytes.length}`);
+    }
+    tlv[TLV.DECRYPT_KEY] = [keyBytes];
+  }
+
+  return encodeTLV(tlv);
+}
+
 /**
  * Encode an nhash permalink
  *
@@ -158,63 +177,21 @@ function isCID(data: unknown): data is CID {
  * const encoded = nhashEncode({ hash: hashBytes, key: keyBytes });
  */
 export function nhashEncode(data: string | Hash | NHashData | CID): string {
-  // Simple hash-only case
+  // Hash-only input
   if (typeof data === 'string' || data instanceof Uint8Array) {
     const hashBytes = typeof data === 'string' ? hexToBytes(data) : data;
-    if (hashBytes.length !== 32) {
-      throw new Error(`Hash must be 32 bytes, got ${hashBytes.length}`);
-    }
-    return encodeBech32('nhash', hashBytes);
+    return encodeBech32('nhash', encodeNhashTlv(hashBytes));
   }
 
   // CID type (Uint8Array fields)
   if (isCID(data)) {
-    const hashBytes = data.hash;
-    if (hashBytes.length !== 32) {
-      throw new Error(`Hash must be 32 bytes, got ${hashBytes.length}`);
-    }
-
-    // No key - simple encoding
-    if (!data.key) {
-      return encodeBech32('nhash', hashBytes);
-    }
-
-    // Has key - use TLV
-    const tlv: Record<number, Uint8Array[]> = {
-      [TLV.HASH]: [hashBytes],
-    };
-
-    if (data.key.length !== 32) {
-      throw new Error(`Decrypt key must be 32 bytes, got ${data.key.length}`);
-    }
-    tlv[TLV.DECRYPT_KEY] = [data.key];
-
-    return encodeBech32('nhash', encodeTLV(tlv));
+    return encodeBech32('nhash', encodeNhashTlv(data.hash, data.key));
   }
 
   // NHashData type (hex string fields)
   const hashBytes = hexToBytes(data.hash);
-  if (hashBytes.length !== 32) {
-    throw new Error(`Hash must be 32 bytes, got ${hashBytes.length}`);
-  }
-
-  // No decrypt key - simple encoding
-  if (!data.decryptKey) {
-    return encodeBech32('nhash', hashBytes);
-  }
-
-  // Has decrypt key - use TLV
-  const tlv: Record<number, Uint8Array[]> = {
-    [TLV.HASH]: [hashBytes],
-  };
-
-  const keyBytes = hexToBytes(data.decryptKey);
-  if (keyBytes.length !== 32) {
-    throw new Error(`Decrypt key must be 32 bytes, got ${keyBytes.length}`);
-  }
-  tlv[TLV.DECRYPT_KEY] = [keyBytes];
-
-  return encodeBech32('nhash', encodeTLV(tlv));
+  const keyBytes = data.decryptKey ? hexToBytes(data.decryptKey) : undefined;
+  return encodeBech32('nhash', encodeNhashTlv(hashBytes, keyBytes));
 }
 
 /**
@@ -250,6 +227,9 @@ export function nhashDecode(code: string): CID {
   const result: CID = {
     hash: tlv[TLV.HASH][0],
   };
+
+  // Legacy path tags inside nhash are ignored.
+  const _legacyPathTags = tlv[TLV.PATH];
 
   if (tlv[TLV.DECRYPT_KEY]?.[0]) {
     if (tlv[TLV.DECRYPT_KEY][0].length !== 32) {

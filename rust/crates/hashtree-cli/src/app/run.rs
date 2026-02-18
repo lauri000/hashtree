@@ -561,7 +561,6 @@ pub(crate) async fn run() -> Result<()> {
                         .map_err(|e| anyhow::anyhow!("Invalid key: {}", e))?;
                     let nhash_data = NHashData {
                         hash,
-                        path: vec![],
                         decrypt_key: key,
                     };
                     let nhash = nhash_encode_full(&nhash_data)

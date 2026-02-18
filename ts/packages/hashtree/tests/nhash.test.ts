@@ -13,6 +13,8 @@ import {
   type NHashData,
   type NPathData,
 } from '../src/index.js';
+import { bech32 } from '@scure/base';
+import { hexToBytes } from '@noble/hashes/utils.js';
 
 // Test vectors
 const TEST_HASH = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'; // SHA256('')
@@ -27,6 +29,12 @@ describe('nhash - permalink', () => {
 
       expect(encoded).toMatch(/^nhash1[a-z0-9]+$/);
       expect(isNHash(encoded)).toBe(true);
+
+      const { words } = bech32.decode(encoded as `${string}1${string}`, 5000);
+      const payload = new Uint8Array(bech32.fromWords(words));
+      expect(payload.length).not.toBe(32);
+      expect(payload[0]).toBe(0);
+      expect(payload[1]).toBe(32);
 
       const decoded = nhashDecode(encoded);
       expect(toHex(decoded.hash)).toBe(TEST_HASH);
@@ -86,6 +94,30 @@ describe('nhash - permalink', () => {
       const encoded = nhashEncode(TEST_HASH);
       const decoded = nhashDecode(`hashtree:${encoded}`);
       expect(toHex(decoded.hash)).toBe(TEST_HASH);
+    });
+
+    it('should decode legacy simple hash payload', () => {
+      const legacy = bech32.encode('nhash', bech32.toWords(hexToBytes(TEST_HASH)), 5000);
+      const decoded = nhashDecode(legacy);
+      expect(toHex(decoded.hash)).toBe(TEST_HASH);
+      expect(decoded.key).toBeUndefined();
+    });
+
+    it('should ignore embedded path tags in nhash TLV', () => {
+      const hash = hexToBytes(TEST_HASH);
+      const path = new TextEncoder().encode('nested/file.txt');
+      const payload = new Uint8Array(2 + hash.length + 2 + path.length);
+      payload[0] = 0;
+      payload[1] = 32;
+      payload.set(hash, 2);
+      payload[34] = 4;
+      payload[35] = path.length;
+      payload.set(path, 36);
+
+      const encoded = bech32.encode('nhash', bech32.toWords(payload), 5000);
+      const decoded = nhashDecode(encoded);
+      expect(toHex(decoded.hash)).toBe(TEST_HASH);
+      expect(decoded.key).toBeUndefined();
     });
 
     it('should throw on wrong prefix', () => {

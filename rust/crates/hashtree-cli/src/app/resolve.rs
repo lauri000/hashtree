@@ -16,7 +16,7 @@ pub(crate) struct ResolveOptions {
 }
 
 /// Resolve a CID input which can be:
-/// - An nhash (bech32-encoded hash with optional path/key)
+/// - An nhash (bech32-encoded hash with optional key)
 /// - An npub/repo path (e.g., "npub1.../myrepo")
 /// - An htree:// URL (e.g., "htree://npub1.../myrepo")
 /// Returns the resolved Cid (raw bytes) and optional path within the tree.
@@ -44,20 +44,12 @@ pub(crate) async fn resolve_cid_input_with_opts(
 
         let data = nhash_decode(nhash_part).map_err(|e| anyhow::anyhow!("Invalid nhash: {}", e))?;
 
-        // Combine embedded TLV path with URL-style path suffix
-        let path = match (data.path.is_empty(), url_path) {
-            (true, None) => None,
-            (true, Some(p)) => Some(p.to_string()),
-            (false, None) => Some(data.path.join("/")),
-            (false, Some(p)) => Some(format!("{}/{}", data.path.join("/"), p)),
-        };
-
         return Ok(ResolvedCid {
             cid: Cid {
                 hash: data.hash,
                 key: data.decrypt_key,
             },
-            path,
+            path: url_path.map(|p| p.to_string()),
         });
     }
 

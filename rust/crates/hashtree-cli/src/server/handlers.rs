@@ -186,10 +186,7 @@ async fn htree_nhash_impl(
         }
     }
 
-    let mut effective_path = path.filter(|p| !p.is_empty());
-    if effective_path.is_none() && !nhash_data.path.is_empty() {
-        effective_path = Some(nhash_data.path.join("/"));
-    }
+    let effective_path = path.filter(|p| !p.is_empty());
 
     let store = state.store.store_arc();
     let tree = HashTree::new(HashTreeConfig::new(store).public());

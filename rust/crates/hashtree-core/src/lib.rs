@@ -71,8 +71,8 @@ pub use reader::{verify_tree, ReaderError, TreeEntry, VerifyResult, WalkEntry};
 
 // Store
 pub use nhash::{
-    decode as nhash_or_nref_decode, is_nhash, is_nref, nhash_decode, nhash_encode,
-    nhash_encode_full, nref_decode, nref_encode, DecodeResult, NHashData, NHashError, NRefData,
+    decode as nhash_decode_any, is_nhash, nhash_decode, nhash_encode, nhash_encode_full,
+    DecodeResult, NHashData, NHashError,
 };
 pub use store::{MemoryStore, Store, StoreError};
 pub use types::{
