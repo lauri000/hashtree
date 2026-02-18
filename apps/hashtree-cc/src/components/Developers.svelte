@@ -31,7 +31,7 @@
     <div class="flex gap-3 justify-center">
       <a
         href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/rust"
-        class="btn-primary inline-flex items-center gap-2 no-underline"
+        class="btn bg-[#b7410e] text-white hover:bg-[#b7410e]/80 inline-flex items-center gap-2 no-underline"
         target="_blank"
         rel="noopener"
       >
@@ -39,7 +39,7 @@
       </a>
       <a
         href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/ts"
-        class="btn-primary inline-flex items-center gap-2 no-underline"
+        class="btn bg-[#3178c6] text-white hover:bg-[#3178c6]/80 inline-flex items-center gap-2 no-underline"
         target="_blank"
         rel="noopener"
       >
@@ -93,7 +93,7 @@
       <div class="i-lucide-truck text-2xl text-[#38bdf8] mb-3"></div>
       <h3 class="text-text-1 font-semibold mb-2">Multi-Transport</h3>
       <p class="text-text-2 text-sm">
-        Works over <a href="https://github.com/hzrd149/blossom" class="text-accent hover:underline" target="_blank" rel="noopener">Blossom</a> servers, WebRTC, HTTP, or any custom transport.
+        Works over <a href="https://github.com/hzrd149/blossom" class="text-accent hover:underline" target="_blank" rel="noopener">Blossom</a> servers, WebRTC, or any custom transport.
         Mix and match as needed.
       </p>
     </div>
