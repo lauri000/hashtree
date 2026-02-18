@@ -80,6 +80,9 @@ importers:
       nostr-tools:
         specifier: ^2.18.2
         version: 2.18.2(typescript@5.9.3)
+      qrcode:
+        specifier: ^1.5.4
+        version: 1.5.4
     devDependencies:
       '@iconify-json/lucide':
         specifier: ^1.2.75
@@ -93,6 +96,9 @@ importers:
       '@tsconfig/svelte':
         specifier: ^5.0.4
         version: 5.0.6
+      '@types/qrcode':
+        specifier: ^1.5.6
+        version: 1.5.6
       '@unocss/preset-icons':
         specifier: ^66.5.9
         version: 66.5.10
@@ -8713,7 +8719,7 @@ snapshots:
 
   '@types/qrcode@1.5.6':
     dependencies:
-      '@types/node': 24.10.1
+      '@types/node': 22.19.8
 
   '@types/qs@6.14.0': {}
 

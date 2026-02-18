@@ -8,6 +8,7 @@
   import ConnectivityIndicator from './components/ConnectivityIndicator.svelte';
   import BandwidthIndicator from './components/BandwidthIndicator.svelte';
   import UploadProgressToast from './components/UploadProgressToast.svelte';
+  import ShareModal from './components/ShareModal.svelte';
   import Footer from './components/Footer.svelte';
   import { settingsStore } from './lib/settings';
 
@@ -115,3 +116,4 @@
 </div>
 
 <UploadProgressToast />
+<ShareModal />

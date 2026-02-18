@@ -18,13 +18,15 @@
     "@hashtree/nostr": "workspace:*",
     "@hashtree/worker": "workspace:*",
     "minidenticons": "^4.2.1",
-    "nostr-tools": "^2.18.2"
+    "nostr-tools": "^2.18.2",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@iconify-json/lucide": "^1.2.75",
     "@playwright/test": "^1.50.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@tsconfig/svelte": "^5.0.4",
+    "@types/qrcode": "^1.5.6",
     "@unocss/preset-icons": "^66.5.9",
     "svelte": "^5.16.0",
     "typescript": "^5.3.0",

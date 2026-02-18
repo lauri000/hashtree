@@ -1,6 +1,7 @@
 <script lang="ts">
   import { uploadBuffer } from '../lib/blossomStore';
   import { getMediaClientKey, setupMediaStreaming } from '../lib/mediaStreamingSetup';
+  import { open as openShareModal } from './ShareModal.svelte';
 
   interface Props {
     nhash: string;
@@ -13,7 +14,6 @@
   let error = $state('');
   let blobUrl = $state('');
   let textContent = $state('');
-  let copiedLink = $state(false);
   let copiedText = $state(false);
   let editing = $state(false);
   let editText = $state('');
@@ -38,12 +38,6 @@
   );
   const htreeDownloadUrl = $derived(`${htreeUrl}&download=1`);
   const shareUrl = $derived(`${window.location.origin}/#/${nhash}/${encodeURIComponent(fileName)}`);
-
-  function copyLink() {
-    navigator.clipboard.writeText(shareUrl);
-    copiedLink = true;
-    setTimeout(() => { copiedLink = false; }, 2000);
-  }
 
   function formatSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
@@ -207,13 +201,8 @@
           <span class="i-lucide-download"></span>
         </button>
       {/if}
-      <button class="btn-ghost text-sm inline-grid" onclick={copyLink} title="Copy link">
-        <span class="col-start-1 row-start-1 flex items-center transition-opacity {copiedLink ? 'opacity-0' : 'opacity-100'}">
-          <span class="i-lucide-link mr-1"></span> Copy Link
-        </span>
-        <span class="col-start-1 row-start-1 flex items-center transition-opacity {copiedLink ? 'opacity-100' : 'opacity-0'}">
-          <span class="i-lucide-check text-success mr-1"></span> Copied!
-        </span>
+      <button class="btn-ghost text-sm" onclick={() => openShareModal(shareUrl)} title="Share">
+        <span class="i-lucide-share mr-1"></span> Share
       </button>
     </div>
   </div>
