@@ -1,15 +1,22 @@
 import { fromHex, toHex, type Store } from '@hashtree/core';
-import { WebRTCController, WebRTCProxy } from '@hashtree/worker/p2p';
+import {
+  WebRTCController,
+  WebRTCProxy,
+  SIGNALING_KIND,
+  createSignalingFilters,
+  decodeSignalingEvent,
+  sendSignalingMessage,
+  type GiftSeal,
+  type SignalingInnerEvent,
+  type SignalingTemplate,
+} from '@hashtree/worker/p2p';
 import type { SignalingMessage } from '@hashtree/nostr';
-import { SimplePool, type Event } from 'nostr-tools';
+import { SimplePool, type Event, nip44 } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { writable } from 'svelte/store';
 import { getBlob, getBlobForPeer, putBlob, setP2PFetchHandler } from './workerClient';
 import { settingsStore } from './settings';
 
-const SIGNALING_KIND = 25050;
-const HELLO_TAG = 'hello';
-const MAX_EVENT_AGE_SEC = 30;
 const STATS_INTERVAL_MS = 1000;
 
 const DEFAULT_RELAYS = [
@@ -146,49 +153,21 @@ function updateDebugState(): void {
   }
 }
 
-function eventExpired(event: Event): boolean {
-  const nowSec = Date.now() / 1000;
-  if (nowSec - event.created_at > MAX_EVENT_AGE_SEC) {
-    return true;
-  }
-  const expirationTag = event.tags.find(tag => tag[0] === 'expiration');
-  if (!expirationTag) return false;
-  const expiration = Number.parseInt(expirationTag[1], 10);
-  return Number.isFinite(expiration) && expiration < nowSec;
-}
-
-function parseDirectedMessage(event: Event): SignalingMessage | null {
-  if (!event.content) return null;
-  try {
-    const parsed = JSON.parse(event.content) as SignalingMessage;
-    if (!parsed || typeof parsed !== 'object' || !('type' in parsed)) {
-      return null;
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
 function handleSignalingEvent(event: Event): void {
-  if (!controller) return;
-  if (eventExpired(event)) return;
-
-  const helloTag = event.tags.find(tag => tag[0] === 'l' && tag[1] === HELLO_TAG);
-  if (helloTag) {
-    const peerIdTag = event.tags.find(tag => tag[0] === 'peerId');
-    if (!peerIdTag) return;
-    const message: SignalingMessage = {
-      type: 'hello',
-      peerId: peerIdTag[1],
-    };
-    void controller.handleSignalingMessage(message, event.pubkey);
+  if (!controller) {
     return;
   }
 
-  const directed = parseDirectedMessage(event);
-  if (!directed) return;
-  void controller.handleSignalingMessage(directed, event.pubkey);
+  void (async () => {
+    const decoded = await decodeSignalingEvent({
+      event,
+      giftUnwrap: giftUnwrapEvent,
+    });
+    if (!decoded) {
+      return;
+    }
+    await controller?.handleSignalingMessage(decoded.message, decoded.senderPubkey);
+  })();
 }
 
 async function publishEvent(event: Event): Promise<void> {
@@ -197,35 +176,66 @@ async function publishEvent(event: Event): Promise<void> {
   await Promise.allSettled(publishes);
 }
 
-async function sendSignaling(msg: SignalingMessage, recipientPubkey?: string): Promise<void> {
-  if (!secretKey) return;
-  const expiration = Math.floor((Date.now() + 5 * 60 * 1000) / 1000);
+async function signLocalEvent(template: SignalingTemplate): Promise<Event> {
+  if (!secretKey) {
+    throw new Error('No local secret key available for WebRTC signaling');
+  }
+  return finalizeEvent(template, secretKey) as Event;
+}
 
-  if (recipientPubkey) {
-    const directedEvent = finalizeEvent({
-      kind: SIGNALING_KIND,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [
-        ['p', recipientPubkey],
-        ['expiration', expiration.toString()],
-      ],
-      content: JSON.stringify(msg),
-    }, secretKey);
-    await publishEvent(directedEvent as Event);
-    return;
+async function giftWrapMessage(innerEvent: SignalingInnerEvent, recipientPubkey: string): Promise<Event> {
+  if (!secretKey || !publicKey) {
+    throw new Error('No local keypair available for WebRTC signaling');
   }
 
-  const helloEvent = finalizeEvent({
+  const seal: GiftSeal = {
+    pubkey: publicKey,
+    kind: innerEvent.kind,
+    content: innerEvent.content,
+    tags: innerEvent.tags,
+  };
+
+  const ephemeralSk = generateSecretKey();
+  const createdAt = Math.floor(Date.now() / 1000);
+  const expiration = createdAt + 5 * 60;
+  const conversationKey = nip44.v2.utils.getConversationKey(ephemeralSk, recipientPubkey);
+  const encryptedContent = nip44.v2.encrypt(JSON.stringify(seal), conversationKey);
+
+  return finalizeEvent({
     kind: SIGNALING_KIND,
-    created_at: Math.floor(Date.now() / 1000),
+    created_at: createdAt,
     tags: [
-      ['l', HELLO_TAG],
-      ['peerId', msg.peerId],
-      ['expiration', expiration.toString()],
+      ['p', recipientPubkey],
+      ['expiration', String(expiration)],
     ],
-    content: '',
-  }, secretKey);
-  await publishEvent(helloEvent as Event);
+    content: encryptedContent,
+  }, ephemeralSk) as Event;
+}
+
+async function giftUnwrapEvent(event: Event): Promise<GiftSeal | null> {
+  if (!secretKey) {
+    return null;
+  }
+  try {
+    const conversationKey = nip44.v2.utils.getConversationKey(secretKey, event.pubkey);
+    const decrypted = nip44.v2.decrypt(event.content, conversationKey);
+    return JSON.parse(decrypted) as GiftSeal;
+  } catch {
+    return null;
+  }
+}
+
+async function sendSignaling(msg: SignalingMessage, recipientPubkey?: string): Promise<void> {
+  if (!secretKey) {
+    return;
+  }
+  await sendSignalingMessage({
+    msg,
+    recipientPubkey,
+    signEvent: signLocalEvent,
+    giftWrap: giftWrapMessage,
+    publish: publishEvent,
+  });
 }
 
 function setupSubscriptions(relays: string[]): void {
@@ -235,19 +245,11 @@ function setupSubscriptions(relays: string[]): void {
   }
   subscriptions = [];
 
-  const since = Math.floor((Date.now() - MAX_EVENT_AGE_SEC * 1000) / 1000);
-  const helloSub = pool.subscribe(relays, {
-    kinds: [SIGNALING_KIND],
-    '#l': [HELLO_TAG],
-    since,
-  }, {
+  const { helloFilter, directedFilter } = createSignalingFilters(publicKey);
+  const helloSub = pool.subscribe(relays, helloFilter, {
     onevent: handleSignalingEvent,
   });
-  const directedSub = pool.subscribe(relays, {
-    kinds: [SIGNALING_KIND],
-    '#p': [publicKey],
-    since,
-  }, {
+  const directedSub = pool.subscribe(relays, directedFilter, {
     onevent: handleSignalingEvent,
   });
   subscriptions = [helloSub, directedSub];
