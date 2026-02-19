@@ -4,8 +4,6 @@ TypeScript/JavaScript implementation of hashtree. Includes the core SDK packages
 
 Part of the hashtree repository. See [../README.md](../README.md) for the project overview and [../rust/README.md](../rust/README.md) for the Rust CLI/daemon.
 
-When published as a single tree, this subtree lives at `/hashtree/ts`.
-
 Blossom-compatible storage with chunking and directory structure. Merkle roots can be published on Nostr to get mutable `npub/path` addresses.
 
 ## Design
