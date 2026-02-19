@@ -8,6 +8,10 @@
  */
 
 import type { CID } from '@hashtree/core';
+import type {
+  BlossomBandwidthStats,
+  BlossomBandwidthServerStats,
+} from '@hashtree/core/worker';
 
 // Re-export common types from hashtree's worker protocol
 export type {
@@ -15,6 +19,8 @@ export type {
   UnsignedEvent,
   SignedEvent,
   SocialGraphEvent,
+  BlossomBandwidthStats,
+  BlossomBandwidthServerStats,
 } from '@hashtree/core/worker';
 
 // Tree visibility levels
@@ -43,19 +49,6 @@ export interface PeerStats {
   responsesReceived: number;
   bytesSent: number;
   bytesReceived: number;
-}
-
-export interface BlossomBandwidthServerStats {
-  url: string;
-  bytesSent: number;
-  bytesReceived: number;
-}
-
-export interface BlossomBandwidthStats {
-  totalBytesSent: number;
-  totalBytesReceived: number;
-  updatedAt: number;
-  servers: BlossomBandwidthServerStats[];
 }
 
 // ============================================================================

@@ -22,6 +22,7 @@
   let blossomLogs = $derived($blossomLogStore);
   let appState = $derived($appStore);
   let blossomBandwidth = $derived(appState.blossomBandwidth);
+  let blossomUsageByUrl = $derived(new Map(blossomBandwidth.servers.map(server => [server.url, server])));
 
   function getStatusColor(status: RelayStatus): string {
     switch (status) {
@@ -35,6 +36,14 @@
   function getRelayStatus(url: string): RelayStatus {
     const normalized = url.replace(/\/$/, '');
     return relayStatuses.get(normalized) || relayStatuses.get(url) || 'disconnected';
+  }
+
+  function formatServerLabel(url: string): string {
+    try {
+      return new URL(url).hostname;
+    } catch {
+      return url;
+    }
   }
 
   function addRelay() {
@@ -101,9 +110,6 @@
     editingBlossom = false;
   }
 
-  function getBlossomServerUsage(url: string) {
-    return blossomBandwidth.servers.find(server => server.url === url);
-  }
 </script>
 
 <div class="p-4 space-y-6 max-w-2xl mx-auto">
@@ -123,9 +129,7 @@
         {@const status = getRelayStatus(relay)}
         <div class="flex items-center gap-2 p-3 text-sm">
           <span class="w-2 h-2 rounded-full {getStatusColor(status)} shrink-0"></span>
-          <span class="text-text-1 truncate flex-1">
-            {(() => { try { return new URL(relay).hostname; } catch { return relay; } })()}
-          </span>
+          <span class="text-text-1 truncate flex-1">{formatServerLabel(relay)}</span>
           {#if editingRelays}
             <button onclick={() => removeRelay(relay)} class="btn-ghost p-1 text-danger" title="Remove relay">
               <span class="i-lucide-x text-sm"></span>
@@ -165,9 +169,7 @@
             {#each discoveredRelays as relay (relay.url)}
               <div class="flex items-center gap-2 p-3 text-sm">
                 <span class="w-2 h-2 rounded-full {getStatusColor(relay.status)} shrink-0"></span>
-                <span class="text-text-1 truncate flex-1">
-                  {(() => { try { return new URL(relay.url).hostname; } catch { return relay.url; } })()}
-                </span>
+                <span class="text-text-1 truncate flex-1">{formatServerLabel(relay.url)}</span>
                 <span class="text-xs text-text-3">{relay.status.charAt(0).toUpperCase() + relay.status.slice(1)}</span>
               </div>
             {/each}
@@ -194,9 +196,7 @@
       {#each networkSettings.blossomServers as server (server.url)}
         <div class="flex items-center gap-2 p-3 text-sm">
           <span class="i-lucide-server text-text-3 shrink-0"></span>
-          <span class="text-text-1 truncate flex-1">
-            {(() => { try { return new URL(server.url).hostname; } catch { return server.url; } })()}
-          </span>
+          <span class="text-text-1 truncate flex-1">{formatServerLabel(server.url)}</span>
           <label class="flex items-center gap-1 text-xs text-text-3 cursor-pointer">
             <input type="checkbox" checked={server.read} onchange={() => toggleBlossomRead(server.url)} class="accent-accent" />
             read
@@ -232,11 +232,9 @@
       {#if networkSettings.blossomServers.length > 0}
         <div class="mt-3 pt-3 border-t border-surface-3 space-y-1 text-xs font-mono">
           {#each networkSettings.blossomServers as server (server.url)}
-            {@const usage = getBlossomServerUsage(server.url)}
+            {@const usage = blossomUsageByUrl.get(server.url)}
             <div class="flex items-center justify-between gap-2 text-text-2">
-              <span class="truncate">
-                {(() => { try { return new URL(server.url).hostname; } catch { return server.url; } })()}
-              </span>
+              <span class="truncate">{formatServerLabel(server.url)}</span>
               <span class="shrink-0">↑ {formatBytes(usage?.bytesSent ?? 0)} · ↓ {formatBytes(usage?.bytesReceived ?? 0)}</span>
             </div>
           {/each}
