@@ -361,7 +361,8 @@
       <div>
         <p class="text-text-1 text-sm font-medium mb-1">Write path</p>
         <p class="text-text-3 text-xs">
-          On upload, encrypted chunks are saved to local IndexedDB first and <code class="text-accent">nhash</code> is returned immediately.
+          Uploads are stream-read and stream-written chunk-by-chunk (no whole-file buffering).
+          Encrypted chunks are saved to local IndexedDB first and <code class="text-accent">nhash</code> is returned immediately.
           Upload to configured Blossom write servers continues in the background.
         </p>
       </div>

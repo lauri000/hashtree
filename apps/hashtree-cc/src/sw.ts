@@ -77,15 +77,27 @@ interface PendingRequest {
   reject: (error: Error) => void;
   timeout: InactivityTimer;
   head: boolean;
+  trackedDownload: boolean;
   writer?: WritableStreamDefaultWriter<Uint8Array>;
 }
 
 const workerPorts = new Map<string, MessagePort>();
 const workerPortsByClientKey = new Map<string, MessagePort>();
 let defaultWorkerPort: MessagePort | null = null;
+let activeDownloadCount = 0;
 
 const pendingRequests = new Map<string, PendingRequest>();
 let requestCounter = 0;
+
+async function broadcastTransferActivity(): Promise<void> {
+  const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  for (const client of clients) {
+    client.postMessage({
+      type: 'TRANSFER_ACTIVITY',
+      activeDownloads: activeDownloadCount,
+    });
+  }
+}
 
 function guessMimeType(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() || '';
@@ -158,6 +170,10 @@ function clearPending(requestId: string): PendingRequest | undefined {
   if (!pending) return undefined;
   pending.timeout.clear();
   pendingRequests.delete(requestId);
+  if (pending.trackedDownload && activeDownloadCount > 0) {
+    activeDownloadCount -= 1;
+    void broadcastTransferActivity();
+  }
   return pending;
 }
 
@@ -215,6 +231,12 @@ function handleWorkerMessage(event: MessageEvent<WorkerMessage>): void {
 
 function serveViaWorker(request: HtreeFileRequest, port: MessagePort): Promise<Response> {
   return new Promise<Response>((resolve, reject) => {
+    const trackedDownload = !!request.download && !request.head;
+    if (trackedDownload) {
+      activeDownloadCount += 1;
+      void broadcastTransferActivity();
+    }
+
     const timeout = createInactivityTimer(PORT_TIMEOUT_MS, () => {
       const timedOut = clearPending(request.requestId);
       if (!timedOut) return;
@@ -227,6 +249,7 @@ function serveViaWorker(request: HtreeFileRequest, port: MessagePort): Promise<R
       reject,
       timeout,
       head: !!request.head,
+      trackedDownload,
     });
 
     port.postMessage(request);
@@ -234,6 +257,24 @@ function serveViaWorker(request: HtreeFileRequest, port: MessagePort): Promise<R
 }
 
 self.addEventListener('message', (event: ExtendableMessageEvent) => {
+  if (event.data?.type === 'SKIP_WAITING') {
+    void self.skipWaiting();
+    return;
+  }
+
+  if (event.data?.type === 'GET_TRANSFER_ACTIVITY') {
+    const source = event.source as Client | null;
+    const requestId = event.data?.requestId as string | undefined;
+    if (requestId && source?.postMessage) {
+      source.postMessage({
+        type: 'TRANSFER_ACTIVITY',
+        requestId,
+        activeDownloads: activeDownloadCount,
+      });
+    }
+    return;
+  }
+
   if (event.data?.type === 'PING_WORKER_PORT') {
     const source = event.source as Client | null;
     const requestId = event.data?.requestId as string | undefined;
@@ -331,7 +372,8 @@ self.addEventListener('fetch', (event: FetchEvent) => {
 });
 
 self.addEventListener('install', () => {
-  self.skipWaiting();
+  // Don't force-activate updates during active sessions.
+  // Waiting SWs are activated by the app when it is safe.
 });
 
 self.addEventListener('activate', (event: ExtendableEvent) => {

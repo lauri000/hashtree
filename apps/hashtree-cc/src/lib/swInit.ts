@@ -1,4 +1,70 @@
 import { registerSW } from 'virtual:pwa-register';
+import { get } from 'svelte/store';
+import { localSaveProgressStore } from './localSaveProgress';
+import { uploadProgressStore } from './workerClient';
+
+const UPDATE_POLL_INTERVAL_MS = 10 * 60 * 1000;
+const UPDATE_RETRY_INTERVAL_MS = 3_000;
+
+interface TransferActivityMessage {
+  type?: string;
+  requestId?: string;
+  activeDownloads?: number;
+}
+
+function hasActiveUploadTransfers(): boolean {
+  if (get(localSaveProgressStore)) {
+    return true;
+  }
+
+  const uploadProgress = get(uploadProgressStore);
+  return !!uploadProgress && !uploadProgress.complete;
+}
+
+async function hasActiveDownloadTransfers(): Promise<boolean> {
+  if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) {
+    return false;
+  }
+
+  const requestId = `sw-transfer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const onMessage = (event: MessageEvent) => {
+      const message = event.data as TransferActivityMessage | undefined;
+      if (message?.type !== 'TRANSFER_ACTIVITY' || message.requestId !== requestId) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve((message.activeDownloads ?? 0) > 0);
+    };
+
+    const cleanup = () => {
+      navigator.serviceWorker.removeEventListener('message', onMessage);
+      clearTimeout(timeoutId);
+    };
+
+    const timeoutId = setTimeout(() => {
+      if (settled) return;
+      cleanup();
+      resolve(false);
+    }, 1000);
+
+    navigator.serviceWorker.addEventListener('message', onMessage);
+    navigator.serviceWorker.controller?.postMessage({
+      type: 'GET_TRANSFER_ACTIVITY',
+      requestId,
+    });
+  });
+}
+
+async function hasActiveTransfers(): Promise<boolean> {
+  if (hasActiveUploadTransfers()) {
+    return true;
+  }
+  return hasActiveDownloadTransfers();
+}
 
 /**
  * Register the app service worker and wait until it controls the page.
@@ -25,14 +91,56 @@ export async function initServiceWorker(): Promise<void> {
     }
   }
 
+  let updatePending = false;
+  let updateInFlight = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let updateCheckTimer: ReturnType<typeof setInterval> | null = null;
+
+  const scheduleRetry = (updateNow: () => Promise<void>) => {
+    if (retryTimer || !updatePending) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void updateNow();
+    }, UPDATE_RETRY_INTERVAL_MS);
+  };
+
   const updateSW = registerSW({
     immediate: true,
+    onRegisteredSW(_swUrl, registration) {
+      if (isTestMode || !registration || updateCheckTimer) return;
+      updateCheckTimer = setInterval(() => {
+        void registration.update().catch(() => {});
+      }, UPDATE_POLL_INTERVAL_MS);
+    },
     onNeedRefresh() {
-      if (!isTestMode) {
-        updateSW(true);
-      }
+      updatePending = true;
+      void activateWhenIdle();
     },
   });
+
+  const activateWhenIdle = async () => {
+    if (isTestMode || !updatePending || updateInFlight) return;
+
+    const busy = await hasActiveTransfers().catch(() => false);
+    if (busy) {
+      scheduleRetry(activateWhenIdle);
+      return;
+    }
+
+    updateInFlight = true;
+    try {
+      await updateSW(true);
+      updatePending = false;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+    } catch {
+      scheduleRetry(activateWhenIdle);
+    } finally {
+      updateInFlight = false;
+    }
+  };
 
   if (!navigator.serviceWorker.controller) {
     await navigator.serviceWorker.ready;
@@ -52,13 +160,5 @@ export async function initServiceWorker(): Promise<void> {
     }
   }
 
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    const reloadKey = 'hashtree-cc-sw-reload';
-    if (!sessionStorage.getItem(reloadKey)) {
-      sessionStorage.setItem(reloadKey, '1');
-      if (!isTestMode) {
-        window.location.reload();
-      }
-    }
-  }, { once: true });
+  // No forced reload on controller changes. Updates are applied on next open.
 }
