@@ -444,7 +444,7 @@ export class HashTree {
     cancelled: boolean;
   }> {
     // First pull to ensure all blocks are available locally
-    await this.pull(id);
+    const pullStats = await this.pull(id);
 
     // Check if already aborted
     if (options?.signal?.aborted) {
@@ -456,7 +456,8 @@ export class HashTree {
     let failed = 0;
     let bytes = 0;
     let completed = 0;
-    let discovered = 0;
+    // Keep progress total stable: pull() already traversed and counted unique blocks.
+    let discovered = pullStats.chunks;
     let walkDone = false;
     const errors: Array<{ hash: Hash; error: Error }> = [];
 
@@ -490,7 +491,7 @@ export class HashTree {
         options?.onBlock?.(hash, 'error', error);
       }
       completed++;
-      // Report progress: completed / discovered (discovered grows as we walk)
+      // Report progress: completed / discovered (stable total from pull()).
       options?.onProgress?.(completed, discovered);
     };
 
@@ -536,8 +537,6 @@ export class HashTree {
     const runProducer = async () => {
       for await (const block of this.walkBlocks(id)) {
         if (options?.signal?.aborted) break;
-
-        discovered++;
 
         // Wait if queue is full
         while (queue.length >= maxQueueSize) {
@@ -735,4 +734,3 @@ export class HashTree {
     });
   }
 }
-
