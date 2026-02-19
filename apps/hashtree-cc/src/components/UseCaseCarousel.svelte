@@ -236,20 +236,12 @@
       >
         {#each slides as slide}
           <div class="w-full shrink-0">
-            <a
-              href={slide.href}
-              target="_blank"
-              rel="noopener"
-              class="block"
-              class:pointer-events-none={!slide.href}
-            >
-              <img
-                src={slide.src}
-                alt={slide.title}
-                class="w-full block"
-                draggable="false"
-              />
-            </a>
+            <img
+              src={slide.src}
+              alt={slide.title}
+              class="w-full block"
+              draggable="false"
+            />
           </div>
         {/each}
       </div>

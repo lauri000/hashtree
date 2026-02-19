@@ -12,6 +12,10 @@ test.describe('Use case carousel', () => {
     await expect(page.getByText('Git repos, file manager')).toBeVisible();
   });
 
+  test('slide image is not a hyperlink target', async ({ page }) => {
+    await expect(page.locator('a:has(img[alt="Iris Files"])')).toHaveCount(0);
+  });
+
   test('next button advances slide', async ({ page }) => {
     await expect(page.getByText('Git repos, file manager')).toBeVisible();
 
