@@ -14,7 +14,13 @@ import type { SignalingMessage } from '@hashtree/nostr';
 import { SimplePool, type Event, nip44 } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { writable } from 'svelte/store';
-import { getBlob, getBlobForPeer, putBlob, setP2PFetchHandler } from './workerClient';
+import {
+  blossomBandwidthStore,
+  getBlob,
+  getBlobForPeer,
+  putBlob,
+  setP2PFetchHandler,
+} from './workerClient';
 import { settingsStore } from './settings';
 
 const STATS_INTERVAL_MS = 1000;
@@ -41,6 +47,19 @@ export interface P2PPeerState {
   bytesReceived: number;
 }
 
+export interface BlossomBandwidthServerState {
+  url: string;
+  bytesSent: number;
+  bytesReceived: number;
+}
+
+export interface BlossomBandwidthState {
+  totalBytesSent: number;
+  totalBytesReceived: number;
+  updatedAt: number;
+  servers: BlossomBandwidthServerState[];
+}
+
 export interface P2PState {
   started: boolean;
   peerCount: number;
@@ -49,7 +68,15 @@ export interface P2PState {
   pubkey: string | null;
   peers: P2PPeerState[];
   relays: P2PRelayState[];
+  blossomBandwidth: BlossomBandwidthState;
 }
+
+const DEFAULT_BLOSSOM_BANDWIDTH: BlossomBandwidthState = {
+  totalBytesSent: 0,
+  totalBytesReceived: 0,
+  updatedAt: 0,
+  servers: [],
+};
 
 const DEFAULT_STATE: P2PState = {
   started: false,
@@ -59,6 +86,7 @@ const DEFAULT_STATE: P2PState = {
   pubkey: null,
   peers: [],
   relays: [],
+  blossomBandwidth: DEFAULT_BLOSSOM_BANDWIDTH,
 };
 
 export const p2pStore = writable<P2PState>(DEFAULT_STATE);
@@ -72,8 +100,10 @@ let currentRelays: string[] = DEFAULT_RELAYS;
 let subscriptions: Array<{ close: () => void }> = [];
 let statsTimer: ReturnType<typeof setInterval> | null = null;
 let settingsUnsubscribe: (() => void) | null = null;
+let blossomBandwidthUnsubscribe: (() => void) | null = null;
 let initPromise: Promise<void> | null = null;
 let localStoreReadDepth = 0;
+let currentBlossomBandwidth: BlossomBandwidthState = DEFAULT_BLOSSOM_BANDWIDTH;
 
 declare global {
   interface Window {
@@ -85,6 +115,7 @@ declare global {
       pubkey: string | null;
       peers: P2PPeerState[];
       relays: P2PRelayState[];
+      blossomBandwidth: BlossomBandwidthState;
     };
   }
 }
@@ -146,11 +177,34 @@ function updateDebugState(): void {
     pubkey: publicKey,
     peers,
     relays,
+    blossomBandwidth: {
+      totalBytesSent: currentBlossomBandwidth.totalBytesSent,
+      totalBytesReceived: currentBlossomBandwidth.totalBytesReceived,
+      updatedAt: currentBlossomBandwidth.updatedAt,
+      servers: currentBlossomBandwidth.servers.map(server => ({ ...server })),
+    },
   };
   p2pStore.set(state);
   if (typeof window !== 'undefined') {
     window.__hashtreeCcP2P = state;
   }
+}
+
+function setupBlossomBandwidthSync(): void {
+  if (blossomBandwidthUnsubscribe) return;
+  blossomBandwidthUnsubscribe = blossomBandwidthStore.subscribe((stats) => {
+    currentBlossomBandwidth = {
+      totalBytesSent: stats.totalBytesSent,
+      totalBytesReceived: stats.totalBytesReceived,
+      updatedAt: stats.updatedAt,
+      servers: stats.servers.map(server => ({
+        url: server.url,
+        bytesSent: server.bytesSent,
+        bytesReceived: server.bytesReceived,
+      })),
+    };
+    updateDebugState();
+  });
 }
 
 function handleSignalingEvent(event: Event): void {
@@ -342,6 +396,7 @@ export async function initP2P(): Promise<void> {
     controller.start();
     setupSubscriptions(currentRelays);
     setupSettingsSync();
+    setupBlossomBandwidthSync();
 
     if (!statsTimer) {
       statsTimer = setInterval(updateDebugState, STATS_INTERVAL_MS);

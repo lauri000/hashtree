@@ -1,5 +1,6 @@
 import { generateRequestId } from '@hashtree/core';
 import type {
+  BlossomBandwidthState,
   BlossomServerConfig,
   BlobSource,
   ConnectivityState,
@@ -35,6 +36,7 @@ export class HashtreeWorkerClient {
   private pending = new Map<string, PendingRequest>();
   private connectivityListeners = new Set<(state: ConnectivityState) => void>();
   private uploadProgressListeners = new Set<(progress: UploadProgressState) => void>();
+  private blossomBandwidthListeners = new Set<(stats: BlossomBandwidthState) => void>();
   private p2pFetchHandler: P2PFetchHandler | null = null;
 
   constructor(workerFactory: WorkerFactory, config: WorkerConfig = {}) {
@@ -103,6 +105,11 @@ export class HashtreeWorkerClient {
 
       if (message.type === 'uploadProgress') {
         this.uploadProgressListeners.forEach(listener => listener(message.progress));
+        return;
+      }
+
+      if (message.type === 'blossomBandwidth') {
+        this.blossomBandwidthListeners.forEach(listener => listener(message.stats));
         return;
       }
 
@@ -373,6 +380,13 @@ export class HashtreeWorkerClient {
     this.uploadProgressListeners.add(listener);
     return () => {
       this.uploadProgressListeners.delete(listener);
+    };
+  }
+
+  onBlossomBandwidth(listener: (stats: BlossomBandwidthState) => void): () => void {
+    this.blossomBandwidthListeners.add(listener);
+    return () => {
+      this.blossomBandwidthListeners.delete(listener);
     };
   }
 

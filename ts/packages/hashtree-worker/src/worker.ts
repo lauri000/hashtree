@@ -12,6 +12,7 @@ import {
   type Store,
 } from '@hashtree/core';
 import type {
+  BlossomBandwidthState,
   BlobSource,
   UploadProgressState,
   UploadServerStatus,
@@ -95,8 +96,35 @@ function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+const EMPTY_BLOSSOM_BANDWIDTH: BlossomBandwidthState = {
+  totalBytesSent: 0,
+  totalBytesReceived: 0,
+  updatedAt: 0,
+  servers: [],
+};
+
+let blossomBandwidth: BlossomBandwidthState = { ...EMPTY_BLOSSOM_BANDWIDTH };
+
 function respond(message: WorkerResponse): void {
   ctx.postMessage(message);
+}
+
+function publishBlossomBandwidth(stats: BlossomBandwidthState): void {
+  blossomBandwidth = {
+    totalBytesSent: stats.totalBytesSent,
+    totalBytesReceived: stats.totalBytesReceived,
+    updatedAt: stats.updatedAt,
+    servers: stats.servers.map(server => ({
+      url: server.url,
+      bytesSent: server.bytesSent,
+      bytesReceived: server.bytesReceived,
+    })),
+  };
+
+  respond({
+    type: 'blossomBandwidth',
+    stats: blossomBandwidth,
+  });
 }
 
 function resetState(): void {
@@ -114,6 +142,7 @@ function resetState(): void {
   pendingP2PFetches.clear();
   peerShareableEncryptedHashes.clear();
   activePutBlobStreams.clear();
+  blossomBandwidth = { ...EMPTY_BLOSSOM_BANDWIDTH };
 }
 
 async function markEncryptedTreeHashesAsPeerShareable(id: CID): Promise<void> {
@@ -397,8 +426,14 @@ function init(config: WorkerConfig): void {
   probeIntervalMs = config.connectivityProbeIntervalMs || DEFAULT_CONNECTIVITY_PROBE_INTERVAL_MS;
 
   storage = new IdbBlobStorage(storeName, maxBytes);
-  blossom = new BlossomTransport(config.blossomServers || DEFAULT_BLOSSOM_SERVERS);
+  blossom = new BlossomTransport(
+    config.blossomServers || DEFAULT_BLOSSOM_SERVERS,
+    (stats) => {
+      publishBlossomBandwidth(stats);
+    }
+  );
   tree = new HashTree({ store: createWorkerStore() });
+  publishBlossomBandwidth(blossom.getBandwidthStats());
 
   startConnectivityProbeLoop();
   void emitConnectivityUpdate();

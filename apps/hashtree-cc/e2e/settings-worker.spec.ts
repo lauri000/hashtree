@@ -13,6 +13,8 @@ test('settings page persists storage/server settings and allows relay updates', 
   await expect(page.getByTestId('settings-app-version')).toHaveText(/\S+/);
   await expect(page.getByTestId('settings-build-time')).toHaveText(/\S+/);
   await expect(page.getByTestId('settings-refresh-app')).toBeVisible();
+  await expect(page.getByTestId('settings-blossom-upload-total')).toContainText('0 B');
+  await expect(page.getByTestId('settings-blossom-download-total')).toContainText('0 B');
   await expect(page.getByRole('link', { name: 'Share Privately' })).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'For Developers' })).toHaveCount(0);
 
@@ -97,13 +99,23 @@ test('p2p module is initialized in hashtree-cc', async ({ page }) => {
   })).toBe(true);
 
   const p2pState = await page.evaluate(() => {
-    const state = (window as unknown as { __hashtreeCcP2P?: { started: boolean; peerCount: number } }).__hashtreeCcP2P;
+    const state = (window as unknown as {
+      __hashtreeCcP2P?: {
+        started: boolean;
+        peerCount: number;
+        blossomBandwidth?: { totalBytesSent: number; totalBytesReceived: number };
+      };
+    }).__hashtreeCcP2P;
     return {
       started: state?.started ?? false,
       peerCount: state?.peerCount ?? -1,
+      blossomBytesSent: state?.blossomBandwidth?.totalBytesSent ?? -1,
+      blossomBytesReceived: state?.blossomBandwidth?.totalBytesReceived ?? -1,
     };
   });
 
   expect(p2pState.started).toBe(true);
   expect(p2pState.peerCount).toBeGreaterThanOrEqual(0);
+  expect(p2pState.blossomBytesSent).toBeGreaterThanOrEqual(0);
+  expect(p2pState.blossomBytesReceived).toBeGreaterThanOrEqual(0);
 });

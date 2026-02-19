@@ -1,4 +1,12 @@
-import { BlossomStore, type BlossomSigner, type BlossomUploadCallback, sha256, toHex, fromHex } from '@hashtree/core';
+import {
+  BlossomStore,
+  type BlossomLogEntry,
+  type BlossomSigner,
+  type BlossomUploadCallback,
+  sha256,
+  toHex,
+  fromHex,
+} from '@hashtree/core';
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import type { BlossomServerConfig } from '../protocol.js';
 
@@ -6,6 +14,21 @@ export const DEFAULT_BLOSSOM_SERVERS: BlossomServerConfig[] = [
   { url: 'https://blossom.primal.net', read: true, write: true },
   { url: 'https://upload.iris.to', read: false, write: true },
 ];
+
+export interface BlossomBandwidthServerStats {
+  url: string;
+  bytesSent: number;
+  bytesReceived: number;
+}
+
+export interface BlossomBandwidthStats {
+  totalBytesSent: number;
+  totalBytesReceived: number;
+  updatedAt: number;
+  servers: BlossomBandwidthServerStats[];
+}
+
+export type BlossomBandwidthUpdateHandler = (stats: BlossomBandwidthStats) => void;
 
 function normalizeServerUrl(url: string): string {
   return url.replace(/\/+$/, '');
@@ -51,11 +74,16 @@ function createEphemeralSigner(): BlossomSigner {
 export class BlossomTransport {
   private servers: BlossomServerConfig[];
   private readonly signer: BlossomSigner;
+  private readonly onBandwidthUpdate?: BlossomBandwidthUpdateHandler;
+  private totalBytesSent = 0;
+  private totalBytesReceived = 0;
+  private readonly serverBandwidth = new Map<string, { bytesSent: number; bytesReceived: number }>();
   private store: BlossomStore;
 
-  constructor(servers?: BlossomServerConfig[]) {
+  constructor(servers?: BlossomServerConfig[], onBandwidthUpdate?: BlossomBandwidthUpdateHandler) {
     this.servers = normalizeServers(servers);
     this.signer = createEphemeralSigner();
+    this.onBandwidthUpdate = onBandwidthUpdate;
     this.store = this.createStore(this.servers);
   }
 
@@ -72,11 +100,61 @@ export class BlossomTransport {
     return this.servers.filter(server => !!server.write);
   }
 
+  getBandwidthStats(): BlossomBandwidthStats {
+    return {
+      totalBytesSent: this.totalBytesSent,
+      totalBytesReceived: this.totalBytesReceived,
+      updatedAt: Date.now(),
+      servers: this.getOrderedServerBandwidth(),
+    };
+  }
+
+  private getOrderedServerBandwidth(): BlossomBandwidthServerStats[] {
+    return Array.from(this.serverBandwidth.entries())
+      .map(([url, stats]) => ({
+        url,
+        bytesSent: stats.bytesSent,
+        bytesReceived: stats.bytesReceived,
+      }))
+      .sort((a, b) => a.url.localeCompare(b.url));
+  }
+
+  private applyBandwidthLog(entry: BlossomLogEntry): void {
+    const bytes = entry.bytes ?? 0;
+    if (!entry.success || bytes <= 0) return;
+
+    const serverStats = this.serverBandwidth.get(entry.server) ?? { bytesSent: 0, bytesReceived: 0 };
+
+    if (entry.operation === 'put') {
+      this.totalBytesSent += bytes;
+      serverStats.bytesSent += bytes;
+    } else if (entry.operation === 'get') {
+      this.totalBytesReceived += bytes;
+      serverStats.bytesReceived += bytes;
+    } else {
+      return;
+    }
+
+    this.serverBandwidth.set(entry.server, serverStats);
+
+    if (this.onBandwidthUpdate) {
+      this.onBandwidthUpdate({
+        totalBytesSent: this.totalBytesSent,
+        totalBytesReceived: this.totalBytesReceived,
+        updatedAt: Date.now(),
+        servers: this.getOrderedServerBandwidth(),
+      });
+    }
+  }
+
   private createStore(servers: BlossomServerConfig[], onUploadProgress?: BlossomUploadCallback): BlossomStore {
     return new BlossomStore({
       servers,
       signer: this.signer,
       onUploadProgress,
+      logger: (entry) => {
+        this.applyBandwidthLog(entry);
+      },
     });
   }
 

@@ -251,11 +251,26 @@
       </a>
     </p>
 
+    <div class="grid grid-cols-2 gap-3 text-sm">
+      <div class="bg-surface-0 rounded-lg p-3" data-testid="settings-blossom-upload-total">
+        <div class="text-text-3 text-xs mb-1">Blossom Upload</div>
+        <div class="text-text-1 font-medium">{formatBytes(p2p.blossomBandwidth.totalBytesSent)}</div>
+      </div>
+      <div class="bg-surface-0 rounded-lg p-3" data-testid="settings-blossom-download-total">
+        <div class="text-text-3 text-xs mb-1">Blossom Download</div>
+        <div class="text-text-1 font-medium">{formatBytes(p2p.blossomBandwidth.totalBytesReceived)}</div>
+      </div>
+    </div>
+
     <div class="space-y-2">
       {#each settings.network.blossomServers as server (server.url)}
+        {@const usage = p2p.blossomBandwidth.servers.find(entry => entry.url === server.url)}
         <div class="bg-surface-0 border border-surface-3 rounded-lg p-3 flex items-center gap-3" data-testid="settings-server-item">
           <div class="min-w-0 flex-1">
             <div class="text-text-1 text-sm truncate" title={server.url}>{serverLabel(server.url)}</div>
+            <div class="text-text-3 text-xs">
+              ↑ {formatBytes(usage?.bytesSent ?? 0)} · ↓ {formatBytes(usage?.bytesReceived ?? 0)}
+            </div>
           </div>
           <label class="text-xs text-text-3 flex items-center gap-1">
             <input

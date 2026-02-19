@@ -635,9 +635,17 @@ export class WebRTCController {
   // Data Protocol
   // ============================================================================
 
+  private sendDataToPeer(peer: WorkerPeer, data: Uint8Array): void {
+    peer.stats.bytesSent += data.byteLength;
+    this.sendCommand({ type: 'rtc:sendData', peerId: peer.peerId, data });
+  }
+
   private async onDataChannelMessage(peerId: string, data: Uint8Array): Promise<void> {
     const peer = this.peers.get(peerId);
     if (!peer) return;
+
+    // Count all inbound DataChannel bytes (requests + responses + protocol overhead).
+    peer.stats.bytesReceived += data.byteLength;
 
     const msg = parseMessage(data);
     if (!msg) {
@@ -694,7 +702,6 @@ export class WebRTCController {
 
   private async handleResponse(peer: WorkerPeer, res: DataResponse): Promise<void> {
     peer.stats.responsesReceived++;
-    peer.stats.bytesReceived += res.d.length;
 
     const hashKey = hashToKey(res.h);
     const pending = peer.pendingRequests.get(hashKey);
@@ -744,7 +751,6 @@ export class WebRTCController {
     if (!peer.dataChannelReady) return;
 
     peer.stats.responsesSent++;
-    peer.stats.bytesSent += data.length;
 
     // Fragment if needed
     if (data.length > FRAGMENT_SIZE) {
@@ -755,12 +761,12 @@ export class WebRTCController {
         const fragment = data.slice(start, end);
         const res = createFragmentResponse(hash, fragment, i, totalFragments);
         const encoded = new Uint8Array(encodeResponse(res));
-        this.sendCommand({ type: 'rtc:sendData', peerId: peer.peerId, data: encoded });
+        this.sendDataToPeer(peer, encoded);
       }
     } else {
       const res = createResponse(hash, data);
       const encoded = new Uint8Array(encodeResponse(res));
-      this.sendCommand({ type: 'rtc:sendData', peerId: peer.peerId, data: encoded });
+      this.sendDataToPeer(peer, encoded);
     }
   }
 
@@ -787,7 +793,7 @@ export class WebRTCController {
 
       const req = createRequest(hash, htl);
       const encoded = new Uint8Array(encodeRequest(req));
-      this.sendCommand({ type: 'rtc:sendData', peerId, data: encoded });
+      this.sendDataToPeer(peer, encoded);
     }
   }
 
@@ -848,7 +854,7 @@ export class WebRTCController {
         peer.stats.requestsSent++;
         const req = createRequest(hash, MAX_HTL);
         const encoded = new Uint8Array(encodeRequest(req));
-        this.sendCommand({ type: 'rtc:sendData', peerId: peer.peerId, data: encoded });
+        this.sendDataToPeer(peer, encoded);
       }
 
       let pending = connectedPeers.length;

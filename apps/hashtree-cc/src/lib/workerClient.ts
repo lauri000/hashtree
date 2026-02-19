@@ -1,4 +1,5 @@
 import { HashtreeWorkerClient } from '@hashtree/worker';
+import type { BlossomBandwidthState } from '@hashtree/worker';
 import type { ConnectivityState } from '@hashtree/worker';
 import type { UploadProgressState } from '@hashtree/worker';
 import type { P2PFetchHandler } from '@hashtree/worker';
@@ -15,16 +16,25 @@ const DEFAULT_CONNECTIVITY: ConnectivityState = {
   updatedAt: Date.now(),
 };
 
+const DEFAULT_BLOSSOM_BANDWIDTH: BlossomBandwidthState = {
+  totalBytesSent: 0,
+  totalBytesReceived: 0,
+  updatedAt: 0,
+  servers: [],
+};
+
 const CONNECTIVITY_POLL_INTERVAL_MS = 15_000;
 
 export const connectivityStore = writable<ConnectivityState>(DEFAULT_CONNECTIVITY);
 export const uploadProgressStore = writable<UploadProgressState | null>(null);
+export const blossomBandwidthStore = writable<BlossomBandwidthState>(DEFAULT_BLOSSOM_BANDWIDTH);
 
 let client: HashtreeWorkerClient | null = null;
 let initPromise: Promise<HashtreeWorkerClient> | null = null;
 let settingsUnsubscribe: (() => void) | null = null;
 let connectivityUnsubscribe: (() => void) | null = null;
 let uploadProgressUnsubscribe: (() => void) | null = null;
+let blossomBandwidthUnsubscribe: (() => void) | null = null;
 let connectivityTimer: ReturnType<typeof setInterval> | null = null;
 let clearUploadProgressTimer: ReturnType<typeof setTimeout> | null = null;
 let p2pFetchHandler: P2PFetchHandler | null = null;
@@ -81,6 +91,13 @@ function startUploadProgressUpdates(clientInstance: HashtreeWorkerClient): void 
   });
 }
 
+function startBlossomBandwidthUpdates(clientInstance: HashtreeWorkerClient): void {
+  if (blossomBandwidthUnsubscribe) return;
+  blossomBandwidthUnsubscribe = clientInstance.onBlossomBandwidth((stats) => {
+    blossomBandwidthStore.set(stats);
+  });
+}
+
 async function ensureClient(): Promise<HashtreeWorkerClient> {
   if (client) return client;
   if (initPromise) return initPromise;
@@ -98,6 +115,7 @@ async function ensureClient(): Promise<HashtreeWorkerClient> {
     syncSettingsToWorker(created);
     startConnectivityPolling(created);
     startUploadProgressUpdates(created);
+    startBlossomBandwidthUpdates(created);
     client = created;
     return created;
   })();

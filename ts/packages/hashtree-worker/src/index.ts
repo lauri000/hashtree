@@ -7,6 +7,8 @@ export type {
   WorkerResponse,
   ConnectivityState,
   UploadProgressState,
+  BlossomBandwidthState,
+  BlossomBandwidthServerStats,
   BlobSource,
 } from './protocol.js';
 

@@ -46,6 +46,19 @@ export interface UploadProgressState {
   error?: string;
 }
 
+export interface BlossomBandwidthServerStats {
+  url: string;
+  bytesSent: number;
+  bytesReceived: number;
+}
+
+export interface BlossomBandwidthState {
+  totalBytesSent: number;
+  totalBytesReceived: number;
+  updatedAt: number;
+  servers: BlossomBandwidthServerStats[];
+}
+
 export interface BlobStreamStarted {
   id: string;
   streamId: string;
@@ -78,4 +91,5 @@ export type WorkerResponse =
   | { type: 'storageStats'; id: string; items: number; bytes: number; maxBytes: number; error?: string }
   | { type: 'connectivity'; id: string; state?: ConnectivityState; error?: string }
   | { type: 'connectivityUpdate'; state: ConnectivityState }
+  | { type: 'blossomBandwidth'; stats: BlossomBandwidthState }
   | { type: 'uploadProgress'; progress: UploadProgressState };
