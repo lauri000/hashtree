@@ -4,6 +4,13 @@ export {
 } from './webrtcController.js';
 
 export {
+  QueryForwardingMachine,
+  type QueryForwardingMachineConfig,
+  type ForwardDecision,
+  type ForwardTimeoutEvent,
+} from './queryForwardingMachine.js';
+
+export {
   WebRTCProxy,
   initWebRTCProxy,
   getWebRTCProxy,
