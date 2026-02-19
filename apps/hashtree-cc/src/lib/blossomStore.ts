@@ -14,6 +14,7 @@ import {
   setLocalSavePhase,
   updateLocalSaveProgress,
 } from './localSaveProgress';
+import { uploadHistoryStore } from './uploadHistory';
 
 const STREAM_APPEND_BATCH_BYTES = 2 * 1024 * 1024;
 
@@ -27,6 +28,7 @@ export async function uploadBuffer(data: Uint8Array, fileName: string, mimeType:
   updateLocalSaveProgress(data.length);
   try {
     const { nhash } = await putBlob(data, mimeType);
+    uploadHistoryStore.add({ nhash, fileName, size: data.length, uploadedAt: Date.now() });
     const fragment = `/${nhash}/${encodeURIComponent(fileName)}`;
     window.location.hash = fragment;
     return fragment;
@@ -64,6 +66,7 @@ export async function uploadFileStream(file: File): Promise<string> {
 
     const { nhash } = result;
     streamId = null;
+    uploadHistoryStore.add({ nhash, fileName: file.name, size: file.size, uploadedAt: Date.now() });
     const fragment = `/${nhash}/${encodeURIComponent(file.name)}`;
     window.location.hash = fragment;
     return fragment;

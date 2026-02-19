@@ -1,5 +1,6 @@
 <script lang="ts">
   import { uploadBuffer, uploadFileStream } from '../lib/blossomStore';
+  import UploadHistory from './UploadHistory.svelte';
 
   let dragOver = $state(false);
   let textValue = $state('');
@@ -78,4 +79,6 @@
       Save
     </button>
   </div>
+
+  <UploadHistory />
 </section>
