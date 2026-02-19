@@ -35,6 +35,23 @@ test('developers tab shows git demo video player', async ({ page }) => {
   await expect(page.getByTestId('git-demo-video-caption')).toHaveText('The above video is delivered and streamed via Hashtree: a decentralized CDN.');
 });
 
+test('developers tab highlights decentralized CDN resilience and economics', async ({ page }) => {
+  await page.goto('/');
+  await page.getByText('For Developers').click();
+
+  await expect(page.getByRole('heading', { name: 'Decentralized CDN', exact: true })).toBeVisible();
+  const cdnSectionLink = page.getByRole('link', { name: /Decentralized CDN Resilience/ });
+  await expect(cdnSectionLink).toBeVisible();
+  await expect(cdnSectionLink).toHaveAttribute('href', '/#/dev/decentralized-cdn');
+
+  const section = page.getByTestId('decentralized-cdn-section');
+  await expect(section).toBeVisible();
+  await expect(section).toContainText('Independent from centralized CDN outages');
+  await expect(section).toContainText('Costs do not increase linearly with popularity');
+  await expect(section).toContainText('Popular content becomes more available with each seeder');
+  await expect(section).toContainText('video.iris.to');
+});
+
 function mockBlossom(page: import('@playwright/test').Page, expectedHash: string, content: string | Buffer) {
   return Promise.all([
     page.route('https://*/upload', async (route) => {
