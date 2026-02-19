@@ -32,7 +32,24 @@
   ];
 
   let current = $state(0);
+  let dragOffset = $state(0);
+  let isDragging = $state(false);
   let autoInterval: ReturnType<typeof setInterval> | undefined;
+  let viewportEl: HTMLDivElement | null = null;
+
+  const axisLockThresholdPx = 8;
+  const swipeThresholdRatio = 0.25;
+  const minSwipeDistancePx = 24;
+  const velocityThresholdPxPerMs = 0.35;
+
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let dragLastX = 0;
+  let dragLastAt = 0;
+  let velocityX = 0;
+  let dragAxis: 'unknown' | 'horizontal' | 'vertical' = 'unknown';
+  let suppressClick = false;
+  let clearSuppressClickTimer: ReturnType<typeof setTimeout> | undefined;
 
   function startAuto() {
     stopAuto();
@@ -44,6 +61,121 @@
   function stopAuto() {
     if (autoInterval) clearInterval(autoInterval);
     autoInterval = undefined;
+  }
+
+  function clearDragState() {
+    dragStartX = 0;
+    dragStartY = 0;
+    dragLastX = 0;
+    dragLastAt = 0;
+    velocityX = 0;
+    dragAxis = 'unknown';
+  }
+
+  function beginDrag(x: number, y: number) {
+    isDragging = true;
+    dragOffset = 0;
+    clearDragState();
+    dragStartX = x;
+    dragStartY = y;
+    dragLastX = x;
+    dragLastAt = performance.now();
+    suppressClick = false;
+    stopAuto();
+  }
+
+  function finishDrag() {
+    if (!isDragging) return;
+
+    isDragging = false;
+
+    const absDistance = Math.abs(dragOffset);
+    const contentWidth = viewportEl?.clientWidth ?? 1;
+    const swipeThreshold = Math.max(minSwipeDistancePx, contentWidth * swipeThresholdRatio);
+    const isQuickSwipe = Math.abs(velocityX) > velocityThresholdPxPerMs && absDistance > minSwipeDistancePx;
+    const shouldNavigate = dragAxis === 'horizontal' && (absDistance > swipeThreshold || isQuickSwipe);
+
+    let direction: 'prev' | 'next' = dragOffset > 0 ? 'prev' : 'next';
+    if (isQuickSwipe) {
+      direction = velocityX > 0 ? 'prev' : 'next';
+    }
+
+    dragOffset = 0;
+    clearDragState();
+
+    if (shouldNavigate) {
+      suppressClick = true;
+      if (clearSuppressClickTimer) clearTimeout(clearSuppressClickTimer);
+      clearSuppressClickTimer = setTimeout(() => {
+        suppressClick = false;
+        clearSuppressClickTimer = undefined;
+      }, 350);
+
+      if (direction === 'prev') {
+        prev();
+      } else {
+        next();
+      }
+      return;
+    }
+
+    startAuto();
+  }
+
+  function onPointerDown(e: PointerEvent) {
+    if (slides.length < 2) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+    viewportEl?.setPointerCapture(e.pointerId);
+    beginDrag(e.clientX, e.clientY);
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    if (!isDragging) return;
+
+    const deltaX = e.clientX - dragStartX;
+    const deltaY = e.clientY - dragStartY;
+
+    if (
+      dragAxis === 'unknown' &&
+      (Math.abs(deltaX) > axisLockThresholdPx || Math.abs(deltaY) > axisLockThresholdPx)
+    ) {
+      dragAxis = Math.abs(deltaX) > Math.abs(deltaY) ? 'horizontal' : 'vertical';
+    }
+
+    if (dragAxis !== 'horizontal') return;
+
+    e.preventDefault();
+    dragOffset = deltaX;
+
+    const now = performance.now();
+    const dt = now - dragLastAt;
+    if (dt > 0) {
+      velocityX = (e.clientX - dragLastX) / dt;
+    }
+    dragLastX = e.clientX;
+    dragLastAt = now;
+  }
+
+  function onPointerUp(e: PointerEvent) {
+    if (viewportEl?.hasPointerCapture(e.pointerId)) {
+      viewportEl.releasePointerCapture(e.pointerId);
+    }
+    finishDrag();
+  }
+
+  function onPointerCancel(e: PointerEvent) {
+    if (viewportEl?.hasPointerCapture(e.pointerId)) {
+      viewportEl.releasePointerCapture(e.pointerId);
+    }
+    finishDrag();
+  }
+
+  function onTrackClick(e: MouseEvent) {
+    if (!suppressClick) return;
+    suppressClick = false;
+    e.preventDefault();
+    e.stopPropagation();
   }
 
   function go(i: number) {
@@ -61,7 +193,10 @@
 
   $effect(() => {
     startAuto();
-    return stopAuto;
+    return () => {
+      if (clearSuppressClickTimer) clearTimeout(clearSuppressClickTimer);
+      stopAuto();
+    };
   });
 </script>
 
@@ -85,10 +220,19 @@
   </h2>
 
   <div class="relative select-none max-w-lg mx-auto">
-    <div class="overflow-hidden rounded-lg">
+    <div
+      bind:this={viewportEl}
+      class="overflow-hidden rounded-lg"
+      style="touch-action: pan-y pinch-zoom;"
+      onpointerdown={onPointerDown}
+      onpointermove={onPointerMove}
+      onpointerup={onPointerUp}
+      onpointercancel={onPointerCancel}
+      onclick={onTrackClick}
+    >
       <div
-        class="flex transition-transform duration-400 ease-in-out"
-        style="transform: translateX(-{current * 100}%)"
+        class="flex"
+        style="transform: translateX(calc(-{current * 100}% + {dragOffset}px)); transition: {isDragging ? 'none' : 'transform 400ms ease-in-out'};"
       >
         {#each slides as slide}
           <div class="w-full shrink-0">
@@ -151,4 +295,3 @@
     {/each}
   </div>
 </div>
-

@@ -36,6 +36,27 @@ test.describe('Use case carousel', () => {
     await expect(page.getByText('Git repos, file manager')).toBeVisible();
   });
 
+  test('dragging carousel navigates to next slide', async ({ page }) => {
+    await expect(page.getByText('Git repos, file manager')).toBeVisible();
+
+    const carousel = page.getByRole('region', { name: 'Use case carousel' });
+    await carousel.focus();
+
+    const viewport = carousel.locator('.overflow-hidden').first();
+    const box = await viewport.boundingBox();
+
+    if (!box) {
+      throw new Error('Carousel viewport was not visible');
+    }
+
+    await page.mouse.move(box.x + box.width * 0.8, box.y + box.height * 0.5);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.5, { steps: 12 });
+    await page.mouse.up();
+
+    await expect(page.getByText('Collaborative documents')).toBeVisible({ timeout: 1500 });
+  });
+
   test('arrow keys navigate when carousel focused', async ({ page }) => {
     const carousel = page.getByRole('region', { name: 'Use case carousel' });
     await carousel.click();
