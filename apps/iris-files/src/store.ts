@@ -7,7 +7,7 @@
  * - Main thread: UI coordination only
  */
 import { writable, get } from 'svelte/store';
-import { HashTree, LinkType } from '@hashtree/core';
+import { HashTree, LinkType, type WorkerBlossomBandwidthStats } from '@hashtree/core';
 import { getWorkerStore } from './stores/workerStore';
 import { closeWorkerAdapter } from './workerAdapter';
 import { getWorkerAdapter } from './lib/workerInit';
@@ -90,6 +90,15 @@ export interface DetailedPeerStats {
   bytesReceived: number;
 }
 
+export type BlossomBandwidthState = WorkerBlossomBandwidthStats;
+
+const DEFAULT_BLOSSOM_BANDWIDTH: BlossomBandwidthState = {
+  totalBytesSent: 0,
+  totalBytesReceived: 0,
+  updatedAt: 0,
+  servers: [],
+};
+
 // App state store interface (simplified - WebRTC stats come from worker)
 interface AppState {
   // Storage stats
@@ -98,6 +107,8 @@ interface AppState {
   peerCount: number;
   // Peer list for connectivity indicator
   peers: PeerInfo[];
+  // Blossom bandwidth stats from worker
+  blossomBandwidth: BlossomBandwidthState;
 }
 
 // Create Svelte store for app state
@@ -106,6 +117,7 @@ function createAppStore() {
     stats: { items: 0, bytes: 0 },
     peerCount: 0,
     peers: [],
+    blossomBandwidth: DEFAULT_BLOSSOM_BANDWIDTH,
   });
 
   return {
@@ -121,6 +133,10 @@ function createAppStore() {
 
     setPeers: (peers: PeerInfo[]) => {
       update(state => ({ ...state, peers, peerCount: peers.filter(p => p.state === 'connected').length }));
+    },
+
+    setBlossomBandwidth: (blossomBandwidth: BlossomBandwidthState) => {
+      update(state => ({ ...state, blossomBandwidth }));
     },
 
     // Get current state synchronously (for compatibility)
@@ -331,6 +347,41 @@ export async function refreshWebRTCStats(): Promise<void> {
   }
 }
 
+export function setBlossomBandwidth(stats: BlossomBandwidthState): void {
+  appStore.setBlossomBandwidth({
+    totalBytesSent: stats.totalBytesSent,
+    totalBytesReceived: stats.totalBytesReceived,
+    updatedAt: stats.updatedAt,
+    servers: stats.servers.map((server) => ({
+      url: server.url,
+      bytesSent: server.bytesSent,
+      bytesReceived: server.bytesReceived,
+    })),
+  });
+}
+
+export function getBandwidthUsageTotals() {
+  const state = get(appStore);
+  const webrtcBytesSent = state.peers.reduce((sum, peer) => sum + peer.bytesSent, 0);
+  const webrtcBytesReceived = state.peers.reduce((sum, peer) => sum + peer.bytesReceived, 0);
+  const blossomBytesSent = state.blossomBandwidth.totalBytesSent;
+  const blossomBytesReceived = state.blossomBandwidth.totalBytesReceived;
+
+  return {
+    webrtcBytesSent,
+    webrtcBytesReceived,
+    blossomBytesSent,
+    blossomBytesReceived,
+    totalBytesSent: webrtcBytesSent + blossomBytesSent,
+    totalBytesReceived: webrtcBytesReceived + blossomBytesReceived,
+    blossomServers: state.blossomBandwidth.servers,
+    peers: state.peers,
+  };
+}
+
 export function getLifetimeStats() {
-  return { bytesSent: 0, bytesReceived: 0, bytesForwarded: 0 };
+  const state = get(appStore);
+  const bytesSent = state.peers.reduce((sum, peer) => sum + peer.bytesSent, 0);
+  const bytesReceived = state.peers.reduce((sum, peer) => sum + peer.bytesReceived, 0);
+  return { bytesSent, bytesReceived, bytesForwarded: 0 };
 }

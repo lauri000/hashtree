@@ -65,11 +65,15 @@ import {
   handleWebRTCSignalingEvent,
   resubscribeWebRTCSignaling,
 } from './webrtcSignaling';
+import { BlossomBandwidthTracker } from '../capabilities/blossomBandwidthTracker';
 // Worker state
 let tree: HashTree | null = null;
 let store: DexieStore | null = null;
 let fallbackStore: FallbackStore | null = null;
 let blossomStore: BlossomStore | null = null;
+let blossomBandwidthTracker = new BlossomBandwidthTracker((stats) => {
+  respond({ type: 'blossomBandwidth', stats });
+});
 let webrtc: WebRTCController | null = null;
 let webrtcStarted = false;
 let _config: WorkerConfig | null = null;
@@ -572,21 +576,22 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 
       // Blossom configuration
       case 'setBlossomServers':
+        if (_config) {
+          _config.blossomServers = msg.servers;
+        }
+
         if (fallbackStore && blossomStore) {
           fallbackStore.removeFallback(blossomStore);
         }
         if (msg.servers && msg.servers.length > 0) {
-          blossomStore = new BlossomStore({
-            servers: msg.servers,
-            signer: createBlossomSigner(),
-            onUploadProgress: updateBlossomProgress,
-          });
+          blossomStore = createTrackedBlossomStore(msg.servers);
           fallbackStore?.addFallback(blossomStore);
           console.log('[Worker] BlossomStore updated with', msg.servers.length, 'servers');
         } else {
           blossomStore = null;
           console.log('[Worker] BlossomStore disabled (no servers configured)');
         }
+        emitBlossomBandwidthSnapshot();
         respond({ type: 'void', id: msg.id });
         break;
 
@@ -726,6 +731,8 @@ function respondWithTransfer(msg: WorkerResponse, transfer: Transferable[]) {
 async function handleInit(id: string, cfg: WorkerConfig) {
   try {
     _config = cfg;
+    blossomBandwidthTracker.reset();
+    emitBlossomBandwidthSnapshot();
 
     // Initialize Dexie/IndexedDB store
     const storeName = cfg.storeName || 'hashtree-worker';
@@ -748,11 +755,7 @@ async function handleInit(id: string, cfg: WorkerConfig) {
 
     // Initialize Blossom store with signer for uploads and progress callback
     if (cfg.blossomServers && cfg.blossomServers.length > 0) {
-      blossomStore = new BlossomStore({
-        servers: cfg.blossomServers,  // Pass full config with read/write flags
-        signer: createBlossomSigner(),
-        onUploadProgress: updateBlossomProgress,
-      });
+      blossomStore = createTrackedBlossomStore(cfg.blossomServers);
       // Add Blossom to fallback chain for remote chunk fetching
       fallbackStore?.addFallback(blossomStore);
       console.log('[Worker] Initialized BlossomStore with', cfg.blossomServers.length, 'servers');
@@ -890,12 +893,18 @@ function handleSetIdentity(id: string, pubkey: string, nsec?: string) {
   console.log('[Worker] SocialGraph root updated:', pubkey.slice(0, 16) + '...');
 
   // Reinitialize Blossom with new signer and progress callback
+  const previousBlossomStore = blossomStore;
+  if (fallbackStore && previousBlossomStore) {
+    fallbackStore.removeFallback(previousBlossomStore);
+  }
+
   if (_config?.blossomServers && _config.blossomServers.length > 0) {
-    blossomStore = new BlossomStore({
-      servers: _config.blossomServers,  // Pass full config with read/write flags
-      signer: createBlossomSigner(),
-      onUploadProgress: updateBlossomProgress,
-    });
+    blossomStore = createTrackedBlossomStore(_config.blossomServers);
+    if (fallbackStore) {
+      fallbackStore.addFallback(blossomStore);
+    }
+  } else {
+    blossomStore = null;
   }
 
   // NOTE: WebRTC not available in workers
@@ -918,6 +927,21 @@ function createBlossomSigner() {
   };
 }
 
+function createTrackedBlossomStore(servers: NonNullable<WorkerConfig['blossomServers']>): BlossomStore {
+  return new BlossomStore({
+    servers,
+    signer: createBlossomSigner(),
+    onUploadProgress: updateBlossomProgress,
+    logger: (entry) => {
+      blossomBandwidthTracker.apply(entry);
+    },
+  });
+}
+
+function emitBlossomBandwidthSnapshot(): void {
+  respond({ type: 'blossomBandwidth', stats: blossomBandwidthTracker.getStats() });
+}
+
 async function handleClose(id: string) {
   // NOTE: WebRTC not available in workers
   // Close NDK connections
@@ -928,6 +952,8 @@ async function handleClose(id: string) {
   clearMemoryCache();
   store = null;
   tree = null;
+  blossomStore = null;
+  blossomBandwidthTracker.reset();
   _config = null;
   respond({ type: 'void', id });
 }

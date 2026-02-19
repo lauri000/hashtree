@@ -17,6 +17,7 @@ import type {
   WorkerRelayStats as RelayStats,
   WorkerDirEntry as DirEntry,
   WorkerSocialGraphEvent as SocialGraphEvent,
+  WorkerBlossomBandwidthStats as BlossomBandwidthStats,
   WorkerBlossomUploadProgress as BlossomUploadProgress,
   WorkerBlossomServerConfig as BlossomServerConfig,
   CID,
@@ -70,6 +71,7 @@ export class WorkerAdapter {
 
   // Blossom upload progress callback
   private blossomProgressCallback: ((progress: BlossomUploadProgress) => void) | null = null;
+  private blossomBandwidthCallback: ((stats: BlossomBandwidthStats) => void) | null = null;
 
   // Background Blossom push progress callback (for automatic pushes)
   private blossomPushProgressCallback: ((treeName: string, current: number, total: number) => void) | null = null;
@@ -212,6 +214,10 @@ export class WorkerAdapter {
           break;
 
         // Blossom upload progress
+        case 'blossomBandwidth':
+          this.handleBlossomBandwidth(msg.stats);
+          break;
+
         case 'blossomUploadProgress':
           this.handleBlossomProgress(msg.progress);
           break;
@@ -524,6 +530,10 @@ export class WorkerAdapter {
     this.blossomProgressCallback?.(progress);
   }
 
+  private handleBlossomBandwidth(stats: BlossomBandwidthStats) {
+    this.blossomBandwidthCallback?.(stats);
+  }
+
   // ============================================================================
   // Tree Root Update Handler
   // ============================================================================
@@ -561,6 +571,10 @@ export class WorkerAdapter {
    */
   onBlossomProgress(callback: (progress: BlossomUploadProgress) => void): void {
     this.blossomProgressCallback = callback;
+  }
+
+  onBlossomBandwidth(callback: (stats: BlossomBandwidthStats) => void): void {
+    this.blossomBandwidthCallback = callback;
   }
 
   /**

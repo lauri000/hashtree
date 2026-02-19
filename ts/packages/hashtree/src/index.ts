@@ -162,6 +162,8 @@ export type {
   UnsignedEvent as WorkerUnsignedEvent,
   SignedEvent as WorkerSignedEvent,
   PeerStats as WorkerPeerStats,
+  BlossomBandwidthStats as WorkerBlossomBandwidthStats,
+  BlossomBandwidthServerStats as WorkerBlossomBandwidthServerStats,
   RelayStats as WorkerRelayStats,
   DirEntry as WorkerDirEntry,
   SocialGraphEvent as WorkerSocialGraphEvent,

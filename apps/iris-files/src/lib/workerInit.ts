@@ -7,7 +7,7 @@
 
 import { initWorkerAdapter, getWorkerAdapter as getWebWorkerAdapter, type WorkerAdapter } from '../workerAdapter';
 import { settingsStore, waitForSettingsLoaded } from '../stores/settings';
-import { refreshWebRTCStats } from '../store';
+import { refreshWebRTCStats, setBlossomBandwidth } from '../store';
 import { get } from 'svelte/store';
 import { createFollowsStore, getFollowsSync } from '../stores/follows';
 import { setupVersionCallback } from '../utils/socialGraph';
@@ -371,6 +371,10 @@ export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<
       // Register worker as transport plugin for NDK publishes and subscriptions
       const adapter = getWorkerAdapter();
       if (adapter) {
+        adapter.onBlossomBandwidth((stats) => {
+          setBlossomBandwidth(stats);
+        });
+
         // Set up event dispatch from worker to NDK subscriptions
         adapter.onEvent((event: WorkerSignedEvent) => {
           ndk.subManager.dispatchEvent(event as unknown as NDKEvent, undefined, false);

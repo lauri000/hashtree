@@ -2,6 +2,7 @@
   import { nostrStore, type RelayStatus } from '../../nostr';
   import { settingsStore, DEFAULT_NETWORK_SETTINGS } from '../../stores/settings';
   import { blossomLogStore } from '../../stores/blossomLog';
+  import { appStore, formatBytes } from '../../store';
 
   // Network settings
   let networkSettings = $derived($settingsStore.network);
@@ -19,6 +20,8 @@
 
   // Blossom log
   let blossomLogs = $derived($blossomLogStore);
+  let appState = $derived($appStore);
+  let blossomBandwidth = $derived(appState.blossomBandwidth);
 
   function getStatusColor(status: RelayStatus): string {
     switch (status) {
@@ -96,6 +99,10 @@
   function resetBlossomServers() {
     settingsStore.setNetworkSettings({ blossomServers: DEFAULT_NETWORK_SETTINGS.blossomServers });
     editingBlossom = false;
+  }
+
+  function getBlossomServerUsage(url: string) {
+    return blossomBandwidth.servers.find(server => server.url === url);
   }
 </script>
 
@@ -208,6 +215,35 @@
         <div class="p-3 text-sm text-text-3">No servers configured</div>
       {/each}
     </div>
+
+    <div class="mt-3 bg-surface-2 rounded p-3">
+      <div class="text-xs text-text-3 mb-2">Session bandwidth</div>
+      <div class="grid grid-cols-2 gap-3 text-sm">
+        <div>
+          <div class="text-xs text-text-3">Upload</div>
+          <div class="font-mono text-success">{formatBytes(blossomBandwidth.totalBytesSent)}</div>
+        </div>
+        <div>
+          <div class="text-xs text-text-3">Download</div>
+          <div class="font-mono text-accent">{formatBytes(blossomBandwidth.totalBytesReceived)}</div>
+        </div>
+      </div>
+
+      {#if networkSettings.blossomServers.length > 0}
+        <div class="mt-3 pt-3 border-t border-surface-3 space-y-1 text-xs font-mono">
+          {#each networkSettings.blossomServers as server (server.url)}
+            {@const usage = getBlossomServerUsage(server.url)}
+            <div class="flex items-center justify-between gap-2 text-text-2">
+              <span class="truncate">
+                {(() => { try { return new URL(server.url).hostname; } catch { return server.url; } })()}
+              </span>
+              <span class="shrink-0">↑ {formatBytes(usage?.bytesSent ?? 0)} · ↓ {formatBytes(usage?.bytesReceived ?? 0)}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
     {#if editingBlossom}
       <div class="mt-2 flex gap-2">
         <input

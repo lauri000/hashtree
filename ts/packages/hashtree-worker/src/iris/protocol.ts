@@ -45,6 +45,19 @@ export interface PeerStats {
   bytesReceived: number;
 }
 
+export interface BlossomBandwidthServerStats {
+  url: string;
+  bytesSent: number;
+  bytesReceived: number;
+}
+
+export interface BlossomBandwidthStats {
+  totalBytesSent: number;
+  totalBytesReceived: number;
+  updatedAt: number;
+  servers: BlossomBandwidthServerStats[];
+}
+
 // ============================================================================
 // Main Thread → Worker Messages
 // ============================================================================
@@ -177,6 +190,7 @@ export type WorkerResponse =
   | { type: 'storageStats'; id: string; items: number; bytes: number }
 
   // Blossom notifications
+  | { type: 'blossomBandwidth'; stats: BlossomBandwidthStats }
   | { type: 'blossomUploadError'; hash: string; error: string }
   | { type: 'blossomUploadProgress'; progress: BlossomUploadProgress }
   | { type: 'blossomPushResult'; id: string; pushed: number; skipped: number; failed: number; error?: string; errors?: string[] }

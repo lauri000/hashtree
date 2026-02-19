@@ -2,7 +2,7 @@
   /**
    * Bandwidth indicator - shows current upload/download rates in header
    */
-  import { getWorkerAdapter } from '../lib/workerInit';
+  import { getBandwidthUsageTotals } from '../store';
 
   // Track previous bytes for rate calculation
   let prevBytes = $state({ sent: 0, received: 0, time: Date.now() });
@@ -10,37 +10,26 @@
 
   // Update rates periodically
   $effect(() => {
-    const interval = setInterval(async () => {
-      const adapter = getWorkerAdapter();
-      if (!adapter) return;
+    const interval = setInterval(() => {
+      const totals = getBandwidthUsageTotals();
+      const now = Date.now();
+      const elapsed = (now - prevBytes.time) / 1000; // seconds
 
-      try {
-        const stats = await adapter.getPeerStats();
-        const now = Date.now();
-        const elapsed = (now - prevBytes.time) / 1000; // seconds
+      if (elapsed > 0 && prevBytes.time > 0) {
+        const sentDiff = totals.totalBytesSent - prevBytes.sent;
+        const receivedDiff = totals.totalBytesReceived - prevBytes.received;
 
-        // Sum up bytes from all peers
-        const totalSent = stats.reduce((sum, p) => sum + p.bytesSent, 0);
-        const totalReceived = stats.reduce((sum, p) => sum + p.bytesReceived, 0);
-
-        if (elapsed > 0 && prevBytes.time > 0) {
-          const sentDiff = totalSent - prevBytes.sent;
-          const receivedDiff = totalReceived - prevBytes.received;
-
-          rates = {
-            up: Math.max(0, sentDiff / elapsed),
-            down: Math.max(0, receivedDiff / elapsed),
-          };
-        }
-
-        prevBytes = {
-          sent: totalSent,
-          received: totalReceived,
-          time: now,
+        rates = {
+          up: Math.max(0, sentDiff / elapsed),
+          down: Math.max(0, receivedDiff / elapsed),
         };
-      } catch {
-        // Worker not ready
       }
+
+      prevBytes = {
+        sent: totals.totalBytesSent,
+        received: totals.totalBytesReceived,
+        time: now,
+      };
     }, 1000);
 
     return () => clearInterval(interval);
