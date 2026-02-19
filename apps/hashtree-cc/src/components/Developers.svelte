@@ -299,6 +299,12 @@
     <p class="text-lg text-text-2 max-w-xl mx-auto mb-6">
       Case Study: <code class="text-accent">hashtree.cc</code>
     </p>
+    <img
+      src="/screenshot-hashtree-cc.webp"
+      alt="hashtree.cc"
+      class="rounded-lg mx-auto mb-6 max-w-lg w-full"
+      draggable="false"
+    />
     <div class="flex flex-wrap gap-3 justify-center">
       <a
         href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/apps/hashtree-cc"
