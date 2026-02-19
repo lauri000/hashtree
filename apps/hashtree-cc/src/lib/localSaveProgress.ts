@@ -5,6 +5,7 @@ const MIN_VISIBLE_MS = 500;
 export type LocalSavePhase = 'reading' | 'writing' | 'finalizing';
 
 export interface LocalSaveProgressState {
+  fileName: string;
   bytesSaved: number;
   totalBytes: number;
   phase: LocalSavePhase;
@@ -29,12 +30,17 @@ function emitState(next: LocalSaveProgressState | null): void {
 }
 
 export function beginLocalSaveProgress(totalBytes: number): void {
+  beginLocalSaveProgressForFile(totalBytes, 'upload');
+}
+
+export function beginLocalSaveProgressForFile(totalBytes: number, fileName: string): void {
   activeSaves += 1;
   clearPendingTimer();
 
   if (activeSaves === 1) {
     visibleSince = Date.now();
     emitState({
+      fileName,
       bytesSaved: 0,
       totalBytes: Math.max(0, totalBytes),
       phase: 'reading',
@@ -51,6 +57,7 @@ export function updateLocalSaveProgress(bytesSaved: number, totalBytes?: number)
   const nextBytes = Math.max(0, Math.min(bytesSaved, nextTotal || bytesSaved));
 
   emitState({
+    fileName: currentState.fileName,
     bytesSaved: nextBytes,
     totalBytes: nextTotal,
     phase: currentState.phase,

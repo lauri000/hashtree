@@ -18,9 +18,9 @@
 
   const localStatusText = $derived.by(() => {
     if (!localSaveProgress) return '';
-    if (localSaveProgress.phase === 'finalizing') return 'Finalizing local save...';
-    if (localSaveProgress.phase === 'reading') return `Reading file (${localPercent}%)`;
-    return `Saving to local storage (${localPercent}%)`;
+    if (localSaveProgress.phase === 'finalizing') return 'finalizing...';
+    if (localSaveProgress.phase === 'reading') return 'reading...';
+    return 'writing...';
   });
 
   const localDetailText = $derived.by(() => {
@@ -68,10 +68,17 @@
     class="fixed right-4 bottom-4 z-40 w-[320px] max-w-[calc(100vw-2rem)] rounded-xl border border-surface-3 bg-surface-1/95 backdrop-blur px-4 py-3 shadow-lg"
     data-testid="upload-progress-toast"
   >
-    <div class="text-sm font-medium text-text-1">{localStatusText}</div>
-    <div class="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
+    <div class="flex items-center gap-2 mb-2">
+      <span class="i-lucide-loader-2 animate-spin text-accent shrink-0"></span>
+      <span class="text-sm text-text-1 truncate flex-1">{localSaveProgress?.fileName || 'upload'}</span>
+    </div>
+    <div class="h-1.5 rounded-full bg-surface-3 overflow-hidden">
       <div class="h-full bg-accent transition-all duration-150" style={`width:${Math.max(2, localPercent)}%`}></div>
     </div>
-    <div class="mt-2 text-xs text-text-3">{localDetailText}</div>
+    <div class="mt-2 flex items-center justify-between text-xs text-text-3">
+      <span class="capitalize">{localStatusText}</span>
+      <span>{localPercent}%</span>
+    </div>
+    <div class="text-xs text-text-3">{localDetailText}</div>
   </aside>
 {/if}

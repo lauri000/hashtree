@@ -181,7 +181,8 @@ test('shows progress while saving locally when blossom uploads are disabled (1GB
   });
 
   await expect(page.getByTestId('upload-progress-toast')).toBeVisible({ timeout: 10000 });
-  await expect(page.getByTestId('upload-progress-toast')).toContainText('Saving to local storage');
+  await expect(page.getByTestId('upload-progress-toast')).toContainText('local-only-large.bin');
+  await expect(page.getByTestId('upload-progress-toast')).toContainText(/reading|writing|finalizing/i);
 
   await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10000 });
   expect(blossomPutRequests).toBe(0);

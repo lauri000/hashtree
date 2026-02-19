@@ -8,7 +8,7 @@ import {
 } from './workerClient';
 import { getFromP2P } from './p2p';
 import {
-  beginLocalSaveProgress,
+  beginLocalSaveProgressForFile,
   endLocalSaveProgress,
   setLocalSavePhase,
   updateLocalSaveProgress,
@@ -32,7 +32,7 @@ function coalesceChunks(chunks: Uint8Array[], totalBytes: number): Uint8Array {
  * Returns the nhash-based URL fragment.
  */
 export async function uploadBuffer(data: Uint8Array, fileName: string, mimeType: string): Promise<string> {
-  beginLocalSaveProgress(data.length);
+  beginLocalSaveProgressForFile(data.length, fileName);
   setLocalSavePhase('finalizing');
   updateLocalSaveProgress(data.length);
   try {
@@ -46,7 +46,7 @@ export async function uploadBuffer(data: Uint8Array, fileName: string, mimeType:
 }
 
 export async function uploadFileStream(file: File): Promise<string> {
-  beginLocalSaveProgress(file.size);
+  beginLocalSaveProgressForFile(file.size, file.name);
   let streamId: string | null = null;
   let bytesSaved = 0;
   let bufferedChunks: Uint8Array[] = [];
