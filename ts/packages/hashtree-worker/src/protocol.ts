@@ -22,6 +22,13 @@ export interface ConnectivityState {
 
 export type BlobSource = 'idb' | 'blossom' | 'p2p';
 
+export interface UploadServerStatus {
+  url: string;
+  uploaded: number;
+  skipped: number;
+  failed: number;
+}
+
 export interface UploadProgressState {
   hashHex: string;
   nhash: string;
@@ -34,6 +41,7 @@ export interface UploadProgressState {
   processedChunks?: number;
   /** 0..1 normalized progress for chunk upload traversal */
   progressRatio?: number;
+  serverStatuses?: UploadServerStatus[];
   complete: boolean;
   error?: string;
 }

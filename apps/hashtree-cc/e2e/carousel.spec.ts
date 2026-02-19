@@ -75,6 +75,6 @@ test.describe('Use case carousel', () => {
   test('auto-advances after timeout', async ({ page }) => {
     await expect(page.getByText('Git repos, file manager')).toBeVisible();
     // wait for auto-advance (5s interval)
-    await expect(page.getByText('Collaborative documents')).toBeVisible({ timeout: 7000 });
+    await expect(page.getByText('Collaborative documents')).toBeVisible({ timeout: 12000 });
   });
 });

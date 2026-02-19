@@ -14,6 +14,7 @@ import {
 import type {
   BlobSource,
   UploadProgressState,
+  UploadServerStatus,
   WorkerRequest,
   WorkerResponse,
   WorkerConfig,
@@ -428,14 +429,25 @@ function startBlossomUploadProgress(hashHex: string, nhash: string, fileCid: CID
     complete: false,
   };
 
-  const serverStats = new Map<string, { uploaded: number; skipped: number; failed: number }>();
+  const serverStats = new Map<string, UploadServerStatus>();
   for (const server of writeServers) {
-    serverStats.set(server.url, { uploaded: 0, skipped: 0, failed: 0 });
+    serverStats.set(server.url, { url: server.url, uploaded: 0, skipped: 0, failed: 0 });
   }
 
   let lastChunkProgressEmit = 0;
 
-  respond({ type: 'uploadProgress', progress: { ...progress } });
+  const syncServerStatuses = (): void => {
+    progress.serverStatuses = Array.from(serverStats.values())
+      .map((status) => ({ ...status }))
+      .sort((a, b) => a.url.localeCompare(b.url));
+  };
+
+  const emitProgress = (): void => {
+    syncServerStatuses();
+    respond({ type: 'uploadProgress', progress: { ...progress } });
+  };
+
+  emitProgress();
 
   const onUploadProgress = (serverUrl: string, status: 'uploaded' | 'skipped' | 'failed'): void => {
     const stats = serverStats.get(serverUrl);
@@ -466,7 +478,7 @@ function startBlossomUploadProgress(hashHex: string, nhash: string, fileCid: CID
         const shouldEmitChunkProgress = now - lastChunkProgressEmit >= chunkProgressEmitIntervalMs || current >= total;
         if (serverEstimateChanged || shouldEmitChunkProgress) {
           lastChunkProgressEmit = now;
-          respond({ type: 'uploadProgress', progress: { ...progress } });
+          emitProgress();
         }
       },
     });
@@ -496,7 +508,7 @@ function startBlossomUploadProgress(hashHex: string, nhash: string, fileCid: CID
     if (result.failed > 0 && result.errors.length > 0) {
       progress.error = result.errors[0].error.message;
     }
-    respond({ type: 'uploadProgress', progress: { ...progress } });
+    emitProgress();
   })().catch((err) => {
     if (progress.complete) return;
     progress.failedServers = progress.totalServers;
@@ -507,7 +519,7 @@ function startBlossomUploadProgress(hashHex: string, nhash: string, fileCid: CID
     progress.progressRatio = 1;
     progress.complete = true;
     progress.error = getErrorMessage(err);
-    respond({ type: 'uploadProgress', progress: { ...progress } });
+    emitProgress();
   });
 }
 

@@ -16,6 +16,49 @@
     return mb >= 100 ? mb.toFixed(0) : mb.toFixed(1);
   }
 
+  function serverLabel(url: string): string {
+    try {
+      return new URL(url).host;
+    } catch {
+      return url.replace(/^https?:\/\//, '');
+    }
+  }
+
+  type ServerState = 'pending' | 'uploading' | 'uploaded' | 'skipped' | 'failed' | 'partial';
+
+  function resolveServerState(
+    server: { uploaded: number; skipped: number; failed: number },
+    complete: boolean
+  ): ServerState {
+    if (complete) {
+      if (server.failed > 0 && (server.uploaded > 0 || server.skipped > 0)) return 'partial';
+      if (server.failed > 0) return 'failed';
+      if (server.uploaded > 0) return 'uploaded';
+      if (server.skipped > 0) return 'skipped';
+      return 'pending';
+    }
+    if (server.failed > 0 && server.uploaded === 0 && server.skipped === 0) return 'failed';
+    if (server.uploaded > 0 || server.skipped > 0 || server.failed > 0) return 'uploading';
+    return 'pending';
+  }
+
+  function serverStateText(state: ServerState): string {
+    if (state === 'uploading') return 'uploading';
+    if (state === 'uploaded') return 'uploaded';
+    if (state === 'skipped') return 'skipped';
+    if (state === 'failed') return 'failed';
+    if (state === 'partial') return 'partial';
+    return 'pending';
+  }
+
+  function serverStateClass(state: ServerState): string {
+    if (state === 'uploaded') return 'text-success';
+    if (state === 'failed' || state === 'partial') return 'text-danger';
+    if (state === 'skipped') return 'text-text-3';
+    if (state === 'uploading') return 'text-accent';
+    return 'text-text-3';
+  }
+
   const percent = $derived.by(() => {
     if (!blossomProgress) return 0;
     if (typeof blossomProgress.progressRatio === 'number') {
@@ -71,6 +114,19 @@
     if (blossomProgress.uploadedServers > 0) return 'Upload complete';
     return 'Already available on Blossom';
   });
+
+  const serverRows = $derived.by(() => {
+    if (!blossomProgress?.serverStatuses?.length) return [];
+    return blossomProgress.serverStatuses.map((server) => {
+      const state = resolveServerState(server, blossomProgress.complete);
+      return {
+        key: server.url,
+        label: serverLabel(server.url),
+        stateText: serverStateText(state),
+        stateClass: serverStateClass(state),
+      };
+    });
+  });
 </script>
 
 {#if blossomProgress}
@@ -95,6 +151,17 @@
       <span>Skipped: {blossomProgress.skippedServers}</span>
       <span class={blossomProgress.failedServers > 0 ? 'text-danger' : ''}>Failed: {blossomProgress.failedServers}</span>
     </div>
+
+    {#if serverRows.length > 0}
+      <div class="mt-2 border-t border-surface-3/80 pt-2 space-y-1">
+        {#each serverRows as server (server.key)}
+          <div class="flex items-center justify-between gap-3 text-xs">
+            <span class="text-text-3 truncate">{server.label}</span>
+            <span class={`font-mono ${server.stateClass}`}>{server.stateText}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
   </aside>
 {:else if showLocalSaveToast}
   <aside
