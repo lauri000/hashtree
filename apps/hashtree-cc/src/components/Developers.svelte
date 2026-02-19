@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import UseCaseCarousel from './UseCaseCarousel.svelte';
 
   let copiedCmd = $state<string | null>(null);
@@ -8,6 +9,17 @@
     copiedCmd = text;
     setTimeout(() => { copiedCmd = null; }, 2000);
   }
+
+  function scrollToSection() {
+    const hash = window.location.hash; // e.g. #/dev/web-apps
+    const parts = hash.replace(/^#\/?/, '').split('/');
+    if (parts[0] === 'dev' && parts[1]) {
+      const el = document.getElementById(parts[1]);
+      el?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }
+
+  onMount(scrollToSection);
 
   const installCmd = `curl -fsSL https://github.com/mmalmi/hashtree/releases/latest/download/hashtree-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/apple-darwin/' | sed 's/linux/unknown-linux-musl/').tar.gz | tar -xz && cd hashtree && ./install.sh`;
   const cargoCmd = 'cargo install hashtree-cli';
@@ -21,8 +33,10 @@
 <section class="py-12">
   <!-- Content-Addressed Storage -->
   <div class="text-center mb-8">
-    <h2 class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
-      Content-Addressed Storage
+    <h2 id="content-addressed-storage" class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
+      <a href="/#/dev/content-addressed-storage" class="group no-underline text-text-1 hover:text-text-1">
+        <span class="opacity-0 group-hover:opacity-40 transition-opacity">#</span> Content-Addressed Storage
+      </a>
     </h2>
     <p class="text-lg text-text-2 max-w-xl mx-auto mb-6">
       A simple merkle tree for git repos, file sharing, and anything else.
@@ -104,8 +118,10 @@
 
   <!-- Git without GitHub -->
   <div class="text-center mb-8 mt-16">
-    <h2 class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
-      Git without GitHub
+    <h2 id="git-without-github" class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
+      <a href="/#/dev/git-without-github" class="group no-underline text-text-1 hover:text-text-1">
+        <span class="opacity-0 group-hover:opacity-40 transition-opacity">#</span> Git without GitHub
+      </a>
     </h2>
     <p class="text-lg text-text-2 max-w-xl mx-auto">
       Push and pull git repos over content-addressed storage.
@@ -293,8 +309,10 @@
 
   <!-- Web Apps -->
   <div class="text-center mb-8 mt-16">
-    <h2 class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
-      Web Apps
+    <h2 id="web-apps" class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
+      <a href="/#/dev/web-apps" class="group no-underline text-text-1 hover:text-text-1">
+        <span class="opacity-0 group-hover:opacity-40 transition-opacity">#</span> Web Apps
+      </a>
     </h2>
     <p class="text-lg text-text-2 max-w-xl mx-auto mb-6">
       Case Study: <code class="text-accent">hashtree.cc</code>

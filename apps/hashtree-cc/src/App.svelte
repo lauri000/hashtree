@@ -14,7 +14,7 @@
 
   let route = $state<
     { type: 'share' }
-    | { type: 'dev' }
+    | { type: 'dev'; section?: string }
     | { type: 'settings' }
     | { type: 'viewer'; nhash: string; fileName: string }
   >({ type: 'share' });
@@ -27,7 +27,7 @@
     }
     const parts = hash.slice(2).split('/'); // remove #/
     if (parts[0] === 'dev') {
-      route = { type: 'dev' };
+      route = { type: 'dev', section: parts[1] || '' };
     } else if (parts[0] === 'settings') {
       route = { type: 'settings' };
     } else if (parts.length >= 1 && isNHash(parts[0])) {
