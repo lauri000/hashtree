@@ -160,5 +160,6 @@ export async function initServiceWorker(): Promise<void> {
     }
   }
 
-  // No forced reload on controller changes. Updates are applied on next open.
+  // No unconditional reload on controller changes.
+  // Updates are activated only after transfer activity goes idle.
 }
