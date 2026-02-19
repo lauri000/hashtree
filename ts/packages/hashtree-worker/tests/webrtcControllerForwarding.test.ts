@@ -100,6 +100,38 @@ describe('WebRTCController forwarding behavior', () => {
     expect(requesterStats?.forwardedResolved).toBe(1);
   });
 
+  it('does not re-forward a hash when the same query loops back from another peer', async () => {
+    const localStore: Store = {
+      put: async () => true,
+      get: async () => null,
+      has: async () => false,
+      delete: async () => false,
+    };
+    const { controller, internal, sentData } = createForwardingController(localStore);
+    const requester = connectPeer(internal, 'peer-requester', 'requester-pubkey');
+    const neighborA = connectPeer(internal, 'peer-neighbor-a', 'neighbor-a-pubkey');
+    const neighborB = connectPeer(internal, 'peer-neighbor-b', 'neighbor-b-pubkey');
+
+    const hash = new Uint8Array(32).fill(9);
+    const requestBytes = new Uint8Array(encodeRequest(createRequest(hash, 4)));
+
+    await internal.onDataChannelMessage(requester.peerId, requestBytes);
+    const forwardsAfterFirstRequest = sentData.length;
+
+    // Simulate the same hash request bouncing back from another peer in the mesh.
+    await internal.onDataChannelMessage(neighborA.peerId, requestBytes);
+
+    // No new forwards should be sent while the hash is already in-flight.
+    expect(sentData.length).toBe(forwardsAfterFirstRequest);
+
+    const neighborAStats = controller.getPeerStats().find((stats) => stats.peerId === neighborA.peerId);
+    expect(neighborAStats?.forwardedSuppressed).toBe(1);
+
+    // Sanity check that we originally forwarded to at least one other neighbor.
+    const forwardedPeerIds = new Set(sentData.map((entry) => entry.peerId));
+    expect(forwardedPeerIds.has(neighborB.peerId)).toBe(true);
+  });
+
   it('resolves multiple requesters without re-forwarding the same hash query', async () => {
     const localStore: Store = {
       put: async () => true,
