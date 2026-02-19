@@ -5,7 +5,7 @@
  * All uploads use encryption by default (CHK - Content Hash Key).
  */
 import { writable, get } from 'svelte/store';
-import { toHex, nhashEncode, cid, LinkType, videoChunker } from '@hashtree/core';
+import { toHex, nhashEncode, cid, LinkType, videoChunker, streamUploadWithProgress } from '@hashtree/core';
 import type { CID } from '@hashtree/core';
 import { getTree } from '../store';
 import { autosaveIfOwn, saveHashtree, nostrStore } from '../nostr';
@@ -224,49 +224,34 @@ export async function uploadFiles(files: FileList): Promise<void> {
       // Use videoChunker for video files (smaller first chunk for faster playback start)
       const chunker = isVideoFile(file.name) ? videoChunker() : undefined;
       const stream = tree.createStream({ chunker });
-      let bytesRead = 0;
-      const reader = file.stream().getReader();
-
-      while (true) {
-        setUploadProgress({
-          current: i + 1,
-          total,
-          fileName: file.name,
-          bytes: bytesRead,
-          totalBytes,
-          status: 'reading',
-        });
-        const readResult = await withStallDetection(
-          reader.read(),
-          `Reading ${file.name} is taking longer than expected...`
-        );
-        if (readResult.done) break;
-        setUploadProgress({
-          current: i + 1,
-          total,
-          fileName: file.name,
-          bytes: bytesRead,
-          totalBytes,
-          status: 'writing',
-        });
-        await withStallDetection(
-          stream.append(readResult.value),
-          `Writing ${file.name} is taking longer than expected...`
-        );
-        bytesRead += readResult.value.length;
-      }
-
-      setUploadProgress({
-        current: i + 1,
-        total,
-        fileName: file.name,
-        bytes: bytesRead,
-        totalBytes,
-        status: 'finalizing',
-      });
-      const result = await withStallDetection(
-        stream.finalize(),
-        `Finalizing ${file.name} is taking longer than expected...`
+      const result = await streamUploadWithProgress(
+        file,
+        {
+          append: async (chunk) => withStallDetection(
+            stream.append(chunk),
+            `Writing ${file.name} is taking longer than expected...`
+          ),
+          finalize: async () => withStallDetection(
+            stream.finalize(),
+            `Finalizing ${file.name} is taking longer than expected...`
+          ),
+        },
+        {
+          readChunk: (reader) => withStallDetection(
+            reader.read(),
+            `Reading ${file.name} is taking longer than expected...`
+          ),
+          onProgress: (progress) => {
+            setUploadProgress({
+              current: i + 1,
+              total,
+              fileName: file.name,
+              bytes: progress.bytesProcessed,
+              totalBytes,
+              status: progress.phase,
+            });
+          },
+        }
       );
       fileCid = cid(result.hash, result.key);
       size = result.size;
@@ -494,41 +479,34 @@ export async function uploadFilesWithPaths(filesWithPaths: FileWithPath[]): Prom
     // Use videoChunker for video files (smaller first chunk for faster playback start)
     const chunker = isVideoFile(file.name) ? videoChunker() : undefined;
     const stream = tree.createStream({ chunker });
-    let bytesRead = 0;
-    const reader = file.stream().getReader();
-
-    while (true) {
-      const readResult = await withStallDetection(
-        reader.read(),
-        `Reading ${relativePath} is taking longer than expected...`
-      );
-      if (readResult.done) break;
-      await withStallDetection(
-        stream.append(readResult.value),
-        `Writing ${relativePath} is taking longer than expected...`
-      );
-      bytesRead += readResult.value.length;
-      setUploadProgress({
-        current: i + 1,
-        total,
-        fileName: relativePath,
-        bytes: bytesRead,
-        totalBytes,
-        status: 'writing',
-      });
-    }
-
-    setUploadProgress({
-      current: i + 1,
-      total,
-      fileName: relativePath,
-      bytes: bytesRead,
-      totalBytes,
-      status: 'finalizing',
-    });
-    const result = await withStallDetection(
-      stream.finalize(),
-      `Finalizing ${relativePath} is taking longer than expected...`
+    const result = await streamUploadWithProgress(
+      file,
+      {
+        append: async (chunk) => withStallDetection(
+          stream.append(chunk),
+          `Writing ${relativePath} is taking longer than expected...`
+        ),
+        finalize: async () => withStallDetection(
+          stream.finalize(),
+          `Finalizing ${relativePath} is taking longer than expected...`
+        ),
+      },
+      {
+        readChunk: (reader) => withStallDetection(
+          reader.read(),
+          `Reading ${relativePath} is taking longer than expected...`
+        ),
+        onProgress: (progress) => {
+          setUploadProgress({
+            current: i + 1,
+            total,
+            fileName: relativePath,
+            bytes: progress.bytesProcessed,
+            totalBytes,
+            status: progress.phase,
+          });
+        },
+      }
     );
     const fileCid = cid(result.hash, result.key);
     const size = result.size;

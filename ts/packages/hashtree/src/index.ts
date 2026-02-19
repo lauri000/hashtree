@@ -100,6 +100,16 @@ export {
   videoChunker,
 } from './builder.js';
 
+// Shared streaming upload helper
+export {
+  streamUploadWithProgress,
+  type StreamUploadPhase,
+  type StreamUploadProgress,
+  type StreamUploadFile,
+  type StreamUploadWriter,
+  type StreamUploadOptions,
+} from './upload.js';
+
 
 // BEP52 (BitTorrent v2) compatible merkle tree
 // Main API: Bep52TreeBuilder, Bep52StreamBuilder

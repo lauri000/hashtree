@@ -1,3 +1,4 @@
+import { streamUploadWithProgress } from '@hashtree/core';
 import {
   appendPutBlobStream,
   beginPutBlobStream,
@@ -15,17 +16,6 @@ import {
 } from './localSaveProgress';
 
 const STREAM_APPEND_BATCH_BYTES = 2 * 1024 * 1024;
-
-function coalesceChunks(chunks: Uint8Array[], totalBytes: number): Uint8Array {
-  if (chunks.length === 1) return chunks[0];
-  const merged = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return merged;
-}
 
 /**
  * Store data in local worker cache and upload to configured Blossom servers in background.
@@ -48,43 +38,31 @@ export async function uploadBuffer(data: Uint8Array, fileName: string, mimeType:
 export async function uploadFileStream(file: File): Promise<string> {
   beginLocalSaveProgressForFile(file.size, file.name);
   let streamId: string | null = null;
-  let bytesSaved = 0;
-  let bufferedChunks: Uint8Array[] = [];
-  let bufferedBytes = 0;
   try {
     streamId = await beginPutBlobStream(file.type || 'application/octet-stream');
 
-    const flushBufferedChunks = async (): Promise<void> => {
-      if (!streamId || bufferedBytes === 0) return;
-      setLocalSavePhase('writing');
-      const batch = coalesceChunks(bufferedChunks, bufferedBytes);
-      bufferedChunks = [];
-      bufferedBytes = 0;
-      await appendPutBlobStream(streamId, batch);
-      bytesSaved += batch.byteLength;
-      updateLocalSaveProgress(bytesSaved, file.size);
-    };
-
-    const reader = file.stream().getReader();
-    while (true) {
-      setLocalSavePhase('reading');
-      const result = await reader.read();
-      if (result.done) break;
-      const chunk = result.value;
-      bufferedChunks.push(chunk);
-      bufferedBytes += chunk.byteLength;
-      updateLocalSaveProgress(Math.min(file.size, bytesSaved + bufferedBytes), file.size);
-
-      if (bufferedBytes >= STREAM_APPEND_BATCH_BYTES) {
-        await flushBufferedChunks();
+    const result = await streamUploadWithProgress(
+      file,
+      {
+        append: async (chunk: Uint8Array) => {
+          if (!streamId) throw new Error('Upload stream not initialized');
+          await appendPutBlobStream(streamId, chunk);
+        },
+        finalize: async () => {
+          if (!streamId) throw new Error('Upload stream not initialized');
+          return finishPutBlobStream(streamId);
+        },
+      },
+      {
+        batchBytes: STREAM_APPEND_BATCH_BYTES,
+        onProgress: (progress) => {
+          setLocalSavePhase(progress.phase);
+          updateLocalSaveProgress(progress.bytesProcessed, progress.totalBytes);
+        },
       }
-    }
+    );
 
-    await flushBufferedChunks();
-    setLocalSavePhase('finalizing');
-    updateLocalSaveProgress(file.size, file.size);
-
-    const { nhash } = await finishPutBlobStream(streamId);
+    const { nhash } = result;
     streamId = null;
     const fragment = `/${nhash}/${encodeURIComponent(file.name)}`;
     window.location.hash = fragment;
