@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import UseCaseCarousel from './UseCaseCarousel.svelte';
+  import SectionHeading from './SectionHeading.svelte';
 
   let copiedCmd = $state<string | null>(null);
 
@@ -19,12 +20,6 @@
     }
   }
 
-  function handleSectionClick(e: MouseEvent, id: string) {
-    e.preventDefault();
-    history.pushState(null, '', `/#/dev/${id}`);
-    document.getElementById(id)?.scrollIntoView({});
-  }
-
   onMount(scrollToSection);
 
   const installCmd = `curl -fsSL https://github.com/mmalmi/hashtree/releases/latest/download/hashtree-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/apple-darwin/' | sed 's/linux/unknown-linux-musl/').tar.gz | tar -xz && cd hashtree && ./install.sh`;
@@ -39,11 +34,7 @@
 <section class="py-12">
   <!-- Content-Addressed Storage -->
   <div class="text-center mb-8">
-    <h2 id="content-addressed-storage" class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
-      <a href="/#/dev/content-addressed-storage" onclick={(e) => handleSectionClick(e, 'content-addressed-storage')} class="group no-underline text-text-1 hover:text-text-1">
-        <span class="opacity-0 group-hover:opacity-40 transition-opacity">#</span> Content-Addressed Storage
-      </a>
-    </h2>
+    <SectionHeading id="content-addressed-storage">Content-Addressed Storage</SectionHeading>
     <p class="text-lg text-text-2 max-w-xl mx-auto mb-6">
       A simple merkle tree for git repos, file sharing, and anything else.
       Sync peer-to-peer between browsers and devices, or via servers.
@@ -124,11 +115,7 @@
 
   <!-- Git without GitHub -->
   <div class="text-center mb-8 mt-16">
-    <h2 id="git-without-github" class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
-      <a href="/#/dev/git-without-github" onclick={(e) => handleSectionClick(e, 'git-without-github')} class="group no-underline text-text-1 hover:text-text-1">
-        <span class="opacity-0 group-hover:opacity-40 transition-opacity">#</span> Git without GitHub
-      </a>
-    </h2>
+    <SectionHeading id="git-without-github">Git without GitHub</SectionHeading>
     <p class="text-lg text-text-2 max-w-xl mx-auto">
       Push and pull git repos over content-addressed storage.
       No server required. Sync over Blossom servers, WebRTC, or any transport.
@@ -315,11 +302,7 @@
 
   <!-- Web Apps -->
   <div class="text-center mb-8 mt-16">
-    <h2 id="web-apps" class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
-      <a href="/#/dev/web-apps" onclick={(e) => handleSectionClick(e, 'web-apps')} class="group no-underline text-text-1 hover:text-text-1">
-        <span class="opacity-0 group-hover:opacity-40 transition-opacity">#</span> Web Apps
-      </a>
-    </h2>
+    <SectionHeading id="web-apps">Web Apps</SectionHeading>
     <p class="text-lg text-text-2 max-w-xl mx-auto mb-6">
       Case Study: <code class="text-accent">hashtree.cc</code>
     </p>

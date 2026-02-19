@@ -1,4 +1,6 @@
 <script lang="ts">
+  import SectionHeading from './SectionHeading.svelte';
+
   const slides = [
     {
       src: '/screenshot-iris-files.webp',
@@ -215,11 +217,7 @@
   onfocusin={stopAuto}
   onfocusout={startAuto}
 >
-  <h2 id="built-on-hashtree" class="text-3xl md:text-4xl font-bold text-text-1 mb-6 text-center">
-    <a href="/#/dev/built-on-hashtree" onclick={(e) => { e.preventDefault(); history.pushState(null, '', '/#/dev/built-on-hashtree'); document.getElementById('built-on-hashtree')?.scrollIntoView({}); }} class="group no-underline text-text-1 hover:text-text-1">
-      <span class="opacity-0 group-hover:opacity-40 transition-opacity">#</span> Built on Hashtree
-    </a>
-  </h2>
+  <SectionHeading id="built-on-hashtree">Built on Hashtree</SectionHeading>
 
   <div class="relative select-none max-w-lg mx-auto">
     <div
