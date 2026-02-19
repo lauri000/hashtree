@@ -69,14 +69,59 @@ export async function streamUploadWithProgress<Result>(
     });
   };
 
-  const flushBuffered = async (): Promise<void> => {
-    if (bufferedBytes === 0) return;
-    const batch = mergeChunks(bufferedChunks, bufferedBytes);
-    bufferedChunks = [];
-    bufferedBytes = 0;
+  const takeBuffered = (maxBytes?: number): Uint8Array | null => {
+    if (bufferedBytes === 0) return null;
+
+    if (!maxBytes || maxBytes <= 0 || bufferedBytes <= maxBytes) {
+      const batch = mergeChunks(bufferedChunks, bufferedBytes);
+      bufferedChunks = [];
+      bufferedBytes = 0;
+      return batch;
+    }
+
+    const parts: Uint8Array[] = [];
+    let collected = 0;
+    let remaining = maxBytes;
+
+    while (remaining > 0 && bufferedChunks.length > 0) {
+      const head = bufferedChunks[0];
+      if (head.byteLength <= remaining) {
+        parts.push(head);
+        bufferedChunks.shift();
+        collected += head.byteLength;
+        bufferedBytes -= head.byteLength;
+        remaining -= head.byteLength;
+      } else {
+        parts.push(head.subarray(0, remaining));
+        bufferedChunks[0] = head.subarray(remaining);
+        collected += remaining;
+        bufferedBytes -= remaining;
+        remaining = 0;
+      }
+    }
+
+    return mergeChunks(parts, collected);
+  };
+
+  const flushOneBatch = async (maxBytes?: number): Promise<boolean> => {
+    const batch = takeBuffered(maxBytes);
+    if (!batch) return false;
     emit('writing', bytesWritten + batch.byteLength);
     await appendChunk(writer, batch);
     bytesWritten += batch.byteLength;
+    return true;
+  };
+
+  const flushBuffered = async (): Promise<void> => {
+    if (batchBytes > 0) {
+      while (bufferedBytes >= batchBytes) {
+        await flushOneBatch(batchBytes);
+      }
+      return;
+    }
+    while (await flushOneBatch()) {
+      // Flush all pending bytes when batching is disabled.
+    }
   };
 
   const reader = file.stream().getReader();
@@ -97,7 +142,9 @@ export async function streamUploadWithProgress<Result>(
     }
   }
 
-  await flushBuffered();
+  while (await flushOneBatch(batchBytes > 0 ? batchBytes : undefined)) {
+    // Flush any remainder after stream end.
+  }
   emit('finalizing', totalBytes);
   const result = await finalizeWriter(writer);
   return result;

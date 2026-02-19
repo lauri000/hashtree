@@ -91,9 +91,9 @@ describe('streamUploadWithProgress', () => {
     );
 
     expect(result).toEqual({ done: true });
-    expect(appended.map(chunk => chunk.byteLength)).toEqual([5]);
+    expect(appended.map(chunk => chunk.byteLength)).toEqual([4, 1]);
     expect(readCalls).toBe(4);
-    expect(appendCalls).toBe(1);
+    expect(appendCalls).toBe(2);
     expect(finalizeCalls).toBe(1);
     expect(progressBytes.at(-1)).toBe(5);
   });
