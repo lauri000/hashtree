@@ -269,15 +269,19 @@
 
     <!-- Prev / Next -->
     <button
-      class="absolute left-0 top-0 h-full w-10 flex-center text-text-1 outline-none"
-      onclick={prev}
+      type="button"
+      class="absolute left-2 top-1/2 z-10 -translate-y-1/2 h-9 w-9 rounded-full flex-center text-text-1 bg-surface-1/90 border border-surface-3 hover:bg-surface-2 outline-none"
+      onpointerdown={(e) => e.stopPropagation()}
+      onclick={(e) => { e.stopPropagation(); prev(); }}
       aria-label="Previous"
     >
       <span class="i-lucide-chevron-left"></span>
     </button>
     <button
-      class="absolute right-0 top-0 h-full w-10 flex-center text-text-1 outline-none"
-      onclick={next}
+      type="button"
+      class="absolute right-2 top-1/2 z-10 -translate-y-1/2 h-9 w-9 rounded-full flex-center text-text-1 bg-surface-1/90 border border-surface-3 hover:bg-surface-2 outline-none"
+      onpointerdown={(e) => e.stopPropagation()}
+      onclick={(e) => { e.stopPropagation(); next(); }}
       aria-label="Next"
     >
       <span class="i-lucide-chevron-right"></span>
