@@ -5,15 +5,48 @@
   const blossomProgress = $derived($uploadProgressStore);
   const localSaveProgress = $derived($localSaveProgressStore);
   const showLocalSaveToast = $derived(!!localSaveProgress && !blossomProgress);
+
+  function clampPercent(value: number): number {
+    return Math.max(0, Math.min(100, Math.round(value)));
+  }
+
+  function formatMb(bytes: number): string {
+    const mb = bytes / (1024 * 1024);
+    if (!Number.isFinite(mb) || mb <= 0) return '0.0';
+    return mb >= 100 ? mb.toFixed(0) : mb.toFixed(1);
+  }
+
   const percent = $derived.by(() => {
     if (!blossomProgress) return 0;
+    if (typeof blossomProgress.progressRatio === 'number') {
+      return clampPercent(blossomProgress.progressRatio * 100);
+    }
+    if (typeof blossomProgress.totalChunks === 'number'
+      && blossomProgress.totalChunks > 0
+      && typeof blossomProgress.processedChunks === 'number') {
+      return clampPercent((blossomProgress.processedChunks / blossomProgress.totalChunks) * 100);
+    }
     if (blossomProgress.totalServers <= 0) return 0;
-    return Math.round((blossomProgress.processedServers / blossomProgress.totalServers) * 100);
+    return clampPercent((blossomProgress.processedServers / blossomProgress.totalServers) * 100);
+  });
+  const blossomDetailText = $derived.by(() => {
+    if (!blossomProgress) return '';
+    if (typeof blossomProgress.totalChunks === 'number'
+      && blossomProgress.totalChunks > 0
+      && typeof blossomProgress.processedChunks === 'number') {
+      return `${blossomProgress.processedChunks}/${blossomProgress.totalChunks} chunks`;
+    }
+    return `${blossomProgress.processedServers}/${blossomProgress.totalServers} servers`;
   });
   const localPercent = $derived.by(() => {
     if (!localSaveProgress) return 0;
     if (localSaveProgress.totalBytes <= 0) return 0;
-    return Math.min(100, Math.round((localSaveProgress.bytesSaved / localSaveProgress.totalBytes) * 100));
+    const raw = Math.min(100, Math.round((localSaveProgress.bytesSaved / localSaveProgress.totalBytes) * 100));
+    // finalizing can take a while; avoid showing "done" before finalize really returns.
+    if (localSaveProgress.phase === 'finalizing' && raw >= 100) {
+      return 99;
+    }
+    return raw;
   });
 
   const localStatusText = $derived.by(() => {
@@ -25,8 +58,8 @@
 
   const localDetailText = $derived.by(() => {
     if (!localSaveProgress) return 'IndexedDB';
-    const doneMb = Math.round(localSaveProgress.bytesSaved / 1024 / 1024);
-    const totalMb = Math.max(1, Math.round(localSaveProgress.totalBytes / 1024 / 1024));
+    const doneMb = formatMb(localSaveProgress.bytesSaved);
+    const totalMb = formatMb(localSaveProgress.totalBytes);
     return `${doneMb}MB / ${totalMb}MB`;
   });
 
@@ -47,7 +80,7 @@
   >
     <div class="flex items-center justify-between gap-3 mb-2">
       <div class="text-sm font-medium text-text-1 truncate">{statusText}</div>
-      <div class="text-xs text-text-3 font-mono">{blossomProgress.processedServers}/{blossomProgress.totalServers}</div>
+      <div class="text-xs text-text-3 font-mono">{blossomDetailText}</div>
     </div>
 
     <div class="h-1.5 rounded-full bg-surface-3 overflow-hidden">

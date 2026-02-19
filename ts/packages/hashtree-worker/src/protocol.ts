@@ -30,6 +30,10 @@ export interface UploadProgressState {
   uploadedServers: number;
   skippedServers: number;
   failedServers: number;
+  totalChunks?: number;
+  processedChunks?: number;
+  /** 0..1 normalized progress for chunk upload traversal */
+  progressRatio?: number;
   complete: boolean;
   error?: string;
 }

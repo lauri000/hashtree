@@ -412,6 +412,7 @@ function startBlossomUploadProgress(hashHex: string, nhash: string, fileCid: CID
   if (!blossom || !tree) return;
   const writeServers = blossom.getWriteServers();
   if (writeServers.length === 0) return;
+  const chunkProgressEmitIntervalMs = 100;
 
   const progress: UploadProgressState = {
     hashHex,
@@ -421,6 +422,9 @@ function startBlossomUploadProgress(hashHex: string, nhash: string, fileCid: CID
     uploadedServers: 0,
     skippedServers: 0,
     failedServers: 0,
+    totalChunks: 0,
+    processedChunks: 0,
+    progressRatio: 0,
     complete: false,
   };
 
@@ -428,6 +432,8 @@ function startBlossomUploadProgress(hashHex: string, nhash: string, fileCid: CID
   for (const server of writeServers) {
     serverStats.set(server.url, { uploaded: 0, skipped: 0, failed: 0 });
   }
+
+  let lastChunkProgressEmit = 0;
 
   respond({ type: 'uploadProgress', progress: { ...progress } });
 
@@ -443,12 +449,23 @@ function startBlossomUploadProgress(hashHex: string, nhash: string, fileCid: CID
       onProgress: (current, total) => {
         if (total <= 0 || progress.complete) return;
         const fraction = current / total;
+        progress.totalChunks = total;
+        progress.processedChunks = current;
+        progress.progressRatio = Math.max(0, Math.min(1, fraction));
+
         const processedEstimate = Math.min(
           progress.totalServers,
           Math.max(0, Math.floor(fraction * progress.totalServers))
         );
-        if (processedEstimate !== progress.processedServers) {
+        const serverEstimateChanged = processedEstimate !== progress.processedServers;
+        if (serverEstimateChanged) {
           progress.processedServers = processedEstimate;
+        }
+
+        const now = Date.now();
+        const shouldEmitChunkProgress = now - lastChunkProgressEmit >= chunkProgressEmitIntervalMs || current >= total;
+        if (serverEstimateChanged || shouldEmitChunkProgress) {
+          lastChunkProgressEmit = now;
           respond({ type: 'uploadProgress', progress: { ...progress } });
         }
       },
@@ -471,6 +488,10 @@ function startBlossomUploadProgress(hashHex: string, nhash: string, fileCid: CID
     progress.skippedServers = skippedServers;
     progress.failedServers = failedServers;
     progress.processedServers = progress.totalServers;
+    if (typeof progress.totalChunks === 'number' && progress.totalChunks > 0) {
+      progress.processedChunks = progress.totalChunks;
+    }
+    progress.progressRatio = 1;
     progress.complete = true;
     if (result.failed > 0 && result.errors.length > 0) {
       progress.error = result.errors[0].error.message;
@@ -480,6 +501,10 @@ function startBlossomUploadProgress(hashHex: string, nhash: string, fileCid: CID
     if (progress.complete) return;
     progress.failedServers = progress.totalServers;
     progress.processedServers = progress.totalServers;
+    if (typeof progress.totalChunks === 'number' && progress.totalChunks > 0) {
+      progress.processedChunks = progress.totalChunks;
+    }
+    progress.progressRatio = 1;
     progress.complete = true;
     progress.error = getErrorMessage(err);
     respond({ type: 'uploadProgress', progress: { ...progress } });
