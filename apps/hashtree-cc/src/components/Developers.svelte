@@ -149,33 +149,35 @@
     </p>
   </div>
 
-  <div class="bg-surface-1 rounded-xl p-6 mb-8" data-testid="decentralized-cdn-section">
-    <div class="grid md:grid-cols-2 gap-4">
-      <div class="bg-surface-0 rounded-lg p-4">
-        <p class="text-text-1 text-sm font-semibold mb-1">Independent from centralized CDN outages</p>
-        <p class="text-text-2 text-sm">
-          Delivery can continue over peers and alternate routes even when a centralized CDN has an outage.
-        </p>
-      </div>
-      <div class="bg-surface-0 rounded-lg p-4">
-        <p class="text-text-1 text-sm font-semibold mb-1">Costs do not increase linearly with popularity</p>
-        <p class="text-text-2 text-sm">
-          Popular content is served by more seeders, so bandwidth pressure and hosting cost do not scale the usual way.
-        </p>
-      </div>
-      <div class="bg-surface-0 rounded-lg p-4">
-        <p class="text-text-1 text-sm font-semibold mb-1">Popular content becomes more available with each seeder</p>
-        <p class="text-text-2 text-sm">
-          Demand improves availability because each successful fetch can add another source for subsequent viewers.
-        </p>
-      </div>
-      <div class="bg-surface-0 rounded-lg p-4">
-        <p class="text-text-1 text-sm font-semibold mb-1">In production today</p>
-        <p class="text-text-2 text-sm">
-          <a href="https://video.iris.to" class="text-accent hover:underline" target="_blank" rel="noopener">video.iris.to</a>
-          streams content over Hashtree.
-        </p>
-      </div>
+  <div class="grid md:grid-cols-2 gap-4 mb-8" data-testid="decentralized-cdn-section">
+    <div class="bg-surface-1 rounded-xl p-5">
+      <div class="i-lucide-shield text-2xl text-[#f87171] mb-3"></div>
+      <h3 class="text-text-1 font-semibold mb-2">Independent from centralized CDN outages</h3>
+      <p class="text-text-2 text-sm">
+        Delivery can continue over peers and alternate routes even when a centralized CDN has an outage.
+      </p>
+    </div>
+    <div class="bg-surface-1 rounded-xl p-5">
+      <div class="i-lucide-workflow text-2xl text-[#60a5fa] mb-3"></div>
+      <h3 class="text-text-1 font-semibold mb-2">Costs do not increase linearly with popularity</h3>
+      <p class="text-text-2 text-sm">
+        Popular content is served by more seeders, so bandwidth pressure and hosting cost do not scale the usual way.
+      </p>
+    </div>
+    <div class="bg-surface-1 rounded-xl p-5">
+      <div class="i-lucide-radio text-2xl text-[#34d399] mb-3"></div>
+      <h3 class="text-text-1 font-semibold mb-2">Popular content becomes more available with each seeder</h3>
+      <p class="text-text-2 text-sm">
+        Demand improves availability because each successful fetch can add another source for subsequent viewers.
+      </p>
+    </div>
+    <div class="bg-surface-1 rounded-xl p-5">
+      <div class="i-lucide-app-window text-2xl text-[#a78bfa] mb-3"></div>
+      <h3 class="text-text-1 font-semibold mb-2">In production today</h3>
+      <p class="text-text-2 text-sm">
+        <a href="https://video.iris.to" class="text-accent hover:underline" target="_blank" rel="noopener">video.iris.to</a>
+        streams content over Hashtree.
+      </p>
     </div>
   </div>
 
