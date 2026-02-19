@@ -21,6 +21,20 @@ test('can switch tabs', async ({ page }) => {
   await expect(page.getByTestId('drop-zone')).toBeVisible();
 });
 
+test('developers tab shows git demo video player', async ({ page }) => {
+  await page.goto('/');
+  await page.getByText('For Developers').click();
+
+  const video = page.getByTestId('git-demo-video');
+  await expect(video).toBeVisible();
+  await expect(video).toHaveAttribute('src', /\/htree\/nhash1qqsqmafutt4u7g4x7cyx0w0k84gs7txg54v7sygkm3aspld3h7ehhyg9ypzx8wcsnd63spv9d3scr4zst2s48mv0yl36lj2c02a6vlms607nkqysxg5\/htree\.mp4\?htree_c=/);
+  await expect(video).toHaveAttribute('controls', '');
+  await expect(video).not.toHaveAttribute('autoplay', '');
+  const box = await video.boundingBox();
+  expect(box?.height ?? 0).toBeGreaterThan(150);
+  await expect(page.getByTestId('git-demo-video-caption')).toHaveText('The above video is delivered and streamed via Hashtree: a decentralized CDN.');
+});
+
 function mockBlossom(page: import('@playwright/test').Page, expectedHash: string, content: string | Buffer) {
   return Promise.all([
     page.route('https://*/upload', async (route) => {

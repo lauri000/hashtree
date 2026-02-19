@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import UseCaseCarousel from './UseCaseCarousel.svelte';
   import SectionHeading from './SectionHeading.svelte';
+  import { getMediaClientKey, setupMediaStreaming } from '../lib/mediaStreamingSetup';
 
   let copiedCmd = $state<string | null>(null);
 
@@ -20,8 +21,6 @@
     }
   }
 
-  onMount(scrollToSection);
-
   const installCmd = `curl -fsSL https://github.com/mmalmi/hashtree/releases/latest/download/hashtree-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/apple-darwin/' | sed 's/linux/unknown-linux-musl/').tar.gz | tar -xz && cd hashtree && ./install.sh`;
   const cargoCmd = 'cargo install hashtree-cli';
   const cloneCmd = 'git clone htree://npub1dqgr6ds2kdauzpqtvpt2ldc5ca4spemj4n4jnjcvn7496x45gnesls5j6g/hashtree';
@@ -29,6 +28,33 @@
   const publicCmd = 'htree://self/myrepo';
   const linkVisibleCmd = 'htree://self/myrepo#link-visible';
   const privateCmd = 'htree://self/myrepo#private';
+  const gitDemoViewerLink = '/#/nhash1qqsqmafutt4u7g4x7cyx0w0k84gs7txg54v7sygkm3aspld3h7ehhyg9ypzx8wcsnd63spv9d3scr4zst2s48mv0yl36lj2c02a6vlms607nkqysxg5/htree.mp4';
+  const gitDemoVideoBaseSrc = '/htree/nhash1qqsqmafutt4u7g4x7cyx0w0k84gs7txg54v7sygkm3aspld3h7ehhyg9ypzx8wcsnd63spv9d3scr4zst2s48mv0yl36lj2c02a6vlms607nkqysxg5/htree.mp4';
+  let gitDemoVideoSrc = $state('');
+
+  async function initGitDemoVideo(): Promise<void> {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+      return;
+    }
+
+    let streamingReady = await setupMediaStreaming().catch(() => false);
+    if (!streamingReady) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      streamingReady = await setupMediaStreaming().catch(() => false);
+    }
+
+    if (!streamingReady) {
+      return;
+    }
+
+    // htree_c binds /htree fetches to this tab's registered SW media port.
+    gitDemoVideoSrc = `${gitDemoVideoBaseSrc}?htree_c=${encodeURIComponent(getMediaClientKey())}`;
+  }
+
+  onMount(() => {
+    scrollToSection();
+    void initGitDemoVideo();
+  });
 </script>
 
 <section class="py-12">
@@ -119,6 +145,22 @@
     <p class="text-lg text-text-2 max-w-xl mx-auto">
       Push and pull git repos over content-addressed storage.
       No server required. Sync over Blossom servers, WebRTC, or any transport.
+    </p>
+  </div>
+
+  <div class="bg-surface-1 rounded-xl p-4 mb-8">
+    <video
+      src={gitDemoVideoSrc}
+      controls
+      class="block w-full max-w-2xl h-[220px] sm:h-[320px] md:h-[360px] mx-auto rounded-lg bg-black object-contain"
+      data-testid="git-demo-video"
+    >
+      <track kind="captions" />
+    </video>
+    <p class="text-text-3 text-sm text-center mt-3" data-testid="git-demo-video-caption">
+      The above
+      <a href={gitDemoViewerLink} class="text-accent hover:underline">video</a>
+      is delivered and streamed via Hashtree: a decentralized CDN.
     </p>
   </div>
 

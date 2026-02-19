@@ -33,6 +33,7 @@
       return fileName;
     }
   });
+  // htree_c lets the SW route this request to the correct per-tab media port.
   const htreeUrl = $derived(
     `/htree/${nhash}/${encodeURIComponent(decodedFileName)}?htree_c=${encodeURIComponent(getMediaClientKey())}`
   );
