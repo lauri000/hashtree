@@ -33,7 +33,7 @@ export const DEFAULT_SETTINGS: HashtreeCcSettings = {
     ],
   },
   storage: {
-    maxBytes: 1024 * MB,
+    maxBytes: 2048 * MB,
   },
   ui: {
     showBandwidthIndicator: false,
