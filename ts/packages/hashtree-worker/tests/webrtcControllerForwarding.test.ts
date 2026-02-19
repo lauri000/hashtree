@@ -99,4 +99,42 @@ describe('WebRTCController forwarding behavior', () => {
     const requesterStats = controller.getPeerStats().find((stats) => stats.peerId === requester.peerId);
     expect(requesterStats?.forwardedResolved).toBe(1);
   });
+
+  it('resolves multiple requesters without re-forwarding the same hash query', async () => {
+    const localStore: Store = {
+      put: async () => true,
+      get: async () => null,
+      has: async () => false,
+      delete: async () => false,
+    };
+    const { controller, internal, sentData } = createForwardingController(localStore);
+    const requesterA = connectPeer(internal, 'peer-requester-a', 'requester-a-pubkey');
+    const requesterB = connectPeer(internal, 'peer-requester-b', 'requester-b-pubkey');
+    const upstream = connectPeer(internal, 'peer-upstream', 'upstream-pubkey');
+
+    const payload = new Uint8Array([1, 4, 9, 16, 25]);
+    const hash = await sha256(payload);
+    const requestBytes = new Uint8Array(encodeRequest(createRequest(hash, 4)));
+
+    await internal.onDataChannelMessage(requesterA.peerId, requestBytes);
+    await internal.onDataChannelMessage(requesterB.peerId, requestBytes);
+
+    const forwardsToUpstream = sentData.filter((entry) => entry.peerId === upstream.peerId).length;
+    expect(forwardsToUpstream).toBe(1);
+
+    const responseBytes = new Uint8Array(encodeResponse(createResponse(hash, payload)));
+    await internal.onDataChannelMessage(upstream.peerId, responseBytes);
+
+    const responsesToA = sentData.filter((entry) => entry.peerId === requesterA.peerId).length;
+    const responsesToB = sentData.filter((entry) => entry.peerId === requesterB.peerId).length;
+    expect(responsesToA).toBeGreaterThan(0);
+    expect(responsesToB).toBeGreaterThan(0);
+
+    const statsA = controller.getPeerStats().find((stats) => stats.peerId === requesterA.peerId);
+    const statsB = controller.getPeerStats().find((stats) => stats.peerId === requesterB.peerId);
+    expect(statsA?.forwardedRequests).toBe(1);
+    expect(statsA?.forwardedResolved).toBe(1);
+    expect(statsB?.forwardedSuppressed).toBe(1);
+    expect(statsB?.forwardedResolved).toBe(1);
+  });
 });
