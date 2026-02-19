@@ -38,6 +38,8 @@
   let isDragging = $state(false);
   let autoInterval: ReturnType<typeof setInterval> | undefined;
   let viewportEl: HTMLDivElement | null = null;
+  let isHovered = false;
+  let hasFocusWithin = false;
 
   const axisLockThresholdPx = 8;
   const swipeThresholdRatio = 0.25;
@@ -50,11 +52,10 @@
   let dragLastAt = 0;
   let velocityX = 0;
   let dragAxis: 'unknown' | 'horizontal' | 'vertical' = 'unknown';
-  let suppressClick = false;
-  let clearSuppressClickTimer: ReturnType<typeof setTimeout> | undefined;
 
   function startAuto() {
     stopAuto();
+    if (slides.length < 2 || isHovered || hasFocusWithin) return;
     autoInterval = setInterval(() => {
       current = (current + 1) % slides.length;
     }, 5000);
@@ -82,7 +83,6 @@
     dragStartY = y;
     dragLastX = x;
     dragLastAt = performance.now();
-    suppressClick = false;
     stopAuto();
   }
 
@@ -106,13 +106,6 @@
     clearDragState();
 
     if (shouldNavigate) {
-      suppressClick = true;
-      if (clearSuppressClickTimer) clearTimeout(clearSuppressClickTimer);
-      clearSuppressClickTimer = setTimeout(() => {
-        suppressClick = false;
-        clearSuppressClickTimer = undefined;
-      }, 350);
-
       if (direction === 'prev') {
         prev();
       } else {
@@ -173,11 +166,33 @@
     finishDrag();
   }
 
-  function onTrackClick(e: MouseEvent) {
-    if (!suppressClick) return;
-    suppressClick = false;
-    e.preventDefault();
-    e.stopPropagation();
+  function onMouseEnter() {
+    isHovered = true;
+    stopAuto();
+  }
+
+  function onMouseLeave() {
+    isHovered = false;
+    startAuto();
+  }
+
+  function onFocusIn() {
+    hasFocusWithin = true;
+    stopAuto();
+  }
+
+  function onFocusOut(e: FocusEvent) {
+    const currentTarget = e.currentTarget;
+    const relatedTarget = e.relatedTarget;
+    if (
+      currentTarget instanceof HTMLElement &&
+      relatedTarget instanceof Node &&
+      currentTarget.contains(relatedTarget)
+    ) {
+      return;
+    }
+    hasFocusWithin = false;
+    startAuto();
   }
 
   function go(i: number) {
@@ -196,7 +211,6 @@
   $effect(() => {
     startAuto();
     return () => {
-      if (clearSuppressClickTimer) clearTimeout(clearSuppressClickTimer);
       stopAuto();
     };
   });
@@ -212,10 +226,10 @@
     if (e.key === 'ArrowRight') { next(); e.preventDefault(); }
     else if (e.key === 'ArrowLeft') { prev(); e.preventDefault(); }
   }}
-  onmouseenter={stopAuto}
-  onmouseleave={startAuto}
-  onfocusin={stopAuto}
-  onfocusout={startAuto}
+  onmouseenter={onMouseEnter}
+  onmouseleave={onMouseLeave}
+  onfocusin={onFocusIn}
+  onfocusout={onFocusOut}
 >
   <SectionHeading id="built-on-hashtree">Built on Hashtree</SectionHeading>
 
@@ -228,7 +242,6 @@
       onpointermove={onPointerMove}
       onpointerup={onPointerUp}
       onpointercancel={onPointerCancel}
-      onclick={onTrackClick}
     >
       <div
         class="flex"
