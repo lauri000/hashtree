@@ -15,8 +15,14 @@
     const parts = hash.replace(/^#\/?/, '').split('/');
     if (parts[0] === 'dev' && parts[1]) {
       const el = document.getElementById(parts[1]);
-      el?.scrollIntoView({ behavior: 'smooth' });
+      el?.scrollIntoView({});
     }
+  }
+
+  function handleSectionClick(e: MouseEvent, id: string) {
+    e.preventDefault();
+    history.pushState(null, '', `/#/dev/${id}`);
+    document.getElementById(id)?.scrollIntoView({});
   }
 
   onMount(scrollToSection);
@@ -34,7 +40,7 @@
   <!-- Content-Addressed Storage -->
   <div class="text-center mb-8">
     <h2 id="content-addressed-storage" class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
-      <a href="/#/dev/content-addressed-storage" class="group no-underline text-text-1 hover:text-text-1">
+      <a href="/#/dev/content-addressed-storage" onclick={(e) => handleSectionClick(e, 'content-addressed-storage')} class="group no-underline text-text-1 hover:text-text-1">
         <span class="opacity-0 group-hover:opacity-40 transition-opacity">#</span> Content-Addressed Storage
       </a>
     </h2>
@@ -119,7 +125,7 @@
   <!-- Git without GitHub -->
   <div class="text-center mb-8 mt-16">
     <h2 id="git-without-github" class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
-      <a href="/#/dev/git-without-github" class="group no-underline text-text-1 hover:text-text-1">
+      <a href="/#/dev/git-without-github" onclick={(e) => handleSectionClick(e, 'git-without-github')} class="group no-underline text-text-1 hover:text-text-1">
         <span class="opacity-0 group-hover:opacity-40 transition-opacity">#</span> Git without GitHub
       </a>
     </h2>
@@ -310,7 +316,7 @@
   <!-- Web Apps -->
   <div class="text-center mb-8 mt-16">
     <h2 id="web-apps" class="text-3xl md:text-4xl font-bold text-text-1 mb-4">
-      <a href="/#/dev/web-apps" class="group no-underline text-text-1 hover:text-text-1">
+      <a href="/#/dev/web-apps" onclick={(e) => handleSectionClick(e, 'web-apps')} class="group no-underline text-text-1 hover:text-text-1">
         <span class="opacity-0 group-hover:opacity-40 transition-opacity">#</span> Web Apps
       </a>
     </h2>
