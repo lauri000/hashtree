@@ -180,6 +180,12 @@
               <div>↑ {formatBytes(peer.bytesSent)}</div>
               <div>↓ {formatBytes(peer.bytesReceived)}</div>
             </div>
+            <div class="text-[11px] text-text-3 text-right font-mono">
+              <div>q ↑{peer.requestsSent} ↓{peer.requestsReceived}</div>
+              <div>r ↑{peer.responsesSent} ↓{peer.responsesReceived}</div>
+              <div>fwd {peer.forwardedRequests} ok {peer.forwardedResolved}</div>
+              <div>dup-supp {peer.forwardedSuppressed}</div>
+            </div>
           </div>
         {/each}
       </div>

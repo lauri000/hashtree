@@ -88,6 +88,9 @@ export interface DetailedPeerStats {
   responsesReceived: number;
   bytesSent: number;
   bytesReceived: number;
+  forwardedRequests: number;
+  forwardedResolved: number;
+  forwardedSuppressed: number;
 }
 
 export type BlossomBandwidthState = WorkerBlossomBandwidthStats;
@@ -247,7 +250,17 @@ const webrtcStoreProxy = {
     const adapter = getWorkerAdapter();
     if (!adapter) {
       return {
-        aggregate: { requestsSent: 0, requestsReceived: 0, responsesSent: 0, responsesReceived: 0, bytesSent: 0, bytesReceived: 0 },
+        aggregate: {
+          requestsSent: 0,
+          requestsReceived: 0,
+          responsesSent: 0,
+          responsesReceived: 0,
+          bytesSent: 0,
+          bytesReceived: 0,
+          forwardedRequests: 0,
+          forwardedResolved: 0,
+          forwardedSuppressed: 0,
+        },
         perPeer: new Map(),
       };
     }
@@ -262,6 +275,9 @@ const webrtcStoreProxy = {
       responsesReceived: 0,
       bytesSent: 0,
       bytesReceived: 0,
+      forwardedRequests: 0,
+      forwardedResolved: 0,
+      forwardedSuppressed: 0,
     };
 
     const perPeer = new Map<string, DetailedPeerStats>();
@@ -273,6 +289,9 @@ const webrtcStoreProxy = {
       aggregate.responsesReceived += p.responsesReceived;
       aggregate.bytesSent += p.bytesSent;
       aggregate.bytesReceived += p.bytesReceived;
+      aggregate.forwardedRequests += p.forwardedRequests;
+      aggregate.forwardedResolved += p.forwardedResolved;
+      aggregate.forwardedSuppressed += p.forwardedSuppressed;
 
       perPeer.set(p.peerId, {
         peerId: p.peerId,
@@ -285,6 +304,9 @@ const webrtcStoreProxy = {
         responsesReceived: p.responsesReceived,
         bytesSent: p.bytesSent,
         bytesReceived: p.bytesReceived,
+        forwardedRequests: p.forwardedRequests,
+        forwardedResolved: p.forwardedResolved,
+        forwardedSuppressed: p.forwardedSuppressed,
       });
     }
 

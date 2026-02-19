@@ -45,6 +45,13 @@ export interface P2PPeerState {
   pool: 'follows' | 'other';
   bytesSent: number;
   bytesReceived: number;
+  requestsSent: number;
+  requestsReceived: number;
+  responsesSent: number;
+  responsesReceived: number;
+  forwardedRequests: number;
+  forwardedResolved: number;
+  forwardedSuppressed: number;
 }
 
 export interface BlossomBandwidthServerState {
@@ -165,6 +172,13 @@ function updateDebugState(): void {
     pool: peer.pool,
     bytesSent: peer.bytesSent,
     bytesReceived: peer.bytesReceived,
+    requestsSent: peer.requestsSent,
+    requestsReceived: peer.requestsReceived,
+    responsesSent: peer.responsesSent,
+    responsesReceived: peer.responsesReceived,
+    forwardedRequests: peer.forwardedRequests,
+    forwardedResolved: peer.forwardedResolved,
+    forwardedSuppressed: peer.forwardedSuppressed,
   })) ?? [];
   const relays = getRelayStates();
   const connectedRelayCount = relays.filter(relay => relay.status === 'connected').length;

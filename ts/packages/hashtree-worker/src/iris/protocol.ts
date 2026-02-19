@@ -49,6 +49,9 @@ export interface PeerStats {
   responsesReceived: number;
   bytesSent: number;
   bytesReceived: number;
+  forwardedRequests: number;
+  forwardedResolved: number;
+  forwardedSuppressed: number;
 }
 
 // ============================================================================

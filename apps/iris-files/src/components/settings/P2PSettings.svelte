@@ -2,7 +2,7 @@
   import { nip19 } from 'nostr-tools';
   import { nostrStore } from '../../nostr';
   import { settingsStore } from '../../stores/settings';
-  import { appStore, formatBytes, refreshWebRTCStats, getLifetimeStats, blockPeer, unblockPeer } from '../../store';
+  import { appStore, formatBytes, refreshWebRTCStats, getLifetimeStats, blockPeer, unblockPeer, getWebRTCStore } from '../../store';
   import { UserRow } from '../User';
 
   // Pool settings
@@ -25,9 +25,18 @@
     bytesSent: peerList.reduce((sum, p) => sum + p.bytesSent, 0),
     bytesReceived: peerList.reduce((sum, p) => sum + p.bytesReceived, 0),
   });
-  let perPeerStats = $derived(new Map(
-    peerList.map(p => [p.peerId, { bytesSent: p.bytesSent, bytesReceived: p.bytesReceived }])
-  ));
+  type PeerDiagnostics = {
+    bytesSent: number;
+    bytesReceived: number;
+    requestsSent: number;
+    requestsReceived: number;
+    responsesSent: number;
+    responsesReceived: number;
+    forwardedRequests: number;
+    forwardedResolved: number;
+    forwardedSuppressed: number;
+  };
+  let perPeerStats = $state(new Map<string, PeerDiagnostics>());
   let lifetimeStats = $derived.by(() => {
     webrtcStats;
     return getLifetimeStats();
@@ -36,8 +45,30 @@
 
   // Refresh stats periodically
   $effect(() => {
-    refreshWebRTCStats();
-    const interval = setInterval(() => refreshWebRTCStats(), 1000);
+    const syncDiagnostics = async () => {
+      refreshWebRTCStats();
+      try {
+        const stats = await getWebRTCStore().getStats();
+        perPeerStats = new Map(
+          Array.from(stats.perPeer.entries()).map(([peerId, peer]) => [peerId, {
+            bytesSent: peer.bytesSent,
+            bytesReceived: peer.bytesReceived,
+            requestsSent: peer.requestsSent,
+            requestsReceived: peer.requestsReceived,
+            responsesSent: peer.responsesSent,
+            responsesReceived: peer.responsesReceived,
+            forwardedRequests: peer.forwardedRequests,
+            forwardedResolved: peer.forwardedResolved,
+            forwardedSuppressed: peer.forwardedSuppressed,
+          }])
+        );
+      } catch {
+        // Worker not ready yet
+      }
+    };
+
+    syncDiagnostics();
+    const interval = setInterval(syncDiagnostics, 1000);
     return () => clearInterval(interval);
   });
 
@@ -250,6 +281,17 @@
                 </span>
                 <span title="Bytes received" class="text-accent">
                   <span class="i-lucide-arrow-down inline-block align-middle mr-0.5"></span>{formatBytes(peerStats.bytesReceived)}
+                </span>
+              </div>
+              <div class="mt-1 ml-4 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-text-3 font-mono">
+                <span title="Hash queries sent to this peer">sent q: {peerStats.requestsSent}</span>
+                <span title="Hash queries received from this peer">recv q: {peerStats.requestsReceived}</span>
+                <span title="Responses sent to this peer">sent r: {peerStats.responsesSent}</span>
+                <span title="Responses received from this peer">recv r: {peerStats.responsesReceived}</span>
+                <span title="Requests from this peer that we forwarded upstream">fwd: {peerStats.forwardedRequests}</span>
+                <span title="Forwarded requests from this peer later resolved">fwd ok: {peerStats.forwardedResolved}</span>
+                <span class="col-span-2" title="Duplicate forwarded requests suppressed while hash was already in-flight">
+                  fwd dup-suppressed: {peerStats.forwardedSuppressed}
                 </span>
               </div>
             {/if}

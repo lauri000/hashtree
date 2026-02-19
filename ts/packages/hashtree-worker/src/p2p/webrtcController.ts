@@ -74,6 +74,14 @@ interface PeerStats {
   responsesReceived: number;
   bytesSent: number;
   bytesReceived: number;
+  forwardedRequests: number;
+  forwardedResolved: number;
+  forwardedSuppressed: number;
+}
+
+interface InFlightForwardRequest {
+  requesters: Set<string>;
+  timeout: ReturnType<typeof setTimeout>;
 }
 
 export interface WebRTCControllerConfig {
@@ -103,6 +111,7 @@ export class WebRTCController {
   private requestTimeout: number;
   private debug: boolean;
   private recentRequests = new LRUCache<string, number>(1000);
+  private inFlightForwards = new Map<string, InFlightForwardRequest>();
 
   // Pool configuration - reasonable defaults, settings sync will override
   private poolConfig: Record<PeerPool, PoolConnectionConfig> = {
@@ -158,6 +167,9 @@ export class WebRTCController {
     // Close all peers
     for (const peerId of this.peers.keys()) {
       this.closePeer(peerId);
+    }
+    for (const hashKey of this.inFlightForwards.keys()) {
+      this.clearForwardingState(hashKey, false);
     }
   }
 
@@ -384,6 +396,9 @@ export class WebRTCController {
         responsesReceived: 0,
         bytesSent: 0,
         bytesReceived: 0,
+        forwardedRequests: 0,
+        forwardedResolved: 0,
+        forwardedSuppressed: 0,
       },
       createdAt: Date.now(),
       bufferPaused: false,
@@ -414,6 +429,13 @@ export class WebRTCController {
     peer.state = 'disconnected';
     this.sendCommand({ type: 'rtc:closePeer', peerId });
     this.peers.delete(peerId);
+
+    for (const [hashKey, inFlight] of this.inFlightForwards.entries()) {
+      inFlight.requesters.delete(peerId);
+      if (inFlight.requesters.size === 0) {
+        this.clearForwardingState(hashKey);
+      }
+    }
 
     this.log(`Closed peer: ${peerId.slice(0, 20)}`);
   }
@@ -694,8 +716,28 @@ export class WebRTCController {
       // Forward if HTL allows
       const htl = req.htl ?? MAX_HTL;
       if (shouldForward(htl)) {
+        const existingForward = this.inFlightForwards.get(hashKey);
+        if (existingForward) {
+          existingForward.requesters.add(peer.peerId);
+          peer.stats.forwardedSuppressed++;
+          return;
+        }
+
         const newHtl = decrementHTL(htl, peer.htlConfig);
-        await this.forwardRequest(req.h, peer.peerId, newHtl);
+        const timeout = setTimeout(() => {
+          this.clearForwardingState(hashKey);
+        }, this.requestTimeout);
+        this.inFlightForwards.set(hashKey, {
+          requesters: new Set([peer.peerId]),
+          timeout,
+        });
+
+        const forwarded = await this.forwardRequest(req.h, peer.peerId, newHtl);
+        if (forwarded > 0) {
+          peer.stats.forwardedRequests++;
+        } else {
+          this.clearForwardingState(hashKey);
+        }
       }
     }
   }
@@ -724,6 +766,7 @@ export class WebRTCController {
         }
         if (hasRequesters) {
           await this.pushToRequesters(res.h, res.d, peer.peerId);
+          this.clearForwardingState(hashKey, false);
         }
       }
       return;
@@ -741,6 +784,7 @@ export class WebRTCController {
 
       // Push to peers who requested this
       await this.pushToRequesters(res.h, res.d, peer.peerId);
+      this.clearForwardingState(hashKey, false);
     } else {
       this.log(`Hash mismatch from ${peer.peerId}`);
       pending.resolve(null);
@@ -770,8 +814,9 @@ export class WebRTCController {
     }
   }
 
-  private async forwardRequest(hash: Uint8Array, excludePeerId: string, htl: number): Promise<void> {
+  private async forwardRequest(hash: Uint8Array, excludePeerId: string, htl: number): Promise<number> {
     const hashKey = hashToKey(hash);
+    let forwarded = 0;
 
     // Forward to all connected peers except the one who sent it
     for (const [peerId, peer] of this.peers) {
@@ -794,7 +839,9 @@ export class WebRTCController {
       const req = createRequest(hash, htl);
       const encoded = new Uint8Array(encodeRequest(req));
       this.sendDataToPeer(peer, encoded);
+      forwarded++;
     }
+    return forwarded;
   }
 
   private async pushToRequesters(hash: Uint8Array, data: Uint8Array, excludePeerId: string): Promise<void> {
@@ -806,8 +853,24 @@ export class WebRTCController {
       const theirReq = peer.theirRequests.get(hashKey);
       if (theirReq) {
         peer.theirRequests.delete(hashKey);
+        peer.stats.forwardedResolved++;
         await this.sendResponse(peer, hash, data);
       }
+    }
+  }
+
+  private clearForwardingState(hashKey: string, clearRequesterMarkers = true): void {
+    const inFlight = this.inFlightForwards.get(hashKey);
+    if (!inFlight) return;
+
+    clearTimeout(inFlight.timeout);
+    this.inFlightForwards.delete(hashKey);
+
+    if (!clearRequesterMarkers) return;
+
+    for (const requesterId of inFlight.requesters) {
+      const requester = this.peers.get(requesterId);
+      requester?.theirRequests.delete(hashKey);
     }
   }
 
@@ -881,6 +944,9 @@ export class WebRTCController {
     responsesReceived: number;
     bytesSent: number;
     bytesReceived: number;
+    forwardedRequests: number;
+    forwardedResolved: number;
+    forwardedSuppressed: number;
   }> {
     return Array.from(this.peers.values()).map(peer => ({
       peerId: peer.peerId,
@@ -893,6 +959,9 @@ export class WebRTCController {
       responsesReceived: peer.stats.responsesReceived,
       bytesSent: peer.stats.bytesSent,
       bytesReceived: peer.stats.bytesReceived,
+      forwardedRequests: peer.stats.forwardedRequests,
+      forwardedResolved: peer.stats.forwardedResolved,
+      forwardedSuppressed: peer.stats.forwardedSuppressed,
     }));
   }
 

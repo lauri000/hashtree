@@ -1453,6 +1453,9 @@ async function handleGetPeerStats(id: string) {
     responsesReceived: s.responsesReceived,
     bytesSent: s.bytesSent,
     bytesReceived: s.bytesReceived,
+    forwardedRequests: s.forwardedRequests,
+    forwardedResolved: s.forwardedResolved,
+    forwardedSuppressed: s.forwardedSuppressed,
   }));
   respond({ type: 'peerStats', id, stats });
 }
