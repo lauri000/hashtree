@@ -32,21 +32,27 @@ test.describe('Settings page', () => {
     await expect(urlInput).toBeVisible({ timeout: 5000 });
 
     const testServerUrl = 'https://test-blossom.example.com';
+    const hostText = 'test-blossom.example.com';
+    const removeButtons = page.getByRole('button', { name: 'Remove server' });
+    const initialRemoveCount = await removeButtons.count();
+    const hostSpans = page.locator(`span:has-text("${hostText}")`);
+    const initialHostCount = await hostSpans.count();
+
     await urlInput.fill(testServerUrl);
 
     const addBtn = page.locator('button', { hasText: 'Add' });
     await expect(addBtn).toBeVisible({ timeout: 5000 });
     await addBtn.click({ timeout: 5000 });
 
-    await expect(page.locator('text=test-blossom.example.com')).toBeVisible({ timeout: 5000 });
+    await expect(removeButtons).toHaveCount(initialRemoveCount + 1, { timeout: 5000 });
+    await expect(hostSpans.first()).toBeVisible({ timeout: 5000 });
+    await expect(hostSpans).toHaveCount(initialHostCount + 2, { timeout: 5000 });
 
-    const serverSpan = page.locator('span:has-text("test-blossom.example.com")');
-    const serverRow = serverSpan.locator('xpath=..');
-    const removeBtn = serverRow.getByRole('button', { name: 'Remove server' });
-    await expect(removeBtn).toBeVisible({ timeout: 5000 });
+    const removeBtn = removeButtons.nth(initialRemoveCount);
     await removeBtn.click();
 
-    await expect(page.locator('text=test-blossom.example.com')).not.toBeVisible({ timeout: 5000 });
+    await expect(removeButtons).toHaveCount(initialRemoveCount, { timeout: 5000 });
+    await expect(hostSpans).toHaveCount(initialHostCount, { timeout: 5000 });
   });
 
   test('can toggle blossom server read/write', async ({ page }) => {

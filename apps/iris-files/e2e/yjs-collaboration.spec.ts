@@ -878,8 +878,16 @@ test.describe('Yjs Collaborative Document Editing', () => {
     }, targetHashA, { timeout: 15000 });
     await waitForAppReady(pageB);
     await waitForRelayConnected(pageB, 30000);
+    await expect.poll(async () => {
+      await safeEvaluate(pageB, async () => {
+        (window as any).__workerAdapter?.sendHello?.();
+        (window as any).__reloadYjsEditors?.();
+      });
+      return pageB.getByRole('link', { name: sharedDocA }).count();
+    }, { timeout: 60000, intervals: [1000, 2000, 3000] }).toBeGreaterThan(0);
     const docLink = pageB.getByRole('link', { name: sharedDocA }).first();
-    await expect(docLink).toBeVisible({ timeout: 60000 });
+    await expect(docLink).toBeVisible({ timeout: 15000 });
+    await docLink.scrollIntoViewIfNeeded();
     await docLink.click();
     const editorReady = await waitForEditorVisible(pageB, 45000);
     if (!editorReady) {

@@ -192,17 +192,26 @@
 </script>
 
 <pre class="code-viewer"><code class="language-{language}"
-  >{#each lines as line, i (i)}{@const lineNum = i + 1}<span
-    class="code-line"
-    class:line-highlighted={isLineHighlighted(lineNum)}
-    data-line={lineNum}
-  ><span
-      class="line-number"
-      role="button"
-      tabindex="0"
-      onclick={(e) => handleLineClick(lineNum, e)}
-      onkeydown={(e) => e.key === 'Enter' && handleLineClick(lineNum, e as unknown as MouseEvent)}
-    >{lineNum}</span><span class="line-content">{@html line || ' '}</span></span>{/each}</code
+  >{#each lines as line, i (i)}
+    {@const lineNum = i + 1}
+    <span
+      class="code-line"
+      class:line-highlighted={isLineHighlighted(lineNum)}
+      data-line={lineNum}
+    >
+      <span
+        class="line-number"
+        role="button"
+        tabindex="0"
+        onclick={(e) => handleLineClick(lineNum, e)}
+        onkeydown={(e) => e.key === 'Enter' && handleLineClick(lineNum, e as unknown as MouseEvent)}
+      >{lineNum}</span>
+      <span class="line-content">
+        <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+        {@html line || ' '}
+      </span>
+    </span>
+  {/each}</code
 ></pre>
 
 <style>

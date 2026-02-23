@@ -11,6 +11,23 @@ import { localStore, getTree } from '../store';
 import { autosaveIfOwn } from '../nostr';
 import { getCurrentRootCid, getCurrentPathFromUrl } from './route';
 import { updateLocalRootCache } from '../treeRootCache';
+import {
+  BOARD_CARD_FILE_SUFFIX,
+  BOARD_CARDS_DIR,
+  BOARD_COLUMNS_DIR,
+  BOARD_COLUMN_META_FILE,
+  BOARD_META_FILE,
+  BOARD_ORDER_FILE,
+  BOARD_PERMISSIONS_FILE,
+  createBoardId,
+  createInitialBoardPermissions,
+  createInitialBoardState,
+  serializeBoardMeta,
+  serializeBoardOrder,
+  serializeBoardPermissions,
+  serializeCardData,
+  serializeColumnMeta,
+} from '../lib/boards';
 
 // Helper to initialize a virtual tree (when rootCid is null but we're in a tree route)
 export async function initVirtualTree(entries: { name: string; cid: CID; size: number; type?: LinkType }[]): Promise<CID | null> {
@@ -315,6 +332,110 @@ export async function createDocumentTree(
   }
 
   return { success: true, npub: nostrState.npub, treeName, linkKey: result.linkKey };
+}
+
+// Create a new tree as a board (kanban data + permissions)
+export async function createBoardTree(
+  name: string,
+  visibility: import('@hashtree/core').TreeVisibility = 'public'
+): Promise<{ success: boolean; npub?: string; treeName?: string; linkKey?: string }> {
+  if (!name) return { success: false };
+
+  const { saveHashtree } = await import('../nostr');
+  const { storeLinkKey } = await import('../stores/trees');
+
+  const tree = getTree();
+  const nostrState = useNostrStore.getState();
+
+  if (!nostrState.isLoggedIn || !nostrState.npub || !nostrState.pubkey) {
+    return { success: false };
+  }
+
+  const treeName = `boards/${name}`;
+  const linkKey = visibility === 'link-visible'
+    ? linkKeyUtils.generateLinkKey()
+    : undefined;
+
+  const now = Date.now();
+  const boardId = createBoardId();
+  const permissions = createInitialBoardPermissions(boardId, name, nostrState.npub, now);
+  const boardState = createInitialBoardState(boardId, name, nostrState.npub, now);
+
+  const putTextFile = async (text: string) => {
+    const data = new TextEncoder().encode(text);
+    return tree.putFile(data);
+  };
+
+  const columnEntries: Array<{ name: string; cid: CID; size: number; type: LinkType }> = [];
+  for (const column of boardState.columns) {
+    const cardEntries: Array<{ name: string; cid: CID; size: number; type: LinkType }> = [];
+    for (const card of column.cards) {
+      const { cid: cardCid, size: cardSize } = await putTextFile(serializeCardData(card));
+      cardEntries.push({
+        name: `${card.id}${BOARD_CARD_FILE_SUFFIX}`,
+        cid: cardCid,
+        size: cardSize,
+        type: LinkType.Blob,
+      });
+    }
+
+    const { cid: cardsCid } = await tree.putDirectory(cardEntries);
+    const { cid: columnMetaCid, size: columnMetaSize } = await putTextFile(serializeColumnMeta(column));
+    const { cid: columnDirCid } = await tree.putDirectory([
+      { name: BOARD_COLUMN_META_FILE, cid: columnMetaCid, size: columnMetaSize, type: LinkType.Blob },
+      { name: BOARD_CARDS_DIR, cid: cardsCid, size: 0, type: LinkType.Dir },
+    ]);
+
+    columnEntries.push({
+      name: column.id,
+      cid: columnDirCid,
+      size: 0,
+      type: LinkType.Dir,
+    });
+  }
+
+  const { cid: columnsCid } = await tree.putDirectory(columnEntries);
+  const { cid: boardMetaCid, size: boardMetaSize } = await putTextFile(serializeBoardMeta(boardState));
+  const { cid: boardOrderCid, size: boardOrderSize } = await putTextFile(serializeBoardOrder(boardState));
+  const { cid: permissionsCid, size: permissionsSize } = await putTextFile(serializeBoardPermissions(permissions));
+
+  const { cid: rootCid } = await tree.putDirectory([
+    { name: BOARD_META_FILE, cid: boardMetaCid, size: boardMetaSize, type: LinkType.Blob },
+    { name: BOARD_ORDER_FILE, cid: boardOrderCid, size: boardOrderSize, type: LinkType.Blob },
+    { name: BOARD_PERMISSIONS_FILE, cid: permissionsCid, size: permissionsSize, type: LinkType.Blob },
+    { name: BOARD_COLUMNS_DIR, cid: columnsCid, size: 0, type: LinkType.Dir },
+  ]);
+
+  useNostrStore.setSelectedTree({
+    id: '',
+    name: treeName,
+    pubkey: nostrState.pubkey,
+    rootHash: toHex(rootCid.hash),
+    rootKey: rootCid.key ? toHex(rootCid.key) : undefined,
+    visibility,
+    created_at: Math.floor(Date.now() / 1000),
+  });
+
+  // Local-first: board creation succeeds immediately after local tree is created.
+  // Relay publish is best-effort in the background and must not fail creation.
+  if (linkKey) {
+    storeLinkKey(nostrState.npub, treeName, linkKey);
+  }
+
+  void saveHashtree(treeName, rootCid, { visibility, labels: ['boards'], linkKey })
+    .then((result) => {
+      if (!result.success) {
+        console.warn('[Boards] Board created locally; relay publish not confirmed yet');
+      }
+      if (result.linkKey) {
+        storeLinkKey(nostrState.npub!, treeName, result.linkKey);
+      }
+    })
+    .catch((err) => {
+      console.warn('[Boards] Background publish failed; board remains local-first', err);
+    });
+
+  return { success: true, npub: nostrState.npub, treeName, linkKey };
 }
 
 // Verify tree

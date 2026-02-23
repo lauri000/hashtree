@@ -649,13 +649,12 @@ export function createTreeRootStore(): Readable<CID | null> {
       const currentRoute = get(routeStore);
       const linkKeyFromUrl = currentRoute.params.get('k');
       const decryptedKey = await decryptEncryptionKey(visibilityInfo, encryptionKey, linkKeyFromUrl);
+      const cachedState = subscriptionState.get(resolverKey);
+      const effectiveKey = decryptedKey ?? cachedState?.decryptedKey;
 
       // Cache the decrypted key
-      if (decryptedKey) {
-        const state = subscriptionState.get(resolverKey);
-        if (state) {
-          state.decryptedKey = decryptedKey;
-        }
+      if (effectiveKey && cachedState) {
+        cachedState.decryptedKey = effectiveKey;
       }
 
       resetResolverRetry();
@@ -849,23 +848,23 @@ export function createTreeRootStore(): Readable<CID | null> {
       // (we need encryptedKey from event to XOR with linkKey)
       // BUT: if we already have encryptionKey from local cache (owner just created tree),
       // we can proceed without waiting for visibilityInfo
-      if (linkKeyFromUrl && !visibilityInfo?.encryptedKey && !encryptionKey) {
+      if (linkKeyFromUrl && !visibilityInfo?.encryptedKey && !encryptionKey && !effectiveKey) {
         console.log('[treeRoot] Have k= param but no encryptedKey yet, waiting for resolver...');
         return;
       }
 
-      if (visibility === 'link-visible' && !decryptedKey) {
+      if (visibility === 'link-visible' && !effectiveKey) {
         console.log('[treeRoot] Link-visible but no decryptedKey yet, waiting...');
         // Don't set the store - wait for next callback with key
         return;
       }
 
       // Set the store FIRST so UI updates immediately
-      treeRootStore.set(cid(hash, decryptedKey));
+      treeRootStore.set(cid(hash, effectiveKey));
       logHtreeDebug('treeRoot:set', {
         resolverKey,
         visibility: visibility ?? null,
-        hasDecryptedKey: !!decryptedKey,
+        hasDecryptedKey: !!effectiveKey,
       });
 
       // Then merge key to registry and worker in the background (don't block UI)
@@ -873,12 +872,12 @@ export function createTreeRootStore(): Readable<CID | null> {
       if (slashIndex > 0 && slashIndex < resolverKey.length - 1) {
         const npub = resolverKey.slice(0, slashIndex);
         const treeName = resolverKey.slice(slashIndex + 1);
-        if (decryptedKey) {
-          treeRootRegistry.mergeKey(npub, treeName, hash, decryptedKey);
-          const signature = `${toHex(hash)}:${toHex(decryptedKey)}`;
+        if (effectiveKey) {
+          treeRootRegistry.mergeKey(npub, treeName, hash, effectiveKey);
+          const signature = `${toHex(hash)}:${toHex(effectiveKey)}`;
           if (workerKeyMergeCache.get(resolverKey) !== signature) {
             // Fire and forget - don't await, let it run in background
-            void mergeTreeRootKeyToWorker(npub, treeName, hash, decryptedKey).then((merged) => {
+            void mergeTreeRootKeyToWorker(npub, treeName, hash, effectiveKey).then((merged) => {
               if (merged) {
                 workerKeyMergeCache.set(resolverKey, signature);
               }

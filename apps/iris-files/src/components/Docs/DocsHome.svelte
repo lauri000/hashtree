@@ -145,6 +145,7 @@
       {#if isLoggedIn}
         <div
           onclick={createNewDoc}
+          onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && createNewDoc()}
           class="bg-surface-1 rounded-lg b-1 b-dashed b-surface-3 hover:b-accent transition-colors cursor-pointer flex flex-col items-center justify-center gap-2"
           style="aspect-ratio: 210 / 297"
           role="button"

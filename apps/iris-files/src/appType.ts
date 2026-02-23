@@ -1,8 +1,8 @@
 /**
  * Tracks which app variant is currently running
- * Set by each main entry point (main.ts, main-video.ts, main-docs.ts, main-maps.ts)
+ * Set by each main entry point (main.ts, main-video.ts, main-docs.ts, main-maps.ts, main-boards.ts)
  */
-export type AppType = 'files' | 'video' | 'docs' | 'maps';
+export type AppType = 'files' | 'video' | 'docs' | 'maps' | 'boards';
 
 let currentAppType: AppType = 'files';
 
@@ -20,4 +20,8 @@ export function isFilesApp(): boolean {
 
 export function isMapsApp(): boolean {
   return currentAppType === 'maps';
+}
+
+export function isBoardsApp(): boolean {
+  return currentAppType === 'boards';
 }
