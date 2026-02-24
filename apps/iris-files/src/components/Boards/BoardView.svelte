@@ -1,6 +1,8 @@
-<script lang="ts">
+  <script lang="ts">
   import { onDestroy } from 'svelte';
   import { cid as makeCid, fromHex, LinkType, nhashEncode, toHex, type CID, type TreeEntry } from '@hashtree/core';
+  import DOMPurify from 'dompurify';
+  import { marked } from 'marked';
   import { nip19 } from 'nostr-tools';
   import { getNhashFileUrl } from '../../lib/mediaUrl';
   import { getTree } from '../../store';
@@ -10,8 +12,10 @@
   import { autosaveIfOwn, nostrStore } from '../../nostr';
   import { updateLocalRootCacheHex } from '../../treeRootCache';
   import { open as openShareModal } from '../Modals/ShareModal.svelte';
+  import CopyText from '../CopyText.svelte';
   import VisibilityIcon from '../VisibilityIcon.svelte';
   import MediaPlayer from '../Viewer/MediaPlayer.svelte';
+  import { Avatar, Name } from '../User';
   import {
     BOARD_CARD_FILE_SUFFIX,
     BOARD_CARD_ATTACHMENTS_SUFFIX,
@@ -42,6 +46,7 @@
     serializeColumnMeta,
     serializeBoardPermissions,
     type BoardCardAttachment,
+    type BoardCardComment,
     type BoardCard,
     type BoardColumn,
     type BoardPermissions,
@@ -89,13 +94,35 @@
   let cardModalCardId = $state<string | null>(null);
   let cardDraftTitle = $state('');
   let cardDraftDescription = $state('');
+  let cardDraftAssigneeNpubs = $state<string[]>([]);
+  let cardDraftAttachments = $state<BoardCardAttachment[]>([]);
+  let cardDraftOriginalAttachmentIds = $state<Record<string, true>>({});
+  let cardDraftUploading = $state(false);
   let cardFormError = $state('');
+  let showCardViewModal = $state(false);
+  let cardViewColumnId = $state<string | null>(null);
+  let cardViewCardId = $state<string | null>(null);
   let showMediaModal = $state(false);
   let mediaAttachment = $state<BoardCardAttachment | null>(null);
 
+  let cardAttachmentInputRef: HTMLInputElement | undefined = $state();
   let attachmentInputRef: HTMLInputElement | undefined = $state();
   let attachmentTarget = $state<{ columnId: string; cardId: string } | null>(null);
   let uploadingCardMap = $state<Record<string, true>>({});
+  let localAttachmentPreviewUrls = $state<Record<string, string>>({});
+  let previewBoardId = $state<string | null>(null);
+  let commentAttachmentInputRef: HTMLInputElement | undefined = $state();
+  let commentDraftMarkdown = $state('');
+  let commentDraftAttachments = $state<Array<{
+    id: string;
+    file: File;
+    displayName: string;
+    mimeType: string;
+    size: number;
+    previewUrl: string | null;
+  }>>([]);
+  let commentSubmitting = $state(false);
+  let commentFormError = $state('');
 
   let showColumnModal = $state(false);
   let columnModalMode = $state<'create' | 'edit'>('create');
@@ -126,6 +153,30 @@
   let canWrite = $derived(
     !!permissions && !!ownerNpub && canWriteBoard(permissions, userNpub, ownerNpub)
   );
+  let boardMemberNpubs = $derived.by(() => {
+    if (!permissions) return [];
+    const seen: Record<string, true> = {};
+    const result: string[] = [];
+    for (const npub of permissions.admins) {
+      if (seen[npub]) continue;
+      seen[npub] = true;
+      result.push(npub);
+    }
+    for (const npub of permissions.writers) {
+      if (seen[npub]) continue;
+      seen[npub] = true;
+      result.push(npub);
+    }
+    return result;
+  });
+
+  let viewedCardState = $derived.by(() => {
+    if (!board || !cardViewColumnId || !cardViewCardId) return null;
+    const column = board.columns.find(item => item.id === cardViewColumnId);
+    const card = column?.cards.find(item => item.id === cardViewCardId);
+    if (!column || !card) return null;
+    return { column, card };
+  });
 
   function boardDisplayName(treeName: string | null): string {
     if (!treeName) return 'Board';
@@ -187,6 +238,68 @@
     if (npub && treeName?.startsWith('boards/') && visibility) {
       updateRecentVisibility(`/${npub}/${treeName}`, visibility as 'public' | 'link-visible' | 'private');
     }
+  });
+
+  $effect(() => {
+    if (!showCardViewModal) return;
+    if (!viewedCardState) {
+      showCardViewModal = false;
+      cardViewColumnId = null;
+      cardViewCardId = null;
+    }
+  });
+
+  $effect(() => {
+    if (!showMediaModal) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      closeAttachmentPreview();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  });
+
+  $effect(() => {
+    if (!showCardModal) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      closeCardModal();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  });
+
+  $effect(() => {
+    if (!showCardViewModal || showMediaModal) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      closeCardViewModal();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  });
+
+  $effect(() => {
+    const boardId = board?.boardId ?? null;
+    if (!boardId) {
+      previewBoardId = null;
+      return;
+    }
+    if (!previewBoardId) {
+      previewBoardId = boardId;
+      return;
+    }
+    if (previewBoardId === boardId) return;
+    for (const previewUrl of Object.values(localAttachmentPreviewUrls)) {
+      URL.revokeObjectURL(previewUrl);
+    }
+    localAttachmentPreviewUrls = {};
+    previewBoardId = boardId;
   });
 
   function sortEntriesByName(entries: TreeEntry[]): TreeEntry[] {
@@ -257,11 +370,36 @@
     return isImageAttachment(attachment) || isVideoAttachment(attachment) || isAudioAttachment(attachment);
   }
 
+  function isImageMimeType(mimeType: string): boolean {
+    return mimeType.startsWith('image/');
+  }
+
   function formatAttachmentSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+
+  function formatCommentTimestamp(timestamp: number): string {
+    if (!Number.isFinite(timestamp)) return '';
+    return new Date(timestamp).toLocaleString();
+  }
+
+  function renderMarkdown(content: string): string {
+    const trimmed = content.trim();
+    if (!trimmed) return '';
+    try {
+      return DOMPurify.sanitize(marked.parse(trimmed, { async: false }) as string);
+    } catch {
+      const escaped = trimmed
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+      return escaped.replaceAll('\n', '<br />');
+    }
   }
 
   function cardAttachmentUrl(attachment: BoardCardAttachment): string | null {
@@ -280,6 +418,98 @@
     } catch {
       return null;
     }
+  }
+
+  function attachmentImageSrc(attachment: BoardCardAttachment): string | null {
+    return localAttachmentPreviewUrls[attachment.id] || cardAttachmentUrl(attachment);
+  }
+
+  function addImageRetryParam(url: string, attempt: number): string {
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}img_retry=${Date.now()}-${attempt}`;
+  }
+
+  function handleAttachmentImageError(event: Event, attachment: BoardCardAttachment) {
+    const image = event.currentTarget as HTMLImageElement | null;
+    if (!image) return;
+
+    const remoteUrl = cardAttachmentUrl(attachment);
+    if (!remoteUrl) return;
+
+    const currentSrc = image.getAttribute('src') || image.src || '';
+    if (currentSrc.startsWith('blob:')) {
+      image.dataset.retryCount = '0';
+      image.src = addImageRetryParam(remoteUrl, 0);
+      return;
+    }
+
+    const currentRetry = Number(image.dataset.retryCount || '0');
+    if (currentRetry >= 4) return;
+    const nextRetry = currentRetry + 1;
+    image.dataset.retryCount = String(nextRetry);
+    const delayMs = 350 * nextRetry;
+    const retryUrl = addImageRetryParam(remoteUrl, nextRetry);
+    setTimeout(() => {
+      if (!image.isConnected) return;
+      image.src = retryUrl;
+    }, delayMs);
+  }
+
+  function releaseLocalAttachmentPreview(attachmentId: string) {
+    const existing = localAttachmentPreviewUrls[attachmentId];
+    if (existing) URL.revokeObjectURL(existing);
+    if (!existing) return;
+    const next = { ...localAttachmentPreviewUrls };
+    delete next[attachmentId];
+    localAttachmentPreviewUrls = next;
+  }
+
+  function shortNpub(npub: string): string {
+    if (!npub) return '';
+    if (npub.length <= 18) return npub;
+    return `${npub.slice(0, 10)}...${npub.slice(-6)}`;
+  }
+
+  function npubToPubkey(npub: string): string | null {
+    if (!npub) return null;
+    try {
+      const decoded = nip19.decode(npub);
+      if (decoded.type !== 'npub') return null;
+      return decoded.data as string;
+    } catch {
+      return null;
+    }
+  }
+
+  function boardMemberRoleLabel(npub: string): string {
+    if (!permissions) return 'Member';
+    if (permissions.admins.includes(npub)) return 'Admin';
+    if (permissions.writers.includes(npub)) return 'Writer';
+    return 'Member';
+  }
+
+  function sanitizeAssigneeNpubs(values: string[]): string[] {
+    const allowed: Record<string, true> = {};
+    for (const npub of boardMemberNpubs) allowed[npub] = true;
+    const deduped: Record<string, true> = {};
+    const result: string[] = [];
+    for (const npub of values) {
+      const trimmed = npub.trim();
+      if (!trimmed || !allowed[trimmed]) continue;
+      if (deduped[trimmed]) continue;
+      deduped[trimmed] = true;
+      result.push(trimmed);
+    }
+    return result;
+  }
+
+  function toggleCardDraftAssignee(npub: string, checked: boolean) {
+    if (checked) {
+      if (cardDraftAssigneeNpubs.includes(npub)) return;
+      cardDraftAssigneeNpubs = [...cardDraftAssigneeNpubs, npub];
+      return;
+    }
+    cardDraftAssigneeNpubs = cardDraftAssigneeNpubs.filter(item => item !== npub);
   }
 
   function openAttachmentPreview(attachment: BoardCardAttachment) {
@@ -823,7 +1053,13 @@
     });
   }
 
-  function addCard(columnId: string, title: string, description: string) {
+  function addCard(
+    columnId: string,
+    title: string,
+    description: string,
+    assigneeNpubs: string[],
+    attachments: BoardCardAttachment[]
+  ) {
     mutateBoard(next => {
       const column = next.columns.find(item => item.id === columnId);
       if (!column) return;
@@ -831,18 +1067,29 @@
         id: createBoardId(),
         title: normalizeTitle(title, 'Untitled'),
         description: description.trim(),
-        attachments: [],
+        assigneeNpubs: sanitizeAssigneeNpubs(assigneeNpubs),
+        attachments: attachments.map(attachment => ({ ...attachment })),
+        comments: [],
       });
     });
   }
 
-  function updateCard(columnId: string, cardId: string, title: string, description: string) {
+  function updateCard(
+    columnId: string,
+    cardId: string,
+    title: string,
+    description: string,
+    assigneeNpubs: string[],
+    attachments: BoardCardAttachment[]
+  ) {
     mutateBoard(next => {
       const column = next.columns.find(item => item.id === columnId);
       const card = column?.cards.find(item => item.id === cardId);
       if (!card) return;
       card.title = normalizeTitle(title, 'Untitled');
       card.description = description.trim();
+      card.assigneeNpubs = sanitizeAssigneeNpubs(assigneeNpubs);
+      card.attachments = attachments.map(attachment => ({ ...attachment }));
     });
   }
 
@@ -851,7 +1098,17 @@
       const column = next.columns.find(item => item.id === columnId);
       if (!column) return;
       const index = column.cards.findIndex(card => card.id === cardId);
-      if (index !== -1) column.cards.splice(index, 1);
+      if (index !== -1) {
+        const [removed] = column.cards.splice(index, 1);
+        for (const attachment of removed.attachments) {
+          releaseLocalAttachmentPreview(attachment.id);
+        }
+        for (const comment of removed.comments) {
+          for (const attachment of comment.attachments) {
+            releaseLocalAttachmentPreview(attachment.id);
+          }
+        }
+      }
     });
   }
 
@@ -876,6 +1133,7 @@
     try {
       const tree = getTree();
       const uploaded: BoardCardAttachment[] = [];
+      const previewUrlByAttachmentId: Record<string, string> = {};
       const totalBytes = selectedFiles.reduce((sum, file) => sum + file.size, 0);
       let uploadedBytes = 0;
 
@@ -910,11 +1168,15 @@
         });
         const attachmentId = createBoardId();
         const cleanName = sanitizeAttachmentFileName(file.name);
+        const mimeType = file.type || guessMimeType(file.name);
+        if (mimeType.startsWith('image/')) {
+          previewUrlByAttachmentId[attachmentId] = URL.createObjectURL(file);
+        }
         uploaded.push({
           id: attachmentId,
           fileName: `${attachmentId}-${cleanName}`,
           displayName: cleanName,
-          mimeType: file.type || guessMimeType(file.name),
+          mimeType,
           size: fileSize,
           uploaderNpub: userNpub,
           cidHash: toHex(fileCid.hash),
@@ -929,6 +1191,12 @@
           if (!card) return;
           card.attachments = [...card.attachments, ...uploaded];
         });
+        if (Object.keys(previewUrlByAttachmentId).length > 0) {
+          localAttachmentPreviewUrls = {
+            ...localAttachmentPreviewUrls,
+            ...previewUrlByAttachmentId,
+          };
+        }
       }
     } catch (err) {
       console.error('[Boards] Attachment upload failed:', err);
@@ -942,6 +1210,7 @@
   }
 
   function removeAttachment(columnId: string, cardId: string, attachmentId: string) {
+    releaseLocalAttachmentPreview(attachmentId);
     mutateBoard(next => {
       const column = next.columns.find(item => item.id === columnId);
       const card = column?.cards.find(item => item.id === cardId);
@@ -997,6 +1266,10 @@
     cardModalCardId = null;
     cardDraftTitle = '';
     cardDraftDescription = '';
+    cardDraftAssigneeNpubs = [];
+    cardDraftAttachments = [];
+    cardDraftOriginalAttachmentIds = {};
+    cardDraftUploading = false;
     cardFormError = '';
     showCardModal = true;
   }
@@ -1008,13 +1281,320 @@
     cardModalCardId = card.id;
     cardDraftTitle = card.title;
     cardDraftDescription = card.description;
+    cardDraftAssigneeNpubs = [...card.assigneeNpubs];
+    cardDraftAttachments = card.attachments.map(attachment => ({ ...attachment }));
+    cardDraftOriginalAttachmentIds = Object.fromEntries(
+      card.attachments.map(attachment => [attachment.id, true] as const)
+    );
+    cardDraftUploading = false;
     cardFormError = '';
     showCardModal = true;
   }
 
-  function closeCardModal() {
+  function openCardViewModal(columnId: string, cardId: string) {
+    resetCommentDraft();
+    cardViewColumnId = columnId;
+    cardViewCardId = cardId;
+    showCardViewModal = true;
+  }
+
+  function closeCardViewModal() {
+    resetCommentDraft();
+    showCardViewModal = false;
+    cardViewColumnId = null;
+    cardViewCardId = null;
+  }
+
+  function openEditViewedCard() {
+    if (!canWrite || !viewedCardState) return;
+    const { column, card } = viewedCardState;
+    closeCardViewModal();
+    openEditCardModal(column.id, card);
+  }
+
+  function removeViewedCard() {
+    if (!canWrite || !viewedCardState) return;
+    const { column, card } = viewedCardState;
+    closeCardViewModal();
+    removeCard(column.id, card.id);
+  }
+
+  function attachToViewedCard() {
+    if (!canWrite || !viewedCardState) return;
+    triggerAttachmentPicker(viewedCardState.column.id, viewedCardState.card.id);
+  }
+
+  function triggerCardDraftAttachmentPicker() {
+    if (!canWrite || cardDraftUploading) return;
+    const input = cardAttachmentInputRef
+      || (document.querySelector('[data-testid="board-card-draft-attachment-input"]') as HTMLInputElement | null);
+    if (!input) return;
+    cardAttachmentInputRef = input;
+    input.click();
+  }
+
+  async function handleCardDraftAttachmentInputChange(event: Event) {
+    if (!canWrite || !userNpub || cardDraftUploading) return;
+    const input = event.target as HTMLInputElement;
+    const selectedFiles = input.files ? Array.from(input.files) : [];
+    input.value = '';
+    if (selectedFiles.length === 0) return;
+
+    cardDraftUploading = true;
+    try {
+      const tree = getTree();
+      const uploaded: BoardCardAttachment[] = [];
+      const previewUrlByAttachmentId: Record<string, string> = {};
+      const totalBytes = selectedFiles.reduce((sum, file) => sum + file.size, 0);
+      let uploadedBytes = 0;
+
+      for (let index = 0; index < selectedFiles.length; index += 1) {
+        const file = selectedFiles[index];
+        setUploadProgress({
+          current: index + 1,
+          total: selectedFiles.length,
+          fileName: file.name,
+          bytes: uploadedBytes,
+          totalBytes,
+          status: 'reading',
+        });
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        setUploadProgress({
+          current: index + 1,
+          total: selectedFiles.length,
+          fileName: file.name,
+          bytes: uploadedBytes,
+          totalBytes,
+          status: 'writing',
+        });
+        const { cid: fileCid, size: fileSize } = await tree.putFile(bytes);
+        uploadedBytes += fileSize;
+        setUploadProgress({
+          current: index + 1,
+          total: selectedFiles.length,
+          fileName: file.name,
+          bytes: uploadedBytes,
+          totalBytes,
+          status: 'finalizing',
+        });
+        const attachmentId = createBoardId();
+        const cleanName = sanitizeAttachmentFileName(file.name);
+        const mimeType = file.type || guessMimeType(file.name);
+        if (isImageMimeType(mimeType)) {
+          previewUrlByAttachmentId[attachmentId] = URL.createObjectURL(file);
+        }
+        uploaded.push({
+          id: attachmentId,
+          fileName: `${attachmentId}-${cleanName}`,
+          displayName: cleanName,
+          mimeType,
+          size: fileSize,
+          uploaderNpub: userNpub,
+          cidHash: toHex(fileCid.hash),
+          cidKey: fileCid.key ? toHex(fileCid.key) : undefined,
+        });
+      }
+
+      if (uploaded.length > 0) {
+        cardDraftAttachments = [...cardDraftAttachments, ...uploaded];
+        if (Object.keys(previewUrlByAttachmentId).length > 0) {
+          localAttachmentPreviewUrls = {
+            ...localAttachmentPreviewUrls,
+            ...previewUrlByAttachmentId,
+          };
+        }
+        cardFormError = '';
+      }
+    } catch (err) {
+      console.error('[Boards] Card draft attachment upload failed:', err);
+      toast.error('Failed to upload attachment');
+    } finally {
+      setUploadProgress(null);
+      cardDraftUploading = false;
+    }
+  }
+
+  function removeCardDraftAttachment(attachmentId: string) {
+    if (!cardDraftOriginalAttachmentIds[attachmentId]) {
+      releaseLocalAttachmentPreview(attachmentId);
+    }
+    cardDraftAttachments = cardDraftAttachments.filter(attachment => attachment.id !== attachmentId);
+  }
+
+  function resetCommentDraft(options?: { keepPreviewUrls?: Record<string, true> }) {
+    const keepPreviewUrls = options?.keepPreviewUrls || {};
+    for (const draftAttachment of commentDraftAttachments) {
+      if (!draftAttachment.previewUrl || keepPreviewUrls[draftAttachment.previewUrl]) continue;
+      URL.revokeObjectURL(draftAttachment.previewUrl);
+    }
+    commentDraftMarkdown = '';
+    commentDraftAttachments = [];
+    commentFormError = '';
+    if (commentAttachmentInputRef) commentAttachmentInputRef.value = '';
+  }
+
+  function triggerCommentAttachmentPicker() {
+    if (!canWrite) return;
+    const input = commentAttachmentInputRef
+      || (document.querySelector('[data-testid="board-comment-attachment-input"]') as HTMLInputElement | null);
+    if (!input) return;
+    commentAttachmentInputRef = input;
+    input.click();
+  }
+
+  function handleCommentAttachmentInputChange(event: Event) {
+    if (!canWrite) return;
+    const input = event.target as HTMLInputElement;
+    const selectedFiles = input.files ? Array.from(input.files) : [];
+    input.value = '';
+    if (selectedFiles.length === 0) return;
+
+    const nextDrafts = [...commentDraftAttachments];
+    for (const file of selectedFiles) {
+      const displayName = sanitizeAttachmentFileName(file.name);
+      const mimeType = file.type || guessMimeType(file.name);
+      nextDrafts.push({
+        id: createBoardId(),
+        file,
+        displayName,
+        mimeType,
+        size: file.size,
+        previewUrl: isImageMimeType(mimeType) ? URL.createObjectURL(file) : null,
+      });
+    }
+
+    commentDraftAttachments = nextDrafts;
+    commentFormError = '';
+  }
+
+  function removeCommentDraftAttachment(draftAttachmentId: string) {
+    const target = commentDraftAttachments.find(item => item.id === draftAttachmentId);
+    if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+    commentDraftAttachments = commentDraftAttachments.filter(item => item.id !== draftAttachmentId);
+  }
+
+  async function submitComment() {
+    if (!canWrite || !userNpub || !viewedCardState || commentSubmitting) return;
+    const markdown = commentDraftMarkdown.trim();
+    if (!markdown && commentDraftAttachments.length === 0) {
+      commentFormError = 'Comment cannot be empty.';
+      return;
+    }
+
+    const targetColumnId = viewedCardState.column.id;
+    const targetCardId = viewedCardState.card.id;
+    commentSubmitting = true;
+    commentFormError = '';
+
+    const keepPreviewUrls: Record<string, true> = {};
+    const previewUrlByAttachmentId: Record<string, string> = {};
+
+    try {
+      const tree = getTree();
+      const uploaded: BoardCardAttachment[] = [];
+      const totalBytes = commentDraftAttachments.reduce((sum, attachment) => sum + attachment.size, 0);
+      let uploadedBytes = 0;
+
+      for (let index = 0; index < commentDraftAttachments.length; index += 1) {
+        const draftAttachment = commentDraftAttachments[index];
+        setUploadProgress({
+          current: index + 1,
+          total: commentDraftAttachments.length,
+          fileName: draftAttachment.displayName,
+          bytes: uploadedBytes,
+          totalBytes,
+          status: 'reading',
+        });
+        const bytes = new Uint8Array(await draftAttachment.file.arrayBuffer());
+        setUploadProgress({
+          current: index + 1,
+          total: commentDraftAttachments.length,
+          fileName: draftAttachment.displayName,
+          bytes: uploadedBytes,
+          totalBytes,
+          status: 'writing',
+        });
+        const { cid: fileCid, size: fileSize } = await tree.putFile(bytes);
+        uploadedBytes += fileSize;
+        setUploadProgress({
+          current: index + 1,
+          total: commentDraftAttachments.length,
+          fileName: draftAttachment.displayName,
+          bytes: uploadedBytes,
+          totalBytes,
+          status: 'finalizing',
+        });
+
+        const attachmentId = createBoardId();
+        const cleanName = sanitizeAttachmentFileName(draftAttachment.displayName || draftAttachment.file.name);
+        const mimeType = draftAttachment.mimeType || guessMimeType(cleanName);
+        if (isImageMimeType(mimeType)) {
+          if (draftAttachment.previewUrl) {
+            keepPreviewUrls[draftAttachment.previewUrl] = true;
+            previewUrlByAttachmentId[attachmentId] = draftAttachment.previewUrl;
+          } else {
+            previewUrlByAttachmentId[attachmentId] = URL.createObjectURL(draftAttachment.file);
+          }
+        }
+        uploaded.push({
+          id: attachmentId,
+          fileName: `${attachmentId}-${cleanName}`,
+          displayName: cleanName,
+          mimeType,
+          size: fileSize,
+          uploaderNpub: userNpub,
+          cidHash: toHex(fileCid.hash),
+          cidKey: fileCid.key ? toHex(fileCid.key) : undefined,
+        });
+      }
+
+      const now = Date.now();
+      const nextComment: BoardCardComment = {
+        id: createBoardId(),
+        authorNpub: userNpub,
+        markdown,
+        createdAt: now,
+        updatedAt: now,
+        attachments: uploaded,
+      };
+
+      mutateBoard(next => {
+        const column = next.columns.find(item => item.id === targetColumnId);
+        const card = column?.cards.find(item => item.id === targetCardId);
+        if (!card) return;
+        card.comments = [...card.comments, nextComment];
+      });
+
+      if (Object.keys(previewUrlByAttachmentId).length > 0) {
+        localAttachmentPreviewUrls = {
+          ...localAttachmentPreviewUrls,
+          ...previewUrlByAttachmentId,
+        };
+      }
+
+      resetCommentDraft({ keepPreviewUrls });
+    } catch (err) {
+      console.error('[Boards] Comment submit failed:', err);
+      toast.error('Failed to add comment');
+    } finally {
+      setUploadProgress(null);
+      commentSubmitting = false;
+    }
+  }
+
+  function closeCardModal(options?: { preserveDraftUploads?: boolean }) {
+    if (!options?.preserveDraftUploads) {
+      for (const attachment of cardDraftAttachments) {
+        if (cardDraftOriginalAttachmentIds[attachment.id]) continue;
+        releaseLocalAttachmentPreview(attachment.id);
+      }
+    }
     showCardModal = false;
     cardFormError = '';
+    cardDraftAttachments = [];
+    cardDraftOriginalAttachmentIds = {};
+    cardDraftUploading = false;
+    if (cardAttachmentInputRef) cardAttachmentInputRef.value = '';
   }
 
   function submitCardModal() {
@@ -1028,14 +1608,16 @@
       cardFormError = 'Column not found.';
       return;
     }
+    const assigneeNpubs = sanitizeAssigneeNpubs(cardDraftAssigneeNpubs);
+    const attachments = cardDraftAttachments.map(attachment => ({ ...attachment }));
 
     if (cardModalMode === 'create') {
-      addCard(cardModalColumnId, title, cardDraftDescription);
+      addCard(cardModalColumnId, title, cardDraftDescription, assigneeNpubs, attachments);
     } else if (cardModalCardId) {
-      updateCard(cardModalColumnId, cardModalCardId, title, cardDraftDescription);
+      updateCard(cardModalColumnId, cardModalCardId, title, cardDraftDescription, assigneeNpubs, attachments);
     }
 
-    closeCardModal();
+    closeCardModal({ preserveDraftUploads: true });
   }
 
   function moveCardToColumn(
@@ -1236,6 +1818,12 @@
 
   onDestroy(() => {
     if (saveTimer) clearTimeout(saveTimer);
+    for (const previewUrl of Object.values(localAttachmentPreviewUrls)) {
+      URL.revokeObjectURL(previewUrl);
+    }
+    for (const draftAttachment of commentDraftAttachments) {
+      if (draftAttachment.previewUrl) URL.revokeObjectURL(draftAttachment.previewUrl);
+    }
   });
 </script>
 
@@ -1251,12 +1839,28 @@
 {:else if board && permissions}
   <div class="flex-1 flex flex-col min-h-0">
     <input
+      bind:this={cardAttachmentInputRef}
+      type="file"
+      multiple
+      class="hidden"
+      data-testid="board-card-draft-attachment-input"
+      onchange={handleCardDraftAttachmentInputChange}
+    />
+    <input
       bind:this={attachmentInputRef}
       type="file"
       multiple
       class="hidden"
       data-testid="board-attachment-input"
       onchange={handleAttachmentInputChange}
+    />
+    <input
+      bind:this={commentAttachmentInputRef}
+      type="file"
+      multiple
+      class="hidden"
+      data-testid="board-comment-attachment-input"
+      onchange={handleCommentAttachmentInputChange}
     />
 
     <div class="flex items-center justify-between gap-3 px-4 py-3 border-b border-surface-3 bg-surface-0">
@@ -1272,12 +1876,14 @@
         <button class="btn-circle btn-ghost" onclick={handleShare} title="Share board">
           <span class="i-lucide-share-2"></span>
         </button>
-        {#if canManage}
-          <button class="btn-ghost" onclick={handleOpenPermissions} title="Manage permissions">
-            <span class="i-lucide-shield-check mr-1"></span>
-            Permissions
-          </button>
-        {/if}
+        <button
+          class="btn-ghost"
+          onclick={handleOpenPermissions}
+          title={canManage ? 'Manage permissions' : 'View permissions'}
+        >
+          <span class="i-lucide-shield-check mr-1"></span>
+          Permissions
+        </button>
         {#if canWrite}
           <button class="btn-primary" onclick={openCreateColumnModal}>
             <span class="i-lucide-columns-2 mr-1"></span>
@@ -1347,33 +1953,53 @@
                   ondrop={(event) => handleCardDrop(event as DragEvent, column.id, card.id)}
                   class={`group bg-surface-0 border border-surface-3 rounded-lg p-3 transition-shadow ${canWrite ? 'cursor-grab active:cursor-grabbing hover:shadow-md' : ''} ${draggingCard?.cardId === card.id ? 'opacity-50' : ''} ${cardDropTargetClass(column.id, card.id)}`}
                 >
-                  {#if canWrite}
+                  <div class="flex items-start gap-2">
                     <button
                       type="button"
-                      class="w-full text-left"
-                      onclick={() => openEditCardModal(column.id, card)}
+                      class="min-w-0 flex-1 text-left"
+                      aria-label="Open card details"
+                      onclick={() => openCardViewModal(column.id, card.id)}
                     >
                       <h3 class="text-sm font-medium break-words">{card.title}</h3>
                       {#if card.description}
                         <p class="text-xs text-text-3 mt-1 whitespace-pre-wrap line-clamp-3">{card.description}</p>
                       {/if}
                     </button>
-                  {:else}
-                    <h3 class="text-sm font-medium break-words">{card.title}</h3>
-                    {#if card.description}
-                      <p class="text-xs text-text-3 mt-1 whitespace-pre-wrap line-clamp-3">{card.description}</p>
+                    {#if canWrite}
+                      <div class="h-8 w-8 shrink-0">
+                        <button
+                          type="button"
+                          class="btn-circle btn-ghost h-8 w-8 min-h-8 min-w-8 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto"
+                          aria-label="Quick edit card"
+                          title="Edit card"
+                          onclick={(event) => {
+                            event.stopPropagation();
+                            openEditCardModal(column.id, card);
+                          }}
+                        >
+                          <span class="i-lucide-pencil text-[11px]"></span>
+                        </button>
+                      </div>
                     {/if}
+                  </div>
+
+                  {#if card.assigneeNpubs.length > 0}
+                    <div class="mt-2 text-[11px] text-text-3 flex items-center gap-1">
+                      <span class="i-lucide-users text-[11px]"></span>
+                      <span>{card.assigneeNpubs.length} {card.assigneeNpubs.length === 1 ? 'assignee' : 'assignees'}</span>
+                    </div>
                   {/if}
 
                   {#if card.attachments.length > 0}
                     <div class="mt-2 space-y-1">
                       {#each card.attachments as attachment (attachment.id)}
                         {@const attachmentUrl = cardAttachmentUrl(attachment)}
+                        {@const attachmentImageUrl = attachmentImageSrc(attachment)}
                         <div
                           class="rounded-md border border-surface-3 bg-surface-1 px-2 py-1.5"
                           data-testid={`board-card-attachment-${attachment.displayName}`}
                         >
-                          {#if isImageAttachment(attachment) && attachmentUrl}
+                          {#if isImageAttachment(attachment) && attachmentImageUrl}
                             <button
                               type="button"
                               class="block w-full bg-transparent border-none p-0 cursor-zoom-in"
@@ -1385,13 +2011,14 @@
                             >
                               <img
                                 class="w-full max-h-32 object-cover rounded border border-surface-3"
-                                src={attachmentUrl}
+                                src={attachmentImageUrl}
                                 alt={attachment.displayName}
+                                onerror={(event) => handleAttachmentImageError(event as Event, attachment)}
                               />
                             </button>
                           {/if}
                           <div class="mt-1 flex items-center justify-between gap-2">
-                            {#if isModalPreviewAttachment(attachment) && attachmentUrl}
+                            {#if isModalPreviewAttachment(attachment) && (attachmentUrl || attachmentImageUrl)}
                               <button
                                 type="button"
                                 class="text-xs text-accent hover:underline truncate bg-transparent border-none p-0 text-left"
@@ -1420,66 +2047,10 @@
                             {/if}
                             <div class="flex items-center gap-1 shrink-0">
                               <span class="text-[10px] text-text-3">{formatAttachmentSize(attachment.size)}</span>
-                              {#if canWrite}
-                                <button
-                                  type="button"
-                                  class="btn-circle btn-ghost text-danger"
-                                  title={`Remove ${attachment.displayName}`}
-                                  onclick={(event) => {
-                                    event.stopPropagation();
-                                    removeAttachment(column.id, card.id, attachment.id);
-                                  }}
-                                >
-                                  <span class="i-lucide-x text-[10px]"></span>
-                                </button>
-                              {/if}
                             </div>
                           </div>
                         </div>
                       {/each}
-                    </div>
-                  {/if}
-
-                  {#if canWrite}
-                    <div class="mt-3 pt-2 border-t border-surface-3 flex items-center justify-end gap-1">
-                      <button
-                        class="btn-circle btn-ghost"
-                        aria-label="Attach file"
-                        title="Attach file"
-                        disabled={isUploadingCard(column.id, card.id)}
-                        onclick={(event) => {
-                          event.stopPropagation();
-                          triggerAttachmentPicker(column.id, card.id);
-                        }}
-                      >
-                        {#if isUploadingCard(column.id, card.id)}
-                          <span class="i-lucide-loader-2 text-xs animate-spin"></span>
-                        {:else}
-                          <span class="i-lucide-paperclip text-xs"></span>
-                        {/if}
-                      </button>
-                      <button
-                        class="btn-circle btn-ghost"
-                        aria-label="Edit card"
-                        title="Edit card"
-                        onclick={(event) => {
-                          event.stopPropagation();
-                          openEditCardModal(column.id, card);
-                        }}
-                      >
-                        <span class="i-lucide-pencil text-xs"></span>
-                      </button>
-                      <button
-                        class="btn-circle btn-ghost text-danger"
-                        aria-label="Remove card"
-                        title="Remove card"
-                        onclick={(event) => {
-                          event.stopPropagation();
-                          removeCard(column.id, card.id);
-                        }}
-                      >
-                        <span class="i-lucide-trash-2 text-xs"></span>
-                      </button>
                     </div>
                   {/if}
                 </article>
@@ -1601,6 +2172,94 @@
           {/if}
         </div>
 
+        <div class="space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <label class="text-sm font-medium">Attachments</label>
+            <button
+              type="button"
+              class="btn-ghost"
+              onclick={triggerCardDraftAttachmentPicker}
+              disabled={cardDraftUploading}
+            >
+              {#if cardDraftUploading}
+                <span class="i-lucide-loader-2 animate-spin mr-1"></span>
+              {:else}
+                <span class="i-lucide-paperclip mr-1"></span>
+              {/if}
+              Attach files
+            </button>
+          </div>
+
+          {#if cardDraftAttachments.length === 0}
+            <p class="text-xs text-text-3">No attachments.</p>
+          {:else}
+            <div class="max-h-44 overflow-auto rounded-lg border border-surface-3 bg-surface-0 p-2 space-y-2">
+              {#each cardDraftAttachments as draftAttachment (draftAttachment.id)}
+                {@const draftPreviewUrl = attachmentImageSrc(draftAttachment)}
+                <div class="rounded-md border border-surface-3 bg-surface-1 px-2 py-2 space-y-2">
+                  {#if isImageAttachment(draftAttachment) && draftPreviewUrl}
+                    <img
+                      class="w-full h-24 object-cover rounded border border-surface-3"
+                      src={draftPreviewUrl}
+                      alt={draftAttachment.displayName}
+                      onerror={(event) => handleAttachmentImageError(event as Event, draftAttachment)}
+                    />
+                  {/if}
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="text-xs truncate" title={draftAttachment.displayName}>
+                      {draftAttachment.displayName}
+                    </span>
+                    <div class="flex items-center gap-2 shrink-0">
+                      <span class="text-[10px] text-text-3">{formatAttachmentSize(draftAttachment.size)}</span>
+                      <button
+                        type="button"
+                        class="btn-circle btn-ghost text-danger"
+                        title={`Remove ${draftAttachment.displayName}`}
+                        onclick={() => removeCardDraftAttachment(draftAttachment.id)}
+                      >
+                        <span class="i-lucide-x text-[10px]"></span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <div class="space-y-2">
+          <label class="text-sm font-medium">Assignees</label>
+          {#if boardMemberNpubs.length === 0}
+            <p class="text-xs text-text-3">No board members available.</p>
+          {:else}
+            <div class="max-h-40 overflow-auto rounded-lg border border-surface-3 bg-surface-0 p-2 space-y-1">
+              {#each boardMemberNpubs as memberNpub (memberNpub)}
+                {@const memberPubkey = npubToPubkey(memberNpub)}
+                <label class="flex items-center justify-between gap-2 px-1 py-1 rounded hover:bg-surface-2 cursor-pointer">
+                  <span class="flex items-center gap-2 min-w-0">
+                    <input
+                      type="checkbox"
+                      class="checkbox checkbox-xs"
+                      checked={cardDraftAssigneeNpubs.includes(memberNpub)}
+                      onchange={(event) => {
+                        const target = event.currentTarget as HTMLInputElement;
+                        toggleCardDraftAssignee(memberNpub, target.checked);
+                      }}
+                    />
+                    {#if memberPubkey}
+                      <Avatar pubkey={memberPubkey} size={18} />
+                      <Name pubkey={memberPubkey} class="text-xs truncate" />
+                    {:else}
+                      <span class="text-xs font-mono truncate" title={memberNpub}>{shortNpub(memberNpub)}</span>
+                    {/if}
+                  </span>
+                  <span class="text-[10px] text-text-3">{boardMemberRoleLabel(memberNpub)}</span>
+                </label>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
         <div class="flex justify-end gap-2">
           <button type="button" class="btn-ghost" onclick={closeCardModal}>Cancel</button>
           <button type="submit" class="btn-primary">
@@ -1612,8 +2271,300 @@
   </div>
 {/if}
 
+{#if showCardViewModal && viewedCardState}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="fixed inset-0 z-[55] flex items-center justify-center bg-black/70 p-4"
+    data-modal-backdrop
+    role="dialog"
+    aria-modal="true"
+    aria-label="Card details"
+    onclick={closeCardViewModal}
+  >
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-surface-1 rounded-lg shadow-lg border border-surface-3 p-5 space-y-4"
+      onclick={(event) => event.stopPropagation()}
+    >
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <h3 class="text-lg font-semibold break-words">{viewedCardState.card.title}</h3>
+          <p class="text-xs text-text-3 mt-1">in {viewedCardState.column.title}</p>
+        </div>
+        <button type="button" class="btn-circle btn-ghost" onclick={closeCardViewModal} aria-label="Close card details">
+          <span class="i-lucide-x"></span>
+        </button>
+      </div>
+
+      {#if viewedCardState.card.description}
+        <p class="text-sm whitespace-pre-wrap">{viewedCardState.card.description}</p>
+      {:else}
+        <p class="text-sm text-text-3">No description.</p>
+      {/if}
+
+      <div class="space-y-2">
+        <div class="text-sm font-medium">Assignees</div>
+        {#if viewedCardState.card.assigneeNpubs.length === 0}
+          <p class="text-xs text-text-3">No assignees.</p>
+        {:else}
+          <div class="flex flex-wrap gap-2">
+            {#each viewedCardState.card.assigneeNpubs as assigneeNpub (assigneeNpub)}
+              {@const assigneePubkey = npubToPubkey(assigneeNpub)}
+              <span class="inline-flex items-center gap-1 rounded-full border border-surface-3 bg-surface-0 px-2 py-0.5 text-xs">
+                {#if assigneePubkey}
+                  <Avatar pubkey={assigneePubkey} size={16} />
+                  <Name pubkey={assigneePubkey} class="truncate max-w-28" />
+                {:else}
+                  <span class="font-mono" title={assigneeNpub}>{shortNpub(assigneeNpub)}</span>
+                {/if}
+                <span class="text-text-3">{boardMemberRoleLabel(assigneeNpub)}</span>
+              </span>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
+      <div class="space-y-2">
+        <div class="text-sm font-medium">Attachments</div>
+        {#if viewedCardState.card.attachments.length === 0}
+          <p class="text-xs text-text-3">No attachments.</p>
+        {:else}
+          <div class="space-y-2">
+            {#each viewedCardState.card.attachments as attachment (attachment.id)}
+              {@const attachmentUrl = cardAttachmentUrl(attachment)}
+              {@const attachmentImageUrl = attachmentImageSrc(attachment)}
+              <div class="rounded-md border border-surface-3 bg-surface-0 px-2 py-2 space-y-2">
+                {#if isImageAttachment(attachment) && attachmentImageUrl}
+                  <button
+                    type="button"
+                    class="block w-full bg-transparent border-none p-0 cursor-zoom-in"
+                    title={attachment.displayName}
+                    onclick={() => openAttachmentPreview(attachment)}
+                  >
+                    <img
+                      class="w-full max-h-56 object-cover rounded border border-surface-3"
+                      src={attachmentImageUrl}
+                      alt={attachment.displayName}
+                      onerror={(event) => handleAttachmentImageError(event as Event, attachment)}
+                    />
+                  </button>
+                {/if}
+                <div class="flex items-center justify-between gap-2">
+                  {#if isModalPreviewAttachment(attachment) && (attachmentUrl || attachmentImageUrl)}
+                    <button
+                      type="button"
+                      class="text-xs text-accent hover:underline truncate bg-transparent border-none p-0 text-left"
+                      title={attachment.displayName}
+                      onclick={() => openAttachmentPreview(attachment)}
+                    >
+                      {attachment.displayName}
+                    </button>
+                  {:else if attachmentUrl}
+                    <a
+                      class="text-xs text-accent hover:underline truncate"
+                      href={attachmentUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={attachment.displayName}
+                    >
+                      {attachment.displayName}
+                    </a>
+                  {:else}
+                    <span class="text-xs text-text-3 truncate">{attachment.displayName}</span>
+                  {/if}
+                  <div class="flex items-center gap-2">
+                    <span class="text-[10px] text-text-3">{formatAttachmentSize(attachment.size)}</span>
+                    {#if canWrite}
+                      <button
+                        type="button"
+                        class="btn-circle btn-ghost text-danger"
+                        title={`Remove ${attachment.displayName}`}
+                        onclick={() => removeAttachment(viewedCardState.column.id, viewedCardState.card.id, attachment.id)}
+                      >
+                        <span class="i-lucide-x text-[10px]"></span>
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
+      <div class="space-y-2">
+        <div class="text-sm font-medium">Comments</div>
+        {#if viewedCardState.card.comments.length === 0}
+          <p class="text-xs text-text-3">No comments yet.</p>
+        {:else}
+          <div class="space-y-2">
+            {#each viewedCardState.card.comments as comment (comment.id)}
+              {@const commentAuthorPubkey = npubToPubkey(comment.authorNpub)}
+              <article class="rounded-md border border-surface-3 bg-surface-0 p-3 space-y-2" data-testid={`board-comment-${comment.id}`}>
+                <div class="flex items-center justify-between gap-2 text-[11px] text-text-3">
+                  <div class="min-w-0 inline-flex items-center gap-2">
+                    {#if commentAuthorPubkey}
+                      <Avatar pubkey={commentAuthorPubkey} size={18} />
+                      <Name pubkey={commentAuthorPubkey} class="text-xs text-text-2 truncate" />
+                    {:else}
+                      <span class="font-mono truncate" title={comment.authorNpub}>{shortNpub(comment.authorNpub)}</span>
+                    {/if}
+                  </div>
+                  <span class="shrink-0">{formatCommentTimestamp(comment.createdAt)}</span>
+                </div>
+                {#if comment.markdown}
+                  <div class="text-sm break-words leading-relaxed [&_a]:text-accent [&_a:hover]:underline [&_code]:bg-surface-2 [&_code]:rounded [&_code]:px-1 [&_pre]:bg-surface-2 [&_pre]:rounded [&_pre]:p-2">
+                    <!-- eslint-disable-next-line svelte/no-at-html-tags -- markdown is sanitized with DOMPurify in renderMarkdown -->
+                    {@html renderMarkdown(comment.markdown)}
+                  </div>
+                {/if}
+                {#if comment.attachments.length > 0}
+                  <div class="grid grid-cols-2 gap-2">
+                    {#each comment.attachments as commentAttachment (commentAttachment.id)}
+                      {@const commentAttachmentUrl = cardAttachmentUrl(commentAttachment)}
+                      {@const commentAttachmentImageUrl = attachmentImageSrc(commentAttachment)}
+                      <div class="rounded-md border border-surface-3 bg-surface-1 p-2 space-y-1">
+                        {#if isImageAttachment(commentAttachment) && commentAttachmentImageUrl}
+                          <button
+                            type="button"
+                            class="block w-full bg-transparent border-none p-0 cursor-zoom-in"
+                            onclick={() => openAttachmentPreview(commentAttachment)}
+                            title={commentAttachment.displayName}
+                          >
+                            <img
+                              class="w-full h-20 object-cover rounded border border-surface-3"
+                              src={commentAttachmentImageUrl}
+                              alt={commentAttachment.displayName}
+                              onerror={(event) => handleAttachmentImageError(event as Event, commentAttachment)}
+                            />
+                          </button>
+                        {/if}
+                        <div class="flex items-center justify-between gap-2">
+                          {#if isModalPreviewAttachment(commentAttachment) && (commentAttachmentUrl || commentAttachmentImageUrl)}
+                            <button
+                              type="button"
+                              class="text-xs text-accent hover:underline truncate bg-transparent border-none p-0 text-left"
+                              onclick={() => openAttachmentPreview(commentAttachment)}
+                              title={commentAttachment.displayName}
+                            >
+                              {commentAttachment.displayName}
+                            </button>
+                          {:else if commentAttachmentUrl}
+                            <a
+                              class="text-xs text-accent hover:underline truncate"
+                              href={commentAttachmentUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              title={commentAttachment.displayName}
+                            >
+                              {commentAttachment.displayName}
+                            </a>
+                          {:else}
+                            <span class="text-xs text-text-3 truncate">{commentAttachment.displayName}</span>
+                          {/if}
+                          <span class="text-[10px] text-text-3 shrink-0">{formatAttachmentSize(commentAttachment.size)}</span>
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </article>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
+      {#if canWrite}
+        <div class="space-y-2 border-t border-surface-3 pt-3">
+          <div class="relative rounded-lg border border-surface-3 bg-surface-0">
+            <textarea
+              id="board-card-comment-markdown"
+              aria-label="Add comment"
+              class="w-full text-sm min-h-24 rounded-lg bg-transparent px-3 py-2 pb-14 resize-y focus:outline-none focus:ring-2 focus:ring-accent/40"
+              bind:value={commentDraftMarkdown}
+              placeholder="Add comment."
+            ></textarea>
+            <div class="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 px-2 py-2 border-t border-surface-3 bg-surface-0/95 rounded-b-lg">
+              <button type="button" class="btn-ghost" onclick={triggerCommentAttachmentPicker}>
+                <span class="i-lucide-paperclip mr-1"></span>
+                Attach files
+              </button>
+              <button
+                type="button"
+                class="btn-primary"
+                onclick={submitComment}
+                disabled={commentSubmitting || (!commentDraftMarkdown.trim() && commentDraftAttachments.length === 0)}
+              >
+                {#if commentSubmitting}
+                  <span class="i-lucide-loader-2 animate-spin mr-1"></span>
+                {/if}
+                Add comment
+              </button>
+            </div>
+          </div>
+
+          {#if commentDraftAttachments.length > 0}
+            <div class="flex flex-wrap gap-2">
+              {#each commentDraftAttachments as draftAttachment (draftAttachment.id)}
+                <div class="rounded-md border border-surface-3 bg-surface-0 px-2 py-2 max-w-44">
+                  {#if draftAttachment.previewUrl}
+                    <img class="w-full h-20 object-cover rounded border border-surface-3 mb-1" src={draftAttachment.previewUrl} alt={draftAttachment.displayName} />
+                  {/if}
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="text-xs truncate" title={draftAttachment.displayName}>{draftAttachment.displayName}</span>
+                    <button
+                      type="button"
+                      class="btn-circle btn-ghost text-danger"
+                      title={`Remove ${draftAttachment.displayName}`}
+                      onclick={() => removeCommentDraftAttachment(draftAttachment.id)}
+                    >
+                      <span class="i-lucide-x text-[10px]"></span>
+                    </button>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+          {#if commentFormError}
+            <p class="text-xs text-danger">{commentFormError}</p>
+          {/if}
+        </div>
+      {/if}
+
+      {#if canWrite}
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-surface-3">
+          <button
+            type="button"
+            class="btn-ghost"
+            onclick={attachToViewedCard}
+            disabled={!viewedCardState || isUploadingCard(viewedCardState.column.id, viewedCardState.card.id)}
+          >
+            {#if viewedCardState && isUploadingCard(viewedCardState.column.id, viewedCardState.card.id)}
+              <span class="i-lucide-loader-2 animate-spin mr-1"></span>
+            {:else}
+              <span class="i-lucide-paperclip mr-1"></span>
+            {/if}
+            Attach file
+          </button>
+          <button type="button" class="btn-ghost" onclick={openEditViewedCard}>
+            <span class="i-lucide-pencil mr-1"></span>
+            Edit card
+          </button>
+          <button type="button" class="btn-danger" onclick={removeViewedCard}>
+            <span class="i-lucide-trash-2 mr-1"></span>
+            Delete card
+          </button>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
+
 {#if showMediaModal && mediaAttachment}
   {@const mediaAttachmentUrl = cardAttachmentUrl(mediaAttachment)}
+  {@const mediaAttachmentImageUrl = attachmentImageSrc(mediaAttachment)}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
@@ -1650,12 +2601,13 @@
         </div>
       </div>
       <div class="bg-surface-0 border border-surface-3 rounded-lg overflow-hidden h-[70vh] min-h-72">
-        {#if isImageAttachment(mediaAttachment) && mediaAttachmentUrl}
+        {#if isImageAttachment(mediaAttachment) && mediaAttachmentImageUrl}
           <div class="h-full w-full flex items-center justify-center p-3">
             <img
-              src={mediaAttachmentUrl}
+              src={mediaAttachmentImageUrl}
               alt={mediaAttachment.displayName}
               class="max-w-full max-h-full object-contain"
+              onerror={(event) => handleAttachmentImageError(event as Event, mediaAttachment)}
             />
           </div>
         {:else if isVideoAttachment(mediaAttachment)}
@@ -1693,7 +2645,11 @@
       </div>
 
       <div class="text-xs text-text-3">
-        Admins can manage admins/writers and edit cards. Writers can edit cards only.
+        {#if canManage}
+          Admins can manage admins/writers and edit cards. Writers can edit cards only.
+        {:else}
+          Admins can manage roles. Writers can edit cards.
+        {/if}
       </div>
 
       <div class="grid grid-cols-2 gap-3">
@@ -1703,13 +2659,15 @@
             {#each permissions.admins as adminNpub (adminNpub)}
               <li class="bg-surface-2 rounded px-2 py-1.5 flex items-center justify-between gap-2">
                 <span class="font-mono text-xs truncate">{adminNpub}</span>
-                <button
-                  class="btn-circle btn-ghost text-danger"
-                  title="Remove admin"
-                  onclick={() => handleRemovePermission('admin', adminNpub)}
-                >
-                  <span class="i-lucide-x text-xs"></span>
-                </button>
+                {#if canManage}
+                  <button
+                    class="btn-circle btn-ghost text-danger"
+                    title="Remove admin"
+                    onclick={() => handleRemovePermission('admin', adminNpub)}
+                  >
+                    <span class="i-lucide-x text-xs"></span>
+                  </button>
+                {/if}
               </li>
             {/each}
           </ul>
@@ -1724,40 +2682,51 @@
             {#each permissions.writers as writerNpub (writerNpub)}
               <li class="bg-surface-2 rounded px-2 py-1.5 flex items-center justify-between gap-2">
                 <span class="font-mono text-xs truncate">{writerNpub}</span>
-                <button
-                  class="btn-circle btn-ghost text-danger"
-                  title="Remove writer"
-                  onclick={() => handleRemovePermission('writer', writerNpub)}
-                >
-                  <span class="i-lucide-x text-xs"></span>
-                </button>
+                {#if canManage}
+                  <button
+                    class="btn-circle btn-ghost text-danger"
+                    title="Remove writer"
+                    onclick={() => handleRemovePermission('writer', writerNpub)}
+                  >
+                    <span class="i-lucide-x text-xs"></span>
+                  </button>
+                {/if}
               </li>
             {/each}
           </ul>
         </div>
       </div>
 
-      <div class="space-y-2">
-        <div class="text-sm font-medium">Assign Role</div>
-        <div class="flex gap-2">
-          <input
-            class="input flex-1 font-mono text-sm"
-            placeholder="npub1..."
-            bind:value={permissionNpub}
-            onkeydown={(e) => e.key === 'Enter' && handleAddPermission()}
-          />
-          <select class="input w-28" bind:value={permissionRole}>
-            <option value="writer">Writer</option>
-            <option value="admin">Admin</option>
-          </select>
-          <button class="btn-success" onclick={handleAddPermission} disabled={savingPermissions}>
-            Add
-          </button>
+      {#if !canWrite && userNpub}
+        <div class="rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 space-y-2">
+          <p class="text-sm text-text-2">Share your npub with an admin to request write access:</p>
+          <CopyText text={userNpub} displayText={shortNpub(userNpub)} class="text-sm" />
         </div>
-        {#if permissionError}
-          <p class="text-xs text-danger">{permissionError}</p>
-        {/if}
-      </div>
+      {/if}
+
+      {#if canManage}
+        <div class="space-y-2">
+          <div class="text-sm font-medium">Assign Role</div>
+          <div class="flex gap-2">
+            <input
+              class="input flex-1 font-mono text-sm"
+              placeholder="npub1..."
+              bind:value={permissionNpub}
+              onkeydown={(e) => e.key === 'Enter' && handleAddPermission()}
+            />
+            <select class="input w-28" bind:value={permissionRole}>
+              <option value="writer">Writer</option>
+              <option value="admin">Admin</option>
+            </select>
+            <button class="btn-success" onclick={handleAddPermission} disabled={savingPermissions}>
+              Add
+            </button>
+          </div>
+          {#if permissionError}
+            <p class="text-xs text-danger">{permissionError}</p>
+          {/if}
+        </div>
+      {/if}
     </div>
   </div>
 {/if}

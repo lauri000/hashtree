@@ -9,11 +9,22 @@ export interface BoardCardAttachment {
   cidKey?: string;
 }
 
+export interface BoardCardComment {
+  id: string;
+  authorNpub: string;
+  markdown: string;
+  createdAt: number;
+  updatedAt: number;
+  attachments: BoardCardAttachment[];
+}
+
 export interface BoardCard {
   id: string;
   title: string;
   description: string;
+  assigneeNpubs: string[];
   attachments: BoardCardAttachment[];
+  comments: BoardCardComment[];
 }
 
 export interface BoardColumn {
@@ -128,6 +139,41 @@ function normalizeAttachment(raw: unknown, fallbackAttachmentId: string): BoardC
   };
 }
 
+function normalizeStringList(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  const deduped = new Set<string>();
+  for (const item of values) {
+    if (typeof item !== 'string') continue;
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+    deduped.add(trimmed);
+  }
+  return Array.from(deduped);
+}
+
+function normalizeComment(raw: unknown, fallbackCommentId: string): BoardCardComment | null {
+  if (!isRecord(raw)) return null;
+  const authorNpub = normalizeString(raw.authorNpub, '');
+  if (!authorNpub) return null;
+
+  const attachments: BoardCardAttachment[] = [];
+  const rawAttachments = Array.isArray(raw.attachments) ? raw.attachments : [];
+  for (let index = 0; index < rawAttachments.length; index += 1) {
+    const attachment = normalizeAttachment(rawAttachments[index], `${fallbackCommentId}-attachment-${index + 1}`);
+    if (attachment) attachments.push(attachment);
+  }
+
+  const createdAt = normalizeTimestamp(raw.createdAt, Date.now());
+  return {
+    id: normalizeString(raw.id, fallbackCommentId),
+    authorNpub,
+    markdown: typeof raw.markdown === 'string' ? raw.markdown : '',
+    createdAt,
+    updatedAt: normalizeTimestamp(raw.updatedAt, createdAt),
+    attachments,
+  };
+}
+
 function normalizeCard(raw: unknown, fallbackCardId: string): BoardCard | null {
   if (!isRecord(raw)) return null;
   const attachments: BoardCardAttachment[] = [];
@@ -136,11 +182,21 @@ function normalizeCard(raw: unknown, fallbackCardId: string): BoardCard | null {
     const attachment = normalizeAttachment(rawAttachments[index], `${fallbackCardId}-attachment-${index + 1}`);
     if (attachment) attachments.push(attachment);
   }
+
+  const comments: BoardCardComment[] = [];
+  const rawComments = Array.isArray(raw.comments) ? raw.comments : [];
+  for (let index = 0; index < rawComments.length; index += 1) {
+    const comment = normalizeComment(rawComments[index], `${fallbackCardId}-comment-${index + 1}`);
+    if (comment) comments.push(comment);
+  }
+
   return {
     id: normalizeString(raw.id, fallbackCardId),
     title: normalizeString(raw.title, `Card ${fallbackCardId}`),
     description: typeof raw.description === 'string' ? raw.description : '',
+    assigneeNpubs: normalizeStringList(raw.assigneeNpubs),
     attachments,
+    comments,
   };
 }
 
@@ -312,7 +368,9 @@ export function serializeCardData(card: BoardCard): string {
     id: card.id,
     title: card.title,
     description: card.description,
+    assigneeNpubs: card.assigneeNpubs,
     attachments: card.attachments,
+    comments: card.comments,
   }, null, 2) + '\n';
 }
 
@@ -333,7 +391,12 @@ export function cloneBoardState(state: BoardState): BoardState {
       ...column,
       cards: column.cards.map(card => ({
         ...card,
+        assigneeNpubs: [...card.assigneeNpubs],
         attachments: card.attachments.map(attachment => ({ ...attachment })),
+        comments: card.comments.map(comment => ({
+          ...comment,
+          attachments: comment.attachments.map(attachment => ({ ...attachment })),
+        })),
       })),
     })),
   };

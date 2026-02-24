@@ -5,15 +5,49 @@ test.describe('Settings page', () => {
   test('can navigate to settings page', async ({ page }) => {
     setupPageErrorHandler(page);
     await page.goto('/');
-    await waitForAppReady(page);
 
     const settingsLink = page.locator('a[href="#/settings"]');
-    await expect(settingsLink).toBeVisible({ timeout: 5000 });
+    await expect(settingsLink).toBeVisible({ timeout: 10000 });
     await settingsLink.click();
 
     await page.waitForURL(/#\/settings/, { timeout: 5000 });
 
     await expect(page.getByRole('button', { name: 'Servers' })).toBeVisible({ timeout: 5000 });
+  });
+
+  test('can expand discovered relays section', async ({ page }) => {
+    setupPageErrorHandler(page);
+    await page.goto('/#/settings');
+    await expect(page.getByRole('button', { name: 'Servers' })).toBeVisible({ timeout: 10000 });
+
+    const seededCount = await page.evaluate(() => {
+      const store = (window as any).__nostrStore;
+      if (!store) return 0;
+      const relay = { url: 'wss://relay.discovered.example.com', status: 'connected' as const };
+      const apply = () => {
+        if (typeof store.setDiscoveredRelays === 'function') {
+          store.setDiscoveredRelays([relay]);
+        } else if (typeof store.setState === 'function') {
+          store.setState({ discoveredRelays: [relay] });
+        }
+      };
+      apply();
+
+      if (typeof store.setDiscoveredRelays === 'function') {
+        const originalSetDiscoveredRelays = store.setDiscoveredRelays.bind(store);
+        store.setDiscoveredRelays = () => originalSetDiscoveredRelays([relay]);
+      }
+
+      return store.getState?.().discoveredRelays?.length ?? 0;
+    });
+    expect(seededCount).toBe(1);
+
+    const discoveredToggle = page.getByRole('button', { name: /Discovered relays \(1\)/i });
+    await expect(discoveredToggle).toBeVisible({ timeout: 5000 });
+    await discoveredToggle.click();
+
+    const discoveredSection = page.locator('div').filter({ has: discoveredToggle }).first();
+    await expect(discoveredSection.getByText('relay.discovered.example.com')).toBeVisible({ timeout: 5000 });
   });
 
   test('can add and remove blossom server', async ({ page }) => {

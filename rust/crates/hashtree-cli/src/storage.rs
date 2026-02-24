@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::executor::block_on as sync_block_on;
+use futures::io::AllowStdIo;
+use futures::StreamExt;
 use hashtree_config::StorageBackend;
 use hashtree_core::store::{Store, StoreError};
 use hashtree_core::{
@@ -14,7 +16,7 @@ use heed::types::*;
 use heed::{Database, EnvOpenOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -592,13 +594,14 @@ impl HashtreeStore {
 
     fn upload_file_internal<P: AsRef<Path>>(&self, file_path: P, pin: bool) -> Result<String> {
         let file_path = file_path.as_ref();
-        let file_content = std::fs::read(file_path)?;
+        let file = std::fs::File::open(file_path)
+            .with_context(|| format!("Failed to open file {}", file_path.display()))?;
 
-        // Use hashtree to store the file (public mode - no encryption)
+        // Use hashtree to store the file (public mode - no encryption), streaming from disk.
         let store = self.store_arc();
         let tree = HashTree::new(HashTreeConfig::new(store).public());
 
-        let (cid, _size) = sync_block_on(async { tree.put(&file_content).await })
+        let (cid, _size) = sync_block_on(async { tree.put_stream(AllowStdIo::new(file)).await })
             .context("Failed to store file")?;
 
         // Only pin if requested (htree add = pin, blossom upload = no pin)
@@ -614,22 +617,19 @@ impl HashtreeStore {
     /// Upload a file from a stream with progress callbacks
     pub fn upload_file_stream<R: Read, F>(
         &self,
-        mut reader: R,
+        reader: R,
         _file_name: impl Into<String>,
         mut callback: F,
     ) -> Result<String>
     where
         F: FnMut(&str),
     {
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data)?;
-
-        // Use HashTree.put for upload (public mode)
+        // Use HashTree.put_stream for streaming upload (public mode).
         let store = self.store_arc();
         let tree = HashTree::new(HashTreeConfig::new(store).public());
 
-        let (cid, _size) =
-            sync_block_on(async { tree.put(&data).await }).context("Failed to store file")?;
+        let (cid, _size) = sync_block_on(async { tree.put_stream(AllowStdIo::new(reader)).await })
+            .context("Failed to store file")?;
 
         let root_hex = to_hex(&cid.hash);
         callback(&root_hex);
@@ -707,8 +707,9 @@ impl HashtreeStore {
             let relative = path.strip_prefix(current_path).unwrap_or(path);
 
             if path.is_file() {
-                let content = std::fs::read(path)?;
-                let (cid, _size) = tree.put(&content).await.map_err(|e| {
+                let file = std::fs::File::open(path)
+                    .with_context(|| format!("Failed to open file {}", path.display()))?;
+                let (cid, _size) = tree.put_stream(AllowStdIo::new(file)).await.map_err(|e| {
                     anyhow::anyhow!("Failed to upload file {}: {}", path.display(), e)
                 })?;
 
@@ -791,13 +792,14 @@ impl HashtreeStore {
     /// Upload a file with CHK encryption, returns CID in format "hash:key"
     pub fn upload_file_encrypted<P: AsRef<Path>>(&self, file_path: P) -> Result<String> {
         let file_path = file_path.as_ref();
-        let file_content = std::fs::read(file_path)?;
+        let file = std::fs::File::open(file_path)
+            .with_context(|| format!("Failed to open file {}", file_path.display()))?;
 
-        // Use unified API with encryption enabled (default)
+        // Use unified API with encryption enabled (default), streaming from disk.
         let store = self.store_arc();
         let tree = HashTree::new(HashTreeConfig::new(store));
 
-        let (cid, _size) = sync_block_on(async { tree.put(&file_content).await })
+        let (cid, _size) = sync_block_on(async { tree.put_stream(AllowStdIo::new(file)).await })
             .map_err(|e| anyhow::anyhow!("Failed to encrypt file: {}", e))?;
 
         let cid_str = cid.to_string();
@@ -1090,6 +1092,73 @@ impl HashtreeStore {
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))
         })
+    }
+
+    fn ensure_cid_exists(&self, cid: &Cid) -> Result<()> {
+        let exists = self
+            .router
+            .exists(&cid.hash)
+            .map_err(|e| anyhow::anyhow!("Failed to check cid existence: {}", e))?;
+        if !exists {
+            anyhow::bail!("CID not found: {}", to_hex(&cid.hash));
+        }
+        Ok(())
+    }
+
+    /// Stream file content identified by Cid into a writer without buffering full file in memory.
+    pub fn write_file_by_cid_to_writer<W: Write>(&self, cid: &Cid, writer: &mut W) -> Result<u64> {
+        self.ensure_cid_exists(cid)?;
+
+        let store = self.store_arc();
+        let tree = HashTree::new(HashTreeConfig::new(store).public());
+        let mut total_bytes = 0u64;
+        let mut streamed_any_chunk = false;
+
+        sync_block_on(async {
+            let mut stream = tree.get_stream(cid);
+            while let Some(chunk) = stream.next().await {
+                streamed_any_chunk = true;
+                let chunk =
+                    chunk.map_err(|e| anyhow::anyhow!("Failed to stream file chunk: {}", e))?;
+                writer
+                    .write_all(&chunk)
+                    .map_err(|e| anyhow::anyhow!("Failed to write file chunk: {}", e))?;
+                total_bytes += chunk.len() as u64;
+            }
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        if !streamed_any_chunk {
+            anyhow::bail!("CID not found: {}", to_hex(&cid.hash));
+        }
+
+        writer
+            .flush()
+            .map_err(|e| anyhow::anyhow!("Failed to flush output: {}", e))?;
+        Ok(total_bytes)
+    }
+
+    /// Stream file content identified by Cid directly into a destination path.
+    pub fn write_file_by_cid<P: AsRef<Path>>(&self, cid: &Cid, output_path: P) -> Result<u64> {
+        self.ensure_cid_exists(cid)?;
+
+        let output_path = output_path.as_ref();
+        if let Some(parent) = output_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create output directory {}", parent.display())
+                })?;
+            }
+        }
+
+        let mut file = std::fs::File::create(output_path)
+            .with_context(|| format!("Failed to create output file {}", output_path.display()))?;
+        self.write_file_by_cid_to_writer(cid, &mut file)
+    }
+
+    /// Stream a public (unencrypted) file by hash directly into a destination path.
+    pub fn write_file<P: AsRef<Path>>(&self, hash: &[u8; 32], output_path: P) -> Result<u64> {
+        self.write_file_by_cid(&Cid::public(*hash), output_path)
     }
 
     /// Resolve a path within a tree (returns Cid with key if encrypted)

@@ -31,15 +31,15 @@ function sampleBoard(): BoardState {
         id: 'todo-col',
         title: 'Todo',
         cards: [
-          { id: 'card-a', title: 'Card A', description: 'first', attachments: [] },
-          { id: 'card-b', title: 'Card B', description: 'second', attachments: [] },
+          { id: 'card-a', title: 'Card A', description: 'first', assigneeNpubs: [], attachments: [], comments: [] },
+          { id: 'card-b', title: 'Card B', description: 'second', assigneeNpubs: [ownerNpub], attachments: [], comments: [] },
         ],
       },
       {
         id: 'done-col',
         title: 'Done',
         cards: [
-          { id: 'card-c', title: 'Card C', description: 'third', attachments: [] },
+          { id: 'card-c', title: 'Card C', description: 'third', assigneeNpubs: [], attachments: [], comments: [] },
         ],
       },
     ],
@@ -88,6 +88,7 @@ describe('board storage format', () => {
       id: 'card-1',
       title: 'Ship it',
       description: 'Move to production\nwithout downtime.',
+      assigneeNpubs: [ownerNpub],
       attachments: [
         {
           id: 'a-1',
@@ -100,13 +101,26 @@ describe('board storage format', () => {
           cidKey: 'cd'.repeat(32),
         },
       ],
+      comments: [
+        {
+          id: 'comment-1',
+          authorNpub: ownerNpub,
+          markdown: '**Looks good**',
+          createdAt: 1700000000100,
+          updatedAt: 1700000000100,
+          attachments: [],
+        },
+      ],
     });
     const parsed = parseCardData(raw, 'card-1');
     expect(parsed).not.toBeNull();
     expect(parsed?.title).toBe('Ship it');
     expect(parsed?.description).toContain('without downtime.');
+    expect(parsed?.assigneeNpubs).toEqual([ownerNpub]);
     expect(parsed?.attachments).toHaveLength(1);
     expect(parsed?.attachments[0].displayName).toBe('spec.png');
+    expect(parsed?.comments).toHaveLength(1);
+    expect(parsed?.comments[0].markdown).toContain('Looks good');
   });
 
   it('serializes and parses board permissions json', () => {

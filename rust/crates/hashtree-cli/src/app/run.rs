@@ -478,6 +478,7 @@ pub(crate) async fn run() -> Result<()> {
 
             if only_hash {
                 // Use in-memory store for hash-only mode
+                use futures::io::AllowStdIo;
                 use hashtree_core::store::MemoryStore;
                 use hashtree_core::{to_hex, HashTree, HashTreeConfig};
                 use std::sync::Arc;
@@ -499,9 +500,11 @@ pub(crate) async fn run() -> Result<()> {
                         println!("key:  {}", to_hex(&key));
                     }
                 } else {
-                    let data = std::fs::read(&path)?;
+                    let file = std::fs::File::open(&path).with_context(|| {
+                        format!("Failed to open file for hashing: {}", path.display())
+                    })?;
                     let (cid, _size) = tree
-                        .put(&data)
+                        .put_stream(AllowStdIo::new(file))
                         .await
                         .map_err(|e| anyhow::anyhow!("Failed to hash file: {}", e))?;
                     println!("hash: {}", to_hex(&cid.hash));
@@ -709,23 +712,15 @@ pub(crate) async fn run() -> Result<()> {
                     let filename = path.rsplit('/').next().unwrap_or(path);
                     let out_path = output.unwrap_or_else(|| PathBuf::from(filename));
 
-                    if let Some(content) = store.get_file_by_cid(&resolved_cid)? {
-                        std::fs::write(&out_path, content)?;
-                        println!("{} -> {}", to_hex(&resolved_cid.hash), out_path.display());
-                    } else {
-                        anyhow::bail!("File not found: {}", path);
-                    }
+                    store.write_file_by_cid(&resolved_cid, &out_path)?;
+                    println!("{} -> {}", to_hex(&resolved_cid.hash), out_path.display());
                 } else {
                     // nhash points to file - save with the filename from path
                     let filename = path.rsplit('/').next().unwrap_or(path);
                     let out_path = output.unwrap_or_else(|| PathBuf::from(filename));
 
-                    if let Some(content) = store.get_file_by_cid(&cid)? {
-                        std::fs::write(&out_path, content)?;
-                        println!("{} -> {}", hash_hex, out_path.display());
-                    } else {
-                        anyhow::bail!("CID not found: {}", hash_hex);
-                    }
+                    store.write_file_by_cid(&cid, &out_path)?;
+                    println!("{} -> {}", hash_hex, out_path.display());
                 }
             } else if let Some(_) = listing {
                 // It's a directory - create it and download contents
@@ -748,11 +743,8 @@ pub(crate) async fn run() -> Result<()> {
                                 std::fs::create_dir_all(&entry_path)?;
                                 Box::pin(download_dir(store, &entry_hash, &entry_path)).await?;
                             } else {
-                                // Get file content
-                                if let Some(content) = store.get_file(&entry_hash)? {
-                                    std::fs::write(&entry_path, content)?;
-                                    println!("  {} -> {}", entry.cid, entry_path.display());
-                                }
+                                store.write_file(&entry_hash, &entry_path)?;
+                                println!("  {} -> {}", entry.cid, entry_path.display());
                             }
                         }
                     }
@@ -763,14 +755,10 @@ pub(crate) async fn run() -> Result<()> {
                 download_dir(&store, &cid.hash, &out_dir).await?;
                 println!("Done.");
             } else {
-                // Try as a file - use get_file_by_cid for decryption support
-                if let Some(content) = store.get_file_by_cid(&cid)? {
-                    let out_path = output.unwrap_or_else(|| PathBuf::from(&hash_hex));
-                    std::fs::write(&out_path, content)?;
-                    println!("{} -> {}", hash_hex, out_path.display());
-                } else {
-                    anyhow::bail!("CID not found: {}", hash_hex);
-                }
+                // Try as a file - stream from store to output path with decryption support.
+                let out_path = output.unwrap_or_else(|| PathBuf::from(&hash_hex));
+                store.write_file_by_cid(&cid, &out_path)?;
+                println!("{} -> {}", hash_hex, out_path.display());
             }
         }
         Commands::Cat { cid: cid_input } => {

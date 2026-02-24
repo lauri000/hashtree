@@ -6,6 +6,7 @@ pub(crate) async fn add_directory<S: hashtree_core::store::Store>(
     dir: &std::path::Path,
     respect_gitignore: bool,
 ) -> Result<hashtree_core::Cid> {
+    use futures::io::AllowStdIo;
     use hashtree_core::DirEntry;
     use ignore::WalkBuilder;
     use std::collections::HashMap;
@@ -33,9 +34,10 @@ pub(crate) async fn add_directory<S: hashtree_core::store::Store>(
         let relative = path.strip_prefix(dir).unwrap_or(path);
 
         if path.is_file() {
-            let data = std::fs::read(path)?;
+            let file = std::fs::File::open(path)
+                .map_err(|e| anyhow::anyhow!("Failed to open file {}: {}", path.display(), e))?;
             let (cid, _size) = tree
-                .put(&data)
+                .put_stream(AllowStdIo::new(file))
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to add file {}: {}", path.display(), e))?;
 

@@ -13,9 +13,7 @@
 
   // Relay statuses
   let relayStatuses = $derived($nostrStore.relayStatuses);
-  let discoveredRelays = $derived(
-    Array.from($nostrStore.discoveredRelays?.entries() || []).map(([url, status]) => ({ url, status }))
-  );
+  let discoveredRelays = $derived($nostrStore.discoveredRelays);
   let showDiscoveredRelays = $state(false);
 
   // Blossom log
