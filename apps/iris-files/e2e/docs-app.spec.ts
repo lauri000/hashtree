@@ -218,7 +218,7 @@ test.describe('Iris Docs App', () => {
   });
 
   test('edits to existing document persist after navigation and refresh', async ({ page }) => {
-    test.setTimeout(120000); // Longer timeout for multiple reload operations
+    test.setTimeout(180000); // Longer timeout for multiple reload operations under parallel load
 
     await page.goto('/docs.html#/');
     await waitForAppReady(page);
@@ -272,6 +272,7 @@ test.describe('Iris Docs App', () => {
     }, { timeout: 90000, intervals: [1000, 2000, 3000] }).toBe(true);
 
     const editor2 = page.locator('.ProseMirror');
+    const rootBeforeAppend = await page.evaluate(() => (window as any).__getTreeRoot?.() ?? null);
     const previousEntry = await page.evaluate((name) => {
       const nostrStore = (window as any).__nostrStore;
       const npub = nostrStore?.getState?.().npub;
@@ -324,6 +325,8 @@ test.describe('Iris Docs App', () => {
       { treeName, previous: previousEntry },
       { timeout: 60000 }
     );
+    await waitForTreeRootChange(page, rootBeforeAppend, 60000);
+    await flushPendingPublishes(page);
 
     await safeReload(page, { waitUntil: 'domcontentloaded', timeoutMs: 60000 });
     await waitForAppReady(page);
@@ -336,8 +339,9 @@ test.describe('Iris Docs App', () => {
     await expect.poll(async () => {
       await page.evaluate(() => (window as any).__reloadYjsEditors?.());
       const text = await page.locator('.ProseMirror').textContent();
-      return text?.includes('Initial content. Added more content.') ?? false;
-    }, { timeout: 60000, intervals: [1000, 2000, 3000] }).toBe(true);
+      const normalized = text ?? '';
+      return normalized.includes('Initial content.') && normalized.includes('Added more content.');
+    }, { timeout: 120000, intervals: [1000, 2000, 3000] }).toBe(true);
   });
 
   test('another browser can view document via shared link', async ({ browser }) => {

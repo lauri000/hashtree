@@ -32,7 +32,20 @@ const slowSpecs = [
 ];
 const fastMode = process.env.E2E_FAST === '1';
 
-const testBootstrapPubkey = process.env.VITE_TEST_BOOTSTRAP_PUBKEY ?? getPublicKey(BOOTSTRAP_SECKEY_HEX);
+function hexToBytes(hex: string): Uint8Array {
+  const normalized = hex.trim();
+  if (normalized.length % 2 !== 0) throw new Error('Invalid hex length');
+  const out = new Uint8Array(normalized.length / 2);
+  for (let i = 0; i < out.length; i += 1) {
+    const offset = i * 2;
+    const value = Number.parseInt(normalized.slice(offset, offset + 2), 16);
+    if (Number.isNaN(value)) throw new Error('Invalid hex value');
+    out[i] = value;
+  }
+  return out;
+}
+
+const testBootstrapPubkey = process.env.VITE_TEST_BOOTSTRAP_PUBKEY ?? getPublicKey(hexToBytes(BOOTSTRAP_SECKEY_HEX));
 process.env.VITE_TEST_BOOTSTRAP_PUBKEY = testBootstrapPubkey;
 const testBlossomUrl = process.env.PW_TEST_BLOSSOM_URL ?? 'http://127.0.0.1:18780';
 process.env.PW_TEST_BLOSSOM_URL = testBlossomUrl;
@@ -84,7 +97,9 @@ export default defineConfig({
     {
       command: 'pnpm run dev --port 5173 --strictPort',
       url: 'http://localhost:5173',
-      reuseExistingServer: !process.env.CI,
+      // Avoid silently reusing a non-test Vite instance (e.g. boards/docs dev server).
+      // Fresh app server startup is slower but deterministic for E2E.
+      reuseExistingServer: false,
       timeout: 15000,
       env: {
         // Test mode: local relay, no Blossom, others pool disabled

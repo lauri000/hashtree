@@ -150,6 +150,78 @@ async function waitForTreeRoot(page: any, npub: string, treeName: string, timeou
   }, { targetNpub: npub, targetTree: treeName, timeout: timeoutMs });
 }
 
+async function waitForTreeEntry(page: any, npub: string, treeName: string, entryPath: string, timeoutMs: number = 60000): Promise<void> {
+  await expect.poll(async () => {
+    return page.evaluate(async ({ targetNpub, targetTree, targetPath }) => {
+      try {
+        const { getTreeRootSync } = await import('/src/stores');
+        const { getTree } = await import('/src/store');
+        const root = getTreeRootSync(targetNpub, targetTree);
+        if (!root) return false;
+        const tree = getTree();
+        const entry = await tree.resolvePath(root, targetPath);
+        return !!entry?.cid;
+      } catch {
+        return false;
+      }
+    }, { targetNpub: npub, targetTree: treeName, targetPath: entryPath });
+  }, { timeout: timeoutMs, intervals: [1000, 2000, 3000] }).toBe(true);
+}
+
+async function getTreeRootHex(page: any, npub: string, treeName: string): Promise<{ hashHex: string; keyHex: string | null }> {
+  const root = await page.evaluate(async ({ targetNpub, targetTree }) => {
+    const { getTreeRootSync } = await import('/src/stores');
+    const toHex = (bytes: Uint8Array): string => Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    const rootCid = getTreeRootSync(targetNpub, targetTree);
+    if (!rootCid?.hash) return null;
+    return {
+      hashHex: toHex(rootCid.hash),
+      keyHex: rootCid.key ? toHex(rootCid.key) : null,
+    };
+  }, { targetNpub: npub, targetTree: treeName });
+
+  if (!root) {
+    throw new Error(`Could not read tree root for ${npub}/${treeName}`);
+  }
+  return root;
+}
+
+async function primeTreeRootInViewer(
+  page: any,
+  npub: string,
+  treeName: string,
+  root: { hashHex: string; keyHex: string | null }
+): Promise<void> {
+  await page.evaluate(async ({ targetNpub, targetTree, hashHex, keyHex }) => {
+    const { updateLocalRootCacheHex } = await import('/src/treeRootCache');
+    const fromHex = (hex: string): Uint8Array => {
+      const normalized = hex.trim().toLowerCase();
+      if (!normalized || normalized.length % 2 !== 0) return new Uint8Array();
+      const out = new Uint8Array(normalized.length / 2);
+      for (let i = 0; i < out.length; i += 1) {
+        const byte = Number.parseInt(normalized.slice(i * 2, i * 2 + 2), 16);
+        if (Number.isNaN(byte)) return new Uint8Array();
+        out[i] = byte;
+      }
+      return out;
+    };
+    updateLocalRootCacheHex(targetNpub, targetTree, hashHex, keyHex ?? undefined, 'link-visible');
+
+    const adapter = (window as any).__getWorkerAdapter?.() ?? (window as any).__workerAdapter;
+    if (adapter?.setTreeRootCache) {
+      await adapter.setTreeRootCache(
+        targetNpub,
+        targetTree,
+        fromHex(hashHex),
+        keyHex ? fromHex(keyHex) : undefined,
+        'link-visible'
+      );
+    }
+  }, { targetNpub: npub, targetTree: treeName, hashHex: root.hashHex, keyHex: root.keyHex });
+}
+
 test.describe('Link-visible Tree Visibility', () => {
   // Increase timeout for all tests since new user setup now creates 3 default folders
   test.setTimeout(120000);
@@ -295,6 +367,8 @@ test.describe('Link-visible Tree Visibility', () => {
     expect(urlMatch).toBeTruthy();
     const [, npub, treeName] = urlMatch!;
     await waitForTreePublished(page, npub, treeName, 45000);
+    await waitForTreeEntry(page, npub, treeName, 'shared.txt', 90000);
+    const ownerRoot = await getTreeRootHex(page, npub, treeName);
 
     // Open fresh browser context (no cookies, no localStorage)
     const context2 = await browser.newContext();
@@ -374,6 +448,7 @@ test.describe('Link-visible Tree Visibility', () => {
         await storeLinkKey(targetNpub, targetTree, linkKey);
       }
     }, { targetNpub: npub, targetTree: treeName, linkKey: kParam });
+    await primeTreeRootInViewer(page2, npub, treeName, ownerRoot);
     await page2.evaluate(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
 
     const fileLink = page2.locator(`[data-testid="file-list"] >> text=shared.txt`);

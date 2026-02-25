@@ -3,16 +3,16 @@ import { finalizeEvent, getPublicKey, nip19 } from 'nostr-tools';
 import WebSocket from 'ws';
 import { createHash } from 'crypto';
 import { setupPageErrorHandler, disableOthersPool, ensureLoggedIn, waitForRelayConnected, useLocalRelay, presetLocalRelayInDB, safeReload, waitForAppReady, clearAllStorage, waitForFollowInWorker } from './test-utils';
-import { BOOTSTRAP_SECKEY_HEX, FOLLOW_SECKEY_HEX, FOLLOW2_SECKEY_HEX } from './nostr-test-keys';
+import { BOOTSTRAP_SECKEY_HEX, FOLLOW_SECKEY_HEX, FOLLOW2_SECKEY_HEX, BOOTSTRAP_SECKEY, FOLLOW_SECKEY, FOLLOW2_SECKEY } from './nostr-test-keys';
 
 let relayUrl = '';
 test.beforeAll(({ relayUrl: workerRelayUrl }) => {
   relayUrl = workerRelayUrl;
 });
-const BOOTSTRAP_PUBKEY = getPublicKey(BOOTSTRAP_SECKEY_HEX);
-const FOLLOW_PUBKEY = getPublicKey(FOLLOW_SECKEY_HEX);
+const BOOTSTRAP_PUBKEY = getPublicKey(BOOTSTRAP_SECKEY);
+const FOLLOW_PUBKEY = getPublicKey(FOLLOW_SECKEY);
 const FOLLOW_NPUB = nip19.npubEncode(FOLLOW_PUBKEY);
-const FOLLOW2_PUBKEY = getPublicKey(FOLLOW2_SECKEY_HEX);
+const FOLLOW2_PUBKEY = getPublicKey(FOLLOW2_SECKEY);
 const FOLLOW2_NPUB = nip19.npubEncode(FOLLOW2_PUBKEY);
 
 async function publishEvent(event: Record<string, unknown>): Promise<void> {

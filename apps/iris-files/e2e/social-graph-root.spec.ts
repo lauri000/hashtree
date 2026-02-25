@@ -2,15 +2,15 @@ import { test, expect } from './fixtures';
 import { finalizeEvent, getPublicKey, nip19 } from 'nostr-tools';
 import WebSocket from 'ws';
 import { disableOthersPool, setupPageErrorHandler, waitForAppReady, ensureLoggedIn, useLocalRelay, waitForRelayConnected } from './test-utils.js';
-import { BOOTSTRAP_SECKEY_HEX, FOLLOW_SECKEY_HEX } from './nostr-test-keys';
+import { BOOTSTRAP_SECKEY_HEX, FOLLOW_SECKEY_HEX, BOOTSTRAP_SECKEY, FOLLOW_SECKEY } from './nostr-test-keys';
 
 let relayUrl = '';
 test.beforeAll(({ relayUrl: workerRelayUrl }) => {
   relayUrl = workerRelayUrl;
 });
-const BOOTSTRAP_PUBKEY = getPublicKey(BOOTSTRAP_SECKEY_HEX);
+const BOOTSTRAP_PUBKEY = getPublicKey(BOOTSTRAP_SECKEY);
 const BOOTSTRAP_NPUB = nip19.npubEncode(BOOTSTRAP_PUBKEY);
-const FOLLOW_PUBKEY = getPublicKey(FOLLOW_SECKEY_HEX);
+const FOLLOW_PUBKEY = getPublicKey(FOLLOW_SECKEY);
 
 async function publishEvent(event: Record<string, unknown>): Promise<void> {
   await new Promise<void>((resolve, reject) => {

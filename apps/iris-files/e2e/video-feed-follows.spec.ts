@@ -3,7 +3,7 @@ import { finalizeEvent, getPublicKey, nip19 } from 'nostr-tools';
 import WebSocket from 'ws';
 import { createHash } from 'crypto';
 import { setupPageErrorHandler, disableOthersPool, ensureLoggedIn, evaluateWithRetry, waitForAppReady, waitForRelayConnected, presetLocalRelayInDB, safeReload } from './test-utils';
-import { BOOTSTRAP_SECKEY_HEX, FOLLOW_SECKEY_HEX } from './nostr-test-keys';
+import { BOOTSTRAP_SECKEY_HEX, FOLLOW_SECKEY_HEX, BOOTSTRAP_SECKEY, FOLLOW_SECKEY } from './nostr-test-keys';
 
 let relayUrl = '';
 
@@ -25,9 +25,9 @@ test.beforeAll(({ relayUrl: workerRelayUrl }) => {
  * Known follow: npub137c5pd8gmhhe0njtsgwjgunc5xjr2vmzvglkgqs5sjeh972gqqxqjak37w
  */
 
-const BOOTSTRAP_PUBKEY = getPublicKey(BOOTSTRAP_SECKEY_HEX);
+const BOOTSTRAP_PUBKEY = getPublicKey(BOOTSTRAP_SECKEY);
 const BOOTSTRAP_NPUB = nip19.npubEncode(BOOTSTRAP_PUBKEY);
-const FOLLOW_PUBKEY = getPublicKey(FOLLOW_SECKEY_HEX);
+const FOLLOW_PUBKEY = getPublicKey(FOLLOW_SECKEY);
 const FOLLOW_NPUB = nip19.npubEncode(FOLLOW_PUBKEY);
 
 const BOOTSTRAP_VIDEO_HASH = createHash('sha256').update('bootstrap-video').digest('hex');

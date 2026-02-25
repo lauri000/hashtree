@@ -2142,7 +2142,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
     data-modal-backdrop
     onclick={closeCardModal}
   >
@@ -2150,7 +2150,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="w-full max-w-lg mx-4" onclick={(event) => event.stopPropagation()}>
       <form
-        class="bg-surface-1 rounded-lg shadow-lg border border-surface-3 p-5 space-y-4"
+        class="bg-surface-1 rounded-lg shadow-lg border border-surface-3 p-5 space-y-4 max-h-[90vh] overflow-y-auto"
         onsubmit={onCardModalSubmit}
       >
         <div class="flex items-center justify-between">
