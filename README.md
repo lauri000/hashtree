@@ -42,6 +42,12 @@ cargo install hashtree-cli --no-default-features
 - Web app + JS SDK: follow [`ts/README.md`](ts/README.md)
 - CLI + daemon + git remote: follow [`rust/README.md`](rust/README.md)
 
+## Mobile FFI (optional)
+
+- FFI crate: [`rust/crates/hashtree-ffi`](rust/crates/hashtree-ffi) (UniFFI bindings for attachment operations)
+- Native Rust apps should usually use `hashtree-core`/`hashtree-blossom` directly
+- Mobile/Flutter apps can build `hashtree-ffi` and generate Kotlin/Swift bindings with UniFFI
+
 ## Protocol spec
 
 - [`docs/HTS-01.md`](docs/HTS-01.md) - hashtree core protocol (draft)
