@@ -32,6 +32,9 @@ importers:
       '@hashtree/nostr':
         specifier: workspace:*
         version: link:../../ts/packages/hashtree-nostr
+      '@hashtree/tree-root':
+        specifier: workspace:*
+        version: link:../../ts/packages/hashtree-tree-root
       '@hashtree/worker':
         specifier: workspace:*
         version: link:../../ts/packages/hashtree-worker
@@ -318,6 +321,19 @@ importers:
         specifier: ^8.18.3
         version: 8.19.0
 
+  ../../ts/packages/hashtree-tree-root:
+    dependencies:
+      '@hashtree/core':
+        specifier: workspace:*
+        version: link:../hashtree
+    devDependencies:
+      typescript:
+        specifier: ^5.3.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.19.11)(happy-dom@15.11.7)(terser@5.46.0)
+
   ../../ts/packages/hashtree-worker:
     dependencies:
       '@hashtree/core':
@@ -329,6 +345,21 @@ importers:
       '@hashtree/nostr':
         specifier: workspace:*
         version: link:../hashtree-nostr
+      '@msgpack/msgpack':
+        specifier: ^3.1.2
+        version: 3.1.3
+      dexie:
+        specifier: ^4.2.1
+        version: 4.2.1
+      ndk:
+        specifier: workspace:*
+        version: link:../ndk
+      ndk-cache:
+        specifier: workspace:*
+        version: link:../ndk-cache
+      nostr-social-graph:
+        specifier: workspace:*
+        version: link:../nostr-social-graph
       nostr-tools:
         specifier: ^2.18.2
         version: 2.23.1(typescript@5.9.3)
@@ -336,6 +367,9 @@ importers:
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
+      vitest:
+        specifier: ^2.1.9
+        version: 2.1.9(@types/node@22.19.11)(happy-dom@15.11.7)(terser@5.46.0)
 
   ../../ts/packages/ndk:
     dependencies:

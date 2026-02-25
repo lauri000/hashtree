@@ -34,7 +34,7 @@
     "lint": "eslint packages/hashtree/src && pnpm --filter iris-files lint",
     "lint:fix": "eslint packages/hashtree/src --fix && pnpm --filter iris-files lint:fix",
     "maps:crawl": "pnpm --filter @hashtree/core build && node scripts/maps/crawl-tiles.js",
-    "publish:packages": "pnpm --filter @hashtree/core build && pnpm --filter @hashtree/core publish && pnpm --filter @hashtree/git build && pnpm --filter @hashtree/git publish && pnpm --filter @hashtree/nostr build && pnpm --filter @hashtree/nostr publish && pnpm --filter @hashtree/dexie build && pnpm --filter @hashtree/dexie publish && pnpm --filter @hashtree/index build && pnpm --filter @hashtree/index publish"
+    "publish:packages": "pnpm --filter @hashtree/core build && pnpm --filter @hashtree/core publish && pnpm --filter @hashtree/git build && pnpm --filter @hashtree/git publish && pnpm --filter @hashtree/nostr build && pnpm --filter @hashtree/nostr publish && pnpm --filter @hashtree/tree-root build && pnpm --filter @hashtree/tree-root publish && pnpm --filter @hashtree/dexie build && pnpm --filter @hashtree/dexie publish && pnpm --filter @hashtree/index build && pnpm --filter @hashtree/index publish"
   },
   "devDependencies": {
     "@esbuild/linux-arm64": "^0.27.0",

@@ -476,6 +476,19 @@ importers:
         specifier: ^8.18.3
         version: 8.18.3
 
+  packages/hashtree-tree-root:
+    dependencies:
+      '@hashtree/core':
+        specifier: workspace:*
+        version: link:../hashtree
+    devDependencies:
+      typescript:
+        specifier: ^5.3.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@24.10.1)(happy-dom@15.11.7)(jsdom@26.1.0)(terser@5.44.1)
+
   packages/hashtree-worker:
     dependencies:
       '@hashtree/core':

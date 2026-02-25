@@ -21,6 +21,7 @@ Blossom-compatible storage with chunking and directory structure. Merkle roots c
 - [`@hashtree/git`](https://www.npmjs.com/package/@hashtree/git) - Git/htree interoperability helpers ([source](packages/hashtree-git))
 - [`@hashtree/dexie`](https://www.npmjs.com/package/@hashtree/dexie) - IndexedDB/Dexie storage adapter ([source](packages/hashtree-dexie))
 - [`@hashtree/index`](https://www.npmjs.com/package/@hashtree/index) - B-Tree index structures ([source](packages/hashtree-index))
+- [`@hashtree/tree-root`](https://www.npmjs.com/package/@hashtree/tree-root) - Shared tree-root registry, caching, and publish-throttling primitives ([source](packages/hashtree-tree-root))
 - [`@hashtree/worker`](https://www.npmjs.com/package/@hashtree/worker) - Modular browser worker + WebRTC P2P controller/proxy helpers ([source](packages/hashtree-worker))
 
 **Internal packages:**
@@ -36,6 +37,7 @@ npm install @hashtree/core
 npm install @hashtree/nostr  # WebRTC P2P + Nostr resolver
 npm install @hashtree/dexie  # IndexedDB storage
 npm install @hashtree/index  # B-Tree indexes
+npm install @hashtree/tree-root  # Shared tree-root state primitives
 ```
 
 ## Storage Backends

@@ -2187,7 +2187,7 @@
 
         <div class="space-y-2">
           <div class="flex items-center justify-between gap-2">
-            <label class="text-sm font-medium">Attachments</label>
+            <div class="text-sm font-medium">Attachments</div>
             <button
               type="button"
               class="btn-ghost"
@@ -2241,7 +2241,7 @@
         </div>
 
         <div class="space-y-2">
-          <label class="text-sm font-medium">Assignees</label>
+          <div class="text-sm font-medium">Assignees</div>
           {#if boardMemberNpubs.length === 0}
             <p class="text-xs text-text-3">No board members available.</p>
           {:else}
@@ -2291,6 +2291,7 @@
     class="fixed inset-0 z-[55] flex items-center justify-center bg-black/70 p-4"
     data-modal-backdrop
     role="dialog"
+    tabindex="-1"
     aria-modal="true"
     aria-label="Card details"
     onclick={closeCardViewModal}
@@ -2584,6 +2585,7 @@
     class="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4"
     data-modal-backdrop
     role="dialog"
+    tabindex="-1"
     aria-modal="true"
     aria-label="Attachment preview"
     onclick={closeAttachmentPreview}
