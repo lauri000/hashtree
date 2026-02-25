@@ -1259,6 +1259,12 @@
     closeColumnModal();
   }
 
+  function removeColumnFromModal() {
+    if (!canWrite || columnModalMode !== 'edit' || !columnModalColumnId) return;
+    removeColumn(columnModalColumnId);
+    closeColumnModal();
+  }
+
   function openCreateCardModal(columnId: string) {
     if (!canWrite) return;
     cardModalMode = 'create';
@@ -1898,7 +1904,7 @@
         {#each board.columns as column (column.id)}
           <section
             data-testid={`board-column-${column.title}`}
-            class="w-80 max-w-80 shrink-0 bg-surface-1 rounded-xl border border-surface-3 p-3 shadow-sm space-y-3"
+            class="group w-80 max-w-80 shrink-0 bg-surface-1 rounded-xl border border-surface-3 p-3 shadow-sm space-y-3"
           >
             <div class="flex items-start justify-between gap-2">
               <div class="min-w-0">
@@ -1908,22 +1914,14 @@
                 </p>
               </div>
               {#if canWrite}
-                <div class="flex items-center gap-1">
+                <div class="h-8 w-8 shrink-0">
                   <button
-                    class="btn-circle btn-ghost"
+                    class="btn-circle btn-ghost h-8 w-8 min-h-8 min-w-8 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto"
                     aria-label="Edit column"
                     title="Edit column"
                     onclick={() => openEditColumnModal(column.id, column.title)}
                   >
                     <span class="i-lucide-pencil text-sm"></span>
-                  </button>
-                  <button
-                    class="btn-circle btn-ghost text-danger"
-                    aria-label="Remove column"
-                    title="Remove column"
-                    onclick={() => removeColumn(column.id)}
-                  >
-                    <span class="i-lucide-trash-2 text-sm"></span>
                   </button>
                 </div>
               {/if}
@@ -2114,11 +2112,26 @@
           {/if}
         </div>
 
-        <div class="flex justify-end gap-2">
+        <div class="flex items-center justify-between gap-2">
+          {#if columnModalMode === 'edit'}
+            <button
+              type="button"
+              class="btn-danger"
+              aria-label="Delete column"
+              onclick={removeColumnFromModal}
+            >
+              <span class="i-lucide-trash-2 mr-1"></span>
+              Delete column
+            </button>
+          {:else}
+            <span></span>
+          {/if}
+          <div class="flex items-center gap-2">
           <button type="button" class="btn-ghost" onclick={closeColumnModal}>Cancel</button>
           <button type="submit" class="btn-primary">
             {columnModalMode === 'create' ? 'Create Column' : 'Save Column'}
           </button>
+          </div>
         </div>
       </form>
     </div>
