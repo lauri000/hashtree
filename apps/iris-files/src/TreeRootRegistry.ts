@@ -277,6 +277,57 @@ class TreeRootRegistryImpl {
     return true;
   }
 
+  private mergeSameHashMetadata(
+    existing: TreeRootRecord | undefined,
+    hash: Hash,
+    options?: {
+      key?: Hash;
+      visibility?: TreeVisibility;
+      encryptedKey?: string;
+      keyId?: string;
+      selfEncryptedKey?: string;
+      selfEncryptedLinkKey?: string;
+    }
+  ): boolean {
+    if (!existing) return false;
+    if (existing.dirty) return false;
+    if (toHex(existing.hash) !== toHex(hash)) return false;
+
+    let changed = false;
+
+    if (!existing.key && options?.key) {
+      existing.key = options.key;
+      changed = true;
+    }
+
+    if (existing.visibility === 'public' && options?.visibility && options.visibility !== 'public') {
+      existing.visibility = options.visibility;
+      changed = true;
+    }
+
+    if (!existing.encryptedKey && options?.encryptedKey) {
+      existing.encryptedKey = options.encryptedKey;
+      changed = true;
+    }
+
+    if (!existing.keyId && options?.keyId) {
+      existing.keyId = options.keyId;
+      changed = true;
+    }
+
+    if (!existing.selfEncryptedKey && options?.selfEncryptedKey) {
+      existing.selfEncryptedKey = options.selfEncryptedKey;
+      changed = true;
+    }
+
+    if (!existing.selfEncryptedLinkKey && options?.selfEncryptedLinkKey) {
+      existing.selfEncryptedLinkKey = options.selfEncryptedLinkKey;
+      changed = true;
+    }
+
+    return changed;
+  }
+
   /**
    * Sync lookup - returns cached record or null (no side effects)
    */
@@ -436,6 +487,11 @@ class TreeRootRegistryImpl {
 
     // Only update if newer (based on updatedAt timestamp), or same timestamp with new hash/key
     if (!this.shouldAcceptUpdate(existing ?? undefined, hash, options?.key, updatedAt)) {
+      if (this.mergeSameHashMetadata(existing ?? undefined, hash, options)) {
+        this.persistence.save(cacheKey, existing!);
+        this.notify(cacheKey, existing!);
+        return true;
+      }
       return false;
     }
 
@@ -506,6 +562,11 @@ class TreeRootRegistryImpl {
 
     // Only update if newer (based on updatedAt timestamp), or same timestamp with new hash/key
     if (!this.shouldAcceptUpdate(existing ?? undefined, hash, options?.key, updatedAt)) {
+      if (this.mergeSameHashMetadata(existing ?? undefined, hash, options)) {
+        this.persistence.save(cacheKey, existing!);
+        this.notify(cacheKey, existing!);
+        return true;
+      }
       return false;
     }
 
@@ -556,6 +617,10 @@ class TreeRootRegistryImpl {
 
     // Only update if newer (based on updatedAt timestamp), or same timestamp with new hash/key
     if (!this.shouldAcceptUpdate(existing ?? undefined, hash, options?.key, updatedAt)) {
+      if (this.mergeSameHashMetadata(existing ?? undefined, hash, options)) {
+        this.persistence.save(cacheKey, existing!);
+        this.notify(cacheKey, existing!);
+      }
       return;
     }
 
