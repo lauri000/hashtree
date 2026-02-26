@@ -45,8 +45,26 @@ use tracing::{debug, info, warn};
 /// Event kind for application-specific data (NIP-78)
 pub const KIND_APP_DATA: u16 = 30078;
 
+/// NIP-34 event kinds
+pub const KIND_PULL_REQUEST: u16 = 1618;
+pub const KIND_STATUS_OPEN: u16 = 1630;
+pub const KIND_STATUS_APPLIED: u16 = 1631;
+pub const KIND_STATUS_CLOSED: u16 = 1632;
+pub const KIND_STATUS_DRAFT: u16 = 1633;
+pub const KIND_REPO_ANNOUNCEMENT: u16 = 30617;
+
 /// Label for hashtree events
 pub const LABEL_HASHTREE: &str = "hashtree";
+
+/// An open pull request from Nostr
+#[derive(Debug, Clone)]
+pub struct OpenPullRequest {
+    pub event_id: String,
+    pub author_pubkey: String,
+    pub commit_tip: Option<String>,
+    pub branch: Option<String>,
+    pub target_branch: Option<String>,
+}
 
 /// A stored key with optional petname
 #[derive(Debug, Clone)]
@@ -237,6 +255,61 @@ where
     events
         .into_iter()
         .max_by_key(|event| (event.created_at, event.id))
+}
+
+fn latest_trusted_pr_status_kinds(
+    pr_events: &[Event],
+    status_events: &[Event],
+    repo_owner_pubkey: &str,
+) -> HashMap<String, u16> {
+    let pr_authors: HashMap<String, String> = pr_events
+        .iter()
+        .map(|event| (event.id.to_hex(), event.pubkey.to_hex()))
+        .collect();
+
+    let mut trusted_statuses: HashMap<String, Vec<&Event>> = HashMap::new();
+    for status in status_events {
+        let signer_pubkey = status.pubkey.to_hex();
+        for tag in status.tags.iter() {
+            let slice = tag.as_slice();
+            if slice.len() < 2 || slice[0].as_str() != "e" {
+                continue;
+            }
+
+            let pr_id = slice[1].to_string();
+            let Some(pr_author_pubkey) = pr_authors.get(&pr_id) else {
+                continue;
+            };
+
+            let trusted = if status.kind.as_u16() == KIND_STATUS_APPLIED {
+                // Only the repository owner can mark a PR as applied/merged.
+                signer_pubkey == repo_owner_pubkey
+            } else {
+                signer_pubkey == *pr_author_pubkey || signer_pubkey == repo_owner_pubkey
+            };
+            if trusted {
+                trusted_statuses.entry(pr_id).or_default().push(status);
+            }
+        }
+    }
+
+    let mut latest_status = HashMap::new();
+    for (pr_id, events) in trusted_statuses {
+        // Treat maintainer-applied as terminal for open-PR computation so later
+        // author statuses cannot make an already-merged PR appear open again.
+        if let Some(applied) = pick_latest_event(
+            events
+                .iter()
+                .copied()
+                .filter(|event| event.kind.as_u16() == KIND_STATUS_APPLIED),
+        ) {
+            latest_status.insert(pr_id, applied.kind.as_u16());
+        } else if let Some(latest) = pick_latest_event(events.iter().copied()) {
+            latest_status.insert(pr_id, latest.kind.as_u16());
+        }
+    }
+
+    latest_status
 }
 
 /// Result of publishing to relays
@@ -1170,6 +1243,238 @@ impl NostrClient {
         ))
     }
 
+    /// Fetch open pull requests targeting this repo
+    pub fn fetch_open_prs(&self, repo_name: &str) -> Result<Vec<OpenPullRequest>> {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?;
+
+        let result = rt.block_on(self.fetch_open_prs_async(repo_name));
+        rt.shutdown_timeout(Duration::from_millis(500));
+        result
+    }
+
+    async fn fetch_open_prs_async(&self, repo_name: &str) -> Result<Vec<OpenPullRequest>> {
+        let client = Client::default();
+
+        for relay in &self.relays {
+            if let Err(e) = client.add_relay(relay).await {
+                warn!("Failed to add relay {}: {}", relay, e);
+            }
+        }
+        client.connect().await;
+
+        // Wait for at least one relay (quick timeout)
+        let start = std::time::Instant::now();
+        loop {
+            let relays = client.relays().await;
+            let mut connected = false;
+            for relay in relays.values() {
+                if relay.is_connected().await {
+                    connected = true;
+                    break;
+                }
+            }
+            if connected {
+                break;
+            }
+            if start.elapsed() > Duration::from_secs(2) {
+                let _ = client.disconnect().await;
+                return Ok(vec![]);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // Query for kind 1618 PRs targeting this repo
+        let repo_address = format!("{}:{}:{}", KIND_REPO_ANNOUNCEMENT, self.pubkey, repo_name);
+        let pr_filter = Filter::new()
+            .kind(Kind::Custom(KIND_PULL_REQUEST))
+            .custom_tag(SingleLetterTag::lowercase(Alphabet::A), vec![&repo_address]);
+
+        let pr_events = match tokio::time::timeout(
+            Duration::from_secs(3),
+            client.get_events_of(vec![pr_filter], EventSource::relays(None)),
+        )
+        .await
+        {
+            Ok(Ok(events)) => events,
+            _ => {
+                let _ = client.disconnect().await;
+                return Ok(vec![]);
+            }
+        };
+
+        if pr_events.is_empty() {
+            let _ = client.disconnect().await;
+            return Ok(vec![]);
+        }
+
+        // Collect PR event IDs for status query
+        let pr_ids: Vec<String> = pr_events.iter().map(|e| e.id.to_hex()).collect();
+
+        // Query for status events referencing these PRs
+        let status_filter = Filter::new()
+            .kinds(vec![
+                Kind::Custom(KIND_STATUS_OPEN),
+                Kind::Custom(KIND_STATUS_APPLIED),
+                Kind::Custom(KIND_STATUS_CLOSED),
+                Kind::Custom(KIND_STATUS_DRAFT),
+            ])
+            .custom_tag(
+                SingleLetterTag::lowercase(Alphabet::E),
+                pr_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            );
+
+        let status_events = match tokio::time::timeout(
+            Duration::from_secs(3),
+            client.get_events_of(vec![status_filter], EventSource::relays(None)),
+        )
+        .await
+        {
+            Ok(Ok(events)) => events,
+            Ok(Err(e)) => {
+                let _ = client.disconnect().await;
+                return Err(anyhow::anyhow!(
+                    "Failed to fetch PR status events from relays: {}",
+                    e
+                ));
+            }
+            Err(_) => {
+                let _ = client.disconnect().await;
+                return Err(anyhow::anyhow!(
+                    "Timed out fetching PR status events from relays"
+                ));
+            }
+        };
+
+        let _ = client.disconnect().await;
+
+        // Build map: pr_event_id -> latest trusted status kind
+        let latest_status = latest_trusted_pr_status_kinds(&pr_events, &status_events, &self.pubkey);
+
+        // Filter to only open PRs (no status or kind 1630)
+        let mut open_prs = Vec::new();
+        for event in &pr_events {
+            let pr_id = event.id.to_hex();
+            let is_open = match latest_status.get(&pr_id) {
+                None => true, // No status = open
+                Some(kind) => *kind == KIND_STATUS_OPEN,
+            };
+            if !is_open {
+                continue;
+            }
+
+            let mut commit_tip = None;
+            let mut branch = None;
+            let mut target_branch = None;
+
+            for tag in event.tags.iter() {
+                let slice = tag.as_slice();
+                if slice.len() >= 2 {
+                    match slice[0].as_str() {
+                        "c" => commit_tip = Some(slice[1].to_string()),
+                        "branch" => branch = Some(slice[1].to_string()),
+                        "target-branch" => target_branch = Some(slice[1].to_string()),
+                        _ => {}
+                    }
+                }
+            }
+
+            open_prs.push(OpenPullRequest {
+                event_id: pr_id,
+                author_pubkey: event.pubkey.to_hex(),
+                commit_tip,
+                branch,
+                target_branch,
+            });
+        }
+
+        debug!("Found {} open PRs for {}", open_prs.len(), repo_name);
+        Ok(open_prs)
+    }
+
+    /// Publish a kind 1631 (STATUS_APPLIED) event to mark a PR as merged
+    pub fn publish_pr_merged_status(
+        &self,
+        pr_event_id: &str,
+        pr_author_pubkey: &str,
+    ) -> Result<()> {
+        let keys = self.keys.as_ref().context("Cannot publish status: no secret key")?;
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?;
+
+        let result = rt.block_on(self.publish_pr_merged_status_async(keys, pr_event_id, pr_author_pubkey));
+        rt.shutdown_timeout(Duration::from_millis(500));
+        result
+    }
+
+    async fn publish_pr_merged_status_async(
+        &self,
+        keys: &Keys,
+        pr_event_id: &str,
+        pr_author_pubkey: &str,
+    ) -> Result<()> {
+        let client = Client::new(keys.clone());
+
+        for relay in &self.relays {
+            if let Err(e) = client.add_relay(relay).await {
+                warn!("Failed to add relay {}: {}", relay, e);
+            }
+        }
+        client.connect().await;
+
+        // Wait for at least one relay
+        let start = std::time::Instant::now();
+        loop {
+            let relays = client.relays().await;
+            let mut connected = false;
+            for relay in relays.values() {
+                if relay.is_connected().await {
+                    connected = true;
+                    break;
+                }
+            }
+            if connected {
+                break;
+            }
+            if start.elapsed() > Duration::from_secs(3) {
+                anyhow::bail!("Failed to connect to any relay for status publish");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let tags = vec![
+            Tag::custom(TagKind::custom("e"), vec![pr_event_id.to_string()]),
+            Tag::custom(TagKind::custom("p"), vec![pr_author_pubkey.to_string()]),
+        ];
+
+        let event = EventBuilder::new(Kind::Custom(KIND_STATUS_APPLIED), "", tags)
+            .to_event(keys)
+            .map_err(|e| anyhow::anyhow!("Failed to sign status event: {}", e))?;
+
+        let publish_result = match client.send_event(event).await {
+            Ok(output) => {
+                if output.success.is_empty() {
+                    Err(anyhow::anyhow!(
+                        "PR merged status was not confirmed by any relay"
+                    ))
+                } else {
+                    info!("Published PR merged status to {} relays", output.success.len());
+                    Ok(())
+                }
+            }
+            Err(e) => Err(anyhow::anyhow!("Failed to publish PR merged status: {}", e)),
+        };
+
+        let _ = client.disconnect().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        publish_result
+    }
+
     /// Upload blob to blossom server
     #[allow(dead_code)]
     pub async fn upload_blob(&self, _hash: &str, data: &[u8]) -> Result<String> {
@@ -1431,6 +1736,204 @@ mod tests {
         assert!(
             private_value.len() != 64,
             "NIP-44 output should not be 64 chars like hex CHK"
+        );
+    }
+
+    fn build_test_pr_event(keys: &Keys, created_at_secs: u64) -> Event {
+        EventBuilder::new(
+            Kind::Custom(KIND_PULL_REQUEST),
+            "",
+            [Tag::custom(
+                TagKind::custom("subject"),
+                vec!["test pr".to_string()],
+            )],
+        )
+        .custom_created_at(Timestamp::from_secs(created_at_secs))
+        .to_event(keys)
+        .unwrap()
+    }
+
+    fn build_test_status_event(
+        keys: &Keys,
+        kind: u16,
+        pr_event_id: &str,
+        created_at_secs: u64,
+    ) -> Event {
+        EventBuilder::new(
+            Kind::Custom(kind),
+            "",
+            [Tag::custom(
+                TagKind::custom("e"),
+                vec![pr_event_id.to_string()],
+            )],
+        )
+        .custom_created_at(Timestamp::from_secs(created_at_secs))
+        .to_event(keys)
+        .unwrap()
+    }
+
+    #[test]
+    fn test_latest_trusted_pr_status_kinds_ignores_untrusted_signers() {
+        let repo_owner = Keys::generate();
+        let pr_author = Keys::generate();
+        let attacker = Keys::generate();
+
+        let pr_event = build_test_pr_event(&pr_author, 1_700_100_000);
+        let spoofed_status = build_test_status_event(
+            &attacker,
+            KIND_STATUS_CLOSED,
+            &pr_event.id.to_hex(),
+            1_700_100_010,
+        );
+
+        let statuses = latest_trusted_pr_status_kinds(
+            &[pr_event.clone()],
+            &[spoofed_status],
+            &repo_owner.public_key().to_hex(),
+        );
+
+        assert!(
+            !statuses.contains_key(&pr_event.id.to_hex()),
+            "untrusted status signer should be ignored"
+        );
+    }
+
+    #[test]
+    fn test_latest_trusted_pr_status_kinds_accepts_pr_author() {
+        let repo_owner = Keys::generate();
+        let pr_author = Keys::generate();
+
+        let pr_event = build_test_pr_event(&pr_author, 1_700_100_000);
+        let author_status = build_test_status_event(
+            &pr_author,
+            KIND_STATUS_CLOSED,
+            &pr_event.id.to_hex(),
+            1_700_100_010,
+        );
+
+        let statuses = latest_trusted_pr_status_kinds(
+            &[pr_event.clone()],
+            &[author_status],
+            &repo_owner.public_key().to_hex(),
+        );
+
+        assert_eq!(
+            statuses.get(&pr_event.id.to_hex()).copied(),
+            Some(KIND_STATUS_CLOSED)
+        );
+    }
+
+    #[test]
+    fn test_latest_trusted_pr_status_kinds_rejects_applied_from_pr_author() {
+        let repo_owner = Keys::generate();
+        let pr_author = Keys::generate();
+
+        let pr_event = build_test_pr_event(&pr_author, 1_700_100_000);
+        let author_applied = build_test_status_event(
+            &pr_author,
+            KIND_STATUS_APPLIED,
+            &pr_event.id.to_hex(),
+            1_700_100_010,
+        );
+
+        let statuses = latest_trusted_pr_status_kinds(
+            &[pr_event.clone()],
+            &[author_applied],
+            &repo_owner.public_key().to_hex(),
+        );
+
+        assert!(
+            !statuses.contains_key(&pr_event.id.to_hex()),
+            "PR author must not be able to self-mark applied"
+        );
+    }
+
+    #[test]
+    fn test_latest_trusted_pr_status_kinds_accepts_repo_owner() {
+        let repo_owner = Keys::generate();
+        let pr_author = Keys::generate();
+
+        let pr_event = build_test_pr_event(&pr_author, 1_700_100_000);
+        let owner_status = build_test_status_event(
+            &repo_owner,
+            KIND_STATUS_APPLIED,
+            &pr_event.id.to_hex(),
+            1_700_100_010,
+        );
+
+        let statuses = latest_trusted_pr_status_kinds(
+            &[pr_event.clone()],
+            &[owner_status],
+            &repo_owner.public_key().to_hex(),
+        );
+
+        assert_eq!(
+            statuses.get(&pr_event.id.to_hex()).copied(),
+            Some(KIND_STATUS_APPLIED)
+        );
+    }
+
+    #[test]
+    fn test_latest_trusted_pr_status_kinds_preserves_owner_applied_over_newer_author_status() {
+        let repo_owner = Keys::generate();
+        let pr_author = Keys::generate();
+
+        let pr_event = build_test_pr_event(&pr_author, 1_700_100_000);
+        let owner_applied = build_test_status_event(
+            &repo_owner,
+            KIND_STATUS_APPLIED,
+            &pr_event.id.to_hex(),
+            1_700_100_010,
+        );
+        let newer_author_open = build_test_status_event(
+            &pr_author,
+            KIND_STATUS_OPEN,
+            &pr_event.id.to_hex(),
+            1_700_100_020,
+        );
+
+        let statuses = latest_trusted_pr_status_kinds(
+            &[pr_event.clone()],
+            &[owner_applied, newer_author_open],
+            &repo_owner.public_key().to_hex(),
+        );
+
+        assert_eq!(
+            statuses.get(&pr_event.id.to_hex()).copied(),
+            Some(KIND_STATUS_APPLIED),
+            "owner-applied status should remain authoritative even if author publishes a newer status"
+        );
+    }
+
+    #[test]
+    fn test_latest_trusted_pr_status_kinds_ignores_newer_untrusted_status() {
+        let repo_owner = Keys::generate();
+        let pr_author = Keys::generate();
+        let attacker = Keys::generate();
+
+        let pr_event = build_test_pr_event(&pr_author, 1_700_100_000);
+        let trusted_open = build_test_status_event(
+            &repo_owner,
+            KIND_STATUS_OPEN,
+            &pr_event.id.to_hex(),
+            1_700_100_010,
+        );
+        let spoofed_closed = build_test_status_event(
+            &attacker,
+            KIND_STATUS_CLOSED,
+            &pr_event.id.to_hex(),
+            1_700_100_020,
+        );
+
+        let statuses = latest_trusted_pr_status_kinds(
+            &[pr_event.clone()],
+            &[trusted_open, spoofed_closed],
+            &repo_owner.public_key().to_hex(),
+        );
+
+        assert_eq!(
+            statuses.get(&pr_event.id.to_hex()).copied(),
+            Some(KIND_STATUS_OPEN)
         );
     }
 }

@@ -42,7 +42,7 @@ use tracing::{debug, info, warn};
 
 pub mod git;
 mod helper;
-mod nostr_client;
+pub mod nostr_client;
 
 use hashtree_config::Config;
 use helper::RemoteHelper;

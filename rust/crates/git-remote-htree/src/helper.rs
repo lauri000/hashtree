@@ -802,6 +802,7 @@ impl RemoteHelper {
         }
 
         let mut results = Vec::new();
+        let mut pushed_refs: Vec<(String, String)> = Vec::new();
 
         // Clone specs to avoid borrow issues
         let specs: Vec<_> = std::mem::take(&mut self.push_specs);
@@ -849,10 +850,18 @@ impl RemoteHelper {
 
                 // Push objects
                 match self.push_objects(&sha, &spec.dst) {
-                    Ok(()) => results.push(format!("ok {}", spec.dst)),
+                    Ok(()) => {
+                        results.push(format!("ok {}", spec.dst));
+                        pushed_refs.push((spec.dst, sha));
+                    }
                     Err(e) => results.push(format!("error {} {}", spec.dst, e)),
                 }
             }
+        }
+
+        // Detect and mark merged PRs (non-blocking)
+        if self.nostr.can_sign() && !pushed_refs.is_empty() {
+            self.detect_and_mark_merged_prs(&pushed_refs);
         }
 
         results.push(String::new()); // Empty line terminates
@@ -1104,6 +1113,116 @@ impl RemoteHelper {
         }
 
         Ok(())
+    }
+
+    /// Find merged-in parent SHAs from merge commits in a pushed range.
+    ///
+    /// For `git rev-list --merges --parents`, each line is:
+    /// `<merge_commit_sha> <first_parent> <merged_parent_1> [<merged_parent_2> ...]`
+    /// We only care about the merged-in parents (`parts[2..]`) for PR matching.
+    fn find_merged_parent_shas(&self, range: &str) -> Result<HashSet<String>> {
+        let output = Command::new("git")
+            .args(["rev-list", "--merges", "--parents", range])
+            .output()
+            .context("Failed to run git rev-list")?;
+
+        if !output.status.success() {
+            return Ok(HashSet::new());
+        }
+
+        // Skip merge commit SHA (field 0) and first parent (field 1); collect merged-in
+        // branch parent SHAs (`parts[2..]`).
+        let merged_parent_shas: HashSet<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .flat_map(|line| line.split_whitespace().skip(2).map(str::to_owned))
+            .collect();
+
+        Ok(merged_parent_shas)
+    }
+
+    /// Detect merged PRs in pushed refs and publish status events
+    fn detect_and_mark_merged_prs(&self, pushed_refs: &[(String, String)]) {
+        // Fetch a single snapshot of open PRs for this push.
+        let open_prs = match self.nostr.fetch_open_prs(&self.repo_name) {
+            Ok(prs) => prs,
+            Err(e) => {
+                debug!("Failed to fetch open PRs: {}", e);
+                return;
+            }
+        };
+
+        if open_prs.is_empty() {
+            return;
+        }
+
+        let merge_candidates = pushed_refs
+            .iter()
+            // Only check branch refs.
+            .filter_map(|(dst_ref, sha)| {
+                dst_ref
+                    .strip_prefix("refs/heads/")
+                    .map(|branch_name| (dst_ref, branch_name, sha))
+            })
+            .filter_map(|(dst_ref, branch_name, sha)| {
+                let Some(old_sha) = self.remote_refs.get(dst_ref) else {
+                    debug!(
+                        "Skipping PR auto-merge detection for {}: previous remote tip is unknown",
+                        dst_ref
+                    );
+                    return None;
+                };
+
+                let range = format!("{}..{}", old_sha, sha);
+                let merged_parent_shas = match self.find_merged_parent_shas(&range) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        debug!("Failed to find merge commits for {}: {}", dst_ref, e);
+                        return None;
+                    }
+                };
+
+                if merged_parent_shas.is_empty() {
+                    return None;
+                }
+
+                debug!(
+                    "Found {} merged parent SHAs in push to {}",
+                    merged_parent_shas.len(),
+                    dst_ref
+                );
+
+                Some((branch_name, merged_parent_shas))
+            });
+
+        for (branch_name, merged_parent_shas) in merge_candidates {
+            let matching_prs = open_prs
+                .iter()
+                .filter(|pr| pr.target_branch.as_deref().unwrap_or("master") == branch_name)
+                // Check if any merge commit's second+ parent matches PR's commit tip
+                .filter(|pr| {
+                    pr.commit_tip
+                        .as_ref()
+                        .is_some_and(|commit_tip| merged_parent_shas.contains(commit_tip))
+                });
+
+            // Publish status events
+            for pr in matching_prs {
+                match self
+                    .nostr
+                    .publish_pr_merged_status(&pr.event_id, &pr.author_pubkey)
+                {
+                    Ok(()) => {
+                        eprintln!(
+                            "PR auto-merged: ({})...",
+                            &pr.event_id[..12.min(pr.event_id.len())]
+                        );
+                    }
+                    Err(e) => {
+                        debug!("Failed to publish PR merged status: {}", e);
+                    }
+                }
+            }
+        }
     }
 
     /// Push content to file servers (blossom) with efficient diff-based upload
@@ -1910,4 +2029,5 @@ mod tests {
         // For empty repo, refs should be empty
         assert!(helper.remote_refs.is_empty());
     }
+
 }
