@@ -32,7 +32,7 @@ export { checkoutWasm } from './checkout';
 
 export { runGitCommand } from './command';
 
-export { diffBranchesWasm, canMergeWasm } from './diff';
+export { diffBranchesWasm, diffCommitsAcrossReposWasm, canMergeWasm } from './diff';
 export type { BranchDiffStats, BranchDiffResult } from './diff';
 
 export { mergeWasm } from './merge';

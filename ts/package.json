@@ -19,6 +19,8 @@
     "build:docs": "pnpm --filter iris-files build:docs",
     "build:maps": "pnpm --filter iris-files build:maps",
     "dev": "pnpm --filter iris-files dev",
+    "setup:iris-files": "pnpm install && pnpm --filter iris-files run build:deps",
+    "dev:iris-files": "pnpm run setup:iris-files && pnpm --filter iris-files run dev",
     "dev:docs": "pnpm --filter iris-files dev:docs",
     "dev:video": "pnpm --filter iris-files dev:video",
     "dev:maps": "pnpm --filter iris-files dev:maps",

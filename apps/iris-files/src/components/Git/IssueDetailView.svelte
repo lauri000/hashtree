@@ -6,6 +6,7 @@
   import { nostrStore } from '../../nostr';
   import {
     decodeEventId,
+    fetchIssueById,
     fetchComments,
     addComment,
     updateStatus,
@@ -18,7 +19,6 @@
   import RepoTabNav from './RepoTabNav.svelte';
   import AuthorName from './AuthorName.svelte';
   import FileBrowser from '../FileBrowser.svelte';
-  import { ndk } from '../../nostr';
 
   interface Props {
     npub: string;
@@ -57,39 +57,16 @@
     error = null;
 
     try {
-      // Fetch the issue event directly by ID with a timeout
-      const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000));
-      const event = await Promise.race([ndk.fetchEvent(eventId), timeoutPromise]);
-      if (!event) {
+      const loadedIssue = await fetchIssueById(eventId);
+      if (!loadedIssue) {
         error = 'Issue not found';
-        loading = false;
         return;
       }
 
-      // Parse the issue event
-      const tags = event.tags;
-      const title = tags.find(t => t[0] === 'subject')?.[1] || tags.find(t => t[0] === 'title')?.[1] || 'Untitled Issue';
-      const labels = tags.filter(t => t[0] === 't').map(t => t[1]);
-
-      issue = {
-        id: event.id!,
-        eventId: event.id!,
-        title,
-        description: event.content || '',
-        author: '', // Will be set below
-        authorPubkey: event.pubkey!,
-        status: 'open', // TODO: fetch actual status
-        created_at: event.created_at || 0,
-        updated_at: event.created_at || 0,
-        labels,
-      };
-
-      // Set author npub
-      const { pubkeyToNpub } = await import('../../nostr');
-      issue.author = pubkeyToNpub(event.pubkey!);
+      issue = loadedIssue;
 
       // Fetch comments
-      comments = await fetchComments(eventId);
+      comments = await fetchComments(loadedIssue.eventId);
     } catch (e) {
       console.error('Failed to load issue:', e);
       error = 'Failed to load issue';

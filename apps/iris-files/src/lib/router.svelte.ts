@@ -81,8 +81,11 @@ export function navigate(path: string) {
   // Update hash (this will trigger hashchange which updates the store)
   window.location.hash = normalizedPath;
 
-  // Also update store directly for immediate reactivity within same tick
-  pathStore.set(normalizedPath);
+  // Update both stores immediately for same-tick reactivity
+  const queryIndex = normalizedPath.indexOf('?');
+  const pathOnly = queryIndex !== -1 ? normalizedPath.slice(0, queryIndex) : normalizedPath;
+  pathStore.set(pathOnly || '/');
+  fullHashStore.set(normalizedPath);
 }
 
 // Alias for navigate
@@ -91,7 +94,10 @@ export const push = navigate;
 export function replace(path: string) {
   const normalizedPath = path.startsWith('/') ? path : '/' + path;
   window.location.replace('#' + normalizedPath);
-  pathStore.set(normalizedPath);
+  const queryIndex = normalizedPath.indexOf('?');
+  const pathOnly = queryIndex !== -1 ? normalizedPath.slice(0, queryIndex) : normalizedPath;
+  pathStore.set(pathOnly || '/');
+  fullHashStore.set(normalizedPath);
 }
 
 // Parse route parameters

@@ -6,6 +6,7 @@
   import { nostrStore } from '../../nostr';
   import {
     decodeEventId,
+    fetchPullRequestById,
     fetchComments,
     addComment,
     updateStatus,
@@ -19,10 +20,15 @@
   import RepoTabNav from './RepoTabNav.svelte';
   import AuthorName from './AuthorName.svelte';
   import FileBrowser from '../FileBrowser.svelte';
-  import { ndk } from '../../nostr';
   import { currentDirCidStore, routeStore } from '../../stores';
-  import { diffBranches } from '../../utils/git';
+  import { diffBranches, diffPullRequestAcrossRepos } from '../../utils/git';
   import { navigate } from '../../lib/router.svelte';
+  import { parseHtreeRepoRef, isSameRepoRef, resolveRepoRootCid } from '../../utils/htreeRepoRef';
+  import {
+    isCurrentPrDiffLoadRequest,
+    nextPrDiffLoadGenerationForPrChange,
+    resetPrDiffStateForPrChange,
+  } from './prDiffLoadState';
 
   interface Props {
     npub: string;
@@ -57,6 +63,9 @@
     diff: string;
     stats: { additions: number; deletions: number; files: string[] };
   } | null>(null);
+  let diffStatePrId = $state<string | null>(null);
+  let diffLoadGeneration = $state(0);
+  const PR_DIFF_TIMEOUT_MS = 15000;
 
   // Check if user can interact
   let userPubkey = $derived($nostrStore.pubkey);
@@ -75,47 +84,16 @@
     error = null;
 
     try {
-      // Fetch the PR event directly by ID with a timeout
-      const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000));
-      const event = await Promise.race([ndk.fetchEvent(eventId), timeoutPromise]);
-      if (!event) {
+      const loadedPr = await fetchPullRequestById(eventId);
+      if (!loadedPr) {
         error = 'Pull request not found';
-        loading = false;
         return;
       }
 
-      // Parse the PR event
-      const tags = event.tags;
-      const title = tags.find(t => t[0] === 'subject')?.[1] || tags.find(t => t[0] === 'title')?.[1] || 'Untitled PR';
-      const branch = tags.find(t => t[0] === 'branch')?.[1];
-      const targetBranch = tags.find(t => t[0] === 'target-branch')?.[1] || 'main';
-      const commitTip = tags.find(t => t[0] === 'c')?.[1];
-      const cloneUrl = tags.find(t => t[0] === 'clone')?.[1];
-      const labels = tags.filter(t => t[0] === 't').map(t => t[1]);
-
-      pr = {
-        id: event.id!,
-        eventId: event.id!,
-        title,
-        description: event.content || '',
-        author: '', // Will be set below
-        authorPubkey: event.pubkey!,
-        status: 'open', // TODO: fetch actual status
-        branch,
-        targetBranch,
-        commitTip,
-        cloneUrl,
-        created_at: event.created_at || 0,
-        updated_at: event.created_at || 0,
-        labels,
-      };
-
-      // Set author npub
-      const { pubkeyToNpub } = await import('../../nostr');
-      pr.author = pubkeyToNpub(event.pubkey!);
+      pr = loadedPr;
 
       // Fetch comments
-      comments = await fetchComments(eventId);
+      comments = await fetchComments(loadedPr.eventId);
     } catch (e) {
       console.error('Failed to load pull request:', e);
       error = 'Failed to load pull request';
@@ -159,22 +137,126 @@
     return `#/${npub}/${repoName}?tab=pulls`;
   }
 
+  // Clear diff state when navigating between PRs while this component instance stays mounted.
+  $effect(() => {
+    const nextPrId = eventId || null;
+    if (diffStatePrId === nextPrId) return;
+
+    diffLoadGeneration = nextPrDiffLoadGenerationForPrChange(diffStatePrId, nextPrId, diffLoadGeneration);
+
+    const nextDiffState = resetPrDiffStateForPrChange(diffStatePrId, nextPrId, {
+      diffLoading,
+      diffError,
+      diffData,
+    });
+    diffLoading = nextDiffState.diffLoading;
+    diffError = nextDiffState.diffError;
+    diffData = nextDiffState.diffData;
+    diffStatePrId = nextPrId;
+  });
+
   // Load diff when files tab is selected
   $effect(() => {
     if (activeTab !== 'files' || !pr?.branch || !pr?.targetBranch || !dirCid) return;
-    if (diffData || diffLoading) return; // Already loaded or loading
+    if (diffData || diffLoading || diffError) return; // Already loaded, loading, or failed (manual retry)
 
     loadDiff();
   });
 
+  function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+      promise.then(
+        (value) => {
+          clearTimeout(timeoutId);
+          resolve(value);
+        },
+        (err) => {
+          clearTimeout(timeoutId);
+          reject(err);
+        }
+      );
+    });
+  }
+
+  async function computeDiffForPR(currentPr: PullRequest, targetRootCid: NonNullable<typeof dirCid>) {
+    const cloneUrl = currentPr.cloneUrl?.trim();
+    if (!cloneUrl) {
+      return diffBranches(targetRootCid, currentPr.targetBranch || 'main', currentPr.branch || '');
+    }
+
+    let sourceRef = null;
+    try {
+      sourceRef = parseHtreeRepoRef(cloneUrl);
+    } catch {
+      // Keep same-repo diff behavior if clone URL is malformed but branches are still present in the target repo.
+      return diffBranches(targetRootCid, currentPr.targetBranch || 'main', currentPr.branch || '');
+    }
+
+    if (isSameRepoRef(sourceRef, npub, repoName, { selfNpub: currentPr.author })) {
+      return diffBranches(targetRootCid, currentPr.targetBranch || 'main', currentPr.branch || '');
+    }
+
+    if (!currentPr.commitTip?.trim()) {
+      return {
+        diff: '',
+        stats: { additions: 0, deletions: 0, files: [] },
+        canFastForward: false,
+        error: 'Cross-repo diff requires a commit tip (c tag) in the pull request event.',
+      };
+    }
+
+    if (sourceRef.visibility !== 'public') {
+      return {
+        diff: '',
+        stats: { additions: 0, deletions: 0, files: [] },
+        canFastForward: false,
+        error: 'Cross-repo diff currently supports only public source repositories.',
+      };
+    }
+
+    const sourceRootCid = await resolveRepoRootCid(sourceRef, {
+      selfNpub: currentPr.author,
+      timeoutMs: 10000,
+    });
+    if (!sourceRootCid) {
+      return {
+        diff: '',
+        stats: { additions: 0, deletions: 0, files: [] },
+        canFastForward: false,
+        error: 'Could not resolve source repository root from PR clone URL.',
+      };
+    }
+
+    return diffPullRequestAcrossRepos({
+      targetRootCid,
+      targetBranch: currentPr.targetBranch || 'main',
+      sourceRootCid,
+      sourceCommitTip: currentPr.commitTip,
+    });
+  }
+
   async function loadDiff() {
     if (!pr?.branch || !pr?.targetBranch || !dirCid) return;
 
+    const requestPrId = eventId || null;
+    const requestGeneration = diffLoadGeneration + 1;
+    diffLoadGeneration = requestGeneration;
     diffLoading = true;
     diffError = null;
 
+    const isCurrentRequest = () =>
+      isCurrentPrDiffLoadRequest(requestPrId, eventId || null, requestGeneration, diffLoadGeneration);
+
     try {
-      const result = await diffBranches(dirCid, pr.targetBranch, pr.branch);
+      const currentPr = pr;
+      const result = await withTimeout(
+        computeDiffForPR(currentPr, dirCid),
+        PR_DIFF_TIMEOUT_MS,
+        'Timed out computing diff. The repository may be large; try reloading and opening Files changed again.'
+      );
+
+      if (!isCurrentRequest()) return;
 
       if (result.error) {
         diffError = result.error;
@@ -186,10 +268,20 @@
         stats: result.stats,
       };
     } catch (err) {
+      if (!isCurrentRequest()) return;
       diffError = getErrorMessage(err);
     } finally {
-      diffLoading = false;
+      if (isCurrentRequest()) {
+        diffLoading = false;
+      }
     }
+  }
+
+  function retryDiff() {
+    if (diffLoading) return;
+    diffData = null;
+    diffError = null;
+    void loadDiff();
   }
 
   // Colorize diff output
@@ -428,8 +520,12 @@
               <span class="i-lucide-alert-circle text-2xl mb-2 text-danger"></span>
               <span class="text-danger mb-2">{diffError}</span>
               <div class="text-sm text-text-3 text-center max-w-md">
-                {#if diffError.includes('branch') || diffError.includes('ref')}
-                  <p>The branch <span class="font-mono bg-surface-2 px-1 rounded">{pr.branch}</span> or <span class="font-mono bg-surface-2 px-1 rounded">{pr.targetBranch}</span> may not exist in this repository.</p>
+                {#if diffError.includes('commit tip') || diffError.includes('clone URL') || diffError.includes('source repository root') || diffError.includes('source commit') || diffError.includes('public source repositories')}
+                  <p>Unable to compute a cross-repo diff for this pull request event.</p>
+                  <p class="mt-2">Cross-repo diffs require a resolvable public source repo in the <code class="font-mono text-xs">clone</code> tag and a source commit in the <code class="font-mono text-xs">c</code> tag.</p>
+                {:else if diffError.includes('branch') || diffError.includes('ref')}
+                  <p>The branch <span class="font-mono bg-surface-2 px-1 rounded">{pr.branch}</span> or <span class="font-mono bg-surface-2 px-1 rounded">{pr.targetBranch}</span> may not exist in this repository snapshot.</p>
+                  <p class="mt-2">This can happen when the source branch exists only in the contributor&apos;s fork or source repo.</p>
                 {:else}
                   <p>Unable to compute the diff between branches. The source repository may need to be fetched first.</p>
                 {/if}
@@ -437,6 +533,10 @@
                   <p class="mt-2">Source: <code class="font-mono text-xs">{pr.cloneUrl}</code></p>
                 {/if}
               </div>
+              <button onclick={retryDiff} class="btn-ghost mt-4 text-sm">
+                <span class="i-lucide-rotate-cw mr-1"></span>
+                Retry
+              </button>
             </div>
           {:else if diffData}
             <!-- Stats summary -->

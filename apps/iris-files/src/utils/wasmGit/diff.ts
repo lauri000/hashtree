@@ -4,8 +4,9 @@
 import type { CID } from '@hashtree/core';
 import { LinkType } from '@hashtree/core';
 import { getTree } from '../../store';
-import { withWasmGitLock, loadWasmGit, copyToWasmFS, createRepoPath } from './core';
+import { withWasmGitLock, loadWasmGit, copyToWasmFS, copyGitDirToWasmFS, createRepoPath, rmRf } from './core';
 import { getErrorMessage } from '../errorMessage';
+import { copyGitObjectPayloadsToWasmFS } from './objectImport';
 
 export interface BranchDiffStats {
   additions: number;
@@ -18,6 +19,15 @@ export interface BranchDiffResult {
   stats: BranchDiffStats;
   canFastForward: boolean;
   error?: string;
+}
+
+function emptyDiffResult(error?: string): BranchDiffResult {
+  return {
+    diff: '',
+    stats: { additions: 0, deletions: 0, files: [] },
+    canFastForward: false,
+    error,
+  };
 }
 
 /**
@@ -48,6 +58,21 @@ function parseDiffStats(diff: string): BranchDiffStats {
   return stats;
 }
 
+async function copyGitObjectsToWasmFS(module: Awaited<ReturnType<typeof loadWasmGit>>, rootCid: CID, destGitObjectsPath: string): Promise<void> {
+  const tree = getTree();
+  const objectsResult = await tree.resolvePath(rootCid, '.git/objects');
+  if (!objectsResult || objectsResult.type !== LinkType.Dir) {
+    throw new Error('Source repository is missing .git/objects');
+  }
+
+  try {
+    module.FS.mkdir(destGitObjectsPath);
+  } catch {
+    // Directory may already exist
+  }
+  await copyGitObjectPayloadsToWasmFS(module, objectsResult.cid, destGitObjectsPath);
+}
+
 /**
  * Get diff between two branches
  */
@@ -62,7 +87,7 @@ export async function diffBranchesWasm(
     // Check for .git directory
     const gitDirResult = await tree.resolvePath(rootCid, '.git');
     if (!gitDirResult || gitDirResult.type !== LinkType.Dir) {
-      return { diff: '', stats: { additions: 0, deletions: 0, files: [] }, canFastForward: false, error: 'Not a git repository' };
+      return emptyDiffResult('Not a git repository');
     }
 
     const module = await loadWasmGit();
@@ -73,16 +98,37 @@ export async function diffBranchesWasm(
       module.FS.mkdir(repoPath);
       module.FS.chdir(repoPath);
 
-      await copyToWasmFS(module, rootCid, '.');
+      // Read-only branch diff only needs git metadata/objects, not the full working tree.
+      await copyGitDirToWasmFS(module, rootCid, '.');
 
-      // Get diff between branches using git diff base head
-      // wasm-git doesn't support the ... syntax, so we use two-dot diff
-      let diff = '';
+      // Resolve refs explicitly first. Some wasm-git diff paths can return empty output
+      // for missing refs instead of failing, which looks like "no changes" in the UI.
+      let baseCommit = '';
+      let headCommit = '';
       try {
-        diff = module.callWithOutput(['diff', baseBranch, headBranch]) || '';
+        baseCommit = (module.callWithOutput(['rev-parse', baseBranch]) || '').trim();
+        headCommit = (module.callWithOutput(['rev-parse', headBranch]) || '').trim();
+        if (!baseCommit || !headCommit) {
+          return {
+            diff: '',
+            stats: { additions: 0, deletions: 0, files: [] },
+            canFastForward: false,
+            error: `Failed to resolve branch refs: ${baseBranch} ${headBranch}`,
+          };
+        }
       } catch (_err) {
         const errorMsg = _err instanceof Error ? _err.message : String(_err);
-        return { diff: '', stats: { additions: 0, deletions: 0, files: [] }, canFastForward: false, error: `Failed to diff branches: ${errorMsg}` };
+        return emptyDiffResult(`Failed to resolve branch refs: ${errorMsg}`);
+      }
+
+      // Compute commit-to-commit diff after explicit ref resolution.
+      // Using commit SHAs avoids the silent "missing ref => empty diff" behavior.
+      let diff = '';
+      try {
+        diff = module.callWithOutput(['diff', baseCommit, headCommit]) || '';
+      } catch (_err) {
+        const errorMsg = _err instanceof Error ? _err.message : String(_err);
+        return emptyDiffResult(`Failed to diff branches: ${errorMsg}`);
       }
 
       const stats = parseDiffStats(diff);
@@ -94,10 +140,6 @@ export async function diffBranchesWasm(
         const mergeBaseOutput = module.callWithOutput(['merge-base', baseBranch, headBranch]) || '';
         const mergeBase = mergeBaseOutput.trim();
 
-        // Get the commit hash of the base branch
-        const baseRefOutput = module.callWithOutput(['rev-parse', baseBranch]) || '';
-        const baseCommit = baseRefOutput.trim();
-
         // If merge-base equals base branch, it's a fast-forward
         canFastForward = mergeBase === baseCommit;
       } catch {
@@ -108,12 +150,122 @@ export async function diffBranchesWasm(
       return { diff, stats, canFastForward };
     } catch (err) {
       console.error('[wasm-git] diffBranches failed:', err);
-      return { diff: '', stats: { additions: 0, deletions: 0, files: [] }, canFastForward: false, error: getErrorMessage(err) };
+      return emptyDiffResult(getErrorMessage(err));
     } finally {
       try {
         module.FS.chdir(originalCwd);
       } catch {
         // Ignore
+      }
+      try {
+        rmRf(module, repoPath);
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  });
+}
+
+/**
+ * Compute a diff between a target branch in one repo and a specific commit in another repo.
+ * Used for cross-repo pull requests where the source branch lives in a contributor fork.
+ */
+export async function diffCommitsAcrossReposWasm(
+  targetRootCid: CID,
+  targetBranch: string,
+  sourceRootCid: CID,
+  sourceCommitTip: string
+): Promise<BranchDiffResult> {
+  return withWasmGitLock(async () => {
+    const tree = getTree();
+    const targetGitDirResult = await tree.resolvePath(targetRootCid, '.git');
+    if (!targetGitDirResult || targetGitDirResult.type !== LinkType.Dir) {
+      return emptyDiffResult('Target repository is missing .git');
+    }
+
+    const sourceGitDirResult = await tree.resolvePath(sourceRootCid, '.git');
+    if (!sourceGitDirResult || sourceGitDirResult.type !== LinkType.Dir) {
+      return emptyDiffResult('Source repository is missing .git');
+    }
+
+    const module = await loadWasmGit();
+    const repoPath = createRepoPath('pr-diff');
+    const originalCwd = module.FS.cwd();
+
+    try {
+      module.FS.mkdir(repoPath);
+      module.FS.chdir(repoPath);
+
+      // Start from the target repo's .git so refs/HEAD resolve against the target branch.
+      await copyGitDirToWasmFS(module, targetRootCid, '.');
+
+      let targetCommit = '';
+      try {
+        targetCommit = (module.callWithOutput(['rev-parse', targetBranch]) || '').trim();
+        if (!targetCommit) {
+          return emptyDiffResult(`Failed to resolve target branch ref: ${targetBranch}`);
+        }
+      } catch (_err) {
+        const errorMsg = _err instanceof Error ? _err.message : String(_err);
+        return emptyDiffResult(`Failed to resolve target branch ref: ${errorMsg}`);
+      }
+
+      // Merge source objects into the target repo object database so source commit/tree/blob data is available.
+      try {
+        await copyGitObjectsToWasmFS(module, sourceRootCid, './.git/objects');
+      } catch (_err) {
+        const errorMsg = _err instanceof Error ? _err.message : String(_err);
+        return emptyDiffResult(`Failed to import source repository objects: ${errorMsg}`);
+      }
+
+      const sourceCommit = sourceCommitTip.trim();
+      if (!sourceCommit) {
+        return emptyDiffResult('Cross-repo diff requires a commit tip (c tag) in the pull request event.');
+      }
+
+      try {
+        const objectType = (module.callWithOutput(['cat-file', '-t', sourceCommit]) || '').trim();
+        if (objectType !== 'commit') {
+          return emptyDiffResult(`Source commit tip is not a commit object: ${sourceCommit}`);
+        }
+      } catch (_err) {
+        const errorMsg = _err instanceof Error ? _err.message : String(_err);
+        return emptyDiffResult(`Failed to resolve source commit tip: ${errorMsg}`);
+      }
+
+      let diff = '';
+      try {
+        diff = module.callWithOutput(['diff', targetCommit, sourceCommit]) || '';
+      } catch (_err) {
+        const errorMsg = _err instanceof Error ? _err.message : String(_err);
+        return emptyDiffResult(`Failed to diff commits: ${errorMsg}`);
+      }
+
+      const stats = parseDiffStats(diff);
+
+      let canFastForward = false;
+      try {
+        const mergeBaseOutput = module.callWithOutput(['merge-base', targetCommit, sourceCommit]) || '';
+        const mergeBase = mergeBaseOutput.trim();
+        canFastForward = mergeBase === targetCommit;
+      } catch {
+        canFastForward = false;
+      }
+
+      return { diff, stats, canFastForward };
+    } catch (err) {
+      console.error('[wasm-git] diffCommitsAcrossRepos failed:', err);
+      return emptyDiffResult(getErrorMessage(err));
+    } finally {
+      try {
+        module.FS.chdir(originalCwd);
+      } catch {
+        // Ignore
+      }
+      try {
+        rmRf(module, repoPath);
+      } catch {
+        // Ignore cleanup errors
       }
     }
   });
@@ -220,6 +372,11 @@ export async function canMergeWasm(
         module.FS.chdir(originalCwd);
       } catch {
         // Ignore
+      }
+      try {
+        rmRf(module, repoPath);
+      } catch {
+        // Ignore cleanup errors
       }
     }
   });

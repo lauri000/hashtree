@@ -290,6 +290,49 @@ function parseIssueEvent(event: NDKEvent): Issue | null {
   };
 }
 
+async function fetchEventByIdViaSubscribe(
+  eventId: string,
+  kind: number,
+  timeoutMs = 8000,
+  attempts = 2
+): Promise<NDKEvent | null> {
+  const filter: NDKFilter = {
+    ids: [eventId],
+    kinds: [kind],
+  };
+
+  for (let i = 0; i < attempts; i++) {
+    const events = await fetchEventsViaSubscribe(filter, timeoutMs);
+    const match = events.find(event => event.id === eventId);
+    if (match) {
+      return match;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Fetch a single pull request event by ID using the subscribe-based read path.
+ * This avoids cold-load misses from one-shot fetches in the main-thread NDK.
+ */
+export async function fetchPullRequestById(eventId: string): Promise<PullRequest | null> {
+  if (!/^[0-9a-f]{64}$/i.test(eventId)) return null;
+
+  const event = await fetchEventByIdViaSubscribe(eventId, KIND_PULL_REQUEST as number);
+  return event ? parsePullRequestEvent(event) : null;
+}
+
+/**
+ * Fetch a single issue event by ID using the subscribe-based read path.
+ */
+export async function fetchIssueById(eventId: string): Promise<Issue | null> {
+  if (!/^[0-9a-f]{64}$/i.test(eventId)) return null;
+
+  const event = await fetchEventByIdViaSubscribe(eventId, KIND_ISSUE as number);
+  return event ? parseIssueEvent(event) : null;
+}
+
 /**
  * Create a new pull request
  */

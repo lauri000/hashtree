@@ -568,6 +568,25 @@ export async function diffBranches(rootCid: CID, baseBranch: string, headBranch:
 }
 
 /**
+ * Get diff between a target branch and a source commit from another repository snapshot.
+ * Used for cross-repo pull requests (forks) when `clone` + `c` tags are present.
+ */
+export async function diffPullRequestAcrossRepos(options: {
+  targetRootCid: CID;
+  targetBranch: string;
+  sourceRootCid: CID;
+  sourceCommitTip: string;
+}) {
+  const { diffCommitsAcrossReposWasm } = await import('./wasmGit');
+  return await diffCommitsAcrossReposWasm(
+    options.targetRootCid,
+    options.targetBranch,
+    options.sourceRootCid,
+    options.sourceCommitTip
+  );
+}
+
+/**
  * Check if branches can be merged without conflicts
  */
 export async function canMerge(rootCid: CID, baseBranch: string, headBranch: string) {

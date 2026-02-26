@@ -131,15 +131,31 @@ export async function loadWasmGit(): Promise<WasmGitModule> {
       capturedOutput.current = [];
       capturedError.current = [];
       quitStatus = null;
-      wasmGitModule!.callMain(args);
-      const ret = capturedOutput.current.join('\n');
-      const err = capturedError.current.join('\n');
-      capturedOutput.current = null;
-      capturedError.current = null;
-      if (!quitStatus) {
-        return ret;
-      } else {
-        throw quitStatus + ': ' + err;
+      try {
+        wasmGitModule!.callMain(args);
+        const ret = capturedOutput.current.join('\n');
+        const err = capturedError.current.join('\n');
+        if (!quitStatus) {
+          return ret;
+        }
+        throw new Error(`${quitStatus}: ${err}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const isFatalWasmTrap =
+          message.includes('memory access out of bounds') ||
+          message.includes('unreachable') ||
+          message.includes('RuntimeError');
+        if (isFatalWasmTrap) {
+          // wasm-git can be left in a corrupted state after a wasm trap; force a reload next time.
+          wasmGitModule = null;
+          moduleLoadPromise = null;
+          throw new Error(`wasm-git crashed while running '${args.join(' ')}': ${message}`);
+        }
+        throw err;
+      } finally {
+        capturedOutput.current = null;
+        capturedError.current = null;
+        quitStatus = null;
       }
     };
 

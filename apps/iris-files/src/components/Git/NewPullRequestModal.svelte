@@ -30,11 +30,9 @@
 
 <script lang="ts">
   import { createPullRequest } from '../../nip34';
-  import { getWorkerAdapter } from '../../lib/workerInit';
   import { createGitInfoStore } from '../../stores/git';
-  import { getLocalRootCache, getLocalRootKey } from '../../treeRootCache';
-  import { waitForTreeRoot } from '../../stores/treeRoot';
   import type { CID } from '@hashtree/core';
+  import { parseHtreeRepoRef, resolveRepoRootCid } from '../../utils/htreeRepoRef';
 
   // Available branches from the target (destination) repo
   let branches = $derived(target?.branches || []);
@@ -54,29 +52,6 @@
   let forkError = $state<string | null>(null);
   let forkResolveToken = 0;
 
-  // Parse fork URL to get npub/repoName
-  function parseForkUrl(url: string): { npub: string; repoName: string } | null {
-    const trimmed = url.trim();
-    if (!trimmed) return null;
-
-    // Handle htree:// URLs
-    if (trimmed.startsWith('htree://')) {
-      const path = trimmed.slice(8);
-      const parts = path.split('/').filter(Boolean);
-      if (parts.length >= 2 && parts[0].startsWith('npub1')) {
-        return { npub: parts[0], repoName: parts.slice(1).join('/') };
-      }
-    }
-
-    // Handle npub/repo format
-    const parts = trimmed.split('/').filter(Boolean);
-    if (parts.length >= 2 && parts[0].startsWith('npub1')) {
-      return { npub: parts[0], repoName: parts.slice(1).join('/') };
-    }
-
-    return null;
-  }
-
   // Resolve fork root when URL changes
   $effect(() => {
     if (!showSourceRepo || !sourceRepo.trim()) {
@@ -86,7 +61,16 @@
       return;
     }
 
-    const parsed = parseForkUrl(sourceRepo);
+    let parsed = null;
+    try {
+      parsed = parseHtreeRepoRef(sourceRepo);
+    } catch {
+      forkRootCid = null;
+      forkBranches = [];
+      forkError = null;
+      return;
+    }
+
     if (!parsed) {
       forkRootCid = null;
       forkBranches = [];
@@ -99,25 +83,15 @@
     const token = ++forkResolveToken;
 
     const resolveFork = async (): Promise<CID | null> => {
-      const adapter = getWorkerAdapter();
-      if (adapter) {
-        try {
-          const cid = await adapter.resolveRoot(parsed.npub, parsed.repoName);
-          if (cid) return cid;
-        } catch (err) {
-          const message = err instanceof Error ? err.message : 'Failed to resolve fork';
-          if (token === forkResolveToken) {
-            forkError = message;
-          }
+      try {
+        return await resolveRepoRootCid(parsed, { selfNpub: userNpub || undefined, timeoutMs: 7000 });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to resolve fork';
+        if (token === forkResolveToken) {
+          forkError = message;
         }
+        return null;
       }
-
-      const localHash = getLocalRootCache(parsed.npub, parsed.repoName);
-      if (localHash) {
-        return { hash: localHash, key: getLocalRootKey(parsed.npub, parsed.repoName) };
-      }
-
-      return waitForTreeRoot(parsed.npub, parsed.repoName, 7000);
     };
 
     resolveFork().then((cid) => {

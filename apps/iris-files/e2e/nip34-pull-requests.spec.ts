@@ -1,5 +1,114 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool } from './test-utils.js';
+import type { Page } from '@playwright/test';
+import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
+import WebSocket from 'ws';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay, goToTreeList } from './test-utils.js';
+
+const KIND_REPO_ANNOUNCEMENT = 30617;
+const KIND_PULL_REQUEST = 1618;
+
+async function publishEventToRelay(relayUrl: string, event: Record<string, unknown>): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const socket = new WebSocket(relayUrl);
+    const timeout = setTimeout(() => {
+      socket.close();
+      reject(new Error('Timed out publishing test event'));
+    }, 5000);
+
+    socket.on('open', () => {
+      socket.send(JSON.stringify(['EVENT', event]));
+    });
+
+    socket.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        if (Array.isArray(msg) && msg[0] === 'OK' && msg[1] === (event as { id?: string }).id && msg[2] === true) {
+          clearTimeout(timeout);
+          socket.close();
+          resolve();
+        }
+      } catch {
+        // ignore malformed relay messages in tests
+      }
+    });
+
+    socket.on('error', (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+  });
+}
+
+async function createTopLevelGitRepo(page: Page, repoName: string, fileContents: string): Promise<{
+  npub: string;
+  treeName: string;
+  branch: string;
+  headCommit: string;
+}> {
+  await goToTreeList(page);
+  await navigateToPublicFolder(page, { timeoutMs: 60000 });
+
+  await page.evaluate(async ({ repoName }) => {
+    const { createTree } = await import('/src/actions/tree.ts');
+    const result = await createTree(repoName, 'public');
+    if (!result?.success) {
+      throw new Error(`Failed to create tree: ${repoName}`);
+    }
+  }, { repoName });
+  await page.waitForURL(new RegExp(`/#/npub[^/]+/${encodeURIComponent(repoName)}(?:\\?|$)`), { timeout: 30000 });
+
+  await page.evaluate(async ({ fileContents }) => {
+    const { getTree, LinkType } = await import('/src/store.ts');
+    const { autosaveIfOwn } = await import('/src/nostr.ts');
+    const { getCurrentRootCid } = await import('/src/actions/route.ts');
+    let rootCid = getCurrentRootCid();
+    if (!rootCid) throw new Error('No current root CID');
+    const tree = getTree();
+    const data = new TextEncoder().encode(fileContents);
+    const { cid, size } = await tree.putFile(data);
+    rootCid = await tree.setEntry(rootCid, [], 'README.md', cid, size, LinkType.Blob);
+    autosaveIfOwn(rootCid);
+  }, { fileContents });
+
+  await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'README.md' })).toBeVisible({ timeout: 15000 });
+
+  const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
+  await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
+  await gitInitBtn.click();
+  await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+  await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: '.git' }).first()).toBeVisible({ timeout: 30000 });
+  await expect(page.locator('button:has(.i-lucide-git-branch):not([data-testid="git-init-btn"])').first()).toBeVisible({ timeout: 30000 });
+
+  const repoInfo = await page.evaluate(async () => {
+    const { getCurrentRootCid } = await import('/src/actions/route.ts');
+    const { getBranches, runGitCommand } = await import('/src/utils/git.ts');
+
+    const rootCid = getCurrentRootCid();
+    if (!rootCid) throw new Error('No current root CID');
+
+    const hash = window.location.hash.slice(1);
+    const qIdx = hash.indexOf('?');
+    const path = qIdx !== -1 ? hash.slice(0, qIdx) : hash;
+    const parts = path.split('/').filter(Boolean);
+
+    const branches = await getBranches(rootCid);
+    const head = await runGitCommand(rootCid, 'rev-parse HEAD');
+    const headCommit = (head.output || '').trim();
+    const branch = branches.currentBranch || branches.branches[0] || '';
+    return {
+      npub: parts[0] || '',
+      treeName: parts[1] || '',
+      branch,
+      headCommit,
+    };
+  });
+
+  expect(repoInfo.npub).toMatch(/^npub1/);
+  expect(repoInfo.treeName).toBe(repoName);
+  expect(repoInfo.branch).toBeTruthy();
+  expect(repoInfo.headCommit).toMatch(/^[0-9a-f]{40}$/);
+  return repoInfo;
+}
 
 test.describe('NIP-34 Pull Requests', () => {
   // PR/Issues views are hidden on small screens (lg:flex), need wider viewport
@@ -203,6 +312,268 @@ test.describe('NIP-34 Pull Requests', () => {
 
     // Back button should also be visible
     await expect(page.locator('a:has-text("Back to pull requests")')).toBeVisible();
+  });
+
+  test('should load PR detail from direct URL on cold page after relay seed', async ({ page, browser, relayUrl }) => {
+    test.slow();
+    test.setTimeout(90000);
+
+    await useLocalRelay(page, relayUrl);
+    await navigateToPublicFolder(page, { timeoutMs: 60000 });
+
+    const { npub, treeName } = await page.evaluate(() => {
+      const hash = window.location.hash.slice(1);
+      const qIdx = hash.indexOf('?');
+      const path = qIdx !== -1 ? hash.slice(0, qIdx) : hash;
+      const parts = path.split('/').filter(Boolean);
+      return { npub: parts[0] || '', treeName: parts[1] || '' };
+    });
+    expect(npub).toMatch(/^npub1/);
+    expect(treeName).toBeTruthy();
+
+    const decodedTarget = nip19.decode(npub);
+    if (decodedTarget.type !== 'npub') {
+      throw new Error(`Expected npub route, got ${decodedTarget.type}`);
+    }
+    const targetPubkeyHex = decodedTarget.data;
+
+    const authorSk = generateSecretKey();
+    const authorPk = getPublicKey(authorSk);
+    const authorNpub = nip19.npubEncode(authorPk);
+    const now = Math.floor(Date.now() / 1000);
+    const title = `E2E cold direct PR ${Date.now().toString(36)}`;
+
+    const prEvent = finalizeEvent({
+      kind: KIND_PULL_REQUEST,
+      created_at: now,
+      content: 'Regression test PR for direct URL cold load',
+      tags: [
+        ['a', `${KIND_REPO_ANNOUNCEMENT}:${targetPubkeyHex}:${treeName}`],
+        ['p', targetPubkeyHex],
+        ['subject', title],
+        ['branch', 'feature'],
+        ['target-branch', 'master'],
+        ['c', '0'.repeat(40)],
+        ['clone', `htree://${authorNpub}/${treeName}`],
+      ],
+    }, authorSk);
+
+    await publishEventToRelay(relayUrl, prEvent as unknown as Record<string, unknown>);
+
+    // Confirm the seeded event is visible in the list before testing cold direct navigation.
+    await page.goto(`/#/${npub}/${treeName}?tab=pulls`);
+    await expect(page.locator('text=Loading pull requests...')).not.toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('link', { name: title })).toBeVisible({ timeout: 10000 });
+
+    const prUrl = `/#/${npub}/${treeName}?tab=pulls&id=${nip19.neventEncode({ id: prEvent.id, relays: [relayUrl] })}`;
+
+    // Fresh context simulates incognito / cold cache.
+    const coldContext = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    const coldPage = await coldContext.newPage();
+    setupPageErrorHandler(coldPage);
+    await coldPage.goto('/');
+    await disableOthersPool(coldPage);
+    await useLocalRelay(coldPage, relayUrl);
+    await navigateToPublicFolder(coldPage, { timeoutMs: 60000 });
+
+    await coldPage.goto(prUrl);
+
+    await expect(coldPage.locator('text=Pull request not found')).not.toBeVisible({ timeout: 20000 });
+    await expect(coldPage.getByRole('heading', { name: title })).toBeVisible({ timeout: 20000 });
+    await expect(coldPage.getByRole('link', { name: 'Go back' })).toBeVisible({ timeout: 10000 });
+
+    // Files changed tab should resolve to diff or error state, but never hang indefinitely.
+    await coldPage.getByRole('button', { name: /^Files changed/ }).click();
+    await expect(coldPage.locator('text=Loading diff...')).not.toBeVisible({ timeout: 20000 });
+    await expect(
+      coldPage.getByText(/Unable to compute the diff between branches|may not exist in this repository snapshot/)
+    ).toBeVisible({ timeout: 20000 });
+
+    await coldContext.close();
+  });
+
+  test('PR Files changed handles missing source branch gracefully from seeded PR event', async ({ page, relayUrl }) => {
+    test.slow();
+    test.setTimeout(120000);
+
+    await useLocalRelay(page, relayUrl);
+
+    const targetRepo = await createTopLevelGitRepo(
+      page,
+      `pr-missing-branch-${Date.now().toString(36)}`,
+      '# Missing branch PR test\n'
+    );
+
+    const decodedTarget = nip19.decode(targetRepo.npub);
+    if (decodedTarget.type !== 'npub') {
+      throw new Error(`Expected npub route, got ${decodedTarget.type}`);
+    }
+    const targetPubkeyHex = decodedTarget.data;
+
+    const authorSk = generateSecretKey();
+    const authorPk = getPublicKey(authorSk);
+    const authorNpub = nip19.npubEncode(authorPk);
+    const missingBranch = `missing-feature-${Date.now().toString(36)}`;
+    const title = `E2E missing source branch ${Date.now().toString(36)}`;
+
+    const prEvent = finalizeEvent({
+      kind: KIND_PULL_REQUEST,
+      created_at: Math.floor(Date.now() / 1000),
+      content: 'PR event points to a missing source branch',
+      tags: [
+        ['a', `${KIND_REPO_ANNOUNCEMENT}:${targetPubkeyHex}:${targetRepo.treeName}`],
+        ['p', targetPubkeyHex],
+        ['subject', title],
+        ['branch', missingBranch],
+        ['target-branch', targetRepo.branch],
+        ['c', '0'.repeat(40)],
+        ['clone', `htree://${authorNpub}/${targetRepo.treeName}`],
+      ],
+    }, authorSk);
+    await publishEventToRelay(relayUrl, prEvent as unknown as Record<string, unknown>);
+
+    await page.goto(`/#/${targetRepo.npub}/${targetRepo.treeName}?tab=pulls`);
+    await expect(page.locator('text=Loading pull requests...')).not.toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('link', { name: title })).toBeVisible({ timeout: 10000 });
+
+    const prUrl = `/#/${targetRepo.npub}/${targetRepo.treeName}?tab=pulls&id=${nip19.neventEncode({ id: prEvent.id, relays: [relayUrl] })}`;
+    await page.goto(prUrl);
+    await expect(page.getByRole('heading', { name: title })).toBeVisible({ timeout: 20000 });
+
+    await page.getByRole('button', { name: /^Files changed/ }).click();
+    await expect(page.locator('text=Loading diff...')).not.toBeVisible({ timeout: 20000 });
+
+    const diffErrorLocator = page.getByText(/Unable to compute the diff between branches|may not exist in this repository snapshot|memory access out of bounds|wasm-git crashed while running/);
+    await expect(diffErrorLocator).toBeVisible({ timeout: 20000 });
+    const retryButton = page.getByRole('button', { name: /Retry/i });
+    await expect(retryButton).toBeVisible({ timeout: 5000 });
+
+    await page.waitForTimeout(2000);
+    await expect(page.locator('text=Loading diff...')).not.toBeVisible();
+    await expect(diffErrorLocator).toBeVisible();
+
+    await retryButton.click();
+    await expect(page.locator('text=Loading diff...')).not.toBeVisible({ timeout: 20000 });
+    await expect(diffErrorLocator).toBeVisible({ timeout: 20000 });
+  });
+
+  test('PR Files changed shows cross-repo diff when clone + commit tip point to another repo', async ({ page, relayUrl }) => {
+    test.slow();
+    test.setTimeout(120000);
+
+    await useLocalRelay(page, relayUrl);
+
+    const targetRepo = await createTopLevelGitRepo(
+      page,
+      `pr-cross-target-${Date.now().toString(36)}`,
+      '# Target repo\n\nbase line\n'
+    );
+    const sourceRepo = await createTopLevelGitRepo(
+      page,
+      `pr-cross-source-${Date.now().toString(36)}`,
+      '# Source repo\n\nchanged line\nextra line\n'
+    );
+
+    const decodedTarget = nip19.decode(targetRepo.npub);
+    if (decodedTarget.type !== 'npub') {
+      throw new Error(`Expected npub route, got ${decodedTarget.type}`);
+    }
+    const targetPubkeyHex = decodedTarget.data;
+
+    const authorSk = generateSecretKey();
+    const title = `E2E cross-repo diff ${Date.now().toString(36)}`;
+    const prEvent = finalizeEvent({
+      kind: KIND_PULL_REQUEST,
+      created_at: Math.floor(Date.now() / 1000),
+      content: 'Cross-repo PR for diff rendering',
+      tags: [
+        ['a', `${KIND_REPO_ANNOUNCEMENT}:${targetPubkeyHex}:${targetRepo.treeName}`],
+        ['p', targetPubkeyHex],
+        ['subject', title],
+        ['branch', sourceRepo.branch],
+        ['target-branch', targetRepo.branch],
+        ['c', sourceRepo.headCommit],
+        ['clone', `htree://${sourceRepo.npub}/${sourceRepo.treeName}`],
+      ],
+    }, authorSk);
+    await publishEventToRelay(relayUrl, prEvent as unknown as Record<string, unknown>);
+
+    await page.goto(`/#/${targetRepo.npub}/${targetRepo.treeName}?tab=pulls`);
+    await expect(page.locator('text=Loading pull requests...')).not.toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('link', { name: title })).toBeVisible({ timeout: 10000 });
+
+    const prUrl = `/#/${targetRepo.npub}/${targetRepo.treeName}?tab=pulls&id=${nip19.neventEncode({ id: prEvent.id, relays: [relayUrl] })}`;
+    await page.goto(prUrl);
+    await expect(page.getByRole('heading', { name: title })).toBeVisible({ timeout: 20000 });
+
+    await page.getByRole('button', { name: /^Files changed/ }).click();
+    await expect(page.locator('text=Loading diff...')).not.toBeVisible({ timeout: 20000 });
+
+    await expect(page.getByText(/Unable to compute a cross-repo diff|Cross-repo diff requires a commit tip/)).not.toBeVisible();
+    await expect(page.getByText(/No differences between branches/)).not.toBeVisible();
+    await expect(page.locator('pre').filter({ hasText: 'diff --git a/README.md b/README.md' }).first()).toBeVisible({ timeout: 20000 });
+  });
+
+  test('PR Files changed handles cross-repo PR missing commit tip gracefully', async ({ page, relayUrl }) => {
+    test.slow();
+    test.setTimeout(120000);
+
+    await useLocalRelay(page, relayUrl);
+
+    const targetRepo = await createTopLevelGitRepo(
+      page,
+      `pr-cross-noc-${Date.now().toString(36)}`,
+      '# Target repo\n\nbase\n'
+    );
+    const sourceRepo = await createTopLevelGitRepo(
+      page,
+      `pr-cross-noc-source-${Date.now().toString(36)}`,
+      '# Source repo\n\nchanged\n'
+    );
+
+    const decodedTarget = nip19.decode(targetRepo.npub);
+    if (decodedTarget.type !== 'npub') {
+      throw new Error(`Expected npub route, got ${decodedTarget.type}`);
+    }
+    const targetPubkeyHex = decodedTarget.data;
+
+    const authorSk = generateSecretKey();
+    const authorNpub = nip19.npubEncode(getPublicKey(authorSk));
+    const title = `E2E cross-repo missing c ${Date.now().toString(36)}`;
+    const prEvent = finalizeEvent({
+      kind: KIND_PULL_REQUEST,
+      created_at: Math.floor(Date.now() / 1000),
+      content: 'Cross-repo PR without commit tip',
+      tags: [
+        ['a', `${KIND_REPO_ANNOUNCEMENT}:${targetPubkeyHex}:${targetRepo.treeName}`],
+        ['p', targetPubkeyHex],
+        ['subject', title],
+        ['branch', sourceRepo.branch],
+        ['target-branch', targetRepo.branch],
+        ['clone', `htree://${authorNpub}/${sourceRepo.treeName}`],
+      ],
+    }, authorSk);
+    await publishEventToRelay(relayUrl, prEvent as unknown as Record<string, unknown>);
+
+    const prUrl = `/#/${targetRepo.npub}/${targetRepo.treeName}?tab=pulls&id=${nip19.neventEncode({ id: prEvent.id, relays: [relayUrl] })}`;
+    await page.goto(prUrl);
+    await expect(page.getByRole('heading', { name: title })).toBeVisible({ timeout: 20000 });
+
+    await page.getByRole('button', { name: /^Files changed/ }).click();
+    await expect(page.locator('text=Loading diff...')).not.toBeVisible({ timeout: 20000 });
+
+    const diffErrorLocator = page.getByText(/Cross-repo diff requires a commit tip|Unable to compute a cross-repo diff/);
+    await expect(diffErrorLocator).toBeVisible({ timeout: 20000 });
+    const retryButton = page.getByRole('button', { name: /Retry/i });
+    await expect(retryButton).toBeVisible({ timeout: 5000 });
+
+    await page.waitForTimeout(2000);
+    await expect(page.locator('text=Loading diff...')).not.toBeVisible();
+    await expect(diffErrorLocator).toBeVisible();
+
+    await retryButton.click();
+    await expect(page.locator('text=Loading diff...')).not.toBeVisible({ timeout: 20000 });
+    await expect(diffErrorLocator).toBeVisible({ timeout: 20000 });
   });
 
   test('should navigate to Issue detail view via URL with nevent id', async ({ page }) => {
