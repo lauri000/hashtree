@@ -1365,10 +1365,8 @@ impl RemoteHelper {
                 let old_root = old_root_bytes.unwrap();
                 let mut sample_hashes = vec![hex::encode(old_root)];
                 // Add up to 4 more random samples from the rest of the tree
-                for hash in old_hashes.iter().take(4) {
-                    if *hash != old_root {
-                        sample_hashes.push(hex::encode(hash));
-                    }
+                for hash in old_hashes.iter().filter(|h| **h != old_root).take(4) {
+                    sample_hashes.push(hex::encode(hash));
                 }
                 let sample_refs: Vec<&str> = sample_hashes.iter().map(|s| s.as_str()).collect();
                 let mut needs_full = Vec::new();
@@ -1388,10 +1386,13 @@ impl RemoteHelper {
                 Arc::new(Vec::new())
             };
 
-            // Channel sends (data, is_from_old_tree) so worker knows which servers to target
+            // Channel sends:
+            // - data: encrypted blob bytes
+            // - from_old_tree: whether hash existed in previous tree
+            // - force_all_servers: for old-tree hashes detected missing on at least one server
             const CHANNEL_SIZE: usize = 100;
             const UPLOAD_CONCURRENCY: usize = 10;
-            let (tx, rx) = mpsc::channel::<(Vec<u8>, bool)>(CHANNEL_SIZE);
+            let (tx, rx) = mpsc::channel::<(Vec<u8>, bool, bool)>(CHANNEL_SIZE);
 
             // Spawn upload workers
             let upload_handle = {
@@ -1410,7 +1411,7 @@ impl RemoteHelper {
 
                     let stream = ReceiverStream::new(rx);
                     stream
-                        .map(|(data, from_old_tree)| {
+                        .map(|(data, from_old_tree, force_all_servers)| {
                             let blossom = &blossom;
                             let uploaded = Arc::clone(&uploaded);
                             let skipped_server = Arc::clone(&skipped_server);
@@ -1420,7 +1421,9 @@ impl RemoteHelper {
                             let servers_needing_full = Arc::clone(&servers_needing_full);
                             async move {
                                 // If from old tree and some servers need full upload, only upload to those
-                                let result = if from_old_tree && !servers_needing_full.is_empty() {
+                                let result = if force_all_servers
+                                    || (from_old_tree && !servers_needing_full.is_empty())
+                                {
                                     blossom.upload_to_all_servers(&data).await.map(|(h, c)| (h, c > 0))
                                 } else {
                                     blossom.upload_if_missing(&data).await
@@ -1477,9 +1480,24 @@ impl RemoteHelper {
                 let from_old_tree = old_hashes.contains(&hash);
 
                 // If from old tree and no servers need full upload, skip entirely
+                // unless a server has lost this hash since previous pushes.
+                let mut force_all_servers_for_hash = false;
                 if from_old_tree && servers_needing_full.is_empty() {
-                    skipped_diff.fetch_add(1, Ordering::Relaxed);
-                    continue;
+                    let hash_hex = hex::encode(hash);
+                    let mut missing_on_any_server = false;
+                    for server in blossom.write_servers() {
+                        if !blossom.exists_on_server(&hash_hex, server).await {
+                            missing_on_any_server = true;
+                            break;
+                        }
+                    }
+                    if !missing_on_any_server {
+                        skipped_diff.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    // At least one server is missing this "unchanged" hash.
+                    // Re-upload it to all servers to repair coverage.
+                    force_all_servers_for_hash = true;
                 }
 
                 // Load blob from store (stored encrypted)
@@ -1517,7 +1535,11 @@ impl RemoteHelper {
                 }
 
                 // Send encrypted blob to upload channel (blossom stores ciphertext)
-                if tx.send((data, from_old_tree)).await.is_err() {
+                if tx
+                    .send((data, from_old_tree, force_all_servers_for_hash))
+                    .await
+                    .is_err()
+                {
                     break; // Channel closed
                 }
                 queued_count += 1;
