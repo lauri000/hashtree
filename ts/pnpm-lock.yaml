@@ -190,6 +190,9 @@ importers:
       '@hashtree/nostr':
         specifier: workspace:*
         version: link:../../ts/packages/hashtree-nostr
+      '@hashtree/tree-root':
+        specifier: workspace:*
+        version: link:../../ts/packages/hashtree-tree-root
       '@hashtree/worker':
         specifier: workspace:*
         version: link:../../ts/packages/hashtree-worker
