@@ -80,7 +80,7 @@ fn bench_tree_reader(c: &mut Criterion) {
                 BenchmarkId::new(*chunk_name, size_name),
                 &(tree, cid),
                 |b, (tree, cid)| {
-                    b.iter(|| rt.block_on(async { tree.get(black_box(cid)).await.unwrap() }))
+                    b.iter(|| rt.block_on(async { tree.get(black_box(cid), None).await.unwrap() }))
                 },
             );
         }
@@ -108,7 +108,7 @@ fn bench_roundtrip(c: &mut Criterion) {
                         .public();
                     let tree = HashTree::new(config);
                     let cid = tree.put(black_box(data)).await.unwrap();
-                    tree.get(&cid).await.unwrap()
+                    tree.get(&cid, None).await.unwrap()
                 })
             })
         });
@@ -188,7 +188,7 @@ fn bench_encrypted_read(c: &mut Criterion) {
             BenchmarkId::new("plain", size_name),
             &(plain_tree, plain_cid),
             |b, (tree, cid)| {
-                b.iter(|| rt.block_on(async { tree.get(black_box(cid)).await.unwrap() }))
+                b.iter(|| rt.block_on(async { tree.get(black_box(cid), None).await.unwrap() }))
             },
         );
 
@@ -205,7 +205,7 @@ fn bench_encrypted_read(c: &mut Criterion) {
             BenchmarkId::new("encrypted", size_name),
             &(enc_tree, enc_cid),
             |b, (tree, cid)| {
-                b.iter(|| rt.block_on(async { tree.get(black_box(cid)).await.unwrap() }))
+                b.iter(|| rt.block_on(async { tree.get(black_box(cid), None).await.unwrap() }))
             },
         );
     }

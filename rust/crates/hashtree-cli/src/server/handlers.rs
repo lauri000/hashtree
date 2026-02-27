@@ -192,7 +192,7 @@ async fn htree_nhash_impl(
     let tree = HashTree::new(HashTreeConfig::new(store).public());
 
     // If root not in local store, try fetching from upstream
-    if tree.get(&cid).await.ok().flatten().is_none() {
+    if tree.get(&cid, None).await.ok().flatten().is_none() {
         fetch_and_cache_blob(&state, &cid.hash).await;
     }
 
@@ -433,7 +433,7 @@ async fn htree_npub_impl(
     let tree = HashTree::new(HashTreeConfig::new(store).public());
 
     // If root not in local store, try fetching from upstream
-    if tree.get(&cid).await.ok().flatten().is_none() {
+    if tree.get(&cid, None).await.ok().flatten().is_none() {
         fetch_and_cache_blob(&state, &cid.hash).await;
     }
 
@@ -692,12 +692,12 @@ async fn serve_cid_with_range(
         }
     }
 
-    let data = match tree.get(cid).await {
+    let data = match tree.get(cid, None).await {
         Ok(Some(d)) => d,
         Ok(None) => {
             // Try fetching from upstream
             if fetch_and_cache_blob(state, &cid.hash).await {
-                match tree.get(cid).await {
+                match tree.get(cid, None).await {
                     Ok(Some(d)) => d,
                     _ => {
                         return Response::builder()

@@ -1088,7 +1088,7 @@ impl HashtreeStore {
         let tree = HashTree::new(HashTreeConfig::new(store).public());
 
         sync_block_on(async {
-            tree.get(cid)
+            tree.get(cid, None)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))
         })

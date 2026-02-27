@@ -19,6 +19,30 @@ export interface EncryptedTreeConfig {
   chunkSize: number;
 }
 
+export interface ReadEncryptedOptions {
+  /** Maximum plaintext bytes to return before throwing */
+  maxBytes?: number;
+}
+
+interface ReadState {
+  maxBytes?: number;
+  bytesRead: number;
+}
+
+function normalizeMaxBytes(maxBytes?: number): number | undefined {
+  if (maxBytes === undefined) return undefined;
+  if (!Number.isFinite(maxBytes) || maxBytes < 0) {
+    throw new Error(`Invalid maxBytes: ${maxBytes}`);
+  }
+  return Math.floor(maxBytes);
+}
+
+function ensureWithinLimit(maxBytes: number | undefined, actualBytes: number): void {
+  if (maxBytes !== undefined && actualBytes > maxBytes) {
+    throw new Error(`Content size ${actualBytes} exceeds maxBytes ${maxBytes}`);
+  }
+}
+
 /**
  * Result of encrypted file storage
  */
@@ -127,8 +151,10 @@ async function buildEncryptedTree(
 export async function readFileEncrypted(
   store: Store,
   hash: Hash,
-  key: EncryptionKey
+  key: EncryptionKey,
+  options: ReadEncryptedOptions = {}
 ): Promise<Uint8Array | null> {
+  const maxBytes = normalizeMaxBytes(options.maxBytes);
   const encryptedData = await store.get(hash);
   if (!encryptedData) return null;
 
@@ -138,10 +164,13 @@ export async function readFileEncrypted(
   // Check if it's a tree node
   const node = tryDecodeTreeNode(decrypted);
   if (node) {
-    return assembleEncryptedChunks(store, node);
+    const declaredSize = node.links.reduce((sum, link) => sum + (link.size ?? 0), 0);
+    ensureWithinLimit(maxBytes, declaredSize);
+    return assembleEncryptedChunks(store, node, { maxBytes, bytesRead: 0 });
   }
 
   // Single chunk data
+  ensureWithinLimit(maxBytes, decrypted.length);
   return decrypted;
 }
 
@@ -180,16 +209,19 @@ async function getEncryptedDirectoryNode(
 }
 
 /**
- * Assemble chunks from an encrypted tree
- * Each link has its own CHK key
- * Fetches all children in parallel within each tree level
+ * Assemble chunks from an encrypted tree.
+ * Each link has its own CHK key.
  */
 async function assembleEncryptedChunks(
   store: Store,
-  node: TreeNode
+  node: TreeNode,
+  state: ReadState = { bytesRead: 0 }
 ): Promise<Uint8Array> {
-  // Fetch and decrypt all children in parallel
-  const childPromises = node.links.map(async (link) => {
+  const parts: Uint8Array[] = [];
+
+  for (const link of node.links) {
+    ensureWithinLimit(state.maxBytes, state.bytesRead + (link.size ?? 0));
+
     const chunkKey = link.key;
     if (!chunkKey) {
       throw new Error(`Missing decryption key for chunk: ${toHex(link.hash)}`);
@@ -203,17 +235,16 @@ async function assembleEncryptedChunks(
     const decrypted = await decryptChk(encryptedChild, chunkKey);
 
     if (link.type !== LinkType.Blob) {
-      // Intermediate tree node - decode and recurse (parallel recursion)
+      // Intermediate tree node - decode and recurse
       const childNode = decodeTreeNode(decrypted);
-      return assembleEncryptedChunks(store, childNode);
+      parts.push(await assembleEncryptedChunks(store, childNode, state));
     } else {
       // Leaf data chunk - raw blob
-      return decrypted;
+      ensureWithinLimit(state.maxBytes, state.bytesRead + decrypted.length);
+      state.bytesRead += decrypted.length;
+      parts.push(decrypted);
     }
-  });
-
-  // Wait for all children to complete
-  const parts = await Promise.all(childPromises);
+  }
 
   const totalLength = parts.reduce((sum, p) => sum + p.length, 0);
   const result = new Uint8Array(totalLength);

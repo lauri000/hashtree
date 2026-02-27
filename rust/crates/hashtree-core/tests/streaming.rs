@@ -20,7 +20,7 @@ async fn test_put_stream_small() {
     assert!(cid.key.is_none()); // public mode
 
     // Verify with get
-    let result = tree.get(&cid).await.unwrap().unwrap();
+    let result = tree.get(&cid, None).await.unwrap().unwrap();
     assert_eq!(result, data);
 }
 
@@ -39,7 +39,7 @@ async fn test_put_stream_chunked() {
 
     assert_eq!(size, 500);
 
-    let result = tree.get(&cid).await.unwrap().unwrap();
+    let result = tree.get(&cid, None).await.unwrap().unwrap();
     assert_eq!(result, data);
 }
 
@@ -92,7 +92,7 @@ async fn test_put_stream_encrypted() {
     assert_eq!(size, 500);
     assert!(cid.key.is_some()); // encrypted
 
-    let result = tree.get(&cid).await.unwrap().unwrap();
+    let result = tree.get(&cid, None).await.unwrap().unwrap();
     assert_eq!(result, data);
 }
 
@@ -128,7 +128,7 @@ async fn test_put_stream_empty() {
 
     assert_eq!(size, 0);
 
-    let result = tree.get(&cid).await.unwrap().unwrap();
+    let result = tree.get(&cid, None).await.unwrap().unwrap();
     assert_eq!(result, data);
 }
 
@@ -147,8 +147,46 @@ async fn test_put_stream_large() {
 
     assert_eq!(size, 1024 * 1024);
 
-    let result = tree.get(&cid).await.unwrap().unwrap();
+    let result = tree.get(&cid, None).await.unwrap().unwrap();
     assert_eq!(result, data);
+}
+
+#[tokio::test]
+async fn test_get_respects_max_size_public() {
+    let store = Arc::new(MemoryStore::new());
+    let tree = HashTree::new(HashTreeConfig::new(store).public().with_chunk_size(100));
+
+    let data: Vec<u8> = (0..500).map(|i| (i % 256) as u8).collect();
+    let (cid, _) = tree.put(&data).await.unwrap();
+
+    let too_small = tree.get(&cid, Some((data.len() - 1) as u64)).await;
+    assert!(too_small.is_err());
+
+    let ok = tree
+        .get(&cid, Some(data.len() as u64))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ok, data);
+}
+
+#[tokio::test]
+async fn test_get_respects_max_size_encrypted() {
+    let store = Arc::new(MemoryStore::new());
+    let tree = HashTree::new(HashTreeConfig::new(store).with_chunk_size(100));
+
+    let data: Vec<u8> = (0..500).map(|i| (i % 256) as u8).collect();
+    let (cid, _) = tree.put(&data).await.unwrap();
+
+    let too_small = tree.get(&cid, Some((data.len() - 1) as u64)).await;
+    assert!(too_small.is_err());
+
+    let ok = tree
+        .get(&cid, Some(data.len() as u64))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ok, data);
 }
 
 #[tokio::test]

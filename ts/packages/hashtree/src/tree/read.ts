@@ -13,6 +13,30 @@ export interface TreeEntry {
   meta?: Record<string, unknown>;
 }
 
+export interface ReadOptions {
+  /** Maximum plaintext bytes to return before throwing */
+  maxBytes?: number;
+}
+
+interface ReadState {
+  maxBytes?: number;
+  bytesRead: number;
+}
+
+function normalizeMaxBytes(maxBytes?: number): number | undefined {
+  if (maxBytes === undefined) return undefined;
+  if (!Number.isFinite(maxBytes) || maxBytes < 0) {
+    throw new Error(`Invalid maxBytes: ${maxBytes}`);
+  }
+  return Math.floor(maxBytes);
+}
+
+function ensureWithinLimit(maxBytes: number | undefined, actualBytes: number): void {
+  if (maxBytes !== undefined && actualBytes > maxBytes) {
+    throw new Error(`Content size ${actualBytes} exceeds maxBytes ${maxBytes}`);
+  }
+}
+
 /**
  * Get raw data by hash
  */
@@ -53,39 +77,55 @@ export async function isDirectory(store: Store, hash: Hash): Promise<boolean> {
 /**
  * Read a complete file (reassemble chunks if needed)
  */
-export async function readFile(store: Store, hash: Hash): Promise<Uint8Array | null> {
+export async function readFile(
+  store: Store,
+  hash: Hash,
+  options: ReadOptions = {}
+): Promise<Uint8Array | null> {
   if (!hash) return null;
+  const maxBytes = normalizeMaxBytes(options.maxBytes);
+
   const data = await store.get(hash);
   if (!data) return null;
 
   const node = tryDecodeTreeNode(data);
   if (!node) {
+    ensureWithinLimit(maxBytes, data.length);
     return data;
   }
 
-  return assembleChunks(store, node);
+  const declaredSize = node.links.reduce((sum, link) => sum + (link.size ?? 0), 0);
+  ensureWithinLimit(maxBytes, declaredSize);
+
+  return assembleChunks(store, node, { maxBytes, bytesRead: 0 });
 }
 
-async function assembleChunks(store: Store, node: TreeNode): Promise<Uint8Array> {
-  // Fetch all children in parallel
-  const childPromises = node.links.map(async (link) => {
+async function assembleChunks(
+  store: Store,
+  node: TreeNode,
+  state: ReadState = { bytesRead: 0 }
+): Promise<Uint8Array> {
+  const parts: Uint8Array[] = [];
+
+  for (const link of node.links) {
+    ensureWithinLimit(state.maxBytes, state.bytesRead + (link.size ?? 0));
+
     const childData = await store.get(link.hash);
     if (!childData) {
       throw new Error(`Missing chunk: ${toHex(link.hash)}`);
     }
 
     if (link.type !== LinkType.Blob) {
-      // Intermediate tree node - decode and recurse (parallel recursion)
+      // Intermediate tree node - decode and recurse
       const childNode = decodeTreeNode(childData);
-      return assembleChunks(store, childNode);
+      parts.push(await assembleChunks(store, childNode, state));
     } else {
       // Leaf chunk - raw blob
-      return childData;
+      ensureWithinLimit(state.maxBytes, state.bytesRead + childData.length);
+      state.bytesRead += childData.length;
+      parts.push(childData);
     }
-  });
-
-  // Wait for all children to complete
-  const parts = await Promise.all(childPromises);
+  }
 
   const totalLength = parts.reduce((sum, p) => sum + p.length, 0);
   const result = new Uint8Array(totalLength);

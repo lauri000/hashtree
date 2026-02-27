@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cid = tree.put(b"Hello, World!").await?;
 
     // Read it back
-    let data = tree.get(&cid).await?;
+    let data = tree.get(&cid, None).await?;
 
     Ok(())
 }

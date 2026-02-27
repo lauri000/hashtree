@@ -139,6 +139,16 @@ struct FetchSpec {
     name: String,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum AncestorCheck {
+    /// Remote tip is an ancestor of local tip: fast-forward allowed.
+    Ancestor,
+    /// Remote tip is not an ancestor of local tip: true non-fast-forward.
+    NotAncestor,
+    /// We could not determine ancestry (merge-base command/object failure).
+    Unknown(String),
+}
+
 impl RemoteHelper {
     pub fn new(
         pubkey: &str,
@@ -588,7 +598,7 @@ impl RemoteHelper {
                 let tree = &tree;
                 let downloaded = StdArc::clone(&downloaded);
                 async move {
-                    let result = match tree.get(&obj_cid).await {
+                    let result = match tree.get(&obj_cid, None).await {
                         Ok(Some(content)) => Ok((oid, content)),
                         Ok(None) => Err((oid, obj_cid)),
                         Err(_) => Err((oid, obj_cid)),
@@ -625,7 +635,7 @@ impl RemoteHelper {
                 eprint!("\r  Retrying {}/{}: {}...    ", i + 1, failed.len(), oid);
                 let _ = std::io::stderr().flush();
 
-                match tree.get(obj_cid).await {
+                match tree.get(obj_cid, None).await {
                     Ok(Some(content)) => {
                         objects.push((oid.clone(), content));
                     }
@@ -834,16 +844,33 @@ impl RemoteHelper {
                 // Check for non-fast-forward push (unless force)
                 if !spec.force {
                     if let Some(remote_sha) = self.remote_refs.get(&spec.dst) {
-                        if !self.is_ancestor(remote_sha, &sha) {
-                            results.push(format!(
-                                "error {} non-fast-forward (use --force to override)",
-                                spec.dst
-                            ));
-                            eprintln!(
-                                "  Rejected: {} has commits you don't have. Pull first or use --force.",
-                                spec.dst
-                            );
-                            continue;
+                        match self.check_ancestor(remote_sha, &sha) {
+                            AncestorCheck::Ancestor => {}
+                            AncestorCheck::NotAncestor => {
+                                results.push(format!(
+                                    "error {} non-fast-forward (use --force to override)",
+                                    spec.dst
+                                ));
+                                eprintln!(
+                                    "  Rejected: {} has commits you don't have. Pull first or use --force.",
+                                    spec.dst
+                                );
+                                eprintln!("  remote: {}", remote_sha);
+                                eprintln!("  local : {}", sha);
+                                continue;
+                            }
+                            AncestorCheck::Unknown(reason) => {
+                                results.push(format!(
+                                    "error {} fast-forward-check-failed (use --force to override)",
+                                    spec.dst
+                                ));
+                                eprintln!("  Rejected: {} fast-forward check failed.", spec.dst);
+                                eprintln!("  Could not verify ancestry between:");
+                                eprintln!("    remote: {}", remote_sha);
+                                eprintln!("    local : {}", sha);
+                                eprintln!("  merge-base error: {}", reason);
+                                continue;
+                            }
                         }
                     }
                 }
@@ -939,15 +966,49 @@ impl RemoteHelper {
     }
 
     /// Check if ancestor_sha is an ancestor of descendant_sha
-    fn is_ancestor(&self, ancestor_sha: &str, descendant_sha: &str) -> bool {
-        // git merge-base --is-ancestor returns 0 if true, 1 if false
+    fn check_ancestor(&self, ancestor_sha: &str, descendant_sha: &str) -> AncestorCheck {
+        // git merge-base --is-ancestor returns:
+        //   0 => true
+        //   1 => false (not ancestor)
+        //   >1 => error
         let output = Command::new("git")
             .args(["merge-base", "--is-ancestor", ancestor_sha, descendant_sha])
             .output();
 
         match output {
-            Ok(o) => o.status.success(),
-            Err(_) => false, // If we can't check, assume not an ancestor (safer)
+            Ok(o) => Self::classify_merge_base_result(o.status.code(), &o.stderr),
+            Err(e) => AncestorCheck::Unknown(format!("failed to run git merge-base: {}", e)),
+        }
+    }
+
+    fn classify_merge_base_result(status_code: Option<i32>, stderr: &[u8]) -> AncestorCheck {
+        match status_code {
+            Some(0) => AncestorCheck::Ancestor,
+            Some(1) => AncestorCheck::NotAncestor,
+            Some(code) => {
+                let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+                if stderr.is_empty() {
+                    AncestorCheck::Unknown(format!("git merge-base exited with exit code {}", code))
+                } else {
+                    AncestorCheck::Unknown(format!(
+                        "git merge-base exited with exit code {}: {}",
+                        code, stderr
+                    ))
+                }
+            }
+            None => {
+                let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+                if stderr.is_empty() {
+                    AncestorCheck::Unknown(
+                        "git merge-base terminated with no exit code".to_string(),
+                    )
+                } else {
+                    AncestorCheck::Unknown(format!(
+                        "git merge-base terminated with no exit code: {}",
+                        stderr
+                    ))
+                }
+            }
         }
     }
 
@@ -2052,4 +2113,39 @@ mod tests {
         assert!(helper.remote_refs.is_empty());
     }
 
+    #[test]
+    fn test_classify_merge_base_result_code_zero_is_ancestor() {
+        let result = RemoteHelper::classify_merge_base_result(Some(0), b"");
+        assert_eq!(result, AncestorCheck::Ancestor);
+    }
+
+    #[test]
+    fn test_classify_merge_base_result_code_one_is_not_ancestor() {
+        let result = RemoteHelper::classify_merge_base_result(Some(1), b"");
+        assert_eq!(result, AncestorCheck::NotAncestor);
+    }
+
+    #[test]
+    fn test_classify_merge_base_result_other_code_is_error() {
+        let result = RemoteHelper::classify_merge_base_result(Some(2), b"fatal: bad object");
+        match result {
+            AncestorCheck::Unknown(reason) => {
+                assert!(reason.contains("exit code 2"));
+                assert!(reason.contains("fatal: bad object"));
+            }
+            _ => panic!("Expected Unknown result"),
+        }
+    }
+
+    #[test]
+    fn test_classify_merge_base_result_missing_exit_code_is_error() {
+        let result = RemoteHelper::classify_merge_base_result(None, b"terminated by signal");
+        match result {
+            AncestorCheck::Unknown(reason) => {
+                assert!(reason.contains("no exit code"));
+                assert!(reason.contains("terminated by signal"));
+            }
+            _ => panic!("Expected Unknown result"),
+        }
+    }
 }

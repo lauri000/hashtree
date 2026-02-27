@@ -106,7 +106,7 @@ async fn download_bytes_impl(
     let store = build_download_store(read_servers)?;
     let tree = HashTree::new(HashTreeConfig::new(store));
 
-    tree.get(&cid)
+    tree.get(&cid, None)
         .await
         .map_err(|e| HashtreeError::Message(format!("failed to download attachment: {}", e)))?
         .ok_or_else(|| HashtreeError::Message("attachment not found".to_string()))

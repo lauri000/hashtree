@@ -33,7 +33,7 @@
 //!     let (cid, _size) = tree.put(b"Hello, World!").await?;
 //!
 //!     // Read it back
-//!     let data = tree.get(&cid).await?;
+//!     let data = tree.get(&cid, None).await?;
 //!     assert_eq!(data, Some(b"Hello, World!".to_vec()));
 //!
 //!     Ok(())

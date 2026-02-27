@@ -67,6 +67,24 @@ describe('HashTree', () => {
       expect(result).toEqual(data);
     });
 
+    it('should enforce maxBytes when reading unencrypted chunked files', async () => {
+      const smallTree = new HashTree({ store, chunkSize: 5 });
+      const data = new TextEncoder().encode('hello world!');
+      const { cid } = await smallTree.putFile(data, { unencrypted: true });
+
+      await expect(smallTree.readFile(cid, { maxBytes: data.length - 1 })).rejects.toThrow(/maxBytes/i);
+      await expect(smallTree.readFile(cid, { maxBytes: data.length })).resolves.toEqual(data);
+    });
+
+    it('should enforce maxBytes when reading encrypted files via get()', async () => {
+      const smallTree = new HashTree({ store, chunkSize: 5 });
+      const data = new TextEncoder().encode('encrypted hello world!');
+      const { cid } = await smallTree.putFile(data); // encrypted by default
+
+      await expect(smallTree.get(cid, { maxBytes: data.length - 1 })).rejects.toThrow(/maxBytes/i);
+      await expect(smallTree.get(cid, { maxBytes: data.length })).resolves.toEqual(data);
+    });
+
     it('should list directory', async () => {
       const { cid: fileCid } = await tree.putFile(new TextEncoder().encode('data'), { unencrypted: true });
       const { cid: dirCid } = await tree.putDirectory([{ name: 'file.txt', cid: fileCid, size: 4 }], { unencrypted: true });

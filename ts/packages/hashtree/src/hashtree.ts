@@ -53,6 +53,11 @@ export interface DirEntry {
   meta?: Record<string, unknown>;
 }
 
+export interface ReadOptions {
+  /** Maximum plaintext bytes to return before throwing */
+  maxBytes?: number;
+}
+
 /**
  * HashTree - create, read, and edit merkle trees
  */
@@ -171,11 +176,18 @@ export class HashTree {
   /**
    * Read a file
    */
-  async readFile(id: CID): Promise<Uint8Array | null> {
+  async readFile(id: CID, options: ReadOptions = {}): Promise<Uint8Array | null> {
+    return this.get(id, options);
+  }
+
+  /**
+   * Get content by CID (alias of readFile)
+   */
+  async get(id: CID, options: ReadOptions = {}): Promise<Uint8Array | null> {
     if (id.key) {
-      return readFileEncrypted(this.store, id.hash, id.key);
+      return readFileEncrypted(this.store, id.hash, id.key, options);
     }
-    return read.readFile(this.store, id.hash);
+    return read.readFile(this.store, id.hash, options);
   }
 
   /**

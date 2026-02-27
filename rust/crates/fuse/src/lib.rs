@@ -195,7 +195,7 @@ impl<S: Store> HashtreeFuse<S> {
         }
 
         if entry.cid.key.is_some() {
-            let data = block_on(self.tree.get(&entry.cid))?.ok_or(FsError::NotFound)?;
+            let data = block_on(self.tree.get(&entry.cid, None))?.ok_or(FsError::NotFound)?;
             let start = usize::try_from(offset).unwrap_or(usize::MAX);
             if start >= data.len() {
                 return Ok(vec![]);
@@ -523,7 +523,7 @@ impl<S: Store> HashtreeFuse<S> {
             return Ok(entry.size);
         }
 
-        let data = block_on(self.tree.get(&entry.cid))?.ok_or(FsError::NotFound)?;
+        let data = block_on(self.tree.get(&entry.cid, None))?.ok_or(FsError::NotFound)?;
         Ok(data.len() as u64)
     }
 
@@ -532,7 +532,7 @@ impl<S: Store> HashtreeFuse<S> {
         if entry.link_type == LinkType::Dir {
             return Err(FsError::IsDir);
         }
-        let data = block_on(self.tree.get(&entry.cid))?.ok_or(FsError::NotFound)?;
+        let data = block_on(self.tree.get(&entry.cid, None))?.ok_or(FsError::NotFound)?;
         Ok(data)
     }
 

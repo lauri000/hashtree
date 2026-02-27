@@ -75,6 +75,8 @@ pub enum HashTreeError {
     Encryption(String),
     #[error("Decryption error: {0}")]
     Decryption(String),
+    #[error("Content size {actual_size} exceeds max_size {max_size}")]
+    SizeLimitExceeded { max_size: u64, actual_size: u64 },
 }
 
 impl From<BuilderError> for HashTreeError {
@@ -169,11 +171,18 @@ impl<S: Store> HashTree<S> {
     }
 
     /// Get content by Cid (handles decryption automatically)
-    pub async fn get(&self, cid: &Cid) -> Result<Option<Vec<u8>>, HashTreeError> {
+    ///
+    /// - `max_size`: Optional max plaintext size in bytes. If exceeded, returns
+    ///   `HashTreeError::SizeLimitExceeded`.
+    pub async fn get(
+        &self,
+        cid: &Cid,
+        max_size: Option<u64>,
+    ) -> Result<Option<Vec<u8>>, HashTreeError> {
         if let Some(key) = cid.key {
-            self.get_encrypted(&cid.hash, &key).await
+            self.get_encrypted(&cid.hash, &key, max_size).await
         } else {
-            self.read_file(&cid.hash).await
+            self.read_file_with_limit(&cid.hash, max_size).await
         }
     }
 
@@ -493,6 +502,7 @@ impl<S: Store> HashTree<S> {
         &self,
         hash: &Hash,
         key: &EncryptionKey,
+        max_size: Option<u64>,
     ) -> Result<Option<Vec<u8>>, HashTreeError> {
         let encrypted_data = match self
             .store
@@ -511,19 +521,46 @@ impl<S: Store> HashTree<S> {
         // Check if it's a tree node
         if is_tree_node(&decrypted) {
             let node = decode_tree_node(&decrypted)?;
-            let assembled = self.assemble_encrypted_chunks(&node).await?;
+            let declared_size: u64 = node.links.iter().map(|l| l.size).sum();
+            Self::ensure_size_limit(max_size, declared_size)?;
+
+            let mut bytes_read = 0u64;
+            let assembled = self
+                .assemble_encrypted_chunks_limited(&node, max_size, &mut bytes_read)
+                .await?;
             return Ok(Some(assembled));
         }
 
         // Single chunk data
+        Self::ensure_size_limit(max_size, decrypted.len() as u64)?;
         Ok(Some(decrypted))
     }
 
+    fn ensure_size_limit(max_size: Option<u64>, actual_size: u64) -> Result<(), HashTreeError> {
+        if let Some(max_size) = max_size {
+            if actual_size > max_size {
+                return Err(HashTreeError::SizeLimitExceeded {
+                    max_size,
+                    actual_size,
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Assemble encrypted chunks from tree
-    async fn assemble_encrypted_chunks(&self, node: &TreeNode) -> Result<Vec<u8>, HashTreeError> {
+    async fn assemble_encrypted_chunks_limited(
+        &self,
+        node: &TreeNode,
+        max_size: Option<u64>,
+        bytes_read: &mut u64,
+    ) -> Result<Vec<u8>, HashTreeError> {
         let mut parts: Vec<Vec<u8>> = Vec::new();
 
         for link in &node.links {
+            let projected = (*bytes_read).saturating_add(link.size);
+            Self::ensure_size_limit(max_size, projected)?;
+
             let chunk_key = link
                 .key
                 .ok_or_else(|| HashTreeError::Encryption("missing chunk key".to_string()))?;
@@ -541,10 +578,18 @@ impl<S: Store> HashTree<S> {
             if is_tree_node(&decrypted) {
                 // Intermediate tree node - recurse
                 let child_node = decode_tree_node(&decrypted)?;
-                let child_data = Box::pin(self.assemble_encrypted_chunks(&child_node)).await?;
+                let child_data = Box::pin(self.assemble_encrypted_chunks_limited(
+                    &child_node,
+                    max_size,
+                    bytes_read,
+                ))
+                .await?;
                 parts.push(child_data);
             } else {
                 // Leaf data chunk
+                let projected = (*bytes_read).saturating_add(decrypted.len() as u64);
+                Self::ensure_size_limit(max_size, projected)?;
+                *bytes_read = projected;
                 parts.push(decrypted);
             }
         }
@@ -751,7 +796,10 @@ impl<S: Store> HashTree<S> {
 
         // If this is a file tree (chunked data), reassemble to get actual directory
         if node.node_type == LinkType::File {
-            let assembled = self.assemble_chunks(&node).await?;
+            let mut bytes_read = 0u64;
+            let assembled = self
+                .assemble_chunks_limited(&node, None, &mut bytes_read)
+                .await?;
             if is_tree_node(&assembled) {
                 let inner_node = decode_tree_node(&assembled)?;
                 return Ok(Some(inner_node));
@@ -806,6 +854,15 @@ impl<S: Store> HashTree<S> {
 
     /// Read a complete file (reassemble chunks if needed)
     pub async fn read_file(&self, hash: &Hash) -> Result<Option<Vec<u8>>, HashTreeError> {
+        self.read_file_with_limit(hash, None).await
+    }
+
+    /// Read a complete file with optional size limit.
+    async fn read_file_with_limit(
+        &self,
+        hash: &Hash,
+        max_size: Option<u64>,
+    ) -> Result<Option<Vec<u8>>, HashTreeError> {
         let data = match self
             .store
             .get(hash)
@@ -818,12 +875,19 @@ impl<S: Store> HashTree<S> {
 
         // Check if it's a tree (chunked file) or raw blob
         if !is_tree_node(&data) {
+            Self::ensure_size_limit(max_size, data.len() as u64)?;
             return Ok(Some(data));
         }
 
         // It's a tree - reassemble chunks
         let node = decode_tree_node(&data)?;
-        let assembled = self.assemble_chunks(&node).await?;
+        let declared_size: u64 = node.links.iter().map(|l| l.size).sum();
+        Self::ensure_size_limit(max_size, declared_size)?;
+
+        let mut bytes_read = 0u64;
+        let assembled = self
+            .assemble_chunks_limited(&node, max_size, &mut bytes_read)
+            .await?;
         Ok(Some(assembled))
     }
 
@@ -874,7 +938,7 @@ impl<S: Store> HashTree<S> {
         end: Option<u64>,
     ) -> Result<Option<Vec<u8>>, HashTreeError> {
         if let Some(_key) = cid.key {
-            let data = match self.get(cid).await? {
+            let data = match self.get(cid, None).await? {
                 Some(d) => d,
                 None => return Ok(None),
             };
@@ -998,10 +1062,18 @@ impl<S: Store> HashTree<S> {
     }
 
     /// Recursively assemble chunks from tree
-    async fn assemble_chunks(&self, node: &TreeNode) -> Result<Vec<u8>, HashTreeError> {
+    async fn assemble_chunks_limited(
+        &self,
+        node: &TreeNode,
+        max_size: Option<u64>,
+        bytes_read: &mut u64,
+    ) -> Result<Vec<u8>, HashTreeError> {
         let mut parts: Vec<Vec<u8>> = Vec::new();
 
         for link in &node.links {
+            let projected = (*bytes_read).saturating_add(link.size);
+            Self::ensure_size_limit(max_size, projected)?;
+
             let child_data = self
                 .store
                 .get(&link.hash)
@@ -1011,8 +1083,14 @@ impl<S: Store> HashTree<S> {
 
             if is_tree_node(&child_data) {
                 let child_node = decode_tree_node(&child_data)?;
-                parts.push(Box::pin(self.assemble_chunks(&child_node)).await?);
+                parts.push(
+                    Box::pin(self.assemble_chunks_limited(&child_node, max_size, bytes_read))
+                        .await?,
+                );
             } else {
+                let projected = (*bytes_read).saturating_add(child_data.len() as u64);
+                Self::ensure_size_limit(max_size, projected)?;
+                *bytes_read = projected;
                 parts.push(child_data);
             }
         }
@@ -1370,7 +1448,7 @@ impl<S: Store> HashTree<S> {
     /// Get total size using a Cid (handles decryption if key present)
     pub async fn get_size_cid(&self, cid: &Cid) -> Result<u64, HashTreeError> {
         if cid.key.is_some() {
-            let data = match self.get(cid).await? {
+            let data = match self.get(cid, None).await? {
                 Some(d) => d,
                 None => return Ok(0),
             };
@@ -2262,7 +2340,7 @@ mod tests {
         assert_eq!(size, data.len() as u64);
         assert!(cid.key.is_none()); // No key for public content
 
-        let retrieved = tree.get(&cid).await.unwrap().unwrap();
+        let retrieved = tree.get(&cid, None).await.unwrap().unwrap();
         assert_eq!(retrieved, data);
     }
 
@@ -2278,7 +2356,7 @@ mod tests {
         assert_eq!(size, data.len() as u64);
         assert!(cid.key.is_some()); // Has encryption key
 
-        let retrieved = tree.get(&cid).await.unwrap().unwrap();
+        let retrieved = tree.get(&cid, None).await.unwrap().unwrap();
         assert_eq!(retrieved, data);
     }
 
@@ -2294,7 +2372,7 @@ mod tests {
         assert_eq!(size, data.len() as u64);
         assert!(cid.key.is_some());
 
-        let retrieved = tree.get(&cid).await.unwrap().unwrap();
+        let retrieved = tree.get(&cid, None).await.unwrap().unwrap();
         assert_eq!(retrieved, data);
     }
 
