@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::args::{Cli, Commands, SocialGraphCommands, StorageCommands};
+use super::args::{Cli, Commands, PrCommands, SocialGraphCommands, StorageCommands};
 use super::blossom::{background_blossom_push, push_to_blossom};
 use super::content::add_directory;
 use super::daemonize::{format_daemon_status, spawn_daemon, stop_daemon};
@@ -1276,6 +1276,26 @@ pub(crate) async fn run() -> Result<()> {
         Commands::Peer { addr } => {
             list_peers(&addr).await?;
         }
+        Commands::Pr { command } => match command {
+            PrCommands::Create {
+                repo,
+                title,
+                description,
+                branch,
+                target_branch,
+                clone_url,
+            } => {
+                super::pr::create_pr(
+                    repo.as_deref(),
+                    &title,
+                    description.as_deref(),
+                    branch.as_deref(),
+                    &target_branch,
+                    clone_url.as_deref(),
+                )
+                .await?;
+            }
+        },
     }
 
     Ok(())

@@ -234,6 +234,36 @@ pub(crate) enum Commands {
         #[arg(long, default_value = "127.0.0.1:8080")]
         addr: String,
     },
+
+    /// Pull request management
+    Pr {
+        #[command(subcommand)]
+        command: PrCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum PrCommands {
+    /// Create a pull request
+    Create {
+        /// Target repository (git remote alias, npub/reponame, or htree:// URL of the repo to PR into)
+        repo: Option<String>,
+        /// PR title
+        #[arg(long, short)]
+        title: String,
+        /// PR description
+        #[arg(long, short)]
+        description: Option<String>,
+        /// Source branch name (default: current branch)
+        #[arg(long)]
+        branch: Option<String>,
+        /// Target branch (default: master)
+        #[arg(long, default_value = "master")]
+        target_branch: String,
+        /// Clone URL for source repo (default: htree://self/<reponame>)
+        #[arg(long)]
+        clone_url: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

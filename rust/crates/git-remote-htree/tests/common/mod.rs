@@ -16,7 +16,7 @@ use tempfile::TempDir;
 /// Minimal in-memory nostr relay for testing with real-time event broadcasting
 pub mod test_relay {
     use futures::{SinkExt, StreamExt};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::net::{TcpListener, TcpStream as StdTcpStream};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -29,16 +29,28 @@ pub mod test_relay {
     struct StoredFilter {
         sub_id: String,
         kind: Option<u64>,
+        kinds: Vec<u64>,
         authors: Vec<String>,
         p_tag: Option<String>, // #p tag for directed messages
         l_tag: Option<String>, // #l tag for hello messages
+        a_tag: Option<String>, // #a tag for addressable references
+        e_tags: Vec<String>,   // #e tag for event references
+        d_tag: Option<String>, // #d tag for replaceable event identifier
     }
 
     impl StoredFilter {
         fn matches(&self, event: &serde_json::Value) -> bool {
-            // Check kind
+            // Check kind (single)
             if let Some(k) = self.kind {
                 if event.get("kind").and_then(|v| v.as_u64()) != Some(k) {
+                    return false;
+                }
+            }
+
+            // Check kinds (multiple)
+            if !self.kinds.is_empty() {
+                let event_kind = event.get("kind").and_then(|v| v.as_u64()).unwrap_or(0);
+                if !self.kinds.contains(&event_kind) {
                     return false;
                 }
             }
@@ -51,11 +63,13 @@ pub mod test_relay {
                 }
             }
 
+            let tags = event
+                .get("tags")
+                .and_then(|t| t.as_array());
+
             // Check #p tag
             if let Some(ref p) = self.p_tag {
-                let has_p = event
-                    .get("tags")
-                    .and_then(|t| t.as_array())
+                let has_p = tags
                     .map(|tags| {
                         tags.iter().any(|tag| {
                             tag.as_array()
@@ -75,9 +89,7 @@ pub mod test_relay {
 
             // Check #l tag
             if let Some(ref l) = self.l_tag {
-                let has_l = event
-                    .get("tags")
-                    .and_then(|t| t.as_array())
+                let has_l = tags
                     .map(|tags| {
                         tags.iter().any(|tag| {
                             tag.as_array()
@@ -95,6 +107,66 @@ pub mod test_relay {
                 }
             }
 
+            // Check #a tag
+            if let Some(ref a) = self.a_tag {
+                let has_a = tags
+                    .map(|tags| {
+                        tags.iter().any(|tag| {
+                            tag.as_array()
+                                .map(|arr| {
+                                    arr.len() >= 2
+                                        && arr[0].as_str() == Some("a")
+                                        && arr[1].as_str() == Some(a.as_str())
+                                })
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false);
+                if !has_a {
+                    return false;
+                }
+            }
+
+            // Check #e tags (any of the filter e_tags must match)
+            if !self.e_tags.is_empty() {
+                let has_e = tags
+                    .map(|tags| {
+                        tags.iter().any(|tag| {
+                            tag.as_array()
+                                .map(|arr| {
+                                    arr.len() >= 2
+                                        && arr[0].as_str() == Some("e")
+                                        && self.e_tags.iter().any(|e| arr[1].as_str() == Some(e.as_str()))
+                                })
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false);
+                if !has_e {
+                    return false;
+                }
+            }
+
+            // Check #d tag
+            if let Some(ref d) = self.d_tag {
+                let has_d = tags
+                    .map(|tags| {
+                        tags.iter().any(|tag| {
+                            tag.as_array()
+                                .map(|arr| {
+                                    arr.len() >= 2
+                                        && arr[0].as_str() == Some("d")
+                                        && arr[1].as_str() == Some(d.as_str())
+                                })
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false);
+                if !has_d {
+                    return false;
+                }
+            }
+
             true
         }
     }
@@ -102,25 +174,42 @@ pub mod test_relay {
     pub struct TestRelay {
         port: u16,
         shutdown: broadcast::Sender<()>,
+        events: Arc<RwLock<HashMap<String, serde_json::Value>>>,
+    }
+
+    #[derive(Clone, Default)]
+    pub struct TestRelayOptions {
+        pub reject_event_kinds: Vec<u64>,
+        pub ignore_req_kinds: Vec<u64>,
     }
 
     impl TestRelay {
         pub fn new(port: u16) -> Self {
+            Self::with_options(port, TestRelayOptions::default())
+        }
+
+        pub fn with_options(port: u16, options: TestRelayOptions) -> Self {
             let events: Arc<RwLock<HashMap<String, serde_json::Value>>> =
                 Arc::new(RwLock::new(HashMap::new()));
             let (shutdown, _) = broadcast::channel(1);
             // Broadcast channel for new events - larger buffer for busy relays
             let (event_tx, _) = broadcast::channel::<serde_json::Value>(1000);
+            let reject_event_kinds: Arc<HashSet<u64>> =
+                Arc::new(options.reject_event_kinds.iter().copied().collect());
+            let ignore_req_kinds: Arc<HashSet<u64>> =
+                Arc::new(options.ignore_req_kinds.iter().copied().collect());
 
             let relay = TestRelay {
                 port,
                 shutdown: shutdown.clone(),
+                events: events.clone(),
             };
 
             // Start relay in background
             let events_clone = events.clone();
             let mut shutdown_rx = shutdown.subscribe();
             let event_tx_clone = event_tx.clone();
+            let ignore_req_kinds_clone = ignore_req_kinds.clone();
 
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Builder::new_multi_thread()
@@ -142,7 +231,16 @@ pub mod test_relay {
                                     let events = events_clone.clone();
                                     let event_tx = event_tx_clone.clone();
                                     let event_rx = event_tx_clone.subscribe();
-                                    tokio::spawn(handle_connection(stream, events, event_tx, event_rx));
+                                    let reject_event_kinds = reject_event_kinds.clone();
+                                    let ignore_req_kinds = ignore_req_kinds_clone.clone();
+                                    tokio::spawn(handle_connection(
+                                        stream,
+                                        events,
+                                        event_tx,
+                                        event_rx,
+                                        reject_event_kinds,
+                                        ignore_req_kinds,
+                                    ));
                                 }
                             }
                         }
@@ -165,6 +263,15 @@ pub mod test_relay {
         pub fn url(&self) -> String {
             format!("ws://127.0.0.1:{}", self.port)
         }
+
+        pub fn stored_events(&self) -> Vec<serde_json::Value> {
+            let events = self.events.clone();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to build runtime");
+            rt.block_on(async move { events.read().await.values().cloned().collect() })
+        }
     }
 
     impl Drop for TestRelay {
@@ -180,6 +287,8 @@ pub mod test_relay {
         events: Arc<RwLock<HashMap<String, serde_json::Value>>>,
         event_tx: broadcast::Sender<serde_json::Value>,
         mut event_rx: broadcast::Receiver<serde_json::Value>,
+        reject_event_kinds: Arc<HashSet<u64>>,
+        ignore_req_kinds: Arc<HashSet<u64>>,
     ) {
         let ws_stream = match accept_async(stream).await {
             Ok(s) => s,
@@ -249,6 +358,15 @@ pub mod test_relay {
                     if parsed.len() >= 2 {
                         let event = parsed[1].clone();
                         if let Some(id) = event.get("id").and_then(|v| v.as_str()) {
+                            let kind = event.get("kind").and_then(|v| v.as_u64()).unwrap_or(0);
+                            if reject_event_kinds.contains(&kind) {
+                                let ok_msg =
+                                    serde_json::json!(["OK", id, false, "rejected for test"]);
+                                let mut w = write.lock().await;
+                                let _ = w.send(Message::Text(ok_msg.to_string())).await;
+                                continue;
+                            }
+
                             // Store event
                             events.write().await.insert(id.to_string(), event.clone());
 
@@ -273,11 +391,29 @@ pub mod test_relay {
                         for i in 2..parsed.len() {
                             let filter = &parsed[i];
 
-                            let kind = filter
+                            let kinds_arr: Vec<u64> = filter
                                 .get("kinds")
                                 .and_then(|k| k.as_array())
-                                .and_then(|a| a.first())
-                                .and_then(|v| v.as_u64());
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_u64())
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+
+                            // Single kind for backward compat
+                            let kind = if kinds_arr.len() == 1 {
+                                Some(kinds_arr[0])
+                            } else {
+                                None
+                            };
+
+                            // If more than one kind, use kinds vec
+                            let kinds = if kinds_arr.len() > 1 {
+                                kinds_arr
+                            } else {
+                                vec![]
+                            };
 
                             let authors: Vec<String> = filter
                                 .get("authors")
@@ -303,13 +439,52 @@ pub mod test_relay {
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string());
 
+                            let a_tag = filter
+                                .get("#a")
+                                .and_then(|a| a.as_array())
+                                .and_then(|a| a.first())
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+
+                            let e_tags: Vec<String> = filter
+                                .get("#e")
+                                .and_then(|e| e.as_array())
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+
+                            let d_tag = filter
+                                .get("#d")
+                                .and_then(|d| d.as_array())
+                                .and_then(|a| a.first())
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+
                             filters.push(StoredFilter {
                                 sub_id: sub_id.clone(),
                                 kind,
+                                kinds,
                                 authors,
                                 p_tag,
                                 l_tag,
+                                a_tag,
+                                e_tags,
+                                d_tag,
                             });
+                        }
+
+                        let should_ignore_req = filters.iter().any(|filter| {
+                            filter
+                                .kind
+                                .into_iter()
+                                .chain(filter.kinds.iter().copied())
+                                .any(|kind| ignore_req_kinds.contains(&kind))
+                        });
+                        if should_ignore_req {
+                            continue;
                         }
 
                         // Store subscription
@@ -436,9 +611,9 @@ fn find_htree_binary() -> Option<PathBuf> {
         .parent()?
         .parent()?
         .to_path_buf();
-
-    let debug_bin = workspace_root.join("target/debug/htree");
-    let release_bin = workspace_root.join("target/release/htree");
+    let target_dir = cargo_target_dir(&workspace_root);
+    let debug_bin = target_dir.join("debug/htree");
+    let release_bin = target_dir.join("release/htree");
 
     if release_bin.exists() {
         Some(release_bin)
@@ -446,6 +621,20 @@ fn find_htree_binary() -> Option<PathBuf> {
         Some(debug_bin)
     } else {
         None
+    }
+}
+
+fn cargo_target_dir(workspace_root: &std::path::Path) -> PathBuf {
+    match std::env::var_os("CARGO_TARGET_DIR") {
+        Some(path) => {
+            let path = PathBuf::from(path);
+            if path.is_absolute() {
+                path
+            } else {
+                workspace_root.join(path)
+            }
+        }
+        None => workspace_root.join("target"),
     }
 }
 
@@ -580,9 +769,9 @@ pub fn find_git_remote_htree_dir() -> Option<PathBuf> {
         .parent()?
         .parent()?
         .to_path_buf();
-
-    let release_dir = workspace_root.join("target/release");
-    let debug_dir = workspace_root.join("target/debug");
+    let target_dir = cargo_target_dir(&workspace_root);
+    let release_dir = target_dir.join("release");
+    let debug_dir = target_dir.join("debug");
 
     if release_dir.join("git-remote-htree").exists() {
         Some(release_dir)
