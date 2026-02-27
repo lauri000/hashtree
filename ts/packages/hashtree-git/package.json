@@ -1,6 +1,6 @@
 {
   "name": "@hashtree/git",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Git/htree interoperability helpers",
   "type": "module",
   "main": "dist/index.js",

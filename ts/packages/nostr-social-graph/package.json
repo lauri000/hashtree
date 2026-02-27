@@ -1,6 +1,6 @@
 {
   "name": "nostr-social-graph",
-  "version": "1.0.35",
+  "version": "1.0.36",
   "type": "module",
   "packageManager": "pnpm@10.23.0",
   "description": "Nostr social graph library",
