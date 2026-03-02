@@ -1630,7 +1630,11 @@ pub async fn resolve_and_serve(
 }
 
 /// API endpoint to resolve npub/treename to hash (returns JSON)
-pub async fn resolve_to_hash(Path(params): Path<(String, String)>) -> impl IntoResponse {
+/// Tries relays first, then WebRTC peers if available.
+pub async fn resolve_to_hash(
+    State(state): State<AppState>,
+    Path(params): Path<(String, String)>,
+) -> impl IntoResponse {
     let (pubkey, treename) = params;
     let key = format!("{}/{}", pubkey, treename);
 
@@ -1644,25 +1648,45 @@ pub async fn resolve_to_hash(Path(params): Path<(String, String)>) -> impl IntoR
         }
     };
 
-    let result =
+    let relay_result =
         match tokio::time::timeout(HTTP_RESOLVER_TIMEOUT, resolver.resolve_wait(&key)).await {
-            Ok(Ok(cid)) => Json(json!({
+            Ok(Ok(cid)) => Some(Json(json!({
                 "key": key,
                 "hash": to_hex(&cid.hash),
-                "cid": cid.to_string()
-            })),
-            Ok(Err(e)) => Json(json!({
-                "error": e.to_string(),
-                "key": key
-            })),
-            Err(_) => Json(json!({
-                "error": "Resolution timeout",
-                "key": key
-            })),
+                "cid": cid.to_string(),
+                "source": "nostr",
+            }))),
+            Ok(Err(_)) | Err(_) => None,
         };
 
     let _ = resolver.stop().await;
-    result
+    if let Some(result) = relay_result {
+        return result;
+    }
+
+    if let Some(ref webrtc_state) = state.webrtc_peers {
+        if let Some(root) = webrtc_state
+            .resolve_root_from_peers(&pubkey, &treename, Duration::from_secs(4))
+            .await
+        {
+            return Json(json!({
+                "key": key,
+                "hash": root.hash,
+                "source": "webrtc",
+                "peer": root.peer_id,
+                "event_id": root.event_id,
+                "created_at": root.created_at,
+                "key_tag": root.key,
+                "encryptedKey": root.encrypted_key,
+                "selfEncryptedKey": root.self_encrypted_key,
+            }));
+        }
+    }
+
+    Json(json!({
+        "error": "Resolution failed via relays and peers",
+        "key": key
+    }))
 }
 
 /// List all trees for a pubkey

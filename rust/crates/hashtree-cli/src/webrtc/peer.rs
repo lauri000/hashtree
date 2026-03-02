@@ -27,7 +27,10 @@ use super::types::{
     DataRequest, DataResponse, PeerDirection, PeerId, PeerStateEvent, SignalingMessage,
 };
 use crate::nostr_relay::NostrRelay;
-use nostr::{ClientMessage as NostrClientMessage, JsonUtil as NostrJsonUtil};
+use nostr::{
+    ClientMessage as NostrClientMessage, Filter as NostrFilter, JsonUtil as NostrJsonUtil,
+    RelayMessage as NostrRelayMessage, SubscriptionId as NostrSubscriptionId,
+};
 
 /// Trait for content storage that can be used by WebRTC peers
 pub trait ContentStore: Send + Sync + 'static {
@@ -59,6 +62,8 @@ pub struct Peer {
 
     // Track pending outgoing requests (keyed by hash hex)
     pub pending_requests: Arc<Mutex<HashMap<String, PendingRequest>>>,
+    // Track pending Nostr relay queries over data channel (keyed by subscription id)
+    pending_nostr_queries: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<NostrRelayMessage>>>>,
 
     // Channel for incoming data messages
     #[allow(dead_code)]
@@ -173,6 +178,7 @@ impl Peer {
             my_peer_id,
             store,
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
+            pending_nostr_queries: Arc::new(Mutex::new(HashMap::new())),
             message_tx,
             message_rx: Some(message_rx),
             state_event_tx,
@@ -344,6 +350,7 @@ impl Peer {
         let peer_id = self.peer_id.clone();
         let message_tx = self.message_tx.clone();
         let pending_requests = self.pending_requests.clone();
+        let pending_nostr_queries = self.pending_nostr_queries.clone();
         let store = self.store.clone();
         let data_channel_holder = self.data_channel.clone();
         let nostr_relay = self.nostr_relay.clone();
@@ -354,6 +361,7 @@ impl Peer {
                 let peer_id = peer_id.clone();
                 let message_tx = message_tx.clone();
                 let pending_requests = pending_requests.clone();
+                let pending_nostr_queries = pending_nostr_queries.clone();
                 let store = store.clone();
                 let data_channel_holder = data_channel_holder.clone();
                 let nostr_relay = nostr_relay.clone();
@@ -379,6 +387,7 @@ impl Peer {
                         peer_id,
                         message_tx,
                         pending_requests,
+                        pending_nostr_queries.clone(),
                         store,
                         nostr_relay,
                         peer_pubkey,
@@ -486,6 +495,7 @@ impl Peer {
             peer_id,
             message_tx,
             pending_requests,
+            self.pending_nostr_queries.clone(),
             store,
             nostr_relay,
             peer_pubkey,
@@ -500,6 +510,9 @@ impl Peer {
         peer_id: PeerId,
         message_tx: mpsc::Sender<(DataMessage, Option<Vec<u8>>)>,
         pending_requests: Arc<Mutex<HashMap<String, PendingRequest>>>,
+        pending_nostr_queries: Arc<
+            Mutex<HashMap<String, mpsc::UnboundedSender<NostrRelayMessage>>>,
+        >,
         store: Option<Arc<dyn ContentStore>>,
         nostr_relay: Option<Arc<NostrRelay>>,
         peer_pubkey: Option<String>,
@@ -513,7 +526,8 @@ impl Peer {
         let open_notify = nostr_relay.as_ref().map(|_| Arc::new(Notify::new()));
         if let Some(ref notify) = open_notify {
             if dc.ready_state() == RTCDataChannelState::Open {
-                notify.notify_waiters();
+                // `notify_one` stores a permit if no waiter is active yet.
+                notify.notify_one();
             }
         }
 
@@ -562,7 +576,7 @@ impl Peer {
                     peer_short_open, label_clone
                 );
                 if let Some(notify) = open_notify {
-                    notify.notify_waiters();
+                    notify.notify_one();
                 }
             })
         }));
@@ -573,6 +587,7 @@ impl Peer {
         let store_clone = store.clone();
         let nostr_relay_for_msg = nostr_relay.clone();
         let nostr_client_id_for_msg = nostr_client_id;
+        let pending_nostr_queries_for_msg = pending_nostr_queries.clone();
 
         dc.on_message(Box::new(move |msg: DataChannelMessage| {
             let dc = dc_for_msg.clone();
@@ -583,13 +598,38 @@ impl Peer {
             let store = store_clone.clone();
             let nostr_relay = nostr_relay_for_msg.clone();
             let nostr_client_id = nostr_client_id_for_msg;
+            let pending_nostr_queries = pending_nostr_queries_for_msg.clone();
             let msg_data = msg.data.clone();
 
             // Work MUST be inside the returned future
             Box::pin(async move {
                 if msg.is_string {
-                    if let Some(relay) = nostr_relay {
-                        if let Ok(text) = std::str::from_utf8(&msg_data) {
+                    if let Ok(text) = std::str::from_utf8(&msg_data) {
+                        // First, route relay responses to pending local queries.
+                        if let Ok(relay_msg) = NostrRelayMessage::from_json(text) {
+                            if let Some(sub_id) = relay_subscription_id(&relay_msg) {
+                                let sender = {
+                                    let pending = pending_nostr_queries.lock().await;
+                                    pending.get(&sub_id).cloned()
+                                };
+                                if let Some(tx) = sender {
+                                    debug!(
+                                        "[Peer {}] Routed Nostr relay message for subscription {}",
+                                        peer_short, sub_id
+                                    );
+                                    let _ = tx.send(relay_msg);
+                                    return;
+                                } else {
+                                    debug!(
+                                        "[Peer {}] Dropping Nostr relay message for unknown subscription {}",
+                                        peer_short, sub_id
+                                    );
+                                }
+                            }
+                        }
+
+                        // Otherwise treat it as a client message to be handled by local relay.
+                        if let Some(relay) = nostr_relay {
                             if let Ok(nostr_msg) = NostrClientMessage::from_json(text) {
                                 if let Some(client_id) = nostr_client_id {
                                     relay.handle_client_message(client_id, nostr_msg).await;
@@ -702,7 +742,12 @@ impl Peer {
         // Use try_lock for non-async context
         self.data_channel
             .try_lock()
-            .map(|guard| guard.is_some())
+            .map(|guard| {
+                guard
+                    .as_ref()
+                    .map(|dc| dc.ready_state() == RTCDataChannelState::Open)
+                    .unwrap_or(false)
+            })
             .unwrap_or(false)
     }
 
@@ -763,6 +808,112 @@ impl Peer {
         }
     }
 
+    /// Query a peer's embedded Nostr relay over the WebRTC data channel.
+    /// Returns all events received before EOSE/timeout.
+    pub async fn query_nostr_events(
+        &self,
+        filters: Vec<NostrFilter>,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<nostr::Event>> {
+        let dc_guard = self.data_channel.lock().await;
+        let dc = dc_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No data channel"))?
+            .clone();
+        drop(dc_guard);
+
+        let subscription_id = NostrSubscriptionId::generate();
+        let subscription_key = subscription_id.to_string();
+        let (tx, mut rx) = mpsc::unbounded_channel::<NostrRelayMessage>();
+
+        {
+            let mut pending = self.pending_nostr_queries.lock().await;
+            pending.insert(subscription_key.clone(), tx);
+        }
+
+        let req = NostrClientMessage::req(subscription_id.clone(), filters);
+        if let Err(e) = dc.send_text(req.as_json()).await {
+            let mut pending = self.pending_nostr_queries.lock().await;
+            pending.remove(&subscription_key);
+            return Err(e.into());
+        }
+        debug!(
+            "[Peer {}] Sent Nostr REQ subscription {}",
+            self.peer_id.short(),
+            subscription_id
+        );
+
+        let mut events = Vec::new();
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let remaining = deadline - now;
+
+            let next = tokio::time::timeout(remaining, rx.recv()).await;
+            match next {
+                Ok(Some(NostrRelayMessage::Event {
+                    subscription_id: sid,
+                    event,
+                })) if sid == subscription_id => {
+                    debug!(
+                        "[Peer {}] Received Nostr EVENT for subscription {}",
+                        self.peer_id.short(),
+                        subscription_id
+                    );
+                    events.push(*event);
+                }
+                Ok(Some(NostrRelayMessage::EndOfStoredEvents(sid))) if sid == subscription_id => {
+                    debug!(
+                        "[Peer {}] Received Nostr EOSE for subscription {}",
+                        self.peer_id.short(),
+                        subscription_id
+                    );
+                    break;
+                }
+                Ok(Some(NostrRelayMessage::Closed {
+                    subscription_id: sid,
+                    message,
+                })) if sid == subscription_id => {
+                    warn!(
+                        "[Peer {}] Nostr query closed for subscription {}: {}",
+                        self.peer_id.short(),
+                        subscription_id,
+                        message
+                    );
+                    break;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => {
+                    warn!(
+                        "[Peer {}] Nostr query timed out for subscription {}",
+                        self.peer_id.short(),
+                        subscription_id
+                    );
+                    break;
+                }
+            }
+        }
+
+        let close = NostrClientMessage::close(subscription_id.clone());
+        let _ = dc.send_text(close.as_json()).await;
+
+        let mut pending = self.pending_nostr_queries.lock().await;
+        pending.remove(&subscription_key);
+        debug!(
+            "[Peer {}] Nostr query subscription {} collected {} event(s)",
+            self.peer_id.short(),
+            subscription_id,
+            events.len()
+        );
+
+        Ok(events)
+    }
+
     /// Send a message over the data channel
     pub async fn send_message(&self, msg: &DataMessage) -> Result<()> {
         let dc_guard = self.data_channel.lock().await;
@@ -783,5 +934,21 @@ impl Peer {
         }
         self.pc.close().await?;
         Ok(())
+    }
+}
+
+fn relay_subscription_id(msg: &NostrRelayMessage) -> Option<String> {
+    match msg {
+        NostrRelayMessage::Event {
+            subscription_id, ..
+        } => Some(subscription_id.to_string()),
+        NostrRelayMessage::EndOfStoredEvents(subscription_id) => Some(subscription_id.to_string()),
+        NostrRelayMessage::Closed {
+            subscription_id, ..
+        } => Some(subscription_id.to_string()),
+        NostrRelayMessage::Count {
+            subscription_id, ..
+        } => Some(subscription_id.to_string()),
+        _ => None,
     }
 }

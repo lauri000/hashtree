@@ -12,8 +12,8 @@
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
 use nostr::{
-    nips::nip44, ClientMessage, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey,
-    RelayMessage, Tag,
+    nips::nip44, Alphabet, ClientMessage, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey,
+    RelayMessage, SingleLetterTag, Tag,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -72,6 +72,101 @@ pub struct WebRTCState {
     pub bytes_sent: std::sync::atomic::AtomicU64,
     /// Total bytes received across all peers (cumulative)
     pub bytes_received: std::sync::atomic::AtomicU64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PeerRootEvent {
+    pub hash: String,
+    pub key: Option<String>,
+    pub encrypted_key: Option<String>,
+    pub self_encrypted_key: Option<String>,
+    pub event_id: String,
+    pub created_at: u64,
+    pub peer_id: String,
+}
+
+const HASHTREE_KIND: u16 = 30078;
+const HASHTREE_LABEL: &str = "hashtree";
+
+fn hashtree_event_identifier(event: &nostr::Event) -> Option<String> {
+    event.tags.iter().find_map(|tag| {
+        let slice = tag.as_slice();
+        if slice.len() >= 2 && slice[0].as_str() == "d" {
+            Some(slice[1].to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn is_hashtree_labeled_event(event: &nostr::Event) -> bool {
+    event.tags.iter().any(|tag| {
+        let slice = tag.as_slice();
+        slice.len() >= 2 && slice[0].as_str() == "l" && slice[1].as_str() == HASHTREE_LABEL
+    })
+}
+
+fn pick_latest_event<'a, I>(events: I) -> Option<&'a nostr::Event>
+where
+    I: IntoIterator<Item = &'a nostr::Event>,
+{
+    events.into_iter().max_by(|a, b| {
+        let ordering = a.created_at.cmp(&b.created_at);
+        if ordering == std::cmp::Ordering::Equal {
+            a.id.cmp(&b.id)
+        } else {
+            ordering
+        }
+    })
+}
+
+fn root_event_from_peer(
+    event: &nostr::Event,
+    peer_id: &str,
+    tree_name: &str,
+) -> Option<PeerRootEvent> {
+    if hashtree_event_identifier(event).as_deref() != Some(tree_name)
+        || !is_hashtree_labeled_event(event)
+    {
+        return None;
+    }
+
+    let mut key = None;
+    let mut encrypted_key = None;
+    let mut self_encrypted_key = None;
+    let mut hash_tag = None;
+
+    for tag in &event.tags {
+        let slice = tag.as_slice();
+        if slice.len() < 2 {
+            continue;
+        }
+        match slice[0].as_str() {
+            "hash" => hash_tag = Some(slice[1].to_string()),
+            "key" => key = Some(slice[1].to_string()),
+            "encryptedKey" => encrypted_key = Some(slice[1].to_string()),
+            "selfEncryptedKey" => self_encrypted_key = Some(slice[1].to_string()),
+            _ => {}
+        }
+    }
+
+    let hash = hash_tag.or_else(|| {
+        if event.content.is_empty() {
+            None
+        } else {
+            Some(event.content.clone())
+        }
+    })?;
+
+    Some(PeerRootEvent {
+        hash,
+        key,
+        encrypted_key,
+        self_encrypted_key,
+        event_id: event.id.to_hex(),
+        created_at: event.created_at.as_u64(),
+        peer_id: peer_id.to_string(),
+    })
 }
 
 impl WebRTCState {
@@ -234,6 +329,90 @@ impl WebRTCState {
             "No peer had data for {}",
             &hash_hex[..8.min(hash_hex.len())]
         );
+        None
+    }
+
+    /// Resolve a hashtree root event through connected peers using Nostr REQ/EOSE over WebRTC.
+    pub async fn resolve_root_from_peers(
+        &self,
+        owner_pubkey: &str,
+        tree_name: &str,
+        per_peer_timeout: Duration,
+    ) -> Option<PeerRootEvent> {
+        let author = PublicKey::from_hex(owner_pubkey).ok()?;
+        let filter = Filter::new()
+            .kind(Kind::Custom(HASHTREE_KIND))
+            .author(author)
+            .custom_tag(
+                SingleLetterTag::lowercase(Alphabet::D),
+                vec![tree_name.to_string()],
+            )
+            .custom_tag(
+                SingleLetterTag::lowercase(Alphabet::L),
+                vec![HASHTREE_LABEL.to_string()],
+            )
+            .limit(50);
+
+        let peers = self.peers.read().await;
+        for entry in peers.values() {
+            if entry.state != ConnectionState::Connected {
+                continue;
+            }
+            let Some(peer) = entry.peer.as_ref() else {
+                continue;
+            };
+            if !peer.has_data_channel() {
+                continue;
+            }
+
+            debug!(
+                "Querying peer {} for root event {}/{}",
+                entry.peer_id.short(),
+                owner_pubkey,
+                tree_name
+            );
+            let events = match peer
+                .query_nostr_events(vec![filter.clone()], per_peer_timeout)
+                .await
+            {
+                Ok(events) => events,
+                Err(e) => {
+                    debug!(
+                        "Peer {} Nostr query failed for {}/{}: {}",
+                        entry.peer_id.short(),
+                        owner_pubkey,
+                        tree_name,
+                        e
+                    );
+                    continue;
+                }
+            };
+            debug!(
+                "Peer {} returned {} Nostr event(s) for {}/{}",
+                entry.peer_id.short(),
+                events.len(),
+                owner_pubkey,
+                tree_name
+            );
+
+            let latest = pick_latest_event(events.iter().filter(|event| {
+                hashtree_event_identifier(event).as_deref() == Some(tree_name)
+                    && is_hashtree_labeled_event(event)
+            }));
+            if let Some(event) = latest {
+                if let Some(root) = root_event_from_peer(event, &entry.peer_id.short(), tree_name) {
+                    debug!(
+                        "Resolved {}/{} via peer {} event {}",
+                        owner_pubkey,
+                        tree_name,
+                        entry.peer_id.short(),
+                        event.id.to_hex()
+                    );
+                    return Some(root);
+                }
+            }
+        }
+
         None
     }
 }
@@ -1446,4 +1625,60 @@ pub struct PeerState {
     pub direction: PeerDirection,
     pub state: String,
     pub last_seen: Instant,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nostr::{EventBuilder, Keys, Tag};
+
+    #[test]
+    fn root_event_from_peer_extracts_tags() {
+        let keys = Keys::generate();
+        let hash = "ab".repeat(32);
+        let event = EventBuilder::new(
+            Kind::Custom(HASHTREE_KIND),
+            "",
+            [
+                Tag::parse(&["d", "repo"]).unwrap(),
+                Tag::parse(&["l", HASHTREE_LABEL]).unwrap(),
+                Tag::parse(&["hash", &hash]).unwrap(),
+                Tag::parse(&["encryptedKey", &"11".repeat(32)]).unwrap(),
+            ],
+        )
+        .to_event(&keys)
+        .unwrap();
+
+        let parsed = root_event_from_peer(&event, "peer-a", "repo").unwrap();
+        let expected_encrypted = "11".repeat(32);
+        assert_eq!(parsed.hash, hash);
+        assert_eq!(parsed.peer_id, "peer-a");
+        assert_eq!(
+            parsed.encrypted_key.as_deref(),
+            Some(expected_encrypted.as_str())
+        );
+        assert!(parsed.key.is_none());
+    }
+
+    #[test]
+    fn pick_latest_event_prefers_higher_event_id_on_timestamp_tie() {
+        let keys = Keys::generate();
+        let created_at = nostr::Timestamp::from_secs(1_700_000_000);
+        let event_a = EventBuilder::new(Kind::Custom(HASHTREE_KIND), "", [])
+            .custom_created_at(created_at)
+            .to_event(&keys)
+            .unwrap();
+        let event_b = EventBuilder::new(Kind::Custom(HASHTREE_KIND), "", [])
+            .custom_created_at(created_at)
+            .to_event(&keys)
+            .unwrap();
+
+        let expected = if event_a.id > event_b.id {
+            event_a.id
+        } else {
+            event_b.id
+        };
+        let picked = pick_latest_event([&event_a, &event_b]).unwrap();
+        assert_eq!(picked.id, expected);
+    }
 }

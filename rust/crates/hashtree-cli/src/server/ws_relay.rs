@@ -58,7 +58,13 @@ pub async fn ws_data(State(state): State<AppState>, ws: WebSocketUpgrade) -> imp
 }
 
 async fn handle_socket(socket: WebSocket, state: AppState) {
-    let client_id = state.ws_relay.next_id();
+    // Use the Nostr relay's client-id generator when available so `/ws` IDs
+    // can't collide with WebRTC relay clients.
+    let client_id = state
+        .nostr_relay
+        .as_ref()
+        .map(|relay| relay.next_client_id())
+        .unwrap_or_else(|| state.ws_relay.next_id());
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
 
     {

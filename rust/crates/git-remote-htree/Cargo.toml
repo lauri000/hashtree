@@ -51,6 +51,7 @@ getrandom = "0.3"
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 
 # CLI
 clap.workspace = true
@@ -66,7 +67,6 @@ lmdb = ["dep:hashtree-lmdb"]
 tempfile.workspace = true
 tokio-tungstenite = "0.24"
 hashtree-lmdb.workspace = true
-reqwest = { version = "0.12", features = ["blocking"] }
 axum.workspace = true
 
 [[bench]]

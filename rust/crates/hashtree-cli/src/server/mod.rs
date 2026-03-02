@@ -197,6 +197,10 @@ impl HashtreeServer {
                 "/api/resolve/:pubkey/:treename",
                 get(handlers::resolve_to_hash),
             )
+            .route(
+                "/api/nostr/resolve/:pubkey/:treename",
+                get(handlers::resolve_to_hash),
+            )
             .route("/api/trees/:pubkey", get(handlers::list_trees))
             .with_state(state.clone());
 

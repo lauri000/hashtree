@@ -38,6 +38,7 @@ use anyhow::{Context, Result};
 use hashtree_blossom::BlossomClient;
 use hashtree_core::{decode_tree_node, decrypt_chk, LinkType};
 use nostr_sdk::prelude::*;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -431,6 +432,29 @@ pub struct NostrClient {
     url_secret: Option<[u8; 32]>,
     /// Whether this is a private (author-only) repo using NIP-44 encryption
     is_private: bool,
+    /// Local htree daemon URL for peer-assisted root discovery
+    local_daemon_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RootEventData {
+    root_hash: String,
+    encryption_key: Option<[u8; 32]>,
+    key_tag_name: Option<String>,
+    self_encrypted_ciphertext: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DaemonResolveResponse {
+    hash: Option<String>,
+    #[serde(default, rename = "key_tag")]
+    key: Option<String>,
+    #[serde(default, rename = "encryptedKey")]
+    encrypted_key: Option<String>,
+    #[serde(default, rename = "selfEncryptedKey")]
+    self_encrypted_key: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
 }
 
 impl NostrClient {
@@ -442,6 +466,9 @@ impl NostrClient {
         is_private: bool,
         config: &Config,
     ) -> Result<Self> {
+        // Ensure rustls has a process-wide crypto provider even when used as a library (tests).
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         // Use provided secret, or try environment variable
         let secret_key = secret_key.or_else(|| std::env::var("NOSTR_SECRET_KEY").ok());
 
@@ -470,6 +497,19 @@ impl NostrClient {
             &config.nostr.relays,
             Some(config.server.bind_address.as_str()),
         );
+        let local_daemon_url =
+            hashtree_config::detect_local_daemon_url(Some(config.server.bind_address.as_str()))
+                .or_else(|| {
+                    config
+                        .blossom
+                        .read_servers
+                        .iter()
+                        .find(|url| {
+                            url.starts_with("http://127.0.0.1:")
+                                || url.starts_with("http://localhost:")
+                        })
+                        .cloned()
+                });
 
         Ok(Self {
             pubkey: pubkey.to_string(),
@@ -481,6 +521,7 @@ impl NostrClient {
             cached_encryption_key: HashMap::new(),
             url_secret,
             is_private,
+            local_daemon_url,
         })
     }
 
@@ -554,6 +595,121 @@ impl NostrClient {
         Ok((refs, root_hash, encryption_key))
     }
 
+    fn parse_root_event_data_from_event(event: &Event) -> RootEventData {
+        let root_hash = event
+            .tags
+            .iter()
+            .find(|t| t.as_slice().len() >= 2 && t.as_slice()[0].as_str() == "hash")
+            .map(|t| t.as_slice()[1].to_string())
+            .unwrap_or_else(|| event.content.to_string());
+
+        let (encryption_key, key_tag_name, self_encrypted_ciphertext) = event
+            .tags
+            .iter()
+            .find_map(|t| {
+                let slice = t.as_slice();
+                if slice.len() < 2 {
+                    return None;
+                }
+                let tag_name = slice[0].as_str();
+                let tag_value = slice[1].to_string();
+                if tag_name == "selfEncryptedKey" {
+                    return Some((None, Some(tag_name.to_string()), Some(tag_value)));
+                }
+                if tag_name == "key" || tag_name == "encryptedKey" {
+                    if let Ok(bytes) = hex::decode(&tag_value) {
+                        if bytes.len() == 32 {
+                            let mut key = [0u8; 32];
+                            key.copy_from_slice(&bytes);
+                            return Some((Some(key), Some(tag_name.to_string()), None));
+                        }
+                    }
+                }
+                None
+            })
+            .unwrap_or((None, None, None));
+
+        RootEventData {
+            root_hash,
+            encryption_key,
+            key_tag_name,
+            self_encrypted_ciphertext,
+        }
+    }
+
+    fn parse_daemon_response_to_root_data(
+        response: DaemonResolveResponse,
+    ) -> Option<RootEventData> {
+        let root_hash = response.hash?;
+        if root_hash.is_empty() {
+            return None;
+        }
+
+        let mut data = RootEventData {
+            root_hash,
+            encryption_key: None,
+            key_tag_name: None,
+            self_encrypted_ciphertext: None,
+        };
+
+        if let Some(ciphertext) = response.self_encrypted_key {
+            data.key_tag_name = Some("selfEncryptedKey".to_string());
+            data.self_encrypted_ciphertext = Some(ciphertext);
+            return Some(data);
+        }
+
+        let (tag_name, tag_value) = if let Some(v) = response.encrypted_key {
+            ("encryptedKey", v)
+        } else if let Some(v) = response.key {
+            ("key", v)
+        } else {
+            return Some(data);
+        };
+
+        if let Ok(bytes) = hex::decode(&tag_value) {
+            if bytes.len() == 32 {
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&bytes);
+                data.encryption_key = Some(key);
+                data.key_tag_name = Some(tag_name.to_string());
+            }
+        }
+
+        Some(data)
+    }
+
+    async fn fetch_root_from_local_daemon(
+        &self,
+        repo_name: &str,
+        timeout: Duration,
+    ) -> Option<RootEventData> {
+        let base = self.local_daemon_url.as_ref()?;
+        let url = format!(
+            "{}/api/nostr/resolve/{}/{}",
+            base.trim_end_matches('/'),
+            self.pubkey,
+            repo_name
+        );
+
+        let client = reqwest::Client::builder().timeout(timeout).build().ok()?;
+        let response = client.get(&url).send().await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+
+        let payload: DaemonResolveResponse = response.json().await.ok()?;
+        let source = payload
+            .source
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        let parsed = Self::parse_daemon_response_to_root_data(payload)?;
+        debug!(
+            "Resolved repo {} via local daemon source={}",
+            repo_name, source
+        );
+        Some(parsed)
+    }
+
     async fn fetch_refs_async_with_timeout(
         &self,
         repo_name: &str,
@@ -579,6 +735,7 @@ impl NostrClient {
 
         let start = std::time::Instant::now();
         let mut last_log = std::time::Instant::now();
+        let mut has_connected_relay = false;
         loop {
             let relays = client.relays().await;
             let total = relays.len();
@@ -595,6 +752,7 @@ impl NostrClient {
                     total,
                     start.elapsed()
                 );
+                has_connected_relay = true;
                 break;
             }
             // Log progress every 500ms so user knows something is happening
@@ -607,9 +765,10 @@ impl NostrClient {
                 last_log = std::time::Instant::now();
             }
             if start.elapsed() > connect_timeout {
-                debug!("Timeout waiting for relay connections - treating as empty repo");
-                let _ = client.disconnect().await;
-                return Ok((HashMap::new(), None, None));
+                debug!(
+                    "Timeout waiting for relay connections - continuing with local-daemon fallback"
+                );
+                break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -633,15 +792,19 @@ impl NostrClient {
         // Query with relay-level timeout.
         // Using `EventSource::relays(Some(...))` preserves partial results from responsive
         // relays instead of discarding everything when one relay stalls.
-        let events = match client
-            .get_events_of(vec![filter], EventSource::relays(Some(query_timeout)))
-            .await
-        {
-            Ok(events) => events,
-            Err(e) => {
-                warn!("Failed to fetch events: {}", e);
-                vec![]
+        let events = if has_connected_relay {
+            match client
+                .get_events_of(vec![filter], EventSource::relays(Some(query_timeout)))
+                .await
+            {
+                Ok(events) => events,
+                Err(e) => {
+                    warn!("Failed to fetch events: {}", e);
+                    vec![]
+                }
             }
+        } else {
+            vec![]
         };
 
         // Disconnect
@@ -649,7 +812,7 @@ impl NostrClient {
 
         // Find the most recent event with "hashtree" label
         debug!("Got {} events from relays", events.len());
-        let event = pick_latest_event(events.iter().filter(|e| {
+        let relay_event = pick_latest_event(events.iter().filter(|e| {
             e.tags.iter().any(|t| {
                 t.as_slice().len() >= 2
                     && t.as_slice()[0].as_str() == "l"
@@ -657,68 +820,45 @@ impl NostrClient {
             })
         }));
 
-        let Some(event) = event else {
-            let npub = PublicKey::from_hex(&self.pubkey)
-                .map(|pk| {
-                    pk.to_bech32()
-                        .unwrap_or_else(|_| self.pubkey[..12].to_string())
-                })
-                .map(|s| format!("{}...{}", &s[..12], &s[s.len() - 6..]))
-                .unwrap_or_else(|_| self.pubkey[..12].to_string());
-            anyhow::bail!(
-                "Repository '{}' not found (no hashtree event published by {})",
-                repo_name,
-                npub
+        let root_data = if let Some(event) = relay_event {
+            debug!(
+                "Found relay event with root hash: {}",
+                &event.content[..12.min(event.content.len())]
             );
+            Self::parse_root_event_data_from_event(event)
+        } else {
+            match self
+                .fetch_root_from_local_daemon(repo_name, Duration::from_secs(4))
+                .await
+            {
+                Some(data) => data,
+                None => {
+                    let npub = PublicKey::from_hex(&self.pubkey)
+                        .map(|pk| {
+                            pk.to_bech32()
+                                .unwrap_or_else(|_| self.pubkey[..12].to_string())
+                        })
+                        .map(|s| format!("{}...{}", &s[..12], &s[s.len() - 6..]))
+                        .unwrap_or_else(|_| self.pubkey[..12].to_string());
+                    anyhow::bail!(
+                        "Repository '{}' not found (no hashtree event published by {})",
+                        repo_name,
+                        npub
+                    );
+                }
+            }
         };
-        debug!(
-            "Found event with root hash: {}",
-            &event.content[..12.min(event.content.len())]
-        );
 
-        // Get root hash from content or "hash" tag
-        let root_hash = event
-            .tags
-            .iter()
-            .find(|t| t.as_slice().len() >= 2 && t.as_slice()[0].as_str() == "hash")
-            .map(|t| t.as_slice()[1].to_string())
-            .unwrap_or_else(|| event.content.to_string());
+        let root_hash = root_data.root_hash;
 
         if root_hash.is_empty() {
             debug!("Empty root hash in event");
             return Ok((HashMap::new(), None, None));
         }
 
-        // Get encryption key and determine visibility type from tag name
-        // - "key": public repo, key is plaintext CHK (hex)
-        // - "encryptedKey": link-visible repo, key is XOR-masked (hex)
-        // - "selfEncryptedKey": private repo, key is NIP-44 ciphertext (base64)
-        let (encryption_key, key_tag_name, self_encrypted_ciphertext) = event
-            .tags
-            .iter()
-            .find_map(|t| {
-                let slice = t.as_slice();
-                if slice.len() >= 2 {
-                    let tag_name = slice[0].as_str();
-                    let tag_value = slice[1].to_string();
-
-                    if tag_name == "selfEncryptedKey" {
-                        // NIP-44 ciphertext - don't parse as hex, save for later decryption
-                        return Some((None, Some(tag_name.to_string()), Some(tag_value)));
-                    } else if tag_name == "key" || tag_name == "encryptedKey" {
-                        // Hex-encoded key
-                        if let Ok(bytes) = hex::decode(&tag_value) {
-                            if bytes.len() == 32 {
-                                let mut key = [0u8; 32];
-                                key.copy_from_slice(&bytes);
-                                return Some((Some(key), Some(tag_name.to_string()), None));
-                            }
-                        }
-                    }
-                }
-                None
-            })
-            .unwrap_or((None, None, None));
+        let encryption_key = root_data.encryption_key;
+        let key_tag_name = root_data.key_tag_name;
+        let self_encrypted_ciphertext = root_data.self_encrypted_ciphertext;
 
         // Process encryption key based on tag type
         let unmasked_key = match key_tag_name.as_deref() {
@@ -1652,6 +1792,19 @@ mod tests {
     }
 
     #[test]
+    fn test_new_client_uses_local_read_server_as_daemon_fallback() {
+        let mut config = test_config();
+        config.server.bind_address = "127.0.0.1:1".to_string();
+        config.blossom.read_servers = vec!["http://127.0.0.1:19092".to_string()];
+
+        let client = NostrClient::new(TEST_PUBKEY, None, None, false, &config).unwrap();
+        assert_eq!(
+            client.local_daemon_url.as_deref(),
+            Some("http://127.0.0.1:19092")
+        );
+    }
+
+    #[test]
     fn test_fetch_refs_empty() {
         let config = test_config();
         let client = NostrClient::new(TEST_PUBKEY, None, None, false, &config).unwrap();
@@ -1713,6 +1866,83 @@ mod tests {
         };
         let picked = pick_latest_event([&event_a, &event_b]).unwrap();
         assert_eq!(picked.id, expected_id);
+    }
+
+    #[test]
+    fn test_parse_daemon_response_to_root_data_encrypted_key() {
+        let payload = DaemonResolveResponse {
+            hash: Some("ab".repeat(32)),
+            key: None,
+            encrypted_key: Some("11".repeat(32)),
+            self_encrypted_key: None,
+            source: Some("webrtc".to_string()),
+        };
+
+        let parsed = NostrClient::parse_daemon_response_to_root_data(payload).unwrap();
+        assert_eq!(parsed.root_hash, "ab".repeat(32));
+        assert_eq!(parsed.key_tag_name.as_deref(), Some("encryptedKey"));
+        assert!(parsed.self_encrypted_ciphertext.is_none());
+        assert_eq!(parsed.encryption_key.unwrap(), [0x11; 32]);
+    }
+
+    #[test]
+    fn test_parse_daemon_response_to_root_data_self_encrypted() {
+        let payload = DaemonResolveResponse {
+            hash: Some("cd".repeat(32)),
+            key: None,
+            encrypted_key: None,
+            self_encrypted_key: Some("ciphertext".to_string()),
+            source: Some("webrtc".to_string()),
+        };
+
+        let parsed = NostrClient::parse_daemon_response_to_root_data(payload).unwrap();
+        assert_eq!(parsed.root_hash, "cd".repeat(32));
+        assert_eq!(parsed.key_tag_name.as_deref(), Some("selfEncryptedKey"));
+        assert_eq!(
+            parsed.self_encrypted_ciphertext.as_deref(),
+            Some("ciphertext")
+        );
+        assert!(parsed.encryption_key.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_root_from_local_daemon_parses_response() {
+        use axum::{extract::Path, routing::get, Json, Router};
+        use serde_json::json;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/api/nostr/resolve/:pubkey/:treename",
+            get(
+                |Path((pubkey, treename)): Path<(String, String)>| async move {
+                    Json(json!({
+                        "key": format!("{}/{}", pubkey, treename),
+                        "hash": "ab".repeat(32),
+                        "source": "webrtc",
+                        "key_tag": "22".repeat(32),
+                    }))
+                },
+            ),
+        );
+
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let config = test_config();
+        let mut client = NostrClient::new(TEST_PUBKEY, None, None, false, &config).unwrap();
+        client.local_daemon_url = Some(format!("http://{}", addr));
+
+        let resolved = client
+            .fetch_root_from_local_daemon("repo", Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(resolved.root_hash, "ab".repeat(32));
+        assert_eq!(resolved.key_tag_name.as_deref(), Some("key"));
+        assert_eq!(resolved.encryption_key, Some([0x22; 32]));
+
+        server.abort();
     }
 
     #[test]
