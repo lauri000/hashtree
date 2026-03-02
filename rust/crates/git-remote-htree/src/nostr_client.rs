@@ -630,20 +630,16 @@ impl NostrClient {
 
         debug!("Querying relays for repo {} events", repo_name);
 
-        // Query with timeout - treat timeout as "no events found" for new repos
-        let events = match tokio::time::timeout(
-            query_timeout,
-            client.get_events_of(vec![filter], EventSource::relays(None)),
-        )
-        .await
+        // Query with relay-level timeout.
+        // Using `EventSource::relays(Some(...))` preserves partial results from responsive
+        // relays instead of discarding everything when one relay stalls.
+        let events = match client
+            .get_events_of(vec![filter], EventSource::relays(Some(query_timeout)))
+            .await
         {
-            Ok(Ok(events)) => events,
-            Ok(Err(e)) => {
+            Ok(events) => events,
+            Err(e) => {
                 warn!("Failed to fetch events: {}", e);
-                vec![]
-            }
-            Err(_) => {
-                debug!("Relay query timed out - treating as empty repo");
                 vec![]
             }
         };
