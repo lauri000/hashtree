@@ -1004,3 +1004,77 @@ impl<S: Store + 'static> Peer<S> {
         self.pending_requests.read().await.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn test_fragment_reassembly_completes_and_clears_pending() {
+        let pending = Arc::new(RwLock::new(HashMap::new()));
+        let hash = vec![0x11u8; 32];
+
+        let first = DataResponse {
+            h: hash.clone(),
+            d: b"world".to_vec(),
+            i: Some(1),
+            n: Some(2),
+        };
+        let second = DataResponse {
+            h: hash.clone(),
+            d: b"hello ".to_vec(),
+            i: Some(0),
+            n: Some(2),
+        };
+
+        let incomplete =
+            Peer::<hashtree_core::MemoryStore>::handle_fragment_response(&first, &pending, false)
+                .await;
+        assert!(incomplete.is_none());
+        assert_eq!(pending.read().await.len(), 1);
+
+        let completed =
+            Peer::<hashtree_core::MemoryStore>::handle_fragment_response(&second, &pending, false)
+                .await;
+        assert_eq!(completed, Some(b"hello world".to_vec()));
+        assert_eq!(pending.read().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_fragment_reassembly_ignores_duplicate_fragment() {
+        let pending = Arc::new(RwLock::new(HashMap::new()));
+        let hash = vec![0x22u8; 32];
+
+        let frag0 = DataResponse {
+            h: hash.clone(),
+            d: b"abc".to_vec(),
+            i: Some(0),
+            n: Some(2),
+        };
+        let frag1 = DataResponse {
+            h: hash,
+            d: b"def".to_vec(),
+            i: Some(1),
+            n: Some(2),
+        };
+
+        // First fragment starts reassembly.
+        let r1 =
+            Peer::<hashtree_core::MemoryStore>::handle_fragment_response(&frag0, &pending, false)
+                .await;
+        assert!(r1.is_none());
+
+        // Duplicate fragment should not be counted twice.
+        let r2 =
+            Peer::<hashtree_core::MemoryStore>::handle_fragment_response(&frag0, &pending, false)
+                .await;
+        assert!(r2.is_none());
+
+        let r3 =
+            Peer::<hashtree_core::MemoryStore>::handle_fragment_response(&frag1, &pending, false)
+                .await;
+        assert_eq!(r3, Some(b"abcdef".to_vec()));
+        assert_eq!(pending.read().await.len(), 0);
+    }
+}

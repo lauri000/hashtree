@@ -9,11 +9,9 @@
 mod common;
 
 use common::{
-    create_test_repo,
-    skip_if_no_binary,
+    create_test_repo, skip_if_no_binary,
     test_relay::{TestRelay, TestRelayOptions},
-    TestEnv,
-    TestServer,
+    TestEnv, TestServer,
 };
 use std::process::Command;
 use std::time::Duration;
@@ -74,11 +72,7 @@ fn test_pr_auto_merge_detection() {
     run_git(&["checkout", "-b", "feature-branch"], repo_path, &env_vars);
     std::fs::write(repo_path.join("feature.txt"), "New feature\n").unwrap();
     run_git(&["add", "feature.txt"], repo_path, &env_vars);
-    run_git(
-        &["commit", "-m", "Add feature"],
-        repo_path,
-        &env_vars,
-    );
+    run_git(&["commit", "-m", "Add feature"], repo_path, &env_vars);
 
     // Get the commit tip of the feature branch
     let feature_tip = git_rev_parse("HEAD", repo_path, &env_vars);
@@ -89,8 +83,8 @@ fn test_pr_auto_merge_detection() {
 
     // Publish a fake kind 1618 PR event to the relay (simulating a contributor's PR)
     // We need the maintainer's pubkey hex for the 'a' tag
-    let maintainer_pk = nostr::PublicKey::parse(&maintainer_npub)
-        .expect("Failed to parse maintainer npub");
+    let maintainer_pk =
+        nostr::PublicKey::parse(&maintainer_npub).expect("Failed to parse maintainer npub");
     let maintainer_pubkey_hex = hex::encode(maintainer_pk.to_bytes());
 
     // Create a "contributor" key for the PR event
@@ -106,7 +100,10 @@ fn test_pr_auto_merge_detection() {
             nostr::TagKind::custom("p"),
             vec![maintainer_pubkey_hex.clone()],
         ),
-        nostr::Tag::custom(nostr::TagKind::custom("subject"), vec!["Add feature".to_string()]),
+        nostr::Tag::custom(
+            nostr::TagKind::custom("subject"),
+            vec!["Add feature".to_string()],
+        ),
         nostr::Tag::custom(
             nostr::TagKind::custom("branch"),
             vec!["feature-branch".to_string()],
@@ -130,7 +127,13 @@ fn test_pr_auto_merge_detection() {
 
     // Now merge the feature branch into master (creating a merge commit)
     let merge = Command::new("git")
-        .args(["merge", "feature-branch", "--no-ff", "-m", "Merge feature-branch"])
+        .args([
+            "merge",
+            "feature-branch",
+            "--no-ff",
+            "-m",
+            "Merge feature-branch",
+        ])
         .current_dir(repo_path)
         .envs(env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .output()
@@ -161,11 +164,7 @@ fn test_pr_auto_merge_detection() {
     println!("Auto-merge detected in output: {}", auto_merged);
 
     // Query relay for kind 1631 events referencing the PR event ID
-    let status_events = query_relay_for_status(
-        &relay.url(),
-        &pr_event_id,
-        &maintainer_pubkey_hex,
-    );
+    let status_events = query_relay_for_status(&relay.url(), &pr_event_id, &maintainer_pubkey_hex);
 
     println!(
         "Found {} kind 1631 status events for PR {}",
@@ -433,12 +432,20 @@ fn test_pr_auto_merge_marks_multiple_prs_in_single_push() {
     assert!(push_worked, "Push with two merges should succeed");
 
     assert_eq!(
-        count_stored_merged_status_events(&relay, &fixture.pr_event_id, &fixture.maintainer_pubkey_hex),
+        count_stored_merged_status_events(
+            &relay,
+            &fixture.pr_event_id,
+            &fixture.maintainer_pubkey_hex
+        ),
         1,
         "Expected exactly one merged status for the first PR"
     );
     assert_eq!(
-        count_stored_merged_status_events(&relay, &second_pr.pr_event_id, &fixture.maintainer_pubkey_hex),
+        count_stored_merged_status_events(
+            &relay,
+            &second_pr.pr_event_id,
+            &fixture.maintainer_pubkey_hex
+        ),
         1,
         "Expected exactly one merged status for the second PR"
     );
@@ -480,12 +487,20 @@ fn test_pr_auto_merge_only_marks_matching_pr_when_multiple_open_prs_exist() {
     assert!(push_worked, "Push with one merged PR should succeed");
 
     assert_eq!(
-        count_stored_merged_status_events(&relay, &fixture.pr_event_id, &fixture.maintainer_pubkey_hex),
+        count_stored_merged_status_events(
+            &relay,
+            &fixture.pr_event_id,
+            &fixture.maintainer_pubkey_hex
+        ),
         1,
         "Merged PR should receive exactly one merged status"
     );
     assert_eq!(
-        count_stored_merged_status_events(&relay, &unmerged_pr.pr_event_id, &fixture.maintainer_pubkey_hex),
+        count_stored_merged_status_events(
+            &relay,
+            &unmerged_pr.pr_event_id,
+            &fixture.maintainer_pubkey_hex
+        ),
         0,
         "Unmerged PR must not receive a merged status"
     );
@@ -513,7 +528,11 @@ impl PrMergeFixture {
     }
 }
 
-fn setup_pr_merge_fixture(relay: &TestRelay, server: &TestServer, repo_name: &str) -> PrMergeFixture {
+fn setup_pr_merge_fixture(
+    relay: &TestRelay,
+    server: &TestServer,
+    repo_name: &str,
+) -> PrMergeFixture {
     let maintainer_env = TestEnv::new(Some(&server.base_url()), Some(&relay.url()));
     let maintainer_npub = maintainer_env.npub.clone();
     let env_vars: Vec<_> = maintainer_env.env();
@@ -522,7 +541,12 @@ fn setup_pr_merge_fixture(relay: &TestRelay, server: &TestServer, repo_name: &st
     let repo_path = repo.path();
 
     run_git(
-        &["remote", "add", "htree", &format!("htree://self/{repo_name}")],
+        &[
+            "remote",
+            "add",
+            "htree",
+            &format!("htree://self/{repo_name}"),
+        ],
         repo_path,
         &env_vars,
     );
@@ -544,8 +568,8 @@ fn setup_pr_merge_fixture(relay: &TestRelay, server: &TestServer, repo_name: &st
     let feature_tip = git_rev_parse("HEAD", repo_path, &env_vars);
     run_git(&["checkout", "master"], repo_path, &env_vars);
 
-    let maintainer_pk = nostr::PublicKey::parse(&maintainer_npub)
-        .expect("Failed to parse maintainer npub");
+    let maintainer_pk =
+        nostr::PublicKey::parse(&maintainer_npub).expect("Failed to parse maintainer npub");
     let maintainer_pubkey_hex = hex::encode(maintainer_pk.to_bytes());
 
     let contributor_keys = nostr::Keys::generate();
@@ -558,7 +582,10 @@ fn setup_pr_merge_fixture(relay: &TestRelay, server: &TestServer, repo_name: &st
             nostr::TagKind::custom("p"),
             vec![maintainer_pubkey_hex.clone()],
         ),
-        nostr::Tag::custom(nostr::TagKind::custom("subject"), vec!["Add feature".to_string()]),
+        nostr::Tag::custom(
+            nostr::TagKind::custom("subject"),
+            vec!["Add feature".to_string()],
+        ),
         nostr::Tag::custom(
             nostr::TagKind::custom("branch"),
             vec!["feature-branch".to_string()],
@@ -597,7 +624,12 @@ fn merge_branch_no_ff(fixture: &PrMergeFixture, branch: &str, message: &str) {
     let merge = Command::new("git")
         .args(["merge", branch, "--no-ff", "-m", message])
         .current_dir(repo_path)
-        .envs(fixture.env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .envs(
+            fixture
+                .env_vars
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str())),
+        )
         .output()
         .expect("Failed to run git merge");
     assert!(
@@ -611,7 +643,12 @@ fn push_master(fixture: &PrMergeFixture) -> std::process::Output {
     Command::new("git")
         .args(["push", "htree", "master"])
         .current_dir(fixture.repo_path())
-        .envs(fixture.env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .envs(
+            fixture
+                .env_vars
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str())),
+        )
         .output()
         .expect("Failed to run git push")
 }
@@ -644,10 +681,7 @@ fn create_branch_and_publish_pr(
             vec![fixture.maintainer_pubkey_hex.clone()],
         ),
         nostr::Tag::custom(nostr::TagKind::custom("subject"), vec![subject.to_string()]),
-        nostr::Tag::custom(
-            nostr::TagKind::custom("branch"),
-            vec![branch.to_string()],
-        ),
+        nostr::Tag::custom(nostr::TagKind::custom("branch"), vec![branch.to_string()]),
         nostr::Tag::custom(
             nostr::TagKind::custom("target-branch"),
             vec!["master".to_string()],
@@ -678,7 +712,11 @@ fn load_test_env_keys(env: &TestEnv) -> nostr::Keys {
     nostr::Keys::new(secret)
 }
 
-fn count_stored_merged_status_events(relay: &TestRelay, pr_event_id: &str, author_pubkey: &str) -> usize {
+fn count_stored_merged_status_events(
+    relay: &TestRelay,
+    pr_event_id: &str,
+    author_pubkey: &str,
+) -> usize {
     relay
         .stored_events()
         .into_iter()

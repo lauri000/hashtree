@@ -59,6 +59,14 @@ pub struct DiffStats {
     pub unchanged_subtrees: usize,
 }
 
+fn decrypt_if_keyed(data: Vec<u8>, key: Option<[u8; 32]>) -> Result<Vec<u8>, HashTreeError> {
+    if let Some(k) = key {
+        decrypt_chk(&data, &k).map_err(|e| HashTreeError::Decryption(e.to_string()))
+    } else {
+        Ok(data)
+    }
+}
+
 /// Collect all hashes in a tree using parallel traversal
 ///
 /// This walks the tree and collects all unique hashes (both tree nodes and blobs).
@@ -139,12 +147,8 @@ pub async fn collect_hashes_with_progress<S: Store>(
                 None => continue,
             };
 
-            // Decrypt if key present
-            let plaintext = if let Some(k) = key {
-                decrypt_chk(&data, &k).unwrap_or(data)
-            } else {
-                data
-            };
+            // Decrypt if key present (strict: wrong key is an error).
+            let plaintext = decrypt_if_keyed(data, key)?;
 
             // If it's a tree node, queue children
             if is_tree_node(&plaintext) {
@@ -273,12 +277,8 @@ pub async fn tree_diff_with_old_hashes<S: Store>(
                 None => continue,
             };
 
-            // Decrypt if key present
-            let plaintext = if let Some(k) = key {
-                decrypt_chk(&data, &k).unwrap_or(data)
-            } else {
-                data
-            };
+            // Decrypt if key present (strict: wrong key is an error).
+            let plaintext = decrypt_if_keyed(data, key)?;
 
             // If it's a tree node, queue children
             if is_tree_node(&plaintext) {
@@ -374,11 +374,7 @@ where
                 None => continue,
             };
 
-            let plaintext = if let Some(k) = key {
-                decrypt_chk(&data, &k).unwrap_or(data)
-            } else {
-                data
-            };
+            let plaintext = decrypt_if_keyed(data, key)?;
 
             if is_tree_node(&plaintext) {
                 if let Ok(node) = decode_tree_node(&plaintext) {

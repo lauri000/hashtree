@@ -79,6 +79,58 @@ fn is_hashtree_event(event: &Event) -> bool {
     has_label(event, HASHTREE_LABEL) || !has_any_label(event)
 }
 
+fn event_identifier(event: &Event) -> Option<String> {
+    event.tags.iter().find_map(|tag| {
+        if let Some(TagStandard::Identifier(id)) = tag.as_standardized() {
+            Some(id.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn pick_latest_event<'a, I>(events: I) -> Option<&'a Event>
+where
+    I: IntoIterator<Item = &'a Event>,
+{
+    // NIP-16/NIP-33 ordering: newest created_at, then larger event id.
+    events
+        .into_iter()
+        .max_by_key(|event| (event.created_at, event.id))
+}
+
+fn is_newer_event(
+    event: &Event,
+    current_created_at: Timestamp,
+    current_event_id: Option<EventId>,
+) -> bool {
+    if event.created_at > current_created_at {
+        return true;
+    }
+    if event.created_at < current_created_at {
+        return false;
+    }
+    match current_event_id {
+        Some(current_id) => event.id > current_id,
+        None => true,
+    }
+}
+
+fn upsert_latest_by_d_tag<'a>(entries_by_d_tag: &mut HashMap<String, &'a Event>, event: &'a Event) {
+    let Some(d_tag) = event_identifier(event) else {
+        return;
+    };
+
+    let should_replace = match entries_by_d_tag.get(&d_tag) {
+        Some(existing) => is_newer_event(event, existing.created_at, Some(existing.id)),
+        None => true,
+    };
+
+    if should_replace {
+        entries_by_d_tag.insert(d_tag, event);
+    }
+}
+
 fn parse_legacy_content(content: &str) -> Option<(String, Option<String>)> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
@@ -107,6 +159,7 @@ struct Subscription {
     tx: mpsc::Sender<Option<Cid>>,
     current_cid: Option<Cid>,
     latest_created_at: Timestamp,
+    latest_event_id: Option<EventId>,
 }
 
 /// NostrRootResolver - Maps npub/treename keys to merkle root hashes
@@ -393,33 +446,9 @@ impl RootResolver for NostrRootResolver {
             .await
             .map_err(|e| ResolverError::Network(e.to_string()))?;
 
-        // Find the latest event with matching d-tag
-        let mut latest_event: Option<&Event> = None;
-        let mut latest_created_at = Timestamp::from(0);
-
-        for event in events.iter() {
-            // Verify d-tag matches
-            let d_tag = event.tags.iter().find_map(|tag| {
-                if let Some(TagStandard::Identifier(id)) = tag.as_standardized() {
-                    Some(id.clone())
-                } else {
-                    None
-                }
-            });
-
-            if d_tag.as_deref() != Some(&tree_name) {
-                continue;
-            }
-
-            if !is_hashtree_event(event) {
-                continue;
-            }
-
-            if event.created_at > latest_created_at {
-                latest_created_at = event.created_at;
-                latest_event = Some(event);
-            }
-        }
+        let latest_event = pick_latest_event(events.iter().filter(|event| {
+            event_identifier(event).as_deref() == Some(&tree_name) && is_hashtree_event(event)
+        }));
 
         // Extract Cid from event tags
         match latest_event {
@@ -450,31 +479,9 @@ impl RootResolver for NostrRootResolver {
             .await
             .map_err(|e| ResolverError::Network(e.to_string()))?;
 
-        let mut latest_event: Option<&Event> = None;
-        let mut latest_created_at = Timestamp::from(0);
-
-        for event in events.iter() {
-            let d_tag = event.tags.iter().find_map(|tag| {
-                if let Some(TagStandard::Identifier(id)) = tag.as_standardized() {
-                    Some(id.clone())
-                } else {
-                    None
-                }
-            });
-
-            if d_tag.as_deref() != Some(&tree_name) {
-                continue;
-            }
-
-            if !is_hashtree_event(event) {
-                continue;
-            }
-
-            if event.created_at > latest_created_at {
-                latest_created_at = event.created_at;
-                latest_event = Some(event);
-            }
-        }
+        let latest_event = pick_latest_event(events.iter().filter(|event| {
+            event_identifier(event).as_deref() == Some(&tree_name) && is_hashtree_event(event)
+        }));
 
         match latest_event {
             Some(event) => Ok(Self::cid_from_event_shared(event, share_secret)),
@@ -516,6 +523,7 @@ impl RootResolver for NostrRootResolver {
                     tx: tx.clone(),
                     current_cid: None,
                     latest_created_at: Timestamp::from(0),
+                    latest_event_id: None,
                 },
             );
         }
@@ -540,16 +548,7 @@ impl RootResolver for NostrRootResolver {
 
             while let Ok(notification) = notifications.recv().await {
                 if let RelayPoolNotification::Event { event, .. } = notification {
-                    // Verify d-tag matches
-                    let d_tag = event.tags.iter().find_map(|tag| {
-                        if let Some(TagStandard::Identifier(id)) = tag.as_standardized() {
-                            Some(id.clone())
-                        } else {
-                            None
-                        }
-                    });
-
-                    if d_tag.as_deref() != Some(&tree_name_clone) {
+                    if event_identifier(&event).as_deref() != Some(&tree_name_clone) {
                         continue;
                     }
 
@@ -563,14 +562,17 @@ impl RootResolver for NostrRootResolver {
                             &event,
                             secret_key.as_ref(),
                         );
-                        if event.created_at >= sub.latest_created_at && new_cid != sub.current_cid {
-                            sub.current_cid = new_cid.clone();
+                        if is_newer_event(&event, sub.latest_created_at, sub.latest_event_id) {
                             sub.latest_created_at = event.created_at;
+                            sub.latest_event_id = Some(event.id);
 
-                            if sub.tx.send(new_cid).await.is_err() {
-                                // Receiver dropped, clean up
-                                subs.remove(&key_clone);
-                                break;
+                            if new_cid != sub.current_cid {
+                                sub.current_cid = new_cid.clone();
+                                if sub.tx.send(new_cid).await.is_err() {
+                                    // Receiver dropped, clean up
+                                    subs.remove(&key_clone);
+                                    break;
+                                }
                             }
                         }
                     } else {
@@ -626,6 +628,7 @@ impl RootResolver for NostrRootResolver {
             if let Some(sub) = subs.get_mut(key) {
                 sub.current_cid = Some(cid.clone());
                 sub.latest_created_at = Timestamp::now();
+                sub.latest_event_id = None;
                 let _ = sub.tx.send(Some(cid.clone())).await;
             }
         }
@@ -705,20 +708,10 @@ impl RootResolver for NostrRootResolver {
         let mut entries_by_d_tag: HashMap<String, &Event> = HashMap::new();
 
         for event in events.iter() {
-            let d_tag = event.tags.iter().find_map(|tag| {
-                if let Some(TagStandard::Identifier(id)) = tag.as_standardized() {
-                    Some(id.clone())
-                } else {
-                    None
-                }
-            });
-
-            if let Some(d_tag) = d_tag {
-                let existing = entries_by_d_tag.get(&d_tag);
-                if existing.is_none() || existing.unwrap().created_at < event.created_at {
-                    entries_by_d_tag.insert(d_tag, event);
-                }
+            if !is_hashtree_event(event) {
+                continue;
             }
+            upsert_latest_by_d_tag(&mut entries_by_d_tag, event);
         }
 
         // Convert to entries
@@ -744,6 +737,28 @@ impl RootResolver for NostrRootResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    fn build_hashtree_event(
+        keys: &Keys,
+        tree_name: &str,
+        created_at: u64,
+        hash: &str,
+        content: &str,
+    ) -> Event {
+        let tags = vec![
+            Tag::identifier(tree_name.to_string()),
+            Tag::custom(
+                TagKind::SingleLetter(SingleLetterTag::lowercase(Alphabet::L)),
+                vec![HASHTREE_LABEL.to_string()],
+            ),
+            Tag::custom(TagKind::Custom(TAG_HASH.into()), vec![hash.to_string()]),
+        ];
+        EventBuilder::new(Kind::Custom(HASHTREE_KIND), content, tags)
+            .custom_created_at(Timestamp::from_secs(created_at))
+            .to_event(keys)
+            .unwrap()
+    }
 
     #[test]
     fn test_parse_key_valid() {
@@ -771,5 +786,117 @@ mod tests {
         let key = "notannpub/mytree";
         let result = NostrRootResolver::parse_key(key);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_tie_breaks_with_event_id() {
+        let keys = Keys::generate();
+        let created_at = 1_700_000_000;
+
+        let event_a = build_hashtree_event(
+            &keys,
+            "tree",
+            created_at,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "a",
+        );
+        let event_b = build_hashtree_event(
+            &keys,
+            "tree",
+            created_at,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "b",
+        );
+
+        let picked = pick_latest_event([&event_a, &event_b]).unwrap();
+        let expected = if event_a.id > event_b.id {
+            event_a.id
+        } else {
+            event_b.id
+        };
+        assert_eq!(picked.id, expected);
+    }
+
+    #[test]
+    fn test_resolve_shared_tie_breaks_with_event_id() {
+        let keys = Keys::generate();
+        let created_at = 1_700_000_000;
+
+        let event_old = build_hashtree_event(
+            &keys,
+            "tree",
+            created_at,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "older",
+        );
+        let event_new = build_hashtree_event(
+            &keys,
+            "tree",
+            created_at,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "newer",
+        );
+
+        let mut events = vec![&event_old, &event_new];
+        events.sort_by_key(|e| e.id);
+        let picked = pick_latest_event(events).unwrap();
+        assert_eq!(picked.id, std::cmp::max(event_old.id, event_new.id));
+    }
+
+    #[test]
+    fn test_subscribe_tie_breaks_with_event_id() {
+        let keys = Keys::generate();
+        let created_at = Timestamp::from_secs(1_700_000_000);
+
+        let current = build_hashtree_event(
+            &keys,
+            "tree",
+            created_at.as_u64(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "current",
+        );
+        let candidate = build_hashtree_event(
+            &keys,
+            "tree",
+            created_at.as_u64(),
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "candidate",
+        );
+
+        let should = is_newer_event(&candidate, current.created_at, Some(current.id));
+        assert_eq!(should, candidate.id > current.id);
+    }
+
+    #[test]
+    fn test_list_dedupe_tie_breaks_with_event_id() {
+        let keys = Keys::generate();
+        let created_at = 1_700_000_000;
+
+        let first = build_hashtree_event(
+            &keys,
+            "videos",
+            created_at,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "first",
+        );
+        let second = build_hashtree_event(
+            &keys,
+            "videos",
+            created_at,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "second",
+        );
+
+        let mut by_tag: HashMap<String, &Event> = HashMap::new();
+        upsert_latest_by_d_tag(&mut by_tag, &first);
+        upsert_latest_by_d_tag(&mut by_tag, &second);
+
+        let selected = by_tag.get("videos").unwrap();
+        let expected = if first.id > second.id {
+            first.id
+        } else {
+            second.id
+        };
+        assert_eq!(selected.id, expected);
     }
 }

@@ -67,7 +67,10 @@ pub use codec::{
 pub use hash::{sha256, verify};
 
 // Reader types (used by HashTree)
-pub use reader::{verify_tree, ReaderError, TreeEntry, VerifyResult, WalkEntry};
+pub use reader::{
+    verify_tree, verify_tree_integrity, ReaderError, TreeEntry, VerifyIntegrityResult,
+    VerifyResult, WalkEntry,
+};
 
 // Store
 pub use nhash::{

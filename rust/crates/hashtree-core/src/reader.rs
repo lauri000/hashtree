@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::codec::{decode_tree_node, is_directory_node, is_tree_node, try_decode_tree_node};
+use crate::hash::sha256;
 use crate::store::Store;
 use crate::types::{to_hex, Cid, Hash, Link, LinkType, TreeNode};
 
@@ -695,11 +696,90 @@ async fn verify_recursive<S: Store>(
     Ok(())
 }
 
+/// Verify tree integrity and content addresses.
+///
+/// Checks that:
+/// - all referenced hashes exist
+/// - every fetched blob/node satisfies `sha256(bytes) == referenced_hash`
+pub async fn verify_tree_integrity<S: Store>(
+    store: Arc<S>,
+    root_hash: &Hash,
+) -> Result<VerifyIntegrityResult, ReaderError> {
+    let mut missing = Vec::new();
+    let mut corrupted = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+
+    verify_integrity_recursive(store, root_hash, &mut missing, &mut corrupted, &mut visited)
+        .await?;
+
+    Ok(VerifyIntegrityResult {
+        valid: missing.is_empty() && corrupted.is_empty(),
+        missing,
+        corrupted,
+    })
+}
+
+async fn verify_integrity_recursive<S: Store>(
+    store: Arc<S>,
+    hash: &Hash,
+    missing: &mut Vec<Hash>,
+    corrupted: &mut Vec<Hash>,
+    visited: &mut std::collections::HashSet<String>,
+) -> Result<(), ReaderError> {
+    let hex = to_hex(hash);
+    if visited.contains(&hex) {
+        return Ok(());
+    }
+    visited.insert(hex);
+
+    let data = match store
+        .get(hash)
+        .await
+        .map_err(|e| ReaderError::Store(e.to_string()))?
+    {
+        Some(d) => d,
+        None => {
+            missing.push(*hash);
+            return Ok(());
+        }
+    };
+
+    // Strong integrity check: referenced hash must match fetched bytes.
+    if sha256(&data) != *hash {
+        corrupted.push(*hash);
+        return Ok(());
+    }
+
+    if is_tree_node(&data) {
+        let node = decode_tree_node(&data).map_err(ReaderError::Codec)?;
+        for link in &node.links {
+            Box::pin(verify_integrity_recursive(
+                store.clone(),
+                &link.hash,
+                missing,
+                corrupted,
+                visited,
+            ))
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Result of tree verification
 #[derive(Debug, Clone)]
 pub struct VerifyResult {
     pub valid: bool,
     pub missing: Vec<Hash>,
+}
+
+/// Result of strong tree integrity verification.
+#[derive(Debug, Clone)]
+pub struct VerifyIntegrityResult {
+    pub valid: bool,
+    pub missing: Vec<Hash>,
+    pub corrupted: Vec<Hash>,
 }
 
 /// Reader error type
@@ -980,6 +1060,81 @@ mod tests {
         let result = verify_tree(store, &cid.hash).await.unwrap();
         assert!(!result.valid);
         assert!(!result.missing.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_verify_tree_integrity_valid() {
+        let store = make_store();
+        let config = BuilderConfig::new(store.clone())
+            .with_chunk_size(100)
+            .public();
+        let builder = TreeBuilder::new(config);
+
+        let data = vec![0u8; 350];
+        let (cid, _size) = builder.put(&data).await.unwrap();
+
+        let result = verify_tree_integrity(store, &cid.hash).await.unwrap();
+        assert!(result.valid);
+        assert!(result.missing.is_empty());
+        assert!(result.corrupted.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_verify_tree_integrity_missing() {
+        let store = make_store();
+        let config = BuilderConfig::new(store.clone())
+            .with_chunk_size(100)
+            .public();
+        let builder = TreeBuilder::new(config);
+
+        let data = vec![0u8; 350];
+        let (cid, _size) = builder.put(&data).await.unwrap();
+
+        // Delete one of the chunks
+        let keys = store.keys();
+        if let Some(chunk_to_delete) = keys.iter().find(|k| **k != cid.hash) {
+            store.delete(chunk_to_delete).await.unwrap();
+        }
+
+        let result = verify_tree_integrity(store, &cid.hash).await.unwrap();
+        assert!(!result.valid);
+        assert!(!result.missing.is_empty());
+        assert!(result.corrupted.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_verify_tree_integrity_corrupted_hash_mismatch() {
+        let store = make_store();
+        let config = BuilderConfig::new(store.clone())
+            .with_chunk_size(100)
+            .public();
+        let builder = TreeBuilder::new(config);
+
+        let data = vec![0u8; 350];
+        let (cid, _size) = builder.put(&data).await.unwrap();
+
+        // Pick a leaf chunk (non-root in this shape) and mutate bytes without changing key.
+        let keys = store.keys();
+        let target = keys
+            .iter()
+            .find(|k| **k != cid.hash)
+            .copied()
+            .expect("expected at least one child chunk");
+
+        let mut corrupted = store.get(&target).await.unwrap().unwrap();
+        corrupted[0] ^= 0xff;
+        store.delete(&target).await.unwrap();
+        store.put(target, corrupted).await.unwrap();
+
+        // Legacy verifier checks only existence, so this still appears valid.
+        let legacy = verify_tree(store.clone(), &cid.hash).await.unwrap();
+        assert!(legacy.valid);
+
+        let strict = verify_tree_integrity(store, &cid.hash).await.unwrap();
+        assert!(!strict.valid);
+        assert!(strict.missing.is_empty());
+        assert!(!strict.corrupted.is_empty());
+        assert!(strict.corrupted.contains(&target));
     }
 
     #[tokio::test]

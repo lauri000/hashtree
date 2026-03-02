@@ -63,9 +63,7 @@ pub mod test_relay {
                 }
             }
 
-            let tags = event
-                .get("tags")
-                .and_then(|t| t.as_array());
+            let tags = event.get("tags").and_then(|t| t.as_array());
 
             // Check #p tag
             if let Some(ref p) = self.p_tag {
@@ -136,7 +134,10 @@ pub mod test_relay {
                                 .map(|arr| {
                                     arr.len() >= 2
                                         && arr[0].as_str() == Some("e")
-                                        && self.e_tags.iter().any(|e| arr[1].as_str() == Some(e.as_str()))
+                                        && self
+                                            .e_tags
+                                            .iter()
+                                            .any(|e| arr[1].as_str() == Some(e.as_str()))
                                 })
                                 .unwrap_or(false)
                         })
@@ -394,11 +395,7 @@ pub mod test_relay {
                             let kinds_arr: Vec<u64> = filter
                                 .get("kinds")
                                 .and_then(|k| k.as_array())
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|v| v.as_u64())
-                                        .collect()
-                                })
+                                .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect())
                                 .unwrap_or_default();
 
                             // Single kind for backward compat
@@ -773,10 +770,11 @@ pub fn find_git_remote_htree_dir() -> Option<PathBuf> {
     let release_dir = target_dir.join("release");
     let debug_dir = target_dir.join("debug");
 
-    if release_dir.join("git-remote-htree").exists() {
-        Some(release_dir)
-    } else if debug_dir.join("git-remote-htree").exists() {
+    // Prefer debug so `cargo test` uses a freshly built helper binary from current sources.
+    if debug_dir.join("git-remote-htree").exists() {
         Some(debug_dir)
+    } else if release_dir.join("git-remote-htree").exists() {
+        Some(release_dir)
     } else {
         // Binary not found - print helpful message
         eprintln!("WARNING: git-remote-htree binary not found in target/debug or target/release.");

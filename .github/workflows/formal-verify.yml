@@ -1,0 +1,213 @@
+name: Formal Verify
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  resolver-formal:
+    name: Resolver Formal
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/target/
+          key: ${{ runner.os }}-resolver-formal-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-resolver-formal-
+
+      - name: Run resolver formal tests
+        run: cargo test -p hashtree-resolver --features nostr -- --nocapture
+
+      - name: Upload resolver artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolver-formal-artifacts
+          path: |
+            rust/target/debug/deps/
+            rust/**/proptest-regressions/
+          retention-days: 7
+
+  core-props:
+    name: Core Property Suite
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      PROPTEST_CASES: 500
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/target/
+          key: ${{ runner.os }}-core-props-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-core-props-
+
+      - name: Run codec formal properties
+        run: cargo test -p hashtree-core --test formal_codec_props -- --nocapture
+
+      - name: Run tree formal properties
+        run: cargo test -p hashtree-core --test formal_tree_props -- --nocapture
+
+      - name: Run diff formal properties
+        run: cargo test -p hashtree-core --test formal_diff_props -- --nocapture
+
+      - name: Upload property artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-props-artifacts
+          path: |
+            rust/**/proptest-regressions/
+            rust/target/debug/deps/
+          retention-days: 7
+
+  core-integrity:
+    name: Core Integrity
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/target/
+          key: ${{ runner.os }}-core-integrity-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-core-integrity-
+
+      - name: Run integrity verifier tests
+        run: cargo test -p hashtree-core test_verify_tree_integrity -- --nocapture
+
+      - name: Upload integrity artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-integrity-artifacts
+          path: rust/target/debug/deps/
+          retention-days: 7
+
+  git-formal:
+    name: Git Formal
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/target/
+          key: ${{ runner.os }}-git-formal-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-git-formal-
+
+      - name: Run git formal tests
+        run: cargo test -p git-remote-htree --test formal_git_props -- --nocapture
+
+      - name: Upload git formal artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-formal-artifacts
+          path: rust/target/debug/deps/
+          retention-days: 7
+
+  webrtc-formal:
+    name: WebRTC Formal
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/target/
+          key: ${{ runner.os }}-webrtc-formal-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-webrtc-formal-
+
+      - name: Run webrtc formal integration tests
+        run: cargo test -p hashtree-webrtc --test formal_webrtc_props -- --nocapture
+
+      - name: Run webrtc fragment reassembly tests
+        run: cargo test -p hashtree-webrtc fragment_reassembly -- --nocapture
+
+      - name: Upload webrtc formal artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webrtc-formal-artifacts
+          path: rust/target/debug/deps/
+          retention-days: 7
