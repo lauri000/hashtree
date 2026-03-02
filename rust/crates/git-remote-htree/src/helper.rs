@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 /// Threshold for showing detailed progress (3 seconds)
 const VERBOSE_THRESHOLD: Duration = Duration::from_secs(3);
 
-use crate::nostr_client::{BlossomResult, NostrClient, RelayResult};
+use crate::nostr_client::{BlossomResult, NostrClient, PullRequestStateFilter, RelayResult};
 use hashtree_config::Config;
 
 // CachedStore: local store first, then Blossom fallback
@@ -1204,7 +1204,10 @@ impl RemoteHelper {
     /// Detect merged PRs in pushed refs and publish status events
     fn detect_and_mark_merged_prs(&self, pushed_refs: &[(String, String)]) {
         // Fetch a single snapshot of open PRs for this push.
-        let open_prs = match self.nostr.fetch_open_prs(&self.repo_name) {
+        let open_prs = match self
+            .nostr
+            .fetch_prs(&self.repo_name, PullRequestStateFilter::Open)
+        {
             Ok(prs) => prs,
             Err(e) => {
                 debug!("Failed to fetch open PRs: {}", e);

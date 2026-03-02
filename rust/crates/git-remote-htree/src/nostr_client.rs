@@ -56,14 +56,91 @@ pub const KIND_REPO_ANNOUNCEMENT: u16 = 30617;
 /// Label for hashtree events
 pub const LABEL_HASHTREE: &str = "hashtree";
 
-/// An open pull request from Nostr
+/// Pull request status derived from trusted NIP-34 status events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullRequestState {
+    Open,
+    Applied,
+    Closed,
+    Draft,
+}
+
+impl PullRequestState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PullRequestState::Open => "open",
+            PullRequestState::Applied => "applied",
+            PullRequestState::Closed => "closed",
+            PullRequestState::Draft => "draft",
+        }
+    }
+
+    fn from_status_kind(status_kind: u16) -> Option<Self> {
+        match status_kind {
+            KIND_STATUS_OPEN => Some(PullRequestState::Open),
+            KIND_STATUS_APPLIED => Some(PullRequestState::Applied),
+            KIND_STATUS_CLOSED => Some(PullRequestState::Closed),
+            KIND_STATUS_DRAFT => Some(PullRequestState::Draft),
+            _ => None,
+        }
+    }
+
+    fn from_latest_status_kind(status_kind: Option<u16>) -> Self {
+        status_kind
+            .and_then(Self::from_status_kind)
+            .unwrap_or(PullRequestState::Open)
+    }
+}
+
+/// Filter used when listing PRs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullRequestStateFilter {
+    Open,
+    Applied,
+    Closed,
+    Draft,
+    All,
+}
+
+impl PullRequestStateFilter {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PullRequestStateFilter::Open => "open",
+            PullRequestStateFilter::Applied => "applied",
+            PullRequestStateFilter::Closed => "closed",
+            PullRequestStateFilter::Draft => "draft",
+            PullRequestStateFilter::All => "all",
+        }
+    }
+
+    fn includes(self, state: PullRequestState) -> bool {
+        match self {
+            PullRequestStateFilter::All => true,
+            PullRequestStateFilter::Open => state == PullRequestState::Open,
+            PullRequestStateFilter::Applied => state == PullRequestState::Applied,
+            PullRequestStateFilter::Closed => state == PullRequestState::Closed,
+            PullRequestStateFilter::Draft => state == PullRequestState::Draft,
+        }
+    }
+}
+
+impl Default for PullRequestStateFilter {
+    fn default() -> Self {
+        PullRequestStateFilter::Open
+    }
+}
+
+/// PR metadata used by listing/filtering consumers.
 #[derive(Debug, Clone)]
-pub struct OpenPullRequest {
+pub struct PullRequestListItem {
     pub event_id: String,
     pub author_pubkey: String,
+    pub state: PullRequestState,
+    pub subject: Option<String>,
     pub commit_tip: Option<String>,
     pub branch: Option<String>,
     pub target_branch: Option<String>,
+    pub created_at: u64,
 }
 
 /// A stored key with optional petname
@@ -1243,19 +1320,27 @@ impl NostrClient {
         ))
     }
 
-    /// Fetch open pull requests targeting this repo
-    pub fn fetch_open_prs(&self, repo_name: &str) -> Result<Vec<OpenPullRequest>> {
+    /// Fetch pull requests targeting this repo, filtered by state.
+    pub fn fetch_prs(
+        &self,
+        repo_name: &str,
+        state_filter: PullRequestStateFilter,
+    ) -> Result<Vec<PullRequestListItem>> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .context("Failed to create tokio runtime")?;
 
-        let result = rt.block_on(self.fetch_open_prs_async(repo_name));
+        let result = rt.block_on(self.fetch_prs_async(repo_name, state_filter));
         rt.shutdown_timeout(Duration::from_millis(500));
         result
     }
 
-    async fn fetch_open_prs_async(&self, repo_name: &str) -> Result<Vec<OpenPullRequest>> {
+    pub async fn fetch_prs_async(
+        &self,
+        repo_name: &str,
+        state_filter: PullRequestStateFilter,
+    ) -> Result<Vec<PullRequestListItem>> {
         let client = Client::default();
 
         for relay in &self.relays {
@@ -1281,7 +1366,9 @@ impl NostrClient {
             }
             if start.elapsed() > Duration::from_secs(2) {
                 let _ = client.disconnect().await;
-                return Ok(vec![]);
+                return Err(anyhow::anyhow!(
+                    "Failed to connect to any relay while fetching PRs"
+                ));
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -1299,15 +1386,22 @@ impl NostrClient {
         .await
         {
             Ok(Ok(events)) => events,
-            _ => {
+            Ok(Err(e)) => {
                 let _ = client.disconnect().await;
-                return Ok(vec![]);
+                return Err(anyhow::anyhow!(
+                    "Failed to fetch PR events from relays: {}",
+                    e
+                ));
+            }
+            Err(_) => {
+                let _ = client.disconnect().await;
+                return Err(anyhow::anyhow!("Timed out fetching PR events from relays"));
             }
         };
 
         if pr_events.is_empty() {
             let _ = client.disconnect().await;
-            return Ok(vec![]);
+            return Ok(Vec::new());
         }
 
         // Collect PR event IDs for status query
@@ -1351,20 +1445,19 @@ impl NostrClient {
         let _ = client.disconnect().await;
 
         // Build map: pr_event_id -> latest trusted status kind
-        let latest_status = latest_trusted_pr_status_kinds(&pr_events, &status_events, &self.pubkey);
+        let latest_status =
+            latest_trusted_pr_status_kinds(&pr_events, &status_events, &self.pubkey);
 
-        // Filter to only open PRs (no status or kind 1630)
-        let mut open_prs = Vec::new();
+        let mut prs = Vec::new();
         for event in &pr_events {
             let pr_id = event.id.to_hex();
-            let is_open = match latest_status.get(&pr_id) {
-                None => true, // No status = open
-                Some(kind) => *kind == KIND_STATUS_OPEN,
-            };
-            if !is_open {
+            let state =
+                PullRequestState::from_latest_status_kind(latest_status.get(&pr_id).copied());
+            if !state_filter.includes(state) {
                 continue;
             }
 
+            let mut subject = None;
             let mut commit_tip = None;
             let mut branch = None;
             let mut target_branch = None;
@@ -1373,6 +1466,7 @@ impl NostrClient {
                 let slice = tag.as_slice();
                 if slice.len() >= 2 {
                     match slice[0].as_str() {
+                        "subject" => subject = Some(slice[1].to_string()),
                         "c" => commit_tip = Some(slice[1].to_string()),
                         "branch" => branch = Some(slice[1].to_string()),
                         "target-branch" => target_branch = Some(slice[1].to_string()),
@@ -1381,17 +1475,33 @@ impl NostrClient {
                 }
             }
 
-            open_prs.push(OpenPullRequest {
+            prs.push(PullRequestListItem {
                 event_id: pr_id,
                 author_pubkey: event.pubkey.to_hex(),
+                state,
+                subject,
                 commit_tip,
                 branch,
                 target_branch,
+                created_at: event.created_at.as_u64(),
             });
         }
 
-        debug!("Found {} open PRs for {}", open_prs.len(), repo_name);
-        Ok(open_prs)
+        // Newest first; tie-break by event id for deterministic output.
+        prs.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| right.event_id.cmp(&left.event_id))
+        });
+
+        debug!(
+            "Found {} PRs for {} (filter: {:?})",
+            prs.len(),
+            repo_name,
+            state_filter
+        );
+        Ok(prs)
     }
 
     /// Publish a kind 1631 (STATUS_APPLIED) event to mark a PR as merged
@@ -1400,14 +1510,18 @@ impl NostrClient {
         pr_event_id: &str,
         pr_author_pubkey: &str,
     ) -> Result<()> {
-        let keys = self.keys.as_ref().context("Cannot publish status: no secret key")?;
+        let keys = self
+            .keys
+            .as_ref()
+            .context("Cannot publish status: no secret key")?;
 
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .context("Failed to create tokio runtime")?;
 
-        let result = rt.block_on(self.publish_pr_merged_status_async(keys, pr_event_id, pr_author_pubkey));
+        let result =
+            rt.block_on(self.publish_pr_merged_status_async(keys, pr_event_id, pr_author_pubkey));
         rt.shutdown_timeout(Duration::from_millis(500));
         result
     }
@@ -1463,7 +1577,10 @@ impl NostrClient {
                         "PR merged status was not confirmed by any relay"
                     ))
                 } else {
-                    info!("Published PR merged status to {} relays", output.success.len());
+                    info!(
+                        "Published PR merged status to {} relays",
+                        output.success.len()
+                    );
                     Ok(())
                 }
             }
@@ -1770,6 +1887,63 @@ mod tests {
         .custom_created_at(Timestamp::from_secs(created_at_secs))
         .to_event(keys)
         .unwrap()
+    }
+
+    #[test]
+    fn test_pull_request_state_from_latest_status_kind_defaults_to_open() {
+        assert_eq!(
+            PullRequestState::from_latest_status_kind(None),
+            PullRequestState::Open
+        );
+        assert_eq!(
+            PullRequestState::from_latest_status_kind(Some(KIND_STATUS_OPEN)),
+            PullRequestState::Open
+        );
+        assert_eq!(
+            PullRequestState::from_latest_status_kind(Some(9999)),
+            PullRequestState::Open
+        );
+    }
+
+    #[test]
+    fn test_pull_request_state_from_status_kind_maps_known_kinds() {
+        assert_eq!(
+            PullRequestState::from_status_kind(KIND_STATUS_APPLIED),
+            Some(PullRequestState::Applied)
+        );
+        assert_eq!(
+            PullRequestState::from_status_kind(KIND_STATUS_CLOSED),
+            Some(PullRequestState::Closed)
+        );
+        assert_eq!(
+            PullRequestState::from_status_kind(KIND_STATUS_DRAFT),
+            Some(PullRequestState::Draft)
+        );
+        assert_eq!(PullRequestState::from_status_kind(9999), None);
+    }
+
+    #[test]
+    fn test_pull_request_state_filter_includes_only_requested_state() {
+        assert!(PullRequestStateFilter::Open.includes(PullRequestState::Open));
+        assert!(!PullRequestStateFilter::Open.includes(PullRequestState::Closed));
+        assert!(PullRequestStateFilter::All.includes(PullRequestState::Open));
+        assert!(PullRequestStateFilter::All.includes(PullRequestState::Applied));
+        assert!(PullRequestStateFilter::All.includes(PullRequestState::Closed));
+        assert!(PullRequestStateFilter::All.includes(PullRequestState::Draft));
+    }
+
+    #[test]
+    fn test_pull_request_state_strings_are_stable() {
+        assert_eq!(PullRequestState::Open.as_str(), "open");
+        assert_eq!(PullRequestState::Applied.as_str(), "applied");
+        assert_eq!(PullRequestState::Closed.as_str(), "closed");
+        assert_eq!(PullRequestState::Draft.as_str(), "draft");
+
+        assert_eq!(PullRequestStateFilter::Open.as_str(), "open");
+        assert_eq!(PullRequestStateFilter::Applied.as_str(), "applied");
+        assert_eq!(PullRequestStateFilter::Closed.as_str(), "closed");
+        assert_eq!(PullRequestStateFilter::Draft.as_str(), "draft");
+        assert_eq!(PullRequestStateFilter::All.as_str(), "all");
     }
 
     #[test]

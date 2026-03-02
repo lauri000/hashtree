@@ -1,4 +1,5 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use git_remote_htree::nostr_client::PullRequestStateFilter;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -264,6 +265,35 @@ pub(crate) enum PrCommands {
         #[arg(long)]
         clone_url: Option<String>,
     },
+    /// List pull requests
+    List {
+        /// Target repository (git remote alias, npub/reponame, or htree:// URL)
+        repo: Option<String>,
+        /// PR state filter (default: open)
+        #[arg(long, value_enum, default_value_t = PrListState::Open)]
+        state: PrListState,
+    },
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum PrListState {
+    Open,
+    Applied,
+    Closed,
+    Draft,
+    All,
+}
+
+impl PrListState {
+    pub(crate) fn to_filter(self) -> PullRequestStateFilter {
+        match self {
+            Self::Open => PullRequestStateFilter::Open,
+            Self::Applied => PullRequestStateFilter::Applied,
+            Self::Closed => PullRequestStateFilter::Closed,
+            Self::Draft => PullRequestStateFilter::Draft,
+            Self::All => PullRequestStateFilter::All,
+        }
+    }
 }
 
 #[derive(Subcommand)]
