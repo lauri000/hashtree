@@ -4,9 +4,9 @@ use hashtree_webrtc::{
     bytes_to_hash, create_fragment_response, create_request, create_response, encode_request,
     encode_response, is_fragmented, parse_message, should_forward, should_forward_htl,
     validate_mesh_frame, DataMessage, MeshNostrFrame, PeerHTLConfig, PeerId, PeerState,
-    SignalingMessage, TimedSeenSet, WebRTCStats, WebRTCStoreConfig, BLOB_REQUEST_POLICY, MAX_HTL,
-    MESH_DEFAULT_HTL, MESH_EVENT_POLICY, MESH_MAX_HTL, MESH_PROTOCOL, MESH_PROTOCOL_VERSION,
-    MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE, NOSTR_KIND_HASHTREE,
+    SelectionStrategy, SignalingMessage, TimedSeenSet, WebRTCStats, WebRTCStoreConfig,
+    BLOB_REQUEST_POLICY, MAX_HTL, MESH_DEFAULT_HTL, MESH_EVENT_POLICY, MESH_MAX_HTL, MESH_PROTOCOL,
+    MESH_PROTOCOL_VERSION, MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE, NOSTR_KIND_HASHTREE,
 };
 use nostr_sdk::nostr::{EventBuilder, Keys, Kind};
 
@@ -177,6 +177,15 @@ fn test_webrtc_store_config_default() {
     assert_eq!(config.request_timeout_ms, 10000);
     assert!(!config.debug);
     assert!(config.classifier_tx.is_none());
+    assert_eq!(
+        config.request_selection_strategy,
+        SelectionStrategy::TitForTat
+    );
+    assert!(config.request_fairness_enabled);
+    assert_eq!(config.request_dispatch.initial_fanout, 2);
+    assert_eq!(config.request_dispatch.hedge_fanout, 1);
+    assert_eq!(config.request_dispatch.max_fanout, 8);
+    assert_eq!(config.request_dispatch.hedge_interval_ms, 120);
 }
 
 #[test]

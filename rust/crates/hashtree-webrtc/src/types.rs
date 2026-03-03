@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
+use crate::generic_store::RequestDispatchConfig;
+use crate::peer_selector::SelectionStrategy;
+
 /// Unique identifier for a peer in the network
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PeerId {
@@ -460,6 +463,12 @@ pub struct WebRTCStoreConfig {
     /// Channel for peer classification (optional)
     /// If None, all peers go to "Other" pool
     pub classifier_tx: Option<ClassifierTx>,
+    /// Retrieval peer selection strategy (shared with GenericStore/CLI/sim).
+    pub request_selection_strategy: SelectionStrategy,
+    /// Whether fairness constraints are enabled for retrieval selection.
+    pub request_fairness_enabled: bool,
+    /// Hedged request dispatch policy for retrieval.
+    pub request_dispatch: RequestDispatchConfig,
 }
 
 impl Default for WebRTCStoreConfig {
@@ -475,6 +484,14 @@ impl Default for WebRTCStoreConfig {
             debug: false,
             pools: PoolSettings::default(),
             classifier_tx: None,
+            request_selection_strategy: SelectionStrategy::TitForTat,
+            request_fairness_enabled: true,
+            request_dispatch: RequestDispatchConfig {
+                initial_fanout: 2,
+                hedge_fanout: 1,
+                max_fanout: 8,
+                hedge_interval_ms: 120,
+            },
         }
     }
 }

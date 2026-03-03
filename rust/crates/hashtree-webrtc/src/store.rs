@@ -9,6 +9,7 @@ use crate::types::{
     ClassifyRequest, ForwardRx, ForwardTx, PeerId, PeerPool, PeerState, SignalingMessage,
     WebRTCStats, WebRTCStoreConfig, NOSTR_KIND_HASHTREE,
 };
+use crate::{build_hedged_wave_plan, normalize_dispatch_config, sync_selector_peers};
 use async_trait::async_trait;
 use hashtree_core::{to_hex, Hash, Store, StoreError};
 use nostr_sdk::prelude::*;
@@ -74,6 +75,8 @@ impl<S: Store + 'static> WebRTCStore<S> {
     pub fn new(local_store: Arc<S>, config: WebRTCStoreConfig) -> Self {
         let (signaling_tx, signaling_rx) = mpsc::channel(100);
         let (forward_tx, forward_rx) = mpsc::channel(100);
+        let mut selector = PeerSelector::with_strategy(config.request_selection_strategy);
+        selector.set_fairness(config.request_fairness_enabled);
 
         let peer_id = PeerId::new(String::new(), Uuid::new_v4().to_string());
 
@@ -90,8 +93,56 @@ impl<S: Store + 'static> WebRTCStore<S> {
             forward_rx: Arc::new(RwLock::new(Some(forward_rx))),
             running: Arc::new(RwLock::new(false)),
             stats: Arc::new(RwLock::new(WebRTCStats::default())),
-            peer_selector: Arc::new(RwLock::new(PeerSelector::new())),
+            peer_selector: Arc::new(RwLock::new(selector)),
         }
+    }
+
+    async fn ordered_ready_peers_by_pool(
+        peers: &RwLock<HashMap<String, PeerEntry<S>>>,
+        peer_selector: &RwLock<PeerSelector>,
+        exclude_peer_id: Option<&str>,
+    ) -> (Vec<(String, Arc<Peer<S>>)>, Vec<(String, Arc<Peer<S>>)>) {
+        let current_peer_ids: Vec<String> = {
+            let peers_read = peers.read().await;
+            peers_read.keys().cloned().collect()
+        };
+        sync_selector_peers(peer_selector, &current_peer_ids).await;
+
+        let mut ordered_peer_ids = peer_selector.write().await.select_peers();
+        if ordered_peer_ids.is_empty() {
+            ordered_peer_ids = current_peer_ids;
+            ordered_peer_ids.sort();
+        }
+
+        let peers_read = peers.read().await;
+        let mut follows_peers = Vec::new();
+        let mut other_peers = Vec::new();
+        for peer_id in ordered_peer_ids {
+            if exclude_peer_id
+                .map(|excluded| excluded == peer_id)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            let Some((peer, pool)) = peers_read
+                .get(&peer_id)
+                .map(|entry| (entry.peer.clone(), entry.pool))
+            else {
+                continue;
+            };
+
+            if peer.state().await != PeerState::Ready {
+                continue;
+            }
+
+            match pool {
+                PeerPool::Follows => follows_peers.push((peer_id, peer)),
+                PeerPool::Other => other_peers.push((peer_id, peer)),
+            }
+        }
+
+        (follows_peers, other_peers)
     }
 
     /// Get the forward request sender (for passing to peers)
@@ -172,31 +223,12 @@ impl<S: Store + 'static> WebRTCStore<S> {
                     );
                 }
 
-                // Get ordered peer list from selector
-                let ordered_peer_ids = peer_selector.write().await.select_peers();
-
-                // Get other peers (excluding the requester), prioritize follows, use selector order
-                let peers_read = peers.read().await;
-                let mut follows_peers: Vec<(String, Arc<Peer<S>>)> = Vec::new();
-                let mut other_peers: Vec<(String, Arc<Peer<S>>)> = Vec::new();
-
-                for peer_id in &ordered_peer_ids {
-                    if *peer_id != req.exclude_peer_id {
-                        if let Some(entry) = peers_read.get(peer_id) {
-                            if entry.peer.state().await == PeerState::Ready {
-                                match entry.pool {
-                                    PeerPool::Follows => {
-                                        follows_peers.push((peer_id.clone(), entry.peer.clone()))
-                                    }
-                                    PeerPool::Other => {
-                                        other_peers.push((peer_id.clone(), entry.peer.clone()))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                drop(peers_read);
+                let (follows_peers, other_peers) = Self::ordered_ready_peers_by_pool(
+                    peers.as_ref(),
+                    peer_selector.as_ref(),
+                    Some(&req.exclude_peer_id),
+                )
+                .await;
 
                 // Request size estimate for metrics
                 let request_bytes = 40u64;
@@ -711,78 +743,87 @@ impl<S: Store + 'static> WebRTCStore<S> {
     /// Uses PeerSelector to order peers by performance (success rate, RTT).
     /// Follows pool is still prioritized, but ordering within each pool uses selector.
     async fn request_from_peers(&self, hash: &Hash) -> Result<Option<Vec<u8>>, WebRTCStoreError> {
-        // Get ordered peer list from selector
-        let ordered_peer_ids = self.peer_selector.write().await.select_peers();
+        let (follows_peers, other_peers) = Self::ordered_ready_peers_by_pool(
+            self.peers.as_ref(),
+            self.peer_selector.as_ref(),
+            None,
+        )
+        .await;
+        let ordered_peers: Vec<(String, Arc<Peer<S>>)> = follows_peers
+            .into_iter()
+            .chain(other_peers.into_iter())
+            .collect();
+        if ordered_peers.is_empty() {
+            return Ok(None);
+        }
 
-        let peers = self.peers.read().await;
+        let dispatch = normalize_dispatch_config(self.config.request_dispatch, ordered_peers.len());
+        let wave_plan = build_hedged_wave_plan(ordered_peers.len(), dispatch);
+        if wave_plan.is_empty() {
+            return Ok(None);
+        }
 
-        // Build ordered list of ready peers, prioritizing follows pool but using selector order within each
-        let mut follows_peers: Vec<(String, Arc<Peer<S>>)> = Vec::new();
-        let mut other_peers: Vec<(String, Arc<Peer<S>>)> = Vec::new();
+        let request_bytes = 40u64;
+        let mut next_peer_idx = 0usize;
+        for (wave_idx, wave_size) in wave_plan.iter().copied().enumerate() {
+            let from = next_peer_idx;
+            let to = (next_peer_idx + wave_size).min(ordered_peers.len());
+            next_peer_idx = to;
 
-        for peer_id in &ordered_peer_ids {
-            if let Some(entry) = peers.get(peer_id) {
-                if entry.peer.state().await == PeerState::Ready {
-                    match entry.pool {
-                        PeerPool::Follows => {
-                            follows_peers.push((peer_id.clone(), entry.peer.clone()))
+            for (peer_id, peer) in &ordered_peers[from..to] {
+                let peer_id = peer_id.clone();
+                // Record request being sent
+                self.peer_selector
+                    .write()
+                    .await
+                    .record_request(&peer_id, request_bytes);
+                let start_time = std::time::Instant::now();
+
+                match peer.request(hash).await {
+                    Ok(Some(data)) => {
+                        // Verify hash
+                        if hashtree_core::sha256(&data) == *hash {
+                            // Record success with RTT
+                            let rtt_ms = start_time.elapsed().as_millis() as u64;
+                            self.peer_selector.write().await.record_success(
+                                &peer_id,
+                                rtt_ms,
+                                data.len() as u64,
+                            );
+
+                            // Store locally for future requests
+                            let _ = self.local_store.put(*hash, data.clone()).await;
+                            let mut stats = self.stats.write().await;
+                            stats.requests_fulfilled += 1;
+                            stats.bytes_received += data.len() as u64;
+                            return Ok(Some(data));
+                        } else {
+                            // Hash mismatch - record as failure
+                            self.peer_selector.write().await.record_failure(&peer_id);
                         }
-                        PeerPool::Other => other_peers.push((peer_id.clone(), entry.peer.clone())),
+                    }
+                    Ok(None) => {
+                        // Peer doesn't have data - not a failure, just continue
+                        continue;
+                    }
+                    Err(PeerError::Timeout) => {
+                        // Record timeout
+                        self.peer_selector.write().await.record_timeout(&peer_id);
+                        continue;
+                    }
+                    Err(_) => {
+                        // Other errors (disconnect, etc.) - record as failure
+                        self.peer_selector.write().await.record_failure(&peer_id);
+                        continue;
                     }
                 }
             }
-        }
-        drop(peers);
 
-        // Request size estimate for metrics (hash request is ~40 bytes)
-        let request_bytes = 40u64;
-
-        // Try follows first, then others (in selector order within each pool)
-        for (peer_id, peer) in follows_peers.into_iter().chain(other_peers.into_iter()) {
-            // Record request being sent
-            self.peer_selector
-                .write()
-                .await
-                .record_request(&peer_id, request_bytes);
-            let start_time = std::time::Instant::now();
-
-            match peer.request(hash).await {
-                Ok(Some(data)) => {
-                    // Verify hash
-                    if hashtree_core::sha256(&data) == *hash {
-                        // Record success with RTT
-                        let rtt_ms = start_time.elapsed().as_millis() as u64;
-                        self.peer_selector.write().await.record_success(
-                            &peer_id,
-                            rtt_ms,
-                            data.len() as u64,
-                        );
-
-                        // Store locally for future requests
-                        let _ = self.local_store.put(*hash, data.clone()).await;
-                        let mut stats = self.stats.write().await;
-                        stats.requests_fulfilled += 1;
-                        stats.bytes_received += data.len() as u64;
-                        return Ok(Some(data));
-                    } else {
-                        // Hash mismatch - record as failure
-                        self.peer_selector.write().await.record_failure(&peer_id);
-                    }
-                }
-                Ok(None) => {
-                    // Peer doesn't have data - not a failure, just continue
-                    continue;
-                }
-                Err(PeerError::Timeout) => {
-                    // Record timeout
-                    self.peer_selector.write().await.record_timeout(&peer_id);
-                    continue;
-                }
-                Err(_) => {
-                    // Other errors (disconnect, etc.) - record as failure
-                    self.peer_selector.write().await.record_failure(&peer_id);
-                    continue;
-                }
+            let is_last_wave =
+                wave_idx + 1 == wave_plan.len() || next_peer_idx >= ordered_peers.len();
+            if !is_last_wave && dispatch.hedge_interval_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(dispatch.hedge_interval_ms))
+                    .await;
             }
         }
 
