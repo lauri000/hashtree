@@ -15,7 +15,7 @@ use nostr::{
     nips::nip44, Alphabet, ClientMessage, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey,
     RelayMessage, SingleLetterTag, Tag,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -24,8 +24,9 @@ use tracing::{debug, error, info, warn};
 
 use super::peer::{ContentStore, Peer, PendingRequest};
 use super::types::{
-    PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus, SignalingMessage, WebRTCConfig,
-    HELLO_TAG, WEBRTC_KIND,
+    decrement_htl_with_policy, should_forward_htl, validate_mesh_frame, MeshNostrFrame,
+    MeshNostrPayload, PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus,
+    SignalingMessage, WebRTCConfig, HELLO_TAG, MESH_DEFAULT_HTL, MESH_EVENT_POLICY, WEBRTC_KIND,
 };
 use crate::nostr_relay::NostrRelay;
 
@@ -72,6 +73,12 @@ pub struct WebRTCState {
     pub bytes_sent: std::sync::atomic::AtomicU64,
     /// Total bytes received across all peers (cumulative)
     pub bytes_received: std::sync::atomic::AtomicU64,
+    /// Relayless mesh frames received and accepted.
+    pub mesh_received: std::sync::atomic::AtomicU64,
+    /// Relayless mesh frames forwarded to peers.
+    pub mesh_forwarded: std::sync::atomic::AtomicU64,
+    /// Relayless mesh frames/events dropped due to dedupe.
+    pub mesh_dropped_duplicate: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +94,72 @@ pub struct PeerRootEvent {
 
 const HASHTREE_KIND: u16 = 30078;
 const HASHTREE_LABEL: &str = "hashtree";
+const SEEN_FRAME_CAP: usize = 4096;
+const SEEN_FRAME_TTL: Duration = Duration::from_secs(120);
+const SEEN_EVENT_CAP: usize = 8192;
+const SEEN_EVENT_TTL: Duration = Duration::from_secs(600);
+
+struct TimedSeenSet {
+    entries: HashMap<String, Instant>,
+    order: VecDeque<(String, Instant)>,
+    ttl: Duration,
+    capacity: usize,
+}
+
+impl TimedSeenSet {
+    fn new(capacity: usize, ttl: Duration) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            ttl,
+            capacity,
+        }
+    }
+
+    fn prune(&mut self, now: Instant) {
+        while let Some((key, inserted_at)) = self.order.front().cloned() {
+            if now.duration_since(inserted_at) < self.ttl {
+                break;
+            }
+            self.order.pop_front();
+            if self
+                .entries
+                .get(&key)
+                .map(|ts| *ts == inserted_at)
+                .unwrap_or(false)
+            {
+                self.entries.remove(&key);
+            }
+        }
+
+        while self.entries.len() > self.capacity {
+            if let Some((key, inserted_at)) = self.order.pop_front() {
+                if self
+                    .entries
+                    .get(&key)
+                    .map(|ts| *ts == inserted_at)
+                    .unwrap_or(false)
+                {
+                    self.entries.remove(&key);
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn insert_if_new(&mut self, key: String) -> bool {
+        let now = Instant::now();
+        self.prune(now);
+        if self.entries.contains_key(&key) {
+            return false;
+        }
+        self.entries.insert(key.clone(), now);
+        self.order.push_back((key, now));
+        self.prune(now);
+        true
+    }
+}
 
 fn hashtree_event_identifier(event: &nostr::Event) -> Option<String> {
     event.tags.iter().find_map(|tag| {
@@ -176,6 +249,9 @@ impl WebRTCState {
             connected_count: std::sync::atomic::AtomicUsize::new(0),
             bytes_sent: std::sync::atomic::AtomicU64::new(0),
             bytes_received: std::sync::atomic::AtomicU64::new(0),
+            mesh_received: std::sync::atomic::AtomicU64::new(0),
+            mesh_forwarded: std::sync::atomic::AtomicU64::new(0),
+            mesh_dropped_duplicate: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -186,6 +262,32 @@ impl WebRTCState {
             self.bytes_received
                 .load(std::sync::atomic::Ordering::Relaxed),
         )
+    }
+
+    pub fn get_mesh_stats(&self) -> (u64, u64, u64) {
+        (
+            self.mesh_received
+                .load(std::sync::atomic::Ordering::Relaxed),
+            self.mesh_forwarded
+                .load(std::sync::atomic::Ordering::Relaxed),
+            self.mesh_dropped_duplicate
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    pub fn record_mesh_received(&self) {
+        self.mesh_received
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn record_mesh_forwarded(&self, count: u64) {
+        self.mesh_forwarded
+            .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn record_mesh_duplicate_drop(&self) {
+        self.mesh_dropped_duplicate
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Record bytes sent (global + per-peer)
@@ -210,7 +312,17 @@ impl WebRTCState {
     /// Queries peers sequentially with 500ms intervals until one responds
     /// Returns the first successful response, or None if no peer has it
     pub async fn request_from_peers(&self, hash_hex: &str) -> Option<Vec<u8>> {
-        use super::types::{encode_request, DataRequest, MAX_HTL};
+        self.request_from_peers_with_source(hash_hex)
+            .await
+            .map(|(data, _peer_id)| data)
+    }
+
+    /// Request content by hash from connected peers, returning data and source peer.
+    pub async fn request_from_peers_with_source(
+        &self,
+        hash_hex: &str,
+    ) -> Option<(Vec<u8>, String)> {
+        use super::types::{encode_request, DataRequest, BLOB_REQUEST_POLICY};
 
         let peers = self.peers.read().await;
 
@@ -291,7 +403,7 @@ impl WebRTCState {
             // Send request
             let req = DataRequest {
                 h: hash_bytes.clone(),
-                htl: MAX_HTL,
+                htl: BLOB_REQUEST_POLICY.max_htl,
             };
             if let Ok(wire) = encode_request(&req) {
                 let wire_len = wire.len() as u64;
@@ -306,7 +418,7 @@ impl WebRTCState {
                                 peer_id,
                                 &hash_hex[..8.min(hash_hex.len())]
                             );
-                            return Some(data);
+                            return Some((data, peer_id));
                         }
                         _ => {
                             // Timeout or no data - clean up and try next peer
@@ -437,6 +549,11 @@ pub struct WebRTCManager {
     /// Channel for peer state events (connection success/failure)
     state_event_tx: mpsc::Sender<PeerStateEvent>,
     state_event_rx: Option<mpsc::Receiver<PeerStateEvent>>,
+    /// Channel for relayless mesh signaling frames received from peers.
+    mesh_frame_tx: mpsc::Sender<(PeerId, MeshNostrFrame)>,
+    mesh_frame_rx: Option<mpsc::Receiver<(PeerId, MeshNostrFrame)>>,
+    seen_frame_ids: Arc<Mutex<TimedSeenSet>>,
+    seen_event_ids: Arc<Mutex<TimedSeenSet>>,
 }
 
 impl WebRTCManager {
@@ -447,6 +564,7 @@ impl WebRTCManager {
         let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
         let (signaling_tx, signaling_rx) = mpsc::channel(100);
         let (state_event_tx, state_event_rx) = mpsc::channel(100);
+        let (mesh_frame_tx, mesh_frame_rx) = mpsc::channel(256);
 
         // Default classifier: all peers go to 'other' pool
         let peer_classifier: PeerClassifier = Arc::new(|_| PeerPool::Other);
@@ -465,6 +583,16 @@ impl WebRTCManager {
             nostr_relay: None,
             state_event_tx,
             state_event_rx: Some(state_event_rx),
+            mesh_frame_tx,
+            mesh_frame_rx: Some(mesh_frame_rx),
+            seen_frame_ids: Arc::new(Mutex::new(TimedSeenSet::new(
+                SEEN_FRAME_CAP,
+                SEEN_FRAME_TTL,
+            ))),
+            seen_event_ids: Arc::new(Mutex::new(TimedSeenSet::new(
+                SEEN_EVENT_CAP,
+                SEEN_EVENT_TTL,
+            ))),
         }
     }
 
@@ -656,6 +784,10 @@ impl WebRTCManager {
             .state_event_rx
             .take()
             .expect("state_event_rx already taken");
+        let mut mesh_frame_rx = self
+            .mesh_frame_rx
+            .take()
+            .expect("mesh_frame_rx already taken");
 
         // Create a shared write channel for all relay tasks
         let (relay_write_tx, _) = tokio::sync::broadcast::channel::<SignalingMessage>(100);
@@ -666,21 +798,11 @@ impl WebRTCManager {
             let event_tx = event_tx.clone();
             let shutdown_rx = self.shutdown_rx.clone();
             let keys = self.keys.clone();
-            let my_peer_id = self.my_peer_id.clone();
-            let hello_interval = Duration::from_millis(self.config.hello_interval_ms);
             let relay_write_rx = relay_write_tx.subscribe();
 
             tokio::spawn(async move {
-                if let Err(e) = Self::relay_task(
-                    url.clone(),
-                    event_tx,
-                    shutdown_rx,
-                    keys,
-                    my_peer_id,
-                    hello_interval,
-                    relay_write_rx,
-                )
-                .await
+                if let Err(e) =
+                    Self::relay_task(url.clone(), event_tx, shutdown_rx, keys, relay_write_rx).await
                 {
                     error!("Relay {} error: {}", url, e);
                 }
@@ -691,6 +813,13 @@ impl WebRTCManager {
         let mut shutdown_rx = self.shutdown_rx.clone();
         // Cleanup interval - run every 30 seconds as a fallback (not for real-time sync)
         let mut cleanup_interval = tokio::time::interval(Duration::from_secs(30));
+        let mut hello_ticker =
+            tokio::time::interval(Duration::from_millis(self.config.hello_interval_ms));
+        self.dispatch_signaling_message(
+            SignalingMessage::hello(&self.my_peer_id.uuid),
+            &relay_write_tx,
+        )
+        .await;
         loop {
             tokio::select! {
                 _ = shutdown_rx.changed() => {
@@ -705,12 +834,20 @@ impl WebRTCManager {
                     }
                 }
                 Some(msg) = signaling_rx.recv() => {
-                    // Forward signaling messages to relay broadcast
-                    let _ = relay_write_tx.send(msg);
+                    self.dispatch_signaling_message(msg, &relay_write_tx).await;
                 }
                 Some(event) = state_event_rx.recv() => {
                     // Handle peer state events (connected, failed, disconnected)
-                    self.handle_peer_state_event(event).await;
+                    self.handle_peer_state_event(event, &relay_write_tx).await;
+                }
+                Some((from_peer_id, frame)) = mesh_frame_rx.recv() => {
+                    self.handle_mesh_frame(from_peer_id, frame, &relay_write_tx).await;
+                }
+                _ = hello_ticker.tick() => {
+                    self.dispatch_signaling_message(
+                        SignalingMessage::hello(&self.my_peer_id.uuid),
+                        &relay_write_tx,
+                    ).await;
                 }
                 _ = cleanup_interval.tick() => {
                     // Periodic cleanup of stale peers and state sync (fallback)
@@ -728,8 +865,6 @@ impl WebRTCManager {
         event_tx: mpsc::Sender<(String, nostr::Event)>,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
         keys: Keys,
-        my_peer_id: PeerId,
-        hello_interval: Duration,
         mut signaling_rx: tokio::sync::broadcast::Receiver<SignalingMessage>,
     ) -> Result<()> {
         info!("Connecting to relay: {}", url);
@@ -765,27 +900,11 @@ impl WebRTCManager {
             url, WEBRTC_KIND
         );
 
-        let mut last_hello = Instant::now() - hello_interval; // Send immediately
-        let mut hello_ticker = tokio::time::interval(Duration::from_secs(1));
-
         loop {
             tokio::select! {
                 _ = shutdown_rx.changed() => {
                     if *shutdown_rx.borrow() {
                         break;
-                    }
-                }
-                _ = hello_ticker.tick() => {
-                    // Send hello periodically
-                    if last_hello.elapsed() >= hello_interval {
-                        let hello = SignalingMessage::hello(&my_peer_id.uuid);
-                        if let Ok(event) = Self::create_signaling_event(&keys, &hello).await {
-                            let msg = ClientMessage::event(event);
-                            if write.send(Message::Text(msg.as_json().into())).await.is_ok() {
-                                debug!("Sent hello to {}", url);
-                            }
-                        }
-                        last_hello = Instant::now();
                     }
                 }
                 // Handle outgoing signaling messages
@@ -823,6 +942,178 @@ impl WebRTCManager {
         }
 
         Ok(())
+    }
+
+    async fn mark_seen_frame_id(&self, frame_id: String) -> bool {
+        let mut seen = self.seen_frame_ids.lock().await;
+        seen.insert_if_new(frame_id)
+    }
+
+    async fn mark_seen_event_id(&self, event_id: String) -> bool {
+        let mut seen = self.seen_event_ids.lock().await;
+        seen.insert_if_new(event_id)
+    }
+
+    async fn dispatch_signaling_message(
+        &self,
+        msg: SignalingMessage,
+        relay_write_tx: &tokio::sync::broadcast::Sender<SignalingMessage>,
+    ) {
+        if relay_write_tx.send(msg.clone()).is_err() {
+            debug!(
+                "No relay subscribers for signaling message {}",
+                msg.msg_type()
+            );
+        }
+
+        let event = match Self::create_signaling_event(&self.keys, &msg).await {
+            Ok(event) => event,
+            Err(e) => {
+                debug!("Failed to create signaling event for mesh dispatch: {}", e);
+                return;
+            }
+        };
+
+        let mut frame =
+            MeshNostrFrame::new_event(event, &self.my_peer_id.to_string(), MESH_DEFAULT_HTL);
+        if !self.mark_seen_frame_id(frame.frame_id.clone()).await {
+            self.state.record_mesh_duplicate_drop();
+            return;
+        }
+        if !self.mark_seen_event_id(frame.event().id.to_hex()).await {
+            self.state.record_mesh_duplicate_drop();
+            return;
+        }
+
+        // Keep the sender peer id stable even if this is forwarded later.
+        frame.sender_peer_id = self.my_peer_id.to_string();
+        let forwarded = self.forward_mesh_frame(&frame, None).await;
+        if forwarded > 0 {
+            self.state.record_mesh_forwarded(forwarded as u64);
+        }
+    }
+
+    async fn forward_mesh_frame(
+        &self,
+        frame: &MeshNostrFrame,
+        exclude_peer_id: Option<&str>,
+    ) -> usize {
+        let peers = self.state.peers.read().await;
+        let peer_refs: Vec<_> = peers
+            .values()
+            .filter(|entry| entry.state == ConnectionState::Connected)
+            .filter(|entry| {
+                entry
+                    .peer
+                    .as_ref()
+                    .map(|peer| peer.has_data_channel())
+                    .unwrap_or(false)
+            })
+            .filter(|entry| {
+                exclude_peer_id
+                    .map(|exclude| exclude != entry.peer_id.to_string())
+                    .unwrap_or(true)
+            })
+            .filter_map(|entry| {
+                entry.peer.as_ref().map(|peer| {
+                    (
+                        entry.peer_id.to_string(),
+                        entry.peer_id.short(),
+                        peer.data_channel.clone(),
+                        peer.htl_config().clone(),
+                    )
+                })
+            })
+            .collect();
+        drop(peers);
+
+        let mut forwarded = 0usize;
+        for (_peer_key, peer_short, dc_mutex, htl_cfg) in peer_refs {
+            let next_htl = decrement_htl_with_policy(frame.htl, &MESH_EVENT_POLICY, &htl_cfg);
+            if !should_forward_htl(next_htl) {
+                continue;
+            }
+
+            let mut outbound = frame.clone();
+            outbound.htl = next_htl;
+            let text = match serde_json::to_string(&outbound) {
+                Ok(text) => text,
+                Err(e) => {
+                    debug!("Failed to serialize mesh frame for {}: {}", peer_short, e);
+                    continue;
+                }
+            };
+
+            let dc_guard = dc_mutex.lock().await;
+            let Some(dc) = dc_guard.as_ref() else {
+                continue;
+            };
+            if dc.ready_state()
+                != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open
+            {
+                continue;
+            }
+            if dc.send_text(text).await.is_ok() {
+                forwarded += 1;
+            }
+        }
+
+        forwarded
+    }
+
+    async fn handle_mesh_frame(
+        &self,
+        from_peer_id: PeerId,
+        frame: MeshNostrFrame,
+        relay_write_tx: &tokio::sync::broadcast::Sender<SignalingMessage>,
+    ) {
+        if let Err(reason) = validate_mesh_frame(&frame) {
+            debug!(
+                "Ignoring mesh frame from {} (invalid: {})",
+                from_peer_id.short(),
+                reason
+            );
+            return;
+        }
+
+        if !self.mark_seen_frame_id(frame.frame_id.clone()).await {
+            self.state.record_mesh_duplicate_drop();
+            return;
+        }
+
+        let event = match &frame.payload {
+            MeshNostrPayload::Event { event } => event.clone(),
+        };
+
+        if !self.mark_seen_event_id(event.id.to_hex()).await {
+            self.state.record_mesh_duplicate_drop();
+            return;
+        }
+
+        if event.verify().is_err() {
+            debug!(
+                "Ignoring mesh event from {} due to invalid signature",
+                from_peer_id.short()
+            );
+            return;
+        }
+
+        self.state.record_mesh_received();
+
+        if let Err(e) = self.handle_event("mesh", &event, relay_write_tx).await {
+            debug!(
+                "Error handling mesh event from {}: {}",
+                from_peer_id.short(),
+                e
+            );
+        }
+
+        let forwarded = self
+            .forward_mesh_frame(&frame, Some(&from_peer_id.to_string()))
+            .await;
+        if forwarded > 0 {
+            self.state.record_mesh_forwarded(forwarded as u64);
+        }
     }
 
     /// Create a signaling event
@@ -1138,6 +1429,7 @@ impl WebRTCManager {
     ) -> Result<()> {
         let full_peer_id = PeerId::new(sender_pubkey.to_string(), Some(their_uuid.to_string()));
         let peer_key = full_peer_id.to_string();
+        let mut already_discovered = false;
 
         // Check if we already have this peer
         {
@@ -1149,6 +1441,7 @@ impl WebRTCManager {
                 {
                     return Ok(());
                 }
+                already_discovered = true;
             }
         }
 
@@ -1215,6 +1508,16 @@ impl WebRTCManager {
             );
         }
 
+        // If we discovered a peer but are not the initiator, send one immediate hello
+        // to accelerate reciprocal discovery over relayless mesh paths.
+        if !will_initiate && !already_discovered {
+            self.dispatch_signaling_message(
+                SignalingMessage::hello(&self.my_peer_id.uuid),
+                relay_write_tx,
+            )
+            .await;
+        }
+
         // If we should initiate, create offer
         if will_initiate {
             self.initiate_connection(&full_peer_id, pool, relay_write_tx)
@@ -1249,6 +1552,7 @@ impl WebRTCManager {
             self.store.clone(),
             Some(self.state_event_tx.clone()),
             self.nostr_relay.clone(),
+            Some(self.mesh_frame_tx.clone()),
         )
         .await?;
 
@@ -1273,9 +1577,8 @@ impl WebRTCManager {
             recipient: peer_id.to_string(),
             peer_id: self.my_peer_id.uuid.clone(),
         };
-        if relay_write_tx.send(offer_msg).is_err() {
-            warn!("Failed to broadcast offer to {}", peer_id.short());
-        }
+        self.dispatch_signaling_message(offer_msg, relay_write_tx)
+            .await;
 
         info!("Sent offer to {}", peer_id.short());
 
@@ -1363,6 +1666,7 @@ impl WebRTCManager {
             self.store.clone(),
             Some(self.state_event_tx.clone()),
             self.nostr_relay.clone(),
+            Some(self.mesh_frame_tx.clone()),
         )
         .await?;
         debug!("Peer connection created for {}", full_peer_id.short());
@@ -1400,9 +1704,8 @@ impl WebRTCManager {
             recipient: full_peer_id.to_string(),
             peer_id: self.my_peer_id.uuid.clone(),
         };
-        if relay_write_tx.send(answer_msg).is_err() {
-            warn!("Failed to send answer to {}", full_peer_id.short());
-        }
+        self.dispatch_signaling_message(answer_msg, relay_write_tx)
+            .await;
         info!("Sent answer to {}", full_peer_id.short());
 
         Ok(())
@@ -1507,20 +1810,34 @@ impl WebRTCManager {
     }
 
     /// Handle peer state change events from peer connections
-    async fn handle_peer_state_event(&self, event: PeerStateEvent) {
+    async fn handle_peer_state_event(
+        &self,
+        event: PeerStateEvent,
+        relay_write_tx: &tokio::sync::broadcast::Sender<SignalingMessage>,
+    ) {
         match event {
             PeerStateEvent::Connected(peer_id) => {
                 let peer_key = peer_id.to_string();
+                let mut emit_hello = false;
                 let mut peers = self.state.peers.write().await;
                 if let Some(entry) = peers.get_mut(&peer_key) {
                     if entry.state != ConnectionState::Connected {
                         info!("Peer {} connected (via state event)", peer_id.short());
                         entry.state = ConnectionState::Connected;
+                        emit_hello = true;
                         // Update connected count
                         self.state
                             .connected_count
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
+                }
+                drop(peers);
+                if emit_hello {
+                    self.dispatch_signaling_message(
+                        SignalingMessage::hello(&self.my_peer_id.uuid),
+                        relay_write_tx,
+                    )
+                    .await;
                 }
             }
             PeerStateEvent::Failed(peer_id) => {

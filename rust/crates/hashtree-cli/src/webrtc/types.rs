@@ -1,5 +1,6 @@
 //! WebRTC signaling types compatible with iris-client and hashtree-ts
 
+use nostr::{Event, Kind};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
@@ -8,12 +9,43 @@ pub const MAX_HTL: u8 = 10;
 pub const DECREMENT_AT_MAX_PROB: f64 = 0.5; // 50% chance to decrement at max
 pub const DECREMENT_AT_MIN_PROB: f64 = 0.25; // 25% chance to decrement at 1
 
+/// Mode for HTL decrement policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HtlMode {
+    Probabilistic,
+}
+
+/// HTL policy shared by traffic classes.
+#[derive(Debug, Clone, Copy)]
+pub struct HtlPolicy {
+    pub mode: HtlMode,
+    pub max_htl: u8,
+    pub p_at_max: f64,
+    pub p_at_min: f64,
+}
+
+/// Blob-request HTL profile (legacy behavior).
+pub const BLOB_REQUEST_POLICY: HtlPolicy = HtlPolicy {
+    mode: HtlMode::Probabilistic,
+    max_htl: MAX_HTL,
+    p_at_max: DECREMENT_AT_MAX_PROB,
+    p_at_min: DECREMENT_AT_MIN_PROB,
+};
+
+/// Signaling/presence mesh HTL profile.
+pub const MESH_EVENT_POLICY: HtlPolicy = HtlPolicy {
+    mode: HtlMode::Probabilistic,
+    max_htl: 4,
+    p_at_max: 0.75,
+    p_at_min: 0.5,
+};
+
 /// Per-peer HTL decrement configuration (Freenet-style)
 /// Stored per peer connection to prevent probing attacks
 #[derive(Debug, Clone)]
 pub struct PeerHTLConfig {
-    pub decrement_at_max: bool, // Whether to decrement when HTL is at max
-    pub decrement_at_min: bool, // Whether to decrement when HTL is 1
+    pub at_max_sample: f64, // Random sample used at max HTL
+    pub at_min_sample: f64, // Random sample used at min HTL
 }
 
 impl PeerHTLConfig {
@@ -22,8 +54,8 @@ impl PeerHTLConfig {
     pub fn new() -> Self {
         let mut rng = rand::thread_rng();
         Self {
-            decrement_at_max: rng.gen_bool(DECREMENT_AT_MAX_PROB),
-            decrement_at_min: rng.gen_bool(DECREMENT_AT_MIN_PROB),
+            at_max_sample: rng.gen_range(0.0..1.0),
+            at_min_sample: rng.gen_range(0.0..1.0),
         }
     }
 }
@@ -34,42 +66,52 @@ impl Default for PeerHTLConfig {
     }
 }
 
-/// Decrement HTL using Freenet-style probabilistic rules
-/// - At max HTL: probabilistic decrement (50% by default)
-/// - At HTL=1: probabilistic decrement (25% by default)
-/// - Otherwise: always decrement
-///
-/// Returns new HTL value
-pub fn decrement_htl(htl: u8, config: &PeerHTLConfig) -> u8 {
-    // Clamp to max
-    let htl = htl.min(MAX_HTL);
-
-    // Already dead
+/// Decrement HTL according to a given policy.
+pub fn decrement_htl_with_policy(htl: u8, policy: &HtlPolicy, config: &PeerHTLConfig) -> u8 {
+    let htl = htl.min(policy.max_htl);
     if htl == 0 {
         return 0;
     }
 
-    // At max: probabilistic decrement
-    if htl == MAX_HTL {
-        return if config.decrement_at_max {
-            htl - 1
-        } else {
-            htl
-        };
-    }
+    match policy.mode {
+        HtlMode::Probabilistic => {
+            let p_at_max = policy.p_at_max.clamp(0.0, 1.0);
+            let p_at_min = policy.p_at_min.clamp(0.0, 1.0);
 
-    // At min (1): probabilistic decrement
-    if htl == 1 {
-        return if config.decrement_at_min { 0 } else { htl };
-    }
+            if htl == policy.max_htl {
+                return if config.at_max_sample < p_at_max {
+                    htl.saturating_sub(1)
+                } else {
+                    htl
+                };
+            }
 
-    // Middle: always decrement
-    htl - 1
+            if htl == 1 {
+                return if config.at_min_sample < p_at_min {
+                    0
+                } else {
+                    htl
+                };
+            }
+
+            htl.saturating_sub(1)
+        }
+    }
 }
 
-/// Check if a request should be forwarded based on HTL
-pub fn should_forward(htl: u8) -> bool {
+/// Backward-compatible helper using blob-request policy.
+pub fn decrement_htl(htl: u8, config: &PeerHTLConfig) -> u8 {
+    decrement_htl_with_policy(htl, &BLOB_REQUEST_POLICY, config)
+}
+
+/// Check if a request should be forwarded based on HTL.
+pub fn should_forward_htl(htl: u8) -> bool {
     htl > 0
+}
+
+/// Backward-compatible helper for existing call sites.
+pub fn should_forward(htl: u8) -> bool {
+    should_forward_htl(htl)
 }
 
 /// Event kind for WebRTC signaling (ephemeral kind 25050)
@@ -81,6 +123,73 @@ pub const HELLO_TAG: &str = "hello";
 
 /// Legacy tag for WebRTC signaling messages (kept for compatibility)
 pub const WEBRTC_TAG: &str = "webrtc";
+
+/// Mesh protocol constants for relayless forwarding over WebRTC data channels.
+pub const MESH_PROTOCOL: &str = "htree.nostr.mesh.v1";
+pub const MESH_PROTOCOL_VERSION: u8 = 1;
+pub const MESH_DEFAULT_HTL: u8 = MESH_EVENT_POLICY.max_htl;
+pub const MESH_MAX_HTL: u8 = 6;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum MeshNostrPayload {
+    #[serde(rename = "EVENT")]
+    Event { event: Event },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshNostrFrame {
+    pub protocol: String,
+    pub version: u8,
+    pub frame_id: String,
+    pub htl: u8,
+    pub sender_peer_id: String,
+    pub payload: MeshNostrPayload,
+}
+
+impl MeshNostrFrame {
+    pub fn new_event(event: Event, sender_peer_id: &str, htl: u8) -> Self {
+        Self {
+            protocol: MESH_PROTOCOL.to_string(),
+            version: MESH_PROTOCOL_VERSION,
+            frame_id: generate_uuid(),
+            htl,
+            sender_peer_id: sender_peer_id.to_string(),
+            payload: MeshNostrPayload::Event { event },
+        }
+    }
+
+    pub fn event(&self) -> &Event {
+        match &self.payload {
+            MeshNostrPayload::Event { event } => event,
+        }
+    }
+}
+
+pub fn validate_mesh_frame(frame: &MeshNostrFrame) -> Result<(), &'static str> {
+    if frame.protocol != MESH_PROTOCOL {
+        return Err("invalid protocol");
+    }
+    if frame.version != MESH_PROTOCOL_VERSION {
+        return Err("invalid version");
+    }
+    if frame.frame_id.is_empty() {
+        return Err("missing frame id");
+    }
+    if frame.sender_peer_id.is_empty() {
+        return Err("missing sender peer id");
+    }
+    if frame.htl == 0 || frame.htl > MESH_MAX_HTL {
+        return Err("invalid htl");
+    }
+
+    let event = frame.event();
+    if event.kind != Kind::Ephemeral(WEBRTC_KIND as u16) {
+        return Err("unsupported event kind");
+    }
+
+    Ok(())
+}
 
 /// Generate a UUID for peer identification
 pub fn generate_uuid() -> String {
@@ -326,7 +435,7 @@ impl Default for WebRTCConfig {
             ],
             max_outbound: 6,
             max_inbound: 6,
-            hello_interval_ms: 10000,
+            hello_interval_ms: 3000,
             message_timeout_ms: 15000,
             stun_servers: vec![
                 "stun:stun.iris.to:3478".to_string(),
@@ -460,11 +569,11 @@ pub enum DataMessage {
 }
 
 fn default_htl() -> u8 {
-    MAX_HTL
+    BLOB_REQUEST_POLICY.max_htl
 }
 
 fn is_max_htl(htl: &u8) -> bool {
-    *htl == MAX_HTL
+    *htl == BLOB_REQUEST_POLICY.max_htl
 }
 
 /// Encode a request to wire format: [0x00][msgpack body]

@@ -83,6 +83,11 @@ impl WebRTCState {
         None
     }
 
+    /// Request from peers with source - always returns None when P2P is disabled
+    pub async fn request_from_peers_with_source(&self, _hash: &str) -> Option<(Vec<u8>, String)> {
+        None
+    }
+
     /// Get bandwidth stats - always returns zeros when P2P is disabled
     pub fn get_bandwidth(&self) -> (u64, u64) {
         (0, 0)

@@ -312,7 +312,6 @@ fn setup_pr_create_fixture() -> PrCreateFixture {
 }
 
 fn setup_pr_create_fixture_with_relay(relay: test_relay::TestRelay) -> PrCreateFixture {
-
     let tmp = TempDir::new().expect("temp dir");
     let config_dir = tmp.path().join("config");
     let data_dir = tmp.path().join("data");

@@ -23,8 +23,9 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 
 use super::types::{
-    encode_message, encode_request, encode_response, hash_to_hex, parse_message, DataMessage,
-    DataRequest, DataResponse, PeerDirection, PeerId, PeerStateEvent, SignalingMessage,
+    encode_message, encode_request, encode_response, hash_to_hex, parse_message,
+    validate_mesh_frame, DataMessage, DataRequest, DataResponse, MeshNostrFrame, PeerDirection,
+    PeerHTLConfig, PeerId, PeerStateEvent, SignalingMessage, BLOB_REQUEST_POLICY,
 };
 use crate::nostr_relay::NostrRelay;
 use nostr::{
@@ -76,6 +77,10 @@ pub struct Peer {
 
     // Optional Nostr relay for text messages over data channel
     nostr_relay: Option<Arc<NostrRelay>>,
+    // Optional channel for inbound relayless signaling mesh frames
+    mesh_frame_tx: Option<mpsc::Sender<(PeerId, MeshNostrFrame)>>,
+    // Per-peer HTL randomness profile (reused across traffic classes)
+    htl_config: PeerHTLConfig,
 }
 
 impl Peer {
@@ -93,6 +98,7 @@ impl Peer {
             my_peer_id,
             signaling_tx,
             stun_servers,
+            None,
             None,
             None,
             None,
@@ -118,6 +124,7 @@ impl Peer {
             store,
             None,
             None,
+            None,
         )
         .await
     }
@@ -132,6 +139,7 @@ impl Peer {
         store: Option<Arc<dyn ContentStore>>,
         state_event_tx: Option<mpsc::Sender<PeerStateEvent>>,
         nostr_relay: Option<Arc<NostrRelay>>,
+        mesh_frame_tx: Option<mpsc::Sender<(PeerId, MeshNostrFrame)>>,
     ) -> Result<Self> {
         // Create WebRTC API
         let mut m = MediaEngine::default();
@@ -183,6 +191,8 @@ impl Peer {
             message_rx: Some(message_rx),
             state_event_tx,
             nostr_relay,
+            mesh_frame_tx,
+            htl_config: PeerHTLConfig::new(),
         })
     }
 
@@ -204,6 +214,10 @@ impl Peer {
     /// Check if connected
     pub fn is_connected(&self) -> bool {
         self.pc.connection_state() == RTCPeerConnectionState::Connected
+    }
+
+    pub fn htl_config(&self) -> &PeerHTLConfig {
+        &self.htl_config
     }
 
     /// Setup event handlers for the peer connection
@@ -354,6 +368,7 @@ impl Peer {
         let store = self.store.clone();
         let data_channel_holder = self.data_channel.clone();
         let nostr_relay = self.nostr_relay.clone();
+        let mesh_frame_tx = self.mesh_frame_tx.clone();
         let peer_pubkey = Some(self.peer_id.pubkey.clone());
 
         self.pc
@@ -365,6 +380,7 @@ impl Peer {
                 let store = store.clone();
                 let data_channel_holder = data_channel_holder.clone();
                 let nostr_relay = nostr_relay.clone();
+                let mesh_frame_tx = mesh_frame_tx.clone();
                 let peer_pubkey = peer_pubkey.clone();
 
                 // Work MUST be inside the returned future
@@ -390,6 +406,7 @@ impl Peer {
                         pending_nostr_queries.clone(),
                         store,
                         nostr_relay,
+                        mesh_frame_tx,
                         peer_pubkey,
                     )
                     .await;
@@ -488,6 +505,7 @@ impl Peer {
         let pending_requests = self.pending_requests.clone();
         let store = self.store.clone();
         let nostr_relay = self.nostr_relay.clone();
+        let mesh_frame_tx = self.mesh_frame_tx.clone();
         let peer_pubkey = Some(self.peer_id.pubkey.clone());
 
         Self::setup_dc_handlers(
@@ -498,6 +516,7 @@ impl Peer {
             self.pending_nostr_queries.clone(),
             store,
             nostr_relay,
+            mesh_frame_tx,
             peer_pubkey,
         )
         .await;
@@ -515,6 +534,7 @@ impl Peer {
         >,
         store: Option<Arc<dyn ContentStore>>,
         nostr_relay: Option<Arc<NostrRelay>>,
+        mesh_frame_tx: Option<mpsc::Sender<(PeerId, MeshNostrFrame)>>,
         peer_pubkey: Option<String>,
     ) {
         let label = dc.label().to_string();
@@ -588,6 +608,8 @@ impl Peer {
         let nostr_relay_for_msg = nostr_relay.clone();
         let nostr_client_id_for_msg = nostr_client_id;
         let pending_nostr_queries_for_msg = pending_nostr_queries.clone();
+        let mesh_frame_tx_for_msg = mesh_frame_tx.clone();
+        let peer_id_for_msg = peer_id.clone();
 
         dc.on_message(Box::new(move |msg: DataChannelMessage| {
             let dc = dc_for_msg.clone();
@@ -599,12 +621,31 @@ impl Peer {
             let nostr_relay = nostr_relay_for_msg.clone();
             let nostr_client_id = nostr_client_id_for_msg;
             let pending_nostr_queries = pending_nostr_queries_for_msg.clone();
+            let mesh_frame_tx = mesh_frame_tx_for_msg.clone();
+            let peer_id = peer_id_for_msg.clone();
             let msg_data = msg.data.clone();
 
             // Work MUST be inside the returned future
             Box::pin(async move {
                 if msg.is_string {
                     if let Ok(text) = std::str::from_utf8(&msg_data) {
+                        if let Ok(mesh_frame) = serde_json::from_str::<MeshNostrFrame>(text) {
+                            match validate_mesh_frame(&mesh_frame) {
+                                Ok(()) => {
+                                    if let Some(tx) = mesh_frame_tx {
+                                        let _ = tx.send((peer_id.clone(), mesh_frame)).await;
+                                    }
+                                    return;
+                                }
+                                Err(reason) => {
+                                    debug!(
+                                        "[Peer {}] Ignoring invalid mesh frame: {}",
+                                        peer_short, reason
+                                    );
+                                }
+                            }
+                        }
+
                         // First, route relay responses to pending local queries.
                         if let Ok(relay_msg) = NostrRelayMessage::from_json(text) {
                             if let Some(sub_id) = relay_subscription_id(&relay_msg) {
@@ -778,10 +819,10 @@ impl Peer {
             );
         }
 
-        // Send request with MAX_HTL (fresh request from us)
+        // Send request with blob-request default HTL (fresh request from us)
         let req = DataRequest {
             h: hash,
-            htl: crate::webrtc::types::MAX_HTL,
+            htl: BLOB_REQUEST_POLICY.max_htl,
         };
         let wire = encode_request(&req)?;
         dc.send(&Bytes::from(wire)).await?;
@@ -912,6 +953,20 @@ impl Peer {
         );
 
         Ok(events)
+    }
+
+    /// Send a mesh signaling frame as text over the data channel.
+    pub async fn send_mesh_frame_text(&self, frame: &MeshNostrFrame) -> Result<()> {
+        let dc_guard = self.data_channel.lock().await;
+        let dc = dc_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No data channel"))?
+            .clone();
+        drop(dc_guard);
+
+        let text = serde_json::to_string(frame)?;
+        dc.send_text(text).await?;
+        Ok(())
     }
 
     /// Send a message over the data channel

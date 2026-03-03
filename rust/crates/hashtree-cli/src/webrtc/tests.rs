@@ -126,3 +126,44 @@ fn test_wire_format_constants() {
     assert_eq!(MSG_TYPE_REQUEST, 0x00);
     assert_eq!(MSG_TYPE_RESPONSE, 0x01);
 }
+
+#[test]
+fn test_blob_policy_matches_legacy_defaults() {
+    assert_eq!(BLOB_REQUEST_POLICY.max_htl, MAX_HTL);
+    assert!((BLOB_REQUEST_POLICY.p_at_max - 0.5).abs() < f64::EPSILON);
+    assert!((BLOB_REQUEST_POLICY.p_at_min - 0.25).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_mesh_policy_is_probabilistic_and_tighter() {
+    assert_eq!(MESH_EVENT_POLICY.mode, HtlMode::Probabilistic);
+    assert_eq!(MESH_EVENT_POLICY.max_htl, 4);
+    assert!(MESH_EVENT_POLICY.max_htl < BLOB_REQUEST_POLICY.max_htl);
+    assert!(MESH_EVENT_POLICY.p_at_max > BLOB_REQUEST_POLICY.p_at_max);
+    assert!(MESH_EVENT_POLICY.p_at_min > BLOB_REQUEST_POLICY.p_at_min);
+}
+
+#[test]
+fn test_mesh_frame_validation_accepts_kind_25050_event() {
+    let keys = nostr::Keys::generate();
+    let event = nostr::EventBuilder::new(
+        nostr::Kind::Ephemeral(WEBRTC_KIND as u16),
+        "",
+        [nostr::Tag::parse(&["l", HELLO_TAG]).unwrap()],
+    )
+    .to_event(&keys)
+    .unwrap();
+
+    let frame = MeshNostrFrame::new_event(event, "peer-a:uuid-a", MESH_EVENT_POLICY.max_htl);
+    assert!(validate_mesh_frame(&frame).is_ok());
+}
+
+#[test]
+fn test_mesh_frame_validation_rejects_non_webrtc_kind() {
+    let keys = nostr::Keys::generate();
+    let event = nostr::EventBuilder::new(nostr::Kind::TextNote, "nope", [])
+        .to_event(&keys)
+        .unwrap();
+    let frame = MeshNostrFrame::new_event(event, "peer-a:uuid-a", MESH_EVENT_POLICY.max_htl);
+    assert!(validate_mesh_frame(&frame).is_err());
+}

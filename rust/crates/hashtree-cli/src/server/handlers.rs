@@ -1299,6 +1299,7 @@ pub async fn webrtc_peers(State(state): State<AppState>) -> impl IntoResponse {
     };
 
     let peers = webrtc_state.peers.read().await;
+    let (mesh_received, mesh_forwarded, mesh_dropped_duplicate) = webrtc_state.get_mesh_stats();
     let peer_list: Vec<_> = peers.iter().map(|(id, entry)| {
         let rtc_state = entry.peer.as_ref().map(|p| format!("{:?}", p.state()));
         json!({
@@ -1317,6 +1318,9 @@ pub async fn webrtc_peers(State(state): State<AppState>) -> impl IntoResponse {
         "total": peers.len(),
         "connected": peer_list.iter().filter(|p| p["connected"].as_bool().unwrap_or(false)).count(),
         "with_data_channel": peer_list.iter().filter(|p| p["has_data_channel"].as_bool().unwrap_or(false)).count(),
+        "mesh_received": mesh_received,
+        "mesh_forwarded": mesh_forwarded,
+        "mesh_dropped_duplicate": mesh_dropped_duplicate,
         "peers": peer_list
     }))
 }
@@ -1364,6 +1368,7 @@ pub async fn daemon_status(
             })
             .count();
         let (bytes_sent, bytes_received) = webrtc_state.get_bandwidth();
+        let (mesh_received, mesh_forwarded, mesh_dropped_duplicate) = webrtc_state.get_mesh_stats();
         // Per-peer stats
         let peer_stats: Vec<_> = peers
             .values()
@@ -1383,6 +1388,9 @@ pub async fn daemon_status(
             "with_data_channel": with_data_channel,
             "bytes_sent": bytes_sent,
             "bytes_received": bytes_received,
+            "mesh_received": mesh_received,
+            "mesh_forwarded": mesh_forwarded,
+            "mesh_dropped_duplicate": mesh_dropped_duplicate,
             "peers": peer_stats,
         })
     } else {
@@ -1727,65 +1735,20 @@ async fn query_webrtc_peers(
     webrtc_state: &Arc<WebRTCState>,
     hash_hex: &str,
 ) -> Option<(Vec<u8>, String)> {
-    let peers = webrtc_state.peers.read().await;
-
-    // Collect connected peers that have data channels
-    let connected_peers: Vec<_> = peers
-        .values()
-        .filter(|entry| {
-            entry.state == ConnectionState::Connected
-                && entry
-                    .peer
-                    .as_ref()
-                    .map(|p| p.has_data_channel())
-                    .unwrap_or(false)
-        })
-        .collect();
-
-    if connected_peers.is_empty() {
-        tracing::debug!("No connected WebRTC peers with data channels to query");
-        return None;
+    if let Some((data, peer_id)) = webrtc_state.request_from_peers_with_source(hash_hex).await {
+        tracing::info!(
+            "Got {} bytes from peer {} for hash {}",
+            data.len(),
+            peer_id,
+            &hash_hex[..16.min(hash_hex.len())]
+        );
+        return Some((data, peer_id));
     }
 
     tracing::debug!(
-        "Querying {} connected WebRTC peers for {}",
-        connected_peers.len(),
+        "No connected WebRTC peer returned hash {}",
         &hash_hex[..16.min(hash_hex.len())]
     );
-
-    // Query peers sequentially (could be parallelized with timeout)
-    for entry in connected_peers {
-        if let Some(ref peer) = entry.peer {
-            match peer.request(hash_hex).await {
-                Ok(Some(data)) => {
-                    let peer_id = entry.peer_id.short();
-                    tracing::info!(
-                        "Got {} bytes from peer {} for hash {}",
-                        data.len(),
-                        peer_id,
-                        &hash_hex[..16.min(hash_hex.len())]
-                    );
-                    return Some((data, peer_id.to_string()));
-                }
-                Ok(None) => {
-                    tracing::debug!(
-                        "Peer {} doesn't have hash {}",
-                        entry.peer_id.short(),
-                        &hash_hex[..16.min(hash_hex.len())]
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Error querying peer {} for {}: {}",
-                        entry.peer_id.short(),
-                        &hash_hex[..16.min(hash_hex.len())],
-                        e
-                    );
-                }
-            }
-        }
-    }
-
     None
 }
 

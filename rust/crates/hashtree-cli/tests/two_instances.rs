@@ -99,6 +99,7 @@ mod test_relay {
     pub struct TestRelay {
         port: u16,
         shutdown: broadcast::Sender<()>,
+        stopped: bool,
     }
 
     impl TestRelay {
@@ -111,6 +112,7 @@ mod test_relay {
             let relay = TestRelay {
                 port,
                 shutdown: shutdown.clone(),
+                stopped: false,
             };
 
             let events_clone = events.clone();
@@ -152,12 +154,20 @@ mod test_relay {
         pub fn url(&self) -> String {
             format!("ws://127.0.0.1:{}", self.port)
         }
+
+        pub fn stop(&mut self) {
+            if self.stopped {
+                return;
+            }
+            self.stopped = true;
+            let _ = self.shutdown.send(());
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
 
     impl Drop for TestRelay {
         fn drop(&mut self) {
-            let _ = self.shutdown.send(());
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            self.stop();
         }
     }
 
@@ -455,6 +465,22 @@ impl DaemonInstance {
         follow_pubkeys: &[String],
         relay_url: &str,
     ) -> Result<Self> {
+        Self::new_with_relays(
+            port,
+            htree_bin,
+            keys,
+            follow_pubkeys,
+            &[relay_url.to_string()],
+        )
+    }
+
+    fn new_with_relays(
+        port: u16,
+        htree_bin: &PathBuf,
+        keys: &Keys,
+        follow_pubkeys: &[String],
+        relay_urls: &[String],
+    ) -> Result<Self> {
         let home_dir = TempDir::new().context("Failed to create temp dir")?;
         let home_path = home_dir.path().to_path_buf();
         let data_path = home_path.join("data");
@@ -462,7 +488,7 @@ impl DaemonInstance {
 
         let config_dir = home_path.join(".hashtree");
         fs::create_dir_all(&config_dir).context("Failed to create config dir")?;
-        write_test_config(&config_dir, relay_url)?;
+        write_test_config_with_relays(&config_dir, relay_urls)?;
 
         let nsec = keys
             .secret_key()
@@ -583,7 +609,19 @@ fn create_test_directory() -> TempDir {
     dir
 }
 
-fn write_test_config(config_dir: &std::path::Path, relay_url: &str) -> Result<()> {
+fn write_test_config_with_relays(
+    config_dir: &std::path::Path,
+    relay_urls: &[String],
+) -> Result<()> {
+    let relays = if relay_urls.is_empty() {
+        "[]".to_string()
+    } else {
+        let quoted: Vec<String> = relay_urls
+            .iter()
+            .map(|url| format!("\"{}\"", url))
+            .collect();
+        format!("[{}]", quoted.join(", "))
+    };
     let config_content = format!(
         r#"
 [server]
@@ -593,7 +631,7 @@ enable_webrtc = true
 public_writes = true
 
 [nostr]
-relays = ["{relay_url}"]
+relays = {relays}
 
 [blossom]
 servers = []
@@ -691,6 +729,35 @@ fn wait_for_peer_data_channel(addr: &str, peer_pubkey: &str, timeout: Duration) 
     }
 
     anyhow::bail!("Timed out waiting for peer data channel on {}", addr);
+}
+
+fn has_peer_data_channel(addr: &str, peer_pubkey: &str) -> bool {
+    let url = format!("http://{}/api/peers", addr);
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+
+    let resp = match client.get(&url).send() {
+        Ok(resp) => resp,
+        Err(_) => return false,
+    };
+    let json = match resp.json::<serde_json::Value>() {
+        Ok(json) => json,
+        Err(_) => return false,
+    };
+    json.get("peers")
+        .and_then(|p| p.as_array())
+        .map(|peers| {
+            peers.iter().any(|peer| {
+                peer.get("pubkey").and_then(|p| p.as_str()) == Some(peer_pubkey)
+                    && peer.get("has_data_channel").and_then(|d| d.as_bool()) == Some(true)
+            })
+        })
+        .unwrap_or(false)
 }
 
 fn fetch_bytes(url: &str) -> Result<Vec<u8>> {
@@ -1053,6 +1120,89 @@ fn test_two_instances_connect_local_relay() -> Result<()> {
         }
         if Instant::now() >= deadline {
             anyhow::bail!("Timed out waiting for peer fetch to succeed");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "p2p"),
+    ignore = "requires p2p feature for WebRTC data channels"
+)]
+fn test_three_peers_chain_bootstrap_then_ac_connect_without_relay() -> Result<()> {
+    let htree_bin = find_htree_binary();
+    let mut relay_r1 = test_relay::TestRelay::new(19120);
+    let mut relay_r2 = test_relay::TestRelay::new(19121);
+    let relay_r1_url = relay_r1.url();
+    let relay_r2_url = relay_r2.url();
+
+    let keys_a = Keys::generate();
+    let keys_b = Keys::generate();
+    let keys_c = Keys::generate();
+
+    let pubkey_a = keys_a.public_key().to_hex();
+    let pubkey_b = keys_b.public_key().to_hex();
+    let pubkey_c = keys_c.public_key().to_hex();
+
+    let instance_a = DaemonInstance::new_with_relays(
+        18201,
+        &htree_bin,
+        &keys_a,
+        &[pubkey_b.clone()],
+        &[relay_r1_url.clone()],
+    )?;
+    let instance_b = DaemonInstance::new_with_relays(
+        18202,
+        &htree_bin,
+        &keys_b,
+        &[pubkey_a.clone(), pubkey_c.clone()],
+        &[relay_r1_url.clone(), relay_r2_url.clone()],
+    )?;
+    let instance_c = DaemonInstance::new_with_relays(
+        18203,
+        &htree_bin,
+        &keys_c,
+        &[pubkey_b.clone()],
+        &[relay_r2_url.clone()],
+    )?;
+
+    wait_for_peer_data_channel(&instance_a.addr, &pubkey_b, Duration::from_secs(12))?;
+    wait_for_peer_data_channel(&instance_b.addr, &pubkey_a, Duration::from_secs(12))?;
+    wait_for_peer_data_channel(&instance_b.addr, &pubkey_c, Duration::from_secs(12))?;
+    wait_for_peer_data_channel(&instance_c.addr, &pubkey_b, Duration::from_secs(12))?;
+
+    assert!(
+        !has_peer_data_channel(&instance_a.addr, &pubkey_c),
+        "A should not have direct channel to C before relay shutdown"
+    );
+    assert!(
+        !has_peer_data_channel(&instance_c.addr, &pubkey_a),
+        "C should not have direct channel to A before relay shutdown"
+    );
+
+    relay_r1.stop();
+    relay_r2.stop();
+
+    wait_for_peer_data_channel(&instance_a.addr, &pubkey_c, Duration::from_secs(20))?;
+    wait_for_peer_data_channel(&instance_c.addr, &pubkey_a, Duration::from_secs(20))?;
+
+    let expected = b"relayless-ac-mesh".to_vec();
+    let store = HashtreeStore::new(&instance_a.data_path)?;
+    let cid = store.put_blob(&expected)?;
+    let url = format!("{}/{}", instance_c.base_url(), cid);
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        if let Ok(bytes) = fetch_bytes(&url) {
+            if bytes == expected {
+                break;
+            }
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("Timed out waiting for C to fetch A's blob over mesh");
         }
         std::thread::sleep(Duration::from_millis(200));
     }
