@@ -1,10 +1,31 @@
-use hashtree_sim::{run_parameter_sweep, NodeStrategyProfile, PoolConfig, SimConfig};
+use hashtree_sim::{
+    run_parameter_sweep, NodeStrategyProfile, PoolConfig, RetrievalTimingMode, SimConfig,
+};
+use std::env;
 use std::time::Duration;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExploreMode {
+    Manual,
+    Auto,
+}
+
+#[derive(Debug, Clone)]
+struct Candidate {
+    label: String,
+    reference_pool: PoolConfig,
+    conservative_pool: PoolConfig,
+    aggressive_pool: PoolConfig,
+    weights: (u32, u32, u32),
+}
 
 #[derive(Debug)]
 struct Summary {
-    max_connections: usize,
-    satisfied_connections: usize,
+    label: String,
+    reference_pool: PoolConfig,
+    conservative_pool: PoolConfig,
+    aggressive_pool: PoolConfig,
+    weights: (u32, u32, u32),
     runs: usize,
     avg_success_rate: f64,
     avg_p95_ms: f64,
@@ -34,6 +55,76 @@ struct ScoredSummary {
     failed_runs: usize,
     gate_failures: Vec<&'static str>,
     score: f64,
+}
+
+fn parse_mode() -> ExploreMode {
+    for arg in env::args().skip(1) {
+        match arg.as_str() {
+            "--auto" | "--mode=auto" => return ExploreMode::Auto,
+            "--manual" | "--mode=manual" => return ExploreMode::Manual,
+            _ => {}
+        }
+    }
+    ExploreMode::Manual
+}
+
+fn build_manual_candidates() -> Vec<Candidate> {
+    let refs = [(16_usize, 8_usize), (18, 9), (20, 10), (24, 12)];
+    let weights = (35_u32, 35_u32, 30_u32);
+
+    refs.into_iter()
+        .map(|(max_connections, satisfied_connections)| Candidate {
+            label: format!("manual:{max_connections}/{satisfied_connections}"),
+            reference_pool: PoolConfig {
+                max_connections,
+                satisfied_connections,
+            },
+            conservative_pool: PoolConfig {
+                max_connections: 12,
+                satisfied_connections: 6,
+            },
+            aggressive_pool: PoolConfig {
+                max_connections: 24,
+                satisfied_connections: 12,
+            },
+            weights,
+        })
+        .collect()
+}
+
+fn build_auto_candidates() -> Vec<Candidate> {
+    let reference_pools = [(14_usize, 7_usize), (16, 8), (18, 9), (20, 10), (24, 12)];
+    let weight_sets = [(20_u32, 40_u32, 40_u32), (30, 35, 35), (40, 30, 30)];
+
+    let mut out = Vec::new();
+    for (max_connections, satisfied_connections) in reference_pools {
+        let conservative = PoolConfig {
+            max_connections: max_connections.saturating_sub(4).max(6),
+            satisfied_connections: satisfied_connections.saturating_sub(2).max(3),
+        };
+        let aggressive = PoolConfig {
+            max_connections: max_connections + 4,
+            satisfied_connections: satisfied_connections + 2,
+        };
+
+        for weights in weight_sets {
+            out.push(Candidate {
+                label: format!(
+                    "auto:{max_connections}/{satisfied_connections}:w{}-{}-{}",
+                    weights.0, weights.1, weights.2
+                ),
+                reference_pool: PoolConfig {
+                    max_connections,
+                    satisfied_connections,
+                },
+                conservative_pool: conservative.clone(),
+                aggressive_pool: aggressive.clone(),
+                weights,
+            });
+        }
+    }
+
+    out
 }
 
 fn ratio_score(summary: &Summary, profile: GateProfile) -> (bool, usize, Vec<&'static str>, f64) {
@@ -81,8 +172,11 @@ fn print_ranked_for_profile(profile: GateProfile, summaries: &[Summary]) {
             let (passes_gates, failed_runs, gate_failures, score) = ratio_score(summary, profile);
             ScoredSummary {
                 summary: Summary {
-                    max_connections: summary.max_connections,
-                    satisfied_connections: summary.satisfied_connections,
+                    label: summary.label.clone(),
+                    reference_pool: summary.reference_pool.clone(),
+                    conservative_pool: summary.conservative_pool.clone(),
+                    aggressive_pool: summary.aggressive_pool.clone(),
+                    weights: summary.weights,
                     runs: summary.runs,
                     avg_success_rate: summary.avg_success_rate,
                     avg_p95_ms: summary.avg_p95_ms,
@@ -119,7 +213,7 @@ fn print_ranked_for_profile(profile: GateProfile, summaries: &[Summary]) {
     });
 
     println!(
-        "\nProfile: {} (accepted first, higher score is better)\nmax/sat | runs | success | p95_ms | overhead | components | largest_share | tick_p95_us | peak_links | fail_runs | gates | score",
+        "\nProfile: {} (accepted first, higher score is better)\nlabel                | ref  | cns  | agg  | w(r/c/a) | runs | success | p95_ms | overhead | components | largest_share | tick_p95_us | peak_links | fail_runs | gates | score",
         profile.name
     );
     for s in scored {
@@ -129,9 +223,17 @@ fn print_ranked_for_profile(profile: GateProfile, summaries: &[Summary]) {
             format!("fail({})", s.gate_failures.join(","))
         };
         println!(
-            "{:>2}/{:<2} | {:>4} | {:>6.2}% | {:>7.1} | {:>8.3} | {:>10.2} | {:>13.3} | {:>11.1} | {:>10.1} | {:>9} | {:>20} | {:>8.5}",
-            s.summary.max_connections,
-            s.summary.satisfied_connections,
+            "{:<20} | {:>2}/{:<2} | {:>2}/{:<2} | {:>2}/{:<2} | {:>2}/{:>2}/{:<2} | {:>4} | {:>6.2}% | {:>7.1} | {:>8.3} | {:>10.2} | {:>13.3} | {:>11.1} | {:>10.1} | {:>9} | {:>20} | {:>8.5}",
+            s.summary.label,
+            s.summary.reference_pool.max_connections,
+            s.summary.reference_pool.satisfied_connections,
+            s.summary.conservative_pool.max_connections,
+            s.summary.conservative_pool.satisfied_connections,
+            s.summary.aggressive_pool.max_connections,
+            s.summary.aggressive_pool.satisfied_connections,
+            s.summary.weights.0,
+            s.summary.weights.1,
+            s.summary.weights.2,
             s.summary.runs,
             s.summary.avg_success_rate * 100.0,
             s.summary.avg_p95_ms,
@@ -149,22 +251,28 @@ fn print_ranked_for_profile(profile: GateProfile, summaries: &[Summary]) {
 
 #[tokio::main]
 async fn main() {
-    let seeds = [11_u64, 22, 33, 44];
-    let candidates = [(16_usize, 8_usize), (18, 9), (20, 10), (24, 12)];
+    let mode = parse_mode();
+    let candidates = match mode {
+        ExploreMode::Manual => build_manual_candidates(),
+        ExploreMode::Auto => build_auto_candidates(),
+    };
+    let seeds: Vec<u64> = match mode {
+        ExploreMode::Manual => vec![11, 22, 33, 44],
+        ExploreMode::Auto => vec![11, 22, 33],
+    };
 
     let mut configs = Vec::new();
-    for (max_connections, satisfied_connections) in candidates {
-        for seed in seeds {
-            let reference_pool = PoolConfig {
-                max_connections,
-                satisfied_connections,
-            };
+    let mut config_candidate_idx = Vec::new();
+
+    for (idx, candidate) in candidates.iter().enumerate() {
+        for seed in &seeds {
+            let (w_ref, w_cons, w_agg) = candidate.weights;
             configs.push(SimConfig {
                 node_count: 90,
                 duration: Duration::from_secs(3),
-                seed,
+                seed: *seed,
                 // Fallback-only when strategy_mix is empty; keep aligned with reference.
-                pool: reference_pool.clone(),
+                pool: candidate.reference_pool.clone(),
                 discovery_interval_ms: 100,
                 churn_rate: 0.02,
                 allow_rejoin: true,
@@ -173,36 +281,34 @@ async fn main() {
                 retrieval_payload_bytes: 2048,
                 retrieval_timeout_ms: 700,
                 max_events_retained: 10_000,
+                retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+                retrieval_poll_interval_ms: 5,
                 reference_strategy: Some("reference".to_string()),
                 strategy_mix: vec![
                     NodeStrategyProfile {
                         name: "reference".to_string(),
-                        weight: 35,
-                        pool: reference_pool,
+                        weight: w_ref,
+                        pool: candidate.reference_pool.clone(),
                     },
                     NodeStrategyProfile {
                         name: "conservative".to_string(),
-                        weight: 35,
-                        pool: PoolConfig {
-                            max_connections: 12,
-                            satisfied_connections: 6,
-                        },
+                        weight: w_cons,
+                        pool: candidate.conservative_pool.clone(),
                     },
                     NodeStrategyProfile {
                         name: "aggressive".to_string(),
-                        weight: 30,
-                        pool: PoolConfig {
-                            max_connections: 24,
-                            satisfied_connections: 12,
-                        },
+                        weight: w_agg,
+                        pool: candidate.aggressive_pool.clone(),
                     },
                 ],
             });
+            config_candidate_idx.push(idx);
         }
     }
 
     println!(
-        "Running {} configs ({} candidates x {} seeds)...",
+        "Mode: {:?} | Running {} configs ({} candidates x {} seeds)",
+        mode,
         configs.len(),
         candidates.len(),
         seeds.len()
@@ -210,8 +316,18 @@ async fn main() {
 
     let results = run_parameter_sweep(&configs).await;
 
+    let mut per_candidate_runs: Vec<Vec<&hashtree_sim::SweepResult>> =
+        vec![Vec::new(); candidates.len()];
+    for (result, candidate_idx) in results.iter().zip(config_candidate_idx.iter().copied()) {
+        per_candidate_runs[candidate_idx].push(result);
+    }
+
     let mut summaries: Vec<Summary> = Vec::new();
-    for (max_connections, satisfied_connections) in candidates {
+    for (candidate, runs) in candidates.iter().zip(per_candidate_runs.into_iter()) {
+        if runs.is_empty() {
+            continue;
+        }
+
         let mut success_sum = 0.0;
         let mut p95_sum = 0.0;
         let mut overhead_sum = 0.0;
@@ -222,16 +338,8 @@ async fn main() {
         let mut run_success_rates = Vec::new();
         let mut run_largest_component_shares = Vec::new();
         let mut run_component_counts = Vec::new();
-        let mut runs = 0_usize;
 
-        for result in &results {
-            if result.config.pool.max_connections != max_connections
-                || result.config.pool.satisfied_connections != satisfied_connections
-            {
-                continue;
-            }
-            runs += 1;
-
+        for result in &runs {
             let reference = result
                 .stats
                 .strategy_retrieval
@@ -246,37 +354,40 @@ async fn main() {
                 reference.data_plane_bytes as f64 / reference.payload_bytes as f64
             };
             overhead_sum += overhead;
-            component_sum += result.final_topology.component_count as f64;
-            tick_p95_sum += result.stats.local_resources.tick_p95_us as f64;
-            peak_links_sum += result.stats.local_resources.peak_connection_pairs as f64;
+
+            let component_count = result.final_topology.component_count as f64;
             let largest_share = if result.final_topology.node_count == 0 {
                 0.0
             } else {
                 result.final_topology.largest_component as f64
                     / result.final_topology.node_count as f64
             };
+
+            component_sum += component_count;
             largest_share_sum += largest_share;
+            tick_p95_sum += result.stats.local_resources.tick_p95_us as f64;
+            peak_links_sum += result.stats.local_resources.peak_connection_pairs as f64;
 
             run_success_rates.push(reference.success_rate);
             run_largest_component_shares.push(largest_share);
-            run_component_counts.push(result.final_topology.component_count as f64);
+            run_component_counts.push(component_count);
         }
 
-        if runs == 0 {
-            continue;
-        }
-
+        let n = runs.len() as f64;
         summaries.push(Summary {
-            max_connections,
-            satisfied_connections,
-            runs,
-            avg_success_rate: success_sum / runs as f64,
-            avg_p95_ms: p95_sum / runs as f64,
-            avg_overhead_ratio: overhead_sum / runs as f64,
-            avg_component_count: component_sum / runs as f64,
-            avg_largest_component_share: largest_share_sum / runs as f64,
-            avg_tick_p95_us: tick_p95_sum / runs as f64,
-            avg_peak_connection_pairs: peak_links_sum / runs as f64,
+            label: candidate.label.clone(),
+            reference_pool: candidate.reference_pool.clone(),
+            conservative_pool: candidate.conservative_pool.clone(),
+            aggressive_pool: candidate.aggressive_pool.clone(),
+            weights: candidate.weights,
+            runs: runs.len(),
+            avg_success_rate: success_sum / n,
+            avg_p95_ms: p95_sum / n,
+            avg_overhead_ratio: overhead_sum / n,
+            avg_component_count: component_sum / n,
+            avg_largest_component_share: largest_share_sum / n,
+            avg_tick_p95_us: tick_p95_sum / n,
+            avg_peak_connection_pairs: peak_links_sum / n,
             run_success_rates,
             run_largest_component_shares,
             run_component_counts,

@@ -53,7 +53,8 @@ pub mod types;
 pub use channel::{ChannelError, LatencyChannel, MockChannel, PeerChannel};
 pub use generic_store::{GenericStore, ProductionStore, SimStore};
 pub use mock::{
-    clear_channel_registry, MockConnectionFactory, MockDataChannel, MockRelay, MockRelayTransport,
+    clear_channel_registry, MockConnectionFactory, MockDataChannel, MockLatencyMode, MockRelay,
+    MockRelayTransport,
 };
 pub use nostr::NostrRelayTransport;
 pub use peer::{ForwardRequestCallback, Peer, PeerError};

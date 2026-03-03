@@ -166,6 +166,14 @@ impl RelayTransport for MockRelayTransport {
 // Mock Data Channel
 // ============================================================================
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MockLatencyMode {
+    /// Use real `tokio::time::sleep` for latency simulation.
+    RealSleep,
+    /// Avoid real-time sleeps for faster simulation loops.
+    YieldOnly,
+}
+
 /// Mock data channel using mpsc channels
 pub struct MockDataChannel {
     peer_id: u64,
@@ -174,6 +182,8 @@ pub struct MockDataChannel {
     open: AtomicBool,
     /// Simulated latency per message (ms)
     latency_ms: u64,
+    /// How latency is realized in async execution.
+    latency_mode: MockLatencyMode,
 }
 
 impl MockDataChannel {
@@ -184,6 +194,16 @@ impl MockDataChannel {
 
     /// Create a connected pair with simulated latency
     pub fn pair_with_latency(id_a: u64, id_b: u64, latency_ms: u64) -> (Self, Self) {
+        Self::pair_with_latency_mode(id_a, id_b, latency_ms, MockLatencyMode::RealSleep)
+    }
+
+    /// Create a connected pair with explicit latency mode.
+    pub fn pair_with_latency_mode(
+        id_a: u64,
+        id_b: u64,
+        latency_ms: u64,
+        latency_mode: MockLatencyMode,
+    ) -> (Self, Self) {
         let (tx_a, rx_a) = mpsc::channel(100);
         let (tx_b, rx_b) = mpsc::channel(100);
 
@@ -193,6 +213,7 @@ impl MockDataChannel {
             rx: tokio::sync::Mutex::new(rx_a),
             open: AtomicBool::new(true),
             latency_ms,
+            latency_mode,
         };
 
         let chan_b = Self {
@@ -201,6 +222,7 @@ impl MockDataChannel {
             rx: tokio::sync::Mutex::new(rx_b),
             open: AtomicBool::new(true),
             latency_ms,
+            latency_mode,
         };
 
         (chan_a, chan_b)
@@ -221,7 +243,14 @@ impl DataChannel for MockDataChannel {
 
         // Simulate latency
         if self.latency_ms > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(self.latency_ms)).await;
+            match self.latency_mode {
+                MockLatencyMode::RealSleep => {
+                    tokio::time::sleep(std::time::Duration::from_millis(self.latency_ms)).await;
+                }
+                MockLatencyMode::YieldOnly => {
+                    tokio::task::yield_now().await;
+                }
+            }
         }
 
         self.tx
@@ -264,6 +293,8 @@ pub struct MockConnectionFactory {
     our_node_id: u64,
     /// Simulated latency per link (ms)
     latency_ms: u64,
+    /// How link latency is realized.
+    latency_mode: MockLatencyMode,
     /// Pending outbound channels (we sent offer, waiting for answer)
     pending: RwLock<HashMap<String, Arc<MockDataChannel>>>,
 }
@@ -271,11 +302,21 @@ pub struct MockConnectionFactory {
 impl MockConnectionFactory {
     /// Create a new mock connection factory
     pub fn new(peer_id: String, latency_ms: u64) -> Self {
+        Self::new_with_latency_mode(peer_id, latency_ms, MockLatencyMode::RealSleep)
+    }
+
+    /// Create a mock connection factory with explicit latency mode.
+    pub fn new_with_latency_mode(
+        peer_id: String,
+        latency_ms: u64,
+        latency_mode: MockLatencyMode,
+    ) -> Self {
         let node_id = peer_id.parse().unwrap_or(0);
         Self {
             our_peer_id: peer_id,
             our_node_id: node_id,
             latency_ms,
+            latency_mode,
             pending: RwLock::new(HashMap::new()),
         }
     }
@@ -290,8 +331,12 @@ impl PeerConnectionFactory for MockConnectionFactory {
         let target_node_id: u64 = target_peer_id.parse().unwrap_or(0);
 
         // Create channel pair
-        let (our_chan, their_chan) =
-            MockDataChannel::pair_with_latency(self.our_node_id, target_node_id, self.latency_ms);
+        let (our_chan, their_chan) = MockDataChannel::pair_with_latency_mode(
+            self.our_node_id,
+            target_node_id,
+            self.latency_ms,
+            self.latency_mode,
+        );
         let our_chan = Arc::new(our_chan);
         let their_chan = Arc::new(their_chan);
 

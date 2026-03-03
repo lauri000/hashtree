@@ -12,8 +12,8 @@ use tokio::sync::RwLock;
 
 use hashtree_core::{HashTree, HashTreeConfig, MemoryStore, Store};
 use hashtree_webrtc::{
-    parse_message, DataMessage, GenericStore, MockConnectionFactory, MockRelay, MockRelayTransport,
-    PoolConfig, PoolSettings, RelayTransport, SignalingManager,
+    parse_message, DataMessage, GenericStore, MockConnectionFactory, MockLatencyMode, MockRelay,
+    MockRelayTransport, PoolConfig, PoolSettings, RelayTransport, SignalingManager,
 };
 
 /// Simulation configuration
@@ -43,10 +43,22 @@ pub struct SimConfig {
     pub retrieval_timeout_ms: u64,
     /// Maximum number of simulation events retained in memory.
     pub max_events_retained: usize,
+    /// Retrieval timeout mode. Virtual steps makes simulation independent of wall-clock sleeps.
+    pub retrieval_timing_mode: RetrievalTimingMode,
+    /// Simulated poll interval (ms) used when `retrieval_timing_mode` is `VirtualSteps`.
+    pub retrieval_poll_interval_ms: u64,
     /// Optional per-node strategy mix (if empty, `pool` is used for all nodes).
     pub strategy_mix: Vec<NodeStrategyProfile>,
     /// Strategy name to track as reference in reports.
     pub reference_strategy: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetrievalTimingMode {
+    /// Use wall clock (`tokio::time::timeout`) like production paths.
+    WallClock,
+    /// Use simulated step budget derived from timeout/poll interval (faster, deterministic).
+    VirtualSteps,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +83,8 @@ impl Default for SimConfig {
             retrieval_payload_bytes: 1024,
             retrieval_timeout_ms: 1500,
             max_events_retained: 20_000,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
         }
@@ -250,6 +264,22 @@ pub struct Simulation {
 }
 
 impl Simulation {
+    fn virtual_sleep_divisor(&self) -> u64 {
+        self.config
+            .retrieval_poll_interval_ms
+            .max(1)
+            .saturating_mul(10)
+            .max(1)
+    }
+
+    fn virtual_scaled_latency_ms(&self) -> u64 {
+        if self.config.network_latency_ms == 0 {
+            return 0;
+        }
+        let divisor = self.virtual_sleep_divisor();
+        (self.config.network_latency_ms / divisor).max(1)
+    }
+
     pub fn new(config: SimConfig) -> Self {
         let strategy_mix = if config.strategy_mix.is_empty() {
             vec![NodeStrategyProfile {
@@ -390,10 +420,20 @@ impl Simulation {
                 .create_transport(node_id.clone(), node_id.clone()),
         );
 
-        // Create connection factory for this node
-        let conn_factory = Arc::new(MockConnectionFactory::new(
+        // In virtual timing mode we still sleep, but with scaled-down latency so ordering
+        // effects remain while wall-clock runtime stays fast.
+        let (latency_ms, latency_mode) = match self.config.retrieval_timing_mode {
+            RetrievalTimingMode::WallClock => {
+                (self.config.network_latency_ms, MockLatencyMode::RealSleep)
+            }
+            RetrievalTimingMode::VirtualSteps => {
+                (self.virtual_scaled_latency_ms(), MockLatencyMode::RealSleep)
+            }
+        };
+        let conn_factory = Arc::new(MockConnectionFactory::new_with_latency_mode(
             node_id.clone(),
-            self.config.network_latency_ms,
+            latency_ms,
+            latency_mode,
         ));
 
         let selected_strategy = {
@@ -719,21 +759,52 @@ impl Simulation {
         time_ms: u64,
     ) -> Option<Vec<u8>> {
         let get_task = tokio::spawn(async move { store.get(&hash).await.ok().flatten() });
-        let started = Instant::now();
+        match self.config.retrieval_timing_mode {
+            RetrievalTimingMode::WallClock => {
+                let started = Instant::now();
+                loop {
+                    if get_task.is_finished() {
+                        return get_task.await.ok().flatten();
+                    }
 
-        loop {
-            if get_task.is_finished() {
-                return get_task.await.ok().flatten();
+                    if started.elapsed() >= timeout {
+                        get_task.abort();
+                        return None;
+                    }
+
+                    self.process_all_messages(time_ms + started.elapsed().as_millis() as u64)
+                        .await;
+                    tokio::task::yield_now().await;
+                }
             }
+            RetrievalTimingMode::VirtualSteps => {
+                let poll_interval_ms = self.config.retrieval_poll_interval_ms.max(1);
+                let timeout_ms = timeout.as_millis() as u64;
+                let max_polls = ((timeout_ms + poll_interval_ms - 1) / poll_interval_ms).max(1);
+                let step_sleep_ms = self.virtual_scaled_latency_ms();
 
-            if started.elapsed() >= timeout {
+                for poll in 0..max_polls {
+                    if get_task.is_finished() {
+                        return get_task.await.ok().flatten();
+                    }
+
+                    let simulated_now =
+                        time_ms.saturating_add(poll.saturating_mul(poll_interval_ms));
+                    self.process_all_messages(simulated_now).await;
+                    if step_sleep_ms > 0 {
+                        tokio::time::sleep(Duration::from_millis(step_sleep_ms)).await;
+                    } else {
+                        tokio::task::yield_now().await;
+                    }
+                }
+
+                if get_task.is_finished() {
+                    return get_task.await.ok().flatten();
+                }
+
                 get_task.abort();
-                return None;
+                None
             }
-
-            self.process_all_messages(time_ms + started.elapsed().as_millis() as u64)
-                .await;
-            tokio::task::yield_now().await;
         }
     }
 
@@ -1005,6 +1076,11 @@ impl Simulation {
                 "retrieval_probe_count": self.config.retrieval_probe_count,
                 "retrieval_payload_bytes": self.config.retrieval_payload_bytes,
                 "retrieval_timeout_ms": self.config.retrieval_timeout_ms,
+                "retrieval_timing_mode": match self.config.retrieval_timing_mode {
+                    RetrievalTimingMode::WallClock => "wall_clock",
+                    RetrievalTimingMode::VirtualSteps => "virtual_steps",
+                },
+                "retrieval_poll_interval_ms": self.config.retrieval_poll_interval_ms,
                 "max_events_retained": self.config.max_events_retained,
                 "reference_strategy": self.config.reference_strategy,
                 "strategy_mix": self.strategy_mix.iter().map(|s| {
@@ -1223,6 +1299,8 @@ mod tests {
             retrieval_payload_bytes: 1024,
             retrieval_timeout_ms: 1500,
             max_events_retained: 20_000,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
         };
@@ -1256,6 +1334,8 @@ mod tests {
             retrieval_payload_bytes: 1024,
             retrieval_timeout_ms: 1500,
             max_events_retained: 20_000,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
         };
@@ -1298,6 +1378,8 @@ mod tests {
             retrieval_payload_bytes: 1024,
             retrieval_timeout_ms: 1500,
             max_events_retained: 20_000,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
         };
@@ -1338,6 +1420,8 @@ mod tests {
             retrieval_payload_bytes: 512,
             retrieval_timeout_ms: 1200,
             max_events_retained: 20_000,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
         };
@@ -1379,6 +1463,8 @@ mod tests {
             retrieval_payload_bytes: 256,
             retrieval_timeout_ms: 1000,
             max_events_retained: 20_000,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
         };
@@ -1413,6 +1499,8 @@ mod tests {
             retrieval_payload_bytes: 256,
             retrieval_timeout_ms: 900,
             max_events_retained: 10_000,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
             strategy_mix: vec![
                 NodeStrategyProfile {
                     name: "reference".to_string(),
@@ -1472,6 +1560,8 @@ mod tests {
             retrieval_payload_bytes: 256,
             retrieval_timeout_ms: 700,
             max_events_retained: 8,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
         };
@@ -1505,6 +1595,8 @@ mod tests {
                 retrieval_payload_bytes: 128,
                 retrieval_timeout_ms: 1000,
                 max_events_retained: 20_000,
+                retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+                retrieval_poll_interval_ms: 5,
                 strategy_mix: Vec::new(),
                 reference_strategy: None,
             },
@@ -1524,6 +1616,8 @@ mod tests {
                 retrieval_payload_bytes: 128,
                 retrieval_timeout_ms: 1000,
                 max_events_retained: 20_000,
+                retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+                retrieval_poll_interval_ms: 5,
                 strategy_mix: Vec::new(),
                 reference_strategy: None,
             },
@@ -1533,6 +1627,50 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].config.seed, 1);
         assert_eq!(results[1].config.seed, 2);
+    }
+
+    #[tokio::test]
+    async fn test_webrtc_sim_virtual_timing_reflects_network_latency() {
+        let base = SimConfig {
+            node_count: 36,
+            duration: Duration::from_secs(3),
+            seed: 5,
+            pool: PoolConfig {
+                max_connections: 14,
+                satisfied_connections: 7,
+            },
+            discovery_interval_ms: 100,
+            churn_rate: 0.0,
+            allow_rejoin: false,
+            network_latency_ms: 0,
+            retrieval_probe_count: 16,
+            retrieval_payload_bytes: 1024,
+            retrieval_timeout_ms: 1200,
+            max_events_retained: 20_000,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
+            strategy_mix: Vec::new(),
+            reference_strategy: None,
+        };
+
+        let mut low_latency_cfg = base.clone();
+        low_latency_cfg.network_latency_ms = 15;
+        let low_sim = Simulation::new(low_latency_cfg);
+        low_sim.run().await;
+        let low_stats = low_sim.get_stats().await;
+
+        let mut high_latency_cfg = base;
+        high_latency_cfg.network_latency_ms = 300;
+        let high_sim = Simulation::new(high_latency_cfg);
+        high_sim.run().await;
+        let high_stats = high_sim.get_stats().await;
+
+        assert!(
+            high_stats.retrieval.p95_latency_ms > low_stats.retrieval.p95_latency_ms,
+            "virtual timing should still reflect higher configured latency (low p95={}ms, high p95={}ms)",
+            low_stats.retrieval.p95_latency_ms,
+            high_stats.retrieval.p95_latency_ms
+        );
     }
 
     #[tokio::test]
@@ -1555,6 +1693,8 @@ mod tests {
             retrieval_payload_bytes: 2048,
             retrieval_timeout_ms: 700,
             max_events_retained: 20_000,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
         };

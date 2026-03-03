@@ -120,6 +120,17 @@ The tuning example evaluates two gate profiles:
 - `exploration`: coarse filter for short/fast sweeps
 - `promotion`: stricter thresholds for candidates considered production-ready
 - both profiles hard-gate on per-run failures (not just averages)
+- use `--mode=manual` for fixed candidate lists and `--mode=auto` for generated strategy/weight grids
+
+### Timing Modes
+
+`SimConfig.retrieval_timing_mode` controls probe timeout behavior:
+- `WallClock`: uses real timeout progression
+- `VirtualSteps`: uses simulated step budgets for faster runs
+
+In `VirtualSteps`, latency simulation is still reflected via scaled-down real sleeps
+(derived from `network_latency_ms` and `retrieval_poll_interval_ms`), so ordering/latency
+effects remain visible while runtime is compressed.
 
 ## Network Connectivity
 
