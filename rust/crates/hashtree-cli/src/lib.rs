@@ -12,6 +12,8 @@ pub mod webrtc;
 pub mod webrtc_stub;
 #[cfg(not(feature = "p2p"))]
 pub use webrtc_stub as webrtc;
+#[cfg(feature = "p2p")]
+pub mod p2p_common;
 
 #[cfg(feature = "nostrdb")]
 pub mod nostrdb_integration;

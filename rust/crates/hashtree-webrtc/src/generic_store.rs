@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash as _, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -55,6 +55,70 @@ impl Default for RequestDispatchConfig {
             max_fanout: usize::MAX,
             hedge_interval_ms: 0,
         }
+    }
+}
+
+/// Normalize fanout config against current peer availability.
+pub fn normalize_dispatch_config(
+    dispatch: RequestDispatchConfig,
+    available_peers: usize,
+) -> RequestDispatchConfig {
+    let mut cfg = dispatch;
+    let cap = if cfg.max_fanout == 0 {
+        available_peers
+    } else {
+        cfg.max_fanout.min(available_peers)
+    };
+    cfg.max_fanout = cap;
+    cfg.initial_fanout = if cfg.initial_fanout == 0 {
+        1
+    } else {
+        cfg.initial_fanout.min(cap.max(1))
+    };
+    cfg.hedge_fanout = if cfg.hedge_fanout == 0 {
+        1
+    } else {
+        cfg.hedge_fanout.min(cap.max(1))
+    };
+    cfg
+}
+
+/// Build wave sizes for staged hedged dispatch.
+pub fn build_hedged_wave_plan(peer_count: usize, dispatch: RequestDispatchConfig) -> Vec<usize> {
+    if peer_count == 0 {
+        return Vec::new();
+    }
+    let cap = dispatch.max_fanout.min(peer_count);
+    if cap == 0 {
+        return Vec::new();
+    }
+
+    let mut plan = Vec::new();
+    let mut sent = 0usize;
+    let first = dispatch.initial_fanout.min(cap).max(1);
+    plan.push(first);
+    sent += first;
+
+    while sent < cap {
+        let next = dispatch.hedge_fanout.min(cap - sent).max(1);
+        plan.push(next);
+        sent += next;
+    }
+    plan
+}
+
+/// Keep selector membership aligned with currently connected peer IDs.
+pub async fn sync_selector_peers(selector: &RwLock<PeerSelector>, current_peer_ids: &[String]) {
+    let mut selector = selector.write().await;
+    let current: HashSet<&str> = current_peer_ids.iter().map(String::as_str).collect();
+    let known: Vec<String> = selector.all_stats().map(|s| s.peer_id.clone()).collect();
+    for peer_id in known {
+        if !current.contains(peer_id.as_str()) {
+            selector.remove_peer(&peer_id);
+        }
+    }
+    for peer_id in current_peer_ids {
+        selector.add_peer(peer_id.clone());
     }
 }
 
@@ -222,27 +286,6 @@ where
         &self.signaling
     }
 
-    fn normalized_dispatch(&self, available_peers: usize) -> RequestDispatchConfig {
-        let mut cfg = self.routing.dispatch;
-        let cap = if cfg.max_fanout == 0 {
-            available_peers
-        } else {
-            cfg.max_fanout.min(available_peers)
-        };
-        cfg.max_fanout = cap;
-        cfg.initial_fanout = if cfg.initial_fanout == 0 {
-            1
-        } else {
-            cfg.initial_fanout.min(cap.max(1))
-        };
-        cfg.hedge_fanout = if cfg.hedge_fanout == 0 {
-            1
-        } else {
-            cfg.hedge_fanout.min(cap.max(1))
-        };
-        cfg
-    }
-
     fn response_behavior(&self) -> ResponseBehaviorConfig {
         self.routing.response_behavior.normalized()
     }
@@ -274,44 +317,6 @@ where
             return false;
         }
         self.deterministic_actor_draw(hash, 0xC0_C0_C0_C0_C0_C0_C0_C0) < p
-    }
-
-    fn hedged_wave_plan(peer_count: usize, dispatch: RequestDispatchConfig) -> Vec<usize> {
-        if peer_count == 0 {
-            return Vec::new();
-        }
-        let cap = dispatch.max_fanout.min(peer_count);
-        if cap == 0 {
-            return Vec::new();
-        }
-
-        let mut plan = Vec::new();
-        let mut sent = 0usize;
-        let first = dispatch.initial_fanout.min(cap).max(1);
-        plan.push(first);
-        sent += first;
-
-        while sent < cap {
-            let next = dispatch.hedge_fanout.min(cap - sent).max(1);
-            plan.push(next);
-            sent += next;
-        }
-        plan
-    }
-
-    async fn sync_selector(&self, current_peer_ids: &[String]) {
-        let mut selector = self.peer_selector.write().await;
-        let current: std::collections::HashSet<&str> =
-            current_peer_ids.iter().map(String::as_str).collect();
-        let known: Vec<String> = selector.all_stats().map(|s| s.peer_id.clone()).collect();
-        for peer_id in known {
-            if !current.contains(peer_id.as_str()) {
-                selector.remove_peer(&peer_id);
-            }
-        }
-        for peer_id in current_peer_ids {
-            selector.add_peer(peer_id.clone());
-        }
     }
 
     async fn send_request_to_peer(&self, peer_id: &str, hash: &Hash) -> bool {
@@ -367,7 +372,7 @@ where
         if current_peer_ids.is_empty() {
             return None;
         }
-        self.sync_selector(&current_peer_ids).await;
+        sync_selector_peers(&self.peer_selector, &current_peer_ids).await;
         let current_set: std::collections::HashSet<&str> =
             current_peer_ids.iter().map(String::as_str).collect();
         let mut ordered_peer_ids = self.peer_selector.write().await.select_peers();
@@ -377,8 +382,8 @@ where
             ordered_peer_ids.sort();
         }
 
-        let dispatch = self.normalized_dispatch(ordered_peer_ids.len());
-        let wave_plan = Self::hedged_wave_plan(ordered_peer_ids.len(), dispatch);
+        let dispatch = normalize_dispatch_config(self.routing.dispatch, ordered_peer_ids.len());
+        let wave_plan = build_hedged_wave_plan(ordered_peer_ids.len(), dispatch);
         if wave_plan.is_empty() {
             return None;
         }
@@ -600,13 +605,13 @@ mod tests {
 
     #[test]
     fn test_hedged_wave_plan_flood_all() {
-        let plan = TestStore::hedged_wave_plan(7, RequestDispatchConfig::default());
+        let plan = build_hedged_wave_plan(7, RequestDispatchConfig::default());
         assert_eq!(plan, vec![7]);
     }
 
     #[test]
     fn test_hedged_wave_plan_staged() {
-        let plan = TestStore::hedged_wave_plan(
+        let plan = build_hedged_wave_plan(
             10,
             RequestDispatchConfig {
                 initial_fanout: 2,

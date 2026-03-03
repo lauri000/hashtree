@@ -16,9 +16,7 @@ use crate::socialgraph;
 use crate::storage::HashtreeStore;
 
 #[cfg(feature = "p2p")]
-use crate::webrtc::{
-    ContentStore, PeerClassifier, PeerPool, WebRTCConfig, WebRTCManager, WebRTCState,
-};
+use crate::webrtc::{ContentStore, WebRTCManager, WebRTCState};
 
 pub struct EmbeddedDaemonOptions {
     pub config: Config,
@@ -144,35 +142,9 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     #[cfg(feature = "p2p")]
     let webrtc_state: Option<Arc<WebRTCState>> = {
         let (webrtc_state, webrtc_handle) = if config.server.enable_webrtc {
-            let webrtc_config = WebRTCConfig {
-                relays: config.nostr.relays.clone(),
-                ..Default::default()
-            };
-
-            let contacts_file = opts.data_dir.join("contacts.json");
-            let classifier_ndb = Arc::clone(&ndb);
-            let peer_classifier: PeerClassifier = Arc::new(move |pubkey_hex: &str| {
-                if contacts_file.exists() {
-                    if let Ok(data) = std::fs::read_to_string(&contacts_file) {
-                        if let Ok(contacts) = serde_json::from_str::<Vec<String>>(&data) {
-                            if contacts.contains(&pubkey_hex.to_string()) {
-                                return PeerPool::Follows;
-                            }
-                        }
-                    }
-                }
-                if let Ok(pk_bytes) = hex::decode(pubkey_hex) {
-                    if pk_bytes.len() == 32 {
-                        let pk: [u8; 32] = pk_bytes.try_into().unwrap();
-                        if let Some(dist) = socialgraph::get_follow_distance(&classifier_ndb, &pk) {
-                            if dist <= 2 {
-                                return PeerPool::Follows;
-                            }
-                        }
-                    }
-                }
-                PeerPool::Other
-            });
+            let webrtc_config = crate::p2p_common::default_webrtc_config(&config.nostr.relays);
+            let peer_classifier =
+                crate::p2p_common::build_peer_classifier(opts.data_dir.clone(), Arc::clone(&ndb));
 
             let mut manager = WebRTCManager::new_with_store_and_classifier(
                 keys.clone(),

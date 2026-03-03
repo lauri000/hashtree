@@ -11,7 +11,9 @@
 
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
-use hashtree_webrtc::PeerSelector;
+use hashtree_webrtc::{
+    build_hedged_wave_plan, normalize_dispatch_config, sync_selector_peers, PeerSelector,
+};
 use nostr::{
     nips::nip44, Alphabet, ClientMessage, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey,
     RelayMessage, SingleLetterTag, Tag,
@@ -216,65 +218,6 @@ impl WebRTCState {
         }
     }
 
-    fn normalized_dispatch(&self, available_peers: usize) -> RequestDispatchConfig {
-        let mut cfg = self.request_dispatch;
-        let cap = if cfg.max_fanout == 0 {
-            0
-        } else {
-            cfg.max_fanout.min(available_peers)
-        };
-        cfg.max_fanout = cap;
-        cfg.initial_fanout = if cfg.initial_fanout == 0 {
-            0
-        } else {
-            cfg.initial_fanout.min(cap.max(1))
-        };
-        cfg.hedge_fanout = if cfg.hedge_fanout == 0 {
-            0
-        } else {
-            cfg.hedge_fanout.min(cap.max(1))
-        };
-        cfg
-    }
-
-    fn hedged_wave_plan(peer_count: usize, dispatch: RequestDispatchConfig) -> Vec<usize> {
-        if peer_count == 0 {
-            return Vec::new();
-        }
-        let cap = dispatch.max_fanout.min(peer_count);
-        if cap == 0 {
-            return Vec::new();
-        }
-
-        let mut plan = Vec::new();
-        let mut sent = 0usize;
-        let first = dispatch.initial_fanout.min(cap).max(1);
-        plan.push(first);
-        sent += first;
-
-        while sent < cap {
-            let next = dispatch.hedge_fanout.min(cap - sent).max(1);
-            plan.push(next);
-            sent += next;
-        }
-        plan
-    }
-
-    async fn sync_selector(&self, current_peer_ids: &[String]) {
-        let mut selector = self.peer_selector.write().await;
-        let current: std::collections::HashSet<&str> =
-            current_peer_ids.iter().map(String::as_str).collect();
-        let known: Vec<String> = selector.all_stats().map(|s| s.peer_id.clone()).collect();
-        for peer_id in known {
-            if !current.contains(peer_id.as_str()) {
-                selector.remove_peer(&peer_id);
-            }
-        }
-        for peer_id in current_peer_ids {
-            selector.add_peer(peer_id.clone());
-        }
-    }
-
     /// Get current bandwidth stats (bytes sent/received)
     pub fn get_bandwidth(&self) -> (u64, u64) {
         (
@@ -407,7 +350,7 @@ impl WebRTCState {
             .iter()
             .map(|(peer_id, _, _)| peer_id.clone())
             .collect();
-        self.sync_selector(&connected_peer_ids).await;
+        sync_selector_peers(&self.peer_selector, &connected_peer_ids).await;
 
         let ordered_peer_ids = self.peer_selector.write().await.select_peers();
         let mut by_peer: HashMap<
@@ -435,8 +378,8 @@ impl WebRTCState {
             ordered_peers.push((peer_id, pending, dc));
         }
 
-        let dispatch = self.normalized_dispatch(ordered_peers.len());
-        let wave_plan = Self::hedged_wave_plan(ordered_peers.len(), dispatch);
+        let dispatch = normalize_dispatch_config(self.request_dispatch, ordered_peers.len());
+        let wave_plan = build_hedged_wave_plan(ordered_peers.len(), dispatch);
         if wave_plan.is_empty() {
             return None;
         }
@@ -2103,7 +2046,6 @@ pub struct PeerState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::webrtc::types::SelectionStrategy;
     use nostr::{EventBuilder, Keys, Tag};
 
     #[test]
@@ -2178,17 +2120,15 @@ mod tests {
 
     #[test]
     fn test_request_dispatch_normalization_caps_to_available_peers() {
-        let state = WebRTCState::new_with_routing(
-            SelectionStrategy::Weighted,
-            true,
+        let normalized = normalize_dispatch_config(
             RequestDispatchConfig {
                 initial_fanout: 8,
                 hedge_fanout: 6,
                 max_fanout: 5,
                 hedge_interval_ms: 120,
             },
+            3,
         );
-        let normalized = state.normalized_dispatch(3);
         assert_eq!(normalized.max_fanout, 3);
         assert_eq!(normalized.initial_fanout, 3);
         assert_eq!(normalized.hedge_fanout, 3);
@@ -2196,7 +2136,7 @@ mod tests {
 
     #[test]
     fn test_hedged_wave_plan_matches_dispatch_policy() {
-        let plan = WebRTCState::hedged_wave_plan(
+        let plan = build_hedged_wave_plan(
             7,
             RequestDispatchConfig {
                 initial_fanout: 2,
