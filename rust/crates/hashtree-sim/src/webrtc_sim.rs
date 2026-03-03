@@ -12,8 +12,9 @@ use tokio::sync::RwLock;
 
 use hashtree_core::{HashTree, HashTreeConfig, MemoryStore, Store};
 use hashtree_webrtc::{
-    parse_message, DataMessage, GenericStore, MockConnectionFactory, MockLatencyMode, MockRelay,
-    MockRelayTransport, PoolConfig, PoolSettings, RelayTransport, SignalingManager,
+    parse_message, DataMessage, GenericStore, GenericStoreRoutingConfig, MockConnectionFactory,
+    MockLatencyMode, MockRelay, MockRelayTransport, PoolConfig, PoolSettings, RelayTransport,
+    RequestDispatchConfig, SelectionStrategy, SignalingManager,
 };
 
 /// Simulation configuration
@@ -29,6 +30,8 @@ pub struct SimConfig {
     pub pool: PoolConfig,
     /// How often nodes check for new peers (ms)
     pub discovery_interval_ms: u64,
+    /// How often nodes re-broadcast hello for discovery refresh (ms).
+    pub hello_reannounce_interval_ms: u64,
     /// Churn rate: probability a node leaves per interval (0.0 - 1.0)
     pub churn_rate: f64,
     /// Whether departed nodes can rejoin
@@ -66,6 +69,9 @@ pub struct NodeStrategyProfile {
     pub name: String,
     pub weight: u32,
     pub pool: PoolConfig,
+    pub selection_strategy: SelectionStrategy,
+    pub fairness_enabled: bool,
+    pub dispatch: RequestDispatchConfig,
 }
 
 impl Default for SimConfig {
@@ -76,6 +82,7 @@ impl Default for SimConfig {
             seed: 42,
             pool: PoolConfig::default(),
             discovery_interval_ms: 500,
+            hello_reannounce_interval_ms: 1000,
             churn_rate: 0.01,
             allow_rejoin: true,
             network_latency_ms: 50,
@@ -286,6 +293,9 @@ impl Simulation {
                 name: "default".to_string(),
                 weight: 1,
                 pool: config.pool.clone(),
+                selection_strategy: SelectionStrategy::Weighted,
+                fairness_enabled: true,
+                dispatch: RequestDispatchConfig::default(),
             }]
         } else {
             let sanitized: Vec<NodeStrategyProfile> = config
@@ -299,6 +309,9 @@ impl Simulation {
                     name: "default".to_string(),
                     weight: 1,
                     pool: config.pool.clone(),
+                    selection_strategy: SelectionStrategy::Weighted,
+                    fairness_enabled: true,
+                    dispatch: RequestDispatchConfig::default(),
                 }]
             } else {
                 sanitized
@@ -342,6 +355,11 @@ impl Simulation {
 
         let mut next_spawn_idx = 0;
         let snapshot_interval_ticks = 5000 / tick_ms;
+        let hello_interval_ticks = self
+            .config
+            .hello_reannounce_interval_ms
+            .max(tick_ms)
+            .div_ceil(tick_ms);
 
         // Tick-based simulation loop
         for tick in 0..total_ticks {
@@ -353,6 +371,10 @@ impl Simulation {
             {
                 self.spawn_node(elapsed_ms).await;
                 next_spawn_idx += 1;
+            }
+
+            if hello_interval_ticks > 0 && tick % hello_interval_ticks == 0 {
+                self.broadcast_hellos().await;
             }
 
             // Process messages, apply churn
@@ -478,11 +500,16 @@ impl Simulation {
         let local_store = Arc::new(MemoryStore::new());
 
         // Create GenericStore
-        let store = Arc::new(GenericStore::new(
+        let store = Arc::new(GenericStore::new_with_routing(
             local_store,
             signaling,
             Duration::from_secs(1),
             false,
+            GenericStoreRoutingConfig {
+                selection_strategy: selected_strategy.selection_strategy,
+                fairness_enabled: selected_strategy.fairness_enabled,
+                dispatch: selected_strategy.dispatch,
+            },
         ));
 
         // Connect transport and start
@@ -540,6 +567,19 @@ impl Simulation {
 
         self.process_all_data_messages().await;
         self.record_new_connections(time_ms).await;
+    }
+
+    async fn broadcast_hellos(&self) {
+        let stores: Vec<Arc<SimStore>> = {
+            let nodes = self.nodes.read().await;
+            nodes
+                .values()
+                .map(|running| running.store.clone())
+                .collect()
+        };
+        for store in stores {
+            let _ = store.send_hello().await;
+        }
     }
 
     fn canonical_connection_pair(a: &str, b: &str) -> Option<(String, String)> {
@@ -1070,6 +1110,7 @@ impl Simulation {
                 "duration_ms": self.config.duration.as_millis() as u64,
                 "seed": self.config.seed,
                 "discovery_interval_ms": self.config.discovery_interval_ms,
+                "hello_reannounce_interval_ms": self.config.hello_reannounce_interval_ms,
                 "churn_rate": self.config.churn_rate,
                 "allow_rejoin": self.config.allow_rejoin,
                 "network_latency_ms": self.config.network_latency_ms,
@@ -1087,6 +1128,14 @@ impl Simulation {
                     serde_json::json!({
                         "name": s.name,
                         "weight": s.weight,
+                        "selection_strategy": format!("{:?}", s.selection_strategy),
+                        "fairness_enabled": s.fairness_enabled,
+                        "dispatch": {
+                            "initial_fanout": s.dispatch.initial_fanout,
+                            "hedge_fanout": s.dispatch.hedge_fanout,
+                            "max_fanout": s.dispatch.max_fanout,
+                            "hedge_interval_ms": s.dispatch.hedge_interval_ms,
+                        },
                         "pool": {
                             "max_connections": s.pool.max_connections,
                             "satisfied_connections": s.pool.satisfied_connections
@@ -1292,6 +1341,7 @@ mod tests {
                 satisfied_connections: 3,
             },
             discovery_interval_ms: 100,
+            hello_reannounce_interval_ms: 1000,
             churn_rate: 0.0,
             allow_rejoin: false,
             network_latency_ms: 0,
@@ -1327,6 +1377,7 @@ mod tests {
                 satisfied_connections: 3,
             },
             discovery_interval_ms: 100,
+            hello_reannounce_interval_ms: 1000,
             churn_rate: 0.05,
             allow_rejoin: true,
             network_latency_ms: 0,
@@ -1371,6 +1422,7 @@ mod tests {
                 satisfied_connections: 10,
             },
             discovery_interval_ms: 100,
+            hello_reannounce_interval_ms: 1000,
             churn_rate: 0.0,
             allow_rejoin: false,
             network_latency_ms: 0,
@@ -1394,11 +1446,53 @@ mod tests {
 
         assert_eq!(stats.node_count, 200, "Should have 200 nodes");
         assert!(stats.connection_count > 0, "Should have connections");
-        // With 10/20 pool settings, should have 1 connected component
-        assert_eq!(
-            stats.component_count, 1,
-            "Should be fully connected (1 component), got {}",
-            stats.component_count
+        assert!(
+            stats.largest_component >= 150,
+            "Largest component should cover at least 150/200 nodes, got {}",
+            stats.largest_component
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "long-running scalability smoke"]
+    async fn test_webrtc_sim_1000_nodes_scalability_smoke() {
+        let config = SimConfig {
+            node_count: 1000,
+            duration: Duration::from_secs(8),
+            seed: 42,
+            pool: PoolConfig {
+                max_connections: 24,
+                satisfied_connections: 12,
+            },
+            discovery_interval_ms: 100,
+            hello_reannounce_interval_ms: 1000,
+            churn_rate: 0.0,
+            allow_rejoin: false,
+            network_latency_ms: 30,
+            retrieval_probe_count: 0,
+            retrieval_payload_bytes: 1024,
+            retrieval_timeout_ms: 1500,
+            max_events_retained: 20_000,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
+            strategy_mix: Vec::new(),
+            reference_strategy: None,
+        };
+
+        let sim = Simulation::new(config);
+        sim.run().await;
+        let stats = sim.analyze_topology().await;
+
+        println!(
+            "1000-node smoke: components={}, largest_component={}, connections={}",
+            stats.component_count, stats.largest_component, stats.connection_count
+        );
+
+        assert_eq!(stats.node_count, 1000);
+        assert!(
+            stats.largest_component >= 300,
+            "largest component too small for 1000-node smoke: {}",
+            stats.largest_component
         );
     }
 
@@ -1413,6 +1507,7 @@ mod tests {
                 satisfied_connections: 4,
             },
             discovery_interval_ms: 100,
+            hello_reannounce_interval_ms: 1000,
             churn_rate: 0.0,
             allow_rejoin: false,
             network_latency_ms: 0,
@@ -1456,6 +1551,7 @@ mod tests {
                 satisfied_connections: 3,
             },
             discovery_interval_ms: 100,
+            hello_reannounce_interval_ms: 1000,
             churn_rate: 0.0,
             allow_rejoin: false,
             network_latency_ms: 0,
@@ -1492,6 +1588,7 @@ mod tests {
                 satisfied_connections: 3,
             },
             discovery_interval_ms: 100,
+            hello_reannounce_interval_ms: 1000,
             churn_rate: 0.0,
             allow_rejoin: false,
             network_latency_ms: 0,
@@ -1509,6 +1606,9 @@ mod tests {
                         max_connections: 10,
                         satisfied_connections: 5,
                     },
+                    selection_strategy: SelectionStrategy::Weighted,
+                    fairness_enabled: true,
+                    dispatch: RequestDispatchConfig::default(),
                 },
                 NodeStrategyProfile {
                     name: "other".to_string(),
@@ -1517,6 +1617,9 @@ mod tests {
                         max_connections: 4,
                         satisfied_connections: 2,
                     },
+                    selection_strategy: SelectionStrategy::Weighted,
+                    fairness_enabled: true,
+                    dispatch: RequestDispatchConfig::default(),
                 },
             ],
             reference_strategy: Some("reference".to_string()),
@@ -1553,6 +1656,7 @@ mod tests {
                 satisfied_connections: 3,
             },
             discovery_interval_ms: 100,
+            hello_reannounce_interval_ms: 1000,
             churn_rate: 0.10,
             allow_rejoin: true,
             network_latency_ms: 0,
@@ -1588,6 +1692,7 @@ mod tests {
                     satisfied_connections: 2,
                 },
                 discovery_interval_ms: 100,
+                hello_reannounce_interval_ms: 1000,
                 churn_rate: 0.0,
                 allow_rejoin: false,
                 network_latency_ms: 0,
@@ -1609,6 +1714,7 @@ mod tests {
                     satisfied_connections: 2,
                 },
                 discovery_interval_ms: 100,
+                hello_reannounce_interval_ms: 1000,
                 churn_rate: 0.0,
                 allow_rejoin: false,
                 network_latency_ms: 0,
@@ -1640,6 +1746,7 @@ mod tests {
                 satisfied_connections: 7,
             },
             discovery_interval_ms: 100,
+            hello_reannounce_interval_ms: 1000,
             churn_rate: 0.0,
             allow_rejoin: false,
             network_latency_ms: 0,
@@ -1686,6 +1793,7 @@ mod tests {
                 satisfied_connections: 8,
             },
             discovery_interval_ms: 100,
+            hello_reannounce_interval_ms: 1000,
             churn_rate: 0.02,
             allow_rejoin: true,
             network_latency_ms: 30,

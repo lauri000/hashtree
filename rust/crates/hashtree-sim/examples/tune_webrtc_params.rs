@@ -1,5 +1,6 @@
 use hashtree_sim::{
-    run_parameter_sweep, NodeStrategyProfile, PoolConfig, RetrievalTimingMode, SimConfig,
+    run_parameter_sweep, NodeStrategyProfile, PoolConfig, RequestDispatchConfig,
+    RetrievalTimingMode, SelectionStrategy, SimConfig,
 };
 use std::env;
 use std::time::Duration;
@@ -17,6 +18,16 @@ struct Candidate {
     conservative_pool: PoolConfig,
     aggressive_pool: PoolConfig,
     weights: (u32, u32, u32),
+    reference_strategy: StrategyRuntime,
+    conservative_strategy: StrategyRuntime,
+    aggressive_strategy: StrategyRuntime,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StrategyRuntime {
+    selection_strategy: SelectionStrategy,
+    fairness_enabled: bool,
+    dispatch: RequestDispatchConfig,
 }
 
 #[derive(Debug)]
@@ -68,33 +79,99 @@ fn parse_mode() -> ExploreMode {
     ExploreMode::Manual
 }
 
+fn flood_runtime(selection_strategy: SelectionStrategy) -> StrategyRuntime {
+    StrategyRuntime {
+        selection_strategy,
+        fairness_enabled: true,
+        dispatch: RequestDispatchConfig::default(),
+    }
+}
+
+fn hedged_runtime(
+    selection_strategy: SelectionStrategy,
+    initial_fanout: usize,
+    hedge_fanout: usize,
+    max_fanout: usize,
+    hedge_interval_ms: u64,
+) -> StrategyRuntime {
+    StrategyRuntime {
+        selection_strategy,
+        fairness_enabled: true,
+        dispatch: RequestDispatchConfig {
+            initial_fanout,
+            hedge_fanout,
+            max_fanout,
+            hedge_interval_ms,
+        },
+    }
+}
+
+fn approach_profiles() -> Vec<(
+    &'static str,
+    StrategyRuntime,
+    StrategyRuntime,
+    StrategyRuntime,
+)> {
+    vec![
+        (
+            "flood_weighted",
+            flood_runtime(SelectionStrategy::Weighted),
+            flood_runtime(SelectionStrategy::HighestSuccessRate),
+            flood_runtime(SelectionStrategy::Weighted),
+        ),
+        (
+            "hedged_utility",
+            hedged_runtime(SelectionStrategy::UtilityUcb, 2, 2, usize::MAX, 5),
+            hedged_runtime(SelectionStrategy::HighestSuccessRate, 1, 1, usize::MAX, 8),
+            hedged_runtime(SelectionStrategy::Weighted, 3, 3, usize::MAX, 4),
+        ),
+        (
+            "hedged_latency",
+            hedged_runtime(SelectionStrategy::LowestLatency, 2, 2, usize::MAX, 5),
+            hedged_runtime(SelectionStrategy::HighestSuccessRate, 1, 1, usize::MAX, 8),
+            hedged_runtime(SelectionStrategy::Weighted, 3, 2, usize::MAX, 5),
+        ),
+    ]
+}
+
 fn build_manual_candidates() -> Vec<Candidate> {
     let refs = [(16_usize, 8_usize), (18, 9), (20, 10), (24, 12)];
     let weights = (35_u32, 35_u32, 30_u32);
+    let approaches = approach_profiles();
 
-    refs.into_iter()
-        .map(|(max_connections, satisfied_connections)| Candidate {
-            label: format!("manual:{max_connections}/{satisfied_connections}"),
-            reference_pool: PoolConfig {
-                max_connections,
-                satisfied_connections,
-            },
-            conservative_pool: PoolConfig {
-                max_connections: 12,
-                satisfied_connections: 6,
-            },
-            aggressive_pool: PoolConfig {
-                max_connections: 24,
-                satisfied_connections: 12,
-            },
-            weights,
-        })
-        .collect()
+    let mut out = Vec::new();
+    for (max_connections, satisfied_connections) in refs {
+        for (approach, reference_strategy, conservative_strategy, aggressive_strategy) in
+            &approaches
+        {
+            out.push(Candidate {
+                label: format!("manual:{max_connections}/{satisfied_connections}:{approach}"),
+                reference_pool: PoolConfig {
+                    max_connections,
+                    satisfied_connections,
+                },
+                conservative_pool: PoolConfig {
+                    max_connections: 12,
+                    satisfied_connections: 6,
+                },
+                aggressive_pool: PoolConfig {
+                    max_connections: 24,
+                    satisfied_connections: 12,
+                },
+                weights,
+                reference_strategy: *reference_strategy,
+                conservative_strategy: *conservative_strategy,
+                aggressive_strategy: *aggressive_strategy,
+            });
+        }
+    }
+    out
 }
 
 fn build_auto_candidates() -> Vec<Candidate> {
     let reference_pools = [(14_usize, 7_usize), (16, 8), (18, 9), (20, 10), (24, 12)];
     let weight_sets = [(20_u32, 40_u32, 40_u32), (30, 35, 35), (40, 30, 30)];
+    let approaches = approach_profiles();
 
     let mut out = Vec::new();
     for (max_connections, satisfied_connections) in reference_pools {
@@ -108,19 +185,26 @@ fn build_auto_candidates() -> Vec<Candidate> {
         };
 
         for weights in weight_sets {
-            out.push(Candidate {
-                label: format!(
-                    "auto:{max_connections}/{satisfied_connections}:w{}-{}-{}",
-                    weights.0, weights.1, weights.2
-                ),
-                reference_pool: PoolConfig {
-                    max_connections,
-                    satisfied_connections,
-                },
-                conservative_pool: conservative.clone(),
-                aggressive_pool: aggressive.clone(),
-                weights,
-            });
+            for (approach, reference_strategy, conservative_strategy, aggressive_strategy) in
+                approaches.iter().take(2)
+            {
+                out.push(Candidate {
+                    label: format!(
+                        "auto:{max_connections}/{satisfied_connections}:w{}-{}-{}:{approach}",
+                        weights.0, weights.1, weights.2
+                    ),
+                    reference_pool: PoolConfig {
+                        max_connections,
+                        satisfied_connections,
+                    },
+                    conservative_pool: conservative,
+                    aggressive_pool: aggressive,
+                    weights,
+                    reference_strategy: *reference_strategy,
+                    conservative_strategy: *conservative_strategy,
+                    aggressive_strategy: *aggressive_strategy,
+                });
+            }
         }
     }
 
@@ -269,11 +353,12 @@ async fn main() {
             let (w_ref, w_cons, w_agg) = candidate.weights;
             configs.push(SimConfig {
                 node_count: 90,
-                duration: Duration::from_secs(3),
+                duration: Duration::from_secs(5),
                 seed: *seed,
                 // Fallback-only when strategy_mix is empty; keep aligned with reference.
                 pool: candidate.reference_pool.clone(),
                 discovery_interval_ms: 100,
+                hello_reannounce_interval_ms: 400,
                 churn_rate: 0.02,
                 allow_rejoin: true,
                 network_latency_ms: 30,
@@ -289,16 +374,25 @@ async fn main() {
                         name: "reference".to_string(),
                         weight: w_ref,
                         pool: candidate.reference_pool.clone(),
+                        selection_strategy: candidate.reference_strategy.selection_strategy,
+                        fairness_enabled: candidate.reference_strategy.fairness_enabled,
+                        dispatch: candidate.reference_strategy.dispatch,
                     },
                     NodeStrategyProfile {
                         name: "conservative".to_string(),
                         weight: w_cons,
                         pool: candidate.conservative_pool.clone(),
+                        selection_strategy: candidate.conservative_strategy.selection_strategy,
+                        fairness_enabled: candidate.conservative_strategy.fairness_enabled,
+                        dispatch: candidate.conservative_strategy.dispatch,
                     },
                     NodeStrategyProfile {
                         name: "aggressive".to_string(),
                         weight: w_agg,
                         pool: candidate.aggressive_pool.clone(),
+                        selection_strategy: candidate.aggressive_strategy.selection_strategy,
+                        fairness_enabled: candidate.aggressive_strategy.fairness_enabled,
+                        dispatch: candidate.aggressive_strategy.dispatch,
                     },
                 ],
             });

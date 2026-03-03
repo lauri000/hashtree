@@ -51,7 +51,9 @@ pub mod transport;
 pub mod types;
 
 pub use channel::{ChannelError, LatencyChannel, MockChannel, PeerChannel};
-pub use generic_store::{GenericStore, ProductionStore, SimStore};
+pub use generic_store::{
+    GenericStore, GenericStoreRoutingConfig, ProductionStore, RequestDispatchConfig, SimStore,
+};
 pub use mock::{
     clear_channel_registry, MockConnectionFactory, MockDataChannel, MockLatencyMode, MockRelay,
     MockRelayTransport,

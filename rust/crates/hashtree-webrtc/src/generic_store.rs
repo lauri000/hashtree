@@ -7,11 +7,12 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, RwLock};
 
 use hashtree_core::{Hash, Store, StoreError};
 
+use crate::peer_selector::{PeerSelector, SelectionStrategy};
 use crate::protocol::{
     create_request, create_response, encode_request, encode_response, hash_to_key, parse_message,
     DataMessage,
@@ -23,6 +24,54 @@ use crate::types::{PeerHTLConfig, SignalingMessage, MAX_HTL};
 /// Pending request awaiting response
 struct PendingRequest {
     response_tx: oneshot::Sender<Option<Vec<u8>>>,
+    started_at: Instant,
+    queried_peers: Vec<String>,
+}
+
+/// Request dispatch strategy for peer queries.
+///
+/// `GenericStore` supports two practical modes:
+/// - Flood (`usize::MAX` fanout): maximize success/latency at bandwidth cost.
+/// - Staged hedging: probe a subset first, then expand.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestDispatchConfig {
+    /// Number of peers queried immediately.
+    pub initial_fanout: usize,
+    /// Number of additional peers to query on each hedge step.
+    pub hedge_fanout: usize,
+    /// Total peers allowed for this request.
+    pub max_fanout: usize,
+    /// Delay between hedge waves (ms). `0` means send all waves immediately.
+    pub hedge_interval_ms: u64,
+}
+
+impl Default for RequestDispatchConfig {
+    fn default() -> Self {
+        Self {
+            initial_fanout: usize::MAX,
+            hedge_fanout: usize::MAX,
+            max_fanout: usize::MAX,
+            hedge_interval_ms: 0,
+        }
+    }
+}
+
+/// Routing policy for request ordering + dispatch fanout.
+#[derive(Debug, Clone, Copy)]
+pub struct GenericStoreRoutingConfig {
+    pub selection_strategy: SelectionStrategy,
+    pub fairness_enabled: bool,
+    pub dispatch: RequestDispatchConfig,
+}
+
+impl Default for GenericStoreRoutingConfig {
+    fn default() -> Self {
+        Self {
+            selection_strategy: SelectionStrategy::Weighted,
+            fairness_enabled: true,
+            dispatch: RequestDispatchConfig::default(),
+        }
+    }
 }
 
 /// Generic P2P store that works with any transport implementation
@@ -44,6 +93,10 @@ where
     htl_configs: RwLock<HashMap<String, PeerHTLConfig>>,
     /// Pending requests we sent
     pending_requests: RwLock<HashMap<String, PendingRequest>>,
+    /// Adaptive selector for peer ordering.
+    peer_selector: RwLock<PeerSelector>,
+    /// Routing/dispatch configuration.
+    routing: GenericStoreRoutingConfig,
     /// Request timeout
     request_timeout: Duration,
     /// Debug mode
@@ -65,11 +118,32 @@ where
         request_timeout: Duration,
         debug: bool,
     ) -> Self {
+        Self::new_with_routing(
+            local_store,
+            signaling,
+            request_timeout,
+            debug,
+            Default::default(),
+        )
+    }
+
+    /// Create a new generic store with explicit routing configuration.
+    pub fn new_with_routing(
+        local_store: Arc<S>,
+        signaling: Arc<SignalingManager<R, F>>,
+        request_timeout: Duration,
+        debug: bool,
+        routing: GenericStoreRoutingConfig,
+    ) -> Self {
+        let mut selector = PeerSelector::with_strategy(routing.selection_strategy);
+        selector.set_fairness(routing.fairness_enabled);
         Self {
             local_store,
             signaling,
             htl_configs: RwLock::new(HashMap::new()),
             pending_requests: RwLock::new(HashMap::new()),
+            peer_selector: RwLock::new(selector),
+            routing,
             request_timeout,
             debug,
             running: RwLock::new(false),
@@ -98,9 +172,10 @@ where
         {
             let mut configs = self.htl_configs.write().await;
             if !configs.contains_key(&peer_id) {
-                configs.insert(peer_id, PeerHTLConfig::random());
+                configs.insert(peer_id.clone(), PeerHTLConfig::random());
             }
         }
+        self.peer_selector.write().await.add_peer(peer_id);
 
         self.signaling.handle_message(msg).await
     }
@@ -108,6 +183,97 @@ where
     /// Get signaling manager reference
     pub fn signaling(&self) -> &Arc<SignalingManager<R, F>> {
         &self.signaling
+    }
+
+    fn normalized_dispatch(&self, available_peers: usize) -> RequestDispatchConfig {
+        let mut cfg = self.routing.dispatch;
+        let cap = if cfg.max_fanout == 0 {
+            available_peers
+        } else {
+            cfg.max_fanout.min(available_peers)
+        };
+        cfg.max_fanout = cap;
+        cfg.initial_fanout = if cfg.initial_fanout == 0 {
+            1
+        } else {
+            cfg.initial_fanout.min(cap.max(1))
+        };
+        cfg.hedge_fanout = if cfg.hedge_fanout == 0 {
+            1
+        } else {
+            cfg.hedge_fanout.min(cap.max(1))
+        };
+        cfg
+    }
+
+    fn hedged_wave_plan(peer_count: usize, dispatch: RequestDispatchConfig) -> Vec<usize> {
+        if peer_count == 0 {
+            return Vec::new();
+        }
+        let cap = dispatch.max_fanout.min(peer_count);
+        if cap == 0 {
+            return Vec::new();
+        }
+
+        let mut plan = Vec::new();
+        let mut sent = 0usize;
+        let first = dispatch.initial_fanout.min(cap).max(1);
+        plan.push(first);
+        sent += first;
+
+        while sent < cap {
+            let next = dispatch.hedge_fanout.min(cap - sent).max(1);
+            plan.push(next);
+            sent += next;
+        }
+        plan
+    }
+
+    async fn sync_selector(&self, current_peer_ids: &[String]) {
+        let mut selector = self.peer_selector.write().await;
+        let current: std::collections::HashSet<&str> =
+            current_peer_ids.iter().map(String::as_str).collect();
+        let known: Vec<String> = selector.all_stats().map(|s| s.peer_id.clone()).collect();
+        for peer_id in known {
+            if !current.contains(peer_id.as_str()) {
+                selector.remove_peer(&peer_id);
+            }
+        }
+        for peer_id in current_peer_ids {
+            selector.add_peer(peer_id.clone());
+        }
+    }
+
+    async fn send_request_to_peer(&self, peer_id: &str, hash: &Hash) -> bool {
+        let channel = match self.signaling.get_channel(peer_id).await {
+            Some(c) => c,
+            None => return false,
+        };
+
+        let htl_config = {
+            let configs = self.htl_configs.read().await;
+            configs
+                .get(peer_id)
+                .cloned()
+                .unwrap_or_else(PeerHTLConfig::random)
+        };
+
+        let send_htl = htl_config.decrement(MAX_HTL);
+        let req = create_request(hash, send_htl);
+        let request_bytes = encode_request(&req);
+
+        {
+            let mut selector = self.peer_selector.write().await;
+            selector.record_request(peer_id, request_bytes.len() as u64);
+        }
+
+        match channel.send(request_bytes).await {
+            Ok(()) => true,
+            Err(_) => {
+                self.peer_selector.write().await.record_failure(peer_id);
+                false
+            }
+        }
     }
 
     /// Get peer count
@@ -120,70 +286,164 @@ where
         self.signaling.needs_peers().await
     }
 
+    /// Re-broadcast hello to refresh discovery as topology changes.
+    pub async fn send_hello(&self) -> Result<(), TransportError> {
+        self.signaling.send_hello(vec![]).await
+    }
+
     /// Request data from peers
     async fn request_from_peers(&self, hash: &Hash) -> Option<Vec<u8>> {
-        let peer_ids = self.signaling.peer_ids().await;
-        if peer_ids.is_empty() {
+        let current_peer_ids = self.signaling.peer_ids().await;
+        if current_peer_ids.is_empty() {
+            return None;
+        }
+        self.sync_selector(&current_peer_ids).await;
+        let current_set: std::collections::HashSet<&str> =
+            current_peer_ids.iter().map(String::as_str).collect();
+        let mut ordered_peer_ids = self.peer_selector.write().await.select_peers();
+        ordered_peer_ids.retain(|peer_id| current_set.contains(peer_id.as_str()));
+        if ordered_peer_ids.is_empty() {
+            ordered_peer_ids = current_peer_ids;
+            ordered_peer_ids.sort();
+        }
+
+        let dispatch = self.normalized_dispatch(ordered_peer_ids.len());
+        let wave_plan = Self::hedged_wave_plan(ordered_peer_ids.len(), dispatch);
+        if wave_plan.is_empty() {
             return None;
         }
 
         let hash_key = hash_to_key(hash);
         let (tx, rx) = oneshot::channel();
-        self.pending_requests
-            .write()
-            .await
-            .insert(hash_key.clone(), PendingRequest { response_tx: tx });
+        self.pending_requests.write().await.insert(
+            hash_key.clone(),
+            PendingRequest {
+                response_tx: tx,
+                started_at: Instant::now(),
+                queried_peers: Vec::new(),
+            },
+        );
 
-        let mut send_count = 0usize;
+        let mut sent_total = 0usize;
+        let mut next_peer_idx = 0usize;
+        let mut rx = rx;
+        let deadline = Instant::now() + self.request_timeout;
 
-        // Fan out requests to all currently connected peers and wait once.
-        // This avoids head-of-line blocking on peers that don't have data.
-        for peer_id in peer_ids {
-            let channel = match self.signaling.get_channel(&peer_id).await {
-                Some(c) => c,
-                None => continue,
-            };
-
-            let htl_config = {
-                let configs = self.htl_configs.read().await;
-                configs
-                    .get(&peer_id)
-                    .cloned()
-                    .unwrap_or_else(PeerHTLConfig::random)
-            };
-
-            let send_htl = htl_config.decrement(MAX_HTL);
-            let req = create_request(hash, send_htl);
-            let request_bytes = encode_request(&req);
-
-            match channel.send(request_bytes).await {
-                Ok(()) => send_count += 1,
-                Err(e) => {
-                    if self.debug {
-                        println!("[GenericStore] Failed to send request to {peer_id}: {e:?}");
+        for (wave_idx, wave_size) in wave_plan.iter().copied().enumerate() {
+            let from = next_peer_idx;
+            let to = (next_peer_idx + wave_size).min(ordered_peer_ids.len());
+            for peer_id in &ordered_peer_ids[from..to] {
+                if self.send_request_to_peer(peer_id, hash).await {
+                    sent_total += 1;
+                    if let Some(pending) = self.pending_requests.write().await.get_mut(&hash_key) {
+                        pending.queried_peers.push(peer_id.clone());
                     }
                 }
             }
+            next_peer_idx = to;
+
+            if sent_total == 0 {
+                if next_peer_idx >= ordered_peer_ids.len() {
+                    break;
+                }
+                continue;
+            }
+
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            let is_last_wave =
+                wave_idx + 1 == wave_plan.len() || next_peer_idx >= ordered_peer_ids.len();
+            let wait = if is_last_wave {
+                remaining
+            } else if dispatch.hedge_interval_ms == 0 {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(dispatch.hedge_interval_ms).min(remaining)
+            };
+
+            if wait.is_zero() {
+                continue;
+            }
+
+            match tokio::time::timeout(wait, &mut rx).await {
+                Ok(Ok(Some(data))) => {
+                    if hashtree_core::sha256(&data) == *hash {
+                        let _ = self.local_store.put(*hash, data.clone()).await;
+                        return Some(data);
+                    }
+                }
+                Ok(Ok(None)) => break,
+                Ok(Err(_)) => break,
+                Err(_) => {
+                    // Timed wait window expired; send next hedge wave if any.
+                }
+            }
         }
 
-        if send_count == 0 {
-            self.pending_requests.write().await.remove(&hash_key);
+        if sent_total == 0 {
+            let _ = self.pending_requests.write().await.remove(&hash_key);
             return None;
         }
 
-        match tokio::time::timeout(self.request_timeout, rx).await {
-            Ok(Ok(Some(data))) => {
-                if hashtree_core::sha256(&data) == *hash {
-                    let _ = self.local_store.put(*hash, data.clone()).await;
-                    return Some(data);
-                }
+        if let Some(pending) = self.pending_requests.write().await.remove(&hash_key) {
+            for peer_id in pending.queried_peers {
+                self.peer_selector.write().await.record_timeout(&peer_id);
             }
-            Ok(Ok(None)) => {}
-            _ => {}
+        }
+        None
+    }
+
+    async fn complete_pending_response(&self, from_peer: &str, hash_key: String, payload: Vec<u8>) {
+        if let Some(pending) = self.pending_requests.write().await.remove(&hash_key) {
+            let rtt_ms = pending.started_at.elapsed().as_millis() as u64;
+            self.peer_selector.write().await.record_success(
+                from_peer,
+                rtt_ms,
+                payload.len() as u64,
+            );
+            let _ = pending.response_tx.send(Some(payload));
+        }
+    }
+
+    async fn handle_response_message(&self, from_peer: &str, res: crate::protocol::DataResponse) {
+        let hash_key = hash_to_key(&res.h);
+        let hash = match crate::protocol::bytes_to_hash(&res.h) {
+            Some(h) => h,
+            None => return,
+        };
+
+        // Ignore malformed/corrupt payload and keep waiting for a valid response.
+        if hashtree_core::sha256(&res.d) != hash {
+            self.peer_selector.write().await.record_failure(from_peer);
+            if self.debug {
+                println!("[GenericStore] Ignoring invalid response payload for {hash_key}");
+            }
+            return;
         }
 
-        self.pending_requests.write().await.remove(&hash_key);
-        None
+        self.complete_pending_response(from_peer, hash_key, res.d)
+            .await;
+    }
+
+    async fn handle_request_message(&self, from_peer: &str, req: crate::protocol::DataRequest) {
+        let hash = match crate::protocol::bytes_to_hash(&req.h) {
+            Some(h) => h,
+            None => return,
+        };
+
+        // Check local store
+        if let Ok(Some(data)) = self.local_store.get(&hash).await {
+            // Send response
+            let res = create_response(&hash, data);
+            let response_bytes = encode_response(&res);
+            if let Some(channel) = self.signaling.get_channel(from_peer).await {
+                let _ = channel.send(response_bytes).await;
+            }
+        }
+        // For now, don't forward - keep it simple
     }
 
     /// Handle incoming data message
@@ -195,40 +455,10 @@ where
 
         match parsed {
             DataMessage::Request(req) => {
-                let hash = match crate::protocol::bytes_to_hash(&req.h) {
-                    Some(h) => h,
-                    None => return,
-                };
-
-                // Check local store
-                if let Ok(Some(data)) = self.local_store.get(&hash).await {
-                    // Send response
-                    let res = create_response(&hash, data);
-                    let response_bytes = encode_response(&res);
-                    if let Some(channel) = self.signaling.get_channel(from_peer).await {
-                        let _ = channel.send(response_bytes).await;
-                    }
-                }
-                // For now, don't forward - keep it simple
+                self.handle_request_message(from_peer, req).await;
             }
             DataMessage::Response(res) => {
-                let hash_key = hash_to_key(&res.h);
-                let hash = match crate::protocol::bytes_to_hash(&res.h) {
-                    Some(h) => h,
-                    None => return,
-                };
-
-                // Ignore malformed/corrupt payload and keep waiting for a valid response.
-                if hashtree_core::sha256(&res.d) != hash {
-                    if self.debug {
-                        println!("[GenericStore] Ignoring invalid response payload for {hash_key}");
-                    }
-                    return;
-                }
-
-                if let Some(pending) = self.pending_requests.write().await.remove(&hash_key) {
-                    let _ = pending.response_tx.send(Some(res.d));
-                }
+                self.handle_response_message(from_peer, res).await;
             }
         }
     }
@@ -261,6 +491,38 @@ where
 
     async fn delete(&self, hash: &Hash) -> Result<bool, StoreError> {
         self.local_store.delete(hash).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hashtree_core::MemoryStore;
+
+    type TestStore = GenericStore<
+        MemoryStore,
+        crate::mock::MockRelayTransport,
+        crate::mock::MockConnectionFactory,
+    >;
+
+    #[test]
+    fn test_hedged_wave_plan_flood_all() {
+        let plan = TestStore::hedged_wave_plan(7, RequestDispatchConfig::default());
+        assert_eq!(plan, vec![7]);
+    }
+
+    #[test]
+    fn test_hedged_wave_plan_staged() {
+        let plan = TestStore::hedged_wave_plan(
+            10,
+            RequestDispatchConfig {
+                initial_fanout: 2,
+                hedge_fanout: 3,
+                max_fanout: 8,
+                hedge_interval_ms: 25,
+            },
+        );
+        assert_eq!(plan, vec![2, 3, 3]);
     }
 }
 

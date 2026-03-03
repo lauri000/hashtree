@@ -219,6 +219,40 @@ impl PeerStats {
         // Success rate is most important (60%), RTT next (30%), recency last (10%)
         0.6 * success_score + 0.3 * rtt_score + 0.1 * (1.0 + recency_bonus)
     }
+
+    /// Utility-centric score with exploration bonus (UCB-style).
+    ///
+    /// Balances:
+    /// - good/bad outcome ratio (successes vs failures+timeouts),
+    /// - latency efficiency,
+    /// - bytes efficiency (received vs sent),
+    /// - uncertainty bonus for less-tested peers.
+    pub fn utility_score(&self, total_requests: u64) -> f64 {
+        let good = self.successes as f64 + 1.0;
+        let bad = (self.failures + self.timeouts) as f64 + 1.0;
+        let ratio = good / bad;
+        let ratio_score = ratio / (1.0 + ratio);
+
+        let latency_score = if self.srtt_ms <= 0.0 {
+            0.5
+        } else {
+            (300.0 / (self.srtt_ms + 50.0)).min(1.0)
+        };
+
+        let efficiency_score = if self.bytes_sent == 0 {
+            0.5
+        } else {
+            (self.bytes_received as f64 / self.bytes_sent as f64).min(1.0)
+        };
+
+        let exploitation = 0.55 * ratio_score + 0.25 * latency_score + 0.20 * efficiency_score;
+
+        let uncertainty =
+            (((total_requests as f64) + 1.0).ln() / ((self.requests_sent as f64) + 1.0)).sqrt();
+        let exploration_bonus = 0.20 * uncertainty;
+
+        exploitation + exploration_bonus
+    }
 }
 
 /// Peer selection strategy
@@ -235,6 +269,8 @@ pub enum SelectionStrategy {
     LowestLatency,
     /// Highest success rate first
     HighestSuccessRate,
+    /// Utility + exploration (good/bad ratio + RTT/efficiency + UCB bonus)
+    UtilityUcb,
 }
 
 /// Adaptive peer selector
@@ -461,6 +497,20 @@ impl PeerSelector {
                         id_a.cmp(id_b)
                     } else {
                         rate_cmp
+                    }
+                });
+            }
+            SelectionStrategy::UtilityUcb => {
+                let total_requests: u64 = sorted.iter().map(|(_, s)| s.requests_sent).sum();
+                sorted.sort_by(|(id_a, a), (id_b, b)| {
+                    let score_cmp = b
+                        .utility_score(total_requests)
+                        .partial_cmp(&a.utility_score(total_requests))
+                        .unwrap_or(std::cmp::Ordering::Equal);
+                    if score_cmp == std::cmp::Ordering::Equal {
+                        id_a.cmp(id_b)
+                    } else {
+                        score_cmp
                     }
                 });
             }
@@ -752,6 +802,61 @@ mod tests {
         assert!(bad_score < 0.3);
 
         assert!(good_score > bad_score);
+    }
+
+    #[test]
+    fn test_peer_stats_utility_score_prefers_good_over_bad() {
+        let mut good = PeerStats::new("good");
+        good.requests_sent = 120;
+        good.successes = 96;
+        good.failures = 8;
+        good.timeouts = 4;
+        good.srtt_ms = 30.0;
+        good.bytes_sent = 120 * 40;
+        good.bytes_received = 96 * 1024;
+
+        let mut bad = PeerStats::new("bad");
+        bad.requests_sent = 120;
+        bad.successes = 40;
+        bad.failures = 50;
+        bad.timeouts = 30;
+        bad.srtt_ms = 220.0;
+        bad.bytes_sent = 120 * 40;
+        bad.bytes_received = 40 * 1024;
+
+        let total_requests = good.requests_sent + bad.requests_sent;
+        assert!(good.utility_score(total_requests) > bad.utility_score(total_requests));
+    }
+
+    #[test]
+    fn test_utility_ucb_strategy_explores_less_sampled_peer() {
+        let mut selector = PeerSelector::with_strategy(SelectionStrategy::UtilityUcb);
+        selector.add_peer("stable");
+        selector.add_peer("new");
+
+        {
+            let stable = selector.get_stats_mut("stable").unwrap();
+            stable.requests_sent = 500;
+            stable.successes = 450;
+            stable.failures = 35;
+            stable.timeouts = 15;
+            stable.srtt_ms = 35.0;
+            stable.bytes_sent = 500 * 40;
+            stable.bytes_received = 450 * 1024;
+        }
+        {
+            let new_peer = selector.get_stats_mut("new").unwrap();
+            new_peer.requests_sent = 2;
+            new_peer.successes = 2;
+            new_peer.failures = 0;
+            new_peer.timeouts = 0;
+            new_peer.srtt_ms = 70.0;
+            new_peer.bytes_sent = 2 * 40;
+            new_peer.bytes_received = 2 * 1024;
+        }
+
+        let peers = selector.select_peers();
+        assert_eq!(peers[0], "new");
     }
 
     #[test]

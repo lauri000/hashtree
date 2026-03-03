@@ -91,25 +91,37 @@ for result in results {
 This lets sweeps evaluate one candidate strategy inside a network of mixed incentives.
 
 ```rust
-use hashtree_sim::{NodeStrategyProfile, PoolConfig, SimConfig};
+use hashtree_sim::{
+    NodeStrategyProfile, PoolConfig, RequestDispatchConfig, SelectionStrategy, SimConfig,
+};
 
 let config = SimConfig {
     reference_strategy: Some("reference".to_string()),
+    hello_reannounce_interval_ms: 1000,
     strategy_mix: vec![
         NodeStrategyProfile {
             name: "reference".to_string(),
             weight: 35,
             pool: PoolConfig { max_connections: 18, satisfied_connections: 9 },
+            selection_strategy: SelectionStrategy::UtilityUcb,
+            fairness_enabled: true,
+            dispatch: RequestDispatchConfig { initial_fanout: 2, hedge_fanout: 2, max_fanout: usize::MAX, hedge_interval_ms: 5 },
         },
         NodeStrategyProfile {
             name: "aggressive".to_string(),
             weight: 30,
             pool: PoolConfig { max_connections: 24, satisfied_connections: 12 },
+            selection_strategy: SelectionStrategy::Weighted,
+            fairness_enabled: true,
+            dispatch: RequestDispatchConfig::default(),
         },
         NodeStrategyProfile {
             name: "conservative".to_string(),
             weight: 35,
             pool: PoolConfig { max_connections: 12, satisfied_connections: 6 },
+            selection_strategy: SelectionStrategy::HighestSuccessRate,
+            fairness_enabled: true,
+            dispatch: RequestDispatchConfig { initial_fanout: 1, hedge_fanout: 1, max_fanout: usize::MAX, hedge_interval_ms: 8 },
         },
     ],
     ..Default::default()
@@ -158,6 +170,7 @@ Nodes discover each other via Hello messages on a mock relay. We use the WebRTC 
 2. Both peers may send offers simultaneously - this is expected, not an error
 3. On collision (both sent offers), the **"polite" peer** (lower ID) backs off and accepts the incoming offer
 4. The **"impolite" peer** (higher ID) ignores the incoming offer and waits for their answer
+5. Nodes periodically re-announce Hello (`hello_reannounce_interval_ms`) so late joiners can still discover already-satisfied peers.
 
 ```rust
 // Polite peer backs off on collision
@@ -170,17 +183,20 @@ fn is_polite_peer(local_id: &str, remote_id: &str) -> bool {
 
 ## Routing Strategies
 
-### Flooding
-- Sends requests to ALL connected peers simultaneously
-- First response wins
-- High bandwidth, low latency
-- Good for small networks or when speed is critical
+### Flood-All
+- Sends requests to all connected peers immediately.
+- Highest success and lowest tail latency in sparse/uncertain neighborhoods.
+- More data-plane overhead.
 
-### Adaptive
-- Tries peers sequentially, ordered by past performance
-- Learns which peers have data and respond quickly
-- Low bandwidth, slightly higher latency
-- Uses exponential backoff for slow/unreliable peers
+### Hedged Fanout
+- Sends a small initial fanout, then expands in timed waves until response/timeout.
+- Uses peer ordering (`SelectionStrategy`) to try likely-good peers first.
+- Lower overhead in favorable topologies; can raise p95 latency if too conservative.
+
+### Utility-UCB Ordering
+- Score combines good/bad outcome ratio, RTT, and bytes efficiency.
+- Adds exploration bonus for less-sampled peers (bandit/UCB style).
+- Helps avoid local optima where one historically-good peer monopolizes traffic.
 
 ## Latency Simulation
 
@@ -225,8 +241,8 @@ cargo run --example run_simulation -- --bench --runs 5
 ## Key Learnings
 
 1. **max_peers matters**: Too low (< ln(N)) causes network fragmentation
-2. **Adaptive beats Flooding** for bandwidth efficiency once it learns peer quality
+2. **Hedged fanout can reduce overhead**, but max-fanout/timing must be tuned to avoid success regressions
 3. **Latency variation** is important - uniform latency is unrealistic
 4. **Multi-hop forwarding** dramatically increases reach but adds latency
-5. **Perfect negotiation beats simple tie-breaking**: With simple "lower ID initiates" tie-breaking, satisfied nodes don't initiate, leaving unsatisfied nodes unable to connect to them. Perfect negotiation (both sides can send offers, collisions resolved by polite/impolite) solves this by letting unsatisfied nodes reach satisfied-but-not-full nodes.
+5. **Perfect negotiation + periodic Hello beats one-shot discovery**: late joiners need periodic discovery refresh, otherwise large runs fragment.
 6. **Use same code for simulation**: Using the exact same signaling code as production ensures simulation behavior matches reality. The `webrtc_sim` module does this.
