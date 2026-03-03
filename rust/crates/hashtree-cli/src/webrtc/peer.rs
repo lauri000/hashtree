@@ -192,7 +192,7 @@ impl Peer {
             state_event_tx,
             nostr_relay,
             mesh_frame_tx,
-            htl_config: PeerHTLConfig::new(),
+            htl_config: PeerHTLConfig::random(),
         })
     }
 

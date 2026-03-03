@@ -15,7 +15,7 @@ use nostr::{
     nips::nip44, Alphabet, ClientMessage, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey,
     RelayMessage, SingleLetterTag, Tag,
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -26,7 +26,8 @@ use super::peer::{ContentStore, Peer, PendingRequest};
 use super::types::{
     decrement_htl_with_policy, should_forward_htl, validate_mesh_frame, MeshNostrFrame,
     MeshNostrPayload, PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus,
-    SignalingMessage, WebRTCConfig, HELLO_TAG, MESH_DEFAULT_HTL, MESH_EVENT_POLICY, WEBRTC_KIND,
+    SignalingMessage, TimedSeenSet, WebRTCConfig, HELLO_TAG, MESH_DEFAULT_HTL, MESH_EVENT_POLICY,
+    WEBRTC_KIND,
 };
 use crate::nostr_relay::NostrRelay;
 
@@ -98,68 +99,6 @@ const SEEN_FRAME_CAP: usize = 4096;
 const SEEN_FRAME_TTL: Duration = Duration::from_secs(120);
 const SEEN_EVENT_CAP: usize = 8192;
 const SEEN_EVENT_TTL: Duration = Duration::from_secs(600);
-
-struct TimedSeenSet {
-    entries: HashMap<String, Instant>,
-    order: VecDeque<(String, Instant)>,
-    ttl: Duration,
-    capacity: usize,
-}
-
-impl TimedSeenSet {
-    fn new(capacity: usize, ttl: Duration) -> Self {
-        Self {
-            entries: HashMap::new(),
-            order: VecDeque::new(),
-            ttl,
-            capacity,
-        }
-    }
-
-    fn prune(&mut self, now: Instant) {
-        while let Some((key, inserted_at)) = self.order.front().cloned() {
-            if now.duration_since(inserted_at) < self.ttl {
-                break;
-            }
-            self.order.pop_front();
-            if self
-                .entries
-                .get(&key)
-                .map(|ts| *ts == inserted_at)
-                .unwrap_or(false)
-            {
-                self.entries.remove(&key);
-            }
-        }
-
-        while self.entries.len() > self.capacity {
-            if let Some((key, inserted_at)) = self.order.pop_front() {
-                if self
-                    .entries
-                    .get(&key)
-                    .map(|ts| *ts == inserted_at)
-                    .unwrap_or(false)
-                {
-                    self.entries.remove(&key);
-                }
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn insert_if_new(&mut self, key: String) -> bool {
-        let now = Instant::now();
-        self.prune(now);
-        if self.entries.contains_key(&key) {
-            return false;
-        }
-        self.entries.insert(key.clone(), now);
-        self.order.push_back((key, now));
-        self.prune(now);
-        true
-    }
-}
 
 fn hashtree_event_identifier(event: &nostr::Event) -> Option<String> {
     event.tags.iter().find_map(|tag| {

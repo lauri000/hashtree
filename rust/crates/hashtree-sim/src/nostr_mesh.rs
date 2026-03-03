@@ -1,8 +1,12 @@
 //! Nostr mesh simulation for p2p request/response flows.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 
-use hashtree_webrtc::{SignalingMessage, NOSTR_KIND_HASHTREE};
+use hashtree_webrtc::{
+    decrement_htl_with_policy, should_forward_htl, validate_mesh_frame, MeshNostrFrame,
+    PeerHTLConfig, SignalingMessage, MESH_EVENT_POLICY, MESH_MAX_HTL, NOSTR_KIND_HASHTREE,
+};
 use nostr::{
     Alphabet, Event, EventBuilder, EventId, Filter, Keys, Kind, PublicKey, SingleLetterTag, Tag,
     TagKind,
@@ -15,12 +19,16 @@ pub struct MeshStats {
     pub forwarded_reqs: usize,
     pub forwarded_events: usize,
     pub forwarded_replies: usize,
+    pub forwarded_mesh_frames: usize,
+    pub dropped_mesh_duplicates: usize,
+    pub dropped_mesh_invalid: usize,
 }
 
 #[derive(Debug)]
 pub struct NostrMesh {
     nodes: HashMap<String, Node>,
     links: HashMap<String, HashSet<String>>,
+    htl_configs: HashMap<(String, String), PeerHTLConfig>,
     queues: HashMap<String, VecDeque<Envelope>>,
     stats: MeshStats,
 }
@@ -30,6 +38,8 @@ struct Node {
     keys: Keys,
     store: HashMap<EventId, Event>,
     seen_events: HashSet<EventId>,
+    seen_mesh_frame_ids: HashSet<String>,
+    seen_mesh_event_ids: HashSet<EventId>,
     seen_reqs: HashSet<(String, String)>,
     seen_replies: HashSet<(String, String, EventId)>,
     received: Vec<Event>,
@@ -58,6 +68,11 @@ enum Envelope {
         event: Event,
         ttl: u8,
     },
+    MeshFrame {
+        origin: String,
+        sender: String,
+        frame: MeshNostrFrame,
+    },
 }
 
 impl NostrMesh {
@@ -65,6 +80,7 @@ impl NostrMesh {
         Self {
             nodes: HashMap::new(),
             links: HashMap::new(),
+            htl_configs: HashMap::new(),
             queues: HashMap::new(),
             stats: MeshStats::default(),
         }
@@ -76,6 +92,8 @@ impl NostrMesh {
             keys: keys.clone(),
             store: HashMap::new(),
             seen_events: HashSet::new(),
+            seen_mesh_frame_ids: HashSet::new(),
+            seen_mesh_event_ids: HashSet::new(),
             seen_reqs: HashSet::new(),
             seen_replies: HashSet::new(),
             received: Vec::new(),
@@ -100,6 +118,14 @@ impl NostrMesh {
             .entry(b.to_string())
             .or_default()
             .insert(a.to_string());
+        self.htl_configs.insert(
+            (a.to_string(), b.to_string()),
+            Self::deterministic_htl_config(a, b),
+        );
+        self.htl_configs.insert(
+            (b.to_string(), a.to_string()),
+            Self::deterministic_htl_config(b, a),
+        );
     }
 
     pub fn publish_hashtree_root(
@@ -134,6 +160,25 @@ impl NostrMesh {
         msg: &SignalingMessage,
         ttl: u8,
     ) -> anyhow::Result<()> {
+        let frame_id = format!(
+            "{}:{}",
+            node_id,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        );
+        self.send_signaling_with_frame_id(node_id, target_pubkey, msg, &frame_id, ttl)
+    }
+
+    pub fn send_signaling_with_frame_id(
+        &mut self,
+        node_id: &str,
+        target_pubkey: &PublicKey,
+        msg: &SignalingMessage,
+        frame_id: &str,
+        ttl: u8,
+    ) -> anyhow::Result<()> {
         let node = self
             .nodes
             .get(node_id)
@@ -142,7 +187,9 @@ impl NostrMesh {
         let tags = vec![Tag::public_key(*target_pubkey)];
         let event = EventBuilder::new(Kind::Custom(NOSTR_KIND_HASHTREE), content, tags)
             .to_event(&node.keys)?;
-        self.publish_event(node_id, event, ttl);
+        let frame =
+            MeshNostrFrame::new_event_with_id(event, node_id, frame_id, ttl.clamp(1, MESH_MAX_HTL));
+        self.publish_mesh_frame(node_id, frame);
         Ok(())
     }
 
@@ -155,6 +202,20 @@ impl NostrMesh {
                 sender: node_id.to_string(),
                 event,
                 ttl,
+            },
+        );
+    }
+
+    fn publish_mesh_frame(&mut self, node_id: &str, frame: MeshNostrFrame) {
+        // Track origin frame/event as already seen to mirror production dedupe.
+        self.mark_mesh_seen(node_id, &frame);
+        self.store_event(node_id, frame.event());
+        self.enqueue_neighbors(
+            node_id,
+            Envelope::MeshFrame {
+                origin: node_id.to_string(),
+                sender: node_id.to_string(),
+                frame,
             },
         );
     }
@@ -250,7 +311,26 @@ impl NostrMesh {
                 event,
                 ttl,
             } => self.handle_reply(node_id, &origin, &sender, &sub_id, event, ttl),
+            Envelope::MeshFrame {
+                origin,
+                sender,
+                frame,
+            } => self.handle_mesh_frame(node_id, &origin, &sender, frame),
         }
+    }
+
+    fn mark_mesh_seen(&mut self, node_id: &str, frame: &MeshNostrFrame) -> bool {
+        let Some(node) = self.nodes.get_mut(node_id) else {
+            return false;
+        };
+
+        if !node.seen_mesh_frame_ids.insert(frame.frame_id.clone()) {
+            return false;
+        }
+        if !node.seen_mesh_event_ids.insert(frame.event().id) {
+            return false;
+        }
+        true
     }
 
     fn handle_publish(&mut self, node_id: &str, origin: &str, sender: &str, event: Event, ttl: u8) {
@@ -357,6 +437,69 @@ impl NostrMesh {
                 },
             );
         }
+    }
+
+    fn handle_mesh_frame(
+        &mut self,
+        node_id: &str,
+        origin: &str,
+        sender: &str,
+        frame: MeshNostrFrame,
+    ) {
+        if validate_mesh_frame(&frame).is_err() {
+            self.stats.dropped_mesh_invalid += 1;
+            return;
+        }
+
+        if !self.mark_mesh_seen(node_id, &frame) {
+            self.stats.dropped_mesh_duplicates += 1;
+            return;
+        }
+
+        self.store_event(node_id, frame.event());
+        let Some(neighbors) = self.links.get(node_id).cloned() else {
+            return;
+        };
+        for neighbor in neighbors {
+            if neighbor == sender {
+                continue;
+            }
+
+            let cfg = self
+                .htl_configs
+                .get(&(node_id.to_string(), neighbor.clone()))
+                .copied()
+                .unwrap_or_else(|| Self::deterministic_htl_config(node_id, &neighbor));
+            let next_htl = decrement_htl_with_policy(frame.htl, &MESH_EVENT_POLICY, &cfg);
+            if !should_forward_htl(next_htl) {
+                continue;
+            }
+
+            let mut outbound = frame.clone();
+            outbound.htl = next_htl;
+            self.stats.forwarded_mesh_frames += 1;
+            self.queues
+                .entry(neighbor)
+                .or_default()
+                .push_back(Envelope::MeshFrame {
+                    origin: origin.to_string(),
+                    sender: node_id.to_string(),
+                    frame: outbound,
+                });
+        }
+    }
+
+    fn deterministic_htl_config(from: &str, to: &str) -> PeerHTLConfig {
+        fn sample(from: &str, to: &str, salt: u8) -> f64 {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            from.hash(&mut hasher);
+            to.hash(&mut hasher);
+            salt.hash(&mut hasher);
+            let value = hasher.finish();
+            (value as f64) / (u64::MAX as f64)
+        }
+
+        PeerHTLConfig::from_samples(sample(from, to, 1), sample(from, to, 2))
     }
 
     fn store_event(&mut self, node_id: &str, event: &Event) -> bool {

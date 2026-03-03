@@ -2,10 +2,13 @@
 
 use hashtree_webrtc::{
     bytes_to_hash, create_fragment_response, create_request, create_response, encode_request,
-    encode_response, is_fragmented, parse_message, should_forward, DataMessage, PeerHTLConfig,
-    PeerId, PeerState, SignalingMessage, WebRTCStats, WebRTCStoreConfig, MAX_HTL, MSG_TYPE_REQUEST,
-    MSG_TYPE_RESPONSE,
+    encode_response, is_fragmented, parse_message, should_forward, should_forward_htl,
+    validate_mesh_frame, DataMessage, MeshNostrFrame, PeerHTLConfig, PeerId, PeerState,
+    SignalingMessage, TimedSeenSet, WebRTCStats, WebRTCStoreConfig, BLOB_REQUEST_POLICY, MAX_HTL,
+    MESH_DEFAULT_HTL, MESH_EVENT_POLICY, MESH_MAX_HTL, MESH_PROTOCOL, MESH_PROTOCOL_VERSION,
+    MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE, NOSTR_KIND_HASHTREE,
 };
+use nostr_sdk::nostr::{EventBuilder, Keys, Kind};
 
 #[test]
 fn test_peer_id_creation() {
@@ -205,17 +208,16 @@ fn test_should_forward() {
     assert!(should_forward(10));
     assert!(should_forward(5));
     assert!(should_forward(1));
+    assert!(should_forward_htl(1));
     // HTL = 0 should not forward
     assert!(!should_forward(0));
+    assert!(!should_forward_htl(0));
 }
 
 #[test]
 fn test_htl_config_decrement_middle_values() {
     // Middle values (2-9) always decrement
-    let config = PeerHTLConfig {
-        decrement_at_max: false,
-        decrement_at_min: false,
-    };
+    let config = PeerHTLConfig::from_samples(1.0, 1.0);
     assert_eq!(config.decrement(5), 4);
     assert_eq!(config.decrement(2), 1);
     assert_eq!(config.decrement(9), 8);
@@ -224,42 +226,27 @@ fn test_htl_config_decrement_middle_values() {
 #[test]
 fn test_htl_config_decrement_at_max() {
     // At MAX_HTL, decrement depends on config
-    let config_dec = PeerHTLConfig {
-        decrement_at_max: true,
-        decrement_at_min: false,
-    };
+    let config_dec = PeerHTLConfig::from_samples(0.0, 1.0);
     assert_eq!(config_dec.decrement(MAX_HTL), MAX_HTL - 1);
 
-    let config_no_dec = PeerHTLConfig {
-        decrement_at_max: false,
-        decrement_at_min: false,
-    };
+    let config_no_dec = PeerHTLConfig::from_samples(1.0, 1.0);
     assert_eq!(config_no_dec.decrement(MAX_HTL), MAX_HTL);
 }
 
 #[test]
 fn test_htl_config_decrement_at_min() {
     // At HTL=1, decrement depends on config
-    let config_dec = PeerHTLConfig {
-        decrement_at_max: false,
-        decrement_at_min: true,
-    };
+    let config_dec = PeerHTLConfig::from_samples(1.0, 0.0);
     assert_eq!(config_dec.decrement(1), 0);
 
-    let config_no_dec = PeerHTLConfig {
-        decrement_at_max: false,
-        decrement_at_min: false,
-    };
+    let config_no_dec = PeerHTLConfig::from_samples(1.0, 1.0);
     assert_eq!(config_no_dec.decrement(1), 1);
 }
 
 #[test]
 fn test_htl_config_decrement_zero() {
     // HTL=0 stays at 0
-    let config = PeerHTLConfig {
-        decrement_at_max: true,
-        decrement_at_min: true,
-    };
+    let config = PeerHTLConfig::from_samples(0.0, 0.0);
     assert_eq!(config.decrement(0), 0);
 }
 
@@ -274,4 +261,68 @@ fn test_htl_config_random_creates_valid_config() {
         let _ = config.decrement(1);
         let _ = config.decrement(0);
     }
+}
+
+#[test]
+fn test_htl_policy_profiles_differ_at_max() {
+    let dec_cfg = PeerHTLConfig::from_samples(0.6, 0.6);
+    let blob_next =
+        dec_cfg.decrement_with_policy(BLOB_REQUEST_POLICY.max_htl, &BLOB_REQUEST_POLICY);
+    let mesh_next = dec_cfg.decrement_with_policy(BLOB_REQUEST_POLICY.max_htl, &MESH_EVENT_POLICY);
+    assert_eq!(blob_next, BLOB_REQUEST_POLICY.max_htl);
+    assert_eq!(mesh_next, MESH_EVENT_POLICY.max_htl - 1);
+}
+
+#[test]
+fn test_timed_seen_set_dedupe_and_ttl() {
+    use std::thread;
+    use std::time::Duration;
+
+    let mut seen = TimedSeenSet::new(2, Duration::from_millis(20));
+    assert!(seen.insert_if_new("a".to_string()));
+    assert!(!seen.insert_if_new("a".to_string()));
+    assert!(seen.insert_if_new("b".to_string()));
+    assert_eq!(seen.len(), 2);
+
+    thread::sleep(Duration::from_millis(25));
+    assert!(seen.insert_if_new("a".to_string()));
+    assert_eq!(seen.len(), 1);
+}
+
+#[test]
+fn test_mesh_frame_roundtrip_and_validation() {
+    let keys = Keys::generate();
+    let event = EventBuilder::new(Kind::Custom(NOSTR_KIND_HASHTREE), "", [])
+        .to_event(&keys)
+        .unwrap();
+    let frame =
+        MeshNostrFrame::new_event_with_id(event, "peer-a:uuid-a", "frame-1", MESH_DEFAULT_HTL);
+    assert!(validate_mesh_frame(&frame).is_ok());
+
+    let encoded = serde_json::to_string(&frame).unwrap();
+    let decoded: MeshNostrFrame = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded.protocol, MESH_PROTOCOL);
+    assert_eq!(decoded.version, MESH_PROTOCOL_VERSION);
+    assert_eq!(decoded.frame_id, "frame-1");
+    assert!(validate_mesh_frame(&decoded).is_ok());
+}
+
+#[test]
+fn test_mesh_frame_validation_rejects_invalid_protocol_and_htl() {
+    let keys = Keys::generate();
+    let event = EventBuilder::new(Kind::Custom(NOSTR_KIND_HASHTREE), "", [])
+        .to_event(&keys)
+        .unwrap();
+    let mut frame =
+        MeshNostrFrame::new_event_with_id(event, "peer-a:uuid-a", "frame-1", MESH_DEFAULT_HTL);
+
+    frame.protocol = "invalid".to_string();
+    assert_eq!(validate_mesh_frame(&frame), Err("invalid protocol"));
+
+    frame.protocol = MESH_PROTOCOL.to_string();
+    frame.htl = 0;
+    assert_eq!(validate_mesh_frame(&frame), Err("invalid htl"));
+
+    frame.htl = MESH_MAX_HTL + 1;
+    assert_eq!(validate_mesh_frame(&frame), Err("invalid htl"));
 }

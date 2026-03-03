@@ -69,4 +69,37 @@ mod nostr_p2p {
             .count();
         assert!(count >= 1);
     }
+
+    #[tokio::test]
+    async fn webrtc_signaling_mesh_frame_dedupes_replayed_frame_id() {
+        let mut mesh = NostrMesh::new();
+        let a_pub = mesh.add_node("a");
+        mesh.add_node("b");
+        let c_pub = mesh.add_node("c");
+        mesh.link("a", "b");
+        mesh.link("b", "c");
+
+        let offer = SignalingMessage::Offer {
+            peer_id: format!("{}:a", a_pub.to_hex()),
+            target_peer_id: format!("{}:c", c_pub.to_hex()),
+            sdp: "fake-sdp".to_string(),
+        };
+
+        mesh.send_signaling_with_frame_id("a", &c_pub, &offer, "frame-replay", 2)
+            .expect("send signaling 1");
+        mesh.send_signaling_with_frame_id("a", &c_pub, &offer, "frame-replay", 2)
+            .expect("send signaling 2");
+
+        mesh.drain(200);
+
+        let received = mesh.received_signaling("c");
+        let offer_count = received
+            .iter()
+            .filter(|msg| match msg {
+                SignalingMessage::Offer { sdp, .. } => sdp == "fake-sdp",
+                _ => false,
+            })
+            .count();
+        assert_eq!(offer_count, 1, "replayed frame id must not amplify");
+    }
 }

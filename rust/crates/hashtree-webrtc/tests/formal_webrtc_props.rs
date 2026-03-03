@@ -1,33 +1,21 @@
 use std::time::{Duration, Instant};
 
-use hashtree_webrtc::{should_forward, PeerHTLConfig, PeerSelector, MAX_HTL};
+use hashtree_webrtc::{should_forward_htl, PeerHTLConfig, PeerSelector, MAX_HTL};
 
 #[test]
 fn test_htl_monotonicity_and_forwarding_bounds() {
     let configs = [
-        PeerHTLConfig {
-            decrement_at_max: false,
-            decrement_at_min: false,
-        },
-        PeerHTLConfig {
-            decrement_at_max: false,
-            decrement_at_min: true,
-        },
-        PeerHTLConfig {
-            decrement_at_max: true,
-            decrement_at_min: false,
-        },
-        PeerHTLConfig {
-            decrement_at_max: true,
-            decrement_at_min: true,
-        },
+        PeerHTLConfig::from_samples(1.0, 1.0),
+        PeerHTLConfig::from_samples(1.0, 0.0),
+        PeerHTLConfig::from_samples(0.0, 1.0),
+        PeerHTLConfig::from_samples(0.0, 0.0),
     ];
 
     for cfg in configs {
         for htl in 0..=MAX_HTL {
             let next = cfg.decrement(htl);
             assert!(next <= htl, "htl increased: {htl} -> {next}");
-            assert_eq!(should_forward(htl), htl > 0);
+            assert_eq!(should_forward_htl(htl), htl > 0);
 
             if htl == 0 {
                 assert_eq!(next, 0);

@@ -70,8 +70,11 @@ pub use transport::{
     DataChannel, PeerConnectionFactory, RelayTransport, SignalingConfig, TransportError,
 };
 pub use types::{
-    classifier_channel, is_polite_peer, should_forward, ClassifierRx, ClassifierTx,
-    ClassifyRequest, ForwardRequest, ForwardRx, ForwardTx, IceCandidate, PeerHTLConfig, PeerId,
-    PeerPool, PeerState, PoolConfig, PoolSettings, SignalingMessage, WebRTCStats,
-    WebRTCStoreConfig, DATA_CHANNEL_LABEL, MAX_HTL, NOSTR_KIND_HASHTREE,
+    classifier_channel, decrement_htl_with_policy, is_polite_peer, should_forward,
+    should_forward_htl, validate_mesh_frame, ClassifierRx, ClassifierTx, ClassifyRequest,
+    ForwardRequest, ForwardRx, ForwardTx, HtlMode, HtlPolicy, IceCandidate, MeshNostrFrame,
+    MeshNostrPayload, PeerHTLConfig, PeerId, PeerPool, PeerState, PoolConfig, PoolSettings,
+    SignalingMessage, TimedSeenSet, WebRTCStats, WebRTCStoreConfig, BLOB_REQUEST_POLICY,
+    DATA_CHANNEL_LABEL, DECREMENT_AT_MAX_PROB, DECREMENT_AT_MIN_PROB, MAX_HTL, MESH_DEFAULT_HTL,
+    MESH_EVENT_POLICY, MESH_MAX_HTL, MESH_PROTOCOL, MESH_PROTOCOL_VERSION, NOSTR_KIND_HASHTREE,
 };

@@ -4,7 +4,10 @@
 //! and the data channel protocol for hash-based data requests.
 
 use hashtree_core::Hash;
+use nostr_sdk::nostr::{Event, Kind};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
 /// Unique identifier for a peer in the network
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -206,14 +209,45 @@ pub const DECREMENT_AT_MAX_PROB: f64 = 0.5;
 /// Probability to decrement at min HTL=1 (25%)
 pub const DECREMENT_AT_MIN_PROB: f64 = 0.25;
 
+/// HTL decrement mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HtlMode {
+    Probabilistic,
+}
+
+/// HTL policy parameters for a traffic class.
+#[derive(Debug, Clone, Copy)]
+pub struct HtlPolicy {
+    pub mode: HtlMode,
+    pub max_htl: u8,
+    pub p_at_max: f64,
+    pub p_at_min: f64,
+}
+
+/// Default policy for blob/content requests.
+pub const BLOB_REQUEST_POLICY: HtlPolicy = HtlPolicy {
+    mode: HtlMode::Probabilistic,
+    max_htl: MAX_HTL,
+    p_at_max: DECREMENT_AT_MAX_PROB,
+    p_at_min: DECREMENT_AT_MIN_PROB,
+};
+
+/// Policy for mesh signaling/event forwarding.
+pub const MESH_EVENT_POLICY: HtlPolicy = HtlPolicy {
+    mode: HtlMode::Probabilistic,
+    max_htl: 4,
+    p_at_max: 0.75,
+    p_at_min: 0.5,
+};
+
 /// Per-peer HTL configuration (Freenet-style probabilistic decrement)
 /// Generated once per peer connection, stays fixed for connection lifetime
 #[derive(Debug, Clone, Copy)]
 pub struct PeerHTLConfig {
-    /// Whether to decrement at MAX_HTL
-    pub decrement_at_max: bool,
-    /// Whether to decrement at HTL=1
-    pub decrement_at_min: bool,
+    /// Random sample used to decide decrement at max HTL.
+    pub at_max_sample: f64,
+    /// Random sample used to decide decrement at min HTL.
+    pub at_min_sample: f64,
 }
 
 impl PeerHTLConfig {
@@ -221,43 +255,84 @@ impl PeerHTLConfig {
     pub fn random() -> Self {
         use rand::Rng;
         let mut rng = rand::thread_rng();
+        Self::from_samples(rng.gen_range(0.0..1.0), rng.gen_range(0.0..1.0))
+    }
+
+    /// Construct config from explicit random samples.
+    pub fn from_samples(at_max_sample: f64, at_min_sample: f64) -> Self {
         Self {
-            decrement_at_max: rng.gen::<f64>() < DECREMENT_AT_MAX_PROB,
-            decrement_at_min: rng.gen::<f64>() < DECREMENT_AT_MIN_PROB,
+            at_max_sample: at_max_sample.clamp(0.0, 1.0),
+            at_min_sample: at_min_sample.clamp(0.0, 1.0),
+        }
+    }
+
+    /// Construct config from explicit decrement choices.
+    pub fn from_flags(decrement_at_max: bool, decrement_at_min: bool) -> Self {
+        Self {
+            at_max_sample: if decrement_at_max { 0.0 } else { 1.0 },
+            at_min_sample: if decrement_at_min { 0.0 } else { 1.0 },
         }
     }
 
     /// Decrement HTL using this peer's config (Freenet-style probabilistic)
     /// Called when SENDING to a peer, not on receive
     pub fn decrement(&self, htl: u8) -> u8 {
-        if htl == 0 {
-            return 0;
-        }
+        decrement_htl_with_policy(htl, &BLOB_REQUEST_POLICY, self)
+    }
 
-        if htl == MAX_HTL {
-            // At max: only decrement if this peer's config says so
-            if self.decrement_at_max {
-                htl - 1
-            } else {
-                htl
+    /// Decrement HTL using the provided traffic policy.
+    pub fn decrement_with_policy(&self, htl: u8, policy: &HtlPolicy) -> u8 {
+        decrement_htl_with_policy(htl, policy, self)
+    }
+}
+
+impl Default for PeerHTLConfig {
+    fn default() -> Self {
+        Self::random()
+    }
+}
+
+/// Decrement HTL according to policy and per-peer randomness profile.
+pub fn decrement_htl_with_policy(htl: u8, policy: &HtlPolicy, config: &PeerHTLConfig) -> u8 {
+    let htl = htl.min(policy.max_htl);
+    if htl == 0 {
+        return 0;
+    }
+
+    match policy.mode {
+        HtlMode::Probabilistic => {
+            let p_at_max = policy.p_at_max.clamp(0.0, 1.0);
+            let p_at_min = policy.p_at_min.clamp(0.0, 1.0);
+
+            if htl == policy.max_htl {
+                return if config.at_max_sample < p_at_max {
+                    htl.saturating_sub(1)
+                } else {
+                    htl
+                };
             }
-        } else if htl == 1 {
-            // At min: only decrement if this peer's config says so
-            if self.decrement_at_min {
-                0
-            } else {
-                htl
+
+            if htl == 1 {
+                return if config.at_min_sample < p_at_min {
+                    0
+                } else {
+                    htl
+                };
             }
-        } else {
-            // Middle values: always decrement
-            htl - 1
+
+            htl.saturating_sub(1)
         }
     }
 }
 
-/// Check if a request should be forwarded based on HTL
-pub fn should_forward(htl: u8) -> bool {
+/// Check if a request should be forwarded based on HTL.
+pub fn should_forward_htl(htl: u8) -> bool {
     htl > 0
+}
+
+/// Backward-compatible helper.
+pub fn should_forward(htl: u8) -> bool {
+    should_forward_htl(htl)
 }
 
 use tokio::sync::{mpsc, oneshot};
@@ -432,6 +507,152 @@ pub struct WebRTCStats {
 
 /// Nostr event kind for WebRTC signaling (ephemeral, NIP-17 style)
 pub const NOSTR_KIND_HASHTREE: u16 = 25050;
+
+/// Relayless mesh protocol constants for forwarding signaling events over data channels.
+pub const MESH_PROTOCOL: &str = "htree.nostr.mesh.v1";
+pub const MESH_PROTOCOL_VERSION: u8 = 1;
+pub const MESH_DEFAULT_HTL: u8 = MESH_EVENT_POLICY.max_htl;
+pub const MESH_MAX_HTL: u8 = 6;
+
+/// TTL/capacity dedupe structure for forwarded mesh frames/events.
+#[derive(Debug)]
+pub struct TimedSeenSet {
+    entries: HashMap<String, Instant>,
+    order: VecDeque<(String, Instant)>,
+    ttl: Duration,
+    capacity: usize,
+}
+
+impl TimedSeenSet {
+    pub fn new(capacity: usize, ttl: Duration) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            ttl,
+            capacity,
+        }
+    }
+
+    fn prune(&mut self, now: Instant) {
+        while let Some((key, inserted_at)) = self.order.front().cloned() {
+            if now.duration_since(inserted_at) < self.ttl {
+                break;
+            }
+            self.order.pop_front();
+            if self
+                .entries
+                .get(&key)
+                .map(|ts| *ts == inserted_at)
+                .unwrap_or(false)
+            {
+                self.entries.remove(&key);
+            }
+        }
+
+        while self.entries.len() > self.capacity {
+            if let Some((key, inserted_at)) = self.order.pop_front() {
+                if self
+                    .entries
+                    .get(&key)
+                    .map(|ts| *ts == inserted_at)
+                    .unwrap_or(false)
+                {
+                    self.entries.remove(&key);
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    pub fn insert_if_new(&mut self, key: String) -> bool {
+        let now = Instant::now();
+        self.prune(now);
+        if self.entries.contains_key(&key) {
+            return false;
+        }
+        self.entries.insert(key.clone(), now);
+        self.order.push_back((key, now));
+        self.prune(now);
+        true
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum MeshNostrPayload {
+    #[serde(rename = "EVENT")]
+    Event { event: Event },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshNostrFrame {
+    pub protocol: String,
+    pub version: u8,
+    pub frame_id: String,
+    pub htl: u8,
+    pub sender_peer_id: String,
+    pub payload: MeshNostrPayload,
+}
+
+impl MeshNostrFrame {
+    pub fn new_event(event: Event, sender_peer_id: &str, htl: u8) -> Self {
+        Self::new_event_with_id(
+            event,
+            sender_peer_id,
+            &uuid::Uuid::new_v4().to_string(),
+            htl,
+        )
+    }
+
+    pub fn new_event_with_id(event: Event, sender_peer_id: &str, frame_id: &str, htl: u8) -> Self {
+        Self {
+            protocol: MESH_PROTOCOL.to_string(),
+            version: MESH_PROTOCOL_VERSION,
+            frame_id: frame_id.to_string(),
+            htl,
+            sender_peer_id: sender_peer_id.to_string(),
+            payload: MeshNostrPayload::Event { event },
+        }
+    }
+
+    pub fn event(&self) -> &Event {
+        match &self.payload {
+            MeshNostrPayload::Event { event } => event,
+        }
+    }
+}
+
+pub fn validate_mesh_frame(frame: &MeshNostrFrame) -> Result<(), &'static str> {
+    if frame.protocol != MESH_PROTOCOL {
+        return Err("invalid protocol");
+    }
+    if frame.version != MESH_PROTOCOL_VERSION {
+        return Err("invalid version");
+    }
+    if frame.frame_id.is_empty() {
+        return Err("missing frame id");
+    }
+    if frame.sender_peer_id.is_empty() {
+        return Err("missing sender peer id");
+    }
+    if frame.htl == 0 || frame.htl > MESH_MAX_HTL {
+        return Err("invalid htl");
+    }
+
+    let event = frame.event();
+    if event.kind != Kind::Custom(NOSTR_KIND_HASHTREE)
+        && event.kind != Kind::Ephemeral(NOSTR_KIND_HASHTREE)
+    {
+        return Err("unsupported event kind");
+    }
+
+    Ok(())
+}
 
 /// Data channel label
 pub const DATA_CHANNEL_LABEL: &str = "hashtree";
