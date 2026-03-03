@@ -1,6 +1,12 @@
 use hashtree_sim::{run_parameter_sweep, PoolConfig, SimConfig};
 use std::time::Duration;
 
+// Gate thresholds for this fast, noisy CI-style sweep.
+// For longer runs, raise these (especially min_success_rate).
+const MIN_SUCCESS_RATE: f64 = 0.12;
+const MIN_LARGEST_COMPONENT_SHARE: f64 = 0.90;
+const MAX_COMPONENT_COUNT: f64 = 3.0;
+
 #[derive(Debug)]
 struct Summary {
     max_connections: usize,
@@ -11,7 +17,43 @@ struct Summary {
     avg_overhead_ratio: f64,
     avg_component_count: f64,
     avg_largest_component_share: f64,
+    avg_tick_p95_us: f64,
+    avg_peak_connection_pairs: f64,
+    passes_gates: bool,
+    gate_failures: Vec<&'static str>,
     score: f64,
+}
+
+fn ratio_score(
+    avg_success_rate: f64,
+    avg_p95_ms: f64,
+    avg_overhead_ratio: f64,
+    avg_component_count: f64,
+    avg_largest_component_share: f64,
+    avg_tick_p95_us: f64,
+    avg_peak_connection_pairs: f64,
+) -> (bool, Vec<&'static str>, f64) {
+    let mut failures = Vec::new();
+    if avg_success_rate < MIN_SUCCESS_RATE {
+        failures.push("success");
+    }
+    if avg_largest_component_share < MIN_LARGEST_COMPONENT_SHARE {
+        failures.push("largest_component");
+    }
+    if avg_component_count > MAX_COMPONENT_COUNT {
+        failures.push("components");
+    }
+    if !failures.is_empty() {
+        return (false, failures, 0.0);
+    }
+
+    let good = avg_success_rate.powf(3.0) * avg_largest_component_share.powf(2.0);
+    let bad = (1.0 + avg_p95_ms / 50.0).ln()
+        + 0.8 * (1.0 + avg_overhead_ratio).ln()
+        + 0.5 * (1.0 + avg_tick_p95_us / 2000.0).ln()
+        + 0.3 * (1.0 + avg_peak_connection_pairs / 200.0).ln();
+    let score = good / (1.0 + bad);
+    (true, failures, score)
 }
 
 #[tokio::main]
@@ -37,6 +79,7 @@ async fn main() {
                 retrieval_probe_count: 15,
                 retrieval_payload_bytes: 2048,
                 retrieval_timeout_ms: 700,
+                max_events_retained: 10_000,
             });
         }
     }
@@ -57,6 +100,8 @@ async fn main() {
         let mut overhead_sum = 0.0;
         let mut component_sum = 0.0;
         let mut largest_share_sum = 0.0;
+        let mut tick_p95_sum = 0.0;
+        let mut peak_links_sum = 0.0;
         let mut runs = 0_usize;
 
         for result in &results {
@@ -76,6 +121,8 @@ async fn main() {
             };
             overhead_sum += overhead;
             component_sum += result.final_topology.component_count as f64;
+            tick_p95_sum += result.stats.local_resources.tick_p95_us as f64;
+            peak_links_sum += result.stats.local_resources.peak_connection_pairs as f64;
             let largest_share = if result.final_topology.node_count == 0 {
                 0.0
             } else {
@@ -94,13 +141,18 @@ async fn main() {
         let avg_overhead_ratio = overhead_sum / runs as f64;
         let avg_component_count = component_sum / runs as f64;
         let avg_largest_component_share = largest_share_sum / runs as f64;
+        let avg_tick_p95_us = tick_p95_sum / runs as f64;
+        let avg_peak_connection_pairs = peak_links_sum / runs as f64;
 
-        // Lower is better: penalize failures and fragmentation heavily.
-        let score = (1.0 - avg_success_rate) * 1200.0
-            + avg_p95_ms
-            + avg_overhead_ratio * 60.0
-            + (avg_component_count - 1.0).max(0.0) * 200.0
-            + (1.0 - avg_largest_component_share) * 600.0;
+        let (passes_gates, gate_failures, score) = ratio_score(
+            avg_success_rate,
+            avg_p95_ms,
+            avg_overhead_ratio,
+            avg_component_count,
+            avg_largest_component_share,
+            avg_tick_p95_us,
+            avg_peak_connection_pairs,
+        );
 
         summaries.push(Summary {
             max_connections,
@@ -111,22 +163,38 @@ async fn main() {
             avg_overhead_ratio,
             avg_component_count,
             avg_largest_component_share,
+            avg_tick_p95_us,
+            avg_peak_connection_pairs,
+            passes_gates,
+            gate_failures,
             score,
         });
     }
 
-    summaries.sort_by(|a, b| {
-        a.score
-            .partial_cmp(&b.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+    summaries.sort_by(|a, b| match (a.passes_gates, b.passes_gates) {
+        (true, true) => b
+            .score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        (false, false) => b
+            .avg_success_rate
+            .partial_cmp(&a.avg_success_rate)
+            .unwrap_or(std::cmp::Ordering::Equal),
     });
 
     println!(
-        "\nRanked candidates (lower score is better):\nmax/sat | runs | success | p95_ms | overhead | components | largest_share | score"
+        "\nRanked candidates (accepted first, higher score is better):\nmax/sat | runs | success | p95_ms | overhead | components | largest_share | tick_p95_us | peak_links | gates | score"
     );
     for s in summaries {
+        let gate_str = if s.passes_gates {
+            "pass".to_string()
+        } else {
+            format!("fail({})", s.gate_failures.join(","))
+        };
         println!(
-            "{:>2}/{:<2} | {:>4} | {:>6.2}% | {:>7.1} | {:>8.3} | {:>10.2} | {:>13.3} | {:>7.1}",
+            "{:>2}/{:<2} | {:>4} | {:>6.2}% | {:>7.1} | {:>8.3} | {:>10.2} | {:>13.3} | {:>11.1} | {:>10.1} | {:>17} | {:>8.5}",
             s.max_connections,
             s.satisfied_connections,
             s.runs,
@@ -135,6 +203,9 @@ async fn main() {
             s.avg_overhead_ratio,
             s.avg_component_count,
             s.avg_largest_component_share,
+            s.avg_tick_p95_us,
+            s.avg_peak_connection_pairs,
+            gate_str,
             s.score,
         );
     }

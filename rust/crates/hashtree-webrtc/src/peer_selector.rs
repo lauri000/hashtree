@@ -348,19 +348,14 @@ impl PeerSelector {
     }
 
     /// Check fairness: should this peer be skipped due to over-selection?
+    #[cfg(test)]
     fn should_skip_for_fairness(&self, peer_id: &str) -> bool {
-        if !self.fairness_enabled {
-            return false;
-        }
-
-        // Only apply fairness with enough peers (Freenet: 5+)
-        if self.stats.len() < SELECTION_MIN_PEERS {
-            return false;
-        }
-
-        // Calculate total selection rate
         let total_rate: f64 = self.stats.values().map(|s| s.selection_rate()).sum();
-        if total_rate <= 0.0 {
+        self.should_skip_for_fairness_with_total(peer_id, total_rate)
+    }
+
+    fn should_skip_for_fairness_with_total(&self, peer_id: &str, total_rate: f64) -> bool {
+        if !self.fairness_enabled || self.stats.len() < SELECTION_MIN_PEERS || total_rate <= 0.0 {
             return false;
         }
 
@@ -396,9 +391,10 @@ impl PeerSelector {
         // Apply fairness filter
         let candidates: Vec<String> =
             if self.fairness_enabled && available.len() >= SELECTION_MIN_PEERS {
+                let total_rate: f64 = self.stats.values().map(|s| s.selection_rate()).sum();
                 available
                     .into_iter()
-                    .filter(|id| !self.should_skip_for_fairness(id))
+                    .filter(|id| !self.should_skip_for_fairness_with_total(id, total_rate))
                     .collect()
             } else {
                 available

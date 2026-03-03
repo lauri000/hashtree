@@ -5,7 +5,7 @@
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -41,6 +41,8 @@ pub struct SimConfig {
     pub retrieval_payload_bytes: usize,
     /// Timeout for each retrieval probe (ms).
     pub retrieval_timeout_ms: u64,
+    /// Maximum number of simulation events retained in memory.
+    pub max_events_retained: usize,
 }
 
 impl Default for SimConfig {
@@ -57,6 +59,7 @@ impl Default for SimConfig {
             retrieval_probe_count: 0,
             retrieval_payload_bytes: 1024,
             retrieval_timeout_ms: 1500,
+            max_events_retained: 20_000,
         }
     }
 }
@@ -128,8 +131,20 @@ pub struct SimStats {
     pub data_response_messages: usize,
     pub data_bytes_processed: u64,
     pub retrieval: RetrievalStats,
+    pub local_resources: LocalResourceStats,
     pub topology_snapshots: Vec<(u64, TopologyStats)>,
-    pub events: Vec<SimEvent>,
+    pub events: VecDeque<SimEvent>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LocalResourceStats {
+    pub peak_active_nodes: usize,
+    pub peak_connection_pairs: usize,
+    pub peak_event_log_entries: usize,
+    pub run_wall_ms: u64,
+    pub tick_p50_us: u64,
+    pub tick_p95_us: u64,
+    pub tick_max_us: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -169,6 +184,40 @@ impl RetrievalStats {
     }
 }
 
+impl SimStats {
+    fn record_event(&mut self, max_events_retained: usize, event: SimEvent) {
+        if max_events_retained == 0 {
+            return;
+        }
+        if self.events.len() >= max_events_retained {
+            let _ = self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+}
+
+impl LocalResourceStats {
+    fn percentile(sorted_samples: &[u64], percentile: f64) -> u64 {
+        if sorted_samples.is_empty() {
+            return 0;
+        }
+        let p = percentile.clamp(0.0, 1.0);
+        let idx = ((sorted_samples.len() as f64 - 1.0) * p).round() as usize;
+        sorted_samples[idx]
+    }
+
+    fn finalize_tick_samples(&mut self, tick_durations_us: &[u64]) {
+        if tick_durations_us.is_empty() {
+            return;
+        }
+        let mut sorted = tick_durations_us.to_vec();
+        sorted.sort_unstable();
+        self.tick_p50_us = Self::percentile(&sorted, 0.50);
+        self.tick_p95_us = Self::percentile(&sorted, 0.95);
+        self.tick_max_us = sorted.last().copied().unwrap_or(0);
+    }
+}
+
 /// Network simulation using GenericStore with mock transports
 ///
 /// Uses the exact same code as production WebRTCStore, just with mocks.
@@ -197,9 +246,11 @@ impl Simulation {
 
     /// Run the simulation
     pub async fn run(&self) {
+        let run_started = Instant::now();
         let total_ms = self.config.duration.as_millis() as u64;
         let tick_ms = self.config.discovery_interval_ms;
         let total_ticks = total_ms / tick_ms;
+        let mut tick_durations_us = Vec::with_capacity(total_ticks as usize + 10);
 
         // Generate initial spawn times for all nodes
         let spawn_ticks: Vec<u64> = {
@@ -221,6 +272,7 @@ impl Simulation {
 
         // Tick-based simulation loop
         for tick in 0..total_ticks {
+            let tick_started = Instant::now();
             let elapsed_ms = tick * tick_ms;
 
             // Spawn nodes scheduled for this tick
@@ -243,6 +295,9 @@ impl Simulation {
                     .topology_snapshots
                     .push((elapsed_ms, stats));
             }
+
+            self.update_resource_peaks().await;
+            tick_durations_us.push(tick_started.elapsed().as_micros() as u64);
         }
 
         // Final processing
@@ -251,13 +306,31 @@ impl Simulation {
         }
 
         self.run_retrieval_probes(total_ms).await;
+        self.update_resource_peaks().await;
 
         let final_stats = self.analyze_topology().await;
-        self.stats
-            .write()
-            .await
-            .topology_snapshots
-            .push((total_ms, final_stats));
+        let mut stats = self.stats.write().await;
+        stats.topology_snapshots.push((total_ms, final_stats));
+        stats.local_resources.run_wall_ms = run_started.elapsed().as_millis() as u64;
+        stats
+            .local_resources
+            .finalize_tick_samples(&tick_durations_us);
+    }
+
+    async fn update_resource_peaks(&self) {
+        let active_nodes = self.nodes.read().await.len();
+        let connection_pairs = self.known_connections.read().await.len();
+        let mut stats = self.stats.write().await;
+        stats.local_resources.peak_active_nodes =
+            stats.local_resources.peak_active_nodes.max(active_nodes);
+        stats.local_resources.peak_connection_pairs = stats
+            .local_resources
+            .peak_connection_pairs
+            .max(connection_pairs);
+        stats.local_resources.peak_event_log_entries = stats
+            .local_resources
+            .peak_event_log_entries
+            .max(stats.events.len());
     }
 
     async fn spawn_node(&self, time_ms: u64) {
@@ -322,10 +395,13 @@ impl Simulation {
         {
             let mut stats = self.stats.write().await;
             stats.total_joins += 1;
-            stats.events.push(SimEvent::NodeJoined {
-                node_id: node_id.clone(),
-                time_ms,
-            });
+            stats.record_event(
+                self.config.max_events_retained,
+                SimEvent::NodeJoined {
+                    node_id: node_id.clone(),
+                    time_ms,
+                },
+            );
         }
 
         self.nodes.write().await.insert(
@@ -401,11 +477,14 @@ impl Simulation {
             let mut stats = self.stats.write().await;
             for (from, to) in &formed {
                 stats.total_connections_formed += 1;
-                stats.events.push(SimEvent::ConnectionFormed {
-                    from: from.clone(),
-                    to: to.clone(),
-                    time_ms,
-                });
+                stats.record_event(
+                    self.config.max_events_retained,
+                    SimEvent::ConnectionFormed {
+                        from: from.clone(),
+                        to: to.clone(),
+                        time_ms,
+                    },
+                );
             }
         }
 
@@ -415,6 +494,11 @@ impl Simulation {
     async fn process_all_data_messages(&self) {
         let mut node_ids: Vec<String> = self.nodes.read().await.keys().cloned().collect();
         node_ids.sort();
+
+        let mut processed = 0usize;
+        let mut request_messages = 0usize;
+        let mut response_messages = 0usize;
+        let mut processed_bytes = 0u64;
 
         for node_id in node_ids {
             let store = {
@@ -432,20 +516,25 @@ impl Simulation {
                 };
 
                 while let Some(data) = channel.try_recv() {
-                    {
-                        let mut stats = self.stats.write().await;
-                        stats.data_messages_processed += 1;
-                        stats.data_bytes_processed += data.len() as u64;
-                        if let Some(msg) = parse_message(&data) {
-                            match msg {
-                                DataMessage::Request(_) => stats.data_request_messages += 1,
-                                DataMessage::Response(_) => stats.data_response_messages += 1,
-                            }
+                    processed += 1;
+                    processed_bytes += data.len() as u64;
+                    if let Some(msg) = parse_message(&data) {
+                        match msg {
+                            DataMessage::Request(_) => request_messages += 1,
+                            DataMessage::Response(_) => response_messages += 1,
                         }
                     }
                     store.handle_data_message(&peer_id, &data).await;
                 }
             }
+        }
+
+        if processed > 0 {
+            let mut stats = self.stats.write().await;
+            stats.data_messages_processed += processed;
+            stats.data_request_messages += request_messages;
+            stats.data_response_messages += response_messages;
+            stats.data_bytes_processed += processed_bytes;
         }
     }
 
@@ -589,18 +678,24 @@ impl Simulation {
 
             for peer_id in peer_ids {
                 stats.total_connections_lost += 1;
-                stats.events.push(SimEvent::ConnectionLost {
-                    from: node_id.to_string(),
-                    to: peer_id.clone(),
-                    time_ms,
-                });
+                stats.record_event(
+                    self.config.max_events_retained,
+                    SimEvent::ConnectionLost {
+                        from: node_id.to_string(),
+                        to: peer_id.clone(),
+                        time_ms,
+                    },
+                );
             }
 
             stats.total_leaves += 1;
-            stats.events.push(SimEvent::NodeLeft {
-                node_id: node_id.to_string(),
-                time_ms,
-            });
+            stats.record_event(
+                self.config.max_events_retained,
+                SimEvent::NodeLeft {
+                    node_id: node_id.to_string(),
+                    time_ms,
+                },
+            );
         }
     }
 
@@ -775,6 +870,7 @@ impl Simulation {
                 "retrieval_probe_count": self.config.retrieval_probe_count,
                 "retrieval_payload_bytes": self.config.retrieval_payload_bytes,
                 "retrieval_timeout_ms": self.config.retrieval_timeout_ms,
+                "max_events_retained": self.config.max_events_retained,
                 "pool": {
                     "max_connections": self.config.pool.max_connections,
                     "satisfied_connections": self.config.pool.satisfied_connections,
@@ -789,6 +885,15 @@ impl Simulation {
                 "data_request_messages": stats.data_request_messages,
                 "data_response_messages": stats.data_response_messages,
                 "data_bytes_processed": stats.data_bytes_processed,
+                "local_resources": {
+                    "peak_active_nodes": stats.local_resources.peak_active_nodes,
+                    "peak_connection_pairs": stats.local_resources.peak_connection_pairs,
+                    "peak_event_log_entries": stats.local_resources.peak_event_log_entries,
+                    "run_wall_ms": stats.local_resources.run_wall_ms,
+                    "tick_p50_us": stats.local_resources.tick_p50_us,
+                    "tick_p95_us": stats.local_resources.tick_p95_us,
+                    "tick_max_us": stats.local_resources.tick_max_us
+                },
                 "retrieval": {
                     "probes": stats.retrieval.probes,
                     "successes": stats.retrieval.successes,
@@ -827,7 +932,11 @@ impl Simulation {
                     0.0
                 } else {
                     final_topology.largest_component as f64 / final_topology.node_count as f64
-                }
+                },
+                "local_cpu_tick_p95_us": stats.local_resources.tick_p95_us,
+                "local_cpu_run_wall_ms": stats.local_resources.run_wall_ms,
+                "local_mem_peak_event_log_entries": stats.local_resources.peak_event_log_entries,
+                "local_mem_peak_connection_pairs": stats.local_resources.peak_connection_pairs
             }
         })
     }
@@ -874,6 +983,16 @@ impl Simulation {
             stats.data_response_messages
         );
         println!("Data bytes: {}", stats.data_bytes_processed);
+        println!(
+            "Local resources: peak_nodes={}, peak_links={}, peak_events={}, tick p50/p95/max (us)={}/{}/{}, wall_ms={}",
+            stats.local_resources.peak_active_nodes,
+            stats.local_resources.peak_connection_pairs,
+            stats.local_resources.peak_event_log_entries,
+            stats.local_resources.tick_p50_us,
+            stats.local_resources.tick_p95_us,
+            stats.local_resources.tick_max_us,
+            stats.local_resources.run_wall_ms
+        );
         if stats.retrieval.probes > 0 {
             println!(
                 "Retrieval probes: {} (success: {}, failure: {}, success_rate: {:.2}%)",
@@ -936,6 +1055,7 @@ mod tests {
             retrieval_probe_count: 0,
             retrieval_payload_bytes: 1024,
             retrieval_timeout_ms: 1500,
+            max_events_retained: 20_000,
         };
 
         let sim = Simulation::new(config);
@@ -966,6 +1086,7 @@ mod tests {
             retrieval_probe_count: 0,
             retrieval_payload_bytes: 1024,
             retrieval_timeout_ms: 1500,
+            max_events_retained: 20_000,
         };
 
         let sim = Simulation::new(config);
@@ -1005,6 +1126,7 @@ mod tests {
             retrieval_probe_count: 0,
             retrieval_payload_bytes: 1024,
             retrieval_timeout_ms: 1500,
+            max_events_retained: 20_000,
         };
 
         let sim = Simulation::new(config);
@@ -1042,6 +1164,7 @@ mod tests {
             retrieval_probe_count: 16,
             retrieval_payload_bytes: 512,
             retrieval_timeout_ms: 1200,
+            max_events_retained: 20_000,
         };
 
         let sim = Simulation::new(config);
@@ -1080,6 +1203,7 @@ mod tests {
             retrieval_probe_count: 6,
             retrieval_payload_bytes: 256,
             retrieval_timeout_ms: 1000,
+            max_events_retained: 20_000,
         };
         let sim = Simulation::new(config);
         sim.run().await;
@@ -1089,6 +1213,39 @@ mod tests {
         assert_eq!(report["stats"]["retrieval"]["probes"].as_u64(), Some(6));
         assert!(report["objectives"]["retrieval_p95_latency_ms"].is_number());
         assert!(report["objectives"]["overhead_ratio_data_to_payload"].is_number());
+        assert!(report["objectives"]["local_cpu_tick_p95_us"].is_number());
+        assert!(report["objectives"]["local_mem_peak_event_log_entries"].is_number());
+        assert!(report["stats"]["local_resources"]["tick_p95_us"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_webrtc_sim_caps_event_log_for_memory() {
+        let config = SimConfig {
+            node_count: 30,
+            duration: Duration::from_secs(3),
+            seed: 77,
+            pool: PoolConfig {
+                max_connections: 6,
+                satisfied_connections: 3,
+            },
+            discovery_interval_ms: 100,
+            churn_rate: 0.10,
+            allow_rejoin: true,
+            network_latency_ms: 0,
+            retrieval_probe_count: 0,
+            retrieval_payload_bytes: 256,
+            retrieval_timeout_ms: 700,
+            max_events_retained: 8,
+        };
+        let sim = Simulation::new(config);
+        sim.run().await;
+        let stats = sim.get_stats().await;
+        assert!(
+            stats.events.len() <= 8,
+            "event log should be capped, got {} entries",
+            stats.events.len()
+        );
+        assert!(stats.local_resources.peak_event_log_entries <= 8);
     }
 
     #[tokio::test]
@@ -1109,6 +1266,7 @@ mod tests {
                 retrieval_probe_count: 0,
                 retrieval_payload_bytes: 128,
                 retrieval_timeout_ms: 1000,
+                max_events_retained: 20_000,
             },
             SimConfig {
                 node_count: 6,
@@ -1125,6 +1283,7 @@ mod tests {
                 retrieval_probe_count: 0,
                 retrieval_payload_bytes: 128,
                 retrieval_timeout_ms: 1000,
+                max_events_retained: 20_000,
             },
         ];
 
@@ -1132,5 +1291,37 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].config.seed, 1);
         assert_eq!(results[1].config.seed, 2);
+    }
+
+    #[tokio::test]
+    async fn test_webrtc_sim_short_timeout_retrieval_success_floor() {
+        // Regression guard for low retrieval success when timeouts are shorter
+        // than sequential per-peer probing.
+        let config = SimConfig {
+            node_count: 60,
+            duration: Duration::from_secs(3),
+            seed: 22,
+            pool: PoolConfig {
+                max_connections: 16,
+                satisfied_connections: 8,
+            },
+            discovery_interval_ms: 100,
+            churn_rate: 0.02,
+            allow_rejoin: true,
+            network_latency_ms: 30,
+            retrieval_probe_count: 20,
+            retrieval_payload_bytes: 2048,
+            retrieval_timeout_ms: 700,
+            max_events_retained: 20_000,
+        };
+
+        let sim = Simulation::new(config);
+        sim.run().await;
+        let stats = sim.get_stats().await;
+        assert!(
+            stats.retrieval.success_rate >= 0.50,
+            "retrieval success rate too low: {:.2}%",
+            stats.retrieval.success_rate * 100.0
+        );
     }
 }

@@ -16,6 +16,7 @@ let config = SimConfig {
     retrieval_probe_count: 200,
     retrieval_payload_bytes: 4096,
     retrieval_timeout_ms: 1500,
+    max_events_retained: 20_000,
     ..Default::default()
 };
 
@@ -64,14 +65,24 @@ let configs = vec![
 let results = run_parameter_sweep(&configs).await;
 for result in results {
     println!(
-        "seed={} success_rate={:.2}% p95={}ms components={}",
+        "seed={} success_rate={:.2}% p95={}ms components={} local_tick_p95_us={} peak_links={}",
         result.config.seed,
         result.stats.retrieval.success_rate * 100.0,
         result.stats.retrieval.p95_latency_ms,
-        result.final_topology.component_count
+        result.final_topology.component_count,
+        result.stats.local_resources.tick_p95_us,
+        result.stats.local_resources.peak_connection_pairs
     );
 }
 ```
+
+### Local Resource Objectives
+
+`report_json()` now includes local efficiency objectives so sweeps can optimize beyond retrieval quality:
+- `local_cpu_tick_p95_us`
+- `local_cpu_run_wall_ms`
+- `local_mem_peak_event_log_entries`
+- `local_mem_peak_connection_pairs`
 
 ## Network Connectivity
 

@@ -128,15 +128,22 @@ where
         }
 
         let hash_key = hash_to_key(hash);
+        let (tx, rx) = oneshot::channel();
+        self.pending_requests
+            .write()
+            .await
+            .insert(hash_key.clone(), PendingRequest { response_tx: tx });
 
-        // Try each peer
+        let mut send_count = 0usize;
+
+        // Fan out requests to all currently connected peers and wait once.
+        // This avoids head-of-line blocking on peers that don't have data.
         for peer_id in peer_ids {
             let channel = match self.signaling.get_channel(&peer_id).await {
                 Some(c) => c,
                 None => continue,
             };
 
-            // Get HTL config for this peer
             let htl_config = {
                 let configs = self.htl_configs.read().await;
                 configs
@@ -145,49 +152,37 @@ where
                     .unwrap_or_else(PeerHTLConfig::random)
             };
 
-            // Create request
             let send_htl = htl_config.decrement(MAX_HTL);
             let req = create_request(hash, send_htl);
             let request_bytes = encode_request(&req);
 
-            // Setup response channel
-            let (tx, rx) = oneshot::channel();
-            self.pending_requests
-                .write()
-                .await
-                .insert(hash_key.clone(), PendingRequest { response_tx: tx });
-
-            // Send request
-            if let Err(e) = channel.send(request_bytes).await {
-                if self.debug {
-                    println!("[GenericStore] Failed to send request: {:?}", e);
-                }
-                self.pending_requests.write().await.remove(&hash_key);
-                continue;
-            }
-
-            // Wait for response
-            match tokio::time::timeout(self.request_timeout, rx).await {
-                Ok(Ok(Some(data))) => {
-                    // Verify hash
-                    if hashtree_core::sha256(&data) == *hash {
-                        // Cache locally
-                        let _ = self.local_store.put(*hash, data.clone()).await;
-                        return Some(data);
+            match channel.send(request_bytes).await {
+                Ok(()) => send_count += 1,
+                Err(e) => {
+                    if self.debug {
+                        println!("[GenericStore] Failed to send request to {peer_id}: {e:?}");
                     }
-                }
-                Ok(Ok(None)) => {
-                    // Peer doesn't have data
-                    continue;
-                }
-                _ => {
-                    // Timeout or error
-                    self.pending_requests.write().await.remove(&hash_key);
-                    continue;
                 }
             }
         }
 
+        if send_count == 0 {
+            self.pending_requests.write().await.remove(&hash_key);
+            return None;
+        }
+
+        match tokio::time::timeout(self.request_timeout, rx).await {
+            Ok(Ok(Some(data))) => {
+                if hashtree_core::sha256(&data) == *hash {
+                    let _ = self.local_store.put(*hash, data.clone()).await;
+                    return Some(data);
+                }
+            }
+            Ok(Ok(None)) => {}
+            _ => {}
+        }
+
+        self.pending_requests.write().await.remove(&hash_key);
         None
     }
 
@@ -218,23 +213,21 @@ where
             }
             DataMessage::Response(res) => {
                 let hash_key = hash_to_key(&res.h);
+                let hash = match crate::protocol::bytes_to_hash(&res.h) {
+                    Some(h) => h,
+                    None => return,
+                };
 
-                // Resolve pending request
-                if let Some(pending) = self.pending_requests.write().await.remove(&hash_key) {
-                    // Verify hash
-                    let hash = match crate::protocol::bytes_to_hash(&res.h) {
-                        Some(h) => h,
-                        None => {
-                            let _ = pending.response_tx.send(None);
-                            return;
-                        }
-                    };
-
-                    if hashtree_core::sha256(&res.d) == hash {
-                        let _ = pending.response_tx.send(Some(res.d));
-                    } else {
-                        let _ = pending.response_tx.send(None);
+                // Ignore malformed/corrupt payload and keep waiting for a valid response.
+                if hashtree_core::sha256(&res.d) != hash {
+                    if self.debug {
+                        println!("[GenericStore] Ignoring invalid response payload for {hash_key}");
                     }
+                    return;
+                }
+
+                if let Some(pending) = self.pending_requests.write().await.remove(&hash_key) {
+                    let _ = pending.response_tx.send(Some(res.d));
                 }
             }
         }
