@@ -67,6 +67,12 @@ pub trait DataChannel: Send + Sync {
     /// Receive data from the peer
     async fn recv(&self) -> Option<Vec<u8>>;
 
+    /// Try to receive data without blocking.
+    /// Returns `None` when no message is currently available.
+    fn try_recv(&self) -> Option<Vec<u8>> {
+        None
+    }
+
     /// Check if the channel is open
     fn is_open(&self) -> bool;
 
@@ -171,6 +177,10 @@ impl<T: DataChannel + ?Sized> DataChannel for Arc<T> {
 
     async fn recv(&self) -> Option<Vec<u8>> {
         (**self).recv().await
+    }
+
+    fn try_recv(&self) -> Option<Vec<u8>> {
+        (**self).try_recv()
     }
 
     fn is_open(&self) -> bool {

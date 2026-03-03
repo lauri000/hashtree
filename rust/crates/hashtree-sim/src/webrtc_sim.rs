@@ -7,17 +7,17 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
-use hashtree_core::{HashTree, HashTreeConfig, MemoryStore};
+use hashtree_core::{HashTree, HashTreeConfig, MemoryStore, Store};
 use hashtree_webrtc::{
-    GenericStore, MockConnectionFactory, MockRelay, MockRelayTransport, PoolConfig, PoolSettings,
-    RelayTransport, SignalingManager,
+    parse_message, DataMessage, GenericStore, MockConnectionFactory, MockRelay, MockRelayTransport,
+    PoolConfig, PoolSettings, RelayTransport, SignalingManager,
 };
 
 /// Simulation configuration
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct SimConfig {
     /// Number of nodes to spawn
     pub node_count: usize,
@@ -35,6 +35,12 @@ pub struct SimConfig {
     pub allow_rejoin: bool,
     /// Mean network latency per hop (ms)
     pub network_latency_ms: u64,
+    /// Number of retrieval probes to run after topology formation.
+    pub retrieval_probe_count: usize,
+    /// Payload size for each retrieval probe.
+    pub retrieval_payload_bytes: usize,
+    /// Timeout for each retrieval probe (ms).
+    pub retrieval_timeout_ms: u64,
 }
 
 impl Default for SimConfig {
@@ -48,6 +54,9 @@ impl Default for SimConfig {
             churn_rate: 0.01,
             allow_rejoin: true,
             network_latency_ms: 50,
+            retrieval_probe_count: 0,
+            retrieval_payload_bytes: 1024,
+            retrieval_timeout_ms: 1500,
         }
     }
 }
@@ -114,8 +123,50 @@ pub struct SimStats {
     pub total_leaves: usize,
     pub total_connections_formed: usize,
     pub total_connections_lost: usize,
+    pub data_messages_processed: usize,
+    pub data_request_messages: usize,
+    pub data_response_messages: usize,
+    pub data_bytes_processed: u64,
+    pub retrieval: RetrievalStats,
     pub topology_snapshots: Vec<(u64, TopologyStats)>,
     pub events: Vec<SimEvent>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RetrievalStats {
+    pub probes: usize,
+    pub successes: usize,
+    pub failures: usize,
+    pub payload_bytes: u64,
+    pub data_plane_bytes: u64,
+    pub p50_latency_ms: u64,
+    pub p95_latency_ms: u64,
+    pub max_latency_ms: u64,
+    pub success_rate: f64,
+}
+
+impl RetrievalStats {
+    fn percentile(sorted_latencies: &[u64], percentile: f64) -> u64 {
+        if sorted_latencies.is_empty() {
+            return 0;
+        }
+        let p = percentile.clamp(0.0, 1.0);
+        let idx = ((sorted_latencies.len() as f64 - 1.0) * p).round() as usize;
+        sorted_latencies[idx]
+    }
+
+    fn finalize(&mut self, latencies_ms: &[u64]) {
+        let mut sorted = latencies_ms.to_vec();
+        sorted.sort_unstable();
+        self.p50_latency_ms = Self::percentile(&sorted, 0.50);
+        self.p95_latency_ms = Self::percentile(&sorted, 0.95);
+        self.max_latency_ms = sorted.last().copied().unwrap_or(0);
+        self.success_rate = if self.probes == 0 {
+            0.0
+        } else {
+            self.successes as f64 / self.probes as f64
+        };
+    }
 }
 
 /// Network simulation using GenericStore with mock transports
@@ -198,6 +249,8 @@ impl Simulation {
         for _ in 0..10 {
             self.process_all_messages(total_ms).await;
         }
+
+        self.run_retrieval_probes(total_ms).await;
 
         let final_stats = self.analyze_topology().await;
         self.stats
@@ -302,6 +355,7 @@ impl Simulation {
             }
         }
 
+        self.process_all_data_messages().await;
         self.record_new_connections(time_ms).await;
     }
 
@@ -356,6 +410,147 @@ impl Simulation {
         }
 
         *self.known_connections.write().await = current;
+    }
+
+    async fn process_all_data_messages(&self) {
+        let mut node_ids: Vec<String> = self.nodes.read().await.keys().cloned().collect();
+        node_ids.sort();
+
+        for node_id in node_ids {
+            let store = {
+                let nodes = self.nodes.read().await;
+                nodes.get(&node_id).map(|running| running.store.clone())
+            };
+            let Some(store) = store else {
+                continue;
+            };
+
+            let peer_ids = store.signaling().peer_ids().await;
+            for peer_id in peer_ids {
+                let Some(channel) = store.signaling().get_channel(&peer_id).await else {
+                    continue;
+                };
+
+                while let Some(data) = channel.try_recv() {
+                    {
+                        let mut stats = self.stats.write().await;
+                        stats.data_messages_processed += 1;
+                        stats.data_bytes_processed += data.len() as u64;
+                        if let Some(msg) = parse_message(&data) {
+                            match msg {
+                                DataMessage::Request(_) => stats.data_request_messages += 1,
+                                DataMessage::Response(_) => stats.data_response_messages += 1,
+                            }
+                        }
+                    }
+                    store.handle_data_message(&peer_id, &data).await;
+                }
+            }
+        }
+    }
+
+    async fn run_retrieval_probes(&self, time_ms: u64) {
+        if self.config.retrieval_probe_count == 0 {
+            return;
+        }
+
+        let connected_pairs: Vec<(String, String)> = self
+            .collect_active_connections()
+            .await
+            .into_iter()
+            .collect();
+        if connected_pairs.is_empty() {
+            return;
+        }
+
+        let mut latencies_ms = Vec::with_capacity(self.config.retrieval_probe_count);
+        for probe_idx in 0..self.config.retrieval_probe_count {
+            let (source_id, target_id, payload) = {
+                let mut rng = self.rng.write().await;
+                let pair_idx = rng.gen_range(0..connected_pairs.len());
+                let (a, b) = connected_pairs[pair_idx].clone();
+                let use_ab = rng.gen::<bool>();
+                let (source, target) = if use_ab { (a, b) } else { (b, a) };
+                let payload = (0..self.config.retrieval_payload_bytes)
+                    .map(|_| rng.gen::<u8>())
+                    .collect::<Vec<u8>>();
+                (source, target, payload)
+            };
+
+            let source_store = {
+                let nodes = self.nodes.read().await;
+                nodes
+                    .get(&source_id)
+                    .map(|running| running.store.clone())
+                    .expect("source node must exist")
+            };
+            let target_store = {
+                let nodes = self.nodes.read().await;
+                nodes
+                    .get(&target_id)
+                    .map(|running| running.store.clone())
+                    .expect("target node must exist")
+            };
+
+            let hash = hashtree_core::sha256(&payload);
+            let _ = source_store.put(hash, payload.clone()).await;
+
+            let bytes_before = self.stats.read().await.data_bytes_processed;
+            let start = Instant::now();
+            let result = self
+                .retrieve_with_processing(
+                    target_store,
+                    hash,
+                    Duration::from_millis(self.config.retrieval_timeout_ms),
+                    time_ms + probe_idx as u64,
+                )
+                .await;
+            let latency_ms = start.elapsed().as_millis() as u64;
+            let bytes_after = self.stats.read().await.data_bytes_processed;
+
+            let mut stats = self.stats.write().await;
+            stats.retrieval.probes += 1;
+            stats.retrieval.data_plane_bytes += bytes_after.saturating_sub(bytes_before);
+
+            match result {
+                Some(data) if data == payload => {
+                    stats.retrieval.successes += 1;
+                    stats.retrieval.payload_bytes += payload.len() as u64;
+                    latencies_ms.push(latency_ms);
+                }
+                _ => {
+                    stats.retrieval.failures += 1;
+                }
+            }
+        }
+
+        self.stats.write().await.retrieval.finalize(&latencies_ms);
+    }
+
+    async fn retrieve_with_processing(
+        &self,
+        store: Arc<SimStore>,
+        hash: hashtree_core::Hash,
+        timeout: Duration,
+        time_ms: u64,
+    ) -> Option<Vec<u8>> {
+        let get_task = tokio::spawn(async move { store.get(&hash).await.ok().flatten() });
+        let started = Instant::now();
+
+        loop {
+            if get_task.is_finished() {
+                return get_task.await.ok().flatten();
+            }
+
+            if started.elapsed() >= timeout {
+                get_task.abort();
+                return None;
+            }
+
+            self.process_all_messages(time_ms + started.elapsed().as_millis() as u64)
+                .await;
+            tokio::task::yield_now().await;
+        }
     }
 
     async fn apply_churn(&self, time_ms: u64) {
@@ -558,6 +753,85 @@ impl Simulation {
         self.stats.read().await.clone()
     }
 
+    /// Build a JSON report suitable for sweep comparison and regression tracking.
+    pub async fn report_json(&self) -> serde_json::Value {
+        let stats = self.get_stats().await;
+        let (snapshot_time_ms, final_topology) =
+            if let Some((ts, topo)) = stats.topology_snapshots.last().cloned() {
+                (ts, topo)
+            } else {
+                (0, self.analyze_topology().await)
+            };
+
+        serde_json::json!({
+            "config": {
+                "node_count": self.config.node_count,
+                "duration_ms": self.config.duration.as_millis() as u64,
+                "seed": self.config.seed,
+                "discovery_interval_ms": self.config.discovery_interval_ms,
+                "churn_rate": self.config.churn_rate,
+                "allow_rejoin": self.config.allow_rejoin,
+                "network_latency_ms": self.config.network_latency_ms,
+                "retrieval_probe_count": self.config.retrieval_probe_count,
+                "retrieval_payload_bytes": self.config.retrieval_payload_bytes,
+                "retrieval_timeout_ms": self.config.retrieval_timeout_ms,
+                "pool": {
+                    "max_connections": self.config.pool.max_connections,
+                    "satisfied_connections": self.config.pool.satisfied_connections,
+                }
+            },
+            "stats": {
+                "joins": stats.total_joins,
+                "leaves": stats.total_leaves,
+                "connections_formed": stats.total_connections_formed,
+                "connections_lost": stats.total_connections_lost,
+                "data_messages_processed": stats.data_messages_processed,
+                "data_request_messages": stats.data_request_messages,
+                "data_response_messages": stats.data_response_messages,
+                "data_bytes_processed": stats.data_bytes_processed,
+                "retrieval": {
+                    "probes": stats.retrieval.probes,
+                    "successes": stats.retrieval.successes,
+                    "failures": stats.retrieval.failures,
+                    "success_rate": stats.retrieval.success_rate,
+                    "payload_bytes": stats.retrieval.payload_bytes,
+                    "data_plane_bytes": stats.retrieval.data_plane_bytes,
+                    "p50_latency_ms": stats.retrieval.p50_latency_ms,
+                    "p95_latency_ms": stats.retrieval.p95_latency_ms,
+                    "max_latency_ms": stats.retrieval.max_latency_ms
+                }
+            },
+            "topology": {
+                "snapshot_time_ms": snapshot_time_ms,
+                "node_count": final_topology.node_count,
+                "connection_count": final_topology.connection_count,
+                "avg_degree": final_topology.avg_degree,
+                "min_degree": final_topology.min_degree,
+                "max_degree": final_topology.max_degree,
+                "isolated_nodes": final_topology.isolated_nodes,
+                "is_connected": final_topology.is_connected,
+                "component_count": final_topology.component_count,
+                "largest_component": final_topology.largest_component,
+                "clustering_coefficient": final_topology.clustering_coefficient
+            },
+            "objectives": {
+                "retrieval_success_rate": stats.retrieval.success_rate,
+                "retrieval_p95_latency_ms": stats.retrieval.p95_latency_ms,
+                "overhead_ratio_data_to_payload": if stats.retrieval.payload_bytes == 0 {
+                    0.0
+                } else {
+                    stats.retrieval.data_plane_bytes as f64 / stats.retrieval.payload_bytes as f64
+                },
+                "decentralization_component_count": final_topology.component_count,
+                "decentralization_largest_component_share": if final_topology.node_count == 0 {
+                    0.0
+                } else {
+                    final_topology.largest_component as f64 / final_topology.node_count as f64
+                }
+            }
+        })
+    }
+
     /// Get number of currently active nodes
     pub async fn active_node_count(&self) -> usize {
         self.nodes.read().await.len()
@@ -593,8 +867,52 @@ impl Simulation {
         println!("Total leaves: {}", stats.total_leaves);
         println!("Connections formed: {}", stats.total_connections_formed);
         println!("Connections lost: {}", stats.total_connections_lost);
+        println!(
+            "Data messages: {} (req: {}, res: {})",
+            stats.data_messages_processed,
+            stats.data_request_messages,
+            stats.data_response_messages
+        );
+        println!("Data bytes: {}", stats.data_bytes_processed);
+        if stats.retrieval.probes > 0 {
+            println!(
+                "Retrieval probes: {} (success: {}, failure: {}, success_rate: {:.2}%)",
+                stats.retrieval.probes,
+                stats.retrieval.successes,
+                stats.retrieval.failures,
+                stats.retrieval.success_rate * 100.0
+            );
+            println!(
+                "Retrieval latency p50/p95/max (ms): {}/{}/{}",
+                stats.retrieval.p50_latency_ms,
+                stats.retrieval.p95_latency_ms,
+                stats.retrieval.max_latency_ms
+            );
+        }
         println!("Topology snapshots: {}", stats.topology_snapshots.len());
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct SweepResult {
+    pub config: SimConfig,
+    pub stats: SimStats,
+    pub final_topology: TopologyStats,
+}
+
+/// Run a deterministic parameter sweep and collect comparable results.
+pub async fn run_parameter_sweep(configs: &[SimConfig]) -> Vec<SweepResult> {
+    let mut results = Vec::with_capacity(configs.len());
+    for config in configs {
+        let sim = Simulation::new(config.clone());
+        sim.run().await;
+        results.push(SweepResult {
+            config: config.clone(),
+            stats: sim.get_stats().await,
+            final_topology: sim.analyze_topology().await,
+        });
+    }
+    results
 }
 
 #[cfg(test)]
@@ -615,6 +933,9 @@ mod tests {
             churn_rate: 0.0,
             allow_rejoin: false,
             network_latency_ms: 0,
+            retrieval_probe_count: 0,
+            retrieval_payload_bytes: 1024,
+            retrieval_timeout_ms: 1500,
         };
 
         let sim = Simulation::new(config);
@@ -642,6 +963,9 @@ mod tests {
             churn_rate: 0.05,
             allow_rejoin: true,
             network_latency_ms: 0,
+            retrieval_probe_count: 0,
+            retrieval_payload_bytes: 1024,
+            retrieval_timeout_ms: 1500,
         };
 
         let sim = Simulation::new(config);
@@ -678,6 +1002,9 @@ mod tests {
             churn_rate: 0.0,
             allow_rejoin: false,
             network_latency_ms: 0,
+            retrieval_probe_count: 0,
+            retrieval_payload_bytes: 1024,
+            retrieval_timeout_ms: 1500,
         };
 
         let sim = Simulation::new(config);
@@ -696,5 +1023,114 @@ mod tests {
             "Should be fully connected (1 component), got {}",
             stats.component_count
         );
+    }
+
+    #[tokio::test]
+    async fn test_webrtc_sim_collects_retrieval_probe_metrics() {
+        let config = SimConfig {
+            node_count: 12,
+            duration: Duration::from_secs(4),
+            seed: 7,
+            pool: PoolConfig {
+                max_connections: 8,
+                satisfied_connections: 4,
+            },
+            discovery_interval_ms: 100,
+            churn_rate: 0.0,
+            allow_rejoin: false,
+            network_latency_ms: 0,
+            retrieval_probe_count: 16,
+            retrieval_payload_bytes: 512,
+            retrieval_timeout_ms: 1200,
+        };
+
+        let sim = Simulation::new(config);
+        sim.run().await;
+
+        let sim_stats = sim.get_stats().await;
+        assert_eq!(sim_stats.retrieval.probes, 16);
+        assert!(
+            sim_stats.retrieval.successes > 0,
+            "expected at least one successful retrieval probe"
+        );
+        assert_eq!(
+            sim_stats.retrieval.failures + sim_stats.retrieval.successes,
+            sim_stats.retrieval.probes
+        );
+        assert!(
+            sim_stats.retrieval.p95_latency_ms >= sim_stats.retrieval.p50_latency_ms,
+            "latency percentiles should be monotonic"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_webrtc_sim_report_json_contains_objectives() {
+        let config = SimConfig {
+            node_count: 8,
+            duration: Duration::from_secs(2),
+            seed: 9,
+            pool: PoolConfig {
+                max_connections: 5,
+                satisfied_connections: 3,
+            },
+            discovery_interval_ms: 100,
+            churn_rate: 0.0,
+            allow_rejoin: false,
+            network_latency_ms: 0,
+            retrieval_probe_count: 6,
+            retrieval_payload_bytes: 256,
+            retrieval_timeout_ms: 1000,
+        };
+        let sim = Simulation::new(config);
+        sim.run().await;
+
+        let report = sim.report_json().await;
+        assert_eq!(report["config"]["retrieval_probe_count"].as_u64(), Some(6));
+        assert_eq!(report["stats"]["retrieval"]["probes"].as_u64(), Some(6));
+        assert!(report["objectives"]["retrieval_p95_latency_ms"].is_number());
+        assert!(report["objectives"]["overhead_ratio_data_to_payload"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_run_parameter_sweep_returns_per_config_results() {
+        let configs = vec![
+            SimConfig {
+                node_count: 6,
+                duration: Duration::from_secs(1),
+                seed: 1,
+                pool: PoolConfig {
+                    max_connections: 4,
+                    satisfied_connections: 2,
+                },
+                discovery_interval_ms: 100,
+                churn_rate: 0.0,
+                allow_rejoin: false,
+                network_latency_ms: 0,
+                retrieval_probe_count: 0,
+                retrieval_payload_bytes: 128,
+                retrieval_timeout_ms: 1000,
+            },
+            SimConfig {
+                node_count: 6,
+                duration: Duration::from_secs(1),
+                seed: 2,
+                pool: PoolConfig {
+                    max_connections: 4,
+                    satisfied_connections: 2,
+                },
+                discovery_interval_ms: 100,
+                churn_rate: 0.0,
+                allow_rejoin: false,
+                network_latency_ms: 0,
+                retrieval_probe_count: 0,
+                retrieval_payload_bytes: 128,
+                retrieval_timeout_ms: 1000,
+            },
+        ];
+
+        let results = run_parameter_sweep(&configs).await;
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].config.seed, 1);
+        assert_eq!(results[1].config.seed, 2);
     }
 }

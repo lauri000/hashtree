@@ -235,6 +235,13 @@ impl DataChannel for MockDataChannel {
         rx.recv().await
     }
 
+    fn try_recv(&self) -> Option<Vec<u8>> {
+        let Ok(mut rx) = self.rx.try_lock() else {
+            return None;
+        };
+        rx.try_recv().ok()
+    }
+
     fn is_open(&self) -> bool {
         self.open.load(Ordering::Relaxed)
     }

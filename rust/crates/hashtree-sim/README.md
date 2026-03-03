@@ -13,11 +13,16 @@ use hashtree_sim::webrtc_sim::{Simulation, SimConfig};
 let config = SimConfig {
     node_count: 100,
     pool: PoolConfig { max_connections: 10, satisfied_connections: 5 },
+    retrieval_probe_count: 200,
+    retrieval_payload_bytes: 4096,
+    retrieval_timeout_ms: 1500,
     ..Default::default()
 };
 
 let sim = Simulation::new(config);
 sim.run().await;
+let report = sim.report_json().await;
+println!("{}", serde_json::to_string_pretty(&report).unwrap());
 ```
 
 ## Shared Code with Production
@@ -33,6 +38,40 @@ let config = SimConfig {
 ```
 
 This ensures simulation behavior matches production as closely as possible.
+
+## Parameter Sweeps
+
+Use `run_parameter_sweep` to compare protocol settings across seeds or policies:
+
+```rust
+use hashtree_sim::{run_parameter_sweep, SimConfig, PoolConfig};
+
+let configs = vec![
+    SimConfig {
+        seed: 1,
+        pool: PoolConfig { max_connections: 8, satisfied_connections: 4 },
+        retrieval_probe_count: 100,
+        ..Default::default()
+    },
+    SimConfig {
+        seed: 2,
+        pool: PoolConfig { max_connections: 12, satisfied_connections: 6 },
+        retrieval_probe_count: 100,
+        ..Default::default()
+    },
+];
+
+let results = run_parameter_sweep(&configs).await;
+for result in results {
+    println!(
+        "seed={} success_rate={:.2}% p95={}ms components={}",
+        result.config.seed,
+        result.stats.retrieval.success_rate * 100.0,
+        result.stats.retrieval.p95_latency_ms,
+        result.final_topology.component_count
+    );
+}
+```
 
 ## Network Connectivity
 
