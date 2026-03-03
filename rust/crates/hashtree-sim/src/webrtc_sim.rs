@@ -1412,50 +1412,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_webrtc_sim_200_nodes_connectivity() {
-        let config = SimConfig {
-            node_count: 200,
-            duration: Duration::from_secs(15),
-            seed: 42,
-            pool: PoolConfig {
-                max_connections: 20,
-                satisfied_connections: 10,
-            },
-            discovery_interval_ms: 100,
-            hello_reannounce_interval_ms: 1000,
-            churn_rate: 0.0,
-            allow_rejoin: false,
-            network_latency_ms: 0,
-            retrieval_probe_count: 0,
-            retrieval_payload_bytes: 1024,
-            retrieval_timeout_ms: 1500,
-            max_events_retained: 20_000,
-            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
-            retrieval_poll_interval_ms: 5,
-            strategy_mix: Vec::new(),
-            reference_strategy: None,
-        };
-
-        let sim = Simulation::new(config);
-        sim.run().await;
-
-        let stats = sim.analyze_topology().await;
-
-        println!("\n=== 200 Node Connectivity Test (10/20 pool) ===");
-        Simulation::print_topology_stats(&stats);
-
-        assert_eq!(stats.node_count, 200, "Should have 200 nodes");
-        assert!(stats.connection_count > 0, "Should have connections");
-        assert!(
-            stats.largest_component >= 150,
-            "Largest component should cover at least 150/200 nodes, got {}",
-            stats.largest_component
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "long-running scalability smoke"]
-    async fn test_webrtc_sim_1000_nodes_scalability_smoke() {
+    async fn test_webrtc_sim_1000_nodes_connectivity() {
         let config = SimConfig {
             node_count: 1000,
             duration: Duration::from_secs(8),
@@ -1481,18 +1438,23 @@ mod tests {
 
         let sim = Simulation::new(config);
         sim.run().await;
+
         let stats = sim.analyze_topology().await;
 
-        println!(
-            "1000-node smoke: components={}, largest_component={}, connections={}",
-            stats.component_count, stats.largest_component, stats.connection_count
-        );
+        println!("\n=== 1000 Node Connectivity Test (12/24 pool) ===");
+        Simulation::print_topology_stats(&stats);
 
-        assert_eq!(stats.node_count, 1000);
+        assert_eq!(stats.node_count, 1000, "Should have 1000 nodes");
+        assert!(stats.connection_count > 0, "Should have connections");
         assert!(
             stats.largest_component >= 300,
-            "largest component too small for 1000-node smoke: {}",
+            "Largest component should cover at least 300/1000 nodes, got {}",
             stats.largest_component
+        );
+        assert!(
+            stats.connection_count >= 6_500,
+            "Expected at least 6500 connections, got {}",
+            stats.connection_count
         );
     }
 

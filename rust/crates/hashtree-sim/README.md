@@ -150,17 +150,13 @@ effects remain visible while runtime is compressed.
 
 In P2P networks, nodes may form disconnected "components" (islands) if there aren't enough connections. A fully connected network has exactly 1 component.
 
-**Graph theory**: For N nodes with k connections each, connectivity requires `k > ln(N)`:
+`k > ln(N)` is only a rough lower bound for random graphs. Real protocol dynamics
+(join timing, pool limits, signaling collisions, churn) need significantly more headroom.
 
-| Nodes | ln(N) | Real WebRTC default (16) |
-|-------|-------|--------------------------|
-| 50    | 3.9   | Well connected           |
-| 100   | 4.6   | Well connected           |
-| 200   | 5.3   | Well connected           |
-| 1000  | 6.9   | Well connected           |
-| 10000 | 9.2   | Edge case                |
+Current simulation defaults are not guaranteed to produce a single connected component at 1000 nodes.
+Use `largest_component` and `component_count` as first-class tuning objectives, not just degree targets.
 
-The tuned default `max_connections: 16` keeps stronger connectivity under churn while keeping overhead moderate.
+`max_connections` and periodic hello re-announcement are the strongest topology controls today.
 
 ### Discovery with Perfect Negotiation
 
@@ -202,10 +198,8 @@ fn is_polite_peer(local_id: &str, remote_id: &str) -> bool {
 
 Per-link latency is configurable:
 - `network_latency_ms`: Mean latency (e.g., 50ms for realistic WebRTC)
-- `latency_variation`: How much latency varies per link (0.0-1.0)
-- `latency_seed`: Seed for reproducible latency distribution
 
-Each link gets a fixed latency drawn from a distribution centered on `network_latency_ms`.
+In `VirtualSteps`, latency still affects ordering/outcomes but wall-clock runtime is compressed.
 
 ## Multi-Hop Forwarding (HTL)
 
@@ -218,24 +212,14 @@ Requests include a **Hops-To-Live** counter (like Freenet):
 ## Running Simulations
 
 ```bash
-# Basic simulation
-cargo run --example run_simulation
+# Manual candidate sweep
+cargo run -p hashtree-sim --example tune_webrtc_params -- --mode=manual
 
-# With options
-cargo run --example run_simulation -- \
-  --nodes 200 \
-  --strategy adaptive \
-  --latency 50 \
-  --seed 42
+# Auto-generated candidate grid
+cargo run -p hashtree-sim --example tune_webrtc_params -- --mode=auto
 
-# Benchmark mode (measures throughput)
-cargo run --example run_simulation -- --bench --nodes 100
-
-# Burst benchmark (realistic load)
-cargo run --example run_simulation -- --burst --nodes 50
-
-# Multiple runs for variance analysis
-cargo run --example run_simulation -- --bench --runs 5
+# 1000-node connectivity/scalability test
+cargo test -p hashtree-sim webrtc_sim::tests::test_webrtc_sim_1000_nodes_connectivity -- --nocapture
 ```
 
 ## Key Learnings
