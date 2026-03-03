@@ -1998,4 +1998,24 @@ mod tests {
         let picked = pick_latest_event([&event_a, &event_b]).unwrap();
         assert_eq!(picked.id, expected);
     }
+
+    #[test]
+    fn test_formal_timed_seen_set_rejects_duplicates() {
+        let mut seen = TimedSeenSet::new(4, Duration::from_secs(60));
+        assert!(seen.insert_if_new("frame-1".to_string()));
+        assert!(!seen.insert_if_new("frame-1".to_string()));
+        assert!(seen.insert_if_new("frame-2".to_string()));
+    }
+
+    #[test]
+    fn test_formal_timed_seen_set_evicts_oldest_when_capacity_exceeded() {
+        let mut seen = TimedSeenSet::new(2, Duration::from_secs(60));
+        assert!(seen.insert_if_new("a".to_string()));
+        assert!(seen.insert_if_new("b".to_string()));
+        assert!(seen.insert_if_new("c".to_string()));
+
+        // "a" should be evicted due to cap=2, so re-insert becomes new again.
+        assert!(seen.insert_if_new("a".to_string()));
+        assert!(!seen.insert_if_new("a".to_string()));
+    }
 }

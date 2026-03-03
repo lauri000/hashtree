@@ -167,3 +167,106 @@ fn test_mesh_frame_validation_rejects_non_webrtc_kind() {
     let frame = MeshNostrFrame::new_event(event, "peer-a:uuid-a", MESH_EVENT_POLICY.max_htl);
     assert!(validate_mesh_frame(&frame).is_err());
 }
+
+#[test]
+fn test_formal_htl_policy_monotonicity_and_bounds() {
+    let sample_points = [0.0, 0.2, 0.49, 0.5, 0.75, 0.99];
+    for policy in [BLOB_REQUEST_POLICY, MESH_EVENT_POLICY] {
+        for htl in 0..=(policy.max_htl + 4) {
+            let bounded = htl.min(policy.max_htl);
+            for at_max_sample in sample_points {
+                for at_min_sample in sample_points {
+                    let cfg = PeerHTLConfig {
+                        at_max_sample,
+                        at_min_sample,
+                    };
+                    let next = decrement_htl_with_policy(htl, &policy, &cfg);
+                    assert!(next <= bounded, "HTL must never increase");
+
+                    if bounded == 0 {
+                        assert_eq!(next, 0, "HTL 0 must stay at 0");
+                        continue;
+                    }
+
+                    if bounded == policy.max_htl {
+                        let expected = if at_max_sample < policy.p_at_max {
+                            bounded - 1
+                        } else {
+                            bounded
+                        };
+                        assert_eq!(next, expected, "max HTL decrement rule mismatch");
+                        continue;
+                    }
+
+                    if bounded == 1 {
+                        let expected = if at_min_sample < policy.p_at_min {
+                            0
+                        } else {
+                            1
+                        };
+                        assert_eq!(next, expected, "min HTL decrement rule mismatch");
+                        continue;
+                    }
+
+                    assert_eq!(next, bounded - 1, "middle HTL values must decrement");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_formal_should_forward_htl_equivalence() {
+    for htl in 0u8..=u8::MAX {
+        assert_eq!(should_forward_htl(htl), htl > 0);
+    }
+}
+
+#[test]
+fn test_formal_mesh_frame_validation_rejects_protocol_version_and_htl_bounds() {
+    let keys = nostr::Keys::generate();
+    let event = nostr::EventBuilder::new(
+        nostr::Kind::Ephemeral(WEBRTC_KIND as u16),
+        "",
+        [nostr::Tag::parse(&["l", HELLO_TAG]).unwrap()],
+    )
+    .to_event(&keys)
+    .unwrap();
+
+    let mut frame = MeshNostrFrame::new_event(event, "peer-a:uuid-a", MESH_EVENT_POLICY.max_htl);
+    assert!(validate_mesh_frame(&frame).is_ok());
+
+    frame.protocol = "invalid".to_string();
+    assert_eq!(validate_mesh_frame(&frame), Err("invalid protocol"));
+    frame.protocol = MESH_PROTOCOL.to_string();
+
+    frame.version = MESH_PROTOCOL_VERSION + 1;
+    assert_eq!(validate_mesh_frame(&frame), Err("invalid version"));
+    frame.version = MESH_PROTOCOL_VERSION;
+
+    frame.htl = 0;
+    assert_eq!(validate_mesh_frame(&frame), Err("invalid htl"));
+    frame.htl = MESH_MAX_HTL + 1;
+    assert_eq!(validate_mesh_frame(&frame), Err("invalid htl"));
+}
+
+#[test]
+fn test_formal_mesh_frame_validation_requires_non_empty_ids() {
+    let keys = nostr::Keys::generate();
+    let event = nostr::EventBuilder::new(
+        nostr::Kind::Ephemeral(WEBRTC_KIND as u16),
+        "",
+        [nostr::Tag::parse(&["l", HELLO_TAG]).unwrap()],
+    )
+    .to_event(&keys)
+    .unwrap();
+
+    let mut frame = MeshNostrFrame::new_event(event, "peer-a:uuid-a", MESH_EVENT_POLICY.max_htl);
+
+    frame.frame_id.clear();
+    assert_eq!(validate_mesh_frame(&frame), Err("missing frame id"));
+
+    frame.frame_id = "frame-1".to_string();
+    frame.sender_peer_id.clear();
+    assert_eq!(validate_mesh_frame(&frame), Err("missing sender peer id"));
+}

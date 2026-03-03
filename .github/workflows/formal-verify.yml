@@ -211,3 +211,76 @@ jobs:
           name: webrtc-formal-artifacts
           path: rust/target/debug/deps/
           retention-days: 7
+
+  webrtc-cli-formal:
+    name: WebRTC CLI Formal
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/target/
+          key: ${{ runner.os }}-webrtc-cli-formal-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-webrtc-cli-formal-
+
+      - name: Run hashtree-cli formal unit tests
+        run: cargo test -p hashtree-cli test_formal_ -- --nocapture
+
+      - name: Run relayless chain integration proof
+        run: cargo test -p hashtree-cli --test two_instances test_three_peers_chain_bootstrap_then_ac_connect_without_relay -- --nocapture
+
+      - name: Upload webrtc cli formal artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webrtc-cli-formal-artifacts
+          path: rust/target/debug/deps/
+          retention-days: 7
+
+  ts-webrtc-formal:
+    name: TS WebRTC Formal
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: ts
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ts/package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run hashtree-nostr formal tests
+        run: pnpm --filter @hashtree/nostr test
+
+      - name: Build hashtree-nostr
+        run: pnpm --filter @hashtree/nostr build

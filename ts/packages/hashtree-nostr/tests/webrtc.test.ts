@@ -12,9 +12,13 @@ import {
   MESH_EVENT_POLICY,
   HtlMode,
   WEBRTC_KIND,
+  MESH_MAX_HTL,
+  MESH_PROTOCOL,
+  MESH_PROTOCOL_VERSION,
   createMeshNostrEventFrame,
   validateMeshNostrFrame,
 } from '../src/webrtc/types.js';
+import { WebRTCStore } from '../src/webrtc/store.js';
 import { MemoryStore, sha256, toHex, fromHex } from '@hashtree/core';
 
 /**
@@ -183,6 +187,47 @@ describe('HTL (Hops To Live)', () => {
       expect(shouldForwardHTL(0)).toBe(false);
       expect(shouldForwardHTL(1)).toBe(true);
     });
+
+    it('formal: decrement policy is monotonic and follows edge rules', () => {
+      const samplePoints = [0.0, 0.2, 0.49, 0.5, 0.75, 0.99];
+      for (const policy of [BLOB_REQUEST_POLICY, MESH_EVENT_POLICY]) {
+        for (let htl = 0; htl <= policy.maxHtl + 4; htl++) {
+          const bounded = Math.min(htl, policy.maxHtl);
+          for (const atMaxSample of samplePoints) {
+            for (const atMinSample of samplePoints) {
+              const cfg = { atMaxSample, atMinSample };
+              const next = decrementHTLWithPolicy(htl, policy, cfg);
+              expect(next).toBeLessThanOrEqual(bounded);
+
+              if (bounded === 0) {
+                expect(next).toBe(0);
+                continue;
+              }
+
+              if (bounded === policy.maxHtl) {
+                const expected = atMaxSample < policy.pAtMax ? bounded - 1 : bounded;
+                expect(next).toBe(expected);
+                continue;
+              }
+
+              if (bounded === 1) {
+                const expected = atMinSample < policy.pAtMin ? 0 : 1;
+                expect(next).toBe(expected);
+                continue;
+              }
+
+              expect(next).toBe(bounded - 1);
+            }
+          }
+        }
+      }
+    });
+
+    it('formal: shouldForwardHTL is equivalent to htl > 0', () => {
+      for (let htl = -32; htl <= 512; htl++) {
+        expect(shouldForwardHTL(htl)).toBe(htl > 0);
+      }
+    });
   });
 
   describe('mesh frame validation', () => {
@@ -223,6 +268,54 @@ describe('HTL (Hops To Live)', () => {
         MESH_EVENT_POLICY.maxHtl,
       );
       expect(validateMeshNostrFrame(frame)).toBe('unsupported event kind');
+    });
+
+    it('formal: rejects invalid protocol, version, and htl bounds', () => {
+      const event = {
+        id: 'a'.repeat(64),
+        pubkey: 'b'.repeat(64),
+        sig: 'c'.repeat(128),
+        kind: WEBRTC_KIND,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [['l', 'hello']],
+        content: '',
+      };
+      const frame = createMeshNostrEventFrame(event as any, 'peer-a:uuid-a', MESH_EVENT_POLICY.maxHtl);
+
+      expect(validateMeshNostrFrame(frame)).toBeNull();
+
+      frame.protocol = 'invalid';
+      expect(validateMeshNostrFrame(frame)).toBe('invalid protocol');
+      frame.protocol = MESH_PROTOCOL;
+
+      frame.version = MESH_PROTOCOL_VERSION + 1;
+      expect(validateMeshNostrFrame(frame)).toBe('invalid version');
+      frame.version = MESH_PROTOCOL_VERSION;
+
+      frame.htl = 0;
+      expect(validateMeshNostrFrame(frame)).toBe('invalid htl');
+      frame.htl = MESH_MAX_HTL + 1;
+      expect(validateMeshNostrFrame(frame)).toBe('invalid htl');
+    });
+
+    it('formal: rejects empty frame and sender identifiers', () => {
+      const event = {
+        id: 'd'.repeat(64),
+        pubkey: 'e'.repeat(64),
+        sig: 'f'.repeat(128),
+        kind: WEBRTC_KIND,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [['l', 'hello']],
+        content: '',
+      };
+      const frame = createMeshNostrEventFrame(event as any, 'peer-a:uuid-a', MESH_EVENT_POLICY.maxHtl);
+
+      frame.frame_id = '';
+      expect(validateMeshNostrFrame(frame)).toBe('missing frame id');
+
+      frame.frame_id = 'frame-1';
+      frame.sender_peer_id = '';
+      expect(validateMeshNostrFrame(frame)).toBe('missing sender peer id');
     });
   });
 
@@ -296,6 +389,119 @@ describe('HTL (Hops To Live)', () => {
       expect(maxGeHalf).toBeGreaterThan(0);
       expect(minLtHalf).toBeGreaterThan(0);
       expect(minGeHalf).toBeGreaterThan(0);
+    });
+  });
+
+  describe('mesh forwarding dedupe invariants', () => {
+    function createStoreForFormalTests(): any {
+      const testSigner = async (evt: {
+        kind: number;
+        created_at: number;
+        tags: string[][];
+        content: string;
+      }) => ({
+        id: '1'.repeat(64),
+        pubkey: '2'.repeat(64),
+        sig: '3'.repeat(128),
+        kind: evt.kind,
+        created_at: evt.created_at,
+        tags: evt.tags,
+        content: evt.content,
+      });
+
+      return new WebRTCStore({
+        signer: testSigner,
+        pubkey: '2'.repeat(64),
+        encrypt: async () => '',
+        decrypt: async () => '',
+        giftWrap: async (inner: { kind: number; content: string; tags: string[][] }) => testSigner({
+          kind: WEBRTC_KIND,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [],
+          content: JSON.stringify(inner),
+        }),
+        giftUnwrap: async () => null,
+        relays: [],
+      }) as any;
+    }
+
+    function makeTestMeshFrame(htl: number) {
+      return createMeshNostrEventFrame({
+        id: 'a'.repeat(64),
+        pubkey: 'b'.repeat(64),
+        sig: 'c'.repeat(128),
+        kind: WEBRTC_KIND,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [['l', 'hello']],
+        content: '',
+      } as any, 'peer-origin:uuid', htl);
+    }
+
+    it('formal: frame/event seen sets reject duplicates', () => {
+      const store = createStoreForFormalTests();
+      expect(store.markSeenFrameId('frame-1')).toBe(true);
+      expect(store.markSeenFrameId('frame-1')).toBe(false);
+      expect(store.markSeenEventId('event-1')).toBe(true);
+      expect(store.markSeenEventId('event-1')).toBe(false);
+    });
+
+    it('formal: seen-set pruning honors deterministic cap eviction', () => {
+      const store = createStoreForFormalTests();
+      const now = Date.now();
+      const seen = new Map<string, number>([
+        ['a', now],
+        ['b', now],
+        ['c', now],
+      ]);
+
+      store.pruneSeenSet(seen, 60_000, 2);
+      expect(seen.size).toBe(2);
+      expect(seen.has('a')).toBe(false);
+      expect(seen.has('b')).toBe(true);
+      expect(seen.has('c')).toBe(true);
+    });
+
+    it('formal: forwarding excludes sender peer', () => {
+      const store = createStoreForFormalTests();
+      const sent: Array<{ peerId: string; htl: number }> = [];
+      const mkPeer = (peerId: string) => ({
+        peerId,
+        isConnected: true,
+        getHTLConfig: () => ({ atMaxSample: 0.0, atMinSample: 0.0 }),
+        sendMeshFrameText: (frame: { htl: number }) => {
+          sent.push({ peerId, htl: frame.htl });
+          return true;
+        },
+      });
+
+      store.peers = new Map([
+        ['a', { pool: 'other', peer: mkPeer('peer-a') }],
+        ['b', { pool: 'other', peer: mkPeer('peer-b') }],
+        ['c', { pool: 'other', peer: mkPeer('peer-c') }],
+      ]);
+
+      const forwarded = store.forwardMeshFrame(makeTestMeshFrame(MESH_EVENT_POLICY.maxHtl), 'peer-b');
+      expect(forwarded).toBe(2);
+      expect(sent.map((x) => x.peerId).sort()).toEqual(['peer-a', 'peer-c']);
+      expect(sent.every((x) => x.htl > 0)).toBe(true);
+    });
+
+    it('formal: forwarding stops when HTL is exhausted', () => {
+      const store = createStoreForFormalTests();
+      const mkPeer = (peerId: string) => ({
+        peerId,
+        isConnected: true,
+        getHTLConfig: () => ({ atMaxSample: 0.0, atMinSample: 0.0 }),
+        sendMeshFrameText: () => true,
+      });
+
+      store.peers = new Map([
+        ['a', { pool: 'other', peer: mkPeer('peer-a') }],
+        ['b', { pool: 'other', peer: mkPeer('peer-b') }],
+      ]);
+
+      const forwarded = store.forwardMeshFrame(makeTestMeshFrame(1));
+      expect(forwarded).toBe(0);
     });
   });
 });
