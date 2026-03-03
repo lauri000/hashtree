@@ -125,6 +125,7 @@ pub struct Simulation {
     config: SimConfig,
     relay: Arc<MockRelay>,
     nodes: RwLock<HashMap<String, RunningNode>>,
+    known_connections: RwLock<HashSet<(String, String)>>,
     rng: RwLock<StdRng>,
     stats: RwLock<SimStats>,
     next_node_id: RwLock<usize>,
@@ -136,6 +137,7 @@ impl Simulation {
             rng: RwLock::new(StdRng::seed_from_u64(config.seed)),
             relay: MockRelay::new(),
             nodes: RwLock::new(HashMap::new()),
+            known_connections: RwLock::new(HashSet::new()),
             stats: RwLock::new(SimStats::default()),
             next_node_id: RwLock::new(0),
             config,
@@ -178,7 +180,7 @@ impl Simulation {
             }
 
             // Process messages, apply churn
-            self.process_all_messages().await;
+            self.process_all_messages(elapsed_ms).await;
             self.apply_churn(elapsed_ms).await;
 
             // Periodic topology snapshot
@@ -194,7 +196,7 @@ impl Simulation {
 
         // Final processing
         for _ in 0..10 {
-            self.process_all_messages().await;
+            self.process_all_messages(total_ms).await;
         }
 
         let final_stats = self.analyze_topology().await;
@@ -284,7 +286,7 @@ impl Simulation {
         );
     }
 
-    async fn process_all_messages(&self) {
+    async fn process_all_messages(&self, time_ms: u64) {
         // Sort node IDs for deterministic order
         let mut node_ids: Vec<String> = self.nodes.read().await.keys().cloned().collect();
         node_ids.sort();
@@ -299,6 +301,61 @@ impl Simulation {
                 }
             }
         }
+
+        self.record_new_connections(time_ms).await;
+    }
+
+    fn canonical_connection_pair(a: &str, b: &str) -> Option<(String, String)> {
+        if a == b {
+            return None;
+        }
+        if a < b {
+            Some((a.to_string(), b.to_string()))
+        } else {
+            Some((b.to_string(), a.to_string()))
+        }
+    }
+
+    async fn collect_active_connections(&self) -> HashSet<(String, String)> {
+        let nodes = self.nodes.read().await;
+        let active_ids: HashSet<String> = nodes.keys().cloned().collect();
+        let mut connections = HashSet::new();
+
+        for (node_id, running) in nodes.iter() {
+            let peers = running.store.signaling().peer_ids().await;
+            for peer_id in peers {
+                if !active_ids.contains(&peer_id) {
+                    continue;
+                }
+                if let Some(pair) = Self::canonical_connection_pair(node_id, &peer_id) {
+                    connections.insert(pair);
+                }
+            }
+        }
+
+        connections
+    }
+
+    async fn record_new_connections(&self, time_ms: u64) {
+        let current = self.collect_active_connections().await;
+        let formed: Vec<(String, String)> = {
+            let known = self.known_connections.read().await;
+            current.difference(&*known).cloned().collect()
+        };
+
+        if !formed.is_empty() {
+            let mut stats = self.stats.write().await;
+            for (from, to) in &formed {
+                stats.total_connections_formed += 1;
+                stats.events.push(SimEvent::ConnectionFormed {
+                    from: from.clone(),
+                    to: to.clone(),
+                    time_ms,
+                });
+            }
+        }
+
+        *self.known_connections.write().await = current;
     }
 
     async fn apply_churn(&self, time_ms: u64) {
@@ -600,6 +657,10 @@ mod tests {
         assert!(
             sim_stats.total_joins >= 20,
             "Should have at least initial joins"
+        );
+        assert!(
+            sim_stats.total_connections_formed > 0,
+            "Should record formed connections"
         );
     }
 
