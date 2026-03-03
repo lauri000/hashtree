@@ -60,6 +60,39 @@ export const MAX_HTL = 10;
 export const DECREMENT_AT_MAX_PROB = 0.5;  // 50% chance to decrement at max
 export const DECREMENT_AT_MIN_PROB = 0.25; // 25% chance to decrement at 1
 
+// Signaling kind for WebRTC events
+export const WEBRTC_KIND = 25050;
+
+export enum HtlMode {
+  Probabilistic = 'probabilistic',
+}
+
+export interface HtlPolicy {
+  mode: HtlMode;
+  maxHtl: number;
+  pAtMax: number;
+  pAtMin: number;
+}
+
+export const BLOB_REQUEST_POLICY: HtlPolicy = {
+  mode: HtlMode.Probabilistic,
+  maxHtl: MAX_HTL,
+  pAtMax: DECREMENT_AT_MAX_PROB,
+  pAtMin: DECREMENT_AT_MIN_PROB,
+};
+
+export const MESH_EVENT_POLICY: HtlPolicy = {
+  mode: HtlMode.Probabilistic,
+  maxHtl: 4,
+  pAtMax: 0.75,
+  pAtMin: 0.5,
+};
+
+export const MESH_PROTOCOL = 'htree.nostr.mesh.v1';
+export const MESH_PROTOCOL_VERSION = 1;
+export const MESH_DEFAULT_HTL = MESH_EVENT_POLICY.maxHtl;
+export const MESH_MAX_HTL = 6;
+
 // Fragment constants for WebRTC transport
 export const FRAGMENT_SIZE = 32 * 1024;           // 32KB per WebRTC message (safe limit)
 export const FRAGMENT_STALL_TIMEOUT = 5_000;      // 5s without fragment = stall
@@ -118,6 +151,60 @@ export interface SignedEvent {
   content: string;
 }
 
+export interface MeshNostrEventPayload {
+  type: 'EVENT';
+  event: SignedEvent;
+}
+
+export type MeshNostrPayload = MeshNostrEventPayload;
+
+export interface MeshNostrFrame {
+  protocol: string;
+  version: number;
+  frame_id: string;
+  htl: number;
+  sender_peer_id: string;
+  payload: MeshNostrPayload;
+}
+
+export function createMeshNostrEventFrame(
+  event: SignedEvent,
+  senderPeerId: string,
+  htl: number = MESH_DEFAULT_HTL,
+): MeshNostrFrame {
+  return {
+    protocol: MESH_PROTOCOL,
+    version: MESH_PROTOCOL_VERSION,
+    frame_id: generateUuid(),
+    htl,
+    sender_peer_id: senderPeerId,
+    payload: {
+      type: 'EVENT',
+      event,
+    },
+  };
+}
+
+export function validateMeshNostrFrame(frame: MeshNostrFrame): string | null {
+  if (frame.protocol !== MESH_PROTOCOL) return 'invalid protocol';
+  if (frame.version !== MESH_PROTOCOL_VERSION) return 'invalid version';
+  if (!frame.frame_id) return 'missing frame id';
+  if (!frame.sender_peer_id) return 'missing sender peer id';
+  if (frame.htl <= 0 || frame.htl > MESH_MAX_HTL) return 'invalid htl';
+  if (frame.payload?.type !== 'EVENT') return 'invalid payload type';
+  if (frame.payload.event.kind !== WEBRTC_KIND) return 'unsupported event kind';
+  return null;
+}
+
+export function parseMeshNostrFrameText(text: string): MeshNostrFrame | null {
+  try {
+    const value = JSON.parse(text) as MeshNostrFrame;
+    return validateMeshNostrFrame(value) === null ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 // Gift wrap function - wraps an inner event for a recipient
 // Returns a kind 25050 ephemeral gift-wrapped event
 export type GiftWrapper = (
@@ -153,7 +240,7 @@ export interface WebRTCStoreConfig {
   giftUnwrap: GiftUnwrapper;      // NIP-17 style gift unwrap
   satisfiedConnections?: number;  // default 3 (legacy, used if no pools)
   maxConnections?: number;        // default 6 (legacy, used if no pools)
-  helloInterval?: number;         // default 10000ms
+  helloInterval?: number;         // default 3000ms
   messageTimeout?: number;        // default 15000ms
   requestTimeout?: number;        // default 500ms - fast fallback to Blossom
   peerQueryDelay?: number;        // default 500ms - delay between sequential peer queries
@@ -211,6 +298,9 @@ export interface WebRTCStats {
   bytesSent: number;              // Total bytes sent (responses)
   bytesReceived: number;          // Total bytes received (responses)
   bytesForwarded: number;         // Bytes sent on behalf of forwarded requests (included in bytesSent)
+  meshReceived: number;           // Relayless mesh frames accepted
+  meshForwarded: number;          // Relayless mesh frames forwarded
+  meshDroppedDuplicate: number;   // Relayless mesh frames/events dropped by dedupe
 }
 
 // Bandwidth sample for rolling average calculation

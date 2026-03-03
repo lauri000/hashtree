@@ -14,12 +14,13 @@
  * - 'other' pool: Everyone else (randos)
  * Each pool has its own connection limits.
  */
-import { SimplePool, type Event } from 'nostr-tools';
+import { SimplePool, type Event, verifyEvent } from 'nostr-tools';
 import type { Store, Hash } from '@hashtree/core';
 import { toHex } from '@hashtree/core';
 import {
   PeerId,
   generateUuid,
+  createMeshNostrEventFrame,
   type SignalingMessage,
   type DirectedMessage,
   type WebRTCStoreConfig,
@@ -36,7 +37,11 @@ import {
   type PeerClassifier,
   type PoolConfig,
   type WebRTCStats,
+  type MeshNostrFrame,
+  validateMeshNostrFrame,
+  MESH_EVENT_POLICY,
 } from './types.js';
+import { decrementHTLWithPolicy, shouldForwardHTL } from './protocol.js';
 import { Peer } from './peer.js';
 
 export const DEFAULT_RELAYS = [
@@ -53,6 +58,10 @@ export const DEFAULT_RELAYS = [
 // Directed messages use #p tag with gift wrap
 const SIGNALING_KIND = 25050;
 const HELLO_TAG = 'hello';
+const SEEN_FRAME_CAP = 4096;
+const SEEN_FRAME_TTL_MS = 120_000;
+const SEEN_EVENT_CAP = 8192;
+const SEEN_EVENT_TTL_MS = 600_000;
 
 
 // Pending request with callbacks
@@ -106,6 +115,13 @@ export class WebRTCStore implements Store {
   private blossomFetches = 0;
   // Track current hello subscription authors for change detection
   private currentHelloAuthors: string[] | null = null;
+  // Relayless mesh dedupe
+  private seenFrameIds = new Map<string, number>();
+  private seenEventIds = new Map<string, number>();
+  // Relayless mesh stats
+  private meshReceived = 0;
+  private meshForwarded = 0;
+  private meshDroppedDuplicate = 0;
 
   constructor(config: WebRTCStoreConfig) {
     this.signer = config.signer;
@@ -136,7 +152,7 @@ export class WebRTCStore implements Store {
     }
 
     this.config = {
-      helloInterval: config.helloInterval ?? 10000,
+      helloInterval: config.helloInterval ?? 3000,
       messageTimeout: config.messageTimeout ?? 60000, // 60 seconds for relay propagation
       requestTimeout: config.requestTimeout ?? 500,
       peerQueryDelay: config.peerQueryDelay ?? 500,
@@ -265,6 +281,8 @@ export class WebRTCStore implements Store {
     }
     this.peers.clear();
     this.pendingOtherPubkeys.clear();
+    this.seenFrameIds.clear();
+    this.seenEventIds.clear();
   }
 
   /**
@@ -590,14 +608,16 @@ export class WebRTCStore implements Store {
       myPeerId: this.myPeerId.uuid,
       direction: 'inbound',
       localStore: this.config.localStore,
-      sendSignaling: (m) => this.sendSignaling(m, peerId.pubkey),
+      sendSignaling: (m) => this.dispatchSignaling(m, peerId.pubkey),
       onClose: () => this.handlePeerClose(peerIdStr),
       onConnected: () => {
         this.emit({ type: 'peer-connected', peerId: peerIdStr });
         this.emit({ type: 'update' });
+        this.maybeSendHello();
         this.tryPendingReqs(peer);
       },
       onForwardRequest: (hash, exclude, htl) => this.forwardRequest(hash, exclude, htl),
+      onMeshFrame: (fromPeerId, frame) => this.handleMeshFrame(fromPeerId, frame),
       requestTimeout: this.config.requestTimeout,
       debug: this.config.debug,
     });
@@ -622,14 +642,16 @@ export class WebRTCStore implements Store {
       myPeerId: this.myPeerId.uuid,
       direction: 'outbound',
       localStore: this.config.localStore,
-      sendSignaling: (m) => this.sendSignaling(m, peerId.pubkey),
+      sendSignaling: (m) => this.dispatchSignaling(m, peerId.pubkey),
       onClose: () => this.handlePeerClose(peerIdStr),
       onConnected: () => {
         this.emit({ type: 'peer-connected', peerId: peerIdStr });
         this.emit({ type: 'update' });
+        this.maybeSendHello();
         this.tryPendingReqs(peer);
       },
       onForwardRequest: (hash, exclude, htl) => this.forwardRequest(hash, exclude, htl),
+      onMeshFrame: (fromPeerId, frame) => this.handleMeshFrame(fromPeerId, frame),
       requestTimeout: this.config.requestTimeout,
       debug: this.config.debug,
     });
@@ -709,7 +731,114 @@ export class WebRTCStore implements Store {
     return sendCount;
   }
 
-  private async sendSignaling(msg: SignalingMessage, recipientPubkey?: string): Promise<void> {
+  private pruneSeenSet(seen: Map<string, number>, ttlMs: number, cap: number): void {
+    const now = Date.now();
+    for (const [key, ts] of seen) {
+      if (now - ts >= ttlMs) {
+        seen.delete(key);
+      }
+    }
+    while (seen.size > cap) {
+      const oldest = seen.keys().next().value as string | undefined;
+      if (!oldest) break;
+      seen.delete(oldest);
+    }
+  }
+
+  private markSeenFrameId(frameId: string): boolean {
+    this.pruneSeenSet(this.seenFrameIds, SEEN_FRAME_TTL_MS, SEEN_FRAME_CAP);
+    if (this.seenFrameIds.has(frameId)) return false;
+    this.seenFrameIds.set(frameId, Date.now());
+    return true;
+  }
+
+  private markSeenEventId(eventId: string): boolean {
+    this.pruneSeenSet(this.seenEventIds, SEEN_EVENT_TTL_MS, SEEN_EVENT_CAP);
+    if (this.seenEventIds.has(eventId)) return false;
+    this.seenEventIds.set(eventId, Date.now());
+    return true;
+  }
+
+  private forwardMeshFrame(frame: MeshNostrFrame, excludePeerId?: string): number {
+    let forwarded = 0;
+    for (const { peer } of this.peers.values()) {
+      if (!peer.isConnected) continue;
+      if (excludePeerId && peer.peerId === excludePeerId) continue;
+
+      const nextHtl = decrementHTLWithPolicy(frame.htl, MESH_EVENT_POLICY, peer.getHTLConfig());
+      if (!shouldForwardHTL(nextHtl)) continue;
+
+      const outbound: MeshNostrFrame = {
+        ...frame,
+        htl: nextHtl,
+      };
+      if (peer.sendMeshFrameText(outbound)) {
+        forwarded++;
+      }
+    }
+    return forwarded;
+  }
+
+  private async handleMeshFrame(fromPeerId: string, frame: MeshNostrFrame): Promise<void> {
+    const validationError = validateMeshNostrFrame(frame);
+    if (validationError) {
+      return;
+    }
+
+    if (!this.markSeenFrameId(frame.frame_id)) {
+      this.meshDroppedDuplicate++;
+      return;
+    }
+
+    const event = frame.payload.event as Event;
+    if (!this.markSeenEventId(event.id)) {
+      this.meshDroppedDuplicate++;
+      return;
+    }
+
+    if (!verifyEvent(event)) {
+      return;
+    }
+
+    this.meshReceived++;
+    await this.handleSignalingEvent(event);
+
+    const forwarded = this.forwardMeshFrame(frame, fromPeerId);
+    if (forwarded > 0) {
+      this.meshForwarded += forwarded;
+    }
+  }
+
+  private async dispatchSignaling(msg: SignalingMessage, recipientPubkey?: string): Promise<void> {
+    const event = await this.sendSignaling(msg, recipientPubkey);
+    if (!event) {
+      return;
+    }
+
+    const frame = createMeshNostrEventFrame(
+      event as SignedEvent,
+      this.myPeerId.toString(),
+      MESH_EVENT_POLICY.maxHtl,
+    );
+    if (!this.markSeenFrameId(frame.frame_id)) {
+      this.meshDroppedDuplicate++;
+      return;
+    }
+    if (!this.markSeenEventId(frame.payload.event.id)) {
+      this.meshDroppedDuplicate++;
+      return;
+    }
+
+    const forwarded = this.forwardMeshFrame(frame);
+    if (forwarded > 0) {
+      this.meshForwarded += forwarded;
+    }
+  }
+
+  private async sendSignaling(
+    msg: SignalingMessage,
+    recipientPubkey?: string,
+  ): Promise<Event | null> {
     // Fill in our peer ID
     if ('peerId' in msg && msg.peerId === '') {
       msg.peerId = this.myPeerId.uuid;
@@ -726,6 +855,7 @@ export class WebRTCStore implements Store {
 
       const wrappedEvent = await this.giftWrap(innerEvent, recipientPubkey);
       await this.pool.publish(this.config.relays, wrappedEvent as Event);
+      return wrappedEvent as Event;
     } else {
       // Hello message - broadcast for peer discovery (kind 25050 with #l: hello)
       const expiration = Math.floor((Date.now() + 5 * 60 * 1000) / 1000); // 5 minutes
@@ -744,6 +874,7 @@ export class WebRTCStore implements Store {
 
       const event = await this.signer(eventTemplate) as Event;
       await this.pool.publish(this.config.relays, event);
+      return event;
     }
   }
 
@@ -766,7 +897,7 @@ export class WebRTCStore implements Store {
       return;
     }
 
-    this.sendSignaling({
+    void this.dispatchSignaling({
       type: 'hello',
       peerId: this.myPeerId.uuid,
     });
@@ -930,6 +1061,9 @@ export class WebRTCStore implements Store {
       bytesSent: 0,
       bytesReceived: 0,
       bytesForwarded: 0,
+      meshReceived: this.meshReceived,
+      meshForwarded: this.meshForwarded,
+      meshDroppedDuplicate: this.meshDroppedDuplicate,
     };
 
     const perPeer = new Map<string, {

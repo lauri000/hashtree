@@ -24,6 +24,11 @@ import {
   MSG_TYPE_REQUEST,
   MSG_TYPE_RESPONSE,
   FRAGMENT_SIZE,
+  WEBRTC_KIND,
+  MESH_PROTOCOL,
+  MESH_PROTOCOL_VERSION,
+  createMeshNostrEventFrame,
+  validateMeshNostrFrame,
 } from '../src/webrtc/types.js';
 
 // Helper to create test hash (32 bytes)
@@ -246,6 +251,30 @@ describe('Protocol Wire Format', () => {
       };
       expect(body.i).toBe(2);
       expect(body.n).toBe(5);
+    });
+  });
+
+  describe('Mesh Event JSON Interop', () => {
+    it('should use rust-compatible mesh field names and values', () => {
+      const event = {
+        id: '7'.repeat(64),
+        pubkey: '8'.repeat(64),
+        sig: '9'.repeat(128),
+        kind: WEBRTC_KIND,
+        created_at: 1_700_000_000,
+        tags: [['l', 'hello']],
+        content: '',
+      };
+      const frame = createMeshNostrEventFrame(event as any, 'peer-a:uuid-a', 4);
+      const json = JSON.parse(JSON.stringify(frame)) as Record<string, unknown>;
+
+      expect(json.protocol).toBe(MESH_PROTOCOL);
+      expect(json.version).toBe(MESH_PROTOCOL_VERSION);
+      expect(json).toHaveProperty('frame_id');
+      expect(json).toHaveProperty('sender_peer_id');
+      expect(json.htl).toBe(4);
+      expect((json.payload as { type?: string }).type).toBe('EVENT');
+      expect(validateMeshNostrFrame(frame)).toBeNull();
     });
   });
 });

@@ -11,9 +11,9 @@ import { encode, decode } from '@msgpack/msgpack';
 import { sha256 } from '@hashtree/core';
 import type { DataRequest, DataResponse, DataMessage } from './types.js';
 import {
-  MAX_HTL,
-  DECREMENT_AT_MAX_PROB,
-  DECREMENT_AT_MIN_PROB,
+  BLOB_REQUEST_POLICY,
+  HtlMode,
+  type HtlPolicy,
   MSG_TYPE_REQUEST,
   MSG_TYPE_RESPONSE,
 } from './types.js';
@@ -88,8 +88,11 @@ export interface PendingRequest {
  * Generated once per peer connection, stays fixed for connection lifetime
  */
 export interface PeerHTLConfig {
-  decrementAtMax: boolean;  // true = decrement at MAX_HTL
-  decrementAtMin: boolean;  // true = decrement at HTL=1
+  atMaxSample: number;      // random sample in [0,1) used at MAX HTL
+  atMinSample: number;      // random sample in [0,1) used at HTL=1
+  // Backward-compatible legacy fields (deprecated)
+  decrementAtMax?: boolean;
+  decrementAtMin?: boolean;
 }
 
 /**
@@ -97,41 +100,67 @@ export interface PeerHTLConfig {
  */
 export function generatePeerHTLConfig(): PeerHTLConfig {
   return {
-    decrementAtMax: Math.random() < DECREMENT_AT_MAX_PROB,
-    decrementAtMin: Math.random() < DECREMENT_AT_MIN_PROB,
+    atMaxSample: Math.random(),
+    atMinSample: Math.random(),
   };
 }
 
 /**
- * Decrement HTL using peer's config (Freenet-style probabilistic)
- * Called when SENDING to a peer, not on receive
+ * Decrement HTL using peer's config and selected policy.
+ */
+export function decrementHTLWithPolicy(
+  htl: number,
+  policy: HtlPolicy,
+  config: PeerHTLConfig,
+): number {
+  if (htl <= 0) return 0;
+  const bounded = Math.min(htl, policy.maxHtl);
+  const maxSample = config.atMaxSample ?? (config.decrementAtMax ? 0 : 1);
+  const minSample = config.atMinSample ?? (config.decrementAtMin ? 0 : 1);
+
+  if (policy.mode !== HtlMode.Probabilistic) {
+    return Math.max(0, bounded - 1);
+  }
+
+  const pAtMax = Math.max(0, Math.min(1, policy.pAtMax));
+  const pAtMin = Math.max(0, Math.min(1, policy.pAtMin));
+
+  if (bounded === policy.maxHtl) {
+    return maxSample < pAtMax ? bounded - 1 : bounded;
+  }
+
+  if (bounded === 1) {
+    return minSample < pAtMin ? 0 : 1;
+  }
+
+  return bounded - 1;
+}
+
+/**
+ * Backward-compatible helper using blob-request policy.
  */
 export function decrementHTL(htl: number, config: PeerHTLConfig): number {
-  if (htl <= 0) return 0;
-
-  if (htl === MAX_HTL) {
-    // At max: only decrement if this peer's config says so
-    return config.decrementAtMax ? htl - 1 : htl;
-  } else if (htl === 1) {
-    // At min: only decrement if this peer's config says so
-    return config.decrementAtMin ? 0 : htl;
-  } else {
-    // Middle values: always decrement
-    return htl - 1;
-  }
+  return decrementHTLWithPolicy(htl, BLOB_REQUEST_POLICY, config);
 }
 
 /**
  * Check if a request should be forwarded based on HTL
  */
-export function shouldForward(htl: number): boolean {
+export function shouldForwardHTL(htl: number): boolean {
   return htl > 0;
+}
+
+/**
+ * Backward-compatible helper.
+ */
+export function shouldForward(htl: number): boolean {
+  return shouldForwardHTL(htl);
 }
 
 /**
  * Create a request body
  */
-export function createRequest(hash: Uint8Array, htl: number = MAX_HTL): DataRequest {
+export function createRequest(hash: Uint8Array, htl: number = BLOB_REQUEST_POLICY.maxHtl): DataRequest {
   return { h: hash, htl };
 }
 

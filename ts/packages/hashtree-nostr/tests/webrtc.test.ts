@@ -1,10 +1,20 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   decrementHTL,
+  decrementHTLWithPolicy,
   shouldForward,
+  shouldForwardHTL,
   generatePeerHTLConfig,
 } from '../src/webrtc/protocol.js';
-import { MAX_HTL } from '../src/webrtc/types.js';
+import {
+  MAX_HTL,
+  BLOB_REQUEST_POLICY,
+  MESH_EVENT_POLICY,
+  HtlMode,
+  WEBRTC_KIND,
+  createMeshNostrEventFrame,
+  validateMeshNostrFrame,
+} from '../src/webrtc/types.js';
 import { MemoryStore, sha256, toHex, fromHex } from '@hashtree/core';
 
 /**
@@ -147,10 +157,79 @@ describe('PeerId', () => {
 });
 
 describe('HTL (Hops To Live)', () => {
+  describe('shared HTL policies', () => {
+    it('blob policy matches legacy defaults', () => {
+      expect(BLOB_REQUEST_POLICY.mode).toBe(HtlMode.Probabilistic);
+      expect(BLOB_REQUEST_POLICY.maxHtl).toBe(MAX_HTL);
+      expect(BLOB_REQUEST_POLICY.pAtMax).toBe(0.5);
+      expect(BLOB_REQUEST_POLICY.pAtMin).toBe(0.25);
+    });
+
+    it('mesh policy is probabilistic and tighter', () => {
+      expect(MESH_EVENT_POLICY.mode).toBe(HtlMode.Probabilistic);
+      expect(MESH_EVENT_POLICY.maxHtl).toBe(4);
+      expect(MESH_EVENT_POLICY.maxHtl).toBeLessThan(BLOB_REQUEST_POLICY.maxHtl);
+      expect(MESH_EVENT_POLICY.pAtMax).toBeGreaterThan(BLOB_REQUEST_POLICY.pAtMax);
+      expect(MESH_EVENT_POLICY.pAtMin).toBeGreaterThan(BLOB_REQUEST_POLICY.pAtMin);
+    });
+
+    it('decrementHTLWithPolicy respects fixed per-peer samples', () => {
+      const cfg = { atMaxSample: 0.6, atMinSample: 0.4 };
+      expect(decrementHTLWithPolicy(BLOB_REQUEST_POLICY.maxHtl, BLOB_REQUEST_POLICY, cfg))
+        .toBe(BLOB_REQUEST_POLICY.maxHtl);
+      expect(decrementHTLWithPolicy(MESH_EVENT_POLICY.maxHtl, MESH_EVENT_POLICY, cfg))
+        .toBe(MESH_EVENT_POLICY.maxHtl - 1);
+      expect(decrementHTLWithPolicy(1, MESH_EVENT_POLICY, cfg)).toBe(0);
+      expect(shouldForwardHTL(0)).toBe(false);
+      expect(shouldForwardHTL(1)).toBe(true);
+    });
+  });
+
+  describe('mesh frame validation', () => {
+    it('accepts signed kind 25050 event', () => {
+      const event = {
+        id: '1'.repeat(64),
+        pubkey: '2'.repeat(64),
+        sig: '3'.repeat(128),
+        kind: WEBRTC_KIND,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [['l', 'hello']],
+        content: '',
+      };
+
+      const frame = createMeshNostrEventFrame(
+        event as any,
+        'peer-a:uuid-a',
+        MESH_EVENT_POLICY.maxHtl,
+      );
+      expect(validateMeshNostrFrame(frame)).toBeNull();
+      expect(frame.frame_id.length).toBeGreaterThan(0);
+      expect(frame.sender_peer_id).toBe('peer-a:uuid-a');
+    });
+
+    it('rejects non-webrtc event kind', () => {
+      const event = {
+        id: '4'.repeat(64),
+        pubkey: '5'.repeat(64),
+        sig: '6'.repeat(128),
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        content: 'nope',
+      };
+      const frame = createMeshNostrEventFrame(
+        event as any,
+        'peer-a:uuid-a',
+        MESH_EVENT_POLICY.maxHtl,
+      );
+      expect(validateMeshNostrFrame(frame)).toBe('unsupported event kind');
+    });
+  });
+
   describe('decrementHTL', () => {
     it('should always decrement at middle values regardless of config', () => {
-      const configNever = { decrementAtMax: false, decrementAtMin: false };
-      const configAlways = { decrementAtMax: true, decrementAtMin: true };
+      const configNever = { atMaxSample: 0.99, atMinSample: 0.99 };
+      const configAlways = { atMaxSample: 0.01, atMinSample: 0.01 };
 
       // Middle values (2 to MAX_HTL-1) always decrement
       expect(decrementHTL(5, configNever)).toBe(4);
@@ -160,17 +239,17 @@ describe('HTL (Hops To Live)', () => {
     });
 
     it('should respect config.decrementAtMax at MAX_HTL', () => {
-      expect(decrementHTL(MAX_HTL, { decrementAtMax: true, decrementAtMin: false })).toBe(MAX_HTL - 1);
-      expect(decrementHTL(MAX_HTL, { decrementAtMax: false, decrementAtMin: false })).toBe(MAX_HTL);
+      expect(decrementHTL(MAX_HTL, { atMaxSample: 0.1, atMinSample: 0.9 })).toBe(MAX_HTL - 1);
+      expect(decrementHTL(MAX_HTL, { atMaxSample: 0.9, atMinSample: 0.9 })).toBe(MAX_HTL);
     });
 
     it('should respect config.decrementAtMin at HTL=1', () => {
-      expect(decrementHTL(1, { decrementAtMax: false, decrementAtMin: true })).toBe(0);
-      expect(decrementHTL(1, { decrementAtMax: false, decrementAtMin: false })).toBe(1);
+      expect(decrementHTL(1, { atMaxSample: 0.9, atMinSample: 0.1 })).toBe(0);
+      expect(decrementHTL(1, { atMaxSample: 0.9, atMinSample: 0.9 })).toBe(1);
     });
 
     it('should return 0 when HTL is already 0 or negative', () => {
-      const config = { decrementAtMax: true, decrementAtMin: true };
+      const config = { atMaxSample: 0.1, atMinSample: 0.1 };
       expect(decrementHTL(0, config)).toBe(0);
       expect(decrementHTL(-1, config)).toBe(0);
     });
@@ -190,34 +269,33 @@ describe('HTL (Hops To Live)', () => {
   });
 
   describe('generatePeerHTLConfig', () => {
-    it('should produce valid boolean config', () => {
+    it('should produce valid sampled config', () => {
       const config = generatePeerHTLConfig();
-      expect(typeof config.decrementAtMax).toBe('boolean');
-      expect(typeof config.decrementAtMin).toBe('boolean');
+      expect(config.atMaxSample).toBeGreaterThanOrEqual(0);
+      expect(config.atMaxSample).toBeLessThan(1);
+      expect(config.atMinSample).toBeGreaterThanOrEqual(0);
+      expect(config.atMinSample).toBeLessThan(1);
     });
 
     it('should produce varied configs over many generations', () => {
       // Generate many configs and check we get some variation
-      // (probabilistically this should pass - 50% and 25% chances)
-      let maxTrue = 0;
-      let maxFalse = 0;
-      let minTrue = 0;
-      let minFalse = 0;
+      let maxLtHalf = 0;
+      let maxGeHalf = 0;
+      let minLtHalf = 0;
+      let minGeHalf = 0;
 
       for (let i = 0; i < 100; i++) {
         const config = generatePeerHTLConfig();
-        if (config.decrementAtMax) maxTrue++;
-        else maxFalse++;
-        if (config.decrementAtMin) minTrue++;
-        else minFalse++;
+        if (config.atMaxSample < 0.5) maxLtHalf++;
+        else maxGeHalf++;
+        if (config.atMinSample < 0.5) minLtHalf++;
+        else minGeHalf++;
       }
 
-      // With 100 samples at 50% probability, we should see both values
-      expect(maxTrue).toBeGreaterThan(0);
-      expect(maxFalse).toBeGreaterThan(0);
-      // With 100 samples at 25% probability, we should see both values
-      expect(minTrue).toBeGreaterThan(0);
-      expect(minFalse).toBeGreaterThan(0);
+      expect(maxLtHalf).toBeGreaterThan(0);
+      expect(maxGeHalf).toBeGreaterThan(0);
+      expect(minLtHalf).toBeGreaterThan(0);
+      expect(minGeHalf).toBeGreaterThan(0);
     });
   });
 });

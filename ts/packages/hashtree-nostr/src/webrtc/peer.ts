@@ -8,15 +8,17 @@ import type {
   DataResponse,
   PeerId,
   PendingReassembly,
+  MeshNostrFrame,
 } from './types.js';
 import {
-  MAX_HTL,
+  BLOB_REQUEST_POLICY,
   MSG_TYPE_REQUEST,
   MSG_TYPE_RESPONSE,
   FRAGMENT_SIZE,
   FRAGMENT_STALL_TIMEOUT,
   FRAGMENT_TOTAL_TIMEOUT,
   MAX_PENDING_REASSEMBLIES,
+  parseMeshNostrFrameText,
 } from './types.js';
 import { LRUCache } from './lruCache.js';
 import {
@@ -90,6 +92,8 @@ export class Peer {
   // Callback to forward request to other peers when we don't have data locally
   // htl parameter is the decremented HTL to use when forwarding
   private onForwardRequest?: (hash: Uint8Array, excludePeerId: string, htl: number) => Promise<Uint8Array | null>;
+  // Callback for relayless mesh signaling frames received over data channel text.
+  private onMeshFrame?: (fromPeerId: string, frame: MeshNostrFrame) => Promise<void> | void;
 
   // Per-peer stats tracking
   private stats = {
@@ -126,6 +130,7 @@ export class Peer {
     onClose: () => void;
     onConnected?: () => void;
     onForwardRequest?: (hash: Uint8Array, excludePeerId: string, htl: number) => Promise<Uint8Array | null>;
+    onMeshFrame?: (fromPeerId: string, frame: MeshNostrFrame) => Promise<void> | void;
     requestTimeout?: number;
     debug?: boolean;
   }) {
@@ -137,6 +142,7 @@ export class Peer {
     this.onClose = options.onClose;
     this.onConnected = options.onConnected;
     this.onForwardRequest = options.onForwardRequest;
+    this.onMeshFrame = options.onMeshFrame;
     this.requestTimeout = options.requestTimeout ?? 500;
     this.debug = options.debug ?? false;
     this.createdAt = Date.now();
@@ -252,9 +258,21 @@ export class Peer {
     };
 
     channel.onmessage = async (event) => {
-      // All messages are binary with type prefix
+      if (typeof event.data === 'string') {
+        const frame = parseMeshNostrFrameText(event.data);
+        if (frame && this.onMeshFrame) {
+          await this.onMeshFrame(this.peerId, frame);
+        }
+        return;
+      }
+
       if (event.data instanceof ArrayBuffer) {
         await this.handleMessage(event.data);
+        return;
+      }
+
+      if (typeof Blob !== 'undefined' && event.data instanceof Blob) {
+        await this.handleMessage(await event.data.arrayBuffer());
       }
     };
   }
@@ -318,7 +336,7 @@ export class Peer {
   }
 
   private async handleRequest(req: DataRequest): Promise<void> {
-    const htl = req.htl ?? MAX_HTL;
+    const htl = req.htl ?? BLOB_REQUEST_POLICY.maxHtl;
     const hash = req.h;
     const hashKey = hashToKey(hash);
 
@@ -490,7 +508,7 @@ export class Peer {
    * Request data by hash from this peer
    * @param htl Hops To Live - decremented before sending
    */
-  async request(hash: Hash, htl: number = MAX_HTL): Promise<Uint8Array | null> {
+  async request(hash: Hash, htl: number = BLOB_REQUEST_POLICY.maxHtl): Promise<Uint8Array | null> {
     if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
       return null;
     }
@@ -546,6 +564,28 @@ export class Peer {
     bytesForwarded: number;
   } {
     return { ...this.stats };
+  }
+
+  /**
+   * Get per-peer HTL config used for probabilistic decrements.
+   */
+  getHTLConfig(): PeerHTLConfig {
+    return this.htlConfig;
+  }
+
+  /**
+   * Send a relayless mesh signaling frame over text channel.
+   */
+  sendMeshFrameText(frame: MeshNostrFrame): boolean {
+    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+      return false;
+    }
+    try {
+      this.dataChannel.send(JSON.stringify(frame));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
