@@ -260,17 +260,20 @@ impl PeerStats {
     /// - penalize timeout/failure-heavy peers (retaliation)
     /// - keep a small exploration term for under-sampled peers
     pub fn tit_for_tat_score(&self, total_requests: u64) -> f64 {
-        let reliability = if self.requests_sent == 0 {
-            0.5
-        } else {
-            self.successes as f64 / self.requests_sent as f64
-        };
+        // Beta prior keeps cold-start behavior neutral while converging quickly.
+        let reliability = (self.successes as f64 + 1.0) / (self.requests_sent as f64 + 2.0);
 
-        let reciprocity = if self.bytes_sent == 0 {
-            0.5
+        // Reciprocity should not be dominated by one lucky large payload. We
+        // gate byte-ratio impact with success confidence.
+        let reciprocity_raw = if self.bytes_sent == 0 {
+            1.0
         } else {
-            ((self.bytes_received as f64 + 1.0) / (self.bytes_sent as f64 + 1.0)).min(2.0) / 2.0
+            self.bytes_received as f64 / self.bytes_sent as f64
         };
+        let reciprocity_ratio = reciprocity_raw / (1.0 + reciprocity_raw);
+        let reciprocity_confidence = self.successes as f64 / (self.successes as f64 + 4.0);
+        let reciprocity =
+            (1.0 - reciprocity_confidence) * 0.5 + reciprocity_confidence * reciprocity_ratio;
 
         let rtt_score = if self.srtt_ms <= 0.0 {
             0.5
@@ -289,11 +292,12 @@ impl PeerStats {
             self.failures as f64 / self.requests_sent as f64
         };
         let retaliation_penalty =
-            (0.35 * timeout_rate + 0.20 * failure_rate + 0.04 * self.backoff_level as f64).min(0.8);
+            (0.60 * timeout_rate + 0.45 * failure_rate + 0.10 * self.backoff_level as f64)
+                .min(0.95);
 
-        let cooperative = 0.45 * reliability + 0.35 * reciprocity + 0.20 * rtt_score;
-        let exploration = 0.12
-            * (((total_requests as f64) + 1.0).ln() / ((self.requests_sent as f64) + 1.0)).sqrt();
+        let cooperative = 0.65 * reliability + 0.25 * reciprocity + 0.10 * rtt_score;
+        let exploration = 0.03
+            * (((total_requests as f64) + 2.0).ln() / ((self.requests_sent as f64) + 2.0)).sqrt();
 
         (cooperative + exploration - retaliation_penalty).max(0.0)
     }

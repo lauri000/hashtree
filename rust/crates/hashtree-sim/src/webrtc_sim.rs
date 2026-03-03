@@ -14,7 +14,7 @@ use hashtree_core::{HashTree, HashTreeConfig, MemoryStore, Store};
 use hashtree_webrtc::{
     parse_message, DataMessage, GenericStore, GenericStoreRoutingConfig, MockConnectionFactory,
     MockLatencyMode, MockRelay, MockRelayTransport, PoolConfig, PoolSettings, RelayTransport,
-    RequestDispatchConfig, SelectionStrategy, SignalingManager,
+    RequestDispatchConfig, ResponseBehaviorConfig, SelectionStrategy, SignalingManager,
 };
 
 /// Simulation configuration
@@ -72,6 +72,7 @@ pub struct NodeStrategyProfile {
     pub selection_strategy: SelectionStrategy,
     pub fairness_enabled: bool,
     pub dispatch: RequestDispatchConfig,
+    pub response_behavior: ResponseBehaviorConfig,
 }
 
 impl Default for SimConfig {
@@ -296,6 +297,7 @@ impl Simulation {
                 selection_strategy: SelectionStrategy::Weighted,
                 fairness_enabled: true,
                 dispatch: RequestDispatchConfig::default(),
+                response_behavior: ResponseBehaviorConfig::default(),
             }]
         } else {
             let sanitized: Vec<NodeStrategyProfile> = config
@@ -312,6 +314,7 @@ impl Simulation {
                     selection_strategy: SelectionStrategy::Weighted,
                     fairness_enabled: true,
                     dispatch: RequestDispatchConfig::default(),
+                    response_behavior: ResponseBehaviorConfig::default(),
                 }]
             } else {
                 sanitized
@@ -509,6 +512,7 @@ impl Simulation {
                 selection_strategy: selected_strategy.selection_strategy,
                 fairness_enabled: selected_strategy.fairness_enabled,
                 dispatch: selected_strategy.dispatch,
+                response_behavior: selected_strategy.response_behavior,
             },
         ));
 
@@ -1136,6 +1140,11 @@ impl Simulation {
                             "max_fanout": s.dispatch.max_fanout,
                             "hedge_interval_ms": s.dispatch.hedge_interval_ms,
                         },
+                        "response_behavior": {
+                            "drop_response_prob": s.response_behavior.drop_response_prob,
+                            "corrupt_response_prob": s.response_behavior.corrupt_response_prob,
+                            "extra_delay_ms": s.response_behavior.extra_delay_ms,
+                        },
                         "pool": {
                             "max_connections": s.pool.max_connections,
                             "satisfied_connections": s.pool.satisfied_connections
@@ -1571,6 +1580,7 @@ mod tests {
                     selection_strategy: SelectionStrategy::Weighted,
                     fairness_enabled: true,
                     dispatch: RequestDispatchConfig::default(),
+                    response_behavior: ResponseBehaviorConfig::default(),
                 },
                 NodeStrategyProfile {
                     name: "other".to_string(),
@@ -1582,6 +1592,7 @@ mod tests {
                     selection_strategy: SelectionStrategy::Weighted,
                     fairness_enabled: true,
                     dispatch: RequestDispatchConfig::default(),
+                    response_behavior: ResponseBehaviorConfig::default(),
                 },
             ],
             reference_strategy: Some("reference".to_string()),
@@ -1605,6 +1616,176 @@ mod tests {
         let report = sim.report_json().await;
         assert!(report["stats"]["strategy_retrieval"]["reference"]["success_rate"].is_number());
         assert!(report["objectives"]["reference_success_rate"].is_number());
+    }
+
+    fn mixed_bad_actor_config(seed: u64, reference_selection: SelectionStrategy) -> SimConfig {
+        let reference_dispatch = RequestDispatchConfig {
+            initial_fanout: 1,
+            hedge_fanout: 1,
+            max_fanout: 4,
+            hedge_interval_ms: 8,
+        };
+
+        SimConfig {
+            node_count: 80,
+            duration: Duration::from_secs(5),
+            seed,
+            pool: PoolConfig {
+                max_connections: 16,
+                satisfied_connections: 8,
+            },
+            discovery_interval_ms: 100,
+            hello_reannounce_interval_ms: 400,
+            churn_rate: 0.02,
+            allow_rejoin: true,
+            network_latency_ms: 30,
+            retrieval_probe_count: 24,
+            retrieval_payload_bytes: 1024,
+            retrieval_timeout_ms: 700,
+            max_events_retained: 20_000,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
+            strategy_mix: vec![
+                NodeStrategyProfile {
+                    name: "reference".to_string(),
+                    weight: 60,
+                    pool: PoolConfig {
+                        max_connections: 18,
+                        satisfied_connections: 9,
+                    },
+                    selection_strategy: reference_selection,
+                    fairness_enabled: true,
+                    dispatch: reference_dispatch,
+                    response_behavior: ResponseBehaviorConfig::default(),
+                },
+                NodeStrategyProfile {
+                    name: "goofball".to_string(),
+                    weight: 25,
+                    pool: PoolConfig {
+                        max_connections: 12,
+                        satisfied_connections: 6,
+                    },
+                    selection_strategy: SelectionStrategy::RoundRobin,
+                    fairness_enabled: true,
+                    dispatch: RequestDispatchConfig::default(),
+                    response_behavior: ResponseBehaviorConfig {
+                        drop_response_prob: 0.25,
+                        corrupt_response_prob: 0.05,
+                        extra_delay_ms: 40,
+                    },
+                },
+                NodeStrategyProfile {
+                    name: "adversarial".to_string(),
+                    weight: 15,
+                    pool: PoolConfig {
+                        max_connections: 20,
+                        satisfied_connections: 10,
+                    },
+                    selection_strategy: SelectionStrategy::Random,
+                    fairness_enabled: true,
+                    dispatch: RequestDispatchConfig::default(),
+                    response_behavior: ResponseBehaviorConfig {
+                        drop_response_prob: 0.55,
+                        corrupt_response_prob: 0.35,
+                        extra_delay_ms: 5,
+                    },
+                },
+            ],
+            reference_strategy: Some("reference".to_string()),
+        }
+    }
+
+    fn reference_success_rate(stats: &SimStats) -> f64 {
+        stats
+            .strategy_retrieval
+            .get("reference")
+            .expect("reference retrieval stats missing")
+            .success_rate
+    }
+
+    #[tokio::test]
+    async fn test_webrtc_sim_goofballs_reduce_reference_success() {
+        let honest_config = SimConfig {
+            node_count: 80,
+            duration: Duration::from_secs(5),
+            seed: 1234,
+            pool: PoolConfig {
+                max_connections: 16,
+                satisfied_connections: 8,
+            },
+            discovery_interval_ms: 100,
+            hello_reannounce_interval_ms: 400,
+            churn_rate: 0.02,
+            allow_rejoin: true,
+            network_latency_ms: 30,
+            retrieval_probe_count: 24,
+            retrieval_payload_bytes: 1024,
+            retrieval_timeout_ms: 700,
+            max_events_retained: 20_000,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
+            strategy_mix: vec![NodeStrategyProfile {
+                name: "reference".to_string(),
+                weight: 1,
+                pool: PoolConfig {
+                    max_connections: 18,
+                    satisfied_connections: 9,
+                },
+                selection_strategy: SelectionStrategy::Weighted,
+                fairness_enabled: true,
+                dispatch: RequestDispatchConfig::default(),
+                response_behavior: ResponseBehaviorConfig::default(),
+            }],
+            reference_strategy: Some("reference".to_string()),
+        };
+
+        let mixed_config = mixed_bad_actor_config(honest_config.seed, SelectionStrategy::TitForTat);
+
+        let honest = Simulation::new(honest_config);
+        honest.run().await;
+        let honest_stats = honest.get_stats().await;
+        let honest_ref = reference_success_rate(&honest_stats);
+
+        let mixed = Simulation::new(mixed_config);
+        mixed.run().await;
+        let mixed_stats = mixed.get_stats().await;
+        let mixed_ref = reference_success_rate(&mixed_stats);
+
+        assert!(
+            mixed_ref < honest_ref,
+            "expected mixed goofball/adversarial network to reduce reference success (honest={:.3}, mixed={:.3})",
+            honest_ref,
+            mixed_ref
+        );
+    }
+
+    #[tokio::test]
+    async fn test_webrtc_sim_tit_for_tat_outperforms_round_robin_with_bad_actors() {
+        let seeds = [17_u64, 33, 49, 65];
+        let mut round_robin_total = 0.0;
+        let mut tit_for_tat_total = 0.0;
+
+        for seed in seeds {
+            let round_robin =
+                Simulation::new(mixed_bad_actor_config(seed, SelectionStrategy::RoundRobin));
+            round_robin.run().await;
+            round_robin_total += reference_success_rate(&round_robin.get_stats().await);
+
+            let tit_for_tat =
+                Simulation::new(mixed_bad_actor_config(seed, SelectionStrategy::TitForTat));
+            tit_for_tat.run().await;
+            tit_for_tat_total += reference_success_rate(&tit_for_tat.get_stats().await);
+        }
+
+        let n = seeds.len() as f64;
+        let round_robin_avg = round_robin_total / n;
+        let tit_for_tat_avg = tit_for_tat_total / n;
+        assert!(
+            tit_for_tat_avg > round_robin_avg + 0.01,
+            "expected tit-for-tat to beat round-robin in mixed bad-actor network (round_robin={:.3}, tit_for_tat={:.3})",
+            round_robin_avg,
+            tit_for_tat_avg
+        );
     }
 
     #[tokio::test]

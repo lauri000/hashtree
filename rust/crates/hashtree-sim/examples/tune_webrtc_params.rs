@@ -1,6 +1,6 @@
 use hashtree_sim::{
     run_parameter_sweep, NodeStrategyProfile, PoolConfig, RequestDispatchConfig,
-    RetrievalTimingMode, SelectionStrategy, SimConfig,
+    ResponseBehaviorConfig, RetrievalTimingMode, SelectionStrategy, SimConfig,
 };
 use std::env;
 use std::time::Duration;
@@ -28,6 +28,7 @@ struct StrategyRuntime {
     selection_strategy: SelectionStrategy,
     fairness_enabled: bool,
     dispatch: RequestDispatchConfig,
+    response_behavior: ResponseBehaviorConfig,
 }
 
 #[derive(Debug)]
@@ -84,6 +85,7 @@ fn flood_runtime(selection_strategy: SelectionStrategy) -> StrategyRuntime {
         selection_strategy,
         fairness_enabled: true,
         dispatch: RequestDispatchConfig::default(),
+        response_behavior: ResponseBehaviorConfig::default(),
     }
 }
 
@@ -103,6 +105,23 @@ fn hedged_runtime(
             max_fanout,
             hedge_interval_ms,
         },
+        response_behavior: ResponseBehaviorConfig::default(),
+    }
+}
+
+fn goofball_behavior() -> ResponseBehaviorConfig {
+    ResponseBehaviorConfig {
+        drop_response_prob: 0.25,
+        corrupt_response_prob: 0.05,
+        extra_delay_ms: 40,
+    }
+}
+
+fn adversarial_behavior() -> ResponseBehaviorConfig {
+    ResponseBehaviorConfig {
+        drop_response_prob: 0.55,
+        corrupt_response_prob: 0.35,
+        extra_delay_ms: 5,
     }
 }
 
@@ -383,6 +402,7 @@ async fn main() {
                         selection_strategy: candidate.reference_strategy.selection_strategy,
                         fairness_enabled: candidate.reference_strategy.fairness_enabled,
                         dispatch: candidate.reference_strategy.dispatch,
+                        response_behavior: candidate.reference_strategy.response_behavior,
                     },
                     NodeStrategyProfile {
                         name: "conservative".to_string(),
@@ -391,6 +411,7 @@ async fn main() {
                         selection_strategy: candidate.conservative_strategy.selection_strategy,
                         fairness_enabled: candidate.conservative_strategy.fairness_enabled,
                         dispatch: candidate.conservative_strategy.dispatch,
+                        response_behavior: candidate.conservative_strategy.response_behavior,
                     },
                     NodeStrategyProfile {
                         name: "aggressive".to_string(),
@@ -399,6 +420,25 @@ async fn main() {
                         selection_strategy: candidate.aggressive_strategy.selection_strategy,
                         fairness_enabled: candidate.aggressive_strategy.fairness_enabled,
                         dispatch: candidate.aggressive_strategy.dispatch,
+                        response_behavior: candidate.aggressive_strategy.response_behavior,
+                    },
+                    NodeStrategyProfile {
+                        name: "goofball".to_string(),
+                        weight: 20,
+                        pool: candidate.conservative_pool.clone(),
+                        selection_strategy: SelectionStrategy::RoundRobin,
+                        fairness_enabled: true,
+                        dispatch: RequestDispatchConfig::default(),
+                        response_behavior: goofball_behavior(),
+                    },
+                    NodeStrategyProfile {
+                        name: "adversarial".to_string(),
+                        weight: 20,
+                        pool: candidate.aggressive_pool.clone(),
+                        selection_strategy: SelectionStrategy::Random,
+                        fairness_enabled: true,
+                        dispatch: RequestDispatchConfig::default(),
+                        response_behavior: adversarial_behavior(),
                     },
                 ],
             });

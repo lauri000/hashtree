@@ -5,7 +5,9 @@
 //! and simulation (mocks) use this same code.
 
 use async_trait::async_trait;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash as _, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, RwLock};
@@ -56,12 +58,46 @@ impl Default for RequestDispatchConfig {
     }
 }
 
+/// Response behavior profile for simulation/game-theory actors.
+///
+/// Defaults to honest behavior (always respond correctly, no extra delay).
+#[derive(Debug, Clone, Copy)]
+pub struct ResponseBehaviorConfig {
+    /// Probability that a node drops a response even when it has data.
+    pub drop_response_prob: f64,
+    /// Probability that a node responds with corrupted payload.
+    pub corrupt_response_prob: f64,
+    /// Optional response delay to model slow/incompetent peers.
+    pub extra_delay_ms: u64,
+}
+
+impl Default for ResponseBehaviorConfig {
+    fn default() -> Self {
+        Self {
+            drop_response_prob: 0.0,
+            corrupt_response_prob: 0.0,
+            extra_delay_ms: 0,
+        }
+    }
+}
+
+impl ResponseBehaviorConfig {
+    fn normalized(self) -> Self {
+        Self {
+            drop_response_prob: self.drop_response_prob.clamp(0.0, 1.0),
+            corrupt_response_prob: self.corrupt_response_prob.clamp(0.0, 1.0),
+            extra_delay_ms: self.extra_delay_ms,
+        }
+    }
+}
+
 /// Routing policy for request ordering + dispatch fanout.
 #[derive(Debug, Clone, Copy)]
 pub struct GenericStoreRoutingConfig {
     pub selection_strategy: SelectionStrategy,
     pub fairness_enabled: bool,
     pub dispatch: RequestDispatchConfig,
+    pub response_behavior: ResponseBehaviorConfig,
 }
 
 impl Default for GenericStoreRoutingConfig {
@@ -70,6 +106,7 @@ impl Default for GenericStoreRoutingConfig {
             selection_strategy: SelectionStrategy::Weighted,
             fairness_enabled: true,
             dispatch: RequestDispatchConfig::default(),
+            response_behavior: ResponseBehaviorConfig::default(),
         }
     }
 }
@@ -204,6 +241,39 @@ where
             cfg.hedge_fanout.min(cap.max(1))
         };
         cfg
+    }
+
+    fn response_behavior(&self) -> ResponseBehaviorConfig {
+        self.routing.response_behavior.normalized()
+    }
+
+    fn deterministic_actor_draw_for(peer_id: &str, hash: &Hash, salt: u64) -> f64 {
+        let mut hasher = DefaultHasher::new();
+        peer_id.hash(&mut hasher);
+        hash.hash(&mut hasher);
+        salt.hash(&mut hasher);
+        let v = hasher.finish();
+        (v as f64) / (u64::MAX as f64)
+    }
+
+    fn deterministic_actor_draw(&self, hash: &Hash, salt: u64) -> f64 {
+        Self::deterministic_actor_draw_for(self.signaling.peer_id(), hash, salt)
+    }
+
+    fn should_drop_response(&self, hash: &Hash) -> bool {
+        let p = self.response_behavior().drop_response_prob;
+        if p <= 0.0 {
+            return false;
+        }
+        self.deterministic_actor_draw(hash, 0xD0_D0_D0_D0_D0_D0_D0_D0) < p
+    }
+
+    fn should_corrupt_response(&self, hash: &Hash) -> bool {
+        let p = self.response_behavior().corrupt_response_prob;
+        if p <= 0.0 {
+            return false;
+        }
+        self.deterministic_actor_draw(hash, 0xC0_C0_C0_C0_C0_C0_C0_C0) < p
     }
 
     fn hedged_wave_plan(peer_count: usize, dispatch: RequestDispatchConfig) -> Vec<usize> {
@@ -435,7 +505,30 @@ where
         };
 
         // Check local store
-        if let Ok(Some(data)) = self.local_store.get(&hash).await {
+        if let Ok(Some(mut data)) = self.local_store.get(&hash).await {
+            if self.should_drop_response(&hash) {
+                if self.debug {
+                    println!(
+                        "[GenericStore] Dropping response for {} due to actor profile",
+                        hash_to_key(&hash)
+                    );
+                }
+                return;
+            }
+
+            let behavior = self.response_behavior();
+            if behavior.extra_delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(behavior.extra_delay_ms)).await;
+            }
+
+            if self.should_corrupt_response(&hash) {
+                if data.is_empty() {
+                    data.push(0x80);
+                } else {
+                    data[0] ^= 0x80;
+                }
+            }
+
             // Send response
             let res = create_response(&hash, data);
             let response_bytes = encode_response(&res);
@@ -523,6 +616,27 @@ mod tests {
             },
         );
         assert_eq!(plan, vec![2, 3, 3]);
+    }
+
+    #[test]
+    fn test_response_behavior_normalization_clamps_probs() {
+        let raw = ResponseBehaviorConfig {
+            drop_response_prob: -1.5,
+            corrupt_response_prob: 9.0,
+            extra_delay_ms: 12,
+        };
+        let normalized = raw.normalized();
+        assert_eq!(normalized.drop_response_prob, 0.0);
+        assert_eq!(normalized.corrupt_response_prob, 1.0);
+        assert_eq!(normalized.extra_delay_ms, 12);
+    }
+
+    #[test]
+    fn test_actor_draw_is_deterministic_per_peer_hash_and_salt() {
+        let hash = hashtree_core::sha256(b"deterministic");
+        let a = TestStore::deterministic_actor_draw_for("peer-a", &hash, 7);
+        let b = TestStore::deterministic_actor_draw_for("peer-a", &hash, 7);
+        assert!((a - b).abs() < f64::EPSILON);
     }
 }
 
