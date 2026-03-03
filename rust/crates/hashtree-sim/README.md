@@ -84,6 +84,10 @@ for result in results {
 - `local_mem_peak_event_log_entries`
 - `local_mem_peak_connection_pairs`
 
+The tuning example evaluates two gate profiles:
+- `exploration`: coarse filter for short/fast sweeps
+- `promotion`: stricter thresholds for candidates considered production-ready
+
 ## Network Connectivity
 
 ### The Component Problem
