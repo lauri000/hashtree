@@ -11,6 +11,7 @@
 
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
+use hashtree_webrtc::PeerSelector;
 use nostr::{
     nips::nip44, Alphabet, ClientMessage, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey,
     RelayMessage, SingleLetterTag, Tag,
@@ -26,8 +27,8 @@ use super::peer::{ContentStore, Peer, PendingRequest};
 use super::types::{
     decrement_htl_with_policy, should_forward_htl, validate_mesh_frame, MeshNostrFrame,
     MeshNostrPayload, PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus,
-    SignalingMessage, TimedSeenSet, WebRTCConfig, HELLO_TAG, MESH_DEFAULT_HTL, MESH_EVENT_POLICY,
-    WEBRTC_KIND,
+    RequestDispatchConfig, SignalingMessage, TimedSeenSet, WebRTCConfig, HELLO_TAG,
+    MESH_DEFAULT_HTL, MESH_EVENT_POLICY, WEBRTC_KIND,
 };
 use crate::nostr_relay::NostrRelay;
 
@@ -80,6 +81,10 @@ pub struct WebRTCState {
     pub mesh_forwarded: std::sync::atomic::AtomicU64,
     /// Relayless mesh frames/events dropped due to dedupe.
     pub mesh_dropped_duplicate: std::sync::atomic::AtomicU64,
+    /// Shared peer selector used by live retrieval; aligned with simulation strategies.
+    peer_selector: RwLock<PeerSelector>,
+    /// Hedged dispatch policy for retrieval requests.
+    request_dispatch: RequestDispatchConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +188,21 @@ fn root_event_from_peer(
 
 impl WebRTCState {
     pub fn new() -> Self {
+        let cfg = WebRTCConfig::default();
+        Self::new_with_routing(
+            cfg.request_selection_strategy,
+            cfg.request_fairness_enabled,
+            cfg.request_dispatch,
+        )
+    }
+
+    pub fn new_with_routing(
+        selection_strategy: super::types::SelectionStrategy,
+        fairness_enabled: bool,
+        request_dispatch: RequestDispatchConfig,
+    ) -> Self {
+        let mut selector = PeerSelector::with_strategy(selection_strategy);
+        selector.set_fairness(fairness_enabled);
         Self {
             peers: RwLock::new(HashMap::new()),
             connected_count: std::sync::atomic::AtomicUsize::new(0),
@@ -191,6 +211,67 @@ impl WebRTCState {
             mesh_received: std::sync::atomic::AtomicU64::new(0),
             mesh_forwarded: std::sync::atomic::AtomicU64::new(0),
             mesh_dropped_duplicate: std::sync::atomic::AtomicU64::new(0),
+            peer_selector: RwLock::new(selector),
+            request_dispatch,
+        }
+    }
+
+    fn normalized_dispatch(&self, available_peers: usize) -> RequestDispatchConfig {
+        let mut cfg = self.request_dispatch;
+        let cap = if cfg.max_fanout == 0 {
+            0
+        } else {
+            cfg.max_fanout.min(available_peers)
+        };
+        cfg.max_fanout = cap;
+        cfg.initial_fanout = if cfg.initial_fanout == 0 {
+            0
+        } else {
+            cfg.initial_fanout.min(cap.max(1))
+        };
+        cfg.hedge_fanout = if cfg.hedge_fanout == 0 {
+            0
+        } else {
+            cfg.hedge_fanout.min(cap.max(1))
+        };
+        cfg
+    }
+
+    fn hedged_wave_plan(peer_count: usize, dispatch: RequestDispatchConfig) -> Vec<usize> {
+        if peer_count == 0 {
+            return Vec::new();
+        }
+        let cap = dispatch.max_fanout.min(peer_count);
+        if cap == 0 {
+            return Vec::new();
+        }
+
+        let mut plan = Vec::new();
+        let mut sent = 0usize;
+        let first = dispatch.initial_fanout.min(cap).max(1);
+        plan.push(first);
+        sent += first;
+
+        while sent < cap {
+            let next = dispatch.hedge_fanout.min(cap - sent).max(1);
+            plan.push(next);
+            sent += next;
+        }
+        plan
+    }
+
+    async fn sync_selector(&self, current_peer_ids: &[String]) {
+        let mut selector = self.peer_selector.write().await;
+        let current: std::collections::HashSet<&str> =
+            current_peer_ids.iter().map(String::as_str).collect();
+        let known: Vec<String> = selector.all_stats().map(|s| s.peer_id.clone()).collect();
+        for peer_id in known {
+            if !current.contains(peer_id.as_str()) {
+                selector.remove_peer(&peer_id);
+            }
+        }
+        for peer_id in current_peer_ids {
+            selector.add_peer(peer_id.clone());
         }
     }
 
@@ -248,7 +329,7 @@ impl WebRTCState {
     }
 
     /// Request content by hash from connected peers
-    /// Queries peers sequentially with 500ms intervals until one responds
+    /// Queries peers in adaptive selector order with hedged fanout waves.
     /// Returns the first successful response, or None if no peer has it
     pub async fn request_from_peers(&self, hash_hex: &str) -> Option<Vec<u8>> {
         self.request_from_peers_with_source(hash_hex)
@@ -262,6 +343,7 @@ impl WebRTCState {
         hash_hex: &str,
     ) -> Option<(Vec<u8>, String)> {
         use super::types::{encode_request, DataRequest, BLOB_REQUEST_POLICY};
+        use tokio::sync::oneshot::error::TryRecvError;
 
         let peers = self.peers.read().await;
 
@@ -304,76 +386,206 @@ impl WebRTCState {
             return None;
         }
 
-        debug!(
-            "Querying {} connected peers for {} (sequential with 500ms delay)",
-            connected_peers.len(),
-            &hash_hex[..8.min(hash_hex.len())]
-        );
-
         // Convert hex to binary hash once
         let hash_bytes = match hex::decode(hash_hex) {
             Ok(b) => b,
             Err(_) => return None,
         };
 
-        // Query peers sequentially with 500ms delay between each
-        for (_i, (peer_id, pending_requests, dc)) in connected_peers.into_iter().enumerate() {
-            debug!(
-                "Querying peer {} for {}",
-                peer_id,
-                &hash_hex[..8.min(hash_hex.len())]
-            );
-
-            // Create response channel
-            let (tx, rx) = tokio::sync::oneshot::channel();
-
-            // Store pending request
-            {
-                let mut pending = pending_requests.lock().await;
-                pending.insert(
-                    hash_hex.to_string(),
-                    super::PendingRequest {
-                        hash: hash_bytes.clone(),
-                        response_tx: tx,
-                    },
+        let expected_hash: [u8; 32] = match hash_bytes.as_slice().try_into() {
+            Ok(h) => h,
+            Err(_) => {
+                debug!(
+                    "Invalid hash length {}, expected 32 bytes",
+                    hash_bytes.len()
                 );
+                return None;
             }
+        };
 
-            // Send request
-            let req = DataRequest {
-                h: hash_bytes.clone(),
-                htl: BLOB_REQUEST_POLICY.max_htl,
-            };
-            if let Ok(wire) = encode_request(&req) {
-                let wire_len = wire.len() as u64;
-                if dc.send(&bytes::Bytes::from(wire)).await.is_ok() {
-                    self.record_sent(&peer_id, wire_len).await;
-                    // Wait 500ms for response from this peer
-                    match tokio::time::timeout(std::time::Duration::from_millis(500), rx).await {
-                        Ok(Ok(Some(data))) => {
-                            self.record_received(&peer_id, data.len() as u64).await;
-                            debug!(
-                                "Got response from peer {} for {}",
-                                peer_id,
-                                &hash_hex[..8.min(hash_hex.len())]
-                            );
-                            return Some((data, peer_id));
-                        }
-                        _ => {
-                            // Timeout or no data - clean up and try next peer
-                            debug!(
-                                "No response from peer {} for {}",
-                                peer_id,
-                                &hash_hex[..8.min(hash_hex.len())]
-                            );
-                        }
-                    }
+        let connected_peer_ids: Vec<String> = connected_peers
+            .iter()
+            .map(|(peer_id, _, _)| peer_id.clone())
+            .collect();
+        self.sync_selector(&connected_peer_ids).await;
+
+        let ordered_peer_ids = self.peer_selector.write().await.select_peers();
+        let mut by_peer: HashMap<
+            String,
+            (
+                Arc<Mutex<HashMap<String, PendingRequest>>>,
+                Arc<webrtc::data_channel::RTCDataChannel>,
+            ),
+        > = connected_peers
+            .into_iter()
+            .map(|(peer_id, pending, dc)| (peer_id, (pending, dc)))
+            .collect();
+
+        let mut ordered_peers: Vec<(
+            String,
+            Arc<Mutex<HashMap<String, PendingRequest>>>,
+            Arc<webrtc::data_channel::RTCDataChannel>,
+        )> = Vec::new();
+        for peer_id in ordered_peer_ids {
+            if let Some((pending, dc)) = by_peer.remove(&peer_id) {
+                ordered_peers.push((peer_id, pending, dc));
+            }
+        }
+        for (peer_id, (pending, dc)) in by_peer {
+            ordered_peers.push((peer_id, pending, dc));
+        }
+
+        let dispatch = self.normalized_dispatch(ordered_peers.len());
+        let wave_plan = Self::hedged_wave_plan(ordered_peers.len(), dispatch);
+        if wave_plan.is_empty() {
+            return None;
+        }
+
+        debug!(
+            "Querying {} peers for {} (strategy order + hedged waves {:?})",
+            ordered_peers.len(),
+            &hash_hex[..8.min(hash_hex.len())],
+            wave_plan
+        );
+
+        let request = DataRequest {
+            h: hash_bytes.clone(),
+            htl: BLOB_REQUEST_POLICY.max_htl,
+        };
+        let wire = match encode_request(&request) {
+            Ok(w) => w,
+            Err(_) => return None,
+        };
+        let wire_len = wire.len() as u64;
+        let wait_window = Duration::from_millis(dispatch.hedge_interval_ms.max(1));
+
+        let mut next_peer_idx = 0usize;
+        for wave_size in wave_plan {
+            let from = next_peer_idx;
+            let to = (next_peer_idx + wave_size).min(ordered_peers.len());
+            next_peer_idx = to;
+
+            let mut outstanding: Vec<(
+                String,
+                Arc<Mutex<HashMap<String, PendingRequest>>>,
+                Instant,
+                tokio::sync::oneshot::Receiver<Option<Vec<u8>>>,
+            )> = Vec::new();
+
+            for (peer_id, pending_requests, dc) in &ordered_peers[from..to] {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                {
+                    let mut pending = pending_requests.lock().await;
+                    pending.insert(
+                        hash_hex.to_string(),
+                        PendingRequest {
+                            hash: hash_bytes.clone(),
+                            response_tx: tx,
+                        },
+                    );
+                }
+
+                if dc.send(&bytes::Bytes::copy_from_slice(&wire)).await.is_ok() {
+                    self.record_sent(peer_id, wire_len).await;
+                    self.peer_selector
+                        .write()
+                        .await
+                        .record_request(peer_id, wire_len);
+                    outstanding.push((
+                        peer_id.clone(),
+                        pending_requests.clone(),
+                        Instant::now(),
+                        rx,
+                    ));
+                } else {
+                    let mut pending = pending_requests.lock().await;
+                    pending.remove(hash_hex);
+                    self.peer_selector.write().await.record_failure(peer_id);
                 }
             }
 
-            // Clean up pending request
-            let mut pending = pending_requests.lock().await;
-            pending.remove(hash_hex);
+            if outstanding.is_empty() {
+                continue;
+            }
+
+            let deadline = Instant::now() + wait_window;
+            let mut success: Option<(String, Vec<u8>, u64)> = None;
+            while !outstanding.is_empty() && Instant::now() < deadline {
+                let mut i = 0usize;
+                while i < outstanding.len() {
+                    let mut drop_entry = false;
+                    let (peer_id, pending_requests, sent_at, rx) = &mut outstanding[i];
+                    match rx.try_recv() {
+                        Ok(Some(data)) => {
+                            let rtt_ms = sent_at.elapsed().as_millis() as u64;
+                            if hashtree_core::sha256(&data) == expected_hash {
+                                success = Some((peer_id.clone(), data, rtt_ms));
+                                break;
+                            }
+                            self.peer_selector.write().await.record_failure(peer_id);
+                            let mut pending = pending_requests.lock().await;
+                            pending.remove(hash_hex);
+                            drop_entry = true;
+                        }
+                        Ok(None) => {
+                            let mut pending = pending_requests.lock().await;
+                            pending.remove(hash_hex);
+                            drop_entry = true;
+                        }
+                        Err(TryRecvError::Closed) => {
+                            let mut pending = pending_requests.lock().await;
+                            pending.remove(hash_hex);
+                            drop_entry = true;
+                        }
+                        Err(TryRecvError::Empty) => {}
+                    }
+
+                    if drop_entry {
+                        outstanding.swap_remove(i);
+                    } else {
+                        i += 1;
+                    }
+                }
+
+                if success.is_some() {
+                    break;
+                }
+
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10).min(deadline - now)).await;
+            }
+
+            if let Some((peer_id, data, rtt_ms)) = success {
+                self.record_received(&peer_id, data.len() as u64).await;
+                self.peer_selector.write().await.record_success(
+                    &peer_id,
+                    rtt_ms,
+                    data.len() as u64,
+                );
+
+                for (other_peer_id, pending_requests, _, _) in outstanding {
+                    if other_peer_id != peer_id {
+                        let mut pending = pending_requests.lock().await;
+                        pending.remove(hash_hex);
+                    }
+                }
+
+                debug!(
+                    "Got response from peer {} for {}",
+                    peer_id,
+                    &hash_hex[..8.min(hash_hex.len())]
+                );
+                return Some((data, peer_id));
+            }
+
+            for (peer_id, pending_requests, _, _) in outstanding {
+                let mut pending = pending_requests.lock().await;
+                pending.remove(hash_hex);
+                self.peer_selector.write().await.record_timeout(&peer_id);
+            }
         }
 
         debug!(
@@ -504,6 +716,11 @@ impl WebRTCManager {
         let (signaling_tx, signaling_rx) = mpsc::channel(100);
         let (state_event_tx, state_event_rx) = mpsc::channel(100);
         let (mesh_frame_tx, mesh_frame_rx) = mpsc::channel(256);
+        let state = Arc::new(WebRTCState::new_with_routing(
+            config.request_selection_strategy,
+            config.request_fairness_enabled,
+            config.request_dispatch,
+        ));
 
         // Default classifier: all peers go to 'other' pool
         let peer_classifier: PeerClassifier = Arc::new(|_| PeerPool::Other);
@@ -512,7 +729,7 @@ impl WebRTCManager {
             config,
             my_peer_id,
             keys,
-            state: Arc::new(WebRTCState::new()),
+            state,
             shutdown: Arc::new(shutdown),
             shutdown_rx,
             signaling_tx,
@@ -1886,6 +2103,7 @@ pub struct PeerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::webrtc::types::SelectionStrategy;
     use nostr::{EventBuilder, Keys, Tag};
 
     #[test]
@@ -1956,5 +2174,37 @@ mod tests {
         // "a" should be evicted due to cap=2, so re-insert becomes new again.
         assert!(seen.insert_if_new("a".to_string()));
         assert!(!seen.insert_if_new("a".to_string()));
+    }
+
+    #[test]
+    fn test_request_dispatch_normalization_caps_to_available_peers() {
+        let state = WebRTCState::new_with_routing(
+            SelectionStrategy::Weighted,
+            true,
+            RequestDispatchConfig {
+                initial_fanout: 8,
+                hedge_fanout: 6,
+                max_fanout: 5,
+                hedge_interval_ms: 120,
+            },
+        );
+        let normalized = state.normalized_dispatch(3);
+        assert_eq!(normalized.max_fanout, 3);
+        assert_eq!(normalized.initial_fanout, 3);
+        assert_eq!(normalized.hedge_fanout, 3);
+    }
+
+    #[test]
+    fn test_hedged_wave_plan_matches_dispatch_policy() {
+        let plan = WebRTCState::hedged_wave_plan(
+            7,
+            RequestDispatchConfig {
+                initial_fanout: 2,
+                hedge_fanout: 3,
+                max_fanout: 6,
+                hedge_interval_ms: 120,
+            },
+        );
+        assert_eq!(plan, vec![2, 3, 1]);
     }
 }

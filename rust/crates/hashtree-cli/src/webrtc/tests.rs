@@ -54,6 +54,15 @@ fn test_webrtc_config_default() {
     assert!(config.max_outbound > 0);
     assert!(config.max_inbound > 0);
     assert!(!config.stun_servers.is_empty());
+    assert_eq!(
+        config.request_selection_strategy,
+        SelectionStrategy::TitForTat
+    );
+    assert!(config.request_fairness_enabled);
+    assert_eq!(config.request_dispatch.initial_fanout, 2);
+    assert_eq!(config.request_dispatch.hedge_fanout, 1);
+    assert_eq!(config.request_dispatch.max_fanout, 8);
+    assert_eq!(config.request_dispatch.hedge_interval_ms, 120);
 }
 
 #[test]

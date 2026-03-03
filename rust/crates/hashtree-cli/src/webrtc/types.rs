@@ -2,9 +2,9 @@
 
 pub use hashtree_webrtc::{
     decrement_htl_with_policy, should_forward_htl, validate_mesh_frame, HtlMode, HtlPolicy,
-    MeshNostrFrame, MeshNostrPayload, PeerHTLConfig, TimedSeenSet, BLOB_REQUEST_POLICY,
-    DECREMENT_AT_MAX_PROB, DECREMENT_AT_MIN_PROB, MAX_HTL, MESH_DEFAULT_HTL, MESH_EVENT_POLICY,
-    MESH_MAX_HTL, MESH_PROTOCOL, MESH_PROTOCOL_VERSION,
+    MeshNostrFrame, MeshNostrPayload, PeerHTLConfig, RequestDispatchConfig, SelectionStrategy,
+    TimedSeenSet, BLOB_REQUEST_POLICY, DECREMENT_AT_MAX_PROB, DECREMENT_AT_MIN_PROB, MAX_HTL,
+    MESH_DEFAULT_HTL, MESH_EVENT_POLICY, MESH_MAX_HTL, MESH_PROTOCOL, MESH_PROTOCOL_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -258,6 +258,12 @@ pub struct WebRTCConfig {
     pub debug: bool,
     /// Pool settings for follows and other peers
     pub pools: PoolSettings,
+    /// Retrieval peer selection strategy (shared with simulation).
+    pub request_selection_strategy: SelectionStrategy,
+    /// Whether fairness constraints are enabled for retrieval peer selection.
+    pub request_fairness_enabled: bool,
+    /// Hedged request dispatch policy for retrieval (shared with simulation).
+    pub request_dispatch: RequestDispatchConfig,
 }
 
 impl Default for WebRTCConfig {
@@ -281,6 +287,14 @@ impl Default for WebRTCConfig {
             ],
             debug: false,
             pools: PoolSettings::default(),
+            request_selection_strategy: SelectionStrategy::TitForTat,
+            request_fairness_enabled: true,
+            request_dispatch: RequestDispatchConfig {
+                initial_fanout: 2,
+                hedge_fanout: 1,
+                max_fanout: 8,
+                hedge_interval_ms: 120,
+            },
         }
     }
 }
