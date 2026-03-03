@@ -335,8 +335,8 @@ pub struct PoolConfig {
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
-            max_connections: 10,
-            satisfied_connections: 5,
+            max_connections: 16,
+            satisfied_connections: 8,
         }
     }
 }
@@ -352,12 +352,12 @@ impl Default for PoolSettings {
     fn default() -> Self {
         Self {
             follows: PoolConfig {
-                max_connections: 20,
-                satisfied_connections: 10,
+                max_connections: 16,
+                satisfied_connections: 8,
             },
             other: PoolConfig {
-                max_connections: 10,
-                satisfied_connections: 5,
+                max_connections: 16,
+                satisfied_connections: 8,
             },
         }
     }

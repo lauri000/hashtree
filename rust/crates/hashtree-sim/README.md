@@ -12,7 +12,7 @@ use hashtree_sim::webrtc_sim::{Simulation, SimConfig};
 
 let config = SimConfig {
     node_count: 100,
-    pool: PoolConfig { max_connections: 10, satisfied_connections: 5 },
+    pool: PoolConfig { max_connections: 16, satisfied_connections: 8 },
     retrieval_probe_count: 200,
     retrieval_payload_bytes: 4096,
     retrieval_timeout_ms: 1500,
@@ -32,7 +32,7 @@ The simulation uses the **same types and defaults as production WebRTC**:
 ```rust
 // Uses hashtree_webrtc::PoolConfig - same defaults as real WebRTC
 let config = SimConfig {
-    pool: PoolConfig::default(),  // max_connections: 10, satisfied_connections: 5
+    pool: PoolConfig::default(),  // max_connections: 16, satisfied_connections: 8
     ..Default::default()
 };
 ```
@@ -81,7 +81,7 @@ In P2P networks, nodes may form disconnected "components" (islands) if there are
 
 **Graph theory**: For N nodes with k connections each, connectivity requires `k > ln(N)`:
 
-| Nodes | ln(N) | Real WebRTC default (10) |
+| Nodes | ln(N) | Real WebRTC default (16) |
 |-------|-------|--------------------------|
 | 50    | 3.9   | Well connected           |
 | 100   | 4.6   | Well connected           |
@@ -89,7 +89,7 @@ In P2P networks, nodes may form disconnected "components" (islands) if there are
 | 1000  | 6.9   | Well connected           |
 | 10000 | 9.2   | Edge case                |
 
-The default `max_connections: 10` works well for networks up to ~10K nodes.
+The tuned default `max_connections: 16` keeps stronger connectivity under churn while keeping overhead moderate.
 
 ### Discovery with Perfect Negotiation
 
