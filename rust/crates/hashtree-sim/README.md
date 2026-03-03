@@ -222,6 +222,9 @@ cargo run -p hashtree-sim --example tune_webrtc_params -- --mode=auto
 cargo test -p hashtree-sim webrtc_sim::tests::test_webrtc_sim_1000_nodes_connectivity -- --nocapture
 ```
 
+Progress notes and experiment outcomes are tracked in:
+`/Users/sirius/src/hashtree/docs/webrtc-strategy-observations.md`
+
 ## Key Learnings
 
 1. **max_peers matters**: Too low (< ln(N)) causes network fragmentation
