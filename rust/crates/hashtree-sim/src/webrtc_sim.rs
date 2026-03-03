@@ -43,6 +43,17 @@ pub struct SimConfig {
     pub retrieval_timeout_ms: u64,
     /// Maximum number of simulation events retained in memory.
     pub max_events_retained: usize,
+    /// Optional per-node strategy mix (if empty, `pool` is used for all nodes).
+    pub strategy_mix: Vec<NodeStrategyProfile>,
+    /// Strategy name to track as reference in reports.
+    pub reference_strategy: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeStrategyProfile {
+    pub name: String,
+    pub weight: u32,
+    pub pool: PoolConfig,
 }
 
 impl Default for SimConfig {
@@ -60,6 +71,8 @@ impl Default for SimConfig {
             retrieval_payload_bytes: 1024,
             retrieval_timeout_ms: 1500,
             max_events_retained: 20_000,
+            strategy_mix: Vec::new(),
+            reference_strategy: None,
         }
     }
 }
@@ -99,6 +112,8 @@ struct RunningNode {
     store: Arc<SimStore>,
     /// Relay transport for this node
     transport: Arc<MockRelayTransport>,
+    /// Strategy profile used by this node
+    strategy: String,
     #[allow(dead_code)]
     joined_at_ms: u64,
 }
@@ -131,6 +146,8 @@ pub struct SimStats {
     pub data_response_messages: usize,
     pub data_bytes_processed: u64,
     pub retrieval: RetrievalStats,
+    pub strategy_joins: HashMap<String, usize>,
+    pub strategy_retrieval: HashMap<String, RetrievalStats>,
     pub local_resources: LocalResourceStats,
     pub topology_snapshots: Vec<(u64, TopologyStats)>,
     pub events: VecDeque<SimEvent>,
@@ -223,6 +240,7 @@ impl LocalResourceStats {
 /// Uses the exact same code as production WebRTCStore, just with mocks.
 pub struct Simulation {
     config: SimConfig,
+    strategy_mix: Vec<NodeStrategyProfile>,
     relay: Arc<MockRelay>,
     nodes: RwLock<HashMap<String, RunningNode>>,
     known_connections: RwLock<HashSet<(String, String)>>,
@@ -233,6 +251,30 @@ pub struct Simulation {
 
 impl Simulation {
     pub fn new(config: SimConfig) -> Self {
+        let strategy_mix = if config.strategy_mix.is_empty() {
+            vec![NodeStrategyProfile {
+                name: "default".to_string(),
+                weight: 1,
+                pool: config.pool.clone(),
+            }]
+        } else {
+            let sanitized: Vec<NodeStrategyProfile> = config
+                .strategy_mix
+                .iter()
+                .filter(|s| s.weight > 0 && !s.name.is_empty())
+                .cloned()
+                .collect();
+            if sanitized.is_empty() {
+                vec![NodeStrategyProfile {
+                    name: "default".to_string(),
+                    weight: 1,
+                    pool: config.pool.clone(),
+                }]
+            } else {
+                sanitized
+            }
+        };
+
         Self {
             rng: RwLock::new(StdRng::seed_from_u64(config.seed)),
             relay: MockRelay::new(),
@@ -240,6 +282,7 @@ impl Simulation {
             known_connections: RwLock::new(HashSet::new()),
             stats: RwLock::new(SimStats::default()),
             next_node_id: RwLock::new(0),
+            strategy_mix,
             config,
         }
     }
@@ -353,13 +396,32 @@ impl Simulation {
             self.config.network_latency_ms,
         ));
 
+        let selected_strategy = {
+            let total_weight: u32 = self.strategy_mix.iter().map(|s| s.weight).sum();
+            let mut rng = self.rng.write().await;
+            let mut pick = rng.gen_range(0..total_weight);
+            let mut chosen = self
+                .strategy_mix
+                .last()
+                .expect("strategy mix must not be empty")
+                .clone();
+            for strategy in &self.strategy_mix {
+                if pick < strategy.weight {
+                    chosen = strategy.clone();
+                    break;
+                }
+                pick -= strategy.weight;
+            }
+            chosen
+        };
+
         // Create pool settings (simulation only uses "other" pool)
         let pools = PoolSettings {
             follows: PoolConfig {
                 max_connections: 0,
                 satisfied_connections: 0,
             },
-            other: self.config.pool.clone(),
+            other: selected_strategy.pool.clone(),
         };
 
         // Create signaling manager
@@ -395,6 +457,10 @@ impl Simulation {
         {
             let mut stats = self.stats.write().await;
             stats.total_joins += 1;
+            *stats
+                .strategy_joins
+                .entry(selected_strategy.name.clone())
+                .or_insert(0) += 1;
             stats.record_event(
                 self.config.max_events_retained,
                 SimEvent::NodeJoined {
@@ -410,6 +476,7 @@ impl Simulation {
                 tree,
                 store,
                 transport,
+                strategy: selected_strategy.name,
                 joined_at_ms: time_ms,
             },
         );
@@ -553,6 +620,7 @@ impl Simulation {
         }
 
         let mut latencies_ms = Vec::with_capacity(self.config.retrieval_probe_count);
+        let mut strategy_latencies: HashMap<String, Vec<u64>> = HashMap::new();
         for probe_idx in 0..self.config.retrieval_probe_count {
             let (source_id, target_id, payload) = {
                 let mut rng = self.rng.write().await;
@@ -573,12 +641,10 @@ impl Simulation {
                     .map(|running| running.store.clone())
                     .expect("source node must exist")
             };
-            let target_store = {
+            let (target_store, target_strategy) = {
                 let nodes = self.nodes.read().await;
-                nodes
-                    .get(&target_id)
-                    .map(|running| running.store.clone())
-                    .expect("target node must exist")
+                let target = nodes.get(&target_id).expect("target node must exist");
+                (target.store.clone(), target.strategy.clone())
             };
 
             let hash = hashtree_core::sha256(&payload);
@@ -596,24 +662,53 @@ impl Simulation {
                 .await;
             let latency_ms = start.elapsed().as_millis() as u64;
             let bytes_after = self.stats.read().await.data_bytes_processed;
+            let success = matches!(result.as_ref(), Some(data) if data == &payload);
+            let transfer_bytes = bytes_after.saturating_sub(bytes_before);
 
             let mut stats = self.stats.write().await;
             stats.retrieval.probes += 1;
-            stats.retrieval.data_plane_bytes += bytes_after.saturating_sub(bytes_before);
+            stats.retrieval.data_plane_bytes += transfer_bytes;
 
-            match result {
-                Some(data) if data == payload => {
-                    stats.retrieval.successes += 1;
-                    stats.retrieval.payload_bytes += payload.len() as u64;
-                    latencies_ms.push(latency_ms);
-                }
-                _ => {
-                    stats.retrieval.failures += 1;
+            if success {
+                stats.retrieval.successes += 1;
+                stats.retrieval.payload_bytes += payload.len() as u64;
+                latencies_ms.push(latency_ms);
+            } else {
+                stats.retrieval.failures += 1;
+            }
+
+            {
+                let strategy_stats = stats
+                    .strategy_retrieval
+                    .entry(target_strategy.clone())
+                    .or_default();
+                strategy_stats.probes += 1;
+                strategy_stats.data_plane_bytes += transfer_bytes;
+                if success {
+                    strategy_stats.successes += 1;
+                    strategy_stats.payload_bytes += payload.len() as u64;
+                    strategy_latencies
+                        .entry(target_strategy)
+                        .or_default()
+                        .push(latency_ms);
+                } else {
+                    strategy_stats.failures += 1;
                 }
             }
         }
 
-        self.stats.write().await.retrieval.finalize(&latencies_ms);
+        let mut stats = self.stats.write().await;
+        stats.retrieval.finalize(&latencies_ms);
+        for (strategy, latencies) in strategy_latencies {
+            if let Some(strategy_stats) = stats.strategy_retrieval.get_mut(&strategy) {
+                strategy_stats.finalize(&latencies);
+            }
+        }
+        for strategy_stats in stats.strategy_retrieval.values_mut() {
+            if strategy_stats.probes > 0 && strategy_stats.success_rate == 0.0 {
+                strategy_stats.finalize(&[]);
+            }
+        }
     }
 
     async fn retrieve_with_processing(
@@ -857,6 +952,46 @@ impl Simulation {
             } else {
                 (0, self.analyze_topology().await)
             };
+        let strategy_retrieval_json: serde_json::Map<String, serde_json::Value> = stats
+            .strategy_retrieval
+            .iter()
+            .map(|(strategy, retrieval)| {
+                (
+                    strategy.clone(),
+                    serde_json::json!({
+                        "probes": retrieval.probes,
+                        "successes": retrieval.successes,
+                        "failures": retrieval.failures,
+                        "success_rate": retrieval.success_rate,
+                        "payload_bytes": retrieval.payload_bytes,
+                        "data_plane_bytes": retrieval.data_plane_bytes,
+                        "p50_latency_ms": retrieval.p50_latency_ms,
+                        "p95_latency_ms": retrieval.p95_latency_ms,
+                        "max_latency_ms": retrieval.max_latency_ms
+                    }),
+                )
+            })
+            .collect();
+        let reference_retrieval = self
+            .config
+            .reference_strategy
+            .as_ref()
+            .and_then(|name| stats.strategy_retrieval.get(name));
+        let reference_success_rate = reference_retrieval
+            .map(|r| r.success_rate)
+            .unwrap_or(stats.retrieval.success_rate);
+        let reference_p95_latency_ms = reference_retrieval
+            .map(|r| r.p95_latency_ms)
+            .unwrap_or(stats.retrieval.p95_latency_ms);
+        let reference_failure_rate = reference_retrieval
+            .map(|r| {
+                if r.probes == 0 {
+                    1.0
+                } else {
+                    r.failures as f64 / r.probes as f64
+                }
+            })
+            .unwrap_or_else(|| 1.0 - stats.retrieval.success_rate);
 
         serde_json::json!({
             "config": {
@@ -871,6 +1006,17 @@ impl Simulation {
                 "retrieval_payload_bytes": self.config.retrieval_payload_bytes,
                 "retrieval_timeout_ms": self.config.retrieval_timeout_ms,
                 "max_events_retained": self.config.max_events_retained,
+                "reference_strategy": self.config.reference_strategy,
+                "strategy_mix": self.strategy_mix.iter().map(|s| {
+                    serde_json::json!({
+                        "name": s.name,
+                        "weight": s.weight,
+                        "pool": {
+                            "max_connections": s.pool.max_connections,
+                            "satisfied_connections": s.pool.satisfied_connections
+                        }
+                    })
+                }).collect::<Vec<_>>(),
                 "pool": {
                     "max_connections": self.config.pool.max_connections,
                     "satisfied_connections": self.config.pool.satisfied_connections,
@@ -885,6 +1031,8 @@ impl Simulation {
                 "data_request_messages": stats.data_request_messages,
                 "data_response_messages": stats.data_response_messages,
                 "data_bytes_processed": stats.data_bytes_processed,
+                "strategy_joins": stats.strategy_joins,
+                "strategy_retrieval": strategy_retrieval_json,
                 "local_resources": {
                     "peak_active_nodes": stats.local_resources.peak_active_nodes,
                     "peak_connection_pairs": stats.local_resources.peak_connection_pairs,
@@ -936,7 +1084,10 @@ impl Simulation {
                 "local_cpu_tick_p95_us": stats.local_resources.tick_p95_us,
                 "local_cpu_run_wall_ms": stats.local_resources.run_wall_ms,
                 "local_mem_peak_event_log_entries": stats.local_resources.peak_event_log_entries,
-                "local_mem_peak_connection_pairs": stats.local_resources.peak_connection_pairs
+                "local_mem_peak_connection_pairs": stats.local_resources.peak_connection_pairs,
+                "reference_success_rate": reference_success_rate,
+                "reference_p95_latency_ms": reference_p95_latency_ms,
+                "reference_failure_rate": reference_failure_rate
             }
         })
     }
@@ -993,6 +1144,22 @@ impl Simulation {
             stats.local_resources.tick_max_us,
             stats.local_resources.run_wall_ms
         );
+        if !stats.strategy_retrieval.is_empty() {
+            println!("Strategy retrieval:");
+            let mut keys: Vec<_> = stats.strategy_retrieval.keys().cloned().collect();
+            keys.sort();
+            for key in keys {
+                if let Some(s) = stats.strategy_retrieval.get(&key) {
+                    println!(
+                        "  {} -> probes={} success_rate={:.2}% p95={}ms",
+                        key,
+                        s.probes,
+                        s.success_rate * 100.0,
+                        s.p95_latency_ms
+                    );
+                }
+            }
+        }
         if stats.retrieval.probes > 0 {
             println!(
                 "Retrieval probes: {} (success: {}, failure: {}, success_rate: {:.2}%)",
@@ -1056,6 +1223,8 @@ mod tests {
             retrieval_payload_bytes: 1024,
             retrieval_timeout_ms: 1500,
             max_events_retained: 20_000,
+            strategy_mix: Vec::new(),
+            reference_strategy: None,
         };
 
         let sim = Simulation::new(config);
@@ -1087,6 +1256,8 @@ mod tests {
             retrieval_payload_bytes: 1024,
             retrieval_timeout_ms: 1500,
             max_events_retained: 20_000,
+            strategy_mix: Vec::new(),
+            reference_strategy: None,
         };
 
         let sim = Simulation::new(config);
@@ -1127,6 +1298,8 @@ mod tests {
             retrieval_payload_bytes: 1024,
             retrieval_timeout_ms: 1500,
             max_events_retained: 20_000,
+            strategy_mix: Vec::new(),
+            reference_strategy: None,
         };
 
         let sim = Simulation::new(config);
@@ -1165,6 +1338,8 @@ mod tests {
             retrieval_payload_bytes: 512,
             retrieval_timeout_ms: 1200,
             max_events_retained: 20_000,
+            strategy_mix: Vec::new(),
+            reference_strategy: None,
         };
 
         let sim = Simulation::new(config);
@@ -1204,6 +1379,8 @@ mod tests {
             retrieval_payload_bytes: 256,
             retrieval_timeout_ms: 1000,
             max_events_retained: 20_000,
+            strategy_mix: Vec::new(),
+            reference_strategy: None,
         };
         let sim = Simulation::new(config);
         sim.run().await;
@@ -1216,6 +1393,65 @@ mod tests {
         assert!(report["objectives"]["local_cpu_tick_p95_us"].is_number());
         assert!(report["objectives"]["local_mem_peak_event_log_entries"].is_number());
         assert!(report["stats"]["local_resources"]["tick_p95_us"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_webrtc_sim_strategy_mix_reports_reference_metrics() {
+        let config = SimConfig {
+            node_count: 30,
+            duration: Duration::from_secs(2),
+            seed: 99,
+            pool: PoolConfig {
+                max_connections: 6,
+                satisfied_connections: 3,
+            },
+            discovery_interval_ms: 100,
+            churn_rate: 0.0,
+            allow_rejoin: false,
+            network_latency_ms: 0,
+            retrieval_probe_count: 8,
+            retrieval_payload_bytes: 256,
+            retrieval_timeout_ms: 900,
+            max_events_retained: 10_000,
+            strategy_mix: vec![
+                NodeStrategyProfile {
+                    name: "reference".to_string(),
+                    weight: 1,
+                    pool: PoolConfig {
+                        max_connections: 10,
+                        satisfied_connections: 5,
+                    },
+                },
+                NodeStrategyProfile {
+                    name: "other".to_string(),
+                    weight: 1,
+                    pool: PoolConfig {
+                        max_connections: 4,
+                        satisfied_connections: 2,
+                    },
+                },
+            ],
+            reference_strategy: Some("reference".to_string()),
+        };
+
+        let sim = Simulation::new(config);
+        sim.run().await;
+
+        let stats = sim.get_stats().await;
+        assert!(stats.strategy_joins.get("reference").copied().unwrap_or(0) > 0);
+        assert!(stats.strategy_joins.get("other").copied().unwrap_or(0) > 0);
+        assert!(
+            stats
+                .strategy_retrieval
+                .get("reference")
+                .map(|s| s.probes)
+                .unwrap_or(0)
+                > 0
+        );
+
+        let report = sim.report_json().await;
+        assert!(report["stats"]["strategy_retrieval"]["reference"]["success_rate"].is_number());
+        assert!(report["objectives"]["reference_success_rate"].is_number());
     }
 
     #[tokio::test]
@@ -1236,6 +1472,8 @@ mod tests {
             retrieval_payload_bytes: 256,
             retrieval_timeout_ms: 700,
             max_events_retained: 8,
+            strategy_mix: Vec::new(),
+            reference_strategy: None,
         };
         let sim = Simulation::new(config);
         sim.run().await;
@@ -1267,6 +1505,8 @@ mod tests {
                 retrieval_payload_bytes: 128,
                 retrieval_timeout_ms: 1000,
                 max_events_retained: 20_000,
+                strategy_mix: Vec::new(),
+                reference_strategy: None,
             },
             SimConfig {
                 node_count: 6,
@@ -1284,6 +1524,8 @@ mod tests {
                 retrieval_payload_bytes: 128,
                 retrieval_timeout_ms: 1000,
                 max_events_retained: 20_000,
+                strategy_mix: Vec::new(),
+                reference_strategy: None,
             },
         ];
 
@@ -1313,6 +1555,8 @@ mod tests {
             retrieval_payload_bytes: 2048,
             retrieval_timeout_ms: 700,
             max_events_retained: 20_000,
+            strategy_mix: Vec::new(),
+            reference_strategy: None,
         };
 
         let sim = Simulation::new(config);

@@ -1,4 +1,4 @@
-use hashtree_sim::{run_parameter_sweep, PoolConfig, SimConfig};
+use hashtree_sim::{run_parameter_sweep, NodeStrategyProfile, PoolConfig, SimConfig};
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -13,6 +13,9 @@ struct Summary {
     avg_largest_component_share: f64,
     avg_tick_p95_us: f64,
     avg_peak_connection_pairs: f64,
+    run_success_rates: Vec<f64>,
+    run_largest_component_shares: Vec<f64>,
+    run_component_counts: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -21,29 +24,45 @@ struct GateProfile {
     min_success_rate: f64,
     min_largest_component_share: f64,
     max_component_count: f64,
+    max_failed_runs: usize,
 }
 
 #[derive(Debug)]
 struct ScoredSummary {
     summary: Summary,
     passes_gates: bool,
+    failed_runs: usize,
     gate_failures: Vec<&'static str>,
     score: f64,
 }
 
-fn ratio_score(summary: &Summary, profile: GateProfile) -> (bool, Vec<&'static str>, f64) {
+fn ratio_score(summary: &Summary, profile: GateProfile) -> (bool, usize, Vec<&'static str>, f64) {
     let mut failures = Vec::new();
     if summary.avg_success_rate < profile.min_success_rate {
-        failures.push("success");
+        failures.push("avg_success");
     }
     if summary.avg_largest_component_share < profile.min_largest_component_share {
-        failures.push("largest_component");
+        failures.push("avg_largest_component");
     }
     if summary.avg_component_count > profile.max_component_count {
-        failures.push("components");
+        failures.push("avg_components");
     }
+
+    let mut failed_runs = 0usize;
+    for idx in 0..summary.runs {
+        if summary.run_success_rates[idx] < profile.min_success_rate
+            || summary.run_largest_component_shares[idx] < profile.min_largest_component_share
+            || summary.run_component_counts[idx] > profile.max_component_count
+        {
+            failed_runs += 1;
+        }
+    }
+    if failed_runs > profile.max_failed_runs {
+        failures.push("run_failures");
+    }
+
     if !failures.is_empty() {
-        return (false, failures, 0.0);
+        return (false, failed_runs, failures, 0.0);
     }
 
     let good = summary.avg_success_rate.powf(3.0) * summary.avg_largest_component_share.powf(2.0);
@@ -52,14 +71,14 @@ fn ratio_score(summary: &Summary, profile: GateProfile) -> (bool, Vec<&'static s
         + 0.5 * (1.0 + summary.avg_tick_p95_us / 2000.0).ln()
         + 0.3 * (1.0 + summary.avg_peak_connection_pairs / 200.0).ln();
     let score = good / (1.0 + bad);
-    (true, failures, score)
+    (true, failed_runs, failures, score)
 }
 
 fn print_ranked_for_profile(profile: GateProfile, summaries: &[Summary]) {
     let mut scored: Vec<ScoredSummary> = summaries
         .iter()
         .map(|summary| {
-            let (passes_gates, gate_failures, score) = ratio_score(summary, profile);
+            let (passes_gates, failed_runs, gate_failures, score) = ratio_score(summary, profile);
             ScoredSummary {
                 summary: Summary {
                     max_connections: summary.max_connections,
@@ -72,8 +91,12 @@ fn print_ranked_for_profile(profile: GateProfile, summaries: &[Summary]) {
                     avg_largest_component_share: summary.avg_largest_component_share,
                     avg_tick_p95_us: summary.avg_tick_p95_us,
                     avg_peak_connection_pairs: summary.avg_peak_connection_pairs,
+                    run_success_rates: summary.run_success_rates.clone(),
+                    run_largest_component_shares: summary.run_largest_component_shares.clone(),
+                    run_component_counts: summary.run_component_counts.clone(),
                 },
                 passes_gates,
+                failed_runs,
                 gate_failures,
                 score,
             }
@@ -87,15 +110,16 @@ fn print_ranked_for_profile(profile: GateProfile, summaries: &[Summary]) {
             .unwrap_or(std::cmp::Ordering::Equal),
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
-        (false, false) => b
-            .summary
-            .avg_success_rate
-            .partial_cmp(&a.summary.avg_success_rate)
-            .unwrap_or(std::cmp::Ordering::Equal),
+        (false, false) => a.failed_runs.cmp(&b.failed_runs).then_with(|| {
+            b.summary
+                .avg_success_rate
+                .partial_cmp(&a.summary.avg_success_rate)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
     });
 
     println!(
-        "\nProfile: {} (accepted first, higher score is better)\nmax/sat | runs | success | p95_ms | overhead | components | largest_share | tick_p95_us | peak_links | gates | score",
+        "\nProfile: {} (accepted first, higher score is better)\nmax/sat | runs | success | p95_ms | overhead | components | largest_share | tick_p95_us | peak_links | fail_runs | gates | score",
         profile.name
     );
     for s in scored {
@@ -105,7 +129,7 @@ fn print_ranked_for_profile(profile: GateProfile, summaries: &[Summary]) {
             format!("fail({})", s.gate_failures.join(","))
         };
         println!(
-            "{:>2}/{:<2} | {:>4} | {:>6.2}% | {:>7.1} | {:>8.3} | {:>10.2} | {:>13.3} | {:>11.1} | {:>10.1} | {:>17} | {:>8.5}",
+            "{:>2}/{:<2} | {:>4} | {:>6.2}% | {:>7.1} | {:>8.3} | {:>10.2} | {:>13.3} | {:>11.1} | {:>10.1} | {:>9} | {:>20} | {:>8.5}",
             s.summary.max_connections,
             s.summary.satisfied_connections,
             s.summary.runs,
@@ -116,6 +140,7 @@ fn print_ranked_for_profile(profile: GateProfile, summaries: &[Summary]) {
             s.summary.avg_largest_component_share,
             s.summary.avg_tick_p95_us,
             s.summary.avg_peak_connection_pairs,
+            s.failed_runs,
             gate_str,
             s.score,
         );
@@ -130,22 +155,48 @@ async fn main() {
     let mut configs = Vec::new();
     for (max_connections, satisfied_connections) in candidates {
         for seed in seeds {
+            let reference_pool = PoolConfig {
+                max_connections,
+                satisfied_connections,
+            };
             configs.push(SimConfig {
-                node_count: 60,
+                node_count: 90,
                 duration: Duration::from_secs(3),
                 seed,
-                pool: PoolConfig {
-                    max_connections,
-                    satisfied_connections,
-                },
+                // Fallback-only when strategy_mix is empty; keep aligned with reference.
+                pool: reference_pool.clone(),
                 discovery_interval_ms: 100,
                 churn_rate: 0.02,
                 allow_rejoin: true,
                 network_latency_ms: 30,
-                retrieval_probe_count: 15,
+                retrieval_probe_count: 20,
                 retrieval_payload_bytes: 2048,
                 retrieval_timeout_ms: 700,
                 max_events_retained: 10_000,
+                reference_strategy: Some("reference".to_string()),
+                strategy_mix: vec![
+                    NodeStrategyProfile {
+                        name: "reference".to_string(),
+                        weight: 35,
+                        pool: reference_pool,
+                    },
+                    NodeStrategyProfile {
+                        name: "conservative".to_string(),
+                        weight: 35,
+                        pool: PoolConfig {
+                            max_connections: 12,
+                            satisfied_connections: 6,
+                        },
+                    },
+                    NodeStrategyProfile {
+                        name: "aggressive".to_string(),
+                        weight: 30,
+                        pool: PoolConfig {
+                            max_connections: 24,
+                            satisfied_connections: 12,
+                        },
+                    },
+                ],
             });
         }
     }
@@ -168,6 +219,9 @@ async fn main() {
         let mut largest_share_sum = 0.0;
         let mut tick_p95_sum = 0.0;
         let mut peak_links_sum = 0.0;
+        let mut run_success_rates = Vec::new();
+        let mut run_largest_component_shares = Vec::new();
+        let mut run_component_counts = Vec::new();
         let mut runs = 0_usize;
 
         for result in &results {
@@ -177,13 +231,19 @@ async fn main() {
                 continue;
             }
             runs += 1;
-            success_sum += result.stats.retrieval.success_rate;
-            p95_sum += result.stats.retrieval.p95_latency_ms as f64;
-            let overhead = if result.stats.retrieval.payload_bytes == 0 {
+
+            let reference = result
+                .stats
+                .strategy_retrieval
+                .get("reference")
+                .unwrap_or(&result.stats.retrieval);
+
+            success_sum += reference.success_rate;
+            p95_sum += reference.p95_latency_ms as f64;
+            let overhead = if reference.payload_bytes == 0 {
                 0.0
             } else {
-                result.stats.retrieval.data_plane_bytes as f64
-                    / result.stats.retrieval.payload_bytes as f64
+                reference.data_plane_bytes as f64 / reference.payload_bytes as f64
             };
             overhead_sum += overhead;
             component_sum += result.final_topology.component_count as f64;
@@ -196,45 +256,46 @@ async fn main() {
                     / result.final_topology.node_count as f64
             };
             largest_share_sum += largest_share;
+
+            run_success_rates.push(reference.success_rate);
+            run_largest_component_shares.push(largest_share);
+            run_component_counts.push(result.final_topology.component_count as f64);
         }
 
         if runs == 0 {
             continue;
         }
 
-        let avg_success_rate = success_sum / runs as f64;
-        let avg_p95_ms = p95_sum / runs as f64;
-        let avg_overhead_ratio = overhead_sum / runs as f64;
-        let avg_component_count = component_sum / runs as f64;
-        let avg_largest_component_share = largest_share_sum / runs as f64;
-        let avg_tick_p95_us = tick_p95_sum / runs as f64;
-        let avg_peak_connection_pairs = peak_links_sum / runs as f64;
-
         summaries.push(Summary {
             max_connections,
             satisfied_connections,
             runs,
-            avg_success_rate,
-            avg_p95_ms,
-            avg_overhead_ratio,
-            avg_component_count,
-            avg_largest_component_share,
-            avg_tick_p95_us,
-            avg_peak_connection_pairs,
+            avg_success_rate: success_sum / runs as f64,
+            avg_p95_ms: p95_sum / runs as f64,
+            avg_overhead_ratio: overhead_sum / runs as f64,
+            avg_component_count: component_sum / runs as f64,
+            avg_largest_component_share: largest_share_sum / runs as f64,
+            avg_tick_p95_us: tick_p95_sum / runs as f64,
+            avg_peak_connection_pairs: peak_links_sum / runs as f64,
+            run_success_rates,
+            run_largest_component_shares,
+            run_component_counts,
         });
     }
 
     let exploration = GateProfile {
         name: "exploration",
-        min_success_rate: 0.50,
+        min_success_rate: 0.70,
         min_largest_component_share: 0.80,
         max_component_count: 3.0,
+        max_failed_runs: 1,
     };
     let promotion = GateProfile {
         name: "promotion",
-        min_success_rate: 0.85,
+        min_success_rate: 0.90,
         min_largest_component_share: 0.95,
         max_component_count: 2.0,
+        max_failed_runs: 0,
     };
 
     print_ranked_for_profile(exploration, &summaries);

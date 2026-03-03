@@ -16,8 +16,8 @@ pub mod ws_relay;
 #[cfg(feature = "nostr")]
 pub use nostr_mesh::NostrMesh;
 pub use webrtc_sim::{
-    run_parameter_sweep, LocalResourceStats, RetrievalStats, SimConfig, SimEvent, SimStats,
-    Simulation, SweepResult, TopologyStats,
+    run_parameter_sweep, LocalResourceStats, NodeStrategyProfile, RetrievalStats, SimConfig,
+    SimEvent, SimStats, Simulation, SweepResult, TopologyStats,
 };
 pub use ws_relay::WsRelay;
 

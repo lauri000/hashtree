@@ -83,10 +83,43 @@ for result in results {
 - `local_cpu_run_wall_ms`
 - `local_mem_peak_event_log_entries`
 - `local_mem_peak_connection_pairs`
+- `reference_success_rate` / `reference_p95_latency_ms` / `reference_failure_rate`
+
+### Mixed Strategy Simulation
+
+`SimConfig` supports heterogeneous node behavior via `strategy_mix` and `reference_strategy`.
+This lets sweeps evaluate one candidate strategy inside a network of mixed incentives.
+
+```rust
+use hashtree_sim::{NodeStrategyProfile, PoolConfig, SimConfig};
+
+let config = SimConfig {
+    reference_strategy: Some("reference".to_string()),
+    strategy_mix: vec![
+        NodeStrategyProfile {
+            name: "reference".to_string(),
+            weight: 35,
+            pool: PoolConfig { max_connections: 18, satisfied_connections: 9 },
+        },
+        NodeStrategyProfile {
+            name: "aggressive".to_string(),
+            weight: 30,
+            pool: PoolConfig { max_connections: 24, satisfied_connections: 12 },
+        },
+        NodeStrategyProfile {
+            name: "conservative".to_string(),
+            weight: 35,
+            pool: PoolConfig { max_connections: 12, satisfied_connections: 6 },
+        },
+    ],
+    ..Default::default()
+};
+```
 
 The tuning example evaluates two gate profiles:
 - `exploration`: coarse filter for short/fast sweeps
 - `promotion`: stricter thresholds for candidates considered production-ready
+- both profiles hard-gate on per-run failures (not just averages)
 
 ## Network Connectivity
 
