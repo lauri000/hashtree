@@ -1,10 +1,14 @@
 //! Pull request creation via NIP-34 (kind 1618)
 
 use anyhow::{Context, Result};
-use git_remote_htree::nostr_client::resolve_identity;
+use git_remote_htree::nostr_client::{resolve_identity, NostrClient};
+#[cfg(test)]
+use git_remote_htree::nostr_client::PullRequestStateFilter;
 use nostr_sdk::prelude::*;
 use std::process::Command;
 use std::time::Duration;
+
+use super::args::PrListState;
 
 const KIND_PULL_REQUEST: u16 = 1618;
 const KIND_REPO_ANNOUNCEMENT: u16 = 30617;
@@ -90,7 +94,9 @@ pub(crate) async fn create_pr(
     // 3. Resolve and parse target repo to get owner pubkey and repo name
     let repo_target = match &params.repo {
         RepoTargetSelection::InferFromGit => resolve_repo_target_input(None, &source_branch)?,
-        RepoTargetSelection::Explicit(repo) => resolve_repo_target_input(Some(repo), &source_branch)?,
+        RepoTargetSelection::Explicit(repo) => {
+            resolve_repo_target_input(Some(repo), &source_branch)?
+        }
     };
     let (target_pubkey, repo_name) = parse_repo_target(&repo_target)?;
 
@@ -213,6 +219,101 @@ pub(crate) async fn create_pr(
     Ok(())
 }
 
+/// List pull requests for a repository.
+pub(crate) async fn list_prs(repo: Option<&str>, state: PrListState) -> Result<()> {
+    let repo_target = resolve_list_repo_target_input(repo)?;
+    let (target_pubkey, repo_name) = parse_repo_target(&repo_target)?;
+    let state_filter = state.to_filter();
+
+    let config = hashtree_config::Config::load_or_default();
+    let client = NostrClient::new(&target_pubkey, None, None, false, &config)
+        .context("Failed to initialize Nostr client")?;
+
+    let prs = client.fetch_prs_async(&repo_name, state_filter).await?;
+    if prs.is_empty() {
+        println!("No pull requests found.");
+        return Ok(());
+    }
+
+    let target_display = PublicKey::from_hex(&target_pubkey)
+        .ok()
+        .and_then(|pk| pk.to_bech32().ok())
+        .unwrap_or(target_pubkey.clone());
+    println!(
+        "Pull requests for {}/{} (state: {})",
+        target_display,
+        repo_name,
+        state_filter.as_str()
+    );
+
+    for pr in prs {
+        let subject = pr.subject.as_deref().unwrap_or("(no subject)");
+        let event_short = pr.event_id.get(..12).unwrap_or(&pr.event_id);
+        let branch = pr.branch.as_deref().unwrap_or("?");
+        let target_branch = pr.target_branch.as_deref().unwrap_or("master");
+        let commit = pr.commit_tip.as_deref().unwrap_or("?");
+        let commit_short = commit.get(..12).unwrap_or(commit);
+
+        println!("[{}] {} ({})", pr.state.as_str(), subject, event_short);
+        println!("  Branch: {} -> {}", branch, target_branch);
+        println!("  Commit: {}", commit_short);
+    }
+
+    Ok(())
+}
+
+fn resolve_list_repo_target_input(repo: Option<&str>) -> Result<String> {
+    match repo.map(str::trim) {
+        Some("") | None => infer_repo_target_from_git_for_list(),
+        Some(raw) => resolve_repo_target_from_raw(raw, true),
+    }
+}
+
+fn infer_repo_target_from_git_for_list() -> Result<String> {
+    ensure_git_work_tree()?;
+
+    if let Some(remote_url) = git_current_branch()
+        .ok()
+        .map(|source_branch| git_upstream_htree_remote_url_opt(&source_branch))
+        .transpose()?
+        .flatten()
+    {
+        return Ok(remote_url);
+    }
+
+    infer_repo_target_from_htree_remotes()
+}
+
+fn resolve_repo_target_from_raw(raw: &str, ensure_git_for_alias_errors: bool) -> Result<String> {
+    if raw.starts_with("htree://") {
+        return Ok(raw.to_string());
+    }
+
+    if let Some(remote_url) = git_remote_get_url_opt(raw)? {
+        if !remote_url.starts_with("htree://") {
+            anyhow::bail!(
+                "Git remote '{}' is not an htree remote (URL: {}). Pass an htree remote alias or htree:// URL.",
+                raw,
+                remote_url
+            );
+        }
+        return Ok(remote_url);
+    }
+
+    if raw.contains('/') {
+        return Ok(raw.to_string());
+    }
+
+    if ensure_git_for_alias_errors {
+        ensure_git_work_tree()?;
+    }
+
+    anyhow::bail!(
+        "Invalid repo target '{}'. Expected a git remote alias, npub.../repo, or htree:// URL.",
+        raw
+    )
+}
+
 fn normalize_create_pr_params(input: CreatePrParamsInput<'_>) -> Result<NormalizedCreatePrParams> {
     let title = input.title.trim();
     if title.is_empty() {
@@ -284,44 +385,19 @@ fn resolve_repo_target_input(repo: Option<&str>, source_branch: &str) -> Result<
         None => infer_repo_target_from_git(source_branch)?,
     };
 
-    if let Some(remote_url) = git_remote_get_url_opt(&raw)? {
-        if !remote_url.starts_with("htree://") {
-            anyhow::bail!(
-                "Git remote '{}' is not an htree remote (URL: {}). Pass an htree remote alias or htree:// URL.",
-                raw,
-                remote_url
-            );
-        }
-        return Ok(remote_url);
-    }
-
-    if raw.starts_with("htree://") || raw.contains('/') {
-        return Ok(raw);
-    }
-
-    anyhow::bail!(
-        "Invalid repo target '{}'. Expected a git remote alias, npub.../repo, or htree:// URL.",
-        raw
-    )
+    resolve_repo_target_from_raw(&raw, false)
 }
 
 fn infer_repo_target_from_git(source_branch: &str) -> Result<String> {
-    if let Some(remote_name) = git_branch_upstream_remote_opt(source_branch)? {
-        if let Some(remote_url) = git_remote_get_url_opt(&remote_name)? {
-            if remote_url.starts_with("htree://") {
-                return Ok(remote_url);
-            }
-        }
+    if let Some(remote_url) = git_upstream_htree_remote_url_opt(source_branch)? {
+        return Ok(remote_url);
     }
 
-    let mut htree_remotes = Vec::new();
-    for remote_name in git_remote_names()? {
-        if let Some(remote_url) = git_remote_get_url_opt(&remote_name)? {
-            if remote_url.starts_with("htree://") {
-                htree_remotes.push((remote_name, remote_url));
-            }
-        }
-    }
+    infer_repo_target_from_htree_remotes()
+}
+
+fn infer_repo_target_from_htree_remotes() -> Result<String> {
+    let mut htree_remotes = git_htree_remotes()?;
 
     match htree_remotes.len() {
         1 => Ok(htree_remotes.remove(0).1),
@@ -453,6 +529,15 @@ fn git_branch_upstream_remote_opt(branch: &str) -> Result<Option<String>> {
     git_config_get_opt(&key)
 }
 
+fn git_upstream_htree_remote_url_opt(branch: &str) -> Result<Option<String>> {
+    let remote_name = match git_branch_upstream_remote_opt(branch)? {
+        Some(remote_name) => remote_name,
+        None => return Ok(None),
+    };
+
+    Ok(git_remote_get_url_opt(&remote_name)?.filter(|url| url.starts_with("htree://")))
+}
+
 fn git_remote_get_url_opt(remote: &str) -> Result<Option<String>> {
     let output = Command::new("git")
         .args(["remote", "get-url", remote])
@@ -487,6 +572,20 @@ fn git_remote_names() -> Result<Vec<String>> {
         .filter(|line| !line.is_empty())
         .map(ToOwned::to_owned)
         .collect())
+}
+
+fn git_htree_remotes() -> Result<Vec<(String, String)>> {
+    let remotes = git_remote_names()?
+        .into_iter()
+        .map(|remote_name| {
+            let remote = git_remote_get_url_opt(&remote_name)?
+                .filter(|remote_url| remote_url.starts_with("htree://"))
+                .map(|remote_url| (remote_name, remote_url));
+            Ok(remote)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(remotes.into_iter().flatten().collect())
 }
 
 /// Warn if a branch has no upstream, or if the upstream does not match the commit in the PR.
@@ -694,5 +793,38 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("Detached HEAD"));
         assert!(msg.contains("--branch"));
+    }
+
+    #[test]
+    fn pr_list_state_to_filter_maps_all_values() {
+        assert_eq!(
+            PrListState::Open.to_filter(),
+            PullRequestStateFilter::Open
+        );
+        assert_eq!(
+            PrListState::Applied.to_filter(),
+            PullRequestStateFilter::Applied
+        );
+        assert_eq!(
+            PrListState::Closed.to_filter(),
+            PullRequestStateFilter::Closed
+        );
+        assert_eq!(
+            PrListState::Draft.to_filter(),
+            PullRequestStateFilter::Draft
+        );
+        assert_eq!(
+            PrListState::All.to_filter(),
+            PullRequestStateFilter::All
+        );
+    }
+
+    #[test]
+    fn resolve_list_repo_target_input_accepts_explicit_repo_without_git() {
+        let out = resolve_list_repo_target_input(Some("htree://npub1test/repo")).expect("resolve");
+        assert_eq!(out, "htree://npub1test/repo");
+
+        let out = resolve_list_repo_target_input(Some("npub1test/repo")).expect("resolve");
+        assert_eq!(out, "npub1test/repo");
     }
 }

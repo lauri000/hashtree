@@ -1295,6 +1295,9 @@ pub(crate) async fn run() -> Result<()> {
                 )
                 .await?;
             }
+            PrCommands::List { repo, state } => {
+                super::pr::list_prs(repo.as_deref(), state).await?;
+            }
         },
     }
 
