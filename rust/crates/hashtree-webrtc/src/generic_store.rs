@@ -160,6 +160,8 @@ impl ResponseBehaviorConfig {
 pub struct GenericStoreRoutingConfig {
     pub selection_strategy: SelectionStrategy,
     pub fairness_enabled: bool,
+    /// Blend weight for payment-priority ranking in selector (`0.0` disables).
+    pub cashu_payment_weight: f64,
     pub dispatch: RequestDispatchConfig,
     pub response_behavior: ResponseBehaviorConfig,
 }
@@ -169,6 +171,7 @@ impl Default for GenericStoreRoutingConfig {
         Self {
             selection_strategy: SelectionStrategy::Weighted,
             fairness_enabled: true,
+            cashu_payment_weight: 0.0,
             dispatch: RequestDispatchConfig::default(),
             response_behavior: ResponseBehaviorConfig::default(),
         }
@@ -238,6 +241,7 @@ where
     ) -> Self {
         let mut selector = PeerSelector::with_strategy(routing.selection_strategy);
         selector.set_fairness(routing.fairness_enabled);
+        selector.set_cashu_payment_weight(routing.cashu_payment_weight);
         Self {
             local_store,
             signaling,
@@ -364,6 +368,14 @@ where
     /// Re-broadcast hello to refresh discovery as topology changes.
     pub async fn send_hello(&self) -> Result<(), TransportError> {
         self.signaling.send_hello(vec![]).await
+    }
+
+    /// Apply an out-of-band payment credit to a peer's routing priority.
+    pub async fn record_cashu_payment_for_peer(&self, peer_id: &str, amount_sat: u64) {
+        self.peer_selector
+            .write()
+            .await
+            .record_cashu_payment(peer_id, amount_sat);
     }
 
     /// Request data from peers

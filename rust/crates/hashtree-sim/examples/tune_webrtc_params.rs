@@ -394,6 +394,7 @@ async fn main() {
                 retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
                 retrieval_poll_interval_ms: 5,
                 reference_strategy: Some("reference".to_string()),
+                cashu_incentives: None,
                 strategy_mix: vec![
                     NodeStrategyProfile {
                         name: "reference".to_string(),

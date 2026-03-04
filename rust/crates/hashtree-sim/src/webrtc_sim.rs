@@ -3,6 +3,7 @@
 //! This module uses the exact same signaling and data transfer code
 //! as production WebRTCStore, just with mock transports.
 
+use crate::cashu_test_mint::{LocalTestCashuMint, MintError, MintStats};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -54,6 +55,8 @@ pub struct SimConfig {
     pub strategy_mix: Vec<NodeStrategyProfile>,
     /// Strategy name to track as reference in reports.
     pub reference_strategy: Option<String>,
+    /// Optional test Cashu incentives (local mint + payment-priority boost).
+    pub cashu_incentives: Option<CashuIncentiveConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +65,29 @@ pub enum RetrievalTimingMode {
     WallClock,
     /// Use simulated step budget derived from timeout/poll interval (faster, deterministic).
     VirtualSteps,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CashuIncentiveConfig {
+    /// Whether payment incentives are enabled.
+    pub enabled: bool,
+    /// Initial channel capacity per payer->payee pair (sat).
+    pub channel_capacity_sat: u64,
+    /// Amount paid before each retrieval probe (sat).
+    pub payment_per_probe_sat: u64,
+    /// Blend weight for payment priority in selector ranking.
+    pub selection_bonus_weight: f64,
+}
+
+impl Default for CashuIncentiveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            channel_capacity_sat: 0,
+            payment_per_probe_sat: 0,
+            selection_bonus_weight: 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +121,7 @@ impl Default for SimConfig {
             retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
+            cashu_incentives: None,
         }
     }
 }
@@ -171,8 +198,20 @@ pub struct SimStats {
     pub strategy_joins: HashMap<String, usize>,
     pub strategy_retrieval: HashMap<String, RetrievalStats>,
     pub local_resources: LocalResourceStats,
+    pub cashu: CashuStats,
     pub topology_snapshots: Vec<(u64, TopologyStats)>,
     pub events: VecDeque<SimEvent>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CashuStats {
+    pub channels_opened: u64,
+    pub payments_sent: u64,
+    pub payments_failed: u64,
+    pub volume_sat: u64,
+    pub settlements_finalized: u64,
+    pub priority_credits_applied: u64,
+    pub priority_volume_sat: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -269,6 +308,7 @@ pub struct Simulation {
     rng: RwLock<StdRng>,
     stats: RwLock<SimStats>,
     next_node_id: RwLock<usize>,
+    cashu_mint: Option<Arc<RwLock<LocalTestCashuMint>>>,
 }
 
 impl Simulation {
@@ -289,6 +329,11 @@ impl Simulation {
     }
 
     pub fn new(config: SimConfig) -> Self {
+        let cashu_mint = config
+            .cashu_incentives
+            .as_ref()
+            .filter(|c| c.enabled)
+            .map(|_| Arc::new(RwLock::new(LocalTestCashuMint::new())));
         let strategy_mix = if config.strategy_mix.is_empty() {
             vec![NodeStrategyProfile {
                 name: "default".to_string(),
@@ -329,6 +374,7 @@ impl Simulation {
             stats: RwLock::new(SimStats::default()),
             next_node_id: RwLock::new(0),
             strategy_mix,
+            cashu_mint,
             config,
         }
     }
@@ -404,6 +450,7 @@ impl Simulation {
         }
 
         self.run_retrieval_probes(total_ms).await;
+        self.finalize_cashu_stats().await;
         self.update_resource_peaks().await;
 
         let final_stats = self.analyze_topology().await;
@@ -511,6 +558,12 @@ impl Simulation {
             GenericStoreRoutingConfig {
                 selection_strategy: selected_strategy.selection_strategy,
                 fairness_enabled: selected_strategy.fairness_enabled,
+                cashu_payment_weight: self
+                    .config
+                    .cashu_incentives
+                    .as_ref()
+                    .map(|c| c.selection_bonus_weight)
+                    .unwrap_or(0.0),
                 dispatch: selected_strategy.dispatch,
                 response_behavior: selected_strategy.response_behavior,
             },
@@ -689,6 +742,77 @@ impl Simulation {
         }
     }
 
+    fn active_cashu_config(&self) -> Option<CashuIncentiveConfig> {
+        self.config
+            .cashu_incentives
+            .filter(|c| c.enabled && c.channel_capacity_sat > 0 && c.payment_per_probe_sat > 0)
+    }
+
+    async fn apply_cashu_priority_payment(
+        &self,
+        payer_id: &str,
+        payee_id: &str,
+        payer_store: Arc<SimStore>,
+    ) {
+        if payer_id == payee_id {
+            return;
+        }
+        let Some(config) = self.active_cashu_config() else {
+            return;
+        };
+        let Some(mint) = &self.cashu_mint else {
+            return;
+        };
+
+        let mut mint = mint.write().await;
+        match mint.open_channel(
+            payer_id.to_string(),
+            payee_id.to_string(),
+            config.channel_capacity_sat,
+        ) {
+            Ok(()) | Err(MintError::ChannelAlreadyExists) => {}
+            Err(_) => return,
+        }
+
+        if mint
+            .transfer(payer_id, payee_id, config.payment_per_probe_sat)
+            .is_err()
+        {
+            return;
+        }
+        drop(mint);
+
+        payer_store
+            .record_cashu_payment_for_peer(payee_id, config.payment_per_probe_sat)
+            .await;
+        let mut stats = self.stats.write().await;
+        stats.cashu.priority_credits_applied += 1;
+        stats.cashu.priority_volume_sat += config.payment_per_probe_sat;
+    }
+
+    async fn finalize_cashu_stats(&self) {
+        let Some(mint) = &self.cashu_mint else {
+            return;
+        };
+        let mut mint = mint.write().await;
+        let _ = mint.settle_all();
+        let MintStats {
+            channels_opened,
+            payments_sent,
+            payments_failed,
+            volume_sat,
+            settlements_finalized,
+        } = mint.stats();
+        drop(mint);
+
+        let mut stats = self.stats.write().await;
+        stats.cashu.channels_opened = channels_opened;
+        stats.cashu.payments_sent = payments_sent;
+        stats.cashu.payments_failed = payments_failed;
+        stats.cashu.volume_sat = volume_sat;
+        stats.cashu.settlements_finalized = settlements_finalized;
+    }
+
     async fn run_retrieval_probes(&self, time_ms: u64) {
         if self.config.retrieval_probe_count == 0 {
             return;
@@ -730,6 +854,9 @@ impl Simulation {
                 let target = nodes.get(&target_id).expect("target node must exist");
                 (target.store.clone(), target.strategy.clone())
             };
+
+            self.apply_cashu_priority_payment(&target_id, &source_id, target_store.clone())
+                .await;
 
             let hash = hashtree_core::sha256(&payload);
             let _ = source_store.put(hash, payload.clone()).await;
@@ -1128,6 +1255,14 @@ impl Simulation {
                 "retrieval_poll_interval_ms": self.config.retrieval_poll_interval_ms,
                 "max_events_retained": self.config.max_events_retained,
                 "reference_strategy": self.config.reference_strategy,
+                "cashu_incentives": self.config.cashu_incentives.map(|cashu| {
+                    serde_json::json!({
+                        "enabled": cashu.enabled,
+                        "channel_capacity_sat": cashu.channel_capacity_sat,
+                        "payment_per_probe_sat": cashu.payment_per_probe_sat,
+                        "selection_bonus_weight": cashu.selection_bonus_weight,
+                    })
+                }),
                 "strategy_mix": self.strategy_mix.iter().map(|s| {
                     serde_json::json!({
                         "name": s.name,
@@ -1176,6 +1311,15 @@ impl Simulation {
                     "tick_p95_us": stats.local_resources.tick_p95_us,
                     "tick_max_us": stats.local_resources.tick_max_us
                 },
+                "cashu": {
+                    "channels_opened": stats.cashu.channels_opened,
+                    "payments_sent": stats.cashu.payments_sent,
+                    "payments_failed": stats.cashu.payments_failed,
+                    "volume_sat": stats.cashu.volume_sat,
+                    "settlements_finalized": stats.cashu.settlements_finalized,
+                    "priority_credits_applied": stats.cashu.priority_credits_applied,
+                    "priority_volume_sat": stats.cashu.priority_volume_sat
+                },
                 "retrieval": {
                     "probes": stats.retrieval.probes,
                     "successes": stats.retrieval.successes,
@@ -1221,7 +1365,9 @@ impl Simulation {
                 "local_mem_peak_connection_pairs": stats.local_resources.peak_connection_pairs,
                 "reference_success_rate": reference_success_rate,
                 "reference_p95_latency_ms": reference_p95_latency_ms,
-                "reference_failure_rate": reference_failure_rate
+                "reference_failure_rate": reference_failure_rate,
+                "cashu_priority_credits_applied": stats.cashu.priority_credits_applied,
+                "cashu_priority_volume_sat": stats.cashu.priority_volume_sat
             }
         })
     }
@@ -1278,6 +1424,18 @@ impl Simulation {
             stats.local_resources.tick_max_us,
             stats.local_resources.run_wall_ms
         );
+        if stats.cashu.payments_sent > 0 || stats.cashu.channels_opened > 0 {
+            println!(
+                "Cashu incentives: channels={} payments_sent={} payments_failed={} volume_sat={} settlements={} priority_credits={} priority_volume_sat={}",
+                stats.cashu.channels_opened,
+                stats.cashu.payments_sent,
+                stats.cashu.payments_failed,
+                stats.cashu.volume_sat,
+                stats.cashu.settlements_finalized,
+                stats.cashu.priority_credits_applied,
+                stats.cashu.priority_volume_sat
+            );
+        }
         if !stats.strategy_retrieval.is_empty() {
             println!("Strategy retrieval:");
             let mut keys: Vec<_> = stats.strategy_retrieval.keys().cloned().collect();
@@ -1362,6 +1520,7 @@ mod tests {
             retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
+            cashu_incentives: None,
         };
 
         let sim = Simulation::new(config);
@@ -1398,6 +1557,7 @@ mod tests {
             retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
+            cashu_incentives: None,
         };
 
         let sim = Simulation::new(config);
@@ -1443,6 +1603,7 @@ mod tests {
             retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
+            cashu_incentives: None,
         };
 
         let sim = Simulation::new(config);
@@ -1490,6 +1651,7 @@ mod tests {
             retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
+            cashu_incentives: None,
         };
 
         let sim = Simulation::new(config);
@@ -1534,6 +1696,7 @@ mod tests {
             retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
+            cashu_incentives: None,
         };
         let sim = Simulation::new(config);
         sim.run().await;
@@ -1546,6 +1709,68 @@ mod tests {
         assert!(report["objectives"]["local_cpu_tick_p95_us"].is_number());
         assert!(report["objectives"]["local_mem_peak_event_log_entries"].is_number());
         assert!(report["stats"]["local_resources"]["tick_p95_us"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_webrtc_sim_cashu_incentives_use_local_test_mint() {
+        let config = SimConfig {
+            node_count: 16,
+            duration: Duration::from_secs(3),
+            seed: 88,
+            pool: PoolConfig {
+                max_connections: 8,
+                satisfied_connections: 4,
+            },
+            discovery_interval_ms: 100,
+            hello_reannounce_interval_ms: 1000,
+            churn_rate: 0.0,
+            allow_rejoin: false,
+            network_latency_ms: 0,
+            retrieval_probe_count: 12,
+            retrieval_payload_bytes: 256,
+            retrieval_timeout_ms: 1000,
+            max_events_retained: 20_000,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
+            strategy_mix: Vec::new(),
+            reference_strategy: None,
+            cashu_incentives: Some(CashuIncentiveConfig {
+                enabled: true,
+                channel_capacity_sat: 128,
+                payment_per_probe_sat: 2,
+                selection_bonus_weight: 0.8,
+            }),
+        };
+
+        let sim = Simulation::new(config);
+        sim.run().await;
+        let stats = sim.get_stats().await;
+
+        assert_eq!(stats.retrieval.probes, 12);
+        assert!(
+            stats.retrieval.successes > 0,
+            "cashu incentives should not prevent retrieval"
+        );
+        assert!(
+            stats.cashu.channels_opened > 0,
+            "expected channels to open in local test mint"
+        );
+        assert!(
+            stats.cashu.payments_sent > 0,
+            "expected micropayments via local test mint"
+        );
+        assert!(
+            stats.cashu.priority_credits_applied > 0,
+            "expected peer priority credits to be applied"
+        );
+        assert_eq!(
+            stats.cashu.priority_volume_sat,
+            stats.cashu.priority_credits_applied * 2
+        );
+        assert_eq!(
+            stats.cashu.settlements_finalized,
+            stats.cashu.channels_opened
+        );
     }
 
     #[tokio::test]
@@ -1596,6 +1821,7 @@ mod tests {
                 },
             ],
             reference_strategy: Some("reference".to_string()),
+            cashu_incentives: None,
         };
 
         let sim = Simulation::new(config);
@@ -1692,6 +1918,7 @@ mod tests {
                 },
             ],
             reference_strategy: Some("reference".to_string()),
+            cashu_incentives: None,
         }
     }
 
@@ -1737,6 +1964,7 @@ mod tests {
                 response_behavior: ResponseBehaviorConfig::default(),
             }],
             reference_strategy: Some("reference".to_string()),
+            cashu_incentives: None,
         };
 
         let mixed_config = mixed_bad_actor_config(honest_config.seed, SelectionStrategy::TitForTat);
@@ -1811,6 +2039,7 @@ mod tests {
             retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
+            cashu_incentives: None,
         };
         let sim = Simulation::new(config);
         sim.run().await;
@@ -1847,6 +2076,7 @@ mod tests {
                 retrieval_poll_interval_ms: 5,
                 strategy_mix: Vec::new(),
                 reference_strategy: None,
+                cashu_incentives: None,
             },
             SimConfig {
                 node_count: 6,
@@ -1869,6 +2099,7 @@ mod tests {
                 retrieval_poll_interval_ms: 5,
                 strategy_mix: Vec::new(),
                 reference_strategy: None,
+                cashu_incentives: None,
             },
         ];
 
@@ -1901,6 +2132,7 @@ mod tests {
             retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
+            cashu_incentives: None,
         };
 
         let mut low_latency_cfg = base.clone();
@@ -1948,6 +2180,7 @@ mod tests {
             retrieval_poll_interval_ms: 5,
             strategy_mix: Vec::new(),
             reference_strategy: None,
+            cashu_incentives: None,
         };
 
         let sim = Simulation::new(config);

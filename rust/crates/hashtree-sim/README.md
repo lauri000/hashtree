@@ -134,6 +134,16 @@ The tuning example evaluates two gate profiles:
 - both profiles hard-gate on per-run failures (not just averages)
 - use `--mode=manual` for fixed candidate lists and `--mode=auto` for generated strategy/weight grids
 
+## Cashu Incentive Simulation
+
+`SimConfig.cashu_incentives` enables a local test mint that models:
+- channel open (`payer -> payee`) with fixed capacity
+- many offchain micropayments inside the channel
+- final settlement at simulation end
+
+When enabled, each retrieval probe can send a micropayment and add payment credit
+to peer selection. If disabled (or unset), routing stays reputation-only.
+
 ### Timing Modes
 
 `SimConfig.retrieval_timing_mode` controls probe timeout behavior:

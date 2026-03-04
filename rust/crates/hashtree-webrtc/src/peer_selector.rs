@@ -59,6 +59,8 @@ pub struct PeerStats {
     pub bytes_received: u64,
     /// Total bytes sent to this peer
     pub bytes_sent: u64,
+    /// Total sats paid to this peer through an external payment channel.
+    pub cashu_paid_sat: u64,
 }
 
 impl PeerStats {
@@ -81,6 +83,7 @@ impl PeerStats {
             last_failure: None,
             bytes_received: 0,
             bytes_sent: 0,
+            cashu_paid_sat: 0,
         }
     }
 
@@ -179,6 +182,14 @@ impl PeerStats {
         self.failures += 1;
         self.last_failure = Some(Instant::now());
         self.apply_backoff();
+    }
+
+    /// Record an out-of-band payment to this peer (e.g. Cashu channel transfer).
+    pub fn record_cashu_payment(&mut self, amount_sat: u64) {
+        if amount_sat == 0 {
+            return;
+        }
+        self.cashu_paid_sat = self.cashu_paid_sat.saturating_add(amount_sat);
     }
 
     /// Apply exponential backoff
@@ -301,6 +312,15 @@ impl PeerStats {
 
         (cooperative + exploration - retaliation_penalty).max(0.0)
     }
+
+    /// Normalize paid amount to a bounded priority score in [0, 1).
+    pub fn cashu_priority_boost(&self) -> f64 {
+        if self.cashu_paid_sat == 0 {
+            return 0.0;
+        }
+        let paid = self.cashu_paid_sat as f64;
+        paid / (paid + 32.0)
+    }
 }
 
 /// Peer selection strategy
@@ -340,6 +360,8 @@ pub struct PeerSelector {
     fairness_enabled: bool,
     /// Round-robin index for RoundRobin strategy
     round_robin_idx: usize,
+    /// Blending weight for payment priority. 0.0 keeps pure reputation routing.
+    cashu_payment_weight: f64,
 }
 
 impl PeerSelector {
@@ -350,6 +372,7 @@ impl PeerSelector {
             strategy: SelectionStrategy::Weighted,
             fairness_enabled: true,
             round_robin_idx: 0,
+            cashu_payment_weight: 0.0,
         }
     }
 
@@ -360,12 +383,19 @@ impl PeerSelector {
             strategy,
             fairness_enabled: true,
             round_robin_idx: 0,
+            cashu_payment_weight: 0.0,
         }
     }
 
     /// Enable/disable fairness constraints
     pub fn set_fairness(&mut self, enabled: bool) {
         self.fairness_enabled = enabled;
+    }
+
+    /// Configure payment-priority influence when ranking peers.
+    /// `0.0` disables payment influence and preserves reputation-only behavior.
+    pub fn set_cashu_payment_weight(&mut self, weight: f64) {
+        self.cashu_payment_weight = weight.clamp(0.0, 1.0);
     }
 
     /// Add a peer to track
@@ -422,6 +452,26 @@ impl PeerSelector {
         if let Some(stats) = self.stats.get_mut(peer_id) {
             stats.record_failure();
         }
+    }
+
+    /// Record payment channel credit for a peer.
+    pub fn record_cashu_payment(&mut self, peer_id: &str, amount_sat: u64) {
+        if amount_sat == 0 {
+            return;
+        }
+        let entry = self
+            .stats
+            .entry(peer_id.to_string())
+            .or_insert_with(|| PeerStats::new(peer_id.to_string()));
+        entry.record_cashu_payment(amount_sat);
+    }
+
+    fn blend_with_payment_priority(&self, stats: &PeerStats, base_score: f64) -> f64 {
+        if self.cashu_payment_weight <= 0.0 {
+            return base_score;
+        }
+        let payment_score = stats.cashu_priority_boost();
+        (1.0 - self.cashu_payment_weight) * base_score + self.cashu_payment_weight * payment_score
     }
 
     /// Get available (non-backed-off) peers
@@ -503,9 +553,10 @@ impl PeerSelector {
             SelectionStrategy::Weighted => {
                 // Sort by score (highest first), then by peer_id for determinism
                 sorted.sort_by(|(id_a, a), (id_b, b)| {
-                    let score_cmp = b
-                        .score()
-                        .partial_cmp(&a.score())
+                    let score_a = self.blend_with_payment_priority(a, a.score());
+                    let score_b = self.blend_with_payment_priority(b, b.score());
+                    let score_cmp = score_b
+                        .partial_cmp(&score_a)
                         .unwrap_or(std::cmp::Ordering::Equal);
                     if score_cmp == std::cmp::Ordering::Equal {
                         id_a.cmp(id_b) // Alphabetical for determinism
@@ -553,9 +604,12 @@ impl PeerSelector {
             SelectionStrategy::TitForTat => {
                 let total_requests: u64 = sorted.iter().map(|(_, s)| s.requests_sent).sum();
                 sorted.sort_by(|(id_a, a), (id_b, b)| {
-                    let score_cmp = b
-                        .tit_for_tat_score(total_requests)
-                        .partial_cmp(&a.tit_for_tat_score(total_requests))
+                    let score_a =
+                        self.blend_with_payment_priority(a, a.tit_for_tat_score(total_requests));
+                    let score_b =
+                        self.blend_with_payment_priority(b, b.tit_for_tat_score(total_requests));
+                    let score_cmp = score_b
+                        .partial_cmp(&score_a)
                         .unwrap_or(std::cmp::Ordering::Equal);
                     if score_cmp == std::cmp::Ordering::Equal {
                         id_a.cmp(id_b)
@@ -567,9 +621,12 @@ impl PeerSelector {
             SelectionStrategy::UtilityUcb => {
                 let total_requests: u64 = sorted.iter().map(|(_, s)| s.requests_sent).sum();
                 sorted.sort_by(|(id_a, a), (id_b, b)| {
-                    let score_cmp = b
-                        .utility_score(total_requests)
-                        .partial_cmp(&a.utility_score(total_requests))
+                    let score_a =
+                        self.blend_with_payment_priority(a, a.utility_score(total_requests));
+                    let score_b =
+                        self.blend_with_payment_priority(b, b.utility_score(total_requests));
+                    let score_cmp = score_b
+                        .partial_cmp(&score_a)
                         .unwrap_or(std::cmp::Ordering::Equal);
                     if score_cmp == std::cmp::Ordering::Equal {
                         id_a.cmp(id_b)
@@ -1003,5 +1060,54 @@ mod tests {
         let peers = selector.select_peers();
         // Peer 2 should be first (lowest RTT)
         assert_eq!(peers[0], "peer2");
+    }
+
+    fn build_cashu_priority_fixture() -> PeerSelector {
+        let mut selector = PeerSelector::with_strategy(SelectionStrategy::Weighted);
+        selector.add_peer("reliable");
+        selector.add_peer("paid");
+
+        {
+            let reliable = selector.get_stats_mut("reliable").expect("reliable");
+            reliable.requests_sent = 80;
+            reliable.successes = 75;
+            reliable.failures = 2;
+            reliable.timeouts = 3;
+            reliable.srtt_ms = 40.0;
+            reliable.bytes_sent = 80 * 40;
+            reliable.bytes_received = 75 * 1024;
+        }
+        {
+            let paid = selector.get_stats_mut("paid").expect("paid");
+            paid.requests_sent = 80;
+            paid.successes = 36;
+            paid.failures = 24;
+            paid.timeouts = 20;
+            paid.srtt_ms = 700.0;
+            paid.bytes_sent = 80 * 40;
+            paid.bytes_received = 36 * 512;
+        }
+
+        selector
+    }
+
+    #[test]
+    fn test_cashu_payment_weight_zero_keeps_reputation_order() {
+        let mut selector = build_cashu_priority_fixture();
+        selector.set_cashu_payment_weight(0.0);
+        selector.record_cashu_payment("paid", 5_000);
+
+        let peers = selector.select_peers();
+        assert_eq!(peers[0], "reliable");
+    }
+
+    #[test]
+    fn test_cashu_payment_weight_prioritizes_paid_peer() {
+        let mut selector = build_cashu_priority_fixture();
+        selector.set_cashu_payment_weight(0.8);
+        selector.record_cashu_payment("paid", 5_000);
+
+        let peers = selector.select_peers();
+        assert_eq!(peers[0], "paid");
     }
 }

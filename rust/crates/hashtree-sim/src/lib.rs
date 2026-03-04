@@ -7,17 +7,22 @@
 //! - `webrtc_sim::Simulation` - uses GenericStore with mock transports
 //! - `WsRelay` - WebSocket Nostr relay for integration testing
 
+pub mod cashu_test_mint;
 #[cfg(feature = "nostr")]
 pub mod nostr_mesh;
 pub mod webrtc_sim;
 pub mod ws_relay;
 
 // Re-export main types from webrtc_sim
+pub use cashu_test_mint::{
+    ChannelSettlement, ChannelState, LocalTestCashuMint, MintError, MintStats,
+};
 #[cfg(feature = "nostr")]
 pub use nostr_mesh::NostrMesh;
 pub use webrtc_sim::{
-    run_parameter_sweep, LocalResourceStats, NodeStrategyProfile, RetrievalStats,
-    RetrievalTimingMode, SimConfig, SimEvent, SimStats, Simulation, SweepResult, TopologyStats,
+    run_parameter_sweep, CashuIncentiveConfig, LocalResourceStats, NodeStrategyProfile,
+    RetrievalStats, RetrievalTimingMode, SimConfig, SimEvent, SimStats, Simulation, SweepResult,
+    TopologyStats,
 };
 pub use ws_relay::WsRelay;
 
