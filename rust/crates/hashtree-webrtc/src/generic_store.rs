@@ -14,7 +14,7 @@ use tokio::sync::{oneshot, RwLock};
 
 use hashtree_core::{Hash, Store, StoreError};
 
-use crate::peer_selector::{PeerReputationSnapshot, PeerSelector, SelectionStrategy};
+use crate::peer_selector::{PeerMetadataSnapshot, PeerSelector, SelectionStrategy};
 use crate::protocol::{
     create_request, create_response, encode_request, encode_response, hash_to_key, parse_message,
     DataMessage,
@@ -23,7 +23,7 @@ use crate::signaling::SignalingManager;
 use crate::transport::{PeerConnectionFactory, RelayTransport, TransportError};
 use crate::types::{PeerHTLConfig, SignalingMessage, MAX_HTL};
 
-const REPUTATION_POINTER_SLOT_KEY: &[u8] = b"hashtree-webrtc/reputation/latest/v1";
+const PEER_METADATA_POINTER_SLOT_KEY: &[u8] = b"hashtree-webrtc/peer-metadata/latest/v1";
 
 /// Pending request awaiting response
 struct PendingRequest {
@@ -309,8 +309,8 @@ where
         Self::deterministic_actor_draw_for(self.signaling.peer_id(), hash, salt)
     }
 
-    fn reputation_pointer_slot_hash() -> Hash {
-        hashtree_core::sha256(REPUTATION_POINTER_SLOT_KEY)
+    fn peer_metadata_pointer_slot_hash() -> Hash {
+        hashtree_core::sha256(PEER_METADATA_POINTER_SLOT_KEY)
     }
 
     fn decode_hash_hex(hash_hex: &str) -> Result<Hash, StoreError> {
@@ -398,18 +398,23 @@ where
             .record_cashu_payment(peer_id, amount_sat);
     }
 
-    /// Snapshot current peer reputation and persist it into `local_store`.
+    /// Snapshot current peer metadata and persist it into `local_store`.
     ///
     /// Uses content-addressed storage for the snapshot body and a reserved
     /// mutable pointer slot for the "latest snapshot hash".
-    pub async fn persist_peer_reputation(&self) -> Result<Hash, StoreError> {
-        let snapshot = self.peer_selector.read().await.export_reputation_snapshot();
-        let bytes = serde_json::to_vec(&snapshot)
-            .map_err(|e| StoreError::Other(format!("Failed to encode reputation snapshot: {e}")))?;
+    pub async fn persist_peer_metadata(&self) -> Result<Hash, StoreError> {
+        let snapshot = self
+            .peer_selector
+            .read()
+            .await
+            .export_peer_metadata_snapshot();
+        let bytes = serde_json::to_vec(&snapshot).map_err(|e| {
+            StoreError::Other(format!("Failed to encode peer metadata snapshot: {e}"))
+        })?;
         let snapshot_hash = hashtree_core::sha256(&bytes);
         let _ = self.local_store.put(snapshot_hash, bytes).await?;
 
-        let pointer_slot = Self::reputation_pointer_slot_hash();
+        let pointer_slot = Self::peer_metadata_pointer_slot_hash();
         let pointer_bytes = hex::encode(snapshot_hash).into_bytes();
         let _ = self.local_store.delete(&pointer_slot).await?;
         let _ = self.local_store.put(pointer_slot, pointer_bytes).await?;
@@ -417,26 +422,28 @@ where
         Ok(snapshot_hash)
     }
 
-    /// Load persisted peer reputation from `local_store` if available.
-    pub async fn load_peer_reputation(&self) -> Result<bool, StoreError> {
-        let pointer_slot = Self::reputation_pointer_slot_hash();
+    /// Load persisted peer metadata from `local_store` if available.
+    pub async fn load_peer_metadata(&self) -> Result<bool, StoreError> {
+        let pointer_slot = Self::peer_metadata_pointer_slot_hash();
         let Some(pointer_bytes) = self.local_store.get(&pointer_slot).await? else {
             return Ok(false);
         };
         let pointer_hex = std::str::from_utf8(&pointer_bytes).map_err(|e| {
-            StoreError::Other(format!("Reputation pointer is not valid UTF-8: {e}"))
+            StoreError::Other(format!("Peer metadata pointer is not valid UTF-8: {e}"))
         })?;
         let snapshot_hash = Self::decode_hash_hex(pointer_hex.trim())?;
 
         let Some(snapshot_bytes) = self.local_store.get(&snapshot_hash).await? else {
             return Ok(false);
         };
-        let snapshot: PeerReputationSnapshot = serde_json::from_slice(&snapshot_bytes)
-            .map_err(|e| StoreError::Other(format!("Failed to decode reputation snapshot: {e}")))?;
+        let snapshot: PeerMetadataSnapshot =
+            serde_json::from_slice(&snapshot_bytes).map_err(|e| {
+                StoreError::Other(format!("Failed to decode peer metadata snapshot: {e}"))
+            })?;
         self.peer_selector
             .write()
             .await
-            .import_reputation_snapshot(&snapshot);
+            .import_peer_metadata_snapshot(&snapshot);
         Ok(true)
     }
 
@@ -740,14 +747,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_load_peer_reputation_returns_false_when_missing() {
+    async fn test_load_peer_metadata_returns_false_when_missing() {
         let local_store = Arc::new(MemoryStore::new());
         let store = make_test_store(local_store, "0");
-        assert!(!store.load_peer_reputation().await.expect("load result"));
+        assert!(!store.load_peer_metadata().await.expect("load result"));
     }
 
     #[tokio::test]
-    async fn test_persist_and_load_peer_reputation_with_existing_store_adapter() {
+    async fn test_persist_and_load_peer_metadata_with_existing_store_adapter() {
         let local_store = Arc::new(MemoryStore::new());
         let writer = make_test_store(local_store.clone(), "0");
         {
@@ -759,9 +766,9 @@ mod tests {
         }
 
         let snapshot_hash = writer
-            .persist_peer_reputation()
+            .persist_peer_metadata()
             .await
-            .expect("persist reputation");
+            .expect("persist peer metadata");
         assert!(local_store
             .get(&snapshot_hash)
             .await
@@ -770,9 +777,9 @@ mod tests {
 
         let reader = make_test_store(local_store, "1");
         assert!(reader
-            .load_peer_reputation()
+            .load_peer_metadata()
             .await
-            .expect("load reputation snapshot"));
+            .expect("load peer metadata snapshot"));
 
         let mut selector = reader.peer_selector.write().await;
         selector.add_peer("npub1stable:session-b");

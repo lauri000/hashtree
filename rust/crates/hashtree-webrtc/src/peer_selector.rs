@@ -25,15 +25,15 @@ const MIN_RTO_MS: u64 = 50; // Minimum retransmission timeout
 const MAX_RTO_MS: u64 = 60_000; // Maximum RTO (60 seconds)
 const INITIAL_RTO_MS: u64 = 1000; // Initial RTO before any measurements
 
-/// Current schema version for persisted peer reputation snapshots.
-pub const PEER_REPUTATION_SNAPSHOT_VERSION: u32 = 1;
+/// Current schema version for persisted peer metadata snapshots.
+pub const PEER_METADATA_SNAPSHOT_VERSION: u32 = 1;
 
-/// Persisted reputation for a logical peer principal (pubkey/npub identity).
+/// Persisted metadata for a logical peer principal (pubkey/npub identity).
 ///
 /// This omits process-local runtime fields (`Instant`, active backoff timers) so
-/// reputation can survive restarts and session UUID churn.
+/// metadata can survive restarts and session UUID churn.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct PersistedPeerReputation {
+pub struct PersistedPeerMetadata {
     /// Stable principal identity (usually pubkey/npub).
     pub principal: String,
     pub requests_sent: u64,
@@ -48,7 +48,7 @@ pub struct PersistedPeerReputation {
     pub cashu_paid_sat: u64,
 }
 
-impl PersistedPeerReputation {
+impl PersistedPeerMetadata {
     fn from_stats(principal: String, stats: &PeerStats) -> Self {
         Self {
             principal,
@@ -86,17 +86,17 @@ impl PersistedPeerReputation {
     }
 }
 
-/// Snapshot of reputation for all known principals.
+/// Snapshot of metadata for all known principals.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PeerReputationSnapshot {
+pub struct PeerMetadataSnapshot {
     pub version: u32,
-    pub peers: Vec<PersistedPeerReputation>,
+    pub peers: Vec<PersistedPeerMetadata>,
 }
 
-impl Default for PeerReputationSnapshot {
+impl Default for PeerMetadataSnapshot {
     fn default() -> Self {
         Self {
-            version: PEER_REPUTATION_SNAPSHOT_VERSION,
+            version: PEER_METADATA_SNAPSHOT_VERSION,
             peers: Vec::new(),
         }
     }
@@ -459,8 +459,8 @@ pub enum SelectionStrategy {
 pub struct PeerSelector {
     /// Per-peer statistics
     stats: HashMap<String, PeerStats>,
-    /// Reputation indexed by stable principal identity (pubkey/npub).
-    persisted_reputation: HashMap<String, PersistedPeerReputation>,
+    /// Persisted peer metadata indexed by stable principal identity (pubkey/npub).
+    persisted_metadata: HashMap<String, PersistedPeerMetadata>,
     /// Selection strategy
     strategy: SelectionStrategy,
     /// Enable fairness constraints (Freenet FOAF mitigation)
@@ -476,7 +476,7 @@ impl PeerSelector {
     pub fn new() -> Self {
         Self {
             stats: HashMap::new(),
-            persisted_reputation: HashMap::new(),
+            persisted_metadata: HashMap::new(),
             strategy: SelectionStrategy::Weighted,
             fairness_enabled: true,
             round_robin_idx: 0,
@@ -488,7 +488,7 @@ impl PeerSelector {
     pub fn with_strategy(strategy: SelectionStrategy) -> Self {
         Self {
             stats: HashMap::new(),
-            persisted_reputation: HashMap::new(),
+            persisted_metadata: HashMap::new(),
             strategy,
             fairness_enabled: true,
             round_robin_idx: 0,
@@ -515,7 +515,7 @@ impl PeerSelector {
         }
 
         let mut stats = PeerStats::new(peer_id.clone());
-        if let Some(saved) = self.persisted_reputation.get(peer_principal(&peer_id)) {
+        if let Some(saved) = self.persisted_metadata.get(peer_principal(&peer_id)) {
             saved.apply_to_stats(&mut stats);
         }
         self.stats.insert(peer_id, stats);
@@ -525,9 +525,9 @@ impl PeerSelector {
     pub fn remove_peer(&mut self, peer_id: &str) {
         if let Some(stats) = self.stats.remove(peer_id) {
             let principal = peer_principal(&stats.peer_id).to_string();
-            self.persisted_reputation.insert(
+            self.persisted_metadata.insert(
                 principal.clone(),
-                PersistedPeerReputation::from_stats(principal, &stats),
+                PersistedPeerMetadata::from_stats(principal, &stats),
             );
         }
     }
@@ -824,43 +824,40 @@ impl PeerSelector {
         }
     }
 
-    /// Export persisted peer reputation keyed by stable principal identity.
-    pub fn export_reputation_snapshot(&self) -> PeerReputationSnapshot {
-        let mut by_principal = self.persisted_reputation.clone();
+    /// Export persisted peer metadata keyed by stable principal identity.
+    pub fn export_peer_metadata_snapshot(&self) -> PeerMetadataSnapshot {
+        let mut by_principal = self.persisted_metadata.clone();
         for stats in self.stats.values() {
             let principal = peer_principal(&stats.peer_id).to_string();
             by_principal.insert(
                 principal.clone(),
-                PersistedPeerReputation::from_stats(principal, stats),
+                PersistedPeerMetadata::from_stats(principal, stats),
             );
         }
 
-        let mut peers: Vec<PersistedPeerReputation> = by_principal.into_values().collect();
+        let mut peers: Vec<PersistedPeerMetadata> = by_principal.into_values().collect();
         peers.sort_by(|a, b| a.principal.cmp(&b.principal));
 
-        PeerReputationSnapshot {
-            version: PEER_REPUTATION_SNAPSHOT_VERSION,
+        PeerMetadataSnapshot {
+            version: PEER_METADATA_SNAPSHOT_VERSION,
             peers,
         }
     }
 
-    /// Import persisted reputation and apply it to currently tracked peers.
-    pub fn import_reputation_snapshot(&mut self, snapshot: &PeerReputationSnapshot) {
-        if snapshot.version != PEER_REPUTATION_SNAPSHOT_VERSION {
+    /// Import persisted metadata and apply it to currently tracked peers.
+    pub fn import_peer_metadata_snapshot(&mut self, snapshot: &PeerMetadataSnapshot) {
+        if snapshot.version != PEER_METADATA_SNAPSHOT_VERSION {
             return;
         }
 
-        self.persisted_reputation.clear();
+        self.persisted_metadata.clear();
         for peer in &snapshot.peers {
-            self.persisted_reputation
+            self.persisted_metadata
                 .insert(peer.principal.clone(), peer.clone());
         }
 
         for stats in self.stats.values_mut() {
-            if let Some(saved) = self
-                .persisted_reputation
-                .get(peer_principal(&stats.peer_id))
-            {
+            if let Some(saved) = self.persisted_metadata.get(peer_principal(&stats.peer_id)) {
                 saved.apply_to_stats(stats);
             }
         }
@@ -1281,20 +1278,20 @@ mod tests {
     }
 
     #[test]
-    fn test_reputation_snapshot_restores_across_session_ids() {
+    fn test_metadata_snapshot_restores_across_session_ids() {
         let mut selector = PeerSelector::new();
         selector.add_peer("npub1stable:session-a");
         selector.record_request("npub1stable:session-a", 64);
         selector.record_success("npub1stable:session-a", 32, 1024);
         selector.record_cashu_payment("npub1stable:session-a", 77);
 
-        let snapshot = selector.export_reputation_snapshot();
-        assert_eq!(snapshot.version, PEER_REPUTATION_SNAPSHOT_VERSION);
+        let snapshot = selector.export_peer_metadata_snapshot();
+        assert_eq!(snapshot.version, PEER_METADATA_SNAPSHOT_VERSION);
         assert_eq!(snapshot.peers.len(), 1);
         assert_eq!(snapshot.peers[0].principal, "npub1stable");
 
         let mut restored = PeerSelector::new();
-        restored.import_reputation_snapshot(&snapshot);
+        restored.import_peer_metadata_snapshot(&snapshot);
         restored.add_peer("npub1stable:session-b");
         let stats = restored
             .get_stats("npub1stable:session-b")
