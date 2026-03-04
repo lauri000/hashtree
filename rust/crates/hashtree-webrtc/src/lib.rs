@@ -62,7 +62,10 @@ pub use mock::{
 };
 pub use nostr::NostrRelayTransport;
 pub use peer::{ForwardRequestCallback, Peer, PeerError};
-pub use peer_selector::{PeerSelector, PeerStats, SelectionStrategy, SelectorSummary};
+pub use peer_selector::{
+    peer_principal, PeerReputationSnapshot, PeerSelector, PeerStats, PersistedPeerReputation,
+    SelectionStrategy, SelectorSummary, PEER_REPUTATION_SNAPSHOT_VERSION,
+};
 pub use protocol::{
     bytes_to_hash, create_fragment_response, create_request, create_response, encode_request,
     encode_response, hash_to_bytes, hash_to_key, is_fragmented, parse_message, DataMessage,

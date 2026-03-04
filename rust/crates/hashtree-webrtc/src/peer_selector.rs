@@ -7,6 +7,7 @@
 //! - Fairness constraints to prevent overloading any single peer
 //! - Weighted selection combining multiple signals
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,110 @@ const MAX_BACKOFF_MS: u64 = 480_000; // 8 minutes max backoff
 const MIN_RTO_MS: u64 = 50; // Minimum retransmission timeout
 const MAX_RTO_MS: u64 = 60_000; // Maximum RTO (60 seconds)
 const INITIAL_RTO_MS: u64 = 1000; // Initial RTO before any measurements
+
+/// Current schema version for persisted peer reputation snapshots.
+pub const PEER_REPUTATION_SNAPSHOT_VERSION: u32 = 1;
+
+/// Persisted reputation for a logical peer principal (pubkey/npub identity).
+///
+/// This omits process-local runtime fields (`Instant`, active backoff timers) so
+/// reputation can survive restarts and session UUID churn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PersistedPeerReputation {
+    /// Stable principal identity (usually pubkey/npub).
+    pub principal: String,
+    pub requests_sent: u64,
+    pub successes: u64,
+    pub timeouts: u64,
+    pub failures: u64,
+    pub srtt_ms: f64,
+    pub rttvar_ms: f64,
+    pub rto_ms: u64,
+    pub bytes_received: u64,
+    pub bytes_sent: u64,
+    pub cashu_paid_sat: u64,
+}
+
+impl PersistedPeerReputation {
+    fn from_stats(principal: String, stats: &PeerStats) -> Self {
+        Self {
+            principal,
+            requests_sent: stats.requests_sent,
+            successes: stats.successes,
+            timeouts: stats.timeouts,
+            failures: stats.failures,
+            srtt_ms: sanitize_latency(stats.srtt_ms),
+            rttvar_ms: sanitize_latency(stats.rttvar_ms),
+            rto_ms: clamp_rto(stats.rto_ms),
+            bytes_received: stats.bytes_received,
+            bytes_sent: stats.bytes_sent,
+            cashu_paid_sat: stats.cashu_paid_sat,
+        }
+    }
+
+    fn apply_to_stats(&self, stats: &mut PeerStats) {
+        stats.requests_sent = self.requests_sent;
+        stats.successes = self.successes;
+        stats.timeouts = self.timeouts;
+        stats.failures = self.failures;
+        stats.srtt_ms = sanitize_latency(self.srtt_ms);
+        stats.rttvar_ms = sanitize_latency(self.rttvar_ms);
+        stats.rto_ms = clamp_rto(self.rto_ms);
+        stats.bytes_received = self.bytes_received;
+        stats.bytes_sent = self.bytes_sent;
+        stats.cashu_paid_sat = self.cashu_paid_sat;
+
+        // Runtime-only state is intentionally reset on restore.
+        stats.backoff_level = 0;
+        stats.backed_off_until = None;
+        stats.last_success = None;
+        stats.last_failure = None;
+        stats.consecutive_rto_backoffs = 0;
+    }
+}
+
+/// Snapshot of reputation for all known principals.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PeerReputationSnapshot {
+    pub version: u32,
+    pub peers: Vec<PersistedPeerReputation>,
+}
+
+impl Default for PeerReputationSnapshot {
+    fn default() -> Self {
+        Self {
+            version: PEER_REPUTATION_SNAPSHOT_VERSION,
+            peers: Vec::new(),
+        }
+    }
+}
+
+fn sanitize_latency(value: f64) -> f64 {
+    if value.is_finite() && value >= 0.0 {
+        value
+    } else {
+        0.0
+    }
+}
+
+fn clamp_rto(rto_ms: u64) -> u64 {
+    if rto_ms == 0 {
+        INITIAL_RTO_MS
+    } else {
+        rto_ms.clamp(MIN_RTO_MS, MAX_RTO_MS)
+    }
+}
+
+/// Extract stable principal identity from a transient peer id.
+///
+/// Peer IDs are generally `"<principal>:<session>"`; if no `:` exists we treat
+/// the full peer id as the principal.
+pub fn peer_principal(peer_id: &str) -> &str {
+    peer_id
+        .split_once(':')
+        .map(|(principal, _)| principal)
+        .unwrap_or(peer_id)
+}
 
 /// Per-peer performance statistics
 #[derive(Debug, Clone)]
@@ -354,6 +459,8 @@ pub enum SelectionStrategy {
 pub struct PeerSelector {
     /// Per-peer statistics
     stats: HashMap<String, PeerStats>,
+    /// Reputation indexed by stable principal identity (pubkey/npub).
+    persisted_reputation: HashMap<String, PersistedPeerReputation>,
     /// Selection strategy
     strategy: SelectionStrategy,
     /// Enable fairness constraints (Freenet FOAF mitigation)
@@ -369,6 +476,7 @@ impl PeerSelector {
     pub fn new() -> Self {
         Self {
             stats: HashMap::new(),
+            persisted_reputation: HashMap::new(),
             strategy: SelectionStrategy::Weighted,
             fairness_enabled: true,
             round_robin_idx: 0,
@@ -380,6 +488,7 @@ impl PeerSelector {
     pub fn with_strategy(strategy: SelectionStrategy) -> Self {
         Self {
             stats: HashMap::new(),
+            persisted_reputation: HashMap::new(),
             strategy,
             fairness_enabled: true,
             round_robin_idx: 0,
@@ -401,14 +510,26 @@ impl PeerSelector {
     /// Add a peer to track
     pub fn add_peer(&mut self, peer_id: impl Into<String>) {
         let peer_id = peer_id.into();
-        self.stats
-            .entry(peer_id.clone())
-            .or_insert_with(|| PeerStats::new(peer_id));
+        if self.stats.contains_key(&peer_id) {
+            return;
+        }
+
+        let mut stats = PeerStats::new(peer_id.clone());
+        if let Some(saved) = self.persisted_reputation.get(peer_principal(&peer_id)) {
+            saved.apply_to_stats(&mut stats);
+        }
+        self.stats.insert(peer_id, stats);
     }
 
     /// Remove a peer
     pub fn remove_peer(&mut self, peer_id: &str) {
-        self.stats.remove(peer_id);
+        if let Some(stats) = self.stats.remove(peer_id) {
+            let principal = peer_principal(&stats.peer_id).to_string();
+            self.persisted_reputation.insert(
+                principal.clone(),
+                PersistedPeerReputation::from_stats(principal, &stats),
+            );
+        }
     }
 
     /// Get peer stats (immutable)
@@ -700,6 +821,48 @@ impl PeerSelector {
             } else {
                 0.0
             },
+        }
+    }
+
+    /// Export persisted peer reputation keyed by stable principal identity.
+    pub fn export_reputation_snapshot(&self) -> PeerReputationSnapshot {
+        let mut by_principal = self.persisted_reputation.clone();
+        for stats in self.stats.values() {
+            let principal = peer_principal(&stats.peer_id).to_string();
+            by_principal.insert(
+                principal.clone(),
+                PersistedPeerReputation::from_stats(principal, stats),
+            );
+        }
+
+        let mut peers: Vec<PersistedPeerReputation> = by_principal.into_values().collect();
+        peers.sort_by(|a, b| a.principal.cmp(&b.principal));
+
+        PeerReputationSnapshot {
+            version: PEER_REPUTATION_SNAPSHOT_VERSION,
+            peers,
+        }
+    }
+
+    /// Import persisted reputation and apply it to currently tracked peers.
+    pub fn import_reputation_snapshot(&mut self, snapshot: &PeerReputationSnapshot) {
+        if snapshot.version != PEER_REPUTATION_SNAPSHOT_VERSION {
+            return;
+        }
+
+        self.persisted_reputation.clear();
+        for peer in &snapshot.peers {
+            self.persisted_reputation
+                .insert(peer.principal.clone(), peer.clone());
+        }
+
+        for stats in self.stats.values_mut() {
+            if let Some(saved) = self
+                .persisted_reputation
+                .get(peer_principal(&stats.peer_id))
+            {
+                saved.apply_to_stats(stats);
+            }
         }
     }
 }
@@ -1109,5 +1272,35 @@ mod tests {
 
         let peers = selector.select_peers();
         assert_eq!(peers[0], "paid");
+    }
+
+    #[test]
+    fn test_peer_principal_prefers_stable_identity_prefix() {
+        assert_eq!(peer_principal("npub1abc:session-1"), "npub1abc");
+        assert_eq!(peer_principal("npub1abc"), "npub1abc");
+    }
+
+    #[test]
+    fn test_reputation_snapshot_restores_across_session_ids() {
+        let mut selector = PeerSelector::new();
+        selector.add_peer("npub1stable:session-a");
+        selector.record_request("npub1stable:session-a", 64);
+        selector.record_success("npub1stable:session-a", 32, 1024);
+        selector.record_cashu_payment("npub1stable:session-a", 77);
+
+        let snapshot = selector.export_reputation_snapshot();
+        assert_eq!(snapshot.version, PEER_REPUTATION_SNAPSHOT_VERSION);
+        assert_eq!(snapshot.peers.len(), 1);
+        assert_eq!(snapshot.peers[0].principal, "npub1stable");
+
+        let mut restored = PeerSelector::new();
+        restored.import_reputation_snapshot(&snapshot);
+        restored.add_peer("npub1stable:session-b");
+        let stats = restored
+            .get_stats("npub1stable:session-b")
+            .expect("restored stats");
+        assert_eq!(stats.requests_sent, 1);
+        assert_eq!(stats.successes, 1);
+        assert_eq!(stats.cashu_paid_sat, 77);
     }
 }
