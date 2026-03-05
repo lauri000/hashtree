@@ -145,6 +145,21 @@ export async function publishTreeRoot(treeName: string, rootCid: CID, cachedVisi
   if (visibility === 'link-visible') {
     const route = parseRoute();
     linkKey = route.params.get('k') ?? undefined;
+
+    // Fallback to stored key when the current URL omits ?k=
+    if (!linkKey && state.npub) {
+      const { getLinkKey, waitForLinkKeysCache } = await import('../stores/trees');
+      linkKey = getLinkKey(state.npub, treeName) ?? undefined;
+      if (!linkKey) {
+        await waitForLinkKeysCache().catch(() => {});
+        linkKey = getLinkKey(state.npub, treeName) ?? undefined;
+      }
+    }
+
+    if (!linkKey) {
+      console.warn('[nostr] Missing link key for link-visible publish', { treeName, npub: state.npub });
+      return false;
+    }
   }
 
   const result = await saveHashtree(treeName, rootCid, {

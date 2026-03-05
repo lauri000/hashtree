@@ -37,9 +37,28 @@ export async function initializePublishFn(): Promise<void> {
     let linkKey: Uint8Array | undefined;
     if (record.visibility === 'link-visible') {
       const route = parseRoute();
-      const urlLinkKey = route.params.get('k');
-      if (urlLinkKey) {
-        linkKey = hexToBytes(urlLinkKey);
+      let linkKeyHex = route.params.get('k') ?? undefined;
+
+      // Fallback to locally stored link keys when URL does not include ?k=
+      if (!linkKeyHex && state.npub) {
+        const { getLinkKey, waitForLinkKeysCache } = await import('./stores/trees');
+        linkKeyHex = getLinkKey(state.npub, treeName) ?? undefined;
+        if (!linkKeyHex) {
+          await waitForLinkKeysCache().catch(() => {});
+          linkKeyHex = getLinkKey(state.npub, treeName) ?? undefined;
+        }
+      }
+
+      if (linkKeyHex) {
+        linkKey = hexToBytes(linkKeyHex);
+      } else {
+        // Do not publish a link-visible update without a stable link key.
+        // Publishing without linkKey can rotate keys and break existing shared links.
+        console.warn('[treeRootCache] Missing link key for link-visible publish', {
+          treeName,
+          npub: state.npub,
+        });
+        return false;
       }
     }
 

@@ -47,6 +47,23 @@ function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+async function killProcessesOnPort(port: number): Promise<void> {
+  const killBySignal = (signal: 'TERM' | 'KILL') => {
+    try {
+      execSync(
+        `for pid in $(lsof -ti tcp:${port}); do kill -s ${signal} "$pid" 2>/dev/null || true; done`,
+        { stdio: 'ignore', shell: '/bin/bash' }
+      );
+    } catch {
+      // lsof exits non-zero when no process is listening on the port.
+    }
+  };
+
+  killBySignal('TERM');
+  await new Promise(resolve => setTimeout(resolve, 300));
+  killBySignal('KILL');
+}
+
 test.describe('hashtreeRs WebRTC Connection', () => {
   test.skip(!hashtreeRsAvailable, 'rust toolchain or Rust toolchain not available');
   test.setTimeout(420000);
@@ -55,6 +72,7 @@ test.describe('hashtreeRs WebRTC Connection', () => {
     ensureHtreeBinary();
     const localRelay = getTestRelayUrl();
     const crosslangPort = getCrosslangPort(testInfo.workerIndex);
+    await killProcessesOnPort(crosslangPort);
 
     setupPageErrorHandler(page);
     await page.goto('/');
@@ -257,6 +275,7 @@ test.describe('hashtreeRs WebRTC Connection', () => {
         await new Promise(r => setTimeout(r, 500));
         hashtreeRsProcess.kill('SIGKILL');
       }
+      await killProcessesOnPort(crosslangPort);
       if (lockFd !== null) {
         releaseRustLock(lockFd);
       }

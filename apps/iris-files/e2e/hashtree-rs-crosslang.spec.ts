@@ -56,6 +56,45 @@ function generateUuid(): string {
     Math.random().toString(36).substring(2, 15);
 }
 
+async function killProcessesOnPort(port: number): Promise<void> {
+  const killBySignal = (signal: 'TERM' | 'KILL') => {
+    try {
+      execSync(
+        `for pid in $(lsof -ti tcp:${port}); do kill -s ${signal} "$pid" 2>/dev/null || true; done`,
+        { stdio: 'ignore', shell: '/bin/bash' }
+      );
+    } catch {
+      // lsof exits non-zero when nothing is listening.
+    }
+  };
+
+  killBySignal('TERM');
+  await new Promise(resolve => setTimeout(resolve, 300));
+  killBySignal('KILL');
+}
+
+async function stopProcess(proc: ChildProcess | null, graceMs = 4000): Promise<void> {
+  if (!proc || proc.exitCode !== null || proc.killed) return;
+
+  const exited = new Promise<void>((resolve) => {
+    proc.once('exit', () => resolve());
+  });
+
+  proc.kill('SIGTERM');
+  await Promise.race([
+    exited,
+    new Promise<void>((resolve) => setTimeout(resolve, graceMs)),
+  ]);
+
+  if (proc.exitCode === null) {
+    proc.kill('SIGKILL');
+    await Promise.race([
+      exited,
+      new Promise<void>((resolve) => setTimeout(resolve, 1000)),
+    ]);
+  }
+}
+
 async function publishWithRetry(
   pool: SimplePool,
   relayUrl: string,
@@ -117,6 +156,7 @@ test.describe('rust Cross-Language', () => {
     ensureHtreeBinary();
     localRelay = relayUrl;
     crosslangPort = getCrosslangPort(testInfo.workerIndex);
+    await killProcessesOnPort(crosslangPort);
     lockFd = await acquireRustLock(240000);
     try {
       rsPeerProcess = spawn(
@@ -215,11 +255,15 @@ test.describe('rust Cross-Language', () => {
 
   test.afterAll(async () => {
     if (rsPeerProcess) {
-      rsPeerProcess.kill();
+      await stopProcess(rsPeerProcess);
       rsPeerProcess = null;
+    }
+    if (crosslangPort > 0) {
+      await killProcessesOnPort(crosslangPort);
     }
     if (lockFd !== null) {
       releaseRustLock(lockFd);
+      lockFd = null;
     }
   });
 

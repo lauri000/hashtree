@@ -42,6 +42,45 @@ function generateKeypair() {
   return { secretKey, pubkeyHex, nsec, npub };
 }
 
+async function stopProcess(proc: ChildProcess | null, graceMs = 4000): Promise<void> {
+  if (!proc || proc.exitCode !== null || proc.killed) return;
+
+  const exited = new Promise<void>((resolve) => {
+    proc.once('exit', () => resolve());
+  });
+
+  proc.kill('SIGTERM');
+  await Promise.race([
+    exited,
+    new Promise<void>((resolve) => setTimeout(resolve, graceMs)),
+  ]);
+
+  if (proc.exitCode === null) {
+    proc.kill('SIGKILL');
+    await Promise.race([
+      exited,
+      new Promise<void>((resolve) => setTimeout(resolve, 1000)),
+    ]);
+  }
+}
+
+async function killProcessesOnPort(port: number): Promise<void> {
+  const killBySignal = (signal: 'TERM' | 'KILL') => {
+    try {
+      execSync(
+        `for pid in $(lsof -ti tcp:${port}); do kill -s ${signal} "$pid" 2>/dev/null || true; done`,
+        { stdio: 'ignore', shell: '/bin/bash' }
+      );
+    } catch {
+      // lsof exits non-zero when nothing is listening.
+    }
+  };
+
+  killBySignal('TERM');
+  await new Promise(resolve => setTimeout(resolve, 300));
+  killBySignal('KILL');
+}
+
 // Check if cargo is available
 function hasRustToolchain(): boolean {
   try {
@@ -104,6 +143,7 @@ test.describe('Cross-Language Sync', () => {
     setupPageErrorHandler(page);
     const localRelay = getTestRelayUrl();
     const crosslangPort = getCrosslangPort(testInfo.workerIndex);
+    await killProcessesOnPort(crosslangPort);
 
     // Set up console logging early to capture relay/worker messages
     page.on('console', msg => {
@@ -347,8 +387,9 @@ test.describe('Cross-Language Sync', () => {
 
     } finally {
       if (rustProcess) {
-        rustProcess.kill();
+        await stopProcess(rustProcess);
       }
+      await killProcessesOnPort(crosslangPort);
       if (lockFd !== null) {
         releaseRustLock(lockFd);
       }
