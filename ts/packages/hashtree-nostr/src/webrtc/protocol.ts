@@ -81,6 +81,7 @@ export interface PendingRequest {
   hash: Uint8Array;
   resolve: (data: Uint8Array | null) => void;
   timeout: ReturnType<typeof setTimeout>;
+  startedAt?: number;
 }
 
 /**

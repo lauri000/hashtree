@@ -230,6 +230,44 @@ export interface PoolConfig {
   satisfiedConnections: number;
 }
 
+// Peer selection strategy for retrieval routing
+export type SelectionStrategy =
+  | 'weighted'
+  | 'roundRobin'
+  | 'random'
+  | 'lowestLatency'
+  | 'highestSuccessRate'
+  | 'titForTat'
+  | 'utilityUcb';
+
+// Hedged request dispatch policy
+export interface RequestDispatchConfig {
+  initialFanout: number;
+  hedgeFanout: number;
+  maxFanout: number;
+  hedgeIntervalMs: number;
+}
+
+export const PEER_METADATA_SNAPSHOT_VERSION = 1;
+
+export interface PersistedPeerMetadata {
+  principal: string;
+  requestsSent: number;
+  successes: number;
+  timeouts: number;
+  failures: number;
+  srttMs: number;
+  rttvarMs: number;
+  rtoMs: number;
+  bytesReceived: number;
+  bytesSent: number;
+}
+
+export interface PeerMetadataSnapshot {
+  version: number;
+  peers: PersistedPeerMetadata[];
+}
+
 // Configuration
 export interface WebRTCStoreConfig {
   signer: EventSigner;            // NIP-07 compatible signer
@@ -263,6 +301,12 @@ export interface WebRTCStoreConfig {
   // Function to check if a peer is blocked (by pubkey)
   // Blocked peers won't be connected to
   isPeerBlocked?: (pubkey: string) => boolean;
+  // Retrieval peer-selection strategy
+  requestSelectionStrategy?: SelectionStrategy;
+  // Whether fairness constraints are enabled in peer selector
+  requestFairnessEnabled?: boolean;
+  // Hedged dispatch fanout policy for peer retrieval
+  requestDispatch?: RequestDispatchConfig;
 }
 
 export interface PeerStatus {

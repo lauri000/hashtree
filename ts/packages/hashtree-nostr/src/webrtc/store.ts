@@ -16,7 +16,7 @@
  */
 import { SimplePool, type Event, verifyEvent } from 'nostr-tools';
 import type { Store, Hash } from '@hashtree/core';
-import { toHex } from '@hashtree/core';
+import { fromHex, sha256, toHex } from '@hashtree/core';
 import {
   PeerId,
   generateUuid,
@@ -36,12 +36,21 @@ import {
   type PeerPool,
   type PeerClassifier,
   type PoolConfig,
+  type SelectionStrategy,
+  type RequestDispatchConfig,
+  type PeerMetadataSnapshot,
   type WebRTCStats,
   type MeshNostrFrame,
   validateMeshNostrFrame,
   MESH_EVENT_POLICY,
 } from './types.js';
 import { decrementHTLWithPolicy, shouldForwardHTL } from './protocol.js';
+import {
+  PeerSelector,
+  buildHedgedWavePlan,
+  normalizeDispatchConfig,
+  syncSelectorPeers,
+} from './peerSelector.js';
 import { Peer } from './peer.js';
 
 export const DEFAULT_RELAYS = [
@@ -62,6 +71,14 @@ const SEEN_FRAME_CAP = 4096;
 const SEEN_FRAME_TTL_MS = 120_000;
 const SEEN_EVENT_CAP = 8192;
 const SEEN_EVENT_TTL_MS = 600_000;
+const PEER_METADATA_POINTER_SLOT_KEY = 'hashtree-webrtc/peer-metadata/latest/v1';
+
+const DEFAULT_REQUEST_DISPATCH: RequestDispatchConfig = {
+  initialFanout: 2,
+  hedgeFanout: 1,
+  maxFanout: 8,
+  hedgeIntervalMs: 120,
+};
 
 
 // Pending request with callbacks
@@ -77,6 +94,12 @@ interface PeerInfo {
   pool: PeerPool;
 }
 
+interface InFlightPeerRequest {
+  peerId: string;
+  settled: boolean;
+  promise: Promise<{ peerId: string; data: Uint8Array | null; elapsedMs: number }>;
+}
+
 export class WebRTCStore implements Store {
   private config: {
     helloInterval: number;
@@ -88,6 +111,12 @@ export class WebRTCStore implements Store {
     fallbackStores: Store[];
     debug: boolean;
   };
+  private routing: {
+    selectionStrategy: SelectionStrategy;
+    fairnessEnabled: boolean;
+    dispatch: RequestDispatchConfig;
+  };
+  private readonly peerSelector: PeerSelector;
   private pools: { follows: PoolConfig; other: PoolConfig };
   private peerClassifier: PeerClassifier;
   private getFollowedPubkeys: (() => string[]) | null;
@@ -161,6 +190,24 @@ export class WebRTCStore implements Store {
       fallbackStores: config.fallbackStores ?? [],
       debug: config.debug ?? false,
     };
+
+    const dispatch = config.requestDispatch ?? (
+      config.peerQueryDelay !== undefined
+        ? {
+          initialFanout: 1,
+          hedgeFanout: 1,
+          maxFanout: Number.MAX_SAFE_INTEGER,
+          hedgeIntervalMs: Math.max(0, config.peerQueryDelay),
+        }
+        : DEFAULT_REQUEST_DISPATCH
+    );
+    this.routing = {
+      selectionStrategy: config.requestSelectionStrategy ?? 'titForTat',
+      fairnessEnabled: config.requestFairnessEnabled ?? true,
+      dispatch,
+    };
+    this.peerSelector = PeerSelector.withStrategy(this.routing.selectionStrategy);
+    this.peerSelector.setFairness(this.routing.fairnessEnabled);
 
     this.pool = new SimplePool();
   }
@@ -276,7 +323,8 @@ export class WebRTCStore implements Store {
     this.subscriptions = [];
 
     // Close all peer connections
-    for (const { peer } of this.peers.values()) {
+    for (const [peerId, { peer }] of this.peers.entries()) {
+      this.peerSelector.removePeer(peerId);
       peer.close();
     }
     this.peers.clear();
@@ -302,7 +350,8 @@ export class WebRTCStore implements Store {
       this.subscriptions = [];
 
       // Clear existing peers (they were discovered via old relays)
-      for (const { peer } of this.peers.values()) {
+      for (const [peerId, { peer }] of this.peers.entries()) {
+        this.peerSelector.removePeer(peerId);
         peer.close();
       }
       this.peers.clear();
@@ -599,6 +648,7 @@ export class WebRTCStore implements Store {
     // Clean up existing connection if any
     const existing = this.peers.get(peerIdStr);
     if (existing) {
+      this.peerSelector.removePeer(peerIdStr);
       existing.peer.close();
       this.peers.delete(peerIdStr);
     }
@@ -623,6 +673,7 @@ export class WebRTCStore implements Store {
     });
 
     this.peers.set(peerIdStr, { peer, pool });
+    this.peerSelector.addPeer(peerIdStr);
     // Clear pending now that peer is in the map
     this.pendingOtherPubkeys.delete(peerId.pubkey);
     await peer.handleSignaling(msg);
@@ -657,61 +708,150 @@ export class WebRTCStore implements Store {
     });
 
     this.peers.set(peerIdStr, { peer, pool });
+    this.peerSelector.addPeer(peerIdStr);
     await peer.connect();
   }
 
   private handlePeerClose(peerIdStr: string): void {
+    this.peerSelector.removePeer(peerIdStr);
     this.peers.delete(peerIdStr);
     this.emit({ type: 'peer-disconnected', peerId: peerIdStr });
     this.emit({ type: 'update' });
   }
 
-  /**
-   * Forward a request to other peers (excluding the requester)
-   * Called by Peer when it receives a request it can't fulfill locally
-   * Uses sequential queries with delays between attempts
-   * @param htl - Hops To Live (already decremented by calling peer)
-   */
-  private async forwardRequest(hash: Uint8Array, excludePeerId: string, htl: number): Promise<Uint8Array | null> {
-    // Try all connected peers except the one who requested
-    const otherPeers = Array.from(this.peers.values())
-      .filter(({ peer }) => peer.isConnected && peer.peerId !== excludePeerId);
+  private orderedConnectedPeers(excludePeerId?: string): Peer[] {
+    const connectedAll = Array.from(this.peers.values())
+      .filter(({ peer }) => peer.isConnected);
+    if (connectedAll.length === 0) return [];
 
-    // Sort: follows first
-    otherPeers.sort((a, b) => {
+    const currentPeerIds = connectedAll.map(({ peer }) => peer.peerId);
+    syncSelectorPeers(this.peerSelector, currentPeerIds);
+
+    const connected = connectedAll
+      .filter(({ peer }) => !excludePeerId || peer.peerId !== excludePeerId);
+    const order = this.peerSelector.selectPeers();
+    const rank = new Map<string, number>(order.map((peerId, idx) => [peerId, idx]));
+
+    connected.sort((a, b) => {
       if (a.pool === 'follows' && b.pool !== 'follows') return -1;
       if (a.pool !== 'follows' && b.pool === 'follows') return 1;
-      return 0;
+      return (rank.get(a.peer.peerId) ?? Number.MAX_SAFE_INTEGER) -
+        (rank.get(b.peer.peerId) ?? Number.MAX_SAFE_INTEGER);
     });
 
-    // Query peers sequentially with delay between attempts
-    for (let i = 0; i < otherPeers.length; i++) {
-      const { peer } = otherPeers[i];
+    return connected.map(({ peer }) => peer);
+  }
 
-      // Start request to this peer with the decremented HTL
-      const requestPromise = peer.request(hash, htl);
+  private createInFlightPeerRequest(peer: Peer, hash: Hash, htl?: number): InFlightPeerRequest {
+    const startedAt = Date.now();
+    this.peerSelector.recordRequest(peer.peerId, 40);
+    const promise = peer.request(hash, htl).then((data) => ({
+      peerId: peer.peerId,
+      data,
+      elapsedMs: Math.max(1, Date.now() - startedAt),
+    })).catch(() => ({
+      peerId: peer.peerId,
+      data: null,
+      elapsedMs: Math.max(1, Date.now() - startedAt),
+    }));
+    return { peerId: peer.peerId, settled: false, promise };
+  }
 
-      // Race between request completing and delay timeout
-      const result = await Promise.race([
-        requestPromise.then(data => ({ type: 'data' as const, data })),
-        this.delay(this.config.peerQueryDelay).then(() => ({ type: 'timeout' as const })),
-      ]);
+  private async waitForNextPeerResult(
+    inFlight: InFlightPeerRequest[],
+    waitMs: number,
+  ): Promise<{ task: InFlightPeerRequest; data: Uint8Array | null; elapsedMs: number } | null> {
+    const active = inFlight.filter((task) => !task.settled);
+    if (active.length === 0 || waitMs <= 0) return null;
+    const timeout = this.delay(waitMs).then(() => null);
+    const outcome = await Promise.race([
+      timeout,
+      ...active.map((task) => task.promise.then((result) => ({
+        task,
+        data: result.data,
+        elapsedMs: result.elapsedMs,
+      }))),
+    ]);
+    if (!outcome) return null;
+    outcome.task.settled = true;
+    return outcome;
+  }
 
-      if (result.type === 'data' && result.data) {
-        // Got data from this peer
+  private async queryPeersWithDispatch(
+    hash: Hash,
+    orderedPeers: Peer[],
+    triedPeers: Set<string>,
+    htl?: number,
+  ): Promise<Uint8Array | null> {
+    if (orderedPeers.length === 0) return null;
+
+    const dispatch = normalizeDispatchConfig(this.routing.dispatch, orderedPeers.length);
+    const wavePlan = buildHedgedWavePlan(orderedPeers.length, dispatch);
+    if (wavePlan.length === 0) return null;
+
+    const deadline = Date.now() + this.config.requestTimeout;
+    const inFlight: InFlightPeerRequest[] = [];
+    let nextPeerIdx = 0;
+    const expectedHashHex = toHex(hash);
+
+    for (let waveIdx = 0; waveIdx < wavePlan.length; waveIdx++) {
+      const waveSize = wavePlan[waveIdx];
+      const from = nextPeerIdx;
+      const to = Math.min(from + waveSize, orderedPeers.length);
+      nextPeerIdx = to;
+
+      for (const peer of orderedPeers.slice(from, to)) {
+        triedPeers.add(peer.peerId);
+        inFlight.push(this.createInFlightPeerRequest(peer, hash, htl));
+      }
+
+      const isLastWave = waveIdx === wavePlan.length - 1 || nextPeerIdx >= orderedPeers.length;
+      const windowEnd = isLastWave
+        ? deadline
+        : Math.min(deadline, Date.now() + dispatch.hedgeIntervalMs);
+
+      while (Date.now() < windowEnd) {
+        const remaining = windowEnd - Date.now();
+        const result = await this.waitForNextPeerResult(inFlight, remaining);
+        if (!result) break;
+
+        if (!result.data) {
+          this.peerSelector.recordTimeout(result.task.peerId);
+          continue;
+        }
+
+        const computedHash = await sha256(result.data);
+        if (toHex(computedHash) !== expectedHashHex) {
+          this.peerSelector.recordFailure(result.task.peerId);
+          continue;
+        }
+
+        this.peerSelector.recordSuccess(result.task.peerId, result.elapsedMs, result.data.length);
         if (this.config.localStore) {
           await this.config.localStore.put(hash, result.data);
         }
         return result.data;
       }
 
-      // If timeout, continue to next peer
-      if (result.type === 'timeout') {
-        this.log('Forward: peer', peer.peerId.slice(0, 12), 'timeout, trying next');
-      }
+      if (Date.now() >= deadline) break;
     }
 
+    for (const task of inFlight) {
+      if (!task.settled) this.peerSelector.recordTimeout(task.peerId);
+    }
     return null;
+  }
+
+  /**
+   * Forward a request to other peers (excluding the requester)
+   * Called by Peer when it receives a request it can't fulfill locally
+   * Uses selector ordering + staged hedged dispatch
+   * @param htl - Hops To Live (already decremented by calling peer)
+   */
+  private async forwardRequest(hash: Uint8Array, excludePeerId: string, htl: number): Promise<Uint8Array | null> {
+    const triedPeers = new Set<string>();
+    const orderedPeers = this.orderedConnectedPeers(excludePeerId);
+    return this.queryPeersWithDispatch(hash, orderedPeers, triedPeers, htl);
   }
 
   /**
@@ -914,6 +1054,7 @@ export class WebRTCStore implements Store {
       if (state === 'failed' || state === 'closed' || state === 'disconnected' || isStale) {
         this.log('Cleaning up', state, 'connection', isStale ? '(stale)' : '');
         peer.close();
+        this.peerSelector.removePeer(peerIdStr);
         this.peers.delete(peerIdStr);
         this.emit({ type: 'update' });
       }
@@ -953,6 +1094,7 @@ export class WebRTCStore implements Store {
       if (peerInfo.peer.pubkey === pubkey) {
         this.log('Disconnecting blocked peer:', pubkey.slice(0, 8));
         peerInfo.peer.close();
+        this.peerSelector.removePeer(peerIdStr);
         this.peers.delete(peerIdStr);
         this.emit({ type: 'peer-disconnected', peerId: peerIdStr });
       }
@@ -1026,6 +1168,58 @@ export class WebRTCStore implements Store {
    */
   getPoolConfig(): { follows: PoolConfig; other: PoolConfig } {
     return { ...this.pools };
+  }
+
+  private async peerMetadataPointerHash(): Promise<Hash> {
+    return sha256(new TextEncoder().encode(PEER_METADATA_POINTER_SLOT_KEY));
+  }
+
+  /**
+   * Persist selector metadata snapshot to local store.
+   * Returns the snapshot hash, or null when local storage is unavailable.
+   */
+  async persistPeerMetadata(): Promise<Uint8Array | null> {
+    if (!this.config.localStore) return null;
+
+    const snapshot = this.peerSelector.exportPeerMetadataSnapshot();
+    const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
+    const snapshotHash = await sha256(bytes);
+    await this.config.localStore.put(snapshotHash, bytes);
+
+    const pointerHash = await this.peerMetadataPointerHash();
+    await this.config.localStore.delete(pointerHash);
+    await this.config.localStore.put(pointerHash, new TextEncoder().encode(toHex(snapshotHash)));
+    return snapshotHash;
+  }
+
+  /**
+   * Load selector metadata snapshot from local store, if available.
+   */
+  async loadPeerMetadata(): Promise<boolean> {
+    if (!this.config.localStore) return false;
+
+    const pointerHash = await this.peerMetadataPointerHash();
+    const pointerBytes = await this.config.localStore.get(pointerHash);
+    if (!pointerBytes) return false;
+
+    const pointerHex = new TextDecoder().decode(pointerBytes).trim();
+    if (pointerHex.length !== 64) return false;
+    const snapshotHash = fromHex(pointerHex);
+    if (snapshotHash.length !== 32) return false;
+
+    const snapshotBytes = await this.config.localStore.get(snapshotHash);
+    if (!snapshotBytes) return false;
+
+    let snapshot: PeerMetadataSnapshot;
+    try {
+      snapshot = JSON.parse(new TextDecoder().decode(snapshotBytes)) as PeerMetadataSnapshot;
+    } catch {
+      return false;
+    }
+
+    this.peerSelector.importPeerMetadataSnapshot(snapshot);
+    syncSelectorPeers(this.peerSelector, Array.from(this.peers.keys()));
+    return true;
   }
 
   /**
@@ -1154,49 +1348,11 @@ export class WebRTCStore implements Store {
    * Internal method to fetch data from peers (separated for deduplication)
    */
   private async fetchFromPeers(hash: Hash): Promise<Uint8Array | null> {
-    // Get currently connected peers (prioritize follows pool)
     const triedPeers = new Set<string>();
-    const allPeers = Array.from(this.peers.values())
-      .filter(({ peer }) => peer.isConnected);
-
-    // Sort: follows first, then others
-    allPeers.sort((a, b) => {
-      if (a.pool === 'follows' && b.pool !== 'follows') return -1;
-      if (a.pool !== 'follows' && b.pool === 'follows') return 1;
-      return 0;
-    });
-
-    // Query peers sequentially with delay between attempts
-    for (let i = 0; i < allPeers.length; i++) {
-      const { peer } = allPeers[i];
-      triedPeers.add(peer.peerId);
-
-      // Start request to this peer
-      const requestPromise = peer.request(hash);
-
-      // Race between request completing and delay timeout
-      // If request completes within delay, we're done
-      // If delay passes first, start next peer while still waiting
-      const result = await Promise.race([
-        requestPromise.then(data => ({ type: 'data' as const, data })),
-        this.delay(this.config.peerQueryDelay).then(() => ({ type: 'timeout' as const })),
-      ]);
-
-      if (result.type === 'data' && result.data) {
-        // Got data from this peer
-        if (this.config.localStore) {
-          await this.config.localStore.put(hash, result.data);
-        }
-        return result.data;
-      }
-
-      // If timeout, continue to next peer but also await the original request
-      // in case it eventually returns data
-      if (result.type === 'timeout') {
-        // Fire-and-forget: if this peer eventually responds, we'll miss it
-        // but that's fine - we're trying the next peer
-        this.log('Peer', peer.peerId.slice(0, 12), 'timeout after', this.config.peerQueryDelay, 'ms, trying next');
-      }
+    const orderedPeers = this.orderedConnectedPeers();
+    const webRtcData = await this.queryPeersWithDispatch(hash, orderedPeers, triedPeers);
+    if (webRtcData) {
+      return webRtcData;
     }
 
     // All WebRTC peers failed - try fallback stores in order
@@ -1272,10 +1428,8 @@ export class WebRTCStore implements Store {
     const reqs = this.pendingReqs.get(hash);
     if (!reqs || reqs.length === 0) return;
 
-    // Get all connected peers
-    const connectedPeers = Array.from(this.peers.values())
-      .filter(({ peer }) => peer.isConnected)
-      .map(({ peer }) => peer);
+    const connectedPeers = this.orderedConnectedPeers();
+    const expectedHashHex = toHex(hash);
 
     for (const peer of connectedPeers) {
       const peerIdStr = peer.peerId;
@@ -1291,8 +1445,16 @@ export class WebRTCStore implements Store {
 
       this.log('Trying pending req from connected peer:', hash.slice(0, 16));
 
+      const startedAt = Date.now();
+      this.peerSelector.recordRequest(peerIdStr, 40);
       const data = await peer.request(hash);
       if (data) {
+        const computedHash = await sha256(data);
+        if (toHex(computedHash) !== expectedHashHex) {
+          this.peerSelector.recordFailure(peerIdStr);
+          continue;
+        }
+        this.peerSelector.recordSuccess(peerIdStr, Math.max(1, Date.now() - startedAt), data.length);
         // Store locally
         if (this.config.localStore) {
           await this.config.localStore.put(hash, data);
@@ -1311,6 +1473,8 @@ export class WebRTCStore implements Store {
         this.log('Resolved pending req:', hash.slice(0, 16));
         return;
       }
+
+      this.peerSelector.recordTimeout(peerIdStr);
     }
   }
 
@@ -1335,8 +1499,11 @@ export class WebRTCStore implements Store {
    */
   private async tryPendingReqs(peer: Peer): Promise<void> {
     const peerIdStr = peer.peerId;
+    const expectedByHash = new Map<string, string>();
 
     for (const [hash, reqs] of this.pendingReqs.entries()) {
+      const hashKey = toHex(hash);
+      expectedByHash.set(hashKey, hashKey);
       // Find requests that haven't tried this peer yet
       const untried = reqs.filter(r => !r.triedPeers.has(peerIdStr));
       if (untried.length === 0) continue;
@@ -1347,8 +1514,17 @@ export class WebRTCStore implements Store {
       }
 
 
+      const startedAt = Date.now();
+      this.peerSelector.recordRequest(peerIdStr, 40);
       const data = await peer.request(hash);
       if (data) {
+        const computedHash = await sha256(data);
+        const expectedHashHex = expectedByHash.get(hashKey)!;
+        if (toHex(computedHash) !== expectedHashHex) {
+          this.peerSelector.recordFailure(peerIdStr);
+          continue;
+        }
+        this.peerSelector.recordSuccess(peerIdStr, Math.max(1, Date.now() - startedAt), data.length);
         // Store locally
         if (this.config.localStore) {
           await this.config.localStore.put(hash, data);
@@ -1362,6 +1538,8 @@ export class WebRTCStore implements Store {
         this.pendingReqs.delete(hash);
 
         this.log('Resolved pending req:', hash.slice(0, 16));
+      } else {
+        this.peerSelector.recordTimeout(peerIdStr);
       }
     }
   }

@@ -1,6 +1,13 @@
 export { WebRTCStore, DEFAULT_RELAYS } from './store.js';
 export { Peer } from './peer.js';
 export {
+  PeerSelector,
+  peerPrincipal,
+  normalizeDispatchConfig,
+  buildHedgedWavePlan,
+  syncSelectorPeers,
+} from './peerSelector.js';
+export {
   PeerId,
   generateUuid,
   WEBRTC_KIND,
@@ -13,6 +20,7 @@ export {
   MESH_PROTOCOL_VERSION,
   MESH_DEFAULT_HTL,
   MESH_MAX_HTL,
+  PEER_METADATA_SNAPSHOT_VERSION,
   MSG_TYPE_REQUEST,
   MSG_TYPE_RESPONSE,
   FRAGMENT_SIZE,
@@ -35,6 +43,10 @@ export {
   type PeerPool,
   type PeerClassifier,
   type PoolConfig,
+  type SelectionStrategy,
+  type RequestDispatchConfig,
+  type PersistedPeerMetadata,
+  type PeerMetadataSnapshot,
   type WebRTCStats,
   type BandwidthSample,
   type DataRequest,

@@ -117,13 +117,25 @@ const store = new WebRTCStore({
   decrypt,
   localStore,       // Fallback store
   relays: ['wss://relay.example.com'],
+  requestSelectionStrategy: 'titForTat',
+  requestFairnessEnabled: true,
+  requestDispatch: {
+    initialFanout: 2,
+    hedgeFanout: 1,
+    maxFanout: 8,
+    hedgeIntervalMs: 120,
+  },
 });
 
 await store.start();
+await store.loadPeerMetadata(); // optional: warm-start selector metadata
 const data = await store.get(hash);  // Fetches from peers
+await store.persistPeerMetadata(); // optional: save selector metadata
 ```
 
 Falls back to Blossom servers when data isn't found on peers or WebRTC isn't available.
+If `requestDispatch` is omitted but `peerQueryDelay` is set, legacy staged probing
+is preserved (`1 + 1` fanout with `peerQueryDelay` hedge interval).
 
 **Data channel protocol**: Just 2 message types, MessagePack-encoded with a type prefix byte:
 

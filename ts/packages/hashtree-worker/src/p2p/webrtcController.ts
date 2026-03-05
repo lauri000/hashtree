@@ -16,6 +16,7 @@
  */
 
 import type { Store } from '@hashtree/core';
+import { fromHex, sha256, toHex } from '@hashtree/core';
 import type { WebRTCCommand, WebRTCEvent } from './protocol.js';
 import {
   MAX_HTL,
@@ -41,9 +42,23 @@ import {
   type DataResponse,
   type PeerHTLConfig,
   type PendingRequest,
+  type SelectionStrategy,
+  type RequestDispatchConfig,
+  PeerSelector,
+  buildHedgedWavePlan,
+  normalizeDispatchConfig,
+  syncSelectorPeers,
 } from '@hashtree/nostr';
 import { LRUCache } from './lruCache.js';
 import { QueryForwardingMachine } from './queryForwardingMachine.js';
+
+const PEER_METADATA_POINTER_SLOT_KEY = 'hashtree-webrtc/peer-metadata/latest/v1';
+const DEFAULT_REQUEST_DISPATCH: RequestDispatchConfig = {
+  initialFanout: 2,
+  hedgeFanout: 1,
+  maxFanout: 8,
+  hedgeIntervalMs: 120,
+};
 
 // ============================================================================
 // Types
@@ -80,6 +95,12 @@ interface PeerStats {
   forwardedSuppressed: number;
 }
 
+interface InFlightPeerRequest {
+  peerId: string;
+  settled: boolean;
+  promise: Promise<{ peerId: string; data: Uint8Array | null; elapsedMs: number }>;
+}
+
 export interface WebRTCControllerConfig {
   pubkey: string;
   localStore: Store;
@@ -91,6 +112,9 @@ export interface WebRTCControllerConfig {
     maxForwardsPerPeerWindow?: number;
     windowMs?: number;
   };
+  requestSelectionStrategy?: SelectionStrategy;
+  requestFairnessEnabled?: boolean;
+  requestDispatch?: RequestDispatchConfig;
   debug?: boolean;
 }
 
@@ -112,6 +136,12 @@ export class WebRTCController {
   private debug: boolean;
   private recentRequests = new LRUCache<string, number>(1000);
   private forwardingMachine: QueryForwardingMachine;
+  private readonly peerSelector: PeerSelector;
+  private routing: {
+    selectionStrategy: SelectionStrategy;
+    fairnessEnabled: boolean;
+    dispatch: RequestDispatchConfig;
+  };
 
   // Pool configuration - reasonable defaults, settings sync will override
   private poolConfig: Record<PeerPool, PoolConnectionConfig> = {
@@ -130,6 +160,13 @@ export class WebRTCController {
     this.sendSignaling = config.sendSignaling;
     this.requestTimeout = config.requestTimeout ?? 1000;
     this.debug = config.debug ?? false;
+    this.routing = {
+      selectionStrategy: config.requestSelectionStrategy ?? 'titForTat',
+      fairnessEnabled: config.requestFairnessEnabled ?? true,
+      dispatch: config.requestDispatch ?? DEFAULT_REQUEST_DISPATCH,
+    };
+    this.peerSelector = PeerSelector.withStrategy(this.routing.selectionStrategy);
+    this.peerSelector.setFairness(this.routing.fairnessEnabled);
     this.forwardingMachine = new QueryForwardingMachine({
       requestTimeoutMs: this.requestTimeout,
       maxForwardsPerPeerWindow: config.forwardRateLimit?.maxForwardsPerPeerWindow,
@@ -412,6 +449,7 @@ export class WebRTCController {
     };
 
     this.peers.set(peerId, peer);
+    this.peerSelector.addPeer(peerId);
     this.sendCommand({ type: 'rtc:createPeer', peerId, pubkey });
 
     return peer;
@@ -435,6 +473,7 @@ export class WebRTCController {
     peer.state = 'disconnected';
     this.sendCommand({ type: 'rtc:closePeer', peerId });
     this.peers.delete(peerId);
+    this.peerSelector.removePeer(peerId);
     this.forwardingMachine.removePeer(peerId);
 
     this.log(`Closed peer: ${peerId.slice(0, 20)}`);
@@ -529,6 +568,7 @@ export class WebRTCController {
 
   private onPeerClosed(peerId: string): void {
     this.peers.delete(peerId);
+    this.peerSelector.removePeer(peerId);
   }
 
   private onOfferCreated(peerId: string, sdp: RTCSessionDescriptionInit): void {
@@ -651,6 +691,142 @@ export class WebRTCController {
       const req = peer.deferredRequests.shift()!;
       await this.processRequest(peer, req);
     }
+  }
+
+  private orderedConnectedPeers(excludePeerId?: string): WorkerPeer[] {
+    const connectedAll = Array.from(this.peers.values())
+      .filter((peer) => peer.dataChannelReady);
+    if (connectedAll.length === 0) return [];
+
+    const peerIds = connectedAll.map((peer) => peer.peerId);
+    syncSelectorPeers(this.peerSelector, peerIds);
+
+    const connectedPeers = connectedAll
+      .filter((peer) => !excludePeerId || peer.peerId !== excludePeerId);
+    const selectorOrder = this.peerSelector.selectPeers();
+    const rank = new Map<string, number>(selectorOrder.map((peerId, idx) => [peerId, idx]));
+
+    connectedPeers.sort((a, b) => {
+      if (a.pool === 'follows' && b.pool !== 'follows') return -1;
+      if (a.pool !== 'follows' && b.pool === 'follows') return 1;
+      return (rank.get(a.peerId) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.peerId) ?? Number.MAX_SAFE_INTEGER);
+    });
+
+    return connectedPeers;
+  }
+
+  private async peerMetadataPointerHash(): Promise<Uint8Array> {
+    return sha256(new TextEncoder().encode(PEER_METADATA_POINTER_SLOT_KEY));
+  }
+
+  private createInFlightRequest(peer: WorkerPeer, hash: Uint8Array, htl: number): InFlightPeerRequest {
+    const hashKey = hashToKey(hash);
+    const startedAt = Date.now();
+    this.peerSelector.recordRequest(peer.peerId, 40);
+
+    const promise = new Promise<{ peerId: string; data: Uint8Array | null; elapsedMs: number }>((resolve) => {
+      const timeout = setTimeout(() => {
+        peer.pendingRequests.delete(hashKey);
+        this.peerSelector.recordTimeout(peer.peerId);
+        resolve({ peerId: peer.peerId, data: null, elapsedMs: Math.max(1, Date.now() - startedAt) });
+      }, this.requestTimeout);
+
+      peer.pendingRequests.set(hashKey, {
+        hash,
+        startedAt,
+        resolve: (data: Uint8Array | null) => {
+          resolve({ peerId: peer.peerId, data, elapsedMs: Math.max(1, Date.now() - startedAt) });
+        },
+        timeout,
+      });
+
+      peer.stats.requestsSent++;
+      const req = createRequest(hash, htl);
+      const encoded = new Uint8Array(encodeRequest(req));
+      this.sendDataToPeer(peer, encoded);
+    });
+
+    return {
+      peerId: peer.peerId,
+      settled: false,
+      promise,
+    };
+  }
+
+  private async waitForInFlightResult(
+    inFlight: InFlightPeerRequest[],
+    waitMs: number,
+  ): Promise<{ task: InFlightPeerRequest; data: Uint8Array | null; elapsedMs: number } | null> {
+    const active = inFlight.filter((task) => !task.settled);
+    if (active.length === 0 || waitMs <= 0) return null;
+    const timeout = new Promise<null>((resolve) => {
+      setTimeout(() => resolve(null), waitMs);
+    });
+    const outcome = await Promise.race([
+      timeout,
+      ...active.map((task) => task.promise.then((result) => ({
+        task,
+        data: result.data,
+        elapsedMs: result.elapsedMs,
+      }))),
+    ]);
+    if (!outcome) return null;
+    outcome.task.settled = true;
+    return outcome;
+  }
+
+  private clearPendingHashFromPeers(hashKey: string, keepPeerId?: string): void {
+    for (const peer of this.peers.values()) {
+      if (keepPeerId && peer.peerId === keepPeerId) continue;
+      const pending = peer.pendingRequests.get(hashKey);
+      if (!pending) continue;
+      clearTimeout(pending.timeout);
+      peer.pendingRequests.delete(hashKey);
+    }
+  }
+
+  /**
+   * Persist selector metadata snapshot to local store.
+   * Returns the snapshot hash.
+   */
+  async persistPeerMetadata(): Promise<Uint8Array | null> {
+    const snapshot = this.peerSelector.exportPeerMetadataSnapshot();
+    const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
+    const snapshotHash = await sha256(bytes);
+    await this.localStore.put(snapshotHash, bytes);
+
+    const pointerHash = await this.peerMetadataPointerHash();
+    await this.localStore.delete(pointerHash);
+    await this.localStore.put(pointerHash, new TextEncoder().encode(toHex(snapshotHash)));
+    return snapshotHash;
+  }
+
+  /**
+   * Load selector metadata snapshot from local store.
+   */
+  async loadPeerMetadata(): Promise<boolean> {
+    const pointerHash = await this.peerMetadataPointerHash();
+    const pointerBytes = await this.localStore.get(pointerHash);
+    if (!pointerBytes) return false;
+
+    const pointerHex = new TextDecoder().decode(pointerBytes).trim();
+    if (pointerHex.length !== 64) return false;
+    const snapshotHash = fromHex(pointerHex);
+    if (snapshotHash.length !== 32) return false;
+
+    const snapshotBytes = await this.localStore.get(snapshotHash);
+    if (!snapshotBytes) return false;
+
+    let snapshot: unknown;
+    try {
+      snapshot = JSON.parse(new TextDecoder().decode(snapshotBytes));
+    } catch {
+      return false;
+    }
+
+    this.peerSelector.importPeerMetadataSnapshot(snapshot as any);
+    syncSelectorPeers(this.peerSelector, Array.from(this.peers.keys()));
+    return true;
   }
 
   // ============================================================================
@@ -783,9 +959,11 @@ export class WebRTCController {
 
     // Verify hash
     const valid = await verifyHash(res.d, res.h);
+    const elapsedMs = pending.startedAt ? Math.max(1, Date.now() - pending.startedAt) : this.requestTimeout;
     if (valid) {
       // Store locally
       await this.localStore.put(res.h, res.d);
+      this.peerSelector.recordSuccess(peer.peerId, elapsedMs, res.d.length);
       pending.resolve(res.d);
 
       // Push to peers who requested this
@@ -793,6 +971,7 @@ export class WebRTCController {
       this.forwardingMachine.resolveForward(hashKey);
     } else {
       this.log(`Hash mismatch from ${peer.peerId}`);
+      this.peerSelector.recordFailure(peer.peerId);
       pending.resolve(null);
     }
   }
@@ -888,52 +1067,50 @@ export class WebRTCController {
    * Request data from peers
    */
   async get(hash: Uint8Array): Promise<Uint8Array | null> {
-    // Try connected peers
-    const connectedPeers = Array.from(this.peers.values())
-      .filter(p => p.dataChannelReady);
+    const orderedPeers = this.orderedConnectedPeers();
+    if (orderedPeers.length === 0) return null;
 
-    if (connectedPeers.length === 0) {
-      return null;
-    }
+    const dispatch = normalizeDispatchConfig(this.routing.dispatch, orderedPeers.length);
+    const wavePlan = buildHedgedWavePlan(orderedPeers.length, dispatch);
+    if (wavePlan.length === 0) return null;
 
-    // Send request to all peers, first response wins
-    return new Promise((resolve) => {
-      let resolved = false;
-      const hashKey = hashToKey(hash);
-      this.recentRequests.set(hashKey, Date.now());
+    const hashKey = hashToKey(hash);
+    this.recentRequests.set(hashKey, Date.now());
 
-      for (const peer of connectedPeers) {
-        const timeout = setTimeout(() => {
-          peer.pendingRequests.delete(hashKey);
-          checkDone();
-        }, this.requestTimeout);
+    const deadline = Date.now() + this.requestTimeout;
+    const inFlight: InFlightPeerRequest[] = [];
+    let nextPeerIdx = 0;
 
-        peer.pendingRequests.set(hashKey, {
-          hash,
-          resolve: (data: Uint8Array | null) => {
-            if (!resolved && data) {
-              resolved = true;
-              resolve(data);
-            }
-            checkDone();
-          },
-          timeout,
-        });
+    for (let waveIdx = 0; waveIdx < wavePlan.length; waveIdx++) {
+      const waveSize = wavePlan[waveIdx];
+      const from = nextPeerIdx;
+      const to = Math.min(from + waveSize, orderedPeers.length);
+      nextPeerIdx = to;
 
-        peer.stats.requestsSent++;
-        const req = createRequest(hash, MAX_HTL);
-        const encoded = new Uint8Array(encodeRequest(req));
-        this.sendDataToPeer(peer, encoded);
+      for (const peer of orderedPeers.slice(from, to)) {
+        inFlight.push(this.createInFlightRequest(peer, hash, MAX_HTL));
       }
 
-      let pending = connectedPeers.length;
-      const checkDone = () => {
-        pending--;
-        if (pending === 0 && !resolved) {
-          resolve(null);
-        }
-      };
-    });
+      const isLastWave = waveIdx === wavePlan.length - 1 || nextPeerIdx >= orderedPeers.length;
+      const windowEnd = isLastWave
+        ? deadline
+        : Math.min(deadline, Date.now() + dispatch.hedgeIntervalMs);
+
+      while (Date.now() < windowEnd) {
+        const remaining = windowEnd - Date.now();
+        const result = await this.waitForInFlightResult(inFlight, remaining);
+        if (!result) break;
+        if (!result.data) continue;
+
+        this.clearPendingHashFromPeers(hashKey, result.task.peerId);
+        return result.data;
+      }
+
+      if (Date.now() >= deadline) break;
+    }
+
+    this.clearPendingHashFromPeers(hashKey);
+    return null;
   }
 
   /**

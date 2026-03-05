@@ -22,10 +22,20 @@ const store = new WebRTCStore({
   decrypt,
   localStore,
   relays: ['wss://relay.example.com'],
+  requestSelectionStrategy: 'titForTat',
+  requestFairnessEnabled: true,
+  requestDispatch: {
+    initialFanout: 2,
+    hedgeFanout: 1,
+    maxFanout: 8,
+    hedgeIntervalMs: 120,
+  },
 });
 
 await store.start();
+await store.loadPeerMetadata(); // optional warm start
 const data = await store.get(hash);
+await store.persistPeerMetadata(); // optional shutdown/save step
 ```
 
 ## Nostr Ref Resolver
