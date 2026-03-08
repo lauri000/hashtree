@@ -182,6 +182,7 @@ pub mod test_relay {
     pub struct TestRelayOptions {
         pub reject_event_kinds: Vec<u64>,
         pub ignore_req_kinds: Vec<u64>,
+        pub respond_empty_req_kinds_once: Vec<u64>,
     }
 
     impl TestRelay {
@@ -199,6 +200,14 @@ pub mod test_relay {
                 Arc::new(options.reject_event_kinds.iter().copied().collect());
             let ignore_req_kinds: Arc<HashSet<u64>> =
                 Arc::new(options.ignore_req_kinds.iter().copied().collect());
+            let respond_empty_req_kinds_once: Arc<tokio::sync::Mutex<HashSet<u64>>> =
+                Arc::new(tokio::sync::Mutex::new(
+                    options
+                        .respond_empty_req_kinds_once
+                        .iter()
+                        .copied()
+                        .collect(),
+                ));
 
             let relay = TestRelay {
                 port,
@@ -211,6 +220,7 @@ pub mod test_relay {
             let mut shutdown_rx = shutdown.subscribe();
             let event_tx_clone = event_tx.clone();
             let ignore_req_kinds_clone = ignore_req_kinds.clone();
+            let respond_empty_req_kinds_once_clone = respond_empty_req_kinds_once.clone();
 
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Builder::new_multi_thread()
@@ -234,6 +244,8 @@ pub mod test_relay {
                                     let event_rx = event_tx_clone.subscribe();
                                     let reject_event_kinds = reject_event_kinds.clone();
                                     let ignore_req_kinds = ignore_req_kinds_clone.clone();
+                                    let respond_empty_req_kinds_once =
+                                        respond_empty_req_kinds_once_clone.clone();
                                     tokio::spawn(handle_connection(
                                         stream,
                                         events,
@@ -241,6 +253,7 @@ pub mod test_relay {
                                         event_rx,
                                         reject_event_kinds,
                                         ignore_req_kinds,
+                                        respond_empty_req_kinds_once,
                                     ));
                                 }
                             }
@@ -290,6 +303,7 @@ pub mod test_relay {
         mut event_rx: broadcast::Receiver<serde_json::Value>,
         reject_event_kinds: Arc<HashSet<u64>>,
         ignore_req_kinds: Arc<HashSet<u64>>,
+        respond_empty_req_kinds_once: Arc<tokio::sync::Mutex<HashSet<u64>>>,
     ) {
         let ws_stream = match accept_async(stream).await {
             Ok(s) => s,
@@ -481,6 +495,23 @@ pub mod test_relay {
                                 .any(|kind| ignore_req_kinds.contains(&kind))
                         });
                         if should_ignore_req {
+                            continue;
+                        }
+
+                        let req_kinds: Vec<u64> = filters
+                            .iter()
+                            .flat_map(|filter| {
+                                filter.kind.into_iter().chain(filter.kinds.iter().copied())
+                            })
+                            .collect();
+                        let should_respond_empty_once = {
+                            let mut remaining = respond_empty_req_kinds_once.lock().await;
+                            req_kinds.into_iter().any(|kind| remaining.remove(&kind))
+                        };
+                        if should_respond_empty_once {
+                            let eose = serde_json::json!(["EOSE", &sub_id]);
+                            let mut w = write.lock().await;
+                            let _ = w.send(Message::Text(eose.to_string())).await;
                             continue;
                         }
 

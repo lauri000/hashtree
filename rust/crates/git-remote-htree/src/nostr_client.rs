@@ -525,6 +525,13 @@ impl NostrClient {
         })
     }
 
+    fn format_repo_author(pubkey_hex: &str) -> String {
+        PublicKey::from_hex(pubkey_hex)
+            .ok()
+            .and_then(|pk| pk.to_bech32().ok())
+            .unwrap_or_else(|| pubkey_hex.to_string())
+    }
+
     /// Check if we can sign (have secret key for this pubkey)
     #[allow(dead_code)]
     pub fn can_sign(&self) -> bool {
@@ -728,50 +735,13 @@ impl NostrClient {
         // Connect to relays - this starts async connection
         client.connect().await;
 
-        // Wait for at least one relay to connect (quick timeout - break immediately when one connects)
-        // Use shorter connect timeout (2s max) since we only need 1 relay
         let connect_timeout = Duration::from_secs(2);
         let query_timeout = Duration::from_secs(timeout_secs.saturating_sub(2).max(3));
+        let local_daemon_timeout = Duration::from_secs(4);
+        let retry_delay = Duration::from_millis(300);
+        let max_attempts = 2;
 
         let start = std::time::Instant::now();
-        let mut last_log = std::time::Instant::now();
-        let mut has_connected_relay = false;
-        loop {
-            let relays = client.relays().await;
-            let total = relays.len();
-            let mut connected = 0;
-            for relay in relays.values() {
-                if relay.is_connected().await {
-                    connected += 1;
-                }
-            }
-            if connected > 0 {
-                debug!(
-                    "Connected to {}/{} relay(s) in {:?}",
-                    connected,
-                    total,
-                    start.elapsed()
-                );
-                has_connected_relay = true;
-                break;
-            }
-            // Log progress every 500ms so user knows something is happening
-            if last_log.elapsed() > Duration::from_millis(500) {
-                debug!(
-                    "Connecting to relays... (0/{} after {:?})",
-                    total,
-                    start.elapsed()
-                );
-                last_log = std::time::Instant::now();
-            }
-            if start.elapsed() > connect_timeout {
-                debug!(
-                    "Timeout waiting for relay connections - continuing with local-daemon fallback"
-                );
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
 
         // Build filter for kind 30078 events from this author with matching d-tag
         let author = PublicKey::from_hex(&self.pubkey)
@@ -789,63 +759,125 @@ impl NostrClient {
 
         debug!("Querying relays for repo {} events", repo_name);
 
-        // Query with relay-level timeout.
-        // Using `EventSource::relays(Some(...))` preserves partial results from responsive
-        // relays instead of discarding everything when one relay stalls.
-        let events = if has_connected_relay {
-            match client
-                .get_events_of(vec![filter], EventSource::relays(Some(query_timeout)))
+        let mut root_data = None;
+        for attempt in 1..=max_attempts {
+            // Wait for at least one relay to connect (quick timeout - break immediately when one
+            // connects). We retry once because relays and the local daemon can both lag briefly.
+            let connect_start = std::time::Instant::now();
+            let mut last_log = std::time::Instant::now();
+            let mut has_connected_relay = false;
+            loop {
+                let relays = client.relays().await;
+                let total = relays.len();
+                let mut connected = 0;
+                for relay in relays.values() {
+                    if relay.is_connected().await {
+                        connected += 1;
+                    }
+                }
+                if connected > 0 {
+                    debug!(
+                        "Connected to {}/{} relay(s) in {:?} (attempt {}/{})",
+                        connected,
+                        total,
+                        start.elapsed(),
+                        attempt,
+                        max_attempts
+                    );
+                    has_connected_relay = true;
+                    break;
+                }
+                if last_log.elapsed() > Duration::from_millis(500) {
+                    debug!(
+                        "Connecting to relays... (0/{} after {:?}, attempt {}/{})",
+                        total,
+                        start.elapsed(),
+                        attempt,
+                        max_attempts
+                    );
+                    last_log = std::time::Instant::now();
+                }
+                if connect_start.elapsed() > connect_timeout {
+                    debug!(
+                        "Timeout waiting for relay connections - continuing with local-daemon fallback"
+                    );
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+
+            // Query with relay-level timeout.
+            // Using `EventSource::relays(Some(...))` preserves partial results from responsive
+            // relays instead of discarding everything when one relay stalls.
+            let events = if has_connected_relay {
+                match client
+                    .get_events_of(
+                        vec![filter.clone()],
+                        EventSource::relays(Some(query_timeout)),
+                    )
+                    .await
+                {
+                    Ok(events) => events,
+                    Err(e) => {
+                        warn!("Failed to fetch events: {}", e);
+                        vec![]
+                    }
+                }
+            } else {
+                vec![]
+            };
+
+            debug!(
+                "Got {} events from relays on attempt {}/{}",
+                events.len(),
+                attempt,
+                max_attempts
+            );
+            let relay_event = pick_latest_event(events.iter().filter(|e| {
+                e.tags.iter().any(|t| {
+                    t.as_slice().len() >= 2
+                        && t.as_slice()[0].as_str() == "l"
+                        && t.as_slice()[1].as_str() == LABEL_HASHTREE
+                })
+            }));
+
+            if let Some(event) = relay_event {
+                debug!(
+                    "Found relay event with root hash: {}",
+                    &event.content[..12.min(event.content.len())]
+                );
+                root_data = Some(Self::parse_root_event_data_from_event(event));
+                break;
+            }
+
+            if let Some(data) = self
+                .fetch_root_from_local_daemon(repo_name, local_daemon_timeout)
                 .await
             {
-                Ok(events) => events,
-                Err(e) => {
-                    warn!("Failed to fetch events: {}", e);
-                    vec![]
-                }
+                root_data = Some(data);
+                break;
             }
-        } else {
-            vec![]
-        };
+
+            if attempt < max_attempts {
+                debug!(
+                    "No hashtree event found for {} on attempt {}/{}; retrying",
+                    repo_name, attempt, max_attempts
+                );
+                tokio::time::sleep(retry_delay).await;
+            }
+        }
 
         // Disconnect
         let _ = client.disconnect().await;
 
-        // Find the most recent event with "hashtree" label
-        debug!("Got {} events from relays", events.len());
-        let relay_event = pick_latest_event(events.iter().filter(|e| {
-            e.tags.iter().any(|t| {
-                t.as_slice().len() >= 2
-                    && t.as_slice()[0].as_str() == "l"
-                    && t.as_slice()[1].as_str() == LABEL_HASHTREE
-            })
-        }));
-
-        let root_data = if let Some(event) = relay_event {
-            debug!(
-                "Found relay event with root hash: {}",
-                &event.content[..12.min(event.content.len())]
-            );
-            Self::parse_root_event_data_from_event(event)
-        } else {
-            match self
-                .fetch_root_from_local_daemon(repo_name, Duration::from_secs(4))
-                .await
-            {
-                Some(data) => data,
-                None => {
-                    let npub = PublicKey::from_hex(&self.pubkey)
-                        .map(|pk| {
-                            pk.to_bech32()
-                                .unwrap_or_else(|_| self.pubkey[..12].to_string())
-                        })
-                        .map(|s| format!("{}...{}", &s[..12], &s[s.len() - 6..]))
-                        .unwrap_or_else(|_| self.pubkey[..12].to_string());
-                    anyhow::bail!(
-                        "Repository '{}' not found (no hashtree event published by {})",
-                        repo_name,
-                        npub
-                    );
-                }
+        let root_data = match root_data {
+            Some(data) => data,
+            None => {
+                anyhow::bail!(
+                    "Repository '{}' not found (no hashtree event published by {})",
+                    repo_name,
+                    Self::format_repo_author(&self.pubkey)
+                );
             }
         };
 
@@ -1987,6 +2019,18 @@ mod tests {
         // Should be valid hex pubkey
         assert_eq!(pubkey.len(), 64);
         assert_eq!(pubkey, TEST_PUBKEY);
+    }
+
+    #[test]
+    fn test_format_repo_author_uses_full_npub() {
+        let formatted = NostrClient::format_repo_author(TEST_PUBKEY);
+        let expected = PublicKey::from_hex(TEST_PUBKEY)
+            .unwrap()
+            .to_bech32()
+            .unwrap();
+
+        assert_eq!(formatted, expected);
+        assert!(!formatted.contains("..."));
     }
 
     #[test]
