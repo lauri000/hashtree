@@ -147,6 +147,24 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
             let webrtc_config = crate::p2p_common::default_webrtc_config(&config.nostr.relays);
             let peer_classifier =
                 crate::p2p_common::build_peer_classifier(opts.data_dir.clone(), Arc::clone(&ndb));
+            let cashu_payment_client = if config.cashu.default_mint.is_some()
+                || !config.cashu.accepted_mints.is_empty()
+            {
+                match crate::cashu_helper::CashuHelperClient::discover(opts.data_dir.clone()) {
+                    Ok(client) => {
+                        Some(Arc::new(client) as Arc<dyn crate::cashu_helper::CashuPaymentClient>)
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            "Cashu settlement helper unavailable; paid retrieval stays disabled: {}",
+                            err
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
 
             let mut manager = WebRTCManager::new_with_store_and_classifier_and_cashu(
                 keys.clone(),
@@ -154,6 +172,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
                 Arc::clone(&store) as Arc<dyn ContentStore>,
                 peer_classifier,
                 crate::webrtc::CashuRoutingConfig::from(&config.cashu),
+                cashu_payment_client,
             );
             manager.set_nostr_relay(nostr_relay.clone());
 

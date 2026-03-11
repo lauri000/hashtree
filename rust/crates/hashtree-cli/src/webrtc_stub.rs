@@ -136,6 +136,8 @@ pub mod types {
     const MSG_TYPE_RESPONSE: u8 = 0x01;
     const MSG_TYPE_QUOTE_REQUEST: u8 = 0x02;
     const MSG_TYPE_QUOTE_RESPONSE: u8 = 0x03;
+    const MSG_TYPE_PAYMENT: u8 = 0x04;
+    const MSG_TYPE_PAYMENT_ACK: u8 = 0x05;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct DataRequest {
@@ -180,12 +182,35 @@ pub mod types {
         pub m: Option<String>,
     }
 
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct DataPayment {
+        #[serde(with = "serde_bytes")]
+        pub h: Vec<u8>,
+        pub q: u64,
+        pub p: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub m: Option<String>,
+        pub tok: String,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct DataPaymentAck {
+        #[serde(with = "serde_bytes")]
+        pub h: Vec<u8>,
+        pub q: u64,
+        pub a: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub e: Option<String>,
+    }
+
     #[derive(Debug, Clone)]
     pub enum DataMessage {
         Request(DataRequest),
         Response(DataResponse),
         QuoteRequest(DataQuoteRequest),
         QuoteResponse(DataQuoteResponse),
+        Payment(DataPayment),
+        PaymentAck(DataPaymentAck),
     }
 
     fn default_htl() -> u8 {
@@ -228,6 +253,22 @@ pub mod types {
         Ok(result)
     }
 
+    pub fn encode_payment(req: &DataPayment) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+        let body = rmp_serde::to_vec_named(req)?;
+        let mut result = Vec::with_capacity(1 + body.len());
+        result.push(MSG_TYPE_PAYMENT);
+        result.extend(body);
+        Ok(result)
+    }
+
+    pub fn encode_payment_ack(res: &DataPaymentAck) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+        let body = rmp_serde::to_vec_named(res)?;
+        let mut result = Vec::with_capacity(1 + body.len());
+        result.push(MSG_TYPE_PAYMENT_ACK);
+        result.extend(body);
+        Ok(result)
+    }
+
     pub fn parse_message(data: &[u8]) -> Result<DataMessage, rmp_serde::decode::Error> {
         if data.is_empty() {
             return Err(rmp_serde::decode::Error::LengthMismatch(0));
@@ -236,12 +277,14 @@ pub mod types {
         match data[0] {
             MSG_TYPE_REQUEST => Ok(DataMessage::Request(rmp_serde::from_slice(&data[1..])?)),
             MSG_TYPE_RESPONSE => Ok(DataMessage::Response(rmp_serde::from_slice(&data[1..])?)),
-            MSG_TYPE_QUOTE_REQUEST => {
-                Ok(DataMessage::QuoteRequest(rmp_serde::from_slice(&data[1..])?))
-            }
-            MSG_TYPE_QUOTE_RESPONSE => Ok(DataMessage::QuoteResponse(
-                rmp_serde::from_slice(&data[1..])?,
-            )),
+            MSG_TYPE_QUOTE_REQUEST => Ok(DataMessage::QuoteRequest(rmp_serde::from_slice(
+                &data[1..],
+            )?)),
+            MSG_TYPE_QUOTE_RESPONSE => Ok(DataMessage::QuoteResponse(rmp_serde::from_slice(
+                &data[1..],
+            )?)),
+            MSG_TYPE_PAYMENT => Ok(DataMessage::Payment(rmp_serde::from_slice(&data[1..])?)),
+            MSG_TYPE_PAYMENT_ACK => Ok(DataMessage::PaymentAck(rmp_serde::from_slice(&data[1..])?)),
             other => Err(rmp_serde::decode::Error::LengthMismatch(other as u32)),
         }
     }

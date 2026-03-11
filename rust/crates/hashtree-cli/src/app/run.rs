@@ -212,6 +212,25 @@ pub(crate) async fn run() -> Result<()> {
                         data_dir.clone(),
                         Arc::clone(&ndb),
                     );
+                    let cashu_payment_client = if config.cashu.default_mint.is_some()
+                        || !config.cashu.accepted_mints.is_empty()
+                    {
+                        match hashtree_cli::cashu_helper::CashuHelperClient::discover(
+                            data_dir.clone(),
+                        ) {
+                            Ok(client) => Some(Arc::new(client)
+                                as Arc<dyn hashtree_cli::cashu_helper::CashuPaymentClient>),
+                            Err(err) => {
+                                tracing::warn!(
+                                    "Cashu settlement helper unavailable; paid retrieval stays disabled: {}",
+                                    err
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
 
                     let mut manager = WebRTCManager::new_with_store_and_classifier_and_cashu(
                         keys.clone(),
@@ -219,6 +238,7 @@ pub(crate) async fn run() -> Result<()> {
                         Arc::clone(&store) as Arc<dyn hashtree_cli::ContentStore>,
                         peer_classifier,
                         hashtree_cli::webrtc::CashuRoutingConfig::from(&config.cashu),
+                        cashu_payment_client,
                     );
                     manager.set_nostr_relay(nostr_relay.clone());
 

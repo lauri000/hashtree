@@ -436,7 +436,10 @@ async fn handle_binary(client_id: u64, data: Vec<u8>, state: &AppState) {
             DataMessage::Response(res) => {
                 handle_msgpack_response(client_id, res, state).await;
             }
-            DataMessage::QuoteRequest(_) | DataMessage::QuoteResponse(_) => {}
+            DataMessage::QuoteRequest(_)
+            | DataMessage::QuoteResponse(_)
+            | DataMessage::Payment(_)
+            | DataMessage::PaymentAck(_) => {}
         }
         return;
     }
@@ -543,6 +546,20 @@ fn parse_msgpack_message(data: &[u8]) -> Option<DataMessage> {
         DataMessage::QuoteResponse(res) => {
             if res.h.len() == 32 {
                 Some(DataMessage::QuoteResponse(res))
+            } else {
+                None
+            }
+        }
+        DataMessage::Payment(req) => {
+            if req.h.len() == 32 {
+                Some(DataMessage::Payment(req))
+            } else {
+                None
+            }
+        }
+        DataMessage::PaymentAck(res) => {
+            if res.h.len() == 32 {
+                Some(DataMessage::PaymentAck(res))
             } else {
                 None
             }

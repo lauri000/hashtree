@@ -138,6 +138,8 @@ fn test_wire_format_constants() {
     assert_eq!(MSG_TYPE_RESPONSE, 0x01);
     assert_eq!(MSG_TYPE_QUOTE_REQUEST, 0x02);
     assert_eq!(MSG_TYPE_QUOTE_RESPONSE, 0x03);
+    assert_eq!(MSG_TYPE_PAYMENT, 0x04);
+    assert_eq!(MSG_TYPE_PAYMENT_ACK, 0x05);
 }
 
 #[test]
@@ -189,6 +191,56 @@ fn test_wire_format_quote_response_encode_decode() {
             assert_eq!(r.m.as_deref(), Some("https://mint-b.example"));
         }
         _ => panic!("Expected quote response"),
+    }
+}
+
+#[test]
+fn test_wire_format_payment_encode_decode() {
+    let req = DataPayment {
+        h: vec![0xcc; 32],
+        q: 9,
+        p: 3,
+        m: Some("https://mint-b.example".to_string()),
+        tok: "cashuBtoken".to_string(),
+    };
+    let encoded = encode_payment(&req).unwrap();
+
+    assert_eq!(encoded[0], MSG_TYPE_PAYMENT);
+
+    let parsed = parse_message(&encoded).unwrap();
+    match parsed {
+        DataMessage::Payment(r) => {
+            assert_eq!(r.h, vec![0xcc; 32]);
+            assert_eq!(r.q, 9);
+            assert_eq!(r.p, 3);
+            assert_eq!(r.m.as_deref(), Some("https://mint-b.example"));
+            assert_eq!(r.tok, "cashuBtoken");
+        }
+        _ => panic!("Expected payment"),
+    }
+}
+
+#[test]
+fn test_wire_format_payment_ack_encode_decode() {
+    let res = DataPaymentAck {
+        h: vec![0xdd; 32],
+        q: 9,
+        a: false,
+        e: Some("invalid token".to_string()),
+    };
+    let encoded = encode_payment_ack(&res).unwrap();
+
+    assert_eq!(encoded[0], MSG_TYPE_PAYMENT_ACK);
+
+    let parsed = parse_message(&encoded).unwrap();
+    match parsed {
+        DataMessage::PaymentAck(r) => {
+            assert_eq!(r.h, vec![0xdd; 32]);
+            assert_eq!(r.q, 9);
+            assert!(!r.a);
+            assert_eq!(r.e.as_deref(), Some("invalid token"));
+        }
+        _ => panic!("Expected payment ack"),
     }
 }
 

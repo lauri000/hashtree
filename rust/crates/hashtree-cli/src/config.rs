@@ -181,6 +181,9 @@ pub struct CashuConfig {
     /// Quote validity window in milliseconds.
     #[serde(default = "default_cashu_quote_ttl_ms")]
     pub quote_ttl_ms: u32,
+    /// Maximum time to wait for post-delivery settlement before recording a default.
+    #[serde(default = "default_cashu_settlement_timeout_ms")]
+    pub settlement_timeout_ms: u64,
     /// Base cap for trying a peer-suggested mint we do not already trust.
     #[serde(default = "default_cashu_peer_suggested_mint_base_cap_sat")]
     pub peer_suggested_mint_base_cap_sat: u64,
@@ -205,6 +208,7 @@ impl Default for CashuConfig {
             default_mint: None,
             quote_payment_offer_sat: default_cashu_quote_payment_offer_sat(),
             quote_ttl_ms: default_cashu_quote_ttl_ms(),
+            settlement_timeout_ms: default_cashu_settlement_timeout_ms(),
             peer_suggested_mint_base_cap_sat: default_cashu_peer_suggested_mint_base_cap_sat(),
             peer_suggested_mint_success_step_sat:
                 default_cashu_peer_suggested_mint_success_step_sat(),
@@ -222,6 +226,10 @@ fn default_cashu_quote_payment_offer_sat() -> u64 {
 
 fn default_cashu_quote_ttl_ms() -> u32 {
     1_500
+}
+
+fn default_cashu_settlement_timeout_ms() -> u64 {
+    5_000
 }
 
 fn default_cashu_peer_suggested_mint_base_cap_sat() -> u64 {
@@ -611,6 +619,7 @@ mod tests {
         assert!(config.cashu.default_mint.is_none());
         assert_eq!(config.cashu.quote_payment_offer_sat, 3);
         assert_eq!(config.cashu.quote_ttl_ms, 1_500);
+        assert_eq!(config.cashu.settlement_timeout_ms, 5_000);
         assert_eq!(config.cashu.peer_suggested_mint_base_cap_sat, 3);
         assert_eq!(config.cashu.peer_suggested_mint_success_step_sat, 1);
         assert_eq!(config.cashu.peer_suggested_mint_receipt_step_sat, 2);
@@ -658,6 +667,7 @@ accepted_mints = ["https://mint1.example", "http://127.0.0.1:3338"]
 default_mint = "https://mint1.example"
 quote_payment_offer_sat = 5
 quote_ttl_ms = 2500
+settlement_timeout_ms = 7000
 peer_suggested_mint_base_cap_sat = 4
 peer_suggested_mint_success_step_sat = 2
 peer_suggested_mint_receipt_step_sat = 3
@@ -678,6 +688,7 @@ payment_default_block_threshold = 2
         );
         assert_eq!(config.cashu.quote_payment_offer_sat, 5);
         assert_eq!(config.cashu.quote_ttl_ms, 2500);
+        assert_eq!(config.cashu.settlement_timeout_ms, 7_000);
         assert_eq!(config.cashu.peer_suggested_mint_base_cap_sat, 4);
         assert_eq!(config.cashu.peer_suggested_mint_success_step_sat, 2);
         assert_eq!(config.cashu.peer_suggested_mint_receipt_step_sat, 3);

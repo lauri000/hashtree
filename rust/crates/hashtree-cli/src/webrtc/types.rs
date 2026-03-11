@@ -391,6 +391,8 @@ pub const MSG_TYPE_REQUEST: u8 = 0x00;
 pub const MSG_TYPE_RESPONSE: u8 = 0x01;
 pub const MSG_TYPE_QUOTE_REQUEST: u8 = 0x02;
 pub const MSG_TYPE_QUOTE_RESPONSE: u8 = 0x03;
+pub const MSG_TYPE_PAYMENT: u8 = 0x04;
+pub const MSG_TYPE_PAYMENT_ACK: u8 = 0x05;
 
 /// Hashtree data channel protocol messages
 /// Shared between WebRTC data channels and WebSocket transport
@@ -400,6 +402,8 @@ pub const MSG_TYPE_QUOTE_RESPONSE: u8 = 0x03;
 /// Response: [0x01][msgpack: {h: bytes32, d: bytes}]
 /// QuoteRequest:  [0x02][msgpack: {h: bytes32, p: u64, t: u32, m?: string}]
 /// QuoteResponse: [0x03][msgpack: {h: bytes32, a: bool, q?: u64, p?: u64, t?: u32, m?: string}]
+/// Payment:       [0x04][msgpack: {h: bytes32, q: u64, p: u64, m?: string, tok: string}]
+/// PaymentAck:    [0x05][msgpack: {h: bytes32, q: u64, a: bool, e?: string}]
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataRequest {
@@ -444,12 +448,35 @@ pub struct DataQuoteResponse {
     pub m: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataPayment {
+    #[serde(with = "serde_bytes")]
+    pub h: Vec<u8>,
+    pub q: u64,
+    pub p: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub m: Option<String>,
+    pub tok: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataPaymentAck {
+    #[serde(with = "serde_bytes")]
+    pub h: Vec<u8>,
+    pub q: u64,
+    pub a: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub e: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum DataMessage {
     Request(DataRequest),
     Response(DataResponse),
     QuoteRequest(DataQuoteRequest),
     QuoteResponse(DataQuoteResponse),
+    Payment(DataPayment),
+    PaymentAck(DataPaymentAck),
 }
 
 fn default_htl() -> u8 {
@@ -498,6 +525,22 @@ pub fn encode_quote_response(res: &DataQuoteResponse) -> Result<Vec<u8>, rmp_ser
     Ok(result)
 }
 
+pub fn encode_payment(req: &DataPayment) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+    let body = rmp_serde::to_vec_named(req)?;
+    let mut result = Vec::with_capacity(1 + body.len());
+    result.push(MSG_TYPE_PAYMENT);
+    result.extend(body);
+    Ok(result)
+}
+
+pub fn encode_payment_ack(res: &DataPaymentAck) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+    let body = rmp_serde::to_vec_named(res)?;
+    let mut result = Vec::with_capacity(1 + body.len());
+    result.push(MSG_TYPE_PAYMENT_ACK);
+    result.extend(body);
+    Ok(result)
+}
+
 /// Parse a wire format message
 pub fn parse_message(data: &[u8]) -> Result<DataMessage, rmp_serde::decode::Error> {
     if data.is_empty() {
@@ -524,6 +567,14 @@ pub fn parse_message(data: &[u8]) -> Result<DataMessage, rmp_serde::decode::Erro
             let res: DataQuoteResponse = rmp_serde::from_slice(body)?;
             Ok(DataMessage::QuoteResponse(res))
         }
+        MSG_TYPE_PAYMENT => {
+            let req: DataPayment = rmp_serde::from_slice(body)?;
+            Ok(DataMessage::Payment(req))
+        }
+        MSG_TYPE_PAYMENT_ACK => {
+            let res: DataPaymentAck = rmp_serde::from_slice(body)?;
+            Ok(DataMessage::PaymentAck(res))
+        }
         _ => Err(rmp_serde::decode::Error::LengthMismatch(msg_type as u32)),
     }
 }
@@ -540,5 +591,7 @@ pub fn encode_message(msg: &DataMessage) -> Result<Vec<u8>, rmp_serde::encode::E
         DataMessage::Response(res) => encode_response(res),
         DataMessage::QuoteRequest(req) => encode_quote_request(req),
         DataMessage::QuoteResponse(res) => encode_quote_response(res),
+        DataMessage::Payment(req) => encode_payment(req),
+        DataMessage::PaymentAck(res) => encode_payment_ack(res),
     }
 }

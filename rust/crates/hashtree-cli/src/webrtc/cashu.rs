@@ -1,10 +1,14 @@
+use anyhow::{anyhow, Result};
 use hashtree_webrtc::PeerSelector;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, Mutex, RwLock};
 
-use super::types::{DataQuoteRequest, DataQuoteResponse};
+use crate::cashu_helper::{CashuPaymentClient, CashuReceivedPayment, CashuSentPayment};
+
+use super::types::{DataPaymentAck, DataQuoteRequest, DataQuoteResponse};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CashuRoutingConfig {
@@ -12,6 +16,7 @@ pub struct CashuRoutingConfig {
     pub default_mint: Option<String>,
     pub quote_payment_offer_sat: u64,
     pub quote_ttl_ms: u32,
+    pub settlement_timeout_ms: u64,
     pub peer_suggested_mint_base_cap_sat: u64,
     pub peer_suggested_mint_success_step_sat: u64,
     pub peer_suggested_mint_receipt_step_sat: u64,
@@ -26,6 +31,7 @@ impl Default for CashuRoutingConfig {
             default_mint: None,
             quote_payment_offer_sat: 3,
             quote_ttl_ms: 1_500,
+            settlement_timeout_ms: 5_000,
             peer_suggested_mint_base_cap_sat: 3,
             peer_suggested_mint_success_step_sat: 1,
             peer_suggested_mint_receipt_step_sat: 2,
@@ -42,6 +48,7 @@ impl From<&crate::config::CashuConfig> for CashuRoutingConfig {
             default_mint: config.default_mint.clone(),
             quote_payment_offer_sat: config.quote_payment_offer_sat,
             quote_ttl_ms: config.quote_ttl_ms,
+            settlement_timeout_ms: config.settlement_timeout_ms,
             peer_suggested_mint_base_cap_sat: config.peer_suggested_mint_base_cap_sat,
             peer_suggested_mint_success_step_sat: config.peer_suggested_mint_success_step_sat,
             peer_suggested_mint_receipt_step_sat: config.peer_suggested_mint_receipt_step_sat,
@@ -57,32 +64,64 @@ struct PendingQuoteRequest {
     offered_payment_sat: u64,
 }
 
+struct IssuedQuote {
+    payment_sat: u64,
+    mint_url: Option<String>,
+    expires_at: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExpectedSettlement {
+    pub payment_sat: u64,
+    pub mint_url: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NegotiatedQuote {
     pub peer_id: String,
     pub quote_id: u64,
+    pub payment_sat: u64,
     pub mint_url: Option<String>,
 }
 
 pub(crate) struct CashuQuoteState {
     routing: CashuRoutingConfig,
     peer_selector: Arc<RwLock<PeerSelector>>,
+    payment_client: Option<Arc<dyn CashuPaymentClient>>,
     pending_quotes: Mutex<HashMap<String, PendingQuoteRequest>>,
+    issued_quotes: Mutex<HashMap<(String, String, u64), IssuedQuote>>,
+    pending_settlements: Mutex<HashMap<(String, String, u64), ExpectedSettlement>>,
+    pending_payment_acks: Mutex<HashMap<(String, String, u64), oneshot::Sender<bool>>>,
     next_quote_id: AtomicU64,
 }
 
 impl CashuQuoteState {
-    pub fn new(routing: CashuRoutingConfig, peer_selector: Arc<RwLock<PeerSelector>>) -> Self {
+    pub fn new(
+        routing: CashuRoutingConfig,
+        peer_selector: Arc<RwLock<PeerSelector>>,
+        payment_client: Option<Arc<dyn CashuPaymentClient>>,
+    ) -> Self {
         Self {
             routing,
             peer_selector,
+            payment_client,
             pending_quotes: Mutex::new(HashMap::new()),
+            issued_quotes: Mutex::new(HashMap::new()),
+            pending_settlements: Mutex::new(HashMap::new()),
+            pending_payment_acks: Mutex::new(HashMap::new()),
             next_quote_id: AtomicU64::new(1),
         }
     }
 
+    pub fn payment_client_available(&self) -> bool {
+        self.payment_client.is_some()
+    }
+
     pub fn requester_quote_terms(&self) -> Option<(u64, u32)> {
-        if self.routing.quote_payment_offer_sat == 0 || self.routing.quote_ttl_ms == 0 {
+        if !self.payment_client_available()
+            || self.routing.quote_payment_offer_sat == 0
+            || self.routing.quote_ttl_ms == 0
+        {
             return None;
         }
         let has_trusted_mint =
@@ -91,6 +130,10 @@ impl CashuQuoteState {
             self.routing.quote_payment_offer_sat,
             self.routing.quote_ttl_ms,
         ))
+    }
+
+    pub fn settlement_timeout(&self) -> Duration {
+        Duration::from_millis(self.routing.settlement_timeout_ms.max(1))
     }
 
     pub fn requested_quote_mint(&self) -> Option<&str> {
@@ -146,6 +189,38 @@ impl CashuQuoteState {
         let _ = self.pending_quotes.lock().await.remove(hash_hex);
     }
 
+    pub async fn register_pending_payment_ack(
+        &self,
+        peer_id: &str,
+        hash_hex: &str,
+        quote_id: u64,
+    ) -> oneshot::Receiver<bool> {
+        let (tx, rx) = oneshot::channel();
+        self.pending_payment_acks
+            .lock()
+            .await
+            .insert((peer_id.to_string(), hash_hex.to_string(), quote_id), tx);
+        rx
+    }
+
+    pub async fn clear_pending_payment_ack(&self, peer_id: &str, hash_hex: &str, quote_id: u64) {
+        let _ = self.pending_payment_acks.lock().await.remove(&(
+            peer_id.to_string(),
+            hash_hex.to_string(),
+            quote_id,
+        ));
+    }
+
+    pub async fn handle_payment_ack(&self, from_peer: &str, ack: DataPaymentAck) -> bool {
+        let hash_hex = hex::encode(&ack.h);
+        let key = (from_peer.to_string(), hash_hex, ack.q);
+        let Some(tx) = self.pending_payment_acks.lock().await.remove(&key) else {
+            return false;
+        };
+        let _ = tx.send(ack.a);
+        true
+    }
+
     pub async fn should_accept_quote_response(
         &self,
         from_peer: &str,
@@ -175,11 +250,11 @@ impl CashuQuoteState {
     }
 
     pub async fn handle_quote_response(&self, from_peer: &str, res: DataQuoteResponse) -> bool {
-        if !res.a {
+        if !res.a || !self.payment_client_available() {
             return false;
         }
 
-        let Some(quote_id) = res.q else {
+        let (Some(quote_id), Some(payment_sat)) = (res.q, res.p) else {
             return false;
         };
         let hash_hex = hex::encode(&res.h);
@@ -212,6 +287,7 @@ impl CashuQuoteState {
         let _ = pending.response_tx.send(Some(NegotiatedQuote {
             peer_id: from_peer.to_string(),
             quote_id,
+            payment_sat,
             mint_url: res.m,
         }));
         true
@@ -219,23 +295,176 @@ impl CashuQuoteState {
 
     pub async fn build_quote_response(
         &self,
-        _from_peer: &str,
+        from_peer: &str,
         req: &DataQuoteRequest,
         can_serve: bool,
     ) -> DataQuoteResponse {
+        if !can_serve || !self.payment_client_available() {
+            return DataQuoteResponse {
+                h: req.h.clone(),
+                a: false,
+                q: None,
+                p: None,
+                t: None,
+                m: None,
+            };
+        }
+
+        let Some(chosen_mint) = self.choose_quote_mint(req.m.as_deref()) else {
+            return DataQuoteResponse {
+                h: req.h.clone(),
+                a: false,
+                q: None,
+                p: None,
+                t: None,
+                m: None,
+            };
+        };
+        let quote_id = self.next_quote_id.fetch_add(1, Ordering::Relaxed);
+        let hash_hex = hex::encode(&req.h);
+        self.issued_quotes.lock().await.insert(
+            (from_peer.to_string(), hash_hex, quote_id),
+            IssuedQuote {
+                payment_sat: req.p,
+                mint_url: Some(chosen_mint.clone()),
+                expires_at: Instant::now() + Duration::from_millis(req.t as u64),
+            },
+        );
+
         DataQuoteResponse {
             h: req.h.clone(),
-            a: can_serve,
-            q: can_serve.then(|| self.next_quote_id.fetch_add(1, Ordering::Relaxed)),
-            p: can_serve.then_some(req.p),
-            t: can_serve.then_some(req.t),
-            m: can_serve
-                .then(|| self.choose_quote_mint(req.m.as_deref()))
-                .flatten(),
+            a: true,
+            q: Some(quote_id),
+            p: Some(req.p),
+            t: Some(req.t),
+            m: Some(chosen_mint),
         }
     }
 
-    pub async fn should_refuse_requests_from_peer(&self, _peer_id: &str) -> bool {
+    pub async fn take_valid_quote(
+        &self,
+        from_peer: &str,
+        hash: &[u8],
+        quote_id: u64,
+    ) -> Option<ExpectedSettlement> {
+        let hash_hex = hex::encode(hash);
+        let key = (from_peer.to_string(), hash_hex, quote_id);
+        let issued = self.issued_quotes.lock().await.remove(&key)?;
+        (issued.expires_at >= Instant::now()).then_some(ExpectedSettlement {
+            payment_sat: issued.payment_sat,
+            mint_url: issued.mint_url,
+        })
+    }
+
+    pub async fn register_expected_payment(
+        self: &Arc<Self>,
+        from_peer: String,
+        hash_hex: String,
+        quote_id: u64,
+        settlement: ExpectedSettlement,
+    ) {
+        let key = (from_peer.clone(), hash_hex.clone(), quote_id);
+        self.pending_settlements
+            .lock()
+            .await
+            .insert(key.clone(), settlement);
+
+        let state = Arc::clone(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(state.settlement_timeout()).await;
+            let expired = state
+                .pending_settlements
+                .lock()
+                .await
+                .remove(&key)
+                .is_some();
+            if expired {
+                state
+                    .peer_selector
+                    .write()
+                    .await
+                    .record_cashu_payment_default(&from_peer);
+            }
+        });
+    }
+
+    pub async fn claim_expected_payment(
+        &self,
+        from_peer: &str,
+        hash: &[u8],
+        quote_id: u64,
+        announced_payment_sat: u64,
+        announced_mint: Option<&str>,
+    ) -> Result<ExpectedSettlement> {
+        let hash_hex = hex::encode(hash);
+        let key = (from_peer.to_string(), hash_hex, quote_id);
+        let settlement = self
+            .pending_settlements
+            .lock()
+            .await
+            .remove(&key)
+            .ok_or_else(|| anyhow!("No pending settlement"))?;
+
+        if announced_payment_sat < settlement.payment_sat {
+            return Err(anyhow!("Quoted payment amount was not met"));
+        }
+        if settlement.mint_url.as_deref() != announced_mint {
+            return Err(anyhow!("Payment mint does not match quoted mint"));
+        }
+
+        Ok(settlement)
+    }
+
+    pub async fn create_payment_token(
+        &self,
+        mint_url: &str,
+        amount_sat: u64,
+    ) -> Result<CashuSentPayment> {
+        let client = self
+            .payment_client
+            .as_ref()
+            .ok_or_else(|| anyhow!("Cashu settlement helper unavailable"))?;
+        client.send_payment(mint_url, amount_sat).await
+    }
+
+    pub async fn receive_payment_token(&self, encoded_token: &str) -> Result<CashuReceivedPayment> {
+        let client = self
+            .payment_client
+            .as_ref()
+            .ok_or_else(|| anyhow!("Cashu settlement helper unavailable"))?;
+        client.receive_payment(encoded_token).await
+    }
+
+    pub async fn revoke_payment_token(&self, mint_url: &str, operation_id: &str) -> Result<()> {
+        let client = self
+            .payment_client
+            .as_ref()
+            .ok_or_else(|| anyhow!("Cashu settlement helper unavailable"))?;
+        client.revoke_payment(mint_url, operation_id).await
+    }
+
+    pub async fn record_paid_peer(&self, peer_id: &str, amount_sat: u64) {
+        self.peer_selector
+            .write()
+            .await
+            .record_cashu_payment(peer_id, amount_sat);
+    }
+
+    pub async fn record_receipt_from_peer(&self, peer_id: &str, amount_sat: u64) {
+        self.peer_selector
+            .write()
+            .await
+            .record_cashu_receipt(peer_id, amount_sat);
+    }
+
+    pub async fn record_payment_default_from_peer(&self, peer_id: &str) {
+        self.peer_selector
+            .write()
+            .await
+            .record_cashu_payment_default(peer_id);
+    }
+
+    pub async fn should_refuse_requests_from_peer(&self, peer_id: &str) -> bool {
         let threshold = self.routing.payment_default_block_threshold;
         if threshold == 0 {
             return false;
@@ -243,7 +472,7 @@ impl CashuQuoteState {
         self.peer_selector
             .read()
             .await
-            .is_peer_blocked_for_payment_defaults(_peer_id, threshold)
+            .is_peer_blocked_for_payment_defaults(peer_id, threshold)
     }
 
     fn accepts_quote_mint(&self, mint_url: Option<&str>) -> bool {
@@ -310,15 +539,47 @@ impl CashuQuoteState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cashu_helper::{CashuPaymentClient, CashuReceivedPayment, CashuSentPayment};
+    use async_trait::async_trait;
     use hashtree_webrtc::SelectionStrategy;
 
-    fn make_state(routing: CashuRoutingConfig) -> CashuQuoteState {
-        CashuQuoteState::new(
+    #[derive(Debug)]
+    struct NoopPaymentClient;
+
+    #[async_trait]
+    impl CashuPaymentClient for NoopPaymentClient {
+        async fn send_payment(&self, mint_url: &str, amount_sat: u64) -> Result<CashuSentPayment> {
+            Ok(CashuSentPayment {
+                mint_url: mint_url.to_string(),
+                unit: "sat".to_string(),
+                amount_sat,
+                send_fee_sat: 0,
+                operation_id: "op-1".to_string(),
+                token: "cashuBtoken".to_string(),
+            })
+        }
+
+        async fn receive_payment(&self, _encoded_token: &str) -> Result<CashuReceivedPayment> {
+            Ok(CashuReceivedPayment {
+                mint_url: "https://mint.example".to_string(),
+                unit: "sat".to_string(),
+                amount_sat: 3,
+            })
+        }
+
+        async fn revoke_payment(&self, _mint_url: &str, _operation_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn make_state(routing: CashuRoutingConfig, with_client: bool) -> Arc<CashuQuoteState> {
+        Arc::new(CashuQuoteState::new(
             routing,
             Arc::new(RwLock::new(PeerSelector::with_strategy(
                 SelectionStrategy::TitForTat,
             ))),
-        )
+            with_client.then_some(Arc::new(NoopPaymentClient) as Arc<dyn CashuPaymentClient>),
+        ))
     }
 
     fn quote_response(mint_url: Option<&str>, payment_sat: u64) -> DataQuoteResponse {
@@ -333,26 +594,41 @@ mod tests {
     }
 
     #[test]
-    fn test_requester_quote_terms_require_explicit_mint_policy() {
-        let disabled = make_state(CashuRoutingConfig::default());
+    fn test_requester_quote_terms_require_payment_client_and_mint_policy() {
+        let disabled = make_state(CashuRoutingConfig::default(), false);
         assert_eq!(disabled.requester_quote_terms(), None);
 
-        let enabled = make_state(CashuRoutingConfig {
-            default_mint: Some("https://mint-a.example".to_string()),
-            ..Default::default()
-        });
+        let no_client = make_state(
+            CashuRoutingConfig {
+                default_mint: Some("https://mint-a.example".to_string()),
+                ..Default::default()
+            },
+            false,
+        );
+        assert_eq!(no_client.requester_quote_terms(), None);
+
+        let enabled = make_state(
+            CashuRoutingConfig {
+                default_mint: Some("https://mint-a.example".to_string()),
+                ..Default::default()
+            },
+            true,
+        );
         assert_eq!(enabled.requester_quote_terms(), Some((3, 1_500)));
     }
 
     #[tokio::test]
     async fn test_should_accept_quote_response_allows_bounded_peer_suggested_mint() {
-        let state = make_state(CashuRoutingConfig {
-            accepted_mints: vec!["https://mint-a.example".to_string()],
-            default_mint: Some("https://mint-a.example".to_string()),
-            peer_suggested_mint_base_cap_sat: 3,
-            peer_suggested_mint_max_cap_sat: 3,
-            ..Default::default()
-        });
+        let state = make_state(
+            CashuRoutingConfig {
+                accepted_mints: vec!["https://mint-a.example".to_string()],
+                default_mint: Some("https://mint-a.example".to_string()),
+                peer_suggested_mint_base_cap_sat: 3,
+                peer_suggested_mint_max_cap_sat: 3,
+                ..Default::default()
+            },
+            true,
+        );
 
         let accepted = state
             .should_accept_quote_response(
@@ -367,13 +643,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_should_accept_quote_response_rejects_peer_suggested_mint_after_defaults() {
-        let state = make_state(CashuRoutingConfig {
-            accepted_mints: vec!["https://mint-a.example".to_string()],
-            default_mint: Some("https://mint-a.example".to_string()),
-            peer_suggested_mint_base_cap_sat: 3,
-            peer_suggested_mint_max_cap_sat: 3,
-            ..Default::default()
-        });
+        let state = make_state(
+            CashuRoutingConfig {
+                accepted_mints: vec!["https://mint-a.example".to_string()],
+                default_mint: Some("https://mint-a.example".to_string()),
+                peer_suggested_mint_base_cap_sat: 3,
+                peer_suggested_mint_max_cap_sat: 3,
+                ..Default::default()
+            },
+            true,
+        );
         state
             .peer_selector
             .write()
@@ -393,13 +672,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_quote_response_resolves_pending_quote() {
-        let state = make_state(CashuRoutingConfig {
-            accepted_mints: vec!["https://mint-a.example".to_string()],
-            default_mint: Some("https://mint-a.example".to_string()),
-            peer_suggested_mint_base_cap_sat: 3,
-            peer_suggested_mint_max_cap_sat: 3,
-            ..Default::default()
-        });
+        let state = make_state(
+            CashuRoutingConfig {
+                accepted_mints: vec!["https://mint-a.example".to_string()],
+                default_mint: Some("https://mint-a.example".to_string()),
+                peer_suggested_mint_base_cap_sat: 3,
+                peer_suggested_mint_max_cap_sat: 3,
+                ..Default::default()
+            },
+            true,
+        );
 
         let hash_hex = hex::encode([0x11; 32]);
         let mut rx = state
@@ -420,6 +702,90 @@ mod tests {
             .expect("expected quote payload");
         assert_eq!(quote.peer_id, "peer-a:session-1");
         assert_eq!(quote.quote_id, 7);
+        assert_eq!(quote.payment_sat, 3);
         assert_eq!(quote.mint_url.as_deref(), Some("https://mint-b.example"));
+    }
+
+    #[tokio::test]
+    async fn test_build_quote_response_registers_quote_for_validation() {
+        let state = make_state(
+            CashuRoutingConfig {
+                accepted_mints: vec!["https://mint-a.example".to_string()],
+                default_mint: Some("https://mint-a.example".to_string()),
+                ..Default::default()
+            },
+            true,
+        );
+
+        let res = state
+            .build_quote_response(
+                "peer-a:session-1",
+                &DataQuoteRequest {
+                    h: vec![0x22; 32],
+                    p: 3,
+                    t: 500,
+                    m: Some("https://mint-a.example".to_string()),
+                },
+                true,
+            )
+            .await;
+        assert!(res.a);
+
+        let expected = state
+            .take_valid_quote("peer-a:session-1", &[0x22; 32], res.q.unwrap())
+            .await
+            .expect("quote should validate");
+        assert_eq!(expected.payment_sat, 3);
+        assert_eq!(expected.mint_url.as_deref(), Some("https://mint-a.example"));
+    }
+
+    #[tokio::test]
+    async fn test_payment_timeout_records_default() {
+        let state = make_state(
+            CashuRoutingConfig {
+                default_mint: Some("https://mint-a.example".to_string()),
+                settlement_timeout_ms: 10,
+                ..Default::default()
+            },
+            true,
+        );
+        state
+            .register_expected_payment(
+                "peer-a:session-1".to_string(),
+                hex::encode([0x33; 32]),
+                7,
+                ExpectedSettlement {
+                    payment_sat: 3,
+                    mint_url: Some("https://mint-a.example".to_string()),
+                },
+            )
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let selector = state.peer_selector.read().await;
+        let stats = selector.get_stats("peer-a:session-1").expect("peer stats");
+        assert_eq!(stats.cashu_payment_defaults, 1);
+    }
+
+    #[tokio::test]
+    async fn test_payment_ack_resolves_pending_waiter() {
+        let state = make_state(CashuRoutingConfig::default(), true);
+        let mut rx = state
+            .register_pending_payment_ack("peer-a:session-1", &hex::encode([0x44; 32]), 9)
+            .await;
+
+        let handled = state
+            .handle_payment_ack(
+                "peer-a:session-1",
+                DataPaymentAck {
+                    h: vec![0x44; 32],
+                    q: 9,
+                    a: true,
+                    e: None,
+                },
+            )
+            .await;
+        assert!(handled);
+        assert_eq!(rx.try_recv().unwrap(), true);
     }
 }

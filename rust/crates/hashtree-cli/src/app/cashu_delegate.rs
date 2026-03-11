@@ -1,63 +1,20 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
+use hashtree_cli::cashu_helper::{base_helper_args, helper_binary_path, run_helper_status};
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 use super::args::{CashuCommands, CashuMintCommands};
-
-const CASHU_HELPER_ENV: &str = "HTREE_CASHU_HELPER";
-const CARGO_HELPER_ENV: &str = "CARGO_BIN_EXE_htree-cashu";
 
 pub(crate) fn run_cashu_helper(data_dir: &Path, command: &CashuCommands) -> Result<()> {
     let current_exe =
         std::env::current_exe().context("Failed to determine htree executable path")?;
     let helper = helper_binary_path(&current_exe)?;
     let args = build_cashu_helper_args(data_dir, command);
-    let status = Command::new(&helper)
-        .args(&args)
-        .status()
-        .with_context(|| format!("Failed to launch Cashu helper at {}", helper.display()))?;
-    if status.success() {
-        return Ok(());
-    }
-
-    match status.code() {
-        Some(code) => bail!("Cashu helper exited with status code {code}"),
-        None => bail!("Cashu helper terminated by signal"),
-    }
-}
-
-fn helper_binary_path(current_exe: &Path) -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os(CASHU_HELPER_ENV) {
-        return Ok(PathBuf::from(path));
-    }
-    if let Some(path) = std::env::var_os(CARGO_HELPER_ENV) {
-        return Ok(PathBuf::from(path));
-    }
-
-    let helper_name = helper_binary_name();
-    let mut candidates = Vec::new();
-    if let Some(parent) = current_exe.parent() {
-        candidates.push(parent.join(helper_name));
-        if let Some(grandparent) = parent.parent() {
-            candidates.push(grandparent.join(helper_name));
-        }
-    }
-
-    if let Some(path) = candidates.into_iter().find(|path| path.exists()) {
-        return Ok(path);
-    }
-
-    bail!(
-        "Cashu helper executable not found. Install `hashtree-cashu-cli` so `htree-cashu` is in PATH next to `htree`, or set {CASHU_HELPER_ENV}."
-    )
+    run_helper_status(&helper, &args)
 }
 
 fn build_cashu_helper_args(data_dir: &Path, command: &CashuCommands) -> Vec<OsString> {
-    let mut args = vec![
-        OsString::from("--data-dir"),
-        data_dir.as_os_str().to_os_string(),
-    ];
+    let mut args = base_helper_args(data_dir).to_vec();
 
     match command {
         CashuCommands::Balance { mint } => {
@@ -166,25 +123,27 @@ mod tests {
         let override_path = temp_dir.path().join("custom-helper");
         std::fs::write(&override_path, b"").unwrap();
 
-        env::set_var(CASHU_HELPER_ENV, &override_path);
-        env::remove_var(CARGO_HELPER_ENV);
+        env::set_var(hashtree_cli::cashu_helper::CASHU_HELPER_ENV, &override_path);
+        env::remove_var(hashtree_cli::cashu_helper::CARGO_HELPER_ENV);
 
         let resolved = helper_binary_path(Path::new("/tmp/htree")).unwrap();
         assert_eq!(resolved, override_path);
 
-        env::remove_var(CASHU_HELPER_ENV);
+        env::remove_var(hashtree_cli::cashu_helper::CASHU_HELPER_ENV);
     }
 
     #[test]
     fn test_helper_binary_path_falls_back_to_sibling_binary() {
         let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
-        env::remove_var(CASHU_HELPER_ENV);
-        env::remove_var(CARGO_HELPER_ENV);
+        env::remove_var(hashtree_cli::cashu_helper::CASHU_HELPER_ENV);
+        env::remove_var(hashtree_cli::cashu_helper::CARGO_HELPER_ENV);
 
         let temp_dir = tempfile::tempdir().unwrap();
         let current_exe = temp_dir.path().join("htree");
         std::fs::write(&current_exe, b"").unwrap();
-        let sibling = temp_dir.path().join(helper_binary_name());
+        let sibling = temp_dir
+            .path()
+            .join(hashtree_cli::cashu_helper::helper_binary_name());
         std::fs::write(&sibling, b"").unwrap();
 
         let resolved = helper_binary_path(&current_exe).unwrap();
@@ -195,7 +154,7 @@ mod tests {
     #[test]
     fn test_run_cashu_helper_with_env_override_executes_helper() {
         let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
-        env::remove_var(CARGO_HELPER_ENV);
+        env::remove_var(hashtree_cli::cashu_helper::CARGO_HELPER_ENV);
 
         let temp_dir = tempfile::tempdir().unwrap();
         let output_path = temp_dir.path().join("args.txt");
@@ -209,7 +168,7 @@ mod tests {
         perms.set_mode(0o755);
         std::fs::set_permissions(&helper_path, perms).unwrap();
 
-        env::set_var(CASHU_HELPER_ENV, &helper_path);
+        env::set_var(hashtree_cli::cashu_helper::CASHU_HELPER_ENV, &helper_path);
         run_cashu_helper(
             Path::new("/tmp/htree-data"),
             &CashuCommands::Topup {
@@ -225,14 +184,6 @@ mod tests {
             "--data-dir\n/tmp/htree-data\ntopup\n42\n--mint\nhttps://mint.example\n"
         );
 
-        env::remove_var(CASHU_HELPER_ENV);
-    }
-}
-
-fn helper_binary_name() -> &'static str {
-    if cfg!(windows) {
-        "htree-cashu.exe"
-    } else {
-        "htree-cashu"
+        env::remove_var(hashtree_cli::cashu_helper::CASHU_HELPER_ENV);
     }
 }

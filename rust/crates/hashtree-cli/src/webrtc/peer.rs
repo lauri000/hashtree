@@ -24,10 +24,10 @@ use webrtc::peer_connection::RTCPeerConnection;
 
 use super::cashu::CashuQuoteState;
 use super::types::{
-    encode_message, encode_quote_response, encode_request, encode_response, hash_to_hex,
-    parse_message, validate_mesh_frame, DataMessage, DataQuoteRequest, DataRequest, DataResponse,
-    MeshNostrFrame, PeerDirection, PeerHTLConfig, PeerId, PeerStateEvent, SignalingMessage,
-    BLOB_REQUEST_POLICY,
+    encode_message, encode_payment_ack, encode_quote_response, encode_request, encode_response,
+    hash_to_hex, parse_message, validate_mesh_frame, DataMessage, DataPayment, DataPaymentAck,
+    DataQuoteRequest, DataRequest, DataResponse, MeshNostrFrame, PeerDirection, PeerHTLConfig,
+    PeerId, PeerStateEvent, SignalingMessage, BLOB_REQUEST_POLICY,
 };
 use crate::nostr_relay::NostrRelay;
 use nostr::{
@@ -92,6 +92,68 @@ async fn handle_quote_request_message(
             .build_quote_response(&peer_id.to_string(), req, can_serve)
             .await,
     )
+}
+
+async fn handle_payment_message(
+    peer_id: &PeerId,
+    cashu_quotes: Option<&Arc<CashuQuoteState>>,
+    req: &DataPayment,
+) -> DataPaymentAck {
+    let nack = |err: String| DataPaymentAck {
+        h: req.h.clone(),
+        q: req.q,
+        a: false,
+        e: Some(err),
+    };
+
+    let Some(cashu_quotes) = cashu_quotes else {
+        return nack("Cashu settlement unavailable".to_string());
+    };
+
+    let expected = match cashu_quotes
+        .claim_expected_payment(&peer_id.to_string(), &req.h, req.q, req.p, req.m.as_deref())
+        .await
+    {
+        Ok(expected) => expected,
+        Err(err) => {
+            cashu_quotes
+                .record_payment_default_from_peer(&peer_id.to_string())
+                .await;
+            return nack(err.to_string());
+        }
+    };
+
+    match cashu_quotes.receive_payment_token(&req.tok).await {
+        Ok(received) if received.amount_sat >= expected.payment_sat => {
+            if expected.mint_url.as_deref() != Some(received.mint_url.as_str()) {
+                cashu_quotes
+                    .record_payment_default_from_peer(&peer_id.to_string())
+                    .await;
+                return nack("Received payment mint did not match quoted mint".to_string());
+            }
+            cashu_quotes
+                .record_receipt_from_peer(&peer_id.to_string(), received.amount_sat)
+                .await;
+            DataPaymentAck {
+                h: req.h.clone(),
+                q: req.q,
+                a: true,
+                e: None,
+            }
+        }
+        Ok(_) => {
+            cashu_quotes
+                .record_payment_default_from_peer(&peer_id.to_string())
+                .await;
+            nack("Received payment amount was below the quoted amount".to_string())
+        }
+        Err(err) => {
+            cashu_quotes
+                .record_payment_default_from_peer(&peer_id.to_string())
+                .await;
+            nack(err.to_string())
+        }
+    }
 }
 
 /// WebRTC peer connection with data channel protocol
@@ -768,6 +830,31 @@ impl Peer {
                                 }
                             }
 
+                            let quoted_settlement = if let Some(quote_id) = req.q {
+                                let Some(cashu_quotes) = cashu_quotes.as_ref() else {
+                                    info!(
+                                        "[Peer {}] Ignoring quoted request without Cashu settlement state",
+                                        peer_short
+                                    );
+                                    return;
+                                };
+                                match cashu_quotes
+                                    .take_valid_quote(&peer_id.to_string(), &req.h, quote_id)
+                                    .await
+                                {
+                                    Some(settlement) => Some((quote_id, settlement)),
+                                    None => {
+                                        info!(
+                                            "[Peer {}] Ignoring request with invalid or expired quote {}",
+                                            peer_short, quote_id
+                                        );
+                                        return;
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+
                             // Handle request - look up in store
                             let data = if let Some(ref store) = store {
                                 match store.get(&hash_hex) {
@@ -815,6 +902,18 @@ impl Peer {
                                             "[Peer {}] Sent response for {} ({} bytes)",
                                             peer_short, hash_short, data_len
                                         );
+                                        if let (Some(cashu_quotes), Some((quote_id, settlement))) =
+                                            (cashu_quotes.as_ref(), quoted_settlement)
+                                        {
+                                            cashu_quotes
+                                                .register_expected_payment(
+                                                    peer_id.to_string(),
+                                                    hash_hex.clone(),
+                                                    quote_id,
+                                                    settlement,
+                                                )
+                                                .await;
+                                        }
                                     }
                                 }
                             } else {
@@ -861,6 +960,25 @@ impl Peer {
                             if let Some(cashu_quotes) = cashu_quotes.as_ref() {
                                 let _ = cashu_quotes
                                     .handle_quote_response(&peer_id.to_string(), res)
+                                    .await;
+                            }
+                        }
+                        DataMessage::Payment(req) => {
+                            let ack = handle_payment_message(&peer_id, cashu_quotes.as_ref(), &req)
+                                .await;
+                            if let Ok(wire) = encode_payment_ack(&ack) {
+                                if let Err(e) = dc.send(&Bytes::from(wire)).await {
+                                    warn!(
+                                        "[Peer {}] Failed to send payment ack: {}",
+                                        peer_short, e
+                                    );
+                                }
+                            }
+                        }
+                        DataMessage::PaymentAck(res) => {
+                            if let Some(cashu_quotes) = cashu_quotes.as_ref() {
+                                let _ = cashu_quotes
+                                    .handle_payment_ack(&peer_id.to_string(), res)
                                     .await;
                             }
                         }

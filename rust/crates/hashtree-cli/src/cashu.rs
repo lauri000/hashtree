@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::{WalletRepository, WalletRepositoryBuilder};
+use cdk::nuts::{CurrencyUnit, PaymentMethod, Token};
+use cdk::wallet::{ReceiveOptions, SendOptions, WalletRepository, WalletRepositoryBuilder};
 use cdk::Amount;
 use cdk_sqlite::WalletSqliteDatabase;
 use rand::RngCore;
@@ -51,6 +51,23 @@ pub struct CashuTopupQuote {
     pub quote_id: String,
     pub payment_request: String,
     pub expiry_unix: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CashuSentPayment {
+    pub mint_url: String,
+    pub unit: String,
+    pub amount_sat: u64,
+    pub send_fee_sat: u64,
+    pub operation_id: String,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CashuReceivedPayment {
+    pub mint_url: String,
+    pub unit: String,
+    pub amount_sat: u64,
 }
 
 pub fn cashu_wallet_dir(data_dir: &Path) -> PathBuf {
@@ -224,6 +241,111 @@ pub async fn create_topup_quote(
     })
 }
 
+pub async fn send_payment_token(
+    data_dir: &Path,
+    mint_url: &str,
+    amount_sat: u64,
+) -> Result<CashuSentPayment> {
+    if amount_sat == 0 {
+        bail!("Cashu payment amount must be greater than zero");
+    }
+
+    let normalized_mint = normalize_mint_url(mint_url)?;
+    let mint_url =
+        MintUrl::from_str(&normalized_mint).context("Failed to parse normalized mint URL")?;
+    let repository = open_wallet_repository(data_dir).await?;
+    let wallet = ensure_sat_wallet(&repository, &mint_url).await?;
+
+    wallet
+        .recover_incomplete_sagas()
+        .await
+        .context("Failed to recover Cashu wallet state before sending payment")?;
+
+    let prepared = wallet
+        .prepare_send(
+            Amount::from(amount_sat),
+            SendOptions {
+                include_fee: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .context("Failed to prepare Cashu payment token")?;
+    let operation_id = prepared.operation_id().to_string();
+    let send_fee_sat = prepared.send_fee().to_u64();
+    let token = prepared
+        .confirm(None)
+        .await
+        .context("Failed to create Cashu payment token")?;
+
+    Ok(CashuSentPayment {
+        mint_url: normalized_mint,
+        unit: CurrencyUnit::Sat.to_string(),
+        amount_sat,
+        send_fee_sat,
+        operation_id,
+        token: token.to_string(),
+    })
+}
+
+pub async fn receive_payment_token(
+    data_dir: &Path,
+    encoded_token: &str,
+) -> Result<CashuReceivedPayment> {
+    let token = Token::from_str(encoded_token).context("Failed to parse Cashu token")?;
+    let mint_url = token
+        .mint_url()
+        .context("Cashu token must contain exactly one mint")?;
+    let unit = token.unit().unwrap_or_default();
+    if unit != CurrencyUnit::Sat {
+        bail!("Unsupported Cashu token unit: {unit}");
+    }
+    let normalized_mint = normalize_mint_url(&mint_url.to_string())?;
+
+    let repository = open_wallet_repository(data_dir).await?;
+    let wallet = ensure_sat_wallet(&repository, &mint_url).await?;
+    wallet
+        .recover_incomplete_sagas()
+        .await
+        .context("Failed to recover Cashu wallet state before receiving payment")?;
+
+    let amount_received = wallet
+        .receive(encoded_token, ReceiveOptions::default())
+        .await
+        .context("Failed to receive Cashu payment token")?;
+
+    Ok(CashuReceivedPayment {
+        mint_url: normalized_mint,
+        unit: CurrencyUnit::Sat.to_string(),
+        amount_sat: amount_received.to_u64(),
+    })
+}
+
+pub async fn revoke_pending_payment(
+    data_dir: &Path,
+    mint_url: &str,
+    operation_id: &str,
+) -> Result<u64> {
+    let normalized_mint = normalize_mint_url(mint_url)?;
+    let mint_url =
+        MintUrl::from_str(&normalized_mint).context("Failed to parse normalized mint URL")?;
+    let repository = open_wallet_repository(data_dir).await?;
+    let wallet = ensure_sat_wallet(&repository, &mint_url).await?;
+    wallet
+        .recover_incomplete_sagas()
+        .await
+        .context("Failed to recover Cashu wallet state before revoking payment")?;
+
+    let operation_id = operation_id
+        .parse()
+        .context("Invalid Cashu send operation id")?;
+    let amount = wallet
+        .revoke_send(operation_id)
+        .await
+        .context("Failed to revoke Cashu payment token")?;
+    Ok(amount.to_u64())
+}
+
 fn write_wallet_seed(path: &Path, seed: &[u8; 64]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).context("Failed to create Cashu wallet directory")?;
@@ -333,6 +455,33 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("greater than zero"));
+    }
+
+    #[tokio::test]
+    async fn test_send_payment_token_rejects_zero_amount() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let err = send_payment_token(temp_dir.path(), "https://mint.example", 0)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("greater than zero"));
+    }
+
+    #[tokio::test]
+    async fn test_receive_payment_token_rejects_invalid_token() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let err = receive_payment_token(temp_dir.path(), "not-a-token")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("parse Cashu token"));
+    }
+
+    #[tokio::test]
+    async fn test_revoke_pending_payment_rejects_invalid_operation_id() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let err = revoke_pending_payment(temp_dir.path(), "https://mint.example", "nope")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Invalid Cashu send operation id"));
     }
 
     #[tokio::test]

@@ -1,11 +1,14 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use hashtree_cli::cashu::{receive_payment_token, revoke_pending_payment, send_payment_token};
 use hashtree_cli::cashu_cli::{
     add_mint, list_mints, print_balance, remove_mint, set_default_mint, topup_balance,
 };
 use hashtree_cli::config::get_hashtree_dir;
 use hashtree_cli::Config;
+use serde_json::json;
 use std::path::PathBuf;
+use tokio::io::AsyncReadExt;
 
 #[derive(Parser)]
 #[command(name = "htree-cashu")]
@@ -51,6 +54,11 @@ enum Commands {
         #[command(subcommand)]
         command: MintCommands,
     },
+    #[command(hide = true)]
+    Internal {
+        #[command(subcommand)]
+        command: InternalCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -74,6 +82,27 @@ enum MintCommands {
     Default {
         /// Mint base URL
         url: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum InternalCommands {
+    Send {
+        amount_sat: u64,
+        #[arg(long)]
+        mint: String,
+    },
+    Receive {
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long)]
+        token_stdin: bool,
+    },
+    Revoke {
+        #[arg(long)]
+        mint: String,
+        #[arg(long)]
+        operation_id: String,
     },
 }
 
@@ -104,6 +133,27 @@ async fn main() -> Result<()> {
             }
             MintCommands::Default { url } => {
                 set_default_mint(&mut config, &url)?;
+            }
+        },
+        Commands::Internal { command } => match command {
+            InternalCommands::Send { amount_sat, mint } => {
+                let payment = send_payment_token(&data_dir, &mint, amount_sat).await?;
+                println!("{}", serde_json::to_string(&payment)?);
+            }
+            InternalCommands::Receive { token, token_stdin } => {
+                let token = if token_stdin {
+                    let mut buf = String::new();
+                    tokio::io::stdin().read_to_string(&mut buf).await?;
+                    buf.trim().to_string()
+                } else {
+                    token.ok_or_else(|| anyhow::anyhow!("missing --token or --token-stdin"))?
+                };
+                let payment = receive_payment_token(&data_dir, &token).await?;
+                println!("{}", serde_json::to_string(&payment)?);
+            }
+            InternalCommands::Revoke { mint, operation_id } => {
+                let revoked_sat = revoke_pending_payment(&data_dir, &mint, &operation_id).await?;
+                println!("{}", json!({ "revoked_sat": revoked_sat }));
             }
         },
     }
@@ -147,6 +197,38 @@ mod tests {
                 assert!(make_default);
             }
             _ => panic!("expected mint add command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_internal_commands() {
+        let cli = Cli::parse_from([
+            "htree-cashu",
+            "internal",
+            "send",
+            "3",
+            "--mint",
+            "https://mint.example",
+        ]);
+        match cli.command {
+            Commands::Internal {
+                command: InternalCommands::Send { amount_sat, mint },
+            } => {
+                assert_eq!(amount_sat, 3);
+                assert_eq!(mint, "https://mint.example");
+            }
+            _ => panic!("expected internal send command"),
+        }
+
+        let cli = Cli::parse_from(["htree-cashu", "internal", "receive", "--token-stdin"]);
+        match cli.command {
+            Commands::Internal {
+                command: InternalCommands::Receive { token, token_stdin },
+            } => {
+                assert!(token.is_none());
+                assert!(token_stdin);
+            }
+            _ => panic!("expected internal receive command"),
         }
     }
 }

@@ -28,12 +28,13 @@ use tracing::{debug, error, info, warn};
 use super::cashu::{CashuQuoteState, CashuRoutingConfig, NegotiatedQuote};
 use super::peer::{ContentStore, Peer, PendingRequest};
 use super::types::{
-    decrement_htl_with_policy, encode_quote_request, encode_request, should_forward_htl,
-    validate_mesh_frame, DataQuoteRequest, DataRequest, MeshNostrFrame, MeshNostrPayload,
-    PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus, RequestDispatchConfig,
-    SignalingMessage, TimedSeenSet, WebRTCConfig, HELLO_TAG, MESH_DEFAULT_HTL, MESH_EVENT_POLICY,
-    WEBRTC_KIND,
+    decrement_htl_with_policy, encode_payment, encode_quote_request, encode_request,
+    should_forward_htl, validate_mesh_frame, DataPayment, DataQuoteRequest, DataRequest,
+    MeshNostrFrame, MeshNostrPayload, PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus,
+    RequestDispatchConfig, SignalingMessage, TimedSeenSet, WebRTCConfig, HELLO_TAG,
+    MESH_DEFAULT_HTL, MESH_EVENT_POLICY, WEBRTC_KIND,
 };
+use crate::cashu_helper::CashuPaymentClient;
 use crate::nostr_relay::NostrRelay;
 
 /// Callback type for classifying peers into pools
@@ -210,6 +211,7 @@ impl WebRTCState {
             cfg.request_dispatch,
             Duration::from_millis(cfg.message_timeout_ms),
             CashuRoutingConfig::default(),
+            None,
         )
     }
 
@@ -225,6 +227,7 @@ impl WebRTCState {
             request_dispatch,
             Duration::from_millis(cfg.message_timeout_ms),
             CashuRoutingConfig::default(),
+            None,
         )
     }
 
@@ -234,11 +237,16 @@ impl WebRTCState {
         request_dispatch: RequestDispatchConfig,
         request_timeout: Duration,
         cashu_routing: CashuRoutingConfig,
+        payment_client: Option<Arc<dyn CashuPaymentClient>>,
     ) -> Self {
         let mut selector = PeerSelector::with_strategy(selection_strategy);
         selector.set_fairness(fairness_enabled);
         let peer_selector = Arc::new(RwLock::new(selector));
-        let cashu_quotes = Arc::new(CashuQuoteState::new(cashu_routing, peer_selector.clone()));
+        let cashu_quotes = Arc::new(CashuQuoteState::new(
+            cashu_routing,
+            peer_selector.clone(),
+            payment_client,
+        ));
         Self {
             peers: RwLock::new(HashMap::new()),
             connected_count: std::sync::atomic::AtomicUsize::new(0),
@@ -435,6 +443,15 @@ impl WebRTCState {
                     )
                     .await
                 {
+                    if !self
+                        .settle_quoted_delivery(&hash_hex, &hash_bytes, &quote, &ordered_peers)
+                        .await
+                    {
+                        debug!(
+                            "Quoted delivery from {} succeeded but settlement did not complete",
+                            quote.peer_id
+                        );
+                    }
                     debug!(
                         "Got quoted response from peer {} for {}",
                         quote.peer_id,
@@ -683,6 +700,107 @@ impl WebRTCState {
         None
     }
 
+    async fn settle_quoted_delivery(
+        &self,
+        hash_hex: &str,
+        hash_bytes: &[u8],
+        quote: &NegotiatedQuote,
+        ordered_peers: &[ConnectedPeer],
+    ) -> bool {
+        let Some(mint_url) = quote.mint_url.as_deref() else {
+            return false;
+        };
+        let Some((_, _, dc)) = ordered_peers
+            .iter()
+            .find(|(peer_id, _, _)| peer_id == &quote.peer_id)
+        else {
+            return false;
+        };
+
+        let payment = match self
+            .cashu_quotes
+            .create_payment_token(mint_url, quote.payment_sat)
+            .await
+        {
+            Ok(payment) => payment,
+            Err(err) => {
+                warn!(
+                    "Failed to create Cashu payment token for peer {}: {}",
+                    quote.peer_id, err
+                );
+                return false;
+            }
+        };
+
+        let mut ack_rx = self
+            .cashu_quotes
+            .register_pending_payment_ack(&quote.peer_id, hash_hex, quote.quote_id)
+            .await;
+        let payment_msg = DataPayment {
+            h: hash_bytes.to_vec(),
+            q: quote.quote_id,
+            p: quote.payment_sat,
+            m: Some(payment.mint_url.clone()),
+            tok: payment.token.clone(),
+        };
+        let wire = match encode_payment(&payment_msg) {
+            Ok(wire) => wire,
+            Err(_) => {
+                self.cashu_quotes
+                    .clear_pending_payment_ack(&quote.peer_id, hash_hex, quote.quote_id)
+                    .await;
+                let _ = self
+                    .cashu_quotes
+                    .revoke_payment_token(&payment.mint_url, &payment.operation_id)
+                    .await;
+                return false;
+            }
+        };
+
+        if dc
+            .send(&bytes::Bytes::copy_from_slice(&wire))
+            .await
+            .is_err()
+        {
+            self.cashu_quotes
+                .clear_pending_payment_ack(&quote.peer_id, hash_hex, quote.quote_id)
+                .await;
+            let _ = self
+                .cashu_quotes
+                .revoke_payment_token(&payment.mint_url, &payment.operation_id)
+                .await;
+            return false;
+        }
+
+        self.record_sent(&quote.peer_id, wire.len() as u64).await;
+
+        let settled = matches!(
+            tokio::time::timeout(self.cashu_quotes.settlement_timeout(), &mut ack_rx).await,
+            Ok(Ok(true))
+        );
+        if settled {
+            self.cashu_quotes
+                .record_paid_peer(&quote.peer_id, quote.payment_sat)
+                .await;
+            return true;
+        }
+
+        self.cashu_quotes
+            .clear_pending_payment_ack(&quote.peer_id, hash_hex, quote.quote_id)
+            .await;
+        if let Err(err) = self
+            .cashu_quotes
+            .revoke_payment_token(&payment.mint_url, &payment.operation_id)
+            .await
+        {
+            debug!(
+                "Failed to revoke unsettled Cashu send {} for {}: {}",
+                payment.operation_id, quote.peer_id, err
+            );
+        }
+        false
+    }
+
     async fn request_from_single_peer(
         &self,
         hash_hex: &str,
@@ -900,6 +1018,7 @@ impl WebRTCManager {
             config.request_dispatch,
             Duration::from_millis(config.message_timeout_ms),
             CashuRoutingConfig::default(),
+            None,
         ));
 
         // Default classifier: all peers go to 'other' pool
@@ -963,6 +1082,7 @@ impl WebRTCManager {
             store,
             classifier,
             CashuRoutingConfig::default(),
+            None,
         )
     }
 
@@ -972,6 +1092,7 @@ impl WebRTCManager {
         store: Arc<dyn ContentStore>,
         classifier: PeerClassifier,
         cashu_routing: CashuRoutingConfig,
+        payment_client: Option<Arc<dyn CashuPaymentClient>>,
     ) -> Self {
         let mut manager = Self::new(keys, config);
         manager.state = Arc::new(WebRTCState::new_with_routing_and_cashu(
@@ -980,6 +1101,7 @@ impl WebRTCManager {
             manager.config.request_dispatch,
             Duration::from_millis(manager.config.message_timeout_ms),
             cashu_routing,
+            payment_client,
         ));
         manager.store = Some(store);
         manager.peer_classifier = classifier;
