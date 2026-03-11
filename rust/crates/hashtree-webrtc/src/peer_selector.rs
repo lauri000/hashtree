@@ -46,6 +46,9 @@ pub struct PersistedPeerMetadata {
     pub bytes_received: u64,
     pub bytes_sent: u64,
     pub cashu_paid_sat: u64,
+    pub cashu_received_sat: u64,
+    pub cashu_payment_receipts: u64,
+    pub cashu_payment_defaults: u64,
 }
 
 impl PersistedPeerMetadata {
@@ -62,6 +65,9 @@ impl PersistedPeerMetadata {
             bytes_received: stats.bytes_received,
             bytes_sent: stats.bytes_sent,
             cashu_paid_sat: stats.cashu_paid_sat,
+            cashu_received_sat: stats.cashu_received_sat,
+            cashu_payment_receipts: stats.cashu_payment_receipts,
+            cashu_payment_defaults: stats.cashu_payment_defaults,
         }
     }
 
@@ -76,6 +82,9 @@ impl PersistedPeerMetadata {
         stats.bytes_received = self.bytes_received;
         stats.bytes_sent = self.bytes_sent;
         stats.cashu_paid_sat = self.cashu_paid_sat;
+        stats.cashu_received_sat = self.cashu_received_sat;
+        stats.cashu_payment_receipts = self.cashu_payment_receipts;
+        stats.cashu_payment_defaults = self.cashu_payment_defaults;
 
         // Runtime-only state is intentionally reset on restore.
         stats.backoff_level = 0;
@@ -166,6 +175,12 @@ pub struct PeerStats {
     pub bytes_sent: u64,
     /// Total sats paid to this peer through an external payment channel.
     pub cashu_paid_sat: u64,
+    /// Total sats this peer paid us after successful delivery.
+    pub cashu_received_sat: u64,
+    /// Number of successful post-delivery payments received from this peer.
+    pub cashu_payment_receipts: u64,
+    /// Number of times this peer failed to pay after successful delivery.
+    pub cashu_payment_defaults: u64,
 }
 
 impl PeerStats {
@@ -189,6 +204,9 @@ impl PeerStats {
             bytes_received: 0,
             bytes_sent: 0,
             cashu_paid_sat: 0,
+            cashu_received_sat: 0,
+            cashu_payment_receipts: 0,
+            cashu_payment_defaults: 0,
         }
     }
 
@@ -295,6 +313,22 @@ impl PeerStats {
             return;
         }
         self.cashu_paid_sat = self.cashu_paid_sat.saturating_add(amount_sat);
+    }
+
+    /// Record a settled payment received from this peer after we served data.
+    pub fn record_cashu_receipt(&mut self, amount_sat: u64) {
+        if amount_sat == 0 {
+            return;
+        }
+        self.cashu_received_sat = self.cashu_received_sat.saturating_add(amount_sat);
+        self.cashu_payment_receipts = self.cashu_payment_receipts.saturating_add(1);
+    }
+
+    /// Record that this peer failed to pay after successful delivery.
+    pub fn record_cashu_payment_default(&mut self) {
+        self.cashu_payment_defaults = self.cashu_payment_defaults.saturating_add(1);
+        self.last_failure = Some(Instant::now());
+        self.apply_backoff();
     }
 
     /// Apply exponential backoff
@@ -425,6 +459,20 @@ impl PeerStats {
         }
         let paid = self.cashu_paid_sat as f64;
         paid / (paid + 32.0)
+    }
+
+    /// Cooperative peers that actually pay us should not be penalized; repeated
+    /// defaults quickly reduce their desirability.
+    pub fn payment_reliability_multiplier(&self) -> f64 {
+        if self.cashu_payment_receipts == 0 && self.cashu_payment_defaults == 0 {
+            return 1.0;
+        }
+        (self.cashu_payment_receipts as f64 + 1.0)
+            / (self.cashu_payment_receipts as f64 + self.cashu_payment_defaults as f64 + 1.0)
+    }
+
+    pub fn exceeds_payment_default_threshold(&self, threshold: u64) -> bool {
+        threshold > 0 && self.cashu_payment_defaults >= threshold
     }
 }
 
@@ -587,12 +635,42 @@ impl PeerSelector {
         entry.record_cashu_payment(amount_sat);
     }
 
+    /// Record a settled post-delivery payment received from a peer.
+    pub fn record_cashu_receipt(&mut self, peer_id: &str, amount_sat: u64) {
+        if amount_sat == 0 {
+            return;
+        }
+        let entry = self
+            .stats
+            .entry(peer_id.to_string())
+            .or_insert_with(|| PeerStats::new(peer_id.to_string()));
+        entry.record_cashu_receipt(amount_sat);
+    }
+
+    /// Record that a peer failed to settle after we delivered successfully.
+    pub fn record_cashu_payment_default(&mut self, peer_id: &str) {
+        let entry = self
+            .stats
+            .entry(peer_id.to_string())
+            .or_insert_with(|| PeerStats::new(peer_id.to_string()));
+        entry.record_cashu_payment_default();
+    }
+
+    pub fn is_peer_blocked_for_payment_defaults(&self, peer_id: &str, threshold: u64) -> bool {
+        self.stats
+            .get(peer_id)
+            .map(|stats| stats.exceeds_payment_default_threshold(threshold))
+            .unwrap_or(false)
+    }
+
     fn blend_with_payment_priority(&self, stats: &PeerStats, base_score: f64) -> f64 {
+        let reliable_base = base_score * stats.payment_reliability_multiplier();
         if self.cashu_payment_weight <= 0.0 {
-            return base_score;
+            return reliable_base;
         }
         let payment_score = stats.cashu_priority_boost();
-        (1.0 - self.cashu_payment_weight) * base_score + self.cashu_payment_weight * payment_score
+        (1.0 - self.cashu_payment_weight) * reliable_base
+            + self.cashu_payment_weight * payment_score
     }
 
     /// Get available (non-backed-off) peers
@@ -1272,6 +1350,38 @@ mod tests {
     }
 
     #[test]
+    fn test_cashu_payment_default_downranks_peer() {
+        let mut selector = PeerSelector::with_strategy(SelectionStrategy::Weighted);
+        selector.add_peer("honest");
+        selector.add_peer("delinquent");
+
+        for peer_id in ["honest", "delinquent"] {
+            let stats = selector.get_stats_mut(peer_id).expect("stats");
+            stats.requests_sent = 40;
+            stats.successes = 34;
+            stats.failures = 3;
+            stats.timeouts = 3;
+            stats.srtt_ms = 60.0;
+            stats.bytes_sent = 40 * 40;
+            stats.bytes_received = 34 * 1024;
+        }
+
+        selector.record_cashu_payment_default("delinquent");
+
+        let peers = selector.select_peers();
+        assert_eq!(peers[0], "honest");
+        assert!(!peers.iter().any(|peer| peer == "delinquent"));
+    }
+
+    #[test]
+    fn test_payment_default_threshold_blocks_peer() {
+        let mut selector = PeerSelector::new();
+        selector.record_cashu_payment_default("peer-a");
+        assert!(selector.is_peer_blocked_for_payment_defaults("peer-a", 1));
+        assert!(!selector.is_peer_blocked_for_payment_defaults("peer-a", 2));
+    }
+
+    #[test]
     fn test_peer_principal_prefers_stable_identity_prefix() {
         assert_eq!(peer_principal("npub1abc:session-1"), "npub1abc");
         assert_eq!(peer_principal("npub1abc"), "npub1abc");
@@ -1284,6 +1394,8 @@ mod tests {
         selector.record_request("npub1stable:session-a", 64);
         selector.record_success("npub1stable:session-a", 32, 1024);
         selector.record_cashu_payment("npub1stable:session-a", 77);
+        selector.record_cashu_receipt("npub1stable:session-a", 33);
+        selector.record_cashu_payment_default("npub1stable:session-a");
 
         let snapshot = selector.export_peer_metadata_snapshot();
         assert_eq!(snapshot.version, PEER_METADATA_SNAPSHOT_VERSION);
@@ -1299,5 +1411,8 @@ mod tests {
         assert_eq!(stats.requests_sent, 1);
         assert_eq!(stats.successes, 1);
         assert_eq!(stats.cashu_paid_sat, 77);
+        assert_eq!(stats.cashu_received_sat, 33);
+        assert_eq!(stats.cashu_payment_receipts, 1);
+        assert_eq!(stats.cashu_payment_defaults, 1);
     }
 }

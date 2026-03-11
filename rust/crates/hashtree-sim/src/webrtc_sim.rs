@@ -73,10 +73,12 @@ pub struct CashuIncentiveConfig {
     pub enabled: bool,
     /// Initial channel capacity per payer->payee pair (sat).
     pub channel_capacity_sat: u64,
-    /// Amount paid before each retrieval probe (sat).
+    /// Amount paid after each successful retrieval probe (sat).
     pub payment_per_probe_sat: u64,
     /// Blend weight for payment priority in selector ranking.
     pub selection_bonus_weight: f64,
+    /// Refuse future service after this many unpaid successful deliveries.
+    pub payment_default_block_threshold: u64,
 }
 
 impl Default for CashuIncentiveConfig {
@@ -86,6 +88,7 @@ impl Default for CashuIncentiveConfig {
             channel_capacity_sat: 0,
             payment_per_probe_sat: 0,
             selection_bonus_weight: 0.0,
+            payment_default_block_threshold: 0,
         }
     }
 }
@@ -212,6 +215,7 @@ pub struct CashuStats {
     pub settlements_finalized: u64,
     pub priority_credits_applied: u64,
     pub priority_volume_sat: u64,
+    pub payment_defaults_recorded: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -381,6 +385,9 @@ impl Simulation {
 
     /// Run the simulation
     pub async fn run(&self) {
+        // Mock WebRTC channels share a global registry; each simulation run must
+        // start from a clean slate or later runs inherit stale links.
+        hashtree_webrtc::clear_channel_registry().await;
         let run_started = Instant::now();
         let total_ms = self.config.duration.as_millis() as u64;
         let tick_ms = self.config.discovery_interval_ms;
@@ -460,6 +467,8 @@ impl Simulation {
         stats
             .local_resources
             .finalize_tick_samples(&tick_durations_us);
+        drop(stats);
+        hashtree_webrtc::clear_channel_registry().await;
     }
 
     async fn update_resource_peaks(&self) {
@@ -564,6 +573,12 @@ impl Simulation {
                     .as_ref()
                     .map(|c| c.selection_bonus_weight)
                     .unwrap_or(0.0),
+                cashu_payment_default_block_threshold: self
+                    .config
+                    .cashu_incentives
+                    .as_ref()
+                    .map(|c| c.payment_default_block_threshold)
+                    .unwrap_or(0),
                 dispatch: selected_strategy.dispatch,
                 response_behavior: selected_strategy.response_behavior,
             },
@@ -748,11 +763,12 @@ impl Simulation {
             .filter(|c| c.enabled && c.channel_capacity_sat > 0 && c.payment_per_probe_sat > 0)
     }
 
-    async fn apply_cashu_priority_payment(
+    async fn settle_cashu_delivery_payment(
         &self,
         payer_id: &str,
         payee_id: &str,
         payer_store: Arc<SimStore>,
+        payee_store: Arc<SimStore>,
     ) {
         if payer_id == payee_id {
             return;
@@ -778,12 +794,21 @@ impl Simulation {
             .transfer(payer_id, payee_id, config.payment_per_probe_sat)
             .is_err()
         {
+            drop(mint);
+            payee_store
+                .record_cashu_payment_default_from_peer(payer_id)
+                .await;
+            let mut stats = self.stats.write().await;
+            stats.cashu.payment_defaults_recorded += 1;
             return;
         }
         drop(mint);
 
         payer_store
             .record_cashu_payment_for_peer(payee_id, config.payment_per_probe_sat)
+            .await;
+        payee_store
+            .record_cashu_receipt_from_peer(payer_id, config.payment_per_probe_sat)
             .await;
         let mut stats = self.stats.write().await;
         stats.cashu.priority_credits_applied += 1;
@@ -855,9 +880,6 @@ impl Simulation {
                 (target.store.clone(), target.strategy.clone())
             };
 
-            self.apply_cashu_priority_payment(&target_id, &source_id, target_store.clone())
-                .await;
-
             let hash = hashtree_core::sha256(&payload);
             let _ = source_store.put(hash, payload.clone()).await;
 
@@ -865,7 +887,7 @@ impl Simulation {
             let start = Instant::now();
             let result = self
                 .retrieve_with_processing(
-                    target_store,
+                    target_store.clone(),
                     hash,
                     Duration::from_millis(self.config.retrieval_timeout_ms),
                     time_ms + probe_idx as u64,
@@ -905,6 +927,17 @@ impl Simulation {
                 } else {
                     strategy_stats.failures += 1;
                 }
+            }
+
+            drop(stats);
+            if success {
+                self.settle_cashu_delivery_payment(
+                    &target_id,
+                    &source_id,
+                    target_store.clone(),
+                    source_store.clone(),
+                )
+                .await;
             }
         }
 
@@ -1261,6 +1294,7 @@ impl Simulation {
                         "channel_capacity_sat": cashu.channel_capacity_sat,
                         "payment_per_probe_sat": cashu.payment_per_probe_sat,
                         "selection_bonus_weight": cashu.selection_bonus_weight,
+                        "payment_default_block_threshold": cashu.payment_default_block_threshold,
                     })
                 }),
                 "strategy_mix": self.strategy_mix.iter().map(|s| {
@@ -1318,7 +1352,8 @@ impl Simulation {
                     "volume_sat": stats.cashu.volume_sat,
                     "settlements_finalized": stats.cashu.settlements_finalized,
                     "priority_credits_applied": stats.cashu.priority_credits_applied,
-                    "priority_volume_sat": stats.cashu.priority_volume_sat
+                    "priority_volume_sat": stats.cashu.priority_volume_sat,
+                    "payment_defaults_recorded": stats.cashu.payment_defaults_recorded
                 },
                 "retrieval": {
                     "probes": stats.retrieval.probes,
@@ -1367,7 +1402,8 @@ impl Simulation {
                 "reference_p95_latency_ms": reference_p95_latency_ms,
                 "reference_failure_rate": reference_failure_rate,
                 "cashu_priority_credits_applied": stats.cashu.priority_credits_applied,
-                "cashu_priority_volume_sat": stats.cashu.priority_volume_sat
+                "cashu_priority_volume_sat": stats.cashu.priority_volume_sat,
+                "cashu_payment_defaults_recorded": stats.cashu.payment_defaults_recorded
             }
         })
     }
@@ -1426,14 +1462,15 @@ impl Simulation {
         );
         if stats.cashu.payments_sent > 0 || stats.cashu.channels_opened > 0 {
             println!(
-                "Cashu incentives: channels={} payments_sent={} payments_failed={} volume_sat={} settlements={} priority_credits={} priority_volume_sat={}",
+                "Cashu incentives: channels={} payments_sent={} payments_failed={} volume_sat={} settlements={} priority_credits={} priority_volume_sat={} payment_defaults={}",
                 stats.cashu.channels_opened,
                 stats.cashu.payments_sent,
                 stats.cashu.payments_failed,
                 stats.cashu.volume_sat,
                 stats.cashu.settlements_finalized,
                 stats.cashu.priority_credits_applied,
-                stats.cashu.priority_volume_sat
+                stats.cashu.priority_volume_sat,
+                stats.cashu.payment_defaults_recorded
             );
         }
         if !stats.strategy_retrieval.is_empty() {
@@ -1739,6 +1776,7 @@ mod tests {
                 channel_capacity_sat: 128,
                 payment_per_probe_sat: 2,
                 selection_bonus_weight: 0.8,
+                payment_default_block_threshold: 0,
             }),
         };
 
@@ -1763,6 +1801,10 @@ mod tests {
             stats.cashu.priority_credits_applied > 0,
             "expected peer priority credits to be applied"
         );
+        assert!(
+            stats.cashu.payments_sent <= stats.retrieval.successes as u64,
+            "post-delivery payments must not exceed successful deliveries"
+        );
         assert_eq!(
             stats.cashu.priority_volume_sat,
             stats.cashu.priority_credits_applied * 2
@@ -1771,6 +1813,78 @@ mod tests {
             stats.cashu.settlements_finalized,
             stats.cashu.channels_opened
         );
+    }
+
+    #[tokio::test]
+    async fn test_cashu_post_delivery_payment_failure_records_default_in_peer_metadata() {
+        hashtree_webrtc::clear_channel_registry().await;
+        let config = SimConfig {
+            node_count: 2,
+            duration: Duration::from_secs(2),
+            seed: 17,
+            pool: PoolConfig {
+                max_connections: 1,
+                satisfied_connections: 1,
+            },
+            discovery_interval_ms: 100,
+            hello_reannounce_interval_ms: 250,
+            churn_rate: 0.0,
+            allow_rejoin: false,
+            network_latency_ms: 0,
+            retrieval_probe_count: 10,
+            retrieval_payload_bytes: 64,
+            retrieval_timeout_ms: 500,
+            max_events_retained: 1_000,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
+            strategy_mix: Vec::new(),
+            reference_strategy: None,
+            cashu_incentives: Some(CashuIncentiveConfig {
+                enabled: true,
+                channel_capacity_sat: 1,
+                payment_per_probe_sat: 2,
+                selection_bonus_weight: 0.8,
+                payment_default_block_threshold: 1,
+            }),
+        };
+
+        let sim = Simulation::new(config);
+        sim.spawn_node(0).await;
+        sim.spawn_node(0).await;
+
+        let (payer_id, payee_id, payer_store, payee_store) = {
+            let nodes = sim.nodes.read().await;
+            let mut ids: Vec<_> = nodes.keys().cloned().collect();
+            ids.sort();
+            let payer_id = ids[0].clone();
+            let payee_id = ids[1].clone();
+            let payer_store = nodes.get(&payer_id).expect("payer node").store.clone();
+            let payee_store = nodes.get(&payee_id).expect("payee node").store.clone();
+            (payer_id, payee_id, payer_store, payee_store)
+        };
+
+        sim.settle_cashu_delivery_payment(&payer_id, &payee_id, payer_store, payee_store.clone())
+            .await;
+        sim.finalize_cashu_stats().await;
+
+        let stats = sim.get_stats().await;
+        assert!(
+            stats.cashu.payments_failed > 0,
+            "expected failed post-delivery settlements when capacity < payment"
+        );
+        assert!(
+            stats.cashu.payment_defaults_recorded > 0,
+            "provider should record non-paying peers in metadata"
+        );
+
+        let snapshot = payee_store.peer_metadata_snapshot().await;
+        let payer_meta = snapshot
+            .peers
+            .iter()
+            .find(|peer| peer.principal == payer_id)
+            .expect("payer metadata");
+        assert_eq!(payer_meta.cashu_payment_defaults, 1);
+        hashtree_webrtc::clear_channel_registry().await;
     }
 
     #[tokio::test]

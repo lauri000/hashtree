@@ -164,6 +164,9 @@ pub struct GenericStoreRoutingConfig {
     pub fairness_enabled: bool,
     /// Blend weight for payment-priority ranking in selector (`0.0` disables).
     pub cashu_payment_weight: f64,
+    /// Refuse serving peers that have reached this many unpaid post-delivery settlements.
+    /// `0` disables refusal and only keeps metadata/downranking.
+    pub cashu_payment_default_block_threshold: u64,
     pub dispatch: RequestDispatchConfig,
     pub response_behavior: ResponseBehaviorConfig,
 }
@@ -174,6 +177,7 @@ impl Default for GenericStoreRoutingConfig {
             selection_strategy: SelectionStrategy::Weighted,
             fairness_enabled: true,
             cashu_payment_weight: 0.0,
+            cashu_payment_default_block_threshold: 0,
             dispatch: RequestDispatchConfig::default(),
             response_behavior: ResponseBehaviorConfig::default(),
         }
@@ -398,6 +402,37 @@ where
             .record_cashu_payment(peer_id, amount_sat);
     }
 
+    /// Record a post-delivery payment we received from a peer.
+    pub async fn record_cashu_receipt_from_peer(&self, peer_id: &str, amount_sat: u64) {
+        self.peer_selector
+            .write()
+            .await
+            .record_cashu_receipt(peer_id, amount_sat);
+    }
+
+    /// Record that a peer failed to pay after we delivered successfully.
+    pub async fn record_cashu_payment_default_from_peer(&self, peer_id: &str) {
+        self.peer_selector
+            .write()
+            .await
+            .record_cashu_payment_default(peer_id);
+    }
+
+    fn should_refuse_requests_from_peer(&self, selector: &PeerSelector, peer_id: &str) -> bool {
+        selector.is_peer_blocked_for_payment_defaults(
+            peer_id,
+            self.routing.cashu_payment_default_block_threshold,
+        )
+    }
+
+    /// Export live peer metadata for inspection/debugging.
+    pub async fn peer_metadata_snapshot(&self) -> PeerMetadataSnapshot {
+        self.peer_selector
+            .read()
+            .await
+            .export_peer_metadata_snapshot()
+    }
+
     /// Snapshot current peer metadata and persist it into `local_store`.
     ///
     /// Uses content-addressed storage for the snapshot body and a reserved
@@ -590,6 +625,19 @@ where
             None => return,
         };
 
+        {
+            let selector = self.peer_selector.read().await;
+            if self.should_refuse_requests_from_peer(&selector, from_peer) {
+                if self.debug {
+                    println!(
+                        "[GenericStore] Refusing request from delinquent peer {}",
+                        from_peer
+                    );
+                }
+                return;
+            }
+        }
+
         // Check local store
         if let Ok(Some(mut data)) = self.local_store.get(&hash).await {
             if self.should_drop_response(&hash) {
@@ -687,6 +735,14 @@ mod tests {
     >;
 
     fn make_test_store(local_store: Arc<MemoryStore>, node_id: &str) -> TestStore {
+        make_test_store_with_routing(local_store, node_id, GenericStoreRoutingConfig::default())
+    }
+
+    fn make_test_store_with_routing(
+        local_store: Arc<MemoryStore>,
+        node_id: &str,
+        routing: GenericStoreRoutingConfig,
+    ) -> TestStore {
         let relay = crate::mock::MockRelay::new();
         let transport = Arc::new(relay.create_transport(node_id.to_string(), node_id.to_string()));
         let conn_factory = Arc::new(crate::mock::MockConnectionFactory::new(
@@ -702,7 +758,13 @@ mod tests {
             false,
         ));
 
-        TestStore::new(local_store, signaling, Duration::from_millis(200), false)
+        TestStore::new_with_routing(
+            local_store,
+            signaling,
+            Duration::from_millis(200),
+            false,
+            routing,
+        )
     }
 
     #[test]
@@ -763,6 +825,8 @@ mod tests {
             selector.record_request("npub1stable:session-a", 64);
             selector.record_success("npub1stable:session-a", 35, 1024);
             selector.record_cashu_payment("npub1stable:session-a", 120);
+            selector.record_cashu_receipt("npub1stable:session-a", 40);
+            selector.record_cashu_payment_default("npub1stable:session-a");
         }
 
         let snapshot_hash = writer
@@ -789,6 +853,27 @@ mod tests {
         assert_eq!(stats.requests_sent, 1);
         assert_eq!(stats.successes, 1);
         assert_eq!(stats.cashu_paid_sat, 120);
+        assert_eq!(stats.cashu_received_sat, 40);
+        assert_eq!(stats.cashu_payment_receipts, 1);
+        assert_eq!(stats.cashu_payment_defaults, 1);
+    }
+
+    #[tokio::test]
+    async fn test_should_refuse_requests_from_peer_after_payment_defaults() {
+        let local_store = Arc::new(MemoryStore::new());
+        let store = make_test_store_with_routing(
+            local_store,
+            "0",
+            GenericStoreRoutingConfig {
+                cashu_payment_default_block_threshold: 1,
+                ..Default::default()
+            },
+        );
+        store.record_cashu_payment_default_from_peer("peer-a").await;
+
+        let selector = store.peer_selector.read().await;
+        assert!(store.should_refuse_requests_from_peer(&selector, "peer-a"));
+        assert!(!store.should_refuse_requests_from_peer(&selector, "peer-b"));
     }
 }
 

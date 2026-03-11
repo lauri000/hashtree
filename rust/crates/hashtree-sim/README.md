@@ -141,8 +141,10 @@ The tuning example evaluates two gate profiles:
 - many offchain micropayments inside the channel
 - final settlement at simulation end
 
-When enabled, each retrieval probe can send a micropayment and add payment credit
-to peer selection. If disabled (or unset), routing stays reputation-only.
+When enabled, successful retrieval probes attempt a post-delivery micropayment.
+Successful settlement adds payment credit to future peer selection; failed settlement
+records requester defaults in peer metadata and can optionally block future service
+after a configured threshold. If disabled (or unset), routing stays reputation-only.
 
 ### Timing Modes
 

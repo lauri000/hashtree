@@ -195,6 +195,7 @@ async fn main() {
                 channel_capacity_sat: 128,
                 payment_per_probe_sat: 1,
                 selection_bonus_weight: 0.35,
+                payment_default_block_threshold: 0,
             }),
         },
         Variant {
@@ -204,6 +205,7 @@ async fn main() {
                 channel_capacity_sat: 256,
                 payment_per_probe_sat: 2,
                 selection_bonus_weight: 0.8,
+                payment_default_block_threshold: 0,
             }),
         },
     ];
