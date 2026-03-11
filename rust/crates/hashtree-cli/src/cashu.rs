@@ -1,101 +1,71 @@
 use anyhow::{bail, Context, Result};
+use cdk::mint_url::MintUrl;
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
+use cdk::wallet::{WalletRepository, WalletRepositoryBuilder};
+use cdk::Amount;
+use cdk_sqlite::WalletSqliteDatabase;
+use rand::RngCore;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::str::FromStr;
+use std::sync::Arc;
 
-pub const CASHU_WALLET_STATE_VERSION: u32 = 1;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MintBalance {
-    pub mint_url: String,
-    pub balance_sat: u64,
-    pub total_topped_up_sat: u64,
-    pub total_spent_sat: u64,
-    pub updated_at_unix_ms: u64,
-}
+pub const CASHU_WALLET_SEED_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CashuWalletState {
+pub struct CashuWalletSeedFile {
     pub version: u32,
-    #[serde(default)]
-    pub mints: Vec<MintBalance>,
+    pub seed_hex: String,
 }
 
-impl Default for CashuWalletState {
-    fn default() -> Self {
-        Self {
-            version: CASHU_WALLET_STATE_VERSION,
-            mints: Vec::new(),
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CashuWalletEntry {
+    pub mint_url: String,
+    pub unit: String,
+    pub balance: u64,
 }
 
-impl CashuWalletState {
-    pub fn load_or_default(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        let content = fs::read_to_string(path).context("Failed to read Cashu wallet state")?;
-        let mut state: Self =
-            serde_json::from_str(&content).context("Failed to parse Cashu wallet state")?;
-        state.sort_mints();
-        Ok(state)
-    }
-
-    pub fn save(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).context("Failed to create Cashu wallet directory")?;
-        }
-        let content =
-            serde_json::to_string_pretty(self).context("Failed to encode Cashu wallet state")?;
-        fs::write(path, content).context("Failed to write Cashu wallet state")?;
-        Ok(())
-    }
-
-    pub fn total_balance_sat(&self) -> u64 {
-        self.mints.iter().map(|mint| mint.balance_sat).sum()
-    }
-
-    pub fn balance_for_mint(&self, mint_url: &str) -> Option<&MintBalance> {
-        self.mints.iter().find(|mint| mint.mint_url == mint_url)
-    }
-
-    pub fn credit_mint(&mut self, mint_url: &str, amount_sat: u64) -> Result<u64> {
-        if amount_sat == 0 {
-            bail!("Cashu topup amount must be greater than zero");
-        }
-
-        let now = unix_ms_now();
-        let entry = self.mints.iter_mut().find(|mint| mint.mint_url == mint_url);
-        match entry {
-            Some(entry) => {
-                entry.balance_sat = entry.balance_sat.saturating_add(amount_sat);
-                entry.total_topped_up_sat = entry.total_topped_up_sat.saturating_add(amount_sat);
-                entry.updated_at_unix_ms = now;
-            }
-            None => self.mints.push(MintBalance {
-                mint_url: mint_url.to_string(),
-                balance_sat: amount_sat,
-                total_topped_up_sat: amount_sat,
-                total_spent_sat: 0,
-                updated_at_unix_ms: now,
-            }),
-        }
-        self.sort_mints();
-        Ok(self
-            .balance_for_mint(mint_url)
-            .map(|mint| mint.balance_sat)
-            .unwrap_or(0))
-    }
-
-    fn sort_mints(&mut self) {
-        self.mints.sort_by(|a, b| a.mint_url.cmp(&b.mint_url));
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CashuUnitTotal {
+    pub unit: String,
+    pub balance: u64,
 }
 
-pub fn cashu_wallet_state_path(data_dir: &Path) -> PathBuf {
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CashuWalletOverview {
+    pub totals: Vec<CashuUnitTotal>,
+    pub entries: Vec<CashuWalletEntry>,
+    pub warnings: Vec<String>,
+    pub legacy_state_detected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CashuTopupQuote {
+    pub mint_url: String,
+    pub unit: String,
+    pub amount: u64,
+    pub quote_id: String,
+    pub payment_request: String,
+    pub expiry_unix: u64,
+}
+
+pub fn cashu_wallet_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("cashu")
+}
+
+pub fn cashu_wallet_db_path(data_dir: &Path) -> PathBuf {
+    cashu_wallet_dir(data_dir).join("wallet.sqlite")
+}
+
+pub fn cashu_wallet_seed_path(data_dir: &Path) -> PathBuf {
+    cashu_wallet_dir(data_dir).join("seed.json")
+}
+
+pub fn legacy_cashu_wallet_state_path(data_dir: &Path) -> PathBuf {
     data_dir.join("cashu-wallet.json")
 }
 
@@ -119,11 +89,184 @@ pub fn normalize_mint_url(raw: &str) -> Result<String> {
     Ok(url.to_string().trim_end_matches('/').to_string())
 }
 
-fn unix_ms_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+pub fn load_or_create_wallet_seed(path: &Path) -> Result<[u8; 64]> {
+    if path.exists() {
+        let content = fs::read_to_string(path).context("Failed to read Cashu wallet seed")?;
+        let seed_file: CashuWalletSeedFile =
+            serde_json::from_str(&content).context("Failed to parse Cashu wallet seed")?;
+        let seed_bytes = hex::decode(seed_file.seed_hex).context("Invalid Cashu wallet seed")?;
+        let seed: [u8; 64] = seed_bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Cashu wallet seed must be 64 bytes"))?;
+        return Ok(seed);
+    }
+
+    let mut seed = [0_u8; 64];
+    rand::thread_rng().fill_bytes(&mut seed);
+    write_wallet_seed(path, &seed)?;
+    Ok(seed)
+}
+
+pub async fn open_wallet_repository(data_dir: &Path) -> Result<WalletRepository> {
+    fs::create_dir_all(cashu_wallet_dir(data_dir))
+        .context("Failed to create Cashu wallet directory")?;
+    let seed = load_or_create_wallet_seed(&cashu_wallet_seed_path(data_dir))?;
+    let localstore = Arc::new(
+        WalletSqliteDatabase::new(cashu_wallet_db_path(data_dir))
+            .await
+            .context("Failed to open Cashu wallet database")?,
+    );
+    let repository = WalletRepositoryBuilder::new()
+        .localstore(localstore)
+        .seed(seed)
+        .build()
+        .await
+        .context("Failed to build Cashu wallet repository")?;
+    Ok(repository)
+}
+
+pub async fn load_wallet_overview(
+    data_dir: &Path,
+    refresh_quotes: bool,
+) -> Result<CashuWalletOverview> {
+    let repository = open_wallet_repository(data_dir).await?;
+    let mut warnings = Vec::new();
+
+    if refresh_quotes {
+        for wallet in repository.get_wallets().await {
+            let mint_label = format!("{} ({})", wallet.mint_url, wallet.unit);
+            if let Err(err) = wallet.recover_incomplete_sagas().await {
+                warnings.push(format!(
+                    "Failed to recover wallet state for {mint_label}: {err}"
+                ));
+                continue;
+            }
+            if let Err(err) = wallet.mint_unissued_quotes().await {
+                warnings.push(format!(
+                    "Failed to refresh pending mint quotes for {mint_label}: {err}"
+                ));
+            }
+        }
+    }
+
+    let totals = repository
+        .total_balance()
+        .await
+        .context("Failed to load Cashu wallet totals")?
+        .into_iter()
+        .map(|(unit, amount)| CashuUnitTotal {
+            unit: unit.to_string(),
+            balance: amount.to_u64(),
+        })
+        .collect();
+
+    let entries = repository
+        .get_balances()
+        .await
+        .context("Failed to load Cashu wallet balances")?
+        .into_iter()
+        .map(|(key, amount)| CashuWalletEntry {
+            mint_url: key.mint_url.to_string(),
+            unit: key.unit.to_string(),
+            balance: amount.to_u64(),
+        })
+        .collect();
+
+    Ok(CashuWalletOverview {
+        totals,
+        entries,
+        warnings,
+        legacy_state_detected: legacy_cashu_wallet_state_path(data_dir).exists(),
+    })
+}
+
+pub async fn create_topup_quote(
+    data_dir: &Path,
+    mint_url: &str,
+    amount_sat: u64,
+) -> Result<CashuTopupQuote> {
+    if amount_sat == 0 {
+        bail!("Cashu topup amount must be greater than zero");
+    }
+
+    let normalized_mint = normalize_mint_url(mint_url)?;
+    let mint_url =
+        MintUrl::from_str(&normalized_mint).context("Failed to parse normalized mint URL")?;
+    let repository = open_wallet_repository(data_dir).await?;
+    let wallet = ensure_sat_wallet(&repository, &mint_url).await?;
+
+    wallet
+        .recover_incomplete_sagas()
+        .await
+        .context("Failed to recover Cashu wallet state before creating quote")?;
+    wallet
+        .mint_unissued_quotes()
+        .await
+        .context("Failed to refresh pending Cashu mint quotes before creating quote")?;
+
+    let quote = wallet
+        .mint_quote(
+            PaymentMethod::BOLT11,
+            Some(Amount::from(amount_sat)),
+            None,
+            None,
+        )
+        .await
+        .context("Failed to create Cashu mint quote")?;
+
+    Ok(CashuTopupQuote {
+        mint_url: normalized_mint,
+        unit: CurrencyUnit::Sat.to_string(),
+        amount: amount_sat,
+        quote_id: quote.id,
+        payment_request: quote.request,
+        expiry_unix: quote.expiry,
+    })
+}
+
+fn write_wallet_seed(path: &Path, seed: &[u8; 64]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).context("Failed to create Cashu wallet directory")?;
+    }
+
+    let seed_file = CashuWalletSeedFile {
+        version: CASHU_WALLET_SEED_VERSION,
+        seed_hex: hex::encode(seed),
+    };
+    let content =
+        serde_json::to_string_pretty(&seed_file).context("Failed to encode Cashu wallet seed")?;
+    fs::write(path, content).context("Failed to write Cashu wallet seed")?;
+    #[cfg(unix)]
+    {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .context("Failed to secure Cashu wallet seed permissions")?;
+    }
+    Ok(())
+}
+
+async fn ensure_sat_wallet(
+    repository: &WalletRepository,
+    mint_url: &MintUrl,
+) -> Result<cdk::wallet::Wallet> {
+    let wallet = if repository.has_wallet(mint_url, &CurrencyUnit::Sat).await {
+        repository
+            .get_wallet(mint_url, &CurrencyUnit::Sat)
+            .await
+            .context("Failed to load existing Cashu sat wallet")?
+    } else {
+        repository
+            .create_wallet(mint_url.clone(), CurrencyUnit::Sat, None)
+            .await
+            .context("Failed to create Cashu sat wallet")?
+    };
+
+    wallet
+        .localstore
+        .add_mint(mint_url.clone(), None)
+        .await
+        .context("Failed to persist Cashu mint metadata")?;
+
+    Ok(wallet)
 }
 
 #[cfg(test)]
@@ -145,30 +288,67 @@ mod tests {
     }
 
     #[test]
-    fn test_cashu_wallet_state_roundtrip_and_credit() {
+    fn test_cashu_wallet_seed_roundtrip_and_paths() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let path = cashu_wallet_state_path(temp_dir.path());
+        let seed_path = cashu_wallet_seed_path(temp_dir.path());
+        let db_path = cashu_wallet_db_path(temp_dir.path());
+        assert_eq!(seed_path, temp_dir.path().join("cashu").join("seed.json"));
+        assert_eq!(db_path, temp_dir.path().join("cashu").join("wallet.sqlite"));
 
-        let mut state = CashuWalletState::load_or_default(&path).unwrap();
-        assert_eq!(state.total_balance_sat(), 0);
+        let seed = load_or_create_wallet_seed(&seed_path).unwrap();
+        assert_eq!(seed.len(), 64);
+        let restored = load_or_create_wallet_seed(&seed_path).unwrap();
+        assert_eq!(restored, seed);
+    }
 
-        assert_eq!(state.credit_mint("https://mint-b.example", 7).unwrap(), 7);
-        assert_eq!(state.credit_mint("https://mint-a.example", 5).unwrap(), 5);
-        assert_eq!(state.credit_mint("https://mint-a.example", 3).unwrap(), 8);
-        state.save(&path).unwrap();
+    #[tokio::test]
+    async fn test_wallet_overview_loads_stored_wallets() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo = open_wallet_repository(temp_dir.path()).await.unwrap();
+        let mint_url: MintUrl = "https://mint.example".parse().unwrap();
+        ensure_sat_wallet(&repo, &mint_url).await.unwrap();
 
-        let restored = CashuWalletState::load_or_default(&path).unwrap();
-        assert_eq!(restored.total_balance_sat(), 15);
+        let overview = load_wallet_overview(temp_dir.path(), false).await.unwrap();
         assert_eq!(
-            restored
-                .mints
-                .iter()
-                .map(|mint| mint.mint_url.as_str())
-                .collect::<Vec<_>>(),
-            vec!["https://mint-a.example", "https://mint-b.example"]
+            overview.entries,
+            vec![CashuWalletEntry {
+                mint_url: "https://mint.example".to_string(),
+                unit: "sat".to_string(),
+                balance: 0,
+            }]
         );
-        let mint_a = restored.balance_for_mint("https://mint-a.example").unwrap();
-        assert_eq!(mint_a.balance_sat, 8);
-        assert_eq!(mint_a.total_topped_up_sat, 8);
+        assert_eq!(
+            overview.totals,
+            vec![CashuUnitTotal {
+                unit: "sat".to_string(),
+                balance: 0,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_topup_quote_rejects_zero_amount() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let err = create_topup_quote(temp_dir.path(), "https://mint.example", 0)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("greater than zero"));
+    }
+
+    #[tokio::test]
+    async fn test_create_topup_quote_against_configured_mint() {
+        let mint_url = match std::env::var("HTREE_CASHU_TEST_MINT_URL") {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let quote = create_topup_quote(temp_dir.path(), &mint_url, 1)
+            .await
+            .unwrap();
+        assert_eq!(quote.amount, 1);
+        assert_eq!(quote.unit, "sat");
+        assert!(!quote.quote_id.is_empty());
+        assert!(!quote.payment_request.is_empty());
     }
 }

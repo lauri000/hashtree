@@ -1264,10 +1264,10 @@ pub(crate) async fn run() -> Result<()> {
             let mut config = Config::load()?;
             match command {
                 CashuCommands::Balance { mint } => {
-                    print_cashu_balance(&config, &data_dir, mint.as_deref())?;
+                    print_cashu_balance(&config, &data_dir, mint.as_deref()).await?;
                 }
                 CashuCommands::Topup { amount_sat, mint } => {
-                    topup_cashu_balance(&config, &data_dir, amount_sat, mint.as_deref())?;
+                    topup_cashu_balance(&config, &data_dir, amount_sat, mint.as_deref()).await?;
                 }
                 CashuCommands::Mint { command } => match command {
                     CashuMintCommands::List => {

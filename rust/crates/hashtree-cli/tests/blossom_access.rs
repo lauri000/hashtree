@@ -12,9 +12,10 @@
 //! Run with: cargo test --package hashtree-cli --test blossom_access -- --nocapture
 
 use nostr::{Keys, ToBech32};
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 struct TestServer {
@@ -67,7 +68,7 @@ relays = []
             .expect("Failed to encode nsec");
         std::fs::write(config_dir.join("keys"), &nsec).expect("Failed to write keys");
 
-        let process = Command::new(htree_bin)
+        let mut process = Command::new(htree_bin)
             .arg("--data-dir")
             .arg(data_dir.path())
             .arg("start")
@@ -80,8 +81,7 @@ relays = []
             .spawn()
             .expect("Failed to start htree server");
 
-        // Wait for server to start
-        std::thread::sleep(Duration::from_secs(2));
+        wait_for_server_ready(&mut process, port);
 
         TestServer {
             _data_dir: data_dir,
@@ -93,6 +93,30 @@ relays = []
 
     fn base_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
+    }
+}
+
+fn wait_for_server_ready(process: &mut Child, port: u16) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+
+    loop {
+        if let Some(status) = process
+            .try_wait()
+            .expect("Failed to poll htree server process")
+        {
+            panic!("htree server exited before becoming ready: {status}");
+        }
+
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
+            return;
+        }
+
+        if Instant::now() >= deadline {
+            panic!("Timed out waiting for htree server on {addr}");
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 

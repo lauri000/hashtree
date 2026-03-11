@@ -1,94 +1,117 @@
 use anyhow::{bail, Result};
-use hashtree_cli::cashu::{cashu_wallet_state_path, normalize_mint_url, CashuWalletState};
+use hashtree_cli::cashu::{
+    create_topup_quote, legacy_cashu_wallet_state_path, load_wallet_overview, normalize_mint_url,
+    CashuWalletEntry,
+};
 use hashtree_cli::Config;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-pub(crate) fn print_balance(
+pub(crate) async fn print_balance(
     config: &Config,
     data_dir: &Path,
     mint_filter: Option<&str>,
 ) -> Result<()> {
-    let wallet_path = cashu_wallet_state_path(data_dir);
-    let wallet = CashuWalletState::load_or_default(&wallet_path)?;
-
+    let overview = load_wallet_overview(data_dir, true).await?;
     let normalized_filter = mint_filter.map(normalize_mint_url).transpose()?;
+
     if let Some(ref mint_url) = normalized_filter {
-        let balance_sat = wallet
-            .balance_for_mint(mint_url)
-            .map(|mint| mint.balance_sat)
-            .unwrap_or(0);
-        let accepted = config
-            .cashu
-            .accepted_mints
-            .iter()
-            .any(|mint| mint == mint_url);
-        let default = config.cashu.default_mint.as_deref() == Some(mint_url.as_str());
-        println!("Mint: {mint_url}");
-        println!("Accepted: {}", if accepted { "yes" } else { "no" });
-        println!("Default: {}", if default { "yes" } else { "no" });
-        println!("Balance: {balance_sat} sat");
+        print_single_mint_balance(config, &overview.entries, mint_url);
+        print_footer(data_dir, &overview.warnings);
         return Ok(());
     }
 
     println!("Cashu balance");
-    println!("Total: {} sat", wallet.total_balance_sat());
+    if overview.totals.is_empty() {
+        println!("Total: 0 sat");
+    } else {
+        println!("Totals:");
+        for total in &overview.totals {
+            println!("  - {} {}", total.balance, total.unit);
+        }
+    }
     if let Some(default_mint) = &config.cashu.default_mint {
         println!("Default mint: {default_mint}");
     } else {
         println!("Default mint: none");
     }
 
+    let mut grouped: BTreeMap<String, Vec<&CashuWalletEntry>> = BTreeMap::new();
+    for entry in &overview.entries {
+        grouped
+            .entry(entry.mint_url.clone())
+            .or_default()
+            .push(entry);
+    }
+
     let mut mint_urls: BTreeSet<String> = config.cashu.accepted_mints.iter().cloned().collect();
-    mint_urls.extend(wallet.mints.iter().map(|mint| mint.mint_url.clone()));
+    mint_urls.extend(grouped.keys().cloned());
 
     if mint_urls.is_empty() {
         println!("Accepted mints: none configured");
         println!("Use `htree cashu mint add <url>` to accept a mint.");
+        print_footer(data_dir, &overview.warnings);
         return Ok(());
     }
 
     println!("Mints:");
     for mint_url in mint_urls {
-        let balance_sat = wallet
-            .balance_for_mint(&mint_url)
-            .map(|mint| mint.balance_sat)
-            .unwrap_or(0);
-        let mut flags = Vec::new();
-        if config
+        let accepted = config
             .cashu
             .accepted_mints
             .iter()
-            .any(|mint| mint == &mint_url)
-        {
-            flags.push("accepted");
+            .any(|mint| mint == &mint_url);
+        let default = config.cashu.default_mint.as_deref() == Some(mint_url.as_str());
+        let flags = flags_for_mint(accepted, default);
+        if let Some(entries) = grouped.get(&mint_url) {
+            for entry in entries {
+                println!(
+                    "  - {} ({}) :: {} [{}]",
+                    mint_url,
+                    entry.unit,
+                    format_amount(entry.balance, &entry.unit),
+                    flags.join(", ")
+                );
+            }
         } else {
-            flags.push("stored-only");
+            println!("  - {} (sat) :: 0 sat [{}]", mint_url, flags.join(", "));
         }
-        if config.cashu.default_mint.as_deref() == Some(mint_url.as_str()) {
-            flags.push("default");
-        }
-        println!("  - {mint_url} :: {balance_sat} sat [{}]", flags.join(", "));
     }
 
+    print_footer(data_dir, &overview.warnings);
     Ok(())
 }
 
-pub(crate) fn topup_balance(
+pub(crate) async fn topup_balance(
     config: &Config,
     data_dir: &Path,
     amount_sat: u64,
     mint: Option<&str>,
 ) -> Result<()> {
     let mint_url = resolve_selected_mint(config, mint)?;
-    let wallet_path = cashu_wallet_state_path(data_dir);
-    let mut wallet = CashuWalletState::load_or_default(&wallet_path)?;
-    let new_balance = wallet.credit_mint(&mint_url, amount_sat)?;
-    wallet.save(&wallet_path)?;
+    let quote = create_topup_quote(data_dir, &mint_url, amount_sat).await?;
 
-    println!("Credited {amount_sat} sat to {mint_url}");
-    println!("New balance: {new_balance} sat");
-    println!("Note: this is local wallet state for development until real mint top-up is wired.");
+    println!("Created Cashu mint quote");
+    println!("Mint: {}", quote.mint_url);
+    println!("Amount: {} {}", quote.amount, quote.unit);
+    println!("Quote id: {}", quote.quote_id);
+    if quote.expiry_unix > 0 {
+        println!("Expiry (unix): {}", quote.expiry_unix);
+    }
+    println!("Invoice:");
+    println!("{}", quote.payment_request);
+    println!(
+        "After paying, run `htree cashu balance --mint {}` to mint pending proofs.",
+        quote.mint_url
+    );
+
+    if legacy_cashu_wallet_state_path(data_dir).exists() {
+        println!(
+            "Legacy note: local dev wallet state at {} is ignored by the CDK wallet backend.",
+            legacy_cashu_wallet_state_path(data_dir).display()
+        );
+    }
+
     Ok(())
 }
 
@@ -170,6 +193,64 @@ pub(crate) fn set_default_mint(config: &mut Config, raw_url: &str) -> Result<()>
     config.save()?;
     println!("Default mint: {mint_url}");
     Ok(())
+}
+
+fn print_single_mint_balance(config: &Config, entries: &[CashuWalletEntry], mint_url: &str) {
+    let accepted = config
+        .cashu
+        .accepted_mints
+        .iter()
+        .any(|mint| mint == mint_url);
+    let default = config.cashu.default_mint.as_deref() == Some(mint_url);
+    let mint_entries: Vec<&CashuWalletEntry> = entries
+        .iter()
+        .filter(|entry| entry.mint_url == mint_url)
+        .collect();
+
+    println!("Mint: {mint_url}");
+    println!("Accepted: {}", if accepted { "yes" } else { "no" });
+    println!("Default: {}", if default { "yes" } else { "no" });
+    if mint_entries.is_empty() {
+        println!("Balance: 0 sat");
+        return;
+    }
+
+    println!("Balances:");
+    for entry in mint_entries {
+        println!("  - {}", format_amount(entry.balance, &entry.unit));
+    }
+}
+
+fn print_footer(data_dir: &Path, warnings: &[String]) {
+    if legacy_cashu_wallet_state_path(data_dir).exists() {
+        println!(
+            "Legacy note: local dev wallet state at {} is ignored by the CDK wallet backend.",
+            legacy_cashu_wallet_state_path(data_dir).display()
+        );
+    }
+    if !warnings.is_empty() {
+        println!("Warnings:");
+        for warning in warnings {
+            println!("  - {warning}");
+        }
+    }
+}
+
+fn flags_for_mint(accepted: bool, default: bool) -> Vec<&'static str> {
+    let mut flags = Vec::new();
+    if accepted {
+        flags.push("accepted");
+    } else {
+        flags.push("stored-only");
+    }
+    if default {
+        flags.push("default");
+    }
+    flags
+}
+
+fn format_amount(amount: u64, unit: &str) -> String {
+    format!("{amount} {unit}")
 }
 
 fn resolve_selected_mint(config: &Config, mint: Option<&str>) -> Result<String> {

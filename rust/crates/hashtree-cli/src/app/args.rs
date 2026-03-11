@@ -236,7 +236,7 @@ pub(crate) enum Commands {
         addr: String,
     },
 
-    /// Manage Cashu wallet state and accepted mints
+    /// Manage Cashu wallet and accepted mints
     Cashu {
         #[command(subcommand)]
         command: CashuCommands,
@@ -330,12 +330,12 @@ pub(crate) enum CashuCommands {
         #[arg(long)]
         mint: Option<String>,
     },
-    /// Credit the local Cashu wallet state for development/testing
+    /// Create a Cashu top-up quote from the selected mint
     #[command(visible_alias = "load")]
     Topup {
         /// Amount in satoshis
         amount_sat: u64,
-        /// Mint to credit (defaults to configured default mint)
+        /// Mint to use (defaults to configured default mint)
         #[arg(long)]
         mint: Option<String>,
     },
