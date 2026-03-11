@@ -389,13 +389,17 @@ impl std::fmt::Display for PeerDirection {
 /// Message type bytes (prefix before MessagePack body)
 pub const MSG_TYPE_REQUEST: u8 = 0x00;
 pub const MSG_TYPE_RESPONSE: u8 = 0x01;
+pub const MSG_TYPE_QUOTE_REQUEST: u8 = 0x02;
+pub const MSG_TYPE_QUOTE_RESPONSE: u8 = 0x03;
 
 /// Hashtree data channel protocol messages
 /// Shared between WebRTC data channels and WebSocket transport
 ///
 /// Wire format: [type byte][msgpack body]
-/// Request:  [0x00][msgpack: {h: bytes32, htl?: u8}]
+/// Request:  [0x00][msgpack: {h: bytes32, htl?: u8, q?: u64}]
 /// Response: [0x01][msgpack: {h: bytes32, d: bytes}]
+/// QuoteRequest:  [0x02][msgpack: {h: bytes32, p: u64, t: u32, m?: string}]
+/// QuoteResponse: [0x03][msgpack: {h: bytes32, a: bool, q?: u64, p?: u64, t?: u32, m?: string}]
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataRequest {
@@ -403,6 +407,8 @@ pub struct DataRequest {
     pub h: Vec<u8>, // 32-byte hash
     #[serde(default = "default_htl", skip_serializing_if = "is_max_htl")]
     pub htl: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub q: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -413,10 +419,37 @@ pub struct DataResponse {
     pub d: Vec<u8>, // Data
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataQuoteRequest {
+    #[serde(with = "serde_bytes")]
+    pub h: Vec<u8>,
+    pub p: u64,
+    pub t: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub m: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataQuoteResponse {
+    #[serde(with = "serde_bytes")]
+    pub h: Vec<u8>,
+    pub a: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub q: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub t: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub m: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum DataMessage {
     Request(DataRequest),
     Response(DataResponse),
+    QuoteRequest(DataQuoteRequest),
+    QuoteResponse(DataQuoteResponse),
 }
 
 fn default_htl() -> u8 {
@@ -447,6 +480,24 @@ pub fn encode_response(res: &DataResponse) -> Result<Vec<u8>, rmp_serde::encode:
     Ok(result)
 }
 
+/// Encode a quote request to wire format: [0x02][msgpack body]
+pub fn encode_quote_request(req: &DataQuoteRequest) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+    let body = rmp_serde::to_vec_named(req)?;
+    let mut result = Vec::with_capacity(1 + body.len());
+    result.push(MSG_TYPE_QUOTE_REQUEST);
+    result.extend(body);
+    Ok(result)
+}
+
+/// Encode a quote response to wire format: [0x03][msgpack body]
+pub fn encode_quote_response(res: &DataQuoteResponse) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+    let body = rmp_serde::to_vec_named(res)?;
+    let mut result = Vec::with_capacity(1 + body.len());
+    result.push(MSG_TYPE_QUOTE_RESPONSE);
+    result.extend(body);
+    Ok(result)
+}
+
 /// Parse a wire format message
 pub fn parse_message(data: &[u8]) -> Result<DataMessage, rmp_serde::decode::Error> {
     if data.is_empty() {
@@ -465,6 +516,14 @@ pub fn parse_message(data: &[u8]) -> Result<DataMessage, rmp_serde::decode::Erro
             let res: DataResponse = rmp_serde::from_slice(body)?;
             Ok(DataMessage::Response(res))
         }
+        MSG_TYPE_QUOTE_REQUEST => {
+            let req: DataQuoteRequest = rmp_serde::from_slice(body)?;
+            Ok(DataMessage::QuoteRequest(req))
+        }
+        MSG_TYPE_QUOTE_RESPONSE => {
+            let res: DataQuoteResponse = rmp_serde::from_slice(body)?;
+            Ok(DataMessage::QuoteResponse(res))
+        }
         _ => Err(rmp_serde::decode::Error::LengthMismatch(msg_type as u32)),
     }
 }
@@ -479,5 +538,7 @@ pub fn encode_message(msg: &DataMessage) -> Result<Vec<u8>, rmp_serde::encode::E
     match msg {
         DataMessage::Request(req) => encode_request(req),
         DataMessage::Response(res) => encode_response(res),
+        DataMessage::QuoteRequest(req) => encode_quote_request(req),
+        DataMessage::QuoteResponse(res) => encode_quote_response(res),
     }
 }

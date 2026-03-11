@@ -22,10 +22,12 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 
+use super::cashu::CashuQuoteState;
 use super::types::{
-    encode_message, encode_request, encode_response, hash_to_hex, parse_message,
-    validate_mesh_frame, DataMessage, DataRequest, DataResponse, MeshNostrFrame, PeerDirection,
-    PeerHTLConfig, PeerId, PeerStateEvent, SignalingMessage, BLOB_REQUEST_POLICY,
+    encode_message, encode_quote_response, encode_request, encode_response, hash_to_hex,
+    parse_message, validate_mesh_frame, DataMessage, DataQuoteRequest, DataRequest, DataResponse,
+    MeshNostrFrame, PeerDirection, PeerHTLConfig, PeerId, PeerStateEvent, SignalingMessage,
+    BLOB_REQUEST_POLICY,
 };
 use crate::nostr_relay::NostrRelay;
 use nostr::{
@@ -43,6 +45,53 @@ pub trait ContentStore: Send + Sync + 'static {
 pub struct PendingRequest {
     pub hash: Vec<u8>,
     pub response_tx: oneshot::Sender<Option<Vec<u8>>>,
+}
+
+async fn handle_quote_request_message(
+    peer_short: &str,
+    peer_id: &PeerId,
+    store: &Option<Arc<dyn ContentStore>>,
+    cashu_quotes: Option<&Arc<CashuQuoteState>>,
+    req: &DataQuoteRequest,
+) -> Option<super::types::DataQuoteResponse> {
+    let Some(cashu_quotes) = cashu_quotes else {
+        debug!(
+            "[Peer {}] Ignoring quote request without Cashu policy",
+            peer_short
+        );
+        return None;
+    };
+
+    if cashu_quotes
+        .should_refuse_requests_from_peer(&peer_id.to_string())
+        .await
+    {
+        return Some(
+            cashu_quotes
+                .build_quote_response(&peer_id.to_string(), req, false)
+                .await,
+        );
+    }
+
+    let hash_hex = hash_to_hex(&req.h);
+    let can_serve = if let Some(store) = store {
+        match store.get(&hash_hex) {
+            Ok(Some(_)) => true,
+            Ok(None) => false,
+            Err(e) => {
+                warn!("[Peer {}] Store error during quote: {}", peer_short, e);
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    Some(
+        cashu_quotes
+            .build_quote_response(&peer_id.to_string(), req, can_serve)
+            .await,
+    )
 }
 
 /// WebRTC peer connection with data channel protocol
@@ -79,6 +128,8 @@ pub struct Peer {
     nostr_relay: Option<Arc<NostrRelay>>,
     // Optional channel for inbound relayless signaling mesh frames
     mesh_frame_tx: Option<mpsc::Sender<(PeerId, MeshNostrFrame)>>,
+    // Optional Cashu quote negotiation state shared with signaling.
+    cashu_quotes: Option<Arc<CashuQuoteState>>,
     // Per-peer HTL randomness profile (reused across traffic classes)
     htl_config: PeerHTLConfig,
 }
@@ -98,6 +149,7 @@ impl Peer {
             my_peer_id,
             signaling_tx,
             stun_servers,
+            None,
             None,
             None,
             None,
@@ -125,12 +177,13 @@ impl Peer {
             None,
             None,
             None,
+            None,
         )
         .await
     }
 
     /// Create a new peer connection with content store and state event channel
-    pub async fn new_with_store_and_events(
+    pub(crate) async fn new_with_store_and_events(
         peer_id: PeerId,
         direction: PeerDirection,
         my_peer_id: PeerId,
@@ -140,6 +193,7 @@ impl Peer {
         state_event_tx: Option<mpsc::Sender<PeerStateEvent>>,
         nostr_relay: Option<Arc<NostrRelay>>,
         mesh_frame_tx: Option<mpsc::Sender<(PeerId, MeshNostrFrame)>>,
+        cashu_quotes: Option<Arc<CashuQuoteState>>,
     ) -> Result<Self> {
         // Create WebRTC API
         let mut m = MediaEngine::default();
@@ -192,6 +246,7 @@ impl Peer {
             state_event_tx,
             nostr_relay,
             mesh_frame_tx,
+            cashu_quotes,
             htl_config: PeerHTLConfig::random(),
         })
     }
@@ -369,6 +424,7 @@ impl Peer {
         let data_channel_holder = self.data_channel.clone();
         let nostr_relay = self.nostr_relay.clone();
         let mesh_frame_tx = self.mesh_frame_tx.clone();
+        let cashu_quotes = self.cashu_quotes.clone();
         let peer_pubkey = Some(self.peer_id.pubkey.clone());
 
         self.pc
@@ -381,6 +437,7 @@ impl Peer {
                 let data_channel_holder = data_channel_holder.clone();
                 let nostr_relay = nostr_relay.clone();
                 let mesh_frame_tx = mesh_frame_tx.clone();
+                let cashu_quotes = cashu_quotes.clone();
                 let peer_pubkey = peer_pubkey.clone();
 
                 // Work MUST be inside the returned future
@@ -407,6 +464,7 @@ impl Peer {
                         store,
                         nostr_relay,
                         mesh_frame_tx,
+                        cashu_quotes,
                         peer_pubkey,
                     )
                     .await;
@@ -506,6 +564,7 @@ impl Peer {
         let store = self.store.clone();
         let nostr_relay = self.nostr_relay.clone();
         let mesh_frame_tx = self.mesh_frame_tx.clone();
+        let cashu_quotes = self.cashu_quotes.clone();
         let peer_pubkey = Some(self.peer_id.pubkey.clone());
 
         Self::setup_dc_handlers(
@@ -517,6 +576,7 @@ impl Peer {
             store,
             nostr_relay,
             mesh_frame_tx,
+            cashu_quotes,
             peer_pubkey,
         )
         .await;
@@ -535,6 +595,7 @@ impl Peer {
         store: Option<Arc<dyn ContentStore>>,
         nostr_relay: Option<Arc<NostrRelay>>,
         mesh_frame_tx: Option<mpsc::Sender<(PeerId, MeshNostrFrame)>>,
+        cashu_quotes: Option<Arc<CashuQuoteState>>,
         peer_pubkey: Option<String>,
     ) {
         let label = dc.label().to_string();
@@ -622,6 +683,7 @@ impl Peer {
             let nostr_client_id = nostr_client_id_for_msg;
             let pending_nostr_queries = pending_nostr_queries_for_msg.clone();
             let mesh_frame_tx = mesh_frame_tx_for_msg.clone();
+            let cashu_quotes = cashu_quotes.clone();
             let peer_id = peer_id_for_msg.clone();
             let msg_data = msg.data.clone();
 
@@ -693,6 +755,19 @@ impl Peer {
                             let hash_short = &hash_hex[..8.min(hash_hex.len())];
                             info!("[Peer {}] Received request for {}", peer_short, hash_short);
 
+                            if let Some(cashu_quotes) = cashu_quotes.as_ref() {
+                                if cashu_quotes
+                                    .should_refuse_requests_from_peer(&peer_id.to_string())
+                                    .await
+                                {
+                                    info!(
+                                        "[Peer {}] Refusing request from peer with unpaid defaults",
+                                        peer_short
+                                    );
+                                    return;
+                                }
+                            }
+
                             // Handle request - look up in store
                             let data = if let Some(ref store) = store {
                                 match store.get(&hash_hex) {
@@ -762,6 +837,33 @@ impl Peer {
                                 let _ = req.response_tx.send(Some(res.d));
                             }
                         }
+                        DataMessage::QuoteRequest(req) => {
+                            let response = handle_quote_request_message(
+                                &peer_short,
+                                &peer_id,
+                                &store,
+                                cashu_quotes.as_ref(),
+                                &req,
+                            )
+                            .await;
+                            if let Some(response) = response {
+                                if let Ok(wire) = encode_quote_response(&response) {
+                                    if let Err(e) = dc.send(&Bytes::from(wire)).await {
+                                        warn!(
+                                            "[Peer {}] Failed to send quote response: {}",
+                                            peer_short, e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        DataMessage::QuoteResponse(res) => {
+                            if let Some(cashu_quotes) = cashu_quotes.as_ref() {
+                                let _ = cashu_quotes
+                                    .handle_quote_response(&peer_id.to_string(), res)
+                                    .await;
+                            }
+                        }
                     },
                     Err(e) => {
                         warn!("[Peer {}] Failed to parse message: {:?}", peer_short, e);
@@ -823,6 +925,7 @@ impl Peer {
         let req = DataRequest {
             h: hash,
             htl: BLOB_REQUEST_POLICY.max_htl,
+            q: None,
         };
         let wire = encode_request(&req)?;
         dc.send(&Bytes::from(wire)).await?;

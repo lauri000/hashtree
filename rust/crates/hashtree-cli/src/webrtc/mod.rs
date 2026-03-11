@@ -5,6 +5,7 @@
 //! - Tag: ["l", "webrtc"]
 //! - Message types: hello, offer, answer, candidate
 
+mod cashu;
 mod peer;
 mod signaling;
 pub mod types;
@@ -12,6 +13,7 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
+pub use cashu::CashuRoutingConfig;
 pub use peer::{ContentStore, Peer, PendingRequest};
 pub use signaling::{ConnectionState, PeerClassifier, PeerEntry, WebRTCManager, WebRTCState};
 pub use types::{

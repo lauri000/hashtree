@@ -25,12 +25,14 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
+use super::cashu::{CashuQuoteState, CashuRoutingConfig, NegotiatedQuote};
 use super::peer::{ContentStore, Peer, PendingRequest};
 use super::types::{
-    decrement_htl_with_policy, should_forward_htl, validate_mesh_frame, MeshNostrFrame,
-    MeshNostrPayload, PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus,
-    RequestDispatchConfig, SignalingMessage, TimedSeenSet, WebRTCConfig, HELLO_TAG,
-    MESH_DEFAULT_HTL, MESH_EVENT_POLICY, WEBRTC_KIND,
+    decrement_htl_with_policy, encode_quote_request, encode_request, should_forward_htl,
+    validate_mesh_frame, DataQuoteRequest, DataRequest, MeshNostrFrame, MeshNostrPayload,
+    PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus, RequestDispatchConfig,
+    SignalingMessage, TimedSeenSet, WebRTCConfig, HELLO_TAG, MESH_DEFAULT_HTL, MESH_EVENT_POLICY,
+    WEBRTC_KIND,
 };
 use crate::nostr_relay::NostrRelay;
 
@@ -84,9 +86,13 @@ pub struct WebRTCState {
     /// Relayless mesh frames/events dropped due to dedupe.
     pub mesh_dropped_duplicate: std::sync::atomic::AtomicU64,
     /// Shared peer selector used by live retrieval; aligned with simulation strategies.
-    peer_selector: RwLock<PeerSelector>,
+    peer_selector: Arc<RwLock<PeerSelector>>,
     /// Hedged dispatch policy for retrieval requests.
     request_dispatch: RequestDispatchConfig,
+    /// Retrieval timeout for quote negotiation and single-peer fetches.
+    request_timeout: Duration,
+    /// Shared Cashu quote negotiation policy/state.
+    cashu_quotes: Arc<CashuQuoteState>,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +112,13 @@ const SEEN_FRAME_CAP: usize = 4096;
 const SEEN_FRAME_TTL: Duration = Duration::from_secs(120);
 const SEEN_EVENT_CAP: usize = 8192;
 const SEEN_EVENT_TTL: Duration = Duration::from_secs(600);
+
+type PendingRequestsMap = Arc<Mutex<HashMap<String, PendingRequest>>>;
+type ConnectedPeer = (
+    String,
+    PendingRequestsMap,
+    Arc<webrtc::data_channel::RTCDataChannel>,
+);
 
 fn hashtree_event_identifier(event: &nostr::Event) -> Option<String> {
     event.tags.iter().find_map(|tag| {
@@ -191,10 +204,12 @@ fn root_event_from_peer(
 impl WebRTCState {
     pub fn new() -> Self {
         let cfg = WebRTCConfig::default();
-        Self::new_with_routing(
+        Self::new_with_routing_and_cashu(
             cfg.request_selection_strategy,
             cfg.request_fairness_enabled,
             cfg.request_dispatch,
+            Duration::from_millis(cfg.message_timeout_ms),
+            CashuRoutingConfig::default(),
         )
     }
 
@@ -203,8 +218,27 @@ impl WebRTCState {
         fairness_enabled: bool,
         request_dispatch: RequestDispatchConfig,
     ) -> Self {
+        let cfg = WebRTCConfig::default();
+        Self::new_with_routing_and_cashu(
+            selection_strategy,
+            fairness_enabled,
+            request_dispatch,
+            Duration::from_millis(cfg.message_timeout_ms),
+            CashuRoutingConfig::default(),
+        )
+    }
+
+    pub fn new_with_routing_and_cashu(
+        selection_strategy: super::types::SelectionStrategy,
+        fairness_enabled: bool,
+        request_dispatch: RequestDispatchConfig,
+        request_timeout: Duration,
+        cashu_routing: CashuRoutingConfig,
+    ) -> Self {
         let mut selector = PeerSelector::with_strategy(selection_strategy);
         selector.set_fairness(fairness_enabled);
+        let peer_selector = Arc::new(RwLock::new(selector));
+        let cashu_quotes = Arc::new(CashuQuoteState::new(cashu_routing, peer_selector.clone()));
         Self {
             peers: RwLock::new(HashMap::new()),
             connected_count: std::sync::atomic::AtomicUsize::new(0),
@@ -213,8 +247,10 @@ impl WebRTCState {
             mesh_received: std::sync::atomic::AtomicU64::new(0),
             mesh_forwarded: std::sync::atomic::AtomicU64::new(0),
             mesh_dropped_duplicate: std::sync::atomic::AtomicU64::new(0),
-            peer_selector: RwLock::new(selector),
+            peer_selector,
             request_dispatch,
+            request_timeout,
+            cashu_quotes,
         }
     }
 
@@ -285,7 +321,7 @@ impl WebRTCState {
         &self,
         hash_hex: &str,
     ) -> Option<(Vec<u8>, String)> {
-        use super::types::{encode_request, DataRequest, BLOB_REQUEST_POLICY};
+        use super::types::BLOB_REQUEST_POLICY;
         use tokio::sync::oneshot::error::TryRecvError;
 
         let peers = self.peers.read().await;
@@ -298,7 +334,7 @@ impl WebRTCState {
             .filter_map(|p| {
                 p.peer.as_ref().map(|peer| {
                     (
-                        p.peer_id.short(),
+                        p.peer_id.to_string(),
                         peer.data_channel.clone(),
                         peer.pending_requests.clone(),
                     )
@@ -309,11 +345,7 @@ impl WebRTCState {
         drop(peers); // Release the read lock
 
         // Now acquire locks and filter to peers with active data channels
-        let mut connected_peers: Vec<(
-            String,
-            Arc<Mutex<HashMap<String, PendingRequest>>>,
-            Arc<webrtc::data_channel::RTCDataChannel>,
-        )> = Vec::new();
+        let mut connected_peers: Vec<ConnectedPeer> = Vec::new();
         for (peer_id, dc_mutex, pending) in peer_refs {
             let dc_guard = dc_mutex.lock().await;
             if let Some(dc) = dc_guard.as_ref() {
@@ -350,13 +382,13 @@ impl WebRTCState {
             .iter()
             .map(|(peer_id, _, _)| peer_id.clone())
             .collect();
-        sync_selector_peers(&self.peer_selector, &connected_peer_ids).await;
+        sync_selector_peers(self.peer_selector.as_ref(), &connected_peer_ids).await;
 
         let ordered_peer_ids = self.peer_selector.write().await.select_peers();
         let mut by_peer: HashMap<
             String,
             (
-                Arc<Mutex<HashMap<String, PendingRequest>>>,
+                PendingRequestsMap,
                 Arc<webrtc::data_channel::RTCDataChannel>,
             ),
         > = connected_peers
@@ -364,11 +396,7 @@ impl WebRTCState {
             .map(|(peer_id, pending, dc)| (peer_id, (pending, dc)))
             .collect();
 
-        let mut ordered_peers: Vec<(
-            String,
-            Arc<Mutex<HashMap<String, PendingRequest>>>,
-            Arc<webrtc::data_channel::RTCDataChannel>,
-        )> = Vec::new();
+        let mut ordered_peers: Vec<ConnectedPeer> = Vec::new();
         for peer_id in ordered_peer_ids {
             if let Some((pending, dc)) = by_peer.remove(&peer_id) {
                 ordered_peers.push((peer_id, pending, dc));
@@ -391,9 +419,36 @@ impl WebRTCState {
             wave_plan
         );
 
+        if let Some((payment_sat, quote_ttl_ms)) = self.cashu_quotes.requester_quote_terms() {
+            if let Some(quote) = self
+                .request_quote_from_peers(&hash_bytes, payment_sat, quote_ttl_ms, &ordered_peers)
+                .await
+            {
+                if let Some(data) = self
+                    .request_from_single_peer(
+                        hash_hex,
+                        &hash_bytes,
+                        expected_hash,
+                        &quote.peer_id,
+                        Some(quote.quote_id),
+                        &ordered_peers,
+                    )
+                    .await
+                {
+                    debug!(
+                        "Got quoted response from peer {} for {}",
+                        quote.peer_id,
+                        &hash_hex[..8.min(hash_hex.len())]
+                    );
+                    return Some((data, quote.peer_id));
+                }
+            }
+        }
+
         let request = DataRequest {
             h: hash_bytes.clone(),
             htl: BLOB_REQUEST_POLICY.max_htl,
+            q: None,
         };
         let wire = match encode_request(&request) {
             Ok(w) => w,
@@ -538,6 +593,186 @@ impl WebRTCState {
         None
     }
 
+    async fn request_quote_from_peers(
+        &self,
+        hash_bytes: &[u8],
+        payment_sat: u64,
+        quote_ttl_ms: u32,
+        ordered_peers: &[ConnectedPeer],
+    ) -> Option<NegotiatedQuote> {
+        if ordered_peers.is_empty() || quote_ttl_ms == 0 {
+            return None;
+        }
+
+        let dispatch = normalize_dispatch_config(self.request_dispatch, ordered_peers.len());
+        let wave_plan = build_hedged_wave_plan(ordered_peers.len(), dispatch);
+        if wave_plan.is_empty() {
+            return None;
+        }
+
+        let hash_hex = hex::encode(hash_bytes);
+        let requested_mint = self.cashu_quotes.requested_quote_mint().map(str::to_string);
+        let mut rx = self
+            .cashu_quotes
+            .register_pending_quote(hash_hex.clone(), requested_mint.clone(), payment_sat)
+            .await;
+        let quote_request = DataQuoteRequest {
+            h: hash_bytes.to_vec(),
+            p: payment_sat,
+            t: quote_ttl_ms,
+            m: requested_mint,
+        };
+        let wire = match encode_quote_request(&quote_request) {
+            Ok(wire) => wire,
+            Err(_) => {
+                self.cashu_quotes.clear_pending_quote(&hash_hex).await;
+                return None;
+            }
+        };
+        let deadline = Instant::now() + self.request_timeout;
+        let mut sent_total = 0usize;
+        let mut next_peer_idx = 0usize;
+
+        for (wave_idx, wave_size) in wave_plan.iter().copied().enumerate() {
+            let from = next_peer_idx;
+            let to = (next_peer_idx + wave_size).min(ordered_peers.len());
+            for (_, _, dc) in &ordered_peers[from..to] {
+                if dc.send(&bytes::Bytes::copy_from_slice(&wire)).await.is_ok() {
+                    sent_total += 1;
+                }
+            }
+            next_peer_idx = to;
+
+            if sent_total == 0 {
+                if next_peer_idx >= ordered_peers.len() {
+                    break;
+                }
+                continue;
+            }
+
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            let is_last_wave =
+                wave_idx + 1 == wave_plan.len() || next_peer_idx >= ordered_peers.len();
+            let wait = if is_last_wave {
+                remaining
+            } else if dispatch.hedge_interval_ms == 0 {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(dispatch.hedge_interval_ms).min(remaining)
+            };
+
+            if wait.is_zero() {
+                continue;
+            }
+
+            match tokio::time::timeout(wait, &mut rx).await {
+                Ok(Ok(Some(quote))) => {
+                    self.cashu_quotes.clear_pending_quote(&hash_hex).await;
+                    return Some(quote);
+                }
+                Ok(Ok(None)) | Ok(Err(_)) => break,
+                Err(_) => {}
+            }
+        }
+
+        self.cashu_quotes.clear_pending_quote(&hash_hex).await;
+        None
+    }
+
+    async fn request_from_single_peer(
+        &self,
+        hash_hex: &str,
+        hash_bytes: &[u8],
+        expected_hash: [u8; 32],
+        target_peer_id: &str,
+        quote_id: Option<u64>,
+        ordered_peers: &[ConnectedPeer],
+    ) -> Option<Vec<u8>> {
+        use super::types::BLOB_REQUEST_POLICY;
+
+        let (pending_requests, dc) = ordered_peers
+            .iter()
+            .find(|(peer_id, _, _)| peer_id == target_peer_id)
+            .map(|(_, pending_requests, dc)| (pending_requests.clone(), dc.clone()))?;
+
+        let request = DataRequest {
+            h: hash_bytes.to_vec(),
+            htl: BLOB_REQUEST_POLICY.max_htl,
+            q: quote_id,
+        };
+        let wire = encode_request(&request).ok()?;
+        let wire_len = wire.len() as u64;
+        let sent_at = Instant::now();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+
+        {
+            let mut pending = pending_requests.lock().await;
+            pending.insert(
+                hash_hex.to_string(),
+                PendingRequest {
+                    hash: hash_bytes.to_vec(),
+                    response_tx: tx,
+                },
+            );
+        }
+
+        if dc
+            .send(&bytes::Bytes::copy_from_slice(&wire))
+            .await
+            .is_err()
+        {
+            let mut pending = pending_requests.lock().await;
+            pending.remove(hash_hex);
+            self.peer_selector
+                .write()
+                .await
+                .record_failure(target_peer_id);
+            return None;
+        }
+
+        self.record_sent(target_peer_id, wire_len).await;
+        self.peer_selector
+            .write()
+            .await
+            .record_request(target_peer_id, wire_len);
+
+        match tokio::time::timeout(self.request_timeout, &mut rx).await {
+            Ok(Ok(Some(data))) if hashtree_core::sha256(&data) == expected_hash => {
+                let rtt_ms = sent_at.elapsed().as_millis() as u64;
+                self.record_received(target_peer_id, data.len() as u64)
+                    .await;
+                self.peer_selector.write().await.record_success(
+                    target_peer_id,
+                    rtt_ms,
+                    data.len() as u64,
+                );
+                Some(data)
+            }
+            Ok(Ok(Some(_))) => {
+                self.peer_selector
+                    .write()
+                    .await
+                    .record_failure(target_peer_id);
+                let mut pending = pending_requests.lock().await;
+                pending.remove(hash_hex);
+                None
+            }
+            Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
+                let mut pending = pending_requests.lock().await;
+                pending.remove(hash_hex);
+                self.peer_selector
+                    .write()
+                    .await
+                    .record_timeout(target_peer_id);
+                None
+            }
+        }
+    }
+
     /// Resolve a hashtree root event through connected peers using Nostr REQ/EOSE over WebRTC.
     pub async fn resolve_root_from_peers(
         &self,
@@ -659,10 +894,12 @@ impl WebRTCManager {
         let (signaling_tx, signaling_rx) = mpsc::channel(100);
         let (state_event_tx, state_event_rx) = mpsc::channel(100);
         let (mesh_frame_tx, mesh_frame_rx) = mpsc::channel(256);
-        let state = Arc::new(WebRTCState::new_with_routing(
+        let state = Arc::new(WebRTCState::new_with_routing_and_cashu(
             config.request_selection_strategy,
             config.request_fairness_enabled,
             config.request_dispatch,
+            Duration::from_millis(config.message_timeout_ms),
+            CashuRoutingConfig::default(),
         ));
 
         // Default classifier: all peers go to 'other' pool
@@ -720,7 +957,30 @@ impl WebRTCManager {
         store: Arc<dyn ContentStore>,
         classifier: PeerClassifier,
     ) -> Self {
+        Self::new_with_store_and_classifier_and_cashu(
+            keys,
+            config,
+            store,
+            classifier,
+            CashuRoutingConfig::default(),
+        )
+    }
+
+    pub fn new_with_store_and_classifier_and_cashu(
+        keys: Keys,
+        config: WebRTCConfig,
+        store: Arc<dyn ContentStore>,
+        classifier: PeerClassifier,
+        cashu_routing: CashuRoutingConfig,
+    ) -> Self {
         let mut manager = Self::new(keys, config);
+        manager.state = Arc::new(WebRTCState::new_with_routing_and_cashu(
+            manager.config.request_selection_strategy,
+            manager.config.request_fairness_enabled,
+            manager.config.request_dispatch,
+            Duration::from_millis(manager.config.message_timeout_ms),
+            cashu_routing,
+        ));
         manager.store = Some(store);
         manager.peer_classifier = classifier;
         manager
@@ -1652,6 +1912,7 @@ impl WebRTCManager {
             Some(self.state_event_tx.clone()),
             self.nostr_relay.clone(),
             Some(self.mesh_frame_tx.clone()),
+            Some(self.state.cashu_quotes.clone()),
         )
         .await?;
 
@@ -1766,6 +2027,7 @@ impl WebRTCManager {
             Some(self.state_event_tx.clone()),
             self.nostr_relay.clone(),
             Some(self.mesh_frame_tx.clone()),
+            Some(self.state.cashu_quotes.clone()),
         )
         .await?;
         debug!("Peer connection created for {}", full_peer_id.short());

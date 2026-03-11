@@ -213,11 +213,12 @@ pub(crate) async fn run() -> Result<()> {
                         Arc::clone(&ndb),
                     );
 
-                    let mut manager = WebRTCManager::new_with_store_and_classifier(
+                    let mut manager = WebRTCManager::new_with_store_and_classifier_and_cashu(
                         keys.clone(),
                         webrtc_config,
                         Arc::clone(&store) as Arc<dyn hashtree_cli::ContentStore>,
                         peer_classifier,
+                        hashtree_cli::webrtc::CashuRoutingConfig::from(&config.cashu),
                     );
                     manager.set_nostr_relay(nostr_relay.clone());
 

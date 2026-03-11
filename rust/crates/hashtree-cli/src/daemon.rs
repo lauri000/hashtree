@@ -148,11 +148,12 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
             let peer_classifier =
                 crate::p2p_common::build_peer_classifier(opts.data_dir.clone(), Arc::clone(&ndb));
 
-            let mut manager = WebRTCManager::new_with_store_and_classifier(
+            let mut manager = WebRTCManager::new_with_store_and_classifier_and_cashu(
                 keys.clone(),
                 webrtc_config,
                 Arc::clone(&store) as Arc<dyn ContentStore>,
                 peer_classifier,
+                crate::webrtc::CashuRoutingConfig::from(&config.cashu),
             );
             manager.set_nostr_relay(nostr_relay.clone());
 

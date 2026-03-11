@@ -134,6 +134,8 @@ pub mod types {
     pub const MAX_HTL: u8 = 7;
     const MSG_TYPE_REQUEST: u8 = 0x00;
     const MSG_TYPE_RESPONSE: u8 = 0x01;
+    const MSG_TYPE_QUOTE_REQUEST: u8 = 0x02;
+    const MSG_TYPE_QUOTE_RESPONSE: u8 = 0x03;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct DataRequest {
@@ -141,6 +143,8 @@ pub mod types {
         pub h: Vec<u8>,
         #[serde(default = "default_htl")]
         pub htl: u8,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub q: Option<u64>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,10 +155,37 @@ pub mod types {
         pub d: Vec<u8>,
     }
 
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct DataQuoteRequest {
+        #[serde(with = "serde_bytes")]
+        pub h: Vec<u8>,
+        pub p: u64,
+        pub t: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub m: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct DataQuoteResponse {
+        #[serde(with = "serde_bytes")]
+        pub h: Vec<u8>,
+        pub a: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub q: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub p: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub t: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub m: Option<String>,
+    }
+
     #[derive(Debug, Clone)]
     pub enum DataMessage {
         Request(DataRequest),
         Response(DataResponse),
+        QuoteRequest(DataQuoteRequest),
+        QuoteResponse(DataQuoteResponse),
     }
 
     fn default_htl() -> u8 {
@@ -177,6 +208,26 @@ pub mod types {
         Ok(result)
     }
 
+    pub fn encode_quote_request(
+        req: &DataQuoteRequest,
+    ) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+        let body = rmp_serde::to_vec_named(req)?;
+        let mut result = Vec::with_capacity(1 + body.len());
+        result.push(MSG_TYPE_QUOTE_REQUEST);
+        result.extend(body);
+        Ok(result)
+    }
+
+    pub fn encode_quote_response(
+        res: &DataQuoteResponse,
+    ) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+        let body = rmp_serde::to_vec_named(res)?;
+        let mut result = Vec::with_capacity(1 + body.len());
+        result.push(MSG_TYPE_QUOTE_RESPONSE);
+        result.extend(body);
+        Ok(result)
+    }
+
     pub fn parse_message(data: &[u8]) -> Result<DataMessage, rmp_serde::decode::Error> {
         if data.is_empty() {
             return Err(rmp_serde::decode::Error::LengthMismatch(0));
@@ -185,6 +236,12 @@ pub mod types {
         match data[0] {
             MSG_TYPE_REQUEST => Ok(DataMessage::Request(rmp_serde::from_slice(&data[1..])?)),
             MSG_TYPE_RESPONSE => Ok(DataMessage::Response(rmp_serde::from_slice(&data[1..])?)),
+            MSG_TYPE_QUOTE_REQUEST => {
+                Ok(DataMessage::QuoteRequest(rmp_serde::from_slice(&data[1..])?))
+            }
+            MSG_TYPE_QUOTE_RESPONSE => Ok(DataMessage::QuoteResponse(
+                rmp_serde::from_slice(&data[1..])?,
+            )),
             other => Err(rmp_serde::decode::Error::LengthMismatch(other as u32)),
         }
     }

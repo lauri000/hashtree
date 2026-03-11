@@ -90,6 +90,7 @@ fn test_wire_format_request_encode_decode() {
     let req = DataRequest {
         h: vec![0xab; 32],
         htl: 10,
+        q: Some(42),
     };
     let encoded = encode_request(&req).unwrap();
 
@@ -102,6 +103,7 @@ fn test_wire_format_request_encode_decode() {
         DataMessage::Request(r) => {
             assert_eq!(r.h, vec![0xab; 32]);
             assert_eq!(r.htl, 10);
+            assert_eq!(r.q, Some(42));
         }
         _ => panic!("Expected request"),
     }
@@ -134,6 +136,60 @@ fn test_wire_format_constants() {
     // These must match hashtree-ts constants
     assert_eq!(MSG_TYPE_REQUEST, 0x00);
     assert_eq!(MSG_TYPE_RESPONSE, 0x01);
+    assert_eq!(MSG_TYPE_QUOTE_REQUEST, 0x02);
+    assert_eq!(MSG_TYPE_QUOTE_RESPONSE, 0x03);
+}
+
+#[test]
+fn test_wire_format_quote_request_encode_decode() {
+    let req = DataQuoteRequest {
+        h: vec![0xaa; 32],
+        p: 3,
+        t: 1_500,
+        m: Some("https://mint-a.example".to_string()),
+    };
+    let encoded = encode_quote_request(&req).unwrap();
+
+    assert_eq!(encoded[0], MSG_TYPE_QUOTE_REQUEST);
+
+    let parsed = parse_message(&encoded).unwrap();
+    match parsed {
+        DataMessage::QuoteRequest(r) => {
+            assert_eq!(r.h, vec![0xaa; 32]);
+            assert_eq!(r.p, 3);
+            assert_eq!(r.t, 1_500);
+            assert_eq!(r.m.as_deref(), Some("https://mint-a.example"));
+        }
+        _ => panic!("Expected quote request"),
+    }
+}
+
+#[test]
+fn test_wire_format_quote_response_encode_decode() {
+    let res = DataQuoteResponse {
+        h: vec![0xbb; 32],
+        a: true,
+        q: Some(9),
+        p: Some(3),
+        t: Some(1_500),
+        m: Some("https://mint-b.example".to_string()),
+    };
+    let encoded = encode_quote_response(&res).unwrap();
+
+    assert_eq!(encoded[0], MSG_TYPE_QUOTE_RESPONSE);
+
+    let parsed = parse_message(&encoded).unwrap();
+    match parsed {
+        DataMessage::QuoteResponse(r) => {
+            assert_eq!(r.h, vec![0xbb; 32]);
+            assert!(r.a);
+            assert_eq!(r.q, Some(9));
+            assert_eq!(r.p, Some(3));
+            assert_eq!(r.t, Some(1_500));
+            assert_eq!(r.m.as_deref(), Some("https://mint-b.example"));
+        }
+        _ => panic!("Expected quote response"),
+    }
 }
 
 #[test]

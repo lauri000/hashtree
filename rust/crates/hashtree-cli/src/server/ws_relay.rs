@@ -436,6 +436,7 @@ async fn handle_binary(client_id: u64, data: Vec<u8>, state: &AppState) {
             DataMessage::Response(res) => {
                 handle_msgpack_response(client_id, res, state).await;
             }
+            DataMessage::QuoteRequest(_) | DataMessage::QuoteResponse(_) => {}
         }
         return;
     }
@@ -532,6 +533,20 @@ fn parse_msgpack_message(data: &[u8]) -> Option<DataMessage> {
                 None
             }
         }
+        DataMessage::QuoteRequest(req) => {
+            if req.h.len() == 32 {
+                Some(DataMessage::QuoteRequest(req))
+            } else {
+                None
+            }
+        }
+        DataMessage::QuoteResponse(res) => {
+            if res.h.len() == 32 {
+                Some(DataMessage::QuoteResponse(res))
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -606,6 +621,7 @@ async fn send_msgpack_request(
     let req = DataRequest {
         h: hash.to_vec(),
         htl: MAX_HTL,
+        q: None,
     };
     let wire = encode_request(&req)?;
     send_to_client(state, client_id, Message::Binary(wire)).await;

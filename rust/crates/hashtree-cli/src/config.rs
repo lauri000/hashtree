@@ -167,7 +167,7 @@ pub struct SyncConfig {
     pub blossom_timeout_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CashuConfig {
     /// Cashu mint base URLs we accept for bandwidth incentives.
     #[serde(default)]
@@ -175,6 +175,69 @@ pub struct CashuConfig {
     /// Default mint to use for wallet operations.
     #[serde(default)]
     pub default_mint: Option<String>,
+    /// Default post-delivery payment offer for quoted retrievals.
+    #[serde(default = "default_cashu_quote_payment_offer_sat")]
+    pub quote_payment_offer_sat: u64,
+    /// Quote validity window in milliseconds.
+    #[serde(default = "default_cashu_quote_ttl_ms")]
+    pub quote_ttl_ms: u32,
+    /// Base cap for trying a peer-suggested mint we do not already trust.
+    #[serde(default = "default_cashu_peer_suggested_mint_base_cap_sat")]
+    pub peer_suggested_mint_base_cap_sat: u64,
+    /// Additional cap granted per successful delivery from that peer.
+    #[serde(default = "default_cashu_peer_suggested_mint_success_step_sat")]
+    pub peer_suggested_mint_success_step_sat: u64,
+    /// Additional cap granted per settled payment received from that peer.
+    #[serde(default = "default_cashu_peer_suggested_mint_receipt_step_sat")]
+    pub peer_suggested_mint_receipt_step_sat: u64,
+    /// Hard ceiling for untrusted peer-suggested mint exposure.
+    #[serde(default = "default_cashu_peer_suggested_mint_max_cap_sat")]
+    pub peer_suggested_mint_max_cap_sat: u64,
+    /// Block serving peers whose unpaid defaults reach this threshold.
+    #[serde(default)]
+    pub payment_default_block_threshold: u64,
+}
+
+impl Default for CashuConfig {
+    fn default() -> Self {
+        Self {
+            accepted_mints: Vec::new(),
+            default_mint: None,
+            quote_payment_offer_sat: default_cashu_quote_payment_offer_sat(),
+            quote_ttl_ms: default_cashu_quote_ttl_ms(),
+            peer_suggested_mint_base_cap_sat: default_cashu_peer_suggested_mint_base_cap_sat(),
+            peer_suggested_mint_success_step_sat:
+                default_cashu_peer_suggested_mint_success_step_sat(),
+            peer_suggested_mint_receipt_step_sat:
+                default_cashu_peer_suggested_mint_receipt_step_sat(),
+            peer_suggested_mint_max_cap_sat: default_cashu_peer_suggested_mint_max_cap_sat(),
+            payment_default_block_threshold: 0,
+        }
+    }
+}
+
+fn default_cashu_quote_payment_offer_sat() -> u64 {
+    3
+}
+
+fn default_cashu_quote_ttl_ms() -> u32 {
+    1_500
+}
+
+fn default_cashu_peer_suggested_mint_base_cap_sat() -> u64 {
+    3
+}
+
+fn default_cashu_peer_suggested_mint_success_step_sat() -> u64 {
+    1
+}
+
+fn default_cashu_peer_suggested_mint_receipt_step_sat() -> u64 {
+    2
+}
+
+fn default_cashu_peer_suggested_mint_max_cap_sat() -> u64 {
+    21
 }
 
 fn default_sync_enabled() -> bool {
@@ -546,6 +609,13 @@ mod tests {
         assert_eq!(config.server.socialgraph_snapshot_public, false);
         assert!(config.cashu.accepted_mints.is_empty());
         assert!(config.cashu.default_mint.is_none());
+        assert_eq!(config.cashu.quote_payment_offer_sat, 3);
+        assert_eq!(config.cashu.quote_ttl_ms, 1_500);
+        assert_eq!(config.cashu.peer_suggested_mint_base_cap_sat, 3);
+        assert_eq!(config.cashu.peer_suggested_mint_success_step_sat, 1);
+        assert_eq!(config.cashu.peer_suggested_mint_receipt_step_sat, 2);
+        assert_eq!(config.cashu.peer_suggested_mint_max_cap_sat, 21);
+        assert_eq!(config.cashu.payment_default_block_threshold, 0);
     }
 
     #[test]
@@ -586,6 +656,13 @@ max_write_distance = 5
 [cashu]
 accepted_mints = ["https://mint1.example", "http://127.0.0.1:3338"]
 default_mint = "https://mint1.example"
+quote_payment_offer_sat = 5
+quote_ttl_ms = 2500
+peer_suggested_mint_base_cap_sat = 4
+peer_suggested_mint_success_step_sat = 2
+peer_suggested_mint_receipt_step_sat = 3
+peer_suggested_mint_max_cap_sat = 34
+payment_default_block_threshold = 2
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(
@@ -599,6 +676,13 @@ default_mint = "https://mint1.example"
             config.cashu.default_mint,
             Some("https://mint1.example".to_string())
         );
+        assert_eq!(config.cashu.quote_payment_offer_sat, 5);
+        assert_eq!(config.cashu.quote_ttl_ms, 2500);
+        assert_eq!(config.cashu.peer_suggested_mint_base_cap_sat, 4);
+        assert_eq!(config.cashu.peer_suggested_mint_success_step_sat, 2);
+        assert_eq!(config.cashu.peer_suggested_mint_receipt_step_sat, 3);
+        assert_eq!(config.cashu.peer_suggested_mint_max_cap_sat, 34);
+        assert_eq!(config.cashu.payment_default_block_threshold, 2);
     }
 
     #[test]
