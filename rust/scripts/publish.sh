@@ -78,6 +78,7 @@ publish_crate "hashtree-webrtc"
 
 # Tier 5: Depends on multiple crates
 publish_crate "git-remote-htree"
+publish_crate "hashtree-cashu-cli"
 publish_crate "hashtree-cli"  # depends on git-remote-htree
 
 echo ""

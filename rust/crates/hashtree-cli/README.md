@@ -5,7 +5,7 @@ Hashtree daemon and CLI - content-addressed storage with P2P sync.
 ## Installation
 
 ```bash
-# Full install with P2P and social graph (default)
+# Full CLI install
 cargo install hashtree-cli
 
 # Without social graph (nostrdb)
@@ -13,6 +13,9 @@ cargo install hashtree-cli --no-default-features --features p2p
 
 # Minimal install without P2P or social graph
 cargo install hashtree-cli --no-default-features
+
+# Cashu wallet helper for `htree cashu ...`
+cargo install hashtree-cashu-cli
 ```
 
 ## Commands

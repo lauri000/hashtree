@@ -8,6 +8,7 @@ COPY crates ./crates
 
 # Build release binary with S3 support
 RUN cargo build --release --package hashtree-cli --features s3
+RUN cargo build --release --package hashtree-cashu-cli
 
 FROM debian:bookworm-slim
 
@@ -17,6 +18,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/htree /usr/local/bin/htree
+COPY --from=builder /app/target/release/htree-cashu /usr/local/bin/htree-cashu
 
 WORKDIR /data
 

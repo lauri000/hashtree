@@ -49,7 +49,7 @@ fn helper_binary_path(current_exe: &Path) -> Result<PathBuf> {
     }
 
     bail!(
-        "Cashu helper executable not found. Install `htree-cashu` next to `htree`, or set {CASHU_HELPER_ENV}."
+        "Cashu helper executable not found. Install `hashtree-cashu-cli` so `htree-cashu` is in PATH next to `htree`, or set {CASHU_HELPER_ENV}."
     )
 }
 
@@ -107,6 +107,8 @@ fn build_cashu_helper_args(data_dir: &Path, command: &CashuCommands) -> Vec<OsSt
 mod tests {
     use super::*;
     use std::env;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -187,6 +189,43 @@ mod tests {
 
         let resolved = helper_binary_path(&current_exe).unwrap();
         assert_eq!(resolved, sibling);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_cashu_helper_with_env_override_executes_helper() {
+        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        env::remove_var(CARGO_HELPER_ENV);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_path = temp_dir.path().join("args.txt");
+        let helper_path = temp_dir.path().join("htree-cashu-stub");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{}\"\n",
+            output_path.display()
+        );
+        std::fs::write(&helper_path, script).unwrap();
+        let mut perms = std::fs::metadata(&helper_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&helper_path, perms).unwrap();
+
+        env::set_var(CASHU_HELPER_ENV, &helper_path);
+        run_cashu_helper(
+            Path::new("/tmp/htree-data"),
+            &CashuCommands::Topup {
+                amount_sat: 42,
+                mint: Some("https://mint.example".to_string()),
+            },
+        )
+        .unwrap();
+
+        let args = std::fs::read_to_string(&output_path).unwrap();
+        assert_eq!(
+            args,
+            "--data-dir\n/tmp/htree-data\ntopup\n42\n--mint\nhttps://mint.example\n"
+        );
+
+        env::remove_var(CASHU_HELPER_ENV);
     }
 }
 

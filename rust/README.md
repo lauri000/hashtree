@@ -91,6 +91,7 @@ The `Store` trait is just `get(hash) → bytes` and `put(hash, bytes)`. The core
 - `hashtree-s3` - S3 storage backend
 - `hashtree-config` - Config loading and defaults
 - `hashtree-cli` - Command-line interface and daemon
+- `hashtree-cashu-cli` - Cashu wallet helper for `htree cashu`
 - `hashtree-sim` - P2P network simulation (Freenet-style HTL forwarding)
 - `git-remote-htree` - Git remote helper (`htree://` protocol)
 
@@ -114,6 +115,7 @@ Push/pull git repos via hashtree:
 ```bash
 # Install (local path)
 cargo install --path crates/hashtree-cli
+cargo install --path crates/hashtree-cashu-cli
 cargo install --path crates/git-remote-htree
 
 # Configure keys in ~/.hashtree/keys
@@ -137,6 +139,13 @@ git clone htree://npub1.../repo#k=<64-hex-chars>
 git remote add origin htree://self/myrepo#private
 git push origin main
 git clone htree://self/myrepo#private
+```
+
+Cashu wallet commands are provided by the separate `htree-cashu` helper. Install it next to `htree`:
+
+```bash
+cargo install --path crates/hashtree-cashu-cli
+htree cashu balance
 ```
 
 ## Configuration
