@@ -570,6 +570,11 @@ impl<S: Store + 'static> Peer<S> {
                             }
                         }
                     }
+                    ProtoMessage::QuoteRequest(_) | ProtoMessage::QuoteResponse(_) => {
+                        if debug {
+                            println!("[Peer] Ignoring quote message on legacy peer path");
+                        }
+                    }
                 }
             })
         }));

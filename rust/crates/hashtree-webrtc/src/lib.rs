@@ -67,9 +67,12 @@ pub use peer_selector::{
     SelectionStrategy, SelectorSummary, PEER_METADATA_SNAPSHOT_VERSION,
 };
 pub use protocol::{
-    bytes_to_hash, create_fragment_response, create_request, create_response, encode_request,
-    encode_response, hash_to_bytes, hash_to_key, is_fragmented, parse_message, DataMessage,
-    DataRequest, DataResponse, FRAGMENT_SIZE, MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE,
+    bytes_to_hash, create_fragment_response, create_quote_request, create_quote_response_available,
+    create_quote_response_unavailable, create_request, create_request_with_quote, create_response,
+    encode_quote_request, encode_quote_response, encode_request, encode_response, hash_to_bytes,
+    hash_to_key, is_fragmented, parse_message, DataMessage, DataQuoteRequest, DataQuoteResponse,
+    DataRequest, DataResponse, FRAGMENT_SIZE, MSG_TYPE_QUOTE_REQUEST, MSG_TYPE_QUOTE_RESPONSE,
+    MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE,
 };
 pub use real_factory::RealPeerConnectionFactory;
 pub use signaling::{PeerEntry, SignalingManager};

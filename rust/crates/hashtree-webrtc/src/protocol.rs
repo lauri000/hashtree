@@ -1,8 +1,10 @@
 //! Wire protocol for hashtree WebRTC data exchange
 //!
 //! Compatible with hashtree-ts wire format:
-//! - Request:  [0x00][msgpack: {h: bytes32, htl?: u8}]
-//! - Response: [0x01][msgpack: {h: bytes32, d: bytes, i?: u32, n?: u32}]
+//! - Request:        [0x00][msgpack: {h: bytes32, htl?: u8, q?: u64}]
+//! - Response:       [0x01][msgpack: {h: bytes32, d: bytes, i?: u32, n?: u32}]
+//! - QuoteRequest:   [0x02][msgpack: {h: bytes32, p: u64, t: u32}]
+//! - QuoteResponse:  [0x03][msgpack: {h: bytes32, a: bool, q?: u64, p?: u64, t?: u32}]
 //!
 //! Fragmented responses include `i` (index) and `n` (total), unfragmented omit them.
 
@@ -12,6 +14,8 @@ use serde::{Deserialize, Serialize};
 /// Message type bytes (prefix before MessagePack body)
 pub const MSG_TYPE_REQUEST: u8 = 0x00;
 pub const MSG_TYPE_RESPONSE: u8 = 0x01;
+pub const MSG_TYPE_QUOTE_REQUEST: u8 = 0x02;
+pub const MSG_TYPE_QUOTE_RESPONSE: u8 = 0x03;
 
 /// Fragment size for large data (32KB - safe limit for WebRTC)
 pub const FRAGMENT_SIZE: usize = 32 * 1024;
@@ -25,6 +29,9 @@ pub struct DataRequest {
     /// Hops To Live (optional, defaults to MAX_HTL)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub htl: Option<u8>,
+    /// Optional quote identifier for paid retrieval.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub q: Option<u64>,
 }
 
 /// Data response message body
@@ -44,11 +51,44 @@ pub struct DataResponse {
     pub n: Option<u32>,
 }
 
+/// Quote request message body
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataQuoteRequest {
+    /// 32-byte hash
+    #[serde(with = "serde_bytes")]
+    pub h: Vec<u8>,
+    /// Offered payment amount in sat.
+    pub p: u64,
+    /// Quote validity window in milliseconds.
+    pub t: u32,
+}
+
+/// Quote response message body
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataQuoteResponse {
+    /// 32-byte hash
+    #[serde(with = "serde_bytes")]
+    pub h: Vec<u8>,
+    /// Whether the peer is willing and able to serve the request.
+    pub a: bool,
+    /// Quote identifier to include in the follow-up request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub q: Option<u64>,
+    /// Accepted payment amount in sat.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p: Option<u64>,
+    /// Quote validity window in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub t: Option<u32>,
+}
+
 /// Parsed data message
 #[derive(Debug, Clone)]
 pub enum DataMessage {
     Request(DataRequest),
     Response(DataResponse),
+    QuoteRequest(DataQuoteRequest),
+    QuoteResponse(DataQuoteResponse),
 }
 
 /// Encode a request message to wire format
@@ -71,6 +111,24 @@ pub fn encode_response(res: &DataResponse) -> Vec<u8> {
     result
 }
 
+/// Encode a quote request message to wire format.
+pub fn encode_quote_request(req: &DataQuoteRequest) -> Vec<u8> {
+    let body = rmp_serde::to_vec_named(req).expect("Failed to encode quote request");
+    let mut result = Vec::with_capacity(1 + body.len());
+    result.push(MSG_TYPE_QUOTE_REQUEST);
+    result.extend(body);
+    result
+}
+
+/// Encode a quote response message to wire format.
+pub fn encode_quote_response(res: &DataQuoteResponse) -> Vec<u8> {
+    let body = rmp_serde::to_vec_named(res).expect("Failed to encode quote response");
+    let mut result = Vec::with_capacity(1 + body.len());
+    result.push(MSG_TYPE_QUOTE_RESPONSE);
+    result.extend(body);
+    result
+}
+
 /// Parse a wire format message
 pub fn parse_message(data: &[u8]) -> Option<DataMessage> {
     if data.len() < 2 {
@@ -87,6 +145,12 @@ pub fn parse_message(data: &[u8]) -> Option<DataMessage> {
         MSG_TYPE_RESPONSE => rmp_serde::from_slice::<DataResponse>(body)
             .ok()
             .map(DataMessage::Response),
+        MSG_TYPE_QUOTE_REQUEST => rmp_serde::from_slice::<DataQuoteRequest>(body)
+            .ok()
+            .map(DataMessage::QuoteRequest),
+        MSG_TYPE_QUOTE_RESPONSE => rmp_serde::from_slice::<DataQuoteResponse>(body)
+            .ok()
+            .map(DataMessage::QuoteResponse),
         _ => None,
     }
 }
@@ -96,6 +160,16 @@ pub fn create_request(hash: &Hash, htl: u8) -> DataRequest {
     DataRequest {
         h: hash.to_vec(),
         htl: Some(htl),
+        q: None,
+    }
+}
+
+/// Create a request that references a previously accepted quote.
+pub fn create_request_with_quote(hash: &Hash, htl: u8, quote_id: u64) -> DataRequest {
+    DataRequest {
+        h: hash.to_vec(),
+        htl: Some(htl),
+        q: Some(quote_id),
     }
 }
 
@@ -106,6 +180,42 @@ pub fn create_response(hash: &Hash, data: Vec<u8>) -> DataResponse {
         d: data,
         i: None,
         n: None,
+    }
+}
+
+/// Create a quote request.
+pub fn create_quote_request(hash: &Hash, ttl_ms: u32, payment_sat: u64) -> DataQuoteRequest {
+    DataQuoteRequest {
+        h: hash.to_vec(),
+        p: payment_sat,
+        t: ttl_ms,
+    }
+}
+
+/// Create an accepted quote response.
+pub fn create_quote_response_available(
+    hash: &Hash,
+    quote_id: u64,
+    payment_sat: u64,
+    ttl_ms: u32,
+) -> DataQuoteResponse {
+    DataQuoteResponse {
+        h: hash.to_vec(),
+        a: true,
+        q: Some(quote_id),
+        p: Some(payment_sat),
+        t: Some(ttl_ms),
+    }
+}
+
+/// Create a declined quote response.
+pub fn create_quote_response_unavailable(hash: &Hash) -> DataQuoteResponse {
+    DataQuoteResponse {
+        h: hash.to_vec(),
+        a: false,
+        q: None,
+        p: None,
+        t: None,
     }
 }
 
@@ -209,6 +319,58 @@ mod tests {
                 assert_eq!(r.n, Some(5));
             }
             _ => panic!("Expected response"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_quote_request() {
+        let hash = [0x44; 32];
+        let req = create_quote_request(&hash, 7, 2_500);
+        let encoded = encode_quote_request(&req);
+
+        assert_eq!(encoded[0], MSG_TYPE_QUOTE_REQUEST);
+
+        let parsed = parse_message(&encoded).unwrap();
+        match parsed {
+            DataMessage::QuoteRequest(r) => {
+                assert_eq!(r.h, hash.to_vec());
+                assert_eq!(r.t, 7);
+                assert_eq!(r.p, 2_500);
+            }
+            _ => panic!("Expected quote request"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_quote_response_and_quoted_request() {
+        let hash = [0x55; 32];
+        let quote = create_quote_response_available(&hash, 19, 2_500, 7);
+        let encoded_quote = encode_quote_response(&quote);
+
+        assert_eq!(encoded_quote[0], MSG_TYPE_QUOTE_RESPONSE);
+
+        let parsed_quote = parse_message(&encoded_quote).unwrap();
+        match parsed_quote {
+            DataMessage::QuoteResponse(r) => {
+                assert_eq!(r.h, hash.to_vec());
+                assert!(r.a);
+                assert_eq!(r.q, Some(19));
+                assert_eq!(r.p, Some(2_500));
+                assert_eq!(r.t, Some(7));
+            }
+            _ => panic!("Expected quote response"),
+        }
+
+        let req = create_request_with_quote(&hash, 9, 19);
+        let encoded_req = encode_request(&req);
+        let parsed_req = parse_message(&encoded_req).unwrap();
+        match parsed_req {
+            DataMessage::Request(r) => {
+                assert_eq!(r.h, hash.to_vec());
+                assert_eq!(r.htl, Some(9));
+                assert_eq!(r.q, Some(19));
+            }
+            _ => panic!("Expected quoted request"),
         }
     }
 

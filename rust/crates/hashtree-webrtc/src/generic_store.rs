@@ -16,8 +16,10 @@ use hashtree_core::{Hash, Store, StoreError};
 
 use crate::peer_selector::{PeerMetadataSnapshot, PeerSelector, SelectionStrategy};
 use crate::protocol::{
-    create_request, create_response, encode_request, encode_response, hash_to_key, parse_message,
-    DataMessage,
+    create_quote_request, create_quote_response_available, create_quote_response_unavailable,
+    create_request, create_request_with_quote, create_response, encode_quote_request,
+    encode_quote_response, encode_request, encode_response, hash_to_key, parse_message,
+    DataMessage, DataQuoteRequest, DataQuoteResponse,
 };
 use crate::signaling::SignalingManager;
 use crate::transport::{PeerConnectionFactory, RelayTransport, TransportError};
@@ -30,6 +32,22 @@ struct PendingRequest {
     response_tx: oneshot::Sender<Option<Vec<u8>>>,
     started_at: Instant,
     queried_peers: Vec<String>,
+}
+
+struct PendingQuoteRequest {
+    response_tx: oneshot::Sender<Option<NegotiatedQuote>>,
+}
+
+#[derive(Debug, Clone)]
+struct NegotiatedQuote {
+    peer_id: String,
+    quote_id: u64,
+}
+
+struct IssuedQuote {
+    expires_at: Instant,
+    #[allow(dead_code)]
+    payment_sat: u64,
 }
 
 /// Request dispatch strategy for peer queries.
@@ -203,6 +221,12 @@ where
     htl_configs: RwLock<HashMap<String, PeerHTLConfig>>,
     /// Pending requests we sent
     pending_requests: RwLock<HashMap<String, PendingRequest>>,
+    /// Pending quote negotiations keyed by requested hash.
+    pending_quotes: RwLock<HashMap<String, PendingQuoteRequest>>,
+    /// Quotes we issued to peers and will accept exactly once until expiry.
+    issued_quotes: RwLock<HashMap<(String, String, u64), IssuedQuote>>,
+    /// Monotonic quote identifier generator.
+    next_quote_id: RwLock<u64>,
     /// Adaptive selector for peer ordering.
     peer_selector: RwLock<PeerSelector>,
     /// Routing/dispatch configuration.
@@ -253,6 +277,9 @@ where
             signaling,
             htl_configs: RwLock::new(HashMap::new()),
             pending_requests: RwLock::new(HashMap::new()),
+            pending_quotes: RwLock::new(HashMap::new()),
+            issued_quotes: RwLock::new(HashMap::new()),
+            next_quote_id: RwLock::new(1),
             peer_selector: RwLock::new(selector),
             routing,
             request_timeout,
@@ -347,7 +374,63 @@ where
         self.deterministic_actor_draw(hash, 0xC0_C0_C0_C0_C0_C0_C0_C0) < p
     }
 
-    async fn send_request_to_peer(&self, peer_id: &str, hash: &Hash) -> bool {
+    async fn ordered_connected_peers(&self) -> Vec<String> {
+        let current_peer_ids = self.signaling.peer_ids().await;
+        if current_peer_ids.is_empty() {
+            return Vec::new();
+        }
+
+        sync_selector_peers(&self.peer_selector, &current_peer_ids).await;
+        let current_set: HashSet<&str> = current_peer_ids.iter().map(String::as_str).collect();
+        let mut ordered_peer_ids = self.peer_selector.write().await.select_peers();
+        ordered_peer_ids.retain(|peer_id| current_set.contains(peer_id.as_str()));
+        if ordered_peer_ids.is_empty() {
+            let mut fallback = current_peer_ids;
+            fallback.sort();
+            return fallback;
+        }
+        ordered_peer_ids
+    }
+
+    async fn issue_quote(
+        &self,
+        peer_id: &str,
+        hash_key: &str,
+        payment_sat: u64,
+        ttl_ms: u32,
+    ) -> u64 {
+        let quote_id = {
+            let mut next = self.next_quote_id.write().await;
+            let quote_id = *next;
+            *next = next.saturating_add(1);
+            quote_id
+        };
+
+        let expires_at = Instant::now() + Duration::from_millis(ttl_ms as u64);
+        self.issued_quotes.write().await.insert(
+            (peer_id.to_string(), hash_key.to_string(), quote_id),
+            IssuedQuote {
+                expires_at,
+                payment_sat,
+            },
+        );
+        quote_id
+    }
+
+    async fn take_valid_quote(&self, peer_id: &str, hash_key: &str, quote_id: u64) -> bool {
+        let key = (peer_id.to_string(), hash_key.to_string(), quote_id);
+        let Some(quote) = self.issued_quotes.write().await.remove(&key) else {
+            return false;
+        };
+        quote.expires_at > Instant::now()
+    }
+
+    async fn send_request_to_peer(
+        &self,
+        peer_id: &str,
+        hash: &Hash,
+        quote_id: Option<u64>,
+    ) -> bool {
         let channel = match self.signaling.get_channel(peer_id).await {
             Some(c) => c,
             None => return false,
@@ -362,7 +445,10 @@ where
         };
 
         let send_htl = htl_config.decrement(MAX_HTL);
-        let req = create_request(hash, send_htl);
+        let req = match quote_id {
+            Some(quote_id) => create_request_with_quote(hash, send_htl, quote_id),
+            None => create_request(hash, send_htl),
+        };
         let request_bytes = encode_request(&req);
 
         {
@@ -376,6 +462,27 @@ where
                 self.peer_selector.write().await.record_failure(peer_id);
                 false
             }
+        }
+    }
+
+    async fn send_quote_request_to_peer(
+        &self,
+        peer_id: &str,
+        hash: &Hash,
+        payment_sat: u64,
+        ttl_ms: u32,
+    ) -> bool {
+        let channel = match self.signaling.get_channel(peer_id).await {
+            Some(c) => c,
+            None => return false,
+        };
+
+        let req = create_quote_request(hash, ttl_ms, payment_sat);
+        let request_bytes = encode_quote_request(&req);
+
+        match channel.send(request_bytes).await {
+            Ok(()) => true,
+            Err(_) => false,
         }
     }
 
@@ -482,22 +589,184 @@ where
         Ok(true)
     }
 
-    /// Request data from peers
-    async fn request_from_peers(&self, hash: &Hash) -> Option<Vec<u8>> {
-        let current_peer_ids = self.signaling.peer_ids().await;
-        if current_peer_ids.is_empty() {
+    /// Request data from peers after negotiating a paid quote.
+    ///
+    /// If quote negotiation fails or the quoted peer does not deliver, the store
+    /// falls back to the normal unpaid retrieval path to preserve liveness.
+    pub async fn get_with_quote(
+        &self,
+        hash: &Hash,
+        payment_sat: u64,
+        quote_ttl: Duration,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        if let Some(data) = self.local_store.get(hash).await? {
+            return Ok(Some(data));
+        }
+        Ok(self
+            .request_from_peers_with_quote(hash, payment_sat, quote_ttl)
+            .await)
+    }
+
+    async fn request_from_peers_with_quote(
+        &self,
+        hash: &Hash,
+        payment_sat: u64,
+        quote_ttl: Duration,
+    ) -> Option<Vec<u8>> {
+        let ordered_peer_ids = self.ordered_connected_peers().await;
+        if ordered_peer_ids.is_empty() {
             return None;
         }
-        sync_selector_peers(&self.peer_selector, &current_peer_ids).await;
-        let current_set: std::collections::HashSet<&str> =
-            current_peer_ids.iter().map(String::as_str).collect();
-        let mut ordered_peer_ids = self.peer_selector.write().await.select_peers();
-        ordered_peer_ids.retain(|peer_id| current_set.contains(peer_id.as_str()));
-        if ordered_peer_ids.is_empty() {
-            ordered_peer_ids = current_peer_ids;
-            ordered_peer_ids.sort();
+
+        if let Some(quote) = self
+            .request_quote_from_peers(hash, payment_sat, quote_ttl, &ordered_peer_ids)
+            .await
+        {
+            if let Some(data) = self
+                .request_from_single_peer(hash, &quote.peer_id, Some(quote.quote_id))
+                .await
+            {
+                return Some(data);
+            }
         }
 
+        self.request_from_ordered_peers(hash, &ordered_peer_ids)
+            .await
+    }
+
+    async fn request_quote_from_peers(
+        &self,
+        hash: &Hash,
+        payment_sat: u64,
+        quote_ttl: Duration,
+        ordered_peer_ids: &[String],
+    ) -> Option<NegotiatedQuote> {
+        if ordered_peer_ids.is_empty() {
+            return None;
+        }
+        let ttl_ms = quote_ttl.as_millis().min(u32::MAX as u128) as u32;
+        if ttl_ms == 0 {
+            return None;
+        }
+
+        let dispatch = normalize_dispatch_config(self.routing.dispatch, ordered_peer_ids.len());
+        let wave_plan = build_hedged_wave_plan(ordered_peer_ids.len(), dispatch);
+        if wave_plan.is_empty() {
+            return None;
+        }
+
+        let hash_key = hash_to_key(hash);
+        let (tx, rx) = oneshot::channel();
+        self.pending_quotes
+            .write()
+            .await
+            .insert(hash_key.clone(), PendingQuoteRequest { response_tx: tx });
+
+        let mut sent_total = 0usize;
+        let mut next_peer_idx = 0usize;
+        let mut rx = rx;
+        let deadline = Instant::now() + self.request_timeout;
+
+        for (wave_idx, wave_size) in wave_plan.iter().copied().enumerate() {
+            let from = next_peer_idx;
+            let to = (next_peer_idx + wave_size).min(ordered_peer_ids.len());
+            for peer_id in &ordered_peer_ids[from..to] {
+                if self
+                    .send_quote_request_to_peer(peer_id, hash, payment_sat, ttl_ms)
+                    .await
+                {
+                    sent_total += 1;
+                }
+            }
+            next_peer_idx = to;
+
+            if sent_total == 0 {
+                if next_peer_idx >= ordered_peer_ids.len() {
+                    break;
+                }
+                continue;
+            }
+
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            let is_last_wave =
+                wave_idx + 1 == wave_plan.len() || next_peer_idx >= ordered_peer_ids.len();
+            let wait = if is_last_wave {
+                remaining
+            } else if dispatch.hedge_interval_ms == 0 {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(dispatch.hedge_interval_ms).min(remaining)
+            };
+
+            if wait.is_zero() {
+                continue;
+            }
+
+            match tokio::time::timeout(wait, &mut rx).await {
+                Ok(Ok(Some(quote))) => {
+                    let _ = self.pending_quotes.write().await.remove(&hash_key);
+                    return Some(quote);
+                }
+                Ok(Ok(None)) => break,
+                Ok(Err(_)) => break,
+                Err(_) => {}
+            }
+        }
+
+        let _ = self.pending_quotes.write().await.remove(&hash_key);
+        None
+    }
+
+    async fn request_from_single_peer(
+        &self,
+        hash: &Hash,
+        peer_id: &str,
+        quote_id: Option<u64>,
+    ) -> Option<Vec<u8>> {
+        let hash_key = hash_to_key(hash);
+        let (tx, rx) = oneshot::channel();
+        self.pending_requests.write().await.insert(
+            hash_key.clone(),
+            PendingRequest {
+                response_tx: tx,
+                started_at: Instant::now(),
+                queried_peers: vec![peer_id.to_string()],
+            },
+        );
+
+        let mut rx = rx;
+        if !self.send_request_to_peer(peer_id, hash, quote_id).await {
+            let _ = self.pending_requests.write().await.remove(&hash_key);
+            return None;
+        }
+
+        match tokio::time::timeout(self.request_timeout, &mut rx).await {
+            Ok(Ok(Some(data))) => {
+                if hashtree_core::sha256(&data) == *hash {
+                    let _ = self.local_store.put(*hash, data.clone()).await;
+                    return Some(data);
+                }
+            }
+            Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {}
+        }
+
+        if let Some(pending) = self.pending_requests.write().await.remove(&hash_key) {
+            for peer_id in pending.queried_peers {
+                self.peer_selector.write().await.record_timeout(&peer_id);
+            }
+        }
+        None
+    }
+
+    async fn request_from_ordered_peers(
+        &self,
+        hash: &Hash,
+        ordered_peer_ids: &[String],
+    ) -> Option<Vec<u8>> {
         let dispatch = normalize_dispatch_config(self.routing.dispatch, ordered_peer_ids.len());
         let wave_plan = build_hedged_wave_plan(ordered_peer_ids.len(), dispatch);
         if wave_plan.is_empty() {
@@ -524,7 +793,7 @@ where
             let from = next_peer_idx;
             let to = (next_peer_idx + wave_size).min(ordered_peer_ids.len());
             for peer_id in &ordered_peer_ids[from..to] {
-                if self.send_request_to_peer(peer_id, hash).await {
+                if self.send_request_to_peer(peer_id, hash, None).await {
                     sent_total += 1;
                     if let Some(pending) = self.pending_requests.write().await.get_mut(&hash_key) {
                         pending.queried_peers.push(peer_id.clone());
@@ -587,6 +856,16 @@ where
         None
     }
 
+    /// Request data from peers
+    async fn request_from_peers(&self, hash: &Hash) -> Option<Vec<u8>> {
+        let ordered_peer_ids = self.ordered_connected_peers().await;
+        if ordered_peer_ids.is_empty() {
+            return None;
+        }
+        self.request_from_ordered_peers(hash, &ordered_peer_ids)
+            .await
+    }
+
     async fn complete_pending_response(&self, from_peer: &str, hash_key: String, payload: Vec<u8>) {
         if let Some(pending) = self.pending_requests.write().await.remove(&hash_key) {
             let rtt_ms = pending.started_at.elapsed().as_millis() as u64;
@@ -596,6 +875,24 @@ where
                 payload.len() as u64,
             );
             let _ = pending.response_tx.send(Some(payload));
+        }
+    }
+
+    async fn handle_quote_response_message(&self, from_peer: &str, res: DataQuoteResponse) {
+        if !res.a {
+            return;
+        }
+
+        let Some(quote_id) = res.q else {
+            return;
+        };
+
+        let hash_key = hash_to_key(&res.h);
+        if let Some(pending) = self.pending_quotes.write().await.remove(&hash_key) {
+            let _ = pending.response_tx.send(Some(NegotiatedQuote {
+                peer_id: from_peer.to_string(),
+                quote_id,
+            }));
         }
     }
 
@@ -619,11 +916,48 @@ where
             .await;
     }
 
+    async fn handle_quote_request_message(&self, from_peer: &str, req: DataQuoteRequest) {
+        let hash = match crate::protocol::bytes_to_hash(&req.h) {
+            Some(h) => h,
+            None => return,
+        };
+        let hash_key = hash_to_key(&hash);
+
+        {
+            let selector = self.peer_selector.read().await;
+            if self.should_refuse_requests_from_peer(&selector, from_peer) {
+                if self.debug {
+                    println!(
+                        "[GenericStore] Refusing quote request from delinquent peer {}",
+                        from_peer
+                    );
+                }
+                return;
+            }
+        }
+
+        let can_serve = self.local_store.has(&hash).await.ok().unwrap_or(false)
+            && !self.should_drop_response(&hash)
+            && !self.should_corrupt_response(&hash);
+
+        let res = if can_serve {
+            let quote_id = self.issue_quote(from_peer, &hash_key, req.p, req.t).await;
+            create_quote_response_available(&hash, quote_id, req.p, req.t)
+        } else {
+            create_quote_response_unavailable(&hash)
+        };
+        let response_bytes = encode_quote_response(&res);
+        if let Some(channel) = self.signaling.get_channel(from_peer).await {
+            let _ = channel.send(response_bytes).await;
+        }
+    }
+
     async fn handle_request_message(&self, from_peer: &str, req: crate::protocol::DataRequest) {
         let hash = match crate::protocol::bytes_to_hash(&req.h) {
             Some(h) => h,
             None => return,
         };
+        let hash_key = hash_to_key(&hash);
 
         {
             let selector = self.peer_selector.read().await;
@@ -632,6 +966,18 @@ where
                     println!(
                         "[GenericStore] Refusing request from delinquent peer {}",
                         from_peer
+                    );
+                }
+                return;
+            }
+        }
+
+        if let Some(quote_id) = req.q {
+            if !self.take_valid_quote(from_peer, &hash_key, quote_id).await {
+                if self.debug {
+                    println!(
+                        "[GenericStore] Refusing request with invalid or expired quote {} from {}",
+                        quote_id, from_peer
                     );
                 }
                 return;
@@ -687,6 +1033,12 @@ where
             DataMessage::Response(res) => {
                 self.handle_response_message(from_peer, res).await;
             }
+            DataMessage::QuoteRequest(req) => {
+                self.handle_quote_request_message(from_peer, req).await;
+            }
+            DataMessage::QuoteResponse(res) => {
+                self.handle_quote_response_message(from_peer, res).await;
+            }
         }
     }
 }
@@ -734,6 +1086,12 @@ mod tests {
         crate::mock::MockConnectionFactory,
     >;
 
+    struct TestNode {
+        store: Arc<TestStore>,
+        local_store: Arc<MemoryStore>,
+        transport: Arc<crate::mock::MockRelayTransport>,
+    }
+
     fn make_test_store(local_store: Arc<MemoryStore>, node_id: &str) -> TestStore {
         make_test_store_with_routing(local_store, node_id, GenericStoreRoutingConfig::default())
     }
@@ -765,6 +1123,162 @@ mod tests {
             false,
             routing,
         )
+    }
+
+    fn make_shared_test_node(
+        relay: Arc<crate::mock::MockRelay>,
+        node_id: &str,
+        routing: GenericStoreRoutingConfig,
+    ) -> TestNode {
+        let transport = Arc::new(relay.create_transport(node_id.to_string(), node_id.to_string()));
+        let conn_factory = Arc::new(crate::mock::MockConnectionFactory::new(
+            node_id.to_string(),
+            0,
+        ));
+        let signaling = Arc::new(crate::signaling::SignalingManager::new(
+            node_id.to_string(),
+            node_id.to_string(),
+            transport.clone(),
+            conn_factory,
+            crate::types::PoolSettings::default(),
+            false,
+        ));
+        let local_store = Arc::new(MemoryStore::new());
+        let store = Arc::new(TestStore::new_with_routing(
+            local_store.clone(),
+            signaling,
+            Duration::from_millis(120),
+            false,
+            routing,
+        ));
+
+        TestNode {
+            store,
+            local_store,
+            transport,
+        }
+    }
+
+    async fn pump_test_signaling(nodes: &[&TestNode]) -> usize {
+        let mut processed = 0usize;
+        for node in nodes {
+            while let Some(msg) = node.transport.try_recv() {
+                node.store
+                    .process_signaling(msg)
+                    .await
+                    .expect("process signaling");
+                processed += 1;
+            }
+        }
+        processed
+    }
+
+    async fn pump_test_data(nodes: &[&TestNode]) -> usize {
+        let mut processed = 0usize;
+        for node in nodes {
+            let peer_ids = node.store.signaling().peer_ids().await;
+            for peer_id in peer_ids {
+                let Some(channel) = node.store.signaling().get_channel(&peer_id).await else {
+                    continue;
+                };
+                while let Some(data) = channel.try_recv() {
+                    node.store.handle_data_message(&peer_id, &data).await;
+                    processed += 1;
+                }
+            }
+        }
+        processed
+    }
+
+    async fn pump_test_network(nodes: &[&TestNode], max_steps: usize) {
+        for _ in 0..max_steps {
+            let signaling = pump_test_signaling(nodes).await;
+            let data = pump_test_data(nodes).await;
+            if signaling + data == 0 {
+                tokio::task::yield_now().await;
+            }
+        }
+    }
+
+    async fn run_get_with_pumps(
+        requester: Arc<TestStore>,
+        hash: Hash,
+        nodes: &[&TestNode],
+    ) -> Option<Vec<u8>> {
+        let task = tokio::spawn(async move { requester.get(&hash).await.ok().flatten() });
+        let started = Instant::now();
+
+        loop {
+            if task.is_finished() {
+                return task.await.expect("request task join");
+            }
+
+            if started.elapsed() > Duration::from_secs(1) {
+                task.abort();
+                return None;
+            }
+
+            pump_test_network(nodes, 4).await;
+        }
+    }
+
+    async fn run_bad_peer_series(strategy: SelectionStrategy) -> usize {
+        crate::mock::clear_channel_registry().await;
+
+        let relay = crate::mock::MockRelay::new();
+        let requester = make_shared_test_node(
+            relay.clone(),
+            "requester",
+            GenericStoreRoutingConfig {
+                selection_strategy: strategy,
+                fairness_enabled: false,
+                dispatch: RequestDispatchConfig {
+                    initial_fanout: 1,
+                    hedge_fanout: 1,
+                    max_fanout: 1,
+                    hedge_interval_ms: 5,
+                },
+                ..Default::default()
+            },
+        );
+        let bad = make_shared_test_node(
+            relay.clone(),
+            "a-bad",
+            GenericStoreRoutingConfig {
+                response_behavior: ResponseBehaviorConfig {
+                    drop_response_prob: 1.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let honest = make_shared_test_node(relay, "b-honest", GenericStoreRoutingConfig::default());
+        let nodes = [&requester, &bad, &honest];
+
+        for node in &nodes {
+            node.transport
+                .connect(&[])
+                .await
+                .expect("connect transport");
+            node.store.start().await.expect("start store");
+        }
+        pump_test_network(&nodes, 24).await;
+
+        let mut successes = 0usize;
+        for round in 0..6 {
+            let payload = format!("payload-{round}").into_bytes();
+            let hash = hashtree_core::sha256(&payload);
+            let _ = bad.local_store.put(hash, payload.clone()).await;
+            let _ = honest.local_store.put(hash, payload.clone()).await;
+
+            let result = run_get_with_pumps(requester.store.clone(), hash, &nodes).await;
+            if result.as_ref() == Some(&payload) {
+                successes += 1;
+            }
+        }
+
+        crate::mock::clear_channel_registry().await;
+        successes
     }
 
     #[test]
@@ -874,6 +1388,46 @@ mod tests {
         let selector = store.peer_selector.read().await;
         assert!(store.should_refuse_requests_from_peer(&selector, "peer-a"));
         assert!(!store.should_refuse_requests_from_peer(&selector, "peer-b"));
+    }
+
+    #[tokio::test]
+    async fn test_take_valid_quote_consumes_once_and_rejects_expired_quotes() {
+        let local_store = Arc::new(MemoryStore::new());
+        let store = make_test_store(local_store, "0");
+        let hash = hashtree_core::sha256(b"quote-test");
+        let hash_key = hash_to_key(&hash);
+
+        {
+            let mut issued = store.issued_quotes.write().await;
+            issued.insert(
+                ("peer-a".to_string(), hash_key.clone(), 11),
+                IssuedQuote {
+                    expires_at: Instant::now() + Duration::from_secs(1),
+                    payment_sat: 5,
+                },
+            );
+            issued.insert(
+                ("peer-a".to_string(), hash_key.clone(), 12),
+                IssuedQuote {
+                    expires_at: Instant::now() - Duration::from_millis(1),
+                    payment_sat: 5,
+                },
+            );
+        }
+
+        assert!(store.take_valid_quote("peer-a", &hash_key, 11).await);
+        assert!(!store.take_valid_quote("peer-a", &hash_key, 11).await);
+        assert!(!store.take_valid_quote("peer-a", &hash_key, 12).await);
+    }
+
+    #[tokio::test]
+    async fn test_tit_for_tat_store_path_recovers_after_bad_peer_observation() {
+        let tit_for_tat_successes = run_bad_peer_series(SelectionStrategy::TitForTat).await;
+
+        assert!(
+            tit_for_tat_successes >= 5,
+            "expected tit-for-tat path to recover after the first consistently bad peer observation (successes={tit_for_tat_successes})"
+        );
     }
 }
 

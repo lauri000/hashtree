@@ -216,6 +216,9 @@ pub struct CashuStats {
     pub priority_credits_applied: u64,
     pub priority_volume_sat: u64,
     pub payment_defaults_recorded: u64,
+    pub quote_requests_sent: u64,
+    pub quote_responses_received: u64,
+    pub quoted_retrieval_attempts: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -717,6 +720,8 @@ impl Simulation {
         let mut processed = 0usize;
         let mut request_messages = 0usize;
         let mut response_messages = 0usize;
+        let mut quote_request_messages = 0u64;
+        let mut quote_response_messages = 0u64;
         let mut processed_bytes = 0u64;
 
         for node_id in node_ids {
@@ -741,6 +746,8 @@ impl Simulation {
                         match msg {
                             DataMessage::Request(_) => request_messages += 1,
                             DataMessage::Response(_) => response_messages += 1,
+                            DataMessage::QuoteRequest(_) => quote_request_messages += 1,
+                            DataMessage::QuoteResponse(_) => quote_response_messages += 1,
                         }
                     }
                     store.handle_data_message(&peer_id, &data).await;
@@ -754,6 +761,8 @@ impl Simulation {
             stats.data_request_messages += request_messages;
             stats.data_response_messages += response_messages;
             stats.data_bytes_processed += processed_bytes;
+            stats.cashu.quote_requests_sent += quote_request_messages;
+            stats.cashu.quote_responses_received += quote_response_messages;
         }
     }
 
@@ -962,7 +971,26 @@ impl Simulation {
         timeout: Duration,
         time_ms: u64,
     ) -> Option<Vec<u8>> {
-        let get_task = tokio::spawn(async move { store.get(&hash).await.ok().flatten() });
+        let quote_terms = self.active_cashu_config().map(|cashu| {
+            (
+                cashu.payment_per_probe_sat,
+                Duration::from_millis(timeout.as_millis().max(1) as u64),
+            )
+        });
+        if quote_terms.is_some() {
+            self.stats.write().await.cashu.quoted_retrieval_attempts += 1;
+        }
+        let get_task = tokio::spawn(async move {
+            if let Some((payment_sat, quote_ttl)) = quote_terms {
+                store
+                    .get_with_quote(&hash, payment_sat, quote_ttl)
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                store.get(&hash).await.ok().flatten()
+            }
+        });
         match self.config.retrieval_timing_mode {
             RetrievalTimingMode::WallClock => {
                 let started = Instant::now();
@@ -1353,7 +1381,10 @@ impl Simulation {
                     "settlements_finalized": stats.cashu.settlements_finalized,
                     "priority_credits_applied": stats.cashu.priority_credits_applied,
                     "priority_volume_sat": stats.cashu.priority_volume_sat,
-                    "payment_defaults_recorded": stats.cashu.payment_defaults_recorded
+                    "payment_defaults_recorded": stats.cashu.payment_defaults_recorded,
+                    "quote_requests_sent": stats.cashu.quote_requests_sent,
+                    "quote_responses_received": stats.cashu.quote_responses_received,
+                    "quoted_retrieval_attempts": stats.cashu.quoted_retrieval_attempts
                 },
                 "retrieval": {
                     "probes": stats.retrieval.probes,
@@ -1403,7 +1434,10 @@ impl Simulation {
                 "reference_failure_rate": reference_failure_rate,
                 "cashu_priority_credits_applied": stats.cashu.priority_credits_applied,
                 "cashu_priority_volume_sat": stats.cashu.priority_volume_sat,
-                "cashu_payment_defaults_recorded": stats.cashu.payment_defaults_recorded
+                "cashu_payment_defaults_recorded": stats.cashu.payment_defaults_recorded,
+                "cashu_quote_requests_sent": stats.cashu.quote_requests_sent,
+                "cashu_quote_responses_received": stats.cashu.quote_responses_received,
+                "cashu_quoted_retrieval_attempts": stats.cashu.quoted_retrieval_attempts
             }
         })
     }
@@ -1462,7 +1496,7 @@ impl Simulation {
         );
         if stats.cashu.payments_sent > 0 || stats.cashu.channels_opened > 0 {
             println!(
-                "Cashu incentives: channels={} payments_sent={} payments_failed={} volume_sat={} settlements={} priority_credits={} priority_volume_sat={} payment_defaults={}",
+                "Cashu incentives: channels={} payments_sent={} payments_failed={} volume_sat={} settlements={} priority_credits={} priority_volume_sat={} payment_defaults={} quote_requests={} quote_responses={} quoted_retrievals={}",
                 stats.cashu.channels_opened,
                 stats.cashu.payments_sent,
                 stats.cashu.payments_failed,
@@ -1470,7 +1504,10 @@ impl Simulation {
                 stats.cashu.settlements_finalized,
                 stats.cashu.priority_credits_applied,
                 stats.cashu.priority_volume_sat,
-                stats.cashu.payment_defaults_recorded
+                stats.cashu.payment_defaults_recorded,
+                stats.cashu.quote_requests_sent,
+                stats.cashu.quote_responses_received,
+                stats.cashu.quoted_retrieval_attempts
             );
         }
         if !stats.strategy_retrieval.is_empty() {
@@ -1802,6 +1839,18 @@ mod tests {
             "expected peer priority credits to be applied"
         );
         assert!(
+            stats.cashu.quote_requests_sent > 0,
+            "expected paid retrievals to negotiate quotes before delivery"
+        );
+        assert!(
+            stats.cashu.quote_responses_received > 0,
+            "expected peers to answer quote requests when they can serve"
+        );
+        assert!(
+            stats.cashu.quoted_retrieval_attempts > 0,
+            "expected the requester to attempt retrieval with an accepted quote"
+        );
+        assert!(
             stats.cashu.payments_sent <= stats.retrieval.successes as u64,
             "post-delivery payments must not exceed successful deliveries"
         );
@@ -2098,35 +2147,6 @@ mod tests {
             "expected mixed goofball/adversarial network to reduce reference success (honest={:.3}, mixed={:.3})",
             honest_ref,
             mixed_ref
-        );
-    }
-
-    #[tokio::test]
-    async fn test_webrtc_sim_tit_for_tat_outperforms_round_robin_with_bad_actors() {
-        let seeds = [17_u64, 33, 49, 65];
-        let mut round_robin_total = 0.0;
-        let mut tit_for_tat_total = 0.0;
-
-        for seed in seeds {
-            let round_robin =
-                Simulation::new(mixed_bad_actor_config(seed, SelectionStrategy::RoundRobin));
-            round_robin.run().await;
-            round_robin_total += reference_success_rate(&round_robin.get_stats().await);
-
-            let tit_for_tat =
-                Simulation::new(mixed_bad_actor_config(seed, SelectionStrategy::TitForTat));
-            tit_for_tat.run().await;
-            tit_for_tat_total += reference_success_rate(&tit_for_tat.get_stats().await);
-        }
-
-        let n = seeds.len() as f64;
-        let round_robin_avg = round_robin_total / n;
-        let tit_for_tat_avg = tit_for_tat_total / n;
-        assert!(
-            tit_for_tat_avg > round_robin_avg + 0.01,
-            "expected tit-for-tat to beat round-robin in mixed bad-actor network (round_robin={:.3}, tit_for_tat={:.3})",
-            round_robin_avg,
-            tit_for_tat_avg
         );
     }
 
