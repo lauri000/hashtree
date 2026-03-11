@@ -36,7 +36,8 @@ struct PendingRequest {
 
 struct PendingQuoteRequest {
     response_tx: oneshot::Sender<Option<NegotiatedQuote>>,
-    expected_mint_url: Option<String>,
+    preferred_mint_url: Option<String>,
+    offered_payment_sat: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -194,6 +195,14 @@ pub struct GenericStoreRoutingConfig {
     pub cashu_accepted_mints: Vec<String>,
     /// Preferred Cashu mint URL when initiating paid retrieval.
     pub cashu_default_mint: Option<String>,
+    /// Baseline cap for accepting a peer-suggested mint outside the trusted set.
+    pub cashu_peer_suggested_mint_base_cap_sat: u64,
+    /// Additional sats allowed per successful delivery from that peer.
+    pub cashu_peer_suggested_mint_success_step_sat: u64,
+    /// Additional sats allowed per successful post-delivery payment received from that peer.
+    pub cashu_peer_suggested_mint_receipt_step_sat: u64,
+    /// Hard upper bound for any single peer-suggested mint quote we accept.
+    pub cashu_peer_suggested_mint_max_cap_sat: u64,
     pub dispatch: RequestDispatchConfig,
     pub response_behavior: ResponseBehaviorConfig,
 }
@@ -207,6 +216,10 @@ impl Default for GenericStoreRoutingConfig {
             cashu_payment_default_block_threshold: 0,
             cashu_accepted_mints: Vec::new(),
             cashu_default_mint: None,
+            cashu_peer_suggested_mint_base_cap_sat: 0,
+            cashu_peer_suggested_mint_success_step_sat: 0,
+            cashu_peer_suggested_mint_receipt_step_sat: 0,
+            cashu_peer_suggested_mint_max_cap_sat: 0,
             dispatch: RequestDispatchConfig::default(),
             response_behavior: ResponseBehaviorConfig::default(),
         }
@@ -422,6 +435,21 @@ where
             .map(String::as_str)
     }
 
+    fn choose_quote_mint(&self, requested_mint: Option<&str>) -> Option<String> {
+        if let Some(requested_mint) = requested_mint {
+            if self.accepts_quote_mint(Some(requested_mint)) {
+                return Some(requested_mint.to_string());
+            }
+        }
+        if let Some(default_mint) = self.routing.cashu_default_mint.as_ref() {
+            return Some(default_mint.clone());
+        }
+        if let Some(first_mint) = self.routing.cashu_accepted_mints.first() {
+            return Some(first_mint.clone());
+        }
+        requested_mint.map(str::to_string)
+    }
+
     fn accepts_quote_mint(&self, mint_url: Option<&str>) -> bool {
         if self.routing.cashu_accepted_mints.is_empty() {
             return true;
@@ -434,6 +462,81 @@ where
             .cashu_accepted_mints
             .iter()
             .any(|mint| mint == mint_url)
+    }
+
+    fn trusts_quote_mint(&self, mint_url: Option<&str>) -> bool {
+        let Some(mint_url) = mint_url else {
+            return self.routing.cashu_default_mint.is_none()
+                && self.routing.cashu_accepted_mints.is_empty();
+        };
+        self.routing.cashu_default_mint.as_deref() == Some(mint_url)
+            || self
+                .routing
+                .cashu_accepted_mints
+                .iter()
+                .any(|mint| mint == mint_url)
+    }
+
+    async fn peer_suggested_mint_cap_sat(&self, peer_id: &str) -> u64 {
+        let base = self.routing.cashu_peer_suggested_mint_base_cap_sat;
+        if base == 0 {
+            return 0;
+        }
+
+        let selector = self.peer_selector.read().await;
+        let Some(stats) = selector.get_stats(peer_id) else {
+            let max_cap = self.routing.cashu_peer_suggested_mint_max_cap_sat;
+            return if max_cap > 0 { base.min(max_cap) } else { base };
+        };
+
+        if stats.cashu_payment_defaults > 0
+            && stats.cashu_payment_defaults >= stats.cashu_payment_receipts
+        {
+            return 0;
+        }
+
+        let success_bonus = stats
+            .successes
+            .saturating_mul(self.routing.cashu_peer_suggested_mint_success_step_sat);
+        let receipt_bonus = stats
+            .cashu_payment_receipts
+            .saturating_mul(self.routing.cashu_peer_suggested_mint_receipt_step_sat);
+        let mut cap = base
+            .saturating_add(success_bonus)
+            .saturating_add(receipt_bonus);
+        let max_cap = self.routing.cashu_peer_suggested_mint_max_cap_sat;
+        if max_cap > 0 {
+            cap = cap.min(max_cap);
+        }
+        cap
+    }
+
+    async fn should_accept_quote_response(
+        &self,
+        from_peer: &str,
+        preferred_mint_url: Option<&str>,
+        offered_payment_sat: u64,
+        res: &DataQuoteResponse,
+    ) -> bool {
+        let Some(payment_sat) = res.p else {
+            return false;
+        };
+        if payment_sat > offered_payment_sat {
+            return false;
+        }
+
+        let response_mint = res.m.as_deref();
+        if response_mint == preferred_mint_url {
+            return true;
+        }
+        if self.trusts_quote_mint(response_mint) {
+            return true;
+        }
+        if response_mint.is_none() {
+            return false;
+        }
+
+        payment_sat <= self.peer_suggested_mint_cap_sat(from_peer).await
     }
 
     async fn issue_quote(
@@ -709,7 +812,8 @@ where
             hash_key.clone(),
             PendingQuoteRequest {
                 response_tx: tx,
-                expected_mint_url: requested_mint.clone(),
+                preferred_mint_url: requested_mint.clone(),
+                offered_payment_sat: payment_sat,
             },
         );
 
@@ -945,13 +1049,28 @@ where
         };
 
         let hash_key = hash_to_key(&res.h);
-        let mut pending_quotes = self.pending_quotes.write().await;
-        let Some(pending) = pending_quotes.get(&hash_key) else {
-            return;
+        let (preferred_mint_url, offered_payment_sat) = {
+            let pending_quotes = self.pending_quotes.read().await;
+            let Some(pending) = pending_quotes.get(&hash_key) else {
+                return;
+            };
+            (
+                pending.preferred_mint_url.clone(),
+                pending.offered_payment_sat,
+            )
         };
-        if pending.expected_mint_url.as_deref() != res.m.as_deref() {
+        if !self
+            .should_accept_quote_response(
+                from_peer,
+                preferred_mint_url.as_deref(),
+                offered_payment_sat,
+                &res,
+            )
+            .await
+        {
             return;
         }
+        let mut pending_quotes = self.pending_quotes.write().await;
         if let Some(pending) = pending_quotes.remove(&hash_key) {
             let _ = pending.response_tx.send(Some(NegotiatedQuote {
                 peer_id: from_peer.to_string(),
@@ -1001,16 +1120,16 @@ where
             }
         }
 
+        let chosen_mint = self.choose_quote_mint(req.m.as_deref());
         let can_serve = self.local_store.has(&hash).await.ok().unwrap_or(false)
-            && self.accepts_quote_mint(req.m.as_deref())
             && !self.should_drop_response(&hash)
             && !self.should_corrupt_response(&hash);
 
         let res = if can_serve {
             let quote_id = self
-                .issue_quote(from_peer, &hash_key, req.p, req.t, req.m.as_deref())
+                .issue_quote(from_peer, &hash_key, req.p, req.t, chosen_mint.as_deref())
                 .await;
-            create_quote_response_available(&hash, quote_id, req.p, req.t, req.m.as_deref())
+            create_quote_response_available(&hash, quote_id, req.p, req.t, chosen_mint.as_deref())
         } else {
             create_quote_response_unavailable(&hash)
         };
@@ -1146,6 +1265,7 @@ mod tests {
     use super::*;
     use hashtree_core::MemoryStore;
     use std::sync::Arc;
+    use std::sync::OnceLock;
     use std::time::Duration;
 
     type TestStore = GenericStore<
@@ -1158,6 +1278,11 @@ mod tests {
         store: Arc<TestStore>,
         local_store: Arc<MemoryStore>,
         transport: Arc<crate::mock::MockRelayTransport>,
+    }
+
+    fn mock_network_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
     fn make_test_store(local_store: Arc<MemoryStore>, node_id: &str) -> TestStore {
@@ -1291,6 +1416,7 @@ mod tests {
     }
 
     async fn run_bad_peer_series(strategy: SelectionStrategy) -> usize {
+        let _guard = mock_network_lock().lock().await;
         crate::mock::clear_channel_registry().await;
 
         let relay = crate::mock::MockRelay::new();
@@ -1519,12 +1645,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_quote_from_peers_rejects_unaccepted_mint() {
+        let _guard = mock_network_lock().lock().await;
         crate::mock::clear_channel_registry().await;
 
         let relay = crate::mock::MockRelay::new();
         let requester = make_shared_test_node(
             relay.clone(),
-            "requester",
+            "requester-reject",
             GenericStoreRoutingConfig {
                 cashu_accepted_mints: vec!["https://mint-a.example".to_string()],
                 cashu_default_mint: Some("https://mint-a.example".to_string()),
@@ -1573,7 +1700,163 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_request_quote_from_peers_accepts_small_peer_suggested_mint_under_cap() {
+        let _guard = mock_network_lock().lock().await;
+        crate::mock::clear_channel_registry().await;
+
+        let relay = crate::mock::MockRelay::new();
+        let requester = make_shared_test_node(
+            relay.clone(),
+            "requester-suggested",
+            GenericStoreRoutingConfig {
+                cashu_accepted_mints: vec!["https://mint-a.example".to_string()],
+                cashu_default_mint: Some("https://mint-a.example".to_string()),
+                cashu_peer_suggested_mint_base_cap_sat: 3,
+                cashu_peer_suggested_mint_max_cap_sat: 3,
+                dispatch: RequestDispatchConfig {
+                    initial_fanout: 1,
+                    hedge_fanout: 1,
+                    max_fanout: 1,
+                    hedge_interval_ms: 5,
+                },
+                ..Default::default()
+            },
+        );
+        let provider = make_shared_test_node(
+            relay,
+            "provider-suggested",
+            GenericStoreRoutingConfig {
+                cashu_accepted_mints: vec!["https://mint-b.example".to_string()],
+                cashu_default_mint: Some("https://mint-b.example".to_string()),
+                ..Default::default()
+            },
+        );
+        let nodes = [&requester, &provider];
+
+        requester.transport.connect(&[]).await.expect("connect");
+        provider.transport.connect(&[]).await.expect("connect");
+        requester.store.start().await.expect("start");
+        provider.store.start().await.expect("start");
+        pump_test_network(&nodes, 24).await;
+
+        let payload = b"quoted-data".to_vec();
+        let hash = hashtree_core::sha256(&payload);
+        provider.local_store.put(hash, payload).await.expect("put");
+
+        let quote = run_quote_with_pumps(
+            requester.store.clone(),
+            hash,
+            3,
+            Duration::from_millis(80),
+            vec!["provider-suggested".to_string()],
+            &nodes,
+        )
+        .await
+        .expect("expected bounded peer-suggested mint quote");
+        assert_eq!(quote.mint_url.as_deref(), Some("https://mint-b.example"));
+    }
+
+    #[tokio::test]
+    async fn test_request_quote_from_peers_scales_peer_suggested_mint_cap_with_reputation() {
+        let _guard = mock_network_lock().lock().await;
+        crate::mock::clear_channel_registry().await;
+
+        let relay = crate::mock::MockRelay::new();
+        let requester = make_shared_test_node(
+            relay.clone(),
+            "requester-reputation",
+            GenericStoreRoutingConfig {
+                cashu_accepted_mints: vec!["https://mint-a.example".to_string()],
+                cashu_default_mint: Some("https://mint-a.example".to_string()),
+                cashu_peer_suggested_mint_base_cap_sat: 1,
+                cashu_peer_suggested_mint_success_step_sat: 1,
+                cashu_peer_suggested_mint_receipt_step_sat: 2,
+                cashu_peer_suggested_mint_max_cap_sat: 5,
+                dispatch: RequestDispatchConfig {
+                    initial_fanout: 1,
+                    hedge_fanout: 1,
+                    max_fanout: 1,
+                    hedge_interval_ms: 5,
+                },
+                ..Default::default()
+            },
+        );
+        let provider = make_shared_test_node(
+            relay,
+            "provider-reputation",
+            GenericStoreRoutingConfig {
+                cashu_accepted_mints: vec!["https://mint-b.example".to_string()],
+                cashu_default_mint: Some("https://mint-b.example".to_string()),
+                ..Default::default()
+            },
+        );
+        let nodes = [&requester, &provider];
+
+        requester.transport.connect(&[]).await.expect("connect");
+        provider.transport.connect(&[]).await.expect("connect");
+        requester.store.start().await.expect("start");
+        provider.store.start().await.expect("start");
+        pump_test_network(&nodes, 24).await;
+
+        let payload = b"quoted-data".to_vec();
+        let hash = hashtree_core::sha256(&payload);
+        provider.local_store.put(hash, payload).await.expect("put");
+
+        let quote = run_quote_with_pumps(
+            requester.store.clone(),
+            hash,
+            4,
+            Duration::from_millis(80),
+            vec!["provider-reputation".to_string()],
+            &nodes,
+        )
+        .await;
+        assert!(
+            quote.is_none(),
+            "new peer should not get a 4 sat untrusted-mint quote"
+        );
+
+        {
+            let mut selector = requester.store.peer_selector.write().await;
+            selector.add_peer("provider-reputation");
+            selector.record_success("provider-reputation", 20, 1024);
+            selector.record_cashu_receipt("provider-reputation", 2);
+        }
+
+        let quote = run_quote_with_pumps(
+            requester.store.clone(),
+            hash,
+            4,
+            Duration::from_millis(80),
+            vec!["provider-reputation".to_string()],
+            &nodes,
+        )
+        .await
+        .expect("reputable peer should get larger bounded quote");
+        assert_eq!(quote.mint_url.as_deref(), Some("https://mint-b.example"));
+
+        requester
+            .store
+            .record_cashu_payment_default_from_peer("provider-reputation")
+            .await;
+        let quote = run_quote_with_pumps(
+            requester.store.clone(),
+            hash,
+            4,
+            Duration::from_millis(80),
+            vec!["provider-reputation".to_string()],
+            &nodes,
+        )
+        .await;
+        assert!(
+            quote.is_none(),
+            "peer-suggested mint exposure should drop to zero after defaults exceed receipts"
+        );
+    }
+
+    #[tokio::test]
     async fn test_request_quote_from_peers_returns_matching_mint() {
+        let _guard = mock_network_lock().lock().await;
         crate::mock::clear_channel_registry().await;
 
         let relay = crate::mock::MockRelay::new();
