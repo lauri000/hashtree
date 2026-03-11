@@ -231,6 +231,24 @@ pub(crate) async fn run() -> Result<()> {
                     } else {
                         None
                     };
+                    let cashu_mint_metadata = if config.cashu.default_mint.is_some()
+                        || !config.cashu.accepted_mints.is_empty()
+                    {
+                        let metadata_path =
+                            hashtree_cli::webrtc::cashu_mint_metadata_path(&data_dir);
+                        match hashtree_cli::webrtc::CashuMintMetadataStore::load(metadata_path) {
+                            Ok(store) => Some(store),
+                            Err(err) => {
+                                tracing::warn!(
+                                    "Failed to load Cashu mint metadata; falling back to in-memory state: {}",
+                                    err
+                                );
+                                Some(hashtree_cli::webrtc::CashuMintMetadataStore::in_memory())
+                            }
+                        }
+                    } else {
+                        None
+                    };
 
                     let mut manager = WebRTCManager::new_with_store_and_classifier_and_cashu(
                         keys.clone(),
@@ -239,6 +257,7 @@ pub(crate) async fn run() -> Result<()> {
                         peer_classifier,
                         hashtree_cli::webrtc::CashuRoutingConfig::from(&config.cashu),
                         cashu_payment_client,
+                        cashu_mint_metadata,
                     );
                     manager.set_nostr_relay(nostr_relay.clone());
 

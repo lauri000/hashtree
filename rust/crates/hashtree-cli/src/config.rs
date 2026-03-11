@@ -184,6 +184,9 @@ pub struct CashuConfig {
     /// Maximum time to wait for post-delivery settlement before recording a default.
     #[serde(default = "default_cashu_settlement_timeout_ms")]
     pub settlement_timeout_ms: u64,
+    /// Block mints whose failed redemptions keep outnumbering successful redemptions.
+    #[serde(default = "default_cashu_mint_failure_block_threshold")]
+    pub mint_failure_block_threshold: u64,
     /// Base cap for trying a peer-suggested mint we do not already trust.
     #[serde(default = "default_cashu_peer_suggested_mint_base_cap_sat")]
     pub peer_suggested_mint_base_cap_sat: u64,
@@ -199,6 +202,9 @@ pub struct CashuConfig {
     /// Block serving peers whose unpaid defaults reach this threshold.
     #[serde(default)]
     pub payment_default_block_threshold: u64,
+    /// Target chunk size for quoted paid delivery.
+    #[serde(default = "default_cashu_chunk_target_bytes")]
+    pub chunk_target_bytes: usize,
 }
 
 impl Default for CashuConfig {
@@ -209,6 +215,7 @@ impl Default for CashuConfig {
             quote_payment_offer_sat: default_cashu_quote_payment_offer_sat(),
             quote_ttl_ms: default_cashu_quote_ttl_ms(),
             settlement_timeout_ms: default_cashu_settlement_timeout_ms(),
+            mint_failure_block_threshold: default_cashu_mint_failure_block_threshold(),
             peer_suggested_mint_base_cap_sat: default_cashu_peer_suggested_mint_base_cap_sat(),
             peer_suggested_mint_success_step_sat:
                 default_cashu_peer_suggested_mint_success_step_sat(),
@@ -216,6 +223,7 @@ impl Default for CashuConfig {
                 default_cashu_peer_suggested_mint_receipt_step_sat(),
             peer_suggested_mint_max_cap_sat: default_cashu_peer_suggested_mint_max_cap_sat(),
             payment_default_block_threshold: 0,
+            chunk_target_bytes: default_cashu_chunk_target_bytes(),
         }
     }
 }
@@ -232,6 +240,10 @@ fn default_cashu_settlement_timeout_ms() -> u64 {
     5_000
 }
 
+fn default_cashu_mint_failure_block_threshold() -> u64 {
+    2
+}
+
 fn default_cashu_peer_suggested_mint_base_cap_sat() -> u64 {
     3
 }
@@ -246,6 +258,10 @@ fn default_cashu_peer_suggested_mint_receipt_step_sat() -> u64 {
 
 fn default_cashu_peer_suggested_mint_max_cap_sat() -> u64 {
     21
+}
+
+fn default_cashu_chunk_target_bytes() -> usize {
+    32 * 1024
 }
 
 fn default_sync_enabled() -> bool {
@@ -620,11 +636,13 @@ mod tests {
         assert_eq!(config.cashu.quote_payment_offer_sat, 3);
         assert_eq!(config.cashu.quote_ttl_ms, 1_500);
         assert_eq!(config.cashu.settlement_timeout_ms, 5_000);
+        assert_eq!(config.cashu.mint_failure_block_threshold, 2);
         assert_eq!(config.cashu.peer_suggested_mint_base_cap_sat, 3);
         assert_eq!(config.cashu.peer_suggested_mint_success_step_sat, 1);
         assert_eq!(config.cashu.peer_suggested_mint_receipt_step_sat, 2);
         assert_eq!(config.cashu.peer_suggested_mint_max_cap_sat, 21);
         assert_eq!(config.cashu.payment_default_block_threshold, 0);
+        assert_eq!(config.cashu.chunk_target_bytes, 32 * 1024);
     }
 
     #[test]
@@ -668,11 +686,13 @@ default_mint = "https://mint1.example"
 quote_payment_offer_sat = 5
 quote_ttl_ms = 2500
 settlement_timeout_ms = 7000
+mint_failure_block_threshold = 3
 peer_suggested_mint_base_cap_sat = 4
 peer_suggested_mint_success_step_sat = 2
 peer_suggested_mint_receipt_step_sat = 3
 peer_suggested_mint_max_cap_sat = 34
 payment_default_block_threshold = 2
+chunk_target_bytes = 65536
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(
@@ -689,11 +709,13 @@ payment_default_block_threshold = 2
         assert_eq!(config.cashu.quote_payment_offer_sat, 5);
         assert_eq!(config.cashu.quote_ttl_ms, 2500);
         assert_eq!(config.cashu.settlement_timeout_ms, 7_000);
+        assert_eq!(config.cashu.mint_failure_block_threshold, 3);
         assert_eq!(config.cashu.peer_suggested_mint_base_cap_sat, 4);
         assert_eq!(config.cashu.peer_suggested_mint_success_step_sat, 2);
         assert_eq!(config.cashu.peer_suggested_mint_receipt_step_sat, 3);
         assert_eq!(config.cashu.peer_suggested_mint_max_cap_sat, 34);
         assert_eq!(config.cashu.payment_default_block_threshold, 2);
+        assert_eq!(config.cashu.chunk_target_bytes, 65_536);
     }
 
     #[test]

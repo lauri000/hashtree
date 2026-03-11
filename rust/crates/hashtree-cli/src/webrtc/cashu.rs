@@ -1,14 +1,140 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use hashtree_webrtc::PeerSelector;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, Mutex, RwLock};
 
-use crate::cashu_helper::{CashuPaymentClient, CashuReceivedPayment, CashuSentPayment};
+use crate::cashu_helper::{
+    CashuMintBalance, CashuPaymentClient, CashuReceivedPayment, CashuSentPayment,
+};
 
-use super::types::{DataPaymentAck, DataQuoteRequest, DataQuoteResponse};
+use super::types::{DataChunk, DataQuoteRequest, DataQuoteResponse};
+
+pub const CASHU_MINT_METADATA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CashuMintMetadataRecord {
+    pub successful_receipts: u64,
+    pub failed_receipts: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedCashuMintMetadata {
+    version: u32,
+    mints: HashMap<String, CashuMintMetadataRecord>,
+}
+
+pub fn cashu_mint_metadata_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("cashu").join("mint-metadata.json")
+}
+
+pub struct CashuMintMetadataStore {
+    path: Option<PathBuf>,
+    state: RwLock<HashMap<String, CashuMintMetadataRecord>>,
+}
+
+impl CashuMintMetadataStore {
+    pub fn in_memory() -> Arc<Self> {
+        Arc::new(Self {
+            path: None,
+            state: RwLock::new(HashMap::new()),
+        })
+    }
+
+    pub fn load(path: impl Into<PathBuf>) -> Result<Arc<Self>> {
+        let path = path.into();
+        let state = if path.exists() {
+            let content = fs::read_to_string(&path).with_context(|| {
+                format!("Failed to read Cashu mint metadata from {}", path.display())
+            })?;
+            let snapshot: PersistedCashuMintMetadata =
+                serde_json::from_str(&content).context("Failed to parse Cashu mint metadata")?;
+            snapshot.mints
+        } else {
+            HashMap::new()
+        };
+
+        Ok(Arc::new(Self {
+            path: Some(path),
+            state: RwLock::new(state),
+        }))
+    }
+
+    pub async fn get(&self, mint_url: &str) -> CashuMintMetadataRecord {
+        self.state
+            .read()
+            .await
+            .get(mint_url)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub async fn record_receipt_success(&self, mint_url: &str) -> Result<()> {
+        let mut state = self.state.write().await;
+        state
+            .entry(mint_url.to_string())
+            .or_default()
+            .successful_receipts += 1;
+        self.persist_locked(&state)
+    }
+
+    pub async fn record_receipt_failure(&self, mint_url: &str) -> Result<()> {
+        let mut state = self.state.write().await;
+        state
+            .entry(mint_url.to_string())
+            .or_default()
+            .failed_receipts += 1;
+        self.persist_locked(&state)
+    }
+
+    pub async fn is_blocked(&self, mint_url: &str, threshold: u64) -> bool {
+        if threshold == 0 {
+            return false;
+        }
+        let record = self.get(mint_url).await;
+        record.failed_receipts >= threshold && record.failed_receipts > record.successful_receipts
+    }
+
+    fn persist_locked(&self, state: &HashMap<String, CashuMintMetadataRecord>) -> Result<()> {
+        let Some(path) = self.path.as_ref() else {
+            return Ok(());
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create Cashu mint metadata directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let snapshot = PersistedCashuMintMetadata {
+            version: CASHU_MINT_METADATA_VERSION,
+            mints: state.clone(),
+        };
+        let content = serde_json::to_string_pretty(&snapshot)
+            .context("Failed to encode Cashu mint metadata")?;
+        let tmp_path = path.with_extension("json.tmp");
+        fs::write(&tmp_path, content).with_context(|| {
+            format!(
+                "Failed to write temporary Cashu mint metadata {}",
+                tmp_path.display()
+            )
+        })?;
+        fs::rename(&tmp_path, path).with_context(|| {
+            format!(
+                "Failed to move Cashu mint metadata into place {}",
+                path.display()
+            )
+        })?;
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CashuRoutingConfig {
@@ -17,11 +143,13 @@ pub struct CashuRoutingConfig {
     pub quote_payment_offer_sat: u64,
     pub quote_ttl_ms: u32,
     pub settlement_timeout_ms: u64,
+    pub mint_failure_block_threshold: u64,
     pub peer_suggested_mint_base_cap_sat: u64,
     pub peer_suggested_mint_success_step_sat: u64,
     pub peer_suggested_mint_receipt_step_sat: u64,
     pub peer_suggested_mint_max_cap_sat: u64,
     pub payment_default_block_threshold: u64,
+    pub chunk_target_bytes: usize,
 }
 
 impl Default for CashuRoutingConfig {
@@ -32,11 +160,13 @@ impl Default for CashuRoutingConfig {
             quote_payment_offer_sat: 3,
             quote_ttl_ms: 1_500,
             settlement_timeout_ms: 5_000,
+            mint_failure_block_threshold: 2,
             peer_suggested_mint_base_cap_sat: 3,
             peer_suggested_mint_success_step_sat: 1,
             peer_suggested_mint_receipt_step_sat: 2,
             peer_suggested_mint_max_cap_sat: 21,
             payment_default_block_threshold: 0,
+            chunk_target_bytes: 32 * 1024,
         }
     }
 }
@@ -49,11 +179,13 @@ impl From<&crate::config::CashuConfig> for CashuRoutingConfig {
             quote_payment_offer_sat: config.quote_payment_offer_sat,
             quote_ttl_ms: config.quote_ttl_ms,
             settlement_timeout_ms: config.settlement_timeout_ms,
+            mint_failure_block_threshold: config.mint_failure_block_threshold,
             peer_suggested_mint_base_cap_sat: config.peer_suggested_mint_base_cap_sat,
             peer_suggested_mint_success_step_sat: config.peer_suggested_mint_success_step_sat,
             peer_suggested_mint_receipt_step_sat: config.peer_suggested_mint_receipt_step_sat,
             peer_suggested_mint_max_cap_sat: config.peer_suggested_mint_max_cap_sat,
             payment_default_block_threshold: config.payment_default_block_threshold,
+            chunk_target_bytes: config.chunk_target_bytes,
         }
     }
 }
@@ -72,8 +204,10 @@ struct IssuedQuote {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExpectedSettlement {
+    pub chunk_index: u32,
     pub payment_sat: u64,
     pub mint_url: Option<String>,
+    pub final_chunk: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,14 +218,22 @@ pub(crate) struct NegotiatedQuote {
     pub mint_url: Option<String>,
 }
 
+struct OutgoingTransfer {
+    chunks: Vec<Vec<u8>>,
+    chunk_payments: Vec<u64>,
+    mint_url: Option<String>,
+    next_chunk_index: usize,
+}
+
 pub(crate) struct CashuQuoteState {
     routing: CashuRoutingConfig,
     peer_selector: Arc<RwLock<PeerSelector>>,
     payment_client: Option<Arc<dyn CashuPaymentClient>>,
+    mint_metadata: Arc<CashuMintMetadataStore>,
     pending_quotes: Mutex<HashMap<String, PendingQuoteRequest>>,
     issued_quotes: Mutex<HashMap<(String, String, u64), IssuedQuote>>,
     pending_settlements: Mutex<HashMap<(String, String, u64), ExpectedSettlement>>,
-    pending_payment_acks: Mutex<HashMap<(String, String, u64), oneshot::Sender<bool>>>,
+    outgoing_transfers: Mutex<HashMap<(String, String, u64), OutgoingTransfer>>,
     next_quote_id: AtomicU64,
 }
 
@@ -101,14 +243,29 @@ impl CashuQuoteState {
         peer_selector: Arc<RwLock<PeerSelector>>,
         payment_client: Option<Arc<dyn CashuPaymentClient>>,
     ) -> Self {
+        Self::new_with_mint_metadata(
+            routing,
+            peer_selector,
+            payment_client,
+            CashuMintMetadataStore::in_memory(),
+        )
+    }
+
+    pub fn new_with_mint_metadata(
+        routing: CashuRoutingConfig,
+        peer_selector: Arc<RwLock<PeerSelector>>,
+        payment_client: Option<Arc<dyn CashuPaymentClient>>,
+        mint_metadata: Arc<CashuMintMetadataStore>,
+    ) -> Self {
         Self {
             routing,
             peer_selector,
             payment_client,
+            mint_metadata,
             pending_quotes: Mutex::new(HashMap::new()),
             issued_quotes: Mutex::new(HashMap::new()),
             pending_settlements: Mutex::new(HashMap::new()),
-            pending_payment_acks: Mutex::new(HashMap::new()),
+            outgoing_transfers: Mutex::new(HashMap::new()),
             next_quote_id: AtomicU64::new(1),
         }
     }
@@ -117,16 +274,19 @@ impl CashuQuoteState {
         self.payment_client.is_some()
     }
 
-    pub fn requester_quote_terms(&self) -> Option<(u64, u32)> {
+    pub async fn requester_quote_terms(&self) -> Option<(String, u64, u32)> {
         if !self.payment_client_available()
             || self.routing.quote_payment_offer_sat == 0
             || self.routing.quote_ttl_ms == 0
         {
             return None;
         }
-        let has_trusted_mint =
-            self.routing.default_mint.is_some() || !self.routing.accepted_mints.is_empty();
-        has_trusted_mint.then_some((
+
+        let mint_url = self
+            .requested_quote_mint(self.routing.quote_payment_offer_sat)
+            .await?;
+        Some((
+            mint_url,
             self.routing.quote_payment_offer_sat,
             self.routing.quote_ttl_ms,
         ))
@@ -136,35 +296,44 @@ impl CashuQuoteState {
         Duration::from_millis(self.routing.settlement_timeout_ms.max(1))
     }
 
-    pub fn requested_quote_mint(&self) -> Option<&str> {
-        if let Some(default_mint) = self.routing.default_mint.as_deref() {
-            if self.routing.accepted_mints.is_empty()
-                || self
-                    .routing
-                    .accepted_mints
-                    .iter()
-                    .any(|mint| mint == default_mint)
+    pub async fn requested_quote_mint(&self, amount_sat: u64) -> Option<String> {
+        for mint_url in self.trusted_mint_candidates() {
+            if self
+                .is_mint_allowed_for_requester(&mint_url, amount_sat)
+                .await
             {
-                return Some(default_mint);
+                return Some(mint_url);
             }
         }
-
-        self.routing.accepted_mints.first().map(String::as_str)
+        None
     }
 
-    pub fn choose_quote_mint(&self, requested_mint: Option<&str>) -> Option<String> {
+    pub async fn choose_quote_mint(&self, requested_mint: Option<&str>) -> Option<String> {
         if let Some(requested_mint) = requested_mint {
-            if self.accepts_quote_mint(Some(requested_mint)) {
+            if self.accepts_quote_mint(Some(requested_mint))
+                && !self.is_mint_blocked(requested_mint).await
+            {
                 return Some(requested_mint.to_string());
             }
         }
         if let Some(default_mint) = self.routing.default_mint.as_ref() {
-            return Some(default_mint.clone());
+            if !self.is_mint_blocked(default_mint).await {
+                return Some(default_mint.clone());
+            }
         }
-        if let Some(first_mint) = self.routing.accepted_mints.first() {
-            return Some(first_mint.clone());
+        for mint_url in &self.routing.accepted_mints {
+            if !self.is_mint_blocked(mint_url).await {
+                return Some(mint_url.clone());
+            }
         }
-        requested_mint.map(str::to_string)
+        if self.routing.accepted_mints.is_empty() {
+            if let Some(requested_mint) = requested_mint {
+                if !self.is_mint_blocked(requested_mint).await {
+                    return Some(requested_mint.to_string());
+                }
+            }
+        }
+        None
     }
 
     pub async fn register_pending_quote(
@@ -189,38 +358,6 @@ impl CashuQuoteState {
         let _ = self.pending_quotes.lock().await.remove(hash_hex);
     }
 
-    pub async fn register_pending_payment_ack(
-        &self,
-        peer_id: &str,
-        hash_hex: &str,
-        quote_id: u64,
-    ) -> oneshot::Receiver<bool> {
-        let (tx, rx) = oneshot::channel();
-        self.pending_payment_acks
-            .lock()
-            .await
-            .insert((peer_id.to_string(), hash_hex.to_string(), quote_id), tx);
-        rx
-    }
-
-    pub async fn clear_pending_payment_ack(&self, peer_id: &str, hash_hex: &str, quote_id: u64) {
-        let _ = self.pending_payment_acks.lock().await.remove(&(
-            peer_id.to_string(),
-            hash_hex.to_string(),
-            quote_id,
-        ));
-    }
-
-    pub async fn handle_payment_ack(&self, from_peer: &str, ack: DataPaymentAck) -> bool {
-        let hash_hex = hex::encode(&ack.h);
-        let key = (from_peer.to_string(), hash_hex, ack.q);
-        let Some(tx) = self.pending_payment_acks.lock().await.remove(&key) else {
-            return false;
-        };
-        let _ = tx.send(ack.a);
-        true
-    }
-
     pub async fn should_accept_quote_response(
         &self,
         from_peer: &str,
@@ -236,14 +373,21 @@ impl CashuQuoteState {
         }
 
         let response_mint = res.m.as_deref();
-        if response_mint == preferred_mint_url {
-            return true;
-        }
-        if self.trusts_quote_mint(response_mint) {
-            return true;
-        }
-        if response_mint.is_none() {
+        let Some(response_mint) = response_mint else {
             return false;
+        };
+        if self.is_mint_blocked(response_mint).await
+            || !self
+                .has_sufficient_balance(response_mint, payment_sat)
+                .await
+        {
+            return false;
+        }
+        if preferred_mint_url == Some(response_mint) {
+            return true;
+        }
+        if self.trusts_quote_mint(Some(response_mint)) {
+            return true;
         }
 
         payment_sat <= self.peer_suggested_mint_cap_sat(from_peer).await
@@ -310,7 +454,7 @@ impl CashuQuoteState {
             };
         }
 
-        let Some(chosen_mint) = self.choose_quote_mint(req.m.as_deref()) else {
+        let Some(chosen_mint) = self.choose_quote_mint(req.m.as_deref()).await else {
             return DataQuoteResponse {
                 h: req.h.clone(),
                 a: false,
@@ -351,8 +495,10 @@ impl CashuQuoteState {
         let key = (from_peer.to_string(), hash_hex, quote_id);
         let issued = self.issued_quotes.lock().await.remove(&key)?;
         (issued.expires_at >= Instant::now()).then_some(ExpectedSettlement {
+            chunk_index: 0,
             payment_sat: issued.payment_sat,
             mint_url: issued.mint_url,
+            final_chunk: true,
         })
     }
 
@@ -379,6 +525,7 @@ impl CashuQuoteState {
                 .remove(&key)
                 .is_some();
             if expired {
+                let _ = state.outgoing_transfers.lock().await.remove(&key);
                 state
                     .peer_selector
                     .write()
@@ -393,6 +540,7 @@ impl CashuQuoteState {
         from_peer: &str,
         hash: &[u8],
         quote_id: u64,
+        chunk_index: u32,
         announced_payment_sat: u64,
         announced_mint: Option<&str>,
     ) -> Result<ExpectedSettlement> {
@@ -405,6 +553,9 @@ impl CashuQuoteState {
             .remove(&key)
             .ok_or_else(|| anyhow!("No pending settlement"))?;
 
+        if settlement.chunk_index != chunk_index {
+            return Err(anyhow!("Payment chunk did not match the expected chunk"));
+        }
         if announced_payment_sat < settlement.payment_sat {
             return Err(anyhow!("Quoted payment amount was not met"));
         }
@@ -413,6 +564,50 @@ impl CashuQuoteState {
         }
 
         Ok(settlement)
+    }
+
+    pub async fn prepare_quoted_transfer(
+        &self,
+        from_peer: &str,
+        hash: &[u8],
+        quote_id: u64,
+        settlement: &ExpectedSettlement,
+        data: Vec<u8>,
+    ) -> Option<(DataChunk, ExpectedSettlement)> {
+        let hash_hex = hex::encode(hash);
+        let transfer_key = (from_peer.to_string(), hash_hex, quote_id);
+        let outgoing = OutgoingTransfer::new(
+            data,
+            self.routing.chunk_target_bytes.max(1),
+            settlement.payment_sat,
+            settlement.mint_url.clone(),
+        );
+        let (first_chunk, first_expected, maybe_store) =
+            outgoing.take_first_chunk(hash, quote_id)?;
+        if let Some(transfer) = maybe_store {
+            self.outgoing_transfers
+                .lock()
+                .await
+                .insert(transfer_key, transfer);
+        }
+        Some((first_chunk, first_expected))
+    }
+
+    pub async fn next_outgoing_chunk(
+        &self,
+        from_peer: &str,
+        hash: &[u8],
+        quote_id: u64,
+    ) -> Option<(DataChunk, ExpectedSettlement)> {
+        let hash_hex = hex::encode(hash);
+        let key = (from_peer.to_string(), hash_hex, quote_id);
+        let mut transfers = self.outgoing_transfers.lock().await;
+        let transfer = transfers.get_mut(&key)?;
+        let next = transfer.next_chunk(hash, quote_id)?;
+        if transfer.is_complete() {
+            let _ = transfers.remove(&key);
+        }
+        Some(next)
     }
 
     pub async fn create_payment_token(
@@ -450,11 +645,17 @@ impl CashuQuoteState {
             .record_cashu_payment(peer_id, amount_sat);
     }
 
-    pub async fn record_receipt_from_peer(&self, peer_id: &str, amount_sat: u64) {
+    pub async fn record_receipt_from_peer(
+        &self,
+        peer_id: &str,
+        mint_url: &str,
+        amount_sat: u64,
+    ) -> Result<()> {
         self.peer_selector
             .write()
             .await
             .record_cashu_receipt(peer_id, amount_sat);
+        self.mint_metadata.record_receipt_success(mint_url).await
     }
 
     pub async fn record_payment_default_from_peer(&self, peer_id: &str) {
@@ -462,6 +663,10 @@ impl CashuQuoteState {
             .write()
             .await
             .record_cashu_payment_default(peer_id);
+    }
+
+    pub async fn record_mint_receive_failure(&self, mint_url: &str) -> Result<()> {
+        self.mint_metadata.record_receipt_failure(mint_url).await
     }
 
     pub async fn should_refuse_requests_from_peer(&self, peer_id: &str) -> bool {
@@ -534,17 +739,182 @@ impl CashuQuoteState {
         }
         cap
     }
+
+    async fn is_mint_allowed_for_requester(&self, mint_url: &str, amount_sat: u64) -> bool {
+        !self.is_mint_blocked(mint_url).await
+            && self.has_sufficient_balance(mint_url, amount_sat).await
+    }
+
+    async fn has_sufficient_balance(&self, mint_url: &str, amount_sat: u64) -> bool {
+        if amount_sat == 0 {
+            return true;
+        }
+        self.mint_balance_sat(mint_url).await >= amount_sat
+    }
+
+    async fn mint_balance_sat(&self, mint_url: &str) -> u64 {
+        let Some(client) = self.payment_client.as_ref() else {
+            return 0;
+        };
+        match client.mint_balance(mint_url).await {
+            Ok(CashuMintBalance {
+                unit, balance_sat, ..
+            }) if unit == "sat" => balance_sat,
+            _ => 0,
+        }
+    }
+
+    async fn is_mint_blocked(&self, mint_url: &str) -> bool {
+        self.mint_metadata
+            .is_blocked(mint_url, self.routing.mint_failure_block_threshold)
+            .await
+    }
+
+    fn trusted_mint_candidates(&self) -> Vec<String> {
+        let mut candidates = Vec::new();
+        if let Some(default_mint) = self.routing.default_mint.as_ref() {
+            candidates.push(default_mint.clone());
+        }
+        for mint_url in &self.routing.accepted_mints {
+            if !candidates.iter().any(|existing| existing == mint_url) {
+                candidates.push(mint_url.clone());
+            }
+        }
+        candidates
+    }
+}
+
+impl OutgoingTransfer {
+    fn new(
+        data: Vec<u8>,
+        chunk_target_bytes: usize,
+        total_payment_sat: u64,
+        mint_url: Option<String>,
+    ) -> Self {
+        let (chunks, chunk_payments) =
+            build_chunk_plan(data, chunk_target_bytes, total_payment_sat);
+        Self {
+            chunks,
+            chunk_payments,
+            mint_url,
+            next_chunk_index: 0,
+        }
+    }
+
+    fn take_first_chunk(
+        mut self,
+        hash: &[u8],
+        quote_id: u64,
+    ) -> Option<(DataChunk, ExpectedSettlement, Option<Self>)> {
+        let next = self.next_chunk(hash, quote_id)?;
+        let store = (!self.is_complete()).then_some(self);
+        Some((next.0, next.1, store))
+    }
+
+    fn next_chunk(
+        &mut self,
+        hash: &[u8],
+        quote_id: u64,
+    ) -> Option<(DataChunk, ExpectedSettlement)> {
+        let chunk_index = self.next_chunk_index;
+        let data = self.chunks.get(chunk_index)?.clone();
+        let payment_sat = *self.chunk_payments.get(chunk_index)?;
+        let total_chunks = self.chunks.len() as u32;
+        self.next_chunk_index += 1;
+        Some((
+            DataChunk {
+                h: hash.to_vec(),
+                q: quote_id,
+                c: chunk_index as u32,
+                n: total_chunks,
+                p: payment_sat,
+                d: data,
+            },
+            ExpectedSettlement {
+                chunk_index: chunk_index as u32,
+                payment_sat,
+                mint_url: self.mint_url.clone(),
+                final_chunk: chunk_index + 1 == self.chunks.len(),
+            },
+        ))
+    }
+
+    fn is_complete(&self) -> bool {
+        self.next_chunk_index >= self.chunks.len()
+    }
+}
+
+fn build_chunk_plan(
+    data: Vec<u8>,
+    chunk_target_bytes: usize,
+    total_payment_sat: u64,
+) -> (Vec<Vec<u8>>, Vec<u64>) {
+    let total_len = data.len();
+    let max_chunks_by_size = if total_len == 0 {
+        1
+    } else {
+        total_len.div_ceil(chunk_target_bytes.max(1))
+    };
+    let chunk_count = if total_payment_sat == 0 {
+        1
+    } else {
+        max_chunks_by_size
+            .min(total_payment_sat.min(usize::MAX as u64) as usize)
+            .max(1)
+    };
+
+    let mut chunks = Vec::with_capacity(chunk_count);
+    if total_len == 0 {
+        chunks.push(Vec::new());
+    } else {
+        let base = total_len / chunk_count;
+        let extra = total_len % chunk_count;
+        let mut offset = 0usize;
+        for chunk_idx in 0..chunk_count {
+            let size = base + usize::from(chunk_idx < extra);
+            let end = offset + size;
+            chunks.push(data[offset..end].to_vec());
+            offset = end;
+        }
+    }
+
+    let mut chunk_payments = Vec::with_capacity(chunk_count);
+    let base_payment = total_payment_sat / chunk_count as u64;
+    let extra_payment = total_payment_sat % chunk_count as u64;
+    for chunk_idx in 0..chunk_count {
+        chunk_payments.push(base_payment + u64::from(chunk_idx < extra_payment as usize));
+    }
+
+    (chunks, chunk_payments)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cashu_helper::{CashuPaymentClient, CashuReceivedPayment, CashuSentPayment};
+    use crate::cashu_helper::{
+        CashuMintBalance, CashuPaymentClient, CashuReceivedPayment, CashuSentPayment,
+    };
     use async_trait::async_trait;
     use hashtree_webrtc::SelectionStrategy;
+    use std::collections::HashMap;
+    use std::sync::Mutex as StdMutex;
 
     #[derive(Debug)]
-    struct NoopPaymentClient;
+    struct NoopPaymentClient {
+        balances: StdMutex<HashMap<String, u64>>,
+    }
+
+    impl Default for NoopPaymentClient {
+        fn default() -> Self {
+            let mut balances = HashMap::new();
+            balances.insert("https://mint.example".to_string(), 21);
+            balances.insert("https://mint-a.example".to_string(), 21);
+            balances.insert("https://mint-b.example".to_string(), 21);
+            Self {
+                balances: StdMutex::new(balances),
+            }
+        }
+    }
 
     #[async_trait]
     impl CashuPaymentClient for NoopPaymentClient {
@@ -570,6 +940,21 @@ mod tests {
         async fn revoke_payment(&self, _mint_url: &str, _operation_id: &str) -> Result<()> {
             Ok(())
         }
+
+        async fn mint_balance(&self, mint_url: &str) -> Result<CashuMintBalance> {
+            let balance_sat = self
+                .balances
+                .lock()
+                .unwrap()
+                .get(mint_url)
+                .copied()
+                .unwrap_or_default();
+            Ok(CashuMintBalance {
+                mint_url: mint_url.to_string(),
+                unit: "sat".to_string(),
+                balance_sat,
+            })
+        }
     }
 
     fn make_state(routing: CashuRoutingConfig, with_client: bool) -> Arc<CashuQuoteState> {
@@ -578,7 +963,8 @@ mod tests {
             Arc::new(RwLock::new(PeerSelector::with_strategy(
                 SelectionStrategy::TitForTat,
             ))),
-            with_client.then_some(Arc::new(NoopPaymentClient) as Arc<dyn CashuPaymentClient>),
+            with_client
+                .then_some(Arc::new(NoopPaymentClient::default()) as Arc<dyn CashuPaymentClient>),
         ))
     }
 
@@ -593,10 +979,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_requester_quote_terms_require_payment_client_and_mint_policy() {
+    #[tokio::test]
+    async fn test_requester_quote_terms_require_payment_client_and_mint_policy() {
         let disabled = make_state(CashuRoutingConfig::default(), false);
-        assert_eq!(disabled.requester_quote_terms(), None);
+        assert_eq!(disabled.requester_quote_terms().await, None);
 
         let no_client = make_state(
             CashuRoutingConfig {
@@ -605,7 +991,7 @@ mod tests {
             },
             false,
         );
-        assert_eq!(no_client.requester_quote_terms(), None);
+        assert_eq!(no_client.requester_quote_terms().await, None);
 
         let enabled = make_state(
             CashuRoutingConfig {
@@ -614,7 +1000,27 @@ mod tests {
             },
             true,
         );
-        assert_eq!(enabled.requester_quote_terms(), Some((3, 1_500)));
+        assert_eq!(
+            enabled.requester_quote_terms().await,
+            Some(("https://mint-a.example".to_string(), 3, 1_500))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_requester_quote_terms_require_funded_trusted_mint() {
+        let state = make_state(
+            CashuRoutingConfig {
+                default_mint: Some("https://mint-empty.example".to_string()),
+                quote_payment_offer_sat: 3,
+                ..Default::default()
+            },
+            true,
+        );
+        assert_eq!(
+            state.requester_quote_terms().await,
+            None,
+            "unfunded trusted mint should disable paid quotes"
+        );
     }
 
     #[tokio::test]
@@ -665,6 +1071,28 @@ mod tests {
                 Some("https://mint-a.example"),
                 3,
                 &quote_response(Some("https://mint-b.example"), 3),
+            )
+            .await;
+        assert!(!accepted);
+    }
+
+    #[tokio::test]
+    async fn test_should_accept_quote_response_rejects_when_mint_balance_is_insufficient() {
+        let state = make_state(
+            CashuRoutingConfig {
+                accepted_mints: vec!["https://mint-a.example".to_string()],
+                default_mint: Some("https://mint-a.example".to_string()),
+                ..Default::default()
+            },
+            true,
+        );
+
+        let accepted = state
+            .should_accept_quote_response(
+                "peer-a:session-1",
+                Some("https://mint-empty.example"),
+                5,
+                &quote_response(Some("https://mint-empty.example"), 5),
             )
             .await;
         assert!(!accepted);
@@ -755,8 +1183,10 @@ mod tests {
                 hex::encode([0x33; 32]),
                 7,
                 ExpectedSettlement {
+                    chunk_index: 0,
                     payment_sat: 3,
                     mint_url: Some("https://mint-a.example".to_string()),
+                    final_chunk: true,
                 },
             )
             .await;
@@ -768,24 +1198,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_payment_ack_resolves_pending_waiter() {
-        let state = make_state(CashuRoutingConfig::default(), true);
-        let mut rx = state
-            .register_pending_payment_ack("peer-a:session-1", &hex::encode([0x44; 32]), 9)
-            .await;
+    async fn test_mint_metadata_store_persists_and_blocks_failed_mint() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = cashu_mint_metadata_path(temp_dir.path());
+        let store = CashuMintMetadataStore::load(&path).unwrap();
+        store
+            .record_receipt_failure("https://mint-bad.example")
+            .await
+            .unwrap();
+        store
+            .record_receipt_failure("https://mint-bad.example")
+            .await
+            .unwrap();
 
-        let handled = state
-            .handle_payment_ack(
-                "peer-a:session-1",
-                DataPaymentAck {
-                    h: vec![0x44; 32],
-                    q: 9,
-                    a: true,
-                    e: None,
-                },
-            )
-            .await;
-        assert!(handled);
-        assert_eq!(rx.try_recv().unwrap(), true);
+        let restored = CashuMintMetadataStore::load(&path).unwrap();
+        let record = restored.get("https://mint-bad.example").await;
+        assert_eq!(record.failed_receipts, 2);
+        assert!(restored.is_blocked("https://mint-bad.example", 2).await);
+    }
+
+    #[test]
+    fn test_build_chunk_plan_splits_payment_into_small_chunks() {
+        let (chunks, payments) = build_chunk_plan(vec![1_u8; 10], 4, 3);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(payments, vec![1, 1, 1]);
+        assert_eq!(chunks.iter().map(Vec::len).sum::<usize>(), 10);
     }
 }

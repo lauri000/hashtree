@@ -165,6 +165,23 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
             } else {
                 None
             };
+            let cashu_mint_metadata = if config.cashu.default_mint.is_some()
+                || !config.cashu.accepted_mints.is_empty()
+            {
+                let metadata_path = crate::webrtc::cashu_mint_metadata_path(&opts.data_dir);
+                match crate::webrtc::CashuMintMetadataStore::load(metadata_path) {
+                    Ok(store) => Some(store),
+                    Err(err) => {
+                        tracing::warn!(
+                            "Failed to load Cashu mint metadata; falling back to in-memory state: {}",
+                            err
+                        );
+                        Some(crate::webrtc::CashuMintMetadataStore::in_memory())
+                    }
+                }
+            } else {
+                None
+            };
 
             let mut manager = WebRTCManager::new_with_store_and_classifier_and_cashu(
                 keys.clone(),
@@ -173,6 +190,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
                 peer_classifier,
                 crate::webrtc::CashuRoutingConfig::from(&config.cashu),
                 cashu_payment_client,
+                cashu_mint_metadata,
             );
             manager.set_nostr_relay(nostr_relay.clone());
 

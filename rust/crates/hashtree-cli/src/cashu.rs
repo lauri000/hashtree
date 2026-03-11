@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use crate::cashu_helper::CashuMintBalance;
+
 pub const CASHU_WALLET_SEED_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -241,6 +243,30 @@ pub async fn create_topup_quote(
     })
 }
 
+pub async fn load_mint_balance(data_dir: &Path, mint_url: &str) -> Result<CashuMintBalance> {
+    let normalized_mint = normalize_mint_url(mint_url)?;
+    let mint_url =
+        MintUrl::from_str(&normalized_mint).context("Failed to parse normalized mint URL")?;
+    let repository = open_wallet_repository(data_dir).await?;
+    ensure_sat_wallet(&repository, &mint_url).await?;
+
+    let balance_sat = repository
+        .get_balances()
+        .await
+        .context("Failed to load Cashu wallet balances")?
+        .into_iter()
+        .find_map(|(key, amount)| {
+            (key.mint_url == mint_url && key.unit == CurrencyUnit::Sat).then_some(amount.to_u64())
+        })
+        .unwrap_or_default();
+
+    Ok(CashuMintBalance {
+        mint_url: normalized_mint,
+        unit: CurrencyUnit::Sat.to_string(),
+        balance_sat,
+    })
+}
+
 pub async fn send_payment_token(
     data_dir: &Path,
     mint_url: &str,
@@ -446,6 +472,21 @@ mod tests {
                 balance: 0,
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn test_load_mint_balance_returns_zero_for_known_wallet() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo = open_wallet_repository(temp_dir.path()).await.unwrap();
+        let mint_url: MintUrl = "https://mint.example".parse().unwrap();
+        ensure_sat_wallet(&repo, &mint_url).await.unwrap();
+
+        let balance = load_mint_balance(temp_dir.path(), "https://mint.example")
+            .await
+            .unwrap();
+        assert_eq!(balance.mint_url, "https://mint.example");
+        assert_eq!(balance.unit, "sat");
+        assert_eq!(balance.balance_sat, 0);
     }
 
     #[tokio::test]

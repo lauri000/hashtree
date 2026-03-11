@@ -28,11 +28,19 @@ pub struct CashuReceivedPayment {
     pub amount_sat: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CashuMintBalance {
+    pub mint_url: String,
+    pub unit: String,
+    pub balance_sat: u64,
+}
+
 #[async_trait]
 pub trait CashuPaymentClient: Send + Sync {
     async fn send_payment(&self, mint_url: &str, amount_sat: u64) -> Result<CashuSentPayment>;
     async fn receive_payment(&self, encoded_token: &str) -> Result<CashuReceivedPayment>;
     async fn revoke_payment(&self, mint_url: &str, operation_id: &str) -> Result<()>;
+    async fn mint_balance(&self, mint_url: &str) -> Result<CashuMintBalance>;
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +168,19 @@ impl CashuPaymentClient for CashuHelperClient {
             )
             .await?;
         Ok(())
+    }
+
+    async fn mint_balance(&self, mint_url: &str) -> Result<CashuMintBalance> {
+        self.run_json(
+            &[
+                OsString::from("internal"),
+                OsString::from("balance"),
+                OsString::from("--mint"),
+                OsString::from(mint_url),
+            ],
+            None,
+        )
+        .await
     }
 }
 
@@ -314,6 +335,38 @@ mod tests {
             .revoke_payment("https://mint.example", "op-123")
             .await
             .unwrap();
+
+        env::remove_var(CASHU_HELPER_ENV);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_cashu_helper_client_queries_mint_balance_json() {
+        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        env::remove_var(CARGO_HELPER_ENV);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let helper_path = temp_dir.path().join("htree-cashu-stub");
+        let script = format!(
+            "#!/bin/sh\nif [ \"$3\" = \"internal\" ] && [ \"$4\" = \"balance\" ]; then\n  printf '%s' '{}'\nelse\n  printf '%s' '{}'\nfi\n",
+            json!({
+                "mint_url": "https://mint.example",
+                "unit": "sat",
+                "balance_sat": 21
+            }),
+            json!({"ok": true}),
+        );
+        std::fs::write(&helper_path, script).unwrap();
+        let mut perms = std::fs::metadata(&helper_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&helper_path, perms).unwrap();
+
+        env::set_var(CASHU_HELPER_ENV, &helper_path);
+        let client = CashuHelperClient::discover(temp_dir.path()).unwrap();
+        let balance = client.mint_balance("https://mint.example").await.unwrap();
+        assert_eq!(balance.mint_url, "https://mint.example");
+        assert_eq!(balance.unit, "sat");
+        assert_eq!(balance.balance_sat, 21);
 
         env::remove_var(CASHU_HELPER_ENV);
     }

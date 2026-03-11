@@ -132,12 +132,13 @@ pub mod types {
     use super::*;
 
     pub const MAX_HTL: u8 = 7;
-    const MSG_TYPE_REQUEST: u8 = 0x00;
-    const MSG_TYPE_RESPONSE: u8 = 0x01;
-    const MSG_TYPE_QUOTE_REQUEST: u8 = 0x02;
-    const MSG_TYPE_QUOTE_RESPONSE: u8 = 0x03;
-    const MSG_TYPE_PAYMENT: u8 = 0x04;
-    const MSG_TYPE_PAYMENT_ACK: u8 = 0x05;
+    pub const MSG_TYPE_REQUEST: u8 = 0x00;
+    pub const MSG_TYPE_RESPONSE: u8 = 0x01;
+    pub const MSG_TYPE_QUOTE_REQUEST: u8 = 0x02;
+    pub const MSG_TYPE_QUOTE_RESPONSE: u8 = 0x03;
+    pub const MSG_TYPE_PAYMENT: u8 = 0x04;
+    pub const MSG_TYPE_PAYMENT_ACK: u8 = 0x05;
+    pub const MSG_TYPE_CHUNK: u8 = 0x06;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct DataRequest {
@@ -187,6 +188,7 @@ pub mod types {
         #[serde(with = "serde_bytes")]
         pub h: Vec<u8>,
         pub q: u64,
+        pub c: u32,
         pub p: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub m: Option<String>,
@@ -198,9 +200,22 @@ pub mod types {
         #[serde(with = "serde_bytes")]
         pub h: Vec<u8>,
         pub q: u64,
+        pub c: u32,
         pub a: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub e: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct DataChunk {
+        #[serde(with = "serde_bytes")]
+        pub h: Vec<u8>,
+        pub q: u64,
+        pub c: u32,
+        pub n: u32,
+        pub p: u64,
+        #[serde(with = "serde_bytes")]
+        pub d: Vec<u8>,
     }
 
     #[derive(Debug, Clone)]
@@ -211,6 +226,7 @@ pub mod types {
         QuoteResponse(DataQuoteResponse),
         Payment(DataPayment),
         PaymentAck(DataPaymentAck),
+        Chunk(DataChunk),
     }
 
     fn default_htl() -> u8 {
@@ -269,6 +285,14 @@ pub mod types {
         Ok(result)
     }
 
+    pub fn encode_chunk(chunk: &DataChunk) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+        let body = rmp_serde::to_vec_named(chunk)?;
+        let mut result = Vec::with_capacity(1 + body.len());
+        result.push(MSG_TYPE_CHUNK);
+        result.extend(body);
+        Ok(result)
+    }
+
     pub fn parse_message(data: &[u8]) -> Result<DataMessage, rmp_serde::decode::Error> {
         if data.is_empty() {
             return Err(rmp_serde::decode::Error::LengthMismatch(0));
@@ -285,6 +309,7 @@ pub mod types {
             )?)),
             MSG_TYPE_PAYMENT => Ok(DataMessage::Payment(rmp_serde::from_slice(&data[1..])?)),
             MSG_TYPE_PAYMENT_ACK => Ok(DataMessage::PaymentAck(rmp_serde::from_slice(&data[1..])?)),
+            MSG_TYPE_CHUNK => Ok(DataMessage::Chunk(rmp_serde::from_slice(&data[1..])?)),
             other => Err(rmp_serde::decode::Error::LengthMismatch(other as u32)),
         }
     }

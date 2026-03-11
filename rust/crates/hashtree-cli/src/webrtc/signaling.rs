@@ -25,14 +25,14 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
-use super::cashu::{CashuQuoteState, CashuRoutingConfig, NegotiatedQuote};
+use super::cashu::{CashuMintMetadataStore, CashuQuoteState, CashuRoutingConfig, NegotiatedQuote};
 use super::peer::{ContentStore, Peer, PendingRequest};
 use super::types::{
-    decrement_htl_with_policy, encode_payment, encode_quote_request, encode_request,
-    should_forward_htl, validate_mesh_frame, DataPayment, DataQuoteRequest, DataRequest,
-    MeshNostrFrame, MeshNostrPayload, PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus,
-    RequestDispatchConfig, SignalingMessage, TimedSeenSet, WebRTCConfig, HELLO_TAG,
-    MESH_DEFAULT_HTL, MESH_EVENT_POLICY, WEBRTC_KIND,
+    decrement_htl_with_policy, encode_quote_request, encode_request, should_forward_htl,
+    validate_mesh_frame, DataQuoteRequest, DataRequest, MeshNostrFrame, MeshNostrPayload,
+    PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus, RequestDispatchConfig,
+    SignalingMessage, TimedSeenSet, WebRTCConfig, HELLO_TAG, MESH_DEFAULT_HTL, MESH_EVENT_POLICY,
+    WEBRTC_KIND,
 };
 use crate::cashu_helper::CashuPaymentClient;
 use crate::nostr_relay::NostrRelay;
@@ -212,6 +212,7 @@ impl WebRTCState {
             Duration::from_millis(cfg.message_timeout_ms),
             CashuRoutingConfig::default(),
             None,
+            None,
         )
     }
 
@@ -228,6 +229,7 @@ impl WebRTCState {
             Duration::from_millis(cfg.message_timeout_ms),
             CashuRoutingConfig::default(),
             None,
+            None,
         )
     }
 
@@ -238,15 +240,21 @@ impl WebRTCState {
         request_timeout: Duration,
         cashu_routing: CashuRoutingConfig,
         payment_client: Option<Arc<dyn CashuPaymentClient>>,
+        mint_metadata: Option<Arc<CashuMintMetadataStore>>,
     ) -> Self {
         let mut selector = PeerSelector::with_strategy(selection_strategy);
         selector.set_fairness(fairness_enabled);
         let peer_selector = Arc::new(RwLock::new(selector));
-        let cashu_quotes = Arc::new(CashuQuoteState::new(
-            cashu_routing,
-            peer_selector.clone(),
-            payment_client,
-        ));
+        let cashu_quotes = Arc::new(if let Some(mint_metadata) = mint_metadata {
+            CashuQuoteState::new_with_mint_metadata(
+                cashu_routing,
+                peer_selector.clone(),
+                payment_client,
+                mint_metadata,
+            )
+        } else {
+            CashuQuoteState::new(cashu_routing, peer_selector.clone(), payment_client)
+        });
         Self {
             peers: RwLock::new(HashMap::new()),
             connected_count: std::sync::atomic::AtomicUsize::new(0),
@@ -427,9 +435,17 @@ impl WebRTCState {
             wave_plan
         );
 
-        if let Some((payment_sat, quote_ttl_ms)) = self.cashu_quotes.requester_quote_terms() {
+        if let Some((requested_mint, payment_sat, quote_ttl_ms)) =
+            self.cashu_quotes.requester_quote_terms().await
+        {
             if let Some(quote) = self
-                .request_quote_from_peers(&hash_bytes, payment_sat, quote_ttl_ms, &ordered_peers)
+                .request_quote_from_peers(
+                    &hash_bytes,
+                    requested_mint,
+                    payment_sat,
+                    quote_ttl_ms,
+                    &ordered_peers,
+                )
                 .await
             {
                 if let Some(data) = self
@@ -438,20 +454,11 @@ impl WebRTCState {
                         &hash_bytes,
                         expected_hash,
                         &quote.peer_id,
-                        Some(quote.quote_id),
+                        Some(&quote),
                         &ordered_peers,
                     )
                     .await
                 {
-                    if !self
-                        .settle_quoted_delivery(&hash_hex, &hash_bytes, &quote, &ordered_peers)
-                        .await
-                    {
-                        debug!(
-                            "Quoted delivery from {} succeeded but settlement did not complete",
-                            quote.peer_id
-                        );
-                    }
                     debug!(
                         "Got quoted response from peer {} for {}",
                         quote.peer_id,
@@ -493,10 +500,7 @@ impl WebRTCState {
                     let mut pending = pending_requests.lock().await;
                     pending.insert(
                         hash_hex.to_string(),
-                        PendingRequest {
-                            hash: hash_bytes.clone(),
-                            response_tx: tx,
-                        },
+                        PendingRequest::standard(hash_bytes.clone(), tx),
                     );
                 }
 
@@ -613,6 +617,7 @@ impl WebRTCState {
     async fn request_quote_from_peers(
         &self,
         hash_bytes: &[u8],
+        requested_mint: String,
         payment_sat: u64,
         quote_ttl_ms: u32,
         ordered_peers: &[ConnectedPeer],
@@ -628,16 +633,15 @@ impl WebRTCState {
         }
 
         let hash_hex = hex::encode(hash_bytes);
-        let requested_mint = self.cashu_quotes.requested_quote_mint().map(str::to_string);
         let mut rx = self
             .cashu_quotes
-            .register_pending_quote(hash_hex.clone(), requested_mint.clone(), payment_sat)
+            .register_pending_quote(hash_hex.clone(), Some(requested_mint.clone()), payment_sat)
             .await;
         let quote_request = DataQuoteRequest {
             h: hash_bytes.to_vec(),
             p: payment_sat,
             t: quote_ttl_ms,
-            m: requested_mint,
+            m: Some(requested_mint),
         };
         let wire = match encode_quote_request(&quote_request) {
             Ok(wire) => wire,
@@ -700,114 +704,13 @@ impl WebRTCState {
         None
     }
 
-    async fn settle_quoted_delivery(
-        &self,
-        hash_hex: &str,
-        hash_bytes: &[u8],
-        quote: &NegotiatedQuote,
-        ordered_peers: &[ConnectedPeer],
-    ) -> bool {
-        let Some(mint_url) = quote.mint_url.as_deref() else {
-            return false;
-        };
-        let Some((_, _, dc)) = ordered_peers
-            .iter()
-            .find(|(peer_id, _, _)| peer_id == &quote.peer_id)
-        else {
-            return false;
-        };
-
-        let payment = match self
-            .cashu_quotes
-            .create_payment_token(mint_url, quote.payment_sat)
-            .await
-        {
-            Ok(payment) => payment,
-            Err(err) => {
-                warn!(
-                    "Failed to create Cashu payment token for peer {}: {}",
-                    quote.peer_id, err
-                );
-                return false;
-            }
-        };
-
-        let mut ack_rx = self
-            .cashu_quotes
-            .register_pending_payment_ack(&quote.peer_id, hash_hex, quote.quote_id)
-            .await;
-        let payment_msg = DataPayment {
-            h: hash_bytes.to_vec(),
-            q: quote.quote_id,
-            p: quote.payment_sat,
-            m: Some(payment.mint_url.clone()),
-            tok: payment.token.clone(),
-        };
-        let wire = match encode_payment(&payment_msg) {
-            Ok(wire) => wire,
-            Err(_) => {
-                self.cashu_quotes
-                    .clear_pending_payment_ack(&quote.peer_id, hash_hex, quote.quote_id)
-                    .await;
-                let _ = self
-                    .cashu_quotes
-                    .revoke_payment_token(&payment.mint_url, &payment.operation_id)
-                    .await;
-                return false;
-            }
-        };
-
-        if dc
-            .send(&bytes::Bytes::copy_from_slice(&wire))
-            .await
-            .is_err()
-        {
-            self.cashu_quotes
-                .clear_pending_payment_ack(&quote.peer_id, hash_hex, quote.quote_id)
-                .await;
-            let _ = self
-                .cashu_quotes
-                .revoke_payment_token(&payment.mint_url, &payment.operation_id)
-                .await;
-            return false;
-        }
-
-        self.record_sent(&quote.peer_id, wire.len() as u64).await;
-
-        let settled = matches!(
-            tokio::time::timeout(self.cashu_quotes.settlement_timeout(), &mut ack_rx).await,
-            Ok(Ok(true))
-        );
-        if settled {
-            self.cashu_quotes
-                .record_paid_peer(&quote.peer_id, quote.payment_sat)
-                .await;
-            return true;
-        }
-
-        self.cashu_quotes
-            .clear_pending_payment_ack(&quote.peer_id, hash_hex, quote.quote_id)
-            .await;
-        if let Err(err) = self
-            .cashu_quotes
-            .revoke_payment_token(&payment.mint_url, &payment.operation_id)
-            .await
-        {
-            debug!(
-                "Failed to revoke unsettled Cashu send {} for {}: {}",
-                payment.operation_id, quote.peer_id, err
-            );
-        }
-        false
-    }
-
     async fn request_from_single_peer(
         &self,
         hash_hex: &str,
         hash_bytes: &[u8],
         expected_hash: [u8; 32],
         target_peer_id: &str,
-        quote_id: Option<u64>,
+        quote: Option<&NegotiatedQuote>,
         ordered_peers: &[ConnectedPeer],
     ) -> Option<Vec<u8>> {
         use super::types::BLOB_REQUEST_POLICY;
@@ -820,7 +723,7 @@ impl WebRTCState {
         let request = DataRequest {
             h: hash_bytes.to_vec(),
             htl: BLOB_REQUEST_POLICY.max_htl,
-            q: quote_id,
+            q: quote.map(|quote| quote.quote_id),
         };
         let wire = encode_request(&request).ok()?;
         let wire_len = wire.len() as u64;
@@ -831,9 +734,16 @@ impl WebRTCState {
             let mut pending = pending_requests.lock().await;
             pending.insert(
                 hash_hex.to_string(),
-                PendingRequest {
-                    hash: hash_bytes.to_vec(),
-                    response_tx: tx,
+                if let Some(quote) = quote {
+                    PendingRequest::quoted(
+                        hash_bytes.to_vec(),
+                        tx,
+                        quote.quote_id,
+                        quote.mint_url.clone().unwrap_or_default(),
+                        quote.payment_sat,
+                    )
+                } else {
+                    PendingRequest::standard(hash_bytes.to_vec(), tx)
                 },
             );
         }
@@ -858,7 +768,19 @@ impl WebRTCState {
             .await
             .record_request(target_peer_id, wire_len);
 
-        match tokio::time::timeout(self.request_timeout, &mut rx).await {
+        let wait_timeout = if let Some(quote) = quote {
+            let multiplier = quote.payment_sat.clamp(1, 32) as u128;
+            let extra_ms = self
+                .cashu_quotes
+                .settlement_timeout()
+                .as_millis()
+                .saturating_mul(multiplier);
+            self.request_timeout + Duration::from_millis(extra_ms.min(u64::MAX as u128) as u64)
+        } else {
+            self.request_timeout
+        };
+
+        match tokio::time::timeout(wait_timeout, &mut rx).await {
             Ok(Ok(Some(data))) if hashtree_core::sha256(&data) == expected_hash => {
                 let rtt_ms = sent_at.elapsed().as_millis() as u64;
                 self.record_received(target_peer_id, data.len() as u64)
@@ -875,13 +797,31 @@ impl WebRTCState {
                     .write()
                     .await
                     .record_failure(target_peer_id);
-                let mut pending = pending_requests.lock().await;
-                pending.remove(hash_hex);
+                let pending = pending_requests.lock().await.remove(hash_hex);
+                if let Some(pending) = pending {
+                    if let Some(quoted) = pending.quoted {
+                        if let Some(in_flight) = quoted.in_flight_payment {
+                            let _ = self
+                                .cashu_quotes
+                                .revoke_payment_token(&in_flight.mint_url, &in_flight.operation_id)
+                                .await;
+                        }
+                    }
+                }
                 None
             }
             Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
-                let mut pending = pending_requests.lock().await;
-                pending.remove(hash_hex);
+                let pending = pending_requests.lock().await.remove(hash_hex);
+                if let Some(pending) = pending {
+                    if let Some(quoted) = pending.quoted {
+                        if let Some(in_flight) = quoted.in_flight_payment {
+                            let _ = self
+                                .cashu_quotes
+                                .revoke_payment_token(&in_flight.mint_url, &in_flight.operation_id)
+                                .await;
+                        }
+                    }
+                }
                 self.peer_selector
                     .write()
                     .await
@@ -1019,6 +959,7 @@ impl WebRTCManager {
             Duration::from_millis(config.message_timeout_ms),
             CashuRoutingConfig::default(),
             None,
+            None,
         ));
 
         // Default classifier: all peers go to 'other' pool
@@ -1083,6 +1024,7 @@ impl WebRTCManager {
             classifier,
             CashuRoutingConfig::default(),
             None,
+            None,
         )
     }
 
@@ -1093,6 +1035,7 @@ impl WebRTCManager {
         classifier: PeerClassifier,
         cashu_routing: CashuRoutingConfig,
         payment_client: Option<Arc<dyn CashuPaymentClient>>,
+        mint_metadata: Option<Arc<CashuMintMetadataStore>>,
     ) -> Self {
         let mut manager = Self::new(keys, config);
         manager.state = Arc::new(WebRTCState::new_with_routing_and_cashu(
@@ -1102,6 +1045,7 @@ impl WebRTCManager {
             Duration::from_millis(manager.config.message_timeout_ms),
             cashu_routing,
             payment_client,
+            mint_metadata,
         ));
         manager.store = Some(store);
         manager.peer_classifier = classifier;

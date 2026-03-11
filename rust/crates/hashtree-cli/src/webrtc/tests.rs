@@ -199,6 +199,7 @@ fn test_wire_format_payment_encode_decode() {
     let req = DataPayment {
         h: vec![0xcc; 32],
         q: 9,
+        c: 1,
         p: 3,
         m: Some("https://mint-b.example".to_string()),
         tok: "cashuBtoken".to_string(),
@@ -212,6 +213,7 @@ fn test_wire_format_payment_encode_decode() {
         DataMessage::Payment(r) => {
             assert_eq!(r.h, vec![0xcc; 32]);
             assert_eq!(r.q, 9);
+            assert_eq!(r.c, 1);
             assert_eq!(r.p, 3);
             assert_eq!(r.m.as_deref(), Some("https://mint-b.example"));
             assert_eq!(r.tok, "cashuBtoken");
@@ -225,6 +227,7 @@ fn test_wire_format_payment_ack_encode_decode() {
     let res = DataPaymentAck {
         h: vec![0xdd; 32],
         q: 9,
+        c: 1,
         a: false,
         e: Some("invalid token".to_string()),
     };
@@ -237,10 +240,39 @@ fn test_wire_format_payment_ack_encode_decode() {
         DataMessage::PaymentAck(r) => {
             assert_eq!(r.h, vec![0xdd; 32]);
             assert_eq!(r.q, 9);
+            assert_eq!(r.c, 1);
             assert!(!r.a);
             assert_eq!(r.e.as_deref(), Some("invalid token"));
         }
         _ => panic!("Expected payment ack"),
+    }
+}
+
+#[test]
+fn test_wire_format_chunk_encode_decode() {
+    let chunk = DataChunk {
+        h: vec![0xee; 32],
+        q: 9,
+        c: 1,
+        n: 3,
+        p: 1,
+        d: vec![1, 2, 3, 4],
+    };
+    let encoded = encode_chunk(&chunk).unwrap();
+
+    assert_eq!(encoded[0], MSG_TYPE_CHUNK);
+
+    let parsed = parse_message(&encoded).unwrap();
+    match parsed {
+        DataMessage::Chunk(res) => {
+            assert_eq!(res.h, vec![0xee; 32]);
+            assert_eq!(res.q, 9);
+            assert_eq!(res.c, 1);
+            assert_eq!(res.n, 3);
+            assert_eq!(res.p, 1);
+            assert_eq!(res.d, vec![1, 2, 3, 4]);
+        }
+        _ => panic!("Expected chunk"),
     }
 }
 

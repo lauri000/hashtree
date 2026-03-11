@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use hashtree_cli::cashu::{receive_payment_token, revoke_pending_payment, send_payment_token};
+use hashtree_cli::cashu::{
+    load_mint_balance, receive_payment_token, revoke_pending_payment, send_payment_token,
+};
 use hashtree_cli::cashu_cli::{
     add_mint, list_mints, print_balance, remove_mint, set_default_mint, topup_balance,
 };
@@ -87,6 +89,10 @@ enum MintCommands {
 
 #[derive(Subcommand)]
 enum InternalCommands {
+    Balance {
+        #[arg(long)]
+        mint: String,
+    },
     Send {
         amount_sat: u64,
         #[arg(long)]
@@ -136,6 +142,10 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Internal { command } => match command {
+            InternalCommands::Balance { mint } => {
+                let balance = load_mint_balance(&data_dir, &mint).await?;
+                println!("{}", serde_json::to_string(&balance)?);
+            }
             InternalCommands::Send { amount_sat, mint } => {
                 let payment = send_payment_token(&data_dir, &mint, amount_sat).await?;
                 println!("{}", serde_json::to_string(&payment)?);
@@ -202,6 +212,22 @@ mod tests {
 
     #[test]
     fn test_cli_parses_internal_commands() {
+        let cli = Cli::parse_from([
+            "htree-cashu",
+            "internal",
+            "balance",
+            "--mint",
+            "https://mint.example",
+        ]);
+        match cli.command {
+            Commands::Internal {
+                command: InternalCommands::Balance { mint },
+            } => {
+                assert_eq!(mint, "https://mint.example");
+            }
+            _ => panic!("expected internal balance command"),
+        }
+
         let cli = Cli::parse_from([
             "htree-cashu",
             "internal",

@@ -13,7 +13,7 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-pub use cashu::CashuRoutingConfig;
+pub use cashu::{cashu_mint_metadata_path, CashuMintMetadataStore, CashuRoutingConfig};
 pub use peer::{ContentStore, Peer, PendingRequest};
 pub use signaling::{ConnectionState, PeerClassifier, PeerEntry, WebRTCManager, WebRTCState};
 pub use types::{
