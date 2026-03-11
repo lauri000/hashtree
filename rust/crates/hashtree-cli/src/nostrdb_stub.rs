@@ -142,6 +142,7 @@ impl SocialGraphCrawler {
         self
     }
 
+    #[allow(dead_code)]
     pub(crate) fn handle_incoming_event(&self, _event: &nostr::Event) {}
 
     pub async fn crawl(&self, _shutdown_rx: tokio::sync::watch::Receiver<bool>) {}

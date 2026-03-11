@@ -2,8 +2,10 @@
 //! Provides minimal types to allow code to compile without webrtc dependencies
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 /// Connection state stub
@@ -58,6 +60,17 @@ pub enum PeerPool {
     None,
 }
 
+#[derive(Debug, Clone)]
+pub struct PeerRootEvent {
+    pub hash: String,
+    pub key: Option<String>,
+    pub encrypted_key: Option<String>,
+    pub self_encrypted_key: Option<String>,
+    pub event_id: String,
+    pub created_at: u64,
+    pub peer_id: String,
+}
+
 /// WebRTC state stub - always empty when P2P is disabled
 #[derive(Debug)]
 pub struct WebRTCState {
@@ -92,10 +105,87 @@ impl WebRTCState {
     pub fn get_bandwidth(&self) -> (u64, u64) {
         (0, 0)
     }
+
+    /// Get mesh stats - always returns zeros when P2P is disabled
+    pub fn get_mesh_stats(&self) -> (u64, u64, u64) {
+        (0, 0, 0)
+    }
+
+    /// Resolve roots from peers - always returns None when P2P is disabled
+    pub async fn resolve_root_from_peers(
+        &self,
+        _owner_pubkey: &str,
+        _tree_name: &str,
+        _per_peer_timeout: Duration,
+    ) -> Option<PeerRootEvent> {
+        None
+    }
 }
 
 /// Content store trait stub
 pub trait ContentStore: Send + Sync + 'static {
     /// Get content by hex hash
     fn get(&self, hash_hex: &str) -> Result<Option<Vec<u8>>>;
+}
+
+pub mod types {
+    use super::*;
+
+    pub const MAX_HTL: u8 = 7;
+    const MSG_TYPE_REQUEST: u8 = 0x00;
+    const MSG_TYPE_RESPONSE: u8 = 0x01;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct DataRequest {
+        #[serde(with = "serde_bytes")]
+        pub h: Vec<u8>,
+        #[serde(default = "default_htl")]
+        pub htl: u8,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct DataResponse {
+        #[serde(with = "serde_bytes")]
+        pub h: Vec<u8>,
+        #[serde(with = "serde_bytes")]
+        pub d: Vec<u8>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub enum DataMessage {
+        Request(DataRequest),
+        Response(DataResponse),
+    }
+
+    fn default_htl() -> u8 {
+        MAX_HTL
+    }
+
+    pub fn encode_request(req: &DataRequest) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+        let body = rmp_serde::to_vec_named(req)?;
+        let mut result = Vec::with_capacity(1 + body.len());
+        result.push(MSG_TYPE_REQUEST);
+        result.extend(body);
+        Ok(result)
+    }
+
+    pub fn encode_response(res: &DataResponse) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+        let body = rmp_serde::to_vec_named(res)?;
+        let mut result = Vec::with_capacity(1 + body.len());
+        result.push(MSG_TYPE_RESPONSE);
+        result.extend(body);
+        Ok(result)
+    }
+
+    pub fn parse_message(data: &[u8]) -> Result<DataMessage, rmp_serde::decode::Error> {
+        if data.is_empty() {
+            return Err(rmp_serde::decode::Error::LengthMismatch(0));
+        }
+
+        match data[0] {
+            MSG_TYPE_REQUEST => Ok(DataMessage::Request(rmp_serde::from_slice(&data[1..])?)),
+            MSG_TYPE_RESPONSE => Ok(DataMessage::Response(rmp_serde::from_slice(&data[1..])?)),
+            other => Err(rmp_serde::decode::Error::LengthMismatch(other as u32)),
+        }
+    }
 }

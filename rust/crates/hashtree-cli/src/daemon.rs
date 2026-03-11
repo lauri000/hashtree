@@ -17,6 +17,8 @@ use crate::storage::HashtreeStore;
 
 #[cfg(feature = "p2p")]
 use crate::webrtc::{ContentStore, WebRTCManager, WebRTCState};
+#[cfg(not(feature = "p2p"))]
+use crate::WebRTCState;
 
 pub struct EmbeddedDaemonOptions {
     pub config: Config,

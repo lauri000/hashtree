@@ -14,11 +14,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::args::{
-    CashuCommands, CashuMintCommands, Cli, Commands, PrCommands, SocialGraphCommands,
-    StorageCommands,
-};
+#[cfg(feature = "cashu")]
+use super::args::{CashuCommands, CashuMintCommands};
+use super::args::{Cli, Commands, PrCommands, SocialGraphCommands, StorageCommands};
 use super::blossom::{background_blossom_push, push_to_blossom};
+#[cfg(feature = "cashu")]
 use super::cashu::{
     add_mint as add_cashu_mint, list_mints as list_cashu_mints,
     print_balance as print_cashu_balance, remove_mint as remove_cashu_mint,
@@ -1260,6 +1260,7 @@ pub(crate) async fn run() -> Result<()> {
         Commands::Peer { addr } => {
             list_peers(&addr).await?;
         }
+        #[cfg(feature = "cashu")]
         Commands::Cashu { command } => {
             let mut config = Config::load()?;
             match command {

@@ -1,18 +1,21 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
+#[cfg(feature = "nostrdb")]
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
+#[cfg(feature = "nostrdb")]
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, Mutex};
 
-use nostr::{
-    ClientMessage as NostrClientMessage, Event, EventId, Filter as NostrFilter, JsonUtil,
-    RelayMessage as NostrRelayMessage, SubscriptionId,
-};
+use nostr::{ClientMessage as NostrClientMessage, JsonUtil, RelayMessage as NostrRelayMessage};
+#[cfg(feature = "nostrdb")]
+use nostr::{Event, EventId, Filter as NostrFilter, SubscriptionId};
 
+#[cfg(feature = "nostrdb")]
 use crate::socialgraph;
 
 #[derive(Debug, Clone)]
@@ -704,6 +707,7 @@ mod tests {
         Ok(RelayMessage::from_json(msg)?)
     }
 
+    #[cfg(feature = "nostrdb")]
     #[tokio::test]
     async fn relay_stores_and_serves_events() -> Result<()> {
         let tmp = TempDir::new()?;

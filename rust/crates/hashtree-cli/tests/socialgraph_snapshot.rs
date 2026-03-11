@@ -1,9 +1,15 @@
+#[cfg(feature = "nostrdb")]
 use std::collections::HashMap;
+#[cfg(feature = "nostrdb")]
 use std::sync::{Mutex, OnceLock};
+#[cfg(feature = "nostrdb")]
 use std::time::Duration;
 
+#[cfg(feature = "nostrdb")]
 use bytes::Bytes;
+#[cfg(feature = "nostrdb")]
 use nostr::{EventBuilder, JsonUtil, Keys, Kind, Tag, Timestamp};
+#[cfg(feature = "nostrdb")]
 use tempfile::TempDir;
 
 #[cfg(feature = "nostrdb")]
@@ -65,11 +71,13 @@ fn snapshot_includes_list_timestamps() {
     assert!(mute_targets.contains(&carol_id));
 }
 
+#[cfg(feature = "nostrdb")]
 fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
 }
 
+#[cfg(feature = "nostrdb")]
 fn flatten_chunks(chunks: Vec<Bytes>) -> Vec<u8> {
     let total = chunks.iter().map(|c| c.len()).sum::<usize>();
     let mut out = Vec::with_capacity(total);
@@ -79,12 +87,14 @@ fn flatten_chunks(chunks: Vec<Bytes>) -> Vec<u8> {
     out
 }
 
+#[cfg(feature = "nostrdb")]
 struct ParsedSnapshot {
     id_to_pubkey: HashMap<u32, [u8; 32]>,
     follow_lists: HashMap<u32, (u64, Vec<u32>)>,
     mute_lists: HashMap<u32, (u64, Vec<u32>)>,
 }
 
+#[cfg(feature = "nostrdb")]
 fn parse_snapshot(data: &[u8]) -> ParsedSnapshot {
     let mut offset = 0usize;
     let _version = read_varint(data, &mut offset);
@@ -131,6 +141,7 @@ fn parse_snapshot(data: &[u8]) -> ParsedSnapshot {
     }
 }
 
+#[cfg(feature = "nostrdb")]
 fn read_varint(data: &[u8], offset: &mut usize) -> u64 {
     let mut value = 0u64;
     let mut shift = 0u32;
@@ -146,6 +157,7 @@ fn read_varint(data: &[u8], offset: &mut usize) -> u64 {
     value
 }
 
+#[cfg(feature = "nostrdb")]
 fn find_id(map: &HashMap<u32, [u8; 32]>, pk: &[u8; 32]) -> Option<u32> {
     map.iter()
         .find_map(|(id, value)| if value == pk { Some(*id) } else { None })

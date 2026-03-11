@@ -1,3 +1,4 @@
+#[cfg(feature = "cashu")]
 pub mod cashu;
 pub mod config;
 pub mod daemon;

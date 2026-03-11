@@ -237,6 +237,7 @@ pub(crate) enum Commands {
     },
 
     /// Manage Cashu wallet and accepted mints
+    #[cfg(feature = "cashu")]
     Cashu {
         #[command(subcommand)]
         command: CashuCommands,
@@ -321,6 +322,7 @@ pub(crate) enum StorageCommands {
     },
 }
 
+#[cfg(feature = "cashu")]
 #[derive(Subcommand)]
 pub(crate) enum CashuCommands {
     /// Show Cashu wallet balances
@@ -346,6 +348,7 @@ pub(crate) enum CashuCommands {
     },
 }
 
+#[cfg(feature = "cashu")]
 #[derive(Subcommand)]
 pub(crate) enum CashuMintCommands {
     /// List accepted mints
