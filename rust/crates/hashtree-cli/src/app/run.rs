@@ -14,16 +14,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(feature = "cashu")]
-use super::args::{CashuCommands, CashuMintCommands};
 use super::args::{Cli, Commands, PrCommands, SocialGraphCommands, StorageCommands};
 use super::blossom::{background_blossom_push, push_to_blossom};
-#[cfg(feature = "cashu")]
-use super::cashu::{
-    add_mint as add_cashu_mint, list_mints as list_cashu_mints,
-    print_balance as print_cashu_balance, remove_mint as remove_cashu_mint,
-    set_default_mint as set_default_cashu_mint, topup_balance as topup_cashu_balance,
-};
+use super::cashu_delegate::run_cashu_helper;
 use super::content::add_directory;
 use super::daemonize::{format_daemon_status, spawn_daemon, stop_daemon};
 use super::lists::{follow_user, list_following, list_muted, mute_user, update_profile};
@@ -1260,31 +1253,8 @@ pub(crate) async fn run() -> Result<()> {
         Commands::Peer { addr } => {
             list_peers(&addr).await?;
         }
-        #[cfg(feature = "cashu")]
         Commands::Cashu { command } => {
-            let mut config = Config::load()?;
-            match command {
-                CashuCommands::Balance { mint } => {
-                    print_cashu_balance(&config, &data_dir, mint.as_deref()).await?;
-                }
-                CashuCommands::Topup { amount_sat, mint } => {
-                    topup_cashu_balance(&config, &data_dir, amount_sat, mint.as_deref()).await?;
-                }
-                CashuCommands::Mint { command } => match command {
-                    CashuMintCommands::List => {
-                        list_cashu_mints(&config);
-                    }
-                    CashuMintCommands::Add { url, make_default } => {
-                        add_cashu_mint(&mut config, &url, make_default)?;
-                    }
-                    CashuMintCommands::Remove { url } => {
-                        remove_cashu_mint(&mut config, &url)?;
-                    }
-                    CashuMintCommands::Default { url } => {
-                        set_default_cashu_mint(&mut config, &url)?;
-                    }
-                },
-            }
+            run_cashu_helper(&data_dir, &command)?;
         }
         Commands::Pr { command } => match command {
             PrCommands::Create {

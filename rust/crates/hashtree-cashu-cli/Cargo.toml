@@ -1,0 +1,19 @@
+[package]
+name = "hashtree-cashu-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Cashu wallet helper CLI for hashtree"
+
+[[bin]]
+name = "htree-cashu"
+path = "src/main.rs"
+
+[dependencies]
+hashtree-cli = { version = "0.2.10", path = "../hashtree-cli", default-features = false, features = ["cashu"] }
+anyhow.workspace = true
+clap.workspace = true
+tokio = { version = "1", features = ["full"] }
+rustls = { version = "0.23", features = ["ring"] }

@@ -4,11 +4,8 @@ use super::lists::{
     update_mute_list_file_with_status, MuteEntry, MuteUpdate,
 };
 use super::resolve::resolve_cid_input;
-#[cfg(feature = "cashu")]
 use crate::app::args::{CashuCommands, CashuMintCommands};
-#[cfg(feature = "cashu")]
 use crate::app::args::{Cli, Commands};
-#[cfg(feature = "cashu")]
 use clap::Parser;
 use nostr::Kind;
 use std::path::PathBuf;
@@ -174,7 +171,6 @@ fn test_load_mute_entries_legacy_format() {
     assert_eq!(entries[0].reason, None);
 }
 
-#[cfg(feature = "cashu")]
 #[test]
 fn test_cli_parses_cashu_topup_and_mint_commands() {
     let cli = Cli::parse_from([

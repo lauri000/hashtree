@@ -1,13 +1,13 @@
-use anyhow::{bail, Result};
-use hashtree_cli::cashu::{
+use crate::cashu::{
     create_topup_quote, legacy_cashu_wallet_state_path, load_wallet_overview, normalize_mint_url,
     CashuWalletEntry,
 };
-use hashtree_cli::Config;
+use crate::Config;
+use anyhow::{bail, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-pub(crate) async fn print_balance(
+pub async fn print_balance(
     config: &Config,
     data_dir: &Path,
     mint_filter: Option<&str>,
@@ -82,7 +82,7 @@ pub(crate) async fn print_balance(
     Ok(())
 }
 
-pub(crate) async fn topup_balance(
+pub async fn topup_balance(
     config: &Config,
     data_dir: &Path,
     amount_sat: u64,
@@ -115,7 +115,7 @@ pub(crate) async fn topup_balance(
     Ok(())
 }
 
-pub(crate) fn list_mints(config: &Config) {
+pub fn list_mints(config: &Config) {
     if config.cashu.accepted_mints.is_empty() {
         println!("No accepted Cashu mints configured.");
         return;
@@ -132,7 +132,7 @@ pub(crate) fn list_mints(config: &Config) {
     }
 }
 
-pub(crate) fn add_mint(config: &mut Config, raw_url: &str, make_default: bool) -> Result<()> {
+pub fn add_mint(config: &mut Config, raw_url: &str, make_default: bool) -> Result<()> {
     let mint_url = normalize_mint_url(raw_url)?;
     if !config
         .cashu
@@ -157,7 +157,7 @@ pub(crate) fn add_mint(config: &mut Config, raw_url: &str, make_default: bool) -
     Ok(())
 }
 
-pub(crate) fn remove_mint(config: &mut Config, raw_url: &str) -> Result<()> {
+pub fn remove_mint(config: &mut Config, raw_url: &str) -> Result<()> {
     let mint_url = normalize_mint_url(raw_url)?;
     let original_len = config.cashu.accepted_mints.len();
     config.cashu.accepted_mints.retain(|mint| mint != &mint_url);
@@ -179,7 +179,7 @@ pub(crate) fn remove_mint(config: &mut Config, raw_url: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn set_default_mint(config: &mut Config, raw_url: &str) -> Result<()> {
+pub fn set_default_mint(config: &mut Config, raw_url: &str) -> Result<()> {
     let mint_url = normalize_mint_url(raw_url)?;
     if !config
         .cashu

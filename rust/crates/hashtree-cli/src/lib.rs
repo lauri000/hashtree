@@ -1,5 +1,7 @@
 #[cfg(feature = "cashu")]
 pub mod cashu;
+#[cfg(feature = "cashu")]
+pub mod cashu_cli;
 pub mod config;
 pub mod daemon;
 pub mod fetch;

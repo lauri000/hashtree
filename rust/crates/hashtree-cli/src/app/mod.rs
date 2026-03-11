@@ -1,7 +1,6 @@
 pub(crate) mod args;
 pub(crate) mod blossom;
-#[cfg(feature = "cashu")]
-pub(crate) mod cashu;
+pub(crate) mod cashu_delegate;
 pub(crate) mod content;
 pub(crate) mod daemonize;
 pub(crate) mod lists;
