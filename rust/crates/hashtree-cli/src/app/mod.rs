@@ -1,5 +1,6 @@
 pub(crate) mod args;
 pub(crate) mod blossom;
+pub(crate) mod cashu;
 pub(crate) mod content;
 pub(crate) mod daemonize;
 pub(crate) mod lists;

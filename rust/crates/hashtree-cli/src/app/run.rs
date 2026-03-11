@@ -14,8 +14,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::args::{Cli, Commands, PrCommands, SocialGraphCommands, StorageCommands};
+use super::args::{
+    CashuCommands, CashuMintCommands, Cli, Commands, PrCommands, SocialGraphCommands,
+    StorageCommands,
+};
 use super::blossom::{background_blossom_push, push_to_blossom};
+use super::cashu::{
+    add_mint as add_cashu_mint, list_mints as list_cashu_mints,
+    print_balance as print_cashu_balance, remove_mint as remove_cashu_mint,
+    set_default_mint as set_default_cashu_mint, topup_balance as topup_cashu_balance,
+};
 use super::content::add_directory;
 use super::daemonize::{format_daemon_status, spawn_daemon, stop_daemon};
 use super::lists::{follow_user, list_following, list_muted, mute_user, update_profile};
@@ -360,6 +368,15 @@ pub(crate) async fn run() -> Result<()> {
                 config.nostr.crawl_depth, config.nostr.max_write_distance
             );
             println!("Storage limit: {} GB", config.storage.max_size_gb);
+            if !config.cashu.accepted_mints.is_empty() {
+                println!(
+                    "Cashu accepted mints: {}",
+                    config.cashu.accepted_mints.len()
+                );
+                if let Some(default_mint) = &config.cashu.default_mint {
+                    println!("Cashu default mint: {}", default_mint);
+                }
+            }
             if config.sync.enabled {
                 let mut sync_features = Vec::new();
                 if config.sync.sync_own {
@@ -1242,6 +1259,31 @@ pub(crate) async fn run() -> Result<()> {
         }
         Commands::Peer { addr } => {
             list_peers(&addr).await?;
+        }
+        Commands::Cashu { command } => {
+            let mut config = Config::load()?;
+            match command {
+                CashuCommands::Balance { mint } => {
+                    print_cashu_balance(&config, &data_dir, mint.as_deref())?;
+                }
+                CashuCommands::Topup { amount_sat, mint } => {
+                    topup_cashu_balance(&config, &data_dir, amount_sat, mint.as_deref())?;
+                }
+                CashuCommands::Mint { command } => match command {
+                    CashuMintCommands::List => {
+                        list_cashu_mints(&config);
+                    }
+                    CashuMintCommands::Add { url, make_default } => {
+                        add_cashu_mint(&mut config, &url, make_default)?;
+                    }
+                    CashuMintCommands::Remove { url } => {
+                        remove_cashu_mint(&mut config, &url)?;
+                    }
+                    CashuMintCommands::Default { url } => {
+                        set_default_cashu_mint(&mut config, &url)?;
+                    }
+                },
+            }
         }
         Commands::Pr { command } => match command {
             PrCommands::Create {

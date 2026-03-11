@@ -236,6 +236,12 @@ pub(crate) enum Commands {
         addr: String,
     },
 
+    /// Manage Cashu wallet state and accepted mints
+    Cashu {
+        #[command(subcommand)]
+        command: CashuCommands,
+    },
+
     /// Pull request management
     Pr {
         #[command(subcommand)]
@@ -312,6 +318,55 @@ pub(crate) enum StorageCommands {
         /// Also verify R2/S3 storage (slower)
         #[arg(long)]
         r2: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum CashuCommands {
+    /// Show Cashu wallet balances
+    #[command(visible_alias = "status")]
+    Balance {
+        /// Show only one mint
+        #[arg(long)]
+        mint: Option<String>,
+    },
+    /// Credit the local Cashu wallet state for development/testing
+    #[command(visible_alias = "load")]
+    Topup {
+        /// Amount in satoshis
+        amount_sat: u64,
+        /// Mint to credit (defaults to configured default mint)
+        #[arg(long)]
+        mint: Option<String>,
+    },
+    /// Manage accepted Cashu mints
+    Mint {
+        #[command(subcommand)]
+        command: CashuMintCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum CashuMintCommands {
+    /// List accepted mints
+    List,
+    /// Add an accepted mint
+    Add {
+        /// Mint base URL
+        url: String,
+        /// Also set as default mint
+        #[arg(long = "default")]
+        make_default: bool,
+    },
+    /// Remove an accepted mint
+    Remove {
+        /// Mint base URL
+        url: String,
+    },
+    /// Set the default mint
+    Default {
+        /// Mint base URL
+        url: String,
     },
 }
 

@@ -1,3 +1,4 @@
+pub mod cashu;
 pub mod config;
 pub mod daemon;
 pub mod fetch;

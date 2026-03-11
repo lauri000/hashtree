@@ -16,6 +16,8 @@ pub struct Config {
     pub blossom: BlossomConfig,
     #[serde(default)]
     pub sync: SyncConfig,
+    #[serde(default)]
+    pub cashu: CashuConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +167,16 @@ pub struct SyncConfig {
     pub blossom_timeout_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CashuConfig {
+    /// Cashu mint base URLs we accept for bandwidth incentives.
+    #[serde(default)]
+    pub accepted_mints: Vec<String>,
+    /// Default mint to use for wallet operations.
+    #[serde(default)]
+    pub default_mint: Option<String>,
+}
+
 fn default_sync_enabled() -> bool {
     true
 }
@@ -310,6 +322,7 @@ impl Default for Config {
             nostr: NostrConfig::default(),
             blossom: BlossomConfig::default(),
             sync: SyncConfig::default(),
+            cashu: CashuConfig::default(),
         }
     }
 }
@@ -531,6 +544,8 @@ mod tests {
         assert_eq!(config.nostr.spambox_max_size_gb, 1);
         assert!(config.nostr.socialgraph_root.is_none());
         assert_eq!(config.server.socialgraph_snapshot_public, false);
+        assert!(config.cashu.accepted_mints.is_empty());
+        assert!(config.cashu.default_mint.is_none());
     }
 
     #[test]
@@ -563,6 +578,27 @@ max_write_distance = 5
         assert_eq!(config.nostr.max_write_distance, 5);
         assert_eq!(config.nostr.db_max_size_gb, 10);
         assert_eq!(config.nostr.spambox_max_size_gb, 1);
+    }
+
+    #[test]
+    fn test_cashu_config_deserialize_with_accepted_mints() {
+        let toml_str = r#"
+[cashu]
+accepted_mints = ["https://mint1.example", "http://127.0.0.1:3338"]
+default_mint = "https://mint1.example"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.cashu.accepted_mints,
+            vec![
+                "https://mint1.example".to_string(),
+                "http://127.0.0.1:3338".to_string()
+            ]
+        );
+        assert_eq!(
+            config.cashu.default_mint,
+            Some("https://mint1.example".to_string())
+        );
     }
 
     #[test]

@@ -4,6 +4,8 @@ use super::lists::{
     update_mute_list_file_with_status, MuteEntry, MuteUpdate,
 };
 use super::resolve::resolve_cid_input;
+use crate::app::args::{CashuCommands, CashuMintCommands, Cli, Commands};
+use clap::Parser;
 use nostr::Kind;
 use std::path::PathBuf;
 
@@ -166,6 +168,48 @@ fn test_load_mute_entries_legacy_format() {
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].pubkey, pk1);
     assert_eq!(entries[0].reason, None);
+}
+
+#[test]
+fn test_cli_parses_cashu_topup_and_mint_commands() {
+    let cli = Cli::parse_from([
+        "htree",
+        "cashu",
+        "topup",
+        "123",
+        "--mint",
+        "https://mint.example",
+    ]);
+    match cli.command {
+        Commands::Cashu {
+            command: CashuCommands::Topup { amount_sat, mint },
+        } => {
+            assert_eq!(amount_sat, 123);
+            assert_eq!(mint.as_deref(), Some("https://mint.example"));
+        }
+        _ => panic!("expected cashu topup command"),
+    }
+
+    let cli = Cli::parse_from([
+        "htree",
+        "cashu",
+        "mint",
+        "add",
+        "https://mint.example",
+        "--default",
+    ]);
+    match cli.command {
+        Commands::Cashu {
+            command:
+                CashuCommands::Mint {
+                    command: CashuMintCommands::Add { url, make_default },
+                },
+        } => {
+            assert_eq!(url, "https://mint.example");
+            assert!(make_default);
+        }
+        _ => panic!("expected cashu mint add command"),
+    }
 }
 
 #[tokio::test]
