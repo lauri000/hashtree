@@ -599,6 +599,8 @@ impl Simulation {
                     .as_ref()
                     .map(|c| c.payment_default_block_threshold)
                     .unwrap_or(0),
+                cashu_accepted_mints: Vec::new(),
+                cashu_default_mint: None,
                 dispatch: selected_strategy.dispatch,
                 response_behavior: selected_strategy.response_behavior,
             },

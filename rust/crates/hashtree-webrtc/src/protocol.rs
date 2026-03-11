@@ -3,8 +3,8 @@
 //! Compatible with hashtree-ts wire format:
 //! - Request:        [0x00][msgpack: {h: bytes32, htl?: u8, q?: u64}]
 //! - Response:       [0x01][msgpack: {h: bytes32, d: bytes, i?: u32, n?: u32}]
-//! - QuoteRequest:   [0x02][msgpack: {h: bytes32, p: u64, t: u32}]
-//! - QuoteResponse:  [0x03][msgpack: {h: bytes32, a: bool, q?: u64, p?: u64, t?: u32}]
+//! - QuoteRequest:   [0x02][msgpack: {h: bytes32, p: u64, t: u32, m?: string}]
+//! - QuoteResponse:  [0x03][msgpack: {h: bytes32, a: bool, q?: u64, p?: u64, t?: u32, m?: string}]
 //!
 //! Fragmented responses include `i` (index) and `n` (total), unfragmented omit them.
 
@@ -61,6 +61,9 @@ pub struct DataQuoteRequest {
     pub p: u64,
     /// Quote validity window in milliseconds.
     pub t: u32,
+    /// Optional settlement mint URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub m: Option<String>,
 }
 
 /// Quote response message body
@@ -80,6 +83,9 @@ pub struct DataQuoteResponse {
     /// Quote validity window in milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub t: Option<u32>,
+    /// Settlement mint URL accepted for this quote.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub m: Option<String>,
 }
 
 /// Parsed data message
@@ -184,11 +190,17 @@ pub fn create_response(hash: &Hash, data: Vec<u8>) -> DataResponse {
 }
 
 /// Create a quote request.
-pub fn create_quote_request(hash: &Hash, ttl_ms: u32, payment_sat: u64) -> DataQuoteRequest {
+pub fn create_quote_request(
+    hash: &Hash,
+    ttl_ms: u32,
+    payment_sat: u64,
+    mint_url: Option<&str>,
+) -> DataQuoteRequest {
     DataQuoteRequest {
         h: hash.to_vec(),
         p: payment_sat,
         t: ttl_ms,
+        m: mint_url.map(str::to_string),
     }
 }
 
@@ -198,6 +210,7 @@ pub fn create_quote_response_available(
     quote_id: u64,
     payment_sat: u64,
     ttl_ms: u32,
+    mint_url: Option<&str>,
 ) -> DataQuoteResponse {
     DataQuoteResponse {
         h: hash.to_vec(),
@@ -205,6 +218,7 @@ pub fn create_quote_response_available(
         q: Some(quote_id),
         p: Some(payment_sat),
         t: Some(ttl_ms),
+        m: mint_url.map(str::to_string),
     }
 }
 
@@ -216,6 +230,7 @@ pub fn create_quote_response_unavailable(hash: &Hash) -> DataQuoteResponse {
         q: None,
         p: None,
         t: None,
+        m: None,
     }
 }
 
@@ -325,7 +340,7 @@ mod tests {
     #[test]
     fn test_encode_decode_quote_request() {
         let hash = [0x44; 32];
-        let req = create_quote_request(&hash, 7, 2_500);
+        let req = create_quote_request(&hash, 7, 2_500, Some("https://mint.example"));
         let encoded = encode_quote_request(&req);
 
         assert_eq!(encoded[0], MSG_TYPE_QUOTE_REQUEST);
@@ -336,6 +351,7 @@ mod tests {
                 assert_eq!(r.h, hash.to_vec());
                 assert_eq!(r.t, 7);
                 assert_eq!(r.p, 2_500);
+                assert_eq!(r.m.as_deref(), Some("https://mint.example"));
             }
             _ => panic!("Expected quote request"),
         }
@@ -344,7 +360,8 @@ mod tests {
     #[test]
     fn test_encode_decode_quote_response_and_quoted_request() {
         let hash = [0x55; 32];
-        let quote = create_quote_response_available(&hash, 19, 2_500, 7);
+        let quote =
+            create_quote_response_available(&hash, 19, 2_500, 7, Some("https://mint.example"));
         let encoded_quote = encode_quote_response(&quote);
 
         assert_eq!(encoded_quote[0], MSG_TYPE_QUOTE_RESPONSE);
@@ -357,6 +374,7 @@ mod tests {
                 assert_eq!(r.q, Some(19));
                 assert_eq!(r.p, Some(2_500));
                 assert_eq!(r.t, Some(7));
+                assert_eq!(r.m.as_deref(), Some("https://mint.example"));
             }
             _ => panic!("Expected quote response"),
         }
