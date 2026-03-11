@@ -8,6 +8,7 @@
 //! - `WsRelay` - WebSocket Nostr relay for integration testing
 
 pub mod cashu_test_mint;
+pub mod mint_client;
 #[cfg(feature = "nostr")]
 pub mod nostr_mesh;
 pub mod webrtc_sim;
@@ -17,6 +18,7 @@ pub mod ws_relay;
 pub use cashu_test_mint::{
     ChannelSettlement, ChannelState, LocalTestCashuMint, MintError, MintStats,
 };
+pub use mint_client::{LocalMintClient, MintClient};
 #[cfg(feature = "nostr")]
 pub use nostr_mesh::NostrMesh;
 pub use webrtc_sim::{

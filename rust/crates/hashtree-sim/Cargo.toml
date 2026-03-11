@@ -17,6 +17,7 @@ hashtree-webrtc = { path = "../hashtree-webrtc" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 anyhow = { workspace = true, optional = true }
+async-trait.workspace = true
 
 # Simulation
 rand = "0.8"

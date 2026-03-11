@@ -148,6 +148,10 @@ future peer selection; failed settlement records requester defaults in peer meta
 and can optionally block future service after a configured threshold. If disabled
 (or unset), routing stays reputation-only.
 
+`Simulation::new(...)` still uses the in-process local mint by default. For integration
+tests or future real-mint plumbing, `Simulation::new_with_mint_client(...)` accepts any
+custom `MintClient` implementation.
+
 ### Timing Modes
 
 `SimConfig.retrieval_timing_mode` controls probe timeout behavior:

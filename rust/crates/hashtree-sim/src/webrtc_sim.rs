@@ -3,7 +3,8 @@
 //! This module uses the exact same signaling and data transfer code
 //! as production WebRTCStore, just with mock transports.
 
-use crate::cashu_test_mint::{LocalTestCashuMint, MintError, MintStats};
+use crate::cashu_test_mint::{MintError, MintStats};
+use crate::mint_client::{LocalMintClient, MintClient};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -315,7 +316,7 @@ pub struct Simulation {
     rng: RwLock<StdRng>,
     stats: RwLock<SimStats>,
     next_node_id: RwLock<usize>,
-    cashu_mint: Option<Arc<RwLock<LocalTestCashuMint>>>,
+    cashu_mint: Option<Arc<dyn MintClient>>,
 }
 
 impl Simulation {
@@ -340,7 +341,23 @@ impl Simulation {
             .cashu_incentives
             .as_ref()
             .filter(|c| c.enabled)
-            .map(|_| Arc::new(RwLock::new(LocalTestCashuMint::new())));
+            .map(|_| Arc::new(LocalMintClient::new()) as Arc<dyn MintClient>);
+        Self::new_with_optional_mint_client(config, cashu_mint)
+    }
+
+    pub fn new_with_mint_client(config: SimConfig, cashu_mint: Arc<dyn MintClient>) -> Self {
+        let cashu_mint = config
+            .cashu_incentives
+            .as_ref()
+            .filter(|c| c.enabled)
+            .map(|_| cashu_mint);
+        Self::new_with_optional_mint_client(config, cashu_mint)
+    }
+
+    fn new_with_optional_mint_client(
+        config: SimConfig,
+        cashu_mint: Option<Arc<dyn MintClient>>,
+    ) -> Self {
         let strategy_mix = if config.strategy_mix.is_empty() {
             vec![NodeStrategyProfile {
                 name: "default".to_string(),
@@ -789,21 +806,19 @@ impl Simulation {
             return;
         };
 
-        let mut mint = mint.write().await;
-        match mint.open_channel(
-            payer_id.to_string(),
-            payee_id.to_string(),
-            config.channel_capacity_sat,
-        ) {
+        match mint
+            .open_channel(payer_id, payee_id, config.channel_capacity_sat)
+            .await
+        {
             Ok(()) | Err(MintError::ChannelAlreadyExists) => {}
             Err(_) => return,
         }
 
         if mint
             .transfer(payer_id, payee_id, config.payment_per_probe_sat)
+            .await
             .is_err()
         {
-            drop(mint);
             payee_store
                 .record_cashu_payment_default_from_peer(payer_id)
                 .await;
@@ -811,7 +826,6 @@ impl Simulation {
             stats.cashu.payment_defaults_recorded += 1;
             return;
         }
-        drop(mint);
 
         payer_store
             .record_cashu_payment_for_peer(payee_id, config.payment_per_probe_sat)
@@ -828,16 +842,14 @@ impl Simulation {
         let Some(mint) = &self.cashu_mint else {
             return;
         };
-        let mut mint = mint.write().await;
-        let _ = mint.settle_all();
+        let _ = mint.settle_all().await;
         let MintStats {
             channels_opened,
             payments_sent,
             payments_failed,
             volume_sat,
             settlements_finalized,
-        } = mint.stats();
-        drop(mint);
+        } = mint.stats().await.unwrap_or_default();
 
         let mut stats = self.stats.write().await;
         stats.cashu.channels_opened = channels_opened;
@@ -1861,6 +1873,57 @@ mod tests {
         assert_eq!(
             stats.cashu.settlements_finalized,
             stats.cashu.channels_opened
+        );
+    }
+
+    #[tokio::test]
+    async fn test_webrtc_sim_accepts_injected_mint_client() {
+        let config = SimConfig {
+            node_count: 12,
+            duration: Duration::from_secs(2),
+            seed: 188,
+            pool: PoolConfig {
+                max_connections: 8,
+                satisfied_connections: 4,
+            },
+            discovery_interval_ms: 100,
+            hello_reannounce_interval_ms: 1000,
+            churn_rate: 0.0,
+            allow_rejoin: false,
+            network_latency_ms: 0,
+            retrieval_probe_count: 8,
+            retrieval_payload_bytes: 128,
+            retrieval_timeout_ms: 1000,
+            max_events_retained: 10_000,
+            retrieval_timing_mode: RetrievalTimingMode::VirtualSteps,
+            retrieval_poll_interval_ms: 5,
+            strategy_mix: Vec::new(),
+            reference_strategy: None,
+            cashu_incentives: Some(CashuIncentiveConfig {
+                enabled: true,
+                channel_capacity_sat: 64,
+                payment_per_probe_sat: 2,
+                selection_bonus_weight: 0.8,
+                payment_default_block_threshold: 0,
+            }),
+        };
+
+        let mint = Arc::new(LocalMintClient::new());
+        let sim = Simulation::new_with_mint_client(config, mint.clone());
+        sim.run().await;
+
+        let stats = sim.get_stats().await;
+        let mint_stats = mint.stats().await.expect("mint stats");
+
+        assert!(
+            mint_stats.channels_opened > 0,
+            "expected injected mint client to receive channel opens"
+        );
+        assert_eq!(mint_stats.payments_sent, stats.cashu.payments_sent);
+        assert_eq!(mint_stats.volume_sat, stats.cashu.volume_sat);
+        assert_eq!(
+            mint_stats.settlements_finalized,
+            stats.cashu.settlements_finalized
         );
     }
 
