@@ -72,6 +72,7 @@ describe('NostrEventStore', () => {
 
     await expect(store.listByAuthor(root, author)).resolves.toEqual([newest, middle, older]);
     await expect(store.listByAuthorAndKind(root, author, 1)).resolves.toEqual([newest, older]);
+    await expect(store.listRecent(root, { limit: 3 })).resolves.toEqual([other, newest, middle]);
   });
 
   it('tracks the latest replaceable event for an author and kind', async () => {

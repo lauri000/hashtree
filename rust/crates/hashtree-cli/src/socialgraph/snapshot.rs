@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 
-use super::Ndb;
+use super::SocialGraphBackend;
 
 const BINARY_FORMAT_VERSION: u64 = 2;
 const CHUNK_SIZE: usize = 16 * 1024;
@@ -28,7 +28,7 @@ struct SnapshotData {
 }
 
 pub fn build_snapshot_chunks(
-    ndb: &Ndb,
+    ndb: &(impl SocialGraphBackend + ?Sized),
     root: &[u8; 32],
     options: &SnapshotOptions,
 ) -> Result<Vec<Bytes>> {
@@ -37,7 +37,7 @@ pub fn build_snapshot_chunks(
 }
 
 fn build_snapshot_data(
-    ndb: &Ndb,
+    ndb: &(impl SocialGraphBackend + ?Sized),
     root: &[u8; 32],
     options: &SnapshotOptions,
 ) -> Result<SnapshotData> {
@@ -155,7 +155,7 @@ fn build_snapshot_data(
 }
 
 fn compute_users_by_distance(
-    ndb: &Ndb,
+    ndb: &(impl SocialGraphBackend + ?Sized),
     root: &[u8; 32],
     max_distance: Option<u32>,
 ) -> Result<BTreeMap<u32, Vec<[u8; 32]>>> {

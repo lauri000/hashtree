@@ -28,6 +28,7 @@ hashtree-fuse = { version = "0.2.10", path = "../fuse", optional = true, feature
 hashtree-lmdb = { workspace = true, optional = true }
 hashtree-blossom.workspace = true
 hashtree-config.workspace = true
+hashtree-nostr.workspace = true
 hashtree-resolver = { workspace = true, features = ["nostr"] }
 hashtree-webrtc = { workspace = true, optional = true }
 

@@ -41,24 +41,24 @@ mod imp {
     use super::*;
     use anyhow::Result;
 
-    use crate::socialgraph::{Ndb, SocialGraphAccessControl};
+    use crate::socialgraph::{SocialGraphAccessControl, SocialGraphBackend};
     use tracing::warn;
 
     struct NostrStore {
-        ndb: Arc<Ndb>,
+        ndb: Arc<dyn SocialGraphBackend>,
     }
 
     impl NostrStore {
-        fn new(ndb: Arc<Ndb>) -> Self {
+        fn new(ndb: Arc<dyn SocialGraphBackend>) -> Self {
             Self { ndb }
         }
 
         fn ingest(&self, event: &Event) -> Result<()> {
-            crate::socialgraph::ingest_parsed_event(&self.ndb, event)
+            crate::socialgraph::ingest_parsed_event(self.ndb.as_ref(), event)
         }
 
         fn query(&self, filter: &NostrFilter, limit: usize) -> Vec<Event> {
-            crate::socialgraph::query_events(&self.ndb, filter, limit)
+            crate::socialgraph::query_events(self.ndb.as_ref(), filter, limit)
         }
     }
 
@@ -198,7 +198,7 @@ mod imp {
 
     impl NostrRelay {
         pub fn new(
-            trusted_ndb: Arc<Ndb>,
+            trusted_ndb: Arc<dyn SocialGraphBackend>,
             data_dir: PathBuf,
             social_graph: Option<Arc<SocialGraphAccessControl>>,
             config: NostrRelayConfig,
@@ -583,9 +583,10 @@ mod tests {
         let keys = Keys::generate();
         let mut allowed = HashSet::new();
         allowed.insert(keys.public_key().to_hex());
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = ndb.clone();
 
         let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
-            Arc::clone(&ndb),
+            Arc::clone(&backend),
             0,
             allowed,
         ));
@@ -593,7 +594,7 @@ mod tests {
         let mut relay_config = NostrRelayConfig::default();
         relay_config.spambox_db_max_bytes = 0;
         let relay = NostrRelay::new(
-            Arc::clone(&ndb),
+            Arc::clone(&backend),
             tmp.path().to_path_buf(),
             Some(access),
             relay_config,
@@ -667,9 +668,10 @@ mod tests {
 
         crate::socialgraph::set_social_graph_root(&ndb, &[1u8; 32]);
         std::thread::sleep(std::time::Duration::from_millis(100));
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = ndb.clone();
 
         let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
-            Arc::clone(&ndb),
+            Arc::clone(&backend),
             0,
             HashSet::new(),
         ));
@@ -677,7 +679,7 @@ mod tests {
         let mut relay_config = NostrRelayConfig::default();
         relay_config.spambox_db_max_bytes = 0;
         let relay = NostrRelay::new(
-            Arc::clone(&ndb),
+            Arc::clone(&backend),
             tmp.path().to_path_buf(),
             Some(access),
             relay_config,

@@ -28,6 +28,7 @@ fn stores_events_by_id_author_and_replaceable_views() {
     block_on(async {
         let store = NostrEventStore::new(Arc::new(MemoryStore::new()));
         let author = "a".repeat(64);
+        let other_author = "b".repeat(64);
         let event1 = event(
             "1195275911eb877e6687b4f8a3495de1e0719280e7fc1fb229a9de37b2d87bea",
             &author,
@@ -52,10 +53,19 @@ fn stores_events_by_id_author_and_replaceable_views() {
             "profile",
             &"3".repeat(128),
         );
+        let other = event(
+            "ee5e6609ca7f7beb6a0e1927740e8cb1c68cc29e407bc85b2936883757cb0884",
+            &other_author,
+            40,
+            1,
+            "other",
+            &"4".repeat(128),
+        );
 
         let mut root = store.add(None, event1.clone()).await.unwrap();
         root = store.add(Some(&root), event2.clone()).await.unwrap();
         root = store.add(Some(&root), profile.clone()).await.unwrap();
+        root = store.add(Some(&root), other.clone()).await.unwrap();
 
         assert_eq!(
             store.get_by_id(Some(&root), &event2.id).await.unwrap(),
@@ -67,6 +77,13 @@ fn stores_events_by_id_author_and_replaceable_views() {
                 .await
                 .unwrap(),
             vec![profile.clone(), event2.clone(), event1.clone()]
+        );
+        assert_eq!(
+            store
+                .list_recent(Some(&root), ListEventsOptions { limit: Some(3) })
+                .await
+                .unwrap(),
+            vec![other, profile.clone(), event2.clone()]
         );
         assert_eq!(
             store
@@ -115,9 +132,9 @@ fn manifest_root_matches_typescript_fixture() {
         assert_eq!(
             cid_to_pair(&root),
             (
-                "24f73dced659df408b9576be014a65264cc4d091c57dff3eb0bdf7508eca83a4".to_string(),
+                "2f6b430b22710649b7bd245127b36840f1481e39deda66fefa6ea27e7536b1ba".to_string(),
                 Some(
-                    "7f06cc418700f245ff84877ac850682aa687799de4e26fbee4dd8a73aa574a3b".to_string()
+                    "bf3d82ed21e2a126c6cc50962be77e6ebf5d7ec1dc0ba92cc76dea55c5327863".to_string()
                 )
             )
         );
@@ -138,6 +155,15 @@ fn manifest_root_matches_typescript_fixture() {
                 "59c18768cfd9635b0fcd9aa4364428176eaf81b198cf01dd15d5d7fbd64f8b58".to_string(),
                 Some(
                     "a9a6b38d6fc3ae3ec08ce09a5d9ffe1c1a3ee7b1019713abf691ce9635c9ef0c".to_string()
+                )
+            )
+        );
+        assert_eq!(
+            cid_to_pair(manifest.by_time.as_ref().unwrap()),
+            (
+                "3a06b344cc4f726e9000f00d6ddea99f28466fc08a33a84c01def4b682fbb2f0".to_string(),
+                Some(
+                    "4d6e07652d9fd5d148d826e2acb06195a416efff0df27fdd0c11a52cd7ee3a34".to_string()
                 )
             )
         );

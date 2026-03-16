@@ -12,6 +12,7 @@ const EVENT_ENVELOPE_VERSION: u8 = 1;
 const MANIFEST_BY_ID: &str = "by-id";
 const MANIFEST_BY_AUTHOR_TIME: &str = "by-author-time";
 const MANIFEST_BY_AUTHOR_KIND_TIME: &str = "by-author-kind-time";
+const MANIFEST_BY_TIME: &str = "by-time";
 const MANIFEST_REPLACEABLE: &str = "replaceable";
 const MANIFEST_PARAMETERIZED_REPLACEABLE: &str = "parameterized-replaceable";
 
@@ -31,6 +32,7 @@ pub struct NostrEventManifest {
     pub by_id: Option<Cid>,
     pub by_author_time: Option<Cid>,
     pub by_author_kind_time: Option<Cid>,
+    pub by_time: Option<Cid>,
     pub replaceable: Option<Cid>,
     pub parameterized_replaceable: Option<Cid>,
 }
@@ -142,6 +144,15 @@ impl<S: Store> NostrEventStore<S> {
                     .insert_link(
                         manifest.by_author_kind_time.as_ref(),
                         &author_kind_time_key(&normalized),
+                        &event_cid,
+                    )
+                    .await?,
+            ),
+            by_time: Some(
+                self.index
+                    .insert_link(
+                        manifest.by_time.as_ref(),
+                        &time_key(&normalized),
                         &event_cid,
                     )
                     .await?,
@@ -282,6 +293,18 @@ impl<S: Store> NostrEventStore<S> {
         Ok(Some(self.read_stored_event(&cid).await?))
     }
 
+    pub async fn list_recent(
+        &self,
+        root: Option<&Cid>,
+        options: ListEventsOptions,
+    ) -> Result<Vec<StoredNostrEvent>, NostrEventStoreError> {
+        let manifest = self.get_manifest(root).await?;
+        let Some(by_time) = manifest.by_time.as_ref() else {
+            return Ok(Vec::new());
+        };
+        self.collect_events(by_time, "", options.limit).await
+    }
+
     pub async fn get_parameterized_replaceable(
         &self,
         root: Option<&Cid>,
@@ -321,6 +344,7 @@ impl<S: Store> NostrEventStore<S> {
             by_id: find_manifest_cid(&entries, MANIFEST_BY_ID),
             by_author_time: find_manifest_cid(&entries, MANIFEST_BY_AUTHOR_TIME),
             by_author_kind_time: find_manifest_cid(&entries, MANIFEST_BY_AUTHOR_KIND_TIME),
+            by_time: find_manifest_cid(&entries, MANIFEST_BY_TIME),
             replaceable: find_manifest_cid(&entries, MANIFEST_REPLACEABLE),
             parameterized_replaceable: find_manifest_cid(
                 &entries,
@@ -336,7 +360,12 @@ impl<S: Store> NostrEventStore<S> {
         limit: Option<usize>,
     ) -> Result<Vec<StoredNostrEvent>, NostrEventStoreError> {
         let mut events = Vec::new();
-        for (_, cid) in self.index.prefix_links(root, prefix).await? {
+        let entries = if prefix.is_empty() {
+            self.index.links_entries(Some(root)).await?
+        } else {
+            self.index.prefix_links(root, prefix).await?
+        };
+        for (_, cid) in entries {
             events.push(self.read_stored_event(&cid).await?);
             if limit.is_some_and(|limit| events.len() >= limit) {
                 break;
@@ -395,6 +424,9 @@ impl<S: Store> NostrEventStore<S> {
             entries.push(
                 DirEntry::from_cid(MANIFEST_BY_AUTHOR_KIND_TIME, cid).with_link_type(LinkType::Dir),
             );
+        }
+        if let Some(cid) = manifest.by_time.as_ref() {
+            entries.push(DirEntry::from_cid(MANIFEST_BY_TIME, cid).with_link_type(LinkType::Dir));
         }
         if let Some(cid) = manifest.replaceable.as_ref() {
             entries
@@ -495,6 +527,10 @@ fn author_kind_time_key(event: &StoredNostrEvent) -> String {
         reverse_timestamp(event.created_at),
         event.id
     )
+}
+
+fn time_key(event: &StoredNostrEvent) -> String {
+    format!("{}:{}", reverse_timestamp(event.created_at), event.id)
 }
 
 fn replaceable_key(pubkey: &str, kind: u32) -> String {

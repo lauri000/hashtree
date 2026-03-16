@@ -44,7 +44,7 @@ impl HashtreeServer {
                 allowed_pubkeys: HashSet::new(), // No pubkeys allowed by default (use public_writes)
                 upstream_blossom: Vec::new(),
                 social_graph: None,
-                social_graph_ndb: None,
+                social_graph_store: None,
                 social_graph_root: None,
                 socialgraph_snapshot_public: false,
                 nostr_relay: None,
@@ -100,11 +100,11 @@ impl HashtreeServer {
     /// Configure social graph snapshot export (store handle + root)
     pub fn with_socialgraph_snapshot(
         mut self,
-        ndb: Arc<socialgraph::Ndb>,
+        store: Arc<dyn socialgraph::SocialGraphBackend>,
         root: [u8; 32],
         public: bool,
     ) -> Self {
-        self.state.social_graph_ndb = Some(ndb);
+        self.state.social_graph_store = Some(store);
         self.state.social_graph_root = Some(root);
         self.state.socialgraph_snapshot_public = public;
         self

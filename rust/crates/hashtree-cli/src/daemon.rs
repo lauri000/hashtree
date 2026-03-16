@@ -78,8 +78,12 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         }
     }
 
-    let ndb = socialgraph::init_ndb_with_mapsize(&opts.data_dir, Some(nostr_db_max_bytes))
-        .context("Failed to initialize social graph store")?;
+    let ndb = socialgraph::init_ndb_with_store(
+        &opts.data_dir,
+        store.store_arc(),
+        Some(nostr_db_max_bytes),
+    )
+    .context("Failed to initialize social graph store")?;
 
     let social_graph_root_bytes = if let Some(ref root_npub) = config.nostr.socialgraph_root {
         parse_npub(root_npub).unwrap_or(pk_bytes)
@@ -87,9 +91,10 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         pk_bytes
     };
     socialgraph::set_social_graph_root(&ndb, &social_graph_root_bytes);
+    let social_graph_store: Arc<dyn socialgraph::SocialGraphBackend> = ndb.clone();
 
     let social_graph = Arc::new(socialgraph::SocialGraphAccessControl::new(
-        Arc::clone(&ndb),
+        Arc::clone(&social_graph_store),
         config.nostr.max_write_distance,
         allowed_pubkeys.clone(),
     ));
@@ -100,7 +105,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     };
     let nostr_relay = Arc::new(
         NostrRelay::new(
-            Arc::clone(&ndb),
+            Arc::clone(&social_graph_store),
             opts.data_dir.clone(),
             Some(social_graph.clone()),
             nostr_relay_config,
@@ -121,7 +126,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         }
     };
 
-    let crawler_ndb = Arc::clone(&ndb);
+    let crawler_store: Arc<dyn socialgraph::SocialGraphBackend> = ndb.clone();
     let crawler_keys = keys.clone();
     let crawler_relays = config.nostr.relays.clone();
     let crawler_depth = config.nostr.crawl_depth;
@@ -130,7 +135,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(5)).await;
         let mut crawler = socialgraph::SocialGraphCrawler::new(
-            crawler_ndb,
+            crawler_store,
             crawler_keys,
             crawler_relays,
             crawler_depth,
@@ -145,8 +150,10 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     let webrtc_state: Option<Arc<WebRTCState>> = {
         let (webrtc_state, webrtc_handle) = if config.server.enable_webrtc {
             let webrtc_config = crate::p2p_common::default_webrtc_config(&config.nostr.relays);
-            let peer_classifier =
-                crate::p2p_common::build_peer_classifier(opts.data_dir.clone(), Arc::clone(&ndb));
+            let peer_classifier = crate::p2p_common::build_peer_classifier(
+                opts.data_dir.clone(),
+                Arc::clone(&social_graph_store),
+            );
             let cashu_payment_client = if config.cashu.default_mint.is_some()
                 || !config.cashu.accepted_mints.is_empty()
             {
@@ -221,7 +228,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         .with_upstream_blossom(upstream_blossom)
         .with_social_graph(social_graph)
         .with_socialgraph_snapshot(
-            Arc::clone(&ndb),
+            Arc::clone(&social_graph_store),
             social_graph_root_bytes,
             config.server.socialgraph_snapshot_public,
         )

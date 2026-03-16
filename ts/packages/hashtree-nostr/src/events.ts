@@ -9,6 +9,7 @@ const HEX_128 = /^[0-9a-f]{128}$/;
 const MANIFEST_BY_ID = 'by-id';
 const MANIFEST_BY_AUTHOR_TIME = 'by-author-time';
 const MANIFEST_BY_AUTHOR_KIND_TIME = 'by-author-kind-time';
+const MANIFEST_BY_TIME = 'by-time';
 const MANIFEST_REPLACEABLE = 'replaceable';
 const MANIFEST_PARAMETERIZED_REPLACEABLE = 'parameterized-replaceable';
 
@@ -26,6 +27,7 @@ export interface NostrEventManifest {
   byId: CID | null;
   byAuthorTime: CID | null;
   byAuthorKindTime: CID | null;
+  byTime: CID | null;
   replaceable: CID | null;
   parameterizedReplaceable: CID | null;
 }
@@ -173,6 +175,7 @@ export class NostrEventStore {
         this.authorKindTimeKey(normalized),
         eventCid
       ),
+      byTime: await this.index.insertLink(manifest.byTime, this.timeKey(normalized), eventCid),
       replaceable: manifest.replaceable,
       parameterizedReplaceable: manifest.parameterizedReplaceable,
     };
@@ -277,6 +280,15 @@ export class NostrEventStore {
     return eventCid ? this.readStoredEvent(eventCid) : null;
   }
 
+  async listRecent(root: CID | null, options: ListEventsOptions = {}): Promise<StoredNostrEvent[]> {
+    const manifest = await this.getManifest(root);
+    if (!manifest.byTime) {
+      return [];
+    }
+
+    return this.collectEvents(manifest.byTime, '', options.limit);
+  }
+
   async getParameterizedReplaceable(
     root: CID | null,
     pubkey: string,
@@ -310,6 +322,7 @@ export class NostrEventStore {
         byId: null,
         byAuthorTime: null,
         byAuthorKindTime: null,
+        byTime: null,
         replaceable: null,
         parameterizedReplaceable: null,
       };
@@ -322,6 +335,7 @@ export class NostrEventStore {
       byId: getCid(MANIFEST_BY_ID),
       byAuthorTime: getCid(MANIFEST_BY_AUTHOR_TIME),
       byAuthorKindTime: getCid(MANIFEST_BY_AUTHOR_KIND_TIME),
+      byTime: getCid(MANIFEST_BY_TIME),
       replaceable: getCid(MANIFEST_REPLACEABLE),
       parameterizedReplaceable: getCid(MANIFEST_PARAMETERIZED_REPLACEABLE),
     };
@@ -329,8 +343,11 @@ export class NostrEventStore {
 
   private async collectEvents(root: CID, prefix: string, limit?: number): Promise<StoredNostrEvent[]> {
     const events: StoredNostrEvent[] = [];
+    const entries = prefix.length === 0
+      ? this.index.linksEntries(root)
+      : this.index.prefixLinks(root, prefix);
 
-    for await (const [, eventCid] of this.index.prefixLinks(root, prefix)) {
+    for await (const [, eventCid] of entries) {
       events.push(await this.readStoredEvent(eventCid));
       if (limit !== undefined && events.length >= limit) {
         break;
@@ -380,6 +397,9 @@ export class NostrEventStore {
     if (manifest.byAuthorKindTime) {
       entries.push({ name: MANIFEST_BY_AUTHOR_KIND_TIME, cid: manifest.byAuthorKindTime, size: 0, type: LinkType.Dir });
     }
+    if (manifest.byTime) {
+      entries.push({ name: MANIFEST_BY_TIME, cid: manifest.byTime, size: 0, type: LinkType.Dir });
+    }
     if (manifest.replaceable) {
       entries.push({ name: MANIFEST_REPLACEABLE, cid: manifest.replaceable, size: 0, type: LinkType.Dir });
     }
@@ -406,6 +426,10 @@ export class NostrEventStore {
 
   private authorKindTimeKey(event: StoredNostrEvent): string {
     return `${event.pubkey}:${padKind(event.kind)}:${reverseTimestamp(event.created_at)}:${event.id}`;
+  }
+
+  private timeKey(event: StoredNostrEvent): string {
+    return `${reverseTimestamp(event.created_at)}:${event.id}`;
   }
 
   private replaceableKey(pubkey: string, kind: number): string {

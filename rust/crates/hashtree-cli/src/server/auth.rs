@@ -78,7 +78,7 @@ pub struct AppState {
     /// Social graph access control
     pub social_graph: Option<Arc<socialgraph::SocialGraphAccessControl>>,
     /// Social graph store handle for snapshot export
-    pub social_graph_ndb: Option<Arc<socialgraph::Ndb>>,
+    pub social_graph_store: Option<Arc<dyn socialgraph::SocialGraphBackend>>,
     /// Social graph root pubkey bytes for snapshot export
     pub social_graph_root: Option<[u8; 32]>,
     /// Allow public access to social graph snapshot endpoint

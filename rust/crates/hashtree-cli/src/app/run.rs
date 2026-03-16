@@ -113,8 +113,9 @@ pub(crate) async fn run() -> Result<()> {
             }
 
             // Initialize the local social graph store.
-            let ndb = hashtree_cli::socialgraph::init_ndb_with_mapsize(
+            let ndb = hashtree_cli::socialgraph::init_ndb_with_store(
                 &data_dir,
+                store.store_arc(),
                 Some(nostr_db_max_bytes),
             )
             .context("Failed to initialize social graph store")?;
@@ -127,10 +128,12 @@ pub(crate) async fn run() -> Result<()> {
                 pk_bytes
             };
             hashtree_cli::socialgraph::set_social_graph_root(&ndb, &social_graph_root_bytes);
+            let social_graph_store: Arc<dyn hashtree_cli::socialgraph::SocialGraphBackend> =
+                ndb.clone();
 
             // Build social graph access control
             let social_graph = Arc::new(hashtree_cli::socialgraph::SocialGraphAccessControl::new(
-                Arc::clone(&ndb),
+                Arc::clone(&social_graph_store),
                 config.nostr.max_write_distance,
                 allowed_pubkeys.clone(),
             ));
@@ -141,7 +144,7 @@ pub(crate) async fn run() -> Result<()> {
             };
             let nostr_relay = Arc::new(
                 hashtree_cli::nostr_relay::NostrRelay::new(
-                    Arc::clone(&ndb),
+                    Arc::clone(&social_graph_store),
                     data_dir.clone(),
                     Some(social_graph.clone()),
                     nostr_relay_config,
@@ -166,7 +169,7 @@ pub(crate) async fn run() -> Result<()> {
             };
 
             // Spawn social graph crawler with 5s startup delay
-            let crawler_ndb = Arc::clone(&ndb);
+            let crawler_store: Arc<dyn hashtree_cli::socialgraph::SocialGraphBackend> = ndb.clone();
             let crawler_keys = keys.clone();
             let crawler_relays = config.nostr.relays.clone();
             let crawler_depth = config.nostr.crawl_depth;
@@ -175,7 +178,7 @@ pub(crate) async fn run() -> Result<()> {
             let crawler_handle = tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 let mut crawler = hashtree_cli::socialgraph::SocialGraphCrawler::new(
-                    crawler_ndb,
+                    crawler_store,
                     crawler_keys,
                     crawler_relays,
                     crawler_depth,
@@ -210,7 +213,7 @@ pub(crate) async fn run() -> Result<()> {
                         hashtree_cli::p2p_common::default_webrtc_config(&config.nostr.relays);
                     let peer_classifier = hashtree_cli::p2p_common::build_peer_classifier(
                         data_dir.clone(),
-                        Arc::clone(&ndb),
+                        Arc::clone(&social_graph_store),
                     );
                     let cashu_payment_client = if config.cashu.default_mint.is_some()
                         || !config.cashu.accepted_mints.is_empty()
@@ -298,7 +301,7 @@ pub(crate) async fn run() -> Result<()> {
             // Add social graph to server
             server = server.with_social_graph(social_graph);
             server = server.with_socialgraph_snapshot(
-                Arc::clone(&ndb),
+                Arc::clone(&social_graph_store),
                 social_graph_root_bytes,
                 config.server.socialgraph_snapshot_public,
             );

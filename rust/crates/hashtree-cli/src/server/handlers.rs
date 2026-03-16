@@ -1463,7 +1463,7 @@ pub async fn socialgraph_snapshot(
             .into_response();
     }
 
-    let ndb = match &state.social_graph_ndb {
+    let ndb = match &state.social_graph_store {
         Some(ndb) => Arc::clone(ndb),
         None => {
             return (
@@ -1492,7 +1492,7 @@ pub async fn socialgraph_snapshot(
     };
 
     let chunks = match tokio::task::spawn_blocking(move || {
-        socialgraph::snapshot::build_snapshot_chunks(&ndb, &root, &options)
+        socialgraph::snapshot::build_snapshot_chunks(ndb.as_ref(), &root, &options)
     })
     .await
     {

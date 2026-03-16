@@ -4,18 +4,23 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
-use super::Ndb;
+use super::SocialGraphBackend;
 
 pub struct SocialGraphCrawler {
-    ndb: Arc<Ndb>,
-    spambox: Option<Arc<Ndb>>,
+    ndb: Arc<dyn SocialGraphBackend>,
+    spambox: Option<Arc<dyn SocialGraphBackend>>,
     keys: nostr::Keys,
     relays: Vec<String>,
     max_depth: u32,
 }
 
 impl SocialGraphCrawler {
-    pub fn new(ndb: Arc<Ndb>, keys: nostr::Keys, relays: Vec<String>, max_depth: u32) -> Self {
+    pub fn new(
+        ndb: Arc<dyn SocialGraphBackend>,
+        keys: nostr::Keys,
+        relays: Vec<String>,
+        max_depth: u32,
+    ) -> Self {
         Self {
             ndb,
             spambox: None,
@@ -25,7 +30,7 @@ impl SocialGraphCrawler {
         }
     }
 
-    pub fn with_spambox(mut self, spambox: Arc<Ndb>) -> Self {
+    pub fn with_spambox(mut self, spambox: Arc<dyn SocialGraphBackend>) -> Self {
         self.spambox = Some(spambox);
         self
     }
@@ -35,12 +40,12 @@ impl SocialGraphCrawler {
             return true;
         }
 
-        super::get_follow_distance(&self.ndb, pk_bytes)
+        super::get_follow_distance(self.ndb.as_ref(), pk_bytes)
             .map(|distance| distance <= self.max_depth)
             .unwrap_or(false)
     }
 
-    fn ingest_event_into(&self, ndb: &Ndb, event: &nostr::Event) {
+    fn ingest_event_into(&self, ndb: &(impl SocialGraphBackend + ?Sized), event: &nostr::Event) {
         if let Err(err) = super::ingest_parsed_event(ndb, event) {
             tracing::debug!("Failed to ingest crawler event: {}", err);
         }
@@ -69,7 +74,7 @@ impl SocialGraphCrawler {
                     continue;
                 }
 
-                let existing_follows = super::get_follows(&self.ndb, &pk_bytes);
+                let existing_follows = super::get_follows(self.ndb.as_ref(), &pk_bytes);
                 if !existing_follows.is_empty() {
                     fetched_contact_lists.insert(pk_bytes);
                     continue;
@@ -111,7 +116,7 @@ impl SocialGraphCrawler {
             {
                 Ok(Ok(events)) => {
                     for event in &events {
-                        self.ingest_event_into(&self.ndb, event);
+                        self.ingest_event_into(self.ndb.as_ref(), event);
                     }
                 }
                 Ok(Err(err)) => {
@@ -133,12 +138,12 @@ impl SocialGraphCrawler {
 
         let pk_bytes = event.pubkey.to_bytes();
         if self.is_within_social_graph(&pk_bytes) {
-            self.ingest_event_into(&self.ndb, event);
+            self.ingest_event_into(self.ndb.as_ref(), event);
             return;
         }
 
         if let Some(spambox) = &self.spambox {
-            self.ingest_event_into(spambox, event);
+            self.ingest_event_into(spambox.as_ref(), event);
         }
     }
 
@@ -207,7 +212,7 @@ impl SocialGraphCrawler {
                 {
                     Ok(Ok(events)) => {
                         for event in &events {
-                            self.ingest_event_into(&self.ndb, event);
+                            self.ingest_event_into(self.ndb.as_ref(), event);
                             if event.kind == nostr::Kind::ContactList {
                                 for tag in event.tags.iter() {
                                     if let Some(nostr::TagStandard::PublicKey {
@@ -289,9 +294,11 @@ mod tests {
         let root_keys = nostr::Keys::generate();
         let root_pk = root_keys.public_key().to_bytes();
         crate::socialgraph::set_social_graph_root(&ndb, &root_pk);
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = ndb.clone();
+        let spambox_backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = spambox.clone();
 
-        let crawler = SocialGraphCrawler::new(Arc::clone(&ndb), root_keys.clone(), vec![], 2)
-            .with_spambox(Arc::clone(&spambox));
+        let crawler = SocialGraphCrawler::new(backend, root_keys.clone(), vec![], 2)
+            .with_spambox(spambox_backend);
 
         let unknown_keys = nostr::Keys::generate();
         let follow_tag = Tag::public_key(PublicKey::from_slice(&root_pk).unwrap());

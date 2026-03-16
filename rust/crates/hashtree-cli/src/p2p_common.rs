@@ -13,7 +13,10 @@ pub fn default_webrtc_config(relays: &[String]) -> WebRTCConfig {
 }
 
 /// Build peer classifier used by daemon/runtime startup paths.
-pub fn build_peer_classifier(data_dir: PathBuf, ndb: Arc<socialgraph::Ndb>) -> PeerClassifier {
+pub fn build_peer_classifier(
+    data_dir: PathBuf,
+    store: Arc<dyn socialgraph::SocialGraphBackend>,
+) -> PeerClassifier {
     let contacts_file = data_dir.join("contacts.json");
     Arc::new(move |pubkey_hex: &str| {
         if contacts_file.exists() {
@@ -28,7 +31,7 @@ pub fn build_peer_classifier(data_dir: PathBuf, ndb: Arc<socialgraph::Ndb>) -> P
         if let Ok(pk_bytes) = hex::decode(pubkey_hex) {
             if pk_bytes.len() == 32 {
                 let pk: [u8; 32] = pk_bytes.try_into().unwrap();
-                if let Some(dist) = socialgraph::get_follow_distance(&ndb, &pk) {
+                if let Some(dist) = socialgraph::get_follow_distance(store.as_ref(), &pk) {
                     if dist <= 2 {
                         return PeerPool::Follows;
                     }

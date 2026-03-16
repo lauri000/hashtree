@@ -1,19 +1,23 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::{Ndb, SocialGraphStats};
+use super::{SocialGraphBackend, SocialGraphStats};
 
 #[derive(Clone)]
 pub struct SocialGraphAccessControl {
-    ndb: Arc<Ndb>,
+    store: Arc<dyn SocialGraphBackend>,
     max_write_distance: u32,
     allowed_pubkeys: HashSet<String>,
 }
 
 impl SocialGraphAccessControl {
-    pub fn new(ndb: Arc<Ndb>, max_write_distance: u32, allowed_pubkeys: HashSet<String>) -> Self {
+    pub fn new(
+        store: Arc<dyn SocialGraphBackend>,
+        max_write_distance: u32,
+        allowed_pubkeys: HashSet<String>,
+    ) -> Self {
         Self {
-            ndb,
+            store,
             max_write_distance,
             allowed_pubkeys,
         }
@@ -31,13 +35,13 @@ impl SocialGraphAccessControl {
             return false;
         };
 
-        super::get_follow_distance(&self.ndb, &pk)
+        super::get_follow_distance(self.store.as_ref(), &pk)
             .map(|distance| distance <= self.max_write_distance)
             .unwrap_or(false)
     }
 
     pub fn stats(&self) -> SocialGraphStats {
-        self.ndb.stats().unwrap_or_else(|_| SocialGraphStats {
+        self.store.stats().unwrap_or_else(|_| SocialGraphStats {
             enabled: true,
             max_depth: self.max_write_distance,
             ..Default::default()
