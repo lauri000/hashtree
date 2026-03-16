@@ -12,6 +12,7 @@
 //! Run with: cargo test --package hashtree-cli --test blossom_access -- --nocapture
 
 use nostr::{Keys, ToBech32};
+use reqwest::blocking::Client;
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -99,6 +100,11 @@ relays = []
 fn wait_for_server_ready(process: &mut Child, port: u16) {
     let deadline = Instant::now() + Duration::from_secs(10);
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let client = Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .expect("Failed to build HTTP client");
+    let health_url = format!("http://127.0.0.1:{port}/health");
 
     loop {
         if let Some(status) = process
@@ -109,7 +115,11 @@ fn wait_for_server_ready(process: &mut Child, port: u16) {
         }
 
         if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
-            return;
+            if let Ok(response) = client.get(&health_url).send() {
+                if response.status().is_success() {
+                    return;
+                }
+            }
         }
 
         if Instant::now() >= deadline {
@@ -177,6 +187,45 @@ fn create_blossom_auth(keys: &Keys) -> String {
     let encoded = base64::engine::general_purpose::STANDARD.encode(event_json);
 
     format!("Nostr {}", encoded)
+}
+
+fn wait_for_upstream_header(url: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("Failed to build HTTP client");
+
+    loop {
+        let response_details = match client.get(url).send() {
+            Ok(response) => {
+                let status = response.status();
+                let headers = response.headers().clone();
+                let body = response
+                    .text()
+                    .unwrap_or_else(|err| format!("<failed to read body: {err}>"));
+
+                let x_source = headers
+                    .get("x-source")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("<missing>");
+                let response_details = format!("status={status} x-source={x_source} body={body}");
+
+                if status.is_success() && x_source.starts_with("upstream:") {
+                    return response_details;
+                }
+
+                response_details
+            }
+            Err(err) => format!("request error: {err}"),
+        };
+
+        if Instant::now() >= deadline {
+            panic!("Timed out waiting for upstream X-Source header from {url}: {response_details}");
+        }
+
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 /// Test that uploads without auth are rejected when auth is enabled
@@ -584,27 +633,16 @@ fn test_x_source_header_upstream() {
         let downstream_server =
             TestServer::new_with_upstream(19010, false, Some(&upstream_server.base_url()));
 
-        // Wait a bit for downstream server to fully start
-        std::thread::sleep(Duration::from_millis(500));
-
-        // GET from downstream should fetch from upstream and include X-Source header
-        // Use -i (include headers) instead of -I (HEAD only) because HEAD doesn't do upstream fallback
-        let get_output = Command::new("curl")
-            .arg("-s")
-            .arg("-i") // Include headers in output
-            .arg(format!("{}/{}", downstream_server.base_url(), hash))
-            .output()
-            .expect("Failed to get blob from downstream");
-
-        let get_response = String::from_utf8_lossy(&get_output.stdout);
+        let get_response =
+            wait_for_upstream_header(&format!("{}/{}", downstream_server.base_url(), hash));
         println!("GET response from downstream: {}", get_response);
 
         // Should have X-Source header showing upstream source
         assert!(
-            get_response.to_lowercase().contains("x-source:"),
+            get_response.to_lowercase().contains("x-source="),
             "Response should include X-Source header for localhost requests"
         );
-        assert!(get_response.to_lowercase().contains("x-source: upstream:"),
+        assert!(get_response.to_lowercase().contains("x-source=upstream:"),
             "X-Source header should indicate 'upstream:' source for blobs fetched from upstream server");
     } else {
         // Skip test if upload failed (may happen in some CI environments)
