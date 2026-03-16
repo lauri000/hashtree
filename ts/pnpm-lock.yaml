@@ -456,6 +456,9 @@ importers:
       '@hashtree/core':
         specifier: workspace:*
         version: link:../hashtree
+      '@hashtree/index':
+        specifier: workspace:*
+        version: link:../hashtree-index
       '@msgpack/msgpack':
         specifier: ^3.1.2
         version: 3.1.2

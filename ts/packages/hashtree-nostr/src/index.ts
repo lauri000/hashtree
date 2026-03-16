@@ -74,3 +74,11 @@ export {
   type VisibilityCallbacks,
   type ParsedTreeVisibility,
 } from './resolver/index.js';
+
+// Event storage and indexing
+export {
+  NostrEventStore,
+  type StoredNostrEvent,
+  type NostrEventManifest,
+  type ListEventsOptions,
+} from './events.js';

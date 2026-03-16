@@ -1,0 +1,115 @@
+import { describe, expect, it } from 'vitest';
+import { MemoryStore, sha256, toHex } from '@hashtree/core';
+import { NostrEventStore, type StoredNostrEvent } from '../src/events.js';
+
+async function makeEvent(
+  overrides: Partial<Omit<StoredNostrEvent, 'id'>> & { id?: string } = {}
+): Promise<StoredNostrEvent> {
+  const pubkey = overrides.pubkey ?? '1'.repeat(64);
+  const createdAt = overrides.created_at ?? 1_700_000_000;
+  const kind = overrides.kind ?? 1;
+  const tags = overrides.tags ?? [];
+  const content = overrides.content ?? 'hello world';
+  const idPayload = JSON.stringify([0, pubkey, createdAt, kind, tags, content]);
+  const id = overrides.id ?? toHex(await sha256(new TextEncoder().encode(idPayload)));
+
+  return {
+    id,
+    pubkey,
+    created_at: createdAt,
+    kind,
+    tags,
+    content,
+    sig: overrides.sig ?? '2'.repeat(128),
+  };
+}
+
+describe('NostrEventStore', () => {
+  it('encodes deterministically and decodes full events', async () => {
+    const store = new NostrEventStore(new MemoryStore());
+    const event = await makeEvent({
+      kind: 7,
+      content: 'deterministic payload',
+      tags: [['e', 'a'.repeat(64)], ['p', 'b'.repeat(64)]],
+      sig: '3'.repeat(128),
+    });
+
+    const encodedA = store.encodeEvent(event);
+    const encodedB = store.encodeEvent({ ...event });
+
+    expect(encodedA).toEqual(encodedB);
+    expect(store.decodeEvent(encodedA)).toEqual(event);
+  });
+
+  it('stores events by id and exposes manifest roots', async () => {
+    const store = new NostrEventStore(new MemoryStore());
+    const event = await makeEvent();
+
+    const root = await store.add(null, event);
+    const manifest = await store.getManifest(root);
+
+    expect(manifest.byId).not.toBeNull();
+    expect(manifest.byAuthorTime).not.toBeNull();
+    expect(manifest.byAuthorKindTime).not.toBeNull();
+
+    await expect(store.getById(root, event.id)).resolves.toEqual(event);
+    await expect(store.getById(root, 'f'.repeat(64))).resolves.toBeNull();
+  });
+
+  it('lists author feeds newest first', async () => {
+    const store = new NostrEventStore(new MemoryStore());
+    const author = 'a'.repeat(64);
+    const otherAuthor = 'b'.repeat(64);
+    const older = await makeEvent({ pubkey: author, created_at: 10, content: 'older', kind: 1 });
+    const newest = await makeEvent({ pubkey: author, created_at: 30, content: 'newest', kind: 1 });
+    const middle = await makeEvent({ pubkey: author, created_at: 20, content: 'middle', kind: 7 });
+    const other = await makeEvent({ pubkey: otherAuthor, created_at: 40, content: 'other', kind: 1 });
+
+    let root = await store.add(null, older);
+    root = await store.add(root, newest);
+    root = await store.add(root, middle);
+    root = await store.add(root, other);
+
+    await expect(store.listByAuthor(root, author)).resolves.toEqual([newest, middle, older]);
+    await expect(store.listByAuthorAndKind(root, author, 1)).resolves.toEqual([newest, older]);
+  });
+
+  it('tracks the latest replaceable event for an author and kind', async () => {
+    const store = new NostrEventStore(new MemoryStore());
+    const author = 'c'.repeat(64);
+    const first = await makeEvent({ pubkey: author, kind: 0, created_at: 50, content: 'first profile' });
+    const latest = await makeEvent({ pubkey: author, kind: 0, created_at: 60, content: 'latest profile' });
+
+    let root = await store.add(null, first);
+    root = await store.add(root, latest);
+
+    await expect(store.getReplaceable(root, author, 0)).resolves.toEqual(latest);
+  });
+
+  it('tracks the latest parameterized replaceable event using d tags and event id tie-breaks', async () => {
+    const store = new NostrEventStore(new MemoryStore());
+    const author = 'd'.repeat(64);
+    const first = await makeEvent({
+      pubkey: author,
+      kind: 30_023,
+      created_at: 70,
+      content: 'draft alpha',
+      tags: [['d', 'article-1']],
+    });
+    const second = await makeEvent({
+      pubkey: author,
+      kind: 30_023,
+      created_at: 70,
+      content: 'draft omega',
+      tags: [['d', 'article-1']],
+    });
+    const expected = first.id > second.id ? first : second;
+
+    let root = await store.add(null, first);
+    root = await store.add(root, second);
+
+    await expect(
+      store.getParameterizedReplaceable(root, author, 30_023, 'article-1')
+    ).resolves.toEqual(expected);
+  });
+});
