@@ -104,10 +104,10 @@ pub struct NostrConfig {
     /// Max follow distance for write access (default: 3)
     #[serde(default = "default_max_write_distance")]
     pub max_write_distance: u32,
-    /// Max size for trusted nostrdb in GB (default: 10)
+    /// Max size for the trusted social graph store in GB (default: 10)
     #[serde(default = "default_nostr_db_max_size_gb")]
     pub db_max_size_gb: u64,
-    /// Max size for spambox nostrdb in GB (default: 1)
+    /// Max size for the social graph spambox in GB (default: 1)
     /// Set to 0 for memory-only spambox (no on-disk DB)
     #[serde(default = "default_nostr_spambox_max_size_gb")]
     pub spambox_max_size_gb: u64,
@@ -562,7 +562,7 @@ pub fn generate_keys() -> Result<Keys> {
     Ok(keys)
 }
 
-/// Get 32-byte pubkey bytes from Keys (for nostrdb)
+/// Get 32-byte pubkey bytes from Keys.
 pub fn pubkey_bytes(keys: &Keys) -> [u8; 32] {
     keys.public_key().to_bytes()
 }

@@ -97,7 +97,7 @@ impl HashtreeServer {
         self
     }
 
-    /// Configure social graph snapshot export (nostrdb handle + root)
+    /// Configure social graph snapshot export (store handle + root)
     pub fn with_socialgraph_snapshot(
         mut self,
         ndb: Arc<socialgraph::Ndb>,

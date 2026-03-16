@@ -6,7 +6,7 @@
 //! - Users muted by root are denied
 //! - Overmuted users (high muter/follower ratio) are denied
 //!
-//! Note: Full e2e tests with nostrdb social graph require a running relay
+//! Note: Full e2e tests with the social graph crawler require a running relay
 //! and populated social graph. These tests focus on the HTTP API behavior.
 //!
 //! Run with: cargo test --package hashtree-cli --test blossom_access -- --nocapture
@@ -453,7 +453,7 @@ fn test_list_blobs() {
     );
 }
 
-// Social graph tests removed - nostrdb dependency has been removed
+// Social graph tests removed from this file.
 // Access control now uses allowed_npubs config + public_writes flag
 
 /// Test that Cache-Control: immutable header is set for content-addressed routes

@@ -75,9 +75,9 @@ pub struct AppState {
     pub allowed_pubkeys: HashSet<String>,
     /// Upstream Blossom servers for cascade fetching
     pub upstream_blossom: Vec<String>,
-    /// Social graph access control (nostrdb-backed when feature enabled)
+    /// Social graph access control
     pub social_graph: Option<Arc<socialgraph::SocialGraphAccessControl>>,
-    /// Social graph nostrdb handle for snapshot export
+    /// Social graph store handle for snapshot export
     pub social_graph_ndb: Option<Arc<socialgraph::Ndb>>,
     /// Social graph root pubkey bytes for snapshot export
     pub social_graph_root: Option<[u8; 32]>,

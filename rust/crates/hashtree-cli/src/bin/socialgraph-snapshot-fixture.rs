@@ -26,8 +26,8 @@ fn main() -> anyhow::Result<()> {
 
     // Generate a minimal snapshot binary directly.
     //
-    // This keeps the TS test deterministic and avoids needing a working LMDB-backed
-    // nostrdb instance in the test runner environment.
+    // This keeps the TS test deterministic and avoids needing a live social graph
+    // store in the test runner environment.
     let used_order = vec![root_pk, bob_pk, carol_pk, dave_pk];
     let follow_lists = vec![
         SnapshotList {

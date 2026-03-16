@@ -41,7 +41,7 @@ pub struct TreeMeta {
     pub priority: u8,
 }
 
-/// Cached root info from Nostr events (replaces nostrdb caching)
+/// Cached root info from Nostr events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedRoot {
     /// Root hash (hex)
@@ -1910,7 +1910,7 @@ impl HashtreeStore {
         })
     }
 
-    // === Cached roots (replaces nostrdb event caching) ===
+    // === Cached roots ===
 
     /// Get cached root for a pubkey/tree_name pair
     pub fn get_cached_root(&self, pubkey_hex: &str, tree_name: &str) -> Result<Option<CachedRoot>> {

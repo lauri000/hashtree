@@ -20,14 +20,7 @@ pub use webrtc_stub as webrtc;
 #[cfg(feature = "p2p")]
 pub mod p2p_common;
 
-#[cfg(feature = "nostrdb")]
-pub mod nostrdb_integration;
-#[cfg(not(feature = "nostrdb"))]
-pub mod nostrdb_stub;
-#[cfg(feature = "nostrdb")]
-pub use nostrdb_integration as socialgraph;
-#[cfg(not(feature = "nostrdb"))]
-pub use nostrdb_stub as socialgraph;
+pub mod socialgraph;
 
 pub use config::Config;
 pub use fetch::{FetchConfig, Fetcher};

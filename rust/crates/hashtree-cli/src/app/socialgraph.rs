@@ -43,7 +43,7 @@ fn init_socialgraph(
     };
 
     let ndb = hashtree_cli::socialgraph::init_ndb_with_mapsize(data_dir, Some(nostr_db_max_bytes))
-        .context("Failed to initialize nostrdb")?;
+        .context("Failed to initialize social graph store")?;
     hashtree_cli::socialgraph::set_social_graph_root(&ndb, &social_graph_root_bytes);
 
     Ok((ndb, social_graph_root_bytes))

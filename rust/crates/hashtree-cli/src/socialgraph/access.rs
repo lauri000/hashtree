@@ -1,0 +1,65 @@
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use super::{Ndb, SocialGraphStats};
+
+#[derive(Clone)]
+pub struct SocialGraphAccessControl {
+    ndb: Arc<Ndb>,
+    max_write_distance: u32,
+    allowed_pubkeys: HashSet<String>,
+}
+
+impl SocialGraphAccessControl {
+    pub fn new(ndb: Arc<Ndb>, max_write_distance: u32, allowed_pubkeys: HashSet<String>) -> Self {
+        Self {
+            ndb,
+            max_write_distance,
+            allowed_pubkeys,
+        }
+    }
+
+    pub fn check_write_access(&self, pubkey_hex: &str) -> bool {
+        if self.allowed_pubkeys.contains(pubkey_hex) {
+            return true;
+        }
+
+        let Ok(pk_bytes) = hex::decode(pubkey_hex) else {
+            return false;
+        };
+        let Ok(pk) = <[u8; 32]>::try_from(pk_bytes.as_slice()) else {
+            return false;
+        };
+
+        super::get_follow_distance(&self.ndb, &pk)
+            .map(|distance| distance <= self.max_write_distance)
+            .unwrap_or(false)
+    }
+
+    pub fn stats(&self) -> SocialGraphStats {
+        self.ndb.stats().unwrap_or_else(|_| SocialGraphStats {
+            enabled: true,
+            max_depth: self.max_write_distance,
+            ..Default::default()
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_allowed_pubkey_passes() {
+        let _guard = crate::socialgraph::test_lock();
+        let tmp = TempDir::new().unwrap();
+        let ndb = crate::socialgraph::init_ndb(tmp.path()).unwrap();
+        let pk_hex = "aa".repeat(32);
+        let mut allowed = HashSet::new();
+        allowed.insert(pk_hex.clone());
+
+        let access = SocialGraphAccessControl::new(ndb, 1, allowed);
+        assert!(access.check_write_access(&pk_hex));
+    }
+}

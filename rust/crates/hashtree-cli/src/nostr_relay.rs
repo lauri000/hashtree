@@ -1,21 +1,17 @@
 use std::collections::HashMap;
-#[cfg(feature = "nostrdb")]
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
-#[cfg(feature = "nostrdb")]
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, Mutex};
 
 use nostr::{ClientMessage as NostrClientMessage, JsonUtil, RelayMessage as NostrRelayMessage};
-#[cfg(feature = "nostrdb")]
 use nostr::{Event, EventId, Filter as NostrFilter, SubscriptionId};
 
-#[cfg(feature = "nostrdb")]
 use crate::socialgraph;
 
 #[derive(Debug, Clone)]
@@ -41,11 +37,9 @@ impl Default for NostrRelayConfig {
     }
 }
 
-#[cfg(feature = "nostrdb")]
 mod imp {
     use super::*;
     use anyhow::Result;
-    use nostrdb_social::{Filter as NdbFilter, Transaction};
 
     use crate::socialgraph::{Ndb, SocialGraphAccessControl};
     use tracing::warn;
@@ -60,47 +54,11 @@ mod imp {
         }
 
         fn ingest(&self, event: &Event) -> Result<()> {
-            let event_json = event.as_json();
-            let wrapped = format!(r#"[\"EVENT\",\"p2p\",{}]"#, event_json);
-            self.ndb.process_event(&wrapped)?;
-            Ok(())
+            crate::socialgraph::ingest_parsed_event(&self.ndb, event)
         }
 
         fn query(&self, filter: &NostrFilter, limit: usize) -> Vec<Event> {
-            if limit == 0 {
-                return Vec::new();
-            }
-
-            let filter_json = match serde_json::to_string(filter) {
-                Ok(json) => json,
-                Err(_) => return Vec::new(),
-            };
-            let ndb_filter = match NdbFilter::from_json(&filter_json) {
-                Ok(f) => f,
-                Err(_) => return Vec::new(),
-            };
-            let txn = match Transaction::new(&self.ndb) {
-                Ok(txn) => txn,
-                Err(_) => return Vec::new(),
-            };
-
-            let max_results = limit.min(i32::MAX as usize) as i32;
-            let results = match self.ndb.query(&txn, &[ndb_filter], max_results) {
-                Ok(r) => r,
-                Err(_) => return Vec::new(),
-            };
-
-            let mut events = Vec::new();
-            for result in results {
-                let json = match result.note.json() {
-                    Ok(json) => json,
-                    Err(_) => continue,
-                };
-                if let Ok(event) = Event::from_json(json) {
-                    events.push(event);
-                }
-            }
-            events
+            crate::socialgraph::query_events(&self.ndb, filter, limit)
         }
     }
 
@@ -250,12 +208,12 @@ mod imp {
                     config.max_query_limit * 2,
                 )))
             } else {
-                let spam_dir = data_dir.join("nostrdb_spambox");
+                let spam_dir = data_dir.join("socialgraph_spambox");
                 match socialgraph::init_ndb_at_path(&spam_dir, Some(config.spambox_db_max_bytes)) {
                     Ok(ndb) => Some(SpamboxStore::Ndb(NostrStore::new(ndb))),
                     Err(err) => {
                         warn!(
-                            "Failed to open spambox nostrdb (falling back to memory): {}",
+                            "Failed to open social graph spambox (falling back to memory): {}",
                             err
                         );
                         Some(SpamboxStore::Memory(MemorySpambox::new(
@@ -597,98 +555,6 @@ mod imp {
     }
 }
 
-#[cfg(not(feature = "nostrdb"))]
-mod imp {
-    use super::*;
-    use crate::socialgraph::{Ndb, SocialGraphAccessControl};
-    use anyhow::Result;
-
-    pub struct NostrRelay {
-        clients: Mutex<HashMap<u64, mpsc::UnboundedSender<String>>>,
-        next_client_id: AtomicU64,
-    }
-
-    impl NostrRelay {
-        pub fn new(
-            _trusted_ndb: Arc<Ndb>,
-            _data_dir: PathBuf,
-            _social_graph: Option<Arc<SocialGraphAccessControl>>,
-            _config: NostrRelayConfig,
-        ) -> Result<Self> {
-            Ok(Self {
-                clients: Mutex::new(HashMap::new()),
-                next_client_id: AtomicU64::new(1),
-            })
-        }
-
-        pub fn next_client_id(&self) -> u64 {
-            self.next_client_id.fetch_add(1, Ordering::SeqCst)
-        }
-
-        pub async fn register_client(
-            &self,
-            client_id: u64,
-            sender: mpsc::UnboundedSender<String>,
-            _pubkey: Option<String>,
-        ) {
-            let mut clients = self.clients.lock().await;
-            clients.insert(client_id, sender);
-        }
-
-        pub async fn unregister_client(&self, client_id: u64) {
-            let mut clients = self.clients.lock().await;
-            clients.remove(&client_id);
-        }
-
-        pub async fn handle_client_message(&self, client_id: u64, msg: NostrClientMessage) {
-            for reply in nostr_responses_for(&msg) {
-                self.send_to_client(client_id, reply).await;
-            }
-        }
-
-        async fn send_to_client(&self, client_id: u64, msg: NostrRelayMessage) {
-            let sender = {
-                let clients = self.clients.lock().await;
-                clients.get(&client_id).cloned()
-            };
-            if let Some(tx) = sender {
-                let _ = tx.send(msg.as_json());
-            }
-        }
-    }
-
-    fn nostr_responses_for(msg: &NostrClientMessage) -> Vec<NostrRelayMessage> {
-        match msg {
-            NostrClientMessage::Event(event) => {
-                let ok = event.verify().is_ok();
-                let message = if ok { "" } else { "invalid: signature" };
-                vec![NostrRelayMessage::ok(event.id, ok, message)]
-            }
-            NostrClientMessage::Req {
-                subscription_id, ..
-            } => {
-                vec![NostrRelayMessage::eose(subscription_id.clone())]
-            }
-            NostrClientMessage::Count {
-                subscription_id, ..
-            } => {
-                vec![NostrRelayMessage::count(subscription_id.clone(), 0)]
-            }
-            NostrClientMessage::Close(_) => Vec::new(),
-            NostrClientMessage::Auth(event) => {
-                let ok = event.verify().is_ok();
-                let message = if ok { "" } else { "invalid auth" };
-                vec![NostrRelayMessage::ok(event.id, ok, message)]
-            }
-            NostrClientMessage::NegOpen { .. }
-            | NostrClientMessage::NegMsg { .. }
-            | NostrClientMessage::NegClose { .. } => {
-                vec![NostrRelayMessage::notice("negentropy not supported")]
-            }
-        }
-    }
-}
-
 pub use imp::NostrRelay;
 
 #[cfg(test)]
@@ -707,7 +573,6 @@ mod tests {
         Ok(RelayMessage::from_json(msg)?)
     }
 
-    #[cfg(feature = "nostrdb")]
     #[tokio::test]
     async fn relay_stores_and_serves_events() -> Result<()> {
         let tmp = TempDir::new()?;

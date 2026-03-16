@@ -112,12 +112,12 @@ pub(crate) async fn run() -> Result<()> {
                 }
             }
 
-            // Initialize social graph (nostrdb)
+            // Initialize the local social graph store.
             let ndb = hashtree_cli::socialgraph::init_ndb_with_mapsize(
                 &data_dir,
                 Some(nostr_db_max_bytes),
             )
-            .context("Failed to initialize nostrdb")?;
+            .context("Failed to initialize social graph store")?;
 
             // Set social graph root (configured npub or own key)
             let social_graph_root_bytes = if let Some(ref root_npub) = config.nostr.socialgraph_root
@@ -152,14 +152,14 @@ pub(crate) async fn run() -> Result<()> {
             let crawler_spambox = if spambox_db_max_bytes == 0 {
                 None
             } else {
-                let spam_dir = data_dir.join("nostrdb_spambox");
+                let spam_dir = data_dir.join("socialgraph_spambox");
                 match hashtree_cli::socialgraph::init_ndb_at_path(
                     &spam_dir,
                     Some(spambox_db_max_bytes),
                 ) {
                     Ok(db) => Some(db),
                     Err(err) => {
-                        tracing::warn!("Failed to open spambox nostrdb for crawler: {}", err);
+                        tracing::warn!("Failed to open social graph spambox for crawler: {}", err);
                         None
                     }
                 }

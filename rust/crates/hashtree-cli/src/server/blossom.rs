@@ -39,7 +39,7 @@ fn check_write_access(state: &AppState, pubkey: &str) -> Result<(), Response<Bod
         return Ok(());
     }
 
-    // Check social graph (nostrdb follow distance)
+    // Check social graph follow distance.
     if let Some(ref sg) = state.social_graph {
         if sg.check_write_access(pubkey) {
             tracing::debug!(

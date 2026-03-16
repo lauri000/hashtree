@@ -1,20 +1,12 @@
-#[cfg(feature = "nostrdb")]
 use std::fs;
-#[cfg(feature = "nostrdb")]
 use std::io::Write;
-#[cfg(feature = "nostrdb")]
 use std::process::{Command, Stdio};
-#[cfg(feature = "nostrdb")]
 use std::thread;
-#[cfg(feature = "nostrdb")]
 use std::time::Duration;
 
-#[cfg(feature = "nostrdb")]
 use nostr::{EventBuilder, JsonUtil, Kind, Tag, ToBech32};
-#[cfg(feature = "nostrdb")]
 use tempfile::TempDir;
 
-#[cfg(feature = "nostrdb")]
 #[test]
 fn socialgraph_filter_drops_unknown_and_overmuted() {
     let temp = TempDir::new().unwrap();
