@@ -206,6 +206,18 @@ export class NostrEventStore {
     return manifestRoot;
   }
 
+  async build(root: CID | null, events: StoredNostrEvent[]): Promise<CID | null> {
+    const normalized = await Promise.all(events.map(event => this.validateEvent(event)));
+    normalized.sort(compareEvents);
+
+    let current = root;
+    for (const event of normalized) {
+      current = await this.add(current, event);
+    }
+
+    return current;
+  }
+
   async getById(root: CID | null, eventId: string): Promise<StoredNostrEvent | null> {
     if (!HEX_64.test(eventId)) {
       throw new Error('Event id must be a lowercase 64-character hex string');

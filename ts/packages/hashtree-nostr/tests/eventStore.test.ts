@@ -112,4 +112,26 @@ describe('NostrEventStore', () => {
       store.getParameterizedReplaceable(root, author, 30_023, 'article-1')
     ).resolves.toEqual(expected);
   });
+
+  it('builds deterministic roots from unordered event sets', async () => {
+    const store = new NostrEventStore(new MemoryStore());
+    const author = 'a'.repeat(64);
+    const older = await makeEvent({ pubkey: author, created_at: 10, content: 'older', kind: 1 });
+    const newer = await makeEvent({ pubkey: author, created_at: 20, content: 'newer', kind: 1 });
+    const profile = await makeEvent({
+      pubkey: author,
+      created_at: 30,
+      content: 'profile',
+      kind: 0,
+      sig: '3'.repeat(128),
+    });
+
+    const built = await store.build(null, [profile, older, newer]);
+
+    let incremental = await store.add(null, older);
+    incremental = await store.add(incremental, newer);
+    incremental = await store.add(incremental, profile);
+
+    expect(built).toEqual(incremental);
+  });
 });

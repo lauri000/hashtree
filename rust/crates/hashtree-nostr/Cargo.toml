@@ -1,0 +1,18 @@
+[package]
+name = "hashtree-nostr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Hashtree-native Nostr event indexes"
+
+[dependencies]
+hashtree-core.workspace = true
+hashtree-index.workspace = true
+futures.workspace = true
+rmp-serde.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+thiserror.workspace = true
