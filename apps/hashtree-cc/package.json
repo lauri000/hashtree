@@ -4,6 +4,11 @@
   "license": "MIT",
   "private": true,
   "description": "hashtree.cc - decentralized file sharing & developer tools",
+  "repository": "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree",
+  "homepage": "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/apps/hashtree-cc",
+  "bugs": {
+    "url": "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree?tab=issues"
+  },
   "type": "module",
   "scripts": {
     "build:deps": "pnpm --dir ../../ts --filter @hashtree/core build && pnpm --dir ../../ts --filter @hashtree/dexie build && pnpm --dir ../../ts --filter @hashtree/nostr build && pnpm --dir ../../ts --filter @hashtree/worker build",

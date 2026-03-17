@@ -38,7 +38,10 @@
     "access": "public"
   },
   "repository": "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree",
-  "homepage": "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree",
+  "homepage": "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/ts/packages/hashtree",
+  "bugs": {
+    "url": "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree?tab=issues"
+  },
   "dependencies": {
     "@msgpack/msgpack": "^3.1.2",
     "@noble/hashes": "^2.0.1",

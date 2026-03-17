@@ -1,0 +1,14 @@
+# hashtree-index
+
+Content-addressed B-tree indexes for hashtree.
+
+The crate builds deterministic index trees on top of `hashtree-core`, so index
+roots can be stored, replicated, and compared the same way as file trees.
+
+Current uses include:
+
+- key/value lookup over immutable tree roots
+- link indexes that point directly at content-addressed blobs
+- cross-language index interoperability with the TypeScript implementation
+
+Part of [hashtree](https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree).
