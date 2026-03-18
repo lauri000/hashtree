@@ -10,6 +10,10 @@ async function mockTauriIPC(page: Page) {
   await page.addInitScript(() => {
     // Track invocations for assertions
     (window as any).__tauriInvocations = [] as Array<{ cmd: string; args: any }>;
+    const callbackStore = new Map<number, (...args: any[]) => void>();
+    const eventListeners = new Map<string, Array<{ eventId: number; handlerId: number }>>();
+    let nextCallbackId = 1;
+    let nextEventId = 1;
 
     // Mutable in-memory history store — record_history_visit adds entries,
     // get_recent_history / search_history read from it.
@@ -20,12 +24,42 @@ async function mockTauriIPC(page: Page) {
     }> = [];
     (window as any).__historyStore = historyStore;
 
+    function unregisterListener(event: string, eventId: number) {
+      const listeners = eventListeners.get(event);
+      if (!listeners) return;
+      eventListeners.set(event, listeners.filter((listener) => listener.eventId !== eventId));
+    }
+
+    (window as any).__emitTauriEvent = (event: string, payload: any) => {
+      const listeners = eventListeners.get(event) ?? [];
+      for (const listener of listeners) {
+        const callback = callbackStore.get(listener.handlerId);
+        callback?.({
+          event,
+          id: listener.eventId,
+          payload,
+        });
+      }
+    };
+
     const ipc = {
       invoke(cmd: string, args: any) {
         (window as any).__tauriInvocations.push({ cmd, args });
 
         // Return sensible defaults per command
         switch (cmd) {
+          case 'plugin:event|listen': {
+            const event = args?.event ?? '';
+            const handlerId = args?.handler;
+            const eventId = nextEventId++;
+            const listeners = eventListeners.get(event) ?? [];
+            listeners.push({ eventId, handlerId });
+            eventListeners.set(event, listeners);
+            return Promise.resolve(eventId);
+          }
+          case 'plugin:event|unlisten':
+            unregisterListener(args?.event ?? '', args?.eventId);
+            return Promise.resolve();
           case 'create_nip07_webview':
           case 'create_htree_webview':
           case 'close_webview':
@@ -85,9 +119,17 @@ async function mockTauriIPC(page: Page) {
         }
       },
       transformCallback(callback: Function, once: boolean) {
-        const id = Math.random();
-        (window as any)[`_${id}`] = callback;
+        const id = nextCallbackId++;
+        callbackStore.set(id, (...cbArgs: any[]) => {
+          callback(...cbArgs);
+          if (once) {
+            callbackStore.delete(id);
+          }
+        });
         return id;
+      },
+      unregisterCallback(id: number) {
+        callbackStore.delete(id);
       },
       convertFileSrc(path: string) {
         return path;
@@ -96,6 +138,14 @@ async function mockTauriIPC(page: Page) {
 
     Object.defineProperty(window, '__TAURI_INTERNALS__', {
       value: ipc,
+      writable: false,
+      configurable: true,
+    });
+
+    Object.defineProperty(window, '__TAURI_EVENT_PLUGIN_INTERNALS__', {
+      value: {
+        unregisterListener,
+      },
       writable: false,
       configurable: true,
     });
@@ -138,4 +188,10 @@ export async function getTauriInvocations(page: Page): Promise<Array<{ cmd: stri
 export async function getInvocationsFor(page: Page, cmd: string): Promise<Array<{ cmd: string; args: any }>> {
   const all = await getTauriInvocations(page);
   return all.filter((i) => i.cmd === cmd);
+}
+
+export async function emitTauriEvent(page: Page, event: string, payload: unknown): Promise<void> {
+  await page.evaluate(([name, data]) => {
+    (window as any).__emitTauriEvent?.(name, data);
+  }, [event, payload]);
 }

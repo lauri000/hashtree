@@ -60,7 +60,7 @@ fn resolve_htree_url_to_path(host: &str, raw_path: &str) -> String {
 
 /// Proxy a content request to the embedded daemon HTTP server
 fn proxy_to_daemon(
-    path: &str,
+    path_and_query: &str,
     range_header: Option<&str>,
 ) -> tauri::http::Response<Vec<u8>> {
     let port = match DAEMON_PORT.get() {
@@ -74,7 +74,11 @@ fn proxy_to_daemon(
         }
     };
 
-    let url = format!("http://127.0.0.1:{}/htree/{}", port, path.trim_start_matches('/'));
+    let url = format!(
+        "http://127.0.0.1:{}/htree/{}",
+        port,
+        path_and_query.trim_start_matches('/')
+    );
     debug!("Proxying htree:// request to daemon: {}", url);
 
     // Use blocking reqwest since protocol handlers are synchronous
@@ -128,7 +132,7 @@ fn proxy_to_daemon(
             builder.body(body).unwrap()
         }
         Err(e) => {
-            error!("Daemon proxy error for {}: {}", path, e);
+            error!("Daemon proxy error for {}: {}", path_and_query, e);
             tauri::http::Response::builder()
                 .status(502)
                 .header("content-type", "text/plain")
@@ -146,6 +150,7 @@ pub fn handle_htree_protocol<R: tauri::Runtime>(
     let uri = request.uri();
     let host = uri.host().unwrap_or("");
     let raw_path = uri.path();
+    let raw_query = uri.query();
 
     // Handle NIP-07 API requests (htree://nip07/...)
     if host == "nip07" {
@@ -155,26 +160,21 @@ pub fn handle_htree_protocol<R: tauri::Runtime>(
     // Determine path based on URL format
     let resolved_path = resolve_htree_url_to_path(host, raw_path);
 
-    // Strip query string
-    let path = resolved_path
-        .split('?')
-        .next()
-        .unwrap_or(&resolved_path)
-        .split("%3F")
-        .next()
-        .unwrap_or(&resolved_path)
-        .split("%3f")
-        .next()
-        .unwrap_or(&resolved_path);
+    let path = resolved_path.as_str();
+    let path_and_query = if let Some(query) = raw_query {
+        format!("{}?{}", path, query)
+    } else {
+        path.to_string()
+    };
 
-    let range_header = request
-        .headers()
-        .get("range")
-        .and_then(|v| v.to_str().ok());
+    let range_header = request.headers().get("range").and_then(|v| v.to_str().ok());
 
-    info!("htree:// protocol request: host={}, path={}", host, path);
+    info!(
+        "htree:// protocol request: host={}, path={}",
+        host, path_and_query
+    );
 
-    proxy_to_daemon(path, range_header)
+    proxy_to_daemon(&path_and_query, range_header)
 }
 
 /// Cache tree roots from the frontend for faster resolution.

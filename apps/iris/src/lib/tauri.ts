@@ -29,7 +29,7 @@ export async function createNip07Webview(
 
 export async function createHtreeWebview(
   label: string,
-  opts: { nhash?: string; npub?: string; treename?: string; path: string },
+  opts: { nhash?: string; npub?: string; treename?: string; path: string; query?: string },
   x: number,
   y: number,
   width: number,
@@ -41,6 +41,7 @@ export async function createHtreeWebview(
     npub: opts.npub ?? null,
     treename: opts.treename ?? null,
     path: opts.path,
+    query: opts.query ?? null,
     x,
     y,
     width,
@@ -153,6 +154,7 @@ export async function toggleAutostart(enabled: boolean): Promise<boolean> {
 export interface WebviewLocationEvent {
   label: string;
   url: string;
+  source?: string;
 }
 
 export function onChildWebviewLocation(

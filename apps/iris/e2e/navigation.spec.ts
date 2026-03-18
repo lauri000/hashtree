@@ -1,4 +1,4 @@
-import { test, expect, getInvocationsFor, setupPageErrorHandler, gotoHome } from './fixtures';
+import { test, expect, emitTauriEvent, getInvocationsFor, setupPageErrorHandler, gotoHome } from './fixtures';
 
 async function openHome(page: import('@playwright/test').Page) {
   setupPageErrorHandler(page);
@@ -109,5 +109,36 @@ test.describe('Navigation', () => {
     // Ensure blur completes before checking display URL
     await input.blur();
     await expect(input).toHaveValue('example.com');
+  });
+
+  test('refresh does not create synthetic webview history', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill('https://example.com');
+    await input.press('Enter');
+
+    await emitTauriEvent(page, 'child-webview-location', {
+      label: 'content',
+      url: 'https://example.com',
+      source: 'load',
+    });
+
+    await page.getByTitle('Refresh').click();
+    const reloadCalls = await getInvocationsFor(page, 'reload_webview');
+    expect(reloadCalls).toHaveLength(1);
+
+    await emitTauriEvent(page, 'child-webview-location', {
+      label: 'content',
+      url: 'https://example.com',
+      source: 'load',
+    });
+
+    await page.getByTitle('Back').click();
+
+    await expect(page.getByRole('heading', { name: 'Suggestions' })).toBeVisible();
+    const historyCalls = await getInvocationsFor(page, 'webview_history');
+    expect(historyCalls).toHaveLength(0);
   });
 });

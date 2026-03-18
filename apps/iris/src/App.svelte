@@ -82,12 +82,16 @@
 
   function handleLocationChange(event: WebviewLocationEvent) {
     if (event.label !== CHILD_LABEL) return;
+    const previousUrl = currentUrl;
     currentUrl = event.url;
     if (!isAddressFocused) {
       addressValue = urlToDisplay(event.url);
     }
     if (ignoreLocationEvents > 0) {
       ignoreLocationEvents--;
+      return;
+    }
+    if (event.url === previousUrl) {
       return;
     }
     if (isRecordableUrl(event.url)) {
@@ -101,19 +105,48 @@
     }
   }
 
-  /** Parse htree://npub/treename/path or htree://nhash/path */
-  function parseHtreeUrl(url: string): { nhash?: string; npub?: string; treename?: string; path: string } | null {
+  function decodeUrlComponent(value: string): string {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  }
+
+  function decodePath(rawPath: string): string {
+    const segments = rawPath
+      .split('/')
+      .filter(Boolean)
+      .map(decodeUrlComponent);
+    return segments.length > 0 ? `/${segments.join('/')}` : '/';
+  }
+
+  /** Parse htree://npub/treename/path, legacy htree://npub.treename/path, or htree://nhash/path */
+  function parseHtreeUrl(url: string): { nhash?: string; npub?: string; treename?: string; path: string; query?: string } | null {
     if (!url.startsWith('htree://')) return null;
     const rest = url.slice('htree://'.length);
-    const parts = rest.split('/');
-    const host = parts[0];
+    const separatorMatch = rest.match(/[/?]/);
+    const separatorIndex = separatorMatch?.index ?? -1;
+    const host = separatorIndex === -1 ? rest : rest.slice(0, separatorIndex);
+    const pathAndQuery = separatorIndex === -1 ? '' : rest.slice(separatorIndex);
+    const queryIndex = pathAndQuery.indexOf('?');
+    const rawPath = queryIndex === -1 ? pathAndQuery : pathAndQuery.slice(0, queryIndex);
+    const query = queryIndex === -1 ? undefined : pathAndQuery.slice(queryIndex + 1);
+
     if (host.startsWith('npub1')) {
-      const treename = parts[1] || '';
-      const path = '/' + parts.slice(2).join('/');
-      return { npub: host, treename, path };
+      const dotIndex = host.indexOf('.');
+      if (dotIndex !== -1) {
+        const npub = host.slice(0, dotIndex);
+        const treename = decodeUrlComponent(host.slice(dotIndex + 1));
+        return { npub, treename, path: decodePath(rawPath), query };
+      }
+
+      const pathSegments = rawPath.split('/').filter(Boolean);
+      const treename = pathSegments[0] ? decodeUrlComponent(pathSegments[0]) : '';
+      const path = pathSegments.length > 1 ? `/${pathSegments.slice(1).map(decodeUrlComponent).join('/')}` : '/';
+      return { npub: host, treename, path, query };
     } else if (host.startsWith('nhash1')) {
-      const path = '/' + parts.slice(1).join('/');
-      return { nhash: host, path };
+      return { nhash: host, path: decodePath(rawPath), query };
     }
     return null;
   }

@@ -7,6 +7,7 @@
 use crate::permissions::{PermissionStore, PermissionType};
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
+use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,26 +25,58 @@ pub fn htree_origin_from_nhash(nhash: &str) -> String {
     format!("htree://{}", nhash)
 }
 
-pub fn htree_origin_from_npub(npub: &str, treename: &str) -> String {
-    format!("htree://{}.{}", npub, treename)
+pub fn htree_origin_from_npub(npub: &str, _treename: &str) -> String {
+    format!("htree://{}", npub)
+}
+
+fn decode_url_component(value: &str) -> String {
+    percent_decode_str(value).decode_utf8_lossy().into_owned()
+}
+
+fn decode_path_segments(path: &str) -> Vec<String> {
+    path.trim_start_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(decode_url_component)
+        .collect()
+}
+
+fn htree_url_with_segments(host: &str, segments: &[String]) -> String {
+    let mut url = tauri::Url::parse(&format!("htree://{}/", host)).expect("valid htree base URL");
+    {
+        let mut path_segments = url
+            .path_segments_mut()
+            .expect("htree URL should support path segments");
+        path_segments.pop_if_empty();
+        for segment in segments {
+            path_segments.push(segment);
+        }
+    }
+
+    if segments.is_empty() {
+        url.as_str().trim_end_matches('/').to_string()
+    } else {
+        url.into()
+    }
 }
 
 fn htree_url_from_nhash(nhash: &str, path: &str) -> String {
-    if path.is_empty() || path == "/" {
-        format!("htree://{}", nhash)
-    } else {
-        let path = path.trim_start_matches('/');
-        format!("htree://{}/{}", nhash, path)
-    }
+    let segments = decode_path_segments(path);
+    htree_url_with_segments(nhash, &segments)
 }
 
 fn htree_url_from_npub(npub: &str, treename: &str, path: &str) -> String {
-    if path.is_empty() || path == "/" {
-        format!("htree://{}.{}", npub, treename)
-    } else {
-        let path = path.trim_start_matches('/');
-        format!("htree://{}.{}/{}", npub, treename, path)
+    let mut segments = vec![decode_url_component(treename)];
+    segments.extend(decode_path_segments(path));
+    htree_url_with_segments(npub, &segments)
+}
+
+fn append_query(mut url: String, query: Option<&str>) -> String {
+    if let Some(query) = query.map(str::trim).filter(|value| !value.is_empty()) {
+        url.push('?');
+        url.push_str(query);
     }
+    url
 }
 
 // ============================================
@@ -195,7 +228,8 @@ pub fn generate_main_window_nip07_script() -> String {
 
   console.log('[NIP-07] window.nostr initialized for main window');
 })();
-"#.to_string()
+"#
+    .to_string()
 }
 
 /// Generate NIP-07 init script for child webviews (uses htree://nip07/ protocol)
@@ -492,8 +526,8 @@ pub async fn create_nip07_webview<R: Runtime>(
 ) -> Result<(), String> {
     info!("[NIP-07] Creating webview {} for {}", label, url);
 
-    let server_url = crate::htree_protocol::get_htree_server_url()
-        .ok_or("htree server not running")?;
+    let server_url =
+        crate::htree_protocol::get_htree_server_url().ok_or("htree server not running")?;
 
     let parsed_url = tauri::Url::parse(&url).map_err(|e| format!("Invalid URL: {}", e))?;
     let origin = if let Some(host) = parsed_url.host_str() {
@@ -576,27 +610,31 @@ pub async fn create_htree_webview<R: Runtime>(
     npub: Option<String>,
     treename: Option<String>,
     path: String,
+    query: Option<String>,
     x: f64,
     y: f64,
     width: f64,
     height: f64,
 ) -> Result<(), String> {
     let (url, origin) = if let Some(nhash) = &nhash {
-        let url = htree_url_from_nhash(nhash, &path);
+        let url = append_query(htree_url_from_nhash(nhash, &path), query.as_deref());
         let origin = htree_origin_from_nhash(nhash);
         (url, origin)
     } else if let (Some(npub), Some(treename)) = (&npub, &treename) {
-        let url = htree_url_from_npub(npub, treename, &path);
+        let url = append_query(htree_url_from_npub(npub, treename, &path), query.as_deref());
         let origin = htree_origin_from_npub(npub, treename);
         (url, origin)
     } else {
         return Err("Either nhash or (npub + treename) must be provided".to_string());
     };
 
-    info!("[htree] Creating webview {} for {} (origin: {})", label, url, origin);
+    info!(
+        "[htree] Creating webview {} for {} (origin: {})",
+        label, url, origin
+    );
 
-    let server_url = crate::htree_protocol::get_htree_server_url()
-        .ok_or("htree server not running")?;
+    let server_url =
+        crate::htree_protocol::get_htree_server_url().ok_or("htree server not running")?;
 
     let nip07_state = app
         .try_state::<Arc<Nip07State>>()
@@ -637,15 +675,15 @@ pub async fn create_htree_webview<R: Runtime>(
         )
         .map_err(|e| format!("Failed to create webview: {}", e))?;
 
-    info!("[htree] Webview created with session token for origin {}", origin);
+    info!(
+        "[htree] Webview created with session token for origin {}",
+        origin
+    );
     Ok(())
 }
 
 #[tauri::command]
-pub fn close_webview<R: Runtime>(
-    app: AppHandle<R>,
-    label: String,
-) -> Result<(), String> {
+pub fn close_webview<R: Runtime>(app: AppHandle<R>, label: String) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&label) {
         webview
             .close()
@@ -714,10 +752,7 @@ pub fn webview_history<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn reload_webview<R: Runtime>(
-    app: AppHandle<R>,
-    label: String,
-) -> Result<(), String> {
+pub fn reload_webview<R: Runtime>(app: AppHandle<R>, label: String) -> Result<(), String> {
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| format!("Webview {} not found", label))?;
@@ -728,10 +763,7 @@ pub fn reload_webview<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn webview_current_url<R: Runtime>(
-    app: AppHandle<R>,
-    label: String,
-) -> Result<String, String> {
+pub fn webview_current_url<R: Runtime>(app: AppHandle<R>, label: String) -> Result<String, String> {
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| format!("Webview {} not found", label))?;
@@ -758,8 +790,8 @@ pub fn webview_event<R: Runtime>(
     payload: WebviewEventRequest,
     session_token: String,
 ) -> Result<(), String> {
-    let nip07_state = get_nip07_state()
-        .ok_or_else(|| "NIP-07 state not initialized".to_string())?;
+    let nip07_state =
+        get_nip07_state().ok_or_else(|| "NIP-07 state not initialized".to_string())?;
 
     if !nip07_state.validate_token(&payload.origin, &session_token)
         && !nip07_state.validate_any_token(&session_token)
@@ -769,8 +801,14 @@ pub fn webview_event<R: Runtime>(
 
     match payload.kind.as_str() {
         "location" => {
-            let url = payload.url.clone().ok_or_else(|| "Missing url".to_string())?;
-            let source = payload.source.clone().unwrap_or_else(|| "unknown".to_string());
+            let url = payload
+                .url
+                .clone()
+                .ok_or_else(|| "Missing url".to_string())?;
+            let source = payload
+                .source
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
             let _ = app.emit(
                 "child-webview-location",
                 serde_json::json!({
@@ -800,4 +838,33 @@ pub fn webview_event<R: Runtime>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn npub_origin_uses_host_only() {
+        assert_eq!(
+            htree_origin_from_npub("npub1example", "public"),
+            "htree://npub1example"
+        );
+    }
+
+    #[test]
+    fn npub_urls_use_path_segments() {
+        assert_eq!(
+            htree_url_from_npub("npub1example", "public", "/index.html"),
+            "htree://npub1example/public/index.html"
+        );
+    }
+
+    #[test]
+    fn npub_urls_encode_tree_name_as_single_segment() {
+        assert_eq!(
+            htree_url_from_npub("npub1example", "videos/My Clip", "/index.html"),
+            "htree://npub1example/videos%2FMy%20Clip/index.html"
+        );
+    }
 }
