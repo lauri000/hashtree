@@ -392,6 +392,9 @@ pub(crate) enum SocialGraphCommands {
         /// Ignore existing graph frontier state and refetch from the root
         #[arg(long, default_value_t = false)]
         full_graph_recrawl: bool,
+        /// Relay URLs to use for this warm run (repeatable, overrides config relays)
+        #[arg(long = "relay")]
+        relays: Vec<String>,
         /// Relay query author batch size
         #[arg(long, default_value_t = 64)]
         author_batch_size: usize,
@@ -458,5 +461,8 @@ pub(crate) enum SocialGraphCommands {
         /// Restrict indexing to these kinds (repeatable)
         #[arg(long = "kind")]
         kinds: Vec<u16>,
+        /// Relay URLs to use for this index run (repeatable, overrides config relays)
+        #[arg(long = "relay")]
+        relays: Vec<String>,
     },
 }

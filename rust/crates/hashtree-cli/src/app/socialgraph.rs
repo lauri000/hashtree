@@ -4,11 +4,12 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hashtree_cli::config::ensure_keys;
 use hashtree_cli::socialgraph::{SocialGraphBackend, SocialGraphCrawler};
-use tokio::sync::watch;
+
+const SOCIALGRAPH_SYNC_CURSOR_FILE: &str = "socialgraph-last-sync.txt";
 
 fn parse_pubkey_hex(hex_str: &str) -> Option<[u8; 32]> {
     if hex_str.len() != 64 {
@@ -52,6 +53,42 @@ fn init_socialgraph(
     hashtree_cli::socialgraph::set_social_graph_root(&ndb, &social_graph_root_bytes);
 
     Ok((ndb, social_graph_root_bytes))
+}
+
+fn sync_cursor_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(SOCIALGRAPH_SYNC_CURSOR_FILE)
+}
+
+fn load_sync_cursor(data_dir: &Path) -> Result<Option<u64>> {
+    let path = sync_cursor_path(data_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    trimmed
+        .parse::<u64>()
+        .map(Some)
+        .with_context(|| format!("Failed to parse {}", path.display()))
+}
+
+fn save_sync_cursor(data_dir: &Path, cursor: u64) -> Result<()> {
+    let path = sync_cursor_path(data_dir);
+    std::fs::write(&path, format!("{cursor}\n"))
+        .with_context(|| format!("Failed to write {}", path.display()))
+}
+
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 pub(crate) fn run_socialgraph_filter(
@@ -182,6 +219,7 @@ pub(crate) async fn run_socialgraph_warm(
     secs: u64,
     crawl_depth: Option<u32>,
     full_graph_recrawl: bool,
+    relays: Vec<String>,
     author_batch_size: usize,
 ) -> Result<()> {
     let config = Config::load()?;
@@ -190,50 +228,70 @@ pub(crate) async fn run_socialgraph_warm(
 
     let before = ndb.stats().context("read social graph stats before warm")?;
     let effective_crawl_depth = crawl_depth.unwrap_or(config.nostr.crawl_depth);
+    let effective_relays = if relays.is_empty() {
+        config.nostr.relays.clone()
+    } else {
+        relays
+    };
+    let stored_known_since = if full_graph_recrawl {
+        None
+    } else {
+        load_sync_cursor(&data_dir)?
+    };
+    let known_since = if full_graph_recrawl {
+        None
+    } else {
+        Some(stored_known_since.unwrap_or(0))
+    };
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let mut completed_cycles = 0usize;
+    let mut cycle_known_since = known_since;
 
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let crawler = SocialGraphCrawler::new(
-        ndb.clone() as Arc<dyn SocialGraphBackend>,
-        keys,
-        config.nostr.relays.clone(),
-        effective_crawl_depth,
-    )
-    .with_author_batch_size(author_batch_size)
-    .with_full_recrawl(full_graph_recrawl);
-    let mut handle = tokio::spawn(async move {
-        crawler.crawl(shutdown_rx).await;
-    });
+    while secs > 0 && (completed_cycles == 0 || Instant::now() < deadline) {
+        let cycle_started_at = unix_timestamp();
+        let crawler = SocialGraphCrawler::new(
+            ndb.clone() as Arc<dyn SocialGraphBackend>,
+            keys.clone(),
+            effective_relays.clone(),
+            effective_crawl_depth,
+        )
+        .with_author_batch_size(author_batch_size)
+        .with_full_recrawl(full_graph_recrawl)
+        .with_known_since(cycle_known_since);
 
-    tokio::time::sleep(Duration::from_secs(secs)).await;
-    let _ = shutdown_tx.send(true);
+        crawler.warm_once().await;
+        save_sync_cursor(&data_dir, cycle_started_at.saturating_sub(1))?;
+        completed_cycles = completed_cycles.saturating_add(1);
 
-    match tokio::time::timeout(Duration::from_secs(5), &mut handle).await {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => return Err(anyhow::anyhow!("social graph warm task failed: {err}")),
-        Err(_) => {
-            handle.abort();
-            match handle.await {
-                Err(err) if err.is_cancelled() => {}
-                Ok(()) => {}
-                Err(err) => {
-                    return Err(anyhow::anyhow!(
-                        "social graph warm task failed after abort: {err}"
-                    ));
-                }
-            }
+        if !full_graph_recrawl {
+            cycle_known_since = Some(cycle_started_at.saturating_sub(1));
         }
     }
 
     let after = ndb.stats().context("read social graph stats after warm")?;
     println!(
-        "Warmed social graph for {}s at depth {} ({})",
+        "Warmed social graph for {}s at depth {} ({}, {} complete cycle{})",
         secs,
         effective_crawl_depth,
         if full_graph_recrawl {
             "full recrawl"
         } else {
             "incremental"
-        }
+        },
+        completed_cycles,
+        if completed_cycles == 1 { "" } else { "s" }
+    );
+    println!(
+        "Known-author refresh: {}",
+        known_since
+            .map(|value| {
+                if value == 0 {
+                    "full fetch for known authors".to_string()
+                } else {
+                    format!("since {value}")
+                }
+            })
+            .unwrap_or_else(|| "full fetch for known authors".to_string())
     );
     println!(
         "Users: {} -> {} (delta {})",

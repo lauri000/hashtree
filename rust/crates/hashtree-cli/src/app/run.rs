@@ -1094,6 +1094,7 @@ pub(crate) async fn run() -> Result<()> {
                 secs,
                 crawl_depth,
                 full_graph_recrawl,
+                relays,
                 author_batch_size,
             } => {
                 run_socialgraph_warm(
@@ -1101,6 +1102,7 @@ pub(crate) async fn run() -> Result<()> {
                     secs,
                     crawl_depth,
                     full_graph_recrawl,
+                    relays,
                     author_batch_size,
                 )
                 .await?;
@@ -1136,6 +1138,7 @@ pub(crate) async fn run() -> Result<()> {
                 relay_page_size,
                 max_relay_pages,
                 kinds,
+                relays,
             } => {
                 let config = Config::load()?;
                 let effective_crawl_depth = crawl_depth.unwrap_or(config.nostr.crawl_depth);
@@ -1158,6 +1161,7 @@ pub(crate) async fn run() -> Result<()> {
                         relay_page_size,
                         max_relay_pages,
                         kinds: (!kinds.is_empty()).then_some(kinds),
+                        relays: (!relays.is_empty()).then_some(relays),
                     },
                 )
                 .await?;

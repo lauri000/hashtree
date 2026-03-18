@@ -2,13 +2,14 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use nostr::Timestamp;
 use tokio::sync::watch;
 
 use super::SocialGraphBackend;
 
 const DEFAULT_AUTHOR_BATCH_SIZE: usize = 500;
-const GRAPH_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
-const RELAY_SOURCE_TIMEOUT: Duration = Duration::from_secs(5);
+const GRAPH_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
+const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct SocialGraphCrawler {
     ndb: Arc<dyn SocialGraphBackend>,
@@ -18,6 +19,7 @@ pub struct SocialGraphCrawler {
     max_depth: u32,
     author_batch_size: usize,
     full_recrawl: bool,
+    known_since: Option<Timestamp>,
 }
 
 impl SocialGraphCrawler {
@@ -35,6 +37,7 @@ impl SocialGraphCrawler {
             max_depth,
             author_batch_size: DEFAULT_AUTHOR_BATCH_SIZE,
             full_recrawl: false,
+            known_since: None,
         }
     }
 
@@ -50,6 +53,11 @@ impl SocialGraphCrawler {
 
     pub fn with_full_recrawl(mut self, full_recrawl: bool) -> Self {
         self.full_recrawl = full_recrawl;
+        self
+    }
+
+    pub fn with_known_since(mut self, known_since: Option<u64>) -> Self {
+        self.known_since = known_since.map(Timestamp::from);
         self
     }
 
@@ -106,7 +114,10 @@ impl SocialGraphCrawler {
         missing
     }
 
-    fn graph_filter_for_pubkeys(pubkeys: &[[u8; 32]]) -> Option<nostr::Filter> {
+    fn graph_filter_for_pubkeys(
+        pubkeys: &[[u8; 32]],
+        since: Option<Timestamp>,
+    ) -> Option<nostr::Filter> {
         let authors = pubkeys
             .iter()
             .filter_map(|pk_bytes| nostr::PublicKey::from_slice(pk_bytes).ok())
@@ -115,42 +126,39 @@ impl SocialGraphCrawler {
             return None;
         }
 
-        Some(
-            nostr::Filter::new()
-                .authors(authors)
-                .kinds(vec![nostr::Kind::ContactList, nostr::Kind::MuteList]),
-        )
+        let mut filter = nostr::Filter::new()
+            .authors(authors)
+            .kinds(vec![nostr::Kind::ContactList, nostr::Kind::MuteList]);
+        if let Some(since) = since {
+            filter = filter.since(since);
+        }
+
+        Some(filter)
     }
 
     async fn fetch_graph_events_for_pubkeys(
         &self,
         client: &nostr_sdk::Client,
         pubkeys: &[[u8; 32]],
+        since: Option<Timestamp>,
     ) -> Vec<nostr::Event> {
-        let Some(filter) = Self::graph_filter_for_pubkeys(pubkeys) else {
+        let Some(filter) = Self::graph_filter_for_pubkeys(pubkeys, since) else {
             return Vec::new();
         };
 
-        let source = nostr_sdk::EventSource::relays(Some(RELAY_SOURCE_TIMEOUT));
-        match tokio::time::timeout(
-            GRAPH_FETCH_TIMEOUT,
-            client.get_events_of(vec![filter], source),
-        )
-        .await
+        match client
+            .get_events_of(
+                vec![filter],
+                nostr_sdk::EventSource::relays(Some(GRAPH_FETCH_TIMEOUT)),
+            )
+            .await
         {
-            Ok(Ok(events)) => events,
-            Ok(Err(err)) => {
+            Ok(events) => events,
+            Err(err) => {
                 tracing::debug!(
                     "Failed to fetch graph events for {} authors: {}",
                     pubkeys.len(),
                     err
-                );
-                Vec::new()
-            }
-            Err(_) => {
-                tracing::debug!(
-                    "Timeout fetching graph events for {} authors",
-                    pubkeys.len()
                 );
                 Vec::new()
             }
@@ -161,6 +169,7 @@ impl SocialGraphCrawler {
         &self,
         client: &nostr_sdk::Client,
         pubkeys: &[[u8; 32]],
+        since: Option<Timestamp>,
         shutdown_rx: &watch::Receiver<bool>,
     ) {
         for chunk in pubkeys.chunks(self.author_batch_size) {
@@ -168,31 +177,115 @@ impl SocialGraphCrawler {
                 break;
             }
 
-            let events = self.fetch_graph_events_for_pubkeys(client, chunk).await;
+            let events = self
+                .fetch_graph_events_for_pubkeys(client, chunk, since)
+                .await;
             for event in &events {
                 self.ingest_event_into(self.ndb.as_ref(), event);
             }
         }
     }
 
-    fn authors_to_fetch_at_distance(&self, distance: u32) -> Vec<[u8; 32]> {
+    fn authors_to_fetch_at_distance(&self, distance: u32) -> (Vec<[u8; 32]>, Vec<[u8; 32]>) {
         let Ok(users) = self.ndb.users_by_follow_distance(distance) else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         if self.full_recrawl {
-            return users;
+            return (users, Vec::new());
         }
 
-        users
-            .into_iter()
-            .filter(|pk_bytes| {
-                self.ndb
-                    .follow_list_created_at(pk_bytes)
-                    .ok()
-                    .flatten()
-                    .is_none()
-            })
-            .collect()
+        let mut new_authors = Vec::new();
+        let mut known_authors = Vec::new();
+        let refresh_known_authors = self.known_since.is_some();
+        for pk_bytes in users {
+            match self.ndb.follow_list_created_at(&pk_bytes).ok().flatten() {
+                Some(_) if refresh_known_authors => known_authors.push(pk_bytes),
+                Some(_) => {}
+                None => new_authors.push(pk_bytes),
+            }
+        }
+        (new_authors, known_authors)
+    }
+
+    async fn connect_client(&self) -> Option<nostr_sdk::Client> {
+        use nostr::nips::nip19::ToBech32;
+
+        let Ok(sdk_keys) =
+            nostr_sdk::Keys::parse(self.keys.secret_key().to_bech32().unwrap_or_default())
+        else {
+            return None;
+        };
+
+        let client = nostr_sdk::Client::new(&sdk_keys);
+        for relay in &self.relays {
+            if let Err(err) = client.add_relay(relay).await {
+                tracing::warn!("Failed to add relay {}: {}", relay, err);
+            }
+        }
+        client.connect_with_timeout(RELAY_CONNECT_TIMEOUT).await;
+        Some(client)
+    }
+
+    async fn sync_graph_once(
+        &self,
+        client: &nostr_sdk::Client,
+        shutdown_rx: &watch::Receiver<bool>,
+        fetched_contact_lists: &mut HashSet<[u8; 32]>,
+    ) {
+        for distance in 0..=self.max_depth {
+            if *shutdown_rx.borrow() {
+                break;
+            }
+
+            let (new_authors, known_authors) = self.authors_to_fetch_at_distance(distance);
+            if new_authors.is_empty() && known_authors.is_empty() {
+                continue;
+            }
+
+            tracing::debug!(
+                "Social graph sync distance={} new_authors={} known_authors={}",
+                distance,
+                new_authors.len(),
+                known_authors.len()
+            );
+
+            if !new_authors.is_empty() {
+                for pk_bytes in &new_authors {
+                    fetched_contact_lists.insert(*pk_bytes);
+                }
+                self.fetch_contact_lists_for_pubkeys(client, &new_authors, None, shutdown_rx)
+                    .await;
+            }
+
+            if !known_authors.is_empty() {
+                for pk_bytes in &known_authors {
+                    fetched_contact_lists.insert(*pk_bytes);
+                }
+                self.fetch_contact_lists_for_pubkeys(
+                    client,
+                    &known_authors,
+                    self.known_since,
+                    shutdown_rx,
+                )
+                .await;
+            }
+        }
+    }
+
+    pub async fn warm_once(&self) {
+        if self.relays.is_empty() {
+            tracing::warn!("Social graph crawler: no relays configured, skipping");
+            return;
+        }
+
+        let Some(client) = self.connect_client().await else {
+            return;
+        };
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let mut fetched_contact_lists: HashSet<[u8; 32]> = HashSet::new();
+        self.sync_graph_once(&client, &shutdown_rx, &mut fetched_contact_lists)
+            .await;
+        let _ = client.disconnect().await;
     }
 
     pub(crate) fn handle_incoming_event(&self, event: &nostr::Event) {
@@ -215,7 +308,6 @@ impl SocialGraphCrawler {
 
     #[allow(deprecated)]
     pub async fn crawl(&self, shutdown_rx: watch::Receiver<bool>) {
-        use nostr::nips::nip19::ToBech32;
         use nostr_sdk::prelude::RelayPoolNotification;
 
         if self.relays.is_empty() {
@@ -228,49 +320,13 @@ impl SocialGraphCrawler {
             return;
         }
 
-        let Ok(sdk_keys) =
-            nostr_sdk::Keys::parse(self.keys.secret_key().to_bech32().unwrap_or_default())
-        else {
+        let Some(client) = self.connect_client().await else {
             return;
         };
 
-        let client = nostr_sdk::Client::new(&sdk_keys);
-        for relay in &self.relays {
-            if let Err(err) = client.add_relay(relay).await {
-                tracing::warn!("Failed to add relay {}: {}", relay, err);
-            }
-        }
-        client.connect().await;
-
         let mut fetched_contact_lists: HashSet<[u8; 32]> = HashSet::new();
-
-        for distance in 0..self.max_depth {
-            if *shutdown_rx.borrow() {
-                break;
-            }
-
-            let authors = self.authors_to_fetch_at_distance(distance);
-            if authors.is_empty() {
-                continue;
-            }
-
-            for author_chunk in authors.chunks(self.author_batch_size) {
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-
-                for pk_bytes in author_chunk {
-                    fetched_contact_lists.insert(*pk_bytes);
-                }
-
-                let events = self
-                    .fetch_graph_events_for_pubkeys(&client, author_chunk)
-                    .await;
-                for event in &events {
-                    self.ingest_event_into(self.ndb.as_ref(), event);
-                }
-            }
-        }
+        self.sync_graph_once(&client, &shutdown_rx, &mut fetched_contact_lists)
+            .await;
 
         let filter = nostr::Filter::new()
             .kinds(vec![nostr::Kind::ContactList, nostr::Kind::MuteList])
@@ -292,7 +348,7 @@ impl SocialGraphCrawler {
                             self.handle_incoming_event(&event);
                             let missing = self.collect_missing_root_follows(&event, &mut fetched_contact_lists);
                             if !missing.is_empty() {
-                                self.fetch_contact_lists_for_pubkeys(&client, &missing, &shutdown_rx).await;
+                                self.fetch_contact_lists_for_pubkeys(&client, &missing, None, &shutdown_rx).await;
                             }
                         }
                         Ok(_) => {}
@@ -327,6 +383,7 @@ mod tests {
     struct RelayState {
         events: Vec<nostr::Event>,
         request_author_counts: Vec<usize>,
+        requested_authors: Vec<Vec<String>>,
     }
 
     struct TestRelay {
@@ -340,6 +397,7 @@ mod tests {
             let state = Arc::new(Mutex::new(RelayState {
                 events,
                 request_author_counts: Vec::new(),
+                requested_authors: Vec::new(),
             }));
             let (shutdown, _) = broadcast::channel(1);
 
@@ -396,6 +454,14 @@ mod tests {
                 .lock()
                 .expect("relay state lock")
                 .request_author_counts
+                .clone()
+        }
+
+        fn requested_authors(&self) -> Vec<Vec<String>> {
+            self.state
+                .lock()
+                .expect("relay state lock")
+                .requested_authors
                 .clone()
         }
     }
@@ -465,11 +531,18 @@ mod tests {
                         .filter_map(|filter| filter.authors.as_ref())
                         .map(|authors| authors.len())
                         .sum();
-                    state
-                        .lock()
-                        .expect("relay state lock")
-                        .request_author_counts
-                        .push(author_count);
+                    let mut requested_authors = filters
+                        .iter()
+                        .filter_map(|filter| filter.authors.as_ref())
+                        .flat_map(|authors| authors.iter().map(|author| author.to_hex()))
+                        .collect::<Vec<_>>();
+                    requested_authors.sort();
+                    requested_authors.dedup();
+                    {
+                        let mut guard = state.lock().expect("relay state lock");
+                        guard.request_author_counts.push(author_count);
+                        guard.requested_authors.push(requested_authors);
+                    }
 
                     for event in matching_events(&state, &filters) {
                         send_relay_message(
@@ -674,10 +747,14 @@ mod tests {
         handle.await.unwrap();
 
         let author_counts = relay.request_author_counts();
+        let requested_authors = relay.requested_authors();
         assert!(
-            !author_counts.contains(&1),
+            requested_authors
+                .iter()
+                .flatten()
+                .all(|author| author != &root_keys.public_key().to_hex()),
             "expected incremental crawl to skip root refetch, got {:?}",
-            author_counts
+            requested_authors
         );
         assert!(
             author_counts.iter().any(|count| *count >= 2),
@@ -731,11 +808,148 @@ mod tests {
         let _ = shutdown_tx.send(true);
         handle.await.unwrap();
 
-        let author_counts = relay.request_author_counts();
+        let requested_authors = relay.requested_authors();
         assert!(
-            author_counts.contains(&1),
+            requested_authors
+                .iter()
+                .flatten()
+                .any(|author| author == &root_keys.public_key().to_hex()),
             "expected full recrawl to refetch root, got {:?}",
-            author_counts
+            requested_authors
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_crawler_revisits_known_authors_with_since_cursor() {
+        let _guard = crate::socialgraph::test_lock();
+        let tmp = TempDir::new().unwrap();
+        let ndb = crate::socialgraph::init_ndb(tmp.path()).unwrap();
+
+        let root_keys = nostr::Keys::generate();
+        let root_pk = root_keys.public_key().to_bytes();
+        crate::socialgraph::set_social_graph_root(&ndb, &root_pk);
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = ndb.clone();
+
+        let alice_keys = nostr::Keys::generate();
+        let carol_keys = nostr::Keys::generate();
+        let dave_keys = nostr::Keys::generate();
+
+        let root_event = EventBuilder::new(
+            Kind::ContactList,
+            "",
+            vec![Tag::public_key(alice_keys.public_key())],
+        )
+        .custom_created_at(nostr::Timestamp::from(10))
+        .to_event(&root_keys)
+        .unwrap();
+        crate::socialgraph::ingest_parsed_event(&ndb, &root_event).unwrap();
+
+        let alice_old_event = EventBuilder::new(
+            Kind::ContactList,
+            "",
+            vec![Tag::public_key(carol_keys.public_key())],
+        )
+        .custom_created_at(nostr::Timestamp::from(11))
+        .to_event(&alice_keys)
+        .unwrap();
+        crate::socialgraph::ingest_parsed_event(&ndb, &alice_old_event).unwrap();
+
+        let alice_new_event = EventBuilder::new(
+            Kind::ContactList,
+            "",
+            vec![
+                Tag::public_key(carol_keys.public_key()),
+                Tag::public_key(dave_keys.public_key()),
+            ],
+        )
+        .custom_created_at(nostr::Timestamp::from(20))
+        .to_event(&alice_keys)
+        .unwrap();
+
+        let relay = TestRelay::new(vec![alice_new_event]);
+        let crawler = SocialGraphCrawler::new(backend, root_keys.clone(), vec![relay.url()], 2)
+            .with_author_batch_size(2)
+            .with_known_since(Some(15));
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = tokio::spawn(async move {
+            crawler.crawl(shutdown_rx).await;
+        });
+
+        let alice_pk = alice_keys.public_key().to_bytes();
+        let dave_pk = dave_keys.public_key().to_bytes();
+        wait_until(Duration::from_secs(5), || {
+            crate::socialgraph::get_follows(&ndb, &alice_pk).contains(&dave_pk)
+        })
+        .await;
+
+        let _ = shutdown_tx.send(true);
+        handle.await.unwrap();
+
+        let requested_authors = relay.requested_authors();
+        assert!(
+            crate::socialgraph::get_follows(&ndb, &alice_pk).contains(&dave_pk),
+            "expected incremental crawl to refresh known author follow list"
+        );
+        assert!(
+            requested_authors
+                .iter()
+                .flatten()
+                .any(|author| author == &alice_keys.public_key().to_hex()),
+            "expected crawler to refetch known author, got {:?}",
+            requested_authors
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_crawler_warm_once_completes_initial_sync_without_shutdown() {
+        let _guard = crate::socialgraph::test_lock();
+        let tmp = TempDir::new().unwrap();
+        let ndb = crate::socialgraph::init_ndb(tmp.path()).unwrap();
+
+        let root_keys = nostr::Keys::generate();
+        let root_pk = root_keys.public_key().to_bytes();
+        crate::socialgraph::set_social_graph_root(&ndb, &root_pk);
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = ndb.clone();
+
+        let alice_keys = nostr::Keys::generate();
+        let bob_keys = nostr::Keys::generate();
+
+        let root_event = EventBuilder::new(
+            Kind::ContactList,
+            "",
+            vec![Tag::public_key(alice_keys.public_key())],
+        )
+        .custom_created_at(nostr::Timestamp::from(10))
+        .to_event(&root_keys)
+        .unwrap();
+        let alice_event = EventBuilder::new(
+            Kind::ContactList,
+            "",
+            vec![Tag::public_key(bob_keys.public_key())],
+        )
+        .custom_created_at(nostr::Timestamp::from(11))
+        .to_event(&alice_keys)
+        .unwrap();
+
+        let relay = TestRelay::new(vec![root_event, alice_event]);
+        let crawler = SocialGraphCrawler::new(backend, root_keys.clone(), vec![relay.url()], 2)
+            .with_author_batch_size(2);
+
+        let started = std::time::Instant::now();
+        crawler.warm_once().await;
+
+        let alice_pk = alice_keys.public_key().to_bytes();
+        let bob_pk = bob_keys.public_key().to_bytes();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "warm_once should complete finite sync promptly"
+        );
+        assert!(
+            crate::socialgraph::get_follows(&ndb, &alice_pk).contains(&bob_pk),
+            "expected warm_once to ingest distance-1 follow list"
         );
     }
 }

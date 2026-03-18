@@ -247,6 +247,10 @@ fn test_cli_parses_socialgraph_index_command() {
         "1",
         "--kind",
         "6",
+        "--relay",
+        "wss://relay.example",
+        "--relay",
+        "wss://relay.two",
     ]);
 
     match cli.command {
@@ -267,6 +271,7 @@ fn test_cli_parses_socialgraph_index_command() {
                     relay_page_size,
                     max_relay_pages,
                     kinds,
+                    relays,
                 },
         } => {
             assert_eq!(warm_secs, 15);
@@ -283,6 +288,13 @@ fn test_cli_parses_socialgraph_index_command() {
             assert_eq!(relay_page_size, 2_000);
             assert_eq!(max_relay_pages, 6);
             assert_eq!(kinds, vec![1, 6]);
+            assert_eq!(
+                relays,
+                vec![
+                    "wss://relay.example".to_string(),
+                    "wss://relay.two".to_string()
+                ]
+            );
         }
         _ => panic!("expected socialgraph index command"),
     }
@@ -299,6 +311,8 @@ fn test_cli_parses_socialgraph_warm_command() {
         "--crawl-depth",
         "4",
         "--full-graph-recrawl",
+        "--relay",
+        "wss://relay.example",
         "--author-batch-size",
         "128",
     ]);
@@ -310,12 +324,14 @@ fn test_cli_parses_socialgraph_warm_command() {
                     secs,
                     crawl_depth,
                     full_graph_recrawl,
+                    relays,
                     author_batch_size,
                 },
         } => {
             assert_eq!(secs, 90);
             assert_eq!(crawl_depth, Some(4));
             assert!(full_graph_recrawl);
+            assert_eq!(relays, vec!["wss://relay.example".to_string()]);
             assert_eq!(author_batch_size, 128);
         }
         _ => panic!("expected socialgraph warm command"),

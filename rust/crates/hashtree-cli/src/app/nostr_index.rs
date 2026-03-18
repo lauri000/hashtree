@@ -25,6 +25,7 @@ pub(crate) struct SocialGraphIndexOptions {
     pub(crate) warm_graph_for: Duration,
     pub(crate) graph_crawl_depth: u32,
     pub(crate) full_graph_recrawl: bool,
+    pub(crate) relays: Option<Vec<String>>,
     pub(crate) max_authors: usize,
     pub(crate) max_follow_distance: Option<u32>,
     pub(crate) max_live_bytes: u64,
@@ -117,12 +118,17 @@ pub(crate) async fn run_socialgraph_index(
         keys.public_key().to_bytes()
     };
     socialgraph::set_social_graph_root(&ndb, &root_pk);
+    let relays = options
+        .relays
+        .clone()
+        .filter(|relays| !relays.is_empty())
+        .unwrap_or_else(|| config.nostr.relays.clone());
 
     if !options.warm_graph_for.is_zero() {
         warm_social_graph(
             ndb.clone(),
             keys.clone(),
-            config.nostr.relays.clone(),
+            relays.clone(),
             options.graph_crawl_depth,
             options.full_graph_recrawl,
             options.warm_graph_for,
@@ -136,7 +142,7 @@ pub(crate) async fn run_socialgraph_index(
     let bridge = NostrBridge::new(
         store.store_arc(),
         CrawlConfig {
-            relays: config.nostr.relays.clone(),
+            relays: relays.clone(),
             max_live_bytes: Some(options.max_live_bytes),
             max_authors: Some(options.max_authors),
             max_follow_distance: options.max_follow_distance,
@@ -158,7 +164,7 @@ pub(crate) async fn run_socialgraph_index(
     let report = bridge.crawl(&graph, existing_root.as_ref()).await?;
     let index_report = build_report(
         &NostrEventStore::new(store.store_arc()),
-        &config.nostr.relays,
+        &relays,
         &options,
         report,
     )
@@ -624,6 +630,7 @@ mod tests {
                 warm_graph_for: Duration::from_secs(1),
                 graph_crawl_depth: 1,
                 full_graph_recrawl: false,
+                relays: None,
                 max_authors: 8,
                 max_follow_distance: Some(1),
                 max_live_bytes: 8 * 1024 * 1024,
