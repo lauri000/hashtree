@@ -48,6 +48,7 @@ impl HashtreeServer {
                 social_graph_root: None,
                 socialgraph_snapshot_public: false,
                 nostr_relay: None,
+                tree_root_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             },
             addr,
             extra_routes: None,
@@ -150,9 +151,11 @@ impl HashtreeServer {
             )
             // /htree/nhash1...[/path] - content-addressed (immutable)
             .route("/htree/nhash1:nhash", get(handlers::htree_nhash))
+            .route("/htree/nhash1:nhash/", get(handlers::htree_nhash))
             .route("/htree/nhash1:nhash/*path", get(handlers::htree_nhash_path))
             // /htree/npub1.../tree[/path] - mutable (resolver-backed)
             .route("/htree/npub1:npub/:treename", get(handlers::htree_npub))
+            .route("/htree/npub1:npub/:treename/", get(handlers::htree_npub))
             .route(
                 "/htree/npub1:npub/:treename/*path",
                 get(handlers::htree_npub_path),

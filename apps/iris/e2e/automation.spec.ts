@@ -61,6 +61,45 @@ test.describe('Automation Bridge', () => {
     expect(state.historyIndex).toBe(0);
   });
 
+  test('child page-load and diagnostic events flow into automation state', async ({ tauriPage: page }) => {
+    await openHome(page);
+    await page.waitForFunction(() => (window as any).__automationState?.shellReady === true);
+
+    await emitTauriEvent(page, 'child-webview-page-load', {
+      label: 'content',
+      url: 'htree://self/video',
+      event: 'started',
+    });
+    await emitTauriEvent(page, 'child-webview-diagnostic', {
+      label: 'content',
+      url: 'htree://self/video',
+      source: 'load',
+      title: 'Iris Video',
+      bodyText: 'Search videos',
+      error: null,
+    });
+    await emitTauriEvent(page, 'child-webview-page-load', {
+      label: 'content',
+      url: 'htree://self/video',
+      event: 'finished',
+    });
+
+    await expect.poll(async () => {
+      const state = await getAutomationState(page);
+      return {
+        childPageLoadState: state.childPageLoadState,
+        childPageLoadUrl: state.childPageLoadUrl,
+        childDocumentTitle: state.childDocumentTitle,
+        childBodyText: state.childBodyText,
+      };
+    }).toEqual({
+      childPageLoadState: 'finished',
+      childPageLoadUrl: 'htree://self/video',
+      childDocumentTitle: 'Iris Video',
+      childBodyText: 'Search videos',
+    });
+  });
+
   test('home and reload commands reuse existing shell actions', async ({ tauriPage: page }) => {
     await openHome(page);
     await page.waitForFunction(() => (window as any).__automationState?.shellReady === true);

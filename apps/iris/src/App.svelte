@@ -11,13 +11,17 @@
     webviewHistory,
     reloadWebview,
     setWebviewBounds,
+    onChildWebviewDiagnostic,
     onChildWebviewLocation,
+    onChildWebviewPageLoad,
     recordHistoryVisit,
     searchHistory,
     getRecentHistory,
     deleteHistoryEntry,
     type AutomationCommandEvent,
+    type WebviewDiagnosticEvent,
     type WebviewLocationEvent,
+    type WebviewPageLoadEvent,
     type HistoryEntry,
   } from './lib/tauri';
   import { appsStore } from './stores/apps';
@@ -53,6 +57,11 @@
   let webviewNavDepth = $state(0);          // user navigations within current webview
   let webviewFwdAvail = $state(0);          // forward steps available within webview
   let ignoreLocationEvents = 0;             // skip location events we caused
+  let childPageLoadState = $state('idle');
+  let childPageLoadUrl = $state('');
+  let childDocumentTitle = $state('');
+  let childBodyText = $state('');
+  let childLastError = $state('');
 
   let canGoBack = $derived(
     (currentView === 'webview' && webviewNavDepth > 0) ||
@@ -62,6 +71,12 @@
   let canGoForward = $derived(
     (currentView === 'webview' && webviewFwdAvail > 0) ||
     historyIndex < historyStack.length - 1
+  );
+  let isChildLoading = $derived(
+    currentView === 'webview' &&
+    !!currentUrl &&
+    childPageLoadState !== 'finished' &&
+    !childLastError
   );
 
   // Track child webview existence at module level to survive HMR
@@ -80,6 +95,7 @@
     if (!trimmed) return '';
     if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
     if (trimmed.startsWith('htree://')) return trimmed;
+    if (trimmed === 'self' || trimmed.startsWith('self/')) return `htree://${trimmed}`;
     if (trimmed.startsWith('nhash1') || trimmed.startsWith('npub1')) return `htree://${trimmed}`;
     if (trimmed.includes('.') && !trimmed.includes(' ')) return `https://${trimmed}`;
     return `https://${trimmed}`;
@@ -126,8 +142,8 @@
     return segments.length > 0 ? `/${segments.join('/')}` : '/';
   }
 
-  /** Parse htree://npub/treename/path, legacy htree://npub.treename/path, or htree://nhash/path */
-  function parseHtreeUrl(url: string): { nhash?: string; npub?: string; treename?: string; path: string; query?: string } | null {
+  /** Parse htree://{self|npub}/treename/path, legacy htree://npub.treename/path, or htree://nhash/path */
+  function parseHtreeUrl(url: string): { host: string; nhash?: string; npub?: string; treename?: string; path: string; query?: string } | null {
     if (!url.startsWith('htree://')) return null;
     const rest = url.slice('htree://'.length);
     const separatorMatch = rest.match(/[/?]/);
@@ -143,15 +159,20 @@
       if (dotIndex !== -1) {
         const npub = host.slice(0, dotIndex);
         const treename = decodeUrlComponent(host.slice(dotIndex + 1));
-        return { npub, treename, path: decodePath(rawPath), query };
+        return { host, npub, treename, path: decodePath(rawPath), query };
       }
 
       const pathSegments = rawPath.split('/').filter(Boolean);
       const treename = pathSegments[0] ? decodeUrlComponent(pathSegments[0]) : '';
       const path = pathSegments.length > 1 ? `/${pathSegments.slice(1).map(decodeUrlComponent).join('/')}` : '/';
-      return { npub: host, treename, path, query };
+      return { host, npub: host, treename, path, query };
+    } else if (host === 'self') {
+      const pathSegments = rawPath.split('/').filter(Boolean);
+      const treename = pathSegments[0] ? decodeUrlComponent(pathSegments[0]) : '';
+      const path = pathSegments.length > 1 ? `/${pathSegments.slice(1).map(decodeUrlComponent).join('/')}` : '/';
+      return { host, treename, path, query };
     } else if (host.startsWith('nhash1')) {
-      return { nhash: host, path: decodePath(rawPath), query };
+      return { host, nhash: host, path: decodePath(rawPath), query };
     }
     return null;
   }
@@ -171,6 +192,14 @@
     };
   }
 
+  function resetChildDiagnostics(loadState: string = 'idle', loadUrl: string = '') {
+    childPageLoadState = loadState;
+    childPageLoadUrl = loadUrl;
+    childDocumentTitle = '';
+    childBodyText = '';
+    childLastError = '';
+  }
+
   async function destroyChildWebview() {
     // Always try to close, regardless of tracked state
     try {
@@ -179,6 +208,7 @@
       // Webview might not exist, that's fine
     }
     g.__irisChildReady = false;
+    resetChildDiagnostics();
     scheduleAutomationStateSync();
   }
 
@@ -198,6 +228,7 @@
 
     currentView = 'webview';
     currentUrl = url;
+    resetChildDiagnostics('started', url);
     await tick();
 
     const x = 0;
@@ -323,6 +354,19 @@
     addressInputEl?.blur();
   }
 
+  function handlePageLoadEvent(event: WebviewPageLoadEvent) {
+    if (event.label !== CHILD_LABEL) return;
+    childPageLoadState = event.event;
+    childPageLoadUrl = event.url;
+  }
+
+  function handleDiagnosticEvent(event: WebviewDiagnosticEvent) {
+    if (event.label !== CHILD_LABEL) return;
+    if (event.title) childDocumentTitle = event.title;
+    if (event.bodyText) childBodyText = event.bodyText;
+    if (event.error) childLastError = event.error;
+  }
+
   async function handleDeleteHistoryItem(event: MouseEvent, path: string) {
     event.stopPropagation();
     await deleteHistoryEntry(path);
@@ -350,6 +394,16 @@
     }
     // Delay to allow mousedown on dropdown items to fire first
     blurTimer = setTimeout(() => { blurTimer = null; closeDropdown(); }, 150);
+  }
+
+  function dismissDropdown() {
+    if (blurTimer) {
+      clearTimeout(blurTimer);
+      blurTimer = null;
+    }
+    isAddressFocused = false;
+    closeDropdown();
+    addressInputEl?.blur();
   }
 
   function scheduleWebviewBoundsUpdate() {
@@ -381,6 +435,11 @@
         canGoForward: canGoForward,
         showDropdown: showDropdown,
         childWebviewReady: !!g.__irisChildReady,
+        childPageLoadState: childPageLoadState,
+        childPageLoadUrl: childPageLoadUrl,
+        childDocumentTitle: childDocumentTitle,
+        childBodyText: childBodyText,
+        childLastError: childLastError,
         historyIndex: historyIndex,
         historyLength: historyStack.length,
       }).catch(() => {
@@ -430,9 +489,8 @@
       return;
     }
     if ((event.key !== 'Escape' && event.key !== 'Esc') || !showDropdown) return;
-    isAddressFocused = false;
-    closeDropdown();
-    addressInputEl?.blur();
+    event.preventDefault();
+    dismissDropdown();
   }
 
   async function goBack() {
@@ -488,6 +546,11 @@
     canGoBack;
     canGoForward;
     showDropdown;
+    childPageLoadState;
+    childPageLoadUrl;
+    childDocumentTitle;
+    childBodyText;
+    childLastError;
     historyIndex;
     historyStack.length;
     scheduleAutomationStateSync();
@@ -495,6 +558,8 @@
 
   onMount(async () => {
     const unlistenLocation = await onChildWebviewLocation(handleLocationChange);
+    const unlistenPageLoad = await onChildWebviewPageLoad(handlePageLoadEvent);
+    const unlistenDiagnostic = await onChildWebviewDiagnostic(handleDiagnosticEvent);
     const unlistenAutomation = await onAutomationCommand((command) => {
       handleAutomationCommand(command).catch((error) => {
         console.warn('[Iris] automation command failed:', error);
@@ -508,6 +573,8 @@
       window.removeEventListener('resize', scheduleWebviewBoundsUpdate);
       if (automationSyncRaf !== null) cancelAnimationFrame(automationSyncRaf);
       unlistenLocation();
+      unlistenPageLoad();
+      unlistenDiagnostic();
       unlistenAutomation();
     };
   });
@@ -556,9 +623,15 @@
             data-tauri-drag-region="false"
             class="shrink-0 text-text-3 hover:text-text-1"
             onclick={refresh}
-            title="Refresh"
+            title={childLastError || (isChildLoading ? 'Loading' : 'Refresh')}
           >
-            <span class="i-lucide-refresh-cw text-sm"></span>
+            {#if childLastError}
+              <span class="i-lucide-triangle-alert text-sm text-red-400"></span>
+            {:else if isChildLoading}
+              <span class="i-lucide-loader-circle text-sm animate-spin"></span>
+            {:else}
+              <span class="i-lucide-refresh-cw text-sm"></span>
+            {/if}
           </button>
         {/if}
         <span data-tauri-drag-region class="i-lucide-search text-sm text-muted shrink-0"></span>
@@ -578,9 +651,9 @@
             if (e.key === 'Enter') {
               handleAddressSubmit();
             } else if (e.key === 'Escape' || e.key === 'Esc') {
-              isAddressFocused = false;
-              closeDropdown();
-              addressInputEl?.blur();
+              e.preventDefault();
+              e.stopPropagation();
+              dismissDropdown();
             } else if (e.key === 'ArrowDown' && showDropdown && dropdownItems.length > 0) {
               e.preventDefault();
               selectedIndex = selectedIndex < 0 ? 0 : (selectedIndex + 1) % dropdownItems.length;

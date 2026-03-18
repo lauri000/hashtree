@@ -32,6 +32,7 @@ pub struct EmbeddedDaemonOptions {
 pub struct EmbeddedDaemonInfo {
     pub addr: String,
     pub port: u16,
+    pub npub: String,
     pub store: Arc<HashtreeStore>,
     #[allow(dead_code)]
     pub webrtc_state: Option<Arc<WebRTCState>>,
@@ -314,6 +315,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     Ok(EmbeddedDaemonInfo {
         addr: actual_addr,
         port: local_addr.port(),
+        npub,
         store,
         webrtc_state,
     })

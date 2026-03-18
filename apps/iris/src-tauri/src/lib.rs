@@ -39,6 +39,13 @@ const TRAY_HOME_MENU_ID: &str = "tray_home";
 const TRAY_SETTINGS_MENU_ID: &str = "tray_settings";
 const TRAY_QUIT_MENU_ID: &str = "tray_quit";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IrisPaths {
+    shell_data_dir: PathBuf,
+    htree_config_dir: PathBuf,
+    htree_data_dir: PathBuf,
+}
+
 pub fn ensure_rustls_provider() {
     RUSTLS_PROVIDER_INIT.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -61,6 +68,29 @@ fn daemon_bind_address() -> String {
     }
 
     "127.0.0.1:21417".to_string()
+}
+
+fn env_path(var: &str) -> Option<PathBuf> {
+    let value = std::env::var(var).ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(trimmed))
+}
+
+fn resolve_iris_paths(
+    shell_data_dir: PathBuf,
+    env_config_dir: Option<PathBuf>,
+    env_data_dir: Option<PathBuf>,
+    shared_config_dir: PathBuf,
+    shared_data_dir: PathBuf,
+) -> IrisPaths {
+    IrisPaths {
+        shell_data_dir,
+        htree_config_dir: env_config_dir.unwrap_or(shared_config_dir),
+        htree_data_dir: env_data_dir.unwrap_or(shared_data_dir),
+    }
 }
 
 /// Start the embedded htree daemon
@@ -562,22 +592,34 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let data_dir = match std::env::var("HTREE_DATA_DIR") {
-                Ok(dir) if !dir.trim().is_empty() => {
-                    let path = PathBuf::from(dir);
-                    info!("Using HTREE_DATA_DIR override: {:?}", path);
-                    path
-                }
-                _ => app
-                    .path()
+            let paths = resolve_iris_paths(
+                app.path()
                     .app_data_dir()
                     .expect("failed to get app data dir"),
-            };
-            std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
-            info!("App data directory: {:?}", data_dir);
+                env_path("HTREE_CONFIG_DIR"),
+                env_path("HTREE_DATA_DIR"),
+                hashtree_cli::config::get_hashtree_dir(),
+                PathBuf::from(
+                    hashtree_cli::Config::load()
+                        .unwrap_or_default()
+                        .storage
+                        .data_dir,
+                ),
+            );
 
-            std::env::set_var("HTREE_CONFIG_DIR", &data_dir);
-            std::env::set_var("HTREE_DATA_DIR", &data_dir);
+            std::fs::create_dir_all(&paths.shell_data_dir)
+                .expect("failed to create iris shell data dir");
+            std::fs::create_dir_all(&paths.htree_config_dir)
+                .expect("failed to create shared htree config dir");
+            std::fs::create_dir_all(&paths.htree_data_dir)
+                .expect("failed to create shared htree data dir");
+
+            info!("Iris shell data directory: {:?}", paths.shell_data_dir);
+            info!("Hashtree config directory: {:?}", paths.htree_config_dir);
+            info!("Hashtree data directory: {:?}", paths.htree_data_dir);
+
+            std::env::set_var("HTREE_CONFIG_DIR", &paths.htree_config_dir);
+            std::env::set_var("HTREE_DATA_DIR", &paths.htree_data_dir);
 
             // Initialize NIP-07 permission state
             let permission_store = Arc::new(permissions::PermissionStore::new(None));
@@ -587,7 +629,7 @@ pub fn run() {
 
             // Initialize history store
             let history_store = Arc::new(
-                history::HistoryStore::new(&data_dir)
+                history::HistoryStore::new(&paths.shell_data_dir)
                     .expect("failed to initialize history store"),
             );
             app.manage(history_store);
@@ -602,7 +644,7 @@ pub fn run() {
             app.manage(automation_state);
 
             // Start the embedded htree daemon
-            let daemon_data_dir = data_dir.clone();
+            let daemon_data_dir = paths.htree_data_dir.clone();
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 match start_daemon(daemon_data_dir).await {
@@ -658,8 +700,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_menu, tray_menu_spec, tray_status_text, TrayConnectionStatus, TrayMenuItemSpec,
+        build_menu, resolve_iris_paths, tray_menu_spec, tray_status_text, IrisPaths,
+        TrayConnectionStatus, TrayMenuItemSpec,
     };
+    use std::path::PathBuf;
 
     #[cfg_attr(target_os = "macos", ignore = "requires main thread for menu items")]
     #[test]
@@ -749,6 +793,46 @@ mod tests {
                     enabled: true,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn resolve_iris_paths_keeps_shell_state_separate_from_shared_hashtree_paths() {
+        let paths = resolve_iris_paths(
+            PathBuf::from("/tmp/iris"),
+            None,
+            None,
+            PathBuf::from("/home/test/.hashtree"),
+            PathBuf::from("/home/test/.hashtree/data"),
+        );
+
+        assert_eq!(
+            paths,
+            IrisPaths {
+                shell_data_dir: PathBuf::from("/tmp/iris"),
+                htree_config_dir: PathBuf::from("/home/test/.hashtree"),
+                htree_data_dir: PathBuf::from("/home/test/.hashtree/data"),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_iris_paths_respects_explicit_htree_overrides() {
+        let paths = resolve_iris_paths(
+            PathBuf::from("/tmp/iris"),
+            Some(PathBuf::from("/tmp/htree-config")),
+            Some(PathBuf::from("/tmp/htree-data")),
+            PathBuf::from("/home/test/.hashtree"),
+            PathBuf::from("/home/test/.hashtree/data"),
+        );
+
+        assert_eq!(
+            paths,
+            IrisPaths {
+                shell_data_dir: PathBuf::from("/tmp/iris"),
+                htree_config_dir: PathBuf::from("/tmp/htree-config"),
+                htree_data_dir: PathBuf::from("/tmp/htree-data"),
+            }
         );
     }
 }

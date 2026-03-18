@@ -93,6 +93,114 @@ async fn resolve_npub_root(
     resolver.resolve_wait(key).await
 }
 
+fn tree_root_cache_key(npub: &str, treename: &str, link_key: Option<[u8; 32]>) -> String {
+    match link_key {
+        Some(key) => format!("{}/{}?k={}", npub, treename, to_hex(&key)),
+        None => format!("{}/{}", npub, treename),
+    }
+}
+
+fn get_cached_tree_root(state: &AppState, cache_key: &str) -> Option<Cid> {
+    state
+        .tree_root_cache
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(cache_key).cloned())
+}
+
+fn put_cached_tree_root(state: &AppState, cache_key: String, cid: Cid) {
+    if let Ok(mut cache) = state.tree_root_cache.lock() {
+        cache.insert(cache_key, cid);
+    }
+}
+
+const DEFAULT_DIRECTORY_INDEXES: [&str; 2] = ["index.html", "index.htm"];
+
+enum DirectoryTarget {
+    File { cid: Cid, path: String },
+    DirectoryListing { cid: Cid },
+}
+
+async fn resolve_directory_index_path<S: Store>(
+    tree: &HashTree<S>,
+    root_cid: &Cid,
+    requested_path: Option<&str>,
+) -> Result<Option<String>, String> {
+    let base = requested_path
+        .map(|path| path.trim_matches('/'))
+        .filter(|path| !path.is_empty());
+
+    for candidate in DEFAULT_DIRECTORY_INDEXES {
+        let candidate_path = match base {
+            Some(base) => format!("{}/{}", base, candidate),
+            None => candidate.to_string(),
+        };
+        if tree
+            .resolve_path(root_cid, &candidate_path)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            return Ok(Some(candidate_path));
+        }
+    }
+
+    Ok(None)
+}
+
+async fn resolve_directory_target<S: Store>(
+    tree: &HashTree<S>,
+    root_cid: &Cid,
+    requested_path: Option<String>,
+) -> Result<Option<DirectoryTarget>, String> {
+    if let Some(path) = requested_path {
+        let entry = match tree
+            .resolve_path(root_cid, &path)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            Some(entry) => entry,
+            None => return Ok(None),
+        };
+
+        if tree.is_dir(&entry).await.map_err(|e| e.to_string())? {
+            if let Some(index_path) =
+                resolve_directory_index_path(tree, root_cid, Some(&path)).await?
+            {
+                let index_entry = tree
+                    .resolve_path(root_cid, &index_path)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| format!("Resolved default path missing: {}", index_path))?;
+                return Ok(Some(DirectoryTarget::File {
+                    cid: index_entry,
+                    path: index_path,
+                }));
+            }
+
+            return Ok(Some(DirectoryTarget::DirectoryListing { cid: entry }));
+        }
+
+        return Ok(Some(DirectoryTarget::File { cid: entry, path }));
+    }
+
+    if let Some(index_path) = resolve_directory_index_path(tree, root_cid, None).await? {
+        let index_entry = tree
+            .resolve_path(root_cid, &index_path)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Resolved default path missing: {}", index_path))?;
+        return Ok(Some(DirectoryTarget::File {
+            cid: index_entry,
+            path: index_path,
+        }));
+    }
+
+    Ok(Some(DirectoryTarget::DirectoryListing {
+        cid: root_cid.clone(),
+    }))
+}
+
 /// Try to fetch a blob from WebRTC peers and upstream Blossom servers, caching locally.
 /// Returns true if the blob was fetched and cached, false otherwise.
 async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool {
@@ -199,29 +307,36 @@ async fn htree_nhash_impl(
     let is_dir = tree.is_dir(&cid).await.unwrap_or(false);
 
     if is_dir {
-        if let Some(path) = effective_path.clone() {
-            let entry = match tree.resolve_path(&cid, &path).await {
-                Ok(Some(entry)) => entry,
-                Ok(None) => {
-                    return Response::builder()
-                        .status(StatusCode::NOT_FOUND)
-                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                        .body(Body::from("File not found"))
-                        .unwrap();
-                }
-                Err(e) => {
-                    return Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                        .body(Body::from(format!("Error: {}", e)))
-                        .unwrap();
-                }
-            };
-            return serve_cid_with_range(&state, &entry, headers, true, is_localhost, Some(&path))
+        match resolve_directory_target(&tree, &cid, effective_path.clone()).await {
+            Ok(Some(DirectoryTarget::File { cid: entry, path })) => {
+                return serve_cid_with_range(
+                    &state,
+                    &entry,
+                    headers,
+                    true,
+                    is_localhost,
+                    Some(&path),
+                )
                 .await;
+            }
+            Ok(Some(DirectoryTarget::DirectoryListing { cid: listing_cid })) => {
+                return list_directory_json(&state, &listing_cid, true, is_localhost).await;
+            }
+            Ok(None) => {
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from("File not found"))
+                    .unwrap();
+            }
+            Err(e) => {
+                return Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from(format!("Error: {}", e)))
+                    .unwrap();
+            }
         }
-
-        return list_directory_json(&state, &cid, true, is_localhost).await;
     }
 
     if let Some(path) = effective_path.clone() {
@@ -384,43 +499,50 @@ async fn htree_npub_impl(
     let is_localhost = connect_info.0.ip().is_loopback();
     let key = format!("{}/{}", npub, treename);
     let link_key = parse_hex_key(params.get("k"));
+    let cache_key = tree_root_cache_key(&npub, &treename, link_key);
 
-    let resolver = match NostrRootResolver::new(resolver_config()).await {
-        Ok(r) => r,
-        Err(e) => {
-            return Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .body(Body::from(format!("Failed to create resolver: {}", e)))
-                .unwrap();
-        }
-    };
+    let resolved = if let Some(cid) = get_cached_tree_root(&state, &cache_key) {
+        cid
+    } else {
+        let resolver = match NostrRootResolver::new(resolver_config()).await {
+            Ok(r) => r,
+            Err(e) => {
+                return Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from(format!("Failed to create resolver: {}", e)))
+                    .unwrap();
+            }
+        };
 
-    let resolved = match tokio::time::timeout(
-        HTTP_RESOLVER_TIMEOUT,
-        resolve_npub_root(&key, &resolver, link_key),
-    )
-    .await
-    {
-        Ok(Ok(cid)) => cid,
-        Ok(Err(e)) => {
-            let _ = resolver.stop().await;
-            return Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .body(Body::from(format!("Resolution failed: {}", e)))
-                .unwrap();
-        }
-        Err(_) => {
-            let _ = resolver.stop().await;
-            return Response::builder()
-                .status(StatusCode::GATEWAY_TIMEOUT)
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .body(Body::from("Resolution timeout"))
-                .unwrap();
-        }
+        let cid = match tokio::time::timeout(
+            HTTP_RESOLVER_TIMEOUT,
+            resolve_npub_root(&key, &resolver, link_key),
+        )
+        .await
+        {
+            Ok(Ok(cid)) => cid,
+            Ok(Err(e)) => {
+                let _ = resolver.stop().await;
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from(format!("Resolution failed: {}", e)))
+                    .unwrap();
+            }
+            Err(_) => {
+                let _ = resolver.stop().await;
+                return Response::builder()
+                    .status(StatusCode::GATEWAY_TIMEOUT)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from("Resolution timeout"))
+                    .unwrap();
+            }
+        };
+        let _ = resolver.stop().await;
+        put_cached_tree_root(&state, cache_key, cid.clone());
+        cid
     };
-    let _ = resolver.stop().await;
 
     let mut cid = resolved;
     if cid.key.is_none() {
@@ -448,29 +570,36 @@ async fn htree_npub_impl(
 
     let is_dir = tree.is_dir(&cid).await.unwrap_or(false);
     if is_dir {
-        if let Some(path) = effective_path.clone() {
-            let entry = match tree.resolve_path(&cid, &path).await {
-                Ok(Some(entry)) => entry,
-                Ok(None) => {
-                    return Response::builder()
-                        .status(StatusCode::NOT_FOUND)
-                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                        .body(Body::from("File not found"))
-                        .unwrap();
-                }
-                Err(e) => {
-                    return Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                        .body(Body::from(format!("Error: {}", e)))
-                        .unwrap();
-                }
-            };
-            return serve_cid_with_range(&state, &entry, headers, false, is_localhost, Some(&path))
+        match resolve_directory_target(&tree, &cid, effective_path.clone()).await {
+            Ok(Some(DirectoryTarget::File { cid: entry, path })) => {
+                return serve_cid_with_range(
+                    &state,
+                    &entry,
+                    headers,
+                    false,
+                    is_localhost,
+                    Some(&path),
+                )
                 .await;
+            }
+            Ok(Some(DirectoryTarget::DirectoryListing { cid: listing_cid })) => {
+                return list_directory_json(&state, &listing_cid, false, is_localhost).await;
+            }
+            Ok(None) => {
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from("File not found"))
+                    .unwrap();
+            }
+            Err(e) => {
+                return Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from(format!("Error: {}", e)))
+                    .unwrap();
+            }
         }
-
-        return list_directory_json(&state, &cid, false, is_localhost).await;
     }
 
     serve_cid_with_range(
@@ -1873,6 +2002,90 @@ mod tests {
 
         let resolved = resolve_thumbnail_path(&tree, &root_cid, "thumbnail").await;
         assert_eq!(resolved.as_deref(), Some("clip/thumbnail.png"));
+    }
+
+    #[tokio::test]
+    async fn resolve_directory_target_prefers_root_index() {
+        let store = Arc::new(MemoryStore::new());
+        let tree = HashTree::new(HashTreeConfig::new(store));
+
+        let (index_cid, _size) = tree.put(b"<html>ok</html>").await.unwrap();
+        let root_cid = tree
+            .put_directory(vec![
+                DirEntry::from_cid("index.html", &index_cid).with_link_type(LinkType::File),
+            ])
+            .await
+            .unwrap();
+
+        let target = resolve_directory_target(&tree, &root_cid, None)
+            .await
+            .expect("resolve")
+            .expect("target");
+
+        match target {
+            DirectoryTarget::File { cid, path } => {
+                assert_eq!(cid, index_cid);
+                assert_eq!(path, "index.html");
+            }
+            DirectoryTarget::DirectoryListing { .. } => panic!("expected file target"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_directory_target_prefers_subdir_index() {
+        let store = Arc::new(MemoryStore::new());
+        let tree = HashTree::new(HashTreeConfig::new(store));
+
+        let (index_cid, _size) = tree.put(b"<html>nested</html>").await.unwrap();
+        let subdir_cid = tree
+            .put_directory(vec![
+                DirEntry::from_cid("index.html", &index_cid).with_link_type(LinkType::File),
+            ])
+            .await
+            .unwrap();
+        let root_cid = tree
+            .put_directory(vec![
+                DirEntry::from_cid("video", &subdir_cid).with_link_type(LinkType::Dir),
+            ])
+            .await
+            .unwrap();
+
+        let target = resolve_directory_target(&tree, &root_cid, Some("video".to_string()))
+            .await
+            .expect("resolve")
+            .expect("target");
+
+        match target {
+            DirectoryTarget::File { cid, path } => {
+                assert_eq!(cid, index_cid);
+                assert_eq!(path, "video/index.html");
+            }
+            DirectoryTarget::DirectoryListing { .. } => panic!("expected file target"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_directory_target_lists_directory_without_index() {
+        let store = Arc::new(MemoryStore::new());
+        let tree = HashTree::new(HashTreeConfig::new(store));
+
+        let (file_cid, _size) = tree.put(b"asset").await.unwrap();
+        let root_cid = tree
+            .put_directory(vec![
+                DirEntry::from_cid("asset.txt", &file_cid).with_link_type(LinkType::File),
+            ])
+            .await
+            .unwrap();
+
+        let target = resolve_directory_target(&tree, &root_cid, None)
+            .await
+            .expect("resolve")
+            .expect("target");
+
+        match target {
+            DirectoryTarget::DirectoryListing { cid } => assert_eq!(cid, root_cid),
+            DirectoryTarget::File { .. } => panic!("expected directory listing"),
+        }
     }
 
     #[test]

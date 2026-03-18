@@ -17,6 +17,7 @@ use crate::nip07;
 
 /// Global daemon port - set when daemon starts
 static DAEMON_PORT: OnceCell<u16> = OnceCell::new();
+static SELF_NPUB: OnceCell<String> = OnceCell::new();
 
 pub fn set_daemon_port(port: u16) {
     let _ = DAEMON_PORT.set(port);
@@ -24,6 +25,14 @@ pub fn set_daemon_port(port: u16) {
 
 pub fn get_daemon_port() -> Option<u16> {
     DAEMON_PORT.get().copied()
+}
+
+pub fn set_self_npub(npub: String) {
+    let _ = SELF_NPUB.set(npub);
+}
+
+pub fn get_self_npub() -> Option<&'static str> {
+    SELF_NPUB.get().map(String::as_str)
 }
 
 /// Tauri command to get the htree server URL
@@ -34,27 +43,34 @@ pub fn get_htree_server_url() -> Option<String> {
 }
 
 /// Resolve htree:// URL to internal path for daemon proxy
-fn resolve_htree_url_to_path(host: &str, raw_path: &str) -> String {
+fn resolve_htree_url_to_path(
+    host: &str,
+    raw_path: &str,
+    self_npub: Option<&str>,
+) -> Result<String, String> {
     // Strip bare root "/" so we don't get a trailing slash
     let path_suffix = if raw_path == "/" { "" } else { raw_path };
     if host.starts_with("nhash1") {
-        format!("/{}{}", host, path_suffix)
+        Ok(format!("/{}{}", host, path_suffix))
+    } else if host == "self" {
+        let npub = self_npub.ok_or_else(|| "self identity is not available".to_string())?;
+        Ok(format!("/{}{}", npub, path_suffix))
     } else if host.starts_with("npub1") {
         // npub is always 63 chars (npub1 + 58 bech32 chars)
         if host.len() > 63 && host.chars().nth(63) == Some('.') {
             let npub = &host[..63];
             let treename = &host[64..];
-            format!("/{}/{}{}", npub, treename, path_suffix)
+            Ok(format!("/{}/{}{}", npub, treename, path_suffix))
         } else {
-            format!("/{}{}", host, path_suffix)
+            Ok(format!("/{}{}", host, path_suffix))
         }
     } else {
         // Legacy path-based format: strip /htree/ prefix
-        raw_path
+        Ok(raw_path
             .strip_prefix("/htree/")
             .or_else(|| raw_path.strip_prefix("/htree"))
             .unwrap_or(raw_path)
-            .to_string()
+            .to_string())
     }
 }
 
@@ -158,7 +174,16 @@ pub fn handle_htree_protocol<R: tauri::Runtime>(
     }
 
     // Determine path based on URL format
-    let resolved_path = resolve_htree_url_to_path(host, raw_path);
+    let resolved_path = match resolve_htree_url_to_path(host, raw_path, get_self_npub()) {
+        Ok(path) => path,
+        Err(error) => {
+            return tauri::http::Response::builder()
+                .status(503)
+                .header("content-type", "text/plain")
+                .body(error.into_bytes())
+                .unwrap();
+        }
+    };
 
     let path = resolved_path.as_str();
     let path_and_query = if let Some(query) = raw_query {
@@ -213,14 +238,14 @@ mod tests {
 
     #[test]
     fn test_resolve_htree_url_to_path_nhash_host() {
-        let path = resolve_htree_url_to_path("nhash1abc123xyz", "/index.html");
+        let path = resolve_htree_url_to_path("nhash1abc123xyz", "/index.html", None).unwrap();
         assert_eq!(path, "/nhash1abc123xyz/index.html");
     }
 
     #[test]
     fn test_resolve_htree_url_to_path_nhash_root() {
         // Root path "/" should not produce trailing slash
-        let path = resolve_htree_url_to_path("nhash1abc123xyz", "/");
+        let path = resolve_htree_url_to_path("nhash1abc123xyz", "/", None).unwrap();
         assert_eq!(path, "/nhash1abc123xyz");
     }
 
@@ -228,13 +253,27 @@ mod tests {
     fn test_resolve_htree_url_to_path_npub_host() {
         let npub = "npub1abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuv";
         let host = format!("{}.public", npub);
-        let path = resolve_htree_url_to_path(&host, "/index.html");
+        let path = resolve_htree_url_to_path(&host, "/index.html", None).unwrap();
         assert_eq!(path, format!("/{}/public/index.html", npub));
     }
 
     #[test]
     fn test_resolve_htree_url_to_path_legacy_format() {
-        let path = resolve_htree_url_to_path("", "/htree/nhash1abc123/index.html");
+        let path = resolve_htree_url_to_path("", "/htree/nhash1abc123/index.html", None).unwrap();
         assert_eq!(path, "nhash1abc123/index.html");
+    }
+
+    #[test]
+    fn test_resolve_htree_url_to_path_self_host() {
+        let path = resolve_htree_url_to_path("self", "/video/index.html", Some("npub1owner"))
+            .unwrap();
+        assert_eq!(path, "/npub1owner/video/index.html");
+    }
+
+    #[test]
+    fn test_resolve_htree_url_to_path_self_host_requires_identity() {
+        let err = resolve_htree_url_to_path("self", "/video/index.html", None)
+            .expect_err("self should require identity");
+        assert!(err.contains("self identity"));
     }
 }

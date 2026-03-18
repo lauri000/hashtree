@@ -21,6 +21,11 @@ async function mockTauriIPC(page: Page) {
       canGoForward: false,
       showDropdown: false,
       childWebviewReady: false,
+      childPageLoadState: 'idle',
+      childPageLoadUrl: '',
+      childDocumentTitle: '',
+      childBodyText: '',
+      childLastError: '',
       historyIndex: -1,
       historyLength: 0,
     };

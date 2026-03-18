@@ -31,6 +31,8 @@ xvfb-run -a pnpm run test:native:linux
 
 If you need multiple Iris instances on one host, set `IRIS_DAEMON_PORT` (or `IRIS_DAEMON_BIND`) so each app uses its own embedded htree daemon socket.
 
+By default, Iris shares the same hashtree identity and alias config as the CLI from `~/.hashtree` (or `HTREE_CONFIG_DIR` when set). That keeps `htree://self/...` and alias resolution consistent with `htree user`, `git-remote-htree`, and the CLI. Iris keeps only shell-local state such as browser history under its app data directory. `HTREE_DATA_DIR` can still override the daemon storage location for smoke tests or isolated runs.
+
 ## Automation
 
 Iris can expose a localhost automation API for agents and smoke tests.

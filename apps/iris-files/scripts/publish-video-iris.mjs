@@ -11,7 +11,7 @@ const manifestPath = path.join(repoRoot, 'rust', 'Cargo.toml');
 
 const result = spawnSync(
   'cargo',
-  ['run', '--manifest-path', manifestPath, '-p', 'hashtree-cli', '--bin', 'htree', '--', 'add', '.'],
+  ['run', '--manifest-path', manifestPath, '-p', 'hashtree-cli', '--bin', 'htree', '--', 'add', '.', '--publish', 'video'],
   {
     cwd: distDir,
     encoding: 'utf8',
@@ -31,10 +31,17 @@ if (result.status !== 0) {
 }
 
 const output = `${result.stdout}\n${result.stderr}`;
-const match = output.match(/nhash1[ac-hj-np-z02-9]+/i);
-if (!match) {
+const nhashMatch = output.match(/nhash1[ac-hj-np-z02-9]+/i);
+if (!nhashMatch) {
   console.error('Publish succeeded but no nhash was found in htree output');
   process.exit(1);
 }
+const publishedMatch = output.match(/published:\s+(npub1[ac-hj-np-z02-9]+\/video)/i);
+if (!publishedMatch) {
+  console.error('Publish succeeded but no published npub/video ref was found in htree output');
+  process.exit(1);
+}
 
-console.log(`Portable Iris video URL: htree://${match[0]}/index.html`);
+console.log(`Portable Iris video immutable URL: htree://${nhashMatch[0]}/index.html`);
+console.log('Portable Iris video mutable URL: htree://self/video');
+console.log(`Portable Iris video owner URL: htree://${publishedMatch[1]}`);

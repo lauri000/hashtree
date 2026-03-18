@@ -2,6 +2,7 @@ use crate::nostr_relay::NostrRelay;
 use crate::socialgraph;
 use crate::storage::HashtreeStore;
 use crate::webrtc::WebRTCState;
+use hashtree_core::Cid;
 use axum::{
     body::Body,
     extract::ws::Message,
@@ -12,7 +13,7 @@ use axum::{
 use std::collections::{HashMap, HashSet};
 use std::sync::{
     atomic::{AtomicU32, AtomicU64, Ordering},
-    Arc,
+    Arc, Mutex as StdMutex,
 };
 use tokio::sync::{mpsc, Mutex};
 
@@ -85,6 +86,8 @@ pub struct AppState {
     pub socialgraph_snapshot_public: bool,
     /// Nostr relay state for /ws and WebRTC Nostr messages
     pub nostr_relay: Option<Arc<NostrRelay>>,
+    /// In-process cache for resolved mutable tree roots, keyed by npub/tree(+key)
+    pub tree_root_cache: Arc<StdMutex<HashMap<String, Cid>>>,
 }
 
 #[derive(Clone)]

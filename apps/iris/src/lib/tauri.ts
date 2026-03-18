@@ -29,7 +29,7 @@ export async function createNip07Webview(
 
 export async function createHtreeWebview(
   label: string,
-  opts: { nhash?: string; npub?: string; treename?: string; path: string; query?: string },
+  opts: { host?: string; nhash?: string; npub?: string; treename?: string; path: string; query?: string },
   x: number,
   y: number,
   width: number,
@@ -37,6 +37,7 @@ export async function createHtreeWebview(
 ): Promise<void> {
   return invoke<void>('create_htree_webview', {
     label,
+    host: opts.host ?? null,
     nhash: opts.nhash ?? null,
     npub: opts.npub ?? null,
     treename: opts.treename ?? null,
@@ -148,6 +149,11 @@ export interface AutomationUiState {
   canGoForward: boolean;
   showDropdown: boolean;
   childWebviewReady: boolean;
+  childPageLoadState: string;
+  childPageLoadUrl: string;
+  childDocumentTitle: string;
+  childBodyText: string;
+  childLastError: string;
   historyIndex: number;
   historyLength: number;
 }
@@ -203,10 +209,42 @@ export interface WebviewLocationEvent {
   source?: string;
 }
 
+export interface WebviewPageLoadEvent {
+  label: string;
+  url: string;
+  event: string;
+}
+
+export interface WebviewDiagnosticEvent {
+  label: string;
+  url?: string | null;
+  source?: string | null;
+  title?: string | null;
+  readyState?: string | null;
+  bodyText?: string | null;
+  error?: string | null;
+}
+
 export function onChildWebviewLocation(
   callback: (event: WebviewLocationEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<WebviewLocationEvent>('child-webview-location', (event) => {
+    callback(event.payload);
+  });
+}
+
+export function onChildWebviewPageLoad(
+  callback: (event: WebviewPageLoadEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<WebviewPageLoadEvent>('child-webview-page-load', (event) => {
+    callback(event.payload);
+  });
+}
+
+export function onChildWebviewDiagnostic(
+  callback: (event: WebviewDiagnosticEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<WebviewDiagnosticEvent>('child-webview-diagnostic', (event) => {
     callback(event.payload);
   });
 }

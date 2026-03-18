@@ -25,8 +25,8 @@ pub fn htree_origin_from_nhash(nhash: &str) -> String {
     format!("htree://{}", nhash)
 }
 
-pub fn htree_origin_from_npub(npub: &str, _treename: &str) -> String {
-    format!("htree://{}", npub)
+pub fn htree_origin_from_host(host: &str) -> String {
+    format!("htree://{}", host)
 }
 
 fn decode_url_component(value: &str) -> String {
@@ -65,10 +65,13 @@ fn htree_url_from_nhash(nhash: &str, path: &str) -> String {
     htree_url_with_segments(nhash, &segments)
 }
 
-fn htree_url_from_npub(npub: &str, treename: &str, path: &str) -> String {
+fn htree_url_from_tree_host(host: &str, treename: &str, path: &str) -> String {
     let mut segments = vec![decode_url_component(treename)];
-    segments.extend(decode_path_segments(path));
-    htree_url_with_segments(npub, &segments)
+    let path_segments = decode_path_segments(path);
+    let is_tree_root = path_segments.is_empty();
+    segments.extend(path_segments);
+    let url = htree_url_with_segments(host, &segments);
+    if is_tree_root { format!("{}/", url) } else { url }
 }
 
 fn append_query(mut url: String, query: Option<&str>) -> String {
@@ -77,6 +80,24 @@ fn append_query(mut url: String, query: Option<&str>) -> String {
         url.push_str(query);
     }
     url
+}
+
+fn resolve_tree_request_host<'a>(
+    request_host: &'a str,
+    self_npub: Option<&'a str>,
+) -> Result<&'a str, String> {
+    if request_host == "self" {
+        self_npub.ok_or_else(|| "self identity is not available".to_string())
+    } else {
+        Ok(request_host)
+    }
+}
+
+fn webview_url_for_parsed_url(url: &tauri::Url) -> WebviewUrl {
+    match url.scheme() {
+        "http" | "https" => WebviewUrl::External(url.clone()),
+        _ => WebviewUrl::CustomProtocol(url.clone()),
+    }
 }
 
 // ============================================
@@ -315,6 +336,29 @@ pub fn generate_nip07_script(server_url: &str, session_token: &str, label: &str)
     }});
   }}
 
+  function getBodyTextPreview() {{
+    try {{
+      const text = document.body?.innerText || '';
+      return text.replace(/\s+/g, ' ').trim().slice(0, 240);
+    }} catch (_error) {{
+      return '';
+    }}
+  }}
+
+  function notifyDiagnostic(phase, errorMessage) {{
+    postWebviewEvent({{
+      kind: 'diagnostic',
+      label: WEBVIEW_LABEL,
+      origin: getOrigin(),
+      url: window.location.href,
+      source: phase,
+      title: document.title || '',
+      readyState: document.readyState || '',
+      bodyText: getBodyTextPreview(),
+      error: errorMessage || null
+    }});
+  }}
+
   const originalPushState = history.pushState;
   history.pushState = function(state, title, url) {{
     const result = originalPushState.apply(this, arguments);
@@ -331,9 +375,35 @@ pub fn generate_nip07_script(server_url: &str, session_token: &str, label: &str)
 
   window.addEventListener('popstate', () => notifyLocation('popstate'));
   window.addEventListener('hashchange', () => notifyLocation('hashchange'));
-  window.addEventListener('DOMContentLoaded', () => notifyLocation('domcontentloaded'));
-  window.addEventListener('load', () => notifyLocation('load'));
-  queueMicrotask(() => notifyLocation('init'));
+  window.addEventListener('DOMContentLoaded', () => {{
+    notifyLocation('domcontentloaded');
+    notifyDiagnostic('domcontentloaded');
+  }});
+  window.addEventListener('load', () => {{
+    notifyLocation('load');
+    notifyDiagnostic('load');
+    setTimeout(() => notifyDiagnostic('post-load'), 250);
+  }});
+  window.addEventListener('error', (event) => {{
+    const filename = event.filename || '';
+    const line = event.lineno || 0;
+    const column = event.colno || 0;
+    const location = filename ? ` @ ${{filename}}:${{line}}:${{column}}` : '';
+    notifyDiagnostic('error', `${{event.message || 'Script error'}}${{location}}`);
+  }});
+  window.addEventListener('unhandledrejection', (event) => {{
+    const reason = event.reason;
+    const message = reason instanceof Error
+      ? (reason.stack || reason.message)
+      : typeof reason === 'string'
+        ? reason
+        : JSON.stringify(reason);
+    notifyDiagnostic('unhandledrejection', message);
+  }});
+  queueMicrotask(() => {{
+    notifyLocation('init');
+    notifyDiagnostic('init');
+  }});
 
   async function callNip07(method, params) {{
     console.log('[NIP-07] Calling:', method, params);
@@ -560,11 +630,13 @@ pub async fn create_nip07_webview<R: Runtime>(
         }
         WebviewUrl::App(path.into())
     } else {
-        WebviewUrl::External(parsed_url.clone())
+        webview_url_for_parsed_url(&parsed_url)
     };
 
     let app_for_nav = app.clone();
     let label_for_nav = label.clone();
+    let app_for_load = app.clone();
+    let label_for_load = label.clone();
 
     let webview_builder = WebviewBuilder::new(&label, webview_url)
         .initialization_script(&init_script)
@@ -582,6 +654,20 @@ pub async fn create_nip07_webview<R: Runtime>(
                 }),
             );
             true
+        })
+        .on_page_load(move |_webview, payload| {
+            let event = match payload.event() {
+                tauri::webview::PageLoadEvent::Started => "started",
+                tauri::webview::PageLoadEvent::Finished => "finished",
+            };
+            let _ = app_for_load.emit(
+                "child-webview-page-load",
+                serde_json::json!({
+                    "label": label_for_load,
+                    "url": payload.url().to_string(),
+                    "event": event
+                }),
+            );
         });
 
     let webview = window
@@ -606,6 +692,7 @@ pub async fn create_nip07_webview<R: Runtime>(
 pub async fn create_htree_webview<R: Runtime>(
     app: AppHandle<R>,
     label: String,
+    host: Option<String>,
     nhash: Option<String>,
     npub: Option<String>,
     treename: Option<String>,
@@ -617,15 +704,25 @@ pub async fn create_htree_webview<R: Runtime>(
     height: f64,
 ) -> Result<(), String> {
     let (url, origin) = if let Some(nhash) = &nhash {
-        let url = append_query(htree_url_from_nhash(nhash, &path), query.as_deref());
-        let origin = htree_origin_from_nhash(nhash);
+        let request_host = host.as_deref().unwrap_or(nhash);
+        let url = append_query(htree_url_from_nhash(request_host, &path), query.as_deref());
+        let origin = htree_origin_from_nhash(request_host);
         (url, origin)
-    } else if let (Some(npub), Some(treename)) = (&npub, &treename) {
-        let url = append_query(htree_url_from_npub(npub, treename, &path), query.as_deref());
-        let origin = htree_origin_from_npub(npub, treename);
+    } else if let Some(treename) = &treename {
+        let request_host = host
+            .as_deref()
+            .or(npub.as_deref())
+            .ok_or_else(|| "Either nhash or (host + treename) must be provided".to_string())?;
+        let resolved_host =
+            resolve_tree_request_host(request_host, crate::htree_protocol::get_self_npub())?;
+        let url = append_query(
+            htree_url_from_tree_host(resolved_host, treename, &path),
+            query.as_deref(),
+        );
+        let origin = htree_origin_from_host(resolved_host);
         (url, origin)
     } else {
-        return Err("Either nhash or (npub + treename) must be provided".to_string());
+        return Err("Either nhash or (host + treename) must be provided".to_string());
     };
 
     info!(
@@ -648,8 +745,10 @@ pub async fn create_htree_webview<R: Runtime>(
 
     let app_for_nav = app.clone();
     let label_for_nav = label.clone();
+    let app_for_load = app.clone();
+    let label_for_load = label.clone();
 
-    let webview_builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed_url))
+    let webview_builder = WebviewBuilder::new(&label, webview_url_for_parsed_url(&parsed_url))
         .initialization_script(&init_script)
         .auto_resize()
         .background_color(tauri::utils::config::Color(15, 15, 15, 255))
@@ -665,6 +764,20 @@ pub async fn create_htree_webview<R: Runtime>(
                 }),
             );
             true
+        })
+        .on_page_load(move |_webview, payload| {
+            let event = match payload.event() {
+                tauri::webview::PageLoadEvent::Started => "started",
+                tauri::webview::PageLoadEvent::Finished => "finished",
+            };
+            let _ = app_for_load.emit(
+                "child-webview-page-load",
+                serde_json::json!({
+                    "label": label_for_load,
+                    "url": payload.url().to_string(),
+                    "event": event
+                }),
+            );
         });
 
     window
@@ -782,6 +895,10 @@ pub struct WebviewEventRequest {
     url: Option<String>,
     source: Option<String>,
     action: Option<String>,
+    title: Option<String>,
+    ready_state: Option<String>,
+    body_text: Option<String>,
+    error: Option<String>,
 }
 
 #[tauri::command]
@@ -832,6 +949,20 @@ pub fn webview_event<R: Runtime>(
                 }),
             );
         }
+        "diagnostic" => {
+            let _ = app.emit(
+                "child-webview-diagnostic",
+                serde_json::json!({
+                    "label": payload.label,
+                    "url": payload.url,
+                    "source": payload.source,
+                    "title": payload.title,
+                    "readyState": payload.ready_state,
+                    "bodyText": payload.body_text,
+                    "error": payload.error
+                }),
+            );
+        }
         _ => {
             return Err("Invalid event kind".to_string());
         }
@@ -847,7 +978,7 @@ mod tests {
     #[test]
     fn npub_origin_uses_host_only() {
         assert_eq!(
-            htree_origin_from_npub("npub1example", "public"),
+            htree_origin_from_host("npub1example"),
             "htree://npub1example"
         );
     }
@@ -855,7 +986,7 @@ mod tests {
     #[test]
     fn npub_urls_use_path_segments() {
         assert_eq!(
-            htree_url_from_npub("npub1example", "public", "/index.html"),
+            htree_url_from_tree_host("npub1example", "public", "/index.html"),
             "htree://npub1example/public/index.html"
         );
     }
@@ -863,8 +994,57 @@ mod tests {
     #[test]
     fn npub_urls_encode_tree_name_as_single_segment() {
         assert_eq!(
-            htree_url_from_npub("npub1example", "videos/My Clip", "/index.html"),
+            htree_url_from_tree_host("npub1example", "videos/My Clip", "/index.html"),
             "htree://npub1example/videos%2FMy%20Clip/index.html"
         );
+    }
+
+    #[test]
+    fn self_urls_use_same_tree_path_shape() {
+        assert_eq!(
+            htree_url_from_tree_host("self", "video", "/index.html"),
+            "htree://self/video/index.html"
+        );
+    }
+
+    #[test]
+    fn tree_root_urls_keep_trailing_slash_for_relative_assets() {
+        assert_eq!(
+            htree_url_from_tree_host("self", "video", "/"),
+            "htree://self/video/"
+        );
+    }
+
+    #[test]
+    fn self_tree_host_resolves_to_owner_npub_before_loading() {
+        assert_eq!(
+            resolve_tree_request_host("self", Some("npub1owner")).unwrap(),
+            "npub1owner"
+        );
+    }
+
+    #[test]
+    fn self_tree_host_requires_owner_identity() {
+        let err =
+            resolve_tree_request_host("self", None).expect_err("self should require identity");
+        assert!(err.contains("self identity"));
+    }
+
+    #[test]
+    fn http_urls_use_external_webview_variant() {
+        let url = tauri::Url::parse("https://files.iris.to").unwrap();
+        assert!(matches!(
+            webview_url_for_parsed_url(&url),
+            WebviewUrl::External(_)
+        ));
+    }
+
+    #[test]
+    fn custom_scheme_urls_use_custom_protocol_webview_variant() {
+        let url = tauri::Url::parse("htree://self/video").unwrap();
+        assert!(matches!(
+            webview_url_for_parsed_url(&url),
+            WebviewUrl::CustomProtocol(_)
+        ));
     }
 }

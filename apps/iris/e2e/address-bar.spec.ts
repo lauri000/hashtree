@@ -91,6 +91,38 @@ test.describe('Address Bar', () => {
     expect(calls[0].args.treename).toBe('my-tree');
   });
 
+  test('htree self URL uses create_htree_webview with self host', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill('htree://self/video');
+    await input.press('Enter');
+
+    const calls = await getInvocationsFor(page, 'create_htree_webview');
+    expect(calls.length).toBe(1);
+    expect(calls[0].args.host).toBe('self');
+    expect(calls[0].args.npub).toBeNull();
+    expect(calls[0].args.treename).toBe('video');
+    expect(calls[0].args.path).toBe('/');
+  });
+
+  test('bare self tree gets htree:// prefix', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill('self/video');
+    await input.press('Enter');
+
+    const calls = await getInvocationsFor(page, 'create_htree_webview');
+    expect(calls.length).toBe(1);
+    expect(calls[0].args.host).toBe('self');
+    expect(calls[0].args.npub).toBeNull();
+    expect(calls[0].args.treename).toBe('video');
+    expect(calls[0].args.path).toBe('/');
+  });
+
   test('bare nhash1 gets htree:// prefix', async ({ tauriPage: page }) => {
     await openHome(page);
 
@@ -237,7 +269,7 @@ test.describe('Address Bar Autocomplete', () => {
     const dropdown = page.locator('[role="listbox"]');
     await expect(dropdown).toBeVisible();
 
-    await page.keyboard.press('Escape');
+    await input.press('Escape');
     await expect(dropdown).not.toBeVisible();
   });
 
