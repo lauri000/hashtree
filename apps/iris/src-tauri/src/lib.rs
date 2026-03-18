@@ -16,18 +16,28 @@ pub mod relay_proxy;
 
 use axum::routing::any;
 use axum::Router;
-use hashtree_cli::daemon::{EmbeddedDaemonOptions, EmbeddedDaemonInfo};
+use hashtree_cli::daemon::{EmbeddedDaemonInfo, EmbeddedDaemonOptions};
 use hashtree_cli::server::AppState;
+use parking_lot::RwLock;
+use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Once;
-use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use std::time::Duration;
+use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{Emitter, Manager};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 static RUSTLS_PROVIDER_INIT: Once = Once::new();
+const TRAY_ICON_ID: &str = "main";
+const TRAY_OPEN_MENU_ID: &str = "tray_open_main";
+const TRAY_HOME_MENU_ID: &str = "tray_home";
+const TRAY_SETTINGS_MENU_ID: &str = "tray_settings";
+const TRAY_QUIT_MENU_ID: &str = "tray_quit";
 
 pub fn ensure_rustls_provider() {
     RUSTLS_PROVIDER_INIT.call_once(|| {
@@ -58,16 +68,16 @@ async fn start_daemon(data_dir: PathBuf) -> Result<EmbeddedDaemonInfo, String> {
     relay_proxy::init_relay_proxy_state();
 
     let bind_address = daemon_bind_address();
-    let mut config = hashtree_cli::Config::load()
-        .map_err(|e| format!("Failed to load config: {}", e))?;
+    let mut config =
+        hashtree_cli::Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
     config.storage.data_dir = data_dir.to_string_lossy().to_string();
     config.server.bind_address = bind_address.clone();
     config.server.enable_auth = false;
     config.server.stun_port = 0;
 
     // Add extra routes for relay proxy and NIP-07
-    let extra_routes = Router::<AppState>::new()
-        .route("/relay", any(relay_proxy::handle_relay_websocket));
+    let extra_routes =
+        Router::<AppState>::new().route("/relay", any(relay_proxy::handle_relay_websocket));
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -97,6 +107,273 @@ async fn start_daemon(data_dir: PathBuf) -> Result<EmbeddedDaemonInfo, String> {
 // ============================================
 // Menu construction
 // ============================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayConnectionStatus {
+    Starting,
+    Running { connected_peers: Option<usize> },
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TrayMenuItemSpec {
+    Text {
+        id: Option<String>,
+        text: String,
+        enabled: bool,
+    },
+    Separator,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrayRuntimeState {
+    connection_status: TrayConnectionStatus,
+}
+
+impl Default for TrayRuntimeState {
+    fn default() -> Self {
+        Self {
+            connection_status: TrayConnectionStatus::Starting,
+        }
+    }
+}
+
+struct TrayState {
+    runtime: RwLock<TrayRuntimeState>,
+}
+
+impl TrayState {
+    fn new() -> Self {
+        Self {
+            runtime: RwLock::new(TrayRuntimeState::default()),
+        }
+    }
+
+    fn snapshot(&self) -> TrayRuntimeState {
+        self.runtime.read().clone()
+    }
+
+    fn set_connection_status(&self, connection_status: TrayConnectionStatus) -> bool {
+        let mut runtime = self.runtime.write();
+        if runtime.connection_status == connection_status {
+            return false;
+        }
+        runtime.connection_status = connection_status;
+        true
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TrayDaemonStatusResponse {
+    #[serde(default)]
+    webrtc: TrayDaemonWebRtcStatus,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TrayDaemonWebRtcStatus {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    connected: usize,
+}
+
+fn tray_status_text(connection_status: TrayConnectionStatus) -> String {
+    match connection_status {
+        TrayConnectionStatus::Starting => "Starting daemon...".to_string(),
+        TrayConnectionStatus::Running {
+            connected_peers: None,
+        } => "Daemon running".to_string(),
+        TrayConnectionStatus::Running {
+            connected_peers: Some(1),
+        } => "Daemon running, 1 peer connected".to_string(),
+        TrayConnectionStatus::Running {
+            connected_peers: Some(connected_peers),
+        } => format!("Daemon running, {} peers connected", connected_peers),
+        TrayConnectionStatus::Failed => "Daemon failed to start".to_string(),
+    }
+}
+
+fn tray_menu_spec(connection_status: TrayConnectionStatus) -> Vec<TrayMenuItemSpec> {
+    vec![
+        TrayMenuItemSpec::Text {
+            id: None,
+            text: tray_status_text(connection_status),
+            enabled: false,
+        },
+        TrayMenuItemSpec::Separator,
+        TrayMenuItemSpec::Text {
+            id: Some(TRAY_OPEN_MENU_ID.to_string()),
+            text: "Open Iris".to_string(),
+            enabled: true,
+        },
+        TrayMenuItemSpec::Text {
+            id: Some(TRAY_HOME_MENU_ID.to_string()),
+            text: "Home".to_string(),
+            enabled: true,
+        },
+        TrayMenuItemSpec::Text {
+            id: Some(TRAY_SETTINGS_MENU_ID.to_string()),
+            text: "Settings".to_string(),
+            enabled: true,
+        },
+        TrayMenuItemSpec::Separator,
+        TrayMenuItemSpec::Text {
+            id: Some(TRAY_QUIT_MENU_ID.to_string()),
+            text: "Quit".to_string(),
+            enabled: true,
+        },
+    ]
+}
+
+fn append_tray_spec_to_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    menu: &Menu<R>,
+    spec: &TrayMenuItemSpec,
+) -> tauri::Result<()> {
+    match spec {
+        TrayMenuItemSpec::Text { id, text, enabled } => {
+            let item = if let Some(id) = id {
+                MenuItemBuilder::with_id(id.clone(), text)
+                    .enabled(*enabled)
+                    .build(app)?
+            } else {
+                MenuItemBuilder::new(text).enabled(*enabled).build(app)?
+            };
+            menu.append(&item)?;
+        }
+        TrayMenuItemSpec::Separator => {
+            let separator = PredefinedMenuItem::separator(app)?;
+            menu.append(&separator)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn build_tray_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    connection_status: TrayConnectionStatus,
+) -> tauri::Result<Menu<R>> {
+    let menu = Menu::new(app)?;
+    for spec in tray_menu_spec(connection_status) {
+        append_tray_spec_to_menu(app, &menu, &spec)?;
+    }
+    Ok(menu)
+}
+
+fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+
+    let _ = window.unminimize();
+    window.show()?;
+    window.set_focus()?;
+    Ok(())
+}
+
+fn hide_main_window_to_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    let _ = window.minimize();
+    let _ = window.hide();
+}
+
+fn started_minimized() -> bool {
+    std::env::args().any(|arg| arg == "--minimized")
+}
+
+fn emit_tray_action<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    action: automation::AutomationAction,
+) {
+    let _ = app.emit(
+        "automation-command",
+        automation::AutomationCommand { action, url: None },
+    );
+}
+
+fn current_tray_connection_status<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> TrayConnectionStatus {
+    app.try_state::<Arc<TrayState>>()
+        .map(|state| state.snapshot().connection_status)
+        .unwrap_or(TrayConnectionStatus::Starting)
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+fn refresh_tray_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let Some(tray) = app.tray_by_id(TRAY_ICON_ID) else {
+        return;
+    };
+
+    let connection_status = current_tray_connection_status(app);
+    let status_text = tray_status_text(connection_status);
+
+    if let Ok(menu) = build_tray_menu(app, connection_status) {
+        let _ = tray.set_menu(Some(menu));
+    }
+    let _ = tray.set_tooltip(Some(status_text));
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+fn update_tray_connection_status<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    connection_status: TrayConnectionStatus,
+) {
+    let Some(state) = app.try_state::<Arc<TrayState>>() else {
+        return;
+    };
+    if !state.set_connection_status(connection_status) {
+        return;
+    }
+
+    let refresh_app = app.clone();
+    let _ = app.run_on_main_thread(move || refresh_tray_menu(&refresh_app));
+}
+
+fn fetch_tray_connection_status(
+    client: &reqwest::blocking::Client,
+    url: &str,
+) -> Option<TrayConnectionStatus> {
+    let response = client.get(url).send().ok()?;
+    let status = response.json::<TrayDaemonStatusResponse>().ok()?;
+    let connected_peers = if status.webrtc.enabled {
+        Some(status.webrtc.connected)
+    } else {
+        None
+    };
+    Some(TrayConnectionStatus::Running { connected_peers })
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+fn spawn_tray_status_poller<R: tauri::Runtime + 'static>(app: tauri::AppHandle<R>, port: u16) {
+    std::thread::spawn(move || {
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+        {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::warn!("Failed to build tray status client: {}", error);
+                return;
+            }
+        };
+        let url = format!("http://127.0.0.1:{}/api/status", port);
+
+        loop {
+            let connection_status = fetch_tray_connection_status(&client, &url).unwrap_or(
+                TrayConnectionStatus::Running {
+                    connected_peers: None,
+                },
+            );
+            update_tray_connection_status(&app, connection_status);
+            std::thread::sleep(Duration::from_secs(5));
+        }
+    });
+}
 
 #[cfg(test)]
 fn build_edit_menu<R: tauri::Runtime>(
@@ -183,16 +460,24 @@ pub fn run() {
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
+            let _ = show_main_window(app);
         }));
     }
 
     builder
         .menu(build_menu)
+        .on_tray_icon_event(|app, event| {
+            if let TrayIconEvent::Click {
+                button,
+                button_state,
+                ..
+            } = event
+            {
+                if button == MouseButton::Left && button_state == MouseButtonState::Up {
+                    let _ = show_main_window(app);
+                }
+            }
+        })
         .on_menu_event(|app, event| {
             match event.id().as_ref() {
                 "nav_back" => {
@@ -206,6 +491,20 @@ pub fn run() {
                         "child-webview-navigate",
                         serde_json::json!({ "action": "forward" }),
                     );
+                }
+                TRAY_OPEN_MENU_ID => {
+                    let _ = show_main_window(app);
+                }
+                TRAY_HOME_MENU_ID => {
+                    let _ = show_main_window(app);
+                    emit_tray_action(app, automation::AutomationAction::Home);
+                }
+                TRAY_SETTINGS_MENU_ID => {
+                    let _ = show_main_window(app);
+                    emit_tray_action(app, automation::AutomationAction::Settings);
+                }
+                TRAY_QUIT_MENU_ID => {
+                    app.exit(0);
                 }
                 "app_quit" => {
                     app.exit(0);
@@ -293,6 +592,9 @@ pub fn run() {
             );
             app.manage(history_store);
 
+            let tray_state = Arc::new(TrayState::new());
+            app.manage(tray_state);
+
             let automation_state = Arc::new(automation::AutomationState::new(
                 automation::automation_requested(),
             ));
@@ -301,27 +603,38 @@ pub fn run() {
 
             // Start the embedded htree daemon
             let daemon_data_dir = data_dir.clone();
+            let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 match start_daemon(daemon_data_dir).await {
                     Ok(info) => {
                         htree_protocol::set_daemon_port(info.port);
+                        htree_protocol::set_self_npub(info.npub.clone());
                         info!("Embedded daemon started on port {}", info.port);
+                        update_tray_connection_status(
+                            &app_handle,
+                            TrayConnectionStatus::Running {
+                                connected_peers: None,
+                            },
+                        );
+                        spawn_tray_status_poller(app_handle.clone(), info.port);
                     }
                     Err(e) => {
                         tracing::error!("Failed to start embedded daemon: {}", e);
+                        update_tray_connection_status(&app_handle, TrayConnectionStatus::Failed);
                     }
                 }
             });
 
-            // Check if launched with --minimized flag (from autostart)
             #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
             {
-                let args: Vec<String> = std::env::args().collect();
-                if args.contains(&"--minimized".to_string()) {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.minimize();
-                        info!("Started minimized (autostart)");
-                    }
+                if let Some(tray) = app.tray_by_id(TRAY_ICON_ID) {
+                    let _ = tray.set_show_menu_on_left_click(false);
+                }
+                refresh_tray_menu(app.handle());
+
+                if started_minimized() {
+                    hide_main_window_to_tray(app.handle());
+                    info!("Started hidden in tray (autostart)");
                 }
             }
 
@@ -344,7 +657,9 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::build_menu;
+    use super::{
+        build_menu, tray_menu_spec, tray_status_text, TrayConnectionStatus, TrayMenuItemSpec,
+    };
 
     #[cfg_attr(target_os = "macos", ignore = "requires main thread for menu items")]
     #[test]
@@ -365,5 +680,75 @@ mod tests {
         }
 
         assert!(has_quit, "expected app_quit menu item");
+    }
+
+    #[test]
+    fn tray_status_text_covers_starting_running_and_failure_states() {
+        assert_eq!(
+            tray_status_text(TrayConnectionStatus::Starting),
+            "Starting daemon..."
+        );
+        assert_eq!(
+            tray_status_text(TrayConnectionStatus::Running {
+                connected_peers: None,
+            }),
+            "Daemon running"
+        );
+        assert_eq!(
+            tray_status_text(TrayConnectionStatus::Running {
+                connected_peers: Some(1),
+            }),
+            "Daemon running, 1 peer connected"
+        );
+        assert_eq!(
+            tray_status_text(TrayConnectionStatus::Running {
+                connected_peers: Some(3),
+            }),
+            "Daemon running, 3 peers connected"
+        );
+        assert_eq!(
+            tray_status_text(TrayConnectionStatus::Failed),
+            "Daemon failed to start"
+        );
+    }
+
+    #[test]
+    fn tray_menu_spec_stays_small_and_action_focused() {
+        let items = tray_menu_spec(TrayConnectionStatus::Running {
+            connected_peers: Some(2),
+        });
+
+        assert_eq!(
+            items,
+            vec![
+                TrayMenuItemSpec::Text {
+                    id: None,
+                    text: "Daemon running, 2 peers connected".to_string(),
+                    enabled: false,
+                },
+                TrayMenuItemSpec::Separator,
+                TrayMenuItemSpec::Text {
+                    id: Some("tray_open_main".to_string()),
+                    text: "Open Iris".to_string(),
+                    enabled: true,
+                },
+                TrayMenuItemSpec::Text {
+                    id: Some("tray_home".to_string()),
+                    text: "Home".to_string(),
+                    enabled: true,
+                },
+                TrayMenuItemSpec::Text {
+                    id: Some("tray_settings".to_string()),
+                    text: "Settings".to_string(),
+                    enabled: true,
+                },
+                TrayMenuItemSpec::Separator,
+                TrayMenuItemSpec::Text {
+                    id: Some("tray_quit".to_string()),
+                    text: "Quit".to_string(),
+                    enabled: true,
+                },
+            ]
+        );
     }
 }
