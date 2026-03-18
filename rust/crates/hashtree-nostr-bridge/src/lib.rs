@@ -10,6 +10,7 @@ use nostr_social_graph::SocialGraphBackend;
 #[derive(Debug, Clone)]
 pub struct CrawlConfig {
     pub relays: Vec<String>,
+    pub max_live_bytes: Option<u64>,
     pub max_follow_distance: Option<u32>,
     pub author_batch_size: usize,
     pub per_author_event_limit: usize,
@@ -21,6 +22,7 @@ impl Default for CrawlConfig {
     fn default() -> Self {
         Self {
             relays: Vec::new(),
+            max_live_bytes: None,
             max_follow_distance: Some(1),
             author_batch_size: 64,
             per_author_event_limit: 256,
@@ -36,6 +38,7 @@ pub struct CrawlReport {
     pub authors_considered: usize,
     pub events_seen: usize,
     pub events_selected: usize,
+    pub live_bytes_selected: u64,
 }
 
 pub trait EventSelectionPolicy: Send + Sync {
@@ -164,12 +167,14 @@ impl<S: Store> NostrBridge<S> {
             selected.extend(self.select_author_events(merged.into_values().collect()));
         }
 
+        let (selected, live_bytes_selected) = self.apply_live_byte_cap(selected)?;
         let root = self.event_store.build(None, selected.clone()).await?;
         Ok(CrawlReport {
             root,
             authors_considered: authors.len(),
             events_seen,
             events_selected: selected.len(),
+            live_bytes_selected,
         })
     }
 
@@ -280,6 +285,40 @@ impl<S: Store> NostrBridge<S> {
         });
         events.truncate(self.config.per_author_event_limit);
         events
+    }
+
+    fn apply_live_byte_cap(
+        &self,
+        mut events: Vec<StoredNostrEvent>,
+    ) -> Result<(Vec<StoredNostrEvent>, u64)> {
+        events.sort_by(|left, right| {
+            self.policy
+                .priority(right)
+                .cmp(&self.policy.priority(left))
+                .then_with(|| right.created_at.cmp(&left.created_at))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        let Some(max_live_bytes) = self.config.max_live_bytes else {
+            let live_bytes_selected = events.iter().try_fold(0u64, |total, event| {
+                let encoded = self.event_store.encode_event(event)?;
+                Ok::<u64, NostrEventStoreError>(total.saturating_add(encoded.len() as u64))
+            })?;
+            return Ok((events, live_bytes_selected));
+        };
+
+        let mut selected = Vec::new();
+        let mut live_bytes_selected = 0u64;
+        for event in events {
+            let encoded_len = self.event_store.encode_event(&event)?.len() as u64;
+            if live_bytes_selected.saturating_add(encoded_len) > max_live_bytes {
+                continue;
+            }
+            live_bytes_selected = live_bytes_selected.saturating_add(encoded_len);
+            selected.push(event);
+        }
+
+        Ok((selected, live_bytes_selected))
     }
 
     fn kind_allowed(&self, kind: u32) -> bool {

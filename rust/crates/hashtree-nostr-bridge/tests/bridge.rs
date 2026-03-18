@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
 use hashtree_core::MemoryStore;
-use hashtree_nostr::ListEventsOptions;
+use hashtree_nostr::{ListEventsOptions, NostrEventStore, StoredNostrEvent};
 use hashtree_nostr_bridge::{CrawlConfig, NostrBridge};
 use nostr::prelude::{Event, EventBuilder, Kind, Tag, Timestamp};
 use nostr_sdk::{Client, Keys};
@@ -188,6 +188,18 @@ fn graph_event_from_nostr(event: &Event) -> GraphEvent {
     }
 }
 
+fn stored_event_from_nostr(event: &Event) -> StoredNostrEvent {
+    StoredNostrEvent {
+        id: event.id.to_hex(),
+        pubkey: event.pubkey.to_hex(),
+        created_at: event.created_at.as_u64(),
+        kind: event.kind.as_u16() as u32,
+        tags: event.tags.iter().map(|tag: &Tag| tag.as_slice().to_vec()).collect(),
+        content: event.content.clone(),
+        sig: event.sig.to_string(),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn crawls_followed_authors_and_applies_per_author_priority_limit() -> io::Result<()> {
     let relay = TestRelay::new();
@@ -283,6 +295,109 @@ async fn crawls_followed_authors_and_applies_per_author_priority_limit() -> io::
         .iter()
         .all(|event| event.pubkey == alice_keys.public_key().to_hex()));
     assert!(nostr_events.iter().all(|event| event.kind == 1));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn enforces_global_live_byte_cap_after_priority_selection() -> io::Result<()> {
+    let relay = TestRelay::new();
+    let relay_url = relay.url();
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("p tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&contact_list), true, 1.0);
+
+    let publisher = Client::new(Keys::generate());
+    publisher
+        .add_relay(&relay_url)
+        .await
+        .expect("add relay");
+    publisher.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let note_one = EventBuilder::new(
+        Kind::TextNote,
+        "note one",
+        [Tag::parse(&["t", "nostr"]).expect("t tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(20))
+    .to_event(&alice_keys)
+    .expect("note one");
+    let note_two = EventBuilder::new(
+        Kind::TextNote,
+        "note two",
+        [Tag::parse(&["t", "nostr"]).expect("t tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(30))
+    .to_event(&alice_keys)
+    .expect("note two");
+    let note_three = EventBuilder::new(
+        Kind::TextNote,
+        "note three",
+        [Tag::parse(&["t", "nostr"]).expect("t tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(40))
+    .to_event(&alice_keys)
+    .expect("note three");
+
+    for event in [&note_one, &note_two, &note_three] {
+        publisher
+            .send_event(event.clone())
+            .await
+            .expect("publish test event");
+    }
+
+    let sizing_store = NostrEventStore::new(Arc::new(MemoryStore::new()));
+    let retained_size = sizing_store
+        .encode_event(&stored_event_from_nostr(&note_three))
+        .expect("encode newest")
+        .len() as u64
+        + sizing_store
+            .encode_event(&stored_event_from_nostr(&note_two))
+            .expect("encode middle")
+            .len() as u64;
+
+    let store = Arc::new(MemoryStore::new());
+    let bridge = NostrBridge::new(
+        store.clone(),
+        CrawlConfig {
+            relays: vec![relay_url],
+            per_author_event_limit: 8,
+            max_live_bytes: Some(retained_size),
+            kinds: Some(vec![1]),
+            ..CrawlConfig::default()
+        },
+    );
+
+    let report = bridge.crawl(&graph, None).await.expect("crawl report");
+    let root = report.root.expect("index root");
+    let event_store = NostrEventStore::new(store);
+
+    let nostr_events = event_store
+        .list_by_tag(
+            Some(&root),
+            "t",
+            "nostr",
+            ListEventsOptions { limit: Some(10) },
+        )
+        .await
+        .expect("query hashtag");
+
+    assert_eq!(report.events_selected, 2);
+    assert_eq!(nostr_events.len(), 2);
+    assert_eq!(nostr_events[0].id, note_three.id.to_hex());
+    assert_eq!(nostr_events[1].id, note_two.id.to_hex());
 
     Ok(())
 }
