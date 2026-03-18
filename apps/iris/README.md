@@ -14,6 +14,21 @@ pnpm run tauri:build  # Build for distribution
 
 Requires [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
 
+## Testing
+
+Use two layers on purpose:
+
+- `pnpm run test:e2e` for fast shell/UI logic in a regular browser.
+- `pnpm run test:native:linux` for real native desktop smoke tests on Linux with `tauri-driver`.
+
+Short rationale: WebDriver owns native clicks, text selection, and screenshots; the Iris automation bridge only exposes Iris-specific readiness and shell state. That keeps the bridge narrow instead of rebuilding a second UI driver.
+
+The native smoke harness is Linux-only and expects a desktop-capable environment. Run it in a Linux VM or container with WebKitGTK, `WebKitWebDriver`, D-Bus, and Xvfb:
+
+```bash
+xvfb-run -a pnpm run test:native:linux
+```
+
 ## Automation
 
 Iris can expose a localhost automation API for agents and smoke tests.
@@ -36,7 +51,7 @@ Example command payload:
 
 Supported actions are `open_url`, `back`, `forward`, `reload`, `home`, and `settings`.
 
-This is intended to pair well with Linux/Xvfb-based native smoke tests: the API drives the real shell state, while screenshots can come from Playwright (web shell) or OS capture tools (native app).
+The automation bridge is intentionally semantic. Use it for readiness checks, current shell state, and app-aware commands; use Linux WebDriver for generic UI actions like clicking arbitrary elements, text selection, and taking screenshots.
 
 ## License
 
