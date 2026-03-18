@@ -425,6 +425,15 @@ pub(crate) enum SocialGraphCommands {
         /// Relay fetch timeout in seconds
         #[arg(long, default_value_t = 10)]
         fetch_timeout_secs: u64,
+        /// Fetch recent relay pages without author filters and filter locally by social graph
+        #[arg(long, default_value_t = false)]
+        global_relay_scan: bool,
+        /// Number of events to request per relay page in global relay scan mode
+        #[arg(long, default_value_t = 1_000)]
+        relay_page_size: usize,
+        /// Maximum pages to fetch per relay in global relay scan mode
+        #[arg(long, default_value_t = 10)]
+        max_relay_pages: usize,
         /// Restrict indexing to these kinds (repeatable)
         #[arg(long = "kind")]
         kinds: Vec<u16>,

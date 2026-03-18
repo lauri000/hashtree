@@ -7,7 +7,7 @@ use std::time::Duration;
 use futures::{SinkExt, StreamExt};
 use hashtree_core::MemoryStore;
 use hashtree_nostr::{ListEventsOptions, NostrEventStore, StoredNostrEvent};
-use hashtree_nostr_bridge::{CrawlConfig, NostrBridge};
+use hashtree_nostr_bridge::{CrawlConfig, NostrBridge, RelayFetchMode};
 use negentropy::{Id, Negentropy, NegentropyStorageVector};
 use nostr::prelude::{
     ClientMessage, Event, EventBuilder, Filter, JsonUtil, Kind, RelayMessage, Tag, Timestamp,
@@ -25,6 +25,7 @@ struct SharedRelayState {
     supports_negentropy: bool,
     negentropy_open_attempts: usize,
     negentropy_sessions_started: usize,
+    server_page_cap: Option<usize>,
 }
 
 struct TestRelay {
@@ -39,8 +40,13 @@ impl TestRelay {
     }
 
     fn with_negentropy(supports_negentropy: bool) -> Self {
+        Self::with_options(supports_negentropy, None)
+    }
+
+    fn with_options(supports_negentropy: bool, server_page_cap: Option<usize>) -> Self {
         let state = Arc::new(Mutex::new(SharedRelayState {
             supports_negentropy,
+            server_page_cap,
             ..SharedRelayState::default()
         }));
         let (shutdown, _) = broadcast::channel(1);
@@ -87,6 +93,10 @@ impl TestRelay {
             shutdown,
             state,
         }
+    }
+
+    fn with_page_cap(server_page_cap: usize) -> Self {
+        Self::with_options(false, Some(server_page_cap))
     }
 
     fn url(&self) -> String {
@@ -142,7 +152,17 @@ fn matching_events(state: &Arc<Mutex<SharedRelayState>>, filters: &[Filter]) -> 
             .then_with(|| left.id.cmp(&right.id))
     });
 
-    if let Some(limit) = filters.iter().filter_map(|filter| filter.limit).min() {
+    let server_page_cap = state.lock().expect("relay state lock").server_page_cap;
+    let effective_limit = match (
+        filters.iter().filter_map(|filter| filter.limit).min(),
+        server_page_cap,
+    ) {
+        (Some(filter_limit), Some(server_limit)) => Some(filter_limit.min(server_limit)),
+        (Some(filter_limit), None) => Some(filter_limit),
+        (None, Some(server_limit)) => Some(server_limit),
+        (None, None) => None,
+    };
+    if let Some(limit) = effective_limit {
         matched.truncate(limit);
     }
 
@@ -667,6 +687,199 @@ async fn caches_relays_that_do_not_support_negentropy() -> io::Result<()> {
     let report = bridge.crawl(&graph, None).await.expect("crawl report");
     assert_eq!(report.events_selected, 2);
     assert_eq!(relay.negentropy_open_attempts(), 1);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn global_recent_scan_filters_locally_by_social_graph() -> io::Result<()> {
+    let relay = TestRelay::new();
+    let relay_url = relay.url();
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+    let bob_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("p tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&contact_list), true, 1.0);
+
+    let publisher = Client::new(Keys::generate());
+    publisher.add_relay(&relay_url).await.expect("add relay");
+    publisher.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let mut events = Vec::new();
+    for created_at in 20..22 {
+        events.push(
+            EventBuilder::new(Kind::TextNote, format!("alice {created_at}"), [])
+                .custom_created_at(Timestamp::from_secs(created_at))
+                .to_event(&alice_keys)
+                .expect("alice note"),
+        );
+    }
+    for created_at in 30..33 {
+        events.push(
+            EventBuilder::new(Kind::TextNote, format!("bob {created_at}"), [])
+                .custom_created_at(Timestamp::from_secs(created_at))
+                .to_event(&bob_keys)
+                .expect("bob note"),
+        );
+    }
+    for event in events {
+        publisher
+            .send_event(event)
+            .await
+            .expect("publish test event");
+    }
+
+    let store = Arc::new(MemoryStore::new());
+    let bridge = NostrBridge::new(
+        store.clone(),
+        CrawlConfig {
+            relays: vec![relay_url],
+            relay_fetch_mode: RelayFetchMode::GlobalRecent,
+            relay_page_size: 16,
+            max_relay_pages: 1,
+            per_author_event_limit: 8,
+            kinds: Some(vec![1]),
+            ..CrawlConfig::default()
+        },
+    );
+
+    let report = bridge.crawl(&graph, None).await.expect("crawl report");
+    let root = report.root.expect("index root");
+    let event_store = NostrEventStore::new(store);
+    let retained = event_store
+        .list_recent(Some(&root), ListEventsOptions { limit: Some(10) })
+        .await
+        .expect("list retained");
+
+    assert_eq!(report.events_seen, 5);
+    assert_eq!(report.events_selected, 2);
+    assert_eq!(retained.len(), 2);
+    assert!(retained
+        .iter()
+        .all(|event| event.pubkey == alice_keys.public_key().to_hex()));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn global_recent_scan_paginates_older_pages() -> io::Result<()> {
+    let relay = TestRelay::new();
+    let relay_url = relay.url();
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("p tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&contact_list), true, 1.0);
+
+    let publisher = Client::new(Keys::generate());
+    publisher.add_relay(&relay_url).await.expect("add relay");
+    publisher.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    for created_at in 20..25 {
+        let note = EventBuilder::new(Kind::TextNote, format!("note {created_at}"), [])
+            .custom_created_at(Timestamp::from_secs(created_at))
+            .to_event(&alice_keys)
+            .expect("note");
+        publisher
+            .send_event(note)
+            .await
+            .expect("publish test event");
+    }
+
+    let store = Arc::new(MemoryStore::new());
+    let bridge = NostrBridge::new(
+        store,
+        CrawlConfig {
+            relays: vec![relay_url],
+            relay_fetch_mode: RelayFetchMode::GlobalRecent,
+            relay_page_size: 2,
+            max_relay_pages: 3,
+            per_author_event_limit: 8,
+            kinds: Some(vec![1]),
+            ..CrawlConfig::default()
+        },
+    );
+
+    let report = bridge.crawl(&graph, None).await.expect("crawl report");
+    assert_eq!(report.events_seen, 5);
+    assert_eq!(report.events_selected, 5);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn global_recent_scan_pages_past_relay_side_caps() -> io::Result<()> {
+    let relay = TestRelay::with_page_cap(2);
+    let relay_url = relay.url();
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("p tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&contact_list), true, 1.0);
+
+    let publisher = Client::new(Keys::generate());
+    publisher.add_relay(&relay_url).await.expect("add relay");
+    publisher.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    for created_at in 20..25 {
+        let note = EventBuilder::new(Kind::TextNote, format!("note {created_at}"), [])
+            .custom_created_at(Timestamp::from_secs(created_at))
+            .to_event(&alice_keys)
+            .expect("note");
+        publisher
+            .send_event(note)
+            .await
+            .expect("publish test event");
+    }
+
+    let store = Arc::new(MemoryStore::new());
+    let bridge = NostrBridge::new(
+        store,
+        CrawlConfig {
+            relays: vec![relay_url],
+            relay_fetch_mode: RelayFetchMode::GlobalRecent,
+            relay_page_size: 5,
+            max_relay_pages: 4,
+            per_author_event_limit: 8,
+            kinds: Some(vec![1]),
+            ..CrawlConfig::default()
+        },
+    );
+
+    let report = bridge.crawl(&graph, None).await.expect("crawl report");
+    assert_eq!(report.events_seen, 5);
+    assert_eq!(report.events_selected, 5);
 
     Ok(())
 }

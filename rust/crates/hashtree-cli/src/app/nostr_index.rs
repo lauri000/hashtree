@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use hashtree_core::Cid;
 use hashtree_nostr::{ListEventsOptions, NostrEventStore, StoredNostrEvent};
-use hashtree_nostr_bridge::{CrawlConfig, CrawlReport, NostrBridge};
+use hashtree_nostr_bridge::{CrawlConfig, CrawlReport, NostrBridge, RelayFetchMode};
 use nostr::Keys;
 use nostr_social_graph::{BinaryBudget, SocialGraph};
 use tokio::sync::watch;
@@ -30,6 +30,9 @@ pub(crate) struct SocialGraphIndexOptions {
     pub(crate) author_batch_size: usize,
     pub(crate) per_author_event_limit: usize,
     pub(crate) fetch_timeout: Duration,
+    pub(crate) global_relay_scan: bool,
+    pub(crate) relay_page_size: usize,
+    pub(crate) max_relay_pages: usize,
     pub(crate) kinds: Option<Vec<u16>>,
 }
 
@@ -60,6 +63,9 @@ pub(crate) struct IndexedNostrReport {
     pub(crate) max_follow_distance: Option<u32>,
     pub(crate) max_authors: usize,
     pub(crate) max_live_bytes: u64,
+    pub(crate) global_relay_scan: bool,
+    pub(crate) relay_page_size: usize,
+    pub(crate) max_relay_pages: usize,
     pub(crate) relays: Vec<String>,
     pub(crate) top_authors: Vec<RankedCount>,
     pub(crate) top_kinds: Vec<RankedCount>,
@@ -132,6 +138,13 @@ pub(crate) async fn run_socialgraph_index(
             author_batch_size: options.author_batch_size,
             per_author_event_limit: options.per_author_event_limit,
             fetch_timeout: options.fetch_timeout,
+            relay_fetch_mode: if options.global_relay_scan {
+                RelayFetchMode::GlobalRecent
+            } else {
+                RelayFetchMode::AuthorBatches
+            },
+            relay_page_size: options.relay_page_size,
+            max_relay_pages: options.max_relay_pages,
             kinds: options.kinds.clone(),
         },
     );
@@ -233,6 +246,9 @@ async fn build_report(
         max_follow_distance: options.max_follow_distance,
         max_authors: options.max_authors,
         max_live_bytes: options.max_live_bytes,
+        global_relay_scan: options.global_relay_scan,
+        relay_page_size: options.relay_page_size,
+        max_relay_pages: options.max_relay_pages,
         relays: relays.to_vec(),
         top_authors: ranked_counts(by_author),
         top_kinds: ranked_counts(by_kind),
@@ -321,11 +337,22 @@ fn load_existing_root(data_dir: &Path) -> Result<Option<Cid>> {
 
 fn print_report(report: &IndexedNostrReport, data_dir: &Path) {
     println!(
-        "Indexed {} events from {} authors (saw {}, kept {} bytes)",
+        "Indexed {} events from {} authors (saw {} relay events, kept {} bytes)",
         report.events_selected,
         report.authors_considered,
         report.events_seen,
         report.live_bytes_selected
+    );
+    println!(
+        "Relay mode: {}",
+        if report.global_relay_scan {
+            format!(
+                "global recent scan (page size {}, max pages {})",
+                report.relay_page_size, report.max_relay_pages
+            )
+        } else {
+            "author batches with negentropy".to_string()
+        }
     );
 
     if let Some(root) = &report.root {
@@ -582,6 +609,9 @@ mod tests {
                 author_batch_size: 32,
                 per_author_event_limit: 8,
                 fetch_timeout: Duration::from_secs(5),
+                global_relay_scan: false,
+                relay_page_size: 1_000,
+                max_relay_pages: 10,
                 kinds: None,
             },
         )

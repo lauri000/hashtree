@@ -235,6 +235,11 @@ fn test_cli_parses_socialgraph_index_command() {
         "32",
         "--fetch-timeout-secs",
         "7",
+        "--global-relay-scan",
+        "--relay-page-size",
+        "2000",
+        "--max-relay-pages",
+        "6",
         "--kind",
         "1",
         "--kind",
@@ -253,6 +258,9 @@ fn test_cli_parses_socialgraph_index_command() {
                     per_author_event_limit,
                     author_batch_size,
                     fetch_timeout_secs,
+                    global_relay_scan,
+                    relay_page_size,
+                    max_relay_pages,
                     kinds,
                 },
         } => {
@@ -264,6 +272,9 @@ fn test_cli_parses_socialgraph_index_command() {
             assert_eq!(per_author_event_limit, 64);
             assert_eq!(author_batch_size, 32);
             assert_eq!(fetch_timeout_secs, 7);
+            assert!(global_relay_scan);
+            assert_eq!(relay_page_size, 2_000);
+            assert_eq!(max_relay_pages, 6);
             assert_eq!(kinds, vec![1, 6]);
         }
         _ => panic!("expected socialgraph index command"),

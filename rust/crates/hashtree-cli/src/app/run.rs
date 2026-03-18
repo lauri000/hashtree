@@ -1115,6 +1115,9 @@ pub(crate) async fn run() -> Result<()> {
                 per_author_event_limit,
                 author_batch_size,
                 fetch_timeout_secs,
+                global_relay_scan,
+                relay_page_size,
+                max_relay_pages,
                 kinds,
             } => {
                 let config = Config::load()?;
@@ -1132,6 +1135,9 @@ pub(crate) async fn run() -> Result<()> {
                         author_batch_size,
                         per_author_event_limit,
                         fetch_timeout: Duration::from_secs(fetch_timeout_secs),
+                        global_relay_scan,
+                        relay_page_size,
+                        max_relay_pages,
                         kinds: (!kinds.is_empty()).then_some(kinds),
                     },
                 )
