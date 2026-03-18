@@ -27,8 +27,8 @@ max_write_distance = 2\n",
     );
     fs::write(config_dir.join("config.toml"), config).unwrap();
 
-    let ndb = hashtree_cli::socialgraph::init_ndb(&data_dir).unwrap();
-    hashtree_cli::socialgraph::set_social_graph_root(&ndb, &root_pk);
+    let graph_store = hashtree_cli::socialgraph::open_social_graph_store(&data_dir).unwrap();
+    hashtree_cli::socialgraph::set_social_graph_root(&graph_store, &root_pk);
     thread::sleep(Duration::from_millis(100));
 
     let alice_keys = nostr::Keys::generate();
@@ -37,7 +37,7 @@ max_write_distance = 2\n",
     let root_follows_alice = EventBuilder::new(Kind::ContactList, "", vec![alice_tag])
         .to_event(&root_keys)
         .unwrap();
-    hashtree_cli::socialgraph::ingest_event(&ndb, "sub1", &root_follows_alice.as_json());
+    hashtree_cli::socialgraph::ingest_event(&graph_store, "sub1", &root_follows_alice.as_json());
 
     let charlie_keys = nostr::Keys::generate();
     let charlie_pk = charlie_keys.public_key().to_bytes();
@@ -45,15 +45,15 @@ max_write_distance = 2\n",
     let alice_follows_charlie = EventBuilder::new(Kind::ContactList, "", vec![charlie_tag.clone()])
         .to_event(&alice_keys)
         .unwrap();
-    hashtree_cli::socialgraph::ingest_event(&ndb, "sub2", &alice_follows_charlie.as_json());
+    hashtree_cli::socialgraph::ingest_event(&graph_store, "sub2", &alice_follows_charlie.as_json());
 
     let root_mutes_charlie = EventBuilder::new(Kind::Custom(10000), "", vec![charlie_tag])
         .to_event(&root_keys)
         .unwrap();
-    hashtree_cli::socialgraph::ingest_event(&ndb, "sub3", &root_mutes_charlie.as_json());
+    hashtree_cli::socialgraph::ingest_event(&graph_store, "sub3", &root_mutes_charlie.as_json());
 
     thread::sleep(Duration::from_millis(200));
-    drop(ndb);
+    drop(graph_store);
 
     let alice_note = EventBuilder::new(Kind::TextNote, "hello from alice", vec![])
         .to_event(&alice_keys)

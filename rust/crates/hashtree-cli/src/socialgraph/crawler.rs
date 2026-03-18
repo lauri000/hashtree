@@ -12,7 +12,7 @@ const GRAPH_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct SocialGraphCrawler {
-    ndb: Arc<dyn SocialGraphBackend>,
+    graph_store: Arc<dyn SocialGraphBackend>,
     spambox: Option<Arc<dyn SocialGraphBackend>>,
     keys: nostr::Keys,
     relays: Vec<String>,
@@ -24,13 +24,13 @@ pub struct SocialGraphCrawler {
 
 impl SocialGraphCrawler {
     pub fn new(
-        ndb: Arc<dyn SocialGraphBackend>,
+        graph_store: Arc<dyn SocialGraphBackend>,
         keys: nostr::Keys,
         relays: Vec<String>,
         max_depth: u32,
     ) -> Self {
         Self {
-            ndb,
+            graph_store,
             spambox: None,
             keys,
             relays,
@@ -66,13 +66,17 @@ impl SocialGraphCrawler {
             return true;
         }
 
-        super::get_follow_distance(self.ndb.as_ref(), pk_bytes)
+        super::get_follow_distance(self.graph_store.as_ref(), pk_bytes)
             .map(|distance| distance <= self.max_depth)
             .unwrap_or(false)
     }
 
-    fn ingest_event_into(&self, ndb: &(impl SocialGraphBackend + ?Sized), event: &nostr::Event) {
-        if let Err(err) = super::ingest_parsed_event(ndb, event) {
+    fn ingest_event_into(
+        &self,
+        graph_store: &(impl SocialGraphBackend + ?Sized),
+        event: &nostr::Event,
+    ) {
+        if let Err(err) = super::ingest_parsed_event(graph_store, event) {
             tracing::debug!("Failed to ingest crawler event: {}", err);
         }
     }
@@ -100,7 +104,7 @@ impl SocialGraphCrawler {
                     continue;
                 }
 
-                let existing_follows = super::get_follows(self.ndb.as_ref(), &pk_bytes);
+                let existing_follows = super::get_follows(self.graph_store.as_ref(), &pk_bytes);
                 if !existing_follows.is_empty() {
                     fetched_contact_lists.insert(pk_bytes);
                     continue;
@@ -181,13 +185,13 @@ impl SocialGraphCrawler {
                 .fetch_graph_events_for_pubkeys(client, chunk, since)
                 .await;
             for event in &events {
-                self.ingest_event_into(self.ndb.as_ref(), event);
+                self.ingest_event_into(self.graph_store.as_ref(), event);
             }
         }
     }
 
     fn authors_to_fetch_at_distance(&self, distance: u32) -> (Vec<[u8; 32]>, Vec<[u8; 32]>) {
-        let Ok(users) = self.ndb.users_by_follow_distance(distance) else {
+        let Ok(users) = self.graph_store.users_by_follow_distance(distance) else {
             return (Vec::new(), Vec::new());
         };
         if self.full_recrawl {
@@ -198,7 +202,12 @@ impl SocialGraphCrawler {
         let mut known_authors = Vec::new();
         let refresh_known_authors = self.known_since.is_some();
         for pk_bytes in users {
-            match self.ndb.follow_list_created_at(&pk_bytes).ok().flatten() {
+            match self
+                .graph_store
+                .follow_list_created_at(&pk_bytes)
+                .ok()
+                .flatten()
+            {
                 Some(_) if refresh_known_authors => known_authors.push(pk_bytes),
                 Some(_) => {}
                 None => new_authors.push(pk_bytes),
@@ -297,7 +306,7 @@ impl SocialGraphCrawler {
 
         let pk_bytes = event.pubkey.to_bytes();
         if self.is_within_social_graph(&pk_bytes) {
-            self.ingest_event_into(self.ndb.as_ref(), event);
+            self.ingest_event_into(self.graph_store.as_ref(), event);
             return;
         }
 
@@ -584,14 +593,15 @@ mod tests {
     async fn test_crawler_routes_untrusted_to_spambox() {
         let _guard = crate::socialgraph::test_lock();
         let tmp = TempDir::new().unwrap();
-        let ndb = crate::socialgraph::init_ndb(tmp.path()).unwrap();
+        let graph_store = crate::socialgraph::open_social_graph_store(tmp.path()).unwrap();
         let spambox =
-            crate::socialgraph::init_ndb_at_path(&tmp.path().join("spambox"), None).unwrap();
+            crate::socialgraph::open_social_graph_store_at_path(&tmp.path().join("spambox"), None)
+                .unwrap();
 
         let root_keys = nostr::Keys::generate();
         let root_pk = root_keys.public_key().to_bytes();
-        crate::socialgraph::set_social_graph_root(&ndb, &root_pk);
-        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = ndb.clone();
+        crate::socialgraph::set_social_graph_root(&graph_store, &root_pk);
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
         let spambox_backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = spambox.clone();
 
         let crawler = SocialGraphCrawler::new(backend, root_keys.clone(), vec![], 2)
@@ -606,7 +616,7 @@ mod tests {
         crawler.handle_incoming_event(&event);
 
         let unknown_pk = unknown_keys.public_key().to_bytes();
-        assert!(crate::socialgraph::get_follows(&ndb, &unknown_pk).is_empty());
+        assert!(crate::socialgraph::get_follows(&graph_store, &unknown_pk).is_empty());
         assert_eq!(
             crate::socialgraph::get_follows(&spambox, &unknown_pk),
             vec![root_pk]
@@ -618,12 +628,12 @@ mod tests {
     async fn test_crawler_batches_graph_fetches_by_author_chunk() {
         let _guard = crate::socialgraph::test_lock();
         let tmp = TempDir::new().unwrap();
-        let ndb = crate::socialgraph::init_ndb(tmp.path()).unwrap();
+        let graph_store = crate::socialgraph::open_social_graph_store(tmp.path()).unwrap();
 
         let root_keys = nostr::Keys::generate();
         let root_pk = root_keys.public_key().to_bytes();
-        crate::socialgraph::set_social_graph_root(&ndb, &root_pk);
-        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = ndb.clone();
+        crate::socialgraph::set_social_graph_root(&graph_store, &root_pk);
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
 
         let alice_keys = nostr::Keys::generate();
         let bob_keys = nostr::Keys::generate();
@@ -666,8 +676,8 @@ mod tests {
         let bob_pk = bob_keys.public_key().to_bytes();
         let carol_pk = carol_keys.public_key().to_bytes();
         wait_until(Duration::from_secs(5), || {
-            let root_follows = crate::socialgraph::get_follows(&ndb, &root_pk);
-            let alice_follows = crate::socialgraph::get_follows(&ndb, &alice_pk);
+            let root_follows = crate::socialgraph::get_follows(&graph_store, &root_pk);
+            let alice_follows = crate::socialgraph::get_follows(&graph_store, &alice_pk);
             root_follows.contains(&alice_pk)
                 && root_follows.contains(&bob_pk)
                 && alice_follows.contains(&carol_pk)
@@ -690,12 +700,12 @@ mod tests {
     async fn test_crawler_expands_from_existing_graph_without_root_refetch() {
         let _guard = crate::socialgraph::test_lock();
         let tmp = TempDir::new().unwrap();
-        let ndb = crate::socialgraph::init_ndb(tmp.path()).unwrap();
+        let graph_store = crate::socialgraph::open_social_graph_store(tmp.path()).unwrap();
 
         let root_keys = nostr::Keys::generate();
         let root_pk = root_keys.public_key().to_bytes();
-        crate::socialgraph::set_social_graph_root(&ndb, &root_pk);
-        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = ndb.clone();
+        crate::socialgraph::set_social_graph_root(&graph_store, &root_pk);
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
 
         let alice_keys = nostr::Keys::generate();
         let bob_keys = nostr::Keys::generate();
@@ -712,7 +722,7 @@ mod tests {
         .custom_created_at(nostr::Timestamp::from(10))
         .to_event(&root_keys)
         .unwrap();
-        crate::socialgraph::ingest_parsed_event(&ndb, &root_event).unwrap();
+        crate::socialgraph::ingest_parsed_event(&graph_store, &root_event).unwrap();
 
         let alice_event = EventBuilder::new(
             Kind::ContactList,
@@ -739,7 +749,7 @@ mod tests {
         let alice_pk = alice_keys.public_key().to_bytes();
         let carol_pk = carol_keys.public_key().to_bytes();
         wait_until(Duration::from_secs(5), || {
-            crate::socialgraph::get_follows(&ndb, &alice_pk).contains(&carol_pk)
+            crate::socialgraph::get_follows(&graph_store, &alice_pk).contains(&carol_pk)
         })
         .await;
 
@@ -768,12 +778,12 @@ mod tests {
     async fn test_crawler_full_recrawl_refetches_root() {
         let _guard = crate::socialgraph::test_lock();
         let tmp = TempDir::new().unwrap();
-        let ndb = crate::socialgraph::init_ndb(tmp.path()).unwrap();
+        let graph_store = crate::socialgraph::open_social_graph_store(tmp.path()).unwrap();
 
         let root_keys = nostr::Keys::generate();
         let root_pk = root_keys.public_key().to_bytes();
-        crate::socialgraph::set_social_graph_root(&ndb, &root_pk);
-        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = ndb.clone();
+        crate::socialgraph::set_social_graph_root(&graph_store, &root_pk);
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
 
         let alice_keys = nostr::Keys::generate();
         let bob_keys = nostr::Keys::generate();
@@ -789,7 +799,7 @@ mod tests {
         .custom_created_at(nostr::Timestamp::from(10))
         .to_event(&root_keys)
         .unwrap();
-        crate::socialgraph::ingest_parsed_event(&ndb, &root_event).unwrap();
+        crate::socialgraph::ingest_parsed_event(&graph_store, &root_event).unwrap();
 
         let relay = TestRelay::new(vec![root_event]);
         let crawler = SocialGraphCrawler::new(backend, root_keys.clone(), vec![relay.url()], 1)
@@ -824,12 +834,12 @@ mod tests {
     async fn test_crawler_revisits_known_authors_with_since_cursor() {
         let _guard = crate::socialgraph::test_lock();
         let tmp = TempDir::new().unwrap();
-        let ndb = crate::socialgraph::init_ndb(tmp.path()).unwrap();
+        let graph_store = crate::socialgraph::open_social_graph_store(tmp.path()).unwrap();
 
         let root_keys = nostr::Keys::generate();
         let root_pk = root_keys.public_key().to_bytes();
-        crate::socialgraph::set_social_graph_root(&ndb, &root_pk);
-        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = ndb.clone();
+        crate::socialgraph::set_social_graph_root(&graph_store, &root_pk);
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
 
         let alice_keys = nostr::Keys::generate();
         let carol_keys = nostr::Keys::generate();
@@ -843,7 +853,7 @@ mod tests {
         .custom_created_at(nostr::Timestamp::from(10))
         .to_event(&root_keys)
         .unwrap();
-        crate::socialgraph::ingest_parsed_event(&ndb, &root_event).unwrap();
+        crate::socialgraph::ingest_parsed_event(&graph_store, &root_event).unwrap();
 
         let alice_old_event = EventBuilder::new(
             Kind::ContactList,
@@ -853,7 +863,7 @@ mod tests {
         .custom_created_at(nostr::Timestamp::from(11))
         .to_event(&alice_keys)
         .unwrap();
-        crate::socialgraph::ingest_parsed_event(&ndb, &alice_old_event).unwrap();
+        crate::socialgraph::ingest_parsed_event(&graph_store, &alice_old_event).unwrap();
 
         let alice_new_event = EventBuilder::new(
             Kind::ContactList,
@@ -880,7 +890,7 @@ mod tests {
         let alice_pk = alice_keys.public_key().to_bytes();
         let dave_pk = dave_keys.public_key().to_bytes();
         wait_until(Duration::from_secs(5), || {
-            crate::socialgraph::get_follows(&ndb, &alice_pk).contains(&dave_pk)
+            crate::socialgraph::get_follows(&graph_store, &alice_pk).contains(&dave_pk)
         })
         .await;
 
@@ -889,7 +899,7 @@ mod tests {
 
         let requested_authors = relay.requested_authors();
         assert!(
-            crate::socialgraph::get_follows(&ndb, &alice_pk).contains(&dave_pk),
+            crate::socialgraph::get_follows(&graph_store, &alice_pk).contains(&dave_pk),
             "expected incremental crawl to refresh known author follow list"
         );
         assert!(
@@ -907,12 +917,12 @@ mod tests {
     async fn test_crawler_warm_once_completes_initial_sync_without_shutdown() {
         let _guard = crate::socialgraph::test_lock();
         let tmp = TempDir::new().unwrap();
-        let ndb = crate::socialgraph::init_ndb(tmp.path()).unwrap();
+        let graph_store = crate::socialgraph::open_social_graph_store(tmp.path()).unwrap();
 
         let root_keys = nostr::Keys::generate();
         let root_pk = root_keys.public_key().to_bytes();
-        crate::socialgraph::set_social_graph_root(&ndb, &root_pk);
-        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = ndb.clone();
+        crate::socialgraph::set_social_graph_root(&graph_store, &root_pk);
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
 
         let alice_keys = nostr::Keys::generate();
         let bob_keys = nostr::Keys::generate();
@@ -948,7 +958,7 @@ mod tests {
             "warm_once should complete finite sync promptly"
         );
         assert!(
-            crate::socialgraph::get_follows(&ndb, &alice_pk).contains(&bob_pk),
+            crate::socialgraph::get_follows(&graph_store, &alice_pk).contains(&bob_pk),
             "expected warm_once to ingest distance-1 follow list"
         );
     }

@@ -1463,8 +1463,8 @@ pub async fn socialgraph_snapshot(
             .into_response();
     }
 
-    let ndb = match &state.social_graph_store {
-        Some(ndb) => Arc::clone(ndb),
+    let social_graph_store = match &state.social_graph_store {
+        Some(store) => Arc::clone(store),
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1492,7 +1492,7 @@ pub async fn socialgraph_snapshot(
     };
 
     let chunks = match tokio::task::spawn_blocking(move || {
-        socialgraph::snapshot::build_snapshot_chunks(ndb.as_ref(), &root, &options)
+        socialgraph::snapshot::build_snapshot_chunks(social_graph_store.as_ref(), &root, &options)
     })
     .await
     {

@@ -44,7 +44,7 @@ pub struct SocialGraphStats {
     pub enabled: bool,
 }
 
-pub struct Ndb {
+pub struct SocialGraphStore {
     graph: StdMutex<HeedSocialGraph>,
     event_store: NostrEventStore<StorageRouter>,
     events_root_path: PathBuf,
@@ -73,25 +73,31 @@ pub fn test_lock() -> TestLockGuard {
     NDB_TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
 }
 
-pub fn init_ndb(data_dir: &Path) -> Result<Arc<Ndb>> {
-    init_ndb_with_mapsize(data_dir, None)
+pub fn open_social_graph_store(data_dir: &Path) -> Result<Arc<SocialGraphStore>> {
+    open_social_graph_store_with_mapsize(data_dir, None)
 }
 
-pub fn init_ndb_with_mapsize(data_dir: &Path, mapsize_bytes: Option<u64>) -> Result<Arc<Ndb>> {
+pub fn open_social_graph_store_with_mapsize(
+    data_dir: &Path,
+    mapsize_bytes: Option<u64>,
+) -> Result<Arc<SocialGraphStore>> {
     let db_dir = data_dir.join("socialgraph");
-    init_ndb_at_path(&db_dir, mapsize_bytes)
+    open_social_graph_store_at_path(&db_dir, mapsize_bytes)
 }
 
-pub fn init_ndb_with_store(
+pub fn open_social_graph_store_with_storage(
     data_dir: &Path,
     store: Arc<StorageRouter>,
     mapsize_bytes: Option<u64>,
-) -> Result<Arc<Ndb>> {
+) -> Result<Arc<SocialGraphStore>> {
     let db_dir = data_dir.join("socialgraph");
-    init_ndb_at_path_with_store(&db_dir, store, mapsize_bytes)
+    open_social_graph_store_at_path_with_storage(&db_dir, store, mapsize_bytes)
 }
 
-pub fn init_ndb_at_path(db_dir: &Path, mapsize_bytes: Option<u64>) -> Result<Arc<Ndb>> {
+pub fn open_social_graph_store_at_path(
+    db_dir: &Path,
+    mapsize_bytes: Option<u64>,
+) -> Result<Arc<SocialGraphStore>> {
     let config = hashtree_config::Config::load_or_default();
     let backend = &config.storage.backend;
     let local_store = Arc::new(
@@ -99,27 +105,27 @@ pub fn init_ndb_at_path(db_dir: &Path, mapsize_bytes: Option<u64>) -> Result<Arc
             .map_err(|err| anyhow::anyhow!("Failed to create social graph blob store: {err}"))?,
     );
     let store = Arc::new(StorageRouter::new(local_store));
-    init_ndb_at_path_with_store(db_dir, store, mapsize_bytes)
+    open_social_graph_store_at_path_with_storage(db_dir, store, mapsize_bytes)
 }
 
-pub fn init_ndb_at_path_with_store(
+pub fn open_social_graph_store_at_path_with_storage(
     db_dir: &Path,
     store: Arc<StorageRouter>,
     _mapsize_bytes: Option<u64>,
-) -> Result<Arc<Ndb>> {
+) -> Result<Arc<SocialGraphStore>> {
     std::fs::create_dir_all(db_dir)?;
     let graph = HeedSocialGraph::open(db_dir, DEFAULT_ROOT_HEX)
         .context("open nostr-social-graph heed backend")?;
 
-    Ok(Arc::new(Ndb {
+    Ok(Arc::new(SocialGraphStore {
         graph: StdMutex::new(graph),
         event_store: NostrEventStore::new(store),
         events_root_path: db_dir.join(EVENTS_ROOT_FILE),
     }))
 }
 
-pub fn set_social_graph_root(ndb: &Ndb, pk_bytes: &[u8; 32]) {
-    if let Err(err) = ndb.set_root(pk_bytes) {
+pub fn set_social_graph_root(store: &SocialGraphStore, pk_bytes: &[u8; 32]) {
+    if let Err(err) = store.set_root(pk_bytes) {
         tracing::warn!("Failed to set social graph root: {err}");
     }
 }
@@ -178,7 +184,7 @@ pub fn query_events(
     backend.query_events(filter, limit).unwrap_or_default()
 }
 
-impl Ndb {
+impl SocialGraphStore {
     fn set_root(&self, root: &[u8; 32]) -> Result<()> {
         let root_hex = hex::encode(root);
         let mut graph = self.graph.lock().unwrap();
@@ -450,41 +456,41 @@ impl Ndb {
     }
 }
 
-impl SocialGraphBackend for Ndb {
+impl SocialGraphBackend for SocialGraphStore {
     fn stats(&self) -> Result<SocialGraphStats> {
-        Ndb::stats(self)
+        SocialGraphStore::stats(self)
     }
 
     fn users_by_follow_distance(&self, distance: u32) -> Result<Vec<[u8; 32]>> {
-        Ndb::users_by_follow_distance(self, distance)
+        SocialGraphStore::users_by_follow_distance(self, distance)
     }
 
     fn follow_distance(&self, pk_bytes: &[u8; 32]) -> Result<Option<u32>> {
-        Ndb::follow_distance(self, pk_bytes)
+        SocialGraphStore::follow_distance(self, pk_bytes)
     }
 
     fn follow_list_created_at(&self, owner: &[u8; 32]) -> Result<Option<u64>> {
-        Ndb::follow_list_created_at(self, owner)
+        SocialGraphStore::follow_list_created_at(self, owner)
     }
 
     fn followed_targets(&self, owner: &[u8; 32]) -> Result<UserSet> {
-        Ndb::followed_targets(self, owner)
+        SocialGraphStore::followed_targets(self, owner)
     }
 
     fn is_overmuted_user(&self, user_pk: &[u8; 32], threshold: f64) -> Result<bool> {
-        Ndb::is_overmuted_user(self, user_pk, threshold)
+        SocialGraphStore::is_overmuted_user(self, user_pk, threshold)
     }
 
     fn snapshot_chunks(&self, root: &[u8; 32], options: &BinaryBudget) -> Result<Vec<Bytes>> {
-        Ndb::snapshot_chunks(self, root, options)
+        SocialGraphStore::snapshot_chunks(self, root, options)
     }
 
     fn ingest_event(&self, event: &Event) -> Result<()> {
-        Ndb::ingest_event(self, event)
+        SocialGraphStore::ingest_event(self, event)
     }
 
     fn query_events(&self, filter: &Filter, limit: usize) -> Result<Vec<Event>> {
-        Ndb::query_events(self, filter, limit)
+        SocialGraphStore::query_events(self, filter, limit)
     }
 }
 
@@ -635,35 +641,35 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_init_ndb() {
+    fn test_open_social_graph_store() {
         let _guard = test_lock();
         let tmp = TempDir::new().unwrap();
-        let ndb = init_ndb(tmp.path()).unwrap();
-        assert_eq!(Arc::strong_count(&ndb), 1);
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        assert_eq!(Arc::strong_count(&graph_store), 1);
     }
 
     #[test]
     fn test_set_root_and_get_follow_distance() {
         let _guard = test_lock();
         let tmp = TempDir::new().unwrap();
-        let ndb = init_ndb(tmp.path()).unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
         let root_pk = [1u8; 32];
-        set_social_graph_root(&ndb, &root_pk);
-        assert_eq!(get_follow_distance(&ndb, &root_pk), Some(0));
+        set_social_graph_root(&graph_store, &root_pk);
+        assert_eq!(get_follow_distance(&graph_store, &root_pk), Some(0));
     }
 
     #[test]
     fn test_ingest_event_updates_follows_and_mutes() {
         let _guard = test_lock();
         let tmp = TempDir::new().unwrap();
-        let ndb = init_ndb(tmp.path()).unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
 
         let root_keys = Keys::generate();
         let alice_keys = Keys::generate();
         let bob_keys = Keys::generate();
 
         let root_pk = root_keys.public_key().to_bytes();
-        set_social_graph_root(&ndb, &root_pk);
+        set_social_graph_root(&graph_store, &root_pk);
 
         let follow = EventBuilder::new(
             Kind::ContactList,
@@ -673,7 +679,7 @@ mod tests {
         .custom_created_at(Timestamp::from_secs(10))
         .to_event(&root_keys)
         .unwrap();
-        ingest_event(&ndb, "follow", &follow.as_json());
+        ingest_event(&graph_store, "follow", &follow.as_json());
 
         let mute = EventBuilder::new(
             Kind::MuteList,
@@ -683,14 +689,14 @@ mod tests {
         .custom_created_at(Timestamp::from_secs(11))
         .to_event(&root_keys)
         .unwrap();
-        ingest_event(&ndb, "mute", &mute.as_json());
+        ingest_event(&graph_store, "mute", &mute.as_json());
 
         assert_eq!(
-            get_follow_distance(&ndb, &alice_keys.public_key().to_bytes()),
+            get_follow_distance(&graph_store, &alice_keys.public_key().to_bytes()),
             Some(1)
         );
         assert!(is_overmuted(
-            &ndb,
+            &graph_store,
             &root_pk,
             &bob_keys.public_key().to_bytes(),
             1.0
@@ -701,7 +707,7 @@ mod tests {
     fn test_query_events_by_author() {
         let _guard = test_lock();
         let tmp = TempDir::new().unwrap();
-        let ndb = init_ndb(tmp.path()).unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
         let keys = Keys::generate();
 
         let older = EventBuilder::new(Kind::TextNote, "older", [])
@@ -713,11 +719,11 @@ mod tests {
             .to_event(&keys)
             .unwrap();
 
-        ingest_parsed_event(&ndb, &older).unwrap();
-        ingest_parsed_event(&ndb, &newer).unwrap();
+        ingest_parsed_event(&graph_store, &older).unwrap();
+        ingest_parsed_event(&graph_store, &newer).unwrap();
 
         let filter = Filter::new().author(keys.public_key()).kind(Kind::TextNote);
-        let events = query_events(&ndb, &filter, 10);
+        let events = query_events(&graph_store, &filter, 10);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].id, newer.id);
         assert_eq!(events[1].id, older.id);
@@ -732,7 +738,7 @@ mod tests {
         let other_keys = Keys::generate();
 
         {
-            let ndb = init_ndb_at_path(&db_dir, None).unwrap();
+            let graph_store = open_social_graph_store_at_path(&db_dir, None).unwrap();
             let older = EventBuilder::new(Kind::TextNote, "older", [])
                 .custom_created_at(Timestamp::from_secs(5))
                 .to_event(&keys)
@@ -746,12 +752,12 @@ mod tests {
                 .to_event(&other_keys)
                 .unwrap();
 
-            ingest_parsed_event(&ndb, &older).unwrap();
-            ingest_parsed_event(&ndb, &newer).unwrap();
-            ingest_parsed_event(&ndb, &latest).unwrap();
+            ingest_parsed_event(&graph_store, &older).unwrap();
+            ingest_parsed_event(&graph_store, &newer).unwrap();
+            ingest_parsed_event(&graph_store, &latest).unwrap();
         }
 
-        let reopened = init_ndb_at_path(&db_dir, None).unwrap();
+        let reopened = open_social_graph_store_at_path(&db_dir, None).unwrap();
 
         let author_filter = Filter::new().author(keys.public_key()).kind(Kind::TextNote);
         let author_events = query_events(&reopened, &author_filter, 10);

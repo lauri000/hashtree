@@ -114,7 +114,7 @@ pub(crate) async fn run() -> Result<()> {
             }
 
             // Initialize the local social graph store.
-            let ndb = hashtree_cli::socialgraph::init_ndb_with_store(
+            let graph_store = hashtree_cli::socialgraph::open_social_graph_store_with_storage(
                 &data_dir,
                 store.store_arc(),
                 Some(nostr_db_max_bytes),
@@ -128,9 +128,12 @@ pub(crate) async fn run() -> Result<()> {
             } else {
                 pk_bytes
             };
-            hashtree_cli::socialgraph::set_social_graph_root(&ndb, &social_graph_root_bytes);
+            hashtree_cli::socialgraph::set_social_graph_root(
+                &graph_store,
+                &social_graph_root_bytes,
+            );
             let social_graph_store: Arc<dyn hashtree_cli::socialgraph::SocialGraphBackend> =
-                ndb.clone();
+                graph_store.clone();
 
             // Build social graph access control
             let social_graph = Arc::new(hashtree_cli::socialgraph::SocialGraphAccessControl::new(
@@ -157,11 +160,11 @@ pub(crate) async fn run() -> Result<()> {
                 None
             } else {
                 let spam_dir = data_dir.join("socialgraph_spambox");
-                match hashtree_cli::socialgraph::init_ndb_at_path(
+                match hashtree_cli::socialgraph::open_social_graph_store_at_path(
                     &spam_dir,
                     Some(spambox_db_max_bytes),
                 ) {
-                    Ok(db) => Some(db),
+                    Ok(store) => Some(store),
                     Err(err) => {
                         tracing::warn!("Failed to open social graph spambox for crawler: {}", err);
                         None
@@ -170,7 +173,8 @@ pub(crate) async fn run() -> Result<()> {
             };
 
             // Spawn social graph crawler with 5s startup delay
-            let crawler_store: Arc<dyn hashtree_cli::socialgraph::SocialGraphBackend> = ndb.clone();
+            let crawler_store: Arc<dyn hashtree_cli::socialgraph::SocialGraphBackend> =
+                graph_store.clone();
             let crawler_keys = keys.clone();
             let crawler_relays = config.nostr.relays.clone();
             let crawler_depth = config.nostr.crawl_depth;
@@ -545,72 +549,72 @@ pub(crate) async fn run() -> Result<()> {
                 // Store and capture cid/hash/key for potential publishing
                 let (cid_for_push, hash_hex, key_hex): (String, String, Option<String>) =
                     if unencrypted {
-                    let hash_hex = if is_dir {
-                        store
-                            .upload_dir_with_options(&path, !no_ignore)
-                            .context("Failed to add directory")?
+                        let hash_hex = if is_dir {
+                            store
+                                .upload_dir_with_options(&path, !no_ignore)
+                                .context("Failed to add directory")?
+                        } else {
+                            store.upload_file(&path).context("Failed to add file")?
+                        };
+                        let hash = from_hex(&hash_hex).context("Invalid hash")?;
+                        let nhash = nhash_encode(&hash)
+                            .map_err(|e| anyhow::anyhow!("Failed to encode nhash: {}", e))?;
+                        println!("added {}", path.display());
+                        if is_dir {
+                            println!("  url:   {}", nhash);
+                        } else {
+                            let filename = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            println!("  url:   {}/{}", nhash, filename);
+                        }
+                        println!("  hash:  {}", hash_hex);
+                        (hash_hex.clone(), hash_hex, None)
                     } else {
-                        store.upload_file(&path).context("Failed to add file")?
+                        let cid_str = if is_dir {
+                            store
+                                .upload_dir_encrypted_with_options(&path, !no_ignore)
+                                .context("Failed to add directory")?
+                        } else {
+                            store
+                                .upload_file_encrypted(&path)
+                                .context("Failed to add file")?
+                        };
+                        // Parse cid_str which may be "hash" or "hash:key"
+                        let (hash_hex, key_hex) = if let Some((h, k)) = cid_str.split_once(':') {
+                            (h.to_string(), Some(k.to_string()))
+                        } else {
+                            (cid_str.clone(), None)
+                        };
+                        let hash = from_hex(&hash_hex).context("Invalid hash")?;
+                        let key = key_hex
+                            .as_ref()
+                            .map(|k| key_from_hex(k))
+                            .transpose()
+                            .map_err(|e| anyhow::anyhow!("Invalid key: {}", e))?;
+                        let nhash_data = NHashData {
+                            hash,
+                            decrypt_key: key,
+                        };
+                        let nhash = nhash_encode_full(&nhash_data)
+                            .map_err(|e| anyhow::anyhow!("Failed to encode nhash: {}", e))?;
+                        println!("added {}", path.display());
+                        if is_dir {
+                            println!("  url:   {}", nhash);
+                        } else {
+                            let filename = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            println!("  url:   {}/{}", nhash, filename);
+                        }
+                        println!("  hash:  {}", hash_hex);
+                        if let Some(ref k) = key_hex {
+                            println!("  key:   {}", k);
+                        }
+                        (cid_str, hash_hex, key_hex)
                     };
-                    let hash = from_hex(&hash_hex).context("Invalid hash")?;
-                    let nhash = nhash_encode(&hash)
-                        .map_err(|e| anyhow::anyhow!("Failed to encode nhash: {}", e))?;
-                    println!("added {}", path.display());
-                    if is_dir {
-                        println!("  url:   {}", nhash);
-                    } else {
-                        let filename = path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        println!("  url:   {}/{}", nhash, filename);
-                    }
-                    println!("  hash:  {}", hash_hex);
-                    (hash_hex.clone(), hash_hex, None)
-                } else {
-                    let cid_str = if is_dir {
-                        store
-                            .upload_dir_encrypted_with_options(&path, !no_ignore)
-                            .context("Failed to add directory")?
-                    } else {
-                        store
-                            .upload_file_encrypted(&path)
-                            .context("Failed to add file")?
-                    };
-                    // Parse cid_str which may be "hash" or "hash:key"
-                    let (hash_hex, key_hex) = if let Some((h, k)) = cid_str.split_once(':') {
-                        (h.to_string(), Some(k.to_string()))
-                    } else {
-                        (cid_str.clone(), None)
-                    };
-                    let hash = from_hex(&hash_hex).context("Invalid hash")?;
-                    let key = key_hex
-                        .as_ref()
-                        .map(|k| key_from_hex(k))
-                        .transpose()
-                        .map_err(|e| anyhow::anyhow!("Invalid key: {}", e))?;
-                    let nhash_data = NHashData {
-                        hash,
-                        decrypt_key: key,
-                    };
-                    let nhash = nhash_encode_full(&nhash_data)
-                        .map_err(|e| anyhow::anyhow!("Failed to encode nhash: {}", e))?;
-                    println!("added {}", path.display());
-                    if is_dir {
-                        println!("  url:   {}", nhash);
-                    } else {
-                        let filename = path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        println!("  url:   {}/{}", nhash, filename);
-                    }
-                    println!("  hash:  {}", hash_hex);
-                    if let Some(ref k) = key_hex {
-                        println!("  key:   {}", k);
-                    }
-                    (cid_str, hash_hex, key_hex)
-                };
 
                 // Index tree for eviction tracking (own content = highest priority)
                 // Get user's npub as owner
@@ -712,7 +716,7 @@ pub(crate) async fn run() -> Result<()> {
             output,
         } => {
             use hashtree_cli::{FetchConfig, Fetcher};
-            use hashtree_core::{Cid, to_hex};
+            use hashtree_core::{to_hex, Cid};
 
             // Resolve to Cid (raw bytes, no hex conversion needed for nhash)
             let resolved = resolve_cid_input(&cid_input).await?;

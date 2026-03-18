@@ -45,20 +45,20 @@ mod imp {
     use tracing::warn;
 
     struct NostrStore {
-        ndb: Arc<dyn SocialGraphBackend>,
+        store: Arc<dyn SocialGraphBackend>,
     }
 
     impl NostrStore {
-        fn new(ndb: Arc<dyn SocialGraphBackend>) -> Self {
-            Self { ndb }
+        fn new(store: Arc<dyn SocialGraphBackend>) -> Self {
+            Self { store }
         }
 
         fn ingest(&self, event: &Event) -> Result<()> {
-            crate::socialgraph::ingest_parsed_event(self.ndb.as_ref(), event)
+            crate::socialgraph::ingest_parsed_event(self.store.as_ref(), event)
         }
 
         fn query(&self, filter: &NostrFilter, limit: usize) -> Vec<Event> {
-            crate::socialgraph::query_events(self.ndb.as_ref(), filter, limit)
+            crate::socialgraph::query_events(self.store.as_ref(), filter, limit)
         }
     }
 
@@ -149,7 +149,7 @@ mod imp {
     }
 
     enum SpamboxStore {
-        Ndb(NostrStore),
+        Persistent(NostrStore),
         Memory(MemorySpambox),
     }
 
@@ -179,7 +179,7 @@ mod imp {
     impl SpamboxStore {
         async fn ingest(&self, event: &Event) -> bool {
             match self {
-                SpamboxStore::Ndb(store) => store.ingest(event).is_ok(),
+                SpamboxStore::Persistent(store) => store.ingest(event).is_ok(),
                 SpamboxStore::Memory(store) => store.ingest(event).await,
             }
         }
@@ -198,7 +198,7 @@ mod imp {
 
     impl NostrRelay {
         pub fn new(
-            trusted_ndb: Arc<dyn SocialGraphBackend>,
+            trusted_store: Arc<dyn SocialGraphBackend>,
             data_dir: PathBuf,
             social_graph: Option<Arc<SocialGraphAccessControl>>,
             config: NostrRelayConfig,
@@ -209,8 +209,11 @@ mod imp {
                 )))
             } else {
                 let spam_dir = data_dir.join("socialgraph_spambox");
-                match socialgraph::init_ndb_at_path(&spam_dir, Some(config.spambox_db_max_bytes)) {
-                    Ok(ndb) => Some(SpamboxStore::Ndb(NostrStore::new(ndb))),
+                match socialgraph::open_social_graph_store_at_path(
+                    &spam_dir,
+                    Some(config.spambox_db_max_bytes),
+                ) {
+                    Ok(store) => Some(SpamboxStore::Persistent(NostrStore::new(store))),
                     Err(err) => {
                         warn!(
                             "Failed to open social graph spambox (falling back to memory): {}",
@@ -227,7 +230,7 @@ mod imp {
 
             Ok(Self {
                 config,
-                trusted: NostrStore::new(trusted_ndb),
+                trusted: NostrStore::new(trusted_store),
                 spambox,
                 social_graph,
                 clients: Mutex::new(HashMap::new()),
@@ -574,14 +577,17 @@ mod tests {
     #[tokio::test]
     async fn relay_stores_and_serves_events() -> Result<()> {
         let tmp = TempDir::new()?;
-        let ndb = {
+        let graph_store = {
             let _guard = crate::socialgraph::test_lock();
-            crate::socialgraph::init_ndb_with_mapsize(tmp.path(), Some(128 * 1024 * 1024))?
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
         };
         let keys = Keys::generate();
         let mut allowed = HashSet::new();
         allowed.insert(keys.public_key().to_hex());
-        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = ndb.clone();
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
 
         let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
             Arc::clone(&backend),
@@ -661,14 +667,17 @@ mod tests {
     #[tokio::test]
     async fn relay_spambox_does_not_serve_untrusted_events() -> Result<()> {
         let tmp = TempDir::new()?;
-        let ndb = {
+        let graph_store = {
             let _guard = crate::socialgraph::test_lock();
-            crate::socialgraph::init_ndb_with_mapsize(tmp.path(), Some(128 * 1024 * 1024))?
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
         };
 
-        crate::socialgraph::set_social_graph_root(&ndb, &[1u8; 32]);
+        crate::socialgraph::set_social_graph_root(&graph_store, &[1u8; 32]);
         std::thread::sleep(std::time::Duration::from_millis(100));
-        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = ndb.clone();
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
 
         let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
             Arc::clone(&backend),

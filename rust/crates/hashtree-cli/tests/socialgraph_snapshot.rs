@@ -11,7 +11,7 @@ use tempfile::TempDir;
 fn snapshot_includes_list_timestamps() {
     let _guard = test_lock();
     let tmp = TempDir::new().unwrap();
-    let ndb = hashtree_cli::socialgraph::init_ndb(tmp.path()).unwrap();
+    let graph_store = hashtree_cli::socialgraph::open_social_graph_store(tmp.path()).unwrap();
 
     let root_keys = Keys::generate();
     let bob_keys = Keys::generate();
@@ -21,7 +21,7 @@ fn snapshot_includes_list_timestamps() {
     let bob_pk = bob_keys.public_key();
     let carol_pk = carol_keys.public_key();
 
-    hashtree_cli::socialgraph::set_social_graph_root(&ndb, &root_pk.to_bytes());
+    hashtree_cli::socialgraph::set_social_graph_root(&graph_store, &root_pk.to_bytes());
     std::thread::sleep(Duration::from_millis(100));
 
     let follow_created_at = 1_700_000_111;
@@ -37,13 +37,13 @@ fn snapshot_includes_list_timestamps() {
         .to_event(&root_keys)
         .unwrap();
 
-    hashtree_cli::socialgraph::ingest_event(&ndb, "follow", &follow_event.as_json());
-    hashtree_cli::socialgraph::ingest_event(&ndb, "mute", &mute_event.as_json());
+    hashtree_cli::socialgraph::ingest_event(&graph_store, "follow", &follow_event.as_json());
+    hashtree_cli::socialgraph::ingest_event(&graph_store, "mute", &mute_event.as_json());
     std::thread::sleep(Duration::from_millis(200));
 
     let options = hashtree_cli::socialgraph::snapshot::SnapshotOptions::default();
     let chunks = hashtree_cli::socialgraph::snapshot::build_snapshot_chunks(
-        &ndb,
+        &graph_store,
         &root_pk.to_bytes(),
         &options,
     )
@@ -69,7 +69,7 @@ fn snapshot_includes_list_timestamps() {
 fn snapshot_binary_matches_upstream_social_graph_encoding() {
     let _guard = test_lock();
     let tmp = TempDir::new().unwrap();
-    let ndb = hashtree_cli::socialgraph::init_ndb(tmp.path()).unwrap();
+    let graph_store = hashtree_cli::socialgraph::open_social_graph_store(tmp.path()).unwrap();
 
     let root_keys = Keys::generate();
     let outsider_keys = Keys::generate();
@@ -77,7 +77,7 @@ fn snapshot_binary_matches_upstream_social_graph_encoding() {
     let carol_keys = Keys::generate();
 
     let root_pk = root_keys.public_key();
-    hashtree_cli::socialgraph::set_social_graph_root(&ndb, &root_pk.to_bytes());
+    hashtree_cli::socialgraph::set_social_graph_root(&graph_store, &root_pk.to_bytes());
 
     let outsider_follow = EventBuilder::new(
         Kind::ContactList,
@@ -106,9 +106,13 @@ fn snapshot_binary_matches_upstream_social_graph_encoding() {
         .unwrap(),
     ];
 
-    hashtree_cli::socialgraph::ingest_event(&ndb, "outsider-follow", &outsider_follow.as_json());
+    hashtree_cli::socialgraph::ingest_event(
+        &graph_store,
+        "outsider-follow",
+        &outsider_follow.as_json(),
+    );
     for event in &root_lists {
-        hashtree_cli::socialgraph::ingest_event(&ndb, "root-list", &event.as_json());
+        hashtree_cli::socialgraph::ingest_event(&graph_store, "root-list", &event.as_json());
     }
 
     let options = hashtree_cli::socialgraph::snapshot::SnapshotOptions {
@@ -119,7 +123,7 @@ fn snapshot_binary_matches_upstream_social_graph_encoding() {
     };
     let actual = flatten_chunks(
         hashtree_cli::socialgraph::snapshot::build_snapshot_chunks(
-            &ndb,
+            &graph_store,
             &root_pk.to_bytes(),
             &options,
         )

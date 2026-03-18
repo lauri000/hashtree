@@ -5,9 +5,9 @@ pub use nostr_social_graph::BinaryBudget as SnapshotOptions;
 use super::SocialGraphBackend;
 
 pub fn build_snapshot_chunks(
-    ndb: &(impl SocialGraphBackend + ?Sized),
+    store: &(impl SocialGraphBackend + ?Sized),
     root: &[u8; 32],
     options: &SnapshotOptions,
 ) -> Result<Vec<Bytes>> {
-    ndb.snapshot_chunks(root, options)
+    store.snapshot_chunks(root, options)
 }

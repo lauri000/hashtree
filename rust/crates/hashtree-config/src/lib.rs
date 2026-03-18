@@ -136,10 +136,10 @@ pub struct NostrConfig {
     pub relays: Vec<String>,
     #[serde(default)]
     pub allowed_npubs: Vec<String>,
-    /// Max size for trusted nostrdb in GB (default: 10)
+    /// Max size for the trusted social graph store in GB (default: 10)
     #[serde(default = "default_nostr_db_max_size_gb")]
     pub db_max_size_gb: u64,
-    /// Max size for spambox nostrdb in GB (default: 1)
+    /// Max size for the social graph spambox store in GB (default: 1)
     /// Set to 0 for memory-only spambox (no on-disk DB)
     #[serde(default = "default_nostr_spambox_max_size_gb")]
     pub spambox_max_size_gb: u64,

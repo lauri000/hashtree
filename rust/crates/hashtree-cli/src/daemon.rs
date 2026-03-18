@@ -78,7 +78,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         }
     }
 
-    let ndb = socialgraph::init_ndb_with_store(
+    let graph_store = socialgraph::open_social_graph_store_with_storage(
         &opts.data_dir,
         store.store_arc(),
         Some(nostr_db_max_bytes),
@@ -90,8 +90,8 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     } else {
         pk_bytes
     };
-    socialgraph::set_social_graph_root(&ndb, &social_graph_root_bytes);
-    let social_graph_store: Arc<dyn socialgraph::SocialGraphBackend> = ndb.clone();
+    socialgraph::set_social_graph_root(&graph_store, &social_graph_root_bytes);
+    let social_graph_store: Arc<dyn socialgraph::SocialGraphBackend> = graph_store.clone();
 
     let social_graph = Arc::new(socialgraph::SocialGraphAccessControl::new(
         Arc::clone(&social_graph_store),
@@ -117,8 +117,8 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         None
     } else {
         let spam_dir = opts.data_dir.join("socialgraph_spambox");
-        match socialgraph::init_ndb_at_path(&spam_dir, Some(spambox_db_max_bytes)) {
-            Ok(db) => Some(db),
+        match socialgraph::open_social_graph_store_at_path(&spam_dir, Some(spambox_db_max_bytes)) {
+            Ok(store) => Some(store),
             Err(err) => {
                 tracing::warn!("Failed to open social graph spambox for crawler: {}", err);
                 None
@@ -126,7 +126,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         }
     };
 
-    let crawler_store: Arc<dyn socialgraph::SocialGraphBackend> = ndb.clone();
+    let crawler_store: Arc<dyn socialgraph::SocialGraphBackend> = graph_store.clone();
     let crawler_keys = keys.clone();
     let crawler_relays = config.nostr.relays.clone();
     let crawler_depth = config.nostr.crawl_depth;

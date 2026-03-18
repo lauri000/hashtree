@@ -58,12 +58,12 @@ mod tests {
     fn test_allowed_pubkey_passes() {
         let _guard = crate::socialgraph::test_lock();
         let tmp = TempDir::new().unwrap();
-        let ndb = crate::socialgraph::init_ndb(tmp.path()).unwrap();
+        let graph_store = crate::socialgraph::open_social_graph_store(tmp.path()).unwrap();
         let pk_hex = "aa".repeat(32);
         let mut allowed = HashSet::new();
         allowed.insert(pk_hex.clone());
 
-        let access = SocialGraphAccessControl::new(ndb, 1, allowed);
+        let access = SocialGraphAccessControl::new(graph_store, 1, allowed);
         assert!(access.check_write_access(&pk_hex));
     }
 }

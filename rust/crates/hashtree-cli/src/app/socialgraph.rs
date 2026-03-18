@@ -25,7 +25,7 @@ fn parse_pubkey_hex(hex_str: &str) -> Option<[u8; 32]> {
 fn init_socialgraph(
     data_dir: &Path,
     config: &Config,
-) -> Result<(Arc<hashtree_cli::socialgraph::Ndb>, [u8; 32])> {
+) -> Result<(Arc<hashtree_cli::socialgraph::SocialGraphStore>, [u8; 32])> {
     use hashtree_cli::config::{ensure_keys, parse_npub, pubkey_bytes};
 
     let nostr_db_max_bytes = config
@@ -48,11 +48,14 @@ fn init_socialgraph(
         pk_bytes
     };
 
-    let ndb = hashtree_cli::socialgraph::init_ndb_with_mapsize(data_dir, Some(nostr_db_max_bytes))
-        .context("Failed to initialize social graph store")?;
-    hashtree_cli::socialgraph::set_social_graph_root(&ndb, &social_graph_root_bytes);
+    let graph_store = hashtree_cli::socialgraph::open_social_graph_store_with_mapsize(
+        data_dir,
+        Some(nostr_db_max_bytes),
+    )
+    .context("Failed to initialize social graph store")?;
+    hashtree_cli::socialgraph::set_social_graph_root(&graph_store, &social_graph_root_bytes);
 
-    Ok((ndb, social_graph_root_bytes))
+    Ok((graph_store, social_graph_root_bytes))
 }
 
 fn sync_cursor_path(data_dir: &Path) -> PathBuf {
@@ -99,7 +102,7 @@ pub(crate) fn run_socialgraph_filter(
     let config = Config::load()?;
     let max_distance = max_distance.unwrap_or(config.nostr.max_write_distance);
 
-    let (ndb, social_graph_root_bytes) = init_socialgraph(&data_dir, &config)?;
+    let (graph_store, social_graph_root_bytes) = init_socialgraph(&data_dir, &config)?;
 
     let mut distance_cache: HashMap<[u8; 32], Option<u32>> = HashMap::new();
     let mut overmute_cache: HashMap<[u8; 32], bool> = HashMap::new();
@@ -143,9 +146,9 @@ pub(crate) fn run_socialgraph_filter(
             continue;
         };
 
-        let distance = *distance_cache
-            .entry(pk_bytes)
-            .or_insert_with(|| hashtree_cli::socialgraph::get_follow_distance(&ndb, &pk_bytes));
+        let distance = *distance_cache.entry(pk_bytes).or_insert_with(|| {
+            hashtree_cli::socialgraph::get_follow_distance(&graph_store, &pk_bytes)
+        });
         let Some(distance) = distance else {
             continue;
         };
@@ -156,7 +159,7 @@ pub(crate) fn run_socialgraph_filter(
         if overmute_threshold > 0.0 {
             let overmuted = *overmute_cache.entry(pk_bytes).or_insert_with(|| {
                 hashtree_cli::socialgraph::is_overmuted(
-                    &ndb,
+                    &graph_store,
                     &social_graph_root_bytes,
                     &pk_bytes,
                     overmute_threshold,
@@ -184,7 +187,7 @@ pub(crate) fn run_socialgraph_snapshot(
 ) -> Result<()> {
     let config = Config::load()?;
 
-    let (ndb, social_graph_root_bytes) = init_socialgraph(&data_dir, &config)?;
+    let (graph_store, social_graph_root_bytes) = init_socialgraph(&data_dir, &config)?;
 
     let options = hashtree_cli::socialgraph::snapshot::SnapshotOptions {
         max_nodes,
@@ -194,7 +197,7 @@ pub(crate) fn run_socialgraph_snapshot(
     };
 
     let chunks = hashtree_cli::socialgraph::snapshot::build_snapshot_chunks(
-        &ndb,
+        &graph_store,
         &social_graph_root_bytes,
         &options,
     )
@@ -224,9 +227,11 @@ pub(crate) async fn run_socialgraph_warm(
 ) -> Result<()> {
     let config = Config::load()?;
     let (keys, _) = ensure_keys()?;
-    let (ndb, _social_graph_root_bytes) = init_socialgraph(&data_dir, &config)?;
+    let (graph_store, _social_graph_root_bytes) = init_socialgraph(&data_dir, &config)?;
 
-    let before = ndb.stats().context("read social graph stats before warm")?;
+    let before = graph_store
+        .stats()
+        .context("read social graph stats before warm")?;
     let effective_crawl_depth = crawl_depth.unwrap_or(config.nostr.crawl_depth);
     let effective_relays = if relays.is_empty() {
         config.nostr.relays.clone()
@@ -250,7 +255,7 @@ pub(crate) async fn run_socialgraph_warm(
     while secs > 0 && (completed_cycles == 0 || Instant::now() < deadline) {
         let cycle_started_at = unix_timestamp();
         let crawler = SocialGraphCrawler::new(
-            ndb.clone() as Arc<dyn SocialGraphBackend>,
+            graph_store.clone() as Arc<dyn SocialGraphBackend>,
             keys.clone(),
             effective_relays.clone(),
             effective_crawl_depth,
@@ -268,7 +273,9 @@ pub(crate) async fn run_socialgraph_warm(
         }
     }
 
-    let after = ndb.stats().context("read social graph stats after warm")?;
+    let after = graph_store
+        .stats()
+        .context("read social graph stats after warm")?;
     println!(
         "Warmed social graph for {}s at depth {} ({}, {} complete cycle{})",
         secs,

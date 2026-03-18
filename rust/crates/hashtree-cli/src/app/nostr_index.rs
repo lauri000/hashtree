@@ -100,7 +100,7 @@ pub(crate) async fn run_socialgraph_index(
         max_size_bytes,
     )?);
 
-    let ndb = socialgraph::init_ndb_with_store(
+    let graph_store = socialgraph::open_social_graph_store_with_storage(
         &data_dir,
         store.store_arc(),
         Some(
@@ -117,7 +117,7 @@ pub(crate) async fn run_socialgraph_index(
     } else {
         keys.public_key().to_bytes()
     };
-    socialgraph::set_social_graph_root(&ndb, &root_pk);
+    socialgraph::set_social_graph_root(&graph_store, &root_pk);
     let relays = options
         .relays
         .clone()
@@ -126,7 +126,7 @@ pub(crate) async fn run_socialgraph_index(
 
     if !options.warm_graph_for.is_zero() {
         warm_social_graph(
-            ndb.clone(),
+            graph_store.clone(),
             keys.clone(),
             relays.clone(),
             options.graph_crawl_depth,
@@ -136,7 +136,7 @@ pub(crate) async fn run_socialgraph_index(
         .await?;
     }
 
-    let graph = load_bridge_graph(ndb.as_ref(), &root_pk)?;
+    let graph = load_bridge_graph(graph_store.as_ref(), &root_pk)?;
     let existing_root = load_existing_root(&data_dir)?;
 
     let bridge = NostrBridge::new(
@@ -187,7 +187,7 @@ fn load_bridge_graph(backend: &dyn SocialGraphBackend, root_pk: &[u8; 32]) -> Re
 }
 
 async fn warm_social_graph(
-    ndb: Arc<dyn SocialGraphBackend>,
+    graph_store: Arc<dyn SocialGraphBackend>,
     keys: Keys,
     relays: Vec<String>,
     crawl_depth: u32,
@@ -195,7 +195,7 @@ async fn warm_social_graph(
     duration: Duration,
 ) -> Result<()> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let crawler = SocialGraphCrawler::new(ndb, keys, relays, crawl_depth)
+    let crawler = SocialGraphCrawler::new(graph_store, keys, relays, crawl_depth)
         .with_full_recrawl(full_graph_recrawl);
     let mut handle = tokio::spawn(async move {
         crawler.crawl(shutdown_rx).await;
