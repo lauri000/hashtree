@@ -7,6 +7,7 @@
 //! 4. Provides htree:// URI scheme for child webviews
 //! 5. Manages NIP-07 permissions for child webviews
 
+pub mod automation;
 pub mod history;
 pub mod htree_protocol;
 pub mod nip07;
@@ -183,6 +184,8 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .register_uri_scheme_protocol("htree", htree_protocol::handle_htree_protocol)
         .invoke_handler(tauri::generate_handler![
+            automation::automation_update_state,
+            automation::automation_get_state,
             htree_protocol::get_htree_server_url,
             htree_protocol::cache_tree_root,
             nip07::create_nip07_webview,
@@ -256,6 +259,12 @@ pub fn run() {
                     .expect("failed to initialize history store"),
             );
             app.manage(history_store);
+
+            let automation_state = Arc::new(automation::AutomationState::new(
+                automation::automation_requested(),
+            ));
+            automation::maybe_start_server(app.handle().clone(), automation_state.clone());
+            app.manage(automation_state);
 
             // Start the embedded htree daemon
             let daemon_data_dir = data_dir.clone();

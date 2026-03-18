@@ -10,6 +10,20 @@ async function mockTauriIPC(page: Page) {
   await page.addInitScript(() => {
     // Track invocations for assertions
     (window as any).__tauriInvocations = [] as Array<{ cmd: string; args: any }>;
+    (window as any).__automationState = {
+      enabled: false,
+      port: null,
+      shellReady: false,
+      currentView: 'launcher',
+      currentUrl: '',
+      addressValue: '',
+      canGoBack: false,
+      canGoForward: false,
+      showDropdown: false,
+      childWebviewReady: false,
+      historyIndex: -1,
+      historyLength: 0,
+    };
     const callbackStore = new Map<number, (...args: any[]) => void>();
     const eventListeners = new Map<string, Array<{ eventId: number; handlerId: number }>>();
     let nextCallbackId = 1;
@@ -68,6 +82,14 @@ async function mockTauriIPC(page: Page) {
           case 'reload_webview':
           case 'set_webview_bounds':
             return Promise.resolve();
+          case 'automation_update_state':
+            (window as any).__automationState = {
+              ...(window as any).__automationState,
+              ...(args?.snapshot ?? {}),
+            };
+            return Promise.resolve();
+          case 'automation_get_state':
+            return Promise.resolve((window as any).__automationState);
           case 'record_history_visit': {
             const now = Date.now();
             const existing = historyStore.find(e => e.path === args?.path);
@@ -194,4 +216,8 @@ export async function emitTauriEvent(page: Page, event: string, payload: unknown
   await page.evaluate(([name, data]) => {
     (window as any).__emitTauriEvent?.(name, data);
   }, [event, payload]);
+}
+
+export async function getAutomationState(page: Page): Promise<any> {
+  return page.evaluate(() => (window as any).__automationState);
 }

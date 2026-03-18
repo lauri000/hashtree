@@ -123,6 +123,47 @@ export async function clearHistory(): Promise<void> {
   return invoke<void>('clear_history');
 }
 
+// ── Automation ──
+
+export type AutomationAction =
+  | 'open_url'
+  | 'back'
+  | 'forward'
+  | 'reload'
+  | 'home'
+  | 'settings';
+
+export interface AutomationCommandEvent {
+  action: AutomationAction;
+  url?: string | null;
+}
+
+export interface AutomationUiState {
+  shellReady: boolean;
+  currentView: string;
+  currentUrl: string;
+  addressValue: string;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  showDropdown: boolean;
+  childWebviewReady: boolean;
+  historyIndex: number;
+  historyLength: number;
+}
+
+export interface AutomationState extends AutomationUiState {
+  enabled: boolean;
+  port: number | null;
+}
+
+export async function automationUpdateState(snapshot: AutomationUiState): Promise<void> {
+  return invoke<void>('automation_update_state', { snapshot });
+}
+
+export async function automationGetState(): Promise<AutomationState> {
+  return invoke<AutomationState>('automation_get_state');
+}
+
 // ── Autostart ──
 
 export async function isAutostartEnabled(): Promise<boolean> {
@@ -161,6 +202,14 @@ export function onChildWebviewLocation(
   callback: (event: WebviewLocationEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<WebviewLocationEvent>('child-webview-location', (event) => {
+    callback(event.payload);
+  });
+}
+
+export function onAutomationCommand(
+  callback: (event: AutomationCommandEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AutomationCommandEvent>('automation-command', (event) => {
     callback(event.payload);
   });
 }

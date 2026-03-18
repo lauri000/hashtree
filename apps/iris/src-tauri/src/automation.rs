@@ -1,0 +1,316 @@
+use axum::{
+    http::StatusCode,
+    routing::{get, post},
+    Json, Router,
+};
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tracing::{info, warn};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationUiState {
+    pub shell_ready: bool,
+    pub current_view: String,
+    pub current_url: String,
+    pub address_value: String,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+    pub show_dropdown: bool,
+    pub child_webview_ready: bool,
+    pub history_index: i32,
+    pub history_length: usize,
+}
+
+impl Default for AutomationUiState {
+    fn default() -> Self {
+        Self {
+            shell_ready: false,
+            current_view: "launcher".to_string(),
+            current_url: String::new(),
+            address_value: String::new(),
+            can_go_back: false,
+            can_go_forward: false,
+            show_dropdown: false,
+            child_webview_ready: false,
+            history_index: -1,
+            history_length: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationSnapshot {
+    pub enabled: bool,
+    pub port: Option<u16>,
+    #[serde(flatten)]
+    pub ui: AutomationUiState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationAction {
+    OpenUrl,
+    Back,
+    Forward,
+    Reload,
+    Home,
+    Settings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationCommand {
+    pub action: AutomationAction,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+pub struct AutomationState {
+    enabled: bool,
+    port: RwLock<Option<u16>>,
+    ui: RwLock<AutomationUiState>,
+}
+
+impl AutomationState {
+    pub fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            port: RwLock::new(None),
+            ui: RwLock::new(AutomationUiState::default()),
+        }
+    }
+
+    pub fn update_ui(&self, ui: AutomationUiState) {
+        *self.ui.write() = ui;
+    }
+
+    pub fn set_port(&self, port: u16) {
+        *self.port.write() = Some(port);
+    }
+
+    pub fn snapshot(&self) -> AutomationSnapshot {
+        AutomationSnapshot {
+            enabled: self.enabled,
+            port: *self.port.read(),
+            ui: self.ui.read().clone(),
+        }
+    }
+}
+
+pub fn automation_requested() -> bool {
+    parse_truthy_env("IRIS_AUTOMATION") || std::env::var("IRIS_AUTOMATION_PORT").is_ok()
+}
+
+fn parse_truthy_env(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            !normalized.is_empty()
+                && normalized != "0"
+                && normalized != "false"
+                && normalized != "no"
+                && normalized != "off"
+        })
+        .unwrap_or(false)
+}
+
+fn requested_port() -> u16 {
+    std::env::var("IRIS_AUTOMATION_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(0)
+}
+
+fn bind_host() -> String {
+    std::env::var("IRIS_AUTOMATION_BIND").unwrap_or_else(|_| "127.0.0.1".to_string())
+}
+
+pub fn maybe_start_server<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    automation: Arc<AutomationState>,
+) {
+    if !automation.enabled {
+        return;
+    }
+
+    let bind_addr = format!("{}:{}", bind_host(), requested_port());
+    let app_for_routes = app.clone();
+    let automation_for_health = automation.clone();
+    let automation_for_state = automation.clone();
+
+    tauri::async_runtime::spawn(async move {
+        let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
+            Ok(listener) => listener,
+            Err(error) => {
+                warn!("[automation] failed to bind {}: {}", bind_addr, error);
+                return;
+            }
+        };
+
+        let port = match listener.local_addr() {
+            Ok(addr) => addr.port(),
+            Err(error) => {
+                warn!("[automation] failed to read local addr: {}", error);
+                return;
+            }
+        };
+
+        automation.set_port(port);
+        info!(
+            "[automation] listening on http://127.0.0.1:{}/automation/state",
+            port
+        );
+
+        let router = Router::new()
+            .route(
+                "/automation/health",
+                get(move || {
+                    let automation = automation_for_health.clone();
+                    async move { Json(automation.snapshot()) }
+                }),
+            )
+            .route(
+                "/automation/state",
+                get(move || {
+                    let automation = automation_for_state.clone();
+                    async move { Json(automation.snapshot()) }
+                }),
+            )
+            .route(
+                "/automation/command",
+                post(move |Json(command): Json<AutomationCommand>| {
+                    let app = app_for_routes.clone();
+                    async move {
+                        app.emit("automation-command", command)
+                            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                        Ok::<StatusCode, (StatusCode, String)>(StatusCode::ACCEPTED)
+                    }
+                }),
+            );
+
+        if let Err(error) = axum::serve(listener, router).await {
+            warn!("[automation] server exited with error: {}", error);
+        }
+    });
+}
+
+#[tauri::command]
+pub fn automation_update_state<R: Runtime>(
+    app: AppHandle<R>,
+    snapshot: AutomationUiState,
+) -> Result<(), String> {
+    let automation = app
+        .try_state::<Arc<AutomationState>>()
+        .ok_or_else(|| "AutomationState not found".to_string())?;
+    automation.update_ui(snapshot);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn automation_get_state<R: Runtime>(app: AppHandle<R>) -> Result<AutomationSnapshot, String> {
+    let automation = app
+        .try_state::<Arc<AutomationState>>()
+        .ok_or_else(|| "AutomationState not found".to_string())?;
+    Ok(automation.snapshot())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn with_env_vars<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned");
+
+        let originals: Vec<(&str, Option<String>)> = vars
+            .iter()
+            .map(|(key, _)| (*key, std::env::var(key).ok()))
+            .collect();
+
+        for (key, value) in vars {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+
+        let result = f();
+
+        for (key, value) in originals {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+
+        result
+    }
+
+    #[test]
+    fn automation_disabled_by_default() {
+        with_env_vars(&[("IRIS_AUTOMATION", None), ("IRIS_AUTOMATION_PORT", None)], || {
+            assert!(!automation_requested());
+        });
+    }
+
+    #[test]
+    fn automation_enabled_when_truthy_flag_set() {
+        with_env_vars(
+            &[("IRIS_AUTOMATION", Some("true")), ("IRIS_AUTOMATION_PORT", None)],
+            || {
+                assert!(automation_requested());
+            },
+        );
+    }
+
+    #[test]
+    fn automation_enabled_when_port_is_configured() {
+        with_env_vars(
+            &[
+                ("IRIS_AUTOMATION", Some("false")),
+                ("IRIS_AUTOMATION_PORT", Some("4317")),
+            ],
+            || {
+                assert!(automation_requested());
+            },
+        );
+    }
+
+    #[test]
+    fn snapshot_tracks_updated_ui_state_and_port() {
+        let automation = AutomationState::new(true);
+        automation.set_port(4317);
+        automation.update_ui(AutomationUiState {
+            shell_ready: true,
+            current_view: "webview".to_string(),
+            current_url: "https://files.iris.to".to_string(),
+            address_value: "files.iris.to".to_string(),
+            can_go_back: true,
+            can_go_forward: false,
+            show_dropdown: false,
+            child_webview_ready: true,
+            history_index: 0,
+            history_length: 1,
+        });
+
+        let snapshot = automation.snapshot();
+        assert!(snapshot.enabled);
+        assert_eq!(snapshot.port, Some(4317));
+        assert!(snapshot.ui.shell_ready);
+        assert_eq!(snapshot.ui.current_view, "webview");
+        assert_eq!(snapshot.ui.current_url, "https://files.iris.to");
+        assert_eq!(snapshot.ui.address_value, "files.iris.to");
+        assert!(snapshot.ui.can_go_back);
+        assert!(snapshot.ui.child_webview_ready);
+    }
+}

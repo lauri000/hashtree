@@ -106,8 +106,8 @@ test.describe('Navigation', () => {
     await input.fill('https://example.com');
     await input.press('Enter');
 
-    // Ensure blur completes before checking display URL
-    await input.blur();
+    // Blur via a real click outside the field to avoid worker timing flakiness.
+    await page.locator('main').click({ position: { x: 20, y: 20 } });
     await expect(input).toHaveValue('example.com');
   });
 

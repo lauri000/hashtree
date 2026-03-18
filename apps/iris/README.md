@@ -14,6 +14,30 @@ pnpm run tauri:build  # Build for distribution
 
 Requires [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
 
+## Automation
+
+Iris can expose a localhost automation API for agents and smoke tests.
+
+```bash
+IRIS_AUTOMATION=1 pnpm run tauri:dev
+```
+
+When enabled, the app logs the chosen port and serves:
+
+- `GET /automation/health`
+- `GET /automation/state`
+- `POST /automation/command`
+
+Example command payload:
+
+```json
+{ "action": "open_url", "url": "htree://npub1.../public/index.html" }
+```
+
+Supported actions are `open_url`, `back`, `forward`, `reload`, `home`, and `settings`.
+
+This is intended to pair well with Linux/Xvfb-based native smoke tests: the API drives the real shell state, while screenshots can come from Playwright (web shell) or OS capture tools (native app).
+
 ## License
 
 MIT

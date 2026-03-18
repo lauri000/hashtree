@@ -113,8 +113,8 @@ test.describe('Address Bar', () => {
     await input.fill('https://video.iris.to/');
     await input.press('Enter');
 
-    // Ensure blur completes before checking
-    await input.blur();
+    // Blur via a real click outside the field to avoid worker timing flakiness.
+    await page.locator('main').click({ position: { x: 20, y: 20 } });
     await expect(input).toHaveValue('video.iris.to');
   });
 
@@ -127,7 +127,7 @@ test.describe('Address Bar', () => {
     await input.press('Enter');
 
     // Blurred: display URL without protocol/trailing slash
-    await input.blur();
+    await page.locator('main').click({ position: { x: 20, y: 20 } });
     await expect(input).toHaveValue('video.iris.to');
 
     // Focus: full URL

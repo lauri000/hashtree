@@ -1,10 +1,12 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import {
+    automationUpdateState,
     createNip07Webview,
     createHtreeWebview,
     closeWebview,
     navigateWebview,
+    onAutomationCommand,
     webviewHistory,
     reloadWebview,
     setWebviewBounds,
@@ -13,6 +15,7 @@
     searchHistory,
     getRecentHistory,
     deleteHistoryEntry,
+    type AutomationCommandEvent,
     type WebviewLocationEvent,
     type HistoryEntry,
   } from './lib/tauri';
@@ -38,6 +41,7 @@
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let blurTimer: ReturnType<typeof setTimeout> | null = null;
   let boundsRaf: number | null = null;
+  let automationSyncRaf: number | null = null;
   let dropdownEl: HTMLDivElement | null = $state(null);
 
   // Shell-level navigation history
@@ -174,6 +178,7 @@
       // Webview might not exist, that's fine
     }
     g.__irisChildReady = false;
+    scheduleAutomationStateSync();
   }
 
   /** Open a URL in the child webview, pushing to history. */
@@ -209,12 +214,14 @@
         }
         g.__irisChildReady = true;
         scheduleWebviewBoundsUpdate();
+        scheduleAutomationStateSync();
       } catch (e) {
         console.warn('[Iris] create webview failed, trying navigate:', e);
         try {
           await navigateWebview(CHILD_LABEL, url);
           g.__irisChildReady = true;
           scheduleWebviewBoundsUpdate();
+          scheduleAutomationStateSync();
         } catch (e2) {
           console.error('[Iris] navigate also failed:', e2);
         }
@@ -360,6 +367,58 @@
     });
   }
 
+  function scheduleAutomationStateSync() {
+    if (automationSyncRaf !== null) cancelAnimationFrame(automationSyncRaf);
+    automationSyncRaf = requestAnimationFrame(() => {
+      automationSyncRaf = null;
+      automationUpdateState({
+        shellReady: true,
+        currentView: currentView,
+        currentUrl: currentUrl,
+        addressValue: addressValue,
+        canGoBack: canGoBack,
+        canGoForward: canGoForward,
+        showDropdown: showDropdown,
+        childWebviewReady: !!g.__irisChildReady,
+        historyIndex: historyIndex,
+        historyLength: historyStack.length,
+      }).catch(() => {
+        // Browser dev mode and tests without native commands can ignore this.
+      });
+    });
+  }
+
+  async function handleAutomationCommand(command: AutomationCommandEvent) {
+    switch (command.action) {
+      case 'open_url': {
+        const rawUrl = command.url?.trim();
+        if (!rawUrl) return;
+        const url = displayToUrl(rawUrl);
+        currentUrl = url;
+        addressValue = isAddressFocused ? url : urlToDisplay(url);
+        await navigate(url);
+        return;
+      }
+      case 'back':
+        await goBack();
+        return;
+      case 'forward':
+        await goForward();
+        return;
+      case 'reload':
+        await refresh();
+        return;
+      case 'home':
+        await goHome();
+        return;
+      case 'settings':
+        goSettings();
+        return;
+      default:
+        console.warn('[Iris] unknown automation action:', command.action);
+    }
+  }
+
   function handleGlobalKeyDown(event: KeyboardEvent) {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'l') {
       event.preventDefault();
@@ -418,14 +477,34 @@
     addressInputEl?.blur();
   }
 
+  $effect(() => {
+    currentView;
+    currentUrl;
+    addressValue;
+    canGoBack;
+    canGoForward;
+    showDropdown;
+    historyIndex;
+    historyStack.length;
+    scheduleAutomationStateSync();
+  });
+
   onMount(async () => {
-    const unlisten = await onChildWebviewLocation(handleLocationChange);
+    const unlistenLocation = await onChildWebviewLocation(handleLocationChange);
+    const unlistenAutomation = await onAutomationCommand((command) => {
+      handleAutomationCommand(command).catch((error) => {
+        console.warn('[Iris] automation command failed:', error);
+      });
+    });
+    scheduleAutomationStateSync();
     window.addEventListener('keydown', handleGlobalKeyDown);
     window.addEventListener('resize', scheduleWebviewBoundsUpdate);
     return () => {
       window.removeEventListener('keydown', handleGlobalKeyDown);
       window.removeEventListener('resize', scheduleWebviewBoundsUpdate);
-      unlisten();
+      if (automationSyncRaf !== null) cancelAnimationFrame(automationSyncRaf);
+      unlistenLocation();
+      unlistenAutomation();
     };
   });
 </script>
