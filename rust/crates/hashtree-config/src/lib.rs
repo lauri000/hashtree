@@ -332,17 +332,22 @@ pub fn get_keys_path() -> PathBuf {
     get_hashtree_dir().join("keys")
 }
 
+/// Get the public alias file path (~/.hashtree/aliases)
+pub fn get_aliases_path() -> PathBuf {
+    get_hashtree_dir().join("aliases")
+}
+
 /// A stored key entry from the keys file
 #[derive(Debug, Clone)]
 pub struct KeyEntry {
-    /// The nsec or hex secret key
+    /// The raw identity token (for example nsec, npub, or hex)
     pub secret: String,
     /// Optional alias/petname
     pub alias: Option<String>,
 }
 
 /// Parse the keys file content into key entries
-/// Format: `nsec1... [alias]` or `hex... [alias]` per line
+/// Format: `<identity> [alias]` per line
 /// Lines starting with # are comments
 pub fn parse_keys_file(content: &str) -> Vec<KeyEntry> {
     let mut entries = Vec::new();

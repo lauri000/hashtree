@@ -17,9 +17,10 @@
 //!     objects/<sha1> -> data
 //!     objects/<sha2> -> data
 //!
-//! ## Secret file format
+//! ## Identity file format
 //!
-//! The secrets file (~/.hashtree/keys) supports multiple keys with optional petnames:
+//! The secrets file (`~/.hashtree/keys`) supports multiple signing keys with optional
+//! petnames:
 //! ```text
 //! nsec1... default
 //! nsec1... work
@@ -31,6 +32,14 @@
 //! <64-char-hex> default
 //! <64-char-hex> work
 //! ```
+//!
+//! Public read-only aliases can be stored in `~/.hashtree/aliases`:
+//! ```text
+//! npub1... sirius
+//! npub1... coworker
+//! ```
+//!
+//! For compatibility, public aliases in `~/.hashtree/keys` are also accepted.
 //!
 //! Then use: `htree://work/myrepo` or `htree://npub1.../myrepo`
 
@@ -144,8 +153,8 @@ type FetchedRefs = (HashMap<String, String>, Option<String>, Option<[u8; 32]>);
 /// A stored key with optional petname
 #[derive(Debug, Clone)]
 pub struct StoredKey {
-    /// Secret key in hex format
-    pub secret_hex: String,
+    /// Secret key in hex format, when this identity can sign
+    pub secret_hex: Option<String>,
     /// Public key in hex format
     pub pubkey_hex: String,
     /// Optional petname (e.g., "default", "work")
@@ -164,7 +173,7 @@ impl StoredKey {
         let pubkey_hex = hex::encode(pk.serialize());
 
         Ok(Self {
-            secret_hex: secret_hex.to_string(),
+            secret_hex: Some(secret_hex.to_string()),
             pubkey_hex,
             petname,
         })
@@ -177,33 +186,138 @@ impl StoredKey {
         let secret_hex = hex::encode(secret_key.to_secret_bytes());
         Self::from_secret_hex(&secret_hex, petname)
     }
+
+    /// Create from pubkey hex without a signing key
+    pub fn from_pubkey_hex(pubkey_hex: &str, petname: Option<String>) -> Result<Self> {
+        let pubkey = PublicKey::from_hex(pubkey_hex)
+            .map_err(|e| anyhow::anyhow!("Invalid pubkey hex: {}", e))?;
+
+        Ok(Self {
+            secret_hex: None,
+            pubkey_hex: hex::encode(pubkey.to_bytes()),
+            petname,
+        })
+    }
+
+    /// Create from npub bech32 format without a signing key
+    pub fn from_npub(npub: &str, petname: Option<String>) -> Result<Self> {
+        let pubkey =
+            PublicKey::parse(npub).map_err(|e| anyhow::anyhow!("Invalid npub format: {}", e))?;
+
+        Ok(Self {
+            secret_hex: None,
+            pubkey_hex: hex::encode(pubkey.to_bytes()),
+            petname,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum IdentityFileKind {
+    Keys,
+    Aliases,
+}
+
+fn ensure_aliases_file_hint() {
+    let aliases_path = hashtree_config::get_aliases_path();
+    if aliases_path.exists() {
+        return;
+    }
+
+    let Some(parent) = aliases_path.parent() else {
+        return;
+    };
+
+    if !parent.exists() {
+        return;
+    }
+
+    let template = concat!(
+        "# Public read-only aliases for repos you clone or fetch.\n",
+        "# Format: npub1... alias\n",
+        "# Example:\n",
+        "# npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce sirius\n",
+    );
+
+    let _ = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&aliases_path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, template.as_bytes()));
+}
+
+fn parse_identity_entry(
+    raw: &str,
+    petname: Option<String>,
+    kind: IdentityFileKind,
+) -> Option<StoredKey> {
+    let key = match kind {
+        IdentityFileKind::Keys => {
+            if raw.starts_with("nsec1") {
+                StoredKey::from_nsec(raw, petname)
+            } else if raw.starts_with("npub1") {
+                StoredKey::from_npub(raw, petname)
+            } else if raw.len() == 64 {
+                StoredKey::from_secret_hex(raw, petname)
+            } else {
+                return None;
+            }
+        }
+        IdentityFileKind::Aliases => {
+            if raw.starts_with("npub1") {
+                StoredKey::from_npub(raw, petname)
+            } else if raw.len() == 64 {
+                StoredKey::from_pubkey_hex(raw, petname)
+            } else {
+                return None;
+            }
+        }
+    };
+
+    key.ok()
+}
+
+fn load_identities_from_path(path: &std::path::Path, kind: IdentityFileKind) -> Vec<StoredKey> {
+    let mut keys = Vec::new();
+
+    if let Ok(content) = std::fs::read_to_string(path) {
+        for entry in hashtree_config::parse_keys_file(&content) {
+            if let Some(key) = parse_identity_entry(&entry.secret, entry.alias, kind) {
+                debug!(
+                    "Loaded identity: pubkey={}, petname={:?}, has_secret={}",
+                    key.pubkey_hex,
+                    key.petname,
+                    key.secret_hex.is_some()
+                );
+                keys.push(key);
+            }
+        }
+    }
+
+    keys
+}
+
+fn resolve_self_identity(keys: &[StoredKey]) -> Option<(String, Option<String>)> {
+    keys.iter()
+        .find(|k| k.petname.as_deref() == Some("self") && k.secret_hex.is_some())
+        .or_else(|| {
+            keys.iter()
+                .find(|k| k.petname.as_deref() == Some("default") && k.secret_hex.is_some())
+        })
+        .or_else(|| keys.iter().find(|k| k.secret_hex.is_some()))
+        .map(|key| (key.pubkey_hex.clone(), key.secret_hex.clone()))
 }
 
 /// Load all keys from config files
 pub fn load_keys() -> Vec<StoredKey> {
-    let mut keys = Vec::new();
+    ensure_aliases_file_hint();
 
-    // Primary: ~/.hashtree/keys (multi-key format)
-    let keys_path = hashtree_config::get_keys_path();
-    if let Ok(content) = std::fs::read_to_string(&keys_path) {
-        for entry in hashtree_config::parse_keys_file(&content) {
-            let key = if entry.secret.starts_with("nsec1") {
-                StoredKey::from_nsec(&entry.secret, entry.alias)
-            } else if entry.secret.len() == 64 {
-                StoredKey::from_secret_hex(&entry.secret, entry.alias)
-            } else {
-                continue;
-            };
-
-            if let Ok(k) = key {
-                debug!(
-                    "Loaded key: pubkey={}, petname={:?}",
-                    k.pubkey_hex, k.petname
-                );
-                keys.push(k);
-            }
-        }
-    }
+    let mut keys =
+        load_identities_from_path(&hashtree_config::get_keys_path(), IdentityFileKind::Keys);
+    keys.extend(load_identities_from_path(
+        &hashtree_config::get_aliases_path(),
+        IdentityFileKind::Aliases,
+    ));
 
     keys
 }
@@ -219,31 +333,19 @@ pub fn resolve_identity(identifier: &str) -> Result<(String, Option<String>)> {
 
     // Special "self" alias - use default key or first available, auto-generate if none
     if identifier == "self" {
-        // First try to find a key with "self" petname
-        if let Some(key) = keys.iter().find(|k| k.petname.as_deref() == Some("self")) {
-            return Ok((key.pubkey_hex.clone(), Some(key.secret_hex.clone())));
-        }
-        // Then try "default"
-        if let Some(key) = keys
-            .iter()
-            .find(|k| k.petname.as_deref() == Some("default"))
-        {
-            return Ok((key.pubkey_hex.clone(), Some(key.secret_hex.clone())));
-        }
-        // Then use first available key
-        if let Some(key) = keys.first() {
-            return Ok((key.pubkey_hex.clone(), Some(key.secret_hex.clone())));
+        if let Some(resolved) = resolve_self_identity(&keys) {
+            return Ok(resolved);
         }
         // No keys - auto-generate one with "self" petname
         let new_key = generate_and_save_key("self")?;
         info!("Generated new identity: npub1{}", &new_key.pubkey_hex[..12]);
-        return Ok((new_key.pubkey_hex, Some(new_key.secret_hex)));
+        return Ok((new_key.pubkey_hex, new_key.secret_hex));
     }
 
     // Check if it's a petname
     for key in &keys {
         if key.petname.as_deref() == Some(identifier) {
-            return Ok((key.pubkey_hex.clone(), Some(key.secret_hex.clone())));
+            return Ok((key.pubkey_hex.clone(), key.secret_hex.clone()));
         }
     }
 
@@ -257,7 +359,7 @@ pub fn resolve_identity(identifier: &str) -> Result<(String, Option<String>)> {
         let secret = keys
             .iter()
             .find(|k| k.pubkey_hex == pubkey_hex)
-            .map(|k| k.secret_hex.clone());
+            .and_then(|k| k.secret_hex.clone());
 
         return Ok((pubkey_hex, secret));
     }
@@ -267,14 +369,14 @@ pub fn resolve_identity(identifier: &str) -> Result<(String, Option<String>)> {
         let secret = keys
             .iter()
             .find(|k| k.pubkey_hex == identifier)
-            .map(|k| k.secret_hex.clone());
+            .and_then(|k| k.secret_hex.clone());
 
         return Ok((identifier.to_string(), secret));
     }
 
     // Unknown identifier - might be a petname we don't have
     anyhow::bail!(
-        "Unknown identity '{}'. Add it to ~/.hashtree/keys or use a pubkey/npub.",
+        "Unknown identity '{}'. Add it to ~/.hashtree/aliases (preferred) or ~/.hashtree/keys, or use a pubkey/npub.",
         identifier
     )
 }
@@ -294,6 +396,7 @@ fn generate_and_save_key(petname: &str) -> Result<StoredKey> {
     if let Some(parent) = keys_path.parent() {
         fs::create_dir_all(parent)?;
     }
+    ensure_aliases_file_hint();
 
     // Append to keys file
     let mut file = OpenOptions::new()
@@ -314,7 +417,7 @@ fn generate_and_save_key(petname: &str) -> Result<StoredKey> {
     );
 
     Ok(StoredKey {
-        secret_hex,
+        secret_hex: Some(secret_hex),
         pubkey_hex,
         petname: Some(petname.to_string()),
     })
@@ -1975,7 +2078,7 @@ mod tests {
     fn test_stored_key_from_hex() {
         let secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let key = StoredKey::from_secret_hex(secret, Some("test".to_string())).unwrap();
-        assert_eq!(key.secret_hex, secret);
+        assert_eq!(key.secret_hex.as_deref(), Some(secret));
         assert_eq!(key.petname, Some("test".to_string()));
         assert_eq!(key.pubkey_hex.len(), 64);
     }
@@ -1985,8 +2088,37 @@ mod tests {
         // This is a test nsec (don't use in production!)
         let nsec = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
         let key = StoredKey::from_nsec(nsec, None).unwrap();
-        assert_eq!(key.secret_hex.len(), 64);
+        assert_eq!(key.secret_hex.as_deref().map(str::len), Some(64));
         assert_eq!(key.pubkey_hex.len(), 64);
+    }
+
+    #[test]
+    fn test_stored_key_from_npub_is_read_only() {
+        let npub = "npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce";
+        let key = StoredKey::from_npub(npub, Some("sirius".to_string())).unwrap();
+
+        assert!(key.secret_hex.is_none());
+        assert_eq!(key.petname.as_deref(), Some("sirius"));
+        assert_eq!(key.pubkey_hex.len(), 64);
+    }
+
+    #[test]
+    fn test_resolve_self_identity_ignores_read_only_aliases() {
+        let read_only = StoredKey::from_npub(
+            "npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce",
+            Some("self".to_string()),
+        )
+        .unwrap();
+        let signing = StoredKey::from_nsec(
+            "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5",
+            Some("work".to_string()),
+        )
+        .unwrap();
+
+        let resolved = resolve_self_identity(&[read_only, signing.clone()]).unwrap();
+
+        assert_eq!(resolved.0, signing.pubkey_hex);
+        assert_eq!(resolved.1, signing.secret_hex);
     }
 
     #[test]
