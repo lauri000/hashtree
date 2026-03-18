@@ -1,5 +1,6 @@
 <script lang="ts">
   import { navigate } from '../lib/router.svelte';
+  import { canUseInjectedHtreeServerUrl, getInjectedHtreeServerUrl } from '../lib/nativeHtree';
 
   interface Props {
     nhash: string;
@@ -12,8 +13,8 @@
 
   // Use native htree server URL if available, otherwise empty (service worker handles it)
   let htreeServerUrl = $derived.by(() => {
-    if (typeof window !== 'undefined' && window.__HTREE_SERVER_URL__) {
-      return window.__HTREE_SERVER_URL__.replace(/\/$/, '');
+    if (canUseInjectedHtreeServerUrl()) {
+      return getInjectedHtreeServerUrl() ?? '';
     }
     return '';
   });

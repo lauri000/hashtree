@@ -15,6 +15,7 @@ import { ndk } from '../nostr/ndk';
 import { initRelayTracking } from '../nostr/relays';
 import { getAppType } from '../appType';
 import { logHtreeDebug } from './htreeDebug';
+import { canUseInjectedHtreeServerUrl } from './nativeHtree';
 import { treeRootRegistry } from '../TreeRootRegistry';
 import { initializePublishFn } from '../treeRootCache';
 import { setupMediaStreaming } from './mediaStreamingSetup';
@@ -282,7 +283,7 @@ export interface WorkerInitIdentity {
  * Wait for service worker to be ready (needed for COOP/COEP headers)
  */
 async function waitForServiceWorker(maxWaitMs?: number): Promise<boolean> {
-  if (typeof window !== 'undefined' && window.__HTREE_SERVER_URL__) return true;
+  if (canUseInjectedHtreeServerUrl()) return true;
   if (!('serviceWorker' in navigator)) return true;
 
   try {

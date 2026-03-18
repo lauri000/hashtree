@@ -12,6 +12,7 @@
 import { nhashEncode, type CID } from '@hashtree/core';
 import { getMediaClientId } from './mediaClient';
 import { logHtreeDebug } from './htreeDebug';
+import { canUseInjectedHtreeServerUrl, getInjectedHtreeServerUrl } from './nativeHtree';
 
 const LOCAL_PROBE_TIMEOUT_MS = 500;
 const LOCAL_PROBE_INTERVAL_MS = 1000;
@@ -29,8 +30,7 @@ function isLocalHtreePrefix(prefix: string): boolean {
 }
 
 function allowLocalPrefix(): boolean {
-  // Allow local prefix when the native app injects __HTREE_SERVER_URL__
-  return !!getHtreeServerOverride();
+  return canUseInjectedHtreeServerUrl();
 }
 
 async function probeLocalHtreeServer(baseUrl: string): Promise<boolean> {
@@ -77,18 +77,8 @@ function updateCachedPrefix(next: string, source: string): void {
   logHtreeDebug('prefix:update', { prefix: normalized, source });
 }
 
-declare global {
-  interface Window {
-    __HTREE_SERVER_URL__?: string;
-  }
-}
-
 function getHtreeServerOverride(): string | null {
-  if (typeof window === 'undefined') return null;
-  const override = window.__HTREE_SERVER_URL__;
-  if (typeof override !== 'string') return null;
-  const trimmed = override.trim();
-  return trimmed ? trimmed.replace(/\/$/, '') : null;
+  return getInjectedHtreeServerUrl();
 }
 
 /**
@@ -98,7 +88,7 @@ function getHtreeServerOverride(): string | null {
  */
 export function getHtreePrefix(): string {
   const override = getHtreeServerOverride();
-  if (override) {
+  if (override && allowLocalPrefix()) {
     updateCachedPrefix(override, 'override');
     if (!prefixReady && !isLocalHtreePrefix(cachedPrefix)) {
       notifyPrefixReady('override');
@@ -299,8 +289,8 @@ export function getThumbnailUrl(npub: string, treeName: string, videoId?: string
  * - Web: Requires service worker to be ready
  */
 export async function isFileStreamingAvailable(): Promise<boolean> {
-  // If a local htree server is available (injected by native app), always ready
-  if (getHtreeServerOverride()) return true;
+  // If a direct local htree server can be used safely, streaming is ready.
+  if (canUseInjectedHtreeServerUrl()) return true;
 
   // In browser, check service worker
   if (!('serviceWorker' in navigator)) return false;

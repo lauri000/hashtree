@@ -35,7 +35,8 @@ export async function initServiceWorker(options: InitOptions = {}): Promise<void
     }
   }
 
-  // Skip service worker when local htree server is available (native app host)
+  // Skip the service worker only when a direct local htree server can be used
+  // safely. Secure HTTPS apps inside Iris still need same-origin /htree routes.
   if (getHtreePrefix()) {
     console.log('[SW] Skipping service worker (native htree server)');
     return;

@@ -3,6 +3,7 @@
  */
 import { writable, get } from 'svelte/store';
 import Dexie, { type Table } from 'dexie';
+import { canUseInjectedHtreeServerUrl } from '../lib/nativeHtree';
 
 // Pool configuration
 export interface PoolSettings {
@@ -171,7 +172,7 @@ function isLocalRelay(url: string): boolean {
 function shouldApplyProductionFallback(): boolean {
   if (isTestMode) return false;
   if (typeof window === 'undefined') return false;
-  if (typeof window.__HTREE_SERVER_URL__ === 'string') return false;
+  if (canUseInjectedHtreeServerUrl()) return false;
   return !isLocalHostname(window.location.hostname);
 }
 
