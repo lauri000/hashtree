@@ -435,6 +435,33 @@ where
         .max_by_key(|event| (event.created_at, event.id))
 }
 
+fn is_matching_repo_event(event: &Event, repo_name: &str) -> bool {
+    let has_hashtree_label = event.tags.iter().any(|tag| {
+        let slice = tag.as_slice();
+        slice.len() >= 2 && slice[0].as_str() == "l" && slice[1].as_str() == LABEL_HASHTREE
+    });
+
+    if !has_hashtree_label {
+        return false;
+    }
+
+    event.tags.iter().any(|tag| {
+        let slice = tag.as_slice();
+        slice.len() >= 2 && slice[0].as_str() == "d" && slice[1].as_str() == repo_name
+    })
+}
+
+fn pick_latest_repo_event<'a, I>(events: I, repo_name: &str) -> Option<&'a Event>
+where
+    I: IntoIterator<Item = &'a Event>,
+{
+    pick_latest_event(
+        events
+            .into_iter()
+            .filter(|event| is_matching_repo_event(event, repo_name)),
+    )
+}
+
 fn latest_trusted_pr_status_kinds(
     pr_events: &[Event],
     status_events: &[Event],
@@ -930,13 +957,7 @@ impl NostrClient {
                 attempt,
                 max_attempts
             );
-            let relay_event = pick_latest_event(events.iter().filter(|e| {
-                e.tags.iter().any(|t| {
-                    t.as_slice().len() >= 2
-                        && t.as_slice()[0].as_str() == "l"
-                        && t.as_slice()[1].as_str() == LABEL_HASHTREE
-                })
-            }));
+            let relay_event = pick_latest_repo_event(events.iter(), repo_name);
 
             if let Some(event) = relay_event {
                 debug!(
@@ -1995,6 +2016,44 @@ mod tests {
         };
         let picked = pick_latest_event([&event_a, &event_b]).unwrap();
         assert_eq!(picked.id, expected_id);
+    }
+
+    #[test]
+    fn test_pick_latest_repo_event_ignores_newer_different_d_tag() {
+        let keys = Keys::generate();
+        let older = Timestamp::from_secs(1_700_000_000);
+        let newer = Timestamp::from_secs(1_700_000_031);
+
+        let iris_chat = EventBuilder::new(
+            Kind::Custom(KIND_APP_DATA),
+            "good",
+            [
+                Tag::custom(TagKind::custom("d"), vec!["iris-chat".to_string()]),
+                Tag::custom(TagKind::custom("l"), vec![LABEL_HASHTREE.to_string()]),
+            ],
+        )
+        .custom_created_at(older)
+        .to_event(&keys)
+        .unwrap();
+
+        let iris_chat_flutter = EventBuilder::new(
+            Kind::Custom(KIND_APP_DATA),
+            "bad",
+            [
+                Tag::custom(
+                    TagKind::custom("d"),
+                    vec!["iris-chat-flutter".to_string()],
+                ),
+                Tag::custom(TagKind::custom("l"), vec![LABEL_HASHTREE.to_string()]),
+            ],
+        )
+        .custom_created_at(newer)
+        .to_event(&keys)
+        .unwrap();
+
+        let picked =
+            pick_latest_repo_event([&iris_chat, &iris_chat_flutter], "iris-chat").unwrap();
+        assert_eq!(picked.id, iris_chat.id);
     }
 
     #[test]
