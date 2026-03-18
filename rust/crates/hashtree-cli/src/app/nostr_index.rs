@@ -24,11 +24,13 @@ const TOP_ITEMS_LIMIT: usize = 20;
 pub(crate) struct SocialGraphIndexOptions {
     pub(crate) warm_graph_for: Duration,
     pub(crate) graph_crawl_depth: u32,
+    pub(crate) full_graph_recrawl: bool,
     pub(crate) max_authors: usize,
     pub(crate) max_follow_distance: Option<u32>,
     pub(crate) max_live_bytes: u64,
     pub(crate) author_batch_size: usize,
     pub(crate) per_author_event_limit: usize,
+    pub(crate) per_author_live_bytes: Option<u64>,
     pub(crate) fetch_timeout: Duration,
     pub(crate) global_relay_scan: bool,
     pub(crate) relay_page_size: usize,
@@ -60,9 +62,11 @@ pub(crate) struct IndexedNostrReport {
     pub(crate) live_bytes_selected: u64,
     pub(crate) warm_graph_seconds: u64,
     pub(crate) graph_crawl_depth: u32,
+    pub(crate) full_graph_recrawl: bool,
     pub(crate) max_follow_distance: Option<u32>,
     pub(crate) max_authors: usize,
     pub(crate) max_live_bytes: u64,
+    pub(crate) per_author_live_bytes: Option<u64>,
     pub(crate) global_relay_scan: bool,
     pub(crate) relay_page_size: usize,
     pub(crate) max_relay_pages: usize,
@@ -120,6 +124,7 @@ pub(crate) async fn run_socialgraph_index(
             keys.clone(),
             config.nostr.relays.clone(),
             options.graph_crawl_depth,
+            options.full_graph_recrawl,
             options.warm_graph_for,
         )
         .await?;
@@ -137,6 +142,7 @@ pub(crate) async fn run_socialgraph_index(
             max_follow_distance: options.max_follow_distance,
             author_batch_size: options.author_batch_size,
             per_author_event_limit: options.per_author_event_limit,
+            per_author_live_bytes: options.per_author_live_bytes,
             fetch_timeout: options.fetch_timeout,
             relay_fetch_mode: if options.global_relay_scan {
                 RelayFetchMode::GlobalRecent
@@ -179,10 +185,12 @@ async fn warm_social_graph(
     keys: Keys,
     relays: Vec<String>,
     crawl_depth: u32,
+    full_graph_recrawl: bool,
     duration: Duration,
 ) -> Result<()> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let crawler = SocialGraphCrawler::new(ndb, keys, relays, crawl_depth);
+    let crawler = SocialGraphCrawler::new(ndb, keys, relays, crawl_depth)
+        .with_full_recrawl(full_graph_recrawl);
     let mut handle = tokio::spawn(async move {
         crawler.crawl(shutdown_rx).await;
     });
@@ -243,9 +251,11 @@ async fn build_report(
         live_bytes_selected: crawl_report.live_bytes_selected,
         warm_graph_seconds: options.warm_graph_for.as_secs(),
         graph_crawl_depth: options.graph_crawl_depth,
+        full_graph_recrawl: options.full_graph_recrawl,
         max_follow_distance: options.max_follow_distance,
         max_authors: options.max_authors,
         max_live_bytes: options.max_live_bytes,
+        per_author_live_bytes: options.per_author_live_bytes,
         global_relay_scan: options.global_relay_scan,
         relay_page_size: options.relay_page_size,
         max_relay_pages: options.max_relay_pages,
@@ -342,6 +352,16 @@ fn print_report(report: &IndexedNostrReport, data_dir: &Path) {
         report.authors_considered,
         report.events_seen,
         report.live_bytes_selected
+    );
+    println!(
+        "Graph warm: {}s depth {} ({})",
+        report.warm_graph_seconds,
+        report.graph_crawl_depth,
+        if report.full_graph_recrawl {
+            "full recrawl"
+        } else {
+            "incremental"
+        }
     );
     println!(
         "Relay mode: {}",
@@ -603,11 +623,13 @@ mod tests {
             SocialGraphIndexOptions {
                 warm_graph_for: Duration::from_secs(1),
                 graph_crawl_depth: 1,
+                full_graph_recrawl: false,
                 max_authors: 8,
                 max_follow_distance: Some(1),
                 max_live_bytes: 8 * 1024 * 1024,
                 author_batch_size: 32,
                 per_author_event_limit: 8,
+                per_author_live_bytes: None,
                 fetch_timeout: Duration::from_secs(5),
                 global_relay_scan: false,
                 relay_page_size: 1_000,

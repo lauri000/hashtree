@@ -4,6 +4,11 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
+
+use hashtree_cli::config::ensure_keys;
+use hashtree_cli::socialgraph::{SocialGraphBackend, SocialGraphCrawler};
+use tokio::sync::watch;
 
 fn parse_pubkey_hex(hex_str: &str) -> Option<[u8; 32]> {
     if hex_str.len() != 64 {
@@ -168,6 +173,81 @@ pub(crate) fn run_socialgraph_snapshot(
         writer.write_all(&chunk)?;
     }
     writer.flush()?;
+
+    Ok(())
+}
+
+pub(crate) async fn run_socialgraph_warm(
+    data_dir: PathBuf,
+    secs: u64,
+    crawl_depth: Option<u32>,
+    full_graph_recrawl: bool,
+    author_batch_size: usize,
+) -> Result<()> {
+    let config = Config::load()?;
+    let (keys, _) = ensure_keys()?;
+    let (ndb, _social_graph_root_bytes) = init_socialgraph(&data_dir, &config)?;
+
+    let before = ndb.stats().context("read social graph stats before warm")?;
+    let effective_crawl_depth = crawl_depth.unwrap_or(config.nostr.crawl_depth);
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let crawler = SocialGraphCrawler::new(
+        ndb.clone() as Arc<dyn SocialGraphBackend>,
+        keys,
+        config.nostr.relays.clone(),
+        effective_crawl_depth,
+    )
+    .with_author_batch_size(author_batch_size)
+    .with_full_recrawl(full_graph_recrawl);
+    let mut handle = tokio::spawn(async move {
+        crawler.crawl(shutdown_rx).await;
+    });
+
+    tokio::time::sleep(Duration::from_secs(secs)).await;
+    let _ = shutdown_tx.send(true);
+
+    match tokio::time::timeout(Duration::from_secs(5), &mut handle).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => return Err(anyhow::anyhow!("social graph warm task failed: {err}")),
+        Err(_) => {
+            handle.abort();
+            match handle.await {
+                Err(err) if err.is_cancelled() => {}
+                Ok(()) => {}
+                Err(err) => {
+                    return Err(anyhow::anyhow!(
+                        "social graph warm task failed after abort: {err}"
+                    ));
+                }
+            }
+        }
+    }
+
+    let after = ndb.stats().context("read social graph stats after warm")?;
+    println!(
+        "Warmed social graph for {}s at depth {} ({})",
+        secs,
+        effective_crawl_depth,
+        if full_graph_recrawl {
+            "full recrawl"
+        } else {
+            "incremental"
+        }
+    );
+    println!(
+        "Users: {} -> {} (delta {})",
+        before.total_users,
+        after.total_users,
+        after.total_users.saturating_sub(before.total_users)
+    );
+    println!(
+        "Follow edges: {} -> {} (delta {})",
+        before.total_follows,
+        after.total_follows,
+        after.total_follows.saturating_sub(before.total_follows)
+    );
+    println!("Max depth: {} -> {}", before.max_depth, after.max_depth);
 
     Ok(())
 }

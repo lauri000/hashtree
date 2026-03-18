@@ -37,6 +37,7 @@ struct StoredCid {
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct SocialGraphStats {
+    pub total_users: usize,
     pub root: Option<String>,
     pub total_follows: usize,
     pub max_depth: u32,
@@ -51,7 +52,9 @@ pub struct Ndb {
 
 pub trait SocialGraphBackend: Send + Sync {
     fn stats(&self) -> Result<SocialGraphStats>;
+    fn users_by_follow_distance(&self, distance: u32) -> Result<Vec<[u8; 32]>>;
     fn follow_distance(&self, pk_bytes: &[u8; 32]) -> Result<Option<u32>>;
+    fn follow_list_created_at(&self, owner: &[u8; 32]) -> Result<Option<u64>>;
     fn followed_targets(&self, owner: &[u8; 32]) -> Result<UserSet>;
     fn is_overmuted_user(&self, user_pk: &[u8; 32], threshold: f64) -> Result<bool>;
     fn snapshot_chunks(&self, root: &[u8; 32], options: &BinaryBudget) -> Result<Vec<Bytes>>;
@@ -196,6 +199,7 @@ impl Ndb {
         let graph = self.graph.lock().unwrap();
         let stats = graph.size().context("read social graph stats")?;
         Ok(SocialGraphStats {
+            total_users: stats.size_by_distance.values().copied().sum(),
             root: Some(graph.get_root().context("read social graph root")?),
             total_follows: stats.follows,
             max_depth: stats
@@ -214,6 +218,34 @@ impl Ndb {
             .get_follow_distance(&hex::encode(pk_bytes))
             .context("read social graph follow distance")?;
         Ok((distance != UNKNOWN_FOLLOW_DISTANCE).then_some(distance))
+    }
+
+    fn users_by_follow_distance(&self, distance: u32) -> Result<Vec<[u8; 32]>> {
+        let graph = self.graph.lock().unwrap();
+        let state = graph
+            .export_state()
+            .context("export social graph state for distance lookup")?;
+        let unique_ids = state
+            .unique_ids
+            .into_iter()
+            .map(|(pubkey, id)| (id, pubkey))
+            .collect::<std::collections::HashMap<_, _>>();
+        state
+            .users_by_follow_distance
+            .into_iter()
+            .find_map(|(bucket_distance, users)| (bucket_distance == distance).then_some(users))
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|id| unique_ids.get(&id))
+            .map(|value| decode_pubkey(value))
+            .collect()
+    }
+
+    fn follow_list_created_at(&self, owner: &[u8; 32]) -> Result<Option<u64>> {
+        let graph = self.graph.lock().unwrap();
+        graph
+            .get_follow_list_created_at(&hex::encode(owner))
+            .context("read social graph follow list timestamp")
     }
 
     fn followed_targets(&self, owner: &[u8; 32]) -> Result<UserSet> {
@@ -423,8 +455,16 @@ impl SocialGraphBackend for Ndb {
         Ndb::stats(self)
     }
 
+    fn users_by_follow_distance(&self, distance: u32) -> Result<Vec<[u8; 32]>> {
+        Ndb::users_by_follow_distance(self, distance)
+    }
+
     fn follow_distance(&self, pk_bytes: &[u8; 32]) -> Result<Option<u32>> {
         Ndb::follow_distance(self, pk_bytes)
+    }
+
+    fn follow_list_created_at(&self, owner: &[u8; 32]) -> Result<Option<u64>> {
+        Ndb::follow_list_created_at(self, owner)
     }
 
     fn followed_targets(&self, owner: &[u8; 32]) -> Result<UserSet> {
@@ -456,8 +496,16 @@ where
         self.as_ref().stats()
     }
 
+    fn users_by_follow_distance(&self, distance: u32) -> Result<Vec<[u8; 32]>> {
+        self.as_ref().users_by_follow_distance(distance)
+    }
+
     fn follow_distance(&self, pk_bytes: &[u8; 32]) -> Result<Option<u32>> {
         self.as_ref().follow_distance(pk_bytes)
+    }
+
+    fn follow_list_created_at(&self, owner: &[u8; 32]) -> Result<Option<u64>> {
+        self.as_ref().follow_list_created_at(owner)
     }
 
     fn followed_targets(&self, owner: &[u8; 32]) -> Result<UserSet> {

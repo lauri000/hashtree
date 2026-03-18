@@ -223,6 +223,7 @@ fn test_cli_parses_socialgraph_index_command() {
         "15",
         "--crawl-depth",
         "2",
+        "--full-graph-recrawl",
         "--max-follow-distance",
         "2",
         "--max-authors",
@@ -231,6 +232,8 @@ fn test_cli_parses_socialgraph_index_command() {
         "128",
         "--per-author-event-limit",
         "64",
+        "--per-author-live-bytes",
+        "65536",
         "--author-batch-size",
         "32",
         "--fetch-timeout-secs",
@@ -252,10 +255,12 @@ fn test_cli_parses_socialgraph_index_command() {
                 SocialGraphCommands::Index {
                     warm_secs,
                     crawl_depth,
+                    full_graph_recrawl,
                     max_follow_distance,
                     max_authors,
                     max_live_mb,
                     per_author_event_limit,
+                    per_author_live_bytes,
                     author_batch_size,
                     fetch_timeout_secs,
                     global_relay_scan,
@@ -266,10 +271,12 @@ fn test_cli_parses_socialgraph_index_command() {
         } => {
             assert_eq!(warm_secs, 15);
             assert_eq!(crawl_depth, Some(2));
+            assert!(full_graph_recrawl);
             assert_eq!(max_follow_distance, Some(2));
             assert_eq!(max_authors, 48);
             assert_eq!(max_live_mb, 128);
             assert_eq!(per_author_event_limit, 64);
+            assert_eq!(per_author_live_bytes, Some(65_536));
             assert_eq!(author_batch_size, 32);
             assert_eq!(fetch_timeout_secs, 7);
             assert!(global_relay_scan);
@@ -278,6 +285,40 @@ fn test_cli_parses_socialgraph_index_command() {
             assert_eq!(kinds, vec![1, 6]);
         }
         _ => panic!("expected socialgraph index command"),
+    }
+}
+
+#[test]
+fn test_cli_parses_socialgraph_warm_command() {
+    let cli = Cli::parse_from([
+        "htree",
+        "socialgraph",
+        "warm",
+        "--secs",
+        "90",
+        "--crawl-depth",
+        "4",
+        "--full-graph-recrawl",
+        "--author-batch-size",
+        "128",
+    ]);
+
+    match cli.command {
+        Commands::Socialgraph {
+            command:
+                SocialGraphCommands::Warm {
+                    secs,
+                    crawl_depth,
+                    full_graph_recrawl,
+                    author_batch_size,
+                },
+        } => {
+            assert_eq!(secs, 90);
+            assert_eq!(crawl_depth, Some(4));
+            assert!(full_graph_recrawl);
+            assert_eq!(author_batch_size, 128);
+        }
+        _ => panic!("expected socialgraph warm command"),
     }
 }
 

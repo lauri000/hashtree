@@ -23,6 +23,7 @@ pub struct CrawlConfig {
     pub max_follow_distance: Option<u32>,
     pub author_batch_size: usize,
     pub per_author_event_limit: usize,
+    pub per_author_live_bytes: Option<u64>,
     pub fetch_timeout: Duration,
     pub kinds: Option<Vec<u16>>,
     pub relay_fetch_mode: RelayFetchMode,
@@ -39,6 +40,7 @@ impl Default for CrawlConfig {
             max_follow_distance: Some(1),
             author_batch_size: 64,
             per_author_event_limit: 256,
+            per_author_live_bytes: None,
             fetch_timeout: Duration::from_secs(10),
             kinds: None,
             relay_fetch_mode: RelayFetchMode::AuthorBatches,
@@ -107,6 +109,8 @@ pub enum CrawlError {
     MissingRelays,
     #[error("per-author event limit must be greater than zero")]
     InvalidPerAuthorLimit,
+    #[error("per-author live byte cap must be greater than zero")]
+    InvalidPerAuthorLiveBytes,
     #[error("author batch size must be greater than zero")]
     InvalidAuthorBatchSize,
     #[error("relay page size must be greater than zero")]
@@ -204,7 +208,7 @@ impl<S: Store> NostrBridge<S> {
                 }
             }
 
-            selected.extend(self.select_author_events(merged.into_values().collect()));
+            selected.extend(self.select_author_events(merged.into_values().collect())?);
         }
 
         let (selected, live_bytes_selected) = self.apply_live_byte_cap(selected)?;
@@ -224,6 +228,9 @@ impl<S: Store> NostrBridge<S> {
         }
         if self.config.per_author_event_limit == 0 {
             return Err(CrawlError::InvalidPerAuthorLimit);
+        }
+        if self.config.per_author_live_bytes == Some(0) {
+            return Err(CrawlError::InvalidPerAuthorLiveBytes);
         }
         if self.config.author_batch_size == 0 {
             return Err(CrawlError::InvalidAuthorBatchSize);
@@ -574,7 +581,10 @@ impl<S: Store> NostrBridge<S> {
         Ok(out)
     }
 
-    fn select_author_events(&self, mut events: Vec<StoredNostrEvent>) -> Vec<StoredNostrEvent> {
+    fn select_author_events(
+        &self,
+        mut events: Vec<StoredNostrEvent>,
+    ) -> Result<Vec<StoredNostrEvent>> {
         events.sort_by(|left, right| {
             self.policy
                 .priority(right)
@@ -582,8 +592,24 @@ impl<S: Store> NostrBridge<S> {
                 .then_with(|| right.created_at.cmp(&left.created_at))
                 .then_with(|| left.id.cmp(&right.id))
         });
+
+        if let Some(max_live_bytes) = self.config.per_author_live_bytes {
+            let mut selected = Vec::new();
+            let mut live_bytes_selected = 0u64;
+            for event in events {
+                let encoded_len = self.event_store.encode_event(&event)?.len() as u64;
+                if live_bytes_selected.saturating_add(encoded_len) > max_live_bytes {
+                    continue;
+                }
+                live_bytes_selected = live_bytes_selected.saturating_add(encoded_len);
+                selected.push(event);
+            }
+            selected.truncate(self.config.per_author_event_limit);
+            return Ok(selected);
+        }
+
         events.truncate(self.config.per_author_event_limit);
-        events
+        Ok(events)
     }
 
     fn apply_live_byte_cap(

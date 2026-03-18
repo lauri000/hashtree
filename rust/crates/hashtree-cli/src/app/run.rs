@@ -25,7 +25,7 @@ use super::mount::mount_fuse;
 use super::nostr_index::{run_socialgraph_index_from_cli, SocialGraphIndexOptions};
 use super::peers::{fetch_profile_name, list_peers};
 use super::resolve::resolve_cid_input;
-use super::socialgraph::{run_socialgraph_filter, run_socialgraph_snapshot};
+use super::socialgraph::{run_socialgraph_filter, run_socialgraph_snapshot, run_socialgraph_warm};
 use super::util::chrono_humanize_timestamp;
 
 pub(crate) async fn run() -> Result<()> {
@@ -1090,6 +1090,21 @@ pub(crate) async fn run() -> Result<()> {
             } => {
                 run_socialgraph_filter(data_dir, max_distance, overmute_threshold)?;
             }
+            SocialGraphCommands::Warm {
+                secs,
+                crawl_depth,
+                full_graph_recrawl,
+                author_batch_size,
+            } => {
+                run_socialgraph_warm(
+                    data_dir,
+                    secs,
+                    crawl_depth,
+                    full_graph_recrawl,
+                    author_batch_size,
+                )
+                .await?;
+            }
             SocialGraphCommands::Snapshot {
                 out,
                 max_nodes,
@@ -1109,10 +1124,12 @@ pub(crate) async fn run() -> Result<()> {
             SocialGraphCommands::Index {
                 warm_secs,
                 crawl_depth,
+                full_graph_recrawl,
                 max_follow_distance,
                 max_authors,
                 max_live_mb,
                 per_author_event_limit,
+                per_author_live_bytes,
                 author_batch_size,
                 fetch_timeout_secs,
                 global_relay_scan,
@@ -1129,11 +1146,13 @@ pub(crate) async fn run() -> Result<()> {
                     SocialGraphIndexOptions {
                         warm_graph_for: Duration::from_secs(warm_secs),
                         graph_crawl_depth: effective_crawl_depth,
+                        full_graph_recrawl,
                         max_authors,
                         max_follow_distance: effective_max_follow_distance,
                         max_live_bytes: max_live_mb.saturating_mul(1024 * 1024),
                         author_batch_size,
                         per_author_event_limit,
+                        per_author_live_bytes,
                         fetch_timeout: Duration::from_secs(fetch_timeout_secs),
                         global_relay_scan,
                         relay_page_size,

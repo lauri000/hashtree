@@ -381,6 +381,21 @@ pub(crate) enum SocialGraphCommands {
         #[arg(long, default_value_t = 1.0)]
         overmute_threshold: f64,
     },
+    /// Warm the local social graph without building a post index
+    Warm {
+        /// Warm the social graph for this many seconds
+        #[arg(long, default_value_t = 60)]
+        secs: u64,
+        /// Graph crawl depth to use while warming (default: config nostr.crawl_depth)
+        #[arg(long)]
+        crawl_depth: Option<u32>,
+        /// Ignore existing graph frontier state and refetch from the root
+        #[arg(long, default_value_t = false)]
+        full_graph_recrawl: bool,
+        /// Relay query author batch size
+        #[arg(long, default_value_t = 64)]
+        author_batch_size: usize,
+    },
     /// Save a social graph snapshot (nostr-social-graph binary format)
     Snapshot {
         /// Output file path (use "-" for stdout)
@@ -407,6 +422,9 @@ pub(crate) enum SocialGraphCommands {
         /// Graph crawl depth to use while warming (default: config nostr.crawl_depth)
         #[arg(long)]
         crawl_depth: Option<u32>,
+        /// Ignore existing graph frontier state and refetch from the root
+        #[arg(long, default_value_t = false)]
+        full_graph_recrawl: bool,
         /// Maximum follow distance to include in the post index (default: config nostr.crawl_depth)
         #[arg(long)]
         max_follow_distance: Option<u32>,
@@ -419,6 +437,9 @@ pub(crate) enum SocialGraphCommands {
         /// Maximum number of kept events per author
         #[arg(long, default_value_t = 256)]
         per_author_event_limit: usize,
+        /// Maximum kept bytes per author before the global live cap is applied
+        #[arg(long)]
+        per_author_live_bytes: Option<u64>,
         /// Relay query author batch size
         #[arg(long, default_value_t = 64)]
         author_batch_size: usize,

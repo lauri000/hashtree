@@ -17,6 +17,7 @@ pub struct SocialGraphCrawler {
     relays: Vec<String>,
     max_depth: u32,
     author_batch_size: usize,
+    full_recrawl: bool,
 }
 
 impl SocialGraphCrawler {
@@ -33,6 +34,7 @@ impl SocialGraphCrawler {
             relays,
             max_depth,
             author_batch_size: DEFAULT_AUTHOR_BATCH_SIZE,
+            full_recrawl: false,
         }
     }
 
@@ -43,6 +45,11 @@ impl SocialGraphCrawler {
 
     pub fn with_author_batch_size(mut self, author_batch_size: usize) -> Self {
         self.author_batch_size = author_batch_size.max(1);
+        self
+    }
+
+    pub fn with_full_recrawl(mut self, full_recrawl: bool) -> Self {
+        self.full_recrawl = full_recrawl;
         self
     }
 
@@ -168,6 +175,26 @@ impl SocialGraphCrawler {
         }
     }
 
+    fn authors_to_fetch_at_distance(&self, distance: u32) -> Vec<[u8; 32]> {
+        let Ok(users) = self.ndb.users_by_follow_distance(distance) else {
+            return Vec::new();
+        };
+        if self.full_recrawl {
+            return users;
+        }
+
+        users
+            .into_iter()
+            .filter(|pk_bytes| {
+                self.ndb
+                    .follow_list_created_at(pk_bytes)
+                    .ok()
+                    .flatten()
+                    .is_none()
+            })
+            .collect()
+    }
+
     pub(crate) fn handle_incoming_event(&self, event: &nostr::Event) {
         let is_contact_list = event.kind == nostr::Kind::ContactList;
         let is_mute_list = event.kind == nostr::Kind::MuteList;
@@ -215,19 +242,19 @@ impl SocialGraphCrawler {
         }
         client.connect().await;
 
-        let root_pk = self.keys.public_key().to_bytes();
-        let mut visited: HashSet<[u8; 32]> = HashSet::new();
         let mut fetched_contact_lists: HashSet<[u8; 32]> = HashSet::new();
-        let mut current_level = vec![root_pk];
-        visited.insert(root_pk);
 
-        for _depth in 0..self.max_depth {
-            if current_level.is_empty() || *shutdown_rx.borrow() {
+        for distance in 0..self.max_depth {
+            if *shutdown_rx.borrow() {
                 break;
             }
 
-            let mut next_level = Vec::new();
-            for author_chunk in current_level.chunks(self.author_batch_size) {
+            let authors = self.authors_to_fetch_at_distance(distance);
+            if authors.is_empty() {
+                continue;
+            }
+
+            for author_chunk in authors.chunks(self.author_batch_size) {
                 if *shutdown_rx.borrow() {
                     break;
                 }
@@ -241,22 +268,8 @@ impl SocialGraphCrawler {
                     .await;
                 for event in &events {
                     self.ingest_event_into(self.ndb.as_ref(), event);
-                    if event.kind == nostr::Kind::ContactList {
-                        for tag in event.tags.iter() {
-                            if let Some(nostr::TagStandard::PublicKey { public_key, .. }) =
-                                tag.as_standardized()
-                            {
-                                let follow_bytes = public_key.to_bytes();
-                                if visited.insert(follow_bytes) {
-                                    next_level.push(follow_bytes);
-                                }
-                            }
-                        }
-                    }
                 }
             }
-
-            current_level = next_level;
         }
 
         let filter = nostr::Filter::new()
@@ -595,6 +608,133 @@ mod tests {
         assert!(
             author_counts.iter().any(|count| *count >= 2),
             "expected batched author REQ, got {:?}",
+            author_counts
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_crawler_expands_from_existing_graph_without_root_refetch() {
+        let _guard = crate::socialgraph::test_lock();
+        let tmp = TempDir::new().unwrap();
+        let ndb = crate::socialgraph::init_ndb(tmp.path()).unwrap();
+
+        let root_keys = nostr::Keys::generate();
+        let root_pk = root_keys.public_key().to_bytes();
+        crate::socialgraph::set_social_graph_root(&ndb, &root_pk);
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = ndb.clone();
+
+        let alice_keys = nostr::Keys::generate();
+        let bob_keys = nostr::Keys::generate();
+        let carol_keys = nostr::Keys::generate();
+
+        let root_event = EventBuilder::new(
+            Kind::ContactList,
+            "",
+            vec![
+                Tag::public_key(alice_keys.public_key()),
+                Tag::public_key(bob_keys.public_key()),
+            ],
+        )
+        .custom_created_at(nostr::Timestamp::from(10))
+        .to_event(&root_keys)
+        .unwrap();
+        crate::socialgraph::ingest_parsed_event(&ndb, &root_event).unwrap();
+
+        let alice_event = EventBuilder::new(
+            Kind::ContactList,
+            "",
+            vec![Tag::public_key(carol_keys.public_key())],
+        )
+        .custom_created_at(nostr::Timestamp::from(11))
+        .to_event(&alice_keys)
+        .unwrap();
+        let bob_event = EventBuilder::new(Kind::ContactList, "", vec![])
+            .custom_created_at(nostr::Timestamp::from(12))
+            .to_event(&bob_keys)
+            .unwrap();
+
+        let relay = TestRelay::new(vec![alice_event, bob_event]);
+        let crawler = SocialGraphCrawler::new(backend, root_keys.clone(), vec![relay.url()], 2)
+            .with_author_batch_size(2);
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = tokio::spawn(async move {
+            crawler.crawl(shutdown_rx).await;
+        });
+
+        let alice_pk = alice_keys.public_key().to_bytes();
+        let carol_pk = carol_keys.public_key().to_bytes();
+        wait_until(Duration::from_secs(5), || {
+            crate::socialgraph::get_follows(&ndb, &alice_pk).contains(&carol_pk)
+        })
+        .await;
+
+        let _ = shutdown_tx.send(true);
+        handle.await.unwrap();
+
+        let author_counts = relay.request_author_counts();
+        assert!(
+            !author_counts.contains(&1),
+            "expected incremental crawl to skip root refetch, got {:?}",
+            author_counts
+        );
+        assert!(
+            author_counts.iter().any(|count| *count >= 2),
+            "expected batched distance-1 REQ, got {:?}",
+            author_counts
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_crawler_full_recrawl_refetches_root() {
+        let _guard = crate::socialgraph::test_lock();
+        let tmp = TempDir::new().unwrap();
+        let ndb = crate::socialgraph::init_ndb(tmp.path()).unwrap();
+
+        let root_keys = nostr::Keys::generate();
+        let root_pk = root_keys.public_key().to_bytes();
+        crate::socialgraph::set_social_graph_root(&ndb, &root_pk);
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = ndb.clone();
+
+        let alice_keys = nostr::Keys::generate();
+        let bob_keys = nostr::Keys::generate();
+
+        let root_event = EventBuilder::new(
+            Kind::ContactList,
+            "",
+            vec![
+                Tag::public_key(alice_keys.public_key()),
+                Tag::public_key(bob_keys.public_key()),
+            ],
+        )
+        .custom_created_at(nostr::Timestamp::from(10))
+        .to_event(&root_keys)
+        .unwrap();
+        crate::socialgraph::ingest_parsed_event(&ndb, &root_event).unwrap();
+
+        let relay = TestRelay::new(vec![root_event]);
+        let crawler = SocialGraphCrawler::new(backend, root_keys.clone(), vec![relay.url()], 1)
+            .with_full_recrawl(true);
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = tokio::spawn(async move {
+            crawler.crawl(shutdown_rx).await;
+        });
+
+        wait_until(Duration::from_secs(5), || {
+            relay.request_author_counts().contains(&1)
+        })
+        .await;
+
+        let _ = shutdown_tx.send(true);
+        handle.await.unwrap();
+
+        let author_counts = relay.request_author_counts();
+        assert!(
+            author_counts.contains(&1),
+            "expected full recrawl to refetch root, got {:?}",
             author_counts
         );
     }
