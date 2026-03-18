@@ -6,6 +6,47 @@ async function openHome(page: import('@playwright/test').Page) {
 }
 
 test.describe('Navigation', () => {
+  test('toolbar marks only non-interactive header regions as draggable', async ({ tauriPage: page }) => {
+    await openHome(page);
+    await expect(page.locator('input[placeholder="Search or enter address"]')).toBeVisible();
+
+    const dragRegions = await page.evaluate(() => {
+      const input = document.querySelector<HTMLInputElement>('input[placeholder="Search or enter address"]');
+      const backButton = document.querySelector<HTMLButtonElement>('button[title="Back"]');
+      const settingsButton = document.querySelector<HTMLButtonElement>('button[title="Settings"]');
+
+      if (!input || !backButton || !settingsButton) {
+        throw new Error('toolbar controls not found');
+      }
+
+      const addressBar = input.parentElement;
+      const centerRegion = addressBar?.parentElement;
+      const navRegion = backButton.parentElement;
+      const toolbar = navRegion?.parentElement;
+      const searchIcon = addressBar?.querySelector('.i-lucide-search');
+
+      return {
+        toolbar: toolbar?.getAttribute('data-tauri-drag-region'),
+        navRegion: navRegion?.getAttribute('data-tauri-drag-region'),
+        centerRegion: centerRegion?.getAttribute('data-tauri-drag-region'),
+        addressBar: addressBar?.getAttribute('data-tauri-drag-region'),
+        searchIcon: searchIcon?.getAttribute('data-tauri-drag-region'),
+        backButton: backButton.getAttribute('data-tauri-drag-region'),
+        settingsButton: settingsButton.getAttribute('data-tauri-drag-region'),
+        input: input.getAttribute('data-tauri-drag-region'),
+      };
+    });
+
+    expect(dragRegions.toolbar).not.toBeNull();
+    expect(dragRegions.navRegion).not.toBeNull();
+    expect(dragRegions.centerRegion).not.toBeNull();
+    expect(dragRegions.addressBar).not.toBeNull();
+    expect(dragRegions.searchIcon).not.toBeNull();
+    expect(dragRegions.backButton).toBe('false');
+    expect(dragRegions.settingsButton).toBe('false');
+    expect(dragRegions.input).toBe('false');
+  });
+
   test('home button closes webview and shows launcher', async ({ tauriPage: page }) => {
     await openHome(page);
 

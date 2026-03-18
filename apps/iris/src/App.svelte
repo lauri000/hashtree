@@ -521,21 +521,39 @@
     style="padding-left: 88px;"
   >
     <div data-tauri-drag-region class="flex items-center gap-1">
-      <button class="btn-circle btn-ghost" class:opacity-40={!canGoBack} onclick={goBack} disabled={!canGoBack} title="Back">
+      <button
+        data-tauri-drag-region="false"
+        class="btn-circle btn-ghost"
+        class:opacity-40={!canGoBack}
+        onclick={goBack}
+        disabled={!canGoBack}
+        title="Back"
+      >
         <span class="i-lucide-chevron-left text-lg"></span>
       </button>
-      <button class="btn-circle btn-ghost" class:opacity-40={!canGoForward} onclick={goForward} disabled={!canGoForward} title="Forward">
+      <button
+        data-tauri-drag-region="false"
+        class="btn-circle btn-ghost"
+        class:opacity-40={!canGoForward}
+        onclick={goForward}
+        disabled={!canGoForward}
+        title="Forward"
+      >
         <span class="i-lucide-chevron-right text-lg"></span>
       </button>
-      <button class="btn-circle btn-ghost" onclick={goHome} title="Home">
+      <button data-tauri-drag-region="false" class="btn-circle btn-ghost" onclick={goHome} title="Home">
         <span class="i-lucide-home text-lg"></span>
       </button>
     </div>
 
-    <div class="flex-1 flex justify-center relative">
-      <div class="w-full max-w-lg flex items-center gap-2 px-3 py-1 rounded-full bg-surface-0 b-1 b-solid b-surface-3 transition-colors {isAddressFocused ? 'b-accent' : ''}">
+    <div data-tauri-drag-region class="flex-1 flex justify-center relative">
+      <div
+        data-tauri-drag-region
+        class="w-full max-w-lg flex items-center gap-2 px-3 py-1 rounded-full bg-surface-0 b-1 b-solid b-surface-3 transition-colors {isAddressFocused ? 'b-accent' : ''}"
+      >
         {#if currentUrl}
           <button
+            data-tauri-drag-region="false"
             class="shrink-0 text-text-3 hover:text-text-1"
             onclick={refresh}
             title="Refresh"
@@ -543,7 +561,7 @@
             <span class="i-lucide-refresh-cw text-sm"></span>
           </button>
         {/if}
-        <span class="i-lucide-search text-sm text-muted shrink-0"></span>
+        <span data-tauri-drag-region class="i-lucide-search text-sm text-muted shrink-0"></span>
         <input
           type="text"
           data-tauri-drag-region="false"
@@ -575,6 +593,7 @@
           class="bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted flex-1 text-center"
         />
         <button
+          data-tauri-drag-region="false"
           class="shrink-0 text-text-3 hover:text-text-1 disabled:opacity-30"
           onclick={toggleFavorite}
           disabled={!currentUrl}
@@ -621,6 +640,7 @@
     </div>
 
     <button
+      data-tauri-drag-region="false"
       class="btn-circle btn-ghost"
       onclick={goSettings}
       title="Settings"
