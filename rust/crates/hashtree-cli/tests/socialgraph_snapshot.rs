@@ -57,11 +57,11 @@ fn snapshot_includes_list_timestamps() {
     let carol_id = find_id(&parsed.id_to_pubkey, &carol_pk.to_bytes()).expect("carol id");
 
     let (follow_ts, follow_targets) = parsed.follow_lists.get(&root_id).expect("root follow list");
-    assert_eq!(*follow_ts, follow_created_at as u64);
+    assert_eq!(*follow_ts, follow_created_at);
     assert!(follow_targets.contains(&bob_id));
 
     let (mute_ts, mute_targets) = parsed.mute_lists.get(&root_id).expect("root mute list");
-    assert_eq!(*mute_ts, mute_created_at as u64);
+    assert_eq!(*mute_ts, mute_created_at);
     assert!(mute_targets.contains(&carol_id));
 }
 

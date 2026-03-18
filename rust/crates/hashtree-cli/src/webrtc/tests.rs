@@ -287,9 +287,8 @@ fn test_blob_policy_matches_legacy_defaults() {
 fn test_mesh_policy_is_probabilistic_and_tighter() {
     assert_eq!(MESH_EVENT_POLICY.mode, HtlMode::Probabilistic);
     assert_eq!(MESH_EVENT_POLICY.max_htl, 4);
-    assert!(MESH_EVENT_POLICY.max_htl < BLOB_REQUEST_POLICY.max_htl);
-    assert!(MESH_EVENT_POLICY.p_at_max > BLOB_REQUEST_POLICY.p_at_max);
-    assert!(MESH_EVENT_POLICY.p_at_min > BLOB_REQUEST_POLICY.p_at_min);
+    assert!((MESH_EVENT_POLICY.p_at_max - 0.75).abs() < f64::EPSILON);
+    assert!((MESH_EVENT_POLICY.p_at_min - 0.5).abs() < f64::EPSILON);
 }
 
 #[test]

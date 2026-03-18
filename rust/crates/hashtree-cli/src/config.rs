@@ -610,14 +610,14 @@ mod tests {
     fn test_config_default() {
         let config = Config::default();
         assert_eq!(config.server.bind_address, "127.0.0.1:8080");
-        assert_eq!(config.server.enable_auth, true);
+        assert!(config.server.enable_auth);
         assert_eq!(config.storage.max_size_gb, 10);
         assert_eq!(config.nostr.crawl_depth, 2);
         assert_eq!(config.nostr.max_write_distance, 3);
         assert_eq!(config.nostr.db_max_size_gb, 10);
         assert_eq!(config.nostr.spambox_max_size_gb, 1);
         assert!(config.nostr.socialgraph_root.is_none());
-        assert_eq!(config.server.socialgraph_snapshot_public, false);
+        assert!(!config.server.socialgraph_snapshot_public);
         assert!(config.cashu.accepted_mints.is_empty());
         assert!(config.cashu.default_mint.is_none());
         assert_eq!(config.cashu.quote_payment_offer_sat, 3);

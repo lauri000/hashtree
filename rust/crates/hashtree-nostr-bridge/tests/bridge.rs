@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io;
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -7,29 +8,48 @@ use futures::{SinkExt, StreamExt};
 use hashtree_core::MemoryStore;
 use hashtree_nostr::{ListEventsOptions, NostrEventStore, StoredNostrEvent};
 use hashtree_nostr_bridge::{CrawlConfig, NostrBridge};
-use nostr::prelude::{Event, EventBuilder, Kind, Tag, Timestamp};
+use negentropy::{Id, Negentropy, NegentropyStorageVector};
+use nostr::prelude::{
+    ClientMessage, Event, EventBuilder, Filter, JsonUtil, Kind, RelayMessage, Tag, Timestamp,
+};
 use nostr_sdk::{Client, Keys};
 use nostr_social_graph::{NostrEvent as GraphEvent, SocialGraph};
-use serde_json::Value;
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
+#[derive(Debug, Default)]
+struct SharedRelayState {
+    events: Vec<Event>,
+    requested_id_batches: Vec<Vec<String>>,
+    supports_negentropy: bool,
+    negentropy_open_attempts: usize,
+    negentropy_sessions_started: usize,
+}
+
 struct TestRelay {
     port: u16,
     shutdown: broadcast::Sender<()>,
+    state: Arc<Mutex<SharedRelayState>>,
 }
 
 impl TestRelay {
     fn new() -> Self {
-        let events = Arc::new(Mutex::new(Vec::new()));
+        Self::with_negentropy(false)
+    }
+
+    fn with_negentropy(supports_negentropy: bool) -> Self {
+        let state = Arc::new(Mutex::new(SharedRelayState {
+            supports_negentropy,
+            ..SharedRelayState::default()
+        }));
         let (shutdown, _) = broadcast::channel(1);
 
         let std_listener = TcpListener::bind("127.0.0.1:0").expect("bind relay listener");
         let port = std_listener.local_addr().expect("relay local addr").port();
         std_listener.set_nonblocking(true).expect("set nonblocking");
 
-        let events_for_thread = Arc::clone(&events);
+        let state_for_thread = Arc::clone(&state);
         let shutdown_for_thread = shutdown.clone();
 
         std::thread::spawn(move || {
@@ -49,9 +69,9 @@ impl TestRelay {
                         _ = shutdown_rx.recv() => break,
                         accept = listener.accept() => {
                             if let Ok((stream, _)) = accept {
-                                let events = Arc::clone(&events_for_thread);
+                                let state = Arc::clone(&state_for_thread);
                                 tokio::spawn(async move {
-                                    handle_connection(stream, events).await;
+                                    handle_connection(stream, state).await;
                                 });
                             }
                         }
@@ -62,11 +82,37 @@ impl TestRelay {
 
         std::thread::sleep(Duration::from_millis(100));
 
-        Self { port, shutdown }
+        Self {
+            port,
+            shutdown,
+            state,
+        }
     }
 
     fn url(&self) -> String {
         format!("ws://127.0.0.1:{}", self.port)
+    }
+
+    fn requested_id_batches(&self) -> Vec<Vec<String>> {
+        self.state
+            .lock()
+            .expect("relay state lock")
+            .requested_id_batches
+            .clone()
+    }
+
+    fn negentropy_sessions_started(&self) -> usize {
+        self.state
+            .lock()
+            .expect("relay state lock")
+            .negentropy_sessions_started
+    }
+
+    fn negentropy_open_attempts(&self) -> usize {
+        self.state
+            .lock()
+            .expect("relay state lock")
+            .negentropy_open_attempts
     }
 }
 
@@ -77,45 +123,90 @@ impl Drop for TestRelay {
     }
 }
 
-fn event_matches_filter(event: &Value, filter: &Value) -> bool {
-    let Some(filter_obj) = filter.as_object() else {
-        return true;
-    };
+fn matching_events(state: &Arc<Mutex<SharedRelayState>>, filters: &[Filter]) -> Vec<Event> {
+    let mut matched = state
+        .lock()
+        .expect("relay state lock")
+        .events
+        .clone()
+        .into_iter()
+        .filter(|event| {
+            filters.is_empty() || filters.iter().any(|filter| filter.match_event(event))
+        })
+        .collect::<Vec<_>>();
 
-    if let Some(authors) = filter_obj.get("authors").and_then(Value::as_array) {
-        let accepted: Vec<&str> = authors.iter().filter_map(Value::as_str).collect();
-        let author = event
-            .get("pubkey")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if !accepted.is_empty() && !accepted.contains(&author) {
-            return false;
-        }
+    matched.sort_by(|left, right| {
+        right
+            .created_at
+            .cmp(&left.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    if let Some(limit) = filters.iter().filter_map(|filter| filter.limit).min() {
+        matched.truncate(limit);
     }
 
-    if let Some(kinds) = filter_obj.get("kinds").and_then(Value::as_array) {
-        let event_kind = event
-            .get("kind")
-            .and_then(Value::as_i64)
-            .unwrap_or_default();
-        if !kinds
-            .iter()
-            .any(|kind| kind.as_i64().is_some_and(|value| value == event_kind))
-        {
-            return false;
-        }
-    }
-
-    true
+    matched
 }
 
-async fn handle_connection(stream: TcpStream, events: Arc<Mutex<Vec<Value>>>) {
+fn build_negentropy_storage(
+    state: &Arc<Mutex<SharedRelayState>>,
+    filter: &Filter,
+) -> NegentropyStorageVector {
+    let mut events = matching_events(state, std::slice::from_ref(filter));
+    events.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    let mut storage = NegentropyStorageVector::with_capacity(events.len());
+    for event in events {
+        storage
+            .insert(
+                event.created_at.as_u64(),
+                Id::from_slice(event.id.as_bytes()).expect("negentropy id"),
+            )
+            .expect("insert negentropy item");
+    }
+    storage.seal().expect("seal negentropy storage");
+    storage
+}
+
+fn record_requested_ids(state: &Arc<Mutex<SharedRelayState>>, filters: &[Filter]) {
+    let mut requested_ids = filters
+        .iter()
+        .filter_map(|filter| filter.ids.as_ref())
+        .flat_map(|ids| ids.iter().map(|id| id.to_hex()))
+        .collect::<Vec<_>>();
+    if requested_ids.is_empty() {
+        return;
+    }
+    requested_ids.sort();
+    requested_ids.dedup();
+    state
+        .lock()
+        .expect("relay state lock")
+        .requested_id_batches
+        .push(requested_ids);
+}
+
+async fn send_relay_message(
+    write: &mut futures::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
+    message: RelayMessage,
+) {
+    let _ = write.send(Message::Text(message.as_json())).await;
+}
+
+async fn handle_connection(stream: TcpStream, state: Arc<Mutex<SharedRelayState>>) {
     let ws_stream = match accept_async(stream).await {
         Ok(ws) => ws,
         Err(_) => return,
     };
 
     let (mut write, mut read) = ws_stream.split();
+    let mut negentropy_sessions: HashMap<String, Negentropy<'static, NegentropyStorageVector>> =
+        HashMap::new();
 
     while let Some(msg) = read.next().await {
         let msg = match msg {
@@ -128,46 +219,107 @@ async fn handle_connection(stream: TcpStream, events: Arc<Mutex<Vec<Value>>>) {
             _ => continue,
         };
 
-        let parsed: Vec<Value> = match serde_json::from_str(&msg) {
+        let parsed = match ClientMessage::from_json(msg.as_bytes()) {
             Ok(value) => value,
             Err(_) => continue,
         };
 
-        match parsed.first().and_then(Value::as_str) {
-            Some("EVENT") => {
-                let Some(event) = parsed.get(1).cloned() else {
-                    continue;
-                };
-                let Some(id) = event.get("id").and_then(Value::as_str).map(str::to_owned) else {
-                    continue;
-                };
-                events.lock().expect("relay events lock").push(event);
-                let ok = serde_json::json!(["OK", id, true, ""]);
-                let _ = write.send(Message::Text(ok.to_string())).await;
+        match parsed {
+            ClientMessage::Event(event) => {
+                state
+                    .lock()
+                    .expect("relay state lock")
+                    .events
+                    .push(*event.clone());
+                send_relay_message(&mut write, RelayMessage::ok(event.id, true, "")).await;
             }
-            Some("REQ") => {
-                let Some(sub_id) = parsed.get(1).and_then(Value::as_str) else {
-                    continue;
-                };
-                let filters: Vec<Value> = parsed.iter().skip(2).cloned().collect();
-                let snapshot = events.lock().expect("relay events lock").clone();
-                for event in snapshot {
-                    let matched = if filters.is_empty() {
-                        true
-                    } else {
-                        filters
-                            .iter()
-                            .any(|filter| event_matches_filter(&event, filter))
-                    };
-                    if matched {
-                        let msg = serde_json::json!(["EVENT", sub_id, event]);
-                        let _ = write.send(Message::Text(msg.to_string())).await;
-                    }
+            ClientMessage::Req {
+                subscription_id,
+                filters,
+            } => {
+                record_requested_ids(&state, &filters);
+                for event in matching_events(&state, &filters) {
+                    send_relay_message(
+                        &mut write,
+                        RelayMessage::event(subscription_id.clone(), event),
+                    )
+                    .await;
                 }
-                let eose = serde_json::json!(["EOSE", sub_id]);
-                let _ = write.send(Message::Text(eose.to_string())).await;
+                send_relay_message(&mut write, RelayMessage::eose(subscription_id)).await;
             }
-            _ => {}
+            ClientMessage::NegOpen {
+                subscription_id,
+                filter,
+                initial_message,
+                ..
+            } => {
+                let supports_negentropy = {
+                    let mut guard = state.lock().expect("relay state lock");
+                    guard.negentropy_open_attempts += 1;
+                    guard.supports_negentropy
+                };
+                if !supports_negentropy {
+                    send_relay_message(
+                        &mut write,
+                        RelayMessage::notice("negentropy not supported"),
+                    )
+                    .await;
+                    continue;
+                }
+
+                let storage = build_negentropy_storage(&state, &filter);
+                let mut negentropy =
+                    Negentropy::owned(storage, 0).expect("build relay negentropy state");
+                let response = negentropy
+                    .reconcile(&hex::decode(initial_message).expect("parse negentropy open"))
+                    .expect("reconcile negentropy open");
+
+                state
+                    .lock()
+                    .expect("relay state lock")
+                    .negentropy_sessions_started += 1;
+                negentropy_sessions.insert(subscription_id.to_string(), negentropy);
+
+                send_relay_message(
+                    &mut write,
+                    RelayMessage::NegMsg {
+                        subscription_id,
+                        message: hex::encode(response),
+                    },
+                )
+                .await;
+            }
+            ClientMessage::NegMsg {
+                subscription_id,
+                message,
+            } => {
+                let Some(negentropy) = negentropy_sessions.get_mut(&subscription_id.to_string())
+                else {
+                    continue;
+                };
+                let response = negentropy
+                    .reconcile(&hex::decode(message).expect("parse negentropy message"))
+                    .expect("reconcile negentropy message");
+                send_relay_message(
+                    &mut write,
+                    RelayMessage::NegMsg {
+                        subscription_id,
+                        message: hex::encode(response),
+                    },
+                )
+                .await;
+            }
+            ClientMessage::NegClose { subscription_id } | ClientMessage::Close(subscription_id) => {
+                negentropy_sessions.remove(&subscription_id.to_string());
+            }
+            ClientMessage::Count {
+                subscription_id,
+                filters,
+            } => {
+                let count = matching_events(&state, &filters).len();
+                send_relay_message(&mut write, RelayMessage::count(subscription_id, count)).await;
+            }
+            ClientMessage::Auth(_) => {}
         }
     }
 }
@@ -194,7 +346,11 @@ fn stored_event_from_nostr(event: &Event) -> StoredNostrEvent {
         pubkey: event.pubkey.to_hex(),
         created_at: event.created_at.as_u64(),
         kind: event.kind.as_u16() as u32,
-        tags: event.tags.iter().map(|tag: &Tag| tag.as_slice().to_vec()).collect(),
+        tags: event
+            .tags
+            .iter()
+            .map(|tag: &Tag| tag.as_slice().to_vec())
+            .collect(),
         content: event.content.clone(),
         sig: event.sig.to_string(),
     }
@@ -319,10 +475,7 @@ async fn enforces_global_live_byte_cap_after_priority_selection() -> io::Result<
     graph.handle_event(&graph_event_from_nostr(&contact_list), true, 1.0);
 
     let publisher = Client::new(Keys::generate());
-    publisher
-        .add_relay(&relay_url)
-        .await
-        .expect("add relay");
+    publisher.add_relay(&relay_url).await.expect("add relay");
     publisher.connect().await;
     tokio::time::sleep(Duration::from_millis(250)).await;
 
@@ -398,6 +551,316 @@ async fn enforces_global_live_byte_cap_after_priority_selection() -> io::Result<
     assert_eq!(nostr_events.len(), 2);
     assert_eq!(nostr_events[0].id, note_three.id.to_hex());
     assert_eq!(nostr_events[1].id, note_two.id.to_hex());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn limits_relay_fetches_per_author_batch() -> io::Result<()> {
+    let relay = TestRelay::new();
+    let relay_url = relay.url();
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("p tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&contact_list), true, 1.0);
+
+    let publisher = Client::new(Keys::generate());
+    publisher.add_relay(&relay_url).await.expect("add relay");
+    publisher.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    for created_at in 20..25 {
+        let note = EventBuilder::new(
+            Kind::TextNote,
+            format!("note {created_at}"),
+            [Tag::parse(&["t", "nostr"]).expect("t tag")],
+        )
+        .custom_created_at(Timestamp::from_secs(created_at))
+        .to_event(&alice_keys)
+        .expect("note");
+        publisher
+            .send_event(note)
+            .await
+            .expect("publish test event");
+    }
+
+    let store = Arc::new(MemoryStore::new());
+    let bridge = NostrBridge::new(
+        store,
+        CrawlConfig {
+            relays: vec![relay_url],
+            author_batch_size: 1,
+            per_author_event_limit: 2,
+            kinds: Some(vec![1]),
+            ..CrawlConfig::default()
+        },
+    );
+
+    let report = bridge.crawl(&graph, None).await.expect("crawl report");
+    assert_eq!(report.events_seen, 2);
+    assert_eq!(report.events_selected, 2);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn caches_relays_that_do_not_support_negentropy() -> io::Result<()> {
+    let relay = TestRelay::new();
+    let relay_url = relay.url();
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+    let bob_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [
+            Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("alice p tag"),
+            Tag::parse(&["p", &bob_keys.public_key().to_hex()]).expect("bob p tag"),
+        ],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&contact_list), true, 1.0);
+
+    let publisher = Client::new(Keys::generate());
+    publisher.add_relay(&relay_url).await.expect("add relay");
+    publisher.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    for (created_at, keys) in [(20, &alice_keys), (21, &bob_keys)] {
+        let note = EventBuilder::new(Kind::TextNote, format!("note {created_at}"), [])
+            .custom_created_at(Timestamp::from_secs(created_at))
+            .to_event(keys)
+            .expect("note");
+        publisher
+            .send_event(note)
+            .await
+            .expect("publish test event");
+    }
+
+    let store = Arc::new(MemoryStore::new());
+    let bridge = NostrBridge::new(
+        store,
+        CrawlConfig {
+            relays: vec![relay_url],
+            author_batch_size: 1,
+            per_author_event_limit: 4,
+            kinds: Some(vec![1]),
+            ..CrawlConfig::default()
+        },
+    );
+
+    let report = bridge.crawl(&graph, None).await.expect("crawl report");
+    assert_eq!(report.events_selected, 2);
+    assert_eq!(relay.negentropy_open_attempts(), 1);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconciles_per_relay_and_fetches_only_missing_ids() -> io::Result<()> {
+    let relay_one = TestRelay::with_negentropy(true);
+    let relay_two = TestRelay::with_negentropy(true);
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("p tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&contact_list), true, 1.0);
+
+    let note_one = EventBuilder::new(Kind::TextNote, "note one", [])
+        .custom_created_at(Timestamp::from_secs(20))
+        .to_event(&alice_keys)
+        .expect("note one");
+    let note_two = EventBuilder::new(Kind::TextNote, "note two", [])
+        .custom_created_at(Timestamp::from_secs(30))
+        .to_event(&alice_keys)
+        .expect("note two");
+    let note_three = EventBuilder::new(Kind::TextNote, "note three", [])
+        .custom_created_at(Timestamp::from_secs(40))
+        .to_event(&alice_keys)
+        .expect("note three");
+
+    let publisher_one = Client::new(Keys::generate());
+    publisher_one
+        .add_relay(&relay_one.url())
+        .await
+        .expect("add relay one");
+    publisher_one.connect().await;
+
+    let publisher_two = Client::new(Keys::generate());
+    publisher_two
+        .add_relay(&relay_two.url())
+        .await
+        .expect("add relay two");
+    publisher_two.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    for event in [&note_one, &note_two] {
+        publisher_one
+            .send_event(event.clone())
+            .await
+            .expect("publish relay one event");
+    }
+
+    for event in [&note_one, &note_two, &note_three] {
+        publisher_two
+            .send_event(event.clone())
+            .await
+            .expect("publish relay two event");
+    }
+
+    let store = Arc::new(MemoryStore::new());
+    let event_store = NostrEventStore::new(store.clone());
+    let existing_root = event_store
+        .build(None, vec![stored_event_from_nostr(&note_one)])
+        .await
+        .expect("build existing root")
+        .expect("existing root cid");
+
+    let bridge = NostrBridge::new(
+        store.clone(),
+        CrawlConfig {
+            relays: vec![relay_one.url(), relay_two.url()],
+            author_batch_size: 1,
+            per_author_event_limit: 8,
+            kinds: Some(vec![1]),
+            ..CrawlConfig::default()
+        },
+    );
+
+    let report = bridge
+        .crawl(&graph, Some(&existing_root))
+        .await
+        .expect("crawl report");
+    let root = report.root.expect("index root");
+    let retained = event_store
+        .list_by_author(
+            Some(&root),
+            &alice_keys.public_key().to_hex(),
+            ListEventsOptions::default(),
+        )
+        .await
+        .expect("list retained events");
+
+    assert_eq!(report.events_seen, 2);
+    assert_eq!(report.events_selected, 3);
+    assert_eq!(retained.len(), 3);
+    assert!(relay_one.negentropy_sessions_started() >= 1);
+    assert!(relay_two.negentropy_sessions_started() >= 1);
+    assert_eq!(
+        relay_one.requested_id_batches(),
+        vec![vec![note_two.id.to_hex()]]
+    );
+    assert_eq!(
+        relay_two.requested_id_batches(),
+        vec![vec![note_three.id.to_hex()]]
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn limits_authors_considered_by_bfs_order() -> io::Result<()> {
+    let relay = TestRelay::new();
+    let relay_url = relay.url();
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+    let bob_keys = Keys::generate();
+    let carol_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let root_contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [
+            Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("alice p tag"),
+            Tag::parse(&["p", &bob_keys.public_key().to_hex()]).expect("bob p tag"),
+            Tag::parse(&["p", &carol_keys.public_key().to_hex()]).expect("carol p tag"),
+        ],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&root_contact_list), true, 1.0);
+
+    let publisher = Client::new(Keys::generate());
+    publisher.add_relay(&relay_url).await.expect("add relay");
+    publisher.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let alice_note = EventBuilder::new(Kind::TextNote, "alice", [])
+        .custom_created_at(Timestamp::from_secs(20))
+        .to_event(&alice_keys)
+        .expect("alice note");
+    let bob_note = EventBuilder::new(Kind::TextNote, "bob", [])
+        .custom_created_at(Timestamp::from_secs(21))
+        .to_event(&bob_keys)
+        .expect("bob note");
+    let carol_note = EventBuilder::new(Kind::TextNote, "carol", [])
+        .custom_created_at(Timestamp::from_secs(22))
+        .to_event(&carol_keys)
+        .expect("carol note");
+
+    for event in [&alice_note, &bob_note, &carol_note] {
+        publisher
+            .send_event(event.clone())
+            .await
+            .expect("publish test event");
+    }
+
+    let store = Arc::new(MemoryStore::new());
+    let bridge = NostrBridge::new(
+        store.clone(),
+        CrawlConfig {
+            relays: vec![relay_url],
+            max_authors: Some(2),
+            author_batch_size: 1,
+            per_author_event_limit: 4,
+            kinds: Some(vec![1]),
+            ..CrawlConfig::default()
+        },
+    );
+
+    let report = bridge.crawl(&graph, None).await.expect("crawl report");
+    let root = report.root.expect("index root");
+    let event_store = NostrEventStore::new(store);
+    let recent = event_store
+        .list_recent(Some(&root), ListEventsOptions { limit: Some(10) })
+        .await
+        .expect("list recent");
+
+    assert_eq!(report.authors_considered, 2);
+    assert_eq!(recent.len(), 1);
+    let retained_id = recent[0].id.as_str();
+    assert!(
+        retained_id == alice_note.id.to_hex()
+            || retained_id == bob_note.id.to_hex()
+            || retained_id == carol_note.id.to_hex()
+    );
 
     Ok(())
 }

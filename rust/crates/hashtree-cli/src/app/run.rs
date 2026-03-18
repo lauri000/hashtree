@@ -22,6 +22,7 @@ use super::daemonize::{format_daemon_status, spawn_daemon, stop_daemon};
 use super::lists::{follow_user, list_following, list_muted, mute_user, update_profile};
 #[cfg(feature = "fuse")]
 use super::mount::mount_fuse;
+use super::nostr_index::{run_socialgraph_index_from_cli, SocialGraphIndexOptions};
 use super::peers::{fetch_profile_name, list_peers};
 use super::resolve::resolve_cid_input;
 use super::socialgraph::{run_socialgraph_filter, run_socialgraph_snapshot};
@@ -1104,6 +1105,37 @@ pub(crate) async fn run() -> Result<()> {
                     max_distance,
                     max_edges_per_node,
                 )?;
+            }
+            SocialGraphCommands::Index {
+                warm_secs,
+                crawl_depth,
+                max_follow_distance,
+                max_authors,
+                max_live_mb,
+                per_author_event_limit,
+                author_batch_size,
+                fetch_timeout_secs,
+                kinds,
+            } => {
+                let config = Config::load()?;
+                let effective_crawl_depth = crawl_depth.unwrap_or(config.nostr.crawl_depth);
+                let effective_max_follow_distance =
+                    max_follow_distance.or(Some(config.nostr.crawl_depth));
+                run_socialgraph_index_from_cli(
+                    data_dir,
+                    SocialGraphIndexOptions {
+                        warm_graph_for: Duration::from_secs(warm_secs),
+                        graph_crawl_depth: effective_crawl_depth,
+                        max_authors,
+                        max_follow_distance: effective_max_follow_distance,
+                        max_live_bytes: max_live_mb.saturating_mul(1024 * 1024),
+                        author_batch_size,
+                        per_author_event_limit,
+                        fetch_timeout: Duration::from_secs(fetch_timeout_secs),
+                        kinds: (!kinds.is_empty()).then_some(kinds),
+                    },
+                )
+                .await?;
             }
         },
         Commands::Profile {

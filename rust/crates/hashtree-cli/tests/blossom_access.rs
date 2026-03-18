@@ -495,7 +495,7 @@ fn test_list_blobs() {
             || list_response.contains("[]")
             || list_response.is_empty()
             || serde_json::from_str::<Vec<serde_json::Value>>(
-                &list_response.lines().next().unwrap_or("")
+                list_response.lines().next().unwrap_or("")
             )
             .is_ok(),
         "List should return 404, empty array, or valid JSON"

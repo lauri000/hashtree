@@ -288,6 +288,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn test_cashu_helper_client_send_and_receive_json() {
         let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
         env::remove_var(CARGO_HELPER_ENV);
@@ -341,6 +342,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn test_cashu_helper_client_queries_mint_balance_json() {
         let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
         env::remove_var(CARGO_HELPER_ENV);

@@ -259,9 +259,7 @@ mod test_relay {
                         let sub_id = parsed[1].as_str().unwrap_or("sub").to_string();
 
                         let mut filters = Vec::new();
-                        for i in 2..parsed.len() {
-                            let filter = &parsed[i];
-
+                        for filter in parsed.iter().skip(2) {
                             let kind = filter
                                 .get("kinds")
                                 .and_then(|k| k.as_array())
@@ -797,12 +795,22 @@ fn test_two_instances_discover_and_sync() {
     // Start two instances with servers for WebRTC (each has its own data directory)
     // Each instance follows the other to prioritize peer connections in "Follows" pool
     println!("\nStarting Instance A on port 18081 (follows B)...");
-    let instance_a = TestInstance::new(18081, htree_bin_str, &keys_a, &[pubkey_b.clone()]);
+    let instance_a = TestInstance::new(
+        18081,
+        htree_bin_str,
+        &keys_a,
+        std::slice::from_ref(&pubkey_b),
+    );
     println!("Instance A data dir: {:?}", instance_a.data_path);
     std::thread::sleep(Duration::from_secs(5));
 
     println!("\nStarting Instance B on port 18082 (follows A)...");
-    let instance_b = TestInstance::new(18082, htree_bin_str, &keys_b, &[pubkey_a.clone()]);
+    let instance_b = TestInstance::new(
+        18082,
+        htree_bin_str,
+        &keys_b,
+        std::slice::from_ref(&pubkey_a),
+    );
     println!("Instance B data dir: {:?}", instance_b.data_path);
     std::thread::sleep(Duration::from_secs(5));
 
@@ -1151,8 +1159,8 @@ fn test_three_peers_chain_bootstrap_then_ac_connect_without_relay() -> Result<()
         18201,
         &htree_bin,
         &keys_a,
-        &[pubkey_b.clone()],
-        &[relay_r1_url.clone()],
+        std::slice::from_ref(&pubkey_b),
+        std::slice::from_ref(&relay_r1_url),
     )?;
     let instance_b = DaemonInstance::new_with_relays(
         18202,
@@ -1165,8 +1173,8 @@ fn test_three_peers_chain_bootstrap_then_ac_connect_without_relay() -> Result<()
         18203,
         &htree_bin,
         &keys_c,
-        &[pubkey_b.clone()],
-        &[relay_r2_url.clone()],
+        std::slice::from_ref(&pubkey_b),
+        std::slice::from_ref(&relay_r2_url),
     )?;
 
     wait_for_peer_data_channel(&instance_a.addr, &pubkey_b, Duration::from_secs(12))?;

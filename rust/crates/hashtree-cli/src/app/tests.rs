@@ -4,7 +4,7 @@ use super::lists::{
     update_mute_list_file_with_status, MuteEntry, MuteUpdate,
 };
 use super::resolve::resolve_cid_input;
-use crate::app::args::{CashuCommands, CashuMintCommands};
+use crate::app::args::{CashuCommands, CashuMintCommands, SocialGraphCommands};
 use crate::app::args::{Cli, Commands};
 use clap::Parser;
 use nostr::Kind;
@@ -210,6 +210,63 @@ fn test_cli_parses_cashu_topup_and_mint_commands() {
             assert!(make_default);
         }
         _ => panic!("expected cashu mint add command"),
+    }
+}
+
+#[test]
+fn test_cli_parses_socialgraph_index_command() {
+    let cli = Cli::parse_from([
+        "htree",
+        "socialgraph",
+        "index",
+        "--warm-secs",
+        "15",
+        "--crawl-depth",
+        "2",
+        "--max-follow-distance",
+        "2",
+        "--max-authors",
+        "48",
+        "--max-live-mb",
+        "128",
+        "--per-author-event-limit",
+        "64",
+        "--author-batch-size",
+        "32",
+        "--fetch-timeout-secs",
+        "7",
+        "--kind",
+        "1",
+        "--kind",
+        "6",
+    ]);
+
+    match cli.command {
+        Commands::Socialgraph {
+            command:
+                SocialGraphCommands::Index {
+                    warm_secs,
+                    crawl_depth,
+                    max_follow_distance,
+                    max_authors,
+                    max_live_mb,
+                    per_author_event_limit,
+                    author_batch_size,
+                    fetch_timeout_secs,
+                    kinds,
+                },
+        } => {
+            assert_eq!(warm_secs, 15);
+            assert_eq!(crawl_depth, Some(2));
+            assert_eq!(max_follow_distance, Some(2));
+            assert_eq!(max_authors, 48);
+            assert_eq!(max_live_mb, 128);
+            assert_eq!(per_author_event_limit, 64);
+            assert_eq!(author_batch_size, 32);
+            assert_eq!(fetch_timeout_secs, 7);
+            assert_eq!(kinds, vec![1, 6]);
+        }
+        _ => panic!("expected socialgraph index command"),
     }
 }
 

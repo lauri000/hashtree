@@ -27,9 +27,7 @@ fn publish_event(relay_url: &str, event: &Event) {
     rt.block_on(async move {
         let (mut ws, _) = connect_async(relay_url).await.expect("connect test relay");
         let msg = serde_json::json!(["EVENT", event]).to_string();
-        ws.send(Message::Text(msg.into()))
-            .await
-            .expect("send event");
+        ws.send(Message::Text(msg)).await.expect("send event");
 
         let response = ws.next().await.expect("relay ack").expect("ws frame");
         let response = match response {

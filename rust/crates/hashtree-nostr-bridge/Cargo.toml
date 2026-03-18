@@ -18,6 +18,8 @@ tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 nostr.workspace = true
+negentropy = "0.5"
+hex.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 serde_json.workspace = true
 futures.workspace = true

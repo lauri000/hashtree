@@ -589,8 +589,10 @@ mod tests {
             allowed,
         ));
 
-        let mut relay_config = NostrRelayConfig::default();
-        relay_config.spambox_db_max_bytes = 0;
+        let relay_config = NostrRelayConfig {
+            spambox_db_max_bytes: 0,
+            ..Default::default()
+        };
         let relay = NostrRelay::new(
             Arc::clone(&backend),
             tmp.path().to_path_buf(),
@@ -674,8 +676,10 @@ mod tests {
             HashSet::new(),
         ));
 
-        let mut relay_config = NostrRelayConfig::default();
-        relay_config.spambox_db_max_bytes = 0;
+        let relay_config = NostrRelayConfig {
+            spambox_db_max_bytes: 0,
+            ..Default::default()
+        };
         let relay = NostrRelay::new(
             Arc::clone(&backend),
             tmp.path().to_path_buf(),

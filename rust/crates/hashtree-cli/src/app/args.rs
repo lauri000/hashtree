@@ -399,4 +399,34 @@ pub(crate) enum SocialGraphCommands {
         #[arg(long)]
         max_edges_per_node: Option<usize>,
     },
+    /// Crawl and index Nostr events for authors in the social graph
+    Index {
+        /// Warm the social graph for this many seconds before indexing
+        #[arg(long, default_value_t = 0)]
+        warm_secs: u64,
+        /// Graph crawl depth to use while warming (default: config nostr.crawl_depth)
+        #[arg(long)]
+        crawl_depth: Option<u32>,
+        /// Maximum follow distance to include in the post index (default: config nostr.crawl_depth)
+        #[arg(long)]
+        max_follow_distance: Option<u32>,
+        /// Maximum number of authors to crawl from the graph
+        #[arg(long, default_value_t = 64)]
+        max_authors: usize,
+        /// Maximum live index size in MiB
+        #[arg(long, default_value_t = 256)]
+        max_live_mb: u64,
+        /// Maximum number of kept events per author
+        #[arg(long, default_value_t = 256)]
+        per_author_event_limit: usize,
+        /// Relay query author batch size
+        #[arg(long, default_value_t = 64)]
+        author_batch_size: usize,
+        /// Relay fetch timeout in seconds
+        #[arg(long, default_value_t = 10)]
+        fetch_timeout_secs: u64,
+        /// Restrict indexing to these kinds (repeatable)
+        #[arg(long = "kind")]
+        kinds: Vec<u16>,
+    },
 }

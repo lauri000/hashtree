@@ -38,6 +38,7 @@ hashtree-resolver = { version = "0.2.10", path = "crates/hashtree-resolver" }
 hashtree-config = { version = "0.2.10", path = "crates/hashtree-config" }
 hashtree-fs = { version = "0.2.10", path = "crates/hashtree-fs" }
 hashtree-nostr = { version = "0.2.10", path = "crates/hashtree-nostr" }
+hashtree-nostr-bridge = { version = "0.2.10", path = "crates/hashtree-nostr-bridge" }
 hashtree-webrtc = { version = "0.2.10", path = "crates/hashtree-webrtc" }
 
 # AWS S3

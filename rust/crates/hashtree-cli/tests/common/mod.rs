@@ -184,7 +184,7 @@ pub mod test_relay {
                     let id = id.to_string();
                     events.lock().expect("relay events lock").push(event);
                     let ok = serde_json::json!(["OK", id, true, ""]);
-                    let _ = write.send(Message::Text(ok.to_string().into())).await;
+                    let _ = write.send(Message::Text(ok.to_string())).await;
                 }
                 "REQ" => {
                     let Some(sub_id) = parsed.get(1).and_then(Value::as_str) else {
@@ -203,11 +203,11 @@ pub mod test_relay {
                         };
                         if matched {
                             let msg = serde_json::json!(["EVENT", sub_id, event]);
-                            let _ = write.send(Message::Text(msg.to_string().into())).await;
+                            let _ = write.send(Message::Text(msg.to_string())).await;
                         }
                     }
                     let eose = serde_json::json!(["EOSE", sub_id]);
-                    let _ = write.send(Message::Text(eose.to_string().into())).await;
+                    let _ = write.send(Message::Text(eose.to_string())).await;
                 }
                 "CLOSE" => {}
                 _ => {}

@@ -6,6 +6,7 @@ pub(crate) mod daemonize;
 pub(crate) mod lists;
 #[cfg(feature = "fuse")]
 pub(crate) mod mount;
+pub(crate) mod nostr_index;
 pub(crate) mod peers;
 pub(crate) mod pr;
 pub(crate) mod resolve;

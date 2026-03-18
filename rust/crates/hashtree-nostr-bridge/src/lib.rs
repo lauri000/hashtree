@@ -4,13 +4,16 @@ use std::time::Duration;
 
 use hashtree_core::{Cid, Store};
 use hashtree_nostr::{ListEventsOptions, NostrEventStore, NostrEventStoreError, StoredNostrEvent};
-use nostr_sdk::{Client, EventSource, Filter, Keys, Kind, PublicKey};
+use nostr_sdk::{Client, EventId, Filter, Keys, Kind, NegentropyOptions, PublicKey, Timestamp};
 use nostr_social_graph::SocialGraphBackend;
+
+const NEGENTROPY_FETCH_CHUNK_SIZE: usize = 256;
 
 #[derive(Debug, Clone)]
 pub struct CrawlConfig {
     pub relays: Vec<String>,
     pub max_live_bytes: Option<u64>,
+    pub max_authors: Option<usize>,
     pub max_follow_distance: Option<u32>,
     pub author_batch_size: usize,
     pub per_author_event_limit: usize,
@@ -23,6 +26,7 @@ impl Default for CrawlConfig {
         Self {
             relays: Vec::new(),
             max_live_bytes: None,
+            max_authors: None,
             max_follow_distance: Some(1),
             author_batch_size: 64,
             per_author_event_limit: 256,
@@ -134,7 +138,21 @@ impl<S: Store> NostrBridge<S> {
         }
 
         let client = self.connect_client().await?;
-        let fetched_events = self.fetch_events(&client, &authors).await?;
+        let mut existing_by_author: BTreeMap<String, Vec<StoredNostrEvent>> = BTreeMap::new();
+        for author in &authors {
+            let retained = self
+                .event_store
+                .list_by_author(existing_root, author, ListEventsOptions::default())
+                .await?
+                .into_iter()
+                .filter(|event| self.kind_allowed(event.kind))
+                .collect::<Vec<_>>();
+            existing_by_author.insert(author.clone(), retained);
+        }
+
+        let fetched_events = self
+            .fetch_events(&client, &authors, &existing_by_author)
+            .await?;
         let events_seen = fetched_events.len();
         let mut fetched_by_author: BTreeMap<String, Vec<StoredNostrEvent>> = BTreeMap::new();
         for event in fetched_events {
@@ -147,20 +165,14 @@ impl<S: Store> NostrBridge<S> {
         let mut selected = Vec::new();
         for author in &authors {
             let mut merged: BTreeMap<String, StoredNostrEvent> = BTreeMap::new();
-            for event in self
-                .event_store
-                .list_by_author(existing_root, author, ListEventsOptions::default())
-                .await?
-            {
-                if self.kind_allowed(event.kind) {
+            if let Some(existing_events) = existing_by_author.remove(author) {
+                for event in existing_events {
                     merged.insert(event.id.clone(), event);
                 }
             }
             if let Some(events) = fetched_by_author.remove(author) {
                 for event in events {
-                    if self.kind_allowed(event.kind) {
-                        merged.insert(event.id.clone(), event);
-                    }
+                    merged.insert(event.id.clone(), event);
                 }
             }
 
@@ -204,6 +216,13 @@ impl<S: Store> NostrBridge<S> {
             authors.push(author.clone());
             if self
                 .config
+                .max_authors
+                .is_some_and(|max_authors| authors.len() >= max_authors)
+            {
+                break;
+            }
+            if self
+                .config
                 .max_follow_distance
                 .is_some_and(|max_distance| distance >= max_distance)
             {
@@ -241,8 +260,17 @@ impl<S: Store> NostrBridge<S> {
         &self,
         client: &Client,
         authors: &[String],
+        existing_by_author: &BTreeMap<String, Vec<StoredNostrEvent>>,
     ) -> Result<Vec<StoredNostrEvent>> {
-        let mut out = Vec::new();
+        let mut known = BTreeMap::<String, StoredNostrEvent>::new();
+        for events in existing_by_author.values() {
+            for event in events {
+                known.insert(event.id.clone(), event.clone());
+            }
+        }
+
+        let mut fetched = BTreeMap::<String, StoredNostrEvent>::new();
+        let mut relay_negentropy_support = BTreeMap::<String, bool>::new();
         for author_batch in authors.chunks(self.config.author_batch_size) {
             let pubkeys: Vec<PublicKey> = author_batch
                 .iter()
@@ -252,26 +280,155 @@ impl<S: Store> NostrBridge<S> {
                 continue;
             }
 
-            let mut filter = Filter::new().authors(pubkeys);
-            if let Some(kinds) = &self.config.kinds {
-                filter = filter.kinds(kinds.iter().copied().map(Kind::from));
+            let filter = self.batch_filter(pubkeys);
+            for relay in &self.config.relays {
+                let local_items = self.local_items_for_batch(known.values(), author_batch);
+                let relay_support = relay_negentropy_support.get(relay).copied();
+                let (events, supports_negentropy) = self
+                    .fetch_events_from_relay(
+                        client,
+                        relay,
+                        filter.clone(),
+                        local_items,
+                        relay_support,
+                    )
+                    .await?;
+                relay_negentropy_support.insert(relay.clone(), supports_negentropy);
+                for event in events {
+                    if self.kind_allowed(event.kind)
+                        && known.insert(event.id.clone(), event.clone()).is_none()
+                    {
+                        fetched.insert(event.id.clone(), event);
+                    }
+                }
             }
+        }
+        Ok(fetched.into_values().collect())
+    }
 
+    fn batch_filter(&self, pubkeys: Vec<PublicKey>) -> Filter {
+        let mut filter = Filter::new().authors(pubkeys);
+        if let Some(kinds) = &self.config.kinds {
+            filter = filter.kinds(kinds.iter().copied().map(Kind::from));
+        }
+        let relay_limit = self
+            .config
+            .author_batch_size
+            .saturating_mul(self.config.per_author_event_limit);
+        if relay_limit > 0 {
+            filter = filter.limit(relay_limit);
+        }
+        filter
+    }
+
+    fn local_items_for_batch<'a, I>(
+        &self,
+        known_events: I,
+        author_batch: &[String],
+    ) -> Vec<(EventId, Timestamp)>
+    where
+        I: Iterator<Item = &'a StoredNostrEvent>,
+    {
+        let authors = author_batch
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+
+        known_events
+            .filter(|event| {
+                authors.contains(event.pubkey.as_str()) && self.kind_allowed(event.kind)
+            })
+            .filter_map(|event| {
+                let event_id = EventId::parse(&event.id).ok()?;
+                Some((event_id, Timestamp::from_secs(event.created_at)))
+            })
+            .collect()
+    }
+
+    async fn fetch_events_from_relay(
+        &self,
+        client: &Client,
+        relay: &str,
+        filter: Filter,
+        local_items: Vec<(EventId, Timestamp)>,
+        supports_negentropy: Option<bool>,
+    ) -> Result<(Vec<StoredNostrEvent>, bool)> {
+        if supports_negentropy == Some(false) {
+            return self
+                .fetch_full_filter(client, relay, filter)
+                .await
+                .map(|events| (events, false));
+        }
+
+        match client
+            .reconcile_advanced(
+                [relay],
+                filter.clone(),
+                local_items,
+                NegentropyOptions::default().dry_run(),
+            )
+            .await
+        {
+            Ok(output) if !output.success.is_empty() => {
+                let missing = output.remote.iter().cloned().collect::<Vec<_>>();
+                self.fetch_missing_ids(client, relay, missing)
+                    .await
+                    .map(|events| (events, true))
+            }
+            Ok(_) | Err(_) => self
+                .fetch_full_filter(client, relay, filter)
+                .await
+                .map(|events| (events, false)),
+        }
+    }
+
+    async fn fetch_missing_ids(
+        &self,
+        client: &Client,
+        relay: &str,
+        missing_ids: Vec<EventId>,
+    ) -> Result<Vec<StoredNostrEvent>> {
+        if missing_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = BTreeMap::<String, StoredNostrEvent>::new();
+        for chunk in missing_ids.chunks(NEGENTROPY_FETCH_CHUNK_SIZE) {
+            let filter = Filter::new().ids(chunk.iter().cloned());
             let events = client
-                .get_events_of(
-                    vec![filter],
-                    EventSource::relays(Some(self.config.fetch_timeout)),
-                )
+                .get_events_from([relay], vec![filter], Some(self.config.fetch_timeout))
                 .await
                 .map_err(|err| CrawlError::Nostr(err.to_string()))?;
-
             for event in events {
                 if event.kind.is_ephemeral() {
                     continue;
                 }
-                out.push(stored_event_from_nostr(&event));
+                let stored = stored_event_from_nostr(&event);
+                out.insert(stored.id.clone(), stored);
             }
         }
+        Ok(out.into_values().collect())
+    }
+
+    async fn fetch_full_filter(
+        &self,
+        client: &Client,
+        relay: &str,
+        filter: Filter,
+    ) -> Result<Vec<StoredNostrEvent>> {
+        let mut out = Vec::new();
+        let events = client
+            .get_events_from([relay], vec![filter], Some(self.config.fetch_timeout))
+            .await
+            .map_err(|err| CrawlError::Nostr(err.to_string()))?;
+
+        for event in events {
+            if event.kind.is_ephemeral() {
+                continue;
+            }
+            out.push(stored_event_from_nostr(&event));
+        }
+
         Ok(out)
     }
 
