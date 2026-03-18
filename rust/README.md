@@ -118,14 +118,19 @@ cargo install --path crates/hashtree-cli
 cargo install --path crates/hashtree-cashu-cli
 cargo install --path crates/git-remote-htree
 
-# Configure keys in ~/.hashtree/keys
-# Format: <nsec or hex> [petname]
+# Configure signing keys in ~/.hashtree/keys
+# Format: <nsec or secret hex> [petname]
 nsec1abc123... work
+
+# Optional: configure read-only aliases in ~/.hashtree/aliases
+# Format: <npub or pubkey hex> [petname]
+npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce sirius
 
 # Use
 git remote add origin htree://work/myproject
 git push origin main
 git clone htree://npub1.../repo-name
+git clone htree://sirius/repo-name
 
 # Link-visible repo (encrypted, shareable via secret URL)
 git remote add origin htree://self/myrepo#link-visible
@@ -173,6 +178,14 @@ Keys file: `~/.hashtree/keys`
 nsec1abc123... default
 nsec1xyz789... work
 ```
+
+Aliases file: `~/.hashtree/aliases`
+
+```
+npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce sirius
+```
+
+`git-remote-htree` auto-creates `~/.hashtree/aliases` with a commented example when the config directory exists. Public aliases in `~/.hashtree/keys` are still accepted for compatibility, but `aliases` is the preferred place for read-only identities.
 
 ## CLI
 

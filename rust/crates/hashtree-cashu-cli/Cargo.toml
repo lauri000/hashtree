@@ -13,7 +13,7 @@ name = "htree-cashu"
 path = "src/main.rs"
 
 [dependencies]
-hashtree-cli = { version = "0.2.10", path = "../hashtree-cli", default-features = false, features = ["cashu"] }
+hashtree-cli = { version = "0.2.11", path = "../hashtree-cli", default-features = false, features = ["cashu"] }
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
