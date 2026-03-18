@@ -35,14 +35,33 @@ pub fn ensure_rustls_provider() {
     });
 }
 
+fn daemon_bind_address() -> String {
+    if let Ok(bind) = std::env::var("IRIS_DAEMON_BIND") {
+        let trimmed = bind.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    if let Ok(port) = std::env::var("IRIS_DAEMON_PORT") {
+        let trimmed = port.trim();
+        if !trimmed.is_empty() {
+            return format!("127.0.0.1:{}", trimmed);
+        }
+    }
+
+    "127.0.0.1:21417".to_string()
+}
+
 /// Start the embedded htree daemon
 async fn start_daemon(data_dir: PathBuf) -> Result<EmbeddedDaemonInfo, String> {
     relay_proxy::init_relay_proxy_state();
 
+    let bind_address = daemon_bind_address();
     let mut config = hashtree_cli::Config::load()
         .map_err(|e| format!("Failed to load config: {}", e))?;
     config.storage.data_dir = data_dir.to_string_lossy().to_string();
-    config.server.bind_address = "127.0.0.1:21417".to_string();
+    config.server.bind_address = bind_address.clone();
     config.server.enable_auth = false;
     config.server.stun_port = 0;
 
@@ -64,7 +83,7 @@ async fn start_daemon(data_dir: PathBuf) -> Result<EmbeddedDaemonInfo, String> {
     let info = hashtree_cli::daemon::start_embedded(EmbeddedDaemonOptions {
         config,
         data_dir,
-        bind_address: "127.0.0.1:21417".to_string(),
+        bind_address,
         relays: None,
         extra_routes: Some(extra_routes),
         cors: Some(cors),

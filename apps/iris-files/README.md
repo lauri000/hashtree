@@ -29,6 +29,16 @@ npm run build
 npm run preview
 ```
 
+Portable Iris video build:
+
+```bash
+pnpm run build:video:iris
+pnpm run smoke:video:iris
+pnpm run publish:video:iris
+```
+
+The portable video build lives in `dist-video-iris`. The publish helper runs `htree add .` inside that directory so the resulting URL shape is `htree://nhash.../index.html`, not `.../dist-video/index.html`. This build also skips the web PWA/service-worker path because Iris already provides the native htree backend for published apps.
+
 ## Desktop App (Tauri)
 
 Build as a native desktop application with [Tauri](https://tauri.app/).

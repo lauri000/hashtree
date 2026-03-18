@@ -5,6 +5,9 @@ import { VitePWA } from 'vite-plugin-pwa';
 import { resolve } from 'path';
 import { rename } from 'fs/promises';
 
+const isPortableBuild = process.env.HTREE_PORTABLE_BUILD === 'true';
+const outDir = isPortableBuild ? 'dist-video-iris' : 'dist-video';
+
 function videoEntryPlugin(): Plugin {
   return {
     name: 'video-entry',
@@ -20,8 +23,8 @@ function videoEntryPlugin(): Plugin {
       // Rename video.html to index.html for production (Cloudflare Pages)
       try {
         await rename(
-          resolve(__dirname, 'dist-video/video.html'),
-          resolve(__dirname, 'dist-video/index.html')
+          resolve(__dirname, outDir, 'video.html'),
+          resolve(__dirname, outDir, 'index.html')
         );
       } catch {
         // Ignore if file doesn't exist (dev mode)
@@ -31,6 +34,7 @@ function videoEntryPlugin(): Plugin {
 }
 
 export default defineConfig({
+  base: isPortableBuild ? './' : '/',
   define: {
     'import.meta.env.VITE_BUILD_TIME': JSON.stringify(new Date().toISOString()),
   },
@@ -90,7 +94,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: 'dist-video',
+    outDir,
     emptyOutDir: true,
     reportCompressedSize: true,
     chunkSizeWarningLimit: 2000,

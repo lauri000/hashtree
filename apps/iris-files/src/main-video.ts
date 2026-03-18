@@ -7,12 +7,15 @@ import { mergeBootstrapIndex } from './stores/searchIndex';
 import { setAppType } from './appType';
 import { initHtreeApi } from './lib/htreeApi';
 import { installHtreeDebugCapture } from './lib/htreeDebug';
+import { isPortableBuild } from './lib/buildFlavor';
 
 setAppType('video');
 installHtreeDebugCapture();
 
 async function init() {
-  const swPromise = initServiceWorker({ requireCrossOriginIsolation: true });
+  const swPromise = isPortableBuild()
+    ? Promise.resolve(console.log('[SW] Skipping service worker for portable Iris video build'))
+    : initServiceWorker({ requireCrossOriginIsolation: true });
   const htreePromise = initHtreeApi();
   const workerPromise = initReadonlyWorker();
   const sessionPromise = restoreSession();

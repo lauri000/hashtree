@@ -29,6 +29,8 @@ The native smoke harness is Linux-only and expects a desktop-capable environment
 xvfb-run -a pnpm run test:native:linux
 ```
 
+If you need multiple Iris instances on one host, set `IRIS_DAEMON_PORT` (or `IRIS_DAEMON_BIND`) so each app uses its own embedded htree daemon socket.
+
 ## Automation
 
 Iris can expose a localhost automation API for agents and smoke tests.
