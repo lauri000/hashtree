@@ -905,14 +905,11 @@ where
             return None;
         }
 
-        match tokio::time::timeout(self.request_timeout, &mut rx).await {
-            Ok(Ok(Some(data))) => {
-                if hashtree_core::sha256(&data) == *hash {
-                    let _ = self.local_store.put(*hash, data.clone()).await;
-                    return Some(data);
-                }
+        if let Ok(Ok(Some(data))) = tokio::time::timeout(self.request_timeout, &mut rx).await {
+            if hashtree_core::sha256(&data) == *hash {
+                let _ = self.local_store.put(*hash, data.clone()).await;
+                return Some(data);
             }
-            Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {}
         }
 
         if let Some(pending) = self.pending_requests.write().await.remove(&hash_key) {

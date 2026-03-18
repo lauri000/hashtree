@@ -27,7 +27,7 @@ pub struct NostrRelayConfig {
 impl Default for NostrRelayConfig {
     fn default() -> Self {
         Self {
-            spambox_db_max_bytes: 1 * 1024 * 1024 * 1024,
+            spambox_db_max_bytes: 1024 * 1024 * 1024,
             max_query_limit: 200,
             max_subs_per_client: 64,
             max_filters_per_sub: 32,
@@ -327,15 +327,13 @@ mod imp {
             }
 
             let trusted = self.is_trusted_event(client_id, &event).await;
-            if !trusted {
-                if !self.allow_spambox_event(client_id).await {
-                    self.send_to_client(
-                        client_id,
-                        NostrRelayMessage::ok(event.id, false, "rate limited"),
-                    )
-                    .await;
-                    return;
-                }
+            if !trusted && !self.allow_spambox_event(client_id).await {
+                self.send_to_client(
+                    client_id,
+                    NostrRelayMessage::ok(event.id, false, "rate limited"),
+                )
+                .await;
+                return;
             }
 
             let is_ephemeral = event.kind.is_ephemeral();

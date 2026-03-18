@@ -1182,7 +1182,7 @@ impl HashtreeStore {
             // First check if the hash exists in the store at all
             // (either as a blob or tree node)
             let exists = store
-                .has(&hash)
+                .has(hash)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to check existence: {}", e))?;
 
@@ -1192,13 +1192,13 @@ impl HashtreeStore {
 
             // Get total size
             let total_size = tree
-                .get_size(&hash)
+                .get_size(hash)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to get size: {}", e))?;
 
             // Check if it's a tree (chunked) or blob
             let is_tree_node = tree
-                .is_tree(&hash)
+                .is_tree(hash)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to check tree: {}", e))?;
 
@@ -1214,7 +1214,7 @@ impl HashtreeStore {
 
             // Get tree node to extract chunk info
             let node = match tree
-                .get_tree_node(&hash)
+                .get_tree_node(hash)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to get tree node: {}", e))?
             {
@@ -1224,7 +1224,7 @@ impl HashtreeStore {
 
             // Check if it's a directory (has named links)
             let is_directory = tree
-                .is_directory(&hash)
+                .is_directory(hash)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to check directory: {}", e))?;
 
@@ -1358,7 +1358,7 @@ impl HashtreeStore {
         sync_block_on(async {
             // Check if it's a directory
             let is_dir = tree
-                .is_directory(&hash)
+                .is_directory(hash)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to check directory: {}", e))?;
 
@@ -1823,12 +1823,10 @@ impl HashtreeStore {
         // Collect all blob hashes that are in at least one tree
         // Key format is blob_hash (32 bytes) ++ tree_hash (32 bytes)
         let mut blobs_in_trees: HashSet<Hash> = HashSet::new();
-        for item in self.blob_trees.iter(&rtxn)? {
-            if let Ok((key_bytes, _)) = item {
-                if key_bytes.len() >= 32 {
-                    let blob_hash: Hash = key_bytes[..32].try_into().unwrap();
-                    blobs_in_trees.insert(blob_hash);
-                }
+        for (key_bytes, _) in self.blob_trees.iter(&rtxn)?.flatten() {
+            if key_bytes.len() >= 32 {
+                let blob_hash: Hash = key_bytes[..32].try_into().unwrap();
+                blobs_in_trees.insert(blob_hash);
             }
         }
         drop(rtxn);
@@ -1877,7 +1875,7 @@ impl HashtreeStore {
             let meta: TreeMeta = rmp_serde::from_slice(bytes)
                 .map_err(|e| anyhow::anyhow!("Failed to deserialize TreeMeta: {}", e))?;
 
-            if meta.priority >= PRIORITY_OWN {
+            if meta.priority == PRIORITY_OWN {
                 own += meta.total_size;
             } else if meta.priority >= PRIORITY_FOLLOWED {
                 followed += meta.total_size;

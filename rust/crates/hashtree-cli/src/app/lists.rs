@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use hashtree_cli::config::{ensure_keys_string, parse_npub};
 use hashtree_cli::Config;
@@ -228,27 +228,24 @@ async fn publish_event_to_relays(relays: &[String], event_json: &str) -> usize {
 
     let mut success_count = 0;
     for relay in relays {
-        match connect_async(relay).await {
-            Ok((mut ws, _)) => {
-                if ws
-                    .send(tokio_tungstenite::tungstenite::Message::Text(
-                        event_json.to_string().into(),
-                    ))
-                    .await
-                    .is_ok()
-                {
-                    success_count += 1;
-                }
-                let _ = ws.close(None).await;
+        if let Ok((mut ws, _)) = connect_async(relay).await {
+            if ws
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    event_json.to_string(),
+                ))
+                .await
+                .is_ok()
+            {
+                success_count += 1;
             }
-            Err(_) => {}
+            let _ = ws.close(None).await;
         }
     }
     success_count
 }
 
 /// Follow or unfollow a user by publishing an updated kind 3 contact list.
-pub(crate) async fn follow_user(data_dir: &PathBuf, npub_str: &str, follow: bool) -> Result<()> {
+pub(crate) async fn follow_user(data_dir: &Path, npub_str: &str, follow: bool) -> Result<()> {
     use nostr::{ClientMessage, JsonUtil, Keys, Kind};
 
     // Load config for relay list
@@ -293,7 +290,7 @@ pub(crate) async fn follow_user(data_dir: &PathBuf, npub_str: &str, follow: bool
 
 /// Mute or unmute a user by publishing an updated kind 10000 mute list.
 pub(crate) async fn mute_user(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     npub_str: &str,
     reason: Option<&str>,
     mute: bool,
@@ -457,7 +454,7 @@ pub(crate) async fn update_profile(
 }
 
 /// List users we follow.
-pub(crate) async fn list_following(data_dir: &PathBuf) -> Result<()> {
+pub(crate) async fn list_following(data_dir: &Path) -> Result<()> {
     use nostr::nips::nip19::ToBech32;
     use nostr::PublicKey;
 
@@ -487,7 +484,7 @@ pub(crate) async fn list_following(data_dir: &PathBuf) -> Result<()> {
 }
 
 /// List users we mute.
-pub(crate) async fn list_muted(data_dir: &PathBuf) -> Result<()> {
+pub(crate) async fn list_muted(data_dir: &Path) -> Result<()> {
     use nostr::nips::nip19::ToBech32;
     use nostr::PublicKey;
 

@@ -73,19 +73,14 @@ fn default_true() -> bool {
 }
 
 /// Storage backend type
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageBackend {
     /// Filesystem storage (default) - stores in ~/.hashtree/blobs/{prefix}/{hash}
+    #[default]
     Fs,
     /// LMDB storage - requires lmdb feature
     Lmdb,
-}
-
-impl Default for StorageBackend {
-    fn default() -> Self {
-        Self::Fs
-    }
 }
 
 /// Storage configuration
@@ -498,7 +493,7 @@ fn prefer_local_relay() -> bool {
 fn parse_env_list(var: &str) -> Option<Vec<String>> {
     let value = std::env::var(var).ok()?;
     let mut items = Vec::new();
-    for part in value.split(|c| c == ',' || c == ';' || c == '\n' || c == '\t' || c == ' ') {
+    for part in value.split([',', ';', '\n', '\t', ' ']) {
         let trimmed = part.trim();
         if !trimmed.is_empty() {
             items.push(trimmed.to_string());

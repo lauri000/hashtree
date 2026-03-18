@@ -29,6 +29,7 @@ pub const DEFAULT_MAX_UPLOAD_SIZE: usize = 5 * 1024 * 1024;
 
 /// Check if a pubkey has write access based on allowed_npubs config or social graph
 /// Returns Ok(()) if allowed, Err with JSON error body if denied
+#[allow(clippy::result_large_err)]
 fn check_write_access(state: &AppState, pubkey: &str) -> Result<(), Response<Body>> {
     // Check if pubkey is in the allowed list (converted from npub to hex)
     if state.allowed_pubkeys.contains(pubkey) {
@@ -332,7 +333,7 @@ pub async fn head_blob(
     let is_localhost = connect_info.0.ip().is_loopback();
     let (hash_part, ext) = parse_hash_and_extension(&id);
 
-    if !is_valid_sha256(&hash_part) {
+    if !is_valid_sha256(hash_part) {
         return Response::builder()
             .status(StatusCode::BAD_REQUEST)
             .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
@@ -525,7 +526,7 @@ pub async fn delete_blob(
 ) -> impl IntoResponse {
     let (hash_part, _) = parse_hash_and_extension(&id);
 
-    if !is_valid_sha256(&hash_part) {
+    if !is_valid_sha256(hash_part) {
         return Response::builder()
             .status(StatusCode::BAD_REQUEST)
             .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")

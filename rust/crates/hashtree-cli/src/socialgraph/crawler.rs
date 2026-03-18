@@ -163,7 +163,7 @@ impl SocialGraphCrawler {
         }
 
         let Ok(sdk_keys) =
-            nostr_sdk::Keys::parse(&self.keys.secret_key().to_bech32().unwrap_or_default())
+            nostr_sdk::Keys::parse(self.keys.secret_key().to_bech32().unwrap_or_default())
         else {
             return;
         };

@@ -390,11 +390,9 @@ impl GitStorage {
         // Parse commit content - first line is "tree <sha>"
         let content_str = std::str::from_utf8(content).ok()?;
         let first_line = content_str.lines().next()?;
-        if first_line.starts_with("tree ") {
-            Some(first_line[5..].to_string())
-        } else {
-            None
-        }
+        first_line
+            .strip_prefix("tree ")
+            .map(|tree_hash| tree_hash.to_string())
     }
 
     /// Get git object content (decompressed, without header)
@@ -828,9 +826,7 @@ impl GitStorage {
             // Pad to 8-byte boundary relative to entry start
             let entry_len = index_data.len() - entry_start;
             let padding = (8 - (entry_len % 8)) % 8;
-            for _ in 0..padding {
-                index_data.push(0);
-            }
+            index_data.extend(std::iter::repeat_n(0, padding));
         }
 
         // Calculate SHA-1 checksum of everything and append

@@ -94,8 +94,9 @@ impl PullRequestState {
 }
 
 /// Filter used when listing PRs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PullRequestStateFilter {
+    #[default]
     Open,
     Applied,
     Closed,
@@ -125,12 +126,6 @@ impl PullRequestStateFilter {
     }
 }
 
-impl Default for PullRequestStateFilter {
-    fn default() -> Self {
-        PullRequestStateFilter::Open
-    }
-}
-
 /// PR metadata used by listing/filtering consumers.
 #[derive(Debug, Clone)]
 pub struct PullRequestListItem {
@@ -143,6 +138,8 @@ pub struct PullRequestListItem {
     pub target_branch: Option<String>,
     pub created_at: u64,
 }
+
+type FetchedRefs = (HashMap<String, String>, Option<String>, Option<[u8; 32]>);
 
 /// A stored key with optional petname
 #[derive(Debug, Clone)]
@@ -556,10 +553,7 @@ impl NostrClient {
     /// Fetch refs and root hash info from nostr
     /// Returns (refs, root_hash, encryption_key)
     #[allow(dead_code)]
-    pub fn fetch_refs_with_root(
-        &mut self,
-        repo_name: &str,
-    ) -> Result<(HashMap<String, String>, Option<String>, Option<[u8; 32]>)> {
+    pub fn fetch_refs_with_root(&mut self, repo_name: &str) -> Result<FetchedRefs> {
         self.fetch_refs_with_timeout(repo_name, 10)
     }
 
@@ -568,7 +562,7 @@ impl NostrClient {
         &mut self,
         repo_name: &str,
         timeout_secs: u64,
-    ) -> Result<(HashMap<String, String>, Option<String>, Option<[u8; 32]>)> {
+    ) -> Result<FetchedRefs> {
         debug!(
             "Fetching refs for {} from {} (timeout {}s)",
             repo_name, self.pubkey, timeout_secs

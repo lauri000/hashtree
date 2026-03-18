@@ -51,6 +51,8 @@ tower-http.workspace = true
 # Nostr
 nostr.workspace = true
 nostr-sdk.workspace = true
+nostr-social-graph.workspace = true
+nostr-social-graph-heed.workspace = true
 
 # WebRTC (optional, for P2P)
 webrtc = { version = "0.11", optional = true }

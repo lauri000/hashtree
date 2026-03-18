@@ -5,18 +5,18 @@ pub mod snapshot;
 pub use access::SocialGraphAccessControl;
 pub use crawler::SocialGraphCrawler;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::collections::{BTreeSet, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use futures::executor::block_on;
 use hashtree_core::Cid;
 use hashtree_nostr::{ListEventsOptions, NostrEventStore, NostrEventStoreError, StoredNostrEvent};
-use heed::byteorder::BigEndian;
-use heed::types::{Bytes, SerdeBincode, Str, U32, U64};
-use heed::{Database, Env, EnvOpenOptions};
-use nostr::{Event, Filter, JsonUtil, Kind, TagStandard};
+use nostr::{Event, Filter, JsonUtil, Kind};
+use nostr_social_graph::{BinaryBudget, GraphStats, NostrEvent as GraphEvent, SocialGraph};
+use nostr_social_graph_heed::HeedSocialGraph;
 
 use crate::storage::{LocalStore, StorageRouter};
 
@@ -25,10 +25,9 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 pub type UserSet = BTreeSet<[u8; 32]>;
 
-const DEFAULT_MAP_SIZE: u64 = 1_024 * 1_024 * 1_024;
-const MAX_FUTURE_EVENT_SECONDS: u64 = 10 * 60;
-const ROOT_KEY: &str = "root";
-const EVENTS_ROOT_KEY: &str = "events-root";
+const DEFAULT_ROOT_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+const EVENTS_ROOT_FILE: &str = "events-root.msgpack";
+const UNKNOWN_FOLLOW_DISTANCE: u32 = 1000;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StoredCid {
@@ -45,29 +44,17 @@ pub struct SocialGraphStats {
 }
 
 pub struct Ndb {
-    env: Env,
-    metadata: Database<Str, Bytes>,
-    follow_distance_by_user: Database<Bytes, U32<BigEndian>>,
-    followed_by_user: Database<Bytes, SerdeBincode<UserSet>>,
-    followers_by_user: Database<Bytes, SerdeBincode<UserSet>>,
-    follow_list_created_at: Database<Bytes, U64<BigEndian>>,
-    muted_by_user: Database<Bytes, SerdeBincode<UserSet>>,
-    muters_by_user: Database<Bytes, SerdeBincode<UserSet>>,
-    mute_list_created_at: Database<Bytes, U64<BigEndian>>,
-    users_by_follow_distance: Database<U32<BigEndian>, SerdeBincode<UserSet>>,
+    graph: StdMutex<HeedSocialGraph>,
     event_store: NostrEventStore<StorageRouter>,
-    write_lock: StdMutex<()>,
+    events_root_path: PathBuf,
 }
 
 pub trait SocialGraphBackend: Send + Sync {
     fn stats(&self) -> Result<SocialGraphStats>;
     fn follow_distance(&self, pk_bytes: &[u8; 32]) -> Result<Option<u32>>;
     fn followed_targets(&self, owner: &[u8; 32]) -> Result<UserSet>;
-    fn followers_of(&self, owner: &[u8; 32]) -> Result<UserSet>;
-    fn muted_targets(&self, owner: &[u8; 32]) -> Result<UserSet>;
-    fn muters_of(&self, owner: &[u8; 32]) -> Result<UserSet>;
-    fn follow_list_created_at(&self, owner: &[u8; 32]) -> Result<Option<u64>>;
-    fn mute_list_created_at(&self, owner: &[u8; 32]) -> Result<Option<u64>>;
+    fn is_overmuted_user(&self, user_pk: &[u8; 32], threshold: f64) -> Result<bool>;
+    fn snapshot_chunks(&self, root: &[u8; 32], options: &BinaryBudget) -> Result<Vec<Bytes>>;
     fn ingest_event(&self, event: &Event) -> Result<()>;
     fn query_events(&self, filter: &Filter, limit: usize) -> Result<Vec<Event>>;
 }
@@ -106,7 +93,7 @@ pub fn init_ndb_at_path(db_dir: &Path, mapsize_bytes: Option<u64>) -> Result<Arc
     let backend = &config.storage.backend;
     let local_store = Arc::new(
         LocalStore::new(db_dir.join("blobs"), backend)
-            .map_err(|err| anyhow::anyhow!("Failed to create social graph blob store: {}", err))?,
+            .map_err(|err| anyhow::anyhow!("Failed to create social graph blob store: {err}"))?,
     );
     let store = Arc::new(StorageRouter::new(local_store));
     init_ndb_at_path_with_store(db_dir, store, mapsize_bytes)
@@ -115,52 +102,22 @@ pub fn init_ndb_at_path(db_dir: &Path, mapsize_bytes: Option<u64>) -> Result<Arc
 pub fn init_ndb_at_path_with_store(
     db_dir: &Path,
     store: Arc<StorageRouter>,
-    mapsize_bytes: Option<u64>,
+    _mapsize_bytes: Option<u64>,
 ) -> Result<Arc<Ndb>> {
     std::fs::create_dir_all(db_dir)?;
-
-    let env = unsafe {
-        EnvOpenOptions::new()
-            .map_size(
-                usize::try_from(mapsize_bytes.unwrap_or(DEFAULT_MAP_SIZE)).unwrap_or(usize::MAX),
-            )
-            .max_dbs(12)
-            .open(db_dir)?
-    };
-
-    let mut wtxn = env.write_txn()?;
-    let metadata = env.create_database(&mut wtxn, Some("metadata"))?;
-    let follow_distance_by_user =
-        env.create_database(&mut wtxn, Some("follow_distance_by_user"))?;
-    let followed_by_user = env.create_database(&mut wtxn, Some("followed_by_user"))?;
-    let followers_by_user = env.create_database(&mut wtxn, Some("followers_by_user"))?;
-    let follow_list_created_at = env.create_database(&mut wtxn, Some("follow_list_created_at"))?;
-    let muted_by_user = env.create_database(&mut wtxn, Some("muted_by_user"))?;
-    let muters_by_user = env.create_database(&mut wtxn, Some("muters_by_user"))?;
-    let mute_list_created_at = env.create_database(&mut wtxn, Some("mute_list_created_at"))?;
-    let users_by_follow_distance =
-        env.create_database(&mut wtxn, Some("users_by_follow_distance"))?;
-    wtxn.commit()?;
+    let graph = HeedSocialGraph::open(db_dir, DEFAULT_ROOT_HEX)
+        .context("open nostr-social-graph heed backend")?;
 
     Ok(Arc::new(Ndb {
-        env,
-        metadata,
-        follow_distance_by_user,
-        followed_by_user,
-        followers_by_user,
-        follow_list_created_at,
-        muted_by_user,
-        muters_by_user,
-        mute_list_created_at,
-        users_by_follow_distance,
+        graph: StdMutex::new(graph),
         event_store: NostrEventStore::new(store),
-        write_lock: StdMutex::new(()),
+        events_root_path: db_dir.join(EVENTS_ROOT_FILE),
     }))
 }
 
 pub fn set_social_graph_root(ndb: &Ndb, pk_bytes: &[u8; 32]) {
     if let Err(err) = ndb.set_root(pk_bytes) {
-        tracing::warn!("Failed to set social graph root: {}", err);
+        tracing::warn!("Failed to set social graph root: {err}");
     }
 }
 
@@ -183,60 +140,13 @@ pub fn get_follows(
 
 pub fn is_overmuted(
     backend: &(impl SocialGraphBackend + ?Sized),
-    root_pk: &[u8; 32],
+    _root_pk: &[u8; 32],
     user_pk: &[u8; 32],
     threshold: f64,
 ) -> bool {
-    if threshold <= 0.0 || user_pk == root_pk {
-        return false;
-    }
-
-    let followers = match backend.followers_of(user_pk) {
-        Ok(set) => set,
-        Err(_) => return false,
-    };
-    let muters = match backend.muters_of(user_pk) {
-        Ok(set) => set,
-        Err(_) => return false,
-    };
-
-    if muters.is_empty() {
-        return false;
-    }
-
-    if let Ok(root_mutes) = backend.muted_targets(root_pk) {
-        if root_mutes.contains(user_pk) {
-            return true;
-        }
-    }
-
-    let mut stats: HashMap<u32, (usize, usize)> = HashMap::new();
-
-    for follower in followers {
-        if let Ok(Some(distance)) = backend.follow_distance(&follower) {
-            let entry = stats.entry(distance).or_insert((0, 0));
-            entry.0 += 1;
-        }
-    }
-
-    for muter in muters {
-        if let Ok(Some(distance)) = backend.follow_distance(&muter) {
-            let entry = stats.entry(distance).or_insert((0, 0));
-            entry.1 += 1;
-        }
-    }
-
-    let mut distances: Vec<u32> = stats.keys().copied().collect();
-    distances.sort_unstable();
-
-    for distance in distances {
-        let (followers, muters) = stats[&distance];
-        if followers + muters > 0 {
-            return (muters as f64) * threshold > followers as f64;
-        }
-    }
-
-    false
+    backend
+        .is_overmuted_user(user_pk, threshold)
+        .unwrap_or(false)
 }
 
 pub fn ingest_event(backend: &(impl SocialGraphBackend + ?Sized), _sub_id: &str, event_json: &str) {
@@ -246,7 +156,7 @@ pub fn ingest_event(backend: &(impl SocialGraphBackend + ?Sized), _sub_id: &str,
     };
 
     if let Err(err) = backend.ingest_event(&event) {
-        tracing::warn!("Failed to ingest social graph event: {}", err);
+        tracing::warn!("Failed to ingest social graph event: {err}");
     }
 }
 
@@ -267,269 +177,95 @@ pub fn query_events(
 
 impl Ndb {
     fn set_root(&self, root: &[u8; 32]) -> Result<()> {
-        {
-            let _guard = self.write_lock.lock().unwrap();
-            let mut wtxn = self.env.write_txn()?;
-            self.metadata.put(&mut wtxn, ROOT_KEY, &root[..])?;
-            wtxn.commit()?;
+        let root_hex = hex::encode(root);
+        let mut graph = self.graph.lock().unwrap();
+        if should_replace_placeholder_root(&graph)? {
+            let fresh = SocialGraph::new(&root_hex);
+            graph
+                .replace_state(&fresh.export_state())
+                .context("replace placeholder social graph root")?;
+            return Ok(());
         }
-        self.recalculate_follow_distances()
-    }
-
-    fn root(&self) -> Result<Option<[u8; 32]>> {
-        let rtxn = self.env.read_txn()?;
-        let Some(bytes) = self.metadata.get(&rtxn, ROOT_KEY)? else {
-            return Ok(None);
-        };
-        let root: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("invalid stored social graph root"))?;
-        Ok(Some(root))
+        graph
+            .set_root(&root_hex)
+            .context("set nostr-social-graph root")?;
+        Ok(())
     }
 
     fn stats(&self) -> Result<SocialGraphStats> {
-        let rtxn = self.env.read_txn()?;
-
-        let root = self
-            .metadata
-            .get(&rtxn, ROOT_KEY)?
-            .map(|bytes| hex::encode(bytes));
-
-        let mut total_follows = 0usize;
-        for entry in self.followed_by_user.iter(&rtxn)? {
-            let (_, follows) = entry?;
-            total_follows += follows.len();
-        }
-
-        let mut max_depth = 0u32;
-        for entry in self.users_by_follow_distance.iter(&rtxn)? {
-            let (distance, _) = entry?;
-            max_depth = max_depth.max(distance);
-        }
-
+        let graph = self.graph.lock().unwrap();
+        let stats = graph.size().context("read social graph stats")?;
         Ok(SocialGraphStats {
-            root,
-            total_follows,
-            max_depth,
+            root: Some(graph.get_root().context("read social graph root")?),
+            total_follows: stats.follows,
+            max_depth: stats
+                .size_by_distance
+                .keys()
+                .copied()
+                .max()
+                .unwrap_or_default(),
             enabled: true,
         })
     }
 
-    fn ingest_event(&self, event: &Event) -> Result<()> {
-        let graph_changed = {
-            let _guard = self.write_lock.lock().unwrap();
-            let current_root = self.events_root()?;
-            let next_root = self.store_event(current_root.as_ref(), event)?;
-            let mut wtxn = self.env.write_txn()?;
-            self.write_events_root(&mut wtxn, Some(&next_root))?;
-            let changed = self.apply_social_graph_event(&mut wtxn, event)?;
-            wtxn.commit()?;
-            changed
-        };
-
-        if graph_changed {
-            self.recalculate_follow_distances()?;
-        }
-
-        Ok(())
-    }
-
-    fn apply_social_graph_event(&self, wtxn: &mut heed::RwTxn, event: &Event) -> Result<bool> {
-        if !is_social_graph_event(event.kind) {
-            return Ok(false);
-        }
-
-        let created_at = event.created_at.as_u64();
-        if created_at > unix_now().saturating_add(MAX_FUTURE_EVENT_SECONDS) {
-            return Ok(false);
-        }
-
-        let author = event.pubkey.to_bytes();
-        let targets = collect_tagged_pubkeys(event);
-
-        if event.kind == Kind::ContactList {
-            let current_ts = self.follow_list_created_at.get(&*wtxn, &author[..])?;
-            if current_ts.is_some_and(|ts| created_at <= ts) {
-                return Ok(false);
-            }
-
-            let current_targets = self
-                .followed_by_user
-                .get(&*wtxn, &author[..])?
-                .unwrap_or_default();
-
-            self.follow_list_created_at
-                .put(wtxn, &author[..], &created_at)?;
-
-            for removed in current_targets.difference(&targets) {
-                self.remove_from_user_set(wtxn, &self.followers_by_user, removed, &author)?;
-            }
-
-            for added in targets.difference(&current_targets) {
-                self.add_to_user_set(wtxn, &self.followers_by_user, added, &author)?;
-            }
-
-            put_or_delete_set(wtxn, &self.followed_by_user, &author, &targets)?;
-
-            return Ok(current_targets != targets);
-        }
-
-        let current_ts = self.mute_list_created_at.get(&*wtxn, &author[..])?;
-        if current_ts.is_some_and(|ts| created_at <= ts) {
-            return Ok(false);
-        }
-
-        let current_targets = self
-            .muted_by_user
-            .get(&*wtxn, &author[..])?
-            .unwrap_or_default();
-
-        self.mute_list_created_at
-            .put(wtxn, &author[..], &created_at)?;
-
-        for removed in current_targets.difference(&targets) {
-            self.remove_from_user_set(wtxn, &self.muters_by_user, removed, &author)?;
-        }
-
-        for added in targets.difference(&current_targets) {
-            self.add_to_user_set(wtxn, &self.muters_by_user, added, &author)?;
-        }
-
-        put_or_delete_set(wtxn, &self.muted_by_user, &author, &targets)?;
-
-        Ok(false)
-    }
-
-    fn add_to_user_set(
-        &self,
-        wtxn: &mut heed::RwTxn,
-        db: &Database<Bytes, SerdeBincode<UserSet>>,
-        owner: &[u8; 32],
-        value: &[u8; 32],
-    ) -> Result<()> {
-        let mut set = db.get(&*wtxn, &owner[..])?.unwrap_or_default();
-        set.insert(*value);
-        db.put(wtxn, &owner[..], &set)?;
-        Ok(())
-    }
-
-    fn remove_from_user_set(
-        &self,
-        wtxn: &mut heed::RwTxn,
-        db: &Database<Bytes, SerdeBincode<UserSet>>,
-        owner: &[u8; 32],
-        value: &[u8; 32],
-    ) -> Result<()> {
-        let Some(mut set) = db.get(&*wtxn, &owner[..])? else {
-            return Ok(());
-        };
-
-        set.remove(value);
-        if set.is_empty() {
-            db.delete(wtxn, &owner[..])?;
-        } else {
-            db.put(wtxn, &owner[..], &set)?;
-        }
-        Ok(())
-    }
-
-    fn recalculate_follow_distances(&self) -> Result<()> {
-        let Some(root) = self.root()? else {
-            return Ok(());
-        };
-
-        let rtxn = self.env.read_txn()?;
-        let mut distances: BTreeMap<[u8; 32], u32> = BTreeMap::new();
-        let mut users_by_distance: BTreeMap<u32, UserSet> = BTreeMap::new();
-        let mut queue = VecDeque::new();
-
-        distances.insert(root, 0);
-        users_by_distance.entry(0).or_default().insert(root);
-        queue.push_back(root);
-
-        while let Some(owner) = queue.pop_front() {
-            let distance = distances[&owner];
-            if let Some(targets) = self.followed_by_user.get(&rtxn, &owner[..])? {
-                for target in targets {
-                    if distances.contains_key(&target) {
-                        continue;
-                    }
-                    let next_distance = distance + 1;
-                    distances.insert(target, next_distance);
-                    users_by_distance
-                        .entry(next_distance)
-                        .or_default()
-                        .insert(target);
-                    queue.push_back(target);
-                }
-            }
-        }
-        drop(rtxn);
-
-        let _guard = self.write_lock.lock().unwrap();
-        let mut wtxn = self.env.write_txn()?;
-        self.follow_distance_by_user.clear(&mut wtxn)?;
-        self.users_by_follow_distance.clear(&mut wtxn)?;
-
-        for (user, distance) in distances {
-            self.follow_distance_by_user
-                .put(&mut wtxn, &user[..], &distance)?;
-        }
-
-        for (distance, users) in users_by_distance {
-            self.users_by_follow_distance
-                .put(&mut wtxn, &distance, &users)?;
-        }
-
-        wtxn.commit()?;
-        Ok(())
-    }
-
     fn follow_distance(&self, pk_bytes: &[u8; 32]) -> Result<Option<u32>> {
-        let rtxn = self.env.read_txn()?;
-        Ok(self.follow_distance_by_user.get(&rtxn, &pk_bytes[..])?)
+        let graph = self.graph.lock().unwrap();
+        let distance = graph
+            .get_follow_distance(&hex::encode(pk_bytes))
+            .context("read social graph follow distance")?;
+        Ok((distance != UNKNOWN_FOLLOW_DISTANCE).then_some(distance))
     }
 
     fn followed_targets(&self, owner: &[u8; 32]) -> Result<UserSet> {
-        let rtxn = self.env.read_txn()?;
-        Ok(self
-            .followed_by_user
-            .get(&rtxn, &owner[..])?
-            .unwrap_or_default())
+        let graph = self.graph.lock().unwrap();
+        decode_pubkey_set(
+            graph
+                .get_followed_by_user(&hex::encode(owner))
+                .context("read followed targets")?,
+        )
     }
 
-    fn followers_of(&self, owner: &[u8; 32]) -> Result<UserSet> {
-        let rtxn = self.env.read_txn()?;
-        Ok(self
-            .followers_by_user
-            .get(&rtxn, &owner[..])?
-            .unwrap_or_default())
+    fn is_overmuted_user(&self, user_pk: &[u8; 32], threshold: f64) -> Result<bool> {
+        if threshold <= 0.0 {
+            return Ok(false);
+        }
+        let graph = self.graph.lock().unwrap();
+        graph
+            .is_overmuted(&hex::encode(user_pk), threshold)
+            .context("check social graph overmute")
     }
 
-    fn muted_targets(&self, owner: &[u8; 32]) -> Result<UserSet> {
-        let rtxn = self.env.read_txn()?;
-        Ok(self
-            .muted_by_user
-            .get(&rtxn, &owner[..])?
-            .unwrap_or_default())
+    fn snapshot_chunks(&self, root: &[u8; 32], options: &BinaryBudget) -> Result<Vec<Bytes>> {
+        let state = {
+            let graph = self.graph.lock().unwrap();
+            graph.export_state().context("export social graph state")?
+        };
+        let mut graph = SocialGraph::from_state(state).context("rebuild social graph state")?;
+        let root_hex = hex::encode(root);
+        if graph.get_root() != root_hex {
+            graph
+                .set_root(&root_hex)
+                .context("set snapshot social graph root")?;
+        }
+        let chunks = graph
+            .to_binary_chunks_with_budget(*options)
+            .context("encode social graph snapshot")?;
+        Ok(chunks.into_iter().map(Bytes::from).collect())
     }
 
-    fn muters_of(&self, owner: &[u8; 32]) -> Result<UserSet> {
-        let rtxn = self.env.read_txn()?;
-        Ok(self
-            .muters_by_user
-            .get(&rtxn, &owner[..])?
-            .unwrap_or_default())
-    }
+    fn ingest_event(&self, event: &Event) -> Result<()> {
+        let mut graph = self.graph.lock().unwrap();
+        let current_root = self.events_root()?;
+        let next_root = self.store_event(current_root.as_ref(), event)?;
+        self.write_events_root(Some(&next_root))?;
 
-    fn follow_list_created_at(&self, owner: &[u8; 32]) -> Result<Option<u64>> {
-        let rtxn = self.env.read_txn()?;
-        Ok(self.follow_list_created_at.get(&rtxn, &owner[..])?)
-    }
+        if is_social_graph_event(event.kind) {
+            graph
+                .handle_event(&graph_event_from_nostr(event), true, 0.0)
+                .context("ingest social graph event into nostr-social-graph")?;
+        }
 
-    fn mute_list_created_at(&self, owner: &[u8; 32]) -> Result<Option<u64>> {
-        let rtxn = self.env.read_txn()?;
-        Ok(self.mute_list_created_at.get(&rtxn, &owner[..])?)
+        Ok(())
     }
 
     fn query_events(&self, filter: &Filter, limit: usize) -> Result<Vec<Event>> {
@@ -537,8 +273,8 @@ impl Ndb {
             return Ok(Vec::new());
         }
 
-        let root = self.events_root()?;
-        let Some(root) = root.as_ref() else {
+        let events_root = self.events_root()?;
+        let Some(root) = events_root.as_ref() else {
             return Ok(Vec::new());
         };
         let mut candidates = Vec::new();
@@ -598,25 +334,28 @@ impl Ndb {
                 .then_with(|| a.id.cmp(&b.id))
         });
         candidates.truncate(limit);
-
         Ok(candidates)
     }
 
     fn events_root(&self) -> Result<Option<Cid>> {
-        let rtxn = self.env.read_txn()?;
-        let Some(bytes) = self.metadata.get(&rtxn, EVENTS_ROOT_KEY)? else {
+        let Ok(bytes) = std::fs::read(&self.events_root_path) else {
             return Ok(None);
         };
-        decode_cid(bytes)
+        decode_cid(&bytes)
     }
 
-    fn write_events_root(&self, wtxn: &mut heed::RwTxn, root: Option<&Cid>) -> Result<()> {
+    fn write_events_root(&self, root: Option<&Cid>) -> Result<()> {
         let Some(root) = root else {
-            self.metadata.delete(wtxn, EVENTS_ROOT_KEY)?;
+            if self.events_root_path.exists() {
+                std::fs::remove_file(&self.events_root_path)?;
+            }
             return Ok(());
         };
+
         let encoded = encode_cid(root)?;
-        self.metadata.put(wtxn, EVENTS_ROOT_KEY, &encoded)?;
+        let tmp_path = self.events_root_path.with_extension("tmp");
+        std::fs::write(&tmp_path, encoded)?;
+        std::fs::rename(tmp_path, &self.events_root_path)?;
         Ok(())
     }
 
@@ -692,24 +431,12 @@ impl SocialGraphBackend for Ndb {
         Ndb::followed_targets(self, owner)
     }
 
-    fn followers_of(&self, owner: &[u8; 32]) -> Result<UserSet> {
-        Ndb::followers_of(self, owner)
+    fn is_overmuted_user(&self, user_pk: &[u8; 32], threshold: f64) -> Result<bool> {
+        Ndb::is_overmuted_user(self, user_pk, threshold)
     }
 
-    fn muted_targets(&self, owner: &[u8; 32]) -> Result<UserSet> {
-        Ndb::muted_targets(self, owner)
-    }
-
-    fn muters_of(&self, owner: &[u8; 32]) -> Result<UserSet> {
-        Ndb::muters_of(self, owner)
-    }
-
-    fn follow_list_created_at(&self, owner: &[u8; 32]) -> Result<Option<u64>> {
-        Ndb::follow_list_created_at(self, owner)
-    }
-
-    fn mute_list_created_at(&self, owner: &[u8; 32]) -> Result<Option<u64>> {
-        Ndb::mute_list_created_at(self, owner)
+    fn snapshot_chunks(&self, root: &[u8; 32], options: &BinaryBudget) -> Result<Vec<Bytes>> {
+        Ndb::snapshot_chunks(self, root, options)
     }
 
     fn ingest_event(&self, event: &Event) -> Result<()> {
@@ -737,24 +464,12 @@ where
         self.as_ref().followed_targets(owner)
     }
 
-    fn followers_of(&self, owner: &[u8; 32]) -> Result<UserSet> {
-        self.as_ref().followers_of(owner)
+    fn is_overmuted_user(&self, user_pk: &[u8; 32], threshold: f64) -> Result<bool> {
+        self.as_ref().is_overmuted_user(user_pk, threshold)
     }
 
-    fn muted_targets(&self, owner: &[u8; 32]) -> Result<UserSet> {
-        self.as_ref().muted_targets(owner)
-    }
-
-    fn muters_of(&self, owner: &[u8; 32]) -> Result<UserSet> {
-        self.as_ref().muters_of(owner)
-    }
-
-    fn follow_list_created_at(&self, owner: &[u8; 32]) -> Result<Option<u64>> {
-        self.as_ref().follow_list_created_at(owner)
-    }
-
-    fn mute_list_created_at(&self, owner: &[u8; 32]) -> Result<Option<u64>> {
-        self.as_ref().mute_list_created_at(owner)
+    fn snapshot_chunks(&self, root: &[u8; 32], options: &BinaryBudget) -> Result<Vec<Bytes>> {
+        self.as_ref().snapshot_chunks(root, options)
     }
 
     fn ingest_event(&self, event: &Event) -> Result<()> {
@@ -766,38 +481,53 @@ where
     }
 }
 
-fn put_or_delete_set(
-    wtxn: &mut heed::RwTxn,
-    db: &Database<Bytes, SerdeBincode<UserSet>>,
-    owner: &[u8; 32],
-    set: &UserSet,
-) -> Result<()> {
-    if set.is_empty() {
-        db.delete(wtxn, &owner[..])?;
-    } else {
-        db.put(wtxn, &owner[..], set)?;
+fn should_replace_placeholder_root(graph: &HeedSocialGraph) -> Result<bool> {
+    if graph.get_root().context("read current social graph root")? != DEFAULT_ROOT_HEX {
+        return Ok(false);
     }
-    Ok(())
+
+    let GraphStats {
+        users,
+        follows,
+        mutes,
+        ..
+    } = graph.size().context("size social graph")?;
+    Ok(users <= 1 && follows == 0 && mutes == 0)
 }
 
-fn collect_tagged_pubkeys(event: &Event) -> UserSet {
-    let author = event.pubkey.to_bytes();
-    let mut targets = UserSet::new();
-
-    for tag in event.tags.iter() {
-        if let Some(TagStandard::PublicKey { public_key, .. }) = tag.as_standardized() {
-            let target = public_key.to_bytes();
-            if target != author {
-                targets.insert(target);
-            }
-        }
+fn decode_pubkey_set(values: Vec<String>) -> Result<UserSet> {
+    let mut set = UserSet::new();
+    for value in values {
+        set.insert(decode_pubkey(&value)?);
     }
+    Ok(set)
+}
 
-    targets
+fn decode_pubkey(value: &str) -> Result<[u8; 32]> {
+    let mut bytes = [0u8; 32];
+    hex::decode_to_slice(value, &mut bytes)
+        .with_context(|| format!("decode social graph pubkey {value}"))?;
+    Ok(bytes)
 }
 
 fn is_social_graph_event(kind: Kind) -> bool {
     kind == Kind::ContactList || kind == Kind::MuteList
+}
+
+fn graph_event_from_nostr(event: &Event) -> GraphEvent {
+    GraphEvent {
+        created_at: event.created_at.as_u64(),
+        content: event.content.clone(),
+        tags: event
+            .tags
+            .iter()
+            .map(|tag| tag.as_slice().to_vec())
+            .collect(),
+        kind: event.kind.as_u16() as u32,
+        pubkey: event.pubkey.to_hex(),
+        id: event.id.to_hex(),
+        sig: event.sig.to_string(),
+    }
 }
 
 fn stored_event_from_nostr(event: &Event) -> StoredNostrEvent {
@@ -847,14 +577,7 @@ fn decode_cid(bytes: &[u8]) -> Result<Option<Cid>> {
 }
 
 fn map_event_store_error(err: NostrEventStoreError) -> anyhow::Error {
-    anyhow::anyhow!("nostr event store error: {}", err)
-}
-
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    anyhow::anyhow!("nostr event store error: {err}")
 }
 
 #[cfg(test)]

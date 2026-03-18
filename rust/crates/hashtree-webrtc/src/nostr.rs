@@ -326,7 +326,7 @@ impl RelayTransport for NostrRelayTransport {
             let encrypted_content = nip44::encrypt(
                 ephemeral_keys.secret_key(),
                 &recipient_pk,
-                &seal.to_string(),
+                seal.to_string(),
                 nip44::Version::V2,
             )
             .map_err(|e| TransportError::SendFailed(format!("Encryption failed: {}", e)))?;

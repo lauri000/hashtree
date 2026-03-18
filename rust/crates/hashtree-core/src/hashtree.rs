@@ -1398,7 +1398,7 @@ impl<S: Store> HashTree<S> {
             // Internal nodes inherit encryption from parent context
             let sub_cid = Cid {
                 hash: link.hash,
-                key: link.key.clone(),
+                key: link.key,
             };
 
             let sub_node = match self.get_node(&sub_cid).await? {

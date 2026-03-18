@@ -487,6 +487,7 @@ impl WebRTCState {
             let to = (next_peer_idx + wave_size).min(ordered_peers.len());
             next_peer_idx = to;
 
+            #[allow(clippy::type_complexity)]
             let mut outstanding: Vec<(
                 String,
                 Arc<Mutex<HashMap<String, PendingRequest>>>,
@@ -916,6 +917,12 @@ impl WebRTCState {
     }
 }
 
+impl Default for WebRTCState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// WebRTC manager handles peer discovery and connection management
 pub struct WebRTCManager {
     config: WebRTCConfig,
@@ -1186,7 +1193,7 @@ impl WebRTCManager {
     /// Check if we should initiate connection (tie-breaking)
     /// Lower UUID initiates - same as iris-client/hashtree-ts
     fn should_initiate(&self, their_uuid: &str) -> bool {
-        self.my_peer_id.uuid < their_uuid.to_string()
+        self.my_peer_id.uuid.as_str() < their_uuid
     }
 
     /// Start the WebRTC manager - connects to relays and handles signaling
@@ -1318,7 +1325,7 @@ impl WebRTCManager {
 
         let sub_id = nostr::SubscriptionId::generate();
         let sub_msg = ClientMessage::req(sub_id.clone(), vec![hello_filter, directed_filter]);
-        write.send(Message::Text(sub_msg.as_json().into())).await?;
+        write.send(Message::Text(sub_msg.as_json())).await?;
 
         info!(
             "Subscribed to {} for WebRTC events (kind {})",
@@ -1338,7 +1345,7 @@ impl WebRTCManager {
                     if let Ok(event) = Self::create_signaling_event(&keys, &signaling_msg).await {
                         let event_id = event.id.to_string();
                         let msg = ClientMessage::event(event);
-                        if write.send(Message::Text(msg.as_json().into())).await.is_ok() {
+                        if write.send(Message::Text(msg.as_json())).await.is_ok() {
                             info!("Sent {} to {} (event id: {})", signaling_msg.msg_type(), url, &event_id[..16]);
                         }
                     }
@@ -1346,10 +1353,10 @@ impl WebRTCManager {
                 msg = read.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
-                            if let Ok(relay_msg) = RelayMessage::from_json(&text) {
-                                if let RelayMessage::Event { event, .. } = relay_msg {
-                                    let _ = event_tx.send((url.clone(), *event)).await;
-                                }
+                            if let Ok(RelayMessage::Event { event, .. }) =
+                                RelayMessage::from_json(&text)
+                            {
+                                let _ = event_tx.send((url.clone(), *event)).await;
                             }
                         }
                         Some(Err(e)) => {
@@ -1445,7 +1452,7 @@ impl WebRTCManager {
                         entry.peer_id.to_string(),
                         entry.peer_id.short(),
                         peer.data_channel.clone(),
-                        peer.htl_config().clone(),
+                        *peer.htl_config(),
                     )
                 })
             })
@@ -1568,7 +1575,7 @@ impl WebRTCManager {
                 let encrypted_content = nip44::encrypt(
                     ephemeral_keys.secret_key(),
                     &recipient_pubkey,
-                    &seal.to_string(),
+                    seal.to_string(),
                     nip44::Version::V2,
                 )?;
 
@@ -1711,7 +1718,7 @@ impl WebRTCManager {
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing SDP in offer"))?;
                     let offer = serde_json::json!({ "type": "offer", "sdp": sdp });
-                    self.handle_offer(&sender_pubkey, their_uuid, offer, relay_write_tx)
+                    self.handle_offer(sender_pubkey, their_uuid, offer, relay_write_tx)
                         .await?;
                 }
                 "answer" => {
@@ -1720,7 +1727,7 @@ impl WebRTCManager {
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing SDP in answer"))?;
                     let answer = serde_json::json!({ "type": "answer", "sdp": sdp });
-                    self.handle_answer(&sender_pubkey, their_uuid, answer)
+                    self.handle_answer(sender_pubkey, their_uuid, answer)
                         .await?;
                 }
                 "candidate" => {
@@ -1734,7 +1741,7 @@ impl WebRTCManager {
                             "sdpMid": raw_msg.get("sdpMid"),
                             "sdpMLineIndex": raw_msg.get("sdpMLineIndex"),
                         });
-                        self.handle_candidate(&sender_pubkey, their_uuid, candidate_json)
+                        self.handle_candidate(sender_pubkey, their_uuid, candidate_json)
                             .await?;
                     }
                 }
@@ -1746,24 +1753,22 @@ impl WebRTCManager {
                             entries
                                 .iter()
                                 .filter_map(|entry| {
-                                    if let Some(candidate_str) = entry
+                                    entry
                                         .get("candidate")
                                         .and_then(|v| v.as_str())
                                         .or_else(|| entry.as_str())
-                                    {
-                                        Some(serde_json::json!({
-                                            "candidate": candidate_str,
-                                            "sdpMid": entry.get("sdpMid"),
-                                            "sdpMLineIndex": entry.get("sdpMLineIndex"),
-                                        }))
-                                    } else {
-                                        None
-                                    }
+                                        .map(|candidate_str| {
+                                            serde_json::json!({
+                                                "candidate": candidate_str,
+                                                "sdpMid": entry.get("sdpMid"),
+                                                "sdpMLineIndex": entry.get("sdpMLineIndex"),
+                                            })
+                                        })
                                 })
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
-                    self.handle_candidates(&sender_pubkey, their_uuid, candidates)
+                    self.handle_candidates(sender_pubkey, their_uuid, candidates)
                         .await?;
                 }
                 _ => {}
@@ -1795,7 +1800,7 @@ impl WebRTCManager {
                     return Ok(()); // Not for us
                 }
                 if let Err(e) = self
-                    .handle_offer(&sender_pubkey, &their_uuid, offer, relay_write_tx)
+                    .handle_offer(sender_pubkey, &their_uuid, offer, relay_write_tx)
                     .await
                 {
                     error!(
@@ -1815,7 +1820,7 @@ impl WebRTCManager {
                 if recipient != self.my_peer_id.to_string() {
                     return Ok(());
                 }
-                self.handle_answer(&sender_pubkey, &their_uuid, answer)
+                self.handle_answer(sender_pubkey, &their_uuid, answer)
                     .await?;
             }
             SignalingMessage::Candidate {
@@ -1826,7 +1831,7 @@ impl WebRTCManager {
                 if recipient != self.my_peer_id.to_string() {
                     return Ok(());
                 }
-                self.handle_candidate(&sender_pubkey, &their_uuid, candidate)
+                self.handle_candidate(sender_pubkey, &their_uuid, candidate)
                     .await?;
             }
             SignalingMessage::Candidates {
@@ -1837,7 +1842,7 @@ impl WebRTCManager {
                 if recipient != self.my_peer_id.to_string() {
                     return Ok(());
                 }
-                self.handle_candidates(&sender_pubkey, &their_uuid, candidates)
+                self.handle_candidates(sender_pubkey, &their_uuid, candidates)
                     .await?;
             }
         }

@@ -591,9 +591,10 @@ impl RemoteHelper {
 
         // Parallel fetch with concurrency limit
         const CONCURRENCY: usize = 20;
+        type FetchObjectResult = std::result::Result<(String, Vec<u8>), (String, Cid)>;
 
         // First pass: fetch all objects with normal timeout
-        let results: Vec<Result<(String, Vec<u8>), (String, Cid)>> = stream::iter(fetch_tasks)
+        let results: Vec<FetchObjectResult> = stream::iter(fetch_tasks)
             .map(|(oid, obj_cid)| {
                 let tree = &tree;
                 let downloaded = StdArc::clone(&downloaded);
@@ -1466,7 +1467,6 @@ impl RemoteHelper {
                 let failed = Arc::clone(&failed);
                 let processed = Arc::clone(&processed);
                 let skipped_diff = Arc::clone(&skipped_diff);
-                let has_old_tree = has_old_tree;
                 let servers_needing_full = Arc::clone(&servers_needing_full);
 
                 tokio::spawn(async move {
@@ -1501,7 +1501,7 @@ impl RemoteHelper {
                                     }
                                 }
                                 let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                                if count == 1 || count % 10 == 0 {
+                                if count == 1 || count.is_multiple_of(10) {
                                     let diff_skipped = skipped_diff.load(Ordering::Relaxed);
                                     if has_old_tree && diff_skipped > 0 {
                                         eprint!("\r  Uploading: {} ({} new, {} unchanged, {} exist on server)",
@@ -1607,7 +1607,7 @@ impl RemoteHelper {
                     break; // Channel closed
                 }
                 queued_count += 1;
-                if queued_count % 100 == 0 {
+                if queued_count.is_multiple_of(100) {
                     eprint!("\r  Uploading: {} queued", queued_count);
                     let _ = std::io::stderr().flush();
                 }
@@ -1632,14 +1632,12 @@ impl RemoteHelper {
                     eprint!("\r  Uploading: {} ({} new, {} unchanged, {} exist)",
                         final_processed, final_uploaded, final_skipped_diff, final_skipped_server);
                 }
+            } else if final_failed > 0 {
+                eprint!("\r  Uploading: {} ({} new, {} exist, {} FAILED)",
+                    final_processed, final_uploaded, final_skipped_server, final_failed);
             } else {
-                if final_failed > 0 {
-                    eprint!("\r  Uploading: {} ({} new, {} exist, {} FAILED)",
-                        final_processed, final_uploaded, final_skipped_server, final_failed);
-                } else {
-                    eprint!("\r  Uploading: {} ({} new, {} exist)",
-                        final_processed, final_uploaded, final_skipped_server);
-                }
+                eprint!("\r  Uploading: {} ({} new, {} exist)",
+                    final_processed, final_uploaded, final_skipped_server);
             }
             eprintln!();
 
@@ -1809,7 +1807,7 @@ impl RemoteHelper {
 
                 // Progress indicator
                 let done = batch_idx * BATCH_SIZE + i + 1;
-                if done == 1 || done % 100 == 0 || done == total {
+                if done == 1 || done.is_multiple_of(100) || done == total {
                     eprint!("\r  Reading objects: {}/{}", done, total);
                     let _ = std::io::stderr().flush();
                 }

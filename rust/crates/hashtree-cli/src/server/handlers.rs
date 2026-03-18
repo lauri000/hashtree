@@ -778,7 +778,7 @@ async fn serve_content_internal(
                     let content_type = "application/octet-stream";
 
                     // Get metadata to determine total size
-                    match store.get_file_chunk_metadata(&hash) {
+                    match store.get_file_chunk_metadata(hash) {
                         Ok(Some(metadata)) => {
                             let total_size = metadata.total_size;
 
@@ -802,7 +802,7 @@ async fn serve_content_internal(
                                 match state
                                     .store
                                     .clone()
-                                    .stream_file_range_chunks_owned(&hash, start, end_actual)
+                                    .stream_file_range_chunks_owned(hash, start, end_actual)
                                 {
                                     Ok(Some(chunks_iter)) => {
                                         let stream = stream::iter(chunks_iter)
@@ -848,7 +848,7 @@ async fn serve_content_internal(
                                 }
                             } else {
                                 // For small non-chunked files, use buffered approach
-                                match store.get_file_range(&hash, start, Some(end_actual)) {
+                                match store.get_file_range(hash, start, Some(end_actual)) {
                                     Ok(Some((range_content, _))) => {
                                         let mut builder = Response::builder()
                                             .status(StatusCode::PARTIAL_CONTENT)
@@ -913,7 +913,7 @@ async fn serve_content_internal(
     }
 
     // Fall back to full file
-    match store.get_file(&hash) {
+    match store.get_file(hash) {
         Ok(Some(content)) => {
             // Content type - hashtree doesn't store filenames, so default to octet-stream
             let content_type = "application/octet-stream";
@@ -1714,7 +1714,7 @@ pub async fn list_trees(Path(pubkey): Path<String>) -> impl IntoResponse {
         Ok(entries) => Json(json!({
             "pubkey": pubkey,
             "trees": entries.iter().map(|e| json!({
-                "name": e.key.split('/').last().unwrap_or(&e.key),
+                "name": e.key.split('/').next_back().unwrap_or(&e.key),
                 "hash": to_hex(&e.cid.hash),
                 "cid": e.cid.to_string()
             })).collect::<Vec<_>>()

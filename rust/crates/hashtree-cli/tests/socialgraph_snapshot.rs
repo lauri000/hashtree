@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use nostr::{EventBuilder, JsonUtil, Keys, Kind, Tag, Timestamp};
+use nostr_social_graph::{BinaryBudget, NostrEvent as ExternalNostrEvent, SocialGraph};
 use tempfile::TempDir;
 
 #[test]
@@ -64,6 +65,85 @@ fn snapshot_includes_list_timestamps() {
     assert!(mute_targets.contains(&carol_id));
 }
 
+#[test]
+fn snapshot_binary_matches_upstream_social_graph_encoding() {
+    let _guard = test_lock();
+    let tmp = TempDir::new().unwrap();
+    let ndb = hashtree_cli::socialgraph::init_ndb(tmp.path()).unwrap();
+
+    let root_keys = Keys::generate();
+    let outsider_keys = Keys::generate();
+    let bob_keys = Keys::generate();
+    let carol_keys = Keys::generate();
+
+    let root_pk = root_keys.public_key();
+    hashtree_cli::socialgraph::set_social_graph_root(&ndb, &root_pk.to_bytes());
+
+    let outsider_follow = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [Tag::public_key(carol_keys.public_key())],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&outsider_keys)
+    .unwrap();
+    let root_lists = [
+        EventBuilder::new(
+            Kind::ContactList,
+            "",
+            [Tag::public_key(bob_keys.public_key())],
+        )
+        .custom_created_at(Timestamp::from_secs(11))
+        .to_event(&root_keys)
+        .unwrap(),
+        EventBuilder::new(
+            Kind::MuteList,
+            "",
+            [Tag::public_key(carol_keys.public_key())],
+        )
+        .custom_created_at(Timestamp::from_secs(12))
+        .to_event(&root_keys)
+        .unwrap(),
+    ];
+
+    hashtree_cli::socialgraph::ingest_event(&ndb, "outsider-follow", &outsider_follow.as_json());
+    for event in &root_lists {
+        hashtree_cli::socialgraph::ingest_event(&ndb, "root-list", &event.as_json());
+    }
+
+    let options = hashtree_cli::socialgraph::snapshot::SnapshotOptions {
+        max_nodes: Some(3),
+        max_edges: Some(2),
+        max_distance: Some(1),
+        max_edges_per_node: Some(2),
+    };
+    let actual = flatten_chunks(
+        hashtree_cli::socialgraph::snapshot::build_snapshot_chunks(
+            &ndb,
+            &root_pk.to_bytes(),
+            &options,
+        )
+        .unwrap(),
+    );
+
+    let mut expected_graph = SocialGraph::new(&root_pk.to_hex());
+    expected_graph.handle_event(&to_external_event(&outsider_follow), true, 0.0);
+    for event in &root_lists {
+        expected_graph.handle_event(&to_external_event(event), true, 0.0);
+    }
+
+    let expected = expected_graph
+        .to_binary_with_budget(BinaryBudget {
+            max_nodes: options.max_nodes,
+            max_edges: options.max_edges,
+            max_distance: options.max_distance,
+            max_edges_per_node: options.max_edges_per_node,
+        })
+        .unwrap();
+
+    assert_eq!(actual, expected);
+}
+
 fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
@@ -76,6 +156,22 @@ fn flatten_chunks(chunks: Vec<Bytes>) -> Vec<u8> {
         out.extend_from_slice(&chunk);
     }
     out
+}
+
+fn to_external_event(event: &nostr::Event) -> ExternalNostrEvent {
+    ExternalNostrEvent {
+        created_at: event.created_at.as_u64(),
+        content: event.content.clone(),
+        tags: event
+            .tags
+            .iter()
+            .map(|tag| tag.as_slice().to_vec())
+            .collect(),
+        kind: event.kind.as_u16() as u32,
+        pubkey: event.pubkey.to_hex(),
+        id: event.id.to_hex(),
+        sig: event.sig.to_string(),
+    }
 }
 
 struct ParsedSnapshot {

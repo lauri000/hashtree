@@ -71,7 +71,7 @@ fn has_label(event: &Event, label: &str) -> bool {
 fn has_any_label(event: &Event) -> bool {
     event.tags.iter().any(|tag| {
         let tag_vec = tag.as_slice();
-        tag_vec.len() >= 1 && tag_vec[0].as_str() == "l"
+        !tag_vec.is_empty() && tag_vec[0].as_str() == "l"
     })
 }
 

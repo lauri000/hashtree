@@ -19,6 +19,7 @@ pub(crate) struct ResolveOptions {
 /// - An nhash (bech32-encoded hash with optional key)
 /// - An npub/repo path (e.g., "npub1.../myrepo")
 /// - An htree:// URL (e.g., "htree://npub1.../myrepo")
+///
 /// Returns the resolved Cid (raw bytes) and optional path within the tree.
 pub(crate) async fn resolve_cid_input(input: &str) -> Result<ResolvedCid> {
     resolve_cid_input_with_opts(input, &ResolveOptions::default()).await

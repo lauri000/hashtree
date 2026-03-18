@@ -139,7 +139,7 @@ pub(crate) async fn run() -> Result<()> {
             ));
 
             let nostr_relay_config = hashtree_cli::nostr_relay::NostrRelayConfig {
-                spambox_db_max_bytes: spambox_db_max_bytes,
+                spambox_db_max_bytes,
                 ..Default::default()
             };
             let nostr_relay = Arc::new(
@@ -281,6 +281,7 @@ pub(crate) async fn run() -> Result<()> {
             };
 
             #[cfg(not(feature = "p2p"))]
+            #[allow(clippy::type_complexity)]
             let (stun_handle, webrtc_handle, webrtc_state): (
                 Option<tokio::task::JoinHandle<()>>,
                 Option<tokio::task::JoinHandle<()>>,
@@ -742,7 +743,7 @@ pub(crate) async fn run() -> Result<()> {
                     store.write_file_by_cid(&cid, &out_path)?;
                     println!("{} -> {}", hash_hex, out_path.display());
                 }
-            } else if let Some(_) = listing {
+            } else if listing.is_some() {
                 // It's a directory - create it and download contents
                 let out_dir = output.unwrap_or_else(|| PathBuf::from(&hash_hex));
                 std::fs::create_dir_all(&out_dir)?;
@@ -883,11 +884,7 @@ pub(crate) async fn run() -> Result<()> {
                     println!("\nTree node info:");
                     println!("  Links: {}", node.links.len());
                     for (i, link) in node.links.iter().enumerate() {
-                        let name = link
-                            .name
-                            .as_ref()
-                            .map(|n| n.as_str())
-                            .unwrap_or("<unnamed>");
+                        let name = link.name.as_deref().unwrap_or("<unnamed>");
                         let size_str = format!("{} bytes", link.size);
                         println!(
                             "    [{}] {} -> {} ({})",

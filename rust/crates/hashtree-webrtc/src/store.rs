@@ -459,6 +459,7 @@ impl<S: Store + 'static> WebRTCStore<S> {
     }
 
     /// Handle incoming signaling message
+    #[allow(clippy::too_many_arguments)]
     async fn handle_signaling_message(
         msg: SignalingMessage,
         local_peer_id: &str,

@@ -162,7 +162,7 @@ pub(crate) fn spawn_daemon(
         println!("Started hashtree daemon (pid {})", child.id());
         println!("Log file: {}", log_path.display());
         println!("PID file: {}", pid_path.display());
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(unix))]

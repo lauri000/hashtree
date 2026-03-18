@@ -5,7 +5,7 @@
 
 use super::{Error, Result};
 use sha1::{Digest, Sha1};
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 /// The four git object types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +27,7 @@ impl ObjectType {
     }
 
     #[allow(dead_code)]
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "blob" => Some(ObjectType::Blob),
             "tree" => Some(ObjectType::Tree),
@@ -35,6 +35,14 @@ impl ObjectType {
             "tag" => Some(ObjectType::Tag),
             _ => None,
         }
+    }
+}
+
+impl FromStr for ObjectType {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
     }
 }
 
@@ -139,8 +147,9 @@ impl GitObject {
             .next()
             .ok_or_else(|| Error::InvalidObjectFormat("missing size".into()))?;
 
-        let obj_type = ObjectType::from_str(type_str)
-            .ok_or_else(|| Error::InvalidObjectType(type_str.into()))?;
+        let obj_type = type_str
+            .parse::<ObjectType>()
+            .map_err(|_| Error::InvalidObjectType(type_str.into()))?;
         let size: usize = size_str
             .parse()
             .map_err(|_| Error::InvalidObjectFormat("invalid size".into()))?;

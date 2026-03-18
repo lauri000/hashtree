@@ -492,7 +492,7 @@ fn validate_lower_hex(
     let valid = value.len() == expected_len
         && value
             .bytes()
-            .all(|byte| byte.is_ascii_digit() || (byte >= b'a' && byte <= b'f'));
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
     if valid {
         Ok(value.to_string())
     } else {

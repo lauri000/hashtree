@@ -389,6 +389,7 @@ impl<S: Store + 'static> Peer<S> {
 
     /// Setup handlers for a data channel
     /// Uses binary MessagePack protocol compatible with hashtree-ts
+    #[allow(clippy::too_many_arguments)]
     async fn setup_data_channel_handlers(
         dc: Arc<RTCDataChannel>,
         pending_requests: Arc<RwLock<HashMap<String, PendingRequest>>>,
@@ -589,7 +590,7 @@ impl<S: Store + 'static> Peer<S> {
             let _ = dc.send(&Bytes::from(encoded)).await;
         } else {
             // Fragment large responses
-            let total_fragments = ((data.len() + FRAGMENT_SIZE - 1) / FRAGMENT_SIZE) as u32;
+            let total_fragments = data.len().div_ceil(FRAGMENT_SIZE) as u32;
             for i in 0..total_fragments {
                 let start = (i as usize) * FRAGMENT_SIZE;
                 let end = std::cmp::min(start + FRAGMENT_SIZE, data.len());

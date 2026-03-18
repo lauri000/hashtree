@@ -294,14 +294,13 @@ async fn process_chunk_message(
     };
 
     match action {
-        ChunkAction::BufferOnly => return,
+        ChunkAction::BufferOnly => (),
         ChunkAction::Fail => {
             warn!(
                 "[Peer {}] Invalid quoted chunk {} for hash {}",
                 peer_short, chunk.c, hash_hex
             );
             fail_pending_request(pending_requests, Some(cashu_quotes), &hash_hex).await;
-            return;
         }
         ChunkAction::Pay {
             mint_url,
@@ -661,6 +660,7 @@ impl Peer {
     }
 
     /// Create a new peer connection with content store and state event channel
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn new_with_store_and_events(
         peer_id: PeerId,
         direction: PeerDirection,
@@ -769,7 +769,7 @@ impl Peer {
 
                 Box::pin(async move {
                     if let Some(c) = candidate {
-                        if let Some(init) = c.to_json().ok() {
+                        if let Ok(init) = c.to_json() {
                             info!(
                                 "ICE candidate generated: {}",
                                 &init.candidate[..init.candidate.len().min(60)]
@@ -1062,6 +1062,7 @@ impl Peer {
     }
 
     /// Setup handlers for a data channel (shared between outbound and inbound)
+    #[allow(clippy::too_many_arguments)]
     async fn setup_dc_handlers(
         dc: Arc<RTCDataChannel>,
         peer_id: PeerId,

@@ -4,7 +4,7 @@ use nostr::{Keys, SecretKey};
 use serde::{Deserialize, Serialize};
 use std::fs;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub server: ServerConfig,
@@ -397,19 +397,6 @@ impl Default for SyncConfig {
             max_concurrent: default_max_concurrent(),
             webrtc_timeout_ms: default_webrtc_timeout_ms(),
             blossom_timeout_ms: default_blossom_timeout_ms(),
-        }
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            storage: StorageConfig::default(),
-            nostr: NostrConfig::default(),
-            blossom: BlossomConfig::default(),
-            sync: SyncConfig::default(),
-            cashu: CashuConfig::default(),
         }
     }
 }
