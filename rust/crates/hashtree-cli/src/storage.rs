@@ -582,7 +582,7 @@ impl HashtreeStore {
         Arc::clone(&self.router)
     }
 
-    /// Upload a file and return its CID (public/unencrypted), with auto-pin
+    /// Upload a file as raw plaintext and return its CID, with auto-pin
     pub fn upload_file<P: AsRef<Path>>(&self, file_path: P) -> Result<String> {
         self.upload_file_internal(file_path, true)
     }
@@ -597,7 +597,7 @@ impl HashtreeStore {
         let file = std::fs::File::open(file_path)
             .with_context(|| format!("Failed to open file {}", file_path.display()))?;
 
-        // Use hashtree to store the file (public mode - no encryption), streaming from disk.
+        // Store raw plaintext blobs without CHK encryption, streaming from disk.
         let store = self.store_arc();
         let tree = HashTree::new(HashTreeConfig::new(store).public());
 
@@ -624,7 +624,7 @@ impl HashtreeStore {
     where
         F: FnMut(&str),
     {
-        // Use HashTree.put_stream for streaming upload (public mode).
+        // Use HashTree.put_stream for streaming upload without CHK encryption.
         let store = self.store_arc();
         let tree = HashTree::new(HashTreeConfig::new(store).public());
 
@@ -648,7 +648,7 @@ impl HashtreeStore {
         self.upload_dir_with_options(dir_path, true)
     }
 
-    /// Upload a directory with options (public mode - no encryption)
+    /// Upload a directory with options as raw plaintext (no CHK encryption)
     pub fn upload_dir_with_options<P: AsRef<Path>>(
         &self,
         dir_path: P,
@@ -1378,6 +1378,48 @@ impl HashtreeStore {
                 .map(|e| DirEntry {
                     name: e.name,
                     cid: to_hex(&e.hash),
+                    is_directory: e.link_type.is_tree(),
+                    size: e.size,
+                })
+                .collect();
+
+            Ok(Some(DirectoryListing {
+                dir_name: String::new(),
+                entries,
+            }))
+        })
+    }
+
+    /// Get directory structure by CID, supporting encrypted directories.
+    pub fn get_directory_listing_by_cid(&self, cid: &Cid) -> Result<Option<DirectoryListing>> {
+        let store = self.store_arc();
+        let tree = HashTree::new(HashTreeConfig::new(store).public());
+        let cid = cid.clone();
+
+        sync_block_on(async {
+            let is_dir = tree
+                .is_dir(&cid)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to check directory: {}", e))?;
+
+            if !is_dir {
+                return Ok(None);
+            }
+
+            let tree_entries = tree
+                .list_directory(&cid)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to list directory: {}", e))?;
+
+            let entries: Vec<DirEntry> = tree_entries
+                .into_iter()
+                .map(|e| DirEntry {
+                    name: e.name,
+                    cid: Cid {
+                        hash: e.hash,
+                        key: e.key,
+                    }
+                    .to_string(),
                     is_directory: e.link_type.is_tree(),
                     size: e.size,
                 })

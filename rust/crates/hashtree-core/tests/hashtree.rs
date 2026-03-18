@@ -390,6 +390,82 @@ mod read {
         assert!(dir_node.is_some());
         assert_eq!(dir_node.unwrap().links.len(), 1);
     }
+
+    #[tokio::test]
+    async fn test_encrypted_directory_keeps_real_underscore_file_entries() {
+        let (_store, tree) = make_encrypted_tree();
+
+        let headers = b"cache-control: no-store\n";
+        let (headers_cid, _) = tree.put_file(headers).await.unwrap();
+        let (index_cid, _) = tree.put_file(b"<html></html>").await.unwrap();
+        let dir_cid = tree
+            .put_directory(vec![
+                DirEntry::from_cid("_headers", &headers_cid)
+                    .with_size(headers.len() as u64)
+                    .with_link_type(LinkType::Blob),
+                DirEntry::from_cid("index.html", &index_cid)
+                    .with_size(13)
+                    .with_link_type(LinkType::Blob),
+            ])
+            .await
+            .unwrap();
+
+        let entries = tree.list_directory(&dir_cid).await.unwrap();
+        let mut names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["_headers", "index.html"]);
+
+        let resolved = tree
+            .resolve_path(&dir_cid, "_headers")
+            .await
+            .unwrap()
+            .expect("resolve _headers");
+        assert_eq!(resolved, headers_cid);
+
+        let data = tree.get(&resolved, None).await.unwrap().expect("read _headers");
+        assert_eq!(data, headers);
+    }
+
+    #[tokio::test]
+    async fn test_list_directory_preserves_legacy_internal_fanout_nodes() {
+        let (_store, tree) = make_tree();
+
+        let (file_cid, _) = tree.put_file(b"fanout").await.unwrap();
+        let sub_hash = tree
+            .put_tree_node(vec![Link {
+                hash: file_cid.hash,
+                name: Some("apple.txt".to_string()),
+                size: 6,
+                key: None,
+                link_type: LinkType::Blob,
+                meta: None,
+            }])
+            .await
+            .unwrap();
+        let root_hash = tree
+            .put_tree_node(vec![Link {
+                hash: sub_hash,
+                name: Some("_a".to_string()),
+                size: 6,
+                key: None,
+                link_type: LinkType::Dir,
+                meta: None,
+            }])
+            .await
+            .unwrap();
+
+        let root_cid = Cid::public(root_hash);
+        let entries = tree.list_directory(&root_cid).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "apple.txt");
+
+        let resolved = tree
+            .resolve_path(&root_cid, "apple.txt")
+            .await
+            .unwrap()
+            .expect("resolve apple.txt");
+        assert_eq!(resolved, file_cid);
+    }
 }
 
 // ============ STREAMING TESTS ============

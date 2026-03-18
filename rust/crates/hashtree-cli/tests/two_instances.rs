@@ -1233,7 +1233,7 @@ fn test_local_add_and_get() {
         &[
             "add",
             test_data.path().to_str().unwrap(),
-            "--public",
+            "--unencrypted",
             "--local",
         ],
     );

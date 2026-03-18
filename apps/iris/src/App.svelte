@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import {
     automationUpdateState,
+    automationShutdown,
     createNip07Webview,
     createHtreeWebview,
     closeWebview,
@@ -413,6 +414,9 @@
         return;
       case 'settings':
         goSettings();
+        return;
+      case 'shutdown':
+        await automationShutdown();
         return;
       default:
         console.warn('[Iris] unknown automation action:', command.action);

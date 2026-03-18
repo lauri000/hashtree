@@ -90,6 +90,8 @@ async function mockTauriIPC(page: Page) {
             return Promise.resolve();
           case 'automation_get_state':
             return Promise.resolve((window as any).__automationState);
+          case 'automation_shutdown':
+            return Promise.resolve();
           case 'record_history_visit': {
             const now = Date.now();
             const existing = historyStore.find(e => e.path === args?.path);

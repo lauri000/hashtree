@@ -758,7 +758,7 @@ read_servers = ["{}"]
         .arg(data_dir.path())
         .arg("add")
         .arg(&test_file)
-        .arg("--public")
+        .arg("--unencrypted")
         .env("HOME", home_dir.path())
         .output()
         .expect("Failed to run htree add");
@@ -809,4 +809,120 @@ read_servers = ["{}"]
         "200",
         "Blob should exist on server after htree add"
     );
+}
+
+#[test]
+fn test_htree_add_encrypted_site_can_be_fetched_from_fresh_store() {
+    let server = TestServer::new(18096, false);
+    let htree_bin = find_htree_binary();
+
+    let data_dir_a = TempDir::new().expect("Failed to create publisher data dir");
+    let home_dir_a = TempDir::new().expect("Failed to create publisher home dir");
+    let data_dir_b = TempDir::new().expect("Failed to create viewer data dir");
+    let home_dir_b = TempDir::new().expect("Failed to create viewer home dir");
+
+    for home_dir in [&home_dir_a, &home_dir_b] {
+        let config_dir = home_dir.path().join(".hashtree");
+        std::fs::create_dir_all(&config_dir).expect("Failed to create config dir");
+        let config_content = format!(
+            r#"
+[blossom]
+write_servers = ["{}"]
+read_servers = ["{}"]
+"#,
+            server.base_url(),
+            server.base_url()
+        );
+        std::fs::write(config_dir.join("config.toml"), config_content)
+            .expect("Failed to write config");
+
+        let keys = Keys::generate();
+        let nsec = keys
+            .secret_key()
+            .to_bech32()
+            .expect("Failed to encode nsec");
+        std::fs::write(config_dir.join("keys"), &nsec).expect("Failed to write keys");
+    }
+
+    let site_dir = TempDir::new().expect("Failed to create site dir");
+    let site_root = site_dir.path().join("site");
+    let asset_dir = site_root.join("assets");
+    std::fs::create_dir_all(&asset_dir).expect("Failed to create asset dir");
+    std::fs::write(
+        site_root.join("index.html"),
+        "<!doctype html><html><body><script src=\"./assets/big.bin\"></script></body></html>",
+    )
+    .expect("Failed to write index.html");
+
+    let mut asset_bytes = Vec::with_capacity(2_750_000);
+    for i in 0..2_750_000u32 {
+        asset_bytes.push((i % 251) as u8);
+    }
+    std::fs::write(asset_dir.join("big.bin"), &asset_bytes).expect("Failed to write big asset");
+
+    let add_output = Command::new(&htree_bin)
+        .arg("--data-dir")
+        .arg(data_dir_a.path())
+        .arg("add")
+        .arg(&site_root)
+        .env("HOME", home_dir_a.path())
+        .output()
+        .expect("Failed to run htree add");
+
+    let add_stdout = String::from_utf8_lossy(&add_output.stdout);
+    let add_stderr = String::from_utf8_lossy(&add_output.stderr);
+    println!("add stdout: {}", add_stdout);
+    println!("add stderr: {}", add_stderr);
+    assert!(add_output.status.success(), "encrypted htree add should succeed");
+
+    let url = add_stdout
+        .lines()
+        .find(|line| line.trim().starts_with("url:"))
+        .and_then(|line| line.split_whitespace().last())
+        .expect("Should print nhash url");
+
+    let out_index = data_dir_b.path().join("index.html");
+    let get_index = Command::new(&htree_bin)
+        .arg("--data-dir")
+        .arg(data_dir_b.path())
+        .arg("get")
+        .arg(format!("{url}/index.html"))
+        .arg("-o")
+        .arg(&out_index)
+        .env("HOME", home_dir_b.path())
+        .output()
+        .expect("Failed to fetch index.html");
+
+    let get_index_stdout = String::from_utf8_lossy(&get_index.stdout);
+    let get_index_stderr = String::from_utf8_lossy(&get_index.stderr);
+    println!("get index stdout: {}", get_index_stdout);
+    println!("get index stderr: {}", get_index_stderr);
+    assert!(
+        get_index.status.success(),
+        "fresh store should fetch index.html via encrypted nhash"
+    );
+
+    let out_asset = data_dir_b.path().join("big.bin");
+    let get_asset = Command::new(&htree_bin)
+        .arg("--data-dir")
+        .arg(data_dir_b.path())
+        .arg("get")
+        .arg(format!("{url}/assets/big.bin"))
+        .arg("-o")
+        .arg(&out_asset)
+        .env("HOME", home_dir_b.path())
+        .output()
+        .expect("Failed to fetch big asset");
+
+    let get_asset_stdout = String::from_utf8_lossy(&get_asset.stdout);
+    let get_asset_stderr = String::from_utf8_lossy(&get_asset.stderr);
+    println!("get asset stdout: {}", get_asset_stdout);
+    println!("get asset stderr: {}", get_asset_stderr);
+    assert!(
+        get_asset.status.success(),
+        "fresh store should fetch chunked asset via encrypted nhash"
+    );
+
+    let restored_asset = std::fs::read(&out_asset).expect("Failed to read restored asset");
+    assert_eq!(restored_asset, asset_bytes);
 }

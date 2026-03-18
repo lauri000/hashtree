@@ -75,9 +75,9 @@ pub(crate) enum Commands {
         /// Only compute hash, don't store
         #[arg(long)]
         only_hash: bool,
-        /// Store without encryption (public, unencrypted)
-        #[arg(long)]
-        public: bool,
+        /// Store as raw plaintext blobs without CHK encryption
+        #[arg(long = "unencrypted", alias = "public")]
+        unencrypted: bool,
         /// Include files ignored by .gitignore (default: respect .gitignore)
         #[arg(long)]
         no_ignore: bool,

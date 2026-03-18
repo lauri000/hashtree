@@ -51,7 +51,7 @@ Example command payload:
 { "action": "open_url", "url": "htree://npub1.../public/index.html" }
 ```
 
-Supported actions are `open_url`, `back`, `forward`, `reload`, `home`, and `settings`.
+Supported actions are `open_url`, `back`, `forward`, `reload`, `home`, `settings`, and `shutdown`.
 
 The automation bridge is intentionally semantic. Use it for readiness checks, current shell state, and app-aware commands; use Linux WebDriver for generic UI actions like clicking arbitrary elements, text selection, and taking screenshots.
 

@@ -491,7 +491,7 @@ pub(crate) async fn run() -> Result<()> {
         Commands::Add {
             path,
             only_hash,
-            public,
+            unencrypted,
             no_ignore,
             publish,
             local,
@@ -506,8 +506,8 @@ pub(crate) async fn run() -> Result<()> {
                 use std::sync::Arc;
 
                 let store = Arc::new(MemoryStore::new());
-                // Use unified API: encryption by default, .public() to disable
-                let config = if public {
+                // Use unified API: CHK encryption by default, .public() for raw plaintext blobs
+                let config = if unencrypted {
                     HashTreeConfig::new(store.clone()).public()
                 } else {
                     HashTreeConfig::new(store.clone())
@@ -542,8 +542,9 @@ pub(crate) async fn run() -> Result<()> {
 
                 let store = HashtreeStore::new(&data_dir)?;
 
-                // Store and capture hash/key for potential publishing
-                let (hash_hex, key_hex): (String, Option<String>) = if public {
+                // Store and capture cid/hash/key for potential publishing
+                let (cid_for_push, hash_hex, key_hex): (String, String, Option<String>) =
+                    if unencrypted {
                     let hash_hex = if is_dir {
                         store
                             .upload_dir_with_options(&path, !no_ignore)
@@ -554,14 +555,18 @@ pub(crate) async fn run() -> Result<()> {
                     let hash = from_hex(&hash_hex).context("Invalid hash")?;
                     let nhash = nhash_encode(&hash)
                         .map_err(|e| anyhow::anyhow!("Failed to encode nhash: {}", e))?;
-                    let filename = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
                     println!("added {}", path.display());
-                    println!("  url:   {}/{}", nhash, filename);
+                    if is_dir {
+                        println!("  url:   {}", nhash);
+                    } else {
+                        let filename = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        println!("  url:   {}/{}", nhash, filename);
+                    }
                     println!("  hash:  {}", hash_hex);
-                    (hash_hex, None)
+                    (hash_hex.clone(), hash_hex, None)
                 } else {
                     let cid_str = if is_dir {
                         store
@@ -590,17 +595,21 @@ pub(crate) async fn run() -> Result<()> {
                     };
                     let nhash = nhash_encode_full(&nhash_data)
                         .map_err(|e| anyhow::anyhow!("Failed to encode nhash: {}", e))?;
-                    let filename = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
                     println!("added {}", path.display());
-                    println!("  url:   {}/{}", nhash, filename);
+                    if is_dir {
+                        println!("  url:   {}", nhash);
+                    } else {
+                        let filename = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        println!("  url:   {}/{}", nhash, filename);
+                    }
                     println!("  hash:  {}", hash_hex);
                     if let Some(ref k) = key_hex {
                         println!("  key:   {}", k);
                     }
-                    (hash_hex, key_hex)
+                    (cid_str, hash_hex, key_hex)
                 };
 
                 // Index tree for eviction tracking (own content = highest priority)
@@ -690,7 +699,7 @@ pub(crate) async fn run() -> Result<()> {
                     if !write_servers.is_empty() {
                         // Await the upload to ensure it completes before exiting
                         if let Err(e) =
-                            background_blossom_push(&data_dir, &hash_hex, &write_servers).await
+                            background_blossom_push(&data_dir, &cid_for_push, &write_servers).await
                         {
                             eprintln!("  file server push failed: {}", e);
                         }
@@ -703,7 +712,7 @@ pub(crate) async fn run() -> Result<()> {
             output,
         } => {
             use hashtree_cli::{FetchConfig, Fetcher};
-            use hashtree_core::{from_hex, to_hex};
+            use hashtree_core::{Cid, to_hex};
 
             // Resolve to Cid (raw bytes, no hex conversion needed for nhash)
             let resolved = resolve_cid_input(&cid_input).await?;
@@ -714,10 +723,10 @@ pub(crate) async fn run() -> Result<()> {
             let fetcher = Fetcher::new(FetchConfig::default());
 
             // Try to fetch tree from remote if not local
-            fetcher.fetch_tree(&store, None, &cid.hash).await?;
+            fetcher.fetch_cid_tree(&store, None, &cid).await?;
 
             // Check if it's a directory
-            let listing = store.get_directory_listing(&cid.hash)?;
+            let listing = store.get_directory_listing_by_cid(&cid)?;
 
             // Handle path: nhash/path/to/file.ext
             if let Some(ref path) = resolved.path {
@@ -728,7 +737,7 @@ pub(crate) async fn run() -> Result<()> {
                         .ok_or_else(|| anyhow::anyhow!("Path not found in directory: {}", path))?;
 
                     // Fetch the resolved file if needed
-                    fetcher.fetch_tree(&store, None, &resolved_cid.hash).await?;
+                    fetcher.fetch_cid_tree(&store, None, &resolved_cid).await?;
 
                     // Get the filename from the path
                     let filename = path.rsplit('/').next().unwrap_or(path);
@@ -751,21 +760,21 @@ pub(crate) async fn run() -> Result<()> {
 
                 async fn download_dir(
                     store: &Arc<HashtreeStore>,
-                    hash: &[u8; 32],
+                    cid: &Cid,
                     dir: &std::path::Path,
                 ) -> Result<()> {
                     // Get listing
-                    let listing = store.get_directory_listing(hash)?;
+                    let listing = store.get_directory_listing_by_cid(cid)?;
                     if let Some(listing) = listing {
                         for entry in listing.entries {
                             let entry_path = dir.join(&entry.name);
-                            let entry_hash = from_hex(&entry.cid)
+                            let entry_cid = Cid::parse(&entry.cid)
                                 .map_err(|e| anyhow::anyhow!("Invalid CID: {}", e))?;
                             if entry.is_directory {
                                 std::fs::create_dir_all(&entry_path)?;
-                                Box::pin(download_dir(store, &entry_hash, &entry_path)).await?;
+                                Box::pin(download_dir(store, &entry_cid, &entry_path)).await?;
                             } else {
-                                store.write_file(&entry_hash, &entry_path)?;
+                                store.write_file_by_cid(&entry_cid, &entry_path)?;
                                 println!("  {} -> {}", entry.cid, entry_path.display());
                             }
                         }
@@ -774,7 +783,7 @@ pub(crate) async fn run() -> Result<()> {
                 }
 
                 println!("Downloading directory to {}", out_dir.display());
-                download_dir(&store, &cid.hash, &out_dir).await?;
+                download_dir(&store, &cid, &out_dir).await?;
                 println!("Done.");
             } else {
                 // Try as a file - stream from store to output path with decryption support.
@@ -1178,12 +1187,10 @@ pub(crate) async fn run() -> Result<()> {
             cid: cid_input,
             server,
         } => {
-            use hashtree_core::to_hex;
-
             // Resolve npub/repo or htree:// URLs to CID
             let resolved = resolve_cid_input(&cid_input).await?;
-            let cid_hex = to_hex(&resolved.cid.hash);
-            push_to_blossom(&data_dir, &cid_hex, server).await?;
+            let cid = resolved.cid.to_string();
+            push_to_blossom(&data_dir, &cid, server).await?;
         }
         Commands::Storage { command } => {
             // Load config

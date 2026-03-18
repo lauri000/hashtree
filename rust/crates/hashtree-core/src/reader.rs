@@ -44,6 +44,34 @@ pub struct TreeReader<S: Store> {
 }
 
 impl<S: Store> TreeReader<S> {
+    fn is_legacy_internal_group_name(name: &str) -> bool {
+        name.starts_with('_') && !name.starts_with("_chunk_") && name.chars().count() == 2
+    }
+
+    fn node_uses_legacy_directory_fanout(node: &TreeNode) -> bool {
+        !node.links.is_empty()
+            && node.links.iter().all(|link| {
+                let Some(name) = link.name.as_deref() else {
+                    return false;
+                };
+                Self::is_legacy_internal_group_name(name) && link.link_type == LinkType::Dir
+            })
+    }
+
+    fn is_internal_directory_link(node: &TreeNode, link: &Link) -> bool {
+        let Some(name) = link.name.as_deref() else {
+            return false;
+        };
+
+        if name.starts_with("_chunk_") {
+            return true;
+        }
+
+        Self::node_uses_legacy_directory_fanout(node)
+            && Self::is_legacy_internal_group_name(name)
+            && link.link_type == LinkType::Dir
+    }
+
     pub fn new(store: Arc<S>) -> Self {
         Self { store }
     }
@@ -441,20 +469,10 @@ impl<S: Store> TreeReader<S> {
 
         for link in &node.links {
             // Skip internal chunk nodes (names starting with _chunk_)
-            if let Some(ref name) = link.name {
-                if name.starts_with("_chunk_") {
-                    // This is an internal split - recurse into it
-                    let sub_entries = Box::pin(self.list_directory(&link.hash)).await?;
-                    entries.extend(sub_entries);
-                    continue;
-                }
-
-                // Skip internal group nodes (names starting with _ but not _chunk_)
-                if name.starts_with('_') {
-                    let sub_entries = Box::pin(self.list_directory(&link.hash)).await?;
-                    entries.extend(sub_entries);
-                    continue;
-                }
+            if Self::is_internal_directory_link(&node, link) {
+                let sub_entries = Box::pin(self.list_directory(&link.hash)).await?;
+                entries.extend(sub_entries);
+                continue;
             }
 
             entries.push(TreeEntry {
@@ -517,12 +535,7 @@ impl<S: Store> TreeReader<S> {
     ) -> Result<Option<Hash>, ReaderError> {
         for link in &node.links {
             // Only search internal nodes
-            if !link
-                .name
-                .as_ref()
-                .map(|n| n.starts_with('_'))
-                .unwrap_or(false)
-            {
+            if !Self::is_internal_directory_link(node, link) {
                 continue;
             }
 
@@ -619,7 +632,7 @@ impl<S: Store> TreeReader<S> {
             let child_path = match &link.name {
                 Some(name) => {
                     // Skip internal chunk nodes in path
-                    if name.starts_with("_chunk_") || name.starts_with('_') {
+                    if Self::is_internal_directory_link(&node, link) {
                         Box::pin(self.walk_recursive(&link.hash, path, entries)).await?;
                         continue;
                     }

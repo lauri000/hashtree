@@ -123,7 +123,7 @@ sleep "$DISCOVERY_WAIT"
 
 # Add directory on instance A
 echo -e "\n${YELLOW}Adding directory on Instance A...${NC}"
-ADD_OUTPUT=$(HTREE_DATA_DIR="$TMPDIR_A" "$HTREE_BIN" add "$TEST_DATA_DIR" --public 2>&1)
+ADD_OUTPUT=$(HTREE_DATA_DIR="$TMPDIR_A" "$HTREE_BIN" add "$TEST_DATA_DIR" --unencrypted 2>&1)
 echo "$ADD_OUTPUT"
 
 # Extract CID from output

@@ -112,6 +112,41 @@ pub struct HashTree<S: Store> {
 }
 
 impl<S: Store> HashTree<S> {
+    fn is_legacy_internal_group_name(name: &str) -> bool {
+        name.starts_with('_') && !name.starts_with("_chunk_") && name.chars().count() == 2
+    }
+
+    fn node_uses_legacy_directory_fanout(node: &TreeNode) -> bool {
+        !node.links.is_empty()
+            && node.links.iter().all(|link| {
+                let Some(name) = link.name.as_deref() else {
+                    return false;
+                };
+                Self::is_legacy_internal_group_name(name) && link.link_type == LinkType::Dir
+            })
+    }
+
+    fn is_internal_directory_link_with_legacy_fanout(link: &Link, uses_legacy_fanout: bool) -> bool {
+        let Some(name) = link.name.as_deref() else {
+            return false;
+        };
+
+        if name.starts_with("_chunk_") {
+            return true;
+        }
+
+        uses_legacy_fanout
+            && Self::is_legacy_internal_group_name(name)
+            && link.link_type == LinkType::Dir
+    }
+
+    fn is_internal_directory_link(node: &TreeNode, link: &Link) -> bool {
+        Self::is_internal_directory_link_with_legacy_fanout(
+            link,
+            Self::node_uses_legacy_directory_fanout(node),
+        )
+    }
+
     pub fn new(config: HashTreeConfig<S>) -> Self {
         Self {
             store: config.store,
@@ -825,17 +860,10 @@ impl<S: Store> HashTree<S> {
 
     /// Check if Cid points to a directory (with decryption)
     pub async fn is_dir(&self, cid: &Cid) -> Result<bool, HashTreeError> {
-        let node = match self.get_node(cid).await? {
-            Some(n) => n,
-            None => return Ok(false),
-        };
-        // Directory has named links (not just internal chunks)
-        Ok(node.links.iter().any(|l| {
-            l.name
-                .as_ref()
-                .map(|n| !n.starts_with('_'))
-                .unwrap_or(false)
-        }))
+        Ok(matches!(
+            self.get_directory_node(cid).await?,
+            Some(node) if node.node_type == LinkType::Dir
+        ))
     }
 
     /// Check if hash points to a directory (tree with named links, no decryption)
@@ -1261,16 +1289,14 @@ impl<S: Store> HashTree<S> {
 
         for link in &node.links {
             // Skip internal chunk nodes - recurse into them
-            if let Some(ref name) = link.name {
-                if name.starts_with("_chunk_") || name.starts_with('_') {
-                    let chunk_cid = Cid {
-                        hash: link.hash,
-                        key: link.key,
-                    };
-                    let sub_entries = Box::pin(self.list(&chunk_cid)).await?;
-                    entries.extend(sub_entries);
-                    continue;
-                }
+            if Self::is_internal_directory_link(&node, link) {
+                let chunk_cid = Cid {
+                    hash: link.hash,
+                    key: link.key,
+                };
+                let sub_entries = Box::pin(self.list(&chunk_cid)).await?;
+                entries.extend(sub_entries);
+                continue;
             }
 
             entries.push(TreeEntry {
@@ -1299,17 +1325,15 @@ impl<S: Store> HashTree<S> {
 
         for link in &node.links {
             // Skip internal chunk nodes (backwards compat with old _chunk_ format)
-            if let Some(ref name) = link.name {
-                if name.starts_with("_chunk_") || name.starts_with('_') {
-                    // Internal nodes inherit parent's key for decryption
-                    let sub_cid = Cid {
-                        hash: link.hash,
-                        key: cid.key,
-                    };
-                    let sub_entries = Box::pin(self.list_directory(&sub_cid)).await?;
-                    entries.extend(sub_entries);
-                    continue;
-                }
+            if Self::is_internal_directory_link(&node, link) {
+                // Internal nodes inherit parent's key for decryption
+                let sub_cid = Cid {
+                    hash: link.hash,
+                    key: cid.key,
+                };
+                let sub_entries = Box::pin(self.list_directory(&sub_cid)).await?;
+                entries.extend(sub_entries);
+                continue;
             }
 
             entries.push(TreeEntry {
@@ -1386,12 +1410,7 @@ impl<S: Store> HashTree<S> {
         _parent_cid: &Cid,
     ) -> Result<Option<Link>, HashTreeError> {
         for link in &node.links {
-            if !link
-                .name
-                .as_ref()
-                .map(|n| n.starts_with('_'))
-                .unwrap_or(false)
-            {
+            if !Self::is_internal_directory_link(node, link) {
                 continue;
             }
 
@@ -1514,7 +1533,7 @@ impl<S: Store> HashTree<S> {
         for link in &node.links {
             let child_path = match &link.name {
                 Some(name) => {
-                    if name.starts_with("_chunk_") || name.starts_with('_') {
+                    if Self::is_internal_directory_link(&node, link) {
                         // Internal nodes inherit parent's key
                         let sub_cid = Cid {
                             hash: link.hash,
@@ -1652,7 +1671,7 @@ impl<S: Store> HashTree<S> {
                 for link in &node.links {
                     let child_path = match &link.name {
                         Some(name) => {
-                            if name.starts_with("_chunk_") || name.starts_with('_') {
+                            if Self::is_internal_directory_link(&node, link) {
                                 // Internal chunked nodes - inherit parent's key, same path
                                 let sub_cid = Cid {
                                     hash: link.hash,
@@ -1766,9 +1785,14 @@ impl<S: Store> HashTree<S> {
 
                         // Create stack with children to process
                         let mut stack: Vec<WalkStackItem> = Vec::new();
+                        let uses_legacy_fanout = Self::node_uses_legacy_directory_fanout(&node);
                         for link in node.links.into_iter().rev() {
+                            let is_internal = Self::is_internal_directory_link_with_legacy_fanout(
+                                &link,
+                                uses_legacy_fanout,
+                            );
                             let child_path = match &link.name {
-                                Some(name) if !name.starts_with('_') => {
+                                Some(name) if !is_internal => {
                                     if path.is_empty() {
                                         name.clone()
                                     } else {
@@ -1843,9 +1867,14 @@ impl<S: Store> HashTree<S> {
             };
 
             // Push children to stack
+            let uses_legacy_fanout = Self::node_uses_legacy_directory_fanout(&node);
             for link in node.links.into_iter().rev() {
+                let is_internal = Self::is_internal_directory_link_with_legacy_fanout(
+                    &link,
+                    uses_legacy_fanout,
+                );
                 let child_path = match &link.name {
-                    Some(name) if !name.starts_with('_') => {
+                    Some(name) if !is_internal => {
                         if item.path.is_empty() {
                             name.clone()
                         } else {

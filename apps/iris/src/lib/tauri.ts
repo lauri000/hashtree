@@ -131,7 +131,8 @@ export type AutomationAction =
   | 'forward'
   | 'reload'
   | 'home'
-  | 'settings';
+  | 'settings'
+  | 'shutdown';
 
 export interface AutomationCommandEvent {
   action: AutomationAction;
@@ -162,6 +163,10 @@ export async function automationUpdateState(snapshot: AutomationUiState): Promis
 
 export async function automationGetState(): Promise<AutomationState> {
   return invoke<AutomationState>('automation_get_state');
+}
+
+export async function automationShutdown(): Promise<void> {
+  return invoke<void>('automation_shutdown');
 }
 
 // ── Autostart ──

@@ -59,6 +59,7 @@ pub enum AutomationAction {
     Reload,
     Home,
     Settings,
+    Shutdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,6 +218,12 @@ pub fn automation_get_state<R: Runtime>(app: AppHandle<R>) -> Result<AutomationS
         .try_state::<Arc<AutomationState>>()
         .ok_or_else(|| "AutomationState not found".to_string())?;
     Ok(automation.snapshot())
+}
+
+#[tauri::command]
+pub fn automation_shutdown<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    app.exit(0);
+    Ok(())
 }
 
 #[cfg(test)]

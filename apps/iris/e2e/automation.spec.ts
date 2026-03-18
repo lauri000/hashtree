@@ -90,4 +90,16 @@ test.describe('Automation Bridge', () => {
     const closeCalls = await getInvocationsFor(page, 'close_webview');
     expect(closeCalls.length).toBeGreaterThan(0);
   });
+
+  test('shutdown command uses the native shutdown invoke', async ({ tauriPage: page }) => {
+    await openHome(page);
+    await page.waitForFunction(() => (window as any).__automationState?.shellReady === true);
+
+    await emitTauriEvent(page, 'automation-command', { action: 'shutdown' });
+
+    await expect.poll(async () => {
+      const shutdownCalls = await getInvocationsFor(page, 'automation_shutdown');
+      return shutdownCalls.length;
+    }).toBe(1);
+  });
 });

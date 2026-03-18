@@ -301,6 +301,21 @@ fn test_cli_parses_socialgraph_index_command() {
 }
 
 #[test]
+fn test_cli_add_uses_unencrypted_flag_with_public_alias() {
+    let cli = Cli::parse_from(["htree", "add", "site", "--unencrypted"]);
+    match cli.command {
+        Commands::Add { unencrypted, .. } => assert!(unencrypted),
+        _ => panic!("expected add command"),
+    }
+
+    let cli = Cli::parse_from(["htree", "add", "site", "--public"]);
+    match cli.command {
+        Commands::Add { unencrypted, .. } => assert!(unencrypted),
+        _ => panic!("expected add command"),
+    }
+}
+
+#[test]
 fn test_cli_parses_socialgraph_warm_command() {
     let cli = Cli::parse_from([
         "htree",

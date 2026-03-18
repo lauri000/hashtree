@@ -8,9 +8,9 @@
 use anyhow::Result;
 use hashtree_blossom::BlossomClient;
 use hashtree_config::detect_local_daemon_url;
-use hashtree_core::{decode_tree_node, to_hex};
+use hashtree_core::{Cid, HashTree, HashTreeConfig, Link, to_hex};
 use nostr::Keys;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::debug;
@@ -18,6 +18,22 @@ use tracing::debug;
 use crate::config::Config as CliConfig;
 use crate::storage::HashtreeStore;
 use crate::webrtc::WebRTCState;
+
+fn child_cid(parent: &Cid, link: &Link) -> Cid {
+    let inherits_parent_key = link
+        .name
+        .as_deref()
+        .map(|name| {
+            name.starts_with("_chunk_")
+                || (name.starts_with('_') && name.chars().count() == 2 && link.link_type.is_tree())
+        })
+        .unwrap_or(false);
+
+    Cid {
+        hash: link.hash,
+        key: link.key.or(if inherits_parent_key { parent.key } else { None }),
+    }
+}
 
 /// Configuration for remote fetching
 #[derive(Clone)]
@@ -140,7 +156,18 @@ impl Fetcher {
         webrtc_state: Option<&Arc<WebRTCState>>,
         root_hash: &[u8; 32],
     ) -> Result<(usize, u64)> {
-        self.fetch_tree_parallel(store, webrtc_state, root_hash, 1)
+        self.fetch_cid_tree(store, webrtc_state, &Cid::public(*root_hash))
+            .await
+    }
+
+    /// Fetch an entire tree from a CID, preserving decryption keys for encrypted trees.
+    pub async fn fetch_cid_tree(
+        &self,
+        store: &HashtreeStore,
+        webrtc_state: Option<&Arc<WebRTCState>>,
+        root_cid: &Cid,
+    ) -> Result<(usize, u64)> {
+        self.fetch_cid_tree_parallel(store, webrtc_state, root_cid, 1)
             .await
     }
 
@@ -154,38 +181,49 @@ impl Fetcher {
         root_hash: &[u8; 32],
         concurrency: usize,
     ) -> Result<(usize, u64)> {
-        use futures::stream::{FuturesUnordered, StreamExt};
-        use std::collections::HashSet;
-        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+        self.fetch_cid_tree_parallel(store, webrtc_state, &Cid::public(*root_hash), concurrency)
+            .await
+    }
 
-        // Check if we already have the root
-        if store.blob_exists(root_hash)? {
-            return Ok((0, 0));
-        }
+    /// Fetch an entire tree with parallel downloads, preserving decryption keys.
+    pub async fn fetch_cid_tree_parallel(
+        &self,
+        store: &HashtreeStore,
+        webrtc_state: Option<&Arc<WebRTCState>>,
+        root_cid: &Cid,
+        concurrency: usize,
+    ) -> Result<(usize, u64)> {
+        use futures::stream::{FuturesUnordered, StreamExt};
+        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
         let chunks_fetched = Arc::new(AtomicUsize::new(0));
         let bytes_fetched = Arc::new(AtomicU64::new(0));
-
-        // Track what we've queued to avoid duplicates
         let mut queued: HashSet<[u8; 32]> = HashSet::new();
-        let mut pending: VecDeque<[u8; 32]> = VecDeque::new();
+        let mut pending: VecDeque<Cid> = VecDeque::new();
 
-        // Seed with root
-        pending.push_back(*root_hash);
-        queued.insert(*root_hash);
+        pending.push_back(root_cid.clone());
+        queued.insert(root_cid.hash);
 
         let mut active = FuturesUnordered::new();
+        let tree = HashTree::new(HashTreeConfig::new(store.store_arc()).public());
 
         loop {
             // Fill up to concurrency limit from pending queue
             while active.len() < concurrency {
-                if let Some(hash) = pending.pop_front() {
-                    // Skip if we already have it locally
-                    if store.blob_exists(&hash).unwrap_or(false) {
+                if let Some(cid) = pending.pop_front() {
+                    if store.blob_exists(&cid.hash).unwrap_or(false) {
+                        if let Some(node) = tree.get_node(&cid).await? {
+                            for link in node.links {
+                                let child = child_cid(&cid, &link);
+                                if queued.insert(child.hash) {
+                                    pending.push_back(child);
+                                }
+                            }
+                        }
                         continue;
                     }
 
-                    let hash_hex = to_hex(&hash);
+                    let hash_hex = to_hex(&cid.hash);
                     let blossom = self.blossom.clone();
                     let webrtc = webrtc_state.map(Arc::clone);
                     let timeout = self.config.webrtc_timeout;
@@ -197,12 +235,12 @@ impl Fetcher {
                                 tokio::time::timeout(timeout, state.request_from_peers(&hash_hex))
                                     .await
                             {
-                                return (hash, Ok(data));
+                                return (cid, Ok(data));
                             }
                         }
                         // Fallback to Blossom
                         let data = blossom.download(&hash_hex).await;
-                        (hash, data)
+                        (cid, data)
                     };
                     active.push(fut);
                 } else {
@@ -216,7 +254,7 @@ impl Fetcher {
             }
 
             // Wait for any download to complete
-            if let Some((hash, result)) = active.next().await {
+            if let Some((cid, result)) = active.next().await {
                 match result {
                     Ok(data) => {
                         // Store it
@@ -224,18 +262,17 @@ impl Fetcher {
                         chunks_fetched.fetch_add(1, Ordering::Relaxed);
                         bytes_fetched.fetch_add(data.len() as u64, Ordering::Relaxed);
 
-                        // Parse as tree node and queue children
-                        if let Ok(node) = decode_tree_node(&data) {
+                        if let Some(node) = tree.get_node(&cid).await? {
                             for link in node.links {
-                                if !queued.contains(&link.hash) {
-                                    queued.insert(link.hash);
-                                    pending.push_back(link.hash);
+                                let child = child_cid(&cid, &link);
+                                if queued.insert(child.hash) {
+                                    pending.push_back(child);
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        debug!("Failed to fetch {}: {}", to_hex(&hash), e);
+                        debug!("Failed to fetch {}: {}", to_hex(&cid.hash), e);
                         // Continue with other chunks - don't fail the whole tree
                     }
                 }

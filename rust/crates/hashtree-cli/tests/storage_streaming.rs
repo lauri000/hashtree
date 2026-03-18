@@ -74,3 +74,40 @@ fn write_file_by_cid_errors_when_content_missing() {
         "output file should not be created on missing cid"
     );
 }
+
+#[test]
+fn encrypted_directory_with_underscore_file_roundtrips_by_cid() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = HashtreeStore::new(tmp.path().join("store")).expect("store");
+
+    let site_dir = tmp.path().join("site");
+    std::fs::create_dir_all(site_dir.join("assets")).expect("asset dir");
+    std::fs::write(site_dir.join("_headers"), "cache-control: no-store\n").expect("_headers");
+    std::fs::write(site_dir.join("index.html"), "<html></html>").expect("index");
+    std::fs::write(site_dir.join("assets").join("asset.txt"), "asset").expect("asset");
+
+    let cid_str = store
+        .upload_dir_encrypted_with_options(&site_dir, true)
+        .expect("upload encrypted dir");
+    let cid = Cid::parse(&cid_str).expect("parse dir cid");
+
+    let listing = store
+        .get_directory_listing_by_cid(&cid)
+        .expect("directory listing")
+        .expect("encrypted root directory");
+    let names: Vec<_> = listing.entries.iter().map(|entry| entry.name.as_str()).collect();
+    assert!(names.contains(&"_headers"));
+    assert!(names.contains(&"assets"));
+    assert!(names.contains(&"index.html"));
+
+    let index_cid = store
+        .resolve_path(&cid, "index.html")
+        .expect("resolve path")
+        .expect("resolved index");
+    let out_path = tmp.path().join("restored-index.html");
+    store
+        .write_file_by_cid(&index_cid, &out_path)
+        .expect("stream encrypted index");
+    let restored = std::fs::read_to_string(&out_path).expect("read restored index");
+    assert_eq!(restored, "<html></html>");
+}

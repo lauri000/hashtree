@@ -178,7 +178,20 @@ pub fn run() {
         )
         .init();
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }));
+    }
+
+    builder
         .menu(build_menu)
         .on_menu_event(|app, event| {
             match event.id().as_ref() {
@@ -205,6 +218,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             automation::automation_update_state,
             automation::automation_get_state,
+            automation::automation_shutdown,
             htree_protocol::get_htree_server_url,
             htree_protocol::cache_tree_root,
             nip07::create_nip07_webview,

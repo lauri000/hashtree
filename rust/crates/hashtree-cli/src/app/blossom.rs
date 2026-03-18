@@ -1,67 +1,60 @@
 use anyhow::{Context, Result};
+use futures::executor::block_on as sync_block_on;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
 use hashtree_cli::config::ensure_keys_string;
 use hashtree_cli::HashtreeStore;
+use hashtree_core::{Cid, HashTree, HashTreeConfig, Link};
 
-fn parse_cid_root_hash(cid_str: &str) -> (String, Option<String>) {
-    if let Some((h, k)) = cid_str.split_once(':') {
-        (h.to_string(), Some(k.to_string()))
-    } else {
-        (cid_str.to_string(), None)
+fn parse_root_cid(cid_str: &str) -> Result<Cid> {
+    Cid::parse(cid_str).map_err(|e| anyhow::anyhow!("Invalid CID '{}': {}", cid_str, e))
+}
+
+fn child_cid(parent: &Cid, link: &Link) -> Cid {
+    let inherits_parent_key = link
+        .name
+        .as_deref()
+        .map(|name| {
+            name.starts_with("_chunk_")
+                || (name.starts_with('_') && name.chars().count() == 2 && link.link_type.is_tree())
+        })
+        .unwrap_or(false);
+
+    Cid {
+        hash: link.hash,
+        key: link.key.or(if inherits_parent_key { parent.key } else { None }),
     }
 }
 
-fn collect_blocks_for_push(store: &HashtreeStore, root_hash: [u8; 32]) -> Vec<Vec<u8>> {
-    let mut blocks_to_push: Vec<Vec<u8>> = Vec::new();
+fn collect_blocks_for_push(store: &HashtreeStore, root_cid: Cid) -> Result<Vec<Vec<u8>>> {
+    let mut blocks_to_push = Vec::new();
     let mut visited: HashSet<[u8; 32]> = HashSet::new();
-    let mut queue = vec![root_hash];
+    let mut queue = vec![root_cid];
+    let tree = HashTree::new(HashTreeConfig::new(store.store_arc()).public());
 
-    while let Some(hash) = queue.pop() {
-        if visited.contains(&hash) {
+    while let Some(cid) = queue.pop() {
+        if !visited.insert(cid.hash) {
             continue;
         }
-        visited.insert(hash);
 
-        // Try to get as tree node first (for directories/internal nodes)
-        if let Ok(Some(node)) = store.get_tree_node(&hash) {
-            if let Ok(Some(data)) = store.get_blob(&hash) {
-                blocks_to_push.push(data);
-            }
+        if let Some(data) = store.get_blob(&cid.hash)? {
+            blocks_to_push.push(data);
+        }
+
+        let node = sync_block_on(async { tree.get_node(&cid).await })
+            .map_err(|e| anyhow::anyhow!("Failed to inspect {}: {}", cid, e))?;
+
+        if let Some(node) = node {
             for link in &node.links {
                 if !visited.contains(&link.hash) {
-                    queue.push(link.hash);
+                    queue.push(child_cid(&cid, link));
                 }
             }
-            continue;
-        }
-
-        // Chunked files: include chunk blobs + metadata blob.
-        if let Ok(Some(metadata)) = store.get_file_chunk_metadata(&hash) {
-            if metadata.is_chunked {
-                for chunk_hash in &metadata.chunk_hashes {
-                    if !visited.contains(chunk_hash) {
-                        if let Ok(Some(chunk_data)) = store.get_blob(chunk_hash) {
-                            blocks_to_push.push(chunk_data);
-                            visited.insert(*chunk_hash);
-                        }
-                    }
-                }
-            }
-            if let Ok(Some(data)) = store.get_blob(&hash) {
-                blocks_to_push.push(data);
-            }
-            continue;
-        }
-
-        // Fall back to plain blob.
-        if let Ok(Some(data)) = store.get_blob(&hash) {
-            blocks_to_push.push(data);
         }
     }
 
-    blocks_to_push
+    Ok(blocks_to_push)
 }
 
 /// Push content to Blossom servers.
@@ -71,7 +64,6 @@ pub(crate) async fn push_to_blossom(
     server_override: Option<String>,
 ) -> Result<()> {
     use hashtree_blossom::BlossomClient;
-    use hashtree_core::from_hex;
     use nostr::Keys;
 
     // Ensure nsec exists for signing
@@ -94,13 +86,10 @@ pub(crate) async fn push_to_blossom(
     // Open local store
     let store = HashtreeStore::new(data_dir)?;
 
-    // Parse CID (hash or hash:key)
-    let (hash_hex, _key_hex) = parse_cid_root_hash(cid_str);
-
     // Collect all blocks to push (walk the DAG)
     println!("Collecting blocks...");
-    let root_hash = from_hex(&hash_hex).context("Invalid hash")?;
-    let blocks_to_push = collect_blocks_for_push(&store, root_hash);
+    let root_cid = parse_root_cid(cid_str)?;
+    let blocks_to_push = collect_blocks_for_push(&store, root_cid)?;
 
     println!("Found {} blocks to push", blocks_to_push.len());
 
@@ -139,7 +128,6 @@ pub(crate) async fn background_blossom_push(
     _servers: &[String],
 ) -> Result<()> {
     use hashtree_blossom::BlossomClient;
-    use hashtree_core::from_hex;
     use nostr::Keys;
 
     // Ensure nsec exists for signing
@@ -148,12 +136,8 @@ pub(crate) async fn background_blossom_push(
 
     // Open local store
     let store = HashtreeStore::new(data_dir)?;
-
-    // Parse CID (hash or hash:key)
-    let (hash_hex, _key_hex) = parse_cid_root_hash(cid_str);
-
-    let root_hash = from_hex(&hash_hex).context("Invalid hash")?;
-    let blocks_to_push = collect_blocks_for_push(&store, root_hash);
+    let root_cid = parse_root_cid(cid_str)?;
+    let blocks_to_push = collect_blocks_for_push(&store, root_cid)?;
 
     if blocks_to_push.is_empty() {
         return Ok(());

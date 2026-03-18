@@ -191,8 +191,8 @@ npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce sirius
 
 ```bash
 # Add content
-htree add myfile.txt                    # Add file (encrypted)
-htree add mydir/ --public               # Add directory (unencrypted)
+htree add myfile.txt                    # Add file (CHK-encrypted, shareable)
+htree add mydir/ --unencrypted          # Add directory as raw plaintext
 htree add myfile.txt --publish mydata   # Add and publish to Nostr
 
 # Push to Blossom servers

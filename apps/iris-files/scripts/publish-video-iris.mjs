@@ -11,7 +11,7 @@ const manifestPath = path.join(repoRoot, 'rust', 'Cargo.toml');
 
 const result = spawnSync(
   'cargo',
-  ['run', '--manifest-path', manifestPath, '-p', 'hashtree-cli', '--bin', 'htree', '--', 'add', '.', '--public'],
+  ['run', '--manifest-path', manifestPath, '-p', 'hashtree-cli', '--bin', 'htree', '--', 'add', '.'],
   {
     cwd: distDir,
     encoding: 'utf8',
