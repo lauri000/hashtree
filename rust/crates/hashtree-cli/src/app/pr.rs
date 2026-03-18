@@ -1,9 +1,9 @@
 //! Pull request creation via NIP-34 (kind 1618)
 
 use anyhow::{Context, Result};
-use git_remote_htree::nostr_client::{resolve_identity, NostrClient};
 #[cfg(test)]
 use git_remote_htree::nostr_client::PullRequestStateFilter;
+use git_remote_htree::nostr_client::{resolve_identity, NostrClient};
 use nostr_sdk::prelude::*;
 use std::process::Command;
 use std::time::Duration;
@@ -797,10 +797,7 @@ mod tests {
 
     #[test]
     fn pr_list_state_to_filter_maps_all_values() {
-        assert_eq!(
-            PrListState::Open.to_filter(),
-            PullRequestStateFilter::Open
-        );
+        assert_eq!(PrListState::Open.to_filter(), PullRequestStateFilter::Open);
         assert_eq!(
             PrListState::Applied.to_filter(),
             PullRequestStateFilter::Applied
@@ -813,10 +810,7 @@ mod tests {
             PrListState::Draft.to_filter(),
             PullRequestStateFilter::Draft
         );
-        assert_eq!(
-            PrListState::All.to_filter(),
-            PullRequestStateFilter::All
-        );
+        assert_eq!(PrListState::All.to_filter(), PullRequestStateFilter::All);
     }
 
     #[test]

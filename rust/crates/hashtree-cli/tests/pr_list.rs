@@ -179,12 +179,7 @@ fn setup_pr_list_fixture() -> PrListFixture {
     }
 }
 
-fn publish_open_pr(
-    fixture: &PrListFixture,
-    subject: &str,
-    commit_tip: &str,
-    created_at_secs: u64,
-) {
+fn publish_open_pr(fixture: &PrListFixture, subject: &str, commit_tip: &str, created_at_secs: u64) {
     let repo_address = fixture.target_repo_address();
     let pr_author = Keys::generate();
     let pr_open = build_pr_event(
@@ -568,7 +563,12 @@ fn test_pr_list_rejects_non_htree_remote_alias() {
     let fixture = setup_pr_list_fixture();
     run_git(
         &fixture.repo_dir,
-        &["remote", "add", "web-origin", "https://example.com/repo.git"],
+        &[
+            "remote",
+            "add",
+            "web-origin",
+            "https://example.com/repo.git",
+        ],
     );
 
     let output = fixture.run_htree(&["pr", "list", "web-origin"]);
