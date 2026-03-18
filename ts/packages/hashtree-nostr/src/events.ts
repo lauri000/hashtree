@@ -10,6 +10,7 @@ const MANIFEST_BY_ID = 'by-id';
 const MANIFEST_BY_AUTHOR_TIME = 'by-author-time';
 const MANIFEST_BY_AUTHOR_KIND_TIME = 'by-author-kind-time';
 const MANIFEST_BY_TIME = 'by-time';
+const MANIFEST_BY_TAG = 'by-tag';
 const MANIFEST_REPLACEABLE = 'replaceable';
 const MANIFEST_PARAMETERIZED_REPLACEABLE = 'parameterized-replaceable';
 
@@ -28,6 +29,7 @@ export interface NostrEventManifest {
   byAuthorTime: CID | null;
   byAuthorKindTime: CID | null;
   byTime: CID | null;
+  byTag: CID | null;
   replaceable: CID | null;
   parameterizedReplaceable: CID | null;
 }
@@ -176,9 +178,14 @@ export class NostrEventStore {
         eventCid
       ),
       byTime: await this.index.insertLink(manifest.byTime, this.timeKey(normalized), eventCid),
+      byTag: manifest.byTag,
       replaceable: manifest.replaceable,
       parameterizedReplaceable: manifest.parameterizedReplaceable,
     };
+
+    for (const tagKey of this.tagKeys(normalized)) {
+      nextManifest.byTag = await this.index.insertLink(nextManifest.byTag, tagKey, eventCid);
+    }
 
     if (isReplaceableKind(normalized.kind)) {
       nextManifest.replaceable = await this.upsertWinner(
@@ -289,6 +296,20 @@ export class NostrEventStore {
     return this.collectEvents(manifest.byTime, '', options.limit);
   }
 
+  async listByTag(
+    root: CID | null,
+    tagName: string,
+    tagValue: string,
+    options: ListEventsOptions = {}
+  ): Promise<StoredNostrEvent[]> {
+    const manifest = await this.getManifest(root);
+    if (!manifest.byTag) {
+      return [];
+    }
+
+    return this.collectEvents(manifest.byTag, this.tagPrefix(tagName, tagValue), options.limit);
+  }
+
   async getParameterizedReplaceable(
     root: CID | null,
     pubkey: string,
@@ -323,6 +344,7 @@ export class NostrEventStore {
         byAuthorTime: null,
         byAuthorKindTime: null,
         byTime: null,
+        byTag: null,
         replaceable: null,
         parameterizedReplaceable: null,
       };
@@ -336,6 +358,7 @@ export class NostrEventStore {
       byAuthorTime: getCid(MANIFEST_BY_AUTHOR_TIME),
       byAuthorKindTime: getCid(MANIFEST_BY_AUTHOR_KIND_TIME),
       byTime: getCid(MANIFEST_BY_TIME),
+      byTag: getCid(MANIFEST_BY_TAG),
       replaceable: getCid(MANIFEST_REPLACEABLE),
       parameterizedReplaceable: getCid(MANIFEST_PARAMETERIZED_REPLACEABLE),
     };
@@ -400,6 +423,9 @@ export class NostrEventStore {
     if (manifest.byTime) {
       entries.push({ name: MANIFEST_BY_TIME, cid: manifest.byTime, size: 0, type: LinkType.Dir });
     }
+    if (manifest.byTag) {
+      entries.push({ name: MANIFEST_BY_TAG, cid: manifest.byTag, size: 0, type: LinkType.Dir });
+    }
     if (manifest.replaceable) {
       entries.push({ name: MANIFEST_REPLACEABLE, cid: manifest.replaceable, size: 0, type: LinkType.Dir });
     }
@@ -430,6 +456,36 @@ export class NostrEventStore {
 
   private timeKey(event: StoredNostrEvent): string {
     return `${reverseTimestamp(event.created_at)}:${event.id}`;
+  }
+
+  private tagKeys(event: StoredNostrEvent): string[] {
+    return event.tags.flatMap((tag) => {
+      const [name, value] = tag;
+      if (!name || !value) {
+        return [];
+      }
+
+      const normalizedName = name.toLowerCase();
+      const normalizedValue = this.normalizeTagValue(normalizedName, value);
+      return [`${normalizedName}:${normalizedValue}:${reverseTimestamp(event.created_at)}:${event.id}`];
+    });
+  }
+
+  private tagPrefix(tagName: string, tagValue: string): string {
+    const normalizedName = this.normalizeTagName(tagName);
+    return `${normalizedName}:${this.normalizeTagValue(normalizedName, tagValue)}:`;
+  }
+
+  private normalizeTagName(tagName: string): string {
+    if (tagName.length === 0) {
+      throw new Error('tag name must be non-empty');
+    }
+
+    return tagName.toLowerCase();
+  }
+
+  private normalizeTagValue(tagName: string, tagValue: string): string {
+    return tagName === 't' ? tagValue.toLowerCase() : tagValue;
   }
 
   private replaceableKey(pubkey: string, kind: number): string {

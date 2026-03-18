@@ -13,6 +13,7 @@ const MANIFEST_BY_ID: &str = "by-id";
 const MANIFEST_BY_AUTHOR_TIME: &str = "by-author-time";
 const MANIFEST_BY_AUTHOR_KIND_TIME: &str = "by-author-kind-time";
 const MANIFEST_BY_TIME: &str = "by-time";
+const MANIFEST_BY_TAG: &str = "by-tag";
 const MANIFEST_REPLACEABLE: &str = "replaceable";
 const MANIFEST_PARAMETERIZED_REPLACEABLE: &str = "parameterized-replaceable";
 
@@ -33,6 +34,7 @@ pub struct NostrEventManifest {
     pub by_author_time: Option<Cid>,
     pub by_author_kind_time: Option<Cid>,
     pub by_time: Option<Cid>,
+    pub by_tag: Option<Cid>,
     pub replaceable: Option<Cid>,
     pub parameterized_replaceable: Option<Cid>,
 }
@@ -157,9 +159,18 @@ impl<S: Store> NostrEventStore<S> {
                     )
                     .await?,
             ),
+            by_tag: manifest.by_tag.clone(),
             replaceable: manifest.replaceable.clone(),
             parameterized_replaceable: manifest.parameterized_replaceable.clone(),
         };
+
+        for tag_key in tag_keys(&normalized) {
+            next_manifest.by_tag = Some(
+                self.index
+                    .insert_link(next_manifest.by_tag.as_ref(), &tag_key, &event_cid)
+                    .await?,
+            );
+        }
 
         if is_replaceable_kind(normalized.kind) {
             next_manifest.replaceable = Some(
@@ -305,6 +316,21 @@ impl<S: Store> NostrEventStore<S> {
         self.collect_events(by_time, "", options.limit).await
     }
 
+    pub async fn list_by_tag(
+        &self,
+        root: Option<&Cid>,
+        tag_name: &str,
+        tag_value: &str,
+        options: ListEventsOptions,
+    ) -> Result<Vec<StoredNostrEvent>, NostrEventStoreError> {
+        let manifest = self.get_manifest(root).await?;
+        let Some(by_tag) = manifest.by_tag.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let prefix = tag_prefix(tag_name, tag_value)?;
+        self.collect_events(by_tag, &prefix, options.limit).await
+    }
+
     pub async fn get_parameterized_replaceable(
         &self,
         root: Option<&Cid>,
@@ -345,6 +371,7 @@ impl<S: Store> NostrEventStore<S> {
             by_author_time: find_manifest_cid(&entries, MANIFEST_BY_AUTHOR_TIME),
             by_author_kind_time: find_manifest_cid(&entries, MANIFEST_BY_AUTHOR_KIND_TIME),
             by_time: find_manifest_cid(&entries, MANIFEST_BY_TIME),
+            by_tag: find_manifest_cid(&entries, MANIFEST_BY_TAG),
             replaceable: find_manifest_cid(&entries, MANIFEST_REPLACEABLE),
             parameterized_replaceable: find_manifest_cid(
                 &entries,
@@ -427,6 +454,9 @@ impl<S: Store> NostrEventStore<S> {
         }
         if let Some(cid) = manifest.by_time.as_ref() {
             entries.push(DirEntry::from_cid(MANIFEST_BY_TIME, cid).with_link_type(LinkType::Dir));
+        }
+        if let Some(cid) = manifest.by_tag.as_ref() {
+            entries.push(DirEntry::from_cid(MANIFEST_BY_TAG, cid).with_link_type(LinkType::Dir));
         }
         if let Some(cid) = manifest.replaceable.as_ref() {
             entries
@@ -531,6 +561,50 @@ fn author_kind_time_key(event: &StoredNostrEvent) -> String {
 
 fn time_key(event: &StoredNostrEvent) -> String {
     format!("{}:{}", reverse_timestamp(event.created_at), event.id)
+}
+
+fn tag_keys(event: &StoredNostrEvent) -> Vec<String> {
+    event
+        .tags
+        .iter()
+        .filter_map(|tag| match tag.as_slice() {
+            [name, value, ..] if !name.is_empty() && !value.is_empty() => {
+                let normalized_name = name.to_lowercase();
+                let normalized_value = normalize_tag_value(&normalized_name, value);
+                Some(format!(
+                    "{}:{}:{}:{}",
+                    normalized_name,
+                    normalized_value,
+                    reverse_timestamp(event.created_at),
+                    event.id
+                ))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn tag_prefix(tag_name: &str, tag_value: &str) -> Result<String, NostrEventStoreError> {
+    let normalized_name = normalize_tag_name(tag_name)?;
+    let normalized_value = normalize_tag_value(&normalized_name, tag_value);
+    Ok(format!("{normalized_name}:{normalized_value}:"))
+}
+
+fn normalize_tag_name(tag_name: &str) -> Result<String, NostrEventStoreError> {
+    if tag_name.is_empty() {
+        return Err(NostrEventStoreError::Validation(
+            "tag name must be non-empty".to_string(),
+        ));
+    }
+    Ok(tag_name.to_lowercase())
+}
+
+fn normalize_tag_value(tag_name: &str, tag_value: &str) -> String {
+    if tag_name == "t" {
+        tag_value.to_lowercase()
+    } else {
+        tag_value.to_string()
+    }
 }
 
 fn replaceable_key(pubkey: &str, kind: u32) -> String {

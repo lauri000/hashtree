@@ -75,6 +75,29 @@ describe('NostrEventStore', () => {
     await expect(store.listRecent(root, { limit: 3 })).resolves.toEqual([other, newest, middle]);
   });
 
+  it('indexes hashtag tags case-insensitively for search', async () => {
+    const store = new NostrEventStore(new MemoryStore());
+    const author = 'a'.repeat(64);
+    const older = await makeEvent({
+      pubkey: author,
+      created_at: 10,
+      content: 'older tagged',
+      tags: [['t', 'nostr']],
+    });
+    const newer = await makeEvent({
+      pubkey: author,
+      created_at: 20,
+      content: 'newer tagged',
+      tags: [['t', 'Hashtree'], ['t', 'nostr']],
+    });
+
+    let root = await store.add(null, older);
+    root = await store.add(root, newer);
+
+    await expect(store.listByTag(root, 't', 'nostr')).resolves.toEqual([newer, older]);
+    await expect(store.listByTag(root, 't', 'hashtree')).resolves.toEqual([newer]);
+  });
+
   it('tracks the latest replaceable event for an author and kind', async () => {
     const store = new NostrEventStore(new MemoryStore());
     const author = 'c'.repeat(64);

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use futures::executor::block_on;
-use hashtree_core::{Cid, MemoryStore};
+use hashtree_core::{sha256, Cid, MemoryStore};
 use hashtree_nostr::{ListEventsOptions, NostrEventStore, StoredNostrEvent};
 
 fn event(
@@ -21,6 +21,18 @@ fn event(
         content: content.to_string(),
         sig: sig.to_string(),
     }
+}
+
+fn canonical_event_id(
+    pubkey: &str,
+    created_at: u64,
+    kind: u32,
+    tags: &[Vec<String>],
+    content: &str,
+) -> String {
+    let payload = serde_json::to_string(&(0u8, pubkey, created_at, kind, tags, content))
+        .expect("canonical payload");
+    hex::encode(sha256(payload.as_bytes()))
 }
 
 #[test]
@@ -61,11 +73,25 @@ fn stores_events_by_id_author_and_replaceable_views() {
             "other",
             &"4".repeat(128),
         );
+        let hashtagged_tags = vec![
+            vec!["t".to_string(), "nostr".to_string()],
+            vec!["t".to_string(), "Hashtree".to_string()],
+        ];
+        let hashtagged = StoredNostrEvent {
+            id: canonical_event_id(&author, 50, 1, &hashtagged_tags, "tagged"),
+            pubkey: author.clone(),
+            created_at: 50,
+            kind: 1,
+            tags: hashtagged_tags,
+            content: "tagged".to_string(),
+            sig: "5".repeat(128),
+        };
 
         let mut root = store.add(None, event1.clone()).await.unwrap();
         root = store.add(Some(&root), event2.clone()).await.unwrap();
         root = store.add(Some(&root), profile.clone()).await.unwrap();
         root = store.add(Some(&root), other.clone()).await.unwrap();
+        root = store.add(Some(&root), hashtagged.clone()).await.unwrap();
 
         assert_eq!(
             store.get_by_id(Some(&root), &event2.id).await.unwrap(),
@@ -76,14 +102,19 @@ fn stores_events_by_id_author_and_replaceable_views() {
                 .list_by_author(Some(&root), &author, ListEventsOptions::default())
                 .await
                 .unwrap(),
-            vec![profile.clone(), event2.clone(), event1.clone()]
+            vec![
+                hashtagged.clone(),
+                profile.clone(),
+                event2.clone(),
+                event1.clone()
+            ]
         );
         assert_eq!(
             store
                 .list_recent(Some(&root), ListEventsOptions { limit: Some(3) })
                 .await
                 .unwrap(),
-            vec![other, profile.clone(), event2.clone()]
+            vec![hashtagged.clone(), other, profile.clone()]
         );
         assert_eq!(
             store
@@ -91,6 +122,30 @@ fn stores_events_by_id_author_and_replaceable_views() {
                 .await
                 .unwrap(),
             Some(profile)
+        );
+        assert_eq!(
+            store
+                .list_by_tag(
+                    Some(&root),
+                    "t",
+                    "nostr",
+                    ListEventsOptions { limit: Some(10) }
+                )
+                .await
+                .unwrap(),
+            vec![hashtagged.clone()]
+        );
+        assert_eq!(
+            store
+                .list_by_tag(
+                    Some(&root),
+                    "t",
+                    "hashtree",
+                    ListEventsOptions { limit: Some(10) }
+                )
+                .await
+                .unwrap(),
+            vec![hashtagged]
         );
     });
 }
