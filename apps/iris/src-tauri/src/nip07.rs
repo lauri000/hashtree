@@ -4,6 +4,9 @@
 //! NIP-07 signing is proxied to the main webview's window.nostr
 //! (which the web app provides via its own identity management).
 
+use axum::body::{Body, Bytes};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Response as AxumResponse;
 use crate::permissions::{PermissionStore, PermissionType};
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
@@ -11,6 +14,7 @@ use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, Runtime, WebviewBuilder,
     WebviewUrl,
@@ -186,6 +190,63 @@ fn webview_url_for_parsed_url(url: &tauri::Url) -> WebviewUrl {
         "http" | "https" => WebviewUrl::External(url.clone()),
         _ => WebviewUrl::CustomProtocol(url.clone()),
     }
+}
+
+fn inject_child_init_script<R: Runtime>(
+    app: &AppHandle<R>,
+    label: &str,
+    script: &str,
+    context: &str,
+) {
+    let Some(webview) = app.get_webview(label) else {
+        warn!(
+            "[child-webview:{}] Missing webview while injecting bridge script during {}",
+            label, context
+        );
+        return;
+    };
+
+    match webview.eval(script) {
+        Ok(()) => {
+            debug!(
+                "[child-webview:{}] Injected bridge script during {}",
+                label, context
+            );
+        }
+        Err(error) => {
+            warn!(
+                "[child-webview:{}] Failed to inject bridge script during {}: {}",
+                label, context, error
+            );
+        }
+    }
+}
+
+fn schedule_child_init_script_retry<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    label: String,
+    script: String,
+    delay: Duration,
+    context: String,
+) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(delay).await;
+        inject_child_init_script(&app, &label, &script, &context);
+    });
+}
+
+fn tauri_response_to_axum(
+    response: tauri::http::Response<Vec<u8>>,
+) -> AxumResponse<Body> {
+    let status = StatusCode::from_u16(response.status().as_u16())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut builder = AxumResponse::builder().status(status);
+    for (name, value) in response.headers() {
+        builder = builder.header(name, value);
+    }
+    builder
+        .body(Body::from(response.into_body()))
+        .unwrap_or_else(|_| AxumResponse::new(Body::from("bridge response build failed")))
 }
 
 // ============================================
@@ -374,7 +435,8 @@ pub fn generate_nip07_script(
   const CANONICAL_ORIGIN = {};
   const CANONICAL_URL_ROOT = {};
   const ACTUAL_URL_ROOT = {};
-  const NAV_ENDPOINT = 'htree://webview/';
+  const WEBVIEW_ENDPOINT = `${{SERVER_URL}}/__iris_webview`;
+  const NIP07_ENDPOINT = `${{SERVER_URL}}/__iris_nip07`;
   console.log('[NIP-07] Initializing with server:', SERVER_URL);
   window.__HTREE_SERVER_URL__ = SERVER_URL;
   window.__HTREE_CANONICAL_URL__ = null;
@@ -439,13 +501,15 @@ pub fn generate_nip07_script(
               session_token: SESSION_TOKEN
             }});
           }} else {{
-            const response = await fetch(NAV_ENDPOINT, {{
+            const response = await fetch(WEBVIEW_ENDPOINT, {{
               method: 'POST',
               headers: {{
-                'Content-Type': 'application/json',
-                'X-Session-Token': SESSION_TOKEN
+                'Content-Type': 'text/plain;charset=UTF-8'
               }},
-              body: JSON.stringify(payload)
+              body: JSON.stringify({{
+                sessionToken: SESSION_TOKEN,
+                payload
+              }})
             }});
             if (!response.ok) {{
               throw new Error(`Protocol bridge request failed: ${{response.status}}`);
@@ -671,9 +735,9 @@ pub fn generate_nip07_script(
   async function callNip07(method, params) {{
     console.log('[NIP-07] Calling:', method, params);
     try {{
-      const response = await fetch('htree://nip07/', {{
+      const response = await fetch(NIP07_ENDPOINT, {{
         method: 'POST',
-        headers: {{ 'Content-Type': 'application/json' }},
+        headers: {{ 'Content-Type': 'text/plain;charset=UTF-8' }},
         body: JSON.stringify({{ method, params, origin: getOrigin() }})
       }});
       if (!response.ok) {{
@@ -712,6 +776,132 @@ pub fn generate_nip07_script(
         canonical_origin_json,
         canonical_url_root_json,
         actual_url_root_json
+    )
+}
+
+fn body_text_preview_js() -> &'static str {
+    r#"
+function getBodyTextPreview() {
+  try {
+    const text = document.body?.innerText || '';
+    return text.replace(/\s+/g, ' ').trim().slice(0, 240);
+  } catch (_error) {
+    return '';
+  }
+}
+"#
+}
+
+fn media_summary_js() -> &'static str {
+    r#"
+function getMediaSummary() {
+  try {
+    const images = Array.from(document.images || []);
+    const thumbImages = images.filter((img) => (img.currentSrc || img.src || '').includes('/thumbnail'));
+    const loadedThumbImages = thumbImages.filter((img) => img.complete && img.naturalWidth > 0 && img.naturalHeight > 0);
+    const visibleLoadedThumbImages = loadedThumbImages.filter((img) => {
+      const style = window.getComputedStyle(img);
+      const rect = img.getBoundingClientRect();
+      return style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        rect.width > 20 &&
+        rect.height > 20;
+    });
+    const videos = Array.from(document.querySelectorAll('video'));
+    const readyVideos = videos.filter((video) => video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA);
+    return `thumbs=${loadedThumbImages.length}/${thumbImages.length} visible=${visibleLoadedThumbImages.length} videos=${readyVideos.length}/${videos.length}`;
+  } catch (_error) {
+    return '';
+  }
+}
+"#
+}
+
+pub fn generate_webview_diagnostic_probe_script(
+    server_url: &str,
+    session_token: &str,
+    label: &str,
+    origin: &str,
+    canonical_url_root: Option<&str>,
+    actual_url_root: Option<&str>,
+    source: &str,
+) -> String {
+    let webview_endpoint_json = serde_json::to_string(&format!("{server_url}/__iris_webview"))
+        .unwrap_or_else(|_| "\"\"".to_string());
+    let session_token_json =
+        serde_json::to_string(session_token).unwrap_or_else(|_| "\"\"".to_string());
+    let label_json = serde_json::to_string(label).unwrap_or_else(|_| "\"\"".to_string());
+    let origin_json = serde_json::to_string(origin).unwrap_or_else(|_| "\"\"".to_string());
+    let source_json = serde_json::to_string(source).unwrap_or_else(|_| "\"\"".to_string());
+    let canonical_url_root_json = canonical_url_root
+        .map(|value| serde_json::to_string(value).unwrap_or_else(|_| "null".to_string()))
+        .unwrap_or_else(|| "null".to_string());
+    let actual_url_root_json = actual_url_root
+        .map(|value| serde_json::to_string(value).unwrap_or_else(|_| "null".to_string()))
+        .unwrap_or_else(|| "null".to_string());
+
+    format!(
+        r#"
+(() => {{
+  const WEBVIEW_ENDPOINT = {webview_endpoint_json};
+  const SESSION_TOKEN = {session_token_json};
+  const LABEL = {label_json};
+  const ORIGIN = {origin_json};
+  const SOURCE = {source_json};
+  const CANONICAL_URL_ROOT = {canonical_url_root_json};
+  const ACTUAL_URL_ROOT = {actual_url_root_json};
+
+  function stripInternalHtreeQueryParams(url) {{
+    try {{
+      const parsed = new URL(url);
+      parsed.searchParams.delete('iris_htree_server');
+      parsed.searchParams.delete('iris_htree_canonical');
+      return parsed.toString();
+    }} catch (_error) {{
+      return url;
+    }}
+  }}
+
+  function canonicalizeUrl(url) {{
+    let mappedUrl = url;
+    if (
+      typeof url === 'string' &&
+      typeof CANONICAL_URL_ROOT === 'string' &&
+      typeof ACTUAL_URL_ROOT === 'string' &&
+      url.startsWith(ACTUAL_URL_ROOT)
+    ) {{
+      mappedUrl = `${{CANONICAL_URL_ROOT}}${{url.slice(ACTUAL_URL_ROOT.length)}}`;
+    }}
+    return stripInternalHtreeQueryParams(mappedUrl);
+  }}
+
+  {body_text_preview}
+  {media_summary}
+
+  const payload = {{
+    kind: 'diagnostic',
+    label: LABEL,
+    origin: ORIGIN,
+    url: canonicalizeUrl(window.location.href),
+    source: SOURCE,
+    title: document.title || '',
+    readyState: document.readyState || '',
+    bodyText: getBodyTextPreview(),
+    mediaSummary: getMediaSummary(),
+    error: null
+  }};
+
+  fetch(WEBVIEW_ENDPOINT, {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'text/plain;charset=UTF-8' }},
+    body: JSON.stringify({{ sessionToken: SESSION_TOKEN, payload }})
+  }}).catch((error) => {{
+    console.warn('[WebviewProbe] Failed to send diagnostic', error);
+  }});
+}})();
+"#,
+        body_text_preview = body_text_preview_js(),
+        media_summary = media_summary_js()
     )
 }
 
@@ -839,33 +1029,52 @@ pub fn handle_webview_event_protocol_request<R: Runtime>(
     app: AppHandle<R>,
     request: tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Vec<u8>> {
-    let session_token = match request
+    let header_session_token = request
         .headers()
         .get("x-session-token")
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
-        Some(token) => token.to_string(),
-        None => {
-            return tauri::http::Response::builder()
-                .status(401)
-                .header("content-type", "text/plain")
-                .body(b"Missing session token".to_vec())
-                .unwrap();
-        }
+        .map(ToOwned::to_owned);
+
+    let (session_token, payload) = match header_session_token {
+        Some(session_token) => match serde_json::from_slice(request.body()) {
+            Ok(payload) => (session_token, payload),
+            Err(error) => {
+                warn!("[webview-event:http] Invalid payload: {}", error);
+                return tauri::http::Response::builder()
+                    .status(400)
+                    .header("content-type", "text/plain")
+                    .body(format!("Invalid webview event payload: {}", error).into_bytes())
+                    .unwrap();
+            }
+        },
+        None => match serde_json::from_slice::<WebviewEventHttpEnvelope>(request.body()) {
+            Ok(envelope) if !envelope.session_token.trim().is_empty() => {
+                (envelope.session_token, envelope.payload)
+            }
+            Ok(_) => {
+                return tauri::http::Response::builder()
+                    .status(401)
+                    .header("content-type", "text/plain")
+                    .body(b"Missing session token".to_vec())
+                    .unwrap();
+            }
+            Err(error) => {
+                warn!("[webview-event:http] Invalid payload envelope: {}", error);
+                return tauri::http::Response::builder()
+                    .status(400)
+                    .header("content-type", "text/plain")
+                    .body(format!("Invalid webview event payload: {}", error).into_bytes())
+                    .unwrap();
+            }
+        },
     };
 
-    let payload: WebviewEventRequest = match serde_json::from_slice(request.body()) {
-        Ok(payload) => payload,
-        Err(error) => {
-            return tauri::http::Response::builder()
-                .status(400)
-                .header("content-type", "text/plain")
-                .body(format!("Invalid webview event payload: {}", error).into_bytes())
-                .unwrap();
-        }
-    };
+    debug!(
+        "[webview-event:http] Received kind={} label={} origin={} url={:?}",
+        payload.kind, payload.label, payload.origin, payload.url
+    );
 
     match webview_event(app, payload, session_token) {
         Ok(()) => tauri::http::Response::builder()
@@ -873,13 +1082,39 @@ pub fn handle_webview_event_protocol_request<R: Runtime>(
             .header("access-control-allow-origin", "*")
             .body(Vec::new())
             .unwrap(),
-        Err(error) => tauri::http::Response::builder()
-            .status(403)
-            .header("content-type", "text/plain")
-            .header("access-control-allow-origin", "*")
-            .body(error.into_bytes())
-            .unwrap(),
+        Err(error) => {
+            warn!("[webview-event:http] Rejected event: {}", error);
+            tauri::http::Response::builder()
+                .status(403)
+                .header("content-type", "text/plain")
+                .header("access-control-allow-origin", "*")
+                .body(error.into_bytes())
+                .unwrap()
+        }
     }
+}
+
+pub async fn handle_nip07_http_bridge(body: Bytes) -> AxumResponse<Body> {
+    let request = tauri::http::Request::builder()
+        .uri("http://127.0.0.1/__iris_nip07")
+        .body(body.to_vec())
+        .unwrap_or_else(|_| tauri::http::Request::new(Vec::new()));
+    tauri_response_to_axum(handle_nip07_protocol_request(request))
+}
+
+pub async fn handle_webview_event_http_bridge<R: Runtime>(
+    app: AppHandle<R>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> AxumResponse<Body> {
+    let mut builder = tauri::http::Request::builder().uri("http://127.0.0.1/__iris_webview");
+    if let Some(session_token) = headers.get("x-session-token") {
+        builder = builder.header("x-session-token", session_token);
+    }
+    let request = builder
+        .body(body.to_vec())
+        .unwrap_or_else(|_| tauri::http::Request::new(Vec::new()));
+    tauri_response_to_axum(handle_webview_event_protocol_request(app, request))
 }
 
 // ============================================
@@ -931,6 +1166,15 @@ pub async fn create_nip07_webview<R: Runtime>(
     let session_token = nip07_state.new_session(&origin);
 
     let init_script = generate_nip07_script(&server_url, &session_token, &label, None, None, None);
+    let diagnostic_probe_script = generate_webview_diagnostic_probe_script(
+        &server_url,
+        &session_token,
+        &label,
+        &origin,
+        None,
+        None,
+        "page-load-probe",
+    );
 
     let window = app.get_window("main").ok_or("Main window not found")?;
 
@@ -953,6 +1197,7 @@ pub async fn create_nip07_webview<R: Runtime>(
     let app_for_load = app.clone();
     let label_for_load = label.clone();
     let init_script_for_load = init_script.clone();
+    let diagnostic_probe_script_for_load = diagnostic_probe_script.clone();
 
     let webview_builder = WebviewBuilder::new(&label, webview_url)
         .initialization_script(&init_script)
@@ -971,12 +1216,49 @@ pub async fn create_nip07_webview<R: Runtime>(
             );
             true
         })
-        .on_page_load(move |webview, payload| {
-            let _ = webview.eval(&init_script_for_load);
+        .on_page_load(move |_webview, payload| {
             let event = match payload.event() {
                 tauri::webview::PageLoadEvent::Started => "started",
                 tauri::webview::PageLoadEvent::Finished => "finished",
             };
+            let context = format!("page-load:{event}");
+            inject_child_init_script(&app_for_load, &label_for_load, &init_script_for_load, &context);
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                inject_child_init_script(
+                    &app_for_load,
+                    &label_for_load,
+                    &diagnostic_probe_script_for_load,
+                    "page-load:finished-diagnostic-probe",
+                );
+                schedule_child_init_script_retry(
+                    app_for_load.clone(),
+                    label_for_load.clone(),
+                    init_script_for_load.clone(),
+                    Duration::from_millis(150),
+                    "page-load:finished-retry-150ms".to_string(),
+                );
+                schedule_child_init_script_retry(
+                    app_for_load.clone(),
+                    label_for_load.clone(),
+                    init_script_for_load.clone(),
+                    Duration::from_millis(1000),
+                    "page-load:finished-retry-1000ms".to_string(),
+                );
+                schedule_child_init_script_retry(
+                    app_for_load.clone(),
+                    label_for_load.clone(),
+                    diagnostic_probe_script_for_load.clone(),
+                    Duration::from_millis(150),
+                    "page-load:finished-diagnostic-probe-150ms".to_string(),
+                );
+                schedule_child_init_script_retry(
+                    app_for_load.clone(),
+                    label_for_load.clone(),
+                    diagnostic_probe_script_for_load.clone(),
+                    Duration::from_millis(1000),
+                    "page-load:finished-diagnostic-probe-1000ms".to_string(),
+                );
+            }
             let _ = app_for_load.emit(
                 "child-webview-page-load",
                 serde_json::json!({
@@ -1099,6 +1381,15 @@ pub async fn create_htree_webview<R: Runtime>(
         Some(&canonical_url_root),
         Some(&actual_url_root),
     );
+    let diagnostic_probe_script = generate_webview_diagnostic_probe_script(
+        &server_url,
+        &session_token,
+        &label,
+        &origin,
+        Some(&canonical_url_root),
+        Some(&actual_url_root),
+        "page-load-probe",
+    );
 
     let window = app.get_window("main").ok_or("Main window not found")?;
     let parsed_url = tauri::Url::parse(&actual_url).map_err(|e| format!("Invalid URL: {}", e))?;
@@ -1108,6 +1399,7 @@ pub async fn create_htree_webview<R: Runtime>(
     let app_for_load = app.clone();
     let label_for_load = label.clone();
     let init_script_for_load = init_script.clone();
+    let diagnostic_probe_script_for_load = diagnostic_probe_script.clone();
 
     let canonical_url_root_for_nav = canonical_url_root.clone();
     let actual_url_root_for_nav = actual_url_root.clone();
@@ -1135,12 +1427,49 @@ pub async fn create_htree_webview<R: Runtime>(
             );
             true
         })
-        .on_page_load(move |webview, payload| {
-            let _ = webview.eval(&init_script_for_load);
+        .on_page_load(move |_webview, payload| {
             let event = match payload.event() {
                 tauri::webview::PageLoadEvent::Started => "started",
                 tauri::webview::PageLoadEvent::Finished => "finished",
             };
+            let context = format!("page-load:{event}");
+            inject_child_init_script(&app_for_load, &label_for_load, &init_script_for_load, &context);
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                inject_child_init_script(
+                    &app_for_load,
+                    &label_for_load,
+                    &diagnostic_probe_script_for_load,
+                    "page-load:finished-diagnostic-probe",
+                );
+                schedule_child_init_script_retry(
+                    app_for_load.clone(),
+                    label_for_load.clone(),
+                    init_script_for_load.clone(),
+                    Duration::from_millis(150),
+                    "page-load:finished-retry-150ms".to_string(),
+                );
+                schedule_child_init_script_retry(
+                    app_for_load.clone(),
+                    label_for_load.clone(),
+                    init_script_for_load.clone(),
+                    Duration::from_millis(1000),
+                    "page-load:finished-retry-1000ms".to_string(),
+                );
+                schedule_child_init_script_retry(
+                    app_for_load.clone(),
+                    label_for_load.clone(),
+                    diagnostic_probe_script_for_load.clone(),
+                    Duration::from_millis(150),
+                    "page-load:finished-diagnostic-probe-150ms".to_string(),
+                );
+                schedule_child_init_script_retry(
+                    app_for_load.clone(),
+                    label_for_load.clone(),
+                    diagnostic_probe_script_for_load.clone(),
+                    Duration::from_millis(1000),
+                    "page-load:finished-diagnostic-probe-1000ms".to_string(),
+                );
+            }
             let url_str = canonicalize_child_webview_url(
                 &payload.url().to_string(),
                 &actual_url_root_for_load,
@@ -1312,6 +1641,13 @@ pub struct WebviewEventRequest {
     error: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WebviewEventHttpEnvelope {
+    session_token: String,
+    payload: WebviewEventRequest,
+}
+
 #[tauri::command]
 pub fn webview_event<R: Runtime>(
     app: AppHandle<R>,
@@ -1324,8 +1660,17 @@ pub fn webview_event<R: Runtime>(
     if !nip07_state.validate_token(&payload.origin, &session_token)
         && !nip07_state.validate_any_token(&session_token)
     {
+        warn!(
+            "[webview-event] Invalid session token for kind={} label={} origin={}",
+            payload.kind, payload.label, payload.origin
+        );
         return Err("Invalid session token".to_string());
     }
+
+    debug!(
+        "[webview-event] kind={} label={} origin={} url={:?}",
+        payload.kind, payload.label, payload.origin, payload.url
+    );
 
     match payload.kind.as_str() {
         "location" => {

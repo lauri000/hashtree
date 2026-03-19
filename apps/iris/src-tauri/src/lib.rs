@@ -14,7 +14,9 @@ pub mod nip07;
 pub mod permissions;
 pub mod relay_proxy;
 
-use axum::routing::any;
+use axum::body::Bytes;
+use axum::http::HeaderMap;
+use axum::routing::{any, post};
 use axum::Router;
 use hashtree_cli::daemon::{EmbeddedDaemonInfo, EmbeddedDaemonOptions};
 use hashtree_cli::server::AppState;
@@ -27,7 +29,7 @@ use std::time::Duration;
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
-use tauri::{Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -94,7 +96,10 @@ fn resolve_iris_paths(
 }
 
 /// Start the embedded htree daemon
-async fn start_daemon(data_dir: PathBuf) -> Result<EmbeddedDaemonInfo, String> {
+async fn start_daemon<R: tauri::Runtime + 'static>(
+    app: AppHandle<R>,
+    data_dir: PathBuf,
+) -> Result<EmbeddedDaemonInfo, String> {
     relay_proxy::init_relay_proxy_state();
 
     let bind_address = daemon_bind_address();
@@ -106,8 +111,20 @@ async fn start_daemon(data_dir: PathBuf) -> Result<EmbeddedDaemonInfo, String> {
     config.server.stun_port = 0;
 
     // Add extra routes for relay proxy and NIP-07
-    let extra_routes =
-        Router::<AppState>::new().route("/relay", any(relay_proxy::handle_relay_websocket));
+    let app_for_webview_bridge = app.clone();
+    let extra_routes = Router::<AppState>::new()
+        .route("/relay", any(relay_proxy::handle_relay_websocket))
+        .route(
+            "/__iris_nip07",
+            post(|body: Bytes| async move { nip07::handle_nip07_http_bridge(body).await }),
+        )
+        .route(
+            "/__iris_webview",
+            post(move |headers: HeaderMap, body: Bytes| {
+                let app = app_for_webview_bridge.clone();
+                async move { nip07::handle_webview_event_http_bridge(app, headers, body).await }
+            }),
+        );
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -645,7 +662,7 @@ pub fn run() {
             let daemon_data_dir = paths.htree_data_dir.clone();
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                match start_daemon(daemon_data_dir).await {
+                match start_daemon(app_handle.clone(), daemon_data_dir).await {
                     Ok(info) => {
                         htree_protocol::set_daemon_port(info.port);
                         htree_protocol::set_self_npub(info.npub.clone());
