@@ -632,9 +632,9 @@
       </button>
     </div>
 
-    <div data-tauri-drag-region class="flex-1 flex justify-center relative">
+    <div data-tauri-drag-region="false" class="flex-1 flex justify-center relative">
       <div
-        data-tauri-drag-region
+        data-tauri-drag-region="false"
         class="w-full max-w-lg flex items-center gap-2 px-3 py-1 rounded-full bg-surface-0 b-1 b-solid b-surface-3 transition-colors {isAddressFocused ? 'b-accent' : ''}"
       >
         {#if currentUrl}
@@ -653,7 +653,7 @@
             {/if}
           </button>
         {/if}
-        <span data-tauri-drag-region class="i-lucide-search text-sm text-muted shrink-0"></span>
+        <span data-tauri-drag-region="false" class="i-lucide-search text-sm text-muted shrink-0"></span>
         <input
           type="text"
           data-tauri-drag-region="false"

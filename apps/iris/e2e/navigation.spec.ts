@@ -63,9 +63,9 @@ test.describe('Navigation', () => {
 
     expect(dragRegions.toolbar).not.toBeNull();
     expect(dragRegions.navRegion).not.toBeNull();
-    expect(dragRegions.centerRegion).not.toBeNull();
-    expect(dragRegions.addressBar).not.toBeNull();
-    expect(dragRegions.searchIcon).not.toBeNull();
+    expect(dragRegions.centerRegion).toBe('false');
+    expect(dragRegions.addressBar).toBe('false');
+    expect(dragRegions.searchIcon).toBe('false');
     expect(dragRegions.backButton).toBe('false');
     expect(dragRegions.settingsButton).toBe('false');
     expect(dragRegions.input).toBe('false');
