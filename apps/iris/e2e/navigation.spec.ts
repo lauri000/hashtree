@@ -6,6 +6,30 @@ async function openHome(page: import('@playwright/test').Page) {
 }
 
 test.describe('Navigation', () => {
+  test('toolbar starts native window dragging from non-interactive chrome', async ({ tauriPage: page }) => {
+    await openHome(page);
+    await expect(page.locator('input[placeholder="Search or enter address"]')).toBeVisible();
+
+    const toolbar = page.locator('div[style="padding-left: 88px;"]');
+    await toolbar.click({ position: { x: 20, y: 20 }, force: true });
+
+    await expect.poll(async () => {
+      const dragCalls = await getInvocationsFor(page, 'plugin:window|start_dragging');
+      return dragCalls.length;
+    }).toBe(1);
+  });
+
+  test('toolbar controls do not start native window dragging', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    await page.locator('input[placeholder="Search or enter address"]').click();
+    await page.getByTitle('Home').click();
+    await page.getByTitle('Settings').click();
+
+    const dragCalls = await getInvocationsFor(page, 'plugin:window|start_dragging');
+    expect(dragCalls).toHaveLength(0);
+  });
+
   test('toolbar marks only non-interactive header regions as draggable', async ({ tauriPage: page }) => {
     await openHome(page);
     await expect(page.locator('input[placeholder="Search or enter address"]')).toBeVisible();
@@ -166,6 +190,7 @@ test.describe('Navigation', () => {
       source: 'load',
     });
 
+    await expect(page.getByTitle('Refresh')).toBeVisible();
     await page.getByTitle('Refresh').click();
     const reloadCalls = await getInvocationsFor(page, 'reload_webview');
     expect(reloadCalls).toHaveLength(1);

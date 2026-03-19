@@ -62,6 +62,10 @@ async function mockTauriIPC(page: Page) {
     };
 
     const ipc = {
+      metadata: {
+        currentWindow: { label: 'main' },
+        currentWebview: { label: 'main' },
+      },
       invoke(cmd: string, args: any) {
         (window as any).__tauriInvocations.push({ cmd, args });
 

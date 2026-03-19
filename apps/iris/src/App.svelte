@@ -11,6 +11,7 @@
     webviewHistory,
     reloadWebview,
     setWebviewBounds,
+    startWindowDragging,
     onChildWebviewDiagnostic,
     onChildWebviewLocation,
     onChildWebviewPageLoad,
@@ -396,6 +397,23 @@
     blurTimer = setTimeout(() => { blurTimer = null; closeDropdown(); }, 150);
   }
 
+  async function handleToolbarMouseDown(event: MouseEvent) {
+    if (event.button !== 0) return;
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (dropdownEl?.contains(target)) return;
+    if (target.closest('[data-tauri-drag-region="false"]')) return;
+
+    event.preventDefault();
+
+    try {
+      await startWindowDragging();
+    } catch {
+      // Browser dev mode and tests without native window commands can ignore this.
+    }
+  }
+
   function dismissDropdown() {
     if (blurTimer) {
       clearTimeout(blurTimer);
@@ -582,8 +600,10 @@
 
 <div class="h-screen flex flex-col bg-surface-0 overscroll-none">
   <!-- Toolbar - data-tauri-drag-region on every non-interactive element -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     data-tauri-drag-region
+    onmousedown={handleToolbarMouseDown}
     class="h-12 shrink-0 flex items-center gap-2 px-3 bg-surface-1 border-b border-surface-2"
     style="padding-left: 88px;"
   >
