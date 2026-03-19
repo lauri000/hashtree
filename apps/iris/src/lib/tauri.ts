@@ -80,11 +80,6 @@ export async function webviewCurrentUrl(label: string): Promise<string> {
   return invoke<string>('webview_current_url', { label });
 }
 
-export async function startWindowDragging(): Promise<void> {
-  const { getCurrentWindow } = await import('@tauri-apps/api/window');
-  return getCurrentWindow().startDragging();
-}
-
 // ── History ──
 
 export interface HistoryEntry {

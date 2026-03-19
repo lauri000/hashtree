@@ -6,20 +6,18 @@ async function openHome(page: import('@playwright/test').Page) {
 }
 
 test.describe('Navigation', () => {
-  test('toolbar starts native window dragging from non-interactive chrome', async ({ tauriPage: page }) => {
+  test('toolbar does not depend on the JS drag fallback', async ({ tauriPage: page }) => {
     await openHome(page);
     await expect(page.locator('input[placeholder="Search or enter address"]')).toBeVisible();
 
     const toolbar = page.locator('div[style="padding-left: 88px;"]');
     await toolbar.click({ position: { x: 20, y: 20 }, force: true });
 
-    await expect.poll(async () => {
-      const dragCalls = await getInvocationsFor(page, 'plugin:window|start_dragging');
-      return dragCalls.length;
-    }).toBe(1);
+    const dragCalls = await getInvocationsFor(page, 'plugin:window|start_dragging');
+    expect(dragCalls).toHaveLength(0);
   });
 
-  test('toolbar controls do not start native window dragging', async ({ tauriPage: page }) => {
+  test('toolbar controls do not trigger the JS drag fallback', async ({ tauriPage: page }) => {
     await openHome(page);
 
     await page.locator('input[placeholder="Search or enter address"]').click();

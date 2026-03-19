@@ -11,7 +11,6 @@
     webviewHistory,
     reloadWebview,
     setWebviewBounds,
-    startWindowDragging,
     onChildWebviewDiagnostic,
     onChildWebviewLocation,
     onChildWebviewPageLoad,
@@ -35,6 +34,7 @@
   const TOOLBAR_HEIGHT = 48;
   const MACOS_FUNCTION_KEY_GLYPHS = /[\uF700-\uF8FF]/g;
   const MACOS_FUNCTION_KEY_GLYPHS_SINGLE = /[\uF700-\uF8FF]/;
+  const LEGACY_MACOS_ARROW_KEY_CODES = new Set([63232, 63233, 63234, 63235]);
   const PRIVATE_USE_ARROW_KEYS = {
     '\uF700': 'ArrowUp',
     '\uF701': 'ArrowDown',
@@ -122,8 +122,20 @@
       case 38: return 'ArrowUp';
       case 39: return 'ArrowRight';
       case 40: return 'ArrowDown';
+      case 63232: return 'ArrowUp';
+      case 63233: return 'ArrowDown';
+      case 63234: return 'ArrowLeft';
+      case 63235: return 'ArrowRight';
       default: return event.key;
     }
+  }
+
+  function isLegacyMacosArrowKeyCode(event: KeyboardEvent): boolean {
+    return LEGACY_MACOS_ARROW_KEY_CODES.has(event.keyCode || event.which);
+  }
+
+  function isMacosFunctionArrowEvent(event: KeyboardEvent): boolean {
+    return MACOS_FUNCTION_KEY_GLYPHS_SINGLE.test(event.key) || isLegacyMacosArrowKeyCode(event);
   }
 
   function moveAddressCaret(direction: -1 | 1) {
@@ -169,13 +181,13 @@
   }
 
   function handleAddressBeforeInput(event: InputEvent) {
-    if (!event.data || event.inputType !== 'insertText') return;
+    if (!event.data) return;
     if (!MACOS_FUNCTION_KEY_GLYPHS_SINGLE.test(event.data)) return;
     event.preventDefault();
   }
 
   function handleAddressKeyPress(event: KeyboardEvent) {
-    if (!MACOS_FUNCTION_KEY_GLYPHS_SINGLE.test(event.key)) return;
+    if (!isMacosFunctionArrowEvent(event)) return;
     event.preventDefault();
     event.stopPropagation();
   }
@@ -189,7 +201,7 @@
 
   function handleAddressKeyDown(event: KeyboardEvent) {
     const key = normalizedAddressKey(event);
-    const isPrivateUseArrow = MACOS_FUNCTION_KEY_GLYPHS_SINGLE.test(event.key);
+    const isMacosFunctionArrow = isMacosFunctionArrowEvent(event);
 
     if (key === 'Enter') {
       handleAddressSubmit();
@@ -215,15 +227,25 @@
       return;
     }
 
-    if (!isPrivateUseArrow) return;
-
-    event.preventDefault();
-    event.stopPropagation();
+    if (!isMacosFunctionArrow) return;
 
     if (key === 'ArrowLeft') {
+      event.preventDefault();
+      event.stopPropagation();
       moveAddressCaret(-1);
-    } else if (key === 'ArrowRight') {
+      return;
+    }
+
+    if (key === 'ArrowRight') {
+      event.preventDefault();
+      event.stopPropagation();
       moveAddressCaret(1);
+      return;
+    }
+
+    if (key === 'ArrowUp' || key === 'ArrowDown') {
+      event.preventDefault();
+      event.stopPropagation();
     }
   }
 
@@ -522,23 +544,6 @@
     blurTimer = setTimeout(() => { blurTimer = null; closeDropdown(); }, 150);
   }
 
-  async function handleToolbarMouseDown(event: MouseEvent) {
-    if (event.button !== 0) return;
-
-    const target = event.target;
-    if (!(target instanceof HTMLElement)) return;
-    if (dropdownEl?.contains(target)) return;
-    if (target.closest('[data-tauri-drag-region="false"]')) return;
-
-    event.preventDefault();
-
-    try {
-      await startWindowDragging();
-    } catch {
-      // Browser dev mode and tests without native window commands can ignore this.
-    }
-  }
-
   function dismissDropdown() {
     if (blurTimer) {
       clearTimeout(blurTimer);
@@ -724,10 +729,8 @@
 
 <div class="h-screen flex flex-col bg-surface-0 overscroll-none">
   <!-- Toolbar - data-tauri-drag-region on every non-interactive element -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     data-tauri-drag-region
-    onmousedown={handleToolbarMouseDown}
     class="h-12 shrink-0 flex items-center gap-2 px-3 bg-surface-1 border-b border-surface-2"
     style="padding-left: 88px;"
   >
