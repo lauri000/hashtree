@@ -12,7 +12,8 @@ use axum::{
 use bytes::Bytes;
 use futures::stream::{self, StreamExt};
 use hashtree_core::{
-    from_hex, nhash_decode, to_hex, Cid, HashTree, HashTreeConfig, LinkType, Store,
+    from_hex, nhash_decode, to_hex, Cid, HashTree, HashTreeConfig, HashTreeError, LinkType, Store,
+    TreeEntry,
 };
 use hashtree_resolver::{
     nostr::{NostrResolverConfig, NostrRootResolver},
@@ -20,7 +21,7 @@ use hashtree_resolver::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -46,8 +47,15 @@ async fn list_directory_json(
 ) -> Response<Body> {
     let store = state.store.store_arc();
     let tree = HashTree::new(HashTreeConfig::new(store).public());
-    let entries = match tree.list_directory(cid).await {
-        Ok(list) => list,
+    let entries = match list_directory_with_fetch(state, &tree, cid).await {
+        Ok(Some(list)) => list,
+        Ok(None) => {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from("Directory not found"))
+                .unwrap();
+        }
         Err(e) => {
             return Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -121,7 +129,13 @@ enum DirectoryTarget {
     DirectoryListing { cid: Cid },
 }
 
+struct ResolvedPathEntry {
+    cid: Cid,
+    link_type: LinkType,
+}
+
 async fn resolve_directory_index_path<S: Store>(
+    state: &AppState,
     tree: &HashTree<S>,
     root_cid: &Cid,
     requested_path: Option<&str>,
@@ -135,10 +149,8 @@ async fn resolve_directory_index_path<S: Store>(
             Some(base) => format!("{}/{}", base, candidate),
             None => candidate.to_string(),
         };
-        if tree
-            .resolve_path(root_cid, &candidate_path)
-            .await
-            .map_err(|e| e.to_string())?
+        if resolve_path_with_fetch(state, tree, root_cid, &candidate_path)
+            .await?
             .is_some()
         {
             return Ok(Some(candidate_path));
@@ -149,49 +161,45 @@ async fn resolve_directory_index_path<S: Store>(
 }
 
 async fn resolve_directory_target<S: Store>(
+    state: &AppState,
     tree: &HashTree<S>,
     root_cid: &Cid,
     requested_path: Option<String>,
 ) -> Result<Option<DirectoryTarget>, String> {
     if let Some(path) = requested_path {
-        let entry = match tree
-            .resolve_path(root_cid, &path)
-            .await
-            .map_err(|e| e.to_string())?
-        {
+        let entry = match resolve_path_with_fetch(state, tree, root_cid, &path).await? {
             Some(entry) => entry,
             None => return Ok(None),
         };
 
-        if tree.is_dir(&entry).await.map_err(|e| e.to_string())? {
+        if entry.link_type == LinkType::Dir {
             if let Some(index_path) =
-                resolve_directory_index_path(tree, root_cid, Some(&path)).await?
+                resolve_directory_index_path(state, tree, root_cid, Some(&path)).await?
             {
-                let index_entry = tree
-                    .resolve_path(root_cid, &index_path)
-                    .await
-                    .map_err(|e| e.to_string())?
+                let index_entry = resolve_path_with_fetch(state, tree, root_cid, &index_path)
+                    .await?
                     .ok_or_else(|| format!("Resolved default path missing: {}", index_path))?;
                 return Ok(Some(DirectoryTarget::File {
-                    cid: index_entry,
+                    cid: index_entry.cid,
                     path: index_path,
                 }));
             }
 
-            return Ok(Some(DirectoryTarget::DirectoryListing { cid: entry }));
+            return Ok(Some(DirectoryTarget::DirectoryListing { cid: entry.cid }));
         }
 
-        return Ok(Some(DirectoryTarget::File { cid: entry, path }));
+        return Ok(Some(DirectoryTarget::File {
+            cid: entry.cid,
+            path,
+        }));
     }
 
-    if let Some(index_path) = resolve_directory_index_path(tree, root_cid, None).await? {
-        let index_entry = tree
-            .resolve_path(root_cid, &index_path)
-            .await
-            .map_err(|e| e.to_string())?
+    if let Some(index_path) = resolve_directory_index_path(state, tree, root_cid, None).await? {
+        let index_entry = resolve_path_with_fetch(state, tree, root_cid, &index_path)
+            .await?
             .ok_or_else(|| format!("Resolved default path missing: {}", index_path))?;
         return Ok(Some(DirectoryTarget::File {
-            cid: index_entry,
+            cid: index_entry.cid,
             path: index_path,
         }));
     }
@@ -262,6 +270,195 @@ async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool {
     false
 }
 
+async fn ensure_blob_available(state: &AppState, hash: &[u8; 32]) -> Result<bool, String> {
+    if state.store.blob_exists(hash).map_err(|e| e.to_string())? {
+        return Ok(true);
+    }
+
+    Ok(fetch_and_cache_blob(state, hash).await)
+}
+
+async fn fetch_missing_chunk(
+    state: &AppState,
+    seen_missing: &mut HashSet<String>,
+    missing: &str,
+) -> Result<bool, String> {
+    if !seen_missing.insert(missing.to_string()) {
+        return Err(format!("Repeated missing chunk {}", missing));
+    }
+
+    let hash =
+        from_hex(missing).map_err(|e| format!("Invalid missing chunk hash {}: {}", missing, e))?;
+    Ok(fetch_and_cache_blob(state, &hash).await)
+}
+
+async fn list_directory_with_fetch<S: Store>(
+    state: &AppState,
+    tree: &HashTree<S>,
+    cid: &Cid,
+) -> Result<Option<Vec<TreeEntry>>, String> {
+    let mut seen_missing = HashSet::new();
+
+    loop {
+        if !ensure_blob_available(state, &cid.hash).await? {
+            return Ok(None);
+        }
+
+        match tree.list_directory(cid).await {
+            Ok(entries) => return Ok(Some(entries)),
+            Err(HashTreeError::MissingChunk(missing)) => {
+                if !fetch_missing_chunk(state, &mut seen_missing, &missing).await? {
+                    return Ok(None);
+                }
+            }
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+}
+
+async fn resolve_path_with_fetch<S: Store>(
+    state: &AppState,
+    tree: &HashTree<S>,
+    root_cid: &Cid,
+    path: &str,
+) -> Result<Option<ResolvedPathEntry>, String> {
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    if parts.is_empty() {
+        return Ok(Some(ResolvedPathEntry {
+            cid: root_cid.clone(),
+            link_type: LinkType::Dir,
+        }));
+    }
+
+    let mut current_cid = root_cid.clone();
+    let mut current_link_type = LinkType::Dir;
+
+    for part in parts {
+        let entries = match list_directory_with_fetch(state, tree, &current_cid).await? {
+            Some(entries) => entries,
+            None => return Ok(None),
+        };
+
+        let Some(entry) = entries.into_iter().find(|entry| entry.name == part) else {
+            return Ok(None);
+        };
+
+        current_link_type = entry.link_type;
+        current_cid = Cid {
+            hash: entry.hash,
+            key: entry.key,
+        };
+    }
+
+    Ok(Some(ResolvedPathEntry {
+        cid: current_cid,
+        link_type: current_link_type,
+    }))
+}
+
+async fn get_cid_with_fetch<S: Store>(
+    state: &AppState,
+    tree: &HashTree<S>,
+    cid: &Cid,
+) -> Result<Option<Vec<u8>>, String> {
+    let mut seen_missing = HashSet::new();
+
+    loop {
+        if !ensure_blob_available(state, &cid.hash).await? {
+            return Ok(None);
+        }
+
+        match tree.get(cid, None).await {
+            Ok(data) => return Ok(data),
+            Err(HashTreeError::MissingChunk(missing)) => {
+                if !fetch_missing_chunk(state, &mut seen_missing, &missing).await? {
+                    return Ok(None);
+                }
+            }
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+}
+
+async fn read_file_range_cid_with_fetch<S: Store>(
+    state: &AppState,
+    tree: &HashTree<S>,
+    cid: &Cid,
+    start: u64,
+    end: Option<u64>,
+) -> Result<Option<Vec<u8>>, String> {
+    let mut seen_missing = HashSet::new();
+
+    loop {
+        if !ensure_blob_available(state, &cid.hash).await? {
+            return Ok(None);
+        }
+
+        match tree.read_file_range_cid(cid, start, end).await {
+            Ok(data) => return Ok(data),
+            Err(HashTreeError::MissingChunk(missing)) => {
+                if !fetch_missing_chunk(state, &mut seen_missing, &missing).await? {
+                    return Ok(None);
+                }
+            }
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+}
+
+async fn get_size_cid_with_fetch<S: Store>(
+    state: &AppState,
+    tree: &HashTree<S>,
+    cid: &Cid,
+) -> Result<Option<u64>, String> {
+    let mut seen_missing = HashSet::new();
+
+    loop {
+        if !ensure_blob_available(state, &cid.hash).await? {
+            return Ok(None);
+        }
+
+        match tree.get_size_cid(cid).await {
+            Ok(size) => return Ok(Some(size)),
+            Err(HashTreeError::MissingChunk(missing)) => {
+                if !fetch_missing_chunk(state, &mut seen_missing, &missing).await? {
+                    return Ok(None);
+                }
+            }
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+}
+
+async fn root_is_directory_with_fetch<S: Store>(
+    state: &AppState,
+    tree: &HashTree<S>,
+    cid: &Cid,
+) -> Result<bool, String> {
+    if !ensure_blob_available(state, &cid.hash).await? {
+        return Ok(false);
+    }
+
+    match tree.get_node(cid).await.map_err(|e| e.to_string())? {
+        Some(node) if node.node_type == LinkType::Dir => Ok(true),
+        Some(node) if node.node_type == LinkType::File => {
+            let mut seen_missing = HashSet::new();
+            loop {
+                match tree.is_dir(cid).await {
+                    Ok(is_dir) => return Ok(is_dir),
+                    Err(HashTreeError::MissingChunk(missing)) => {
+                        if !fetch_missing_chunk(state, &mut seen_missing, &missing).await? {
+                            return Ok(false);
+                        }
+                    }
+                    Err(err) => return Err(err.to_string()),
+                }
+            }
+        }
+        Some(_) | None => Ok(false),
+    }
+}
+
 async fn await_webrtc_peer_response<F>(
     future: F,
     hash_hex: &str,
@@ -318,16 +515,19 @@ async fn htree_nhash_impl(
 
     let store = state.store.store_arc();
     let tree = HashTree::new(HashTreeConfig::new(store).public());
-
-    // If root not in local store, try fetching from upstream
-    if tree.get(&cid, None).await.ok().flatten().is_none() {
-        fetch_and_cache_blob(&state, &cid.hash).await;
-    }
-
-    let is_dir = tree.is_dir(&cid).await.unwrap_or(false);
+    let is_dir = match root_is_directory_with_fetch(&state, &tree, &cid).await {
+        Ok(value) => value,
+        Err(e) => {
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from(format!("Error: {}", e)))
+                .unwrap();
+        }
+    };
 
     if is_dir {
-        match resolve_directory_target(&tree, &cid, effective_path.clone()).await {
+        match resolve_directory_target(&state, &tree, &cid, effective_path.clone()).await {
             Ok(Some(DirectoryTarget::File { cid: entry, path })) => {
                 return serve_cid_with_range(
                     &state,
@@ -574,11 +774,6 @@ async fn htree_npub_impl(
     let store = state.store.store_arc();
     let tree = HashTree::new(HashTreeConfig::new(store).public());
 
-    // If root not in local store, try fetching from upstream
-    if tree.get(&cid, None).await.ok().flatten().is_none() {
-        fetch_and_cache_blob(&state, &cid.hash).await;
-    }
-
     let mut effective_path = path.filter(|p| !p.is_empty());
     if let Some(path) = effective_path.clone() {
         if path == "thumbnail" || path.ends_with("/thumbnail") {
@@ -588,9 +783,18 @@ async fn htree_npub_impl(
         }
     }
 
-    let is_dir = tree.is_dir(&cid).await.unwrap_or(false);
+    let is_dir = match root_is_directory_with_fetch(&state, &tree, &cid).await {
+        Ok(value) => value,
+        Err(e) => {
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from(format!("Error: {}", e)))
+                .unwrap();
+        }
+    };
     if is_dir {
-        match resolve_directory_target(&tree, &cid, effective_path.clone()).await {
+        match resolve_directory_target(&state, &tree, &cid, effective_path.clone()).await {
             Ok(Some(DirectoryTarget::File { cid: entry, path })) => {
                 return serve_cid_with_range(
                     &state,
@@ -768,8 +972,15 @@ async fn serve_cid_with_range(
                     parts[1].parse::<u64>().ok()
                 };
 
-                let total_size = match tree.get_size_cid(cid).await {
-                    Ok(size) => size,
+                let total_size = match get_size_cid_with_fetch(state, &tree, cid).await {
+                    Ok(Some(size)) => size,
+                    Ok(None) => {
+                        return Response::builder()
+                            .status(StatusCode::NOT_FOUND)
+                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                            .body(Body::from("Not found"))
+                            .unwrap();
+                    }
                     Err(e) => {
                         return Response::builder()
                             .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -799,11 +1010,16 @@ async fn serve_cid_with_range(
                 }
 
                 let end_exclusive = end_inclusive.saturating_add(1);
-                let data = match tree
-                    .read_file_range_cid(cid, start, Some(end_exclusive))
-                    .await
+                let data = match read_file_range_cid_with_fetch(
+                    state,
+                    &tree,
+                    cid,
+                    start,
+                    Some(end_exclusive),
+                )
+                .await
                 {
-                    Ok(Some(d)) => d,
+                    Ok(Some(data)) => data,
                     Ok(None) => {
                         return Response::builder()
                             .status(StatusCode::NOT_FOUND)
@@ -841,28 +1057,14 @@ async fn serve_cid_with_range(
         }
     }
 
-    let data = match tree.get(cid, None).await {
-        Ok(Some(d)) => d,
+    let data = match get_cid_with_fetch(state, &tree, cid).await {
+        Ok(Some(data)) => data,
         Ok(None) => {
-            // Try fetching from upstream
-            if fetch_and_cache_blob(state, &cid.hash).await {
-                match tree.get(cid, None).await {
-                    Ok(Some(d)) => d,
-                    _ => {
-                        return Response::builder()
-                            .status(StatusCode::NOT_FOUND)
-                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                            .body(Body::from("Not found"))
-                            .unwrap();
-                    }
-                }
-            } else {
-                return Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                    .body(Body::from("Not found"))
-                    .unwrap();
-            }
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from("Not found"))
+                .unwrap();
         }
         Err(e) => {
             return Response::builder()
@@ -1963,7 +2165,63 @@ async fn query_upstream_blossom(servers: &[String], hash_hex: &str) -> Option<(V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::HashtreeStore;
+    use axum::{
+        body::{to_bytes, Body},
+        extract::{Path as AxumPath, State as AxumState},
+        response::IntoResponse,
+        routing::get,
+        Router,
+    };
     use hashtree_core::{DirEntry, MemoryStore};
+    use std::{collections::HashSet, net::SocketAddr};
+    use tempfile::TempDir;
+
+    async fn serve_blob_for_test(
+        AxumState(store): AxumState<Arc<HashtreeStore>>,
+        AxumPath(id): AxumPath<String>,
+    ) -> Response<Body> {
+        let Ok(hash) = from_hex(&id) else {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Body::from("invalid hash"))
+                .unwrap();
+        };
+
+        match store.get_blob(&hash) {
+            Ok(Some(data)) => Response::builder()
+                .status(StatusCode::OK)
+                .body(Body::from(data))
+                .unwrap(),
+            Ok(None) => Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("missing"))
+                .unwrap(),
+            Err(err) => Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from(err.to_string()))
+                .unwrap(),
+        }
+    }
+
+    fn test_app_state(store: Arc<HashtreeStore>, upstream_blossom: Vec<String>) -> AppState {
+        AppState {
+            store,
+            auth: None,
+            webrtc_peers: None,
+            ws_relay: Arc::new(crate::server::auth::WsRelayState::new()),
+            max_upload_bytes: 5 * 1024 * 1024,
+            public_writes: true,
+            allowed_pubkeys: HashSet::new(),
+            upstream_blossom,
+            social_graph: None,
+            social_graph_store: None,
+            social_graph_root: None,
+            socialgraph_snapshot_public: false,
+            nostr_relay: None,
+            tree_root_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        }
+    }
 
     #[tokio::test]
     async fn test_query_upstream_blossom_no_servers() {
@@ -2057,18 +2315,20 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_directory_target_prefers_root_index() {
-        let store = Arc::new(MemoryStore::new());
-        let tree = HashTree::new(HashTreeConfig::new(store));
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("store")).unwrap());
+        let tree = HashTree::new(HashTreeConfig::new(store.store_arc()));
+        let state = test_app_state(store.clone(), Vec::new());
 
         let (index_cid, _size) = tree.put(b"<html>ok</html>").await.unwrap();
         let root_cid = tree
             .put_directory(vec![
-                DirEntry::from_cid("index.html", &index_cid).with_link_type(LinkType::File),
+                DirEntry::from_cid("index.html", &index_cid).with_link_type(LinkType::File)
             ])
             .await
             .unwrap();
 
-        let target = resolve_directory_target(&tree, &root_cid, None)
+        let target = resolve_directory_target(&state, &tree, &root_cid, None)
             .await
             .expect("resolve")
             .expect("target");
@@ -2084,24 +2344,26 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_directory_target_prefers_subdir_index() {
-        let store = Arc::new(MemoryStore::new());
-        let tree = HashTree::new(HashTreeConfig::new(store));
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("store")).unwrap());
+        let tree = HashTree::new(HashTreeConfig::new(store.store_arc()));
+        let state = test_app_state(store.clone(), Vec::new());
 
         let (index_cid, _size) = tree.put(b"<html>nested</html>").await.unwrap();
         let subdir_cid = tree
             .put_directory(vec![
-                DirEntry::from_cid("index.html", &index_cid).with_link_type(LinkType::File),
+                DirEntry::from_cid("index.html", &index_cid).with_link_type(LinkType::File)
             ])
             .await
             .unwrap();
         let root_cid = tree
             .put_directory(vec![
-                DirEntry::from_cid("video", &subdir_cid).with_link_type(LinkType::Dir),
+                DirEntry::from_cid("video", &subdir_cid).with_link_type(LinkType::Dir)
             ])
             .await
             .unwrap();
 
-        let target = resolve_directory_target(&tree, &root_cid, Some("video".to_string()))
+        let target = resolve_directory_target(&state, &tree, &root_cid, Some("video".to_string()))
             .await
             .expect("resolve")
             .expect("target");
@@ -2117,18 +2379,20 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_directory_target_lists_directory_without_index() {
-        let store = Arc::new(MemoryStore::new());
-        let tree = HashTree::new(HashTreeConfig::new(store));
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("store")).unwrap());
+        let tree = HashTree::new(HashTreeConfig::new(store.store_arc()));
+        let state = test_app_state(store.clone(), Vec::new());
 
         let (file_cid, _size) = tree.put(b"asset").await.unwrap();
         let root_cid = tree
             .put_directory(vec![
-                DirEntry::from_cid("asset.txt", &file_cid).with_link_type(LinkType::File),
+                DirEntry::from_cid("asset.txt", &file_cid).with_link_type(LinkType::File)
             ])
             .await
             .unwrap();
 
-        let target = resolve_directory_target(&tree, &root_cid, None)
+        let target = resolve_directory_target(&state, &tree, &root_cid, None)
             .await
             .expect("resolve")
             .expect("target");
@@ -2144,5 +2408,63 @@ mod tests {
         assert_eq!(content_type_for_path(Some("dir/video.mp4")), "video/mp4");
         assert_eq!(content_type_for_path(Some("image.jpeg")), "image/jpeg");
         assert_eq!(content_type_for_path(None), "application/octet-stream");
+    }
+
+    #[tokio::test]
+    async fn htree_nhash_path_fetches_nested_assets_from_upstream_tree() {
+        let source_dir = TempDir::new().unwrap();
+        let source_store =
+            Arc::new(HashtreeStore::new(source_dir.path().join("source-db")).unwrap());
+
+        let site_dir = source_dir.path().join("site");
+        let assets_dir = site_dir.join("assets");
+        std::fs::create_dir_all(&assets_dir).unwrap();
+
+        let index_html = r#"
+<!doctype html>
+<html>
+  <head><script type="module" src="./assets/main.js"></script></head>
+  <body>ok</body>
+</html>
+"#;
+        let main_js = "export const big = '".to_string() + &"x".repeat(2_500_000) + "';\n";
+
+        std::fs::write(site_dir.join("index.html"), index_html).unwrap();
+        std::fs::write(assets_dir.join("main.js"), &main_js).unwrap();
+
+        let root_hash = source_store
+            .upload_dir_with_options(&site_dir, true)
+            .expect("upload site");
+        let root_hash_bytes = from_hex(&root_hash).expect("hex root hash");
+        let nhash = hashtree_core::nhash_encode(&root_hash_bytes).expect("encode nhash");
+        let route_nhash = nhash.strip_prefix("nhash1").expect("nhash prefix");
+
+        let upstream_router = Router::new()
+            .route("/:id", get(serve_blob_for_test))
+            .with_state(source_store.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = listener.local_addr().unwrap();
+        let _server = tokio::spawn(async move {
+            axum::serve(listener, upstream_router).await.unwrap();
+        });
+
+        let target_dir = TempDir::new().unwrap();
+        let target_store =
+            Arc::new(HashtreeStore::new(target_dir.path().join("target-db")).unwrap());
+        let state = test_app_state(target_store, vec![format!("http://{}", upstream_addr)]);
+
+        let response = htree_nhash_path(
+            State(state),
+            Path((route_nhash.to_string(), "assets/main.js".to_string())),
+            Query(HashMap::new()),
+            axum::http::HeaderMap::new(),
+            axum::extract::ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 43123))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), main_js.as_bytes());
     }
 }
