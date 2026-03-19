@@ -33,6 +33,8 @@
 
   const CHILD_LABEL = 'content';
   const TOOLBAR_HEIGHT = 48;
+  const MACOS_FUNCTION_KEY_GLYPHS = /[\uF700-\uF8FF]/g;
+  const MACOS_FUNCTION_KEY_GLYPHS_SINGLE = /[\uF700-\uF8FF]/;
 
   let addressValue = $state('');
   let currentUrl = $state('');              // full URL for editing
@@ -100,6 +102,52 @@
     if (trimmed.startsWith('nhash1') || trimmed.startsWith('npub1')) return `htree://${trimmed}`;
     if (trimmed.includes('.') && !trimmed.includes(' ')) return `https://${trimmed}`;
     return `https://${trimmed}`;
+  }
+
+  function sanitizeAddressText(value: string): string {
+    return value.replace(MACOS_FUNCTION_KEY_GLYPHS, '');
+  }
+
+  function sanitizeAddressFieldValue() {
+    const input = addressInputEl;
+    const rawValue = input?.value ?? addressValue;
+    const sanitizedValue = sanitizeAddressText(rawValue);
+
+    if (rawValue === sanitizedValue) {
+      if (addressValue !== rawValue) {
+        addressValue = rawValue;
+      }
+      return sanitizedValue;
+    }
+
+    const selectionStart = input?.selectionStart ?? rawValue.length;
+    const selectionEnd = input?.selectionEnd ?? rawValue.length;
+    const removedBeforeStart = (rawValue.slice(0, selectionStart).match(MACOS_FUNCTION_KEY_GLYPHS) ?? []).length;
+    const removedBeforeEnd = (rawValue.slice(0, selectionEnd).match(MACOS_FUNCTION_KEY_GLYPHS) ?? []).length;
+
+    addressValue = sanitizedValue;
+
+    requestAnimationFrame(() => {
+      if (!addressInputEl) return;
+      const nextStart = Math.max(0, selectionStart - removedBeforeStart);
+      const nextEnd = Math.max(0, selectionEnd - removedBeforeEnd);
+      addressInputEl.setSelectionRange(nextStart, nextEnd);
+    });
+
+    return sanitizedValue;
+  }
+
+  function handleAddressBeforeInput(event: InputEvent) {
+    if (!event.data || event.inputType !== 'insertText') return;
+    if (!MACOS_FUNCTION_KEY_GLYPHS_SINGLE.test(event.data)) return;
+    event.preventDefault();
+  }
+
+  function handleAddressInput() {
+    const sanitizedValue = sanitizeAddressFieldValue();
+    if (!isAddressFocused) isAddressFocused = true;
+    showDropdown = true;
+    debouncedSearch(sanitizedValue);
   }
 
   function handleLocationChange(event: WebviewLocationEvent) {
@@ -632,7 +680,7 @@
       </button>
     </div>
 
-    <div data-tauri-drag-region="false" class="flex-1 flex justify-center relative">
+    <div data-tauri-drag-region class="flex-1 flex justify-center relative">
       <div
         data-tauri-drag-region="false"
         class="w-full max-w-lg flex items-center gap-2 px-3 py-1 rounded-full bg-surface-0 b-1 b-solid b-surface-3 transition-colors {isAddressFocused ? 'b-accent' : ''}"
@@ -661,11 +709,8 @@
           bind:value={addressValue}
           onfocus={handleAddressFocus}
           onblur={handleAddressBlur}
-          oninput={() => {
-            if (!isAddressFocused) isAddressFocused = true;
-            showDropdown = true;
-            debouncedSearch(addressValue);
-          }}
+          onbeforeinput={handleAddressBeforeInput}
+          oninput={handleAddressInput}
           onkeydown={(e) => {
             if (e.key === 'Enter') {
               handleAddressSubmit();

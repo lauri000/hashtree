@@ -187,6 +187,35 @@ test.describe('Address Bar', () => {
     // Launcher still visible
     await expect(page.getByRole('heading', { name: 'Suggestions' })).toBeVisible();
   });
+
+  test('macOS function-key glyphs do not end up in the address bar', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+
+    const result = await input.evaluate((element) => {
+      const field = element as HTMLInputElement;
+      const beforeInput = new InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertText',
+        data: '\uF702\uF703\uF700\uF701',
+      });
+      const allowed = field.dispatchEvent(beforeInput);
+
+      field.value = `abc\uF702\uF703\uF700\uF701def`;
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+
+      return {
+        allowed,
+        value: field.value,
+      };
+    });
+
+    expect(result.allowed).toBe(false);
+    await expect(input).toHaveValue('abcdef');
+  });
 });
 
 test.describe('Address Bar Autocomplete', () => {
