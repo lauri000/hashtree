@@ -122,7 +122,7 @@
         <div class="mt-1 text-sm text-text-1">{status}</div>
         <div class="mt-1 text-xs text-text-3">
           {#if imageReady}Smoke image ready.{:else if imageError}{imageError}.{:else}Waiting for smoke image.{/if}
-          
+
           {#if videoReady}Smoke video ready.{:else if videoError}{videoError}.{:else}Waiting for smoke video.{/if}
         </div>
       </div>
