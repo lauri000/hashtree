@@ -64,7 +64,8 @@ npx wrangler deploy --assets ./dist --name iris-files --compatibility-date 2026-
 - Create or reuse one Worker static-assets service per site, for example `iris-files`.
 - Attach the desired custom domain to that Worker service in Cloudflare.
 - Authenticate Wrangler either with `wrangler login` or with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
-- Set the matching `CF_WORKER_NAME_*` environment variables in your shell so the release script knows which Worker service to deploy.
+- `pnpm run release:iris -- files` defaults to the `iris-files` Worker service.
+- Set `CF_WORKER_NAME_*` environment variables only for profiles that do not have a built-in Worker target, or when you want to override the default.
 - Optionally set `CF_WORKER_COMPATIBILITY_DATE` if you do not want to use the script default.
 
 Cloudflare Pages fallback:

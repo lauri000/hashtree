@@ -16,6 +16,7 @@ export const releaseProfiles = {
     appName: 'Iris Files',
     distDir: 'dist',
     treeName: 'files',
+    defaultWorkerName: 'iris-files',
     workerNameEnv: 'CF_WORKER_NAME_FILES',
     pagesProjectEnv: 'CF_PAGES_PROJECT_FILES',
     buildCommand: ['pnpm', 'run', 'build'],
@@ -174,7 +175,7 @@ export function parseArgs(argv, env = process.env) {
     skipCloudflare,
     branch,
     treeName: treeName ?? profile.treeName,
-    workerName: workerName ?? env[profile.workerNameEnv],
+    workerName: workerName ?? env[profile.workerNameEnv] ?? profile.defaultWorkerName,
     pagesProject: pagesProject ?? env[profile.pagesProjectEnv],
     workerCompatibilityDate:
       workerCompatibilityDate ?? env.CF_WORKER_COMPATIBILITY_DATE ?? defaultWorkerCompatibilityDate,

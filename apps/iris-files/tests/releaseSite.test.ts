@@ -2,10 +2,21 @@ import { describe, expect, it, vi } from 'vitest';
 import { createReleasePlan, parseArgs, parsePublishOutput, runAllReleases, runRelease } from '../scripts/release-site.mjs';
 
 describe('release-site', () => {
+  it('uses the built-in Worker default for files', () => {
+    const parsed = parseArgs(['files']);
+    expect(parsed.workerName).toBe('iris-files');
+    expect(parsed.treeName).toBe('files');
+  });
+
   it('uses the profile-specific Worker env var by default', () => {
     const parsed = parseArgs(['video'], { CF_WORKER_NAME_VIDEO: 'iris-video' });
     expect(parsed.workerName).toBe('iris-video');
     expect(parsed.treeName).toBe('video');
+  });
+
+  it('lets an explicit Worker env var override the built-in files default', () => {
+    const parsed = parseArgs(['files'], { CF_WORKER_NAME_FILES: 'iris-files-staging' });
+    expect(parsed.workerName).toBe('iris-files-staging');
   });
 
   it('falls back to the profile-specific Pages project env var when no Worker is configured', () => {
