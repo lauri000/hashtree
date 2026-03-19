@@ -72,8 +72,10 @@ export const releaseProfiles = {
   },
 };
 
+export const releaseProfileNames = Object.keys(releaseProfiles);
+
 export function parseArgs(argv, env = process.env) {
-  const args = [...argv];
+  const args = [...argv].filter((arg, index) => !(arg === '--' && index === 0));
   const profileName = args.shift();
   if (!profileName || profileName === '-h' || profileName === '--help') {
     return { help: true };
@@ -87,6 +89,9 @@ export function parseArgs(argv, env = process.env) {
 
   while (args.length > 0) {
     const arg = args.shift();
+    if (arg === '--') {
+      continue;
+    }
     if (arg === '--pages-project') {
       pagesProject = args.shift();
       continue;
@@ -108,6 +113,22 @@ export function parseArgs(argv, env = process.env) {
       continue;
     }
     throw new Error(`Unknown argument: ${arg}`);
+  }
+
+  if (profileName === 'all') {
+    if (pagesProject) {
+      throw new Error('--pages-project is not supported with the all profile');
+    }
+    if (treeName) {
+      throw new Error('--tree is not supported with the all profile');
+    }
+
+    return {
+      profileName,
+      dryRun,
+      skipPages,
+      branch,
+    };
   }
 
   const profile = releaseProfiles[profileName];
@@ -288,8 +309,33 @@ export function runRelease(options, runner = defaultRunner, hooks = {}) {
   };
 }
 
+export function runAllReleases(options, runner = defaultRunner, hooks = {}) {
+  const profiles = releaseProfileNames.map((profileName) =>
+    parseArgs(
+      [
+        profileName,
+        ...(options.branch ? ['--branch', options.branch] : []),
+        ...(options.skipPages ? ['--skip-pages'] : []),
+        ...(options.dryRun ? ['--dry-run'] : []),
+      ],
+      process.env,
+    ),
+  );
+
+  if (options.dryRun) {
+    return {
+      dryRun: true,
+      profiles: profiles.map((profile) => runRelease(profile, runner, hooks)),
+    };
+  }
+
+  return {
+    profiles: profiles.map((profile) => runRelease(profile, runner, hooks)),
+  };
+}
+
 export function usage() {
-  return `Usage: node ./scripts/release-site.mjs <files|video|docs|maps|boards> [options]
+  return `Usage: node ./scripts/release-site.mjs <files|video|docs|maps|boards|all> [options]
 
 Build once, test the built output, publish to hashtree, then deploy that same
 directory to Cloudflare Pages.
@@ -325,6 +371,12 @@ function printSummary(result) {
   console.log(`Tree name: ${treeName}`);
 }
 
+function printAllSummaries(results) {
+  for (const result of results.profiles) {
+    printSummary(result);
+  }
+}
+
 function isMainModule() {
   if (!process.argv[1]) {
     return false;
@@ -340,15 +392,29 @@ if (isMainModule()) {
       process.exit(0);
     }
 
-    const result = runRelease(parsed);
+    const result =
+      parsed.profileName === 'all' ? runAllReleases(parsed) : runRelease(parsed);
     if (result.dryRun) {
       console.log(usage());
-      for (const step of result.steps) {
-        console.log(`${step.label}: ${step.command.join(' ')} (cwd: ${step.cwd})`);
+      if (parsed.profileName === 'all') {
+        for (const profileResult of result.profiles) {
+          console.log(`\n[${profileResult.profile.name}]`);
+          for (const step of profileResult.steps) {
+            console.log(`${step.label}: ${step.command.join(' ')} (cwd: ${step.cwd})`);
+          }
+        }
+      } else {
+        for (const step of result.steps) {
+          console.log(`${step.label}: ${step.command.join(' ')} (cwd: ${step.cwd})`);
+        }
       }
       process.exit(0);
     }
-    printSummary(result);
+    if (parsed.profileName === 'all') {
+      printAllSummaries(result);
+    } else {
+      printSummary(result);
+    }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

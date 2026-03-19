@@ -1,11 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createReleasePlan, parseArgs, parsePublishOutput, runRelease } from '../scripts/release-site.mjs';
+import { createReleasePlan, parseArgs, parsePublishOutput, runAllReleases, runRelease } from '../scripts/release-site.mjs';
 
 describe('release-site', () => {
   it('uses the profile-specific Pages project env var by default', () => {
     const parsed = parseArgs(['video'], { CF_PAGES_PROJECT_VIDEO: 'video-iris-to' });
     expect(parsed.pagesProject).toBe('video-iris-to');
     expect(parsed.treeName).toBe('video');
+  });
+
+  it('supports the all profile without per-site overrides', () => {
+    const parsed = parseArgs(['all', '--branch', 'main', '--skip-pages']);
+    expect(parsed.profileName).toBe('all');
+    expect(parsed.branch).toBe('main');
+    expect(parsed.skipPages).toBe(true);
   });
 
   it('supports docs, maps, and boards release profiles', () => {
@@ -122,6 +129,37 @@ describe('release-site', () => {
       publishedRef: 'npub1example/video',
     });
     expect(result.pagesUrl).toBe('https://video-iris-to.pages.dev');
+  });
+
+  it('runs all profiles sequentially', () => {
+    const runner = vi.fn((step) => {
+      if (step.id === 'publish') {
+        return {
+          status: 0,
+          stdout: `published: npub1example/${step.label.split(' ')[1].toLowerCase()}\nnhash1ace`,
+          stderr: '',
+        };
+      }
+      return { status: 0, stdout: '', stderr: '' };
+    });
+
+    const result = runAllReleases(
+      {
+        profileName: 'all',
+        skipPages: true,
+      },
+      runner,
+      { buildOutputExists: () => true },
+    );
+
+    expect(result.profiles).toHaveLength(5);
+    expect(result.profiles.map((profile) => profile.profile.name)).toEqual([
+      'files',
+      'video',
+      'docs',
+      'maps',
+      'boards',
+    ]);
   });
 
   it('parses htree publish output defensively', () => {

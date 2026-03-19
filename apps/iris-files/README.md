@@ -42,20 +42,15 @@ The shared video build lives in `dist-video`. The same artifacts work for both `
 Portable Pages release:
 
 ```bash
-# Docs
-CF_PAGES_PROJECT_DOCS=docs-iris-to pnpm run release:docs:iris
+# One app
+pnpm run release:iris -- files
+pnpm run release:iris -- video
+pnpm run release:iris -- docs
+pnpm run release:iris -- maps
+pnpm run release:iris -- boards
 
-# Files
-CF_PAGES_PROJECT_FILES=files-iris-to pnpm run release:files:iris
-
-# Maps
-CF_PAGES_PROJECT_MAPS=maps-iris-to pnpm run release:maps:iris
-
-# Video
-CF_PAGES_PROJECT_VIDEO=video-iris-to pnpm run release:video:iris
-
-# Boards
-CF_PAGES_PROJECT_BOARDS=boards-iris-to pnpm run release:boards:iris
+# All apps
+pnpm run release:all:iris
 ```
 
 Each release script performs one build, runs focused tests against that exact build output, publishes the built directory to hashtree, and only then deploys the same directory to Cloudflare Pages. If build or tests fail, neither hashtree nor Pages upload runs.
