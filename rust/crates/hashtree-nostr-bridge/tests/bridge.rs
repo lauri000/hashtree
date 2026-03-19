@@ -1682,3 +1682,67 @@ async fn ignores_missing_local_event_blobs_from_existing_root_in_global_scan() -
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn global_recent_scan_reuses_existing_root_events_before_fetching() -> io::Result<()> {
+    let relay = TestRelay::new();
+    let relay_url = relay.url();
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("alice p tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&contact_list), true, 1.0);
+
+    let old_note = EventBuilder::new(Kind::TextNote, "old", [])
+        .custom_created_at(Timestamp::from_secs(20))
+        .to_event(&alice_keys)
+        .expect("old note");
+
+    let store = Arc::new(MemoryStore::new());
+    let event_store = NostrEventStore::new(store.clone());
+    let existing_root = event_store
+        .build(None, vec![stored_event_from_nostr(&old_note)])
+        .await
+        .expect("build root")
+        .expect("existing root");
+
+    let bridge = NostrBridge::new(
+        store.clone(),
+        CrawlConfig {
+            relays: vec![relay_url],
+            per_author_event_limit: 8,
+            kinds: Some(vec![1]),
+            relay_fetch_mode: RelayFetchMode::GlobalRecent,
+            relay_page_size: 10,
+            max_relay_pages: 2,
+            ..CrawlConfig::default()
+        },
+    );
+
+    let report = bridge
+        .crawl(&graph, Some(&existing_root))
+        .await
+        .expect("crawl report");
+
+    assert_eq!(report.events_seen, 0);
+    assert_eq!(report.events_selected, 1);
+    assert_eq!(report.root, Some(existing_root.clone()));
+
+    let recent = event_store
+        .list_recent(Some(&existing_root), ListEventsOptions { limit: Some(10) })
+        .await
+        .expect("list recent");
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].id, old_note.id.to_hex());
+
+    Ok(())
+}

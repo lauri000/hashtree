@@ -214,25 +214,9 @@ impl<S: Store> NostrBridge<S> {
                 .await;
         }
 
-        let mut state = GlobalRecentState {
-            current_root: existing_root.cloned(),
-            ..GlobalRecentState::default()
-        };
-        for author in &authors {
-            let retained = self
-                .load_retained_events(existing_root, author)
-                .await?
-                .into_iter()
-                .filter(|event| self.kind_allowed(event.kind))
-                .filter(|event| self.is_valid_stored_event(event))
-                .collect::<Vec<_>>();
-            let retained = self.select_author_events(retained)?;
-            state.events_selected = state.events_selected.saturating_add(retained.len());
-            state.live_bytes_selected = state
-                .live_bytes_selected
-                .saturating_add(self.encoded_events_size(&retained)?);
-            state.retained_by_author.insert(author.clone(), retained);
-        }
+        let state = self
+            .load_existing_global_state(existing_root, &authors)
+            .await?;
 
         let report = self
             .crawl_global_recent_incremental(&client, &authors, state, &mut on_progress)
@@ -298,6 +282,108 @@ impl<S: Store> NostrBridge<S> {
             events_selected,
             live_bytes_selected,
         })
+    }
+
+    async fn load_existing_global_state(
+        &self,
+        root: Option<&Cid>,
+        authors: &[String],
+    ) -> Result<GlobalRecentState> {
+        let Some(root) = root else {
+            return Ok(GlobalRecentState::default());
+        };
+
+        match self
+            .event_store
+            .list_recent(Some(root), ListEventsOptions::default())
+            .await
+        {
+            Ok(events) => {
+                let author_set = authors.iter().map(String::as_str).collect::<BTreeSet<_>>();
+                let mut retained_by_author = BTreeMap::<String, Vec<StoredNostrEvent>>::new();
+                for event in events {
+                    if !author_set.contains(event.pubkey.as_str()) || !self.kind_allowed(event.kind)
+                    {
+                        continue;
+                    }
+                    if !self.is_valid_stored_event(&event) {
+                        continue;
+                    }
+                    retained_by_author
+                        .entry(event.pubkey.clone())
+                        .or_default()
+                        .push(event);
+                }
+
+                let mut state = GlobalRecentState {
+                    current_root: Some(root.clone()),
+                    ..GlobalRecentState::default()
+                };
+                for (author, events) in retained_by_author {
+                    let selected = self.select_author_events(events)?;
+                    state.events_selected = state.events_selected.saturating_add(selected.len());
+                    state.live_bytes_selected = state
+                        .live_bytes_selected
+                        .saturating_add(self.encoded_events_size(&selected)?);
+                    state.retained_by_author.insert(author, selected);
+                }
+                Ok(state)
+            }
+            Err(NostrEventStoreError::Validation(message))
+                if message == "stored nostr event blob is missing" =>
+            {
+                eprintln!(
+                    "Falling back to per-author resume for existing root due to missing event blobs"
+                );
+                let mut state = self
+                    .load_existing_global_state_by_author(Some(root), authors)
+                    .await?;
+                state.current_root = self
+                    .rebuild_root_from_retained_state(&state)
+                    .await?;
+                Ok(state)
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    async fn load_existing_global_state_by_author(
+        &self,
+        root: Option<&Cid>,
+        authors: &[String],
+    ) -> Result<GlobalRecentState> {
+        let mut state = GlobalRecentState {
+            current_root: root.cloned(),
+            ..GlobalRecentState::default()
+        };
+        for author in authors {
+            let retained = self
+                .load_retained_events(root, author)
+                .await?
+                .into_iter()
+                .filter(|event| self.kind_allowed(event.kind))
+                .filter(|event| self.is_valid_stored_event(event))
+                .collect::<Vec<_>>();
+            let retained = self.select_author_events(retained)?;
+            state.events_selected = state.events_selected.saturating_add(retained.len());
+            state.live_bytes_selected = state
+                .live_bytes_selected
+                .saturating_add(self.encoded_events_size(&retained)?);
+            state.retained_by_author.insert(author.clone(), retained);
+        }
+        Ok(state)
+    }
+
+    async fn rebuild_root_from_retained_state(
+        &self,
+        state: &GlobalRecentState,
+    ) -> Result<Option<Cid>> {
+        let events = state
+            .retained_by_author
+            .values()
+            .flat_map(|events| events.iter().cloned())
+            .collect::<Vec<_>>();
+        self.event_store.build(None, events).await.map_err(Into::into)
     }
 
     fn validate_config(&self) -> Result<()> {
