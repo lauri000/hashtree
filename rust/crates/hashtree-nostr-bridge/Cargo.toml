@@ -17,6 +17,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
+hashtree-index.workspace = true
 nostr.workspace = true
 negentropy = "0.5"
 hex.workspace = true

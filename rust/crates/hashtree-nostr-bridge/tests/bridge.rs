@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
-use hashtree_core::MemoryStore;
+use hashtree_core::{MemoryStore, Store};
+use hashtree_index::{BTree, BTreeOptions};
 use hashtree_nostr::{ListEventsOptions, NostrEventStore, StoredNostrEvent};
 use hashtree_nostr_bridge::{CrawlConfig, NostrBridge, RelayFetchMode};
 use negentropy::{Id, Negentropy, NegentropyStorageVector};
@@ -1093,6 +1094,72 @@ async fn global_recent_scan_filters_locally_by_social_graph() -> io::Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reports_global_recent_progress() -> io::Result<()> {
+    let relay = TestRelay::new();
+    let relay_url = relay.url();
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("p tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&contact_list), true, 1.0);
+
+    let publisher = Client::new(Keys::generate());
+    publisher.add_relay(&relay_url).await.expect("add relay");
+    publisher.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    for created_at in 20..22 {
+        let note = EventBuilder::new(Kind::TextNote, format!("alice {created_at}"), [])
+            .custom_created_at(Timestamp::from_secs(created_at))
+            .to_event(&alice_keys)
+            .expect("alice note");
+        publisher
+            .send_event(note)
+            .await
+            .expect("publish test event");
+    }
+
+    let store = Arc::new(MemoryStore::new());
+    let bridge = NostrBridge::new(
+        store,
+        CrawlConfig {
+            relays: vec![relay_url],
+            relay_fetch_mode: RelayFetchMode::GlobalRecent,
+            relay_page_size: 1,
+            max_relay_pages: 4,
+            per_author_event_limit: 8,
+            kinds: Some(vec![1]),
+            ..CrawlConfig::default()
+        },
+    );
+
+    let mut progress = Vec::new();
+    let report = bridge
+        .crawl_with_progress(&graph, None, |checkpoint| progress.push(checkpoint.clone()))
+        .await
+        .expect("crawl report");
+
+    assert!(progress.len() >= 2);
+    assert!(progress.iter().take(progress.len() - 1).all(|item| item.root.is_none()));
+    assert!(progress
+        .iter()
+        .take(progress.len() - 1)
+        .all(|item| item.events_seen > 0));
+    assert_eq!(progress.last(), Some(&report));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn global_recent_scan_paginates_older_pages() -> io::Result<()> {
     let relay = TestRelay::new();
     let relay_url = relay.url();
@@ -1451,6 +1518,166 @@ async fn limits_authors_considered_by_bfs_order() -> io::Result<()> {
             || retained_id == bob_note.id.to_hex()
             || retained_id == carol_note.id.to_hex()
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reports_author_batch_progress() -> io::Result<()> {
+    let relay = TestRelay::new();
+    let relay_url = relay.url();
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+    let bob_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let root_contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [
+            Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("alice p tag"),
+            Tag::parse(&["p", &bob_keys.public_key().to_hex()]).expect("bob p tag"),
+        ],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&root_contact_list), true, 1.0);
+
+    let publisher = Client::new(Keys::generate());
+    publisher.add_relay(&relay_url).await.expect("add relay");
+    publisher.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    for (keys, content, created_at) in [
+        (&alice_keys, "alice", 20u64),
+        (&bob_keys, "bob", 21u64),
+    ] {
+        let note = EventBuilder::new(Kind::TextNote, content, [])
+            .custom_created_at(Timestamp::from_secs(created_at))
+            .to_event(keys)
+            .expect("note");
+        publisher.send_event(note).await.expect("publish test event");
+    }
+
+    let store = Arc::new(MemoryStore::new());
+    let bridge = NostrBridge::new(
+        store,
+        CrawlConfig {
+            relays: vec![relay_url],
+            author_batch_size: 1,
+            per_author_event_limit: 4,
+            kinds: Some(vec![1]),
+            ..CrawlConfig::default()
+        },
+    );
+
+    let mut progress = Vec::new();
+    let report = bridge
+        .crawl_with_progress(&graph, None, |checkpoint| progress.push(checkpoint.clone()))
+        .await
+        .expect("crawl report");
+
+    assert_eq!(report.authors_processed, 3);
+    assert_eq!(progress.len(), 3);
+    assert_eq!(progress[0].authors_processed, 1);
+    assert_eq!(progress[1].authors_processed, 2);
+    assert_eq!(progress[2].authors_processed, 3);
+    assert!(progress.iter().skip(1).all(|item| item.root.is_some()));
+    assert_eq!(progress.last(), Some(&report));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ignores_missing_local_event_blobs_from_existing_root_in_global_scan() -> io::Result<()> {
+    let relay = TestRelay::new();
+    let relay_url = relay.url();
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("alice p tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&contact_list), true, 1.0);
+
+    let old_note = EventBuilder::new(Kind::TextNote, "old", [])
+        .custom_created_at(Timestamp::from_secs(20))
+        .to_event(&alice_keys)
+        .expect("old note");
+    let new_note = EventBuilder::new(Kind::TextNote, "new", [])
+        .custom_created_at(Timestamp::from_secs(21))
+        .to_event(&alice_keys)
+        .expect("new note");
+
+    let publisher = Client::new(Keys::generate());
+    publisher.add_relay(&relay_url).await.expect("add relay");
+    publisher.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    publisher
+        .send_event(new_note.clone())
+        .await
+        .expect("publish new note");
+
+    let store = Arc::new(MemoryStore::new());
+    let event_store = NostrEventStore::new(store.clone());
+    let old_stored = stored_event_from_nostr(&old_note);
+    let existing_root = event_store
+        .build(None, vec![old_stored.clone()])
+        .await
+        .expect("build root")
+        .expect("existing root");
+    let manifest = event_store
+        .get_manifest(Some(&existing_root))
+        .await
+        .expect("get manifest");
+    let by_id = manifest.by_id.as_ref().expect("by-id root");
+    let index = BTree::new(store.clone(), BTreeOptions::default());
+    let old_event_cid = index
+        .get_link(Some(by_id), &old_stored.id)
+        .await
+        .expect("get old event cid")
+        .expect("old event cid");
+    let deleted = store
+        .delete(&old_event_cid.hash)
+        .await
+        .expect("delete old blob");
+    assert!(deleted);
+
+    let bridge = NostrBridge::new(
+        store.clone(),
+        CrawlConfig {
+            relays: vec![relay_url],
+            per_author_event_limit: 8,
+            kinds: Some(vec![1]),
+            relay_fetch_mode: RelayFetchMode::GlobalRecent,
+            relay_page_size: 10,
+            max_relay_pages: 2,
+            ..CrawlConfig::default()
+        },
+    );
+
+    let report = bridge
+        .crawl(&graph, Some(&existing_root))
+        .await
+        .expect("crawl report");
+    let root = report.root.expect("new root");
+    let recent = event_store
+        .list_recent(Some(&root), ListEventsOptions { limit: Some(10) })
+        .await
+        .expect("list recent");
+
+    assert_eq!(report.events_selected, 1);
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].id, new_note.id.to_hex());
 
     Ok(())
 }

@@ -19,6 +19,8 @@ use hashtree_cli::{Config, HashtreeStore};
 const INDEX_DIR: &str = "nostr-index";
 const LATEST_ROOT_FILE: &str = "latest-root.txt";
 const LATEST_REPORT_FILE: &str = "latest-report.json";
+const CHECKPOINT_ROOT_FILE: &str = "checkpoint-root.txt";
+const CHECKPOINT_REPORT_FILE: &str = "checkpoint-report.json";
 const TOP_ITEMS_LIMIT: usize = 20;
 const NEGENTROPY_NIP: u16 = 77;
 
@@ -70,6 +72,7 @@ pub(crate) struct RecentIndexedEvent {
 pub(crate) struct IndexedNostrReport {
     pub(crate) root: Option<String>,
     pub(crate) authors_considered: usize,
+    pub(crate) authors_processed: usize,
     pub(crate) events_seen: usize,
     pub(crate) events_selected: usize,
     pub(crate) live_bytes_selected: u64,
@@ -91,6 +94,19 @@ pub(crate) struct IndexedNostrReport {
     pub(crate) top_kinds: Vec<RankedCount>,
     pub(crate) top_hashtags: Vec<RankedCount>,
     pub(crate) recent_events: Vec<RecentIndexedEvent>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+struct IndexedNostrCheckpointReport {
+    root: Option<String>,
+    authors_considered: usize,
+    authors_processed: usize,
+    events_seen: usize,
+    events_selected: usize,
+    live_bytes_selected: u64,
+    max_live_bytes: u64,
+    negentropy_only: bool,
+    relays: Vec<String>,
 }
 
 pub(crate) async fn run_socialgraph_index_from_cli(
@@ -185,7 +201,11 @@ pub(crate) async fn run_socialgraph_index(
     );
 
     let report = bridge
-        .crawl(graph_store.as_ref(), existing_root.as_ref())
+        .crawl_with_progress(graph_store.as_ref(), existing_root.as_ref(), |progress| {
+            if let Err(err) = persist_checkpoint(&data_dir, progress, &options, &relays) {
+                eprintln!("Failed to persist nostr index checkpoint: {err}");
+            }
+        })
         .await?;
     let index_report = build_report(
         &NostrEventStore::new(store.store_arc()),
@@ -195,6 +215,7 @@ pub(crate) async fn run_socialgraph_index(
     )
     .await?;
     persist_report(&data_dir, &index_report)?;
+    clear_checkpoint(&data_dir)?;
     print_report(&index_report, &data_dir);
     Ok(index_report)
 }
@@ -267,6 +288,7 @@ async fn build_report(
     Ok(IndexedNostrReport {
         root,
         authors_considered: crawl_report.authors_considered,
+        authors_processed: crawl_report.authors_processed,
         events_seen: crawl_report.events_seen,
         events_selected: crawl_report.events_selected,
         live_bytes_selected: crawl_report.live_bytes_selected,
@@ -349,30 +371,83 @@ fn persist_report(data_dir: &Path, report: &IndexedNostrReport) -> Result<()> {
 }
 
 fn load_existing_root(data_dir: &Path) -> Result<Option<Cid>> {
-    let root_path = data_dir.join(INDEX_DIR).join(LATEST_ROOT_FILE);
-    if !root_path.exists() {
-        return Ok(None);
+    let index_dir = data_dir.join(INDEX_DIR);
+    let latest_root = index_dir.join(LATEST_ROOT_FILE);
+    if latest_root.exists() {
+        return load_root_from_path(&latest_root);
     }
 
-    let root = std::fs::read_to_string(&root_path)
-        .with_context(|| format!("read {}", root_path.display()))?;
+    let checkpoint_root = index_dir.join(CHECKPOINT_ROOT_FILE);
+    if checkpoint_root.exists() {
+        return load_root_from_path(&checkpoint_root);
+    }
+
+    Ok(None)
+}
+
+fn load_root_from_path(path: &Path) -> Result<Option<Cid>> {
+    let root = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let trimmed = root.trim();
     if trimmed.is_empty() {
         return Ok(None);
     }
 
-    Cid::parse(trimmed).map(Some).with_context(|| {
-        format!(
-            "parse existing nostr index root from {}",
-            root_path.display()
-        )
-    })
+    Cid::parse(trimmed)
+        .map(Some)
+        .with_context(|| format!("parse nostr index root from {}", path.display()))
+}
+
+fn persist_checkpoint(
+    data_dir: &Path,
+    report: &CrawlReport,
+    options: &SocialGraphIndexOptions,
+    relays: &[String],
+) -> Result<()> {
+    let output_dir = data_dir.join(INDEX_DIR);
+    std::fs::create_dir_all(&output_dir)?;
+
+    let checkpoint = IndexedNostrCheckpointReport {
+        root: report.root.as_ref().map(ToString::to_string),
+        authors_considered: report.authors_considered,
+        authors_processed: report.authors_processed,
+        events_seen: report.events_seen,
+        events_selected: report.events_selected,
+        live_bytes_selected: report.live_bytes_selected,
+        max_live_bytes: options.max_live_bytes,
+        negentropy_only: options.negentropy_only,
+        relays: relays.to_vec(),
+    };
+    let report_path = output_dir.join(CHECKPOINT_REPORT_FILE);
+    std::fs::write(&report_path, serde_json::to_vec_pretty(&checkpoint)?)?;
+
+    let root_path = output_dir.join(CHECKPOINT_ROOT_FILE);
+    if let Some(root) = &checkpoint.root {
+        std::fs::write(root_path, format!("{root}\n"))?;
+    } else if root_path.exists() {
+        std::fs::remove_file(root_path)?;
+    }
+
+    Ok(())
+}
+
+fn clear_checkpoint(data_dir: &Path) -> Result<()> {
+    let output_dir = data_dir.join(INDEX_DIR);
+    for path in [
+        output_dir.join(CHECKPOINT_ROOT_FILE),
+        output_dir.join(CHECKPOINT_REPORT_FILE),
+    ] {
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+    }
+    Ok(())
 }
 
 fn print_report(report: &IndexedNostrReport, data_dir: &Path) {
     println!(
-        "Indexed {} events from {} authors (saw {} relay events, kept {} bytes)",
+        "Indexed {} events from {}/{} authors (saw {} relay events, kept {} bytes)",
         report.events_selected,
+        report.authors_processed,
         report.authors_considered,
         report.events_seen,
         report.live_bytes_selected
@@ -800,6 +875,7 @@ mod tests {
         .expect("run index");
 
         assert_eq!(report.authors_considered, 2);
+        assert_eq!(report.authors_processed, 2);
         assert!(report.events_selected >= 2);
         assert_eq!(
             report.top_hashtags.first(),
@@ -852,6 +928,69 @@ mod tests {
 
         let loaded = load_existing_root(tmp.path()).expect("load root");
         assert_eq!(loaded.expect("existing root").to_string(), cid);
+    }
+
+    #[test]
+    fn loads_existing_root_from_checkpoint_when_latest_root_is_missing() {
+        let tmp = TempDir::new().expect("tempdir");
+        let index_dir = tmp.path().join(INDEX_DIR);
+        std::fs::create_dir_all(&index_dir).expect("create index dir");
+        let cid =
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+        std::fs::write(index_dir.join(CHECKPOINT_ROOT_FILE), format!("{cid}\n"))
+            .expect("write checkpoint root");
+
+        let loaded = load_existing_root(tmp.path()).expect("load root");
+        assert_eq!(loaded.expect("checkpoint root").to_string(), cid);
+    }
+
+    #[test]
+    fn persist_report_clears_checkpoint_files() {
+        let tmp = TempDir::new().expect("tempdir");
+        let index_dir = tmp.path().join(INDEX_DIR);
+        std::fs::create_dir_all(&index_dir).expect("create index dir");
+        std::fs::write(index_dir.join(CHECKPOINT_ROOT_FILE), "abc:def\n")
+            .expect("write checkpoint root");
+        std::fs::write(index_dir.join(CHECKPOINT_REPORT_FILE), "{}")
+            .expect("write checkpoint report");
+
+        let report = IndexedNostrReport {
+            root: Some(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+                    .to_string(),
+            ),
+            authors_considered: 10,
+            authors_processed: 10,
+            events_seen: 11,
+            events_selected: 12,
+            live_bytes_selected: 13,
+            warm_graph_seconds: 0,
+            graph_crawl_depth: 1,
+            full_graph_recrawl: false,
+            max_events_seen: None,
+            max_follow_distance: Some(1),
+            max_authors: 10,
+            max_live_bytes: 14,
+            per_author_live_bytes: None,
+            relay_event_max_bytes: None,
+            global_relay_scan: false,
+            negentropy_only: false,
+            relay_page_size: 1000,
+            max_relay_pages: 10,
+            relays: vec!["wss://example.com".to_string()],
+            top_authors: Vec::new(),
+            top_kinds: Vec::new(),
+            top_hashtags: Vec::new(),
+            recent_events: Vec::new(),
+        };
+
+        persist_report(tmp.path(), &report).expect("persist report");
+        clear_checkpoint(tmp.path()).expect("clear checkpoint");
+
+        assert!(!index_dir.join(CHECKPOINT_ROOT_FILE).exists());
+        assert!(!index_dir.join(CHECKPOINT_REPORT_FILE).exists());
+        assert!(index_dir.join(LATEST_ROOT_FILE).exists());
+        assert!(index_dir.join(LATEST_REPORT_FILE).exists());
     }
 
     #[test]
