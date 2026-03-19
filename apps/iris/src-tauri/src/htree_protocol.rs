@@ -48,6 +48,13 @@ fn resolve_htree_url_to_path(
     raw_path: &str,
     self_npub: Option<&str>,
 ) -> Result<String, String> {
+    if let Some(stripped) = raw_path
+        .strip_prefix("/htree/")
+        .or_else(|| raw_path.strip_prefix("/htree"))
+    {
+        return Ok(stripped.to_string());
+    }
+
     // Strip bare root "/" so we don't get a trailing slash
     let path_suffix = if raw_path == "/" { "" } else { raw_path };
     if host.starts_with("nhash1") {
@@ -164,6 +171,23 @@ fn forwarded_proxy_headers(headers: &reqwest::header::HeaderMap) -> Vec<(String,
         ));
     }
 
+    if !forwarded
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("access-control-allow-origin"))
+    {
+        forwarded.push(("access-control-allow-origin".to_string(), "*".to_string()));
+    }
+
+    if !forwarded
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("cross-origin-resource-policy"))
+    {
+        forwarded.push((
+            "cross-origin-resource-policy".to_string(),
+            "cross-origin".to_string(),
+        ));
+    }
+
     forwarded
 }
 
@@ -186,7 +210,7 @@ fn tree_root_index_fallback_path(
 
 /// Handle htree:// URI scheme protocol requests
 pub fn handle_htree_protocol<R: tauri::Runtime>(
-    _ctx: tauri::UriSchemeContext<'_, R>,
+    ctx: tauri::UriSchemeContext<'_, R>,
     request: tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Vec<u8>> {
     let uri = request.uri();
@@ -197,6 +221,10 @@ pub fn handle_htree_protocol<R: tauri::Runtime>(
     // Handle NIP-07 API requests (htree://nip07/...)
     if host == "nip07" {
         return nip07::handle_nip07_protocol_request(request);
+    }
+
+    if host == "webview" {
+        return nip07::handle_webview_event_protocol_request(ctx.app_handle().clone(), request);
     }
 
     // Determine path based on URL format
@@ -308,6 +336,17 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_htree_url_to_path_same_origin_htree_route_on_hosted_page() {
+        let path = resolve_htree_url_to_path(
+            "npub1ownerabcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnop",
+            "/htree/npub1video/video/index.html",
+            None,
+        )
+        .unwrap();
+        assert_eq!(path, "npub1video/video/index.html");
+    }
+
+    #[test]
     fn test_resolve_htree_url_to_path_self_host() {
         let path =
             resolve_htree_url_to_path("self", "/video/index.html", Some("npub1owner")).unwrap();
@@ -388,6 +427,19 @@ mod tests {
         assert!(!forwarded
             .iter()
             .any(|(name, value)| name == "x-unrelated-header" && value == "ignored"));
+    }
+
+    #[test]
+    fn forwarded_proxy_headers_add_cors_defaults_when_missing() {
+        let headers = reqwest::header::HeaderMap::new();
+        let forwarded = forwarded_proxy_headers(&headers);
+
+        assert!(forwarded
+            .iter()
+            .any(|(name, value)| { name == "access-control-allow-origin" && value == "*" }));
+        assert!(forwarded.iter().any(|(name, value)| {
+            name == "cross-origin-resource-policy" && value == "cross-origin"
+        }));
     }
 
     #[test]

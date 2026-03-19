@@ -295,6 +295,7 @@ export interface AutomationUiState {
   childPageLoadUrl: string;
   childDocumentTitle: string;
   childBodyText: string;
+  childMediaSummary: string;
   childLastError: string;
   historyIndex: number;
   historyLength: number;
@@ -364,6 +365,7 @@ export interface WebviewDiagnosticEvent {
   title?: string | null;
   readyState?: string | null;
   bodyText?: string | null;
+  mediaSummary?: string | null;
   error?: string | null;
 }
 

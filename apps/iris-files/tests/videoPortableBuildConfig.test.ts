@@ -23,15 +23,29 @@ afterEach(() => {
 });
 
 describe('video portable build config', () => {
-  it('uses root-relative assets for hosted video builds', async () => {
+  it('uses one relative-asset build for hosted video builds', async () => {
     const config = await loadVideoConfig();
-    expect(config.base ?? '/').toBe('/');
+    expect(config.base).toBe('./');
     expect(config.build?.outDir).toBe('dist-video');
   });
 
-  it('uses relative assets for portable Iris video builds', async () => {
+  it('keeps the same output directory and asset base for Iris-delivered video builds', async () => {
     const config = await loadVideoConfig('true');
     expect(config.base).toBe('./');
-    expect(config.build?.outDir).toBe('dist-video-iris');
+    expect(config.build?.outDir).toBe('dist-video');
+  });
+
+  it('strips module preload and crossorigin hints for htree webviews', async () => {
+    const configModule = await import('../vite.video.config.ts');
+    const sanitized = configModule.sanitizeVideoHtml(`
+      <script type="module" crossorigin src="./assets/main.js"></script>
+      <link rel="modulepreload" crossorigin href="./assets/vendor.js">
+      <link rel="stylesheet" crossorigin href="./assets/main.css">
+    `);
+
+    expect(sanitized).not.toContain('modulepreload');
+    expect(sanitized).not.toContain('crossorigin');
+    expect(sanitized).toContain('<script type="module" src="./assets/main.js"></script>');
+    expect(sanitized).toContain('<link rel="stylesheet" href="./assets/main.css">');
   });
 });

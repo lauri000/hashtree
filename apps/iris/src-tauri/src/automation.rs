@@ -24,6 +24,7 @@ pub struct AutomationUiState {
     pub child_page_load_url: String,
     pub child_document_title: String,
     pub child_body_text: String,
+    pub child_media_summary: String,
     pub child_last_error: String,
     pub history_index: i32,
     pub history_length: usize,
@@ -44,6 +45,7 @@ impl Default for AutomationUiState {
             child_page_load_url: String::new(),
             child_document_title: String::new(),
             child_body_text: String::new(),
+            child_media_summary: String::new(),
             child_last_error: String::new(),
             history_index: -1,
             history_length: 0,
@@ -278,15 +280,21 @@ mod tests {
 
     #[test]
     fn automation_disabled_by_default() {
-        with_env_vars(&[("IRIS_AUTOMATION", None), ("IRIS_AUTOMATION_PORT", None)], || {
-            assert!(!automation_requested());
-        });
+        with_env_vars(
+            &[("IRIS_AUTOMATION", None), ("IRIS_AUTOMATION_PORT", None)],
+            || {
+                assert!(!automation_requested());
+            },
+        );
     }
 
     #[test]
     fn automation_enabled_when_truthy_flag_set() {
         with_env_vars(
-            &[("IRIS_AUTOMATION", Some("true")), ("IRIS_AUTOMATION_PORT", None)],
+            &[
+                ("IRIS_AUTOMATION", Some("true")),
+                ("IRIS_AUTOMATION_PORT", None),
+            ],
             || {
                 assert!(automation_requested());
             },
@@ -323,6 +331,7 @@ mod tests {
             child_page_load_url: "https://files.iris.to".to_string(),
             child_document_title: "Files".to_string(),
             child_body_text: "hello".to_string(),
+            child_media_summary: "thumbs=4/5 visible=3".to_string(),
             child_last_error: String::new(),
             history_index: 0,
             history_length: 1,
@@ -339,5 +348,6 @@ mod tests {
         assert!(snapshot.ui.child_webview_ready);
         assert_eq!(snapshot.ui.child_page_load_state, "finished");
         assert_eq!(snapshot.ui.child_document_title, "Files");
+        assert_eq!(snapshot.ui.child_media_summary, "thumbs=4/5 visible=3");
     }
 }

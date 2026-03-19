@@ -70,6 +70,7 @@
   let childPageLoadUrl = $state('');
   let childDocumentTitle = $state('');
   let childBodyText = $state('');
+  let childMediaSummary = $state('');
   let childLastError = $state('');
 
   let canGoBack = $derived(
@@ -345,6 +346,7 @@
     childPageLoadUrl = loadUrl;
     childDocumentTitle = '';
     childBodyText = '';
+    childMediaSummary = '';
     childLastError = '';
   }
 
@@ -512,6 +514,7 @@
     if (event.label !== CHILD_LABEL) return;
     if (event.title) childDocumentTitle = event.title;
     if (event.bodyText) childBodyText = event.bodyText;
+    if (event.mediaSummary) childMediaSummary = event.mediaSummary;
     if (event.error) childLastError = event.error;
   }
 
@@ -586,6 +589,7 @@
         childPageLoadUrl: childPageLoadUrl,
         childDocumentTitle: childDocumentTitle,
         childBodyText: childBodyText,
+        childMediaSummary: childMediaSummary,
         childLastError: childLastError,
         historyIndex: historyIndex,
         historyLength: historyStack.length,
@@ -697,6 +701,7 @@
     childPageLoadUrl;
     childDocumentTitle;
     childBodyText;
+    childMediaSummary;
     childLastError;
     historyIndex;
     historyStack.length;

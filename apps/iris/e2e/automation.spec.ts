@@ -76,6 +76,7 @@ test.describe('Automation Bridge', () => {
       source: 'load',
       title: 'Iris Video',
       bodyText: 'Search videos',
+      mediaSummary: 'thumbs=3/4 visible=2 videos=1/1',
       error: null,
     });
     await emitTauriEvent(page, 'child-webview-page-load', {
@@ -91,12 +92,14 @@ test.describe('Automation Bridge', () => {
         childPageLoadUrl: state.childPageLoadUrl,
         childDocumentTitle: state.childDocumentTitle,
         childBodyText: state.childBodyText,
+        childMediaSummary: state.childMediaSummary,
       };
     }).toEqual({
       childPageLoadState: 'finished',
       childPageLoadUrl: 'htree://self/video',
       childDocumentTitle: 'Iris Video',
       childBodyText: 'Search videos',
+      childMediaSummary: 'thumbs=3/4 visible=2 videos=1/1',
     });
   });
 

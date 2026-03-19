@@ -3,10 +3,15 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import UnoCSS from 'unocss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { resolve } from 'path';
-import { rename } from 'fs/promises';
+import { readFile, rename, unlink, writeFile } from 'fs/promises';
 
-const isPortableBuild = process.env.HTREE_PORTABLE_BUILD === 'true';
-const outDir = isPortableBuild ? 'dist-video-iris' : 'dist-video';
+const outDir = 'dist-video';
+
+export function sanitizeVideoHtml(html: string): string {
+  return html
+    .replace(/^\s*<link rel="modulepreload".*$/gm, '')
+    .replace(/\s+crossorigin(?=[\s>])/g, '');
+}
 
 function videoEntryPlugin(): Plugin {
   return {
@@ -20,12 +25,16 @@ function videoEntryPlugin(): Plugin {
       });
     },
     async closeBundle() {
-      // Rename video.html to index.html for production (Cloudflare Pages)
+      // Rename video.html to index.html and remove custom-scheme-hostile
+      // preload/crossorigin hints that blank the app inside htree:// webviews.
       try {
-        await rename(
-          resolve(__dirname, outDir, 'video.html'),
-          resolve(__dirname, outDir, 'index.html')
-        );
+        const source = resolve(__dirname, outDir, 'video.html');
+        const target = resolve(__dirname, outDir, 'index.html');
+        const html = await readFile(source, 'utf8');
+        await writeFile(target, sanitizeVideoHtml(html), 'utf8');
+        if (source !== target) {
+          await unlink(source);
+        }
       } catch {
         // Ignore if file doesn't exist (dev mode)
       }
@@ -34,7 +43,7 @@ function videoEntryPlugin(): Plugin {
 }
 
 export default defineConfig({
-  base: isPortableBuild ? './' : '/',
+  base: './',
   define: {
     'import.meta.env.VITE_BUILD_TIME': JSON.stringify(new Date().toISOString()),
   },
@@ -94,6 +103,7 @@ export default defineConfig({
     },
   },
   build: {
+    modulePreload: false,
     outDir,
     emptyOutDir: true,
     reportCompressedSize: true,

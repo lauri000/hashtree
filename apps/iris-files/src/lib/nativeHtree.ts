@@ -14,11 +14,23 @@ declare global {
   }
 }
 
+function getQueryParam(name: string): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const value = new URLSearchParams(window.location.search).get(name);
+    return typeof value === 'string' ? value.trim() || null : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getInjectedHtreeServerUrl(): string | null {
   if (typeof window === 'undefined') return null;
   const override = window.__HTREE_SERVER_URL__;
-  if (typeof override !== 'string') return null;
-  const trimmed = override.trim();
+  const fallback = getQueryParam('iris_htree_server');
+  const candidate = typeof override === 'string' && override.trim() ? override : fallback;
+  if (typeof candidate !== 'string') return null;
+  const trimmed = candidate.trim();
   return trimmed ? trimmed.replace(/\/$/, '') : null;
 }
 
@@ -26,6 +38,11 @@ function getPageProtocol(): string | null {
   if (typeof window === 'undefined') return null;
   const protocol = window.location?.protocol;
   return typeof protocol === 'string' ? protocol.toLowerCase() : null;
+}
+
+function hasCanonicalHtreeIdentity(): boolean {
+  const canonical = getQueryParam('iris_htree_canonical');
+  return typeof canonical === 'string' && canonical.toLowerCase().startsWith('htree://');
 }
 
 function getServerProtocol(serverUrl: string): string | null {
@@ -39,10 +56,17 @@ function getServerProtocol(serverUrl: string): string | null {
 export function shouldPreferSameOriginHtreeRoutes(): boolean {
   const serverUrl = getInjectedHtreeServerUrl();
   if (!serverUrl) return false;
-  return getPageProtocol() === 'https:' && getServerProtocol(serverUrl) === 'http:';
+  const pageProtocol = getPageProtocol();
+  const serverProtocol = getServerProtocol(serverUrl);
+  if (serverProtocol !== 'http:') return false;
+  return pageProtocol === 'https:' || pageProtocol === 'htree:' || hasCanonicalHtreeIdentity();
 }
 
 export function canUseInjectedHtreeServerUrl(): boolean {
   const serverUrl = getInjectedHtreeServerUrl();
   return !!serverUrl && !shouldPreferSameOriginHtreeRoutes();
+}
+
+export function canUseSameOriginHtreeProtocolStreaming(): boolean {
+  return getPageProtocol() === 'htree:';
 }

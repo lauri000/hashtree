@@ -10,6 +10,8 @@ type WindowLike = {
   location: {
     protocol: string;
     hostname: string;
+    search: string;
+    reload?: ReturnType<typeof vi.fn>;
   };
   __HTREE_SERVER_URL__?: string;
   htree?: {
@@ -17,10 +19,10 @@ type WindowLike = {
   };
 };
 
-function installWindow(protocol: string, hostname: string, serverUrl?: string): void {
+function installWindow(protocol: string, hostname: string, serverUrl?: string, search = ''): void {
   const storage = new Map<string, string>();
   const windowLike: WindowLike = {
-    location: { protocol, hostname },
+    location: { protocol, hostname, search, reload: vi.fn() },
   };
   if (serverUrl) {
     windowLike.__HTREE_SERVER_URL__ = serverUrl;
@@ -46,6 +48,21 @@ function installServiceWorker(): void {
     serviceWorker: {
       controller,
       ready: Promise.resolve({ active: controller }),
+      getRegistrations: vi.fn(async () => []),
+      addEventListener: vi.fn(),
+    },
+  });
+  vi.stubGlobal('self', { crossOriginIsolated: false });
+}
+
+function installServiceWorkerWithoutController(): void {
+  const active = {
+    postMessage: vi.fn(),
+  };
+  vi.stubGlobal('navigator', {
+    serviceWorker: {
+      controller: null,
+      ready: Promise.resolve({ active }),
       getRegistrations: vi.fn(async () => []),
       addEventListener: vi.fn(),
     },
@@ -89,6 +106,49 @@ describe('native htree policy', () => {
     expect(mediaUrl.getHtreePrefix()).toBe('http://127.0.0.1:21417');
   });
 
+  it('reads the embedded daemon URL from query params when child-webview globals are unavailable', async () => {
+    installWindow('http:', '127.0.0.1', undefined, '?iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417');
+
+    const nativeHtree = await import('../src/lib/nativeHtree');
+    const mediaUrl = await import('../src/lib/mediaUrl');
+
+    expect(nativeHtree.getInjectedHtreeServerUrl()).toBe('http://127.0.0.1:21417');
+    expect(nativeHtree.canUseInjectedHtreeServerUrl()).toBe(true);
+    expect(mediaUrl.getHtreePrefix()).toBe('http://127.0.0.1:21417');
+  });
+
+  it('keeps same-origin /htree routes on local child-webview pages with canonical htree identity', async () => {
+    installWindow(
+      'http:',
+      '127.0.0.1',
+      undefined,
+      '?iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Fvideo%2Findex.html'
+    );
+
+    const nativeHtree = await import('../src/lib/nativeHtree');
+    const mediaUrl = await import('../src/lib/mediaUrl');
+
+    expect(nativeHtree.getInjectedHtreeServerUrl()).toBe('http://127.0.0.1:21417');
+    expect(nativeHtree.canUseInjectedHtreeServerUrl()).toBe(false);
+    expect(nativeHtree.shouldPreferSameOriginHtreeRoutes()).toBe(true);
+    expect(mediaUrl.getHtreePrefix()).toBe('');
+  });
+
+  it('keeps same-origin /htree routes on htree pages inside Iris', async () => {
+    installWindow('htree:', 'npub1example', 'http://127.0.0.1:21417');
+
+    const nativeHtree = await import('../src/lib/nativeHtree');
+    const mediaUrl = await import('../src/lib/mediaUrl');
+
+    expect(nativeHtree.getInjectedHtreeServerUrl()).toBe('http://127.0.0.1:21417');
+    expect(nativeHtree.canUseInjectedHtreeServerUrl()).toBe(false);
+    expect(nativeHtree.shouldPreferSameOriginHtreeRoutes()).toBe(true);
+    expect(mediaUrl.getHtreePrefix()).toBe('');
+
+    const videoUrl = mediaUrl.getNpubFileUrl('npub1example', 'videos/Test Clip', 'video.mp4');
+    expect(videoUrl.startsWith('/htree/npub1example/videos%2FTest%20Clip/video.mp4')).toBe(true);
+  });
+
   it('registers the service worker on https pages instead of skipping it', async () => {
     installWindow('https:', 'video.iris.to', 'http://127.0.0.1:21417');
     installServiceWorker();
@@ -101,6 +161,47 @@ describe('native htree policy', () => {
 
   it('skips the service worker only when the injected daemon URL is safe to use directly', async () => {
     installWindow('http:', '127.0.0.1', 'http://127.0.0.1:21417');
+    installServiceWorker();
+
+    const { initServiceWorker } = await import('../src/lib/swInit');
+    await initServiceWorker();
+
+    expect(registerSWMock).not.toHaveBeenCalled();
+  });
+
+  it('registers the service worker on local child-webview pages that preserve htree identity', async () => {
+    installWindow(
+      'http:',
+      '127.0.0.1',
+      undefined,
+      '?iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Fvideo%2Findex.html'
+    );
+    installServiceWorker();
+
+    const { initServiceWorker } = await import('../src/lib/swInit');
+    await initServiceWorker();
+
+    expect(registerSWMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not force a reload when a local child-webview page is waiting for SW control', async () => {
+    installWindow(
+      'http:',
+      '127.0.0.1',
+      undefined,
+      '?iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Fvideo%2Findex.html'
+    );
+    installServiceWorkerWithoutController();
+
+    const { initServiceWorker } = await import('../src/lib/swInit');
+    await initServiceWorker();
+
+    expect(registerSWMock).toHaveBeenCalledTimes(1);
+    expect(window.location.reload).not.toHaveBeenCalled();
+  });
+
+  it('does not try to register a service worker on htree child pages even when the API exists', async () => {
+    installWindow('htree:', 'npub1example', 'http://127.0.0.1:21417');
     installServiceWorker();
 
     const { initServiceWorker } = await import('../src/lib/swInit');

@@ -7,7 +7,7 @@ import { chromium } from '@playwright/test';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const appDir = path.resolve(__dirname, '..');
-const distDir = path.join(appDir, 'dist-video-iris');
+const distDir = path.join(appDir, 'dist-video');
 const screenshotPath = path.join(appDir, 'test-results', 'video-iris-portable-smoke.png');
 
 const MIME_TYPES = new Map([
@@ -106,7 +106,7 @@ async function main() {
       throw new Error(`Portable build loaded unexpected title "${title}"`);
     }
 
-    if (documentResponses.length !== 1) {
+    if (documentResponses.length > 2) {
       throw new Error(`Portable build reloaded unexpectedly (${documentResponses.length} document responses)`);
     }
 

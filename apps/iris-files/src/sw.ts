@@ -16,6 +16,7 @@
 
 /// <reference lib="webworker" />
 import { precacheAndRoute } from 'workbox-precaching';
+import { shouldInterceptHtreeRequestForWorker } from './lib/swRoutePolicy';
 
 declare let self: ServiceWorkerGlobalScope;
 
@@ -693,43 +694,48 @@ self.addEventListener('fetch', (event: FetchEvent) => {
   // All hashtree routes start with /htree/ - check this FIRST before navigation handling
   // Otherwise navigation requests to /htree/... get redirected to index.html
   if (pathParts[0] === 'htree') {
-    // /htree/{nhash}/{filename} - Direct nhash access (content-addressed)
-    if (pathParts.length >= 2 && pathParts[1].startsWith('nhash1')) {
-      const nhash = pathParts[1];
-      const filename = pathParts.slice(2).join('/') || 'file';
-      const forceDownload = url.searchParams.get('download') === '1';
-      event.respondWith(
-        createNhashFileResponse(
-          nhash,
-          filename,
-          rangeHeader,
-          forceDownload,
-          event.clientId,
-          clientKey,
-          event.request.referrer
-        ).then(addCORSHeaders)
-      );
-      return;
-    }
+    if (!shouldInterceptHtreeRequestForWorker(rawPath, clientKey, rangeHeader)) {
+      // Fall through to the normal same-origin fetch path so the app shell and
+      // other ordinary tree files load directly from the embedded server.
+    } else {
+      // /htree/{nhash}/{filename} - Direct nhash access (content-addressed)
+      if (pathParts.length >= 2 && pathParts[1].startsWith('nhash1')) {
+        const nhash = pathParts[1];
+        const filename = pathParts.slice(2).join('/') || 'file';
+        const forceDownload = url.searchParams.get('download') === '1';
+        event.respondWith(
+          createNhashFileResponse(
+            nhash,
+            filename,
+            rangeHeader,
+            forceDownload,
+            event.clientId,
+            clientKey,
+            event.request.referrer
+          ).then(addCORSHeaders)
+        );
+        return;
+      }
 
-    // /htree/{npub}/{treeName}/{path...} - Npub-based file access
-    // treeName is URL-encoded (may contain %2F for slashes)
-    if (pathParts.length >= 3 && NPUB_PATTERN.test(pathParts[1])) {
-      const npub = pathParts[1];
-      const treeName = decodeURIComponent(pathParts[2]);
-      const filePath = pathParts.slice(3).map(decodeURIComponent).join('/');
-      event.respondWith(
-        createNpubFileResponse(
-          npub,
-          treeName,
-          filePath,
-          rangeHeader,
-          event.clientId,
-          clientKey,
-          event.request.referrer
-        ).then(addCORSHeaders)
-      );
-      return;
+      // /htree/{npub}/{treeName}/{path...} - Npub-based file access
+      // treeName is URL-encoded (may contain %2F for slashes)
+      if (pathParts.length >= 3 && NPUB_PATTERN.test(pathParts[1])) {
+        const npub = pathParts[1];
+        const treeName = decodeURIComponent(pathParts[2]);
+        const filePath = pathParts.slice(3).map(decodeURIComponent).join('/');
+        event.respondWith(
+          createNpubFileResponse(
+            npub,
+            treeName,
+            filePath,
+            rangeHeader,
+            event.clientId,
+            clientKey,
+            event.request.referrer
+          ).then(addCORSHeaders)
+        );
+        return;
+      }
     }
   }
 

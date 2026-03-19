@@ -32,12 +32,12 @@ npm run preview
 Portable Iris video build:
 
 ```bash
-pnpm run build:video:iris
+pnpm run build:video
 pnpm run smoke:video:iris
 pnpm run publish:video:iris
 ```
 
-The portable video build lives in `dist-video-iris`. The publish helper runs `htree add .` inside that directory and publishes the CHK-encrypted/shareable `nhash` root directly, so the resulting URL shape is `htree://nhash.../index.html`, not `.../dist-video/index.html`. This build also skips the web PWA/service-worker path because Iris already provides the native htree backend for published apps.
+The shared video build lives in `dist-video`. The same artifacts work for both `https://video.iris.to` and `htree://.../video/index.html`: runtime code now picks the right backend for hosted HTTPS, native `http://127.0.0.1`, and Iris `htree://` delivery. The publish helper runs `htree add .` inside `dist-video` and publishes the CHK-encrypted/shareable `nhash` root directly, so the resulting URL shape is `htree://nhash.../index.html`, not `.../dist-video/index.html`.
 
 ## Desktop App (Tauri)
 

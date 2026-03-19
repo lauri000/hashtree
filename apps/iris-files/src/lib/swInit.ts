@@ -5,6 +5,7 @@
 
 import { registerSW } from 'virtual:pwa-register';
 import { getHtreePrefix } from './mediaUrl';
+import { shouldPreferSameOriginHtreeRoutes } from './nativeHtree';
 
 interface InitOptions {
   /** Require cross-origin isolation (for SharedArrayBuffer/FFmpeg) */
@@ -17,8 +18,10 @@ interface InitOptions {
  */
 export async function initServiceWorker(options: InitOptions = {}): Promise<void> {
   const isTestMode = !!import.meta.env.VITE_TEST_MODE;
+  const hasServiceWorker = typeof navigator !== 'undefined' && 'serviceWorker' in navigator;
+  const pageProtocol = typeof window !== 'undefined' ? window.location?.protocol : '';
 
-  if (isTestMode && 'serviceWorker' in navigator) {
+  if (isTestMode && hasServiceWorker) {
     try {
       const registrations = await navigator.serviceWorker.getRegistrations();
       await Promise.all(registrations.map(reg => reg.unregister().catch(() => {})));
@@ -42,6 +45,18 @@ export async function initServiceWorker(options: InitOptions = {}): Promise<void
     return;
   }
 
+  // Custom htree:// child webviews cannot rely on service workers, and waiting
+  // for registration there can block the app before it mounts.
+  if (pageProtocol === 'htree:') {
+    console.log('[SW] Skipping service worker (htree runtime)');
+    return;
+  }
+
+  if (!hasServiceWorker) {
+    console.log('[SW] Service workers unavailable for this runtime');
+    return;
+  }
+
   // Register service worker
   const updateSW = registerSW({
     immediate: true,
@@ -58,10 +73,6 @@ export async function initServiceWorker(options: InitOptions = {}): Promise<void
       console.error('[SW] Registration error:', error);
     },
   });
-
-  if (!('serviceWorker' in navigator)) {
-    return;
-  }
 
   // Wait for SW to be active and controlling this page
   if (!navigator.serviceWorker.controller) {
@@ -85,10 +96,16 @@ export async function initServiceWorker(options: InitOptions = {}): Promise<void
 
       // If no controller after SW is ready, reload to let SW take control
       if (!gotController && !navigator.serviceWorker.controller) {
-        console.log('[SW] No controller after SW ready, reloading...');
-        window.location.reload();
-        // Return a never-resolving promise since we're reloading
-        return new Promise(() => {});
+        const isLocalChildRuntime =
+          pageProtocol === 'http:' && shouldPreferSameOriginHtreeRoutes();
+        if (isLocalChildRuntime) {
+          console.log('[SW] No controller after SW ready in local child runtime; continuing without forced reload');
+        } else {
+          console.log('[SW] No controller after SW ready, reloading...');
+          window.location.reload();
+          // Return a never-resolving promise since we're reloading
+          return new Promise(() => {});
+        }
       }
     }
   }

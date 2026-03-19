@@ -7,6 +7,7 @@
 
 import { getMediaClientId } from './mediaClient';
 import { isHtreeDebugEnabled, logHtreeDebug } from './htreeDebug';
+import { canUseInjectedHtreeServerUrl, canUseSameOriginHtreeProtocolStreaming } from './nativeHtree';
 import { getWorkerAdapter, waitForWorkerAdapter } from './workerInit';
 
 let isSetup = false;
@@ -32,6 +33,10 @@ function ensureControllerListener(): void {
  * The service worker can then request media data directly from the worker.
  */
 export async function setupMediaStreaming(): Promise<boolean> {
+  if (canUseInjectedHtreeServerUrl() || canUseSameOriginHtreeProtocolStreaming()) {
+    logHtreeDebug('media:setup:direct-runtime');
+    return true;
+  }
   logHtreeDebug('media:setup:begin', {
     isSetup,
     hasController: typeof navigator !== 'undefined' && !!navigator.serviceWorker?.controller,

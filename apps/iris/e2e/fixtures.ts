@@ -25,6 +25,7 @@ async function mockTauriIPC(page: Page) {
       childPageLoadUrl: '',
       childDocumentTitle: '',
       childBodyText: '',
+      childMediaSummary: '',
       childLastError: '',
       historyIndex: -1,
       historyLength: 0,

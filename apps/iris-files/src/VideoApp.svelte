@@ -15,6 +15,7 @@
   import WalletLink from './components/WalletLink.svelte';
   import Toast from './components/Toast.svelte';
   import VideoRouter from './components/Video/VideoRouter.svelte';
+  import SmokeMediaPanel from './components/Video/SmokeMediaPanel.svelte';
   import Dropdown from './components/ui/Dropdown.svelte';
   import { currentPath, initRouter } from './lib/router.svelte';
   import { nostrStore } from './nostr';
@@ -115,6 +116,7 @@
 
   <!-- Main area -->
   <div class="flex-1 flex flex-col">
+    <SmokeMediaPanel />
     <VideoRouter currentPath={$currentPath} />
   </div>
 

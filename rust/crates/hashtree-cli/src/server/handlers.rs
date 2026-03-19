@@ -640,12 +640,13 @@ fn is_thumbnail_request(path: &str) -> bool {
 }
 
 async fn resolve_thumbnail_path<S: Store>(
+    state: &AppState,
     tree: &HashTree<S>,
     root: &Cid,
     path: &str,
-) -> Option<String> {
+) -> Result<Option<String>, String> {
     if !is_thumbnail_request(path) {
-        return None;
+        return Ok(None);
     }
 
     let dir_path = if path == "thumbnail" {
@@ -657,18 +658,25 @@ async fn resolve_thumbnail_path<S: Store>(
     let dir_entry = if dir_path.is_empty() {
         Some(root.clone())
     } else {
-        tree.resolve_path(root, dir_path).await.ok().flatten()
-    }?;
+        resolve_path_with_fetch(state, tree, root, dir_path)
+            .await?
+            .map(|entry| entry.cid)
+    };
+    let Some(dir_entry) = dir_entry else {
+        return Ok(None);
+    };
 
-    let entries = tree.list_directory(&dir_entry).await.ok()?;
+    let Some(entries) = list_directory_with_fetch(state, tree, &dir_entry).await? else {
+        return Ok(None);
+    };
 
     for pattern in THUMBNAIL_PATTERNS {
         if entries.iter().any(|e| e.name == *pattern) {
-            return Some(if dir_path.is_empty() {
+            return Ok(Some(if dir_path.is_empty() {
                 (*pattern).to_string()
             } else {
                 format!("{}/{}", dir_path, pattern)
-            });
+            }));
         }
     }
 
@@ -686,9 +694,9 @@ async fn resolve_thumbnail_path<S: Store>(
                 hash: entry.hash,
                 key: entry.key,
             };
-            let sub_entries = match tree.list_directory(&sub_cid).await {
-                Ok(entries) => entries,
-                Err(_) => continue,
+            let sub_entries = match list_directory_with_fetch(state, tree, &sub_cid).await? {
+                Some(entries) => entries,
+                None => continue,
             };
 
             for pattern in THUMBNAIL_PATTERNS {
@@ -698,13 +706,13 @@ async fn resolve_thumbnail_path<S: Store>(
                     } else {
                         format!("{}/{}", dir_path, entry.name)
                     };
-                    return Some(format!("{}/{}", prefix, pattern));
+                    return Ok(Some(format!("{}/{}", prefix, pattern)));
                 }
             }
         }
     }
 
-    None
+    Ok(None)
 }
 
 async fn htree_npub_impl(
@@ -777,8 +785,18 @@ async fn htree_npub_impl(
     let mut effective_path = path.filter(|p| !p.is_empty());
     if let Some(path) = effective_path.clone() {
         if path == "thumbnail" || path.ends_with("/thumbnail") {
-            if let Some(resolved_path) = resolve_thumbnail_path(&tree, &cid, &path).await {
-                effective_path = Some(resolved_path);
+            match resolve_thumbnail_path(&state, &tree, &cid, &path).await {
+                Ok(Some(resolved_path)) => {
+                    effective_path = Some(resolved_path);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    return Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .body(Body::from(format!("Error: {}", e)))
+                        .unwrap();
+                }
             }
         }
     }
@@ -2173,7 +2191,7 @@ mod tests {
         routing::get,
         Router,
     };
-    use hashtree_core::{DirEntry, MemoryStore};
+    use hashtree_core::DirEntry;
     use std::{collections::HashSet, net::SocketAddr};
     use tempfile::TempDir;
 
@@ -2272,8 +2290,10 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_thumbnail_path_prefers_root_thumbnail() {
-        let store = Arc::new(MemoryStore::new());
-        let tree = HashTree::new(HashTreeConfig::new(store));
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("store")).unwrap());
+        let tree = HashTree::new(HashTreeConfig::new(store.store_arc()));
+        let state = test_app_state(store.clone(), Vec::new());
 
         let (thumb_cid, _size) = tree.put(b"thumb").await.unwrap();
         let root_cid = tree
@@ -2283,14 +2303,18 @@ mod tests {
             .await
             .unwrap();
 
-        let resolved = resolve_thumbnail_path(&tree, &root_cid, "thumbnail").await;
+        let resolved = resolve_thumbnail_path(&state, &tree, &root_cid, "thumbnail")
+            .await
+            .unwrap();
         assert_eq!(resolved.as_deref(), Some("thumbnail.jpg"));
     }
 
     #[tokio::test]
     async fn resolve_thumbnail_path_falls_back_to_subdir() {
-        let store = Arc::new(MemoryStore::new());
-        let tree = HashTree::new(HashTreeConfig::new(store));
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("store")).unwrap());
+        let tree = HashTree::new(HashTreeConfig::new(store.store_arc()));
+        let state = test_app_state(store.clone(), Vec::new());
 
         let (thumb_cid, _size) = tree.put(b"thumb").await.unwrap();
         let subdir_cid = tree
@@ -2309,8 +2333,55 @@ mod tests {
             .await
             .unwrap();
 
-        let resolved = resolve_thumbnail_path(&tree, &root_cid, "thumbnail").await;
+        let resolved = resolve_thumbnail_path(&state, &tree, &root_cid, "thumbnail")
+            .await
+            .unwrap();
         assert_eq!(resolved.as_deref(), Some("clip/thumbnail.png"));
+    }
+
+    #[tokio::test]
+    async fn resolve_thumbnail_path_fetches_missing_subdir_from_upstream() {
+        let source_dir = TempDir::new().unwrap();
+        let source_store =
+            Arc::new(HashtreeStore::new(source_dir.path().join("source-db")).unwrap());
+        let source_tree = HashTree::new(HashTreeConfig::new(source_store.store_arc()));
+
+        let (thumb_cid, _size) = source_tree.put(b"thumb").await.unwrap();
+        let subdir_cid = source_tree
+            .put_directory(vec![
+                DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File)
+            ])
+            .await
+            .unwrap();
+        let root_cid = source_tree
+            .put_directory(vec![
+                DirEntry::from_cid("clip", &subdir_cid).with_link_type(LinkType::Dir)
+            ])
+            .await
+            .unwrap();
+
+        let upstream_router = Router::new()
+            .route("/:id", get(serve_blob_for_test))
+            .with_state(source_store.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = listener.local_addr().unwrap();
+        let upstream_server =
+            tokio::spawn(async move { axum::serve(listener, upstream_router).await.unwrap() });
+
+        let local_dir = TempDir::new().unwrap();
+        let local_store = Arc::new(HashtreeStore::new(local_dir.path().join("local-db")).unwrap());
+        let state = test_app_state(
+            local_store.clone(),
+            vec![format!("http://{}", upstream_addr)],
+        );
+        let local_tree = HashTree::new(HashTreeConfig::new(local_store.store_arc()));
+
+        let resolved = resolve_thumbnail_path(&state, &local_tree, &root_cid, "thumbnail")
+            .await
+            .unwrap();
+        assert_eq!(resolved.as_deref(), Some("clip/thumbnail.jpg"));
+
+        upstream_server.abort();
     }
 
     #[tokio::test]
