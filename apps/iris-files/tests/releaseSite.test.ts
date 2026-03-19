@@ -58,7 +58,7 @@ describe('release-site', () => {
     ]);
     expect(plan.steps.at(-1)?.command).toEqual([
       'npx',
-      'wrangler',
+      'wrangler@4',
       'pages',
       'deploy',
       'dist',
@@ -164,6 +164,18 @@ describe('release-site', () => {
 
   it('parses htree publish output defensively', () => {
     expect(parsePublishOutput('published: npub1foo/files\nnhash1ace')).toEqual({
+      nhash: 'nhash1ace',
+      publishedRef: 'npub1foo/files',
+    });
+    expect(
+      parsePublishOutput(
+        [
+          '2026-03-19T21:46:47Z ERROR nostr_relay_pool::pool::internal: Impossible to send event to wss://upload.iris.to/nostr: event not published: index build failed: MissingChunk',
+          'published: npub1foo/files',
+          'nhash1ace',
+        ].join('\n'),
+      ),
+    ).toEqual({
       nhash: 'nhash1ace',
       publishedRef: 'npub1foo/files',
     });

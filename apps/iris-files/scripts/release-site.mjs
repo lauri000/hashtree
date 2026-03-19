@@ -74,6 +74,10 @@ export const releaseProfiles = {
 
 export const releaseProfileNames = Object.keys(releaseProfiles);
 
+function wranglerPagesCommand(...args) {
+  return ['npx', 'wrangler@4', ...args];
+}
+
 export function parseArgs(argv, env = process.env) {
   const args = [...argv].filter((arg, index) => !(arg === '--' && index === 0));
   const profileName = args.shift();
@@ -194,15 +198,13 @@ export function createReleasePlan(options) {
   ];
 
   if (!options.skipPages) {
-    const deployCommand = [
-      'npx',
-      'wrangler',
+    const deployCommand = wranglerPagesCommand(
       'pages',
       'deploy',
       profile.distDir,
       '--project-name',
       options.pagesProject,
-    ];
+    );
     if (options.branch) {
       deployCommand.push('--branch', options.branch);
     }
@@ -253,7 +255,7 @@ export function parsePublishOutput(output) {
     throw new Error('Publish succeeded but no nhash was found in htree output');
   }
 
-  const publishedMatch = output.match(/published:\s+(\S+)/i);
+  const publishedMatch = output.match(/^\s*published:\s+(\S+)\s*$/im);
   if (!publishedMatch) {
     throw new Error('Publish succeeded but no mutable ref was found in htree output');
   }
