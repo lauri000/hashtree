@@ -39,6 +39,29 @@ pnpm run publish:video:iris
 
 The shared video build lives in `dist-video`. The same artifacts work for both `https://video.iris.to` and `htree://.../video/index.html`: runtime code now picks the right backend for hosted HTTPS, native `http://127.0.0.1`, and Iris `htree://` delivery. The publish helper runs `htree add .` inside `dist-video` and publishes the CHK-encrypted/shareable `nhash` root directly, so the resulting URL shape is `htree://nhash.../index.html`, not `.../dist-video/index.html`.
 
+Portable Pages release:
+
+```bash
+# Files
+CF_PAGES_PROJECT_FILES=files-iris-to pnpm run release:files:iris
+
+# Video
+CF_PAGES_PROJECT_VIDEO=video-iris-to pnpm run release:video:iris
+```
+
+Each release script performs one build, runs focused tests against that exact build output, publishes the built directory to hashtree, and only then deploys the same directory to Cloudflare Pages. If build or tests fail, neither hashtree nor Pages upload runs.
+
+Cloudflare Pages setup:
+
+```bash
+npx wrangler pages project create
+```
+
+- Create one Direct Upload Pages project per site, for example `files-iris-to` and `video-iris-to`.
+- Attach the desired custom domain in Cloudflare Pages, for example `files.iris.to` or `video.iris.to`.
+- Authenticate Wrangler either with `wrangler login` or with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
+- Set `CF_PAGES_PROJECT_FILES` and/or `CF_PAGES_PROJECT_VIDEO` in your shell so the release script knows which Pages project to deploy.
+
 ## Desktop App (Tauri)
 
 Build as a native desktop application with [Tauri](https://tauri.app/).
