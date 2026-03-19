@@ -8,6 +8,7 @@ const __dirname = path.dirname(__filename);
 const appDir = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(appDir, '..', '..');
 const manifestPath = path.join(repoRoot, 'rust', 'Cargo.toml');
+const defaultWorkerCompatibilityDate = '2026-03-19';
 
 export const releaseProfiles = {
   files: {
@@ -15,6 +16,7 @@ export const releaseProfiles = {
     appName: 'Iris Files',
     distDir: 'dist',
     treeName: 'files',
+    workerNameEnv: 'CF_WORKER_NAME_FILES',
     pagesProjectEnv: 'CF_PAGES_PROJECT_FILES',
     buildCommand: ['pnpm', 'run', 'build'],
     testCommands: [
@@ -27,6 +29,7 @@ export const releaseProfiles = {
     appName: 'Iris Video',
     distDir: 'dist-video',
     treeName: 'video',
+    workerNameEnv: 'CF_WORKER_NAME_VIDEO',
     pagesProjectEnv: 'CF_PAGES_PROJECT_VIDEO',
     buildCommand: ['pnpm', 'run', 'build:video'],
     testCommands: [
@@ -39,6 +42,7 @@ export const releaseProfiles = {
     appName: 'Iris Docs',
     distDir: 'dist-docs',
     treeName: 'docs',
+    workerNameEnv: 'CF_WORKER_NAME_DOCS',
     pagesProjectEnv: 'CF_PAGES_PROJECT_DOCS',
     buildCommand: ['pnpm', 'run', 'build:docs'],
     testCommands: [
@@ -51,6 +55,7 @@ export const releaseProfiles = {
     appName: 'Iris Maps',
     distDir: 'dist-maps',
     treeName: 'maps',
+    workerNameEnv: 'CF_WORKER_NAME_MAPS',
     pagesProjectEnv: 'CF_PAGES_PROJECT_MAPS',
     buildCommand: ['pnpm', 'run', 'build:maps'],
     testCommands: [
@@ -63,6 +68,7 @@ export const releaseProfiles = {
     appName: 'Iris Boards',
     distDir: 'dist-boards',
     treeName: 'boards',
+    workerNameEnv: 'CF_WORKER_NAME_BOARDS',
     pagesProjectEnv: 'CF_PAGES_PROJECT_BOARDS',
     buildCommand: ['pnpm', 'run', 'build:boards'],
     testCommands: [
@@ -78,6 +84,10 @@ function wranglerPagesCommand(...args) {
   return ['npx', 'wrangler@4', ...args];
 }
 
+function wranglerWorkerAssetsCommand(...args) {
+  return ['npx', 'wrangler@4', 'deploy', ...args];
+}
+
 export function parseArgs(argv, env = process.env) {
   const args = [...argv].filter((arg, index) => !(arg === '--' && index === 0));
   const profileName = args.shift();
@@ -86,10 +96,12 @@ export function parseArgs(argv, env = process.env) {
   }
 
   let pagesProject;
+  let workerName;
   let treeName;
   let branch;
   let dryRun = false;
-  let skipPages = false;
+  let skipCloudflare = false;
+  let workerCompatibilityDate;
 
   while (args.length > 0) {
     const arg = args.shift();
@@ -98,6 +110,10 @@ export function parseArgs(argv, env = process.env) {
     }
     if (arg === '--pages-project') {
       pagesProject = args.shift();
+      continue;
+    }
+    if (arg === '--worker-name') {
+      workerName = args.shift();
       continue;
     }
     if (arg === '--tree') {
@@ -112,14 +128,25 @@ export function parseArgs(argv, env = process.env) {
       dryRun = true;
       continue;
     }
+    if (arg === '--compatibility-date') {
+      workerCompatibilityDate = args.shift();
+      continue;
+    }
+    if (arg === '--skip-cloudflare') {
+      skipCloudflare = true;
+      continue;
+    }
     if (arg === '--skip-pages') {
-      skipPages = true;
+      skipCloudflare = true;
       continue;
     }
     throw new Error(`Unknown argument: ${arg}`);
   }
 
   if (profileName === 'all') {
+    if (workerName) {
+      throw new Error('--worker-name is not supported with the all profile');
+    }
     if (pagesProject) {
       throw new Error('--pages-project is not supported with the all profile');
     }
@@ -130,8 +157,9 @@ export function parseArgs(argv, env = process.env) {
     return {
       profileName,
       dryRun,
-      skipPages,
+      skipCloudflare,
       branch,
+      workerCompatibilityDate,
     };
   }
 
@@ -143,10 +171,13 @@ export function parseArgs(argv, env = process.env) {
   return {
     profileName,
     dryRun,
-    skipPages,
+    skipCloudflare,
     branch,
     treeName: treeName ?? profile.treeName,
+    workerName: workerName ?? env[profile.workerNameEnv],
     pagesProject: pagesProject ?? env[profile.pagesProjectEnv],
+    workerCompatibilityDate:
+      workerCompatibilityDate ?? env.CF_WORKER_COMPATIBILITY_DATE ?? defaultWorkerCompatibilityDate,
   };
 }
 
@@ -155,9 +186,12 @@ export function createReleasePlan(options) {
   if (!profile) {
     throw new Error(`Unknown release profile: ${options.profileName}`);
   }
-  if (!options.skipPages && !options.pagesProject) {
+  if (options.workerName && options.branch) {
+    throw new Error('--branch is only supported for Pages deployments');
+  }
+  if (!options.skipCloudflare && !options.workerName && !options.pagesProject) {
     throw new Error(
-      `Missing Pages project. Pass --pages-project or set ${profile.pagesProjectEnv}.`,
+      `Missing Cloudflare target. Pass --worker-name, --pages-project, or set ${profile.workerNameEnv} / ${profile.pagesProjectEnv}.`,
     );
   }
 
@@ -197,20 +231,32 @@ export function createReleasePlan(options) {
     },
   ];
 
-  if (!options.skipPages) {
-    const deployCommand = wranglerPagesCommand(
-      'pages',
-      'deploy',
-      profile.distDir,
-      '--project-name',
-      options.pagesProject,
-    );
-    if (options.branch) {
+  if (!options.skipCloudflare) {
+    const deployCommand = options.workerName
+      ? wranglerWorkerAssetsCommand(
+          '--assets',
+          profile.distDir,
+          '--name',
+          options.workerName,
+          '--compatibility-date',
+          options.workerCompatibilityDate,
+          '--keep-vars',
+        )
+      : wranglerPagesCommand(
+          'pages',
+          'deploy',
+          profile.distDir,
+          '--project-name',
+          options.pagesProject,
+        );
+    if (options.pagesProject && options.branch) {
       deployCommand.push('--branch', options.branch);
     }
     steps.push({
       id: 'deploy',
-      label: `Deploy ${profile.appName} to Cloudflare Pages`,
+      label: options.workerName
+        ? `Deploy ${profile.appName} to Cloudflare Worker`
+        : `Deploy ${profile.appName} to Cloudflare Pages`,
       command: deployCommand,
       cwd: appDir,
     });
@@ -307,7 +353,9 @@ export function runRelease(options, runner = defaultRunner, hooks = {}) {
     treeName: options.treeName,
     publish,
     pagesUrl: pagesOutput ? parsePagesOutput(pagesOutput) : null,
-    pagesProject: options.skipPages ? null : options.pagesProject,
+    pagesProject:
+      options.skipCloudflare || options.workerName ? null : options.pagesProject ?? null,
+    workerName: options.skipCloudflare ? null : options.workerName ?? null,
   };
 }
 
@@ -317,7 +365,7 @@ export function runAllReleases(options, runner = defaultRunner, hooks = {}) {
       [
         profileName,
         ...(options.branch ? ['--branch', options.branch] : []),
-        ...(options.skipPages ? ['--skip-pages'] : []),
+        ...(options.skipCloudflare ? ['--skip-cloudflare'] : []),
         ...(options.dryRun ? ['--dry-run'] : []),
       ],
       process.env,
@@ -340,30 +388,42 @@ export function usage() {
   return `Usage: node ./scripts/release-site.mjs <files|video|docs|maps|boards|all> [options]
 
 Build once, test the built output, publish to hashtree, then deploy that same
-directory to Cloudflare Pages.
+directory to Cloudflare Workers Static Assets or Cloudflare Pages.
 
 Options:
+  --worker-name <name>    Cloudflare Worker service name for static assets
   --pages-project <name>  Cloudflare Pages project name
   --tree <name>           hashtree mutable tree name override
   --branch <name>         Pages branch/preview deployment target
-  --skip-pages            publish to hashtree only
+  --compatibility-date    Worker compatibility date override
+  --skip-cloudflare       publish to hashtree only
+  --skip-pages            alias for --skip-cloudflare
   --dry-run               print planned steps without running them
 
 Environment:
+  ${releaseProfiles.files.workerNameEnv}   Default Worker name for the files profile
   ${releaseProfiles.files.pagesProjectEnv}   Default Pages project for the files profile
+  ${releaseProfiles.video.workerNameEnv}   Default Worker name for the video profile
   ${releaseProfiles.video.pagesProjectEnv}   Default Pages project for the video profile
+  ${releaseProfiles.docs.workerNameEnv}   Default Worker name for the docs profile
   ${releaseProfiles.docs.pagesProjectEnv}   Default Pages project for the docs profile
+  ${releaseProfiles.maps.workerNameEnv}   Default Worker name for the maps profile
   ${releaseProfiles.maps.pagesProjectEnv}   Default Pages project for the maps profile
+  ${releaseProfiles.boards.workerNameEnv}   Default Worker name for the boards profile
   ${releaseProfiles.boards.pagesProjectEnv}   Default Pages project for the boards profile
+  CF_WORKER_COMPATIBILITY_DATE   Default compatibility date for Worker deployments
 `;
 }
 
 function printSummary(result) {
-  const { profile, treeName, publish, pagesProject, pagesUrl } = result;
+  const { profile, treeName, publish, pagesProject, pagesUrl, workerName } = result;
   console.log(`\n${profile.appName} release complete.`);
   console.log(`Hashtree immutable URL: htree://${publish.nhash}/index.html`);
   console.log(`Hashtree mutable URL: htree://${publish.publishedRef}`);
   console.log(`Hashtree owner URL: htree://${publish.publishedRef}`);
+  if (workerName) {
+    console.log(`Worker service: ${workerName}`);
+  }
   if (pagesProject) {
     console.log(`Pages project: ${pagesProject}`);
   }

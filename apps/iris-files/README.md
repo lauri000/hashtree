@@ -39,7 +39,7 @@ pnpm run publish:video:iris
 
 The shared video build lives in `dist-video`. The same artifacts work for both `https://video.iris.to` and `htree://.../video/index.html`: runtime code now picks the right backend for hosted HTTPS, native `http://127.0.0.1`, and Iris `htree://` delivery. The publish helper runs `htree add .` inside `dist-video` and publishes the CHK-encrypted/shareable `nhash` root directly, so the resulting URL shape is `htree://nhash.../index.html`, not `.../dist-video/index.html`.
 
-Portable Pages release:
+Portable Cloudflare release:
 
 ```bash
 # One app
@@ -53,18 +53,24 @@ pnpm run release:iris -- boards
 pnpm run release:all:iris
 ```
 
-Each release script performs one build, runs focused tests against that exact build output, publishes the built directory to hashtree, and only then deploys the same directory to Cloudflare Pages. If build or tests fail, neither hashtree nor Pages upload runs.
+Each release script performs one build, runs focused tests against that exact build output, publishes the built directory to hashtree, and only then deploys the same directory to Cloudflare. If build or tests fail, neither hashtree nor Cloudflare upload runs.
 
-Cloudflare Pages setup:
+Cloudflare Worker static-assets setup:
 
 ```bash
-npx wrangler pages project create
+npx wrangler deploy --assets ./dist --name iris-files --compatibility-date 2026-03-19 --dry-run
 ```
 
-- Create one Direct Upload Pages project per site, for example `docs-iris-to`, `files-iris-to`, `maps-iris-to`, `video-iris-to`, and `boards-iris-to`.
-- Attach the desired custom domain in Cloudflare Pages, for example `docs.iris.to`, `files.iris.to`, `maps.iris.to`, `video.iris.to`, or `boards.iris.to`.
+- Create or reuse one Worker static-assets service per site, for example `iris-files`.
+- Attach the desired custom domain to that Worker service in Cloudflare.
 - Authenticate Wrangler either with `wrangler login` or with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
-- Set the matching `CF_PAGES_PROJECT_*` environment variables in your shell so the release script knows which Pages project to deploy.
+- Set the matching `CF_WORKER_NAME_*` environment variables in your shell so the release script knows which Worker service to deploy.
+- Optionally set `CF_WORKER_COMPATIBILITY_DATE` if you do not want to use the script default.
+
+Cloudflare Pages fallback:
+
+- If a profile does not have a Worker service yet, you can still set `CF_PAGES_PROJECT_*` instead.
+- When both `CF_WORKER_NAME_*` and `CF_PAGES_PROJECT_*` are set for the same profile, the release script deploys to the Worker service.
 
 ## Desktop App (Tauri)
 
