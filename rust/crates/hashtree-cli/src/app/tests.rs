@@ -4,9 +4,11 @@ use super::lists::{
     update_mute_list_file_with_status, MuteEntry, MuteUpdate,
 };
 use super::resolve::resolve_cid_input;
+use super::run::format_cid_for_display;
 use crate::app::args::{CashuCommands, CashuMintCommands, SocialGraphCommands};
 use crate::app::args::{Cli, Commands};
 use clap::Parser;
+use hashtree_core::{nhash_decode, Cid};
 use nostr::Kind;
 use std::path::PathBuf;
 
@@ -169,6 +171,20 @@ fn test_load_mute_entries_legacy_format() {
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].pubkey, pk1);
     assert_eq!(entries[0].reason, None);
+}
+
+#[test]
+fn test_format_cid_for_display_preserves_decrypt_key() {
+    let cid = Cid {
+        hash: [0x11; 32],
+        key: Some([0x22; 32]),
+    };
+
+    let rendered = format_cid_for_display(&cid);
+    let decoded = nhash_decode(&rendered).expect("decode rendered nhash");
+
+    assert_eq!(decoded.hash, cid.hash);
+    assert_eq!(decoded.decrypt_key, cid.key);
 }
 
 #[test]

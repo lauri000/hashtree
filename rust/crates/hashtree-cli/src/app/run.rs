@@ -6,9 +6,10 @@ use hashtree_cli::config::{
 #[cfg(feature = "p2p")]
 use hashtree_cli::WebRTCManager;
 use hashtree_cli::{
-    BackgroundSync, Config, HashtreeServer, HashtreeStore, NostrKeys, NostrResolverConfig,
-    NostrRootResolver, NostrToBech32, RootResolver,
+    BackgroundSync, Config, FetchConfig, Fetcher, HashtreeServer, HashtreeStore, NostrKeys,
+    NostrResolverConfig, NostrRootResolver, NostrToBech32, RootResolver,
 };
+use hashtree_core::{Cid, HashTree, HashTreeConfig, NHashData};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -833,86 +834,30 @@ pub(crate) async fn run() -> Result<()> {
             }
         }
         Commands::Pin { cid: cid_input } => {
-            use hashtree_core::{nhash_encode, to_hex};
-
             // Resolve npub/repo or htree:// URLs to CID
             let resolved = resolve_cid_input(&cid_input).await?;
             let store = HashtreeStore::new(&data_dir)?;
             store.pin(&resolved.cid.hash)?;
-            let nhash =
-                nhash_encode(&resolved.cid.hash).unwrap_or_else(|_| to_hex(&resolved.cid.hash));
-            println!("Pinned: {}", nhash);
+            println!("Pinned: {}", format_cid_for_display(&resolved.cid));
         }
         Commands::Unpin { cid: cid_input } => {
-            use hashtree_core::{nhash_encode, to_hex};
-
             // Resolve npub/repo or htree:// URLs to CID
             let resolved = resolve_cid_input(&cid_input).await?;
             let store = HashtreeStore::new(&data_dir)?;
             store.unpin(&resolved.cid.hash)?;
-            let nhash =
-                nhash_encode(&resolved.cid.hash).unwrap_or_else(|_| to_hex(&resolved.cid.hash));
-            println!("Unpinned: {}", nhash);
+            println!("Unpinned: {}", format_cid_for_display(&resolved.cid));
         }
         Commands::Info { cid: cid_input } => {
-            use hashtree_core::{nhash_encode, to_hex};
-
             // Resolve npub/repo or htree:// URLs to CID
             let resolved = resolve_cid_input(&cid_input).await?;
-            let store = HashtreeStore::new(&data_dir)?;
-            let nhash =
-                nhash_encode(&resolved.cid.hash).unwrap_or_else(|_| to_hex(&resolved.cid.hash));
+            let store = Arc::new(HashtreeStore::new(&data_dir)?);
+            let fetcher = Fetcher::new(FetchConfig::default());
+            let target_cid =
+                resolve_info_target(&store, &fetcher, &resolved.cid, resolved.path.as_deref())
+                    .await?;
 
-            // Check if content exists using file chunk metadata
-            if let Some(metadata) = store.get_file_chunk_metadata(&resolved.cid.hash)? {
-                println!("Hash: {}", nhash);
-                println!("Pinned: {}", store.is_pinned(&resolved.cid.hash)?);
-                println!("Total size: {} bytes", metadata.total_size);
-                println!("Chunked: {}", metadata.is_chunked);
-
-                if metadata.is_chunked {
-                    println!("Chunks: {}", metadata.chunk_hashes.len());
-                    println!("\nChunk details:");
-                    for (i, (chunk_hash, size)) in metadata
-                        .chunk_hashes
-                        .iter()
-                        .zip(metadata.chunk_sizes.iter())
-                        .enumerate()
-                    {
-                        println!("  [{}] {} ({} bytes)", i, to_hex(chunk_hash), size);
-                    }
-                }
-
-                // Show directory listing if it's a directory
-                if let Ok(Some(listing)) = store.get_directory_listing(&resolved.cid.hash) {
-                    println!("\nDirectory contents:");
-                    for entry in listing.entries {
-                        let type_str = if entry.is_directory { "dir" } else { "file" };
-                        println!(
-                            "  [{}] {} -> {} ({} bytes)",
-                            type_str, entry.name, entry.cid, entry.size
-                        );
-                    }
-                }
-
-                // Show tree node info if available
-                if let Ok(Some(node)) = store.get_tree_node(&resolved.cid.hash) {
-                    println!("\nTree node info:");
-                    println!("  Links: {}", node.links.len());
-                    for (i, link) in node.links.iter().enumerate() {
-                        let name = link.name.as_deref().unwrap_or("<unnamed>");
-                        let size_str = format!("{} bytes", link.size);
-                        println!(
-                            "    [{}] {} -> {} ({})",
-                            i,
-                            name,
-                            hashtree_core::to_hex(&link.hash),
-                            size_str
-                        );
-                    }
-                }
-            } else {
-                println!("Hash not found: {}", nhash);
+            if !print_info_for_cid(&store, &target_cid).await? {
+                println!("Hash not found: {}", format_cid_for_display(&target_cid));
             }
         }
         Commands::Stats => {
@@ -1409,4 +1354,124 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+pub(crate) fn format_cid_for_display(cid: &Cid) -> String {
+    hashtree_core::nhash_encode_full(&NHashData {
+        hash: cid.hash,
+        decrypt_key: cid.key,
+    })
+    .unwrap_or_else(|_| cid.to_string())
+}
+
+async fn resolve_info_target(
+    store: &Arc<HashtreeStore>,
+    fetcher: &Fetcher,
+    root_cid: &Cid,
+    path: Option<&str>,
+) -> Result<Cid> {
+    fetcher.fetch_cid_tree(store, None, root_cid).await?;
+
+    let Some(path) = path else {
+        return Ok(root_cid.clone());
+    };
+
+    if store.get_chunk(&root_cid.hash)?.is_none() {
+        return Ok(root_cid.clone());
+    }
+
+    let target_cid = store
+        .resolve_path(root_cid, path)?
+        .ok_or_else(|| anyhow::anyhow!("Path not found in directory: {}", path))?;
+
+    fetcher.fetch_cid_tree(store, None, &target_cid).await?;
+    Ok(target_cid)
+}
+
+async fn print_info_for_cid(store: &Arc<HashtreeStore>, cid: &Cid) -> Result<bool> {
+    use hashtree_core::to_hex;
+
+    if store.get_chunk(&cid.hash)?.is_none() {
+        return Ok(false);
+    }
+
+    let tree = HashTree::new(HashTreeConfig::new(store.store_arc()).public());
+    let total_size = tree
+        .get_size_cid(cid)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get size: {}", e))?;
+    let is_directory = tree
+        .is_dir(cid)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to inspect directory: {}", e))?;
+    let node = if is_directory {
+        tree.get_directory_node(cid)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get directory node: {}", e))?
+    } else {
+        tree.get_node(cid)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get tree node: {}", e))?
+    };
+
+    println!("Hash: {}", format_cid_for_display(cid));
+    println!("Pinned: {}", store.is_pinned(&cid.hash)?);
+    println!("Total size: {} bytes", total_size);
+
+    if is_directory {
+        println!("Directory: true");
+        let entries = tree
+            .list_directory(cid)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list directory: {}", e))?;
+        println!("\nDirectory contents:");
+        for entry in entries {
+            let type_str = if entry.link_type.is_tree() {
+                "dir"
+            } else {
+                "file"
+            };
+            let entry_cid = Cid {
+                hash: entry.hash,
+                key: entry.key,
+            };
+            println!(
+                "  [{}] {} -> {} ({} bytes)",
+                type_str,
+                entry.name,
+                format_cid_for_display(&entry_cid),
+                entry.size
+            );
+        }
+    } else if let Some(node) = &node {
+        let is_chunked = !node.links.is_empty();
+        println!("Chunked: {}", is_chunked);
+
+        if is_chunked {
+            println!("Chunks: {}", node.links.len());
+            println!("\nChunk details:");
+            for (i, link) in node.links.iter().enumerate() {
+                println!("  [{}] {} ({} bytes)", i, to_hex(&link.hash), link.size);
+            }
+        }
+    } else {
+        println!("Chunked: false");
+    }
+
+    if let Some(node) = node {
+        println!("\nTree node info:");
+        println!("  Links: {}", node.links.len());
+        for (i, link) in node.links.iter().enumerate() {
+            let name = link.name.as_deref().unwrap_or("<unnamed>");
+            println!(
+                "    [{}] {} -> {} ({} bytes)",
+                i,
+                name,
+                to_hex(&link.hash),
+                link.size
+            );
+        }
+    }
+
+    Ok(true)
 }
