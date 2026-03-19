@@ -9,6 +9,7 @@ pub(crate) mod mount;
 pub(crate) mod nostr_index;
 pub(crate) mod peers;
 pub(crate) mod pr;
+pub(crate) mod release;
 pub(crate) mod resolve;
 pub(crate) mod socialgraph;
 pub(crate) mod util;

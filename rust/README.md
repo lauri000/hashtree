@@ -211,9 +211,19 @@ htree unpin <hash>                      # Unpin content
 # Nostr identity
 htree user                              # Show npub
 htree publish mydata <hash>             # Publish hash to npub.../mydata
+htree release publish hashtree-releases v0.2.3 <cid-or-nhash>
 htree follow npub1...                   # Follow user
 htree following                         # List followed users
 ```
+
+Publish a new binary release while keeping older versions in the same mutable tree:
+
+```bash
+release="$(htree add dist/hashtree-v0.2.3 | awk '/^  url:/ {print $2}')"
+scripts/publish_release.sh v0.2.3 "$release" hashtree-releases
+```
+
+That stores the new release under `v0.2.3/`, repoints `latest/` at the same CID, and leaves older versions intact.
 
 ## Development
 

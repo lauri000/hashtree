@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::args::{Cli, Commands, PrCommands, SocialGraphCommands, StorageCommands};
+use super::args::{Cli, Commands, PrCommands, ReleaseCommands, SocialGraphCommands, StorageCommands};
 use super::blossom::{background_blossom_push, push_to_blossom};
 use super::cashu_delegate::run_cashu_helper;
 use super::content::add_directory;
@@ -25,6 +25,7 @@ use super::lists::{follow_user, list_following, list_muted, mute_user, update_pr
 use super::mount::mount_fuse;
 use super::nostr_index::{run_socialgraph_index_from_cli, SocialGraphIndexOptions};
 use super::peers::{fetch_profile_name, list_peers};
+use super::release::publish_release_version;
 use super::resolve::resolve_cid_input;
 use super::socialgraph::{
     run_socialgraph_filter, run_socialgraph_snapshot, run_socialgraph_stats, run_socialgraph_warm,
@@ -1025,6 +1026,27 @@ pub(crate) async fn run() -> Result<()> {
             // Clean up
             let _ = resolver.stop().await;
         }
+        Commands::Release { command } => match command {
+            ReleaseCommands::Publish {
+                tree_name,
+                version_path,
+                cid,
+                local,
+            } => {
+                let published =
+                    publish_release_version(&data_dir, &tree_name, &version_path, &cid, local)
+                        .await?;
+
+                println!(
+                    "Published release: htree://{}/{}/{}",
+                    published.npub, published.tree_name, published.version_path
+                );
+                println!(
+                    "Latest release:    htree://{}/{}/{}",
+                    published.npub, published.tree_name, published.latest_path
+                );
+            }
+        },
         Commands::Follow { npub } => {
             follow_user(&data_dir, &npub, true).await?;
         }

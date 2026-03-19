@@ -14,6 +14,7 @@
 //!   htree gc
 //!   htree user [<nsec>]
 //!   htree publish <ref_name> <hash> [--key <key>]
+//!   htree release publish <tree_name> <version_path> <cid> [--local]
 
 mod app;
 

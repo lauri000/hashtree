@@ -162,6 +162,12 @@ pub(crate) enum Commands {
         key: Option<String>,
     },
 
+    /// Manage published release trees
+    Release {
+        #[command(subcommand)]
+        command: ReleaseCommands,
+    },
+
     /// Follow a user (adds to your contact list)
     Follow {
         /// npub of user to follow
@@ -481,5 +487,21 @@ pub(crate) enum SocialGraphCommands {
         /// Relay URLs to use for this index run (repeatable, overrides config relays)
         #[arg(long = "relay")]
         relays: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ReleaseCommands {
+    /// Publish a version directory CID into a mutable release tree and repoint latest
+    Publish {
+        /// Mutable release tree name (for example: "hashtree-releases")
+        tree_name: String,
+        /// Version path within the release tree (for example: "v0.2.3" or "releases/v0.2.3")
+        version_path: String,
+        /// CID or nhash for the release directory to publish
+        cid: String,
+        /// Don't push the updated release root to file servers
+        #[arg(long)]
+        local: bool,
     },
 }

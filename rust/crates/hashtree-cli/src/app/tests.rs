@@ -5,7 +5,7 @@ use super::lists::{
 };
 use super::resolve::resolve_cid_input;
 use super::run::format_cid_for_display;
-use crate::app::args::{CashuCommands, CashuMintCommands, SocialGraphCommands};
+use crate::app::args::{CashuCommands, CashuMintCommands, ReleaseCommands, SocialGraphCommands};
 use crate::app::args::{Cli, Commands};
 use clap::Parser;
 use hashtree_core::{nhash_decode, Cid};
@@ -226,6 +226,37 @@ fn test_cli_parses_cashu_topup_and_mint_commands() {
             assert!(make_default);
         }
         _ => panic!("expected cashu mint add command"),
+    }
+}
+
+#[test]
+fn test_cli_parses_release_publish_command() {
+    let cli = Cli::parse_from([
+        "htree",
+        "release",
+        "publish",
+        "hashtree-releases",
+        "releases/v0.2.3",
+        "nhash1qqsq9qxpq9qcrsszg2pvxq6rs0zqg3yyc5fc5z0knh0wlh",
+        "--local",
+    ]);
+
+    match cli.command {
+        Commands::Release {
+            command:
+                ReleaseCommands::Publish {
+                    tree_name,
+                    version_path,
+                    cid,
+                    local,
+                },
+        } => {
+            assert_eq!(tree_name, "hashtree-releases");
+            assert_eq!(version_path, "releases/v0.2.3");
+            assert_eq!(cid, "nhash1qqsq9qxpq9qcrsszg2pvxq6rs0zqg3yyc5fc5z0knh0wlh");
+            assert!(local);
+        }
+        _ => panic!("expected release publish command"),
     }
 }
 

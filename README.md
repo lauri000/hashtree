@@ -37,6 +37,23 @@ cargo install hashtree-cli git-remote-htree hashtree-cashu-cli
 cargo install hashtree-cli --no-default-features
 ```
 
+### Binary Release Tree
+
+Binary releases are being published under the hashtree publisher identity at:
+
+- `htree://npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree-releases`
+- `htree://npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree-releases/latest`
+- [files.iris.to browser view](https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree-releases)
+- [upload.iris.to direct download root](https://upload.iris.to/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree-releases/latest/)
+
+The htree-native install URL pattern is:
+
+```bash
+curl -fsSL https://upload.iris.to/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree-releases/latest/hashtree-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/apple-darwin/' | sed 's/linux/unknown-linux-musl/').tar.gz | tar -xz && cd hashtree && ./install.sh
+```
+
+The GitHub quick-install line above is kept until the first `hashtree-releases/latest` tree is published, so the README does not point at an empty path.
+
 ## Getting started
 
 - Web app + JS SDK: follow [`ts/README.md`](ts/README.md)
