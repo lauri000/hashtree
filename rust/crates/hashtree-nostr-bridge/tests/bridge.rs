@@ -792,6 +792,131 @@ async fn caches_relays_that_do_not_support_negentropy() -> io::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn require_negentropy_skips_relays_that_cannot_reconcile() -> io::Result<()> {
+    let fallback_relay = TestRelay::new();
+    let supported_relay = TestRelay::with_negentropy(true);
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("p tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&contact_list), true, 1.0);
+
+    let note = EventBuilder::new(Kind::TextNote, "alice note", [])
+        .custom_created_at(Timestamp::from_secs(20))
+        .to_event(&alice_keys)
+        .expect("note");
+
+    let publisher = Client::new(Keys::generate());
+    publisher
+        .add_relay(&supported_relay.url())
+        .await
+        .expect("add supported relay");
+    publisher.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    publisher
+        .send_event(note.clone())
+        .await
+        .expect("publish event");
+
+    let store = Arc::new(MemoryStore::new());
+    let bridge = NostrBridge::new(
+        store.clone(),
+        CrawlConfig {
+            relays: vec![fallback_relay.url(), supported_relay.url()],
+            author_batch_size: 1,
+            per_author_event_limit: 4,
+            kinds: Some(vec![1]),
+            require_negentropy: true,
+            ..CrawlConfig::default()
+        },
+    );
+
+    let report = bridge.crawl(&graph, None).await.expect("crawl report");
+    let root = report.root.expect("index root");
+    let retained = NostrEventStore::new(store)
+        .list_recent(Some(&root), ListEventsOptions { limit: Some(10) })
+        .await
+        .expect("list retained");
+
+    assert_eq!(report.events_selected, 1);
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].id, note.id.to_hex());
+    assert_eq!(fallback_relay.negentropy_open_attempts(), 1);
+    assert!(fallback_relay.requested_id_batches().is_empty());
+    assert!(supported_relay.negentropy_sessions_started() >= 1);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relay_event_max_size_allows_moderately_large_events() -> io::Result<()> {
+    let relay = TestRelay::new();
+    let relay_url = relay.url();
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("p tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&contact_list), true, 1.0);
+
+    let publisher = Client::new(Keys::generate());
+    publisher.add_relay(&relay_url).await.expect("add relay");
+    publisher.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let large_note = EventBuilder::new(Kind::TextNote, "x".repeat(90_000), [])
+        .custom_created_at(Timestamp::from_secs(20))
+        .to_event(&alice_keys)
+        .expect("large note");
+    publisher
+        .send_event(large_note.clone())
+        .await
+        .expect("publish large event");
+
+    let store = Arc::new(MemoryStore::new());
+    let bridge = NostrBridge::new(
+        store.clone(),
+        CrawlConfig {
+            relays: vec![relay_url],
+            per_author_event_limit: 4,
+            kinds: Some(vec![1]),
+            relay_event_max_size: Some(128_000),
+            ..CrawlConfig::default()
+        },
+    );
+
+    let report = bridge.crawl(&graph, None).await.expect("crawl report");
+    let root = report.root.expect("index root");
+    let retained = NostrEventStore::new(store)
+        .list_recent(Some(&root), ListEventsOptions { limit: Some(10) })
+        .await
+        .expect("list retained");
+
+    assert_eq!(report.events_selected, 1);
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].id, large_note.id.to_hex());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn global_recent_scan_filters_locally_by_social_graph() -> io::Result<()> {
     let relay = TestRelay::new();
     let relay_url = relay.url();
@@ -980,6 +1105,63 @@ async fn global_recent_scan_pages_past_relay_side_caps() -> io::Result<()> {
     let report = bridge.crawl(&graph, None).await.expect("crawl report");
     assert_eq!(report.events_seen, 5);
     assert_eq!(report.events_selected, 5);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn global_recent_scan_stops_after_max_events_seen() -> io::Result<()> {
+    let relay = TestRelay::new();
+    let relay_url = relay.url();
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("p tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&contact_list), true, 1.0);
+
+    let publisher = Client::new(Keys::generate());
+    publisher.add_relay(&relay_url).await.expect("add relay");
+    publisher.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    for created_at in 20..25 {
+        let note = EventBuilder::new(Kind::TextNote, format!("note {created_at}"), [])
+            .custom_created_at(Timestamp::from_secs(created_at))
+            .to_event(&alice_keys)
+            .expect("note");
+        publisher
+            .send_event(note)
+            .await
+            .expect("publish test event");
+    }
+
+    let store = Arc::new(MemoryStore::new());
+    let bridge = NostrBridge::new(
+        store,
+        CrawlConfig {
+            relays: vec![relay_url],
+            relay_fetch_mode: RelayFetchMode::GlobalRecent,
+            relay_page_size: 2,
+            max_relay_pages: 10,
+            max_events_seen: Some(3),
+            per_author_event_limit: 8,
+            kinds: Some(vec![1]),
+            ..CrawlConfig::default()
+        },
+    );
+
+    let report = bridge.crawl(&graph, None).await.expect("crawl report");
+    assert_eq!(report.events_seen, 4);
+    assert_eq!(report.events_selected, 4);
 
     Ok(())
 }

@@ -23,7 +23,11 @@ fn child_cid(parent: &Cid, link: &Link) -> Cid {
 
     Cid {
         hash: link.hash,
-        key: link.key.or(if inherits_parent_key { parent.key } else { None }),
+        key: link.key.or(if inherits_parent_key {
+            parent.key
+        } else {
+            None
+        }),
     }
 }
 

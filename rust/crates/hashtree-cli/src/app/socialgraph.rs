@@ -217,6 +217,28 @@ pub(crate) fn run_socialgraph_snapshot(
     Ok(())
 }
 
+pub(crate) fn run_socialgraph_stats(data_dir: PathBuf) -> Result<()> {
+    let config = Config::load()?;
+    let (graph_store, _social_graph_root_bytes) = init_socialgraph(&data_dir, &config)?;
+    let stats = graph_store.stats().context("read social graph stats")?;
+
+    println!("Social graph:");
+    println!("  Root: {}", stats.root.as_deref().unwrap_or("unknown"));
+    println!("  Users: {}", stats.total_users);
+    println!("  Follow edges: {}", stats.total_follows);
+    println!("  Max depth: {}", stats.max_depth);
+    if stats.size_by_distance.is_empty() {
+        println!("  Distances: none");
+    } else {
+        println!("  Distances:");
+        for (distance, count) in stats.size_by_distance {
+            println!("    {}: {}", distance, count);
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn run_socialgraph_warm(
     data_dir: PathBuf,
     secs: u64,
@@ -224,6 +246,7 @@ pub(crate) async fn run_socialgraph_warm(
     full_graph_recrawl: bool,
     relays: Vec<String>,
     author_batch_size: usize,
+    concurrent_batches: usize,
 ) -> Result<()> {
     let config = Config::load()?;
     let (keys, _) = ensure_keys()?;
@@ -261,6 +284,7 @@ pub(crate) async fn run_socialgraph_warm(
             effective_crawl_depth,
         )
         .with_author_batch_size(author_batch_size)
+        .with_concurrent_batches(concurrent_batches)
         .with_full_recrawl(full_graph_recrawl)
         .with_known_since(cycle_known_since);
 

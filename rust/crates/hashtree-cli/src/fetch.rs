@@ -8,7 +8,7 @@
 use anyhow::Result;
 use hashtree_blossom::BlossomClient;
 use hashtree_config::detect_local_daemon_url;
-use hashtree_core::{Cid, HashTree, HashTreeConfig, Link, to_hex};
+use hashtree_core::{to_hex, Cid, HashTree, HashTreeConfig, Link};
 use nostr::Keys;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
@@ -31,7 +31,11 @@ fn child_cid(parent: &Cid, link: &Link) -> Cid {
 
     Cid {
         hash: link.hash,
-        key: link.key.or(if inherits_parent_key { parent.key } else { None }),
+        key: link.key.or(if inherits_parent_key {
+            parent.key
+        } else {
+            None
+        }),
     }
 }
 

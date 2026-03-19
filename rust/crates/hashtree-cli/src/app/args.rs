@@ -381,6 +381,8 @@ pub(crate) enum SocialGraphCommands {
         #[arg(long, default_value_t = 1.0)]
         overmute_threshold: f64,
     },
+    /// Show local social graph statistics
+    Stats,
     /// Warm the local social graph without building a post index
     Warm {
         /// Warm the social graph for this many seconds
@@ -398,6 +400,9 @@ pub(crate) enum SocialGraphCommands {
         /// Relay query author batch size
         #[arg(long, default_value_t = 64)]
         author_batch_size: usize,
+        /// Number of relay author batches to fetch concurrently
+        #[arg(long, default_value_t = 4)]
+        concurrent_batches: usize,
     },
     /// Save a social graph snapshot (nostr-social-graph binary format)
     Snapshot {
@@ -446,18 +451,30 @@ pub(crate) enum SocialGraphCommands {
         /// Relay query author batch size
         #[arg(long, default_value_t = 64)]
         author_batch_size: usize,
+        /// Number of graph-crawl author batches to fetch concurrently during warmup
+        #[arg(long, default_value_t = 4)]
+        concurrent_batches: usize,
         /// Relay fetch timeout in seconds
         #[arg(long, default_value_t = 10)]
         fetch_timeout_secs: u64,
+        /// Maximum event size accepted from relays, in bytes
+        #[arg(long)]
+        relay_event_max_bytes: Option<u32>,
         /// Fetch recent relay pages without author filters and filter locally by social graph
         #[arg(long, default_value_t = false)]
         global_relay_scan: bool,
+        /// Only use relays that advertise NIP-77 negentropy support via NIP-11
+        #[arg(long, default_value_t = false)]
+        negentropy_only: bool,
         /// Number of events to request per relay page in global relay scan mode
         #[arg(long, default_value_t = 1_000)]
         relay_page_size: usize,
         /// Maximum pages to fetch per relay in global relay scan mode
         #[arg(long, default_value_t = 10)]
         max_relay_pages: usize,
+        /// Stop after seeing at least this many raw relay events
+        #[arg(long)]
+        max_events_seen: Option<usize>,
         /// Restrict indexing to these kinds (repeatable)
         #[arg(long = "kind")]
         kinds: Vec<u16>,

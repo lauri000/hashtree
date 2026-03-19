@@ -1,3 +1,4 @@
+use futures::stream::{self, StreamExt};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,6 +9,7 @@ use tokio::sync::watch;
 use super::SocialGraphBackend;
 
 const DEFAULT_AUTHOR_BATCH_SIZE: usize = 500;
+const DEFAULT_CONCURRENT_BATCHES: usize = 4;
 const GRAPH_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -18,6 +20,7 @@ pub struct SocialGraphCrawler {
     relays: Vec<String>,
     max_depth: u32,
     author_batch_size: usize,
+    concurrent_batches: usize,
     full_recrawl: bool,
     known_since: Option<Timestamp>,
 }
@@ -36,6 +39,7 @@ impl SocialGraphCrawler {
             relays,
             max_depth,
             author_batch_size: DEFAULT_AUTHOR_BATCH_SIZE,
+            concurrent_batches: DEFAULT_CONCURRENT_BATCHES,
             full_recrawl: false,
             known_since: None,
         }
@@ -48,6 +52,11 @@ impl SocialGraphCrawler {
 
     pub fn with_author_batch_size(mut self, author_batch_size: usize) -> Self {
         self.author_batch_size = author_batch_size.max(1);
+        self
+    }
+
+    pub fn with_concurrent_batches(mut self, concurrent_batches: usize) -> Self {
+        self.concurrent_batches = concurrent_batches.max(1);
         self
     }
 
@@ -71,12 +80,12 @@ impl SocialGraphCrawler {
             .unwrap_or(false)
     }
 
-    fn ingest_event_into(
+    fn ingest_events_into(
         &self,
         graph_store: &(impl SocialGraphBackend + ?Sized),
-        event: &nostr::Event,
+        events: &[nostr::Event],
     ) {
-        if let Err(err) = super::ingest_parsed_event(graph_store, event) {
+        if let Err(err) = super::ingest_parsed_events(graph_store, events) {
             tracing::debug!("Failed to ingest crawler event: {}", err);
         }
     }
@@ -176,16 +185,25 @@ impl SocialGraphCrawler {
         since: Option<Timestamp>,
         shutdown_rx: &watch::Receiver<bool>,
     ) {
-        for chunk in pubkeys.chunks(self.author_batch_size) {
+        let chunk_futures = stream::iter(
+            pubkeys
+                .chunks(self.author_batch_size)
+                .map(|chunk| chunk.to_vec())
+                .collect::<Vec<_>>(),
+        )
+        .map(|chunk| async move {
+            self.fetch_graph_events_for_pubkeys(client, &chunk, since)
+                .await
+        });
+
+        let mut in_flight = chunk_futures.buffer_unordered(self.concurrent_batches);
+        while let Some(events) = in_flight.next().await {
             if *shutdown_rx.borrow() {
                 break;
             }
-
-            let events = self
-                .fetch_graph_events_for_pubkeys(client, chunk, since)
-                .await;
-            for event in &events {
-                self.ingest_event_into(self.graph_store.as_ref(), event);
+            if let Err(err) = super::ingest_graph_parsed_events(self.graph_store.as_ref(), &events)
+            {
+                tracing::debug!("Failed to ingest crawler graph batch: {}", err);
             }
         }
     }
@@ -306,12 +324,12 @@ impl SocialGraphCrawler {
 
         let pk_bytes = event.pubkey.to_bytes();
         if self.is_within_social_graph(&pk_bytes) {
-            self.ingest_event_into(self.graph_store.as_ref(), event);
+            self.ingest_events_into(self.graph_store.as_ref(), std::slice::from_ref(event));
             return;
         }
 
         if let Some(spambox) = &self.spambox {
-            self.ingest_event_into(spambox.as_ref(), event);
+            self.ingest_events_into(spambox.as_ref(), std::slice::from_ref(event));
         }
     }
 

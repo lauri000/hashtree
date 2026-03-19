@@ -236,13 +236,20 @@ fn test_cli_parses_socialgraph_index_command() {
         "65536",
         "--author-batch-size",
         "32",
+        "--concurrent-batches",
+        "6",
         "--fetch-timeout-secs",
         "7",
+        "--relay-event-max-bytes",
+        "262144",
         "--global-relay-scan",
+        "--negentropy-only",
         "--relay-page-size",
         "2000",
         "--max-relay-pages",
         "6",
+        "--max-events-seen",
+        "1000000",
         "--kind",
         "1",
         "--kind",
@@ -266,10 +273,14 @@ fn test_cli_parses_socialgraph_index_command() {
                     per_author_event_limit,
                     per_author_live_bytes,
                     author_batch_size,
+                    concurrent_batches,
                     fetch_timeout_secs,
+                    relay_event_max_bytes,
                     global_relay_scan,
+                    negentropy_only,
                     relay_page_size,
                     max_relay_pages,
+                    max_events_seen,
                     kinds,
                     relays,
                 },
@@ -283,10 +294,14 @@ fn test_cli_parses_socialgraph_index_command() {
             assert_eq!(per_author_event_limit, 64);
             assert_eq!(per_author_live_bytes, Some(65_536));
             assert_eq!(author_batch_size, 32);
+            assert_eq!(concurrent_batches, 6);
             assert_eq!(fetch_timeout_secs, 7);
+            assert_eq!(relay_event_max_bytes, Some(262_144));
             assert!(global_relay_scan);
+            assert!(negentropy_only);
             assert_eq!(relay_page_size, 2_000);
             assert_eq!(max_relay_pages, 6);
+            assert_eq!(max_events_seen, Some(1_000_000));
             assert_eq!(kinds, vec![1, 6]);
             assert_eq!(
                 relays,
@@ -330,6 +345,8 @@ fn test_cli_parses_socialgraph_warm_command() {
         "wss://relay.example",
         "--author-batch-size",
         "128",
+        "--concurrent-batches",
+        "5",
     ]);
 
     match cli.command {
@@ -341,6 +358,7 @@ fn test_cli_parses_socialgraph_warm_command() {
                     full_graph_recrawl,
                     relays,
                     author_batch_size,
+                    concurrent_batches,
                 },
         } => {
             assert_eq!(secs, 90);
@@ -348,8 +366,21 @@ fn test_cli_parses_socialgraph_warm_command() {
             assert!(full_graph_recrawl);
             assert_eq!(relays, vec!["wss://relay.example".to_string()]);
             assert_eq!(author_batch_size, 128);
+            assert_eq!(concurrent_batches, 5);
         }
         _ => panic!("expected socialgraph warm command"),
+    }
+}
+
+#[test]
+fn test_cli_parses_socialgraph_stats_command() {
+    let cli = Cli::parse_from(["htree", "socialgraph", "stats"]);
+
+    match cli.command {
+        Commands::Socialgraph {
+            command: SocialGraphCommands::Stats,
+        } => {}
+        _ => panic!("expected socialgraph stats command"),
     }
 }
 

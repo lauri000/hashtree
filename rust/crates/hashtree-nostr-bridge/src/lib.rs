@@ -4,10 +4,14 @@ use std::time::Duration;
 
 use hashtree_core::{Cid, Store};
 use hashtree_nostr::{ListEventsOptions, NostrEventStore, NostrEventStoreError, StoredNostrEvent};
-use nostr_sdk::{Client, EventId, Filter, Keys, Kind, NegentropyOptions, PublicKey, Timestamp};
+use nostr_sdk::{
+    pool::RelayLimits, Client, EventId, Filter, Keys, Kind, NegentropyOptions, Options, PublicKey,
+    Timestamp,
+};
 use nostr_social_graph::SocialGraphBackend;
 
 const NEGENTROPY_FETCH_CHUNK_SIZE: usize = 256;
+const AUTHOR_CANDIDATE_SLACK_FACTOR: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayFetchMode {
@@ -19,6 +23,7 @@ pub enum RelayFetchMode {
 pub struct CrawlConfig {
     pub relays: Vec<String>,
     pub max_live_bytes: Option<u64>,
+    pub max_events_seen: Option<usize>,
     pub max_authors: Option<usize>,
     pub max_follow_distance: Option<u32>,
     pub author_batch_size: usize,
@@ -27,6 +32,8 @@ pub struct CrawlConfig {
     pub fetch_timeout: Duration,
     pub kinds: Option<Vec<u16>>,
     pub relay_fetch_mode: RelayFetchMode,
+    pub require_negentropy: bool,
+    pub relay_event_max_size: Option<u32>,
     pub relay_page_size: usize,
     pub max_relay_pages: usize,
 }
@@ -36,6 +43,7 @@ impl Default for CrawlConfig {
         Self {
             relays: Vec::new(),
             max_live_bytes: None,
+            max_events_seen: None,
             max_authors: None,
             max_follow_distance: Some(1),
             author_batch_size: 64,
@@ -44,6 +52,8 @@ impl Default for CrawlConfig {
             fetch_timeout: Duration::from_secs(10),
             kinds: None,
             relay_fetch_mode: RelayFetchMode::AuthorBatches,
+            require_negentropy: false,
+            relay_event_max_size: None,
             relay_page_size: 1_000,
             max_relay_pages: 10,
         }
@@ -117,6 +127,10 @@ pub enum CrawlError {
     InvalidRelayPageSize,
     #[error("max relay pages must be greater than zero")]
     InvalidMaxRelayPages,
+    #[error("max events seen must be greater than zero")]
+    InvalidMaxEventsSeen,
+    #[error("relay event max size must be greater than zero")]
+    InvalidRelayEventMaxSize,
     #[error("nostr error: {0}")]
     Nostr(String),
     #[error("social graph error: {0}")]
@@ -179,6 +193,7 @@ impl<S: Store> NostrBridge<S> {
                 .await?
                 .into_iter()
                 .filter(|event| self.kind_allowed(event.kind))
+                .filter(|event| self.is_valid_stored_event(event))
                 .collect::<Vec<_>>();
             existing_by_author.insert(author.clone(), retained);
         }
@@ -211,6 +226,10 @@ impl<S: Store> NostrBridge<S> {
             selected.extend(self.select_author_events(merged.into_values().collect())?);
         }
 
+        let selected = selected
+            .into_iter()
+            .filter(|event| self.is_valid_stored_event(event))
+            .collect::<Vec<_>>();
         let (selected, live_bytes_selected) = self.apply_live_byte_cap(selected)?;
         let root = self.event_store.build(None, selected.clone()).await?;
         Ok(CrawlReport {
@@ -241,6 +260,12 @@ impl<S: Store> NostrBridge<S> {
         if self.config.max_relay_pages == 0 {
             return Err(CrawlError::InvalidMaxRelayPages);
         }
+        if self.config.max_events_seen == Some(0) {
+            return Err(CrawlError::InvalidMaxEventsSeen);
+        }
+        if self.config.relay_event_max_size == Some(0) {
+            return Err(CrawlError::InvalidRelayEventMaxSize);
+        }
         Ok(())
     }
 
@@ -254,6 +279,9 @@ impl<S: Store> NostrBridge<S> {
         visited.insert(root);
 
         while let Some((author, distance)) = queue.pop_front() {
+            if !is_valid_hex_pubkey(&author) {
+                continue;
+            }
             authors.push(author.clone());
             if self
                 .config
@@ -273,6 +301,7 @@ impl<S: Store> NostrBridge<S> {
             let mut follows = graph
                 .get_followed_by_user(&author)
                 .map_err(|err| CrawlError::SocialGraph(err.to_string()))?;
+            follows.retain(|followed| is_valid_hex_pubkey(followed));
             follows.sort();
             for followed in follows {
                 if visited.insert(followed.clone()) {
@@ -285,7 +314,13 @@ impl<S: Store> NostrBridge<S> {
     }
 
     async fn connect_client(&self) -> Result<Client> {
-        let client = Client::new(Keys::generate());
+        let client = if let Some(max_size) = self.config.relay_event_max_size {
+            let mut limits = RelayLimits::default();
+            limits.events.max_size = Some(max_size);
+            Client::with_opts(Keys::generate(), Options::new().relay_limits(limits))
+        } else {
+            Client::new(Keys::generate())
+        };
         for relay in &self.config.relays {
             client
                 .add_relay(relay)
@@ -319,7 +354,7 @@ impl<S: Store> NostrBridge<S> {
         let mut fetched = BTreeMap::<String, StoredNostrEvent>::new();
         let mut relay_negentropy_support = BTreeMap::<String, bool>::new();
         let mut events_seen = 0usize;
-        for author_batch in authors.chunks(self.config.author_batch_size) {
+        'author_batches: for author_batch in authors.chunks(self.config.author_batch_size) {
             let pubkeys: Vec<PublicKey> = author_batch
                 .iter()
                 .filter_map(|author| author.parse::<PublicKey>().ok())
@@ -351,6 +386,9 @@ impl<S: Store> NostrBridge<S> {
                         fetched.insert(event.id.clone(), event);
                     }
                 }
+                if self.reached_events_seen_limit(events_seen) {
+                    break 'author_batches;
+                }
             }
         }
         Ok(FetchEventsResult {
@@ -366,7 +404,9 @@ impl<S: Store> NostrBridge<S> {
         mut known: BTreeMap<String, StoredNostrEvent>,
     ) -> Result<FetchEventsResult> {
         let authors = authors.iter().map(String::as_str).collect::<BTreeSet<_>>();
-        let mut fetched = BTreeMap::<String, StoredNostrEvent>::new();
+        let mut known_ids = known.keys().cloned().collect::<BTreeSet<_>>();
+        known.clear();
+        let mut fetched_by_author = BTreeMap::<String, Vec<StoredNostrEvent>>::new();
         let mut events_seen = 0usize;
 
         for relay in &self.config.relays {
@@ -396,8 +436,11 @@ impl<S: Store> NostrBridge<S> {
                         continue;
                     }
 
-                    if known.insert(stored.id.clone(), stored.clone()).is_none() {
-                        fetched.insert(stored.id.clone(), stored);
+                    if known_ids.insert(stored.id.clone()) {
+                        let author_events =
+                            fetched_by_author.entry(stored.pubkey.clone()).or_default();
+                        author_events.push(stored);
+                        self.trim_author_candidate_events(author_events)?;
                     }
                 }
 
@@ -409,12 +452,18 @@ impl<S: Store> NostrBridge<S> {
                     break;
                 }
                 until = Some(next_until);
+                if self.reached_events_seen_limit(events_seen) {
+                    break;
+                }
+            }
+            if self.reached_events_seen_limit(events_seen) {
+                break;
             }
         }
 
         Ok(FetchEventsResult {
             events_seen,
-            events: fetched.into_values().collect(),
+            events: fetched_by_author.into_values().flatten().collect(),
         })
     }
 
@@ -442,6 +491,16 @@ impl<S: Store> NostrBridge<S> {
             filter = filter.until(Timestamp::from_secs(until));
         }
         filter
+    }
+
+    fn reached_events_seen_limit(&self, events_seen: usize) -> bool {
+        self.config
+            .max_events_seen
+            .is_some_and(|limit| events_seen >= limit)
+    }
+
+    fn is_valid_stored_event(&self, event: &StoredNostrEvent) -> bool {
+        self.event_store.encode_event(event).is_ok()
     }
 
     fn local_items_for_batch<'a, I>(
@@ -477,6 +536,13 @@ impl<S: Store> NostrBridge<S> {
         supports_negentropy: Option<bool>,
     ) -> Result<RelayFetchResult> {
         if supports_negentropy == Some(false) {
+            if self.config.require_negentropy {
+                return Ok(RelayFetchResult {
+                    events_seen: 0,
+                    events: Vec::new(),
+                    supports_negentropy: false,
+                });
+            }
             return self
                 .fetch_full_filter(client, relay, filter)
                 .await
@@ -510,14 +576,23 @@ impl<S: Store> NostrBridge<S> {
                     },
                 )
             }
-            Ok(_) | Err(_) => self
-                .fetch_full_filter(client, relay, filter)
-                .await
-                .map(|events| RelayFetchResult {
-                    events_seen: events.len(),
-                    events,
-                    supports_negentropy: false,
-                }),
+            Ok(_) | Err(_) => {
+                if self.config.require_negentropy {
+                    Ok(RelayFetchResult {
+                        events_seen: 0,
+                        events: Vec::new(),
+                        supports_negentropy: false,
+                    })
+                } else {
+                    self.fetch_full_filter(client, relay, filter)
+                        .await
+                        .map(|events| RelayFetchResult {
+                            events_seen: events.len(),
+                            events,
+                            supports_negentropy: false,
+                        })
+                }
+            }
         }
     }
 
@@ -581,9 +656,19 @@ impl<S: Store> NostrBridge<S> {
         Ok(out)
     }
 
-    fn select_author_events(
+    fn select_author_events(&self, events: Vec<StoredNostrEvent>) -> Result<Vec<StoredNostrEvent>> {
+        self.select_author_events_with_limits(
+            events,
+            self.config.per_author_event_limit,
+            self.config.per_author_live_bytes,
+        )
+    }
+
+    fn select_author_events_with_limits(
         &self,
         mut events: Vec<StoredNostrEvent>,
+        event_limit: usize,
+        live_byte_limit: Option<u64>,
     ) -> Result<Vec<StoredNostrEvent>> {
         events.sort_by(|left, right| {
             self.policy
@@ -593,7 +678,7 @@ impl<S: Store> NostrBridge<S> {
                 .then_with(|| left.id.cmp(&right.id))
         });
 
-        if let Some(max_live_bytes) = self.config.per_author_live_bytes {
+        if let Some(max_live_bytes) = live_byte_limit {
             let mut selected = Vec::new();
             let mut live_bytes_selected = 0u64;
             for event in events {
@@ -604,12 +689,36 @@ impl<S: Store> NostrBridge<S> {
                 live_bytes_selected = live_bytes_selected.saturating_add(encoded_len);
                 selected.push(event);
             }
-            selected.truncate(self.config.per_author_event_limit);
+            selected.truncate(event_limit);
             return Ok(selected);
         }
 
-        events.truncate(self.config.per_author_event_limit);
+        events.truncate(event_limit);
         Ok(events)
+    }
+
+    fn trim_author_candidate_events(&self, events: &mut Vec<StoredNostrEvent>) -> Result<()> {
+        let candidate_limit = self
+            .config
+            .per_author_event_limit
+            .saturating_mul(AUTHOR_CANDIDATE_SLACK_FACTOR)
+            .max(self.config.per_author_event_limit);
+        if events.len() <= candidate_limit {
+            return Ok(());
+        }
+
+        let candidate_bytes = self.config.per_author_live_bytes.map(|limit| {
+            limit
+                .saturating_mul(AUTHOR_CANDIDATE_SLACK_FACTOR as u64)
+                .max(limit)
+        });
+        let trimmed = self.select_author_events_with_limits(
+            std::mem::take(events),
+            candidate_limit,
+            candidate_bytes,
+        )?;
+        *events = trimmed;
+        Ok(())
     }
 
     fn apply_live_byte_cap(
@@ -668,5 +777,164 @@ fn stored_event_from_nostr(event: &nostr_sdk::Event) -> StoredNostrEvent {
             .collect(),
         content: event.content.clone(),
         sig: event.sig.to_string(),
+    }
+}
+
+fn is_valid_hex_pubkey(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use hashtree_core::MemoryStore;
+    use nostr_social_graph::{NostrEvent, SocialGraphBackend as NostrSocialGraphBackend};
+
+    use super::{CrawlConfig, NostrBridge, StoredNostrEvent};
+
+    #[derive(Default)]
+    struct FakeGraphBackend;
+
+    impl NostrSocialGraphBackend for FakeGraphBackend {
+        type Error = std::io::Error;
+
+        fn get_root(&self) -> std::result::Result<String, Self::Error> {
+            Ok("0".repeat(64))
+        }
+
+        fn set_root(&mut self, _root: &str) -> std::result::Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn handle_event(
+            &mut self,
+            _event: &NostrEvent,
+            _allow_unknown_authors: bool,
+            _overmute_threshold: f64,
+        ) -> std::result::Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn get_follow_distance(&self, _user: &str) -> std::result::Result<u32, Self::Error> {
+            Ok(0)
+        }
+
+        fn is_following(
+            &self,
+            _follower: &str,
+            _followed_user: &str,
+        ) -> std::result::Result<bool, Self::Error> {
+            Ok(false)
+        }
+
+        fn get_followed_by_user(
+            &self,
+            user: &str,
+        ) -> std::result::Result<Vec<String>, Self::Error> {
+            if user == "0".repeat(64) {
+                return Ok(vec![
+                    "1".repeat(64),
+                    "NOT-HEX".to_string(),
+                    "a".repeat(63),
+                    "A".repeat(64),
+                ]);
+            }
+            Ok(Vec::new())
+        }
+
+        fn get_followers_by_user(
+            &self,
+            _user: &str,
+        ) -> std::result::Result<Vec<String>, Self::Error> {
+            Ok(Vec::new())
+        }
+
+        fn get_muted_by_user(&self, _user: &str) -> std::result::Result<Vec<String>, Self::Error> {
+            Ok(Vec::new())
+        }
+
+        fn get_user_muted_by(&self, _user: &str) -> std::result::Result<Vec<String>, Self::Error> {
+            Ok(Vec::new())
+        }
+
+        fn get_follow_list_created_at(
+            &self,
+            _user: &str,
+        ) -> std::result::Result<Option<u64>, Self::Error> {
+            Ok(None)
+        }
+
+        fn get_mute_list_created_at(
+            &self,
+            _user: &str,
+        ) -> std::result::Result<Option<u64>, Self::Error> {
+            Ok(None)
+        }
+
+        fn is_overmuted(
+            &self,
+            _user: &str,
+            _threshold: f64,
+        ) -> std::result::Result<bool, Self::Error> {
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_stored_event_shape() {
+        let bridge = NostrBridge::new(Arc::new(MemoryStore::new()), CrawlConfig::default());
+        let invalid = StoredNostrEvent {
+            id: "f".repeat(64),
+            pubkey: "not-hex".to_string(),
+            created_at: 1,
+            kind: 1,
+            tags: Vec::new(),
+            content: String::new(),
+            sig: "f".repeat(128),
+        };
+
+        assert!(!bridge.is_valid_stored_event(&invalid));
+    }
+
+    #[test]
+    fn collect_authors_skips_invalid_graph_pubkeys() {
+        let bridge = NostrBridge::new(Arc::new(MemoryStore::new()), CrawlConfig::default());
+        let authors = bridge
+            .collect_authors(&FakeGraphBackend)
+            .expect("collect authors");
+
+        assert_eq!(authors, vec!["0".repeat(64), "1".repeat(64)]);
+    }
+
+    #[test]
+    fn trim_author_candidate_events_applies_slack_limit() {
+        let bridge = NostrBridge::new(
+            Arc::new(MemoryStore::new()),
+            CrawlConfig {
+                per_author_event_limit: 2,
+                ..CrawlConfig::default()
+            },
+        );
+        let mut events = (0..20)
+            .map(|index| StoredNostrEvent {
+                id: format!("{index:064x}"),
+                pubkey: "a".repeat(64),
+                created_at: index as u64,
+                kind: 1,
+                tags: Vec::new(),
+                content: String::new(),
+                sig: "b".repeat(128),
+            })
+            .collect::<Vec<_>>();
+
+        bridge
+            .trim_author_candidate_events(&mut events)
+            .expect("trim candidates");
+
+        assert!(events.len() <= 8);
     }
 }

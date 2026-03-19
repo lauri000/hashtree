@@ -126,7 +126,10 @@ impl<S: Store> HashTree<S> {
             })
     }
 
-    fn is_internal_directory_link_with_legacy_fanout(link: &Link, uses_legacy_fanout: bool) -> bool {
+    fn is_internal_directory_link_with_legacy_fanout(
+        link: &Link,
+        uses_legacy_fanout: bool,
+    ) -> bool {
         let Some(name) = link.name.as_deref() else {
             return false;
         };
@@ -1869,10 +1872,8 @@ impl<S: Store> HashTree<S> {
             // Push children to stack
             let uses_legacy_fanout = Self::node_uses_legacy_directory_fanout(&node);
             for link in node.links.into_iter().rev() {
-                let is_internal = Self::is_internal_directory_link_with_legacy_fanout(
-                    &link,
-                    uses_legacy_fanout,
-                );
+                let is_internal =
+                    Self::is_internal_directory_link_with_legacy_fanout(&link, uses_legacy_fanout);
                 let child_path = match &link.name {
                     Some(name) if !is_internal => {
                         if item.path.is_empty() {

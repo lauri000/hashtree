@@ -25,7 +25,9 @@ use super::mount::mount_fuse;
 use super::nostr_index::{run_socialgraph_index_from_cli, SocialGraphIndexOptions};
 use super::peers::{fetch_profile_name, list_peers};
 use super::resolve::resolve_cid_input;
-use super::socialgraph::{run_socialgraph_filter, run_socialgraph_snapshot, run_socialgraph_warm};
+use super::socialgraph::{
+    run_socialgraph_filter, run_socialgraph_snapshot, run_socialgraph_stats, run_socialgraph_warm,
+};
 use super::util::chrono_humanize_timestamp;
 
 pub(crate) async fn run() -> Result<()> {
@@ -1103,12 +1105,16 @@ pub(crate) async fn run() -> Result<()> {
             } => {
                 run_socialgraph_filter(data_dir, max_distance, overmute_threshold)?;
             }
+            SocialGraphCommands::Stats => {
+                run_socialgraph_stats(data_dir)?;
+            }
             SocialGraphCommands::Warm {
                 secs,
                 crawl_depth,
                 full_graph_recrawl,
                 relays,
                 author_batch_size,
+                concurrent_batches,
             } => {
                 run_socialgraph_warm(
                     data_dir,
@@ -1117,6 +1123,7 @@ pub(crate) async fn run() -> Result<()> {
                     full_graph_recrawl,
                     relays,
                     author_batch_size,
+                    concurrent_batches,
                 )
                 .await?;
             }
@@ -1146,10 +1153,14 @@ pub(crate) async fn run() -> Result<()> {
                 per_author_event_limit,
                 per_author_live_bytes,
                 author_batch_size,
+                concurrent_batches,
                 fetch_timeout_secs,
+                relay_event_max_bytes,
                 global_relay_scan,
+                negentropy_only,
                 relay_page_size,
                 max_relay_pages,
+                max_events_seen,
                 kinds,
                 relays,
             } => {
@@ -1163,14 +1174,18 @@ pub(crate) async fn run() -> Result<()> {
                         warm_graph_for: Duration::from_secs(warm_secs),
                         graph_crawl_depth: effective_crawl_depth,
                         full_graph_recrawl,
+                        max_events_seen,
                         max_authors,
                         max_follow_distance: effective_max_follow_distance,
                         max_live_bytes: max_live_mb.saturating_mul(1024 * 1024),
                         author_batch_size,
+                        concurrent_batches,
                         per_author_event_limit,
                         per_author_live_bytes,
                         fetch_timeout: Duration::from_secs(fetch_timeout_secs),
+                        relay_event_max_bytes,
                         global_relay_scan,
+                        negentropy_only,
                         relay_page_size,
                         max_relay_pages,
                         kinds: (!kinds.is_empty()).then_some(kinds),

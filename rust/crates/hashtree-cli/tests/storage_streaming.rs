@@ -95,7 +95,11 @@ fn encrypted_directory_with_underscore_file_roundtrips_by_cid() {
         .get_directory_listing_by_cid(&cid)
         .expect("directory listing")
         .expect("encrypted root directory");
-    let names: Vec<_> = listing.entries.iter().map(|entry| entry.name.as_str()).collect();
+    let names: Vec<_> = listing
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
     assert!(names.contains(&"_headers"));
     assert!(names.contains(&"assets"));
     assert!(names.contains(&"index.html"));

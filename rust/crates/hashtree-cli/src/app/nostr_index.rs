@@ -8,7 +8,8 @@ use hashtree_core::Cid;
 use hashtree_nostr::{ListEventsOptions, NostrEventStore, StoredNostrEvent};
 use hashtree_nostr_bridge::{CrawlConfig, CrawlReport, NostrBridge, RelayFetchMode};
 use nostr::Keys;
-use nostr_social_graph::{BinaryBudget, SocialGraph};
+use reqwest::header::ACCEPT;
+use serde::Deserialize;
 use tokio::sync::watch;
 
 use hashtree_cli::config::{ensure_keys, parse_npub};
@@ -19,6 +20,13 @@ const INDEX_DIR: &str = "nostr-index";
 const LATEST_ROOT_FILE: &str = "latest-root.txt";
 const LATEST_REPORT_FILE: &str = "latest-report.json";
 const TOP_ITEMS_LIMIT: usize = 20;
+const NEGENTROPY_NIP: u16 = 77;
+
+#[derive(Debug, Deserialize)]
+struct RelayInfoDocument {
+    #[serde(default)]
+    supported_nips: Vec<u16>,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct SocialGraphIndexOptions {
@@ -26,14 +34,18 @@ pub(crate) struct SocialGraphIndexOptions {
     pub(crate) graph_crawl_depth: u32,
     pub(crate) full_graph_recrawl: bool,
     pub(crate) relays: Option<Vec<String>>,
+    pub(crate) max_events_seen: Option<usize>,
     pub(crate) max_authors: usize,
     pub(crate) max_follow_distance: Option<u32>,
     pub(crate) max_live_bytes: u64,
     pub(crate) author_batch_size: usize,
+    pub(crate) concurrent_batches: usize,
     pub(crate) per_author_event_limit: usize,
     pub(crate) per_author_live_bytes: Option<u64>,
     pub(crate) fetch_timeout: Duration,
+    pub(crate) relay_event_max_bytes: Option<u32>,
     pub(crate) global_relay_scan: bool,
+    pub(crate) negentropy_only: bool,
     pub(crate) relay_page_size: usize,
     pub(crate) max_relay_pages: usize,
     pub(crate) kinds: Option<Vec<u16>>,
@@ -64,11 +76,14 @@ pub(crate) struct IndexedNostrReport {
     pub(crate) warm_graph_seconds: u64,
     pub(crate) graph_crawl_depth: u32,
     pub(crate) full_graph_recrawl: bool,
+    pub(crate) max_events_seen: Option<usize>,
     pub(crate) max_follow_distance: Option<u32>,
     pub(crate) max_authors: usize,
     pub(crate) max_live_bytes: u64,
     pub(crate) per_author_live_bytes: Option<u64>,
+    pub(crate) relay_event_max_bytes: Option<u32>,
     pub(crate) global_relay_scan: bool,
+    pub(crate) negentropy_only: bool,
     pub(crate) relay_page_size: usize,
     pub(crate) max_relay_pages: usize,
     pub(crate) relays: Vec<String>,
@@ -123,6 +138,9 @@ pub(crate) async fn run_socialgraph_index(
         .clone()
         .filter(|relays| !relays.is_empty())
         .unwrap_or_else(|| config.nostr.relays.clone());
+    let relays = resolve_index_relays(relays, options.negentropy_only)
+        .await
+        .context("resolve index relay set")?;
 
     if !options.warm_graph_for.is_zero() {
         warm_social_graph(
@@ -131,12 +149,12 @@ pub(crate) async fn run_socialgraph_index(
             relays.clone(),
             options.graph_crawl_depth,
             options.full_graph_recrawl,
+            options.concurrent_batches,
             options.warm_graph_for,
         )
         .await?;
     }
 
-    let graph = load_bridge_graph(graph_store.as_ref(), &root_pk)?;
     let existing_root = load_existing_root(&data_dir)?;
 
     let bridge = NostrBridge::new(
@@ -144,24 +162,31 @@ pub(crate) async fn run_socialgraph_index(
         CrawlConfig {
             relays: relays.clone(),
             max_live_bytes: Some(options.max_live_bytes),
+            max_events_seen: options.max_events_seen,
             max_authors: Some(options.max_authors),
             max_follow_distance: options.max_follow_distance,
             author_batch_size: options.author_batch_size,
             per_author_event_limit: options.per_author_event_limit,
             per_author_live_bytes: options.per_author_live_bytes,
             fetch_timeout: options.fetch_timeout,
-            relay_fetch_mode: if options.global_relay_scan {
+            relay_event_max_size: options.relay_event_max_bytes,
+            relay_fetch_mode: if options.negentropy_only {
+                RelayFetchMode::AuthorBatches
+            } else if options.global_relay_scan {
                 RelayFetchMode::GlobalRecent
             } else {
                 RelayFetchMode::AuthorBatches
             },
+            require_negentropy: options.negentropy_only,
             relay_page_size: options.relay_page_size,
             max_relay_pages: options.max_relay_pages,
             kinds: options.kinds.clone(),
         },
     );
 
-    let report = bridge.crawl(&graph, existing_root.as_ref()).await?;
+    let report = bridge
+        .crawl(graph_store.as_ref(), existing_root.as_ref())
+        .await?;
     let index_report = build_report(
         &NostrEventStore::new(store.store_arc()),
         &relays,
@@ -174,28 +199,18 @@ pub(crate) async fn run_socialgraph_index(
     Ok(index_report)
 }
 
-fn load_bridge_graph(backend: &dyn SocialGraphBackend, root_pk: &[u8; 32]) -> Result<SocialGraph> {
-    let chunks = backend
-        .snapshot_chunks(root_pk, &BinaryBudget::default())
-        .context("build social graph snapshot for bridge")?;
-    let mut data = Vec::with_capacity(chunks.iter().map(|chunk| chunk.len()).sum());
-    for chunk in chunks {
-        data.extend_from_slice(&chunk);
-    }
-    SocialGraph::from_binary(&hex::encode(root_pk), &data)
-        .context("load social graph snapshot into bridge graph")
-}
-
 async fn warm_social_graph(
     graph_store: Arc<dyn SocialGraphBackend>,
     keys: Keys,
     relays: Vec<String>,
     crawl_depth: u32,
     full_graph_recrawl: bool,
+    concurrent_batches: usize,
     duration: Duration,
 ) -> Result<()> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let crawler = SocialGraphCrawler::new(graph_store, keys, relays, crawl_depth)
+        .with_concurrent_batches(concurrent_batches)
         .with_full_recrawl(full_graph_recrawl);
     let mut handle = tokio::spawn(async move {
         crawler.crawl(shutdown_rx).await;
@@ -258,11 +273,14 @@ async fn build_report(
         warm_graph_seconds: options.warm_graph_for.as_secs(),
         graph_crawl_depth: options.graph_crawl_depth,
         full_graph_recrawl: options.full_graph_recrawl,
+        max_events_seen: options.max_events_seen,
         max_follow_distance: options.max_follow_distance,
         max_authors: options.max_authors,
         max_live_bytes: options.max_live_bytes,
         per_author_live_bytes: options.per_author_live_bytes,
+        relay_event_max_bytes: options.relay_event_max_bytes,
         global_relay_scan: options.global_relay_scan,
+        negentropy_only: options.negentropy_only,
         relay_page_size: options.relay_page_size,
         max_relay_pages: options.max_relay_pages,
         relays: relays.to_vec(),
@@ -371,7 +389,9 @@ fn print_report(report: &IndexedNostrReport, data_dir: &Path) {
     );
     println!(
         "Relay mode: {}",
-        if report.global_relay_scan {
+        if report.negentropy_only {
+            "author batches with negentropy-only relays".to_string()
+        } else if report.global_relay_scan {
             format!(
                 "global recent scan (page size {}, max pages {})",
                 report.relay_page_size, report.max_relay_pages
@@ -380,6 +400,12 @@ fn print_report(report: &IndexedNostrReport, data_dir: &Path) {
             "author batches with negentropy".to_string()
         }
     );
+    if let Some(max_events_seen) = report.max_events_seen {
+        println!("Raw relay event target: {}", max_events_seen);
+    }
+    if let Some(relay_event_max_bytes) = report.relay_event_max_bytes {
+        println!("Relay event max size: {} bytes", relay_event_max_bytes);
+    }
 
     if let Some(root) = &report.root {
         println!("Root: {}", root);
@@ -404,12 +430,66 @@ fn print_report(report: &IndexedNostrReport, data_dir: &Path) {
     }
 }
 
+async fn resolve_index_relays(relays: Vec<String>, negentropy_only: bool) -> Result<Vec<String>> {
+    if !negentropy_only {
+        return Ok(relays);
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("build reqwest client for NIP-11 relay checks")?;
+
+    let mut supported = Vec::new();
+    for relay in relays {
+        match relay_supports_nip(&client, &relay, NEGENTROPY_NIP).await {
+            Ok(true) => supported.push(relay),
+            Ok(false) => {}
+            Err(err) => {
+                eprintln!("Skipping relay {relay}: {err}");
+            }
+        }
+    }
+
+    if supported.is_empty() {
+        anyhow::bail!("no relays advertise NIP-77 negentropy support");
+    }
+
+    Ok(supported)
+}
+
+fn relay_info_url(relay: &str) -> Result<String> {
+    if let Some(rest) = relay.strip_prefix("wss://") {
+        return Ok(format!("https://{rest}"));
+    }
+    if let Some(rest) = relay.strip_prefix("ws://") {
+        return Ok(format!("http://{rest}"));
+    }
+    anyhow::bail!("unsupported relay scheme: {relay}");
+}
+
+async fn relay_supports_nip(client: &reqwest::Client, relay: &str, nip: u16) -> Result<bool> {
+    let url = relay_info_url(relay)?;
+    let info = client
+        .get(url)
+        .header(ACCEPT, "application/nostr+json")
+        .send()
+        .await
+        .with_context(|| format!("fetch NIP-11 document for {relay}"))?
+        .error_for_status()
+        .with_context(|| format!("NIP-11 request failed for {relay}"))?
+        .json::<RelayInfoDocument>()
+        .await
+        .with_context(|| format!("decode NIP-11 document for {relay}"))?;
+    Ok(info.supported_nips.contains(&nip))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io;
     use std::net::TcpListener;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use futures::{SinkExt, StreamExt};
     use hashtree_nostr::NostrEventStore;
@@ -417,6 +497,7 @@ mod tests {
     use nostr_sdk::Client;
     use serde_json::Value;
     use tempfile::TempDir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::broadcast;
     use tokio_tungstenite::{accept_async, tungstenite::Message};
@@ -480,6 +561,73 @@ mod tests {
         fn drop(&mut self) {
             let _ = self.shutdown.send(());
             std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    struct TestNip11Server {
+        port: u16,
+        shutdown: broadcast::Sender<()>,
+    }
+
+    impl TestNip11Server {
+        fn new(status_line: &'static str, body: String) -> Self {
+            let (shutdown, _) = broadcast::channel(1);
+
+            let std_listener = TcpListener::bind("127.0.0.1:0").expect("bind nip11 listener");
+            let port = std_listener.local_addr().expect("nip11 local addr").port();
+            std_listener
+                .set_nonblocking(true)
+                .expect("set nip11 nonblocking");
+
+            let shutdown_for_thread = shutdown.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime");
+
+                rt.block_on(async move {
+                    let listener =
+                        tokio::net::TcpListener::from_std(std_listener).expect("tokio listener");
+                    let mut shutdown_rx = shutdown_for_thread.subscribe();
+
+                    loop {
+                        tokio::select! {
+                            _ = shutdown_rx.recv() => break,
+                            accept = listener.accept() => {
+                                if let Ok((mut stream, _)) = accept {
+                                    let body = body.clone();
+                                    tokio::spawn(async move {
+                                        let mut buf = [0u8; 1024];
+                                        let _ = stream.read(&mut buf).await;
+                                        let response = format!(
+                                            "HTTP/1.1 {status_line}\r\ncontent-type: application/nostr+json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                                            body.len()
+                                        );
+                                        let _ = stream.write_all(response.as_bytes()).await;
+                                        let _ = stream.shutdown().await;
+                                    });
+                                }
+                            }
+                        }
+                    }
+                });
+            });
+
+            std::thread::sleep(Duration::from_millis(50));
+            Self { port, shutdown }
+        }
+
+        fn relay_url(&self) -> String {
+            format!("ws://127.0.0.1:{}", self.port)
+        }
+    }
+
+    impl Drop for TestNip11Server {
+        fn drop(&mut self) {
+            let _ = self.shutdown.send(());
+            std::thread::sleep(Duration::from_millis(25));
         }
     }
 
@@ -631,14 +779,18 @@ mod tests {
                 graph_crawl_depth: 1,
                 full_graph_recrawl: false,
                 relays: None,
+                max_events_seen: None,
                 max_authors: 8,
                 max_follow_distance: Some(1),
                 max_live_bytes: 8 * 1024 * 1024,
                 author_batch_size: 32,
+                concurrent_batches: 4,
                 per_author_event_limit: 8,
                 per_author_live_bytes: None,
                 fetch_timeout: Duration::from_secs(5),
+                relay_event_max_bytes: None,
                 global_relay_scan: false,
+                negentropy_only: false,
                 relay_page_size: 1_000,
                 max_relay_pages: 10,
                 kinds: None,
@@ -700,5 +852,36 @@ mod tests {
 
         let loaded = load_existing_root(tmp.path()).expect("load root");
         assert_eq!(loaded.expect("existing root").to_string(), cid);
+    }
+
+    #[test]
+    fn relay_info_url_maps_websocket_urls_to_http() {
+        assert_eq!(
+            relay_info_url("ws://127.0.0.1:1234").expect("ws url"),
+            "http://127.0.0.1:1234"
+        );
+        assert_eq!(
+            relay_info_url("wss://relay.example").expect("wss url"),
+            "https://relay.example"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resolve_index_relays_keeps_only_relays_advertising_nip77() {
+        let supported = TestNip11Server::new("200 OK", r#"{"supported_nips":[11,77]}"#.to_string());
+        let unsupported =
+            TestNip11Server::new("200 OK", r#"{"supported_nips":[11,12]}"#.to_string());
+        let broken = TestNip11Server::new("500 Internal Server Error", "{}".to_string());
+
+        let relays = vec![
+            supported.relay_url(),
+            unsupported.relay_url(),
+            broken.relay_url(),
+        ];
+        let resolved = resolve_index_relays(relays, true)
+            .await
+            .expect("resolve relays");
+
+        assert_eq!(resolved, vec![supported.relay_url()]);
     }
 }

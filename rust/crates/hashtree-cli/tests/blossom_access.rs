@@ -873,7 +873,10 @@ read_servers = ["{}"]
     let add_stderr = String::from_utf8_lossy(&add_output.stderr);
     println!("add stdout: {}", add_stdout);
     println!("add stderr: {}", add_stderr);
-    assert!(add_output.status.success(), "encrypted htree add should succeed");
+    assert!(
+        add_output.status.success(),
+        "encrypted htree add should succeed"
+    );
 
     let url = add_stdout
         .lines()

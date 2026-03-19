@@ -422,7 +422,11 @@ mod read {
             .expect("resolve _headers");
         assert_eq!(resolved, headers_cid);
 
-        let data = tree.get(&resolved, None).await.unwrap().expect("read _headers");
+        let data = tree
+            .get(&resolved, None)
+            .await
+            .unwrap()
+            .expect("read _headers");
         assert_eq!(data, headers);
     }
 

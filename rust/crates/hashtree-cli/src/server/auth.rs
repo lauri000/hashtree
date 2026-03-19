@@ -2,7 +2,6 @@ use crate::nostr_relay::NostrRelay;
 use crate::socialgraph;
 use crate::storage::HashtreeStore;
 use crate::webrtc::WebRTCState;
-use hashtree_core::Cid;
 use axum::{
     body::Body,
     extract::ws::Message,
@@ -10,6 +9,7 @@ use axum::{
     http::{header, Request, Response, StatusCode},
     middleware::Next,
 };
+use hashtree_core::Cid;
 use std::collections::{HashMap, HashSet};
 use std::sync::{
     atomic::{AtomicU32, AtomicU64, Ordering},
