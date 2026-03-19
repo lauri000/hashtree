@@ -20,14 +20,23 @@ Use two layers on purpose:
 
 - `pnpm run test:e2e` for fast shell/UI logic in a regular browser.
 - `pnpm run test:native:linux` for real native desktop smoke tests on Linux with `tauri-driver`.
+- `pnpm run test:native:docker` to run that same Linux native smoke in Docker from macOS or other non-Linux hosts.
 
 Short rationale: WebDriver owns native clicks, text selection, and screenshots; the Iris automation bridge only exposes Iris-specific readiness and shell state. That keeps the bridge narrow instead of rebuilding a second UI driver.
 
-The native smoke harness is Linux-only and expects a desktop-capable environment. Run it in a Linux VM or container with WebKitGTK, `WebKitWebDriver`, D-Bus, and Xvfb:
+The native smoke harness is Linux-only and expects a desktop-capable environment with a real window manager. Run it in a Linux VM or container with WebKitGTK, `WebKitWebDriver`, D-Bus, Xvfb, and a window manager such as `openbox`:
 
 ```bash
 xvfb-run -a pnpm run test:native:linux
 ```
+
+For a reproducible containerized run, use:
+
+```bash
+pnpm run test:native:docker
+```
+
+The Docker wrapper builds `scripts/Dockerfile.native-linux-smoke`, mounts the repo into `/workspace`, keeps Linux-only `node_modules` and Rust target artifacts in Docker volumes, and then runs the same `tauri-driver` smoke suite under `dbus-run-session`, Xvfb, and `openbox`.
 
 If you need multiple Iris instances on one host, set `IRIS_DAEMON_PORT` (or `IRIS_DAEMON_BIND`) so each app uses its own embedded htree daemon socket.
 

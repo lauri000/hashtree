@@ -130,6 +130,73 @@ async function clickElement(elementId) {
   await request('POST', `/session/${sessionId}/element/${elementId}/click`, {});
 }
 
+function webdriverElement(elementId) {
+  return { [elementRefKey]: elementId };
+}
+
+async function performActions(actions) {
+  await request('POST', `/session/${sessionId}/actions`, { actions });
+}
+
+async function releaseActions() {
+  await request('DELETE', `/session/${sessionId}/actions`);
+}
+
+async function clickElementOffset(elementId, x, y) {
+  try {
+    await performActions([
+      {
+        type: 'pointer',
+        id: 'mouse',
+        parameters: { pointerType: 'mouse' },
+        actions: [
+          { type: 'pointerMove', duration: 0, origin: webdriverElement(elementId), x, y },
+          { type: 'pointerDown', button: 0 },
+          { type: 'pointerUp', button: 0 },
+        ],
+      },
+    ]);
+  } finally {
+    await releaseActions().catch(() => {});
+  }
+}
+
+async function dragElementOffset(elementId, x, y, deltaX, deltaY) {
+  try {
+    await performActions([
+      {
+        type: 'pointer',
+        id: 'mouse',
+        parameters: { pointerType: 'mouse' },
+        actions: [
+          { type: 'pointerMove', duration: 0, origin: webdriverElement(elementId), x, y },
+          { type: 'pointerDown', button: 0 },
+          { type: 'pause', duration: 120 },
+          { type: 'pointerMove', duration: 240, origin: 'pointer', x: deltaX, y: deltaY },
+          { type: 'pause', duration: 120 },
+          { type: 'pointerUp', button: 0 },
+        ],
+      },
+    ]);
+  } finally {
+    await releaseActions().catch(() => {});
+  }
+}
+
+async function getWindowRect() {
+  const payload = await request('GET', `/session/${sessionId}/window/rect`);
+  const rect = payload.value ?? payload;
+  if (
+    typeof rect?.x !== 'number' ||
+    typeof rect?.y !== 'number' ||
+    typeof rect?.width !== 'number' ||
+    typeof rect?.height !== 'number'
+  ) {
+    fail(`WebDriver did not return a valid window rect: ${JSON.stringify(payload)}`);
+  }
+  return rect;
+}
+
 async function takeScreenshot(filename) {
   const payload = await request('GET', `/session/${sessionId}/screenshot`);
   const encoded = payload.value;
@@ -225,6 +292,37 @@ async function main() {
       'Iris launcher to be ready',
     );
     await takeScreenshot('launcher.png');
+
+    const toolbar = await findElement('css selector', "div[style='padding-left: 88px;']");
+    const windowBeforeFocusClick = await getWindowRect();
+    await clickElementOffset(toolbar, 20, 20);
+    const windowAfterFocusClick = await getWindowRect();
+    if (
+      Math.abs(windowAfterFocusClick.x - windowBeforeFocusClick.x) > 4 ||
+      Math.abs(windowAfterFocusClick.y - windowBeforeFocusClick.y) > 4
+    ) {
+      fail(
+        `Toolbar focus click should not move the window: before=${JSON.stringify(windowBeforeFocusClick)} after=${JSON.stringify(windowAfterFocusClick)}`,
+      );
+    }
+
+    await dragElementOffset(toolbar, 20, 20, 140, 48);
+    const windowAfterDrag = await waitFor(async () => {
+      const rect = await getWindowRect();
+      if (
+        Math.abs(rect.x - windowAfterFocusClick.x) < 16 &&
+        Math.abs(rect.y - windowAfterFocusClick.y) < 16
+      ) {
+        fail(
+          `waiting for focused toolbar drag to move the window, current rect=${JSON.stringify(rect)} baseline=${JSON.stringify(windowAfterFocusClick)}`,
+        );
+      }
+      return rect;
+    }, 'focused toolbar drag to move the window');
+    await takeScreenshot('launcher-dragged.png');
+    console.log(
+      `Focused toolbar drag moved the window from (${windowAfterFocusClick.x}, ${windowAfterFocusClick.y}) to (${windowAfterDrag.x}, ${windowAfterDrag.y})`,
+    );
 
     const irisFilesCard = await findElement(
       'xpath',

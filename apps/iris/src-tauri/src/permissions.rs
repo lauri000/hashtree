@@ -46,7 +46,11 @@ impl PermissionStore {
     }
 
     /// Check if a permission is granted
-    pub async fn is_granted(&self, app_origin: &str, permission_type: &PermissionType) -> Option<bool> {
+    pub async fn is_granted(
+        &self,
+        app_origin: &str,
+        permission_type: &PermissionType,
+    ) -> Option<bool> {
         // GetPublicKey is always allowed
         if matches!(permission_type, PermissionType::GetPublicKey) {
             return Some(true);
@@ -68,8 +72,16 @@ impl PermissionStore {
     }
 
     /// Grant a permission
-    pub async fn grant(&self, app_origin: &str, permission_type: PermissionType, _persistent: bool) {
-        info!("Granting permission {:?} to {}", permission_type, app_origin);
+    pub async fn grant(
+        &self,
+        app_origin: &str,
+        permission_type: PermissionType,
+        _persistent: bool,
+    ) {
+        info!(
+            "Granting permission {:?} to {}",
+            permission_type, app_origin
+        );
         let mut cache = self.cache.write().await;
         cache
             .entry(app_origin.to_string())
@@ -126,7 +138,10 @@ mod tests {
     async fn test_sign_event_needs_prompt() {
         let store = PermissionStore::new(None);
         let app = "http://example.com";
-        assert!(store.is_granted(app, &PermissionType::SignEvent).await.is_none());
+        assert!(store
+            .is_granted(app, &PermissionType::SignEvent)
+            .await
+            .is_none());
         assert!(store.needs_prompt(app, &PermissionType::SignEvent).await);
     }
 
@@ -151,7 +166,10 @@ mod tests {
             store.is_granted(app1, &PermissionType::SignEvent).await,
             Some(true)
         );
-        assert!(store.is_granted(app2, &PermissionType::SignEvent).await.is_none());
+        assert!(store
+            .is_granted(app2, &PermissionType::SignEvent)
+            .await
+            .is_none());
     }
 
     #[tokio::test]

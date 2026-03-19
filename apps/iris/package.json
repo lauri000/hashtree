@@ -9,6 +9,7 @@
   "bugs": {
     "url": "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree?tab=issues"
   },
+  "packageManager": "pnpm@10.28.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,17 +18,18 @@
     "tauri:build": "tauri build",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "test:native:linux": "node ./scripts/tauri-driver-linux-smoke.mjs"
+    "test:native:linux": "node ./scripts/tauri-driver-linux-smoke.mjs",
+    "test:native:docker": "bash ./scripts/test-native-linux-docker.sh"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.5.0",
-    "@tauri-apps/plugin-autostart": "^2"
+    "@tauri-apps/api": "2.9.1",
+    "@tauri-apps/plugin-autostart": "2.5.1"
   },
   "devDependencies": {
     "@iconify-json/lucide": "^1.2.75",
     "@playwright/test": "^1.58.1",
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
-    "@tauri-apps/cli": "^2.6.0",
+    "@tauri-apps/cli": "2.9.6",
     "@tsconfig/svelte": "^5.0.4",
     "@unocss/preset-icons": "^66.5.9",
     "svelte": "^5.16.0",

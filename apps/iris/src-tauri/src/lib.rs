@@ -194,17 +194,20 @@ impl TrayState {
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct TrayDaemonStatusResponse {
-    #[serde(default)]
-    webrtc: TrayDaemonWebRtcStatus,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct TrayDaemonWebRtcStatus {
+struct TrayPeersResponse {
     #[serde(default)]
     enabled: bool,
     #[serde(default)]
     connected: usize,
+}
+
+fn tray_connection_status_from_peers(response: TrayPeersResponse) -> TrayConnectionStatus {
+    let connected_peers = if response.enabled {
+        Some(response.connected)
+    } else {
+        None
+    };
+    TrayConnectionStatus::Running { connected_peers }
 }
 
 fn tray_status_text(connection_status: TrayConnectionStatus) -> String {
@@ -369,13 +372,8 @@ fn fetch_tray_connection_status(
     url: &str,
 ) -> Option<TrayConnectionStatus> {
     let response = client.get(url).send().ok()?;
-    let status = response.json::<TrayDaemonStatusResponse>().ok()?;
-    let connected_peers = if status.webrtc.enabled {
-        Some(status.webrtc.connected)
-    } else {
-        None
-    };
-    Some(TrayConnectionStatus::Running { connected_peers })
+    let status = response.json::<TrayPeersResponse>().ok()?;
+    Some(tray_connection_status_from_peers(status))
 }
 
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -391,7 +389,7 @@ fn spawn_tray_status_poller<R: tauri::Runtime + 'static>(app: tauri::AppHandle<R
                 return;
             }
         };
-        let url = format!("http://127.0.0.1:{}/api/status", port);
+        let url = format!("http://127.0.0.1:{}/api/peers", port);
 
         loop {
             let connection_status = fetch_tray_connection_status(&client, &url).unwrap_or(
@@ -700,8 +698,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_menu, resolve_iris_paths, tray_menu_spec, tray_status_text, IrisPaths,
-        TrayConnectionStatus, TrayMenuItemSpec,
+        build_menu, resolve_iris_paths, tray_connection_status_from_peers, tray_menu_spec,
+        tray_status_text, IrisPaths, TrayConnectionStatus, TrayMenuItemSpec, TrayPeersResponse,
     };
     use std::path::PathBuf;
 
@@ -793,6 +791,28 @@ mod tests {
                     enabled: true,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn tray_connection_status_uses_peer_endpoint_shape() {
+        assert_eq!(
+            tray_connection_status_from_peers(TrayPeersResponse {
+                enabled: true,
+                connected: 4,
+            }),
+            TrayConnectionStatus::Running {
+                connected_peers: Some(4),
+            }
+        );
+        assert_eq!(
+            tray_connection_status_from_peers(TrayPeersResponse {
+                enabled: false,
+                connected: 99,
+            }),
+            TrayConnectionStatus::Running {
+                connected_peers: None,
+            }
         );
     }
 

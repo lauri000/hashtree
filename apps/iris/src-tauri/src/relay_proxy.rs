@@ -111,31 +111,29 @@ async fn handle_connection(socket: WebSocket, state: RelayProxyState) {
                         }
                     }
                 }
-                RelayPoolNotification::Message { message, .. } => {
-                    match message {
-                        nostr_sdk::RelayMessage::EndOfStoredEvents(sdk_sub_id) => {
-                            let subs = subs_clone.read().await;
-                            for (sub_id, stored_sdk_id) in subs.iter() {
-                                if stored_sdk_id == &sdk_sub_id {
-                                    let msg = serde_json::json!(["EOSE", sub_id]);
-                                    if tx.send(msg.to_string()).await.is_err() {
-                                        return;
-                                    }
-                                    break;
+                RelayPoolNotification::Message { message, .. } => match message {
+                    nostr_sdk::RelayMessage::EndOfStoredEvents(sdk_sub_id) => {
+                        let subs = subs_clone.read().await;
+                        for (sub_id, stored_sdk_id) in subs.iter() {
+                            if stored_sdk_id == &sdk_sub_id {
+                                let msg = serde_json::json!(["EOSE", sub_id]);
+                                if tx.send(msg.to_string()).await.is_err() {
+                                    return;
                                 }
+                                break;
                             }
                         }
-                        nostr_sdk::RelayMessage::Ok {
-                            event_id, status, ..
-                        } => {
-                            let msg = serde_json::json!(["OK", event_id.to_hex(), status, ""]);
-                            if tx.send(msg.to_string()).await.is_err() {
-                                return;
-                            }
-                        }
-                        _ => {}
                     }
-                }
+                    nostr_sdk::RelayMessage::Ok {
+                        event_id, status, ..
+                    } => {
+                        let msg = serde_json::json!(["OK", event_id.to_hex(), status, ""]);
+                        if tx.send(msg.to_string()).await.is_err() {
+                            return;
+                        }
+                    }
+                    _ => {}
+                },
                 RelayPoolNotification::Shutdown => return,
                 _ => {}
             }

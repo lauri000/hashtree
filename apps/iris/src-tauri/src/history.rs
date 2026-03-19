@@ -104,8 +104,8 @@ impl HistoryStore {
             entry
         };
 
-        let bytes =
-            bincode::serialize(&updated_entry).map_err(|e| format!("Failed to serialize: {}", e))?;
+        let bytes = bincode::serialize(&updated_entry)
+            .map_err(|e| format!("Failed to serialize: {}", e))?;
         self.db
             .put(&mut wtxn, &updated_entry.path, &bytes)
             .map_err(|e| format!("Failed to put: {}", e))?;
@@ -363,9 +363,7 @@ pub fn delete_history_entry(
 }
 
 #[tauri::command]
-pub fn clear_history(
-    history: tauri::State<'_, Arc<HistoryStore>>,
-) -> Result<(), String> {
+pub fn clear_history(history: tauri::State<'_, Arc<HistoryStore>>) -> Result<(), String> {
     history.clear()
 }
 
