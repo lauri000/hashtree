@@ -22,11 +22,15 @@ use tracing::{debug, error, info, warn};
 // ============================================
 
 pub fn htree_origin_from_nhash(nhash: &str) -> String {
-    format!("htree://{}", nhash)
+    htree_url_from_nhash(nhash, "/")
+        .trim_end_matches('/')
+        .to_string()
 }
 
-pub fn htree_origin_from_host(host: &str) -> String {
-    format!("htree://{}", host)
+pub fn htree_origin_from_tree_host(host: &str, treename: &str) -> String {
+    htree_url_from_tree_host(host, treename, "/")
+        .trim_end_matches('/')
+        .to_string()
 }
 
 fn decode_url_component(value: &str) -> String {
@@ -92,12 +96,30 @@ fn http_url_with_segments(base: &str, segments: &[String]) -> Result<String, Str
     Ok(url.into())
 }
 
+fn isolated_loopback_scope_label(canonical_root: &str) -> String {
+    let digest = hashtree_core::sha256(canonical_root.as_bytes());
+    format!("tree-{}", hex::encode(&digest[..16]))
+}
+
+fn isolated_loopback_server_url(server_url: &str, canonical_root: &str) -> Result<String, String> {
+    let mut url = tauri::Url::parse(server_url).map_err(|e| format!("Invalid base URL: {}", e))?;
+    let isolated_host = format!(
+        "{}.htree.localhost",
+        isolated_loopback_scope_label(canonical_root)
+    );
+    url.set_host(Some(&isolated_host))
+        .map_err(|e| format!("Failed to set isolated host: {}", e))?;
+    Ok(url.into())
+}
+
 fn daemon_proxy_url_from_nhash(server_url: &str, nhash: &str, path: &str) -> Result<String, String> {
+    let canonical_root = htree_origin_from_nhash(nhash);
+    let isolated_server_url = isolated_loopback_server_url(server_url, &canonical_root)?;
     let mut segments = vec!["htree".to_string(), decode_url_component(nhash)];
     let path_segments = decode_path_segments(path);
     let is_tree_root = path_segments.is_empty();
     segments.extend(path_segments);
-    let url = http_url_with_segments(server_url, &segments)?;
+    let url = http_url_with_segments(&isolated_server_url, &segments)?;
     if is_tree_root {
         Ok(format!("{}/", url.trim_end_matches('/')))
     } else {
@@ -111,6 +133,8 @@ fn daemon_proxy_url_from_tree_host(
     treename: &str,
     path: &str,
 ) -> Result<String, String> {
+    let canonical_root = htree_origin_from_tree_host(host, treename);
+    let isolated_server_url = isolated_loopback_server_url(server_url, &canonical_root)?;
     let mut segments = vec![
         "htree".to_string(),
         decode_url_component(host),
@@ -119,7 +143,7 @@ fn daemon_proxy_url_from_tree_host(
     let path_segments = decode_path_segments(path);
     let is_tree_root = path_segments.is_empty();
     segments.extend(path_segments);
-    let url = http_url_with_segments(server_url, &segments)?;
+    let url = http_url_with_segments(&isolated_server_url, &segments)?;
     if is_tree_root {
         Ok(format!("{}/", url.trim_end_matches('/')))
     } else {
@@ -999,6 +1023,10 @@ pub async fn create_htree_webview<R: Runtime>(
     let server_url =
         crate::htree_protocol::get_htree_server_url().ok_or("htree server not running")?;
 
+    // The child webview keeps a canonical htree:// identity for permissions and
+    // diagnostics, but it loads over a per-root loopback host so the browser's
+    // own origin model isolates storage, service workers, and other origin-
+    // scoped state between different trees and nhashes.
     let (canonical_url, actual_url, origin, canonical_url_root, actual_url_root) = if let Some(nhash) = &nhash {
         let request_host = host.as_deref().unwrap_or(nhash);
         let canonical_url = append_query(htree_url_from_nhash(request_host, &path), query.as_deref());
@@ -1017,7 +1045,7 @@ pub async fn create_htree_webview<R: Runtime>(
         let actual_root = daemon_proxy_url_from_nhash(&server_url, request_host, "/")?
             .trim_end_matches('/')
             .to_string();
-        let origin = htree_origin_from_nhash(request_host);
+        let origin = canonical_root.clone();
         (canonical_url, actual_url, origin, canonical_root, actual_root)
     } else if let Some(treename) = &treename {
         let request_host = host
@@ -1047,7 +1075,7 @@ pub async fn create_htree_webview<R: Runtime>(
         let actual_root = daemon_proxy_url_from_tree_host(&server_url, resolved_host, treename, "/")?
             .trim_end_matches('/')
             .to_string();
-        let origin = htree_origin_from_host(resolved_host);
+        let origin = canonical_root.clone();
         (canonical_url, actual_url, origin, canonical_root, actual_root)
     } else {
         return Err("Either nhash or (host + treename) must be provided".to_string());
@@ -1360,10 +1388,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn npub_origin_uses_host_only() {
+    fn nhash_origin_uses_root_identity() {
         assert_eq!(
-            htree_origin_from_host("npub1example"),
-            "htree://npub1example"
+            htree_origin_from_nhash("nhash1example"),
+            "htree://nhash1example"
+        );
+    }
+
+    #[test]
+    fn tree_origin_uses_tree_root_identity() {
+        assert_eq!(
+            htree_origin_from_tree_host("npub1example", "video"),
+            "htree://npub1example/video"
         );
     }
 
@@ -1400,7 +1436,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_proxy_tree_urls_use_embedded_server_paths() {
+    fn daemon_proxy_tree_urls_use_origin_isolated_loopback_hosts() {
         let url = daemon_proxy_url_from_tree_host(
             "http://127.0.0.1:21417",
             "npub1example",
@@ -1408,9 +1444,17 @@ mod tests {
             "/index.html",
         )
         .unwrap();
+        let parsed = tauri::Url::parse(&url).expect("valid URL");
         assert_eq!(
-            url,
-            "http://127.0.0.1:21417/htree/npub1example/videos%2FMy%20Clip/index.html"
+            parsed.path(),
+            "/htree/npub1example/videos%2FMy%20Clip/index.html"
+        );
+        assert!(
+            parsed
+                .host_str()
+                .expect("isolated host")
+                .ends_with(".htree.localhost"),
+            "expected isolated loopback host, got {url}"
         );
     }
 
@@ -1423,7 +1467,10 @@ mod tests {
             "/",
         )
         .unwrap();
-        assert_eq!(url, "http://127.0.0.1:21417/htree/npub1example/video/");
+        assert!(
+            url.ends_with("/htree/npub1example/video/"),
+            "expected tree root URL to keep trailing slash, got {url}"
+        );
     }
 
     #[test]
@@ -1434,14 +1481,93 @@ mod tests {
             "/poster.png",
         )
         .unwrap();
-        assert_eq!(url, "http://127.0.0.1:21417/htree/nhash1example/poster.png");
+        let parsed = tauri::Url::parse(&url).expect("valid URL");
+        assert_eq!(parsed.path(), "/htree/nhash1example/poster.png");
+        assert!(
+            parsed
+                .host_str()
+                .expect("isolated host")
+                .ends_with(".htree.localhost"),
+            "expected isolated loopback host, got {url}"
+        );
+    }
+
+    #[test]
+    fn isolated_loopback_hosts_are_stable_per_tree_root() {
+        let first = daemon_proxy_url_from_tree_host(
+            "http://127.0.0.1:21417",
+            "npub1example",
+            "video",
+            "/index.html",
+        )
+        .unwrap();
+        let second = daemon_proxy_url_from_tree_host(
+            "http://127.0.0.1:21417",
+            "npub1example",
+            "video",
+            "/poster.png",
+        )
+        .unwrap();
+        let first_host = tauri::Url::parse(&first)
+            .expect("valid URL")
+            .host_str()
+            .expect("first host")
+            .to_string();
+        let second_host = tauri::Url::parse(&second)
+            .expect("valid URL")
+            .host_str()
+            .expect("second host")
+            .to_string();
+        assert_eq!(first_host, second_host);
+    }
+
+    #[test]
+    fn isolated_loopback_hosts_differ_across_tree_roots_and_nhashes() {
+        let owner_a = daemon_proxy_url_from_tree_host(
+            "http://127.0.0.1:21417",
+            "npub1alice",
+            "video",
+            "/index.html",
+        )
+        .unwrap();
+        let owner_b = daemon_proxy_url_from_tree_host(
+            "http://127.0.0.1:21417",
+            "npub1bob",
+            "video",
+            "/index.html",
+        )
+        .unwrap();
+        let nhash = daemon_proxy_url_from_nhash(
+            "http://127.0.0.1:21417",
+            "nhash1example",
+            "/index.html",
+        )
+        .unwrap();
+        let owner_a_host = tauri::Url::parse(&owner_a)
+            .expect("valid owner A URL")
+            .host_str()
+            .expect("owner A host")
+            .to_string();
+        let owner_b_host = tauri::Url::parse(&owner_b)
+            .expect("valid owner B URL")
+            .host_str()
+            .expect("owner B host")
+            .to_string();
+        let nhash_host = tauri::Url::parse(&nhash)
+            .expect("valid nhash URL")
+            .host_str()
+            .expect("nhash host")
+            .to_string();
+        assert_ne!(owner_a_host, owner_b_host);
+        assert_ne!(owner_a_host, nhash_host);
+        assert_ne!(owner_b_host, nhash_host);
     }
 
     #[test]
     fn canonicalized_child_urls_map_back_to_htree_identity() {
         let url = canonicalize_child_webview_url(
-            "http://127.0.0.1:21417/htree/npub1example/video/index.html?smoke=1&iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Fvideo%2Findex.html%3Fsmoke%3D1#/feed",
-            "http://127.0.0.1:21417/htree/npub1example/video",
+            "http://tree-deadbeef.htree.localhost:21417/htree/npub1example/video/index.html?smoke=1&iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Fvideo%2Findex.html%3Fsmoke%3D1#/feed",
+            "http://tree-deadbeef.htree.localhost:21417/htree/npub1example/video",
             "htree://npub1example/video",
         );
         assert_eq!(url, "htree://npub1example/video/index.html?smoke=1#/feed");

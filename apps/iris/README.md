@@ -4,6 +4,19 @@ Native desktop shell for hashtree apps, built with [Tauri](https://tauri.app/).
 
 Browser-like navigation with an address bar, back/forward history, and favorites. Loads web apps and `htree://` URLs in child webviews with NIP-07 signer injection. Embeds the htree daemon for local P2P connectivity.
 
+## Origin Isolation
+
+`htree://` apps must keep real browser origin boundaries. Different tree roots must not share `localStorage`, service workers, or other origin-scoped browser state just because Iris serves them from the same embedded daemon.
+
+Iris keeps the canonical app identity as `htree://...`, but child webviews load through a per-root loopback host under `*.htree.localhost`. That means:
+
+- `htree://npubA/app/...` and `htree://npubB/app/...` get different browser origins.
+- `htree://npub/appA/...` and `htree://npub/appB/...` get different browser origins.
+- Different `nhash` roots get different browser origins.
+- Different paths inside the same tree root still share the same origin, so app state works normally within that app.
+
+The `actual_url` transport detail is intentional: it keeps content on the local daemon backend while delegating storage isolation to the browser's own origin model instead of trying to emulate it in app code.
+
 ## Development
 
 ```bash
