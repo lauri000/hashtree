@@ -127,10 +127,10 @@ importers:
   ../apps/iris:
     dependencies:
       '@tauri-apps/api':
-        specifier: ^2.5.0
+        specifier: 2.9.1
         version: 2.9.1
       '@tauri-apps/plugin-autostart':
-        specifier: ^2
+        specifier: 2.5.1
         version: 2.5.1
     devDependencies:
       '@iconify-json/lucide':
@@ -143,7 +143,7 @@ importers:
         specifier: ^5.0.3
         version: 5.1.1(svelte@5.45.6)(vite@6.4.1(@types/node@24.10.1)(jiti@2.6.1)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.2))
       '@tauri-apps/cli':
-        specifier: ^2.6.0
+        specifier: 2.9.6
         version: 2.9.6
       '@tsconfig/svelte':
         specifier: ^5.0.4

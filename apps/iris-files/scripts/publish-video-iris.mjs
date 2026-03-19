@@ -43,5 +43,5 @@ if (!publishedMatch) {
 }
 
 console.log(`Portable Iris video immutable URL: htree://${nhashMatch[0]}/index.html`);
-console.log('Portable Iris video mutable URL: htree://self/video');
+console.log(`Portable Iris video mutable URL: htree://${publishedMatch[1]}`);
 console.log(`Portable Iris video owner URL: htree://${publishedMatch[1]}`);

@@ -4,11 +4,12 @@
 
   const baseUrl = import.meta.env.BASE_URL;
   const irisLogoUrl = `${baseUrl}iris-logo.png`;
+  const distributedOwner = 'npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce';
 
   // Default suggested apps
   const suggestions: AppBookmark[] = [
-    { url: 'https://files.iris.to', name: 'Iris Files', icon: irisLogoUrl, addedAt: 0 },
-    { url: 'https://video.iris.to', name: 'Iris Video', icon: irisLogoUrl, addedAt: 0 },
+    { url: `htree://${distributedOwner}/files`, name: 'Iris Files', icon: irisLogoUrl, addedAt: 0 },
+    { url: `htree://${distributedOwner}/video`, name: 'Iris Video', icon: irisLogoUrl, addedAt: 0 },
     { url: 'https://iris.to', name: 'Iris Social', icon: irisLogoUrl, addedAt: 0 },
   ];
 
@@ -57,7 +58,8 @@
     return colors[index];
   }
 
-  function getHostname(url: string): string {
+  function getUrlLabel(url: string): string {
+    if (url.startsWith('htree://')) return url.replace(/^htree:\/\//, '').replace(/\/$/, '');
     if (url.startsWith('/')) return 'Local';
     try {
       return new URL(url).hostname;
@@ -122,7 +124,7 @@
             </div>
             <div class="min-w-0 flex-1">
               <div class="text-sm font-medium text-text-1 truncate">{app.name}</div>
-              <div class="text-xs text-text-3 truncate">{getHostname(app.url)}</div>
+              <div class="text-xs text-text-3 truncate">{getUrlLabel(app.url)}</div>
             </div>
             {#if !favorites.some(f => f.url === app.url)}
               <button

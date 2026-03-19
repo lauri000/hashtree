@@ -12,7 +12,8 @@ const webdriverPort = Number(process.env.TAURI_DRIVER_PORT ?? 4444);
 const automationPort = Number(process.env.IRIS_AUTOMATION_PORT ?? 21977);
 const webdriverBase = `http://127.0.0.1:${webdriverPort}`;
 const automationBase = `http://127.0.0.1:${automationPort}/automation`;
-const smokeUrl = process.env.IRIS_VIDEO_SMOKE_URL ?? 'htree://self/video/index.html?smoke=1';
+const distributedOwner = 'npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce';
+const smokeUrl = process.env.IRIS_VIDEO_SMOKE_URL ?? `htree://${distributedOwner}/video/index.html?smoke=1`;
 
 let driverProcess = null;
 let sessionId = null;
@@ -250,7 +251,13 @@ async function main() {
     await waitForAutomationState(
       (state) => {
         return state.currentView === 'webview' &&
-          (state.currentUrl === smokeUrl || state.currentUrl.includes('/video/index.html'));
+          (
+            state.currentUrl === smokeUrl ||
+            state.currentUrl === smokeUrl.replace('/index.html', '') ||
+            state.currentUrl === `${smokeUrl.replace('/index.html', '')}/` ||
+            state.currentUrl.includes('/video/') ||
+            state.currentUrl.includes('/video/index.html')
+          );
       },
       `Iris to open ${smokeUrl}`,
       60000,

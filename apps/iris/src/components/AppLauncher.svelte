@@ -6,10 +6,11 @@
   }
 
   let { onnavigate }: Props = $props();
+  const distributedOwner = 'npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce';
 
   const suggestions: AppBookmark[] = [
-    { url: 'https://files.iris.to', name: 'Iris Files', icon: '/iris-logo.png', addedAt: 0 },
-    { url: 'https://video.iris.to', name: 'Iris Video', icon: '/iris-logo.png', addedAt: 0 },
+    { url: `htree://${distributedOwner}/files`, name: 'Iris Files', icon: '/iris-logo.png', addedAt: 0 },
+    { url: `htree://${distributedOwner}/video`, name: 'Iris Video', icon: '/iris-logo.png', addedAt: 0 },
     { url: 'https://iris.to', name: 'Iris Social', icon: '/iris-logo.png', addedAt: 0 },
   ];
 
@@ -45,7 +46,10 @@
     return colors[name.charCodeAt(0) % colors.length];
   }
 
-  function getHostname(url: string): string {
+  function getUrlLabel(url: string): string {
+    if (url.startsWith('htree://')) {
+      return url.replace(/^htree:\/\//, '').replace(/\/$/, '');
+    }
     try {
       return new URL(url).hostname;
     } catch {
@@ -112,7 +116,7 @@
             </div>
             <div class="min-w-0 flex-1">
               <div class="text-sm font-medium text-text-1 truncate">{app.name}</div>
-              <div class="text-xs text-text-3 truncate">{getHostname(app.url)}</div>
+              <div class="text-xs text-text-3 truncate">{getUrlLabel(app.url)}</div>
             </div>
             {#if !favorites.some(f => f.url === app.url)}
               <button

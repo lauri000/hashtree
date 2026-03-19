@@ -1,5 +1,7 @@
 import { test, expect, setupPageErrorHandler, gotoHome } from './fixtures';
 
+const distributedOwner = 'npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce';
+
 async function openHome(page: import('@playwright/test').Page) {
   setupPageErrorHandler(page);
   await gotoHome(page);
@@ -25,11 +27,12 @@ test.describe('App Launcher', () => {
 
     await page.getByText('Iris Files').click();
 
-    // Should have invoked create_nip07_webview
     const invocations = await page.evaluate(() => (window as any).__tauriInvocations);
-    const createCalls = invocations.filter((i: any) => i.cmd === 'create_nip07_webview');
+    const createCalls = invocations.filter((i: any) => i.cmd === 'create_htree_webview');
     expect(createCalls.length).toBe(1);
-    expect(createCalls[0].args.url).toBe('https://files.iris.to');
+    expect(createCalls[0].args.host).toBe(distributedOwner);
+    expect(createCalls[0].args.treename).toBe('files');
+    expect(createCalls[0].args.path).toBe('/');
   });
 
   test('add to favourites button works', async ({ tauriPage: page }) => {

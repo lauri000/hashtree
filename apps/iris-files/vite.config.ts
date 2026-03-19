@@ -1,20 +1,44 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import UnoCSS from 'unocss/vite';
 import { visualizer } from 'rollup-plugin-visualizer';
 import { VitePWA } from 'vite-plugin-pwa';
 import { resolve } from 'path';
+import { readFile, writeFile } from 'fs/promises';
 
 const isGithubPagesBuild = process.env.GITHUB_PAGES === 'true';
+const outDir = 'dist';
+
+export function sanitizeFilesHtml(html: string): string {
+  return html
+    .replace(/^\s*<link rel="modulepreload".*$/gm, '')
+    .replace(/\s+crossorigin(?=[\s>])/g, '');
+}
+
+function filesPortableHtmlPlugin(): Plugin {
+  return {
+    name: 'files-portable-html',
+    async closeBundle() {
+      try {
+        const indexPath = resolve(__dirname, outDir, 'index.html');
+        const html = await readFile(indexPath, 'utf8');
+        await writeFile(indexPath, sanitizeFilesHtml(html), 'utf8');
+      } catch {
+        // Ignore missing build output in dev mode.
+      }
+    },
+  };
+}
 
 export default defineConfig({
-  base: isGithubPagesBuild ? '/hashtree/' : '/',
+  base: isGithubPagesBuild ? '/hashtree/' : './',
   define: {
     'import.meta.env.VITE_BUILD_TIME': JSON.stringify(new Date().toISOString()),
   },
   plugins: [
     UnoCSS(),
     svelte(),
+    filesPortableHtmlPlugin(),
     VitePWA({
       registerType: 'autoUpdate',
       strategies: 'injectManifest',
@@ -80,6 +104,7 @@ export default defineConfig({
     },
   },
   build: {
+    modulePreload: false,
     reportCompressedSize: true,
     chunkSizeWarningLimit: 2000,
     rollupOptions: {
