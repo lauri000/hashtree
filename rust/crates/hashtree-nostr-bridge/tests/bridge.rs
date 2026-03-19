@@ -26,6 +26,7 @@ struct SharedRelayState {
     negentropy_open_attempts: usize,
     negentropy_sessions_started: usize,
     server_page_cap: Option<usize>,
+    disconnect_on_id_request: bool,
 }
 
 struct TestRelay {
@@ -97,6 +98,16 @@ impl TestRelay {
 
     fn with_page_cap(server_page_cap: usize) -> Self {
         Self::with_options(false, Some(server_page_cap))
+    }
+
+    fn with_negentropy_disconnect_on_id_request() -> Self {
+        let relay = Self::with_options(true, None);
+        relay
+            .state
+            .lock()
+            .expect("relay state lock")
+            .disconnect_on_id_request = true;
+        relay
     }
 
     fn url(&self) -> String {
@@ -258,6 +269,15 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<SharedRelayState>
                 filters,
             } => {
                 record_requested_ids(&state, &filters);
+                let disconnect_on_id_request = {
+                    let guard = state.lock().expect("relay state lock");
+                    guard.disconnect_on_id_request
+                        && filters.iter().any(|filter| filter.ids.as_ref().is_some())
+                };
+                if disconnect_on_id_request {
+                    let _ = write.close().await;
+                    break;
+                }
                 for event in matching_events(&state, &filters) {
                     send_relay_message(
                         &mut write,
@@ -853,6 +873,81 @@ async fn require_negentropy_skips_relays_that_cannot_reconcile() -> io::Result<(
     assert_eq!(fallback_relay.negentropy_open_attempts(), 1);
     assert!(fallback_relay.requested_id_batches().is_empty());
     assert!(supported_relay.negentropy_sessions_started() >= 1);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relay_disconnect_during_missing_id_fetch_does_not_abort_crawl() -> io::Result<()> {
+    let flaky_relay = TestRelay::with_negentropy_disconnect_on_id_request();
+    let good_relay = TestRelay::with_negentropy(true);
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+
+    let mut graph = SocialGraph::new(&root_keys.public_key().to_hex());
+    let contact_list = EventBuilder::new(
+        Kind::ContactList,
+        "",
+        [Tag::parse(&["p", &alice_keys.public_key().to_hex()]).expect("p tag")],
+    )
+    .custom_created_at(Timestamp::from_secs(10))
+    .to_event(&root_keys)
+    .expect("contact list");
+    graph.handle_event(&graph_event_from_nostr(&contact_list), true, 1.0);
+
+    let note = EventBuilder::new(Kind::TextNote, "alice note", [])
+        .custom_created_at(Timestamp::from_secs(20))
+        .to_event(&alice_keys)
+        .expect("note");
+
+    let flaky_publisher = Client::new(Keys::generate());
+    flaky_publisher
+        .add_relay(&flaky_relay.url())
+        .await
+        .expect("add flaky relay");
+    flaky_publisher.connect().await;
+
+    let good_publisher = Client::new(Keys::generate());
+    good_publisher
+        .add_relay(&good_relay.url())
+        .await
+        .expect("add good relay");
+    good_publisher.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    for publisher in [&flaky_publisher, &good_publisher] {
+        publisher
+            .send_event(note.clone())
+            .await
+            .expect("publish note");
+    }
+
+    let store = Arc::new(MemoryStore::new());
+    let bridge = NostrBridge::new(
+        store.clone(),
+        CrawlConfig {
+            relays: vec![flaky_relay.url(), good_relay.url()],
+            author_batch_size: 1,
+            per_author_event_limit: 4,
+            kinds: Some(vec![1]),
+            require_negentropy: true,
+            ..CrawlConfig::default()
+        },
+    );
+
+    let report = bridge.crawl(&graph, None).await.expect("crawl report");
+    let root = report.root.expect("index root");
+    let retained = NostrEventStore::new(store)
+        .list_recent(Some(&root), ListEventsOptions { limit: Some(10) })
+        .await
+        .expect("list retained");
+
+    assert_eq!(report.events_selected, 1);
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].id, note.id.to_hex());
+    assert!(flaky_relay.negentropy_sessions_started() >= 1);
+    assert!(good_relay.negentropy_sessions_started() >= 1);
 
     Ok(())
 }

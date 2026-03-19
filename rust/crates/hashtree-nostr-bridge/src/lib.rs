@@ -152,6 +152,13 @@ struct RelayFetchResult {
     supports_negentropy: bool,
 }
 
+#[derive(Debug, Default)]
+struct BatchCrawlReport {
+    events_seen: usize,
+    events: Vec<StoredNostrEvent>,
+    live_bytes_selected: u64,
+}
+
 pub struct NostrBridge<S: Store> {
     event_store: NostrEventStore<S>,
     config: CrawlConfig,
@@ -185,6 +192,11 @@ impl<S: Store> NostrBridge<S> {
         }
 
         let client = self.connect_client().await?;
+
+        if self.config.relay_fetch_mode == RelayFetchMode::AuthorBatches {
+            return self.crawl_author_batches(&client, &authors, existing_root).await;
+        }
+
         let mut existing_by_author: BTreeMap<String, Vec<StoredNostrEvent>> = BTreeMap::new();
         for author in &authors {
             let retained = self
@@ -237,6 +249,50 @@ impl<S: Store> NostrBridge<S> {
             authors_considered: authors.len(),
             events_seen: fetched.events_seen,
             events_selected: selected.len(),
+            live_bytes_selected,
+        })
+    }
+
+    async fn crawl_author_batches(
+        &self,
+        client: &Client,
+        authors: &[String],
+        existing_root: Option<&Cid>,
+    ) -> Result<CrawlReport> {
+        let mut relay_negentropy_support = BTreeMap::<String, bool>::new();
+        let mut failed_relays = BTreeSet::<String>::new();
+        let mut current_root = existing_root.cloned();
+        let mut events_seen = 0usize;
+        let mut events_selected = 0usize;
+        let mut live_bytes_selected = 0u64;
+
+        for author_batch in authors.chunks(self.config.author_batch_size) {
+            let batch = self
+                .crawl_author_batch(
+                    client,
+                    author_batch,
+                    current_root.as_ref(),
+                    &mut relay_negentropy_support,
+                    &mut failed_relays,
+                    live_bytes_selected,
+                )
+                .await?;
+            events_seen = events_seen.saturating_add(batch.events_seen);
+            events_selected = events_selected.saturating_add(batch.events.len());
+            live_bytes_selected = batch.live_bytes_selected;
+            if !batch.events.is_empty() {
+                current_root = self.event_store.build(current_root.as_ref(), batch.events).await?;
+            }
+            if self.reached_events_seen_limit(events_seen) {
+                break;
+            }
+        }
+
+        Ok(CrawlReport {
+            root: current_root,
+            authors_considered: authors.len(),
+            events_seen,
+            events_selected,
             live_bytes_selected,
         })
     }
@@ -353,6 +409,7 @@ impl<S: Store> NostrBridge<S> {
 
         let mut fetched = BTreeMap::<String, StoredNostrEvent>::new();
         let mut relay_negentropy_support = BTreeMap::<String, bool>::new();
+        let mut failed_relays = BTreeSet::<String>::new();
         let mut events_seen = 0usize;
         'author_batches: for author_batch in authors.chunks(self.config.author_batch_size) {
             let pubkeys: Vec<PublicKey> = author_batch
@@ -365,9 +422,12 @@ impl<S: Store> NostrBridge<S> {
 
             let filter = self.batch_filter(pubkeys);
             for relay in &self.config.relays {
+                if failed_relays.contains(relay) {
+                    continue;
+                }
                 let local_items = self.local_items_for_batch(known.values(), author_batch);
                 let relay_support = relay_negentropy_support.get(relay).copied();
-                let fetched_from_relay = self
+                let fetched_from_relay = match self
                     .fetch_events_from_relay(
                         client,
                         relay,
@@ -375,7 +435,15 @@ impl<S: Store> NostrBridge<S> {
                         local_items,
                         relay_support,
                     )
-                    .await?;
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(err) => {
+                        eprintln!("Skipping relay {relay}: {err}");
+                        failed_relays.insert(relay.clone());
+                        continue;
+                    }
+                };
                 relay_negentropy_support
                     .insert(relay.clone(), fetched_from_relay.supports_negentropy);
                 events_seen = events_seen.saturating_add(fetched_from_relay.events_seen);
@@ -397,6 +465,120 @@ impl<S: Store> NostrBridge<S> {
         })
     }
 
+    async fn crawl_author_batch(
+        &self,
+        client: &Client,
+        author_batch: &[String],
+        current_root: Option<&Cid>,
+        relay_negentropy_support: &mut BTreeMap<String, bool>,
+        failed_relays: &mut BTreeSet<String>,
+        live_bytes_selected_so_far: u64,
+    ) -> Result<BatchCrawlReport> {
+        let mut existing_by_author = BTreeMap::<String, Vec<StoredNostrEvent>>::new();
+        let mut known = BTreeMap::<String, StoredNostrEvent>::new();
+        for author in author_batch {
+            let retained = self
+                .event_store
+                .list_by_author(current_root, author, ListEventsOptions::default())
+                .await?
+                .into_iter()
+                .filter(|event| self.kind_allowed(event.kind))
+                .filter(|event| self.is_valid_stored_event(event))
+                .collect::<Vec<_>>();
+            for event in &retained {
+                known.insert(event.id.clone(), event.clone());
+            }
+            existing_by_author.insert(author.clone(), retained);
+        }
+
+        let pubkeys: Vec<PublicKey> = author_batch
+            .iter()
+            .filter_map(|author| author.parse::<PublicKey>().ok())
+            .collect();
+        if pubkeys.is_empty() {
+            return Ok(BatchCrawlReport {
+                events_seen: 0,
+                events: Vec::new(),
+                live_bytes_selected: live_bytes_selected_so_far,
+            });
+        }
+
+        let filter = self.batch_filter(pubkeys);
+        let mut fetched = BTreeMap::<String, StoredNostrEvent>::new();
+        let mut events_seen = 0usize;
+
+        for relay in &self.config.relays {
+            if failed_relays.contains(relay) {
+                continue;
+            }
+            let local_items = self.local_items_for_batch(known.values(), author_batch);
+            let relay_support = relay_negentropy_support.get(relay).copied();
+            let fetched_from_relay = match self
+                .fetch_events_from_relay(
+                    client,
+                    relay,
+                    filter.clone(),
+                    local_items,
+                    relay_support,
+                )
+                .await
+            {
+                Ok(result) => result,
+                Err(err) => {
+                    eprintln!("Skipping relay {relay}: {err}");
+                    failed_relays.insert(relay.clone());
+                    continue;
+                }
+            };
+            relay_negentropy_support.insert(relay.clone(), fetched_from_relay.supports_negentropy);
+            events_seen = events_seen.saturating_add(fetched_from_relay.events_seen);
+            for event in fetched_from_relay.events {
+                if self.kind_allowed(event.kind)
+                    && known.insert(event.id.clone(), event.clone()).is_none()
+                {
+                    fetched.insert(event.id.clone(), event);
+                }
+            }
+        }
+
+        let mut fetched_by_author = BTreeMap::<String, Vec<StoredNostrEvent>>::new();
+        for event in fetched.into_values() {
+            fetched_by_author
+                .entry(event.pubkey.clone())
+                .or_default()
+                .push(event);
+        }
+
+        let mut selected = Vec::new();
+        for author in author_batch {
+            let mut merged: BTreeMap<String, StoredNostrEvent> = BTreeMap::new();
+            if let Some(existing_events) = existing_by_author.remove(author) {
+                for event in existing_events {
+                    merged.insert(event.id.clone(), event);
+                }
+            }
+            if let Some(events) = fetched_by_author.remove(author) {
+                for event in events {
+                    merged.insert(event.id.clone(), event);
+                }
+            }
+            selected.extend(self.select_author_events(merged.into_values().collect())?);
+        }
+
+        let selected = selected
+            .into_iter()
+            .filter(|event| self.is_valid_stored_event(event))
+            .collect::<Vec<_>>();
+        let (selected, live_bytes_selected) =
+            self.apply_live_byte_cap_from(selected, live_bytes_selected_so_far)?;
+
+        Ok(BatchCrawlReport {
+            events_seen,
+            events: selected,
+            live_bytes_selected,
+        })
+    }
+
     async fn fetch_events_global_recent(
         &self,
         client: &Client,
@@ -407,16 +589,27 @@ impl<S: Store> NostrBridge<S> {
         let mut known_ids = known.keys().cloned().collect::<BTreeSet<_>>();
         known.clear();
         let mut fetched_by_author = BTreeMap::<String, Vec<StoredNostrEvent>>::new();
+        let mut failed_relays = BTreeSet::<String>::new();
         let mut events_seen = 0usize;
 
         for relay in &self.config.relays {
+            if failed_relays.contains(relay) {
+                continue;
+            }
             let mut until = None;
             for _ in 0..self.config.max_relay_pages {
                 let filter = self.global_recent_filter(until);
-                let events = client
+                let events = match client
                     .get_events_from([relay], vec![filter], Some(self.config.fetch_timeout))
                     .await
-                    .map_err(|err| CrawlError::Nostr(err.to_string()))?;
+                {
+                    Ok(events) => events,
+                    Err(err) => {
+                        eprintln!("Skipping relay {relay}: {}", err);
+                        failed_relays.insert(relay.clone());
+                        break;
+                    }
+                };
                 let fetched_count = events.len();
                 events_seen = events_seen.saturating_add(fetched_count);
                 if fetched_count == 0 {
@@ -723,7 +916,15 @@ impl<S: Store> NostrBridge<S> {
 
     fn apply_live_byte_cap(
         &self,
+        events: Vec<StoredNostrEvent>,
+    ) -> Result<(Vec<StoredNostrEvent>, u64)> {
+        self.apply_live_byte_cap_from(events, 0)
+    }
+
+    fn apply_live_byte_cap_from(
+        &self,
         mut events: Vec<StoredNostrEvent>,
+        live_bytes_selected_so_far: u64,
     ) -> Result<(Vec<StoredNostrEvent>, u64)> {
         events.sort_by(|left, right| {
             self.policy
@@ -734,7 +935,7 @@ impl<S: Store> NostrBridge<S> {
         });
 
         let Some(max_live_bytes) = self.config.max_live_bytes else {
-            let live_bytes_selected = events.iter().try_fold(0u64, |total, event| {
+            let live_bytes_selected = events.iter().try_fold(live_bytes_selected_so_far, |total, event| {
                 let encoded = self.event_store.encode_event(event)?;
                 Ok::<u64, NostrEventStoreError>(total.saturating_add(encoded.len() as u64))
             })?;
@@ -742,7 +943,7 @@ impl<S: Store> NostrBridge<S> {
         };
 
         let mut selected = Vec::new();
-        let mut live_bytes_selected = 0u64;
+        let mut live_bytes_selected = live_bytes_selected_so_far;
         for event in events {
             let encoded_len = self.event_store.encode_event(&event)?.len() as u64;
             if live_bytes_selected.saturating_add(encoded_len) > max_live_bytes {
