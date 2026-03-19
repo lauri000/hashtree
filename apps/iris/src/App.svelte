@@ -5,6 +5,7 @@
     automationShutdown,
     createNip07Webview,
     createHtreeWebview,
+    deepLinkFrontendReady,
     closeWebview,
     navigateWebview,
     onAutomationCommand,
@@ -717,6 +718,14 @@
         console.warn('[Iris] automation command failed:', error);
       });
     });
+    try {
+      const pendingDeepLinks = await deepLinkFrontendReady();
+      for (const url of pendingDeepLinks) {
+        await handleAutomationCommand({ action: 'open_url', url });
+      }
+    } catch (error) {
+      console.warn('[Iris] deep-link initialization failed:', error);
+    }
     scheduleAutomationStateSync();
     window.addEventListener('keydown', handleGlobalKeyDown);
     window.addEventListener('resize', scheduleWebviewBoundsUpdate);

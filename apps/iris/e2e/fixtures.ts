@@ -30,6 +30,7 @@ async function mockTauriIPC(page: Page) {
       historyIndex: -1,
       historyLength: 0,
     };
+    (window as any).__pendingDeepLinks = (window as any).__pendingDeepLinks ?? [];
     const callbackStore = new Map<number, (...args: any[]) => void>();
     const eventListeners = new Map<string, Array<{ eventId: number; handlerId: number }>>();
     let nextCallbackId = 1;
@@ -102,6 +103,13 @@ async function mockTauriIPC(page: Page) {
             return Promise.resolve((window as any).__automationState);
           case 'automation_shutdown':
             return Promise.resolve();
+          case 'deep_link_frontend_ready': {
+            const pending = Array.isArray((window as any).__pendingDeepLinks)
+              ? [...(window as any).__pendingDeepLinks]
+              : [];
+            (window as any).__pendingDeepLinks = [];
+            return Promise.resolve(pending);
+          }
           case 'record_history_visit': {
             const now = Date.now();
             const existing = historyStore.find(e => e.path === args?.path);

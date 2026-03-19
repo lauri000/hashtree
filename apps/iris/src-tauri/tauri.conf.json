@@ -48,5 +48,12 @@
     },
     "externalBin": [],
     "resources": []
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["htree"]
+      }
+    }
   }
 }

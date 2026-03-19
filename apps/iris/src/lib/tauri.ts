@@ -14,6 +14,10 @@ export async function getHtreeServerUrl(): Promise<string> {
   return invoke<string>('get_htree_server_url');
 }
 
+export async function deepLinkFrontendReady(): Promise<string[]> {
+  return invoke<string[]>('deep_link_frontend_ready');
+}
+
 // ── Child webview management ──
 
 export async function createNip07Webview(

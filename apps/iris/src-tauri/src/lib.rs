@@ -30,6 +30,7 @@ use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, Submen
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -46,6 +47,34 @@ struct IrisPaths {
     shell_data_dir: PathBuf,
     htree_config_dir: PathBuf,
     htree_data_dir: PathBuf,
+}
+
+#[derive(Default)]
+struct DeepLinkState {
+    frontend_ready: RwLock<bool>,
+    pending_urls: RwLock<Vec<String>>,
+}
+
+impl DeepLinkState {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn is_frontend_ready(&self) -> bool {
+        *self.frontend_ready.read()
+    }
+
+    fn queue_urls<I>(&self, urls: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        self.pending_urls.write().extend(urls);
+    }
+
+    fn mark_frontend_ready(&self) -> Vec<String> {
+        *self.frontend_ready.write() = true;
+        std::mem::take(&mut *self.pending_urls.write())
+    }
 }
 
 pub fn ensure_rustls_provider() {
@@ -385,6 +414,74 @@ fn started_minimized() -> bool {
     std::env::args().any(|arg| arg == "--minimized")
 }
 
+fn is_supported_launch_host(host: &str) -> bool {
+    host == "self" || host.starts_with("nhash1") || host.starts_with("npub1")
+}
+
+fn normalize_supported_launch_deep_link(url: &tauri::Url) -> Option<String> {
+    if url.scheme() != "htree" {
+        return None;
+    }
+
+    let host = url.host_str()?;
+    if !is_supported_launch_host(host) {
+        return None;
+    }
+
+    Some(url.to_string())
+}
+
+fn collect_supported_launch_deep_links(urls: &[tauri::Url]) -> Vec<String> {
+    urls.iter()
+        .filter_map(normalize_supported_launch_deep_link)
+        .collect()
+}
+
+fn emit_open_url_command<R: tauri::Runtime>(app: &tauri::AppHandle<R>, url: String) {
+    let _ = show_main_window(app);
+    let _ = app.emit(
+        "automation-command",
+        automation::AutomationCommand {
+            action: automation::AutomationAction::OpenUrl,
+            url: Some(url),
+        },
+    );
+}
+
+fn handle_deep_link_urls<R: tauri::Runtime>(app: &tauri::AppHandle<R>, urls: &[tauri::Url]) {
+    let supported_urls = collect_supported_launch_deep_links(urls);
+    if supported_urls.is_empty() {
+        return;
+    }
+
+    let Some(state) = app.try_state::<Arc<DeepLinkState>>() else {
+        return;
+    };
+
+    if state.is_frontend_ready() {
+        for url in supported_urls {
+            emit_open_url_command(app, url);
+        }
+    } else {
+        let _ = show_main_window(app);
+        state.queue_urls(supported_urls);
+    }
+}
+
+#[tauri::command]
+fn deep_link_frontend_ready<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<Vec<String>, String> {
+    let state = app
+        .try_state::<Arc<DeepLinkState>>()
+        .ok_or_else(|| "DeepLinkState not found".to_string())?;
+    let pending_urls = state.mark_frontend_ready();
+    if !pending_urls.is_empty() {
+        let _ = show_main_window(&app);
+    }
+    Ok(pending_urls)
+}
+
 fn emit_tray_action<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     action: automation::AutomationAction,
@@ -559,6 +656,8 @@ pub fn run() {
         }));
     }
 
+    builder = builder.plugin(tauri_plugin_deep_link::init());
+
     builder
         .menu(build_menu)
         .on_tray_icon_event(|app, event| {
@@ -618,6 +717,7 @@ pub fn run() {
             automation::automation_update_state,
             automation::automation_get_state,
             automation::automation_shutdown,
+            deep_link_frontend_ready,
             htree_protocol::get_htree_server_url,
             htree_protocol::cache_tree_root,
             nip07::create_nip07_webview,
@@ -713,6 +813,27 @@ pub fn run() {
             automation::maybe_start_server(app.handle().clone(), automation_state.clone());
             app.manage(automation_state);
 
+            let deep_link_state = Arc::new(DeepLinkState::new());
+            app.manage(deep_link_state);
+
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            if let Err(error) = app.deep_link().register_all() {
+                tracing::warn!("Failed to register deep-link schemes at runtime: {}", error);
+            }
+
+            match app.deep_link().get_current() {
+                Ok(Some(start_urls)) => handle_deep_link_urls(&app.handle().clone(), &start_urls),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::debug!("Deep-link startup URLs unavailable: {}", error);
+                }
+            }
+
+            let app_for_deep_links = app.handle().clone();
+            let _deep_link_listener = app.deep_link().on_open_url(move |event| {
+                handle_deep_link_urls(&app_for_deep_links, &event.urls());
+            });
+
             // Start the embedded htree daemon
             let daemon_data_dir = paths.htree_data_dir.clone();
             let app_handle = app.handle().clone();
@@ -770,9 +891,11 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_menu, resolve_iris_paths, tray_connection_status_from_peers, tray_menu_spec,
-        tray_primary_click_action, tray_status_text, DesktopPlatform, IrisPaths,
-        TrayConnectionStatus, TrayMenuItemSpec, TrayPeersResponse, TrayPrimaryClickAction,
+        build_menu, collect_supported_launch_deep_links, is_supported_launch_host,
+        normalize_supported_launch_deep_link, resolve_iris_paths,
+        tray_connection_status_from_peers, tray_menu_spec, tray_primary_click_action,
+        tray_status_text, DesktopPlatform, IrisPaths, TrayConnectionStatus, TrayMenuItemSpec,
+        TrayPeersResponse, TrayPrimaryClickAction,
     };
     use std::path::PathBuf;
 
@@ -946,6 +1069,74 @@ mod tests {
                 htree_config_dir: PathBuf::from("/tmp/htree-config"),
                 htree_data_dir: PathBuf::from("/tmp/htree-data"),
             }
+        );
+    }
+
+    #[test]
+    fn supported_launch_hosts_match_user_facing_htree_targets_only() {
+        assert!(is_supported_launch_host("self"));
+        assert!(is_supported_launch_host("nhash1example"));
+        assert!(is_supported_launch_host("npub1example"));
+        assert!(is_supported_launch_host("npub1example.videos%2FMy%20Clip"));
+        assert!(!is_supported_launch_host("nip07"));
+        assert!(!is_supported_launch_host("webview"));
+        assert!(!is_supported_launch_host(""));
+    }
+
+    #[test]
+    fn normalize_supported_launch_deep_link_accepts_user_facing_htree_urls() {
+        let url = tauri::Url::parse("htree://self/video/index.html?autoplay=1").unwrap();
+        assert_eq!(
+            normalize_supported_launch_deep_link(&url),
+            Some("htree://self/video/index.html?autoplay=1".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_supported_launch_deep_link_rejects_internal_or_non_htree_urls() {
+        let http_url = tauri::Url::parse("https://files.iris.to").unwrap();
+        let nip07_url = tauri::Url::parse("htree://nip07/").unwrap();
+        let webview_url = tauri::Url::parse("htree://webview/").unwrap();
+
+        assert_eq!(normalize_supported_launch_deep_link(&http_url), None);
+        assert_eq!(normalize_supported_launch_deep_link(&nip07_url), None);
+        assert_eq!(normalize_supported_launch_deep_link(&webview_url), None);
+    }
+
+    #[test]
+    fn collect_supported_launch_deep_links_filters_out_non_launchable_urls() {
+        let urls = vec![
+            tauri::Url::parse("htree://self/video").unwrap(),
+            tauri::Url::parse("htree://nip07/").unwrap(),
+            tauri::Url::parse("https://files.iris.to").unwrap(),
+            tauri::Url::parse("htree://npub1example/video").unwrap(),
+        ];
+
+        assert_eq!(
+            collect_supported_launch_deep_links(&urls),
+            vec![
+                "htree://self/video".to_string(),
+                "htree://npub1example/video".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn tauri_config_registers_htree_as_desktop_deep_link_scheme() {
+        let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
+        let config = std::fs::read_to_string(&config_path).expect("failed to read tauri.conf.json");
+        let json: serde_json::Value =
+            serde_json::from_str(&config).expect("failed to parse tauri.conf.json");
+
+        let schemes = json
+            .pointer("/plugins/deep-link/desktop/schemes")
+            .and_then(serde_json::Value::as_array)
+            .expect("expected plugins.deep-link.desktop.schemes to be configured");
+
+        assert!(
+            schemes.iter().any(|value| value.as_str() == Some("htree")),
+            "expected htree deep-link scheme in {:?}",
+            config_path
         );
     }
 }

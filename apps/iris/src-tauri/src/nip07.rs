@@ -116,7 +116,11 @@ fn isolated_loopback_server_url(server_url: &str, canonical_root: &str) -> Resul
     Ok(url.into())
 }
 
-fn daemon_proxy_url_from_nhash(server_url: &str, nhash: &str, path: &str) -> Result<String, String> {
+fn daemon_proxy_url_from_nhash(
+    server_url: &str,
+    nhash: &str,
+    path: &str,
+) -> Result<String, String> {
     let canonical_root = htree_origin_from_nhash(nhash);
     let isolated_server_url = isolated_loopback_server_url(server_url, &canonical_root)?;
     let mut segments = vec!["htree".to_string(), decode_url_component(nhash)];
@@ -1309,59 +1313,76 @@ pub async fn create_htree_webview<R: Runtime>(
     // diagnostics, but it loads over a per-root loopback host so the browser's
     // own origin model isolates storage, service workers, and other origin-
     // scoped state between different trees and nhashes.
-    let (canonical_url, actual_url, origin, canonical_url_root, actual_url_root) = if let Some(nhash) = &nhash {
-        let request_host = host.as_deref().unwrap_or(nhash);
-        let canonical_url = append_query(htree_url_from_nhash(request_host, &path), query.as_deref());
-        let canonical_root = htree_url_from_nhash(request_host, "/").trim_end_matches('/').to_string();
-        let actual_url = append_query(
-            daemon_proxy_url_from_nhash(&server_url, request_host, &path)?,
-            query.as_deref(),
-        );
-        let actual_url = append_query_params(
-            &actual_url,
-            &[
-                ("iris_htree_server", &server_url),
-                ("iris_htree_canonical", &canonical_url),
-            ],
-        )?;
-        let actual_root = daemon_proxy_url_from_nhash(&server_url, request_host, "/")?
-            .trim_end_matches('/')
-            .to_string();
-        let origin = canonical_root.clone();
-        (canonical_url, actual_url, origin, canonical_root, actual_root)
-    } else if let Some(treename) = &treename {
-        let request_host = host
-            .as_deref()
-            .or(npub.as_deref())
-            .ok_or_else(|| "Either nhash or (host + treename) must be provided".to_string())?;
-        let resolved_host =
-            resolve_tree_request_host(request_host, crate::htree_protocol::get_self_npub())?;
-        let canonical_url = append_query(
-            htree_url_from_tree_host(resolved_host, treename, &path),
-            query.as_deref(),
-        );
-        let canonical_root = htree_url_from_tree_host(resolved_host, treename, "/")
-            .trim_end_matches('/')
-            .to_string();
-        let actual_url = append_query(
-            daemon_proxy_url_from_tree_host(&server_url, resolved_host, treename, &path)?,
-            query.as_deref(),
-        );
-        let actual_url = append_query_params(
-            &actual_url,
-            &[
-                ("iris_htree_server", &server_url),
-                ("iris_htree_canonical", &canonical_url),
-            ],
-        )?;
-        let actual_root = daemon_proxy_url_from_tree_host(&server_url, resolved_host, treename, "/")?
-            .trim_end_matches('/')
-            .to_string();
-        let origin = canonical_root.clone();
-        (canonical_url, actual_url, origin, canonical_root, actual_root)
-    } else {
-        return Err("Either nhash or (host + treename) must be provided".to_string());
-    };
+    let (canonical_url, actual_url, origin, canonical_url_root, actual_url_root) =
+        if let Some(nhash) = &nhash {
+            let request_host = host.as_deref().unwrap_or(nhash);
+            let canonical_url =
+                append_query(htree_url_from_nhash(request_host, &path), query.as_deref());
+            let canonical_root = htree_url_from_nhash(request_host, "/")
+                .trim_end_matches('/')
+                .to_string();
+            let actual_url = append_query(
+                daemon_proxy_url_from_nhash(&server_url, request_host, &path)?,
+                query.as_deref(),
+            );
+            let actual_url = append_query_params(
+                &actual_url,
+                &[
+                    ("iris_htree_server", &server_url),
+                    ("iris_htree_canonical", &canonical_url),
+                ],
+            )?;
+            let actual_root = daemon_proxy_url_from_nhash(&server_url, request_host, "/")?
+                .trim_end_matches('/')
+                .to_string();
+            let origin = canonical_root.clone();
+            (
+                canonical_url,
+                actual_url,
+                origin,
+                canonical_root,
+                actual_root,
+            )
+        } else if let Some(treename) = &treename {
+            let request_host = host
+                .as_deref()
+                .or(npub.as_deref())
+                .ok_or_else(|| "Either nhash or (host + treename) must be provided".to_string())?;
+            let resolved_host =
+                resolve_tree_request_host(request_host, crate::htree_protocol::get_self_npub())?;
+            let canonical_url = append_query(
+                htree_url_from_tree_host(resolved_host, treename, &path),
+                query.as_deref(),
+            );
+            let canonical_root = htree_url_from_tree_host(resolved_host, treename, "/")
+                .trim_end_matches('/')
+                .to_string();
+            let actual_url = append_query(
+                daemon_proxy_url_from_tree_host(&server_url, resolved_host, treename, &path)?,
+                query.as_deref(),
+            );
+            let actual_url = append_query_params(
+                &actual_url,
+                &[
+                    ("iris_htree_server", &server_url),
+                    ("iris_htree_canonical", &canonical_url),
+                ],
+            )?;
+            let actual_root =
+                daemon_proxy_url_from_tree_host(&server_url, resolved_host, treename, "/")?
+                    .trim_end_matches('/')
+                    .to_string();
+            let origin = canonical_root.clone();
+            (
+                canonical_url,
+                actual_url,
+                origin,
+                canonical_root,
+                actual_root,
+            )
+        } else {
+            return Err("Either nhash or (host + treename) must be provided".to_string());
+        };
 
     info!(
         "[htree] Creating webview {} for {} (origin: {})",
@@ -1805,13 +1826,9 @@ mod tests {
 
     #[test]
     fn daemon_proxy_tree_root_urls_keep_trailing_slash() {
-        let url = daemon_proxy_url_from_tree_host(
-            "http://127.0.0.1:21417",
-            "npub1example",
-            "video",
-            "/",
-        )
-        .unwrap();
+        let url =
+            daemon_proxy_url_from_tree_host("http://127.0.0.1:21417", "npub1example", "video", "/")
+                .unwrap();
         assert!(
             url.ends_with("/htree/npub1example/video/"),
             "expected tree root URL to keep trailing slash, got {url}"
@@ -1820,12 +1837,9 @@ mod tests {
 
     #[test]
     fn daemon_proxy_nhash_urls_use_embedded_server_paths() {
-        let url = daemon_proxy_url_from_nhash(
-            "http://127.0.0.1:21417",
-            "nhash1example",
-            "/poster.png",
-        )
-        .unwrap();
+        let url =
+            daemon_proxy_url_from_nhash("http://127.0.0.1:21417", "nhash1example", "/poster.png")
+                .unwrap();
         let parsed = tauri::Url::parse(&url).expect("valid URL");
         assert_eq!(parsed.path(), "/htree/nhash1example/poster.png");
         assert!(
@@ -1882,12 +1896,9 @@ mod tests {
             "/index.html",
         )
         .unwrap();
-        let nhash = daemon_proxy_url_from_nhash(
-            "http://127.0.0.1:21417",
-            "nhash1example",
-            "/index.html",
-        )
-        .unwrap();
+        let nhash =
+            daemon_proxy_url_from_nhash("http://127.0.0.1:21417", "nhash1example", "/index.html")
+                .unwrap();
         let owner_a_host = tauri::Url::parse(&owner_a)
             .expect("valid owner A URL")
             .host_str()

@@ -14,6 +14,26 @@ async function openHome(page: import('@playwright/test').Page) {
 }
 
 test.describe('Automation Bridge', () => {
+  test('pending deep links open through the normal shell navigation path on boot', async ({ tauriPage: page }) => {
+    await page.addInitScript(() => {
+      (window as any).__pendingDeepLinks = ['htree://self/video/index.html?autoplay=1'];
+    });
+
+    await openHome(page);
+
+    await expect.poll(async () => {
+      const state = await getAutomationState(page);
+      return state.currentUrl;
+    }).toBe('htree://self/video/index.html?autoplay=1');
+
+    const createCalls = await getInvocationsFor(page, 'create_htree_webview');
+    expect(createCalls).toHaveLength(1);
+    expect(createCalls[0].args.host).toBe('self');
+    expect(createCalls[0].args.treename).toBe('video');
+    expect(createCalls[0].args.path).toBe('/index.html');
+    expect(createCalls[0].args.query).toBe('autoplay=1');
+  });
+
   test('publishes shell state snapshots', async ({ tauriPage: page }) => {
     await openHome(page);
 
