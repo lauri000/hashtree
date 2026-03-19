@@ -415,11 +415,196 @@ jobs:
           security delete-keychain "${KEYCHAIN_PATH}" || true
           rm -f "$RUNNER_TEMP/iris-signing-cert.p12" "$RUNNER_TEMP/iris-notarize.zip"
 
+  build-linux-app:
+    name: Build Linux Iris app
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libwebkit2gtk-4.1-dev
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: apps/iris/package.json
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/iris/pnpm-lock.yaml
+
+      - name: Install Iris dependencies
+        run: pnpm --dir apps/iris install --frozen-lockfile
+
+      - name: Build Linux Iris bundles
+        run: pnpm --dir apps/iris exec tauri build --target x86_64-unknown-linux-gnu --bundles appimage,deb --ci
+
+      - name: Package Linux artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+
+          candidates=(
+            "apps/iris/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle"
+            "apps/iris/src-tauri/target/release/bundle"
+            "target/x86_64-unknown-linux-gnu/release/bundle"
+            "target/release/bundle"
+          )
+
+          appimage=""
+          deb=""
+
+          for candidate in "${candidates[@]}"; do
+            if [ -z "${appimage}" ] && [ -d "${candidate}/appimage" ]; then
+              appimage="$(find "${candidate}/appimage" -maxdepth 1 -name '*.AppImage' -print -quit)"
+            fi
+            if [ -z "${deb}" ] && [ -d "${candidate}/deb" ]; then
+              deb="$(find "${candidate}/deb" -maxdepth 1 -name '*.deb' -print -quit)"
+            fi
+          done
+
+          if [ -z "${appimage}" ]; then
+            echo "No Linux AppImage bundle found in build output"
+            exit 1
+          fi
+
+          if [ -z "${deb}" ]; then
+            echo "No Linux .deb bundle found in build output"
+            exit 1
+          fi
+
+          cp "${appimage}" dist/iris-linux-x86_64.AppImage
+          cp "${deb}" dist/iris-linux-x86_64.deb
+          sha256sum dist/iris-linux-x86_64.AppImage > dist/iris-linux-x86_64.AppImage.sha256
+          sha256sum dist/iris-linux-x86_64.deb > dist/iris-linux-x86_64.deb.sha256
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: iris-linux-x86_64
+          path: dist/iris-linux-x86_64*
+          retention-days: 7
+
+  build-windows-app:
+    name: Build Windows Iris app
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: apps/iris/package.json
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/iris/pnpm-lock.yaml
+
+      - name: Install Iris dependencies
+        run: pnpm --dir apps/iris install --frozen-lockfile
+
+      - name: Build Windows Iris bundles
+        run: pnpm --dir apps/iris exec tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi --ci
+
+      - name: Package Windows artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          $candidates = @(
+            'apps/iris/src-tauri/target/x86_64-pc-windows-msvc/release/bundle',
+            'apps/iris/src-tauri/target/release/bundle',
+            'target/x86_64-pc-windows-msvc/release/bundle',
+            'target/release/bundle'
+          )
+
+          $nsis = $null
+          $msi = $null
+
+          foreach ($candidate in $candidates) {
+            if (-not $nsis -and (Test-Path (Join-Path $candidate 'nsis'))) {
+              $nsis = Get-ChildItem -Path (Join-Path $candidate 'nsis') -Filter '*-setup.exe' | Select-Object -First 1
+            }
+            if (-not $msi -and (Test-Path (Join-Path $candidate 'msi'))) {
+              $msi = Get-ChildItem -Path (Join-Path $candidate 'msi') -Filter '*.msi' | Select-Object -First 1
+            }
+          }
+
+          if (-not $nsis) {
+            throw 'No Windows NSIS installer found in build output'
+          }
+
+          if (-not $msi) {
+            throw 'No Windows MSI installer found in build output'
+          }
+
+          Copy-Item $nsis.FullName 'dist/iris-windows-x64-setup.exe'
+          Copy-Item $msi.FullName 'dist/iris-windows-x64.msi'
+
+          $nsisHash = (Get-FileHash 'dist/iris-windows-x64-setup.exe' -Algorithm SHA256).Hash.ToLower()
+          "$nsisHash  iris-windows-x64-setup.exe" | Out-File -FilePath 'dist/iris-windows-x64-setup.exe.sha256' -Encoding ASCII
+
+          $msiHash = (Get-FileHash 'dist/iris-windows-x64.msi' -Algorithm SHA256).Hash.ToLower()
+          "$msiHash  iris-windows-x64.msi" | Out-File -FilePath 'dist/iris-windows-x64.msi.sha256' -Encoding ASCII
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: iris-windows-x64
+          path: dist/iris-windows-x64*
+          retention-days: 7
+
   release:
     name: Create Release
     needs:
       - build
       - build-macos-app
+      - build-linux-app
+      - build-windows-app
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -475,7 +660,15 @@ jobs:
             Download `hashtree-x86_64-pc-windows-msvc.zip`, extract, and add the folder to PATH.
 
             ### Iris desktop app
+            macOS:
             Download `iris-macos-arm64.zip`, unzip it, and move `Iris.app` into `/Applications`.
+
+            Linux:
+            Download `iris-linux-x86_64.AppImage` and run `chmod +x iris-linux-x86_64.AppImage && ./iris-linux-x86_64.AppImage`,
+            or install `iris-linux-x86_64.deb` with `sudo apt install ./iris-linux-x86_64.deb`.
+
+            Windows:
+            Run `iris-windows-x64-setup.exe` or install `iris-windows-x64.msi`.
 
             ### Verify
             ```bash
@@ -490,4 +683,4 @@ jobs:
             - `git-remote-htree` — Git remote helper for `htree://` URLs
             - `install.sh` — Installer script (Unix)
             - `README.txt` — Quick reference
-            - `Iris.app` — Signed macOS desktop shell with embedded htree daemon
+            - `Iris` desktop installers for macOS, Linux, and Windows — native shell with embedded htree daemon
