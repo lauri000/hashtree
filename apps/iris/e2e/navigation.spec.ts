@@ -189,6 +189,11 @@ test.describe('Navigation', () => {
       url: 'https://example.com',
       source: 'load',
     });
+    await emitTauriEvent(page, 'child-webview-page-load', {
+      label: 'content',
+      url: 'https://example.com',
+      event: 'finished',
+    });
 
     await expect(page.getByTitle('Refresh')).toBeVisible();
     await page.getByTitle('Refresh').click();
@@ -199,6 +204,11 @@ test.describe('Navigation', () => {
       label: 'content',
       url: 'https://example.com',
       source: 'load',
+    });
+    await emitTauriEvent(page, 'child-webview-page-load', {
+      label: 'content',
+      url: 'https://example.com',
+      event: 'finished',
     });
 
     await page.getByTitle('Back').click();

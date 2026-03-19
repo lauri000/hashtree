@@ -316,20 +316,22 @@ test.describe('Address Bar Autocomplete', () => {
     expect(calls.length).toBe(1);
   });
 
-  test('opening dropdown adjusts webview bounds', async ({ tauriPage: page }) => {
+  test('opening dropdown keeps the page anchored below the toolbar', async ({ tauriPage: page }) => {
     await openHome(page);
 
     const input = page.locator('input[placeholder="Search or enter address"]');
     await input.click();
     await input.fill('https://example.com');
     await input.press('Enter');
-
-    const before = await getInvocationsFor(page, 'set_webview_bounds');
+    await input.press('Tab');
 
     await input.click();
-    await expect(page.locator('[role="listbox"]')).toBeVisible();
+    const dropdown = page.locator('[role="listbox"]');
+    await expect(dropdown).toBeVisible();
+    await expect(dropdown.locator('[role="option"]')).toHaveCount(1);
+    await page.waitForTimeout(250);
 
-    await expect.poll(async () => (await getInvocationsFor(page, 'set_webview_bounds')).length)
-      .toBeGreaterThan(before.length);
+    const after = await getInvocationsFor(page, 'set_webview_bounds');
+    expect(after.at(-1)?.args.y).toBe(48);
   });
 });

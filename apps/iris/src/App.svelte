@@ -429,8 +429,7 @@
     boundsRaf = requestAnimationFrame(async () => {
       boundsRaf = null;
       if (currentView !== 'webview' || !g.__irisChildReady) return;
-      const extra = showDropdown ? (dropdownEl?.getBoundingClientRect().height ?? 0) : 0;
-      const top = TOOLBAR_HEIGHT + extra;
+      const top = TOOLBAR_HEIGHT;
       const height = Math.max(0, window.innerHeight - top);
       try {
         await setWebviewBounds(CHILD_LABEL, 0, top, window.innerWidth, height);
