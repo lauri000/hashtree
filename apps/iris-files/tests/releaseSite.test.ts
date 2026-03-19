@@ -8,6 +8,31 @@ describe('release-site', () => {
     expect(parsed.treeName).toBe('video');
   });
 
+  it('supports docs, maps, and boards release profiles', () => {
+    const docs = createReleasePlan({
+      profileName: 'docs',
+      pagesProject: 'docs-iris-to',
+      treeName: 'docs',
+      skipPages: false,
+    });
+    const maps = createReleasePlan({
+      profileName: 'maps',
+      pagesProject: 'maps-iris-to',
+      treeName: 'maps',
+      skipPages: false,
+    });
+    const boards = createReleasePlan({
+      profileName: 'boards',
+      pagesProject: 'boards-iris-to',
+      treeName: 'boards',
+      skipPages: false,
+    });
+
+    expect(docs.profile.distDir).toBe('dist-docs');
+    expect(maps.profile.distDir).toBe('dist-maps');
+    expect(boards.profile.distDir).toBe('dist-boards');
+  });
+
   it('builds the release plan in build-test-publish-deploy order', () => {
     const plan = createReleasePlan({
       profileName: 'files',

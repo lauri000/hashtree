@@ -34,6 +34,42 @@ export const releaseProfiles = {
       ['node', './scripts/smoke-video-iris-portable.mjs'],
     ],
   },
+  docs: {
+    name: 'docs',
+    appName: 'Iris Docs',
+    distDir: 'dist-docs',
+    treeName: 'docs',
+    pagesProjectEnv: 'CF_PAGES_PROJECT_DOCS',
+    buildCommand: ['pnpm', 'run', 'build:docs'],
+    testCommands: [
+      ['pnpm', 'exec', 'vitest', 'run', 'tests/docsPortableBuildConfig.test.ts'],
+      ['node', './scripts/smoke-docs-iris-portable.mjs'],
+    ],
+  },
+  maps: {
+    name: 'maps',
+    appName: 'Iris Maps',
+    distDir: 'dist-maps',
+    treeName: 'maps',
+    pagesProjectEnv: 'CF_PAGES_PROJECT_MAPS',
+    buildCommand: ['pnpm', 'run', 'build:maps'],
+    testCommands: [
+      ['pnpm', 'exec', 'vitest', 'run', 'tests/mapsPortableBuildConfig.test.ts'],
+      ['node', './scripts/smoke-maps-iris-portable.mjs'],
+    ],
+  },
+  boards: {
+    name: 'boards',
+    appName: 'Iris Boards',
+    distDir: 'dist-boards',
+    treeName: 'boards',
+    pagesProjectEnv: 'CF_PAGES_PROJECT_BOARDS',
+    buildCommand: ['pnpm', 'run', 'build:boards'],
+    testCommands: [
+      ['pnpm', 'exec', 'vitest', 'run', 'tests/boardsPortableBuildConfig.test.ts'],
+      ['node', './scripts/smoke-boards-iris-portable.mjs'],
+    ],
+  },
 };
 
 export function parseArgs(argv, env = process.env) {
@@ -253,7 +289,7 @@ export function runRelease(options, runner = defaultRunner, hooks = {}) {
 }
 
 export function usage() {
-  return `Usage: node ./scripts/release-site.mjs <files|video> [options]
+  return `Usage: node ./scripts/release-site.mjs <files|video|docs|maps|boards> [options]
 
 Build once, test the built output, publish to hashtree, then deploy that same
 directory to Cloudflare Pages.
@@ -268,6 +304,9 @@ Options:
 Environment:
   ${releaseProfiles.files.pagesProjectEnv}   Default Pages project for the files profile
   ${releaseProfiles.video.pagesProjectEnv}   Default Pages project for the video profile
+  ${releaseProfiles.docs.pagesProjectEnv}   Default Pages project for the docs profile
+  ${releaseProfiles.maps.pagesProjectEnv}   Default Pages project for the maps profile
+  ${releaseProfiles.boards.pagesProjectEnv}   Default Pages project for the boards profile
 `;
 }
 

@@ -42,11 +42,20 @@ The shared video build lives in `dist-video`. The same artifacts work for both `
 Portable Pages release:
 
 ```bash
+# Docs
+CF_PAGES_PROJECT_DOCS=docs-iris-to pnpm run release:docs:iris
+
 # Files
 CF_PAGES_PROJECT_FILES=files-iris-to pnpm run release:files:iris
 
+# Maps
+CF_PAGES_PROJECT_MAPS=maps-iris-to pnpm run release:maps:iris
+
 # Video
 CF_PAGES_PROJECT_VIDEO=video-iris-to pnpm run release:video:iris
+
+# Boards
+CF_PAGES_PROJECT_BOARDS=boards-iris-to pnpm run release:boards:iris
 ```
 
 Each release script performs one build, runs focused tests against that exact build output, publishes the built directory to hashtree, and only then deploys the same directory to Cloudflare Pages. If build or tests fail, neither hashtree nor Pages upload runs.
@@ -57,10 +66,10 @@ Cloudflare Pages setup:
 npx wrangler pages project create
 ```
 
-- Create one Direct Upload Pages project per site, for example `files-iris-to` and `video-iris-to`.
-- Attach the desired custom domain in Cloudflare Pages, for example `files.iris.to` or `video.iris.to`.
+- Create one Direct Upload Pages project per site, for example `docs-iris-to`, `files-iris-to`, `maps-iris-to`, `video-iris-to`, and `boards-iris-to`.
+- Attach the desired custom domain in Cloudflare Pages, for example `docs.iris.to`, `files.iris.to`, `maps.iris.to`, `video.iris.to`, or `boards.iris.to`.
 - Authenticate Wrangler either with `wrangler login` or with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
-- Set `CF_PAGES_PROJECT_FILES` and/or `CF_PAGES_PROJECT_VIDEO` in your shell so the release script knows which Pages project to deploy.
+- Set the matching `CF_PAGES_PROJECT_*` environment variables in your shell so the release script knows which Pages project to deploy.
 
 ## Desktop App (Tauri)
 

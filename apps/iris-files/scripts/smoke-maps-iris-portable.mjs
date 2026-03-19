@@ -5,19 +5,13 @@ import { runPortableSmoke } from './portable-smoke-lib.mjs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const appDir = path.resolve(__dirname, '..');
-const distDir = path.join(appDir, 'dist-video');
-const screenshotPath = path.join(appDir, 'test-results', 'video-iris-portable-smoke.png');
 
-async function main() {
-  await runPortableSmoke({
-    distDir,
-    title: 'Iris Video',
-    appName: 'video',
-    screenshotPath,
-  });
-}
-
-main().catch((error) => {
+runPortableSmoke({
+  distDir: path.join(appDir, 'dist-maps'),
+  title: 'Iris Maps',
+  appName: 'maps',
+  screenshotPath: path.join(appDir, 'test-results', 'maps-iris-portable-smoke.png'),
+}).catch((error) => {
   console.error(error instanceof Error ? error.message : error);
   process.exit(1);
 });

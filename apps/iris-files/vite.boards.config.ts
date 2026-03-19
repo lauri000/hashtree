@@ -3,7 +3,15 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import UnoCSS from 'unocss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { resolve } from 'path';
-import { rename } from 'fs/promises';
+import { readFile, unlink, writeFile } from 'fs/promises';
+
+const outDir = 'dist-boards';
+
+export function sanitizeBoardsHtml(html: string): string {
+  return html
+    .replace(/^\s*<link rel="modulepreload".*$/gm, '')
+    .replace(/\s+crossorigin(?=[\s>])/g, '');
+}
 
 function boardsEntryPlugin(): Plugin {
   return {
@@ -18,10 +26,13 @@ function boardsEntryPlugin(): Plugin {
     },
     async closeBundle() {
       try {
-        await rename(
-          resolve(__dirname, 'dist-boards/boards.html'),
-          resolve(__dirname, 'dist-boards/index.html')
-        );
+        const source = resolve(__dirname, outDir, 'boards.html');
+        const target = resolve(__dirname, outDir, 'index.html');
+        const html = await readFile(source, 'utf8');
+        await writeFile(target, sanitizeBoardsHtml(html), 'utf8');
+        if (source !== target) {
+          await unlink(source);
+        }
       } catch {
         // Ignore in dev mode.
       }
@@ -30,6 +41,7 @@ function boardsEntryPlugin(): Plugin {
 }
 
 export default defineConfig({
+  base: './',
   define: {
     'import.meta.env.VITE_BUILD_TIME': JSON.stringify(new Date().toISOString()),
   },
@@ -88,7 +100,8 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: 'dist-boards',
+    modulePreload: false,
+    outDir,
     emptyOutDir: true,
     reportCompressedSize: true,
     chunkSizeWarningLimit: 2000,

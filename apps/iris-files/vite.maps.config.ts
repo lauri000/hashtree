@@ -3,7 +3,15 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import UnoCSS from 'unocss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { resolve } from 'path';
-import { rename } from 'fs/promises';
+import { readFile, unlink, writeFile } from 'fs/promises';
+
+const outDir = 'dist-maps';
+
+export function sanitizeMapsHtml(html: string): string {
+  return html
+    .replace(/^\s*<link rel="modulepreload".*$/gm, '')
+    .replace(/\s+crossorigin(?=[\s>])/g, '');
+}
 
 function mapsEntryPlugin(): Plugin {
   return {
@@ -17,12 +25,15 @@ function mapsEntryPlugin(): Plugin {
       });
     },
     async closeBundle() {
-      // Rename maps.html to index.html for production (Cloudflare Pages)
+      // Rename maps.html to index.html and strip hints that break htree:// delivery.
       try {
-        await rename(
-          resolve(__dirname, 'dist-maps/maps.html'),
-          resolve(__dirname, 'dist-maps/index.html')
-        );
+        const source = resolve(__dirname, outDir, 'maps.html');
+        const target = resolve(__dirname, outDir, 'index.html');
+        const html = await readFile(source, 'utf8');
+        await writeFile(target, sanitizeMapsHtml(html), 'utf8');
+        if (source !== target) {
+          await unlink(source);
+        }
       } catch {
         // Ignore if file doesn't exist (dev mode)
       }
@@ -31,6 +42,7 @@ function mapsEntryPlugin(): Plugin {
 }
 
 export default defineConfig({
+  base: './',
   define: {
     'import.meta.env.VITE_BUILD_TIME': JSON.stringify(new Date().toISOString()),
   },
@@ -88,7 +100,8 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: 'dist-maps',
+    modulePreload: false,
+    outDir,
     emptyOutDir: true,
     reportCompressedSize: true,
     chunkSizeWarningLimit: 2000,
