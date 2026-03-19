@@ -107,42 +107,12 @@ fn proxy_to_daemon(
     match request.send() {
         Ok(response) => {
             let status = response.status().as_u16();
-            let content_type = response
-                .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("application/octet-stream")
-                .to_string();
-            let content_length = response
-                .headers()
-                .get("content-length")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-            let content_range = response
-                .headers()
-                .get("content-range")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-            let accept_ranges = response
-                .headers()
-                .get("accept-ranges")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-
+            let response_headers = forwarded_proxy_headers(response.headers());
             let body = response.bytes().unwrap_or_default().to_vec();
+            let mut builder = tauri::http::Response::builder().status(status);
 
-            let mut builder = tauri::http::Response::builder()
-                .status(status)
-                .header("content-type", content_type);
-
-            if let Some(cl) = content_length {
-                builder = builder.header("content-length", cl);
-            }
-            if let Some(cr) = content_range {
-                builder = builder.header("content-range", cr);
-            }
-            if let Some(ar) = accept_ranges {
-                builder = builder.header("accept-ranges", ar);
+            for (name, value) in response_headers {
+                builder = builder.header(name, value);
             }
 
             builder.body(body).unwrap()
@@ -156,6 +126,62 @@ fn proxy_to_daemon(
                 .unwrap()
         }
     }
+}
+
+fn forwarded_proxy_headers(headers: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
+    const FORWARDED_HEADERS: &[&str] = &[
+        "content-type",
+        "content-length",
+        "content-range",
+        "accept-ranges",
+        "cache-control",
+        "etag",
+        "last-modified",
+        "expires",
+        "access-control-allow-origin",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "access-control-expose-headers",
+        "content-security-policy",
+        "cross-origin-resource-policy",
+        "x-content-type-options",
+    ];
+
+    let mut forwarded = Vec::new();
+    for name in FORWARDED_HEADERS {
+        if let Some(value) = headers.get(*name).and_then(|value| value.to_str().ok()) {
+            forwarded.push(((*name).to_string(), value.to_string()));
+        }
+    }
+
+    if !forwarded
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+    {
+        forwarded.push((
+            "content-type".to_string(),
+            "application/octet-stream".to_string(),
+        ));
+    }
+
+    forwarded
+}
+
+fn tree_root_index_fallback_path(
+    raw_path: &str,
+    resolved_path: &str,
+    range_header: Option<&str>,
+) -> Option<String> {
+    if range_header.is_some() || !raw_path.ends_with('/') {
+        return None;
+    }
+
+    let trimmed = resolved_path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(format!("{}/index.html", trimmed))
 }
 
 /// Handle htree:// URI scheme protocol requests
@@ -199,7 +225,25 @@ pub fn handle_htree_protocol<R: tauri::Runtime>(
         host, path_and_query
     );
 
-    proxy_to_daemon(&path_and_query, range_header)
+    let response = proxy_to_daemon(&path_and_query, range_header);
+    if response.status().as_u16() != 404 {
+        return response;
+    }
+
+    if let Some(index_path) = tree_root_index_fallback_path(raw_path, path, range_header) {
+        let index_path_and_query = if let Some(query) = raw_query {
+            format!("{}?{}", index_path, query)
+        } else {
+            index_path
+        };
+        info!(
+            "htree:// protocol retrying root request with index fallback: {}",
+            index_path_and_query
+        );
+        return proxy_to_daemon(&index_path_and_query, range_header);
+    }
+
+    response
 }
 
 /// Cache tree roots from the frontend for faster resolution.
@@ -265,8 +309,8 @@ mod tests {
 
     #[test]
     fn test_resolve_htree_url_to_path_self_host() {
-        let path = resolve_htree_url_to_path("self", "/video/index.html", Some("npub1owner"))
-            .unwrap();
+        let path =
+            resolve_htree_url_to_path("self", "/video/index.html", Some("npub1owner")).unwrap();
         assert_eq!(path, "/npub1owner/video/index.html");
     }
 
@@ -275,5 +319,85 @@ mod tests {
         let err = resolve_htree_url_to_path("self", "/video/index.html", None)
             .expect_err("self should require identity");
         assert!(err.contains("self identity"));
+    }
+
+    #[test]
+    fn tree_root_index_fallback_appends_index_for_directory_urls() {
+        let path = tree_root_index_fallback_path("/video/", "/npub1owner/video/", None)
+            .expect("directory requests should fall back to index.html");
+        assert_eq!(path, "/npub1owner/video/index.html");
+    }
+
+    #[test]
+    fn tree_root_index_fallback_supports_nhash_root() {
+        let path = tree_root_index_fallback_path("/", "/nhash1abc123xyz", None)
+            .expect("nhash root should fall back to index.html");
+        assert_eq!(path, "/nhash1abc123xyz/index.html");
+    }
+
+    #[test]
+    fn tree_root_index_fallback_skips_non_directory_requests() {
+        assert!(
+            tree_root_index_fallback_path("/video/app.js", "/npub1owner/video/app.js", None)
+                .is_none()
+        );
+        assert!(
+            tree_root_index_fallback_path("/video/", "/npub1owner/video/", Some("bytes=0-1"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn forwarded_proxy_headers_preserve_cors_and_cache_metadata() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "content-type",
+            reqwest::header::HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        headers.insert(
+            "access-control-allow-origin",
+            reqwest::header::HeaderValue::from_static("*"),
+        );
+        headers.insert(
+            "access-control-expose-headers",
+            reqwest::header::HeaderValue::from_static(
+                "accept-ranges,content-range,content-length,content-type",
+            ),
+        );
+        headers.insert(
+            "cache-control",
+            reqwest::header::HeaderValue::from_static("public, max-age=60"),
+        );
+        headers.insert(
+            "x-unrelated-header",
+            reqwest::header::HeaderValue::from_static("ignored"),
+        );
+
+        let forwarded = forwarded_proxy_headers(&headers);
+
+        assert!(forwarded
+            .iter()
+            .any(|(name, value)| { name == "access-control-allow-origin" && value == "*" }));
+        assert!(forwarded.iter().any(|(name, value)| {
+            name == "access-control-expose-headers"
+                && value == "accept-ranges,content-range,content-length,content-type"
+        }));
+        assert!(forwarded
+            .iter()
+            .any(|(name, value)| name == "cache-control" && value == "public, max-age=60"));
+        assert!(!forwarded
+            .iter()
+            .any(|(name, value)| name == "x-unrelated-header" && value == "ignored"));
+    }
+
+    #[test]
+    fn forwarded_proxy_headers_defaults_content_type() {
+        let headers = reqwest::header::HeaderMap::new();
+
+        let forwarded = forwarded_proxy_headers(&headers);
+
+        assert!(forwarded.iter().any(|(name, value)| {
+            name == "content-type" && value == "application/octet-stream"
+        }));
     }
 }

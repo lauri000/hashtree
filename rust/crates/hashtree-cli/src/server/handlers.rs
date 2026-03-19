@@ -262,6 +262,26 @@ async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool {
     false
 }
 
+async fn await_webrtc_peer_response<F>(
+    future: F,
+    hash_hex: &str,
+    timeout: Duration,
+) -> Option<(Vec<u8>, String)>
+where
+    F: std::future::Future<Output = Option<(Vec<u8>, String)>>,
+{
+    match tokio::time::timeout(timeout, future).await {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::warn!(
+                "[htree-fetch] WebRTC peer query timed out for {}",
+                &hash_hex[..16.min(hash_hex.len())]
+            );
+            None
+        }
+    }
+}
+
 async fn htree_nhash_impl(
     State(state): State<AppState>,
     nhash: String,
@@ -1686,6 +1706,7 @@ pub async fn follow_distance(
 
 /// Timeout for HTTP resolver requests
 const HTTP_RESOLVER_TIMEOUT: Duration = Duration::from_secs(10);
+const HTTP_WEBRTC_FETCH_TIMEOUT: Duration = Duration::from_millis(2000);
 
 /// Create resolver config with HTTP timeout
 fn resolver_config() -> NostrResolverConfig {
@@ -1864,7 +1885,13 @@ async fn query_webrtc_peers(
     webrtc_state: &Arc<WebRTCState>,
     hash_hex: &str,
 ) -> Option<(Vec<u8>, String)> {
-    if let Some((data, peer_id)) = webrtc_state.request_from_peers_with_source(hash_hex).await {
+    if let Some((data, peer_id)) = await_webrtc_peer_response(
+        webrtc_state.request_from_peers_with_source(hash_hex),
+        hash_hex,
+        HTTP_WEBRTC_FETCH_TIMEOUT,
+    )
+    .await
+    {
         tracing::info!(
             "Got {} bytes from peer {} for hash {}",
             data.len(),
@@ -1942,6 +1969,30 @@ mod tests {
     async fn test_query_upstream_blossom_no_servers() {
         let servers: Vec<String> = vec![];
         let result = query_upstream_blossom(&servers, "abc123").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn await_webrtc_peer_response_returns_success() {
+        let result = await_webrtc_peer_response(
+            async { Some((b"ok".to_vec(), "peer-a".to_string())) },
+            "abcd1234",
+            Duration::from_millis(10),
+        )
+        .await;
+
+        assert_eq!(result, Some((b"ok".to_vec(), "peer-a".to_string())));
+    }
+
+    #[tokio::test]
+    async fn await_webrtc_peer_response_times_out() {
+        let result = await_webrtc_peer_response(
+            std::future::pending::<Option<(Vec<u8>, String)>>(),
+            "abcd1234",
+            Duration::from_millis(10),
+        )
+        .await;
+
         assert!(result.is_none());
     }
 
