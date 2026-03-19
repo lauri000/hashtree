@@ -225,6 +225,14 @@ scripts/publish_release.sh v0.2.3 "$release" hashtree-releases
 
 That stores the new release under `v0.2.3/`, repoints `latest/` at the same CID, and leaves older versions intact.
 
+Build and publish a local CLI release directory in one step:
+
+```bash
+scripts/release_to_htree.sh --version v0.2.3
+```
+
+On macOS this builds the macOS CLI artifacts locally, uses `cross` for the Linux musl CLI artifacts, and can optionally include Windows MSVC binaries from a VM via `--windows-artifacts-dir <shared-dir>`.
+
 ## Development
 
 ```bash
