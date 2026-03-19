@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use hashtree_core::Cid;
+use hashtree_core::{nhash_decode, nhash_encode_full, Cid, NHashData};
 use hashtree_nostr::{ListEventsOptions, NostrEventStore, StoredNostrEvent};
 use hashtree_nostr_bridge::{CrawlConfig, CrawlReport, NostrBridge, RelayFetchMode};
 use nostr::Keys;
@@ -262,7 +262,7 @@ async fn build_report(
     options: &SocialGraphIndexOptions,
     crawl_report: CrawlReport,
 ) -> Result<IndexedNostrReport> {
-    let root = crawl_report.root.as_ref().map(ToString::to_string);
+    let root = crawl_report.root.as_ref().map(cid_to_nhash).transpose()?;
     let mut events = if let Some(root_cid) = crawl_report.root.as_ref() {
         event_store
             .list_recent(Some(root_cid), ListEventsOptions::default())
@@ -357,11 +357,16 @@ fn persist_report(data_dir: &Path, report: &IndexedNostrReport) -> Result<()> {
     let output_dir = data_dir.join(INDEX_DIR);
     std::fs::create_dir_all(&output_dir)?;
 
+    let mut saved_report = report.clone();
+    if let Some(root) = &saved_report.root {
+        saved_report.root = Some(cid_to_nhash(&parse_root_text(root)?)?);
+    }
+
     let report_path = output_dir.join(LATEST_REPORT_FILE);
-    std::fs::write(&report_path, serde_json::to_vec_pretty(report)?)?;
+    std::fs::write(&report_path, serde_json::to_vec_pretty(&saved_report)?)?;
 
     let root_path = output_dir.join(LATEST_ROOT_FILE);
-    if let Some(root) = &report.root {
+    if let Some(root) = &saved_report.root {
         std::fs::write(root_path, format!("{root}\n"))?;
     } else if root_path.exists() {
         std::fs::remove_file(root_path)?;
@@ -392,7 +397,7 @@ fn load_root_from_path(path: &Path) -> Result<Option<Cid>> {
         return Ok(None);
     }
 
-    Cid::parse(trimmed)
+    parse_root_text(trimmed)
         .map(Some)
         .with_context(|| format!("parse nostr index root from {}", path.display()))
 }
@@ -407,7 +412,7 @@ fn persist_checkpoint(
     std::fs::create_dir_all(&output_dir)?;
 
     let checkpoint = IndexedNostrCheckpointReport {
-        root: report.root.as_ref().map(ToString::to_string),
+        root: report.root.as_ref().map(cid_to_nhash).transpose()?,
         authors_considered: report.authors_considered,
         authors_processed: report.authors_processed,
         events_seen: report.events_seen,
@@ -441,6 +446,26 @@ fn clear_checkpoint(data_dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn parse_root_text(value: &str) -> Result<Cid> {
+    if value.starts_with("nhash1") {
+        let decoded = nhash_decode(value).context("decode nhash root")?;
+        return Ok(Cid {
+            hash: decoded.hash,
+            key: decoded.decrypt_key,
+        });
+    }
+
+    Cid::parse(value).context("parse raw cid root")
+}
+
+fn cid_to_nhash(cid: &Cid) -> Result<String> {
+    nhash_encode_full(&NHashData {
+        hash: cid.hash,
+        decrypt_key: cid.key,
+    })
+    .context("encode nhash root")
 }
 
 fn print_report(report: &IndexedNostrReport, data_dir: &Path) {
@@ -898,7 +923,7 @@ mod tests {
         let store = HashtreeStore::with_options(tmp.path(), None, 1024 * 1024 * 1024)
             .expect("reopen store");
         let event_store = NostrEventStore::new(store.store_arc());
-        let root = hashtree_core::Cid::parse(report.root.as_deref().expect("root string"))
+        let root = parse_root_text(report.root.as_deref().expect("root string"))
             .expect("parse cid");
         let hashtagged = event_store
             .list_by_tag(
@@ -923,7 +948,8 @@ mod tests {
         std::fs::create_dir_all(&index_dir).expect("create index dir");
         let cid =
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
-        std::fs::write(index_dir.join(LATEST_ROOT_FILE), format!("{cid}\n"))
+        let nhash = cid_to_nhash(&parse_root_text(cid).expect("parse raw cid")).expect("nhash");
+        std::fs::write(index_dir.join(LATEST_ROOT_FILE), format!("{nhash}\n"))
             .expect("write latest root");
 
         let loaded = load_existing_root(tmp.path()).expect("load root");
@@ -937,7 +963,8 @@ mod tests {
         std::fs::create_dir_all(&index_dir).expect("create index dir");
         let cid =
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
-        std::fs::write(index_dir.join(CHECKPOINT_ROOT_FILE), format!("{cid}\n"))
+        let nhash = cid_to_nhash(&parse_root_text(cid).expect("parse raw cid")).expect("nhash");
+        std::fs::write(index_dir.join(CHECKPOINT_ROOT_FILE), format!("{nhash}\n"))
             .expect("write checkpoint root");
 
         let loaded = load_existing_root(tmp.path()).expect("load root");
@@ -949,7 +976,10 @@ mod tests {
         let tmp = TempDir::new().expect("tempdir");
         let index_dir = tmp.path().join(INDEX_DIR);
         std::fs::create_dir_all(&index_dir).expect("create index dir");
-        std::fs::write(index_dir.join(CHECKPOINT_ROOT_FILE), "abc:def\n")
+        std::fs::write(
+            index_dir.join(CHECKPOINT_ROOT_FILE),
+            "nhash1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq\n",
+        )
             .expect("write checkpoint root");
         std::fs::write(index_dir.join(CHECKPOINT_REPORT_FILE), "{}")
             .expect("write checkpoint report");
@@ -986,6 +1016,10 @@ mod tests {
 
         persist_report(tmp.path(), &report).expect("persist report");
         clear_checkpoint(tmp.path()).expect("clear checkpoint");
+
+        let saved_root = std::fs::read_to_string(index_dir.join(LATEST_ROOT_FILE))
+            .expect("read latest root");
+        assert!(saved_root.trim().starts_with("nhash1"));
 
         assert!(!index_dir.join(CHECKPOINT_ROOT_FILE).exists());
         assert!(!index_dir.join(CHECKPOINT_REPORT_FILE).exists());
