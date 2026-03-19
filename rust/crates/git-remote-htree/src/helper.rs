@@ -82,6 +82,41 @@ fn get_hashtree_data_dir() -> PathBuf {
     hashtree_config::get_data_dir()
 }
 
+fn format_upload_progress(
+    processed: usize,
+    total: usize,
+    uploaded: usize,
+    skipped_diff: usize,
+    skipped_server: usize,
+    failed: usize,
+    has_old_tree: bool,
+) -> String {
+    let total = total.max(processed);
+    if has_old_tree {
+        if failed > 0 {
+            format!(
+                "  Uploading: {}/{} ({} new, {} unchanged, {} exist, {} FAILED)",
+                processed, total, uploaded, skipped_diff, skipped_server, failed
+            )
+        } else {
+            format!(
+                "  Uploading: {}/{} ({} new, {} unchanged, {} exist)",
+                processed, total, uploaded, skipped_diff, skipped_server
+            )
+        }
+    } else if failed > 0 {
+        format!(
+            "  Uploading: {}/{} ({} new, {} exist, {} FAILED)",
+            processed, total, uploaded, skipped_server, failed
+        )
+    } else {
+        format!(
+            "  Uploading: {}/{} ({} new, {} exist)",
+            processed, total, uploaded, skipped_server
+        )
+    }
+}
+
 /// Create local blob store based on config
 fn create_local_store(
     path: &std::path::Path,
@@ -1376,6 +1411,7 @@ impl RemoteHelper {
             let skipped_server = Arc::new(AtomicUsize::new(0)); // Skipped due to server already having it
             let failed = Arc::new(AtomicUsize::new(0));
             let processed = Arc::new(AtomicUsize::new(0));
+            let total_queued = Arc::new(AtomicUsize::new(0));
 
             // Collect old tree hashes if we have an old root
             let old_hashes: HashSet<[u8; 32]> = if let Some(old_root) = old_root_bytes {
@@ -1483,6 +1519,7 @@ impl RemoteHelper {
                 let failed = Arc::clone(&failed);
                 let processed = Arc::clone(&processed);
                 let skipped_diff = Arc::clone(&skipped_diff);
+                let total_queued = Arc::clone(&total_queued);
                 let servers_needing_full = Arc::clone(&servers_needing_full);
 
                 tokio::spawn(async move {
@@ -1498,6 +1535,7 @@ impl RemoteHelper {
                             let failed = Arc::clone(&failed);
                             let processed = Arc::clone(&processed);
                             let skipped_diff = Arc::clone(&skipped_diff);
+                            let total_queued = Arc::clone(&total_queued);
                             let servers_needing_full = Arc::clone(&servers_needing_full);
                             async move {
                                 // If from old tree and some servers need full upload, push the
@@ -1519,19 +1557,18 @@ impl RemoteHelper {
                                 }
                                 let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
                                 if count == 1 || count.is_multiple_of(10) {
-                                    let diff_skipped = skipped_diff.load(Ordering::Relaxed);
-                                    if has_old_tree && diff_skipped > 0 {
-                                        eprint!("\r  Uploading: {} ({} new, {} unchanged, {} exist on server)",
+                                    eprint!(
+                                        "\r{}",
+                                        format_upload_progress(
                                             count,
+                                            total_queued.load(Ordering::Relaxed),
                                             uploaded.load(Ordering::Relaxed),
-                                            diff_skipped,
-                                            skipped_server.load(Ordering::Relaxed));
-                                    } else {
-                                        eprint!("\r  Uploading: {} ({} new, {} exist)",
-                                            count,
-                                            uploaded.load(Ordering::Relaxed),
-                                            skipped_server.load(Ordering::Relaxed));
-                                    }
+                                            skipped_diff.load(Ordering::Relaxed),
+                                            skipped_server.load(Ordering::Relaxed),
+                                            failed.load(Ordering::Relaxed),
+                                            has_old_tree,
+                                        )
+                                    );
                                     let _ = std::io::stderr().flush();
                                 }
                             }
@@ -1548,7 +1585,7 @@ impl RemoteHelper {
             let mut queue: Vec<([u8; 32], Option<[u8; 32]>)> = vec![(root_bytes, encryption_key.copied())];
             let mut queued_count = 0usize;
 
-            eprint!("  Uploading: 0");
+            eprint!("{}", format_upload_progress(0, 0, 0, 0, 0, 0, has_old_tree));
             let _ = std::io::stderr().flush();
 
             while let Some((hash, key)) = queue.pop() {
@@ -1610,8 +1647,20 @@ impl RemoteHelper {
                     break; // Channel closed
                 }
                 queued_count += 1;
+                total_queued.store(queued_count, Ordering::Relaxed);
                 if queued_count.is_multiple_of(100) {
-                    eprint!("\r  Uploading: {} queued", queued_count);
+                    eprint!(
+                        "\r{}",
+                        format_upload_progress(
+                            processed.load(Ordering::Relaxed),
+                            queued_count,
+                            uploaded.load(Ordering::Relaxed),
+                            skipped_diff.load(Ordering::Relaxed),
+                            skipped_server.load(Ordering::Relaxed),
+                            failed.load(Ordering::Relaxed),
+                            has_old_tree,
+                        )
+                    );
                     let _ = std::io::stderr().flush();
                 }
             }
@@ -1625,23 +1674,21 @@ impl RemoteHelper {
             let final_skipped_server = skipped_server.load(Ordering::Relaxed);
             let final_failed = failed.load(Ordering::Relaxed);
             let final_processed = processed.load(Ordering::Relaxed);
+            let final_total_queued = total_queued.load(Ordering::Relaxed);
 
             // Final progress
-            if has_old_tree {
-                if final_failed > 0 {
-                    eprint!("\r  Uploading: {} ({} new, {} unchanged, {} exist, {} FAILED)",
-                        final_processed, final_uploaded, final_skipped_diff, final_skipped_server, final_failed);
-                } else {
-                    eprint!("\r  Uploading: {} ({} new, {} unchanged, {} exist)",
-                        final_processed, final_uploaded, final_skipped_diff, final_skipped_server);
-                }
-            } else if final_failed > 0 {
-                eprint!("\r  Uploading: {} ({} new, {} exist, {} FAILED)",
-                    final_processed, final_uploaded, final_skipped_server, final_failed);
-            } else {
-                eprint!("\r  Uploading: {} ({} new, {} exist)",
-                    final_processed, final_uploaded, final_skipped_server);
-            }
+            eprint!(
+                "\r{}",
+                format_upload_progress(
+                    final_processed,
+                    final_total_queued,
+                    final_uploaded,
+                    final_skipped_diff,
+                    final_skipped_server,
+                    final_failed,
+                    has_old_tree,
+                )
+            );
             eprintln!();
 
             info!(
@@ -2178,5 +2225,21 @@ mod tests {
             }
             _ => panic!("Expected Unknown result"),
         }
+    }
+
+    #[test]
+    fn test_upload_progress_includes_processed_over_total_for_old_tree() {
+        assert_eq!(
+            format_upload_progress(12, 34, 7, 5, 0, 0, true),
+            "  Uploading: 12/34 (7 new, 5 unchanged, 0 exist)"
+        );
+    }
+
+    #[test]
+    fn test_upload_progress_includes_processed_over_total_for_new_tree_failures() {
+        assert_eq!(
+            format_upload_progress(12, 34, 7, 0, 5, 2, false),
+            "  Uploading: 12/34 (7 new, 5 exist, 2 FAILED)"
+        );
     }
 }
