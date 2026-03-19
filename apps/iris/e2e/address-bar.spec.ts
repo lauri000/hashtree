@@ -216,6 +216,61 @@ test.describe('Address Bar', () => {
     expect(result.allowed).toBe(false);
     await expect(input).toHaveValue('abcdef');
   });
+
+  test('macOS private-use arrow keys are handled as arrows, not text', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.fill('abcdef');
+
+    const result = await input.evaluate((element) => {
+      const field = element as HTMLInputElement;
+      field.focus();
+      field.setSelectionRange(3, 3);
+
+      const dispatchArrow = (key: string, keyCode: number) => {
+        const event = new KeyboardEvent('keydown', {
+          bubbles: true,
+          cancelable: true,
+          key,
+        });
+        Object.defineProperty(event, 'keyCode', { get: () => keyCode });
+        Object.defineProperty(event, 'which', { get: () => keyCode });
+        const allowed = field.dispatchEvent(event);
+        return {
+          allowed,
+          value: field.value,
+          start: field.selectionStart,
+          end: field.selectionEnd,
+        };
+      };
+
+      return {
+        left: dispatchArrow('\uF702', 37),
+        right: dispatchArrow('\uF703', 39),
+      };
+    });
+
+    expect(result.left.allowed).toBe(false);
+    expect(result.left.value).toBe('abcdef');
+    expect(result.left.start).toBe(2);
+    expect(result.left.end).toBe(2);
+
+    expect(result.right.allowed).toBe(false);
+    expect(result.right.value).toBe('abcdef');
+    expect(result.right.start).toBe(3);
+    expect(result.right.end).toBe(3);
+    await expect(input).toHaveValue('abcdef');
+  });
+
+  test('focus does not show a dropdown when history is empty', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+
+    await expect(page.locator('[role="listbox"]')).toHaveCount(0);
+  });
 });
 
 test.describe('Address Bar Autocomplete', () => {
@@ -244,6 +299,23 @@ test.describe('Address Bar Autocomplete', () => {
     await expect(dropdown).toBeVisible();
     await expect(dropdown.locator('[role="option"]')).toHaveCount(2);
     await expect(dropdown.getByText('video.iris.to').first()).toBeVisible();
+    await expect(dropdown.getByText('example.com').first()).toBeVisible();
+  });
+
+  test('dropdown still shows fallback history when native history is empty', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    await visitAndGoHome(page, 'https://example.com');
+
+    await page.evaluate(() => {
+      ((window as any).__historyStore ?? []).length = 0;
+    });
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+
+    const dropdown = page.locator('[role="listbox"]');
+    await expect(dropdown).toBeVisible();
     await expect(dropdown.getByText('example.com').first()).toBeVisible();
   });
 

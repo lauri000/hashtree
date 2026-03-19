@@ -35,6 +35,12 @@
   const TOOLBAR_HEIGHT = 48;
   const MACOS_FUNCTION_KEY_GLYPHS = /[\uF700-\uF8FF]/g;
   const MACOS_FUNCTION_KEY_GLYPHS_SINGLE = /[\uF700-\uF8FF]/;
+  const PRIVATE_USE_ARROW_KEYS = {
+    '\uF700': 'ArrowUp',
+    '\uF701': 'ArrowDown',
+    '\uF702': 'ArrowLeft',
+    '\uF703': 'ArrowRight',
+  } as const;
 
   let addressValue = $state('');
   let currentUrl = $state('');              // full URL for editing
@@ -108,6 +114,31 @@
     return value.replace(MACOS_FUNCTION_KEY_GLYPHS, '');
   }
 
+  function normalizedAddressKey(event: KeyboardEvent): string {
+    const privateUseKey = PRIVATE_USE_ARROW_KEYS[event.key as keyof typeof PRIVATE_USE_ARROW_KEYS];
+    if (privateUseKey) return privateUseKey;
+    switch (event.keyCode || event.which) {
+      case 37: return 'ArrowLeft';
+      case 38: return 'ArrowUp';
+      case 39: return 'ArrowRight';
+      case 40: return 'ArrowDown';
+      default: return event.key;
+    }
+  }
+
+  function moveAddressCaret(direction: -1 | 1) {
+    const input = addressInputEl;
+    if (!input) return;
+    const start = input.selectionStart ?? 0;
+    const end = input.selectionEnd ?? start;
+    const hasSelection = start !== end;
+    const boundary = direction < 0 ? Math.min(start, end) : Math.max(start, end);
+    const next = hasSelection
+      ? boundary
+      : Math.max(0, Math.min(input.value.length, boundary + direction));
+    input.setSelectionRange(next, next);
+  }
+
   function sanitizeAddressFieldValue() {
     const input = addressInputEl;
     const rawValue = input?.value ?? addressValue;
@@ -143,11 +174,57 @@
     event.preventDefault();
   }
 
+  function handleAddressKeyPress(event: KeyboardEvent) {
+    if (!MACOS_FUNCTION_KEY_GLYPHS_SINGLE.test(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
   function handleAddressInput() {
     const sanitizedValue = sanitizeAddressFieldValue();
     if (!isAddressFocused) isAddressFocused = true;
     showDropdown = true;
     debouncedSearch(sanitizedValue);
+  }
+
+  function handleAddressKeyDown(event: KeyboardEvent) {
+    const key = normalizedAddressKey(event);
+    const isPrivateUseArrow = MACOS_FUNCTION_KEY_GLYPHS_SINGLE.test(event.key);
+
+    if (key === 'Enter') {
+      handleAddressSubmit();
+      return;
+    }
+
+    if (key === 'Escape' || key === 'Esc') {
+      event.preventDefault();
+      event.stopPropagation();
+      dismissDropdown();
+      return;
+    }
+
+    if (key === 'ArrowDown' && showDropdown && dropdownItems.length > 0) {
+      event.preventDefault();
+      selectedIndex = selectedIndex < 0 ? 0 : (selectedIndex + 1) % dropdownItems.length;
+      return;
+    }
+
+    if (key === 'ArrowUp' && showDropdown && dropdownItems.length > 0) {
+      event.preventDefault();
+      selectedIndex = selectedIndex <= 0 ? dropdownItems.length - 1 : selectedIndex - 1;
+      return;
+    }
+
+    if (!isPrivateUseArrow) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (key === 'ArrowLeft') {
+      moveAddressCaret(-1);
+    } else if (key === 'ArrowRight') {
+      moveAddressCaret(1);
+    }
   }
 
   function handleLocationChange(event: WebviewLocationEvent) {
@@ -710,22 +787,9 @@
           onfocus={handleAddressFocus}
           onblur={handleAddressBlur}
           onbeforeinput={handleAddressBeforeInput}
+          onkeypress={handleAddressKeyPress}
           oninput={handleAddressInput}
-          onkeydown={(e) => {
-            if (e.key === 'Enter') {
-              handleAddressSubmit();
-            } else if (e.key === 'Escape' || e.key === 'Esc') {
-              e.preventDefault();
-              e.stopPropagation();
-              dismissDropdown();
-            } else if (e.key === 'ArrowDown' && showDropdown && dropdownItems.length > 0) {
-              e.preventDefault();
-              selectedIndex = selectedIndex < 0 ? 0 : (selectedIndex + 1) % dropdownItems.length;
-            } else if (e.key === 'ArrowUp' && showDropdown && dropdownItems.length > 0) {
-              e.preventDefault();
-              selectedIndex = selectedIndex <= 0 ? dropdownItems.length - 1 : selectedIndex - 1;
-            }
-          }}
+          onkeydown={handleAddressKeyDown}
           placeholder="Search or enter address"
           class="bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted flex-1 text-center"
         />
@@ -744,34 +808,30 @@
         </button>
       </div>
 
-      {#if showDropdown}
+      {#if showDropdown && dropdownItems.length > 0}
         <div bind:this={dropdownEl} class="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-full max-w-lg bg-surface-1 b-1 b-solid b-surface-3 rounded-lg overflow-hidden z-50 max-h-80 overflow-y-auto" role="listbox">
-          {#if dropdownItems.length === 0}
-            <div class="px-3 py-3 text-sm text-text-3">No history yet.</div>
-          {:else}
-            {#each dropdownItems as item, i}
-              <div
-                class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors cursor-pointer {i === selectedIndex ? 'bg-surface-2' : ''}"
-                onmousedown={() => handleDropdownSelect(item)}
-                role="option"
-                aria-selected={i === selectedIndex}
-                tabindex="-1"
-              >
-                <span class="i-lucide-clock text-sm text-text-3 shrink-0"></span>
-                <div class="flex-1 min-w-0">
-                  <div class="text-sm text-text-1 truncate">{item.label}</div>
-                  <div class="text-xs text-text-3 truncate">{urlToDisplay(item.path)}</div>
-                </div>
-                <button
-                  class="shrink-0 text-text-3 hover:text-danger p-1"
-                  onmousedown={(e) => handleDeleteHistoryItem(e, item.path)}
-                  title="Delete"
-                >
-                  <span class="i-lucide-x text-sm"></span>
-                </button>
+          {#each dropdownItems as item, i}
+            <div
+              class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors cursor-pointer {i === selectedIndex ? 'bg-surface-2' : ''}"
+              onmousedown={() => handleDropdownSelect(item)}
+              role="option"
+              aria-selected={i === selectedIndex}
+              tabindex="-1"
+            >
+              <span class="i-lucide-clock text-sm text-text-3 shrink-0"></span>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm text-text-1 truncate">{item.label}</div>
+                <div class="text-xs text-text-3 truncate">{urlToDisplay(item.path)}</div>
               </div>
-            {/each}
-          {/if}
+              <button
+                class="shrink-0 text-text-3 hover:text-danger p-1"
+                onmousedown={(e) => handleDeleteHistoryItem(e, item.path)}
+                title="Delete"
+              >
+                <span class="i-lucide-x text-sm"></span>
+              </button>
+            </div>
+          {/each}
         </div>
       {/if}
     </div>

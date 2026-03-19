@@ -98,6 +98,109 @@ export interface HistoryEntry {
   first_visited: number;
 }
 
+const FALLBACK_HISTORY_STORAGE_KEY = 'iris.addressBarHistory.v1';
+
+function historyStorage(): Storage | null {
+  try {
+    return globalThis.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function readFallbackHistory(): HistoryEntry[] {
+  const storage = historyStorage();
+  if (!storage) return [];
+  try {
+    const raw = storage.getItem(FALLBACK_HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is HistoryEntry => {
+      return !!entry &&
+        typeof entry.path === 'string' &&
+        typeof entry.label === 'string' &&
+        typeof entry.entry_type === 'string' &&
+        typeof entry.visit_count === 'number' &&
+        typeof entry.last_visited === 'number' &&
+        typeof entry.first_visited === 'number';
+    });
+  } catch {
+    return [];
+  }
+}
+
+function writeFallbackHistory(entries: HistoryEntry[]) {
+  const storage = historyStorage();
+  if (!storage) return;
+  storage.setItem(FALLBACK_HISTORY_STORAGE_KEY, JSON.stringify(entries));
+}
+
+function upsertFallbackHistory(entry: {
+  path: string;
+  label: string;
+  entry_type: string;
+  npub?: string | null;
+  tree_name?: string | null;
+}) {
+  const now = Date.now();
+  const entries = readFallbackHistory();
+  const existing = entries.find((item) => item.path === entry.path);
+  if (existing) {
+    existing.label = entry.label;
+    existing.entry_type = entry.entry_type;
+    existing.npub = entry.npub ?? undefined;
+    existing.tree_name = entry.tree_name ?? undefined;
+    existing.visit_count += 1;
+    existing.last_visited = now;
+  } else {
+    entries.push({
+      path: entry.path,
+      label: entry.label,
+      entry_type: entry.entry_type,
+      npub: entry.npub ?? undefined,
+      tree_name: entry.tree_name ?? undefined,
+      visit_count: 1,
+      last_visited: now,
+      first_visited: now,
+    });
+  }
+  entries.sort((a, b) => b.last_visited - a.last_visited);
+  writeFallbackHistory(entries.slice(0, 1000));
+}
+
+function deleteFallbackHistoryEntry(path: string): boolean {
+  const entries = readFallbackHistory();
+  const nextEntries = entries.filter((entry) => entry.path !== path);
+  if (nextEntries.length === entries.length) return false;
+  writeFallbackHistory(nextEntries);
+  return true;
+}
+
+function clearFallbackHistory() {
+  const storage = historyStorage();
+  storage?.removeItem(FALLBACK_HISTORY_STORAGE_KEY);
+}
+
+function getFallbackRecentHistory(limit: number): HistoryEntry[] {
+  return readFallbackHistory()
+    .sort((a, b) => b.last_visited - a.last_visited)
+    .slice(0, limit);
+}
+
+function scoreFallbackHistory(query: string, entry: HistoryEntry): number {
+  const normalizedQuery = query.toLowerCase();
+  const label = entry.label.toLowerCase();
+  const path = entry.path.toLowerCase();
+  if (path === normalizedQuery) return 10;
+  if (label === normalizedQuery) return 9;
+  if (label.startsWith(normalizedQuery)) return 8;
+  if (path.startsWith(normalizedQuery)) return 7;
+  if (label.includes(normalizedQuery)) return 6;
+  if (path.includes(normalizedQuery)) return 5;
+  return 0;
+}
+
 export async function recordHistoryVisit(entry: {
   path: string;
   label: string;
@@ -105,7 +208,12 @@ export async function recordHistoryVisit(entry: {
   npub?: string;
   tree_name?: string;
 }): Promise<void> {
-  return invoke<void>('record_history_visit', entry);
+  upsertFallbackHistory(entry);
+  try {
+    await invoke<void>('record_history_visit', entry);
+  } catch {
+    // Keep fallback history even if native storage is unavailable.
+  }
 }
 
 export interface HistorySearchResult {
@@ -114,19 +222,53 @@ export interface HistorySearchResult {
 }
 
 export async function searchHistory(query: string, limit?: number): Promise<HistorySearchResult[]> {
-  return invoke<HistorySearchResult[]>('search_history', { query, limit: limit ?? 10 });
+  const cappedLimit = limit ?? 10;
+  let nativeResults: HistorySearchResult[] = [];
+  try {
+    nativeResults = await invoke<HistorySearchResult[]>('search_history', { query, limit: cappedLimit });
+  } catch {
+    nativeResults = [];
+  }
+  if (nativeResults.length > 0) {
+    return nativeResults;
+  }
+  return readFallbackHistory()
+    .map((entry) => ({ entry, score: scoreFallbackHistory(query, entry) }))
+    .filter((result) => result.score > 0)
+    .sort((a, b) => b.score - a.score || b.entry.last_visited - a.entry.last_visited)
+    .slice(0, cappedLimit);
 }
 
 export async function getRecentHistory(limit?: number): Promise<HistoryEntry[]> {
-  return invoke<HistoryEntry[]>('get_recent_history', { limit: limit ?? 20 });
+  const cappedLimit = limit ?? 20;
+  let nativeEntries: HistoryEntry[] = [];
+  try {
+    nativeEntries = await invoke<HistoryEntry[]>('get_recent_history', { limit: cappedLimit });
+  } catch {
+    nativeEntries = [];
+  }
+  if (nativeEntries.length > 0) {
+    return nativeEntries;
+  }
+  return getFallbackRecentHistory(cappedLimit);
 }
 
 export async function deleteHistoryEntry(path: string): Promise<boolean> {
-  return invoke<boolean>('delete_history_entry', { path });
+  const fallbackDeleted = deleteFallbackHistoryEntry(path);
+  try {
+    return await invoke<boolean>('delete_history_entry', { path });
+  } catch {
+    return fallbackDeleted;
+  }
 }
 
 export async function clearHistory(): Promise<void> {
-  return invoke<void>('clear_history');
+  clearFallbackHistory();
+  try {
+    await invoke<void>('clear_history');
+  } catch {
+    // Keep fallback history cleared even if native storage is unavailable.
+  }
 }
 
 // ── Automation ──
