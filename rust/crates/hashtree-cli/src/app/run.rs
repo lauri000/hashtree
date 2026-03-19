@@ -176,27 +176,17 @@ pub(crate) async fn run() -> Result<()> {
                 }
             };
 
-            // Spawn social graph crawler with 5s startup delay
-            let crawler_store: Arc<dyn hashtree_cli::socialgraph::SocialGraphBackend> =
-                graph_store.clone();
-            let crawler_keys = keys.clone();
-            let crawler_relays = config.nostr.relays.clone();
-            let crawler_depth = config.nostr.crawl_depth;
-            let crawler_spambox = crawler_spambox.clone();
-            let (crawler_shutdown_tx, crawler_shutdown_rx) = tokio::sync::watch::channel(false);
-            let crawler_handle = tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                let mut crawler = hashtree_cli::socialgraph::SocialGraphCrawler::new(
-                    crawler_store,
-                    crawler_keys,
-                    crawler_relays,
-                    crawler_depth,
-                );
-                if let Some(spambox) = crawler_spambox {
-                    crawler = crawler.with_spambox(spambox);
-                }
-                crawler.crawl(crawler_shutdown_rx).await;
-            });
+            let crawler_spambox_backend = crawler_spambox
+                .clone()
+                .map(|store| store as Arc<dyn hashtree_cli::socialgraph::SocialGraphBackend>);
+            let crawler_tasks = hashtree_cli::socialgraph::crawler::spawn_social_graph_tasks(
+                graph_store.clone(),
+                keys.clone(),
+                config.nostr.relays.clone(),
+                config.nostr.crawl_depth,
+                crawler_spambox_backend,
+                data_dir.clone(),
+            );
 
             // Start STUN server and WebRTC if P2P feature enabled
             #[cfg(feature = "p2p")]
@@ -447,8 +437,9 @@ pub(crate) async fn run() -> Result<()> {
             server.run().await?;
 
             // Shutdown social graph crawler
-            let _ = crawler_shutdown_tx.send(true);
-            crawler_handle.abort();
+            let _ = crawler_tasks.shutdown_tx.send(true);
+            crawler_tasks.crawl_handle.abort();
+            crawler_tasks.local_list_handle.abort();
 
             // Shutdown background eviction
             eviction_handle.abort();

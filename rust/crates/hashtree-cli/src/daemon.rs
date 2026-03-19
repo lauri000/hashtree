@@ -127,25 +127,17 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         }
     };
 
-    let crawler_store: Arc<dyn socialgraph::SocialGraphBackend> = graph_store.clone();
-    let crawler_keys = keys.clone();
-    let crawler_relays = config.nostr.relays.clone();
-    let crawler_depth = config.nostr.crawl_depth;
-    let crawler_spambox = crawler_spambox.clone();
-    let (_crawler_shutdown_tx, crawler_shutdown_rx) = tokio::sync::watch::channel(false);
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        let mut crawler = socialgraph::SocialGraphCrawler::new(
-            crawler_store,
-            crawler_keys,
-            crawler_relays,
-            crawler_depth,
-        );
-        if let Some(spambox) = crawler_spambox {
-            crawler = crawler.with_spambox(spambox);
-        }
-        crawler.crawl(crawler_shutdown_rx).await;
-    });
+    let crawler_spambox_backend = crawler_spambox
+        .clone()
+        .map(|store| store as Arc<dyn socialgraph::SocialGraphBackend>);
+    let _crawler_tasks = socialgraph::crawler::spawn_social_graph_tasks(
+        graph_store.clone(),
+        keys.clone(),
+        config.nostr.relays.clone(),
+        config.nostr.crawl_depth,
+        crawler_spambox_backend,
+        opts.data_dir.clone(),
+    );
 
     #[cfg(feature = "p2p")]
     let webrtc_state: Option<Arc<WebRTCState>> = {
