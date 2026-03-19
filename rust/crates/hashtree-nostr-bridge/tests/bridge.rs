@@ -1149,11 +1149,12 @@ async fn reports_global_recent_progress() -> io::Result<()> {
         .expect("crawl report");
 
     assert!(progress.len() >= 2);
-    assert!(progress.iter().take(progress.len() - 1).all(|item| item.root.is_none()));
+    assert!(progress.iter().skip(1).any(|item| item.root.is_some()));
     assert!(progress
         .iter()
         .take(progress.len() - 1)
         .all(|item| item.events_seen > 0));
+    assert!(report.root.is_some());
     assert_eq!(progress.last(), Some(&report));
 
     Ok(())
