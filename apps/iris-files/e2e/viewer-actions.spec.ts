@@ -1,6 +1,10 @@
 import { test, expect } from './fixtures';
 import { setupPageErrorHandler, navigateToPublicFolder, goToTreeList } from './test-utils.js';
 
+test.use({
+  permissions: ['clipboard-read', 'clipboard-write'],
+});
+
 // Helper to create tree and navigate into it
 async function createAndEnterTree(page: any, name: string) {
   await goToTreeList(page);
@@ -126,6 +130,18 @@ test.describe('Viewer Actions', () => {
 
     // Share modal should open - look for modal or QR code
     await expect(page.getByTestId('share-modal')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('share-url-option-web')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('share-url-option-htree')).toHaveAttribute('aria-pressed', 'false');
+
+    await page.getByTestId('share-copy-url').click();
+    await expect.poll(async () => page.evaluate(() => navigator.clipboard.readText())).toContain('https://files.iris.to/#/');
+    await expect.poll(async () => page.evaluate(() => navigator.clipboard.readText())).not.toContain('htree.localhost');
+
+    await page.getByTestId('share-url-option-htree').click();
+    await expect(page.getByTestId('share-url-option-htree')).toHaveAttribute('aria-pressed', 'true');
+    await page.getByTestId('share-copy-url').click();
+    await expect.poll(async () => page.evaluate(() => navigator.clipboard.readText())).toContain('htree://npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/files#/');
+    await expect.poll(async () => page.evaluate(() => navigator.clipboard.readText())).not.toContain('htree.localhost');
   });
 
   test('should show rename button for own files', async ({ page }) => {

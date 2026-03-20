@@ -2,17 +2,23 @@
   /**
    * ShareModal - unified sharing options with QR code, copy link, and native share
    */
+  import { getAppType } from '../../appType';
+  import { createShareUrlOptions, type ShareUrlOption, type ShareUrlOptionId } from '../../lib/shareUrls';
+
   let show = $state(false);
-  let url = $state<string | null>(null);
+  let options = $state<ShareUrlOption[]>([]);
+  let selectedOptionId = $state<ShareUrlOptionId>('web');
 
   export function open(shareUrl: string) {
-    url = shareUrl;
+    options = createShareUrlOptions(getAppType(), shareUrl);
+    selectedOptionId = 'web';
     show = true;
   }
 
   export function close() {
     show = false;
-    url = null;
+    options = [];
+    selectedOptionId = 'web';
   }
 </script>
 
@@ -20,15 +26,16 @@
   import QRCode from 'qrcode';
   import CopyText from '../CopyText.svelte';
 
+  let selectedUrl = $derived(options.find((option) => option.id === selectedOptionId)?.url ?? null);
   let qrDataUrl = $state<string | null>(null);
 
   // Generate QR code when modal opens
   $effect(() => {
-    if (!show || !url) {
+    if (!show || !selectedUrl) {
       qrDataUrl = null;
       return;
     }
-    generateQrCode(url).then((u) => (qrDataUrl = u));
+    generateQrCode(selectedUrl).then((u) => (qrDataUrl = u));
   });
 
   // Handle Escape key to close modal
@@ -47,9 +54,9 @@
   });
 
   async function handleNativeShare() {
-    if (navigator.share && url) {
+    if (navigator.share && selectedUrl) {
       try {
-        await navigator.share({ url });
+        await navigator.share({ url: selectedUrl });
       } catch (e) {
         if ((e as Error).name !== 'AbortError') {
           console.error('Share failed:', e);
@@ -67,7 +74,7 @@
   }
 </script>
 
-{#if show && url}
+{#if show && selectedUrl}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
@@ -81,6 +88,23 @@
       class="bg-surface-1 sm:rounded-lg overflow-auto w-screen sm:w-96 sm:border border-surface-3 max-h-full my-auto"
       data-testid="share-modal"
     >
+      <div class="grid grid-cols-2 gap-2 px-4 pt-4">
+        {#each options as option (option.id)}
+          <button
+            class={`rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
+              option.id === selectedOptionId
+                ? 'border-accent bg-accent/10 text-text-1'
+                : 'border-surface-3 text-text-3'
+            }`}
+            onclick={() => { selectedOptionId = option.id; }}
+            aria-pressed={option.id === selectedOptionId}
+            data-testid={`share-url-option-${option.id}`}
+          >
+            {option.label}
+          </button>
+        {/each}
+      </div>
+
       <!-- QR Code - click to close -->
       <div class="cursor-pointer" onclick={close}>
         {#if qrDataUrl}
@@ -99,7 +123,7 @@
 
       <!-- URL with copy -->
       <div class="bg-surface-2 p-3 m-4 mb-2 rounded">
-        <CopyText text={url} truncate={80} class="text-sm" testId="share-copy-url" />
+        <CopyText text={selectedUrl} truncate={80} class="text-sm" testId="share-copy-url" />
       </div>
 
       <!-- Native share button -->
