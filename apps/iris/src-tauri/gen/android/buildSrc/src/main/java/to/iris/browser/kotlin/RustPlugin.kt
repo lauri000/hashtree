@@ -25,6 +25,10 @@ open class RustPlugin : Plugin<Project> {
 
         val targetsList = (findProperty("targetList") as? String)?.split(',') ?: listOf("aarch64", "armv7", "i686", "x86_64")
 
+        require(abiList.size == archList.size && archList.size == targetsList.size) {
+            "abiList, archList, and targetList must have the same number of entries"
+        }
+
         extensions.configure<ApplicationExtension> {
             @Suppress("UnstableApiUsage")
             flavorDimensions.add("abi")
@@ -35,11 +39,11 @@ open class RustPlugin : Plugin<Project> {
                         abiFilters += abiList
                     }
                 }
-                defaultArchList.forEachIndexed { index, arch ->
+                archList.forEachIndexed { index, arch ->
                     create(arch) {
                         dimension = "abi"
                         ndk {
-                            abiFilters.add(defaultAbiList[index])
+                            abiFilters.add(abiList[index])
                         }
                     }
                 }
