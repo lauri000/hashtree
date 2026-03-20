@@ -13,6 +13,23 @@ export function sanitizeBoardsHtml(html: string): string {
     .replace(/\s+crossorigin(?=[\s>])/g, '');
 }
 
+export async function rewriteBoardsEntryHtml(
+  buildDir: string,
+  fileOps: Pick<typeof import('fs/promises'), 'readFile' | 'writeFile' | 'unlink'> = {
+    readFile,
+    writeFile,
+    unlink,
+  },
+): Promise<void> {
+  const source = resolve(buildDir, 'boards.html');
+  const target = resolve(buildDir, 'index.html');
+  const html = await fileOps.readFile(source, 'utf8');
+  await fileOps.writeFile(target, sanitizeBoardsHtml(html), 'utf8');
+  if (source !== target) {
+    await fileOps.unlink(source);
+  }
+}
+
 function boardsEntryPlugin(): Plugin {
   return {
     name: 'boards-entry',
@@ -26,13 +43,7 @@ function boardsEntryPlugin(): Plugin {
     },
     async closeBundle() {
       try {
-        const source = resolve(__dirname, outDir, 'boards.html');
-        const target = resolve(__dirname, outDir, 'index.html');
-        const html = await readFile(source, 'utf8');
-        await writeFile(target, sanitizeBoardsHtml(html), 'utf8');
-        if (source !== target) {
-          await unlink(source);
-        }
+        await rewriteBoardsEntryHtml(resolve(__dirname, outDir));
       } catch {
         // Ignore in dev mode.
       }
