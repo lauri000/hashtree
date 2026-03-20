@@ -62,6 +62,16 @@ class BoundsArgs {
 }
 
 @InvokeArg
+class ShellOverlayArgs {
+    var enabled: Boolean = false
+    var x: Double = 0.0
+    var y: Double = 0.0
+    var width: Double = 0.0
+    var height: Double = 0.0
+    var scale: Double = 1.0
+}
+
+@InvokeArg
 class HistoryArgs {
     lateinit var label: String
     lateinit var direction: String
@@ -140,6 +150,14 @@ class MobileBrowserPlugin(private val activity: Activity) : Plugin(activity) {
             browser.bringToFront()
             browser.requestLayout()
             Log.i(TAG, "setBounds ${args.label} bounds=${describe(args.x, args.y, args.width, args.height, args.scale)}")
+            invoke.resolve()
+        }
+    }
+
+    @Command
+    fun setShellOverlay(invoke: Invoke) {
+        invoke.parseArgs(ShellOverlayArgs::class.java)
+        activity.runOnUiThread {
             invoke.resolve()
         }
     }

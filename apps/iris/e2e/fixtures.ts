@@ -98,6 +98,7 @@ async function mockTauriIPC(page: Page) {
           case 'webview_history':
           case 'reload_webview':
           case 'set_webview_bounds':
+          case 'set_mobile_shell_overlay':
             return Promise.resolve();
           case 'automation_update_state':
             (window as any).__automationState = {

@@ -64,6 +64,17 @@ pub struct BrowserBoundsRequest {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ShellOverlayRequest {
+    pub enabled: bool,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub scale: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BrowserHistoryRequest {
     pub label: String,
     pub direction: String,

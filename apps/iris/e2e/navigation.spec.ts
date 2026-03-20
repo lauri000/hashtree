@@ -141,6 +141,46 @@ test.describe('Navigation', () => {
     expect(boundsCalls.at(-1)?.args?.scale).toBe(deviceScale);
   });
 
+  test('mobile browsing reserves footer space without shell passthrough', async ({ tauriPage: page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openHome(page);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill('https://example.com');
+    await input.press('Enter');
+
+    await expect.poll(async () => (await getInvocationsFor(page, 'set_webview_bounds')).length > 0).toBe(true);
+
+    const shellLayout = await page.evaluate(() => {
+      const root = document.body.firstElementChild as HTMLElement | null;
+      const toolbar = document.querySelector<HTMLElement>('[data-testid="toolbar"]');
+      if (!root || !toolbar) {
+        throw new Error('shell root or toolbar not found');
+      }
+
+      return {
+        toolbarBackground: getComputedStyle(toolbar).backgroundColor,
+        viewportHeight: window.innerHeight,
+        toolbarTop: toolbar.getBoundingClientRect().top,
+      };
+    });
+
+    const overlayCalls = await getInvocationsFor(page, 'set_mobile_shell_overlay');
+    const boundsCalls = await getInvocationsFor(page, 'set_webview_bounds');
+    const lastBounds = boundsCalls.at(-1)?.args;
+    const reservedBottom = shellLayout.viewportHeight - (lastBounds?.y ?? 0) - (lastBounds?.height ?? 0);
+
+    expect(overlayCalls).toHaveLength(0);
+    expect(lastBounds?.x).toBe(0);
+    expect(lastBounds?.y).toBe(0);
+    expect(lastBounds?.width).toBe(390);
+    expect(lastBounds?.height).toBeLessThan(shellLayout.viewportHeight - 40);
+    expect(reservedBottom).toBeGreaterThan(40);
+    expect(reservedBottom).toBeLessThan(220);
+    expect(shellLayout.toolbarBackground).not.toBe('rgba(0, 0, 0, 0)');
+  });
+
   test('shows a real error when embedded page creation fails', async ({ tauriPage: page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await openHome(page);

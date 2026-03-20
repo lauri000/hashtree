@@ -21,7 +21,7 @@ use std::time::Duration;
 use tauri::{LogicalPosition, LogicalSize, Rect, WebviewBuilder};
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use tauri_plugin_iris_mobile_browser::{
-    BrowserBoundsRequest, BrowserCreateRequest, MobileBrowserExt,
+    BrowserBoundsRequest, BrowserCreateRequest, MobileBrowserExt, ShellOverlayRequest,
 };
 use tracing::{debug, error, info, warn};
 
@@ -1845,6 +1845,41 @@ pub fn set_webview_bounds<R: Runtime>(
 ) -> Result<(), String> {
     app.mobile_browser().set_bounds(BrowserBoundsRequest {
         label,
+        x,
+        y,
+        width,
+        height,
+        scale,
+    })
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+#[tauri::command]
+pub fn set_mobile_shell_overlay<R: Runtime>(
+    _app: AppHandle<R>,
+    _enabled: bool,
+    _x: f64,
+    _y: f64,
+    _width: f64,
+    _height: f64,
+    _scale: Option<f64>,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+#[tauri::command]
+pub fn set_mobile_shell_overlay<R: Runtime>(
+    app: AppHandle<R>,
+    enabled: bool,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    scale: f64,
+) -> Result<(), String> {
+    app.mobile_browser().set_shell_overlay(ShellOverlayRequest {
+        enabled,
         x,
         y,
         width,

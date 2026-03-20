@@ -476,6 +476,21 @@ fn collect_supported_launch_deep_links(urls: &[tauri::Url]) -> Vec<String> {
         .collect()
 }
 
+fn automation_startup_url_from_env() -> Option<String> {
+    let raw = std::env::var("IRIS_AUTOMATION_OPEN_URL").ok()?;
+    normalize_automation_startup_url(&raw)
+}
+
+fn normalize_automation_startup_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let url = tauri::Url::parse(trimmed).ok()?;
+    normalize_supported_launch_deep_link(&url)
+}
+
 fn emit_open_url_command<R: tauri::Runtime>(app: &tauri::AppHandle<R>, url: String) {
     let _ = show_main_window(app);
     let _ = app.emit(
@@ -785,6 +800,7 @@ pub fn run() {
             nip07::close_webview,
             nip07::navigate_webview,
             nip07::set_webview_bounds,
+            nip07::set_mobile_shell_overlay,
             nip07::webview_history,
             nip07::reload_webview,
             nip07::webview_current_url,
@@ -872,6 +888,9 @@ pub fn run() {
             app.manage(automation_state);
 
             let deep_link_state = Arc::new(DeepLinkState::new());
+            if let Some(url) = automation_startup_url_from_env() {
+                deep_link_state.queue_urls([url]);
+            }
             app.manage(deep_link_state);
 
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
@@ -952,10 +971,10 @@ mod tests {
     use super::build_menu;
     use super::{
         collect_supported_launch_deep_links, is_supported_launch_host, mobile_default_htree_paths,
-        normalize_supported_launch_deep_link, resolve_iris_paths,
-        tray_connection_status_from_peers, tray_menu_spec, tray_primary_click_action,
-        tray_status_text, DesktopPlatform, IrisPaths, TrayConnectionStatus, TrayMenuItemSpec,
-        TrayPeersResponse, TrayPrimaryClickAction,
+        normalize_automation_startup_url, normalize_supported_launch_deep_link,
+        resolve_iris_paths, tray_connection_status_from_peers, tray_menu_spec,
+        tray_primary_click_action, tray_status_text, DesktopPlatform, IrisPaths,
+        TrayConnectionStatus, TrayMenuItemSpec, TrayPeersResponse, TrayPrimaryClickAction,
     };
     use std::path::{Path, PathBuf};
 
@@ -1188,6 +1207,22 @@ mod tests {
                 "htree://npub1example/video".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn automation_startup_url_accepts_user_facing_htree_targets() {
+        assert_eq!(
+            normalize_automation_startup_url(" htree://npub1example/video/index.html?autoplay=1 "),
+            Some("htree://npub1example/video/index.html?autoplay=1".to_string())
+        );
+    }
+
+    #[test]
+    fn automation_startup_url_rejects_internal_or_invalid_urls() {
+        assert_eq!(normalize_automation_startup_url(""), None);
+        assert_eq!(normalize_automation_startup_url("not a url"), None);
+        assert_eq!(normalize_automation_startup_url("htree://nip07/"), None);
+        assert_eq!(normalize_automation_startup_url("https://files.iris.to"), None);
     }
 
     #[test]

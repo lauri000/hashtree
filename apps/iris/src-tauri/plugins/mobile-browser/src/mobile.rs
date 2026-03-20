@@ -1,6 +1,6 @@
 use super::{
     BrowserBoundsRequest, BrowserCreateRequest, BrowserHistoryRequest, BrowserLabelRequest,
-    BrowserNavigateRequest, NativeCurrentUrlResponse, UrlMapping,
+    BrowserNavigateRequest, NativeCurrentUrlResponse, ShellOverlayRequest, UrlMapping,
 };
 use serde::de::DeserializeOwned;
 use std::{
@@ -72,6 +72,12 @@ impl<R: Runtime> MobileBrowser<R> {
     pub fn set_bounds(&self, request: BrowserBoundsRequest) -> Result<(), String> {
         self.handle
             .run_mobile_plugin::<()>("setBounds", request)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn set_shell_overlay(&self, request: ShellOverlayRequest) -> Result<(), String> {
+        self.handle
+            .run_mobile_plugin::<()>("setShellOverlay", request)
             .map_err(|error| error.to_string())
     }
 

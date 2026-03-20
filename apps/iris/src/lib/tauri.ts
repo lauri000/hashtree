@@ -96,6 +96,23 @@ export async function setWebviewBounds(
   });
 }
 
+export async function setMobileShellOverlay(
+  enabled: boolean,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): Promise<void> {
+  return invoke<void>('set_mobile_shell_overlay', {
+    enabled,
+    x,
+    y,
+    width,
+    height,
+    scale: currentDeviceScale(),
+  });
+}
+
 export async function webviewCurrentUrl(label: string): Promise<string> {
   return invoke<string>('webview_current_url', { label });
 }

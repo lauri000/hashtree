@@ -40,6 +40,15 @@ struct HistoryArgs: Decodable {
   let direction: String
 }
 
+struct ShellOverlayArgs: Decodable {
+  let enabled: Bool
+  let x: Double
+  let y: Double
+  let width: Double
+  let height: Double
+  let scale: Double
+}
+
 private final class BrowserEntry: NSObject, WKNavigationDelegate {
   let args: CreateArgs
   let webView: WKWebView
@@ -108,6 +117,13 @@ private final class BrowserEntry: NSObject, WKNavigationDelegate {
 
 class MobileBrowserPlugin: Plugin {
   private var browsers = [String: BrowserEntry]()
+  private weak var shellWebView: WKWebView?
+
+  override func load(webview: WKWebView) {
+    DispatchQueue.main.async {
+      self.shellWebView = webview
+    }
+  }
 
   @objc public func create(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(CreateArgs.self)
@@ -117,9 +133,9 @@ class MobileBrowserPlugin: Plugin {
 
       let entry = BrowserEntry(args: args, plugin: self)
       entry.webView.frame = self.frame(from: args)
-      if let rootView = self.rootView() {
-        rootView.addSubview(entry.webView)
-        rootView.bringSubviewToFront(entry.webView)
+      if let hostView = self.contentHostView() {
+        hostView.addSubview(entry.webView)
+        hostView.bringSubviewToFront(entry.webView)
       }
       self.browsers[args.label] = entry
       if let url = URL(string: args.url) {
@@ -157,7 +173,14 @@ class MobileBrowserPlugin: Plugin {
         return
       }
       entry.webView.frame = self.frame(from: args)
-      self.rootView()?.bringSubviewToFront(entry.webView)
+      self.contentHostView()?.bringSubviewToFront(entry.webView)
+      invoke.resolve()
+    }
+  }
+
+  @objc public func setShellOverlay(_ invoke: Invoke) throws {
+    _ = try invoke.parseArgs(ShellOverlayArgs.self)
+    DispatchQueue.main.async {
       invoke.resolve()
     }
   }
@@ -282,6 +305,10 @@ class MobileBrowserPlugin: Plugin {
 
   private func rootView() -> UIView? {
     return manager.viewController?.view
+  }
+
+  private func contentHostView() -> UIView? {
+    return shellWebView?.superview ?? rootView()
   }
 
   private func frame(from args: CreateArgs) -> CGRect {

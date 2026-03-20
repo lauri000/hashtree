@@ -62,6 +62,7 @@
   let boundsRaf: number | null = null;
   let automationSyncRaf: number | null = null;
   let dropdownEl: HTMLDivElement | null = $state(null);
+  let safeAreaTopInsetEl: HTMLDivElement | null = $state(null);
   let toolbarHeight = $state(TOOLBAR_BASE_HEIGHT);
   let isCompactToolbar = $state(
     typeof window !== 'undefined' && window.innerWidth < COMPACT_TOOLBAR_BREAKPOINT
@@ -455,11 +456,12 @@
   function browserViewportInsets() {
     const dropdownHeight = showDropdown ? (dropdownEl?.offsetHeight ?? 0) : 0;
     const mobileMenuHeight = showMobileMenu ? (mobileMenuEl?.offsetHeight ?? 0) : 0;
+    const safeAreaTop = safeAreaTopInsetEl?.offsetHeight ?? 0;
 
     if (isCompactToolbar) {
       const overlayHeight = Math.max(dropdownHeight, mobileMenuHeight);
       return {
-        top: 0,
+        top: safeAreaTop,
         bottom: toolbarHeight + (overlayHeight > 0 ? overlayHeight + 8 : 0),
       };
     }
@@ -891,7 +893,13 @@
   });
 </script>
 
-<div class="h-[100dvh] max-h-[100dvh] flex flex-col bg-surface-0 overscroll-none overflow-hidden">
+<div class="h-[100dvh] max-h-[100dvh] flex flex-col overscroll-none overflow-hidden bg-surface-0">
+  <div
+    bind:this={safeAreaTopInsetEl}
+    aria-hidden="true"
+    class="pointer-events-none fixed left-0 top-0 h-0 w-0 overflow-hidden opacity-0"
+    style="padding-top: env(safe-area-inset-top, 0px);"
+  ></div>
   <!-- Browser chrome -->
   {#if isCompactToolbar}
     <div
