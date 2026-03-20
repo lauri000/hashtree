@@ -9,6 +9,7 @@
   import { updateRecentVisibility } from '../stores/recents';
   import { nip19 } from 'nostr-tools';
   import { getQueryParamsFromHash } from '../lib/router.svelte';
+  import { supportsDocumentFeatures, supportsGitFeatures } from '../appType';
 
   interface Props {
     npub?: string;
@@ -41,10 +42,10 @@
 
   // Check if current directory is a git repo (quick check via .git dir for immediate UI)
   let dirEntries = $derived($directoryEntriesStore);
-  let isGitRepo = $derived(dirEntries.entries.some(e => e.name === '.git' && e.type === LinkType.Dir));
+  let isGitRepo = $derived(supportsGitFeatures() && dirEntries.entries.some(e => e.name === '.git' && e.type === LinkType.Dir));
 
   // Check if current directory is a Yjs document (contains .yjs file)
-  let isYjsDocument = $derived(dirEntries.entries.some(e => e.name === '.yjs' && e.type !== LinkType.Dir));
+  let isYjsDocument = $derived(supportsDocumentFeatures() && dirEntries.entries.some(e => e.name === '.yjs' && e.type !== LinkType.Dir));
 
   // On mobile, show viewer for git repos, Yjs docs, or when file/stream selected
   let hasFileSelected = $derived(isViewingFile || isStreaming || isGitRepo || isYjsDocument);

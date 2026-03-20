@@ -51,6 +51,20 @@ export const releaseProfiles = {
       ['node', './scripts/smoke-docs-iris-portable.mjs'],
     ],
   },
+  git: {
+    name: 'git',
+    appName: 'Iris Git',
+    distDir: 'iris-git',
+    treeName: 'git',
+    defaultWorkerName: 'iris-git',
+    workerNameEnv: 'CF_WORKER_NAME_GIT',
+    pagesProjectEnv: 'CF_PAGES_PROJECT_GIT',
+    buildCommand: ['pnpm', 'run', 'build:git'],
+    testCommands: [
+      ['pnpm', 'exec', 'vitest', 'run', 'tests/gitPortableBuildConfig.test.ts'],
+      ['node', './scripts/smoke-git-iris-portable.mjs'],
+    ],
+  },
   maps: {
     name: 'maps',
     appName: 'Iris Maps',
@@ -386,7 +400,7 @@ export function runAllReleases(options, runner = defaultRunner, hooks = {}) {
 }
 
 export function usage() {
-  return `Usage: node ./scripts/release-site.mjs <files|video|docs|maps|boards|all> [options]
+  return `Usage: node ./scripts/release-site.mjs <files|video|docs|git|maps|boards|all> [options]
 
 Build once, test the built output, publish to hashtree, then deploy that same
 directory to Cloudflare Workers Static Assets or Cloudflare Pages.
@@ -408,6 +422,8 @@ Environment:
   ${releaseProfiles.video.pagesProjectEnv}   Default Pages project for the video profile
   ${releaseProfiles.docs.workerNameEnv}   Default Worker name for the docs profile
   ${releaseProfiles.docs.pagesProjectEnv}   Default Pages project for the docs profile
+  ${releaseProfiles.git.workerNameEnv}   Default Worker name for the git profile
+  ${releaseProfiles.git.pagesProjectEnv}   Default Pages project for the git profile
   ${releaseProfiles.maps.workerNameEnv}   Default Worker name for the maps profile
   ${releaseProfiles.maps.pagesProjectEnv}   Default Pages project for the maps profile
   ${releaseProfiles.boards.workerNameEnv}   Default Worker name for the boards profile

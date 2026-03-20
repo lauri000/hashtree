@@ -2,12 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { createPublishPlan } from '../scripts/publish-iris-build.mjs';
 
 describe('publish-iris-build', () => {
-  it('supports docs and maps portable publish plans', () => {
+  it('supports docs, git, and maps portable publish plans', () => {
     expect(createPublishPlan('docs')).toMatchObject({
       name: 'docs',
       appName: 'Iris Docs',
       distDir: 'dist-docs',
       treeName: 'docs',
+    });
+
+    expect(createPublishPlan('git')).toMatchObject({
+      name: 'git',
+      appName: 'Iris Git',
+      distDir: 'iris-git',
+      treeName: 'git',
     });
 
     expect(createPublishPlan('maps')).toMatchObject({

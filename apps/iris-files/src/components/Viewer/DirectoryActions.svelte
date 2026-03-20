@@ -12,6 +12,7 @@
   import ViewerHeader from './ViewerHeader.svelte';
   import { uploadFiles } from '../../stores/upload';
   import { LinkType, type TreeEntry as HashTreeEntry } from '@hashtree/core';
+  import { supportsGitFeatures } from '../../appType';
 
   let route = $derived($routeStore);
   let rootCid = $derived($treeRootStore);
@@ -49,7 +50,7 @@
 
   // Check if we're inside a git repo subdirectory (gitRoot propagated via URL)
   let gitRootFromUrl = $derived(route.params.get('g'));
-  let isInGitRepo = $derived(hasGitDir || gitRootFromUrl !== null);
+  let isInGitRepo = $derived(supportsGitFeatures() && (hasGitDir || gitRootFromUrl !== null));
 
   // Resolve git root CID when we're in a subdirectory
   // If at git root (hasGitDir), use currentDirCid

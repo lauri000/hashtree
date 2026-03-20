@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp } from './test-utils.js';
 
 test.describe('NIP-34 Pull Requests', () => {
   // PR/Issues views are hidden on small screens (lg:flex), need wider viewport
@@ -9,7 +9,7 @@ test.describe('NIP-34 Pull Requests', () => {
   // Disable "others pool" to prevent WebRTC cross-talk from parallel tests
   test.beforeEach(async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/');
+    await gotoGitApp(page);
     await disableOthersPool(page);
   });
 
@@ -122,7 +122,7 @@ test.describe('NIP-34 Pull Requests', () => {
 
   test('nevent encoding works correctly', async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/');
+    await gotoGitApp(page);
 
     // Wait for app to load
     await page.waitForTimeout(1000);

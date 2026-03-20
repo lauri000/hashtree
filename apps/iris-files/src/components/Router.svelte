@@ -4,6 +4,7 @@
    * Receives currentPath as a prop to ensure proper reactivity
    */
   import { matchRoute, currentFullHash, getQueryParamsFromHash } from '../lib/router.svelte';
+  import { supportsGitFeatures } from '../appType';
 
   // Page components
   import SettingsLayout from './settings/SettingsLayout.svelte';
@@ -53,6 +54,7 @@
   // Also check for ?id= to show individual detail views
   // This allows PR/Issues views without interfering with actual directory names
   function parseRepoTabQuery(fullHash: string): { tab: 'pulls' | 'issues' | 'releases'; id?: string } | null {
+    if (!supportsGitFeatures()) return null;
     const params = getQueryParamsFromHash(fullHash);
     const tab = params.get('tab');
     if (tab === 'pulls' || tab === 'issues' || tab === 'releases') {
@@ -64,12 +66,14 @@
 
   // Check for ?commit=<hash> query param (commit view)
   function parseCommitQuery(fullHash: string): string | null {
+    if (!supportsGitFeatures()) return null;
     const params = getQueryParamsFromHash(fullHash);
     return params.get('commit');
   }
 
   // Check for ?compare=base...head query param (branch comparison view)
   function parseCompareQuery(fullHash: string): { base: string; head: string } | null {
+    if (!supportsGitFeatures()) return null;
     const params = getQueryParamsFromHash(fullHash);
     const compare = params.get('compare');
     if (!compare || !compare.includes('...')) return null;
@@ -79,6 +83,7 @@
 
   // Check for ?merge=1&base=<base>&head=<head> query param (merge view)
   function parseMergeQuery(fullHash: string): { base: string; head: string; prId?: string; prPubkey?: string } | null {
+    if (!supportsGitFeatures()) return null;
     const params = getQueryParamsFromHash(fullHash);
     if (params.get('merge') !== '1') return null;
     const base = params.get('base');

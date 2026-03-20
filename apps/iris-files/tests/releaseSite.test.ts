@@ -38,11 +38,17 @@ describe('release-site', () => {
     );
   });
 
-  it('supports docs, maps, and boards release profiles', () => {
+  it('supports docs, git, maps, and boards release profiles', () => {
     const docs = createReleasePlan({
       profileName: 'docs',
       pagesProject: 'docs-iris-to',
       treeName: 'docs',
+      skipCloudflare: false,
+    });
+    const git = createReleasePlan({
+      profileName: 'git',
+      pagesProject: 'git-iris-to',
+      treeName: 'git',
       skipCloudflare: false,
     });
     const maps = createReleasePlan({
@@ -59,6 +65,7 @@ describe('release-site', () => {
     });
 
     expect(docs.profile.distDir).toBe('dist-docs');
+    expect(git.profile.distDir).toBe('iris-git');
     expect(maps.profile.distDir).toBe('dist-maps');
     expect(boards.profile.distDir).toBe('dist-boards');
   });
@@ -258,11 +265,12 @@ describe('release-site', () => {
       { buildOutputExists: () => true },
     );
 
-    expect(result.profiles).toHaveLength(5);
+    expect(result.profiles).toHaveLength(6);
     expect(result.profiles.map((profile) => profile.profile.name)).toEqual([
       'files',
       'video',
       'docs',
+      'git',
       'maps',
       'boards',
     ]);

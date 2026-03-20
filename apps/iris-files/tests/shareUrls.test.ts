@@ -51,4 +51,19 @@ describe('shareUrls', () => {
       },
     ]);
   });
+
+  it('maps git routes to clean web and htree app URLs', () => {
+    expect(createShareUrlOptions('git', 'http://127.0.0.1:5173/git.html#/npub1owner/repo?tab=pulls')).toEqual([
+      {
+        id: 'web',
+        label: 'Web URL',
+        url: 'https://git.iris.to/#/npub1owner/repo?tab=pulls',
+      },
+      {
+        id: 'htree',
+        label: 'htree URL',
+        url: 'htree://npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/git#/npub1owner/repo?tab=pulls',
+      },
+    ]);
+  });
 });

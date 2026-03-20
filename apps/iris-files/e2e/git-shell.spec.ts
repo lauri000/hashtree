@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp } from './test-utils.js';
 
 async function assertCodeDropdown(page: any, repoName: string): Promise<void> {
   const codeBtn = page.locator('.code-dropdown > button');
@@ -22,7 +22,7 @@ test.describe('Git code dropdown', () => {
   // Disable "others pool" to prevent WebRTC cross-talk from parallel tests
   test.beforeEach(async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/');
+    await gotoGitApp(page);
     await disableOthersPool(page);
   });
 

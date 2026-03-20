@@ -1,5 +1,5 @@
 import { test, expect, type Page } from './fixtures';
-import { setupPageErrorHandler, disableOthersPool, waitForAppReady, presetProductionRelaysInDB, getTestRelayUrl, useLocalRelay, navigateToPublicFolder } from './test-utils.js';
+import { setupPageErrorHandler, disableOthersPool, waitForAppReady, presetProductionRelaysInDB, getTestRelayUrl, useLocalRelay, navigateToPublicFolder, gotoGitApp } from './test-utils.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -94,7 +94,7 @@ test.describe('Git performance', () => {
       }
     });
 
-    await page.goto('/');
+    await gotoGitApp(page);
     await presetProductionRelaysInDB(page);
     await page.reload();
     await waitForAppReady(page);

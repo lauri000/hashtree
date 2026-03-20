@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp } from './test-utils.js';
 // Tests use isolated page contexts with disableOthersPool - safe for parallel execution
 
 test.describe('Git commit view', () => {
@@ -7,7 +7,7 @@ test.describe('Git commit view', () => {
   // Disable "others pool" to prevent WebRTC cross-talk from parallel tests
   test.beforeEach(async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/');
+    await gotoGitApp(page);
     await disableOthersPool(page);
   });
 

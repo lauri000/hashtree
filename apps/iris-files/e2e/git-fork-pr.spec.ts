@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay, gotoGitApp } from './test-utils.js';
 
 // Helper to get npub from URL
 async function getNpub(page: any): Promise<string> {
@@ -12,7 +12,7 @@ async function getNpub(page: any): Promise<string> {
 test.describe('Git fork and PR workflow', () => {
   test.beforeEach(async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/');
+    await gotoGitApp(page);
     await disableOthersPool(page);
     await useLocalRelay(page);
   });

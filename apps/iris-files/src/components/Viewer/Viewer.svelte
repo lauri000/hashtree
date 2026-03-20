@@ -25,6 +25,7 @@
   import MarkdownViewer from './MarkdownViewer.svelte';
   import { TreeRow } from '../ui';
   import FileGitBar from '../Git/FileGitBar.svelte';
+  import { supportsDocumentFeatures, supportsGitFeatures } from '../../appType';
 
   let route = $derived($routeStore);
   let rootCid = $derived($treeRootStore);
@@ -58,7 +59,7 @@
   // Check for .git in parent directory entries or git root from URL param
   let hasGitDir = $derived(entries.some(e => e.name === '.git' && e.type === LinkType.Dir));
   let gitRootFromUrl = $derived(route.params.get('g'));
-  let isInGitRepo = $derived(hasGitDir || gitRootFromUrl !== null);
+  let isInGitRepo = $derived(supportsGitFeatures() && (hasGitDir || gitRootFromUrl !== null));
 
   // Resolve git root CID
   let gitRootCid = $state<typeof currentDirCid>(null);
@@ -225,7 +226,7 @@
   let hasTreeContext = $derived(!!rootCid || !!route.treeName);
 
   // Check if current directory is a Yjs document (contains .yjs file)
-  let isYjsDocument = $derived(entries.some(e => e.name === '.yjs' && e.type !== LinkType.Dir));
+  let isYjsDocument = $derived(supportsDocumentFeatures() && entries.some(e => e.name === '.yjs' && e.type !== LinkType.Dir));
 
   // Get current directory name from path
   let currentDirName = $derived.by(() => {

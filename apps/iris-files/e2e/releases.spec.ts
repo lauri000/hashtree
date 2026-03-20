@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp } from './test-utils.js';
 
 test.describe('Releases', () => {
   test.use({ viewport: { width: 1280, height: 720 } });
@@ -7,7 +7,7 @@ test.describe('Releases', () => {
 
   test.beforeEach(async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/');
+    await gotoGitApp(page);
     await disableOthersPool(page);
   });
 

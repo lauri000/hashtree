@@ -98,6 +98,10 @@ export async function safeGoto(
   throw lastError;
 }
 
+export async function gotoGitApp(page: any) {
+  await safeGoto(page, '/git.html#/');
+}
+
 export async function safeReload(
   page: any,
   options?: { waitUntil?: 'domcontentloaded' | 'load' | 'networkidle'; timeoutMs?: number; retries?: number; url?: string }
@@ -200,7 +204,7 @@ export async function navigateToPublicFolder(
 
   // If we're already inside public (auto-redirect), just wait for actions and return
   const alreadyInPublic = await page.waitForFunction(() => {
-    return /\/#\/npub[^/]+\/public/.test(window.location.hash);
+    return /^#\/npub[^/]+\/public/.test(window.location.hash);
   }, { timeout: 5000 }).then(() => true).catch(() => false);
   if (alreadyInPublic) {
     const actionsButton = page.getByRole('button', { name: /New Folder|File/i }).first();
@@ -256,7 +260,11 @@ export async function navigateToPublicFolder(
   await publicLink.click();
 
   // Wait for navigation to complete and folder actions to be visible
-  await page.waitForURL(/\/#\/npub.*\/public/, { timeout: timeoutMs });
+  await page.waitForFunction(
+    () => /^#\/npub[^/]+\/public/.test(window.location.hash),
+    undefined,
+    { timeout: timeoutMs }
+  );
   await expect(page.getByRole('button', { name: /New Folder|File/i }).first()).toBeVisible({ timeout: Math.max(20000, timeoutMs) });
 }
 

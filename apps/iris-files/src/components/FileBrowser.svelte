@@ -17,6 +17,7 @@
   import { TreeRow } from './ui';
   import { treeRootStore, routeStore, createTreesStore, type TreeEntry, currentDirCidStore, isViewingFileStore, resolvingPathStore, directoryEntriesStore } from '../stores';
   import { readFilesFromDataTransfer, hasDirectoryItems } from '../utils/directory';
+  import { supportsGitFeatures } from '../appType';
 
   import { getFileIcon } from '../utils/fileIcon';
   import { BREAKPOINTS } from '../utils/breakpoints';
@@ -188,6 +189,9 @@
   // If current dir has .git, this becomes the git root (use current path)
   // Otherwise, keep propagating the existing gitRoot from URL
   let effectiveGitRoot = $derived.by(() => {
+    if (!supportsGitFeatures()) {
+      return null;
+    }
     if (hasGitDir) {
       // Current directory is a git root - use current path as git root
       // Empty path means tree root, so use empty string

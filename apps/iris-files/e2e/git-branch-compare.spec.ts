@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, safeReload, waitForAppReady } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, safeReload, waitForAppReady, gotoGitApp } from './test-utils.js';
 
 async function createAndEnterFolder(page: any, name: string) {
   await page.getByRole('button', { name: 'New Folder' }).click();
@@ -29,7 +29,7 @@ test.describe('Git branch comparison and merge', () => {
   // Disable "others pool" to prevent WebRTC cross-talk from parallel tests
   test.beforeEach(async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/');
+    await gotoGitApp(page);
     await disableOthersPool(page);
   });
 

@@ -16,6 +16,7 @@ const WEB_APP_URLS: Record<AppType, string> = {
   docs: 'https://docs.iris.to',
   maps: 'https://maps.iris.to',
   boards: 'https://boards.iris.to',
+  git: 'https://git.iris.to',
 };
 
 function normalizeHashSuffix(hashSuffix: string): string {

@@ -1,11 +1,11 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, ensureLoggedIn, waitForAppReady } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, ensureLoggedIn, waitForAppReady, gotoGitApp } from './test-utils.js';
 
 test.describe('Git history features', () => {
   // Disable "others pool" to prevent WebRTC cross-talk from parallel tests
   test.beforeEach(async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/');
+    await gotoGitApp(page);
     await disableOthersPool(page);
   });
 

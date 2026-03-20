@@ -1,5 +1,5 @@
 import { test, expect, type Page } from './fixtures';
-import { setupPageErrorHandler, disableOthersPool, waitForAppReady, navigateToPublicFolder } from './test-utils.js';
+import { setupPageErrorHandler, disableOthersPool, waitForAppReady, navigateToPublicFolder, gotoGitApp } from './test-utils.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -74,7 +74,7 @@ async function uploadGitRepo(page: Page): Promise<{ repoName: string; npub: stri
 test.describe('Git file bar', () => {
   test.beforeEach(async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/');
+    await gotoGitApp(page);
     await waitForAppReady(page);
     await disableOthersPool(page);
   });

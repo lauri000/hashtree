@@ -7,7 +7,7 @@
  * 2. Repo Viewer - follows the runner, fetches CI status via WebRTC/Blossom
  */
 import { test, expect, type Page } from './fixtures';
-import { setupPageErrorHandler, disableOthersPool, followUser, waitForAppReady, ensureLoggedIn, navigateToPublicFolder, useLocalRelay, waitForRelayConnected, evaluateWithRetry, getTestRelayUrl, safeGoto, safeReload } from './test-utils';
+import { setupPageErrorHandler, disableOthersPool, followUser, waitForAppReady, ensureLoggedIn, navigateToPublicFolder, useLocalRelay, waitForRelayConnected, evaluateWithRetry, getTestRelayUrl, safeGoto, safeReload, gotoGitApp } from './test-utils';
 import { spawn, execSync, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -485,7 +485,7 @@ test.describe('CI Status Display', () => {
 
   test('CIStatusBadge renders correct status icons', async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/');
+    await gotoGitApp(page);
     await disableOthersPool(page);
 
     // Test that CI store module loads correctly
@@ -608,7 +608,7 @@ test.describe('CI Status Display', () => {
       });
 
       setupPageErrorHandler(page);
-      await page.goto('/');
+      await gotoGitApp(page);
 
       await page.evaluate(async () => {
         const dbs = await indexedDB.databases();

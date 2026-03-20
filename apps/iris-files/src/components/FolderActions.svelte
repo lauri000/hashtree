@@ -22,6 +22,7 @@
   import { routeStore, createTreesStore } from '../stores';
   import { isGitRepo, initGitRepo } from '../utils/git';
   import { getCurrentRootCid } from '../actions/route';
+  import { supportsDocumentFeatures, supportsGitFeatures } from '../appType';
 
   interface Props {
     dirCid?: CID | null;
@@ -56,6 +57,10 @@
 
   // Check if directory is already a git repo
   $effect(() => {
+    if (!supportsGitFeatures()) {
+      isGitRepoCheck = null;
+      return;
+    }
     if (!dirCid) {
       isGitRepoCheck = null;
       return;
@@ -290,10 +295,12 @@
         New Folder
       </button>
 
-      <button onclick={() => openCreateModal('document')} class="btn-ghost {btnClass}" title="New Document">
-        <span class="i-lucide-file-text"></span>
-        New Document
-      </button>
+      {#if supportsDocumentFeatures()}
+        <button onclick={() => openCreateModal('document')} class="btn-ghost {btnClass}" title="New Document">
+          <span class="i-lucide-file-text"></span>
+          New Document
+        </button>
+      {/if}
 
       {#if streamUrl}
         <a href={streamUrl} class="btn-ghost no-underline {btnClass}" title="Stream">
@@ -302,7 +309,7 @@
         </a>
       {/if}
 
-      {#if dirCid && isGitRepoCheck === false}
+      {#if supportsGitFeatures() && dirCid && isGitRepoCheck === false}
         <button
           onclick={handleGitInit}
           disabled={isInitializingGit}

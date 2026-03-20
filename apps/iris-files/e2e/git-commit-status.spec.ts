@@ -1,10 +1,10 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay, gotoGitApp } from './test-utils.js';
 
 test.describe('Git commit status indicator', () => {
   test.beforeEach(async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/');
+    await gotoGitApp(page);
     await disableOthersPool(page);
     await useLocalRelay(page);
   });

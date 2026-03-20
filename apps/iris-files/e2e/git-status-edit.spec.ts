@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, waitForAppReady, configureBlossomServers, useLocalRelay, waitForRelayConnected } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, waitForAppReady, configureBlossomServers, useLocalRelay, waitForRelayConnected, gotoGitApp } from './test-utils.js';
 import { execSync } from 'child_process';
 import { getPublicKey, nip19 } from 'nostr-tools';
 import WebSocket from 'ws';
@@ -109,7 +109,7 @@ async function waitForTreeEvent(
 test.describe('Git status after file edit', () => {
   test.beforeEach(async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/');
+    await gotoGitApp(page);
     await disableOthersPool(page);
   });
 

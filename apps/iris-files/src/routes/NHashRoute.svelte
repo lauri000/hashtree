@@ -6,6 +6,7 @@
   import { isViewingFileStore, currentHash, currentDirCidStore, createGitInfoStore } from '../stores';
   import { nhashDecode } from '@hashtree/core';
   import { getQueryParamsFromHash } from '../lib/router.svelte';
+  import { supportsGitFeatures } from '../appType';
 
   interface Props {
     nhash: string;
@@ -21,7 +22,7 @@
   let currentDirCid = $derived($currentDirCidStore);
   let gitInfoStore = $derived(createGitInfoStore(currentDirCid));
   let gitInfo = $derived($gitInfoStore);
-  let isGitRepo = $derived(gitInfo.isRepo);
+  let isGitRepo = $derived(supportsGitFeatures() && gitInfo.isRepo);
 
   // In single-column layout, show viewer for git repos or files
   let showViewer = $derived(isViewingFile || isGitRepo);
