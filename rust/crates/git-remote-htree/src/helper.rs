@@ -101,6 +101,13 @@ fn create_local_store(
     }
 }
 
+fn build_repo_viewer_url(path: &str, url_secret: Option<&[u8; 32]>) -> String {
+    match url_secret {
+        Some(secret) => format!("https://git.iris.to/#/{}?k={}", path, hex::encode(secret)),
+        None => format!("https://git.iris.to/#/{}", path),
+    }
+}
+
 /// Git remote helper state machine
 pub struct RemoteHelper {
     #[allow(dead_code)]
@@ -1166,11 +1173,7 @@ impl RemoteHelper {
 
         // Print web viewer URL
         if let Some(path) = npub_url.strip_prefix("htree://") {
-            let viewer_url = if let Some(secret) = self.url_secret {
-                format!("https://files.iris.to/#/{}?k={}", path, hex::encode(secret))
-            } else {
-                format!("https://files.iris.to/#/{}", path)
-            };
+            let viewer_url = build_repo_viewer_url(path, self.url_secret.as_ref());
             eprintln!("View at: {}", viewer_url);
         }
 
@@ -1829,6 +1832,26 @@ mod tests {
     fn create_test_helper() -> Option<RemoteHelper> {
         let config = Config::default();
         RemoteHelper::new(TEST_PUBKEY, "test-repo", None, None, false, config).ok()
+    }
+
+    #[test]
+    fn test_build_repo_viewer_url_uses_git_host() {
+        assert_eq!(
+            build_repo_viewer_url("npub1example/repo", None),
+            "https://git.iris.to/#/npub1example/repo"
+        );
+    }
+
+    #[test]
+    fn test_build_repo_viewer_url_preserves_link_key() {
+        let url_secret = [0xab; 32];
+        assert_eq!(
+            build_repo_viewer_url("npub1example/repo", Some(&url_secret)),
+            format!(
+                "https://git.iris.to/#/npub1example/repo?k={}",
+                "ab".repeat(32)
+            )
+        );
     }
 
     #[test]

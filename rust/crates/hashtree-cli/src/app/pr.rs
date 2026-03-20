@@ -13,6 +13,13 @@ use super::args::PrListState;
 const KIND_PULL_REQUEST: u16 = 1618;
 const KIND_REPO_ANNOUNCEMENT: u16 = 30617;
 
+fn build_pr_view_url(target_npub: &str, repo_name: &str, nevent_id: &str) -> String {
+    format!(
+        "https://git.iris.to/#/{}/{}?tab=pulls&id={}",
+        target_npub, repo_name, nevent_id
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RepoTargetSelection {
     InferFromGit,
@@ -212,8 +219,8 @@ pub(crate) async fn create_pr(
         .and_then(|pk| pk.to_bech32().ok())
         .unwrap_or_else(|| target_pubkey.clone());
     println!(
-        "  View: https://files.iris.to/#/{}/{}?tab=pulls&id={}",
-        target_npub, repo_name, nevent_str
+        "  View: {}",
+        build_pr_view_url(&target_npub, &repo_name, &nevent_str)
     );
 
     Ok(())
@@ -630,6 +637,14 @@ fn warn_if_branch_not_pushed(branch: &str, commit_tip: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_pr_view_url_uses_git_host() {
+        assert_eq!(
+            build_pr_view_url("npub1target", "repo-name", "nevent1pullrequest"),
+            "https://git.iris.to/#/npub1target/repo-name?tab=pulls&id=nevent1pullrequest"
+        );
+    }
 
     #[test]
     fn normalize_create_pr_params_applies_defaults() {

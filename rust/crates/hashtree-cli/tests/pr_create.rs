@@ -398,7 +398,7 @@ fn test_pr_create_publishes_kind_1618_event() {
         "stdout missing nevent: {stdout}"
     );
     assert!(
-        stdout.contains("View: https://files.iris.to/"),
+        stdout.contains("View: https://git.iris.to/"),
         "stdout missing view link: {stdout}"
     );
     assert!(
