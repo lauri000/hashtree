@@ -7,15 +7,17 @@ export interface AppBookmark {
 
 export const distributedOwner = 'npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce';
 
-export const defaultFavoriteApps: readonly AppBookmark[] = [
+export const suggestedIrisApps: readonly AppBookmark[] = [
   { url: `htree://${distributedOwner}/files`, name: 'Iris Files', icon: '/iris-logo.png', addedAt: 0 },
   { url: `htree://${distributedOwner}/video`, name: 'Iris Video', icon: '/iris-logo.png', addedAt: 0 },
   { url: `htree://${distributedOwner}/docs`, name: 'Iris Docs', icon: '/iris-logo.png', addedAt: 0 },
   { url: `htree://${distributedOwner}/maps`, name: 'Iris Maps', icon: '/iris-logo.png', addedAt: 0 },
 ];
 
+export const defaultFavoriteApps: readonly AppBookmark[] = [];
+
 export const suggestedApps: readonly AppBookmark[] = [
-  ...defaultFavoriteApps,
+  ...suggestedIrisApps,
   { url: 'https://iris.to', name: 'Iris Social', icon: '/iris-logo.png', addedAt: 0 },
 ];
 

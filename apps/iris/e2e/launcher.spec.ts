@@ -19,12 +19,12 @@ test.describe('App Launcher', () => {
 
     await expect(page.getByRole('heading', { name: 'Favourites' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Suggestions' })).toBeVisible();
-    await expect(page.getByText('No favourites yet')).not.toBeVisible();
+    await expect(page.getByText('No favourites yet')).toBeVisible();
 
-    await expect(favourites.getByText('Iris Files')).toBeVisible();
-    await expect(favourites.getByText('Iris Video')).toBeVisible();
-    await expect(favourites.getByText('Iris Docs')).toBeVisible();
-    await expect(favourites.getByText('Iris Maps')).toBeVisible();
+    await expect(favourites.getByText('Iris Files')).not.toBeVisible();
+    await expect(favourites.getByText('Iris Video')).not.toBeVisible();
+    await expect(favourites.getByText('Iris Docs')).not.toBeVisible();
+    await expect(favourites.getByText('Iris Maps')).not.toBeVisible();
 
     await expect(suggestions.getByText('Iris Files')).toBeVisible();
     await expect(suggestions.getByText('Iris Video')).toBeVisible();
@@ -36,10 +36,10 @@ test.describe('App Launcher', () => {
   test('clicking suggestion triggers webview creation', async ({ tauriPage: page }) => {
     await openHome(page);
 
-    const favourites = page.locator('section').filter({
-      has: page.getByRole('heading', { name: 'Favourites' }),
+    const suggestions = page.locator('section').filter({
+      has: page.getByRole('heading', { name: 'Suggestions' }),
     });
-    await favourites.getByText('Iris Files').click();
+    await suggestions.getByText('Iris Files').click();
 
     const invocations = await page.evaluate(() => (window as any).__tauriInvocations);
     const createCalls = invocations.filter((i: any) => i.cmd === 'create_htree_webview');
