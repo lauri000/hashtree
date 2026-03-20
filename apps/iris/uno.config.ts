@@ -51,7 +51,7 @@ export default defineConfig({
   shortcuts: {
     'btn': 'px-3 py-1.5 min-h-9 rounded-full text-sm font-medium transition-colors duration-100 select-none disabled:opacity-50 disabled:cursor-not-allowed',
     'btn-ghost': 'btn bg-surface-2 text-text-1 hover:bg-surface-3 disabled:hover:bg-surface-2',
-    'btn-circle': 'w-9 min-h-9 p-0! rounded-full flex items-center justify-center transition-colors duration-100 select-none disabled:opacity-50 disabled:cursor-not-allowed',
+    'btn-circle': 'w-9 min-h-9 p-0! rounded-full flex items-center justify-center transition-colors duration-100 select-none outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface-1 [-webkit-tap-highlight-color:transparent] disabled:opacity-50 disabled:cursor-not-allowed',
     'input': 'px-3 py-1.5 bg-surface-0 b-1 b-solid b-surface-3 rounded-full text-text-1 outline-none focus:b-accent',
     'text-muted': 'text-text-2',
   },

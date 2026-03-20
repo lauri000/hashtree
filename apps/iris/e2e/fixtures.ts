@@ -30,6 +30,7 @@ async function mockTauriIPC(page: Page) {
       historyIndex: -1,
       historyLength: 0,
     };
+    (window as any).__tauriInvokeErrors = {} as Record<string, string>;
     (window as any).__pendingDeepLinks = (window as any).__pendingDeepLinks ?? [];
     const callbackStore = new Map<number, (...args: any[]) => void>();
     const eventListeners = new Map<string, Array<{ eventId: number; handlerId: number }>>();
@@ -70,6 +71,11 @@ async function mockTauriIPC(page: Page) {
       },
       invoke(cmd: string, args: any) {
         (window as any).__tauriInvocations.push({ cmd, args });
+
+        const forcedError = (window as any).__tauriInvokeErrors?.[cmd];
+        if (forcedError) {
+          return Promise.reject(forcedError);
+        }
 
         // Return sensible defaults per command
         switch (cmd) {
@@ -236,6 +242,15 @@ export async function emitTauriEvent(page: Page, event: string, payload: unknown
   await page.evaluate(([name, data]) => {
     (window as any).__emitTauriEvent?.(name, data);
   }, [event, payload]);
+}
+
+export async function failTauriCommand(page: Page, cmd: string, message: string): Promise<void> {
+  await page.evaluate(([name, error]) => {
+    (window as any).__tauriInvokeErrors = {
+      ...((window as any).__tauriInvokeErrors ?? {}),
+      [name]: error,
+    };
+  }, [cmd, message]);
 }
 
 export async function getAutomationState(page: Page): Promise<any> {

@@ -1,4 +1,12 @@
-import { test, expect, emitTauriEvent, getInvocationsFor, setupPageErrorHandler, gotoHome } from './fixtures';
+import {
+  test,
+  expect,
+  emitTauriEvent,
+  failTauriCommand,
+  getInvocationsFor,
+  setupPageErrorHandler,
+  gotoHome,
+} from './fixtures';
 
 async function openHome(page: import('@playwright/test').Page) {
   setupPageErrorHandler(page);
@@ -86,6 +94,46 @@ test.describe('Navigation', () => {
     expect(after.addressWidth).toBeGreaterThan(before.addressWidth + 40);
     expect(after.moreVisible).toBe(false);
     expect(after.backVisible).toBe(false);
+  });
+
+  test('address field disables autocorrect and capitalization helpers', async ({ tauriPage: page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openHome(page);
+    await expect(page.locator('input[placeholder="Search or enter address"]')).toBeVisible();
+
+    const attributes = await page.evaluate(() => {
+      const input = document.querySelector<HTMLInputElement>('input[placeholder="Search or enter address"]');
+      if (!input) {
+        throw new Error('address input not found');
+      }
+
+      return {
+        autocorrect: input.getAttribute('autocorrect'),
+        autocapitalize: input.getAttribute('autocapitalize'),
+        autocomplete: input.getAttribute('autocomplete'),
+        spellcheck: input.spellcheck,
+      };
+    });
+
+    expect(attributes.autocorrect).toBe('off');
+    expect(attributes.autocapitalize).toBe('none');
+    expect(attributes.autocomplete).toBe('off');
+    expect(attributes.spellcheck).toBe(false);
+  });
+
+  test('shows a real error when embedded page creation fails', async ({ tauriPage: page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openHome(page);
+    await failTauriCommand(page, 'create_nip07_webview', 'Mobile child webviews are not supported yet');
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill('https://example.com');
+    await input.press('Enter');
+
+    await expect(page.getByTestId('webview-error')).toBeVisible();
+    await expect(page.getByText('Embedded browsing is not available on this device yet')).toBeVisible();
+    await expect(page.getByText('Iris uses child webviews for in-app pages, and the current mobile runtime does not provide them yet.')).toBeVisible();
   });
 
   test('toolbar does not depend on the JS drag fallback', async ({ tauriPage: page }) => {

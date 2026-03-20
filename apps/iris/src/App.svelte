@@ -35,6 +35,7 @@
   const TOOLBAR_BASE_HEIGHT = 48;
   const COMPACT_TOOLBAR_BREAKPOINT = 720;
   const DESKTOP_TRAFFIC_LIGHTS_PADDING = 88;
+  const MOBILE_CHILD_WEBVIEWS_UNSUPPORTED = 'Mobile child webviews are not supported yet';
   const MACOS_FUNCTION_KEY_GLYPHS = /[\uF700-\uF8FF]/g;
   const MACOS_FUNCTION_KEY_GLYPHS_SINGLE = /[\uF700-\uF8FF]/;
   const LEGACY_MACOS_ARROW_KEY_CODES = new Set([63232, 63233, 63234, 63235]);
@@ -44,6 +45,7 @@
     '\uF702': 'ArrowLeft',
     '\uF703': 'ArrowRight',
   } as const;
+  const g = globalThis as typeof globalThis & { __irisChildReady?: boolean };
 
   let addressValue = $state('');
   let currentUrl = $state('');              // full URL for editing
@@ -80,6 +82,7 @@
   let childBodyText = $state('');
   let childMediaSummary = $state('');
   let childLastError = $state('');
+  let childWebviewReady = $state(!!g.__irisChildReady);
 
   let canGoBack = $derived(
     (currentView === 'webview' && webviewNavDepth > 0) ||
@@ -96,9 +99,6 @@
     childPageLoadState !== 'finished' &&
     !childLastError
   );
-
-  // Track child webview existence at module level to survive HMR
-  const g = globalThis as typeof globalThis & { __irisChildReady?: boolean };
 
   function urlToDisplay(url: string): string {
     try {
@@ -187,6 +187,54 @@
     });
 
     return sanitizedValue;
+  }
+
+  function setChildWebviewReady(ready: boolean) {
+    g.__irisChildReady = ready;
+    childWebviewReady = ready;
+  }
+
+  function formatWebviewError(error: unknown): string {
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+    if (typeof error === 'string') {
+      return error;
+    }
+    if (error && typeof error === 'object' && 'message' in error) {
+      const message = (error as { message?: unknown }).message;
+      if (typeof message === 'string' && message) {
+        return message;
+      }
+    }
+    return 'Failed to open page.';
+  }
+
+  function isUnsupportedChildWebviewError(message: string): boolean {
+    return message.includes(MOBILE_CHILD_WEBVIEWS_UNSUPPORTED);
+  }
+
+  function shouldRetryNavigateAfterCreateFailure(message: string): boolean {
+    return !isUnsupportedChildWebviewError(message) && !message.includes('missing required key origin');
+  }
+
+  function setChildWebviewError(error: unknown) {
+    childLastError = formatWebviewError(error);
+    childPageLoadState = 'failed';
+    setChildWebviewReady(false);
+    scheduleAutomationStateSync();
+  }
+
+  function webviewErrorHeadline(error: string): string {
+    return isUnsupportedChildWebviewError(error)
+      ? 'Embedded browsing is not available on this device yet'
+      : 'Could not open this page';
+  }
+
+  function webviewErrorDetail(error: string): string {
+    return isUnsupportedChildWebviewError(error)
+      ? 'Iris uses child webviews for in-app pages, and the current mobile runtime does not provide them yet.'
+      : error;
   }
 
   function syncToolbarMode() {
@@ -372,7 +420,7 @@
     } catch {
       // Webview might not exist, that's fine
     }
-    g.__irisChildReady = false;
+    setChildWebviewReady(false);
     resetChildDiagnostics();
     scheduleAutomationStateSync();
   }
@@ -411,18 +459,26 @@
         } else {
           await createNip07Webview(CHILD_LABEL, url, x, y, width, height);
         }
-        g.__irisChildReady = true;
+        setChildWebviewReady(true);
         scheduleWebviewBoundsUpdate();
         scheduleAutomationStateSync();
       } catch (e) {
-        console.warn('[Iris] create webview failed, trying navigate:', e);
+        const createError = formatWebviewError(e);
+        if (!shouldRetryNavigateAfterCreateFailure(createError)) {
+          console.warn('[Iris] create webview failed:', createError);
+          setChildWebviewError(createError);
+          return;
+        }
+        console.warn('[Iris] create webview failed, trying navigate:', createError);
         try {
           await navigateWebview(CHILD_LABEL, url);
-          g.__irisChildReady = true;
+          setChildWebviewReady(true);
           scheduleWebviewBoundsUpdate();
           scheduleAutomationStateSync();
         } catch (e2) {
           console.error('[Iris] navigate also failed:', e2);
+          setChildWebviewError(e2);
+          return;
         }
       }
     } else {
@@ -480,7 +536,11 @@
 
   async function refresh() {
     showMobileMenu = false;
-    if (currentView === 'webview' && g.__irisChildReady) {
+    if (currentView === 'webview' && currentUrl && !childWebviewReady) {
+      await navigate(currentUrl, false);
+      return;
+    }
+    if (currentView === 'webview' && childWebviewReady) {
       await reloadWebview(CHILD_LABEL);
     }
   }
@@ -582,7 +642,7 @@
     if (boundsRaf !== null) cancelAnimationFrame(boundsRaf);
     boundsRaf = requestAnimationFrame(async () => {
       boundsRaf = null;
-      if (currentView !== 'webview' || !g.__irisChildReady) return;
+      if (currentView !== 'webview' || !childWebviewReady) return;
       const top = isCompactToolbar ? 0 : toolbarHeight;
       const bottom = isCompactToolbar ? toolbarHeight : 0;
       const height = Math.max(0, window.innerHeight - top - bottom);
@@ -606,7 +666,7 @@
         canGoBack: canGoBack,
         canGoForward: canGoForward,
         showDropdown: showDropdown,
-        childWebviewReady: !!g.__irisChildReady,
+        childWebviewReady: childWebviewReady,
         childPageLoadState: childPageLoadState,
         childPageLoadUrl: childPageLoadUrl,
         childDocumentTitle: childDocumentTitle,
@@ -895,6 +955,9 @@
             <input
               type="text"
               data-tauri-drag-region="false"
+              autocorrect="off"
+              autocapitalize="none"
+              autocomplete="off"
               bind:this={addressInputEl}
               bind:value={addressValue}
               onfocus={handleAddressFocus}
@@ -904,6 +967,7 @@
               oninput={handleAddressInput}
               onkeydown={handleAddressKeyDown}
               placeholder="Search or enter address"
+              spellcheck={false}
               class="bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted flex-1 min-w-0 text-left"
             />
             {#if !isAddressFocused}
@@ -1027,6 +1091,9 @@
           <input
             type="text"
             data-tauri-drag-region="false"
+            autocorrect="off"
+            autocapitalize="none"
+            autocomplete="off"
             bind:this={addressInputEl}
             bind:value={addressValue}
             onfocus={handleAddressFocus}
@@ -1036,6 +1103,7 @@
             oninput={handleAddressInput}
             onkeydown={handleAddressKeyDown}
             placeholder="Search or enter address"
+            spellcheck={false}
             class="bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted flex-1 min-w-0 text-center"
           />
           <button
@@ -1102,6 +1170,29 @@
       <AppLauncher onnavigate={navigate} />
     {:else if currentView === 'settings'}
       <Settings />
+    {:else if !childWebviewReady || childLastError}
+      <section class="flex flex-1 items-center justify-center p-6">
+        <div
+          data-testid={childLastError ? 'webview-error' : 'webview-loading'}
+          class="w-full max-w-md rounded-3xl border border-surface-3 bg-surface-1 px-5 py-6 text-center shadow-lg"
+        >
+          <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-2 text-text-1">
+            <span class={childLastError ? 'i-lucide-triangle-alert text-xl text-warning' : 'i-lucide-loader-circle animate-spin text-xl'}></span>
+          </div>
+          <h2 class="text-lg font-semibold text-text-1">
+            {childLastError ? webviewErrorHeadline(childLastError) : 'Opening page'}
+          </h2>
+          <p class="mt-2 text-sm text-text-2">
+            {childLastError ? webviewErrorDetail(childLastError) : 'Waiting for the embedded page to start.'}
+          </p>
+          {#if currentUrl}
+            <p class="mt-3 break-all text-xs text-text-3">{currentUrl}</p>
+          {/if}
+          {#if childLastError && webviewErrorDetail(childLastError) !== childLastError}
+            <p class="mt-3 break-all text-xs text-text-3">{childLastError}</p>
+          {/if}
+        </div>
+      </section>
     {/if}
     <!-- When currentView === 'webview', child webview overlays this area -->
   </main>
