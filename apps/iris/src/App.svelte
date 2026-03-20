@@ -64,6 +64,7 @@
   let isCompactToolbar = $state(
     typeof window !== 'undefined' && window.innerWidth < COMPACT_TOOLBAR_BREAKPOINT
   );
+  let showMobileMenu = $state(false);
 
   // Shell-level navigation history
   let historyStack: string[] = $state([]);  // URLs visited
@@ -189,7 +190,10 @@
   }
 
   function syncToolbarMode() {
-    isCompactToolbar = window.innerWidth < COMPACT_TOOLBAR_BREAKPOINT;
+    const nextIsCompactToolbar = window.innerWidth < COMPACT_TOOLBAR_BREAKPOINT;
+    if (isCompactToolbar === nextIsCompactToolbar) return;
+    isCompactToolbar = nextIsCompactToolbar;
+    showMobileMenu = false;
   }
 
   function handleAddressBeforeInput(event: InputEvent) {
@@ -393,9 +397,11 @@
     await tick();
 
     const x = 0;
-    const y = toolbarHeight;
+    const top = isCompactToolbar ? 0 : toolbarHeight;
+    const bottom = isCompactToolbar ? toolbarHeight : 0;
+    const y = top;
     const width = window.innerWidth;
-    const height = Math.max(0, window.innerHeight - toolbarHeight);
+    const height = Math.max(0, window.innerHeight - top - bottom);
 
     if (!g.__irisChildReady) {
       const htree = parseHtreeUrl(url);
@@ -441,6 +447,7 @@
   }
 
   async function goHome() {
+    showMobileMenu = false;
     await destroyChildWebview();
     currentView = 'launcher';
     currentUrl = '';
@@ -450,6 +457,7 @@
   }
 
   function goSettings() {
+    showMobileMenu = false;
     destroyChildWebview();
     currentView = 'settings';
     currentUrl = '';
@@ -471,6 +479,7 @@
   }
 
   async function refresh() {
+    showMobileMenu = false;
     if (currentView === 'webview' && g.__irisChildReady) {
       await reloadWebview(CHILD_LABEL);
     }
@@ -536,6 +545,7 @@
   }
 
   function handleAddressFocus() {
+    showMobileMenu = false;
     // Cancel any pending blur-close so it doesn't kill the new dropdown
     if (blurTimer) { clearTimeout(blurTimer); blurTimer = null; }
     isAddressFocused = true;
@@ -573,8 +583,9 @@
     boundsRaf = requestAnimationFrame(async () => {
       boundsRaf = null;
       if (currentView !== 'webview' || !g.__irisChildReady) return;
-      const top = toolbarHeight;
-      const height = Math.max(0, window.innerHeight - top);
+      const top = isCompactToolbar ? 0 : toolbarHeight;
+      const bottom = isCompactToolbar ? toolbarHeight : 0;
+      const height = Math.max(0, window.innerHeight - top - bottom);
       try {
         await setWebviewBounds(CHILD_LABEL, 0, top, window.innerWidth, height);
       } catch {
@@ -650,9 +661,26 @@
       addressInputEl?.focus();
       return;
     }
+    if ((event.key === 'Escape' || event.key === 'Esc') && showMobileMenu) {
+      event.preventDefault();
+      showMobileMenu = false;
+      return;
+    }
     if ((event.key !== 'Escape' && event.key !== 'Esc') || !showDropdown) return;
     event.preventDefault();
     dismissDropdown();
+  }
+
+  function handleGlobalPointerDown(event: PointerEvent) {
+    if (!showMobileMenu) return;
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      showMobileMenu = false;
+      return;
+    }
+    if (target.closest('[data-testid="mobile-more-menu"]')) return;
+    if (target.closest('button[title="More"]')) return;
+    showMobileMenu = false;
   }
 
   async function goBack() {
@@ -744,10 +772,12 @@
     syncToolbarMode();
     scheduleAutomationStateSync();
     window.addEventListener('keydown', handleGlobalKeyDown);
+    window.addEventListener('pointerdown', handleGlobalPointerDown);
     window.addEventListener('resize', syncToolbarMode);
     window.addEventListener('resize', scheduleWebviewBoundsUpdate);
     return () => {
       window.removeEventListener('keydown', handleGlobalKeyDown);
+      window.removeEventListener('pointerdown', handleGlobalPointerDown);
       window.removeEventListener('resize', syncToolbarMode);
       window.removeEventListener('resize', scheduleWebviewBoundsUpdate);
       if (automationSyncRaf !== null) cancelAnimationFrame(automationSyncRaf);
@@ -760,15 +790,191 @@
 </script>
 
 <div class="h-[100dvh] max-h-[100dvh] flex flex-col bg-surface-0 overscroll-none overflow-hidden">
-  <!-- Toolbar - data-tauri-drag-region on every non-interactive element -->
-  <div
-    bind:offsetHeight={toolbarHeight}
-    data-testid="toolbar"
-    data-tauri-drag-region
-    class="shrink-0 flex bg-surface-1 border-b border-surface-2 {isCompactToolbar ? 'flex-col items-stretch gap-2 px-3 py-2' : 'h-12 items-center gap-2 px-3'}"
-    style={!isCompactToolbar ? `padding-left: ${DESKTOP_TRAFFIC_LIGHTS_PADDING}px;` : undefined}
-  >
-    <div data-tauri-drag-region class="flex items-center gap-1 {isCompactToolbar ? 'w-full justify-between' : 'shrink-0'}">
+  <!-- Browser chrome -->
+  {#if isCompactToolbar}
+    <div
+      bind:offsetHeight={toolbarHeight}
+      data-testid="toolbar"
+      data-tauri-drag-region
+      class="order-2 relative shrink-0 border-t border-surface-2 bg-surface-1 px-3 pt-2"
+      style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);"
+    >
+      {#if showMobileMenu && !isAddressFocused}
+        <div
+          data-testid="mobile-more-menu"
+          data-tauri-drag-region="false"
+          class="absolute bottom-full right-3 mb-2 w-52 overflow-hidden rounded-2xl bg-surface-1 b-1 b-solid b-surface-3 shadow-lg"
+        >
+          <button
+            data-tauri-drag-region="false"
+            class="w-full flex items-center justify-between px-4 py-3 text-left text-sm text-text-1 hover:bg-surface-2 transition-colors"
+            onclick={async () => {
+              showMobileMenu = false;
+              await goHome();
+            }}
+          >
+            <span>Home</span>
+            <span class="i-lucide-home text-base text-text-3"></span>
+          </button>
+          <button
+            data-tauri-drag-region="false"
+            class="w-full flex items-center justify-between px-4 py-3 text-left text-sm text-text-1 hover:bg-surface-2 transition-colors disabled:opacity-40"
+            onclick={async () => {
+              showMobileMenu = false;
+              await goForward();
+            }}
+            disabled={!canGoForward}
+          >
+            <span>Forward</span>
+            <span class="i-lucide-chevron-right text-base text-text-3"></span>
+          </button>
+          {#if currentUrl}
+            <button
+              data-tauri-drag-region="false"
+              class="w-full flex items-center justify-between px-4 py-3 text-left text-sm text-text-1 hover:bg-surface-2 transition-colors"
+              onclick={async () => {
+                showMobileMenu = false;
+                await refresh();
+              }}
+            >
+              <span>Refresh</span>
+              <span class="i-lucide-refresh-cw text-base text-text-3"></span>
+            </button>
+          {/if}
+          <button
+            data-tauri-drag-region="false"
+            class="w-full flex items-center justify-between px-4 py-3 text-left text-sm text-text-1 hover:bg-surface-2 transition-colors"
+            onclick={() => {
+              showMobileMenu = false;
+              goSettings();
+            }}
+          >
+            <span>Settings</span>
+            <span class="i-lucide-settings text-base text-text-3"></span>
+          </button>
+        </div>
+      {/if}
+
+      <div data-tauri-drag-region class="flex items-center gap-2">
+        {#if !isAddressFocused}
+          <button
+            data-tauri-drag-region="false"
+            class="btn-circle btn-ghost shrink-0"
+            class:opacity-40={!canGoBack}
+            onclick={goBack}
+            disabled={!canGoBack}
+            title="Back"
+          >
+            <span class="i-lucide-chevron-left text-lg"></span>
+          </button>
+        {/if}
+
+        <div data-tauri-drag-region class="flex-1 min-w-0 relative">
+          <div
+            data-testid="address-bar"
+            data-tauri-drag-region="false"
+            class="w-full min-w-0 flex items-center gap-2 rounded-full bg-surface-0 b-1 b-solid b-surface-3 px-4 py-2 transition-all {isAddressFocused ? 'b-accent' : ''}"
+          >
+            {#if currentUrl && !isAddressFocused}
+              <button
+                data-tauri-drag-region="false"
+                class="shrink-0 text-text-3 hover:text-text-1"
+                onclick={refresh}
+                title={childLastError || (isChildLoading ? 'Loading' : 'Refresh')}
+              >
+                {#if childLastError}
+                  <span class="i-lucide-triangle-alert text-sm text-red-400"></span>
+                {:else if isChildLoading}
+                  <span class="i-lucide-loader-circle text-sm animate-spin"></span>
+                {:else}
+                  <span class="i-lucide-refresh-cw text-sm"></span>
+                {/if}
+              </button>
+            {/if}
+            <span data-tauri-drag-region="false" class="i-lucide-search text-sm text-muted shrink-0"></span>
+            <input
+              type="text"
+              data-tauri-drag-region="false"
+              bind:this={addressInputEl}
+              bind:value={addressValue}
+              onfocus={handleAddressFocus}
+              onblur={handleAddressBlur}
+              onbeforeinput={handleAddressBeforeInput}
+              onkeypress={handleAddressKeyPress}
+              oninput={handleAddressInput}
+              onkeydown={handleAddressKeyDown}
+              placeholder="Search or enter address"
+              class="bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted flex-1 min-w-0 text-left"
+            />
+            {#if !isAddressFocused}
+              <button
+                data-tauri-drag-region="false"
+                class="shrink-0 text-text-3 hover:text-text-1 disabled:opacity-30"
+                onclick={toggleFavorite}
+                disabled={!currentUrl}
+                title={isFavorited ? 'Unfavourite' : 'Favourite'}
+              >
+                {#if isFavorited}
+                  <span class="i-lucide-star text-yellow-500 fill-yellow-500"></span>
+                {:else}
+                  <span class="i-lucide-star"></span>
+                {/if}
+              </button>
+            {/if}
+          </div>
+
+          {#if showDropdown && dropdownItems.length > 0}
+            <div
+              bind:this={dropdownEl}
+              class="absolute bottom-full left-0 right-0 mb-2 bg-surface-1 b-1 b-solid b-surface-3 rounded-lg overflow-hidden z-50 max-h-80 overflow-y-auto"
+              role="listbox"
+            >
+              {#each dropdownItems as item, i}
+                <div
+                  class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors cursor-pointer {i === selectedIndex ? 'bg-surface-2' : ''}"
+                  onmousedown={() => handleDropdownSelect(item)}
+                  role="option"
+                  aria-selected={i === selectedIndex}
+                  tabindex="-1"
+                >
+                  <span class="i-lucide-clock text-sm text-text-3 shrink-0"></span>
+                  <div class="flex-1 min-w-0">
+                    <div class="text-sm text-text-1 truncate">{item.label}</div>
+                    <div class="text-xs text-text-3 truncate">{urlToDisplay(item.path)}</div>
+                  </div>
+                  <button
+                    class="shrink-0 text-text-3 hover:text-danger p-1"
+                    onmousedown={(e) => handleDeleteHistoryItem(e, item.path)}
+                    title="Delete"
+                  >
+                    <span class="i-lucide-x text-sm"></span>
+                  </button>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        {#if !isAddressFocused}
+          <button
+            data-tauri-drag-region="false"
+            class="btn-circle btn-ghost shrink-0"
+            onclick={() => { showMobileMenu = !showMobileMenu; }}
+            title="More"
+          >
+            <span class="i-lucide-ellipsis text-lg"></span>
+          </button>
+        {/if}
+      </div>
+    </div>
+  {:else}
+    <div
+      bind:offsetHeight={toolbarHeight}
+      data-testid="toolbar"
+      data-tauri-drag-region
+      class="h-12 shrink-0 flex items-center gap-2 px-3 bg-surface-1 border-b border-surface-2"
+      style={`padding-left: ${DESKTOP_TRAFFIC_LIGHTS_PADDING}px;`}
+    >
       <div data-tauri-drag-region class="flex items-center gap-1 shrink-0">
         <button
           data-tauri-drag-region="false"
@@ -795,99 +1001,90 @@
         </button>
       </div>
 
-      {#if isCompactToolbar}
-        <button
+      <div data-tauri-drag-region class="flex flex-1 min-w-0 relative justify-center">
+        <div
+          data-testid="address-bar"
           data-tauri-drag-region="false"
-          class="btn-circle btn-ghost shrink-0"
-          onclick={goSettings}
-          title="Settings"
+          class="w-full min-w-0 max-w-lg flex items-center gap-2 px-3 py-1 rounded-full bg-surface-0 b-1 b-solid b-surface-3 transition-colors {isAddressFocused ? 'b-accent' : ''}"
         >
-          <span class="i-lucide-settings text-lg"></span>
-        </button>
-      {/if}
-    </div>
-
-    <div data-tauri-drag-region class="flex flex-1 min-w-0 relative {isCompactToolbar ? 'w-full' : 'justify-center'}">
-      <div
-        data-testid="address-bar"
-        data-tauri-drag-region="false"
-        class="w-full min-w-0 flex items-center gap-2 px-3 py-1 rounded-full bg-surface-0 b-1 b-solid b-surface-3 transition-colors {isCompactToolbar ? '' : 'max-w-lg'} {isAddressFocused ? 'b-accent' : ''}"
-      >
-        {#if currentUrl}
+          {#if currentUrl}
+            <button
+              data-tauri-drag-region="false"
+              class="shrink-0 text-text-3 hover:text-text-1"
+              onclick={refresh}
+              title={childLastError || (isChildLoading ? 'Loading' : 'Refresh')}
+            >
+              {#if childLastError}
+                <span class="i-lucide-triangle-alert text-sm text-red-400"></span>
+              {:else if isChildLoading}
+                <span class="i-lucide-loader-circle text-sm animate-spin"></span>
+              {:else}
+                <span class="i-lucide-refresh-cw text-sm"></span>
+              {/if}
+            </button>
+          {/if}
+          <span data-tauri-drag-region="false" class="i-lucide-search text-sm text-muted shrink-0"></span>
+          <input
+            type="text"
+            data-tauri-drag-region="false"
+            bind:this={addressInputEl}
+            bind:value={addressValue}
+            onfocus={handleAddressFocus}
+            onblur={handleAddressBlur}
+            onbeforeinput={handleAddressBeforeInput}
+            onkeypress={handleAddressKeyPress}
+            oninput={handleAddressInput}
+            onkeydown={handleAddressKeyDown}
+            placeholder="Search or enter address"
+            class="bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted flex-1 min-w-0 text-center"
+          />
           <button
             data-tauri-drag-region="false"
-            class="shrink-0 text-text-3 hover:text-text-1"
-            onclick={refresh}
-            title={childLastError || (isChildLoading ? 'Loading' : 'Refresh')}
+            class="shrink-0 text-text-3 hover:text-text-1 disabled:opacity-30"
+            onclick={toggleFavorite}
+            disabled={!currentUrl}
+            title={isFavorited ? 'Unfavourite' : 'Favourite'}
           >
-            {#if childLastError}
-              <span class="i-lucide-triangle-alert text-sm text-red-400"></span>
-            {:else if isChildLoading}
-              <span class="i-lucide-loader-circle text-sm animate-spin"></span>
+            {#if isFavorited}
+              <span class="i-lucide-star text-yellow-500 fill-yellow-500"></span>
             {:else}
-              <span class="i-lucide-refresh-cw text-sm"></span>
+              <span class="i-lucide-star"></span>
             {/if}
           </button>
+        </div>
+
+        {#if showDropdown && dropdownItems.length > 0}
+          <div
+            bind:this={dropdownEl}
+            class="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-full max-w-lg bg-surface-1 b-1 b-solid b-surface-3 rounded-lg overflow-hidden z-50 max-h-80 overflow-y-auto"
+            role="listbox"
+          >
+            {#each dropdownItems as item, i}
+              <div
+                class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors cursor-pointer {i === selectedIndex ? 'bg-surface-2' : ''}"
+                onmousedown={() => handleDropdownSelect(item)}
+                role="option"
+                aria-selected={i === selectedIndex}
+                tabindex="-1"
+              >
+                <span class="i-lucide-clock text-sm text-text-3 shrink-0"></span>
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm text-text-1 truncate">{item.label}</div>
+                  <div class="text-xs text-text-3 truncate">{urlToDisplay(item.path)}</div>
+                </div>
+                <button
+                  class="shrink-0 text-text-3 hover:text-danger p-1"
+                  onmousedown={(e) => handleDeleteHistoryItem(e, item.path)}
+                  title="Delete"
+                >
+                  <span class="i-lucide-x text-sm"></span>
+                </button>
+              </div>
+            {/each}
+          </div>
         {/if}
-        <span data-tauri-drag-region="false" class="i-lucide-search text-sm text-muted shrink-0"></span>
-        <input
-          type="text"
-          data-tauri-drag-region="false"
-          bind:this={addressInputEl}
-          bind:value={addressValue}
-          onfocus={handleAddressFocus}
-          onblur={handleAddressBlur}
-          onbeforeinput={handleAddressBeforeInput}
-          onkeypress={handleAddressKeyPress}
-          oninput={handleAddressInput}
-          onkeydown={handleAddressKeyDown}
-          placeholder="Search or enter address"
-          class="bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted flex-1 min-w-0 {isCompactToolbar ? 'text-left' : 'text-center'}"
-        />
-        <button
-          data-tauri-drag-region="false"
-          class="shrink-0 text-text-3 hover:text-text-1 disabled:opacity-30"
-          onclick={toggleFavorite}
-          disabled={!currentUrl}
-          title={isFavorited ? 'Unfavourite' : 'Favourite'}
-        >
-          {#if isFavorited}
-            <span class="i-lucide-star text-yellow-500 fill-yellow-500"></span>
-          {:else}
-            <span class="i-lucide-star"></span>
-          {/if}
-        </button>
       </div>
 
-      {#if showDropdown && dropdownItems.length > 0}
-        <div bind:this={dropdownEl} class="absolute top-full mt-1 bg-surface-1 b-1 b-solid b-surface-3 rounded-lg overflow-hidden z-50 max-h-80 overflow-y-auto {isCompactToolbar ? 'left-0 right-0' : 'left-1/2 -translate-x-1/2 w-full max-w-lg'}" role="listbox">
-          {#each dropdownItems as item, i}
-            <div
-              class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors cursor-pointer {i === selectedIndex ? 'bg-surface-2' : ''}"
-              onmousedown={() => handleDropdownSelect(item)}
-              role="option"
-              aria-selected={i === selectedIndex}
-              tabindex="-1"
-            >
-              <span class="i-lucide-clock text-sm text-text-3 shrink-0"></span>
-              <div class="flex-1 min-w-0">
-                <div class="text-sm text-text-1 truncate">{item.label}</div>
-                <div class="text-xs text-text-3 truncate">{urlToDisplay(item.path)}</div>
-              </div>
-              <button
-                class="shrink-0 text-text-3 hover:text-danger p-1"
-                onmousedown={(e) => handleDeleteHistoryItem(e, item.path)}
-                title="Delete"
-              >
-                <span class="i-lucide-x text-sm"></span>
-              </button>
-            </div>
-          {/each}
-        </div>
-      {/if}
-    </div>
-
-    {#if !isCompactToolbar}
       <button
         data-tauri-drag-region="false"
         class="btn-circle btn-ghost shrink-0"
@@ -896,11 +1093,11 @@
       >
         <span class="i-lucide-settings text-lg"></span>
       </button>
-    {/if}
-  </div>
+    </div>
+  {/if}
 
   <!-- Content area -->
-  <main class="min-h-0 flex-1 flex flex-col">
+  <main class="min-h-0 flex-1 flex flex-col {isCompactToolbar ? 'order-1' : ''}">
     {#if currentView === 'launcher'}
       <AppLauncher onnavigate={navigate} />
     {:else if currentView === 'settings'}

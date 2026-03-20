@@ -12,6 +12,7 @@ export default defineConfig({
     'i-lucide-star',
     'i-lucide-clock',
     'i-lucide-x',
+    'i-lucide-ellipsis',
   ],
   presets: [
     presetUno(),

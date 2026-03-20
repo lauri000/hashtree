@@ -6,7 +6,7 @@ async function openHome(page: import('@playwright/test').Page) {
 }
 
 test.describe('Navigation', () => {
-  test('toolbar stays within a narrow mobile viewport', async ({ tauriPage: page }) => {
+  test('mobile chrome docks to the footer with back and more actions', async ({ tauriPage: page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await openHome(page);
     await expect(page.locator('input[placeholder="Search or enter address"]')).toBeVisible();
@@ -14,29 +14,78 @@ test.describe('Navigation', () => {
     const toolbarLayout = await page.evaluate(() => {
       const toolbar = document.querySelector<HTMLElement>('div[data-tauri-drag-region][data-testid="toolbar"]');
       const input = document.querySelector<HTMLInputElement>('input[placeholder="Search or enter address"]');
+      const backButton = document.querySelector<HTMLButtonElement>('button[title="Back"]');
+      const moreButton = document.querySelector<HTMLButtonElement>('button[title="More"]');
       const settingsButton = document.querySelector<HTMLButtonElement>('button[title="Settings"]');
 
-      if (!toolbar || !input || !settingsButton) {
-        throw new Error('mobile toolbar controls not found');
+      if (!toolbar || !input || !backButton || !moreButton) {
+        throw new Error('mobile footer controls not found');
       }
 
       const toolbarRect = toolbar.getBoundingClientRect();
       const inputRect = input.getBoundingClientRect();
-      const settingsRect = settingsButton.getBoundingClientRect();
 
       return {
         viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
         toolbarLeft: toolbarRect.left,
         toolbarRight: toolbarRect.right,
+        toolbarTop: toolbarRect.top,
+        toolbarBottom: toolbarRect.bottom,
         inputRight: inputRect.right,
-        settingsRight: settingsRect.right,
+        hasSettingsButton: !!settingsButton,
       };
     });
 
     expect(toolbarLayout.toolbarLeft).toBeGreaterThanOrEqual(0);
     expect(toolbarLayout.toolbarRight).toBeLessThanOrEqual(toolbarLayout.viewportWidth);
+    expect(toolbarLayout.toolbarTop).toBeGreaterThan(toolbarLayout.viewportHeight - 180);
+    expect(toolbarLayout.toolbarBottom).toBeLessThanOrEqual(toolbarLayout.viewportHeight);
     expect(toolbarLayout.inputRight).toBeLessThanOrEqual(toolbarLayout.viewportWidth - 8);
-    expect(toolbarLayout.settingsRight).toBeLessThanOrEqual(toolbarLayout.viewportWidth - 8);
+    expect(toolbarLayout.hasSettingsButton).toBe(false);
+  });
+
+  test('mobile address field expands while editing', async ({ tauriPage: page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openHome(page);
+    await expect(page.locator('input[placeholder="Search or enter address"]')).toBeVisible();
+
+    const before = await page.evaluate(() => {
+      const addressBar = document.querySelector<HTMLElement>('[data-testid="address-bar"]');
+      const moreButton = document.querySelector<HTMLButtonElement>('button[title="More"]');
+
+      if (!addressBar || !moreButton) {
+        throw new Error('mobile address bar not found');
+      }
+
+      return {
+        addressWidth: addressBar.getBoundingClientRect().width,
+        moreVisible: moreButton.offsetParent !== null,
+      };
+    });
+
+    await page.locator('input[placeholder="Search or enter address"]').click();
+
+    const after = await page.evaluate(() => {
+      const addressBar = document.querySelector<HTMLElement>('[data-testid="address-bar"]');
+      const moreButton = document.querySelector<HTMLButtonElement>('button[title="More"]');
+      const backButton = document.querySelector<HTMLButtonElement>('button[title="Back"]');
+
+      if (!addressBar) {
+        throw new Error('mobile address bar not found after focus');
+      }
+
+      return {
+        addressWidth: addressBar.getBoundingClientRect().width,
+        moreVisible: !!moreButton && moreButton.offsetParent !== null,
+        backVisible: !!backButton && backButton.offsetParent !== null,
+      };
+    });
+
+    expect(before.moreVisible).toBe(true);
+    expect(after.addressWidth).toBeGreaterThan(before.addressWidth + 40);
+    expect(after.moreVisible).toBe(false);
+    expect(after.backVisible).toBe(false);
   });
 
   test('toolbar does not depend on the JS drag fallback', async ({ tauriPage: page }) => {

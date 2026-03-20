@@ -15,11 +15,9 @@ use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl};
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 use std::time::Duration;
-#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 use tauri::{LogicalPosition, LogicalSize, Rect, WebviewBuilder};
 use tracing::{debug, error, info, warn};
 
