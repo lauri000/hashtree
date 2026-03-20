@@ -1709,16 +1709,6 @@ pub async fn daemon_status(
             .into_response();
     }
 
-    // Storage stats
-    let storage = match state.store.get_storage_stats() {
-        Ok(stats) => json!({
-            "total_dags": stats.total_dags,
-            "pinned_dags": stats.pinned_dags,
-            "total_bytes": stats.total_bytes,
-        }),
-        Err(e) => json!({"error": e.to_string()}),
-    };
-
     // WebRTC peers
     let webrtc = if let Some(ref webrtc_state) = state.webrtc_peers {
         let peers = webrtc_state.peers.read().await;
@@ -1773,7 +1763,6 @@ pub async fn daemon_status(
 
     Json(json!({
         "status": "running",
-        "storage": storage,
         "webrtc": webrtc,
         "upstream": upstream,
     }))

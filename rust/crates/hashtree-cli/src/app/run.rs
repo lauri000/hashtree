@@ -877,6 +877,13 @@ pub(crate) async fn run() -> Result<()> {
                 Ok(resp) => {
                     eprintln!("Daemon returned error: {}", resp.status());
                 }
+                Err(err) if err.is_timeout() => {
+                    eprintln!(
+                        "Daemon at {} did not respond before the status timeout",
+                        addr
+                    );
+                    eprintln!("Check daemon logs or try again after load subsides");
+                }
                 Err(_) => {
                     eprintln!("Daemon not running at {}", addr);
                     eprintln!("Start with: htree start");
