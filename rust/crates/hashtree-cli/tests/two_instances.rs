@@ -593,6 +593,16 @@ fn find_htree_binary() -> PathBuf {
     }
 }
 
+fn find_free_port() -> Result<u16> {
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").context("Failed to bind ephemeral test port")?;
+    let port = listener
+        .local_addr()
+        .context("Failed to read ephemeral test port")?
+        .port();
+    Ok(port)
+}
+
 fn create_test_directory() -> TempDir {
     let dir = TempDir::new().expect("Failed to create test data dir");
 
@@ -1078,6 +1088,49 @@ fn extract_cid(text: &str) -> Option<String> {
             .find(|word| word.len() == 64 && word.chars().all(|c| c.is_ascii_hexdigit()))
             .map(|s| s.to_string())
     })
+}
+
+#[test]
+fn test_status_command_reports_running_daemon() -> Result<()> {
+    let htree_bin = find_htree_binary();
+    let keys = Keys::generate();
+    let port = find_free_port()?;
+    let no_follows = Vec::<String>::new();
+    let no_relays = Vec::<String>::new();
+
+    let daemon = DaemonInstance::new_with_relays(port, &htree_bin, &keys, &no_follows, &no_relays)
+        .context("Failed to start daemon for status test")?;
+
+    let output = Command::new(&htree_bin)
+        .arg("status")
+        .arg("--addr")
+        .arg(&daemon.addr)
+        .env("HOME", daemon._home_dir.path())
+        .env("HTREE_CONFIG_DIR", &daemon.config_dir)
+        .output()
+        .context("Failed to run htree status")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "htree status failed\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        stderr
+    );
+    assert!(
+        stdout.contains("Daemon Status:"),
+        "status output missing header:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Status: running"),
+        "status output missing running state:\n{}",
+        stdout
+    );
+
+    Ok(())
 }
 
 #[test]

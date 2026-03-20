@@ -175,7 +175,6 @@ pub(crate) async fn run() -> Result<()> {
                     }
                 }
             };
-
             let crawler_spambox_backend = crawler_spambox
                 .clone()
                 .map(|store| store as Arc<dyn hashtree_cli::socialgraph::SocialGraphBackend>);
@@ -866,9 +865,13 @@ pub(crate) async fn run() -> Result<()> {
         }
         Commands::Status { addr } => {
             let url = format!("http://{}/api/status", addr);
-            match reqwest::blocking::get(&url) {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .context("Failed to build HTTP client")?;
+            match client.get(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
-                    let status: serde_json::Value = resp.json()?;
+                    let status: serde_json::Value = resp.json().await?;
                     println!("{}", format_daemon_status(&status, true));
                 }
                 Ok(resp) => {
