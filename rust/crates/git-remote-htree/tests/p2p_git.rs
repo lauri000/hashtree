@@ -52,6 +52,7 @@ impl TestPeer {
         let config_content = format!(
             r#"
 [server]
+bind_address = "127.0.0.1:{port}"
 enable_auth = false
 stun_port = 0
 enable_webrtc = true

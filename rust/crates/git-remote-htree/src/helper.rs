@@ -117,6 +117,30 @@ fn format_upload_progress(
     }
 }
 
+fn emit_upload_progress(
+    processed: usize,
+    total: usize,
+    uploaded: usize,
+    skipped_diff: usize,
+    skipped_server: usize,
+    failed: usize,
+    has_old_tree: bool,
+) {
+    eprint!(
+        "\r{}",
+        format_upload_progress(
+            processed,
+            total,
+            uploaded,
+            skipped_diff,
+            skipped_server,
+            failed,
+            has_old_tree,
+        )
+    );
+    let _ = std::io::stderr().flush();
+}
+
 /// Create local blob store based on config
 fn create_local_store(
     path: &std::path::Path,
@@ -1410,8 +1434,8 @@ impl RemoteHelper {
             let skipped_diff = Arc::new(AtomicUsize::new(0)); // Skipped due to diff (already in old tree)
             let skipped_server = Arc::new(AtomicUsize::new(0)); // Skipped due to server already having it
             let failed = Arc::new(AtomicUsize::new(0));
-            let processed = Arc::new(AtomicUsize::new(0));
-            let total_queued = Arc::new(AtomicUsize::new(0));
+            let completed = Arc::new(AtomicUsize::new(0));
+            let total_seen = Arc::new(AtomicUsize::new(0));
 
             // Collect old tree hashes if we have an old root
             let old_hashes: HashSet<[u8; 32]> = if let Some(old_root) = old_root_bytes {
@@ -1517,9 +1541,9 @@ impl RemoteHelper {
                 let uploaded = Arc::clone(&uploaded);
                 let skipped_server = Arc::clone(&skipped_server);
                 let failed = Arc::clone(&failed);
-                let processed = Arc::clone(&processed);
+                let completed = Arc::clone(&completed);
                 let skipped_diff = Arc::clone(&skipped_diff);
-                let total_queued = Arc::clone(&total_queued);
+                let total_seen = Arc::clone(&total_seen);
                 let servers_needing_full = Arc::clone(&servers_needing_full);
 
                 tokio::spawn(async move {
@@ -1533,9 +1557,9 @@ impl RemoteHelper {
                             let uploaded = Arc::clone(&uploaded);
                             let skipped_server = Arc::clone(&skipped_server);
                             let failed = Arc::clone(&failed);
-                            let processed = Arc::clone(&processed);
+                            let completed = Arc::clone(&completed);
                             let skipped_diff = Arc::clone(&skipped_diff);
-                            let total_queued = Arc::clone(&total_queued);
+                            let total_seen = Arc::clone(&total_seen);
                             let servers_needing_full = Arc::clone(&servers_needing_full);
                             async move {
                                 // If from old tree and some servers need full upload, push the
@@ -1555,21 +1579,17 @@ impl RemoteHelper {
                                         eprintln!("\n  Upload failed ({} bytes): {}", data.len(), e);
                                     }
                                 }
-                                let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                                let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
                                 if count == 1 || count.is_multiple_of(10) {
-                                    eprint!(
-                                        "\r{}",
-                                        format_upload_progress(
-                                            count,
-                                            total_queued.load(Ordering::Relaxed),
-                                            uploaded.load(Ordering::Relaxed),
-                                            skipped_diff.load(Ordering::Relaxed),
-                                            skipped_server.load(Ordering::Relaxed),
-                                            failed.load(Ordering::Relaxed),
-                                            has_old_tree,
-                                        )
+                                    emit_upload_progress(
+                                        count,
+                                        total_seen.load(Ordering::Relaxed),
+                                        uploaded.load(Ordering::Relaxed),
+                                        skipped_diff.load(Ordering::Relaxed),
+                                        skipped_server.load(Ordering::Relaxed),
+                                        failed.load(Ordering::Relaxed),
+                                        has_old_tree,
                                     );
-                                    let _ = std::io::stderr().flush();
                                 }
                             }
                         })
@@ -1583,7 +1603,6 @@ impl RemoteHelper {
             // Queue entries are (hash, optional decryption key)
             let mut visited: HashSet<[u8; 32]> = HashSet::new();
             let mut queue: Vec<([u8; 32], Option<[u8; 32]>)> = vec![(root_bytes, encryption_key.copied())];
-            let mut queued_count = 0usize;
 
             eprint!("{}", format_upload_progress(0, 0, 0, 0, 0, 0, has_old_tree));
             let _ = std::io::stderr().flush();
@@ -1593,15 +1612,44 @@ impl RemoteHelper {
                     continue;
                 }
                 visited.insert(hash);
+                let seen_count = total_seen.fetch_add(1, Ordering::Relaxed) + 1;
 
                 // Check if this hash exists in old tree
                 let from_old_tree = old_hashes.contains(&hash);
 
-                // If the server sample says coverage is intact, skip unchanged hashes.
-                let force_all_servers_for_hash = from_old_tree && !servers_needing_full.is_empty();
+                // If the server sample says coverage is intact, unchanged hashes can
+                // usually be skipped. When coverage looks incomplete, or when a hash is
+                // missing despite the sample passing, force upload to all write servers.
+                let mut force_all_servers_for_hash =
+                    from_old_tree && !servers_needing_full.is_empty();
                 if from_old_tree && !force_all_servers_for_hash {
-                    skipped_diff.fetch_add(1, Ordering::Relaxed);
-                    continue;
+                    let hash_hex = hex::encode(hash);
+                    let mut missing_on_any_server = false;
+                    for server in blossom.write_servers() {
+                        if !blossom.exists_on_server(&hash_hex, server).await {
+                            missing_on_any_server = true;
+                            break;
+                        }
+                    }
+                    if !missing_on_any_server {
+                        skipped_diff.fetch_add(1, Ordering::Relaxed);
+                        let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                        if count == 1 || count.is_multiple_of(10) {
+                            emit_upload_progress(
+                                count,
+                                seen_count,
+                                uploaded.load(Ordering::Relaxed),
+                                skipped_diff.load(Ordering::Relaxed),
+                                skipped_server.load(Ordering::Relaxed),
+                                failed.load(Ordering::Relaxed),
+                                has_old_tree,
+                            );
+                        }
+                        continue;
+                    }
+                    // At least one server is missing this "unchanged" hash.
+                    // Re-upload it to all servers to repair coverage.
+                    force_all_servers_for_hash = true;
                 }
 
                 // Load blob from store (stored encrypted)
@@ -1609,12 +1657,36 @@ impl RemoteHelper {
                     Ok(Some(data)) => data,
                     Ok(None) => {
                         failed.fetch_add(1, Ordering::Relaxed);
+                        let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
                         eprintln!("\n  Missing from local store: {}", hex::encode(hash));
+                        if count == 1 || count.is_multiple_of(10) {
+                            emit_upload_progress(
+                                count,
+                                seen_count,
+                                uploaded.load(Ordering::Relaxed),
+                                skipped_diff.load(Ordering::Relaxed),
+                                skipped_server.load(Ordering::Relaxed),
+                                failed.load(Ordering::Relaxed),
+                                has_old_tree,
+                            );
+                        }
                         continue;
                     }
                     Err(e) => {
                         failed.fetch_add(1, Ordering::Relaxed);
+                        let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
                         eprintln!("\n  Store read error for {}: {}", hex::encode(hash), e);
+                        if count == 1 || count.is_multiple_of(10) {
+                            emit_upload_progress(
+                                count,
+                                seen_count,
+                                uploaded.load(Ordering::Relaxed),
+                                skipped_diff.load(Ordering::Relaxed),
+                                skipped_server.load(Ordering::Relaxed),
+                                failed.load(Ordering::Relaxed),
+                                has_old_tree,
+                            );
+                        }
                         continue;
                     }
                 };
@@ -1646,22 +1718,16 @@ impl RemoteHelper {
                 {
                     break; // Channel closed
                 }
-                queued_count += 1;
-                total_queued.store(queued_count, Ordering::Relaxed);
-                if queued_count.is_multiple_of(100) {
-                    eprint!(
-                        "\r{}",
-                        format_upload_progress(
-                            processed.load(Ordering::Relaxed),
-                            queued_count,
-                            uploaded.load(Ordering::Relaxed),
-                            skipped_diff.load(Ordering::Relaxed),
-                            skipped_server.load(Ordering::Relaxed),
-                            failed.load(Ordering::Relaxed),
-                            has_old_tree,
-                        )
+                if seen_count.is_multiple_of(100) {
+                    emit_upload_progress(
+                        completed.load(Ordering::Relaxed),
+                        seen_count,
+                        uploaded.load(Ordering::Relaxed),
+                        skipped_diff.load(Ordering::Relaxed),
+                        skipped_server.load(Ordering::Relaxed),
+                        failed.load(Ordering::Relaxed),
+                        has_old_tree,
                     );
-                    let _ = std::io::stderr().flush();
                 }
             }
 
@@ -1673,21 +1739,18 @@ impl RemoteHelper {
             let final_skipped_diff = skipped_diff.load(Ordering::Relaxed);
             let final_skipped_server = skipped_server.load(Ordering::Relaxed);
             let final_failed = failed.load(Ordering::Relaxed);
-            let final_processed = processed.load(Ordering::Relaxed);
-            let final_total_queued = total_queued.load(Ordering::Relaxed);
+            let final_completed = completed.load(Ordering::Relaxed);
+            let final_total_seen = total_seen.load(Ordering::Relaxed);
 
             // Final progress
-            eprint!(
-                "\r{}",
-                format_upload_progress(
-                    final_processed,
-                    final_total_queued,
-                    final_uploaded,
-                    final_skipped_diff,
-                    final_skipped_server,
-                    final_failed,
-                    has_old_tree,
-                )
+            emit_upload_progress(
+                final_completed,
+                final_total_seen,
+                final_uploaded,
+                final_skipped_diff,
+                final_skipped_server,
+                final_failed,
+                has_old_tree,
             );
             eprintln!();
 

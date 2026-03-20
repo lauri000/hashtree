@@ -7,6 +7,55 @@ mod common;
 use common::{create_test_repo, skip_if_no_binary, test_relay::TestRelay, TestEnv, TestServer};
 use std::process::{Command, Stdio};
 
+#[derive(Debug, PartialEq, Eq)]
+struct UploadProgress {
+    processed: u32,
+    total: u32,
+    new_count: u32,
+    unchanged: u32,
+    exist: u32,
+    failed: u32,
+}
+
+fn parse_upload_progress_line(line: &str) -> Option<UploadProgress> {
+    let line = line.trim();
+    let rest = line.strip_prefix("Uploading: ")?;
+    let (progress, summary) = rest.split_once(" (")?;
+    let (processed, total) = progress.split_once('/')?;
+    let summary = summary.strip_suffix(')')?;
+
+    let mut parsed = UploadProgress {
+        processed: processed.parse().ok()?,
+        total: total.parse().ok()?,
+        new_count: 0,
+        unchanged: 0,
+        exist: 0,
+        failed: 0,
+    };
+
+    for item in summary.split(", ") {
+        let (count, label) = item.split_once(' ')?;
+        let count: u32 = count.parse().ok()?;
+        match label {
+            "new" => parsed.new_count = count,
+            "unchanged" => parsed.unchanged = count,
+            "exist" => parsed.exist = count,
+            "FAILED" => parsed.failed = count,
+            _ => return None,
+        }
+    }
+
+    Some(parsed)
+}
+
+fn parse_final_upload_progress(stderr: &str) -> Option<UploadProgress> {
+    stderr
+        .lines()
+        .flat_map(|line| line.split('\r'))
+        .filter_map(parse_upload_progress_line)
+        .last()
+}
+
 /// Test diff-based push - second push should upload fewer blobs
 #[test]
 fn test_diff_based_push() {
@@ -103,6 +152,28 @@ fn test_diff_based_push() {
     let used_diff = stderr2.contains("unchanged") || stderr2.contains("Computing diff");
     println!("\nDiff optimization used: {}", used_diff);
     assert!(used_diff, "Second push should use diff optimization");
+
+    let final_progress = parse_final_upload_progress(&stderr2)
+        .expect("Second push should print a final upload progress line");
+    assert!(
+        final_progress.unchanged > 0,
+        "Second push should report unchanged objects in final progress: {:?}",
+        final_progress
+    );
+    assert_eq!(
+        final_progress.total,
+        final_progress.new_count
+            + final_progress.unchanged
+            + final_progress.exist
+            + final_progress.failed,
+        "Final upload total should include unchanged/existing/failed objects: {:?}",
+        final_progress
+    );
+    assert_eq!(
+        final_progress.processed, final_progress.total,
+        "Final upload progress should be complete: {:?}",
+        final_progress
+    );
 
     // Third push with no changes
     println!("\n=== Third push (no changes) ===");
