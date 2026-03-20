@@ -185,8 +185,7 @@ impl<S: Store> NostrBridge<S> {
         graph: &G,
         existing_root: Option<&Cid>,
     ) -> Result<CrawlReport> {
-        self.crawl_with_progress(graph, existing_root, |_| {})
-            .await
+        self.crawl_with_progress(graph, existing_root, |_| {}).await
     }
 
     pub async fn crawl_with_progress<G, F>(
@@ -338,9 +337,7 @@ impl<S: Store> NostrBridge<S> {
                 let mut state = self
                     .load_existing_global_state_by_author(Some(root), authors)
                     .await?;
-                state.current_root = self
-                    .rebuild_root_from_retained_state(&state)
-                    .await?;
+                state.current_root = self.rebuild_root_from_retained_state(&state).await?;
                 Ok(state)
             }
             Err(err) => Err(err.into()),
@@ -383,7 +380,10 @@ impl<S: Store> NostrBridge<S> {
             .values()
             .flat_map(|events| events.iter().cloned())
             .collect::<Vec<_>>();
-        self.event_store.build(None, events).await.map_err(Into::into)
+        self.event_store
+            .build(None, events)
+            .await
+            .map_err(Into::into)
     }
 
     fn validate_config(&self) -> Result<()> {
@@ -666,7 +666,8 @@ impl<S: Store> NostrBridge<S> {
                         }
                     }
 
-                    state.events_selected = state.events_selected
+                    state.events_selected = state
+                        .events_selected
                         .saturating_sub(old_len)
                         .saturating_add(selected.len());
                     state.live_bytes_selected = state
@@ -1177,5 +1178,4 @@ mod tests {
 
         assert_eq!(authors, vec!["0".repeat(64), "1".repeat(64)]);
     }
-
 }

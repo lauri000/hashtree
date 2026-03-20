@@ -126,7 +126,6 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
             }
         }
     };
-
     let crawler_spambox_backend = crawler_spambox
         .clone()
         .map(|store| store as Arc<dyn socialgraph::SocialGraphBackend>);

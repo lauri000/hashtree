@@ -1,15 +1,17 @@
-use anyhow::{Context, Result as AnyResult};
 use futures::stream::{self, StreamExt};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use nostr::{EventBuilder, Keys, Kind, PublicKey, Tag, Timestamp};
+use nostr::Timestamp;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use super::SocialGraphBackend;
+use super::{
+    read_local_list_file_state, sync_local_list_files_force, sync_local_list_files_if_changed,
+    LocalListFileState, SocialGraphBackend,
+};
 
 const DEFAULT_AUTHOR_BATCH_SIZE: usize = 500;
 const DEFAULT_CONCURRENT_BATCHES: usize = 4;
@@ -24,29 +26,10 @@ const LOCAL_LIST_POLL_INTERVAL: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const LOCAL_LIST_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct LocalListFileState {
-    contacts_modified: Option<SystemTime>,
-    mutes_modified: Option<SystemTime>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct LocalListSyncOutcome {
-    contacts_changed: bool,
-    mutes_changed: bool,
-}
-
 pub struct SocialGraphTaskHandles {
     pub shutdown_tx: watch::Sender<bool>,
     pub crawl_handle: JoinHandle<()>,
     pub local_list_handle: JoinHandle<()>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-struct StoredMuteEntry {
-    pubkey: String,
-    #[serde(default)]
-    reason: Option<String>,
 }
 
 pub struct SocialGraphCrawler {
@@ -428,203 +411,9 @@ impl SocialGraphCrawler {
     }
 }
 
-fn file_modified(path: &Path) -> AnyResult<Option<SystemTime>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    Ok(std::fs::metadata(path)?.modified().ok())
-}
-
-fn read_local_list_file_state(data_dir: &Path) -> AnyResult<LocalListFileState> {
-    Ok(LocalListFileState {
-        contacts_modified: file_modified(&data_dir.join("contacts.json"))?,
-        mutes_modified: file_modified(&data_dir.join("mutes.json"))?,
-    })
-}
-
-fn should_sync_list(
-    previous: Option<SystemTime>,
-    current: Option<SystemTime>,
-    force_existing: bool,
-) -> bool {
-    if previous != current {
-        return previous.is_some() || current.is_some();
-    }
-    force_existing && current.is_some()
-}
-
-fn system_time_secs(time: SystemTime) -> u64 {
-    time.duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default()
-}
-
-fn list_timestamp(current: Option<SystemTime>, previous: Option<SystemTime>) -> Timestamp {
-    if let Some(current) = current {
-        return Timestamp::from_secs(system_time_secs(current));
-    }
-    if previous.is_some() {
-        return Timestamp::now();
-    }
-    Timestamp::now()
-}
-
-fn load_contacts(path: &Path) -> AnyResult<Vec<String>> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let data = std::fs::read_to_string(path)?;
-    Ok(serde_json::from_str::<Vec<String>>(&data).unwrap_or_default())
-}
-
-fn load_mutes(path: &Path) -> AnyResult<Vec<StoredMuteEntry>> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-
-    let data = std::fs::read_to_string(path)?;
-    let value: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
-    let Some(items) = value.as_array() else {
-        return Ok(Vec::new());
-    };
-
-    let mut entries = Vec::new();
-    for item in items {
-        match item {
-            serde_json::Value::String(pubkey) => entries.push(StoredMuteEntry {
-                pubkey: pubkey.clone(),
-                reason: None,
-            }),
-            serde_json::Value::Object(_) => {
-                if let Ok(entry) = serde_json::from_value::<StoredMuteEntry>(item.clone()) {
-                    entries.push(entry);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Ok(entries)
-}
-
-fn build_contact_list_event(pubkeys: &[String], keys: &Keys, created_at: Timestamp) -> AnyResult<nostr::Event> {
-    let tags = pubkeys
-        .iter()
-        .filter_map(|pubkey| PublicKey::from_hex(pubkey).ok())
-        .map(Tag::public_key)
-        .collect::<Vec<_>>();
-    EventBuilder::new(Kind::ContactList, "", tags)
-        .custom_created_at(created_at)
-        .to_event(keys)
-        .context("sign local contact list event")
-}
-
-fn build_mute_list_event(
-    entries: &[StoredMuteEntry],
-    keys: &Keys,
-    created_at: Timestamp,
-) -> AnyResult<nostr::Event> {
-    let mut tags = Vec::new();
-    for entry in entries {
-        let Ok(pubkey) = PublicKey::from_hex(&entry.pubkey) else {
-            continue;
-        };
-        if let Some(reason) = entry.reason.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
-            tags.push(Tag::parse(&["p", &pubkey.to_hex(), reason])?);
-        } else {
-            tags.push(Tag::public_key(pubkey));
-        }
-    }
-    EventBuilder::new(Kind::MuteList, "", tags)
-        .custom_created_at(created_at)
-        .to_event(keys)
-        .context("sign local mute list event")
-}
-
-fn sync_local_list_files_between(
-    backend: &(impl SocialGraphBackend + ?Sized),
-    data_dir: &Path,
-    keys: &Keys,
-    previous_state: &LocalListFileState,
-    current_state: &LocalListFileState,
-    force_existing: bool,
-) -> AnyResult<LocalListSyncOutcome> {
-    let contacts_changed = should_sync_list(
-        previous_state.contacts_modified,
-        current_state.contacts_modified,
-        force_existing,
-    );
-    if contacts_changed {
-        let event = build_contact_list_event(
-            &load_contacts(&data_dir.join("contacts.json"))?,
-            keys,
-            list_timestamp(
-                current_state.contacts_modified,
-                previous_state.contacts_modified,
-            ),
-        )?;
-        backend.ingest_event(&event)?;
-    }
-
-    let mutes_changed = should_sync_list(
-        previous_state.mutes_modified,
-        current_state.mutes_modified,
-        force_existing,
-    );
-    if mutes_changed {
-        let event = build_mute_list_event(
-            &load_mutes(&data_dir.join("mutes.json"))?,
-            keys,
-            list_timestamp(current_state.mutes_modified, previous_state.mutes_modified),
-        )?;
-        backend.ingest_event(&event)?;
-    }
-
-    Ok(LocalListSyncOutcome {
-        contacts_changed,
-        mutes_changed,
-    })
-}
-
-fn sync_local_list_files_force(
-    backend: &(impl SocialGraphBackend + ?Sized),
-    data_dir: &Path,
-    keys: &Keys,
-) -> AnyResult<LocalListFileState> {
-    let state = read_local_list_file_state(data_dir)?;
-    let _ = sync_local_list_files_between(
-        backend,
-        data_dir,
-        keys,
-        &LocalListFileState::default(),
-        &state,
-        true,
-    )?;
-    Ok(state)
-}
-
-fn sync_local_list_files_if_changed(
-    backend: &(impl SocialGraphBackend + ?Sized),
-    data_dir: &Path,
-    keys: &Keys,
-    previous_state: &mut LocalListFileState,
-) -> AnyResult<LocalListSyncOutcome> {
-    let current_state = read_local_list_file_state(data_dir)?;
-    let outcome = sync_local_list_files_between(
-        backend,
-        data_dir,
-        keys,
-        previous_state,
-        &current_state,
-        false,
-    )?;
-    *previous_state = current_state;
-    Ok(outcome)
-}
-
 pub fn spawn_social_graph_tasks(
     graph_store: Arc<dyn SocialGraphBackend>,
-    keys: Keys,
+    keys: nostr::Keys,
     relays: Vec<String>,
     max_depth: u32,
     spambox: Option<Arc<dyn SocialGraphBackend>>,
@@ -633,7 +422,7 @@ pub fn spawn_social_graph_tasks(
     let (shutdown_tx, crawl_shutdown_rx) = watch::channel(false);
     let local_list_shutdown_rx = crawl_shutdown_rx.clone();
     let crawl_data_dir = data_dir.clone();
-    let local_data_dir = data_dir;
+    let local_list_data_dir = data_dir;
 
     let crawl_handle = tokio::spawn({
         let graph_store = Arc::clone(&graph_store);
@@ -646,8 +435,13 @@ pub fn spawn_social_graph_tasks(
             if let Some(spambox) = spambox {
                 crawler = crawler.with_spambox(spambox);
             }
-            if let Err(err) = sync_local_list_files_force(graph_store.as_ref(), &crawl_data_dir, &crawler.keys) {
-                tracing::warn!("Failed to sync local social graph lists at startup: {}", err);
+            if let Err(err) =
+                sync_local_list_files_force(graph_store.as_ref(), &crawl_data_dir, &crawler.keys)
+            {
+                tracing::warn!(
+                    "Failed to sync local social graph lists at startup: {}",
+                    err
+                );
             }
             crawler.crawl(crawl_shutdown_rx).await;
         }
@@ -660,7 +454,11 @@ pub fn spawn_social_graph_tasks(
         let spambox = spambox.clone();
         async move {
             let mut shutdown_rx = local_list_shutdown_rx;
-            let mut file_state = read_local_list_file_state(&local_data_dir).unwrap_or_default();
+            let mut state =
+                read_local_list_file_state(&local_list_data_dir).unwrap_or_else(|err| {
+                    tracing::warn!("Failed to read local social graph list state: {}", err);
+                    LocalListFileState::default()
+                });
             let mut interval = tokio::time::interval(LOCAL_LIST_POLL_INTERVAL);
             loop {
                 tokio::select! {
@@ -672,9 +470,9 @@ pub fn spawn_social_graph_tasks(
                     _ = interval.tick() => {
                         let outcome = match sync_local_list_files_if_changed(
                             graph_store.as_ref(),
-                            &local_data_dir,
+                            &local_list_data_dir,
                             &keys,
-                            &mut file_state,
+                            &mut state,
                         ) {
                             Ok(outcome) => outcome,
                             Err(err) => {
@@ -682,13 +480,10 @@ pub fn spawn_social_graph_tasks(
                                 continue;
                             }
                         };
+
                         if outcome.contacts_changed {
-                            let mut crawler = SocialGraphCrawler::new(
-                                graph_store.clone(),
-                                keys.clone(),
-                                relays.clone(),
-                                max_depth,
-                            );
+                            let mut crawler =
+                                SocialGraphCrawler::new(graph_store.clone(), keys.clone(), relays.clone(), max_depth);
                             if let Some(spambox) = spambox.clone() {
                                 crawler = crawler.with_spambox(spambox);
                             }
@@ -923,8 +718,11 @@ mod tests {
     }
 
     fn write_contacts_file(path: &std::path::Path, pubkeys: &[String]) {
-        std::fs::write(path, serde_json::to_string(pubkeys).expect("serialize contacts"))
-            .expect("write contacts file");
+        std::fs::write(
+            path,
+            serde_json::to_string(pubkeys).expect("serialize contacts"),
+        )
+        .expect("write contacts file");
     }
 
     #[tokio::test]

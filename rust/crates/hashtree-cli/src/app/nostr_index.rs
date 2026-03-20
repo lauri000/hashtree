@@ -923,8 +923,8 @@ mod tests {
         let store = HashtreeStore::with_options(tmp.path(), None, 1024 * 1024 * 1024)
             .expect("reopen store");
         let event_store = NostrEventStore::new(store.store_arc());
-        let root = parse_root_text(report.root.as_deref().expect("root string"))
-            .expect("parse cid");
+        let root =
+            parse_root_text(report.root.as_deref().expect("root string")).expect("parse cid");
         let hashtagged = event_store
             .list_by_tag(
                 Some(&root),
@@ -1017,8 +1017,8 @@ mod tests {
         persist_report(tmp.path(), &report).expect("persist report");
         clear_checkpoint(tmp.path()).expect("clear checkpoint");
 
-        let saved_root = std::fs::read_to_string(index_dir.join(LATEST_ROOT_FILE))
-            .expect("read latest root");
+        let saved_root =
+            std::fs::read_to_string(index_dir.join(LATEST_ROOT_FILE)).expect("read latest root");
         assert!(saved_root.trim().starts_with("nhash1"));
 
         assert!(!index_dir.join(CHECKPOINT_ROOT_FILE).exists());

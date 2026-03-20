@@ -1,9 +1,14 @@
 pub mod access;
 pub mod crawler;
+pub mod local_lists;
 pub mod snapshot;
 
 pub use access::SocialGraphAccessControl;
 pub use crawler::SocialGraphCrawler;
+pub use local_lists::{
+    read_local_list_file_state, sync_local_list_files_force, sync_local_list_files_if_changed,
+    LocalListFileState, LocalListSyncOutcome,
+};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};

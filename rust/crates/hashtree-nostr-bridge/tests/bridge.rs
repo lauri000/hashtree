@@ -1551,15 +1551,15 @@ async fn reports_author_batch_progress() -> io::Result<()> {
     publisher.connect().await;
     tokio::time::sleep(Duration::from_millis(250)).await;
 
-    for (keys, content, created_at) in [
-        (&alice_keys, "alice", 20u64),
-        (&bob_keys, "bob", 21u64),
-    ] {
+    for (keys, content, created_at) in [(&alice_keys, "alice", 20u64), (&bob_keys, "bob", 21u64)] {
         let note = EventBuilder::new(Kind::TextNote, content, [])
             .custom_created_at(Timestamp::from_secs(created_at))
             .to_event(keys)
             .expect("note");
-        publisher.send_event(note).await.expect("publish test event");
+        publisher
+            .send_event(note)
+            .await
+            .expect("publish test event");
     }
 
     let store = Arc::new(MemoryStore::new());
