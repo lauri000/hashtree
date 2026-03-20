@@ -67,6 +67,7 @@
     typeof window !== 'undefined' && window.innerWidth < COMPACT_TOOLBAR_BREAKPOINT
   );
   let showMobileMenu = $state(false);
+  let mobileMenuEl: HTMLDivElement | null = $state(null);
 
   // Shell-level navigation history
   let historyStack: string[] = $state([]);  // URLs visited
@@ -106,6 +107,27 @@
     } catch {
       return url;
     }
+  }
+
+  function browserIsolationScope(url: string): string {
+    const htree = parseHtreeUrl(url);
+    if (htree?.nhash) {
+      return `htree://${htree.nhash}`;
+    }
+    if (htree?.treename) {
+      return `htree://${htree.host}/${encodeURIComponent(htree.treename)}/`;
+    }
+
+    try {
+      return new URL(url).origin;
+    } catch {
+      return url;
+    }
+  }
+
+  function shouldRecreateBrowserForUrl(nextUrl: string, previousUrl: string): boolean {
+    if (!previousUrl) return true;
+    return browserIsolationScope(nextUrl) !== browserIsolationScope(previousUrl);
   }
 
   function displayToUrl(value: string): string {
@@ -327,6 +349,11 @@
     if (event.url === previousUrl) {
       return;
     }
+    if (currentView === 'webview' && previousUrl && shouldRecreateBrowserForUrl(event.url, previousUrl)) {
+      currentUrl = previousUrl;
+      void navigate(event.url, false);
+      return;
+    }
     if (isRecordableUrl(event.url)) {
       recordHistoryVisit(buildHistoryEntry(event.url))
         .catch((e) => console.warn('[Iris] record history failed:', e));
@@ -425,12 +452,29 @@
     scheduleAutomationStateSync();
   }
 
+  function browserViewportInsets() {
+    const dropdownHeight = showDropdown ? (dropdownEl?.offsetHeight ?? 0) : 0;
+    const mobileMenuHeight = showMobileMenu ? (mobileMenuEl?.offsetHeight ?? 0) : 0;
+
+    if (isCompactToolbar) {
+      const overlayHeight = Math.max(dropdownHeight, mobileMenuHeight);
+      return {
+        top: 0,
+        bottom: toolbarHeight + (overlayHeight > 0 ? overlayHeight + 8 : 0),
+      };
+    }
+
+    return {
+      top: toolbarHeight + (dropdownHeight > 0 ? dropdownHeight + 4 : 0),
+      bottom: 0,
+    };
+  }
+
   /** Open a URL in the child webview, pushing to history. */
   async function navigate(url: string, pushHistory = true) {
     // Destroy existing child webview when switching origins or entering webview
     if (g.__irisChildReady) {
-      const htree = parseHtreeUrl(url);
-      if (htree || currentView !== 'webview') {
+      if (currentView !== 'webview' || shouldRecreateBrowserForUrl(url, currentUrl)) {
         await destroyChildWebview();
       }
     }
@@ -445,8 +489,7 @@
     await tick();
 
     const x = 0;
-    const top = isCompactToolbar ? 0 : toolbarHeight;
-    const bottom = isCompactToolbar ? toolbarHeight : 0;
+    const { top, bottom } = browserViewportInsets();
     const y = top;
     const width = window.innerWidth;
     const height = Math.max(0, window.innerHeight - top - bottom);
@@ -643,8 +686,7 @@
     boundsRaf = requestAnimationFrame(async () => {
       boundsRaf = null;
       if (currentView !== 'webview' || !childWebviewReady) return;
-      const top = isCompactToolbar ? 0 : toolbarHeight;
-      const bottom = isCompactToolbar ? toolbarHeight : 0;
+      const { top, bottom } = browserViewportInsets();
       const height = Math.max(0, window.innerHeight - top - bottom);
       try {
         await setWebviewBounds(CHILD_LABEL, 0, top, window.innerWidth, height);
@@ -861,6 +903,7 @@
     >
       {#if showMobileMenu && !isAddressFocused}
         <div
+          bind:this={mobileMenuEl}
           data-testid="mobile-more-menu"
           data-tauri-drag-region="false"
           class="absolute bottom-full right-3 mb-2 w-52 overflow-hidden rounded-2xl bg-surface-1 b-1 b-solid b-surface-3 shadow-lg"

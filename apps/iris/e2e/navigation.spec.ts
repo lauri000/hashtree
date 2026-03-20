@@ -121,6 +121,26 @@ test.describe('Navigation', () => {
     expect(attributes.spellcheck).toBe(false);
   });
 
+  test('mobile native browser commands include the device scale factor', async ({ tauriPage: page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openHome(page);
+
+    const deviceScale = await page.evaluate(() => window.devicePixelRatio);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill('https://example.com');
+    await input.press('Enter');
+
+    await expect.poll(async () => (await getInvocationsFor(page, 'set_webview_bounds')).length > 0).toBe(true);
+
+    const createCalls = await getInvocationsFor(page, 'create_nip07_webview');
+    const boundsCalls = await getInvocationsFor(page, 'set_webview_bounds');
+
+    expect(createCalls[0]?.args?.scale).toBe(deviceScale);
+    expect(boundsCalls.at(-1)?.args?.scale).toBe(deviceScale);
+  });
+
   test('shows a real error when embedded page creation fails', async ({ tauriPage: page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await openHome(page);
@@ -344,5 +364,34 @@ test.describe('Navigation', () => {
     await expect(page.getByRole('heading', { name: 'Suggestions' })).toBeVisible();
     const historyCalls = await getInvocationsFor(page, 'webview_history');
     expect(historyCalls).toHaveLength(0);
+  });
+
+  test('recreates the embedded browser when navigation changes isolation scope', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill('https://example.com');
+    await input.press('Enter');
+
+    await emitTauriEvent(page, 'child-webview-location', {
+      label: 'content',
+      url: 'https://example.com/',
+      source: 'navigation',
+    });
+
+    await emitTauriEvent(page, 'child-webview-location', {
+      label: 'content',
+      url: 'https://second.example.com/',
+      source: 'navigation',
+    });
+
+    await expect.poll(async () => (await getInvocationsFor(page, 'create_nip07_webview')).length).toBe(2);
+
+    const closeCalls = await getInvocationsFor(page, 'close_webview');
+    expect(closeCalls.length).toBeGreaterThan(0);
+
+    const createCalls = await getInvocationsFor(page, 'create_nip07_webview');
+    expect(createCalls[1]?.args?.url).toBe('https://second.example.com/');
   });
 });

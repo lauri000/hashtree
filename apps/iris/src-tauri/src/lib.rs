@@ -713,6 +713,11 @@ pub fn run() {
 
     builder = builder.plugin(tauri_plugin_deep_link::init());
 
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        builder = builder.plugin(tauri_plugin_iris_mobile_browser::init());
+    }
+
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
         builder = builder
@@ -1201,6 +1206,75 @@ mod tests {
             schemes.iter().any(|value| value.as_str() == Some("htree")),
             "expected htree deep-link scheme in {:?}",
             config_path
+        );
+    }
+
+    #[test]
+    fn tauri_config_registers_htree_as_mobile_deep_link_scheme() {
+        let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
+        let config = std::fs::read_to_string(&config_path).expect("failed to read tauri.conf.json");
+        let json: serde_json::Value =
+            serde_json::from_str(&config).expect("failed to parse tauri.conf.json");
+
+        let mobile_domains = json
+            .pointer("/plugins/deep-link/mobile")
+            .and_then(serde_json::Value::as_array)
+            .expect("expected plugins.deep-link.mobile to be configured");
+
+        let has_htree_scheme = mobile_domains.iter().any(|entry| {
+            entry
+                .get("scheme")
+                .and_then(serde_json::Value::as_array)
+                .map(|schemes| schemes.iter().any(|value| value.as_str() == Some("htree")))
+                .unwrap_or(false)
+        });
+
+        assert!(
+            has_htree_scheme,
+            "expected htree deep-link scheme in mobile config {:?}",
+            config_path
+        );
+    }
+
+    #[test]
+    fn android_manifest_registers_htree_view_intent_filter() {
+        let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("gen/android/app/src/main/AndroidManifest.xml");
+        let manifest =
+            std::fs::read_to_string(&manifest_path).expect("failed to read AndroidManifest.xml");
+
+        assert!(
+            manifest.contains("android.intent.action.VIEW"),
+            "expected VIEW intent filter in {:?}",
+            manifest_path
+        );
+        assert!(
+            manifest.contains("android.intent.category.BROWSABLE"),
+            "expected BROWSABLE category in {:?}",
+            manifest_path
+        );
+        assert!(
+            manifest.contains("android:scheme=\"htree\""),
+            "expected htree scheme in {:?}",
+            manifest_path
+        );
+    }
+
+    #[test]
+    fn ios_info_plist_registers_htree_url_scheme() {
+        let plist_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("gen/apple/iris_iOS/Info.plist");
+        let plist = std::fs::read_to_string(&plist_path).expect("failed to read iOS Info.plist");
+
+        assert!(
+            plist.contains("<key>CFBundleURLTypes</key>"),
+            "expected CFBundleURLTypes in {:?}",
+            plist_path
+        );
+        assert!(
+            plist.contains("<string>htree</string>"),
+            "expected htree URL scheme in {:?}",
+            plist_path
         );
     }
 }

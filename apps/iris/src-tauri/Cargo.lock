@@ -3039,6 +3039,7 @@ dependencies = [
  "tauri-plugin-autostart",
  "tauri-plugin-deep-link",
  "tauri-plugin-dialog",
+ "tauri-plugin-iris-mobile-browser",
  "tauri-plugin-notification",
  "tauri-plugin-opener",
  "tauri-plugin-os",
@@ -6064,6 +6065,17 @@ dependencies = [
  "tauri-utils",
  "thiserror 2.0.18",
  "toml 0.9.11+spec-1.1.0",
+ "url",
+]
+
+[[package]]
+name = "tauri-plugin-iris-mobile-browser"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
  "url",
 ]
 

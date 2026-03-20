@@ -5,10 +5,10 @@
 //! (which the web app provides via its own identity management).
 #![cfg_attr(any(target_os = "android", target_os = "ios"), allow(dead_code))]
 
+use crate::permissions::{PermissionStore, PermissionType};
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response as AxumResponse;
-use crate::permissions::{PermissionStore, PermissionType};
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
 use percent_encoding::percent_decode_str;
@@ -19,6 +19,10 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl};
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 use std::time::Duration;
 use tauri::{LogicalPosition, LogicalSize, Rect, WebviewBuilder};
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use tauri_plugin_iris_mobile_browser::{
+    BrowserBoundsRequest, BrowserCreateRequest, MobileBrowserExt,
+};
 use tracing::{debug, error, info, warn};
 
 #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
@@ -199,6 +203,19 @@ fn webview_url_for_parsed_url(url: &tauri::Url) -> WebviewUrl {
     }
 }
 
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn url_origin(url: &tauri::Url) -> Option<String> {
+    let scheme = url.scheme();
+    let host = url.host_str()?;
+    let port = url.port();
+
+    Some(if let Some(port) = port {
+        format!("{scheme}://{host}:{port}")
+    } else {
+        format!("{scheme}://{host}")
+    })
+}
+
 fn inject_child_init_script<R: Runtime>(
     app: &AppHandle<R>,
     label: &str,
@@ -242,9 +259,7 @@ fn schedule_child_init_script_retry<R: Runtime + 'static>(
     });
 }
 
-fn tauri_response_to_axum(
-    response: tauri::http::Response<Vec<u8>>,
-) -> AxumResponse<Body> {
+fn tauri_response_to_axum(response: tauri::http::Response<Vec<u8>>) -> AxumResponse<Body> {
     let status = StatusCode::from_u16(response.status().as_u16())
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut builder = AxumResponse::builder().status(status);
@@ -301,13 +316,6 @@ impl Nip07State {
             .get(origin)
             .map(|t| t == token)
             .unwrap_or(false)
-    }
-
-    pub fn validate_any_token(&self, token: &str) -> bool {
-        self.session_tokens
-            .read()
-            .values()
-            .any(|stored| stored == token)
     }
 }
 
@@ -1151,6 +1159,7 @@ pub async fn create_nip07_webview<R: Runtime>(
     y: f64,
     width: f64,
     height: f64,
+    _scale: Option<f64>,
 ) -> Result<(), String> {
     info!("[NIP-07] Creating webview {} for {}", label, url);
 
@@ -1230,7 +1239,12 @@ pub async fn create_nip07_webview<R: Runtime>(
                 tauri::webview::PageLoadEvent::Finished => "finished",
             };
             let context = format!("page-load:{event}");
-            inject_child_init_script(&app_for_load, &label_for_load, &init_script_for_load, &context);
+            inject_child_init_script(
+                &app_for_load,
+                &label_for_load,
+                &init_script_for_load,
+                &context,
+            );
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 inject_child_init_script(
                     &app_for_load,
@@ -1305,9 +1319,45 @@ pub async fn create_nip07_webview<R: Runtime>(
     y: f64,
     width: f64,
     height: f64,
+    scale: f64,
 ) -> Result<(), String> {
-    let _ = (app, label, url, x, y, width, height);
-    Err(MOBILE_CHILD_WEBVIEWS_UNSUPPORTED.to_string())
+    let server_url =
+        crate::htree_protocol::get_htree_server_url().ok_or("htree server not running")?;
+
+    let parsed_url = tauri::Url::parse(&url).map_err(|e| format!("Invalid URL: {}", e))?;
+    let origin = url_origin(&parsed_url).unwrap_or_else(|| parsed_url.scheme().to_string());
+    let allowed_origin_rule = url_origin(&parsed_url);
+
+    let nip07_state = app
+        .try_state::<Arc<Nip07State>>()
+        .ok_or("Nip07State not found")?;
+    let session_token = nip07_state.new_session(&origin);
+
+    let init_script = generate_nip07_script(&server_url, &session_token, &label, None, None, None);
+    let diagnostic_probe_script = generate_webview_diagnostic_probe_script(
+        &server_url,
+        &session_token,
+        &label,
+        &origin,
+        None,
+        None,
+        "page-load-probe",
+    );
+
+    app.mobile_browser().create(BrowserCreateRequest {
+        label,
+        url,
+        x,
+        y,
+        width,
+        height,
+        scale,
+        init_script,
+        diagnostic_script: diagnostic_probe_script,
+        allowed_origin_rule,
+        actual_url_root: None,
+        canonical_url_root: None,
+    })
 }
 
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -1325,6 +1375,7 @@ pub async fn create_htree_webview<R: Runtime>(
     y: f64,
     width: f64,
     height: f64,
+    _scale: Option<f64>,
 ) -> Result<(), String> {
     let server_url =
         crate::htree_protocol::get_htree_server_url().ok_or("htree server not running")?;
@@ -1474,7 +1525,12 @@ pub async fn create_htree_webview<R: Runtime>(
                 tauri::webview::PageLoadEvent::Finished => "finished",
             };
             let context = format!("page-load:{event}");
-            inject_child_init_script(&app_for_load, &label_for_load, &init_script_for_load, &context);
+            inject_child_init_script(
+                &app_for_load,
+                &label_for_load,
+                &init_script_for_load,
+                &context,
+            );
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 inject_child_init_script(
                     &app_for_load,
@@ -1556,11 +1612,121 @@ pub async fn create_htree_webview<R: Runtime>(
     y: f64,
     width: f64,
     height: f64,
+    scale: f64,
 ) -> Result<(), String> {
-    let _ = (
-        app, label, host, nhash, npub, treename, path, query, x, y, width, height,
+    let server_url =
+        crate::htree_protocol::get_htree_server_url().ok_or("htree server not running")?;
+
+    let (_canonical_url, actual_url, origin, canonical_url_root, actual_url_root) =
+        if let Some(nhash) = &nhash {
+            let request_host = host.as_deref().unwrap_or(nhash);
+            let canonical_url =
+                append_query(htree_url_from_nhash(request_host, &path), query.as_deref());
+            let canonical_root = htree_url_from_nhash(request_host, "/")
+                .trim_end_matches('/')
+                .to_string();
+            let actual_url = append_query(
+                daemon_proxy_url_from_nhash(&server_url, request_host, &path)?,
+                query.as_deref(),
+            );
+            let actual_url = append_query_params(
+                &actual_url,
+                &[
+                    ("iris_htree_server", &server_url),
+                    ("iris_htree_canonical", &canonical_url),
+                ],
+            )?;
+            let actual_root = daemon_proxy_url_from_nhash(&server_url, request_host, "/")?
+                .trim_end_matches('/')
+                .to_string();
+            let origin = canonical_root.clone();
+            (
+                canonical_url,
+                actual_url,
+                origin,
+                canonical_root,
+                actual_root,
+            )
+        } else if let Some(treename) = &treename {
+            let request_host = host
+                .as_deref()
+                .or(npub.as_deref())
+                .ok_or_else(|| "Either nhash or (host + treename) must be provided".to_string())?;
+            let resolved_host =
+                resolve_tree_request_host(request_host, crate::htree_protocol::get_self_npub())?;
+            let canonical_url = append_query(
+                htree_url_from_tree_host(resolved_host, treename, &path),
+                query.as_deref(),
+            );
+            let canonical_root = htree_url_from_tree_host(resolved_host, treename, "/")
+                .trim_end_matches('/')
+                .to_string();
+            let actual_url = append_query(
+                daemon_proxy_url_from_tree_host(&server_url, resolved_host, treename, &path)?,
+                query.as_deref(),
+            );
+            let actual_url = append_query_params(
+                &actual_url,
+                &[
+                    ("iris_htree_server", &server_url),
+                    ("iris_htree_canonical", &canonical_url),
+                ],
+            )?;
+            let actual_root =
+                daemon_proxy_url_from_tree_host(&server_url, resolved_host, treename, "/")?
+                    .trim_end_matches('/')
+                    .to_string();
+            let origin = canonical_root.clone();
+            (
+                canonical_url,
+                actual_url,
+                origin,
+                canonical_root,
+                actual_root,
+            )
+        } else {
+            return Err("Either nhash or (host + treename) must be provided".to_string());
+        };
+
+    let nip07_state = app
+        .try_state::<Arc<Nip07State>>()
+        .ok_or("Nip07State not found")?;
+    let session_token = nip07_state.new_session(&origin);
+
+    let init_script = generate_nip07_script(
+        &server_url,
+        &session_token,
+        &label,
+        Some(&origin),
+        Some(&canonical_url_root),
+        Some(&actual_url_root),
     );
-    Err(MOBILE_CHILD_WEBVIEWS_UNSUPPORTED.to_string())
+    let diagnostic_probe_script = generate_webview_diagnostic_probe_script(
+        &server_url,
+        &session_token,
+        &label,
+        &origin,
+        Some(&canonical_url_root),
+        Some(&actual_url_root),
+        "page-load-probe",
+    );
+    let actual_parsed_url =
+        tauri::Url::parse(&actual_url).map_err(|e| format!("Invalid URL: {}", e))?;
+
+    app.mobile_browser().create(BrowserCreateRequest {
+        label,
+        url: actual_url,
+        x,
+        y,
+        width,
+        height,
+        scale,
+        init_script,
+        diagnostic_script: diagnostic_probe_script,
+        allowed_origin_rule: url_origin(&actual_parsed_url),
+        actual_url_root: Some(actual_url_root),
+        canonical_url_root: Some(canonical_url_root),
+    })
 }
 
 fn canonicalize_child_webview_url(
@@ -1612,8 +1778,7 @@ pub fn close_webview<R: Runtime>(app: AppHandle<R>, label: String) -> Result<(),
 #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 #[tauri::command]
 pub fn close_webview<R: Runtime>(app: AppHandle<R>, label: String) -> Result<(), String> {
-    let _ = (app, label);
-    Err(MOBILE_CHILD_WEBVIEWS_UNSUPPORTED.to_string())
+    app.mobile_browser().close(label)
 }
 
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -1640,8 +1805,7 @@ pub fn navigate_webview<R: Runtime>(
     label: String,
     url: String,
 ) -> Result<(), String> {
-    let _ = (app, label, url);
-    Err(MOBILE_CHILD_WEBVIEWS_UNSUPPORTED.to_string())
+    app.mobile_browser().navigate(label, url)
 }
 
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -1653,6 +1817,7 @@ pub fn set_webview_bounds<R: Runtime>(
     y: f64,
     width: f64,
     height: f64,
+    _scale: Option<f64>,
 ) -> Result<(), String> {
     let webview = app
         .get_webview(&label)
@@ -1676,9 +1841,16 @@ pub fn set_webview_bounds<R: Runtime>(
     y: f64,
     width: f64,
     height: f64,
+    scale: f64,
 ) -> Result<(), String> {
-    let _ = (app, label, x, y, width, height);
-    Err(MOBILE_CHILD_WEBVIEWS_UNSUPPORTED.to_string())
+    app.mobile_browser().set_bounds(BrowserBoundsRequest {
+        label,
+        x,
+        y,
+        width,
+        height,
+        scale,
+    })
 }
 
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -1709,8 +1881,7 @@ pub fn webview_history<R: Runtime>(
     label: String,
     direction: String,
 ) -> Result<(), String> {
-    let _ = (app, label, direction);
-    Err(MOBILE_CHILD_WEBVIEWS_UNSUPPORTED.to_string())
+    app.mobile_browser().history(label, direction)
 }
 
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -1728,8 +1899,7 @@ pub fn reload_webview<R: Runtime>(app: AppHandle<R>, label: String) -> Result<()
 #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 #[tauri::command]
 pub fn reload_webview<R: Runtime>(app: AppHandle<R>, label: String) -> Result<(), String> {
-    let _ = (app, label);
-    Err(MOBILE_CHILD_WEBVIEWS_UNSUPPORTED.to_string())
+    app.mobile_browser().reload(label)
 }
 
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -1747,8 +1917,7 @@ pub fn webview_current_url<R: Runtime>(app: AppHandle<R>, label: String) -> Resu
 #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 #[tauri::command]
 pub fn webview_current_url<R: Runtime>(app: AppHandle<R>, label: String) -> Result<String, String> {
-    let _ = (app, label);
-    Err(MOBILE_CHILD_WEBVIEWS_UNSUPPORTED.to_string())
+    app.mobile_browser().current_url(label)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1783,9 +1952,7 @@ pub fn webview_event<R: Runtime>(
     let nip07_state =
         get_nip07_state().ok_or_else(|| "NIP-07 state not initialized".to_string())?;
 
-    if !nip07_state.validate_token(&payload.origin, &session_token)
-        && !nip07_state.validate_any_token(&session_token)
-    {
+    if !nip07_state.validate_token(&payload.origin, &session_token) {
         warn!(
             "[webview-event] Invalid session token for kind={} label={} origin={}",
             payload.kind, payload.label, payload.origin

@@ -51,6 +51,9 @@
   },
   "plugins": {
     "deep-link": {
+      "mobile": [
+        { "scheme": ["htree"] }
+      ],
       "desktop": {
         "schemes": ["htree"]
       }

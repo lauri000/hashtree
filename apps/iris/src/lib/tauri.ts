@@ -28,7 +28,15 @@ export async function createNip07Webview(
   width: number,
   height: number,
 ): Promise<void> {
-  return invoke<void>('create_nip07_webview', { label, url, x, y, width, height });
+  return invoke<void>('create_nip07_webview', {
+    label,
+    url,
+    x,
+    y,
+    width,
+    height,
+    scale: currentDeviceScale(),
+  });
 }
 
 export async function createHtreeWebview(
@@ -51,6 +59,7 @@ export async function createHtreeWebview(
     y,
     width,
     height,
+    scale: currentDeviceScale(),
   });
 }
 
@@ -77,7 +86,14 @@ export async function setWebviewBounds(
   width: number,
   height: number,
 ): Promise<void> {
-  return invoke<void>('set_webview_bounds', { label, x, y, width, height });
+  return invoke<void>('set_webview_bounds', {
+    label,
+    x,
+    y,
+    width,
+    height,
+    scale: currentDeviceScale(),
+  });
 }
 
 export async function webviewCurrentUrl(label: string): Promise<string> {
@@ -98,6 +114,12 @@ export interface HistoryEntry {
 }
 
 const FALLBACK_HISTORY_STORAGE_KEY = 'iris.addressBarHistory.v1';
+
+function currentDeviceScale(): number {
+  if (typeof window === 'undefined') return 1;
+  const scale = window.devicePixelRatio;
+  return Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
 
 function historyStorage(): Storage | null {
   try {
