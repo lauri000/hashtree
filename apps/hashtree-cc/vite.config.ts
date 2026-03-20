@@ -1,14 +1,39 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import UnoCSS from 'unocss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import { readFile, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+
+export function sanitizePortableHtml(html: string): string {
+  return html
+    .replace(/^\s*<link rel="modulepreload".*$/gm, '')
+    .replace(/\s+crossorigin(?=[\s>])/g, '');
+}
+
+function portableHtmlPlugin(): Plugin {
+  return {
+    name: 'portable-html',
+    async closeBundle() {
+      const indexPath = resolve(__dirname, 'dist', 'index.html');
+      try {
+        const html = await readFile(indexPath, 'utf8');
+        await writeFile(indexPath, sanitizePortableHtml(html), 'utf8');
+      } catch {
+        // Ignore when build output does not exist.
+      }
+    },
+  };
+}
 
 export default defineConfig({
+  base: './',
   define: {
     'import.meta.env.VITE_BUILD_TIME': JSON.stringify(new Date().toISOString()),
     'import.meta.env.VITE_APP_VERSION': JSON.stringify(process.env.npm_package_version || '0.1.0'),
   },
   plugins: [
+    portableHtmlPlugin(),
     UnoCSS(),
     svelte(),
     VitePWA({
@@ -44,6 +69,7 @@ export default defineConfig({
     }),
   ],
   build: {
+    modulePreload: false,
     reportCompressedSize: true,
   },
   server: {

@@ -18,6 +18,7 @@ export const defaultFavoriteApps: readonly AppBookmark[] = [];
 
 export const suggestedApps: readonly AppBookmark[] = [
   ...suggestedIrisApps,
+  { url: `htree://${distributedOwner}/hashtree-cc`, name: 'hashtree.cc', addedAt: 0 },
   { url: 'https://iris.to', name: 'Iris Social', icon: '/iris-logo.png', addedAt: 0 },
 ];
 

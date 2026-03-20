@@ -30,6 +30,7 @@ test.describe('App Launcher', () => {
     await expect(suggestions.getByText('Iris Video')).toBeVisible();
     await expect(suggestions.getByText('Iris Docs')).toBeVisible();
     await expect(suggestions.getByText('Iris Maps')).toBeVisible();
+    await expect(suggestions.getByText('hashtree.cc')).toBeVisible();
     await expect(suggestions.getByText('Iris Social')).toBeVisible();
   });
 

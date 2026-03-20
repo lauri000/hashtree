@@ -4,6 +4,7 @@
   import SectionHeading from './SectionHeading.svelte';
   import { getMediaClientKey, setupMediaStreaming } from '../lib/mediaStreamingSetup';
 
+  const baseUrl = import.meta.env.BASE_URL;
   let copiedCmd = $state<string | null>(null);
 
   function copy(text: string) {
@@ -391,7 +392,7 @@
       Case Study: <code class="text-accent">hashtree.cc</code>
     </p>
     <img
-      src="/screenshot-hashtree-cc.webp"
+      src={`${baseUrl}screenshot-hashtree-cc.webp`}
       alt="hashtree.cc"
       class="rounded-lg mx-auto mb-6 max-w-lg w-full"
       draggable="false"

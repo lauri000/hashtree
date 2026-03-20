@@ -1,33 +1,34 @@
 <script lang="ts">
   import SectionHeading from './SectionHeading.svelte';
+  const baseUrl = import.meta.env.BASE_URL;
 
   const slides = [
     {
-      src: '/screenshot-iris-files.webp',
+      src: `${baseUrl}screenshot-iris-files.webp`,
       title: 'Iris Files',
       desc: 'Git repos, file manager, pull requests, issues — all decentralized.',
       href: 'https://files.iris.to',
     },
     {
-      src: '/screenshot-iris-docs.webp',
+      src: `${baseUrl}screenshot-iris-docs.webp`,
       title: 'Iris Docs',
       desc: 'Collaborative documents with comments and real-time editing.',
       href: 'https://docs.iris.to',
     },
     {
-      src: '/screenshot-iris-video.webp',
+      src: `${baseUrl}screenshot-iris-video.webp`,
       title: 'Iris Video',
       desc: 'Video streaming and playlists over content-addressed storage.',
       href: 'https://video.iris.to',
     },
     {
-      src: '/screenshot-iris-chat.webp',
+      src: `${baseUrl}screenshot-iris-chat.webp`,
       title: 'Iris Chat',
       desc: 'Secure file sharing in a nostr-based encrypted chat.',
       href: 'https://chat.iris.to',
     },
     {
-      src: '/screenshot-git-push.webp',
+      src: `${baseUrl}screenshot-git-push.webp`,
       title: 'Decentralized Git',
       desc: 'Push and pull repos with htree:// URLs. No server required.',
     },
