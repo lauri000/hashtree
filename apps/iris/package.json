@@ -16,6 +16,7 @@
     "build": "vite build",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "test:icons": "node ./scripts/check-icons.mjs",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:native:linux": "node ./scripts/tauri-driver-linux-smoke.mjs",
