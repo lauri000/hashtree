@@ -16,6 +16,7 @@ export {
   initVirtualTree,
   createFolder,
   createGitRepository,
+  createGitRepositoryTree,
   initializeDirectoryAsGitRepo,
   createDocument,
   forkTree,

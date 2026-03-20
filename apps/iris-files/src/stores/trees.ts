@@ -120,6 +120,8 @@ export interface TreeEntry {
   name: string;     // Just the tree name
   hash: Hash;       // Current root hash
   hashHex: string;  // Hex string of hash
+  /** All l-tags attached to the tree root event */
+  labels?: string[];
   /** @deprecated Use visibility instead */
   encryptionKey?: Hash; // Encryption key (if encrypted, public)
   /** Tree visibility: public, link-visible, or private. Undefined if not yet resolved from Nostr. */
@@ -176,6 +178,7 @@ export function createTreesStore(npub: string | null): Readable<TreeEntry[]> {
         name,
         hash: e.cid.hash,
         hashHex: toHex(e.cid.hash),
+        labels: e.labels,
         encryptionKey: e.cid.key,
         visibility,
         encryptedKey: e.encryptedKey,

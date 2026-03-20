@@ -251,6 +251,40 @@ describe('NostrRefResolver', () => {
     resolver.stop?.();
   });
 
+  it('includes extra labels in list entries', async () => {
+    const { subscribe, publish } = createNostrFunctions(ndk);
+    const resolver = createNostrRefResolver({
+      subscribe,
+      publish,
+      getPubkey: () => pubkey,
+      nip19,
+    });
+
+    const treeName = `git-repo-${Date.now()}`;
+    const key = `${npub}/${treeName}`;
+    const testCid = cid(fromHex('beef'.repeat(16)));
+
+    let latestEntries: Array<Record<string, unknown>> = [];
+    const unsubscribe = resolver.list!(npub, (entries) => {
+      latestEntries = entries as Array<Record<string, unknown>>;
+    });
+
+    await new Promise(r => setTimeout(r, 100));
+
+    const published = await resolver.publish!(key, testCid, { labels: ['git'] });
+    expect(published?.success).toBe(true);
+
+    await new Promise(r => setTimeout(r, 500));
+
+    const entry = latestEntries.find(item => item.key === key);
+    expect(entry).toBeTruthy();
+    expect(entry?.labels).toContain('git');
+    expect(entry?.labels).toContain('hashtree');
+
+    unsubscribe();
+    resolver.stop?.();
+  });
+
   it('should resolve legacy events without hashtree label', async () => {
     const { subscribe, publish } = createNostrFunctions(ndk);
     const resolver = createNostrRefResolver({

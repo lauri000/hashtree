@@ -193,6 +193,8 @@ export function hashEquals(a: Hash, b: Hash): boolean {
 export interface RefResolverListEntry {
   key: string;
   cid: CID;
+  /** All l-tags attached to the tree event, including app/discovery labels */
+  labels?: string[];
   /** Tree visibility: public, link-visible, or private */
   visibility?: TreeVisibility;
   /** Encrypted key for link-visible trees - decrypt with link key from URL */

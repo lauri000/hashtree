@@ -56,6 +56,8 @@ interface SubscriptionEntry {
 export interface ParsedTreeVisibility {
   hash: string;
   visibility: TreeVisibility;
+  /** All l-tags attached to the tree event */
+  labels?: string[];
   /** Plaintext key (for public trees) */
   key?: string;
   /** Encrypted key (for link-visible trees) - decrypt with link key */
@@ -84,6 +86,26 @@ function hasLabel(event: NostrEvent, label: string): boolean {
 
 function hasAnyLabel(event: NostrEvent): boolean {
   return event.tags.some(tag => tag[0] === 'l');
+}
+
+function uniqueLabels(labels: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const label of labels) {
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    result.push(label);
+  }
+  return result;
+}
+
+function parseLabels(event: NostrEvent): string[] {
+  return uniqueLabels(
+    event.tags
+      .filter(tag => tag[0] === 'l')
+      .map(tag => tag[1])
+      .filter((label): label is string => typeof label === 'string' && label.length > 0)
+  );
 }
 
 function parseLegacyContent(event: NostrEvent): LegacyContentPayload | null {
@@ -136,6 +158,7 @@ function parseHashAndVisibility(event: NostrEvent): ParsedTreeVisibility | null 
   const keyId = keyIdTag ?? legacyContent?.keyId;
   const selfEncryptedKey = selfEncryptedKeyTag ?? legacyContent?.selfEncryptedKey;
   const selfEncryptedLinkKey = selfEncryptedLinkKeyTag ?? legacyContent?.selfEncryptedLinkKey;
+  const labels = parseLabels(event);
 
   let visibility: TreeVisibility;
   if (encryptedKey) {
@@ -149,7 +172,7 @@ function parseHashAndVisibility(event: NostrEvent): ParsedTreeVisibility | null 
     visibility = legacyContent?.visibility ?? 'public';
   }
 
-  return { hash, visibility, key, encryptedKey, keyId, selfEncryptedKey, selfEncryptedLinkKey };
+  return { hash, visibility, labels, key, encryptedKey, keyId, selfEncryptedKey, selfEncryptedLinkKey };
 }
 
 /**
@@ -494,6 +517,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
           tags.push(['l', label]);
         }
       }
+      const allLabels = uniqueLabels(tags.filter(tag => tag[0] === 'l').map(tag => tag[1]));
 
       // Handle visibility-specific encryption and tags
       if (chkKey) {
@@ -570,6 +594,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
       npubCache.set(treeName, {
         hash: hashHex,
         visibility: visibilityType,
+        labels: allLabels,
         key: visibilityType === 'public' ? chkKeyHex : undefined,
         encryptedKey: visibilityInfo.encryptedKey,
         keyId: visibilityInfo.keyId,
@@ -609,6 +634,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
           listSub.entriesByDTag.set(treeName, {
             hash: hashHex,
             visibility: visibilityType,
+            labels: allLabels,
             key: visibilityType === 'public' ? chkKeyHex : undefined,
             encryptedKey: visibilityInfo.encryptedKey,
             keyId: visibilityInfo.keyId,
@@ -623,6 +649,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
             result.push({
               key: `${npubStr}/${dTag}`,
               cid: cid(fromHex(entry.hash), entry.key ? fromHex(entry.key) : undefined),
+              labels: entry.labels,
               visibility: entry.visibility,
               encryptedKey: entry.encryptedKey,
               keyId: entry.keyId,
@@ -703,6 +730,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
           result.push({
             key: `${npubStr}/${dTag}`,
             cid: cid(fromHex(entry.hash), entry.key ? fromHex(entry.key) : undefined),
+            labels: entry.labels,
             visibility: entry.visibility,
             encryptedKey: entry.encryptedKey,
             keyId: entry.keyId,
@@ -744,6 +772,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
           result.push({
             key: `${npubStr}/${dTag}`,
             cid: cid(fromHex(entry.hash), entry.key ? fromHex(entry.key) : undefined),
+            labels: entry.labels,
             visibility: entry.visibility,
             encryptedKey: entry.encryptedKey,
             keyId: entry.keyId,
@@ -814,6 +843,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
           const entryData = {
             hash: parsed?.hash ?? '',
             visibility: parsed?.visibility ?? 'public',
+            labels: parsed?.labels,
             key: parsed?.key,
             encryptedKey: parsed?.encryptedKey,
             keyId: parsed?.keyId,
@@ -925,6 +955,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
           result.push({
             key: `${npubStr}/${dTag}`,
             cid: cid(fromHex(entry.hash), entry.key ? fromHex(entry.key) : undefined),
+            labels: entry.labels,
             visibility: entry.visibility,
             encryptedKey: entry.encryptedKey,
             keyId: entry.keyId,
@@ -991,6 +1022,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
         npubCache.set(treeName, {
           hash: toHex(entry.cid.hash),
           visibility: entry.visibility ?? 'public',
+          labels: entry.labels,
           key: entry.cid.key ? toHex(entry.cid.key) : undefined,
           encryptedKey: entry.encryptedKey,
           keyId: entry.keyId,
@@ -1016,6 +1048,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
           listSub.entriesByDTag.set(treeName, {
             hash: toHex(entry.cid.hash),
             visibility: entry.visibility ?? 'public',
+            labels: entry.labels,
             key: entry.cid.key ? toHex(entry.cid.key) : undefined,
             encryptedKey: entry.encryptedKey,
             keyId: entry.keyId,
@@ -1030,6 +1063,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
             result.push({
               key: `${npubStr}/${dTag}`,
               cid: cid(fromHex(e.hash), e.key ? fromHex(e.key) : undefined),
+              labels: e.labels,
               visibility: e.visibility,
               encryptedKey: e.encryptedKey,
               keyId: e.keyId,

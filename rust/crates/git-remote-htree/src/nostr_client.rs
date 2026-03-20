@@ -65,6 +65,7 @@ pub const KIND_REPO_ANNOUNCEMENT: u16 = 30617;
 
 /// Label for hashtree events
 pub const LABEL_HASHTREE: &str = "hashtree";
+pub const LABEL_GIT: &str = "git";
 
 /// Pull request status derived from trusted NIP-34 status events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -460,6 +461,21 @@ where
             .into_iter()
             .filter(|event| is_matching_repo_event(event, repo_name)),
     )
+}
+
+fn append_repo_discovery_labels(tags: &mut Vec<Tag>, repo_name: &str) {
+    tags.push(Tag::custom(
+        TagKind::custom("l"),
+        vec![LABEL_GIT.to_string()],
+    ));
+
+    // Add directory prefix labels for discoverability
+    // e.g. "docs/travel/doc1" -> ["l", "docs"], ["l", "docs/travel"]
+    let parts: Vec<&str> = repo_name.split('/').collect();
+    for i in 1..parts.len() {
+        let prefix = parts[..i].join("/");
+        tags.push(Tag::custom(TagKind::custom("l"), vec![prefix]));
+    }
 }
 
 fn latest_trusted_pr_status_kinds(
@@ -1535,13 +1551,7 @@ impl NostrClient {
             }
         }
 
-        // Add directory prefix labels for discoverability
-        // e.g. "docs/travel/doc1" -> ["l", "docs"], ["l", "docs/travel"]
-        let parts: Vec<&str> = repo_name.split('/').collect();
-        for i in 1..parts.len() {
-            let prefix = parts[..i].join("/");
-            tags.push(Tag::custom(TagKind::custom("l"), vec![prefix]));
-        }
+        append_repo_discovery_labels(&mut tags, repo_name);
 
         // Sign the event
         let event = EventBuilder::new(Kind::Custom(KIND_APP_DATA), root_hash, tags)
@@ -2050,6 +2060,26 @@ mod tests {
 
         let picked = pick_latest_repo_event([&iris_chat, &iris_chat_flutter], "iris-chat").unwrap();
         assert_eq!(picked.id, iris_chat.id);
+    }
+
+    #[test]
+    fn test_append_repo_discovery_labels_includes_git_label_and_prefixes() {
+        let mut tags = vec![];
+        append_repo_discovery_labels(&mut tags, "tools/hashtree");
+
+        let values: Vec<String> = tags
+            .iter()
+            .filter_map(|tag| {
+                let parts = tag.as_slice();
+                if parts.first().map(|kind| kind.as_str()) != Some("l") {
+                    return None;
+                }
+                parts.get(1).cloned()
+            })
+            .collect();
+
+        assert!(values.iter().any(|value| value == LABEL_GIT));
+        assert!(values.iter().any(|value| value == "tools"));
     }
 
     #[test]

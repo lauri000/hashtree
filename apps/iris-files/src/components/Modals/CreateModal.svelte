@@ -4,7 +4,7 @@
    */
   import type { TreeVisibility } from '@hashtree/core';
 
-  export type ModalType = 'file' | 'folder' | 'tree' | 'document';
+  export type ModalType = 'file' | 'folder' | 'tree' | 'document' | 'repository';
 
   let show = $state(false);
   let modalType = $state<ModalType>('file');
@@ -50,11 +50,14 @@
   let isFolder = $derived(modalType === 'folder');
   let isTree = $derived(modalType === 'tree');
   let isDocument = $derived(modalType === 'document');
+  let isRepository = $derived(modalType === 'repository');
   let folderCreationBehavior = $derived(getFolderCreationBehavior());
 
   let title = $derived(
     isTree
       ? 'New Folder'
+      : isRepository
+        ? 'New Repository'
       : isDocument
         ? 'New Document'
         : isFolder
@@ -64,6 +67,8 @@
   let placeholder = $derived(
     isDocument
       ? 'Document name...'
+      : isRepository
+        ? 'Repository name...'
       : isTree
         ? 'Folder name...'
         : isFolder
@@ -76,7 +81,13 @@
     const name = modalInput.trim();
     if (!name || isCreating) return;
 
-    if (isTree) {
+    if (isRepository) {
+      isCreating = true;
+      const { createGitRepositoryTree } = await import('../../actions/tree');
+      await createGitRepositoryTree(name, treeVisibility);
+      isCreating = false;
+      close();
+    } else if (isTree) {
       isCreating = true;
       await createTree(name, treeVisibility);
       isCreating = false;
@@ -145,7 +156,7 @@
         />
 
         <!-- Visibility picker for trees and new documents -->
-        {#if isTree || (isDocument && !route.treeName)}
+        {#if isTree || isRepository || (isDocument && !route.treeName)}
           <div class="mt-4 mb-4">
             <VisibilityPicker value={treeVisibility} onchange={setVisibility} />
           </div>

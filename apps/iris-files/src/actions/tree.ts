@@ -200,6 +200,53 @@ export async function createGitRepository(name: string) {
   }
 }
 
+export async function createGitRepositoryTree(
+  name: string,
+  visibility: import('@hashtree/core').TreeVisibility = 'public'
+): Promise<{ success: boolean; npub?: string; treeName?: string; linkKey?: string }> {
+  if (!name) return { success: false };
+
+  const { saveHashtree } = await import('../nostr');
+  const { storeLinkKey } = await import('../stores/trees');
+
+  const tree = getTree();
+  const nostrState = useNostrStore.getState();
+
+  if (!nostrState.isLoggedIn || !nostrState.npub || !nostrState.pubkey) {
+    return { success: false };
+  }
+
+  const linkKey = visibility === 'link-visible'
+    ? linkKeyUtils.generateLinkKey()
+    : undefined;
+
+  const { cid: emptyDirCid } = await tree.putDirectory([]);
+  const repoRootCid = await initializeDirectoryAsGitRepo(emptyDirCid);
+
+  useNostrStore.setSelectedTree({
+    id: '',
+    name,
+    pubkey: nostrState.pubkey,
+    rootHash: toHex(repoRootCid.hash),
+    rootKey: repoRootCid.key ? toHex(repoRootCid.key) : undefined,
+    visibility,
+    created_at: Math.floor(Date.now() / 1000),
+  });
+
+  const result = await saveHashtree(name, repoRootCid, { visibility, labels: ['git'], linkKey });
+
+  if (result.linkKey) {
+    storeLinkKey(nostrState.npub, name, result.linkKey);
+  }
+
+  if (result.success) {
+    const linkKeyParam = result.linkKey ? `?k=${result.linkKey}` : '';
+    navigate(`/${nostrState.npub}/${encodeURIComponent(name)}${linkKeyParam}`);
+  }
+
+  return { success: result.success, npub: nostrState.npub, treeName: name, linkKey: result.linkKey };
+}
+
 // Create new Yjs document folder (folder with .yjs config file)
 export async function createDocument(name: string) {
   if (!name) return;
