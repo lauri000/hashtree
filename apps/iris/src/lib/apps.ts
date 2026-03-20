@@ -11,6 +11,7 @@ export const suggestedIrisApps: readonly AppBookmark[] = [
   { url: `htree://${distributedOwner}/files`, name: 'Iris Files', icon: '/iris-logo.png', addedAt: 0 },
   { url: `htree://${distributedOwner}/video`, name: 'Iris Video', icon: '/iris-logo.png', addedAt: 0 },
   { url: `htree://${distributedOwner}/docs`, name: 'Iris Docs', icon: '/iris-logo.png', addedAt: 0 },
+  { url: `htree://${distributedOwner}/git`, name: 'Iris Git', icon: '/iris-logo.png', addedAt: 0 },
   { url: `htree://${distributedOwner}/maps`, name: 'Iris Maps', icon: '/iris-logo.png', addedAt: 0 },
   { url: `htree://${distributedOwner}/boards`, name: 'Iris Boards', icon: '/iris-logo.png', addedAt: 0 },
 ];
@@ -19,7 +20,7 @@ export const defaultFavoriteApps: readonly AppBookmark[] = [];
 
 export const suggestedApps: readonly AppBookmark[] = [
   ...suggestedIrisApps,
-  { url: `htree://${distributedOwner}/hashtree-cc`, name: 'hashtree.cc', addedAt: 0 },
+  { url: `htree://${distributedOwner}/hashtree-cc`, name: 'hashtree.cc', icon: '/hashtree-cc-favicon.svg', addedAt: 0 },
   { url: 'https://iris.to', name: 'Iris Social', icon: '/iris-logo.png', addedAt: 0 },
 ];
 
