@@ -12,7 +12,18 @@ export { clearFileSelection, navigateTo, goBack, selectFile } from './navigation
 export { saveFile, createFile, uploadSingleFile, uploadExtractedFiles } from './file';
 
 // Tree operations
-export { initVirtualTree, createFolder, createDocument, forkTree, createTree, createBoardTree, verifyCurrentTree, clearStore } from './tree';
+export {
+  initVirtualTree,
+  createFolder,
+  createGitRepository,
+  initializeDirectoryAsGitRepo,
+  createDocument,
+  forkTree,
+  createTree,
+  createBoardTree,
+  verifyCurrentTree,
+  clearStore,
+} from './tree';
 
 // Entry operations
 export { renameEntry, deleteEntry, deleteCurrentFolder, moveEntry, moveToParent } from './entry';

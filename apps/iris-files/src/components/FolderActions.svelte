@@ -5,7 +5,6 @@
    */
   import { nhashEncode, toHex, LinkType } from '@hashtree/core';
   import type { CID } from '@hashtree/core';
-  import { SvelteMap } from 'svelte/reactivity';
   import { open as openCreateModal } from './Modals/CreateModal.svelte';
   import { open as openRenameModal } from './Modals/RenameModal.svelte';
   import { open as openForkModal } from './Modals/ForkModal.svelte';
@@ -13,16 +12,15 @@
   import { open as openBlossomPushModal } from './Modals/BlossomPushModal.svelte';
   import { npubToPubkey } from '../nostr';
   import { uploadFiles, uploadDirectory } from '../stores/upload';
-  import { deleteCurrentFolder, buildRouteUrl } from '../actions';
+  import { deleteCurrentFolder, buildRouteUrl, getCurrentRootCid, initializeDirectoryAsGitRepo } from '../actions';
   import { nostrStore, autosaveIfOwn, deleteTree } from '../nostr';
   import { getTree } from '../store';
   import { createZipFromDirectory, downloadBlob } from '../utils/compression';
   import { setUploadProgress } from '../stores/upload';
   import { readFilesFromWebkitDirectory, supportsDirectoryUpload } from '../utils/directory';
   import { routeStore, createTreesStore } from '../stores';
-  import { isGitRepo, initGitRepo } from '../utils/git';
-  import { getCurrentRootCid } from '../actions/route';
-  import { supportsDocumentFeatures, supportsGitFeatures } from '../appType';
+  import { isGitRepo } from '../utils/git';
+  import { getFolderCreationBehavior, supportsDocumentFeatures, supportsGitFeatures } from '../appType';
 
   interface Props {
     dirCid?: CID | null;
@@ -39,7 +37,7 @@
   let hasDirectorySupport = supportsDirectoryUpload();
   let route = $derived($routeStore);
   let userNpub = $derived($nostrStore.npub);
-  let userProfile = $derived($nostrStore.profile);
+  let folderCreationBehavior = $derived(getFolderCreationBehavior());
 
   // Get user's own trees for fork name suggestions
   let ownTreesStore = $derived(createTreesStore(userNpub));
@@ -106,72 +104,20 @@
     isInitializingGit = true;
     try {
       const tree = getTree();
-      const authorName = userProfile?.name || 'Anonymous';
-      const authorEmail = userProfile?.nip05 || 'anon@hashtree.local';
-
-      // Initialize git repo and get .git files
-      const gitFiles = await initGitRepo(dirCid, authorName, authorEmail);
-
-      // Build the .git directory in hashtree
-      // First, organize files by directory
-      const dirMap = new SvelteMap<string, Array<{ name: string; cid: CID; size: number; type: LinkType }>>();
-      dirMap.set('.git', []);
-
-      // Create directory entries
-      for (const file of gitFiles) {
-        if (file.isDir) {
-          dirMap.set(file.name, []);
-        }
-      }
-
-      // Add files to their parent directories
-      for (const file of gitFiles) {
-        if (!file.isDir) {
-          const { cid, size } = await tree.putFile(file.data);
-          const parentDir = file.name.substring(0, file.name.lastIndexOf('/'));
-          const fileName = file.name.substring(file.name.lastIndexOf('/') + 1);
-
-          const entries = dirMap.get(parentDir);
-          if (entries) {
-            entries.push({ name: fileName, cid, size, type: LinkType.Blob });
-          }
-        }
-      }
-
-      // Build directories from deepest to root
-      const sortedDirs = Array.from(dirMap.keys())
-        .filter(d => d !== '.git')
-        .sort((a, b) => b.split('/').length - a.split('/').length);
-
-      for (const dirPath of sortedDirs) {
-        const entries = dirMap.get(dirPath) || [];
-        const { cid } = await tree.putDirectory(entries);
-
-        const parentDir = dirPath.substring(0, dirPath.lastIndexOf('/'));
-        const dirName = dirPath.substring(dirPath.lastIndexOf('/') + 1);
-
-        const parentEntries = dirMap.get(parentDir);
-        if (parentEntries) {
-          parentEntries.push({ name: dirName, cid, size: 0, type: LinkType.Dir });
-        }
-      }
-
-      // Build .git directory
-      const gitEntries = dirMap.get('.git') || [];
-      const { cid: gitDirCid } = await tree.putDirectory(gitEntries);
-
-      // Add .git to current directory
+      const updatedDirCid = await initializeDirectoryAsGitRepo(dirCid);
       const treeRootCid = getCurrentRootCid();
       if (!treeRootCid) throw new Error('No tree root');
 
-      const newRootCid = await tree.setEntry(
-        treeRootCid,
-        route.path,
-        '.git',
-        gitDirCid,
-        0,
-        LinkType.Dir
-      );
+      const newRootCid = route.path.length === 0
+        ? updatedDirCid
+        : await tree.setEntry(
+            treeRootCid,
+            route.path.slice(0, -1),
+            currentDirName || '',
+            updatedDirCid,
+            0,
+            LinkType.Dir
+          );
 
       // Save and publish
       autosaveIfOwn(newRootCid);
@@ -290,9 +236,13 @@
         New File
       </button>
 
-      <button onclick={() => openCreateModal('folder')} class="btn-ghost {btnClass}" title="New Folder">
+      <button
+        onclick={() => openCreateModal('folder')}
+        class="btn-ghost {btnClass}"
+        title={folderCreationBehavior.modalTitle}
+      >
         <span class="i-lucide-folder-plus"></span>
-        New Folder
+        {folderCreationBehavior.actionLabel}
       </button>
 
       {#if supportsDocumentFeatures()}

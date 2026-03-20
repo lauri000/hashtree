@@ -11,6 +11,7 @@ import { localStore, getTree } from '../store';
 import { autosaveIfOwn } from '../nostr';
 import { getCurrentRootCid, getCurrentPathFromUrl } from './route';
 import { updateLocalRootCache } from '../treeRootCache';
+import { initGitRepo } from '../utils/git';
 import {
   BOARD_CARD_FILE_SUFFIX,
   BOARD_CARDS_DIR,
@@ -29,8 +30,76 @@ import {
   serializeColumnMeta,
 } from '../lib/boards';
 
+type DirectoryEntryInput = { name: string; cid: CID; size: number; type?: LinkType };
+
+function getGitAuthorIdentity() {
+  const nostrState = useNostrStore.getState();
+  return {
+    authorName: nostrState.profile?.name || 'Anonymous',
+    authorEmail: nostrState.profile?.nip05 || 'anon@hashtree.local',
+  };
+}
+
+async function buildGitDirectoryCid(
+  repoRootCid: CID,
+  authorName: string,
+  authorEmail: string,
+  commitMessage: string = 'Initial commit'
+): Promise<CID> {
+  const tree = getTree();
+  const gitFiles = await initGitRepo(repoRootCid, authorName, authorEmail, commitMessage);
+  const dirMap = new Map<string, Array<{ name: string; cid: CID; size: number; type: LinkType }>>();
+  dirMap.set('.git', []);
+
+  for (const file of gitFiles) {
+    if (file.isDir) {
+      dirMap.set(file.name, []);
+    }
+  }
+
+  for (const file of gitFiles) {
+    if (file.isDir) continue;
+
+    const { cid, size } = await tree.putFile(file.data);
+    const parentDir = file.name.substring(0, file.name.lastIndexOf('/'));
+    const fileName = file.name.substring(file.name.lastIndexOf('/') + 1);
+    const entries = dirMap.get(parentDir);
+    if (entries) {
+      entries.push({ name: fileName, cid, size, type: LinkType.Blob });
+    }
+  }
+
+  const sortedDirs = Array.from(dirMap.keys())
+    .filter(dirPath => dirPath !== '.git')
+    .sort((a, b) => b.split('/').length - a.split('/').length);
+
+  for (const dirPath of sortedDirs) {
+    const entries = dirMap.get(dirPath) || [];
+    const { cid } = await tree.putDirectory(entries);
+    const parentDir = dirPath.substring(0, dirPath.lastIndexOf('/'));
+    const dirName = dirPath.substring(dirPath.lastIndexOf('/') + 1);
+    const parentEntries = dirMap.get(parentDir);
+    if (parentEntries) {
+      parentEntries.push({ name: dirName, cid, size: 0, type: LinkType.Dir });
+    }
+  }
+
+  const gitEntries = dirMap.get('.git') || [];
+  return (await tree.putDirectory(gitEntries)).cid;
+}
+
+export async function initializeDirectoryAsGitRepo(
+  dirCid: CID,
+  commitMessage: string = 'Initial commit'
+): Promise<CID> {
+  const tree = getTree();
+  const { authorName, authorEmail } = getGitAuthorIdentity();
+  const gitDirCid = await buildGitDirectoryCid(dirCid, authorName, authorEmail, commitMessage);
+  return tree.setEntry(dirCid, [], '.git', gitDirCid, 0, LinkType.Dir);
+}
+
 // Helper to initialize a virtual tree (when rootCid is null but we're in a tree route)
-export async function initVirtualTree(entries: { name: string; cid: CID; size: number; type?: LinkType }[]): Promise<CID | null> {
+export async function initVirtualTree(entries: DirectoryEntryInput[]): Promise<CID | null> {
   const route = parseRoute();
   if (!route.npub || !route.treeName) return null;
 
@@ -104,6 +173,30 @@ export async function createFolder(name: string) {
   } else {
     // Initialize virtual tree with this folder
     await initVirtualTree([{ name, cid: emptyDirCid, size: 0, type: LinkType.Dir }]);
+  }
+}
+
+export async function createGitRepository(name: string) {
+  if (!name) return;
+
+  const rootCid = getCurrentRootCid();
+  const tree = getTree();
+  const currentPath = getCurrentPathFromUrl();
+  const { cid: emptyDirCid } = await tree.putDirectory([]);
+  const repoRootCid = await initializeDirectoryAsGitRepo(emptyDirCid);
+
+  if (rootCid) {
+    const newRootCid = await tree.setEntry(
+      rootCid,
+      currentPath,
+      name,
+      repoRootCid,
+      0,
+      LinkType.Dir
+    );
+    autosaveIfOwn(newRootCid);
+  } else {
+    await initVirtualTree([{ name, cid: repoRootCid, size: 0, type: LinkType.Dir }]);
   }
 }
 

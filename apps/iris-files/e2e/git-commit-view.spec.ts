@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
 // Tests use isolated page contexts with disableOthersPool - safe for parallel execution
 
 test.describe('Git commit view', () => {
@@ -16,12 +16,7 @@ test.describe('Git commit view', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder for our test repo
-    await page.getByRole('button', { name: 'New Folder' }).click();
-    const folderInput = page.locator('input[placeholder="Folder name..."]');
-    await folderInput.waitFor({ timeout: 5000 });
-    await folderInput.fill('commit-view-test');
-    await page.click('button:has-text("Create")');
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createRepositoryInCurrentDirectory(page, 'commit-view-test');
 
     // Navigate into the folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'commit-view-test' }).first();
@@ -57,16 +52,7 @@ test.describe('Git commit view', () => {
     // Wait for files to appear
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'README.md' })).toBeVisible({ timeout: 15000 });
 
-    // Git Init button should be visible
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-
-    // Click Git Init
-    await gitInitBtn.click();
-
-    // Wait for initialization to complete
-    await expect(page.getByRole('button', { name: 'Initializing...' })).toBeVisible({ timeout: 5000 });
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Verify commits button appears
     const commitsBtn = page.getByRole('button', { name: /commits/i });
@@ -114,12 +100,7 @@ test.describe('Git commit view', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder for test
-    await page.getByRole('button', { name: 'New Folder' }).click();
-    const folderInput = page.locator('input[placeholder="Folder name..."]');
-    await folderInput.waitFor({ timeout: 5000 });
-    await folderInput.fill('diff-view-test');
-    await page.click('button:has-text("Create")');
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createRepositoryInCurrentDirectory(page, 'diff-view-test');
 
     // Navigate into the folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'diff-view-test' }).first();
@@ -149,10 +130,7 @@ test.describe('Git commit view', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'test.txt' })).toBeVisible({ timeout: 15000 });
 
     // Init git
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Wait for commits button
     await expect(page.getByRole('button', { name: /commits/i })).toBeVisible({ timeout: 20000 });
@@ -182,12 +160,7 @@ test.describe('Git commit view', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder
-    await page.getByRole('button', { name: 'New Folder' }).click();
-    const folderInput = page.locator('input[placeholder="Folder name..."]');
-    await folderInput.waitFor({ timeout: 5000 });
-    await folderInput.fill('tab-nav-test');
-    await page.click('button:has-text("Create")');
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createRepositoryInCurrentDirectory(page, 'tab-nav-test');
 
     // Navigate into folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'tab-nav-test' }).first();
@@ -215,10 +188,7 @@ test.describe('Git commit view', () => {
 
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'test.txt' })).toBeVisible({ timeout: 15000 });
 
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Navigate to commit view
     const currentUrl = page.url();

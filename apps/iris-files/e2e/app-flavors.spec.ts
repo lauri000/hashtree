@@ -16,6 +16,7 @@ test.describe('App flavors', () => {
     await gotoGitApp(page);
     await navigateToPublicFolder(page, { requireRelay: false });
 
+    await expect(page.getByRole('button', { name: 'New Repository' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Git Init' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'New Document' })).not.toBeVisible();
   });

@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
 
 test.describe('Git branch features', () => {
   // Disable "others pool" to prevent WebRTC cross-talk from parallel tests
@@ -14,12 +14,7 @@ test.describe('Git branch features', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder and init as git repo with 2 commits
-    await page.getByRole('button', { name: 'New Folder' }).click();
-    const folderInput = page.locator('input[placeholder="Folder name..."]');
-    await folderInput.waitFor({ timeout: 5000 });
-    await folderInput.fill('detached-head-test');
-    await page.click('button:has-text("Create")');
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createRepositoryInCurrentDirectory(page, 'detached-head-test');
 
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'detached-head-test' }).first();
     await expect(folderLink).toBeVisible({ timeout: 15000 });
@@ -45,10 +40,7 @@ test.describe('Git branch features', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'file1.txt' })).toBeVisible({ timeout: 15000 });
 
     // Git init
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Verify branch selector shows "master"
     const branchSelector = page.locator('button').filter({ hasText: /master|main/i }).first();
@@ -132,12 +124,7 @@ test.describe('Git branch features', () => {
     await navigateToPublicFolder(page);
 
     // Create folder with file and init git
-    await page.getByRole('button', { name: 'New Folder' }).click();
-    const folderInput = page.locator('input[placeholder="Folder name..."]');
-    await folderInput.waitFor({ timeout: 5000 });
-    await folderInput.fill('branch-test-repo');
-    await page.click('button:has-text("Create")');
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createRepositoryInCurrentDirectory(page, 'branch-test-repo');
 
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'branch-test-repo' }).first();
     await expect(folderLink).toBeVisible({ timeout: 15000 });
@@ -165,10 +152,7 @@ test.describe('Git branch features', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'README.md' })).toBeVisible({ timeout: 15000 });
 
     // Init git
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Wait for git features to appear
     await expect(page.getByRole('button', { name: /commits/i })).toBeVisible({ timeout: 20000 });

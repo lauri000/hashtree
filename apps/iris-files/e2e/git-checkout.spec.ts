@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
 
 test.describe('Git checkout features', () => {
   // Disable "others pool" to prevent WebRTC cross-talk from parallel tests
@@ -187,12 +187,7 @@ test.describe('Git checkout features', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder for our test repo
-    await page.getByRole('button', { name: 'New Folder' }).click();
-    const folderInput = page.locator('input[placeholder="Folder name..."]');
-    await folderInput.waitFor({ timeout: 5000 });
-    await folderInput.fill('checkout-test');
-    await page.click('button:has-text("Create")');
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createRepositoryInCurrentDirectory(page, 'checkout-test');
 
     // Navigate into the folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'checkout-test' }).first();
@@ -226,10 +221,7 @@ test.describe('Git checkout features', () => {
     await expect(fileList.getByRole('link', { name: /initial\.txt/i })).toBeVisible({ timeout: 15000 });
 
     // Initialize git repo (creates first commit with initial.txt)
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Wait for git features
     const commitsBtn = page.getByRole('button', { name: /commits/i });

@@ -1,13 +1,8 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, safeReload, waitForAppReady, gotoGitApp } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, safeReload, waitForAppReady, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
 
 async function createAndEnterFolder(page: any, name: string) {
-  await page.getByRole('button', { name: 'New Folder' }).click();
-  const folderInput = page.locator('input[placeholder="Folder name..."]');
-  await expect(folderInput).toBeVisible({ timeout: 5000 });
-  await folderInput.fill(name);
-  await page.getByRole('button', { name: 'Create' }).click();
-  await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+  await createRepositoryInCurrentDirectory(page, name);
 
   const alreadyInFolder = page.url().includes(`/${encodeURIComponent(name)}`);
   if (!alreadyInFolder) {
@@ -58,10 +53,7 @@ test.describe('Git branch comparison and merge', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'test.txt' })).toBeVisible({ timeout: 15000 });
 
     // Git init
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Navigate to compare URL with non-existent branch
     const currentUrl = page.url();
@@ -98,10 +90,7 @@ test.describe('Git branch comparison and merge', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'test.txt' })).toBeVisible({ timeout: 15000 });
 
     // Git init
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Navigate to compare URL (will show error since only one branch)
     const currentUrl = page.url();
@@ -137,10 +126,7 @@ test.describe('Git branch comparison and merge', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'test.txt' })).toBeVisible({ timeout: 15000 });
 
     // Git init
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Navigate to merge URL
     const currentUrl = page.url();
@@ -177,10 +163,7 @@ test.describe('Git branch comparison and merge', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'main-file.txt' })).toBeVisible({ timeout: 15000 });
 
     // Git init
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Verify branch selector shows "master"
     const branchSelector = page.locator('button').filter({ hasText: /master|main/i }).first();
@@ -270,12 +253,7 @@ test.describe('Git branch comparison and merge', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder and init as git repo
-    await page.getByRole('button', { name: 'New Folder' }).click();
-    const folderInput = page.locator('input[placeholder="Folder name..."]');
-    await folderInput.waitFor({ timeout: 5000 });
-    await folderInput.fill('compare-dropdown-test');
-    await page.click('button:has-text("Create")');
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createRepositoryInCurrentDirectory(page, 'compare-dropdown-test');
 
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'compare-dropdown-test' }).first();
     await expect(folderLink).toBeVisible({ timeout: 15000 });
@@ -301,10 +279,7 @@ test.describe('Git branch comparison and merge', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'test.txt' })).toBeVisible({ timeout: 15000 });
 
     // Git init
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Create a second branch
     const branchSelector = page.locator('button').filter({ hasText: /master|main/i }).first();
@@ -366,10 +341,7 @@ test.describe('Git branch comparison and merge', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'test.txt' })).toBeVisible({ timeout: 15000 });
 
     // Git init
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Verify branch selector shows "master" and 1 branch
     const branchSelector = page.locator('button').filter({ hasText: /master|main/i }).first();
@@ -438,10 +410,7 @@ test.describe('Git branch comparison and merge', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'main-file.txt' })).toBeVisible({ timeout: 15000 });
 
     // Git init
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Verify branch selector shows "master"
     const branchSelector = page.locator('button').filter({ hasText: /master|main/i }).first();

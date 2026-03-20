@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
 
 test.describe('NIP-34 Pull Requests', () => {
   // PR/Issues views are hidden on small screens (lg:flex), need wider viewport
@@ -353,12 +353,7 @@ test.describe('NIP-34 Pull Requests', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder and init as git repo with branches
-    await page.getByRole('button', { name: 'New Folder' }).click();
-    const folderInput = page.locator('input[placeholder="Folder name..."]');
-    await folderInput.waitFor({ timeout: 5000 });
-    await folderInput.fill('pr-structure-test');
-    await page.click('button:has-text("Create")');
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createRepositoryInCurrentDirectory(page, 'pr-structure-test');
 
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'pr-structure-test' }).first();
     await expect(folderLink).toBeVisible({ timeout: 15000 });
@@ -384,10 +379,7 @@ test.describe('NIP-34 Pull Requests', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'file.txt' })).toBeVisible({ timeout: 15000 });
 
     // Git init
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     const gitDirEntry = page.locator('[data-testid="file-list"] a').filter({ hasText: '.git' }).first();
     await expect(gitDirEntry).toBeVisible({ timeout: 30000 });

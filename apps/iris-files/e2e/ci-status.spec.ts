@@ -7,7 +7,7 @@
  * 2. Repo Viewer - follows the runner, fetches CI status via WebRTC/Blossom
  */
 import { test, expect, type Page } from './fixtures';
-import { setupPageErrorHandler, disableOthersPool, followUser, waitForAppReady, ensureLoggedIn, navigateToPublicFolder, useLocalRelay, waitForRelayConnected, evaluateWithRetry, getTestRelayUrl, safeGoto, safeReload, gotoGitApp } from './test-utils';
+import { setupPageErrorHandler, disableOthersPool, followUser, waitForAppReady, ensureLoggedIn, navigateToPublicFolder, useLocalRelay, waitForRelayConnected, evaluateWithRetry, getTestRelayUrl, safeGoto, safeReload, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils';
 import { spawn, execSync, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -628,12 +628,7 @@ test.describe('CI Status Display', () => {
       await navigateToPublicFolder(page, { timeoutMs: 60000 });
 
       const repoName = `htci-test-${Date.now()}`;
-      await page.getByRole('button', { name: 'New Folder' }).click();
-      const folderInput = page.locator('input[placeholder="Folder name..."]');
-      await folderInput.waitFor({ timeout: 5000 });
-      await folderInput.fill(repoName);
-      await page.click('button:has-text("Create")');
-      await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+      await createRepositoryInCurrentDirectory(page, repoName);
 
       const repoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: repoName }).first();
       await expect(repoLink).toBeVisible({ timeout: 15000 });
@@ -674,10 +669,7 @@ test.describe('CI Status Display', () => {
         throw new Error(`Failed to write ci.toml: ${ciConfigResult.error}`);
       }
 
-      const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-      await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-      await gitInitBtn.click();
-      await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+      await ensureGitRepoInitialized(page);
 
       await expect(page.locator('[title="No uncommitted changes"]')).toBeVisible({ timeout: 30000 });
 

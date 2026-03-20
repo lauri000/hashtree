@@ -29,7 +29,8 @@
 </script>
 
 <script lang="ts">
-  import { createFile, createFolder, createTree, createDocument } from '../../actions';
+  import { createFile, createFolder, createGitRepository, createTree, createDocument } from '../../actions';
+  import { getFolderCreationBehavior } from '../../appType';
   import { routeStore } from '../../stores';
   import { navigate } from '../../lib/router.svelte';
   import VisibilityPicker from './VisibilityPicker.svelte';
@@ -49,12 +50,25 @@
   let isFolder = $derived(modalType === 'folder');
   let isTree = $derived(modalType === 'tree');
   let isDocument = $derived(modalType === 'document');
+  let folderCreationBehavior = $derived(getFolderCreationBehavior());
 
   let title = $derived(
-    isTree ? 'New Folder' : isDocument ? 'New Document' : isFolder ? 'New Folder' : 'New File'
+    isTree
+      ? 'New Folder'
+      : isDocument
+        ? 'New Document'
+        : isFolder
+          ? folderCreationBehavior.modalTitle
+          : 'New File'
   );
   let placeholder = $derived(
-    isDocument ? 'Document name...' : (isTree || isFolder ? 'Folder name...' : 'File name...')
+    isDocument
+      ? 'Document name...'
+      : isTree
+        ? 'Folder name...'
+        : isFolder
+          ? folderCreationBehavior.placeholder
+          : 'File name...'
   );
 
   async function handleSubmit(e?: Event) {
@@ -88,7 +102,13 @@
       }
       isCreating = false;
     } else if (isFolder) {
-      createFolder(name);
+      isCreating = true;
+      if (folderCreationBehavior.createsGitRepo) {
+        await createGitRepository(name);
+      } else {
+        await createFolder(name);
+      }
+      isCreating = false;
       close();
     } else {
       createFile(name, '');

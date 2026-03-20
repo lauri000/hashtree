@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay, gotoGitApp } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
 
 // Helper to get npub from URL
 async function getNpub(page: any): Promise<string> {
@@ -25,12 +25,7 @@ test.describe('Git fork and PR workflow', () => {
     await navigateToPublicFolder(page);
 
     // Create folder
-    await page.getByRole('button', { name: 'New Folder' }).click();
-    const folderInput = page.locator('input[placeholder="Folder name..."]');
-    await folderInput.waitFor({ timeout: 5000 });
-    await folderInput.fill('original-repo');
-    await page.click('button:has-text("Create")');
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createRepositoryInCurrentDirectory(page, 'original-repo');
 
     // Navigate into folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'original-repo' }).first();
@@ -59,10 +54,7 @@ test.describe('Git fork and PR workflow', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'README.md' })).toBeVisible({ timeout: 15000 });
 
     // Git init
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Wait for clean status
     await expect(page.locator('text=clean')).toBeVisible({ timeout: 15000 });

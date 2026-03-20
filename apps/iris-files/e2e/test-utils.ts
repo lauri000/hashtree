@@ -102,6 +102,31 @@ export async function gotoGitApp(page: any) {
   await safeGoto(page, '/git.html#/');
 }
 
+export async function createRepositoryInCurrentDirectory(
+  page: any,
+  repositoryName: string,
+  timeoutMs: number = 15000
+) {
+  await page.getByRole('button', { name: 'New Repository' }).click();
+  const input = page.locator('input[placeholder="Repository name..."]');
+  await input.waitFor({ timeout: 5000 });
+  await input.fill(repositoryName);
+  await page.click('button:has-text("Create")');
+  await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: timeoutMs });
+}
+
+export async function ensureGitRepoInitialized(page: any, timeoutMs: number = 30000) {
+  const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
+  if (await gitInitBtn.isVisible().catch(() => false)) {
+    await gitInitBtn.click();
+    await page.getByRole('button', { name: 'Initializing...' }).waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    await expect(gitInitBtn).not.toBeVisible({ timeout: timeoutMs });
+    return;
+  }
+
+  await expect(page.getByRole('button', { name: /commits/i })).toBeVisible({ timeout: timeoutMs });
+}
+
 export async function safeReload(
   page: any,
   options?: { waitUntil?: 'domcontentloaded' | 'load' | 'networkidle'; timeoutMs?: number; retries?: number; url?: string }
@@ -207,7 +232,7 @@ export async function navigateToPublicFolder(
     return /^#\/npub[^/]+\/public/.test(window.location.hash);
   }, { timeout: 5000 }).then(() => true).catch(() => false);
   if (alreadyInPublic) {
-    const actionsButton = page.getByRole('button', { name: /New Folder|File/i }).first();
+    const actionsButton = page.getByRole('button', { name: /New Repository|New Folder|File/i }).first();
     await expect(actionsButton).toBeVisible({ timeout: 10000 });
     return;
   }

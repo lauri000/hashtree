@@ -4,7 +4,28 @@
  */
 export type AppType = 'files' | 'video' | 'docs' | 'maps' | 'boards' | 'git';
 
+export interface FolderCreationBehavior {
+  actionLabel: string;
+  modalTitle: string;
+  placeholder: string;
+  createsGitRepo: boolean;
+}
+
 let currentAppType: AppType = 'files';
+
+const DEFAULT_FOLDER_CREATION_BEHAVIOR: FolderCreationBehavior = {
+  actionLabel: 'New Folder',
+  modalTitle: 'New Folder',
+  placeholder: 'Folder name...',
+  createsGitRepo: false,
+};
+
+const GIT_FOLDER_CREATION_BEHAVIOR: FolderCreationBehavior = {
+  actionLabel: 'New Repository',
+  modalTitle: 'New Repository',
+  placeholder: 'Repository name...',
+  createsGitRepo: true,
+};
 
 export function setAppType(type: AppType) {
   currentAppType = type;
@@ -40,4 +61,10 @@ export function supportsDocumentFeatures(): boolean {
 
 export function supportsGitFeatures(): boolean {
   return currentAppType === 'git';
+}
+
+export function getFolderCreationBehavior(): FolderCreationBehavior {
+  return currentAppType === 'git'
+    ? GIT_FOLDER_CREATION_BEHAVIOR
+    : DEFAULT_FOLDER_CREATION_BEHAVIOR;
 }

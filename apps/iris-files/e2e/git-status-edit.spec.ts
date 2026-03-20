@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, waitForAppReady, configureBlossomServers, useLocalRelay, waitForRelayConnected, gotoGitApp } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, waitForAppReady, configureBlossomServers, useLocalRelay, waitForRelayConnected, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
 import { execSync } from 'child_process';
 import { getPublicKey, nip19 } from 'nostr-tools';
 import WebSocket from 'ws';
@@ -121,12 +121,7 @@ test.describe('Git status after file edit', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder for our test repo
-    await page.getByRole('button', { name: 'New Folder' }).click();
-    const folderInput = page.locator('input[placeholder="Folder name..."]');
-    await folderInput.waitFor({ timeout: 5000 });
-    await folderInput.fill('subdir-test');
-    await page.click('button:has-text("Create")');
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createRepositoryInCurrentDirectory(page, 'subdir-test');
 
     // Navigate into the folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'subdir-test' }).first();
@@ -168,10 +163,7 @@ test.describe('Git status after file edit', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'src' })).toBeVisible({ timeout: 5000 });
 
     // Git Init
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Verify git repo detected and clean
     const cleanIndicator = page.locator('text=clean');
@@ -214,12 +206,7 @@ test.describe('Git status after file edit', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder for our test repo
-    await page.getByRole('button', { name: 'New Folder' }).click();
-    const folderInput = page.locator('input[placeholder="Folder name..."]');
-    await folderInput.waitFor({ timeout: 5000 });
-    await folderInput.fill('edit-in-subdir-test');
-    await page.click('button:has-text("Create")');
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createRepositoryInCurrentDirectory(page, 'edit-in-subdir-test');
 
     // Navigate into the folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'edit-in-subdir-test' }).first();
@@ -255,10 +242,7 @@ test.describe('Git status after file edit', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'src' })).toBeVisible({ timeout: 15000 });
 
     // Git Init
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Verify git repo detected and clean
     const cleanIndicator = page.locator('text=clean');
@@ -316,12 +300,7 @@ test.describe('Git status after file edit', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder for our test repo
-    await page.getByRole('button', { name: 'New Folder' }).click();
-    const folderInput = page.locator('input[placeholder="Folder name..."]');
-    await folderInput.waitFor({ timeout: 5000 });
-    await folderInput.fill('editor-test');
-    await page.click('button:has-text("Create")');
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createRepositoryInCurrentDirectory(page, 'editor-test');
 
     // Navigate into the folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'editor-test' }).first();
@@ -353,10 +332,7 @@ test.describe('Git status after file edit', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'test.txt' })).toBeVisible({ timeout: 15000 });
 
     // Git Init
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Verify git repo detected and clean
     const cleanIndicator = page.locator('text=clean');
@@ -453,12 +429,7 @@ test.describe('Git status after file edit', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder for our source repo
-    await page.getByRole('button', { name: 'New Folder' }).click();
-    const folderInput = page.locator('input[placeholder="Folder name..."]');
-    await folderInput.waitFor({ timeout: 5000 });
-    await folderInput.fill('fork-source-test');
-    await page.click('button:has-text("Create")');
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createRepositoryInCurrentDirectory(page, 'fork-source-test');
 
     // Navigate into the folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'fork-source-test' }).first();
@@ -489,13 +460,7 @@ test.describe('Git status after file edit', () => {
     // Wait for file to appear
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'README.md' })).toBeVisible({ timeout: 15000 });
 
-    // Git Init
-    const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
-    await expect(gitInitBtn).toBeVisible({ timeout: 15000 });
-    await gitInitBtn.click();
-
-    // Wait for initialization to complete
-    await expect(gitInitBtn).not.toBeVisible({ timeout: 30000 });
+    await ensureGitRepoInitialized(page);
 
     // Verify git repo detected and clean
     const cleanIndicator = page.locator('text=clean');

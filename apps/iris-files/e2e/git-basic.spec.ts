@@ -28,13 +28,22 @@ test.describe('Git basic features', () => {
     // Wait for modal to close
     await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
 
-    // Create .git directory
-    await page.getByRole('button', { name: 'New Folder' }).click();
-    const folderInput = page.locator('input[placeholder="Folder name..."]');
-    await folderInput.waitFor({ timeout: 5000 });
-    await folderInput.fill('.git');
-    await page.click('button:has-text("Create")');
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    // Create .git directory via the tree API so this stays a plain folder, not a repo
+    await page.evaluate(async () => {
+      const { getTree, LinkType } = await import('/src/store.ts');
+      const { autosaveIfOwn } = await import('/src/nostr.ts');
+      const { getCurrentRootCid } = await import('/src/actions/route.ts');
+      const { getRouteSync } = await import('/src/stores/index.ts');
+
+      const route = getRouteSync();
+      const tree = getTree();
+      let rootCid = getCurrentRootCid();
+      if (!rootCid) return;
+
+      const { cid: emptyDir } = await tree.putDirectory([]);
+      rootCid = await tree.setEntry(rootCid, route.path, '.git', emptyDir, 0, LinkType.Dir);
+      autosaveIfOwn(rootCid);
+    });
 
     // Wait for .git to appear in the file list and click it
     // The entry is a Link (<a>) with a child span containing the folder name
