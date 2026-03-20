@@ -28,6 +28,7 @@ struct FakeBlossomState {
     spoof_head_remaining: usize,
     drop_all_after_spoof: bool,
     drop_events: usize,
+    head_requests: usize,
 }
 
 struct FakeBlossomServer {
@@ -98,6 +99,11 @@ impl FakeBlossomServer {
         let state = self.state.lock().expect("state lock poisoned");
         state.drop_events
     }
+
+    fn head_request_count(&self) -> usize {
+        let state = self.state.lock().expect("state lock poisoned");
+        state.head_requests
+    }
 }
 
 impl Drop for FakeBlossomServer {
@@ -160,6 +166,7 @@ async fn head_blob(
     };
 
     let mut state = state.lock().expect("state lock poisoned");
+    state.head_requests += 1;
     if state.spoof_head_remaining > 0 {
         state.spoof_head_remaining -= 1;
         if state.spoof_head_remaining == 0 && state.drop_all_after_spoof {
@@ -290,6 +297,7 @@ fn test_push_repairs_missing_old_chunks_after_sample_check() {
 
     // Spoof exactly the first 5 HEAD checks (server sample check), then drop all old blobs.
     fake_blossom.spoof_next_head_checks_then_drop_all(5);
+    let head_requests_before_push2 = fake_blossom.head_request_count();
 
     let push2 = Command::new("git")
         .args(["push", "htree", "master"])
@@ -305,6 +313,13 @@ fn test_push_repairs_missing_old_chunks_after_sample_check() {
     assert!(
         fake_blossom.drop_event_count() > 0,
         "Expected fake blossom to drop old blobs after sample checks"
+    );
+    let head_requests_after_push2 = fake_blossom.head_request_count();
+    let head_requests_during_push2 = head_requests_after_push2 - head_requests_before_push2;
+    assert!(
+        head_requests_during_push2 <= 64,
+        "Expected second push to use bounded HEAD checks, got {}",
+        head_requests_during_push2
     );
     assert!(
         stderr2.contains("Computing diff") || stderr2.contains("unchanged"),

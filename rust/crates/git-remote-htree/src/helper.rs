@@ -16,6 +16,9 @@ use tracing::{debug, info, warn};
 
 /// Threshold for showing detailed progress (3 seconds)
 const VERBOSE_THRESHOLD: Duration = Duration::from_secs(3);
+/// Number of old-tree hashes to probe per server before deciding whether an
+/// incremental push can safely skip unchanged content.
+const SERVER_COVERAGE_SAMPLE_SIZE: usize = 32;
 
 use crate::nostr_client::{BlossomResult, NostrClient, PullRequestStateFilter, RelayResult};
 use hashtree_config::Config;
@@ -1428,18 +1431,28 @@ impl RemoteHelper {
                 // Force upload to all servers
                 Arc::new(all_servers.clone())
             } else if has_old_tree && !all_servers.is_empty() {
-                // Always include the root hash first, then sample additional random hashes
+                // Always include the root hash first, then sample additional old hashes.
                 // Root is critical - if server doesn't have root, it can't serve the tree
                 let old_root = old_root_bytes.unwrap();
                 let mut sample_hashes = vec![hex::encode(old_root)];
-                // Add up to 4 more random samples from the rest of the tree
-                for hash in old_hashes.iter().filter(|h| **h != old_root).take(4) {
+                for hash in old_hashes
+                    .iter()
+                    .filter(|h| **h != old_root)
+                    .take(SERVER_COVERAGE_SAMPLE_SIZE.saturating_sub(1))
+                {
                     sample_hashes.push(hex::encode(hash));
                 }
                 let sample_refs: Vec<&str> = sample_hashes.iter().map(|s| s.as_str()).collect();
                 let mut needs_full = Vec::new();
                 for server in &all_servers {
-                    if !blossom.server_has_tree_samples(server, &sample_refs, 5).await {
+                    if !blossom
+                        .server_has_tree_samples(
+                            server,
+                            &sample_refs,
+                            SERVER_COVERAGE_SAMPLE_SIZE,
+                        )
+                        .await
+                    {
                         needs_full.push(server.clone());
                     }
                 }
@@ -1457,7 +1470,7 @@ impl RemoteHelper {
             // Channel sends:
             // - data: encrypted blob bytes
             // - from_old_tree: whether hash existed in previous tree
-            // - force_all_servers: for old-tree hashes detected missing on at least one server
+            // - force_all_servers: whether this hash must be pushed to every write server
             const CHANNEL_SIZE: usize = 100;
             const UPLOAD_CONCURRENCY: usize = 10;
             let (tx, rx) = mpsc::channel::<(Vec<u8>, bool, bool)>(CHANNEL_SIZE);
@@ -1487,7 +1500,8 @@ impl RemoteHelper {
                             let skipped_diff = Arc::clone(&skipped_diff);
                             let servers_needing_full = Arc::clone(&servers_needing_full);
                             async move {
-                                // If from old tree and some servers need full upload, only upload to those
+                                // If from old tree and some servers need full upload, push the
+                                // reused content to every configured write server.
                                 let result = if force_all_servers
                                     || (from_old_tree && !servers_needing_full.is_empty())
                                 {
@@ -1546,25 +1560,11 @@ impl RemoteHelper {
                 // Check if this hash exists in old tree
                 let from_old_tree = old_hashes.contains(&hash);
 
-                // If from old tree and no servers need full upload, skip entirely
-                // unless a server has lost this hash since previous pushes.
-                let mut force_all_servers_for_hash = false;
-                if from_old_tree && servers_needing_full.is_empty() {
-                    let hash_hex = hex::encode(hash);
-                    let mut missing_on_any_server = false;
-                    for server in blossom.write_servers() {
-                        if !blossom.exists_on_server(&hash_hex, server).await {
-                            missing_on_any_server = true;
-                            break;
-                        }
-                    }
-                    if !missing_on_any_server {
-                        skipped_diff.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    }
-                    // At least one server is missing this "unchanged" hash.
-                    // Re-upload it to all servers to repair coverage.
-                    force_all_servers_for_hash = true;
+                // If the server sample says coverage is intact, skip unchanged hashes.
+                let force_all_servers_for_hash = from_old_tree && !servers_needing_full.is_empty();
+                if from_old_tree && !force_all_servers_for_hash {
+                    skipped_diff.fetch_add(1, Ordering::Relaxed);
+                    continue;
                 }
 
                 // Load blob from store (stored encrypted)
