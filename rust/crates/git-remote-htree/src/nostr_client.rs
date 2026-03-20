@@ -2040,10 +2040,7 @@ mod tests {
             Kind::Custom(KIND_APP_DATA),
             "bad",
             [
-                Tag::custom(
-                    TagKind::custom("d"),
-                    vec!["iris-chat-flutter".to_string()],
-                ),
+                Tag::custom(TagKind::custom("d"), vec!["iris-chat-flutter".to_string()]),
                 Tag::custom(TagKind::custom("l"), vec![LABEL_HASHTREE.to_string()]),
             ],
         )
@@ -2051,8 +2048,7 @@ mod tests {
         .to_event(&keys)
         .unwrap();
 
-        let picked =
-            pick_latest_repo_event([&iris_chat, &iris_chat_flutter], "iris-chat").unwrap();
+        let picked = pick_latest_repo_event([&iris_chat, &iris_chat_flutter], "iris-chat").unwrap();
         assert_eq!(picked.id, iris_chat.id);
     }
 

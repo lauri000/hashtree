@@ -194,7 +194,9 @@ impl<S: Store> NostrBridge<S> {
         let client = self.connect_client().await?;
 
         if self.config.relay_fetch_mode == RelayFetchMode::AuthorBatches {
-            return self.crawl_author_batches(&client, &authors, existing_root).await;
+            return self
+                .crawl_author_batches(&client, &authors, existing_root)
+                .await;
         }
 
         let mut existing_by_author: BTreeMap<String, Vec<StoredNostrEvent>> = BTreeMap::new();
@@ -281,7 +283,10 @@ impl<S: Store> NostrBridge<S> {
             events_selected = events_selected.saturating_add(batch.events.len());
             live_bytes_selected = batch.live_bytes_selected;
             if !batch.events.is_empty() {
-                current_root = self.event_store.build(current_root.as_ref(), batch.events).await?;
+                current_root = self
+                    .event_store
+                    .build(current_root.as_ref(), batch.events)
+                    .await?;
             }
             if self.reached_events_seen_limit(events_seen) {
                 break;
@@ -514,13 +519,7 @@ impl<S: Store> NostrBridge<S> {
             let local_items = self.local_items_for_batch(known.values(), author_batch);
             let relay_support = relay_negentropy_support.get(relay).copied();
             let fetched_from_relay = match self
-                .fetch_events_from_relay(
-                    client,
-                    relay,
-                    filter.clone(),
-                    local_items,
-                    relay_support,
-                )
+                .fetch_events_from_relay(client, relay, filter.clone(), local_items, relay_support)
                 .await
             {
                 Ok(result) => result,
@@ -935,10 +934,13 @@ impl<S: Store> NostrBridge<S> {
         });
 
         let Some(max_live_bytes) = self.config.max_live_bytes else {
-            let live_bytes_selected = events.iter().try_fold(live_bytes_selected_so_far, |total, event| {
-                let encoded = self.event_store.encode_event(event)?;
-                Ok::<u64, NostrEventStoreError>(total.saturating_add(encoded.len() as u64))
-            })?;
+            let live_bytes_selected =
+                events
+                    .iter()
+                    .try_fold(live_bytes_selected_so_far, |total, event| {
+                        let encoded = self.event_store.encode_event(event)?;
+                        Ok::<u64, NostrEventStoreError>(total.saturating_add(encoded.len() as u64))
+                    })?;
             return Ok((events, live_bytes_selected));
         };
 
