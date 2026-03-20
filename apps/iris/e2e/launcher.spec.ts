@@ -25,11 +25,13 @@ test.describe('App Launcher', () => {
     await expect(favourites.getByText('Iris Video')).not.toBeVisible();
     await expect(favourites.getByText('Iris Docs')).not.toBeVisible();
     await expect(favourites.getByText('Iris Maps')).not.toBeVisible();
+    await expect(favourites.getByText('Iris Boards')).not.toBeVisible();
 
     await expect(suggestions.getByText('Iris Files')).toBeVisible();
     await expect(suggestions.getByText('Iris Video')).toBeVisible();
     await expect(suggestions.getByText('Iris Docs')).toBeVisible();
     await expect(suggestions.getByText('Iris Maps')).toBeVisible();
+    await expect(suggestions.getByText('Iris Boards')).toBeVisible();
     await expect(suggestions.getByText('hashtree.cc')).toBeVisible();
     await expect(suggestions.getByText('Iris Social')).toBeVisible();
   });
@@ -47,6 +49,22 @@ test.describe('App Launcher', () => {
     expect(createCalls.length).toBe(1);
     expect(createCalls[0].args.host).toBe(distributedOwner);
     expect(createCalls[0].args.treename).toBe('files');
+    expect(createCalls[0].args.path).toBe('/');
+  });
+
+  test('clicking Iris Boards suggestion opens boards tree', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const suggestions = page.locator('section').filter({
+      has: page.getByRole('heading', { name: 'Suggestions' }),
+    });
+    await suggestions.getByText('Iris Boards').click();
+
+    const invocations = await page.evaluate(() => (window as any).__tauriInvocations);
+    const createCalls = invocations.filter((i: any) => i.cmd === 'create_htree_webview');
+    expect(createCalls.length).toBe(1);
+    expect(createCalls[0].args.host).toBe(distributedOwner);
+    expect(createCalls[0].args.treename).toBe('boards');
     expect(createCalls[0].args.path).toBe('/');
   });
 

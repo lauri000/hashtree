@@ -12,6 +12,7 @@ export const suggestedIrisApps: readonly AppBookmark[] = [
   { url: `htree://${distributedOwner}/video`, name: 'Iris Video', icon: '/iris-logo.png', addedAt: 0 },
   { url: `htree://${distributedOwner}/docs`, name: 'Iris Docs', icon: '/iris-logo.png', addedAt: 0 },
   { url: `htree://${distributedOwner}/maps`, name: 'Iris Maps', icon: '/iris-logo.png', addedAt: 0 },
+  { url: `htree://${distributedOwner}/boards`, name: 'Iris Boards', icon: '/iris-logo.png', addedAt: 0 },
 ];
 
 export const defaultFavoriteApps: readonly AppBookmark[] = [];
