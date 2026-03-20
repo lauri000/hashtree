@@ -6,6 +6,7 @@
 //! 3. Injects window.__HTREE_SERVER_URL__ so the web app can use the daemon
 //! 4. Provides htree:// URI scheme for child webviews
 //! 5. Manages NIP-07 permissions for child webviews
+#![cfg_attr(any(target_os = "android", target_os = "ios"), allow(dead_code))]
 
 pub mod automation;
 pub mod history;
@@ -22,10 +23,12 @@ use hashtree_cli::daemon::{EmbeddedDaemonInfo, EmbeddedDaemonOptions};
 use hashtree_cli::server::AppState;
 use parking_lot::RwLock;
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Once;
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 use std::time::Duration;
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
@@ -108,6 +111,30 @@ fn env_path(var: &str) -> Option<PathBuf> {
         return None;
     }
     Some(PathBuf::from(trimmed))
+}
+
+#[cfg(any(target_os = "android", target_os = "ios", test))]
+fn mobile_default_htree_paths(shell_data_dir: &Path) -> (PathBuf, PathBuf) {
+    let config_dir = shell_data_dir.join("hashtree");
+    let data_dir = config_dir.join("data");
+    (config_dir, data_dir)
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn default_htree_paths(shell_data_dir: &Path) -> (PathBuf, PathBuf) {
+    mobile_default_htree_paths(shell_data_dir)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn default_htree_paths(_shell_data_dir: &Path) -> (PathBuf, PathBuf) {
+    let config_dir = hashtree_cli::config::get_hashtree_dir();
+    let data_dir = PathBuf::from(
+        hashtree_cli::Config::load()
+            .unwrap_or_default()
+            .storage
+            .data_dir,
+    );
+    (config_dir, data_dir)
 }
 
 fn resolve_iris_paths(
@@ -354,6 +381,7 @@ fn tray_menu_spec(connection_status: TrayConnectionStatus) -> Vec<TrayMenuItemSp
     ]
 }
 
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 fn append_tray_spec_to_menu<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     menu: &Menu<R>,
@@ -379,6 +407,7 @@ fn append_tray_spec_to_menu<R: tauri::Runtime>(
     Ok(())
 }
 
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 fn build_tray_menu<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     connection_status: TrayConnectionStatus,
@@ -390,6 +419,7 @@ fn build_tray_menu<R: tauri::Runtime>(
     Ok(menu)
 }
 
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
     let Some(window) = app.get_webview_window("main") else {
         return Ok(());
@@ -401,6 +431,12 @@ fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resu
     Ok(())
 }
 
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+fn show_main_window<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> tauri::Result<()> {
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 fn hide_main_window_to_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -409,6 +445,9 @@ fn hide_main_window_to_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let _ = window.minimize();
     let _ = window.hide();
 }
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+fn hide_main_window_to_tray<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) {}
 
 fn started_minimized() -> bool {
     std::env::args().any(|arg| arg == "--minimized")
@@ -540,6 +579,16 @@ fn fetch_tray_connection_status(
     Some(tray_connection_status_from_peers(status))
 }
 
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+fn refresh_tray_menu<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) {}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+fn update_tray_connection_status<R: tauri::Runtime>(
+    _app: &tauri::AppHandle<R>,
+    _connection_status: TrayConnectionStatus,
+) {
+}
+
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 fn spawn_tray_status_poller<R: tauri::Runtime + 'static>(app: tauri::AppHandle<R>, port: u16) {
     std::thread::spawn(move || {
@@ -567,6 +616,10 @@ fn spawn_tray_status_poller<R: tauri::Runtime + 'static>(app: tauri::AppHandle<R
     });
 }
 
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+fn spawn_tray_status_poller<R: tauri::Runtime + 'static>(_app: tauri::AppHandle<R>, _port: u16) {}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux", test))]
 #[cfg(test)]
 fn build_edit_menu<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -592,6 +645,7 @@ fn build_edit_menu<R: tauri::Runtime>(
         .build()
 }
 
+#[cfg(any(target_os = "macos", windows, target_os = "linux", test))]
 #[cfg(not(test))]
 fn build_edit_menu<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -604,6 +658,7 @@ fn build_edit_menu<R: tauri::Runtime>(
         .build()
 }
 
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     let app_name = app.package_info().name.clone();
     let quit = MenuItemBuilder::with_id("app_quit", "Quit")
@@ -658,27 +713,28 @@ pub fn run() {
 
     builder = builder.plugin(tauri_plugin_deep_link::init());
 
-    builder
-        .menu(build_menu)
-        .on_tray_icon_event(|app, event| {
-            if let TrayIconEvent::Click {
-                button,
-                button_state,
-                ..
-            } = event
-            {
-                if matches!(
-                    tray_primary_click_action(current_desktop_platform()),
-                    TrayPrimaryClickAction::OpenWindow
-                ) && button == MouseButton::Left
-                    && button_state == MouseButtonState::Up
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    {
+        builder = builder
+            .menu(build_menu)
+            .on_tray_icon_event(|app, event| {
+                if let TrayIconEvent::Click {
+                    button,
+                    button_state,
+                    ..
+                } = event
                 {
-                    let _ = show_main_window(app);
+                    if matches!(
+                        tray_primary_click_action(current_desktop_platform()),
+                        TrayPrimaryClickAction::OpenWindow
+                    ) && button == MouseButton::Left
+                        && button_state == MouseButtonState::Up
+                    {
+                        let _ = show_main_window(app);
+                    }
                 }
-            }
-        })
-        .on_menu_event(|app, event| {
-            match event.id().as_ref() {
+            })
+            .on_menu_event(|app, event| match event.id().as_ref() {
                 "nav_back" => {
                     let _ = app.emit(
                         "child-webview-navigate",
@@ -702,15 +758,14 @@ pub fn run() {
                     let _ = show_main_window(app);
                     emit_tray_action(app, automation::AutomationAction::Settings);
                 }
-                TRAY_QUIT_MENU_ID => {
-                    app.exit(0);
-                }
-                "app_quit" => {
+                TRAY_QUIT_MENU_ID | "app_quit" => {
                     app.exit(0);
                 }
                 _ => {}
-            }
-        })
+            });
+    }
+
+    builder
         .plugin(tauri_plugin_os::init())
         .register_uri_scheme_protocol("htree", htree_protocol::handle_htree_protocol)
         .invoke_handler(tauri::generate_handler![
@@ -762,19 +817,17 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            let shell_data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("failed to get app data dir");
+            let (shared_config_dir, shared_data_dir) = default_htree_paths(&shell_data_dir);
             let paths = resolve_iris_paths(
-                app.path()
-                    .app_data_dir()
-                    .expect("failed to get app data dir"),
+                shell_data_dir,
                 env_path("HTREE_CONFIG_DIR"),
                 env_path("HTREE_DATA_DIR"),
-                hashtree_cli::config::get_hashtree_dir(),
-                PathBuf::from(
-                    hashtree_cli::Config::load()
-                        .unwrap_or_default()
-                        .storage
-                        .data_dir,
-                ),
+                shared_config_dir,
+                shared_data_dir,
             );
 
             std::fs::create_dir_all(&paths.shell_data_dir)
@@ -890,15 +943,18 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    use super::build_menu;
     use super::{
-        build_menu, collect_supported_launch_deep_links, is_supported_launch_host,
+        collect_supported_launch_deep_links, is_supported_launch_host, mobile_default_htree_paths,
         normalize_supported_launch_deep_link, resolve_iris_paths,
         tray_connection_status_from_peers, tray_menu_spec, tray_primary_click_action,
         tray_status_text, DesktopPlatform, IrisPaths, TrayConnectionStatus, TrayMenuItemSpec,
         TrayPeersResponse, TrayPrimaryClickAction,
     };
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     #[cfg_attr(target_os = "macos", ignore = "requires main thread for menu items")]
     #[test]
     fn app_menu_includes_quit_item() {
@@ -1070,6 +1126,14 @@ mod tests {
                 htree_data_dir: PathBuf::from("/tmp/htree-data"),
             }
         );
+    }
+
+    #[test]
+    fn mobile_default_htree_paths_live_under_shell_state() {
+        let (config_dir, data_dir) = mobile_default_htree_paths(Path::new("/tmp/iris"));
+
+        assert_eq!(config_dir, PathBuf::from("/tmp/iris/hashtree"));
+        assert_eq!(data_dir, PathBuf::from("/tmp/iris/hashtree/data"));
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! Provides window.nostr capability for child webviews.
 //! NIP-07 signing is proxied to the main webview's window.nostr
 //! (which the web app provides via its own identity management).
+#![cfg_attr(any(target_os = "android", target_os = "ios"), allow(dead_code))]
 
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, StatusCode};
@@ -14,11 +15,11 @@ use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl};
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 use std::time::Duration;
-use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, Runtime, WebviewBuilder,
-    WebviewUrl,
-};
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+use tauri::{LogicalPosition, LogicalSize, Rect, WebviewBuilder};
 use tracing::{debug, error, info, warn};
 
 // ============================================
@@ -1138,6 +1139,7 @@ pub async fn nip07_request<R: Runtime>(
     handle_nip07_request_inner(permissions, &method, &params, &origin).await
 }
 
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 #[tauri::command]
 pub async fn create_nip07_webview<R: Runtime>(
     app: AppHandle<R>,
@@ -1291,6 +1293,23 @@ pub async fn create_nip07_webview<R: Runtime>(
     Ok(())
 }
 
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+#[tauri::command]
+pub async fn create_nip07_webview<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+    url: String,
+    origin: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let _ = (app, label, url, origin, x, y, width, height);
+    Err("Child webviews are not supported on Android yet".to_string())
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 #[tauri::command]
 pub async fn create_htree_webview<R: Runtime>(
     app: AppHandle<R>,
@@ -1521,6 +1540,28 @@ pub async fn create_htree_webview<R: Runtime>(
     Ok(())
 }
 
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+#[tauri::command]
+pub async fn create_htree_webview<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+    host: Option<String>,
+    nhash: Option<String>,
+    npub: Option<String>,
+    treename: Option<String>,
+    path: String,
+    query: Option<String>,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let _ = (
+        app, label, host, nhash, npub, treename, path, query, x, y, width, height,
+    );
+    Err("Child webviews are not supported on Android yet".to_string())
+}
+
 fn canonicalize_child_webview_url(
     url: &str,
     actual_url_root: &str,
@@ -1555,6 +1596,7 @@ fn strip_internal_htree_query_params(url: &str) -> String {
     parsed.into()
 }
 
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 #[tauri::command]
 pub fn close_webview<R: Runtime>(app: AppHandle<R>, label: String) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&label) {
@@ -1566,6 +1608,14 @@ pub fn close_webview<R: Runtime>(app: AppHandle<R>, label: String) -> Result<(),
     Ok(())
 }
 
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+#[tauri::command]
+pub fn close_webview<R: Runtime>(app: AppHandle<R>, label: String) -> Result<(), String> {
+    let _ = (app, label);
+    Err("Child webviews are not supported on Android yet".to_string())
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 #[tauri::command]
 pub fn navigate_webview<R: Runtime>(
     app: AppHandle<R>,
@@ -1582,6 +1632,18 @@ pub fn navigate_webview<R: Runtime>(
     Ok(())
 }
 
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+#[tauri::command]
+pub fn navigate_webview<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+    url: String,
+) -> Result<(), String> {
+    let _ = (app, label, url);
+    Err("Child webviews are not supported on Android yet".to_string())
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 #[tauri::command]
 pub fn set_webview_bounds<R: Runtime>(
     app: AppHandle<R>,
@@ -1604,6 +1666,21 @@ pub fn set_webview_bounds<R: Runtime>(
     Ok(())
 }
 
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+#[tauri::command]
+pub fn set_webview_bounds<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let _ = (app, label, x, y, width, height);
+    Err("Child webviews are not supported on Android yet".to_string())
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 #[tauri::command]
 pub fn webview_history<R: Runtime>(
     app: AppHandle<R>,
@@ -1624,6 +1701,18 @@ pub fn webview_history<R: Runtime>(
     Ok(())
 }
 
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+#[tauri::command]
+pub fn webview_history<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+    direction: String,
+) -> Result<(), String> {
+    let _ = (app, label, direction);
+    Err("Child webviews are not supported on Android yet".to_string())
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 #[tauri::command]
 pub fn reload_webview<R: Runtime>(app: AppHandle<R>, label: String) -> Result<(), String> {
     let webview = app
@@ -1635,6 +1724,14 @@ pub fn reload_webview<R: Runtime>(app: AppHandle<R>, label: String) -> Result<()
     Ok(())
 }
 
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+#[tauri::command]
+pub fn reload_webview<R: Runtime>(app: AppHandle<R>, label: String) -> Result<(), String> {
+    let _ = (app, label);
+    Err("Child webviews are not supported on Android yet".to_string())
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 #[tauri::command]
 pub fn webview_current_url<R: Runtime>(app: AppHandle<R>, label: String) -> Result<String, String> {
     let webview = app
@@ -1644,6 +1741,13 @@ pub fn webview_current_url<R: Runtime>(app: AppHandle<R>, label: String) -> Resu
         .url()
         .map(|url| url.to_string())
         .map_err(|e| format!("Failed to read webview URL: {}", e))
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+#[tauri::command]
+pub fn webview_current_url<R: Runtime>(app: AppHandle<R>, label: String) -> Result<String, String> {
+    let _ = (app, label);
+    Err("Child webviews are not supported on Android yet".to_string())
 }
 
 #[derive(Debug, Deserialize)]
