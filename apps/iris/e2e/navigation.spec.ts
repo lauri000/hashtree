@@ -6,11 +6,44 @@ async function openHome(page: import('@playwright/test').Page) {
 }
 
 test.describe('Navigation', () => {
+  test('toolbar stays within a narrow mobile viewport', async ({ tauriPage: page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openHome(page);
+    await expect(page.locator('input[placeholder="Search or enter address"]')).toBeVisible();
+
+    const toolbarLayout = await page.evaluate(() => {
+      const toolbar = document.querySelector<HTMLElement>('div[data-tauri-drag-region][data-testid="toolbar"]');
+      const input = document.querySelector<HTMLInputElement>('input[placeholder="Search or enter address"]');
+      const settingsButton = document.querySelector<HTMLButtonElement>('button[title="Settings"]');
+
+      if (!toolbar || !input || !settingsButton) {
+        throw new Error('mobile toolbar controls not found');
+      }
+
+      const toolbarRect = toolbar.getBoundingClientRect();
+      const inputRect = input.getBoundingClientRect();
+      const settingsRect = settingsButton.getBoundingClientRect();
+
+      return {
+        viewportWidth: window.innerWidth,
+        toolbarLeft: toolbarRect.left,
+        toolbarRight: toolbarRect.right,
+        inputRight: inputRect.right,
+        settingsRight: settingsRect.right,
+      };
+    });
+
+    expect(toolbarLayout.toolbarLeft).toBeGreaterThanOrEqual(0);
+    expect(toolbarLayout.toolbarRight).toBeLessThanOrEqual(toolbarLayout.viewportWidth);
+    expect(toolbarLayout.inputRight).toBeLessThanOrEqual(toolbarLayout.viewportWidth - 8);
+    expect(toolbarLayout.settingsRight).toBeLessThanOrEqual(toolbarLayout.viewportWidth - 8);
+  });
+
   test('toolbar does not depend on the JS drag fallback', async ({ tauriPage: page }) => {
     await openHome(page);
     await expect(page.locator('input[placeholder="Search or enter address"]')).toBeVisible();
 
-    const toolbar = page.locator('div[style="padding-left: 88px;"]');
+    const toolbar = page.getByTestId('toolbar');
     await toolbar.click({ position: { x: 20, y: 20 }, force: true });
 
     const dragCalls = await getInvocationsFor(page, 'plugin:window|start_dragging');

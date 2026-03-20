@@ -32,7 +32,9 @@
   type View = 'launcher' | 'settings' | 'webview';
 
   const CHILD_LABEL = 'content';
-  const TOOLBAR_HEIGHT = 48;
+  const TOOLBAR_BASE_HEIGHT = 48;
+  const COMPACT_TOOLBAR_BREAKPOINT = 720;
+  const DESKTOP_TRAFFIC_LIGHTS_PADDING = 88;
   const MACOS_FUNCTION_KEY_GLYPHS = /[\uF700-\uF8FF]/g;
   const MACOS_FUNCTION_KEY_GLYPHS_SINGLE = /[\uF700-\uF8FF]/;
   const LEGACY_MACOS_ARROW_KEY_CODES = new Set([63232, 63233, 63234, 63235]);
@@ -58,6 +60,10 @@
   let boundsRaf: number | null = null;
   let automationSyncRaf: number | null = null;
   let dropdownEl: HTMLDivElement | null = $state(null);
+  let toolbarHeight = $state(TOOLBAR_BASE_HEIGHT);
+  let isCompactToolbar = $state(
+    typeof window !== 'undefined' && window.innerWidth < COMPACT_TOOLBAR_BREAKPOINT
+  );
 
   // Shell-level navigation history
   let historyStack: string[] = $state([]);  // URLs visited
@@ -180,6 +186,10 @@
     });
 
     return sanitizedValue;
+  }
+
+  function syncToolbarMode() {
+    isCompactToolbar = window.innerWidth < COMPACT_TOOLBAR_BREAKPOINT;
   }
 
   function handleAddressBeforeInput(event: InputEvent) {
@@ -383,9 +393,9 @@
     await tick();
 
     const x = 0;
-    const y = TOOLBAR_HEIGHT;
+    const y = toolbarHeight;
     const width = window.innerWidth;
-    const height = window.innerHeight - TOOLBAR_HEIGHT;
+    const height = Math.max(0, window.innerHeight - toolbarHeight);
 
     if (!g.__irisChildReady) {
       const htree = parseHtreeUrl(url);
@@ -563,7 +573,7 @@
     boundsRaf = requestAnimationFrame(async () => {
       boundsRaf = null;
       if (currentView !== 'webview' || !g.__irisChildReady) return;
-      const top = TOOLBAR_HEIGHT;
+      const top = toolbarHeight;
       const height = Math.max(0, window.innerHeight - top);
       try {
         await setWebviewBounds(CHILD_LABEL, 0, top, window.innerWidth, height);
@@ -709,6 +719,11 @@
     scheduleAutomationStateSync();
   });
 
+  $effect(() => {
+    toolbarHeight;
+    scheduleWebviewBoundsUpdate();
+  });
+
   onMount(async () => {
     const unlistenLocation = await onChildWebviewLocation(handleLocationChange);
     const unlistenPageLoad = await onChildWebviewPageLoad(handlePageLoadEvent);
@@ -726,11 +741,14 @@
     } catch (error) {
       console.warn('[Iris] deep-link initialization failed:', error);
     }
+    syncToolbarMode();
     scheduleAutomationStateSync();
     window.addEventListener('keydown', handleGlobalKeyDown);
+    window.addEventListener('resize', syncToolbarMode);
     window.addEventListener('resize', scheduleWebviewBoundsUpdate);
     return () => {
       window.removeEventListener('keydown', handleGlobalKeyDown);
+      window.removeEventListener('resize', syncToolbarMode);
       window.removeEventListener('resize', scheduleWebviewBoundsUpdate);
       if (automationSyncRaf !== null) cancelAnimationFrame(automationSyncRaf);
       unlistenLocation();
@@ -741,43 +759,59 @@
   });
 </script>
 
-<div class="h-screen flex flex-col bg-surface-0 overscroll-none">
+<div class="h-[100dvh] max-h-[100dvh] flex flex-col bg-surface-0 overscroll-none overflow-hidden">
   <!-- Toolbar - data-tauri-drag-region on every non-interactive element -->
   <div
+    bind:offsetHeight={toolbarHeight}
+    data-testid="toolbar"
     data-tauri-drag-region
-    class="h-12 shrink-0 flex items-center gap-2 px-3 bg-surface-1 border-b border-surface-2"
-    style="padding-left: 88px;"
+    class="shrink-0 flex bg-surface-1 border-b border-surface-2 {isCompactToolbar ? 'flex-col items-stretch gap-2 px-3 py-2' : 'h-12 items-center gap-2 px-3'}"
+    style={!isCompactToolbar ? `padding-left: ${DESKTOP_TRAFFIC_LIGHTS_PADDING}px;` : undefined}
   >
-    <div data-tauri-drag-region class="flex items-center gap-1">
-      <button
-        data-tauri-drag-region="false"
-        class="btn-circle btn-ghost"
-        class:opacity-40={!canGoBack}
-        onclick={goBack}
-        disabled={!canGoBack}
-        title="Back"
-      >
-        <span class="i-lucide-chevron-left text-lg"></span>
-      </button>
-      <button
-        data-tauri-drag-region="false"
-        class="btn-circle btn-ghost"
-        class:opacity-40={!canGoForward}
-        onclick={goForward}
-        disabled={!canGoForward}
-        title="Forward"
-      >
-        <span class="i-lucide-chevron-right text-lg"></span>
-      </button>
-      <button data-tauri-drag-region="false" class="btn-circle btn-ghost" onclick={goHome} title="Home">
-        <span class="i-lucide-home text-lg"></span>
-      </button>
+    <div data-tauri-drag-region class="flex items-center gap-1 {isCompactToolbar ? 'w-full justify-between' : 'shrink-0'}">
+      <div data-tauri-drag-region class="flex items-center gap-1 shrink-0">
+        <button
+          data-tauri-drag-region="false"
+          class="btn-circle btn-ghost"
+          class:opacity-40={!canGoBack}
+          onclick={goBack}
+          disabled={!canGoBack}
+          title="Back"
+        >
+          <span class="i-lucide-chevron-left text-lg"></span>
+        </button>
+        <button
+          data-tauri-drag-region="false"
+          class="btn-circle btn-ghost"
+          class:opacity-40={!canGoForward}
+          onclick={goForward}
+          disabled={!canGoForward}
+          title="Forward"
+        >
+          <span class="i-lucide-chevron-right text-lg"></span>
+        </button>
+        <button data-tauri-drag-region="false" class="btn-circle btn-ghost" onclick={goHome} title="Home">
+          <span class="i-lucide-home text-lg"></span>
+        </button>
+      </div>
+
+      {#if isCompactToolbar}
+        <button
+          data-tauri-drag-region="false"
+          class="btn-circle btn-ghost shrink-0"
+          onclick={goSettings}
+          title="Settings"
+        >
+          <span class="i-lucide-settings text-lg"></span>
+        </button>
+      {/if}
     </div>
 
-    <div data-tauri-drag-region class="flex-1 flex justify-center relative">
+    <div data-tauri-drag-region class="flex flex-1 min-w-0 relative {isCompactToolbar ? 'w-full' : 'justify-center'}">
       <div
+        data-testid="address-bar"
         data-tauri-drag-region="false"
-        class="w-full max-w-lg flex items-center gap-2 px-3 py-1 rounded-full bg-surface-0 b-1 b-solid b-surface-3 transition-colors {isAddressFocused ? 'b-accent' : ''}"
+        class="w-full min-w-0 flex items-center gap-2 px-3 py-1 rounded-full bg-surface-0 b-1 b-solid b-surface-3 transition-colors {isCompactToolbar ? '' : 'max-w-lg'} {isAddressFocused ? 'b-accent' : ''}"
       >
         {#if currentUrl}
           <button
@@ -808,7 +842,7 @@
           oninput={handleAddressInput}
           onkeydown={handleAddressKeyDown}
           placeholder="Search or enter address"
-          class="bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted flex-1 text-center"
+          class="bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted flex-1 min-w-0 {isCompactToolbar ? 'text-left' : 'text-center'}"
         />
         <button
           data-tauri-drag-region="false"
@@ -826,7 +860,7 @@
       </div>
 
       {#if showDropdown && dropdownItems.length > 0}
-        <div bind:this={dropdownEl} class="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-full max-w-lg bg-surface-1 b-1 b-solid b-surface-3 rounded-lg overflow-hidden z-50 max-h-80 overflow-y-auto" role="listbox">
+        <div bind:this={dropdownEl} class="absolute top-full mt-1 bg-surface-1 b-1 b-solid b-surface-3 rounded-lg overflow-hidden z-50 max-h-80 overflow-y-auto {isCompactToolbar ? 'left-0 right-0' : 'left-1/2 -translate-x-1/2 w-full max-w-lg'}" role="listbox">
           {#each dropdownItems as item, i}
             <div
               class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors cursor-pointer {i === selectedIndex ? 'bg-surface-2' : ''}"
@@ -853,18 +887,20 @@
       {/if}
     </div>
 
-    <button
-      data-tauri-drag-region="false"
-      class="btn-circle btn-ghost"
-      onclick={goSettings}
-      title="Settings"
-    >
-      <span class="i-lucide-settings text-lg"></span>
-    </button>
+    {#if !isCompactToolbar}
+      <button
+        data-tauri-drag-region="false"
+        class="btn-circle btn-ghost shrink-0"
+        onclick={goSettings}
+        title="Settings"
+      >
+        <span class="i-lucide-settings text-lg"></span>
+      </button>
+    {/if}
   </div>
 
   <!-- Content area -->
-  <main class="flex-1 flex flex-col">
+  <main class="min-h-0 flex-1 flex flex-col">
     {#if currentView === 'launcher'}
       <AppLauncher onnavigate={navigate} />
     {:else if currentView === 'settings'}
