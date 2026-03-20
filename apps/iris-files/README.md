@@ -29,15 +29,23 @@ npm run build
 npm run preview
 ```
 
-Portable Iris video build:
+Portable hashtree publish:
 
 ```bash
+pnpm run build:docs
+pnpm run smoke:docs:iris
+pnpm run publish:docs:iris
+
 pnpm run build:video
 pnpm run smoke:video:iris
 pnpm run publish:video:iris
+
+pnpm run build:maps
+pnpm run smoke:maps:iris
+pnpm run publish:maps:iris
 ```
 
-The shared video build lives in `dist-video`. The same artifacts work for both `https://video.iris.to` and `htree://.../video/index.html`: runtime code now picks the right backend for hosted HTTPS, native `http://127.0.0.1`, and Iris `htree://` delivery. The publish helper runs `htree add .` inside `dist-video` and publishes the CHK-encrypted/shareable `nhash` root directly, so the resulting URL shape is `htree://nhash.../index.html`, not `.../dist-video/index.html`.
+The shared docs, video, and maps builds live in `dist-docs`, `dist-video`, and `dist-maps`. The same artifacts work for both their hosted HTTPS deployments and `htree://.../<tree>/index.html` inside Iris. Each publish helper runs `htree add .` inside the built output directory and publishes the CHK-encrypted/shareable root directly, so the resulting URL shape is `htree://nhash.../index.html`, not `.../dist-*/index.html`.
 
 Portable Cloudflare release:
 

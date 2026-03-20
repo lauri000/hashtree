@@ -1,6 +1,5 @@
 import { test, expect, setupPageErrorHandler, gotoHome } from './fixtures';
-
-const distributedOwner = 'npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce';
+import { distributedOwner } from '../src/lib/apps';
 
 async function openHome(page: import('@playwright/test').Page) {
   setupPageErrorHandler(page);
@@ -11,21 +10,36 @@ test.describe('App Launcher', () => {
   test('shows launcher on startup', async ({ tauriPage: page }) => {
     await openHome(page);
 
-    // Favourites section visible
-    await expect(page.getByRole('heading', { name: 'Favourites' })).toBeVisible();
-    await expect(page.getByText('No favourites yet')).toBeVisible();
+    const favourites = page.locator('section').filter({
+      has: page.getByRole('heading', { name: 'Favourites' }),
+    });
+    const suggestions = page.locator('section').filter({
+      has: page.getByRole('heading', { name: 'Suggestions' }),
+    });
 
-    // Suggestions section visible with default apps
+    await expect(page.getByRole('heading', { name: 'Favourites' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Suggestions' })).toBeVisible();
-    await expect(page.getByText('Iris Files')).toBeVisible();
-    await expect(page.getByText('Iris Video')).toBeVisible();
-    await expect(page.getByText('Iris Social')).toBeVisible();
+    await expect(page.getByText('No favourites yet')).not.toBeVisible();
+
+    await expect(favourites.getByText('Iris Files')).toBeVisible();
+    await expect(favourites.getByText('Iris Video')).toBeVisible();
+    await expect(favourites.getByText('Iris Docs')).toBeVisible();
+    await expect(favourites.getByText('Iris Maps')).toBeVisible();
+
+    await expect(suggestions.getByText('Iris Files')).toBeVisible();
+    await expect(suggestions.getByText('Iris Video')).toBeVisible();
+    await expect(suggestions.getByText('Iris Docs')).toBeVisible();
+    await expect(suggestions.getByText('Iris Maps')).toBeVisible();
+    await expect(suggestions.getByText('Iris Social')).toBeVisible();
   });
 
   test('clicking suggestion triggers webview creation', async ({ tauriPage: page }) => {
     await openHome(page);
 
-    await page.getByText('Iris Files').click();
+    const favourites = page.locator('section').filter({
+      has: page.getByRole('heading', { name: 'Favourites' }),
+    });
+    await favourites.getByText('Iris Files').click();
 
     const invocations = await page.evaluate(() => (window as any).__tauriInvocations);
     const createCalls = invocations.filter((i: any) => i.cmd === 'create_htree_webview');
@@ -36,16 +50,15 @@ test.describe('App Launcher', () => {
   });
 
   test('add to favourites button works', async ({ tauriPage: page }) => {
-    // Clear any stored favourites
     await openHome(page);
-    await page.evaluate(() => localStorage.removeItem('iris:apps'));
+    await page.evaluate(() => localStorage.setItem('iris:apps', JSON.stringify([])));
     await page.reload();
     await gotoHome(page);
 
-    // Click the + button on the first suggestion
+    await expect(page.getByText('No favourites yet')).toBeVisible();
+
     await page.locator('button[title="Add to favourites"]').first().click();
 
-    // Should no longer show "No favourites yet"
     await expect(page.getByText('No favourites yet')).not.toBeVisible();
   });
 });

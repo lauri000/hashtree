@@ -1,21 +1,16 @@
 import { writable } from 'svelte/store';
-
-export interface AppBookmark {
-  url: string;
-  name: string;
-  icon?: string;
-  addedAt: number;
-}
+import { cloneBookmarks, defaultFavoriteApps, type AppBookmark } from '../lib/apps';
 
 const STORAGE_KEY = 'iris:apps';
 
 function loadApps(): AppBookmark[] {
-  if (typeof localStorage === 'undefined') return [];
+  if (typeof localStorage === 'undefined') return cloneBookmarks(defaultFavoriteApps);
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    return stored ? JSON.parse(stored) : [];
+    if (!stored) return cloneBookmarks(defaultFavoriteApps);
+    return JSON.parse(stored);
   } catch {
-    return [];
+    return cloneBookmarks(defaultFavoriteApps);
   }
 }
 
