@@ -947,11 +947,7 @@ fn ensure_social_graph_mapsize(db_dir: &Path, requested_bytes: u64) -> Result<()
 }
 
 fn page_size_bytes() -> usize {
-    let value = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    usize::try_from(value)
-        .ok()
-        .filter(|size| *size > 0)
-        .unwrap_or(4096)
+    page_size::get_granularity()
 }
 
 #[cfg(test)]

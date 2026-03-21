@@ -27,6 +27,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const HASHTREE_RS_DIR = path.resolve(__dirname, '../../../rust');
+const RELEASE_DIR = path.join(HASHTREE_RS_DIR, 'target/release');
 
 test.describe('Git push to htree:// and view in browser', () => {
   // Serial mode: WebRTC from parallel tests can interfere with local git state
@@ -37,6 +38,8 @@ test.describe('Git push to htree:// and view in browser', () => {
   let htreeProcess: ChildProcess | null = null;
   let npub: string | null = null;
   let lockFd: number | null = null;
+  let htreeBin: string;
+  let gitRemoteHtree: string;
 
   const deriveNpubFromKeys = (keysPath: string): string | null => {
     if (!fs.existsSync(keysPath)) return null;
@@ -64,6 +67,36 @@ test.describe('Git push to htree:// and view in browser', () => {
     return null;
   };
 
+  const ensureRustBinaries = (): { htreeBin: string; gitRemoteHtree: string } => {
+    const resolvedHtreeBin = path.join(RELEASE_DIR, 'htree');
+    const resolvedGitRemoteHtree = path.join(RELEASE_DIR, 'git-remote-htree');
+
+    if (!fs.existsSync(resolvedHtreeBin)) {
+      console.log('Building release htree binary...');
+      execSync('cargo build --release -p hashtree-cli --bin htree', {
+        cwd: HASHTREE_RS_DIR,
+        stdio: 'inherit',
+      });
+    }
+
+    if (!fs.existsSync(resolvedGitRemoteHtree)) {
+      console.log('Building release git-remote-htree binary...');
+      execSync('cargo build --release -p git-remote-htree', {
+        cwd: HASHTREE_RS_DIR,
+        stdio: 'inherit',
+      });
+    }
+
+    if (!fs.existsSync(resolvedHtreeBin) || !fs.existsSync(resolvedGitRemoteHtree)) {
+      throw new Error('Required Rust binaries are missing after build');
+    }
+
+    return {
+      htreeBin: resolvedHtreeBin,
+      gitRemoteHtree: resolvedGitRemoteHtree,
+    };
+  };
+
   test.beforeAll(async () => {
     test.setTimeout(180000);
     // Create temp directory for htree data
@@ -71,18 +104,7 @@ test.describe('Git push to htree:// and view in browser', () => {
     console.log(`Using temp directory: ${tempDir}`);
 
     lockFd = await acquireRustLock(240000);
-
-    // Build htree CLI (includes git-remote-htree wrapper binary)
-    console.log('Building rust...');
-    try {
-      execSync('cargo build --release -p hashtree-cli', {
-        cwd: HASHTREE_RS_DIR,
-        stdio: 'inherit',
-      });
-    } catch (e) {
-      console.error('Failed to build rust:', e);
-      throw e;
-    }
+    ({ htreeBin, gitRemoteHtree } = ensureRustBinaries());
   });
 
   test.afterAll(async () => {
@@ -111,9 +133,6 @@ test.describe('Git push to htree:// and view in browser', () => {
         console.log(`[browser] ${msg.text()}`);
       }
     });
-
-    const htreeBin = path.join(HASHTREE_RS_DIR, 'target/release/htree');
-    const gitRemoteHtree = path.join(HASHTREE_RS_DIR, 'target/release/git-remote-htree');
 
     // Verify binaries exist
     expect(fs.existsSync(htreeBin)).toBe(true);

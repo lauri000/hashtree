@@ -69,7 +69,7 @@ jobs:
   ts-e2e-tests:
     name: TypeScript E2E Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: ts
@@ -95,8 +95,11 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Prebuild htree daemon for E2E
-        run: cargo build --manifest-path ../rust/Cargo.toml -p hashtree-cli
+      - name: Prebuild Rust artifacts for E2E
+        run: |
+          cargo build --manifest-path ../rust/Cargo.toml --release -p hashtree-cli --bin htree
+          cargo build --manifest-path ../rust/Cargo.toml --release -p git-remote-htree
+          cargo test --manifest-path ../rust/Cargo.toml -p hashtree-cli --features p2p --test crosslang_peer --no-run
 
       - name: Install Playwright browsers
         run: pnpm exec playwright install chromium --with-deps
