@@ -11,9 +11,12 @@
   import WalletPage from './WalletPage.svelte';
   import UsersPage from './UsersPage.svelte';
   import ProfileView from './ProfileView.svelte';
+  import GitProfileView from './Git/GitProfileView.svelte';
   import FollowsPage from './FollowsPage.svelte';
   import FollowersPage from './FollowersPage.svelte';
   import EditProfilePage from './EditProfilePage.svelte';
+  import { isNHash, isNPath } from '@hashtree/core';
+  import { nip19 } from 'nostr-tools';
 
   // Route handlers
   import HomeRoute from '../routes/HomeRoute.svelte';
@@ -129,6 +132,23 @@
   // Derive route from path prop
   let route = $derived.by(() => findRoute(currentPath));
 
+  function parseGitProfileNpub(component: unknown, params: Record<string, string | undefined>): string | null {
+    if (!supportsGitFeatures()) return null;
+    if (component !== UserRoute) return null;
+    const candidate = params.npub || params.id;
+    if (!candidate || isNHash(candidate) || isNPath(candidate)) {
+      return null;
+    }
+    try {
+      const decoded = nip19.decode(candidate);
+      return decoded.type === 'npub' ? candidate : null;
+    } catch {
+      return null;
+    }
+  }
+
+  let gitProfileNpub = $derived(parseGitProfileNpub(route.component, route.params));
+
   // For NIP-34/compare/merge views, we need npub and treeName from the current route
   // The repo path is treeName + any wild path
   let repoPath = $derived.by(() => {
@@ -171,6 +191,8 @@
     <FollowersPage npub={route.params.npub} />
   {:else if route.component === EditProfilePage}
     <EditProfilePage npub={route.params.npub} />
+  {:else if gitProfileNpub}
+    <GitProfileView npub={gitProfileNpub} />
   {:else if route.component === ProfileView}
     <ProfileView npub={route.params.npub || ''} />
   {:else if route.component === TreeRoute}

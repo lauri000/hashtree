@@ -58,4 +58,25 @@ describe('tree root registry same-hash merges', () => {
     expect(record?.key).toBeUndefined();
     expect(record?.visibility).toBe('public');
   });
+
+  it('preserves labels across local writes when autosave does not resend them', () => {
+    const npub = 'npub-test-label-preserve';
+    const treeName = 'git/test-label-preserve';
+
+    treeRootRegistry.delete(npub, treeName);
+    treeRootRegistry.setFromExternal(npub, treeName, HASH_A, 'prefetch', {
+      updatedAt: 200,
+      visibility: 'public',
+      labels: ['hashtree', 'git'],
+    });
+
+    treeRootRegistry.setLocal(npub, treeName, HASH_B, {
+      visibility: 'public',
+    });
+
+    const record = treeRootRegistry.get(npub, treeName);
+    expect(record).not.toBeNull();
+    expect(record?.hash && toHex(record.hash)).toBe(toHex(HASH_B));
+    expect(record?.labels).toEqual(['hashtree', 'git']);
+  });
 });

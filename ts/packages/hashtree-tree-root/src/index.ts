@@ -26,6 +26,7 @@ export interface TreeRootRecord {
   hash: Hash;
   key?: Hash;
   visibility: TreeVisibility;
+  labels?: string[];
   updatedAt: number; // Unix seconds (event created_at or local timestamp)
   source: TreeRootSource;
   dirty: boolean; // Local writes pending publish
@@ -44,6 +45,7 @@ interface PersistedRecord {
   hash: string; // hex
   key?: string; // hex
   visibility: TreeVisibility;
+  labels?: string[];
   updatedAt: number;
   source: TreeRootSource;
   dirty: boolean;
@@ -81,6 +83,7 @@ class LocalStoragePersistence implements RegistryPersistence {
       hash: toHex(record.hash),
       key: record.key ? toHex(record.key) : undefined,
       visibility: record.visibility,
+      labels: record.labels,
       updatedAt: record.updatedAt,
       source: record.source,
       dirty: record.dirty,
@@ -97,6 +100,7 @@ class LocalStoragePersistence implements RegistryPersistence {
         hash: fromHex(data.hash),
         key: data.key ? fromHex(data.key) : undefined,
         visibility: data.visibility,
+        labels: uniqueLabels(data.labels),
         updatedAt: data.updatedAt,
         source: data.source,
         dirty: data.dirty,
@@ -283,6 +287,7 @@ class TreeRootRegistryImpl {
     options?: {
       key?: Hash;
       visibility?: TreeVisibility;
+      labels?: string[];
       encryptedKey?: string;
       keyId?: string;
       selfEncryptedKey?: string;
@@ -302,6 +307,12 @@ class TreeRootRegistryImpl {
 
     if (existing.visibility === 'public' && options?.visibility && options.visibility !== 'public') {
       existing.visibility = options.visibility;
+      changed = true;
+    }
+
+    const mergedLabels = mergeLabels(options?.labels, existing.labels);
+    if (mergedLabels && JSON.stringify(mergedLabels) !== JSON.stringify(existing.labels)) {
+      existing.labels = mergedLabels;
       changed = true;
     }
 
@@ -433,6 +444,7 @@ class TreeRootRegistryImpl {
     options?: {
       key?: Hash;
       visibility?: TreeVisibility;
+      labels?: string[];
       encryptedKey?: string;
       keyId?: string;
       selfEncryptedKey?: string;
@@ -449,6 +461,7 @@ class TreeRootRegistryImpl {
       hash,
       key: options?.key,
       visibility,
+      labels: uniqueLabels(options?.labels) ?? existing?.labels,
       updatedAt: Math.floor(Date.now() / 1000),
       source: 'local-write',
       dirty: true,
@@ -475,6 +488,7 @@ class TreeRootRegistryImpl {
     options?: {
       key?: Hash;
       visibility?: TreeVisibility;
+      labels?: string[];
       encryptedKey?: string;
       keyId?: string;
       selfEncryptedKey?: string;
@@ -500,6 +514,7 @@ class TreeRootRegistryImpl {
       // Preserve known key when newer resolver updates omit it for the same hash.
       key: options?.key ?? (sameHash ? existing?.key : undefined),
       visibility: options?.visibility ?? 'public',
+      labels: uniqueLabels(options?.labels) ?? existing?.labels,
       updatedAt,
       source: 'nostr',
       dirty: false,
@@ -550,6 +565,7 @@ class TreeRootRegistryImpl {
     options?: {
       key?: Hash;
       visibility?: TreeVisibility;
+      labels?: string[];
       encryptedKey?: string;
       keyId?: string;
       selfEncryptedKey?: string;
@@ -575,6 +591,7 @@ class TreeRootRegistryImpl {
       // Preserve known key when worker updates omit it for the same hash.
       key: options?.key ?? (sameHash ? existing?.key : undefined),
       visibility: options?.visibility ?? 'public',
+      labels: uniqueLabels(options?.labels) ?? existing?.labels,
       updatedAt,
       source: 'worker',
       dirty: false,
@@ -601,6 +618,7 @@ class TreeRootRegistryImpl {
     options?: {
       key?: Hash;
       visibility?: TreeVisibility;
+      labels?: string[];
       updatedAt?: number;
     }
   ): void {
@@ -628,6 +646,7 @@ class TreeRootRegistryImpl {
       hash,
       key: options?.key ?? (sameHash ? existing?.key : undefined),
       visibility: options?.visibility ?? existing?.visibility ?? 'public',
+      labels: uniqueLabels(options?.labels) ?? existing?.labels,
       updatedAt,
       source,
       dirty: false,
@@ -767,6 +786,13 @@ class TreeRootRegistryImpl {
   getVisibility(npub: string, treeName: string): TreeVisibility | undefined {
     return this.records.get(this.makeKey(npub, treeName))?.visibility;
   }
+
+  /**
+   * Get labels for a tree
+   */
+  getLabels(npub: string, treeName: string): string[] | undefined {
+    return this.records.get(this.makeKey(npub, treeName))?.labels;
+  }
 }
 
 // Singleton instance - use window to survive HMR
@@ -788,6 +814,25 @@ function getRegistry(): TreeRootRegistryImpl {
   }
 
   return registry;
+}
+
+function uniqueLabels(labels: string[] | undefined): string[] | undefined {
+  if (!labels?.length) return undefined;
+
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const label of labels) {
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    deduped.push(label);
+  }
+  return deduped.length > 0 ? deduped : undefined;
+}
+
+function mergeLabels(primary: string[] | undefined, fallback: string[] | undefined): string[] | undefined {
+  if (!primary?.length) return uniqueLabels(fallback);
+  if (!fallback?.length) return uniqueLabels(primary);
+  return uniqueLabels([...primary, ...fallback]);
 }
 
 // Export singleton instance

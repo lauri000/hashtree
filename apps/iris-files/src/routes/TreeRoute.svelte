@@ -10,6 +10,7 @@
   import { nip19 } from 'nostr-tools';
   import { getQueryParamsFromHash } from '../lib/router.svelte';
   import { supportsDocumentFeatures, supportsGitFeatures } from '../appType';
+  import { treeRootRegistry } from '../TreeRootRegistry';
 
   interface Props {
     npub?: string;
@@ -103,6 +104,7 @@
           id: '',
           name: treeNameVal,
           pubkey,
+          labels: treeRootRegistry.getLabels(npubStr, treeNameVal) ?? currentSelected?.labels,
           rootHash: currentSelected?.rootHash || '',
           rootKey: currentSelected?.rootKey,
           visibility: currentSelected?.visibility ?? 'public',
@@ -185,6 +187,7 @@
                   id: currentSelected?.id || '',
                   name: treeNameVal,
                   pubkey,
+                  labels: treeRootRegistry.getLabels(npubStr, treeNameVal) ?? currentSelected?.labels,
                   rootHash: hashHex,
                   rootKey: keyHex,
                   visibility: visibilityInfo?.visibility ?? 'public',

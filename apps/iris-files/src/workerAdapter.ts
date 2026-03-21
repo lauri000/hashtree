@@ -78,7 +78,7 @@ export class WorkerAdapter {
   private blossomPushCompleteCallback: ((treeName: string, pushed: number, skipped: number, failed: number) => void) | null = null;
 
   // Tree root update callbacks (worker → main thread notifications)
-  private treeRootUpdateCallbacks = new Set<(npub: string, treeName: string, hash: Uint8Array, updatedAt: number, options: { key?: Uint8Array; visibility: string; encryptedKey?: string; keyId?: string; selfEncryptedKey?: string; selfEncryptedLinkKey?: string }) => void>();
+  private treeRootUpdateCallbacks = new Set<(npub: string, treeName: string, hash: Uint8Array, updatedAt: number, options: { key?: Uint8Array; visibility: string; labels?: string[]; encryptedKey?: string; keyId?: string; selfEncryptedKey?: string; selfEncryptedLinkKey?: string }) => void>();
 
   // Message queue for messages sent before worker is ready
   private messageQueue: WorkerRequest[] = [];
@@ -544,6 +544,7 @@ export class WorkerAdapter {
     hash: Uint8Array;
     key?: Uint8Array;
     visibility: string;
+    labels?: string[];
     updatedAt: number;
     encryptedKey?: string;
     keyId?: string;
@@ -554,6 +555,7 @@ export class WorkerAdapter {
       callback(msg.npub, msg.treeName, msg.hash, msg.updatedAt, {
         key: msg.key,
         visibility: msg.visibility,
+        labels: msg.labels,
         encryptedKey: msg.encryptedKey,
         keyId: msg.keyId,
         selfEncryptedKey: msg.selfEncryptedKey,
@@ -596,7 +598,7 @@ export class WorkerAdapter {
    * Returns an unsubscribe function.
    */
   onTreeRootUpdate(
-    callback: (npub: string, treeName: string, hash: Uint8Array, updatedAt: number, options: { key?: Uint8Array; visibility: string; encryptedKey?: string; keyId?: string; selfEncryptedKey?: string; selfEncryptedLinkKey?: string }) => void
+    callback: (npub: string, treeName: string, hash: Uint8Array, updatedAt: number, options: { key?: Uint8Array; visibility: string; labels?: string[]; encryptedKey?: string; keyId?: string; selfEncryptedKey?: string; selfEncryptedLinkKey?: string }) => void
   ): () => void {
     this.treeRootUpdateCallbacks.add(callback);
     return () => this.treeRootUpdateCallbacks.delete(callback);
@@ -1007,7 +1009,8 @@ export class WorkerAdapter {
     treeName: string,
     hash: Uint8Array,
     key?: Uint8Array,
-    visibility: 'public' | 'link-visible' | 'private' = 'public'
+    visibility: 'public' | 'link-visible' | 'private' = 'public',
+    labels?: string[]
   ): Promise<void> {
     const id = generateRequestId();
     await this.request<{ error?: string }>({
@@ -1018,6 +1021,7 @@ export class WorkerAdapter {
       hash,
       key,
       visibility,
+      labels,
     } as WorkerRequest);
   }
 

@@ -75,4 +75,20 @@ describe('parseTreeRootEvent', () => {
     expect(parsed?.selfEncryptedKey).toBe(selfEncryptedKey);
     expect(parsed?.visibility).toBe('private');
   });
+
+  it('keeps discovery labels from l tags', () => {
+    const hash = 'e'.repeat(64);
+    const event = buildEvent({
+      tags: [
+        ['d', 'repo/test'],
+        ['l', 'hashtree'],
+        ['l', 'git'],
+        ['l', 'git'],
+        ['hash', hash],
+      ],
+    });
+
+    const parsed = parseTreeRootEvent(event);
+    expect(parsed?.labels).toEqual(['hashtree', 'git']);
+  });
 });

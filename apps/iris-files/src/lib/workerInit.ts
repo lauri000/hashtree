@@ -198,8 +198,8 @@ function setupTreeRootRegistryBridge(): void {
       const treeName = key.slice(slashIndex + 1);
 
       try {
-        await (adapter as { setTreeRootCache: (npub: string, treeName: string, hash: Uint8Array, key?: Uint8Array, visibility?: 'public' | 'link-visible' | 'private') => Promise<void> })
-          .setTreeRootCache(npub, treeName, record.hash, record.key, record.visibility);
+        await (adapter as { setTreeRootCache: (npub: string, treeName: string, hash: Uint8Array, key?: Uint8Array, visibility?: 'public' | 'link-visible' | 'private', labels?: string[]) => Promise<void> })
+          .setTreeRootCache(npub, treeName, record.hash, record.key, record.visibility, record.labels);
       } catch (err) {
         console.warn('[WorkerInit] Failed to sync local write to worker:', err);
       }
@@ -215,19 +215,20 @@ function setupTreeRootRegistryBridge(): void {
       const npub = key.slice(0, slashIndex);
       const treeName = key.slice(slashIndex + 1);
 
-      (adapter as { setTreeRootCache: (npub: string, treeName: string, hash: Uint8Array, key?: Uint8Array, visibility?: 'public' | 'link-visible' | 'private') => Promise<void> })
-        .setTreeRootCache(npub, treeName, record.hash, record.key, record.visibility)
+      (adapter as { setTreeRootCache: (npub: string, treeName: string, hash: Uint8Array, key?: Uint8Array, visibility?: 'public' | 'link-visible' | 'private', labels?: string[]) => Promise<void> })
+        .setTreeRootCache(npub, treeName, record.hash, record.key, record.visibility, record.labels)
         .catch(err => console.warn('[WorkerInit] Failed to sync initial local write to worker:', err));
     }
   }
 
   // 2. Listen for worker tree root updates (from Nostr subscriptions)
   if ('onTreeRootUpdate' in adapter) {
-    workerTreeRootUnsubscribe = (adapter as { onTreeRootUpdate: (cb: (npub: string, treeName: string, hash: Uint8Array, updatedAt: number, options: { key?: Uint8Array; visibility: string; encryptedKey?: string; keyId?: string; selfEncryptedKey?: string; selfEncryptedLinkKey?: string }) => void) => () => void })
+    workerTreeRootUnsubscribe = (adapter as { onTreeRootUpdate: (cb: (npub: string, treeName: string, hash: Uint8Array, updatedAt: number, options: { key?: Uint8Array; visibility: string; labels?: string[]; encryptedKey?: string; keyId?: string; selfEncryptedKey?: string; selfEncryptedLinkKey?: string }) => void) => () => void })
       .onTreeRootUpdate((npub, treeName, hash, updatedAt, options) => {
         treeRootRegistry.setFromWorker(npub, treeName, hash, updatedAt, {
           key: options.key,
           visibility: options.visibility as 'public' | 'link-visible' | 'private',
+          labels: options.labels,
           encryptedKey: options.encryptedKey,
           keyId: options.keyId,
           selfEncryptedKey: options.selfEncryptedKey,

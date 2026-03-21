@@ -504,7 +504,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         await handleResolveRoot(msg.id, msg.npub, msg.path);
         break;
       case 'setTreeRootCache':
-        await handleSetTreeRootCache(msg.id, msg.npub, msg.treeName, msg.hash, msg.key, msg.visibility);
+        await handleSetTreeRootCache(msg.id, msg.npub, msg.treeName, msg.hash, msg.key, msg.visibility, msg.labels);
         break;
       case 'getTreeRootInfo':
         await handleGetTreeRootInfo(msg.id, msg.npub, msg.treeName);
@@ -798,6 +798,7 @@ async function handleInit(id: string, cfg: WorkerConfig) {
         hash: record.hash,
         key: record.key,
         visibility: record.visibility,
+        labels: record.labels,
         updatedAt: record.updatedAt,
         encryptedKey: record.encryptedKey,
         keyId: record.keyId,
@@ -1253,10 +1254,11 @@ async function handleSetTreeRootCache(
   treeName: string,
   hash: Uint8Array,
   key: Uint8Array | undefined,
-  visibility: 'public' | 'link-visible' | 'private'
+  visibility: 'public' | 'link-visible' | 'private',
+  labels?: string[]
 ) {
   try {
-    await setCachedRoot(npub, treeName, { hash, key }, visibility);
+    await setCachedRoot(npub, treeName, { hash, key }, visibility, { labels });
     respond({ type: 'void', id });
   } catch (err) {
     respond({ type: 'void', id, error: getErrorMessage(err) });
@@ -1278,6 +1280,7 @@ async function handleGetTreeRootInfo(id: string, npub: string, treeName: string)
         hash: cached.hash,
         key: cached.key,
         visibility: cached.visibility,
+        labels: cached.labels,
         updatedAt: cached.updatedAt,
         encryptedKey: cached.encryptedKey,
         keyId: cached.keyId,

@@ -22,6 +22,7 @@ export interface TreeRootRecord {
     hash: Hash;
     key?: Hash;
     visibility: TreeVisibility;
+    labels?: string[];
     updatedAt: number;
     source: TreeRootSource;
     dirty: boolean;
@@ -103,6 +104,7 @@ declare class TreeRootRegistryImpl {
     setLocal(npub: string, treeName: string, hash: Hash, options?: {
         key?: Hash;
         visibility?: TreeVisibility;
+        labels?: string[];
         encryptedKey?: string;
         keyId?: string;
         selfEncryptedKey?: string;
@@ -114,6 +116,7 @@ declare class TreeRootRegistryImpl {
     setFromResolver(npub: string, treeName: string, hash: Hash, updatedAt: number, options?: {
         key?: Hash;
         visibility?: TreeVisibility;
+        labels?: string[];
         encryptedKey?: string;
         keyId?: string;
         selfEncryptedKey?: string;
@@ -131,6 +134,7 @@ declare class TreeRootRegistryImpl {
     setFromWorker(npub: string, treeName: string, hash: Hash, updatedAt: number, options?: {
         key?: Hash;
         visibility?: TreeVisibility;
+        labels?: string[];
         encryptedKey?: string;
         keyId?: string;
         selfEncryptedKey?: string;
@@ -142,6 +146,7 @@ declare class TreeRootRegistryImpl {
     setFromExternal(npub: string, treeName: string, hash: Hash, source: TreeRootSource, options?: {
         key?: Hash;
         visibility?: TreeVisibility;
+        labels?: string[];
         updatedAt?: number;
     }): void;
     /**
@@ -176,6 +181,10 @@ declare class TreeRootRegistryImpl {
      * Get visibility for a tree
      */
     getVisibility(npub: string, treeName: string): TreeVisibility | undefined;
+    /**
+     * Get labels for a tree
+     */
+    getLabels(npub: string, treeName: string): string[] | undefined;
 }
 declare global {
     interface Window {

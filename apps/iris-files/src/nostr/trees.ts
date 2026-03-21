@@ -55,6 +55,7 @@ export async function saveHashtree(
   if (currentSelected && currentSelected.name === name && currentSelected.pubkey === state.pubkey) {
     nostrStore.setSelectedTree({
       ...currentSelected,
+      labels: options.labels ?? currentSelected.labels,
       rootHash: toHex(rootCid.hash),
       rootKey: rootCid.key ? toHex(rootCid.key) : undefined,
       visibility,
@@ -63,7 +64,7 @@ export async function saveHashtree(
   }
 
   // Update treeRootCache immediately so local ops don't wait on publish
-  updateLocalRootCache(state.npub, name, rootCid.hash, rootCid.key, visibility);
+  updateLocalRootCache(state.npub, name, rootCid.hash, rootCid.key, visibility, options.labels ?? currentSelected?.labels);
 
   // Use resolver to publish - it handles all visibility encryption
   const result = await resolver.publish?.(
@@ -106,7 +107,14 @@ export function autosaveIfOwn(rootCid: CID): void {
 
   // Update local cache - this triggers throttled publish to Nostr
   // Pass visibility to ensure correct tags are published
-  updateLocalRootCache(state.npub, state.selectedTree.name, rootCid.hash, rootCid.key, state.selectedTree.visibility);
+  updateLocalRootCache(
+    state.npub,
+    state.selectedTree.name,
+    rootCid.hash,
+    rootCid.key,
+    state.selectedTree.visibility,
+    state.selectedTree.labels
+  );
 
   // Update selectedTree state immediately for UI (uses hex for state storage)
   const rootHash = toHex(rootCid.hash);
@@ -127,6 +135,9 @@ export function autosaveIfOwn(rootCid: CID): void {
 export async function publishTreeRoot(treeName: string, rootCid: CID, cachedVisibility?: TreeVisibility): Promise<boolean> {
   const state = nostrStore.getState();
   if (!state.pubkey || !ndk.signer) return false;
+  const selectedTreeLabels = state.selectedTree?.name === treeName && state.selectedTree.pubkey === state.pubkey
+    ? state.selectedTree.labels
+    : undefined;
 
   // Priority: cached visibility > selectedTree visibility > 'public'
   let visibility: TreeVisibility = cachedVisibility ?? 'public';
@@ -165,6 +176,7 @@ export async function publishTreeRoot(treeName: string, rootCid: CID, cachedVisi
   const result = await saveHashtree(treeName, rootCid, {
     visibility,
     linkKey,
+    labels: selectedTreeLabels,
   });
 
   return result.success;

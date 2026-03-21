@@ -9,6 +9,7 @@ export interface HashTreeEvent {
   id: string;
   pubkey: string;
   name: string;
+  labels?: string[];
   /** Root hash (hex encoded) */
   rootHash: string;
   /** Decryption key for encrypted trees (hex encoded) - present for public trees */

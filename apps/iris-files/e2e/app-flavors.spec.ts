@@ -1,5 +1,15 @@
 import { test, expect } from './fixtures';
-import { ensureLoggedIn, gotoGitApp, navigateToPublicFolder, setupPageErrorHandler } from './test-utils.js';
+import {
+  createFolder,
+  ensureLoggedIn,
+  flushPendingPublishes,
+  goToTreeList,
+  gotoGitApp,
+  loginAsTestUser,
+  navigateToPublicFolder,
+  setupPageErrorHandler,
+  waitForRelayConnected,
+} from './test-utils.js';
 
 async function createTopLevelRepository(page: import('@playwright/test').Page, repoName: string) {
   await page.getByRole('button', { name: /New Repository/ }).first().click();
@@ -45,5 +55,38 @@ test.describe('App flavors', () => {
     await gotoGitApp(page);
 
     await expect(page.getByRole('link', { name: new RegExp(repoName) })).toBeVisible({ timeout: 15000 });
+  });
+
+  test('git app profile route shows repositories instead of the generic tree sidebar', async ({ page }) => {
+    setupPageErrorHandler(page);
+
+    await page.goto('/');
+    await ensureLoggedIn(page);
+    await goToTreeList(page);
+
+    const plainTreeName = `plain-tree-${Date.now()}`;
+    await createFolder(page, plainTreeName);
+    await flushPendingPublishes(page);
+
+    const npub = await page.evaluate(() => (window as { __nostrStore?: { getState?: () => { npub?: string } } }).__nostrStore?.getState?.().npub ?? null);
+    const nsec = await page.evaluate(() => window.localStorage.getItem('hashtree:nsec'));
+    expect(npub).toBeTruthy();
+    expect(nsec).toBeTruthy();
+
+    await gotoGitApp(page);
+    await loginAsTestUser(page, nsec);
+    await waitForRelayConnected(page);
+
+    const repoName = `git-profile-${Date.now()}`;
+    await createTopLevelRepository(page, repoName);
+    await flushPendingPublishes(page);
+
+    await page.goto(`/git.html#/${npub}`);
+
+    await expect(page.getByRole('heading', { name: 'Repositories' })).toBeVisible();
+    await expect(page.getByRole('link', { name: new RegExp(repoName) })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('link', { name: new RegExp(plainTreeName) })).not.toBeVisible();
+    await expect(page.getByRole('button', { name: 'New Folder' })).not.toBeVisible();
+    await expect(page.getByText('Add files to begin')).not.toBeVisible();
   });
 });

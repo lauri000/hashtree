@@ -22,6 +22,7 @@ class LocalStoragePersistence {
             hash: toHex(record.hash),
             key: record.key ? toHex(record.key) : undefined,
             visibility: record.visibility,
+            labels: record.labels,
             updatedAt: record.updatedAt,
             source: record.source,
             dirty: record.dirty,
@@ -37,6 +38,7 @@ class LocalStoragePersistence {
                 hash: fromHex(data.hash),
                 key: data.key ? fromHex(data.key) : undefined,
                 visibility: data.visibility,
+                labels: uniqueLabels(data.labels),
                 updatedAt: data.updatedAt,
                 source: data.source,
                 dirty: data.dirty,
@@ -221,6 +223,11 @@ class TreeRootRegistryImpl {
             existing.visibility = options.visibility;
             changed = true;
         }
+        const mergedLabels = mergeLabels(options?.labels, existing.labels);
+        if (mergedLabels && JSON.stringify(mergedLabels) !== JSON.stringify(existing.labels)) {
+            existing.labels = mergedLabels;
+            changed = true;
+        }
         if (!existing.encryptedKey && options?.encryptedKey) {
             existing.encryptedKey = options.encryptedKey;
             changed = true;
@@ -330,6 +337,7 @@ class TreeRootRegistryImpl {
             hash,
             key: options?.key,
             visibility,
+            labels: uniqueLabels(options?.labels) ?? existing?.labels,
             updatedAt: Math.floor(Date.now() / 1000),
             source: 'local-write',
             dirty: true,
@@ -364,6 +372,7 @@ class TreeRootRegistryImpl {
             // Preserve known key when newer resolver updates omit it for the same hash.
             key: options?.key ?? (sameHash ? existing?.key : undefined),
             visibility: options?.visibility ?? 'public',
+            labels: uniqueLabels(options?.labels) ?? existing?.labels,
             updatedAt,
             source: 'nostr',
             dirty: false,
@@ -417,6 +426,7 @@ class TreeRootRegistryImpl {
             // Preserve known key when worker updates omit it for the same hash.
             key: options?.key ?? (sameHash ? existing?.key : undefined),
             visibility: options?.visibility ?? 'public',
+            labels: uniqueLabels(options?.labels) ?? existing?.labels,
             updatedAt,
             source: 'worker',
             dirty: false,
@@ -454,6 +464,7 @@ class TreeRootRegistryImpl {
             hash,
             key: options?.key ?? (sameHash ? existing?.key : undefined),
             visibility: options?.visibility ?? existing?.visibility ?? 'public',
+            labels: uniqueLabels(options?.labels) ?? existing?.labels,
             updatedAt,
             source,
             dirty: false,
@@ -574,6 +585,12 @@ class TreeRootRegistryImpl {
     getVisibility(npub, treeName) {
         return this.records.get(this.makeKey(npub, treeName))?.visibility;
     }
+    /**
+     * Get labels for a tree
+     */
+    getLabels(npub, treeName) {
+        return this.records.get(this.makeKey(npub, treeName))?.labels;
+    }
 }
 function getRegistry() {
     if (typeof window !== 'undefined' && window.__treeRootRegistry) {
@@ -584,6 +601,26 @@ function getRegistry() {
         window.__treeRootRegistry = registry;
     }
     return registry;
+}
+function uniqueLabels(labels) {
+    if (!labels?.length)
+        return undefined;
+    const deduped = [];
+    const seen = new Set();
+    for (const label of labels) {
+        if (!label || seen.has(label))
+            continue;
+        seen.add(label);
+        deduped.push(label);
+    }
+    return deduped.length > 0 ? deduped : undefined;
+}
+function mergeLabels(primary, fallback) {
+    if (!primary?.length)
+        return uniqueLabels(fallback);
+    if (!fallback?.length)
+        return uniqueLabels(primary);
+    return uniqueLabels([...primary, ...fallback]);
 }
 // Export singleton instance
 export const treeRootRegistry = getRegistry();

@@ -141,6 +141,7 @@ async function hydrateTreeRootFromWorker(npub: string, treeName: string): Promis
     treeRootRegistry.setFromWorker(npub, treeName, record.hash, record.updatedAt, {
       key: record.key,
       visibility: record.visibility,
+      labels: record.labels,
       encryptedKey: record.encryptedKey,
       keyId: record.keyId,
       selfEncryptedKey: record.selfEncryptedKey,
@@ -269,6 +270,7 @@ async function startResolverSubscription(
         treeRootRegistry.setFromResolver(npub, treeName, resolvedCid.hash, updatedAt, {
           key: resolvedCid.key,
           visibility: visibilityInfo?.visibility ?? 'public',
+          labels: treeRootRegistry.getLabels(npub, treeName),
           encryptedKey: visibilityInfo?.encryptedKey,
           keyId: visibilityInfo?.keyId,
           selfEncryptedKey: visibilityInfo?.selfEncryptedKey,

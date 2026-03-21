@@ -20,6 +20,7 @@ interface CachedRoot {
   hash: Uint8Array;        // Root hash
   key?: Uint8Array;        // CHK decryption key (for encrypted trees)
   visibility: TreeVisibility;
+  labels?: string[];
   updatedAt: number;       // Unix timestamp
   encryptedKey?: string;   // For link-visible trees
   keyId?: string;          // For link-visible trees
@@ -113,6 +114,7 @@ export async function setCachedRoot(
   cid: CID,
   visibility: TreeVisibility = 'public',
   options?: {
+    labels?: string[];
     encryptedKey?: string;
     keyId?: string;
     selfEncryptedKey?: string;
@@ -121,11 +123,13 @@ export async function setCachedRoot(
 ): Promise<void> {
   const cacheKey = `${npub}/${treeName}`;
   const now = Math.floor(Date.now() / 1000);
+  const existing = await getCachedRootInfo(npub, treeName);
 
   const cached: CachedRoot = {
     hash: cid.hash,
     key: cid.key,
     visibility,
+    labels: options?.labels ?? existing?.labels,
     updatedAt: now,
     encryptedKey: options?.encryptedKey,
     keyId: options?.keyId,

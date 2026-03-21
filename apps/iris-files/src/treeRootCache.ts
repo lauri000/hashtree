@@ -70,6 +70,7 @@ export async function initializePublishFn(): Promise<void> {
     const result = await resolver.publish(key, rootCid, {
       visibility: record.visibility,
       linkKey,
+      labels: record.labels,
     });
 
     return result?.success ?? false;
@@ -81,6 +82,7 @@ export interface CacheEntry {
   hash: Hash;
   key?: Hash;
   visibility?: TreeVisibility;
+  labels?: string[];
   dirty: boolean;
 }
 
@@ -107,9 +109,10 @@ export function updateLocalRootCache(
   treeName: string,
   hash: Hash,
   key?: Hash,
-  visibility?: TreeVisibility
+  visibility?: TreeVisibility,
+  labels?: string[]
 ): void {
-  treeRootRegistry.setLocal(npub, treeName, hash, { key, visibility });
+  treeRootRegistry.setLocal(npub, treeName, hash, { key, visibility, labels });
 }
 
 /**
@@ -127,14 +130,16 @@ export function updateLocalRootCacheHex(
   treeName: string,
   hashHex: string,
   keyHex?: string,
-  visibility?: TreeVisibility
+  visibility?: TreeVisibility,
+  labels?: string[]
 ): void {
   updateLocalRootCache(
     npub,
     treeName,
     fromHex(hashHex),
     keyHex ? fromHex(keyHex) : undefined,
-    visibility
+    visibility,
+    labels
   );
 }
 
@@ -155,13 +160,14 @@ export function getLocalRootKey(npub: string, treeName: string): Hash | undefine
 /**
  * Get all entries from the local root cache
  */
-export function getAllLocalRoots(): Map<string, { hash: Hash; key?: Hash; visibility?: TreeVisibility }> {
-  const result = new Map<string, { hash: Hash; key?: Hash; visibility?: TreeVisibility }>();
+export function getAllLocalRoots(): Map<string, { hash: Hash; key?: Hash; visibility?: TreeVisibility; labels?: string[] }> {
+  const result = new Map<string, { hash: Hash; key?: Hash; visibility?: TreeVisibility; labels?: string[] }>();
   for (const [key, record] of treeRootRegistry.getAllRecords().entries()) {
     result.set(key, {
       hash: record.hash,
       key: record.key,
       visibility: record.visibility,
+      labels: record.labels,
     });
   }
   return result;
@@ -178,6 +184,7 @@ export function getLocalRootEntry(npub: string, treeName: string): CacheEntry | 
     hash: record.hash,
     key: record.key,
     visibility: record.visibility,
+    labels: record.labels,
     dirty: record.dirty,
   };
 }
