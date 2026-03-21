@@ -59,6 +59,9 @@ pnpm run release:iris -- boards
 
 # All apps
 pnpm run release:all:iris
+
+# Iris Git
+pnpm run release:git:iris
 ```
 
 Each release script performs one build, runs focused tests against that exact build output, publishes the built directory to hashtree, and only then deploys the same directory to Cloudflare. If build or tests fail, neither hashtree nor Cloudflare upload runs.
@@ -73,6 +76,7 @@ npx wrangler deploy --assets ./dist --name iris-files --compatibility-date 2026-
 - Attach the desired custom domain to that Worker service in Cloudflare.
 - Authenticate Wrangler either with `wrangler login` or with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
 - `pnpm run release:iris -- files` defaults to the `iris-files` Worker service.
+- `pnpm run release:git:iris` publishes to the `git` hashtree tree and deploys the `iris-git` Worker service by default.
 - Set `CF_WORKER_NAME_*` environment variables only for profiles that do not have a built-in Worker target, or when you want to override the default.
 - Optionally set `CF_WORKER_COMPATIBILITY_DATE` if you do not want to use the script default.
 

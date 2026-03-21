@@ -8,6 +8,12 @@ describe('release-site', () => {
     expect(parsed.treeName).toBe('files');
   });
 
+  it('uses the built-in Worker default for git', () => {
+    const parsed = parseArgs(['git']);
+    expect(parsed.workerName).toBe('iris-git');
+    expect(parsed.treeName).toBe('git');
+  });
+
   it('uses the profile-specific Worker env var by default', () => {
     const parsed = parseArgs(['video'], { CF_WORKER_NAME_VIDEO: 'iris-video' });
     expect(parsed.workerName).toBe('iris-video');

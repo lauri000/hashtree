@@ -95,12 +95,12 @@ export default defineConfig({
       timeout: 5000,
     },
     {
-      command: 'pnpm run dev --port 5173 --strictPort',
+      command: 'pnpm run build:deps && pnpm exec vite --port 5173 --strictPort',
       url: 'http://localhost:5173',
       // Avoid silently reusing a non-test Vite instance (e.g. boards/docs dev server).
       // Fresh app server startup is slower but deterministic for E2E.
       reuseExistingServer: false,
-      timeout: 15000,
+      timeout: 120000,
       env: {
         // Test mode: local relay, no Blossom, others pool disabled
         VITE_TEST_MODE: 'true',

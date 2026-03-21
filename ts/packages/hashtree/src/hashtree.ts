@@ -469,7 +469,7 @@ export class HashTree {
     let bytes = 0;
     let completed = 0;
     // Keep progress total stable: pull() already traversed and counted unique blocks.
-    let discovered = pullStats.chunks;
+    const discovered = pullStats.chunks;
     let walkDone = false;
     const errors: Array<{ hash: Hash; error: Error }> = [];
 

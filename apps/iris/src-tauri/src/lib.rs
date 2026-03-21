@@ -162,6 +162,21 @@ enum TrayConnectionStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+enum DesktopPlatform {
+    MacOs,
+    Windows,
+    Linux,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayPrimaryClickAction {
+    ShowMenu,
+    OpenWindow,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TrayMenuItemSpec {
     Text {
@@ -241,6 +256,41 @@ fn tray_status_text(connection_status: TrayConnectionStatus) -> String {
         } => format!("Daemon running, {} peers connected", connected_peers),
         TrayConnectionStatus::Failed => "Daemon failed to start".to_string(),
     }
+}
+
+const fn current_desktop_platform() -> DesktopPlatform {
+    #[cfg(target_os = "macos")]
+    {
+        DesktopPlatform::MacOs
+    }
+    #[cfg(windows)]
+    {
+        DesktopPlatform::Windows
+    }
+    #[cfg(target_os = "linux")]
+    {
+        DesktopPlatform::Linux
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+    {
+        DesktopPlatform::Other
+    }
+}
+
+const fn tray_primary_click_action(platform: DesktopPlatform) -> TrayPrimaryClickAction {
+    match platform {
+        DesktopPlatform::MacOs => TrayPrimaryClickAction::ShowMenu,
+        DesktopPlatform::Windows | DesktopPlatform::Linux | DesktopPlatform::Other => {
+            TrayPrimaryClickAction::OpenWindow
+        }
+    }
+}
+
+const fn tray_show_menu_on_left_click() -> bool {
+    matches!(
+        tray_primary_click_action(current_desktop_platform()),
+        TrayPrimaryClickAction::ShowMenu
+    )
 }
 
 fn tray_menu_spec(connection_status: TrayConnectionStatus) -> Vec<TrayMenuItemSpec> {
@@ -518,7 +568,12 @@ pub fn run() {
                 ..
             } = event
             {
-                if button == MouseButton::Left && button_state == MouseButtonState::Up {
+                if matches!(
+                    tray_primary_click_action(current_desktop_platform()),
+                    TrayPrimaryClickAction::OpenWindow
+                ) && button == MouseButton::Left
+                    && button_state == MouseButtonState::Up
+                {
                     let _ = show_main_window(app);
                 }
             }
@@ -685,7 +740,7 @@ pub fn run() {
             #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
             {
                 if let Some(tray) = app.tray_by_id(TRAY_ICON_ID) {
-                    let _ = tray.set_show_menu_on_left_click(false);
+                    let _ = tray.set_show_menu_on_left_click(tray_show_menu_on_left_click());
                 }
                 refresh_tray_menu(app.handle());
 
@@ -716,7 +771,8 @@ pub fn run() {
 mod tests {
     use super::{
         build_menu, resolve_iris_paths, tray_connection_status_from_peers, tray_menu_spec,
-        tray_status_text, IrisPaths, TrayConnectionStatus, TrayMenuItemSpec, TrayPeersResponse,
+        tray_primary_click_action, tray_status_text, DesktopPlatform, IrisPaths,
+        TrayConnectionStatus, TrayMenuItemSpec, TrayPeersResponse, TrayPrimaryClickAction,
     };
     use std::path::PathBuf;
 
@@ -808,6 +864,26 @@ mod tests {
                     enabled: true,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn tray_primary_click_prefers_menu_only_on_macos() {
+        assert_eq!(
+            tray_primary_click_action(DesktopPlatform::MacOs),
+            TrayPrimaryClickAction::ShowMenu
+        );
+        assert_eq!(
+            tray_primary_click_action(DesktopPlatform::Windows),
+            TrayPrimaryClickAction::OpenWindow
+        );
+        assert_eq!(
+            tray_primary_click_action(DesktopPlatform::Linux),
+            TrayPrimaryClickAction::OpenWindow
+        );
+        assert_eq!(
+            tray_primary_click_action(DesktopPlatform::Other),
+            TrayPrimaryClickAction::OpenWindow
         );
     }
 

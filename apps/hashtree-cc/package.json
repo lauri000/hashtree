@@ -11,7 +11,7 @@
   },
   "type": "module",
   "scripts": {
-    "build:deps": "pnpm --dir ../../ts --filter @hashtree/core build && pnpm --dir ../../ts --filter @hashtree/dexie build && pnpm --dir ../../ts --filter @hashtree/nostr build && pnpm --dir ../../ts --filter @hashtree/worker build",
+    "build:deps": "pnpm --dir ../../ts --filter @hashtree/core build && pnpm --dir ../../ts --filter @hashtree/index build && pnpm --dir ../../ts --filter @hashtree/dexie build && pnpm --dir ../../ts --filter @hashtree/nostr build && pnpm --dir ../../ts --filter nostr-social-graph build && pnpm --dir ../../ts --filter @hashtree/worker build",
     "dev": "pnpm run build:deps && vite",
     "build": "pnpm run build:deps && vite build",
     "preview": "vite preview",
