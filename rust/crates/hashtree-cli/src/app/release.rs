@@ -1,8 +1,8 @@
 use anyhow::{bail, Context, Result};
 use hashtree_cli::config::ensure_keys_string;
 use hashtree_cli::{
-    Config, FetchConfig, Fetcher, HashtreeStore, NostrKeys, NostrResolverConfig,
-    NostrRootResolver, NostrToBech32, RootResolver,
+    Config, FetchConfig, Fetcher, HashtreeStore, NostrKeys, NostrResolverConfig, NostrRootResolver,
+    NostrToBech32, RootResolver,
 };
 use hashtree_core::{Cid, HashTree, HashTreeConfig, LinkType, Store};
 use std::path::Path;
@@ -227,8 +227,7 @@ pub(crate) async fn publish_release_version(
     let config = Config::load()?;
     let (nsec_str, was_generated) = ensure_keys_string()?;
     let keys = NostrKeys::parse(&nsec_str).context("Failed to parse nsec")?;
-    let npub =
-        NostrToBech32::to_bech32(&keys.public_key()).context("Failed to encode npub")?;
+    let npub = NostrToBech32::to_bech32(&keys.public_key()).context("Failed to encode npub")?;
 
     if was_generated {
         println!("Identity: {} (new)", npub);
@@ -266,9 +265,13 @@ pub(crate) async fn publish_release_version(
         let mut write_servers = config.blossom.servers.clone();
         write_servers.extend(config.blossom.write_servers.clone());
         if !write_servers.is_empty() {
-            background_blossom_push(&data_dir.to_path_buf(), &new_root.to_string(), &write_servers)
-                .await
-                .context("Failed to push updated release root to file servers")?;
+            background_blossom_push(
+                &data_dir.to_path_buf(),
+                &new_root.to_string(),
+                &write_servers,
+            )
+            .await
+            .context("Failed to push updated release root to file servers")?;
         }
     }
 
@@ -302,13 +305,14 @@ mod tests {
 
     async fn make_release_dir(tree: &HashTree<MemoryStore>, contents: &[u8]) -> hashtree_core::Cid {
         let (binary_cid, size) = tree.put_file(contents).await.expect("put file");
-        tree.put_directory(vec![
-            DirEntry::from_cid("hashtree-x86_64-unknown-linux-musl.tar.gz", &binary_cid)
-                .with_link_type(LinkType::File)
-                .with_size(size),
-        ])
-        .await
-        .expect("put release dir")
+        tree.put_directory(vec![DirEntry::from_cid(
+            "hashtree-x86_64-unknown-linux-musl.tar.gz",
+            &binary_cid,
+        )
+        .with_link_type(LinkType::File)
+        .with_size(size)])
+            .await
+            .expect("put release dir")
     }
 
     #[test]
@@ -319,7 +323,10 @@ mod tests {
 
     #[test]
     fn latest_path_tracks_version_parent_directory() {
-        assert_eq!(latest_path_for(&parse_release_path("v0.2.3").unwrap()), "latest");
+        assert_eq!(
+            latest_path_for(&parse_release_path("v0.2.3").unwrap()),
+            "latest"
+        );
         assert_eq!(
             latest_path_for(&parse_release_path("releases/v0.2.3").unwrap()),
             "releases/latest"

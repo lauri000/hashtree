@@ -15,7 +15,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::args::{Cli, Commands, PrCommands, ReleaseCommands, SocialGraphCommands, StorageCommands};
+use super::args::{
+    Cli, Commands, PrCommands, ReleaseCommands, SocialGraphCommands, StorageCommands,
+};
 use super::blossom::{background_blossom_push, push_to_blossom};
 use super::cashu_delegate::run_cashu_helper;
 use super::content::add_directory;
