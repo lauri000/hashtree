@@ -486,8 +486,9 @@ test.describe('Git branch comparison and merge', () => {
     // Should show merge preview with branch names
     await expect(page.locator('text=/Merge.*feature.*into.*master/')).toBeVisible({ timeout: 15000 });
 
-    // Should show stats (1 file changed)
-    await expect(page.locator('text=/1 file.*will be changed/')).toBeVisible({ timeout: 15000 });
+    // Should show merge stats and the changed file list
+    await expect(page.locator('text=/[1-9][0-9]* file[s]?.*will be changed/')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('div.p-2.max-h-64.overflow-auto').filter({ hasText: 'feature-file.txt' })).toBeVisible({ timeout: 15000 });
 
     // Should show "Confirm merge" button (user is owner)
     const mergeBtn = page.locator('button').filter({ hasText: 'Confirm merge' });

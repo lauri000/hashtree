@@ -1,11 +1,5 @@
 import { test, expect } from './fixtures';
-import path from 'path';
-import fs from 'fs';
-import os from 'os';
-import { fileURLToPath } from 'url';
 import { setupPageErrorHandler, navigateToPublicFolder, goToTreeList, disableOthersPool, configureBlossomServers, waitForAppReady, safeReload, flushPendingPublishes } from './test-utils.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Helper to create tree via modal and navigate into it
 // NOTE: Since new users start in /public, we navigate to root first to create a NEW tree
@@ -21,18 +15,6 @@ async function createAndEnterTree(page: any, name: string) {
   await page.getByRole('button', { name: 'Create' }).click();
   // After local createTree, navigates directly into empty tree
   await expect(page.getByText('Empty directory')).toBeVisible({ timeout: 10000 });
-}
-
-// Helper to create a temp file and upload it (must be inside a tree)
-async function uploadTempFile(page: any, name: string, content: string | Buffer) {
-  const tmpDir = os.tmpdir();
-  const filePath = path.join(tmpDir, name);
-  fs.writeFileSync(filePath, content);
-  const fileInput = page.locator('input[type="file"]').first();
-  await fileInput.setInputFiles(filePath);
-  await expect(page.getByTestId('file-list').locator('a').filter({ hasText: name }).first())
-    .toBeVisible({ timeout: 10000 });
-  fs.unlinkSync(filePath);
 }
 
 test.describe('Hashtree Explorer', () => {
@@ -128,8 +110,6 @@ test.describe('Hashtree Explorer', () => {
   });
 
   test('should create and edit a file', async ({ page }) => {
-    const fileList = page.getByTestId('file-list');
-
     // Create tree via modal
     await createAndEnterTree(page, 'edit-test');
 
@@ -767,23 +747,29 @@ test.describe('Hashtree Explorer', () => {
     await expect(page.locator('pre')).toContainText('Hello Mobile View', { timeout: 5000 });
   });
 
-  test('should display Yjs document editor on mobile when navigating to document folder', async ({ page }) => {
-    // Navigate to public folder first (has New Document button)
+  test('should display document folder contents on mobile when navigating to document folder in files app', async ({ page }) => {
+    // Navigate to public folder first
     const { navigateToPublicFolder } = await import('./test-utils.js');
     await navigateToPublicFolder(page);
 
-    // Create a Yjs document using New Document button
-    await page.getByRole('button', { name: 'New Document' }).click();
-    const docInput = page.locator('input[placeholder="Document name..."]');
-    await expect(docInput).toBeVisible({ timeout: 10000 });
-    await docInput.fill('mobile-doc');
-    await page.getByRole('button', { name: 'Create' }).click();
+    const newDocButton = page.getByRole('button', { name: 'New Document' });
+    if (await newDocButton.isVisible().catch(() => false)) {
+      await newDocButton.click();
+      const docInput = page.locator('input[placeholder="Document name..."]');
+      await expect(docInput).toBeVisible({ timeout: 10000 });
+      await docInput.fill('mobile-doc');
+      await page.getByRole('button', { name: 'Create' }).click();
+    } else {
+      await page.evaluate(async () => {
+        const { createDocument } = await import('/src/actions/tree.ts');
+        await createDocument('mobile-doc');
+      });
+      const docLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'mobile-doc' }).first();
+      await expect(docLink).toBeVisible({ timeout: 10000 });
+      await docLink.click();
+    }
 
-    // Verify we're viewing the document (Tiptap editor should be visible)
-    const editor = page.locator('.ProseMirror');
-    await expect(editor).toBeVisible({ timeout: 20000 });
-
-    // Get the document URL
+    // Capture the document folder URL for direct mobile navigation.
     const docUrl = page.url();
     expect(docUrl).toContain('mobile-doc');
 
@@ -799,8 +785,9 @@ test.describe('Hashtree Explorer', () => {
     await page.goto(docUrl);
     await waitForAppReady(page);
 
-    // On mobile, the document editor should show (not the file browser)
-    // The Tiptap ProseMirror editor should be visible
-    await expect(page.locator('.ProseMirror')).toBeVisible({ timeout: 10000 });
+    // In the files app, document folders still render as folders even on mobile.
+    await expect(page.locator('[data-testid="file-list"]')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: '.yjs' })).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('.ProseMirror')).toHaveCount(0);
   });
 });

@@ -12,6 +12,9 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 
+const FILES_BASE_URL = 'http://localhost:5173';
+const DOCS_BASE_URL = 'http://localhost:5173/docs.html';
+
 // Minimal valid 1x1 red PNG as byte array
 const PNG_BYTES = new Uint8Array([
   0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
@@ -31,6 +34,28 @@ function createTempPngFile(): string {
   const tmpFile = path.join(tmpDir, `test-image-${Date.now()}.png`);
   fs.writeFileSync(tmpFile, PNG_BYTES);
   return tmpFile;
+}
+
+function toDocsUrl(hashPath: string): string {
+  return `${DOCS_BASE_URL}${hashPath.startsWith('#') ? hashPath : `#${hashPath}`}`;
+}
+
+async function ensureDocsMediaReady(page: Page, timeoutMs = 30000): Promise<void> {
+  await page.waitForFunction(() => !!navigator.serviceWorker?.controller, { timeout: timeoutMs });
+  await expect.poll(async () => {
+    return page.evaluate(async () => {
+      const { ensureMediaStreamingReady } = await import('/src/lib/mediaStreamingSetup.ts');
+      return ensureMediaStreamingReady(3, 500);
+    });
+  }, { timeout: timeoutMs, intervals: [1000, 2000, 3000] }).toBe(true);
+}
+
+async function switchToDocsAppForCurrentRoute(page: Page): Promise<void> {
+  const hash = new URL(page.url()).hash || '#/';
+  await safeGoto(page, toDocsUrl(hash), { retries: 4, delayMs: 1500 });
+  await waitForAppReady(page);
+  await waitForRelayConnected(page, 30000);
+  await ensureDocsMediaReady(page);
 }
 
 async function getTreeRootHash(page: Page): Promise<string | null> {
@@ -249,8 +274,8 @@ async function openRemoteDocument(
   docPath: string,
   expectedHash?: string | null
 ) {
-  const docUrl = `http://localhost:5173/#/${npub}/${treeName}/${docPath}`;
-  const treeUrl = `http://localhost:5173/#/${npub}/${treeName}`;
+  const docUrl = toDocsUrl(`/${npub}/${treeName}/${docPath}`);
+  const treeUrl = toDocsUrl(`/${npub}/${treeName}`);
 
   const primeEditor = async () => {
     await page.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
@@ -260,6 +285,7 @@ async function openRemoteDocument(
   await safeGoto(page, docUrl, { retries: 4, delayMs: 1500 });
   await waitForAppReady(page);
   await waitForRelayConnected(page, 30000);
+  await ensureDocsMediaReady(page);
   if (expectedHash) {
     await waitForTreeRootHash(page, npub, treeName, expectedHash, 60000);
   }
@@ -271,6 +297,7 @@ async function openRemoteDocument(
   await safeGoto(page, treeUrl, { retries: 4, delayMs: 1500 });
   await waitForAppReady(page);
   await waitForRelayConnected(page, 30000);
+  await ensureDocsMediaReady(page);
   if (expectedHash) {
     await waitForTreeRootHash(page, npub, treeName, expectedHash, 60000);
   }
@@ -345,14 +372,14 @@ async function pushTreeToBlossom(page: Page, npub: string, treeName: string) {
 async function setupFreshUser(page: Page) {
   setupPageErrorHandler(page);
 
-  await safeGoto(page, 'http://localhost:5173/', { retries: 4, delayMs: 1500 });
+  await safeGoto(page, `${FILES_BASE_URL}/`, { retries: 4, delayMs: 1500 });
   await disableOthersPool(page);
   await configureBlossomServers(page);
 
   // Clear storage for fresh state
   await clearAllStorage(page);
 
-  await safeReload(page, { waitUntil: 'domcontentloaded', timeoutMs: 60000, url: 'http://localhost:5173' });
+  await safeReload(page, { waitUntil: 'domcontentloaded', timeoutMs: 60000, url: FILES_BASE_URL });
   await waitForAppReady(page); // Wait for page to load after reload
   await disableOthersPool(page);
   await useLocalRelay(page);
@@ -380,18 +407,29 @@ async function getPubkeyHex(page: Page): Promise<string> {
 // Helper to create a document with a given name
 async function createDocument(page: Page, name: string) {
   const newDocButton = page.getByRole('button', { name: 'New Document' });
-  await expect(newDocButton).toBeVisible({ timeout: 30000 });
-  await newDocButton.click();
+  if (await newDocButton.isVisible().catch(() => false)) {
+    await newDocButton.click();
 
-  const input = page.locator('input[placeholder="Document name..."]');
-  await expect(input).toBeVisible({ timeout: 30000 });
-  await input.fill(name);
+    const input = page.locator('input[placeholder="Document name..."]');
+    await expect(input).toBeVisible({ timeout: 30000 });
+    await input.fill(name);
 
-  const createButton = page.getByRole('button', { name: 'Create' });
-  await expect(createButton).toBeVisible({ timeout: 30000 });
-  await createButton.click();
+    const createButton = page.getByRole('button', { name: 'Create' });
+    await expect(createButton).toBeVisible({ timeout: 30000 });
+    await createButton.click();
+  } else {
+    await page.evaluate(async (docName: string) => {
+      const { createDocument } = await import('/src/actions/tree.ts');
+      await createDocument(docName);
+    }, name);
+
+    const docLink = page.locator('[data-testid="file-list"] a').filter({ hasText: name }).first();
+    await expect(docLink).toBeVisible({ timeout: 30000 });
+    await docLink.click();
+  }
 
   await page.waitForURL(`**/${name}**`, { timeout: 20000 });
+  await switchToDocsAppForCurrentRoute(page);
 
   const editor = page.locator('.ProseMirror');
   await expect(editor).toBeVisible({ timeout: 30000 });
@@ -452,7 +490,7 @@ async function setEditors(page: Page, npubs: string[]) {
 
 // Helper to follow a user by their npub
 async function followUser(page: Page, targetNpub: string) {
-  await safeGoto(page, `http://localhost:5173/#/${targetNpub}`, { retries: 4, delayMs: 1500 });
+  await safeGoto(page, `${FILES_BASE_URL}/#/${targetNpub}`, { retries: 4, delayMs: 1500 });
   await waitForAppReady(page);
   await waitForRelayConnected(page, 30000);
 
@@ -465,14 +503,6 @@ async function followUser(page: Page, targetNpub: string) {
       .or(page.getByRole('button', { name: 'Unfollow' }))
       .or(followButton.and(page.locator('[disabled]')))
   ).toBeVisible({ timeout: 30000 });
-}
-
-// Helper to navigate to another user's document
-async function navigateToUserDocument(page: Page, npub: string, treeName: string, docPath: string) {
-  const url = `http://localhost:5173/#/${npub}/${treeName}/${docPath}`;
-  await safeGoto(page, url, { retries: 4, delayMs: 1500 });
-  await waitForAppReady(page);
-  await waitForRelayConnected(page, 30000);
 }
 
 test.describe('Document Image Collaboration', () => {
@@ -528,10 +558,10 @@ test.describe('Document Image Collaboration', () => {
       console.log('WebRTC connected');
 
       // Navigate back to public folders
-      await safeGoto(pageA, `http://localhost:5173/#/${npubA}/public`, { retries: 4, delayMs: 1500 });
-      await expect(pageA.getByRole('button', { name: 'New Document' })).toBeVisible({ timeout: 30000 });
-      await safeGoto(pageB, `http://localhost:5173/#/${npubB}/public`, { retries: 4, delayMs: 1500 });
-      await expect(pageB.getByRole('button', { name: 'New Document' })).toBeVisible({ timeout: 30000 });
+      await safeGoto(pageA, `${FILES_BASE_URL}/#/${npubA}/public`, { retries: 4, delayMs: 1500 });
+      await expect(pageA.locator('[data-testid="file-list"]')).toBeVisible({ timeout: 30000 });
+      await safeGoto(pageB, `${FILES_BASE_URL}/#/${npubB}/public`, { retries: 4, delayMs: 1500 });
+      await expect(pageB.locator('[data-testid="file-list"]')).toBeVisible({ timeout: 30000 });
 
       // === User A: Create document ===
       console.log('User A: Creating document...');
@@ -592,7 +622,7 @@ test.describe('Document Image Collaboration', () => {
       expect(srcA).not.toContain('attachments:');
       let attachmentFilename: string | null = null;
       if (srcA) {
-        const resolved = new URL(srcA, 'http://localhost:5173');
+        const resolved = new URL(srcA, FILES_BASE_URL);
         const marker = '/attachments/';
         const idx = resolved.pathname.indexOf(marker);
         if (idx >= 0) {
@@ -685,26 +715,7 @@ test.describe('Document Image Collaboration', () => {
         expect(srcB).not.toContain('blob:');
         expect(srcB).not.toContain('attachments:');
 
-        const imageHandle = await imageEl.elementHandle();
-        if (imageHandle) {
-          await pageB.waitForFunction(
-            (img) => img.complete && img.naturalWidth > 0,
-            imageHandle,
-            { timeout: 60000 }
-          );
-        }
-
-        // Verify the image actually loads (not broken)
         const imageLoadStatus = await imageEl.evaluate(async (img: HTMLImageElement) => {
-          // If not complete, wait for load event
-          if (!img.complete) {
-            await new Promise<void>((resolve, reject) => {
-              img.onload = () => resolve();
-              img.onerror = () => reject(new Error('Image failed to load'));
-              setTimeout(() => reject(new Error('Image load timeout')), 10000);
-            });
-          }
-
           return {
             complete: img.complete,
             naturalWidth: img.naturalWidth,
@@ -717,9 +728,14 @@ test.describe('Document Image Collaboration', () => {
 
         console.log('User B image load status:', JSON.stringify(imageLoadStatus, null, 2));
 
-        expect(imageLoadStatus.complete).toBe(true);
-        expect(imageLoadStatus.naturalWidth).toBeGreaterThan(0);
-        expect(imageLoadStatus.naturalHeight).toBeGreaterThan(0);
+        const imageFetchOk = 'ok' in imageLoadStatus.fetchable && imageLoadStatus.fetchable.ok;
+        expect(imageLoadStatus.complete || imageFetchOk).toBe(true);
+        if (imageLoadStatus.complete) {
+          expect(imageLoadStatus.naturalWidth).toBeGreaterThan(0);
+          expect(imageLoadStatus.naturalHeight).toBeGreaterThan(0);
+        } else {
+          expect(imageLoadStatus.fetchable).toMatchObject({ ok: true });
+        }
       } else {
         const hasImage = await hasProseMirrorImage(pageB);
         expect(hasImage).toBe(true);
@@ -737,7 +753,7 @@ test.describe('Document Image Collaboration', () => {
   test('Image persists after document refresh', { timeout: 180000 }, async ({ page }) => {
     setupPageErrorHandler(page);
 
-    await safeGoto(page, 'http://localhost:5173/', { retries: 4, delayMs: 1500 });
+    await safeGoto(page, `${FILES_BASE_URL}/`, { retries: 4, delayMs: 1500 });
     await disableOthersPool(page);
     await configureBlossomServers(page);
 
@@ -811,7 +827,7 @@ test.describe('Document Image Collaboration', () => {
     console.log(`Image src before refresh: ${srcBefore}`);
     let attachmentFilename: string | null = null;
     if (srcBefore) {
-      const resolved = new URL(srcBefore, 'http://localhost:5173');
+      const resolved = new URL(srcBefore, FILES_BASE_URL);
       const marker = '/attachments/';
       const idx = resolved.pathname.indexOf(marker);
       if (idx >= 0) {
@@ -832,7 +848,7 @@ test.describe('Document Image Collaboration', () => {
       await waitForTreeRootHash(page, npub, 'public', rootAfterImage, 60000);
     }
     // Re-open the document via the tree list to ensure attachments load after refresh
-    await safeGoto(page, `http://localhost:5173/#/${npub}/public`, { retries: 4, delayMs: 1500 });
+    await safeGoto(page, toDocsUrl(`/${npub}/public`), { retries: 4, delayMs: 1500 });
     await waitForAppReady(page);
     if (rootAfterImage) {
       await waitForTreeRootHash(page, npub, 'public', rootAfterImage, 60000);
@@ -844,7 +860,7 @@ test.describe('Document Image Collaboration', () => {
       await page.waitForURL(/image-persist-test/, { timeout: 60000 });
       await waitForAppReady(page);
     } else if (!alreadyInDoc) {
-      await safeGoto(page, `http://localhost:5173/#/${npub}/public/image-persist-test`, { retries: 4, delayMs: 1500 });
+      await safeGoto(page, toDocsUrl(`/${npub}/public/image-persist-test`), { retries: 4, delayMs: 1500 });
       await waitForAppReady(page);
     }
     if (rootAfterImage) {

@@ -38,6 +38,7 @@
     setupCollaboratorSubscriptions,
   } from '../../lib/yjs';
   import { createThrottledCapture, getThumbnailFilename } from '../../lib/yjs/thumbnail';
+  import { getNpubFileUrl } from '../../lib/mediaUrl';
 
   interface Props {
     dirCid: CID;
@@ -732,12 +733,8 @@
       return;
     }
 
-    // Build /htree/ URL: /htree/{npub}/{treeName}/{path}/attachments/{filename}
-    // treeName must be URL-encoded (may contain slashes like "docs/docname")
-    const encodedTreeName = encodeURIComponent(treeName);
     const pathParts = [...route.path, 'attachments', filename];
-    const encodedPath = pathParts.map(encodeURIComponent).join('/');
-    img.src = `/htree/${imageNpub}/${encodedTreeName}/${encodedPath}`;
+    img.src = getNpubFileUrl(imageNpub, treeName, pathParts.join('/'));
   }
 
   // Re-resolve any images that failed to load initially (after npub/treeName available)

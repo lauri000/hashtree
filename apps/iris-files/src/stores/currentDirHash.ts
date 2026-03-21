@@ -7,7 +7,7 @@ import { writable, derived, get, type Readable } from 'svelte/store';
 import { toHex, LinkType } from '@hashtree/core';
 import { appStore, getTree } from '../store';
 import { routeStore } from './route';
-import { treeRootStore } from './treeRoot';
+import { treeRootStore, getTreeRootSync } from './treeRoot';
 import { isWorkerReady } from '../lib/workerInit';
 import type { CID, Hash } from '@hashtree/core';
 
@@ -50,8 +50,8 @@ async function waitForWorker(timeoutMs = 10000): Promise<boolean> {
 
 // Reactive update based on rootCid and path changes
 async function updateCurrentDirCid() {
-  const rootCid = get(treeRootStore);
   const route = get(routeStore);
+  const rootCid = get(treeRootStore) ?? getTreeRootSync(route.npub, route.treeName);
   const urlPath = route.path;
 
   const rootHash = rootCid?.hash ? toHex(rootCid.hash) : null;

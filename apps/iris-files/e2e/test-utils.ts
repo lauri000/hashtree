@@ -221,6 +221,7 @@ export async function navigateToPublicFolder(
   const waitForRelay = () => requireRelay
     ? waitForRelayConnected(page, relayTimeoutMs)
     : waitForRelayConnected(page, relayTimeoutMs).catch(() => {});
+  const appPath = new URL(page.url()).pathname || '/';
 
   // First wait for the app to be ready - look for the Iris header
   await waitForAppReady(page, timeoutMs);
@@ -241,15 +242,18 @@ export async function navigateToPublicFolder(
   // This can take a while for new users since default folders are created async
   // and published to Nostr fire-and-forget style
   const publicLink = page.getByRole('link', { name: 'public' }).first();
+  const npub = await evaluateWithRetry(page, () => {
+    const nostrStore = (window as any).__nostrStore;
+    return nostrStore?.getState?.().npub ?? null;
+  }, undefined);
 
   if (!await publicLink.isVisible().catch(() => false)) {
     const logoLink = page.locator('header a:has-text("Iris")').first();
     if (await logoLink.isVisible().catch(() => false)) {
       await logoLink.click();
     }
-    await page.evaluate(async () => {
-      const nostrStore = (window as any).__nostrStore;
-      const npub = nostrStore?.getState?.().npub;
+    await page.evaluate(async (treeNpub) => {
+      const npub = treeNpub;
       if (!npub) return;
       const { getLocalRootCache } = await import('/src/treeRootCache.ts');
       const { createTree } = await import('/src/actions/tree.ts');
@@ -263,7 +267,7 @@ export async function navigateToPublicFolder(
           await createTree(name, visibility, true);
         }
       }
-    }).catch(() => {});
+    }, npub).catch(() => {});
   }
 
   for (let attempt = 0; attempt < 2 && !await publicLink.isVisible().catch(() => false); attempt++) {
@@ -272,17 +276,23 @@ export async function navigateToPublicFolder(
     await waitForRelay();
   }
 
-  // Wait for public folder to appear
-  await expect(publicLink).toBeVisible({ timeout: Math.max(60000, timeoutMs) });
+  if (await publicLink.isVisible().catch(() => false)) {
+    // Close any modal backdrop that might intercept clicks
+    const modalBackdrop = page.locator('[data-modal-backdrop], div.fixed.inset-0.bg-black\\/70').first();
+    if (await modalBackdrop.isVisible().catch(() => false)) {
+      await modalBackdrop.click({ position: { x: 5, y: 5 } }).catch(() => {});
+    }
 
-  // Close any modal backdrop that might intercept clicks
-  const modalBackdrop = page.locator('[data-modal-backdrop], div.fixed.inset-0.bg-black\\/70').first();
-  if (await modalBackdrop.isVisible().catch(() => false)) {
-    await modalBackdrop.click({ position: { x: 5, y: 5 } }).catch(() => {});
+    // Click into the public folder
+    await publicLink.click();
+  } else {
+    if (!npub) {
+      throw new Error('Failed to resolve logged-in npub for public folder navigation');
+    }
+    await safeGoto(page, `${appPath}#/${npub}/public`, { timeoutMs });
+    await waitForAppReady(page, timeoutMs);
+    await waitForRelay();
   }
-
-  // Click into the public folder
-  await publicLink.click();
 
   // Wait for navigation to complete and folder actions to be visible
   await page.waitForFunction(

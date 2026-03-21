@@ -202,6 +202,16 @@ treeRootRegistry.subscribeAll((key, record) => {
     const visibilityInfo = getVisibilityInfoFromRegistry(key);
     state.listeners.forEach(listener => listener(record.hash, record.key, visibilityInfo));
   }
+
+  if (key !== activeResolverKey) return;
+  const currentRoute = get(routeStore);
+  if (key !== getResolverKey(currentRoute.npub ?? undefined, currentRoute.treeName ?? undefined)) return;
+
+  const effectiveKey = record.key ?? state?.decryptedKey;
+  if (record.visibility === 'link-visible' && !effectiveKey) return;
+
+  treeRootStore.set(cid(record.hash, effectiveKey));
+  logHtreeDebug('treeRoot:set', { source: 'registry-active', resolverKey: key });
 });
 
 /**
@@ -595,8 +605,14 @@ export function createTreeRootStore(): Readable<CID | null> {
     }
 
     // Same key, no need to resubscribe
-    // But still check if we need to recover k= param for URL
+    // But still check if we need to recover k= param for URL, and restore the
+    // store from the registry snapshot if a same-tree navigation cleared it.
     if (resolverKey === activeResolverKey) {
+      const cachedRoot = getTreeRootSync(route.npub, route.treeName);
+      if (cachedRoot && !get(treeRootStore)) {
+        treeRootStore.set(cachedRoot);
+        logHtreeDebug('treeRoot:set', { source: 'registry-reuse', resolverKey });
+      }
       const currentRoute = get(routeStore);
       const linkKeyFromUrl = currentRoute.params.get('k');
       if (!linkKeyFromUrl) {
@@ -628,8 +644,14 @@ export function createTreeRootStore(): Readable<CID | null> {
     // Subscribe to resolver
     activeUnsubscribe = subscribeToResolver(resolverKey, async (hash, encryptionKey, visibilityInfo) => {
       if (!hash) {
-        treeRootStore.set(null);
-        logHtreeDebug('treeRoot:clear', { reason: 'no-hash', resolverKey });
+        const fallbackRoot = getTreeRootSync(route.npub, route.treeName);
+        if (fallbackRoot) {
+          treeRootStore.set(fallbackRoot);
+          logHtreeDebug('treeRoot:set', { source: 'registry-fallback', resolverKey });
+        } else {
+          treeRootStore.set(null);
+          logHtreeDebug('treeRoot:clear', { reason: 'no-hash', resolverKey });
+        }
         return;
       }
 

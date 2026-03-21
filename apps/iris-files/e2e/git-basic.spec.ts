@@ -1,6 +1,31 @@
 import { test, expect } from './fixtures';
 import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp } from './test-utils.js';
 
+async function createAndOpenPlainFolder(page: import('@playwright/test').Page, folderName: string) {
+  await page.evaluate(async (name) => {
+    const { getTree, LinkType } = await import('/src/store.ts');
+    const { autosaveIfOwn } = await import('/src/nostr.ts');
+    const { getCurrentRootCid } = await import('/src/actions/route.ts');
+    const { getRouteSync } = await import('/src/stores/index.ts');
+
+    const tree = getTree();
+    const route = getRouteSync();
+    const rootCid = getCurrentRootCid();
+    if (!rootCid) {
+      throw new Error('Missing root CID when creating plain folder');
+    }
+
+    const { cid: emptyDir } = await tree.putDirectory([]);
+    const nextRoot = await tree.setEntry(rootCid, route.path, name, emptyDir, 0, LinkType.Dir);
+    autosaveIfOwn(nextRoot);
+  }, folderName);
+
+  const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: folderName }).first();
+  await expect(folderLink).toBeVisible({ timeout: 15000 });
+  await folderLink.click();
+  await expect(page).toHaveURL(new RegExp(`/${folderName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`), { timeout: 10000 });
+}
+
 test.describe('Git basic features', () => {
   test.describe.configure({ timeout: 90000 });
   // Disable "others pool" to prevent WebRTC cross-talk from parallel tests
@@ -14,19 +39,7 @@ test.describe('Git basic features', () => {
     test.slow(); // File operations can be slow under parallel load
     await navigateToPublicFolder(page, { timeoutMs: 60000, requireRelay: false });
 
-    // Navigate to tree list and create a folder
-    await page.locator('header a:has-text("Iris")').click();
-    const newFolderButton = page.getByRole('button', { name: 'New Folder' }).first();
-    await expect(newFolderButton).toBeVisible({ timeout: 5000 });
-    await newFolderButton.click();
-
-    const input = page.locator('input[placeholder="Folder name..."]');
-    await input.waitFor({ timeout: 5000 });
-    await input.fill('nav-dotfile-test');
-    await page.click('button:has-text("Create")');
-
-    // Wait for modal to close
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createAndOpenPlainFolder(page, 'nav-dotfile-test');
 
     // Create .git directory via the tree API so this stays a plain folder, not a repo
     await page.evaluate(async () => {
@@ -66,7 +79,6 @@ test.describe('Git basic features', () => {
     // At least one of these should be true:
     // 1. We see "Empty directory" (correct - viewing as directory)
     // 2. We don't see a Download button (correct - not treating as file)
-    const emptyVisible = await emptyDir.isVisible().catch(() => false);
     const downloadVisible = await downloadButton.isVisible().catch(() => false);
 
     // If we see Download button, we're incorrectly treating .git as a file
@@ -76,19 +88,7 @@ test.describe('Git basic features', () => {
   test('dotfiles like .git and .claude should be treated as directories', async ({ page }) => {
     await navigateToPublicFolder(page, { timeoutMs: 60000, requireRelay: false });
 
-    // Navigate to tree list and create a folder
-    await page.locator('header a:has-text("Iris")').click();
-    const newFolderButton = page.getByRole('button', { name: 'New Folder' }).first();
-    await expect(newFolderButton).toBeVisible({ timeout: 5000 });
-    await newFolderButton.click();
-
-    const input = page.locator('input[placeholder="Folder name..."]');
-    await input.waitFor({ timeout: 5000 });
-    await input.fill('dotfile-test');
-    await page.click('button:has-text("Create")');
-
-    // Wait for modal to close
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createAndOpenPlainFolder(page, 'dotfile-test');
     await expect(page.locator('text=Empty directory')).toBeVisible({ timeout: 10000 });
 
     // Create .git and .claude directories via the tree API
@@ -128,19 +128,7 @@ test.describe('Git basic features', () => {
   test('should detect git repo and show git features when .git directory exists', async ({ page }) => {
     await navigateToPublicFolder(page, { timeoutMs: 60000, requireRelay: false });
 
-    // Navigate to tree list and create a folder
-    await page.locator('header a:has-text("Iris")').click();
-    const newFolderButton = page.getByRole('button', { name: 'New Folder' }).first();
-    await expect(newFolderButton).toBeVisible({ timeout: 5000 });
-    await newFolderButton.click();
-
-    const input = page.locator('input[placeholder="Folder name..."]');
-    await input.waitFor({ timeout: 5000 });
-    await input.fill('git-repo-test');
-    await page.click('button:has-text("Create")');
-
-    // Wait for modal to close
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+    await createAndOpenPlainFolder(page, 'git-repo-test');
 
     // Create a minimal git repo structure via the tree API
     const result = await page.evaluate(async () => {

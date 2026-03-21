@@ -279,6 +279,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build hashtree-nostr dependencies
+        run: |
+          pnpm --filter @hashtree/core build
+          pnpm --filter @hashtree/index build
+
       - name: Run hashtree-nostr formal tests
         run: pnpm --filter @hashtree/nostr test
 
