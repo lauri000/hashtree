@@ -393,7 +393,7 @@ pub fn detect_local_daemon_url(bind_address: Option<&str>) -> Option<String> {
     use std::net::{SocketAddr, TcpStream};
     use std::time::Duration;
 
-    if !prefer_local_relay() {
+    if !prefer_local_daemon() {
         return None;
     }
 
@@ -497,6 +497,20 @@ fn prefer_local_relay() -> bool {
         }
     }
     true
+}
+
+fn prefer_local_daemon() -> bool {
+    for key in [
+        "HTREE_PREFER_LOCAL_DAEMON",
+        "NOSTR_PREFER_LOCAL",
+        "HTREE_PREFER_LOCAL_RELAY",
+    ] {
+        if let Ok(val) = std::env::var(key) {
+            let val = val.trim().to_lowercase();
+            return !matches!(val.as_str(), "0" | "false" | "no" | "off");
+        }
+    }
+    false
 }
 
 fn parse_env_list(var: &str) -> Option<Vec<String>> {
@@ -726,6 +740,34 @@ nsec1ghi789
         assert_eq!(
             detect_local_daemon_url(Some(&format!("127.0.0.1:{port}"))),
             None
+        );
+    }
+
+    #[test]
+    fn test_detect_local_daemon_url_requires_opt_in() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _prefer = EnvGuard::clear("HTREE_PREFER_LOCAL_DAEMON");
+        let _prefer_nostr = EnvGuard::clear("NOSTR_PREFER_LOCAL");
+        let _prefer_relay = EnvGuard::clear("HTREE_PREFER_LOCAL_RELAY");
+
+        assert_eq!(
+            detect_local_daemon_url(Some(&format!("127.0.0.1:{port}"))),
+            None
+        );
+    }
+
+    #[test]
+    fn test_detect_local_daemon_url_uses_opt_in_flag() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _prefer = EnvGuard::set("HTREE_PREFER_LOCAL_DAEMON", "1");
+
+        assert_eq!(
+            detect_local_daemon_url(Some(&format!("127.0.0.1:{port}"))),
+            Some(format!("http://127.0.0.1:{port}"))
         );
     }
 
