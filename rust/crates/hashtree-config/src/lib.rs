@@ -393,6 +393,10 @@ pub fn detect_local_daemon_url(bind_address: Option<&str>) -> Option<String> {
     use std::net::{SocketAddr, TcpStream};
     use std::time::Duration;
 
+    if !prefer_local_relay() {
+        return None;
+    }
+
     let port = local_daemon_port(bind_address);
     if port == 0 {
         return None;
@@ -710,6 +714,19 @@ nsec1ghi789
     #[test]
     fn test_local_daemon_port_invalid() {
         assert_eq!(local_daemon_port(Some("localhost")), 8080);
+    }
+
+    #[test]
+    fn test_detect_local_daemon_url_respects_prefer_local_flag() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _prefer = EnvGuard::set("NOSTR_PREFER_LOCAL", "0");
+
+        assert_eq!(
+            detect_local_daemon_url(Some(&format!("127.0.0.1:{port}"))),
+            None
+        );
     }
 
     #[test]
