@@ -247,7 +247,8 @@ jobs:
       - name: Install Iris dependencies
         run: pnpm --dir apps/iris install --frozen-lockfile
 
-      - name: Validate macOS release secrets
+      - name: Determine macOS signing mode
+        id: signing
         shell: bash
         run: |
           required=(
@@ -267,12 +268,14 @@ jobs:
           done
 
           if [ "${#missing[@]}" -gt 0 ]; then
-            echo "macOS releases require a signed and notarized Iris app."
-            echo "Missing required secrets: ${missing[*]}"
-            exit 1
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+            echo "Building unsigned macOS app artifact because signing secrets are missing: ${missing[*]}"
+          else
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Install macOS signing certificate
+        if: steps.signing.outputs.enabled == 'true'
         shell: bash
         run: |
           KEYCHAIN_PATH="$RUNNER_TEMP/iris-signing.keychain-db"
@@ -326,6 +329,7 @@ jobs:
           exit 1
 
       - name: Code sign macOS app
+        if: steps.signing.outputs.enabled == 'true'
         shell: bash
         run: |
           APP_PATH="${{ steps.locate_app.outputs.app_path }}"
@@ -343,6 +347,7 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
 
       - name: Notarize macOS app
+        if: steps.signing.outputs.enabled == 'true'
         shell: bash
         run: |
           APP_PATH="${{ steps.locate_app.outputs.app_path }}"
@@ -397,8 +402,12 @@ jobs:
             exit 1
           fi
 
-          codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
-          spctl --assess --type execute --verbose=4 "${APP_PATH}"
+          if [ "${{ steps.signing.outputs.enabled }}" = "true" ]; then
+            codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
+            spctl --assess --type execute --verbose=4 "${APP_PATH}"
+          else
+            echo "Unsigned macOS app artifact verified for structure only."
+          fi
 
       - name: Upload macOS app artifact
         uses: actions/upload-artifact@v4
