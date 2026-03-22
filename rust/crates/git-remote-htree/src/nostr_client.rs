@@ -478,6 +478,59 @@ fn append_repo_discovery_labels(tags: &mut Vec<Tag>, repo_name: &str) {
     }
 }
 
+fn relay_host(url: &str) -> Option<&str> {
+    let stripped = url
+        .strip_prefix("ws://")
+        .or_else(|| url.strip_prefix("wss://"))
+        .or_else(|| url.strip_prefix("http://"))
+        .or_else(|| url.strip_prefix("https://"))
+        .unwrap_or(url);
+    let authority = stripped.split('/').next().unwrap_or(stripped);
+    if authority.is_empty() {
+        return None;
+    }
+
+    if let Some(host) = authority.strip_prefix('[') {
+        return host.split(']').next().filter(|value| !value.is_empty());
+    }
+
+    authority
+        .split(':')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn is_local_relay_url(url: &str) -> bool {
+    relay_host(url).is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host == "127.0.0.1"
+            || host == "::1"
+            || host.starts_with("127.")
+    })
+}
+
+fn has_non_local_relay(urls: &[String]) -> bool {
+    urls.iter().any(|url| !is_local_relay_url(url))
+}
+
+fn validate_repo_publish_relays(configured: &[String], connected: &[String]) -> Result<()> {
+    if connected.is_empty() {
+        anyhow::bail!(
+            "No relay confirmed repo publication. Another machine will not discover this repo via htree://<npub>/... Check [nostr].relays in ~/.hashtree/config.toml."
+        );
+    }
+
+    if has_non_local_relay(configured) && !has_non_local_relay(connected) {
+        anyhow::bail!(
+            "No public relay confirmed repo publication; local relays only: {}. Another machine will not discover this repo via htree://<npub>/... Check [nostr].relays in ~/.hashtree/config.toml.",
+            connected.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
 fn latest_trusted_pr_status_kinds(
     pr_events: &[Event],
     status_events: &[Event],
@@ -1602,9 +1655,13 @@ impl NostrClient {
             .map(|npub| format!("htree://{}/{}", npub, repo_name))
             .unwrap_or_else(|_| format!("htree://{}/{}", &self.pubkey[..16], repo_name));
 
+        let relay_validation = validate_repo_publish_relays(&configured, &connected);
+
         // Disconnect and give time for cleanup
         let _ = client.disconnect().await;
         tokio::time::sleep(Duration::from_millis(50)).await;
+
+        relay_validation?;
 
         Ok((
             npub_url,
@@ -1971,6 +2028,28 @@ mod tests {
         // This will timeout/return empty without real relays
         let refs = client.cached_refs.get("new-repo");
         assert!(refs.is_none());
+    }
+
+    #[test]
+    fn test_validate_repo_publish_relays_allows_local_only_when_only_local_relays_configured() {
+        let configured = vec!["ws://127.0.0.1:8080/ws".to_string()];
+        let connected = vec!["ws://127.0.0.1:8080/ws".to_string()];
+
+        assert!(validate_repo_publish_relays(&configured, &connected).is_ok());
+    }
+
+    #[test]
+    fn test_validate_repo_publish_relays_rejects_local_only_when_public_relays_configured() {
+        let configured = vec![
+            "ws://127.0.0.1:8080/ws".to_string(),
+            "wss://relay.damus.io".to_string(),
+        ];
+        let connected = vec!["ws://127.0.0.1:8080/ws".to_string()];
+
+        let err = validate_repo_publish_relays(&configured, &connected)
+            .expect_err("should reject local-only publication");
+        assert!(err.to_string().contains("No public relay confirmed"));
+        assert!(err.to_string().contains("local relays only"));
     }
 
     #[test]

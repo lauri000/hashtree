@@ -20,7 +20,7 @@ const VERBOSE_THRESHOLD: Duration = Duration::from_secs(3);
 /// incremental push can safely skip unchanged content.
 const SERVER_COVERAGE_SAMPLE_SIZE: usize = 32;
 
-use crate::nostr_client::{BlossomResult, NostrClient, PullRequestStateFilter, RelayResult};
+use crate::nostr_client::{BlossomResult, NostrClient, PullRequestStateFilter};
 use hashtree_config::Config;
 
 // CachedStore: local store first, then Blossom fallback
@@ -1217,31 +1217,13 @@ impl RemoteHelper {
 
         // Then publish to nostr (kind 30078 with hashtree label)
         // Include masked key (encryptedKey tag) for private or raw CHK key (key tag) for public repos
-        // Don't fail push if relay publish fails - it's just distribution
         let key_with_privacy = key_to_publish
             .as_ref()
             .map(|k| (k, is_link_visible, self.is_private));
-        let (npub_url, relay_result) =
-            match self
-                .nostr
-                .publish_repo(&self.repo_name, &root_hash_hex, key_with_privacy)
-            {
-                Ok((url, result)) => (url, result),
-                Err(e) => {
-                    warn!("Failed to publish to relays: {}", e);
-                    // Construct URL anyway for display using npub
-                    let url = format!("htree://{}/{}", self.nostr.npub(), &self.repo_name);
-                    let configured = self.nostr.relay_urls();
-                    (
-                        url,
-                        RelayResult {
-                            configured: configured.clone(),
-                            connected: vec![],
-                            failed: configured,
-                        },
-                    )
-                }
-            };
+        let (npub_url, relay_result) = self
+            .nostr
+            .publish_repo(&self.repo_name, &root_hash_hex, key_with_privacy)
+            .map_err(|e| anyhow::anyhow!("Failed to publish repo metadata to relays: {}", e))?;
 
         // Build full URL with secret fragment if private
         let full_url = if let Some(secret) = self.url_secret {
