@@ -13,6 +13,7 @@
   import { uploadFiles } from '../../stores/upload';
   import { LinkType, type TreeEntry as HashTreeEntry } from '@hashtree/core';
   import { supportsGitFeatures } from '../../appType';
+  import { findNearestGitRootPath } from '../../utils/gitRoot';
 
   let route = $derived($routeStore);
   let rootCid = $derived($treeRootStore);
@@ -50,7 +51,36 @@
 
   // Check if we're inside a git repo subdirectory (gitRoot propagated via URL)
   let gitRootFromUrl = $derived(route.params.get('g'));
-  let isInGitRepo = $derived(supportsGitFeatures() && (hasGitDir || gitRootFromUrl !== null));
+  let detectedGitRootPath = $state<string | null>(null);
+  let effectiveGitRootPath = $derived(gitRootFromUrl ?? detectedGitRootPath);
+  let isInGitRepo = $derived(supportsGitFeatures() && (hasGitDir || effectiveGitRootPath !== null));
+
+  $effect(() => {
+    const enabled = supportsGitFeatures();
+    const treeCid = rootCid;
+    const currentDir = currentDirCid;
+    const path = currentPath;
+    const explicitGitRoot = gitRootFromUrl;
+    const currentHasGitDir = hasGitDir;
+
+    if (!enabled || !treeCid || !currentDir || explicitGitRoot !== null || currentHasGitDir) {
+      detectedGitRootPath = null;
+      return;
+    }
+
+    let cancelled = false;
+    findNearestGitRootPath(treeCid, path).then((gitRootPath) => {
+      if (!cancelled) {
+        detectedGitRootPath = gitRootPath;
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        detectedGitRootPath = null;
+      }
+    });
+
+    return () => { cancelled = true; };
+  });
 
   // Resolve git root CID when we're in a subdirectory
   // If at git root (hasGitDir), use currentDirCid
@@ -61,10 +91,10 @@
     if (hasGitDir) {
       // We're at the git root - use current directory CID
       gitRootCid = currentDirCid;
-    } else if (gitRootFromUrl !== null && rootCid) {
+    } else if (effectiveGitRootPath !== null && rootCid) {
       // We're in a subdirectory - resolve gitRoot path to get CID
       const tree = getTree();
-      const pathParts = gitRootFromUrl === '' ? [] : gitRootFromUrl.split('/');
+      const pathParts = effectiveGitRootPath === '' ? [] : effectiveGitRootPath.split('/');
 
       let cancelled = false;
       (async () => {
@@ -227,6 +257,7 @@
       <GitRepoView
         dirCid={currentDirCid}
         {gitRootCid}
+        gitRootPath={effectiveGitRootPath}
         {entries}
         {canEdit}
         currentBranch={gitInfo.currentBranch}

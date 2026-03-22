@@ -25,22 +25,21 @@
     dirCid: CID;
     /** Git root CID - use this for git operations when in a subdirectory */
     gitRootCid: CID | null;
+    /** Git root path from tree root, or empty string when the tree root is the repo root */
+    gitRootPath: string | null;
     entries: TreeEntry[];
     canEdit: boolean;
     currentBranch: string | null;
     branches: string[];
   }
 
-  let { dirCid, gitRootCid, entries, canEdit, currentBranch, branches }: Props = $props();
+  let { dirCid, gitRootCid, gitRootPath, entries, canEdit, currentBranch, branches }: Props = $props();
 
   // Use gitRootCid for git operations, fall back to dirCid if not provided (at git root)
   let gitCid = $derived(gitRootCid ?? dirCid);
 
   let route = $derived($routeStore);
   let currentPath = $derived(route.path);
-
-  // Get git root path from route (for subdirectory operations)
-  let gitRootPath = $derived(route.params.get('g'));
 
   // Full repo path for URLs (treeName + path to git root)
   // e.g., if treeName is "link" and git root is at "link/my-repo", repoPath is "link/my-repo"

@@ -26,6 +26,7 @@
   import { TreeRow } from '../ui';
   import FileGitBar from '../Git/FileGitBar.svelte';
   import { supportsDocumentFeatures, supportsGitFeatures } from '../../appType';
+  import { findNearestGitRootPath } from '../../utils/gitRoot';
 
   let route = $derived($routeStore);
   let rootCid = $derived($treeRootStore);
@@ -59,7 +60,37 @@
   // Check for .git in parent directory entries or git root from URL param
   let hasGitDir = $derived(entries.some(e => e.name === '.git' && e.type === LinkType.Dir));
   let gitRootFromUrl = $derived(route.params.get('g'));
-  let isInGitRepo = $derived(supportsGitFeatures() && (hasGitDir || gitRootFromUrl !== null));
+  let detectedGitRootPath = $state<string | null>(null);
+  let effectiveGitRootPath = $derived(gitRootFromUrl ?? detectedGitRootPath);
+  let isInGitRepo = $derived(supportsGitFeatures() && (hasGitDir || effectiveGitRootPath !== null));
+
+  $effect(() => {
+    const enabled = supportsGitFeatures();
+    const treeCid = rootCid;
+    const currentDir = currentDirCid;
+    const path = urlPath.slice(0, -1);
+    const explicitGitRoot = gitRootFromUrl;
+    const currentHasGitDir = hasGitDir;
+    const viewingFile = hasFile;
+
+    if (!enabled || !viewingFile || !treeCid || !currentDir || explicitGitRoot !== null || currentHasGitDir) {
+      detectedGitRootPath = null;
+      return;
+    }
+
+    let cancelled = false;
+    findNearestGitRootPath(treeCid, path).then((gitRootPath) => {
+      if (!cancelled) {
+        detectedGitRootPath = gitRootPath;
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        detectedGitRootPath = null;
+      }
+    });
+
+    return () => { cancelled = true; };
+  });
 
   // Resolve git root CID
   let gitRootCid = $state<typeof currentDirCid>(null);
@@ -68,10 +99,10 @@
     if (hasGitDir && currentDirCid) {
       // We're at the git root - use current directory CID
       gitRootCid = currentDirCid;
-    } else if (gitRootFromUrl !== null && rootCid) {
+    } else if (effectiveGitRootPath !== null && rootCid) {
       // We're in a subdirectory - resolve gitRoot path to get CID
       const tree = getTree();
-      const pathParts = gitRootFromUrl === '' ? [] : gitRootFromUrl.split('/');
+      const pathParts = effectiveGitRootPath === '' ? [] : effectiveGitRootPath.split('/');
 
       let cancelled = false;
       (async () => {
@@ -101,9 +132,9 @@
     // Path without the filename (path to parent directory from tree root)
     const parentPath = urlPath.slice(0, -1);
 
-    if (gitRootFromUrl !== null) {
+    if (effectiveGitRootPath !== null) {
       // We're in a subdirectory - need to subtract the git root path
-      const gitRootParts = gitRootFromUrl === '' ? [] : gitRootFromUrl.split('/');
+      const gitRootParts = effectiveGitRootPath === '' ? [] : effectiveGitRootPath.split('/');
       const subpathParts = parentPath.slice(gitRootParts.length);
       return subpathParts.length > 0 ? subpathParts.join('/') : undefined;
     }

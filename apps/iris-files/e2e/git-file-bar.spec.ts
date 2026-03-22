@@ -84,7 +84,7 @@ test.describe('Git file bar', () => {
 
     const { repoName, npub } = await uploadGitRepo(page);
 
-    await page.goto(`/#/${npub}/public/${repoName}/${README_NAME}?g=${encodeURIComponent(repoName)}`);
+    await page.goto(`/git.html#/${npub}/public/${repoName}/${README_NAME}?g=${encodeURIComponent(repoName)}`);
     await waitForAppReady(page);
 
     const gitBar = page.locator('[data-testid="git-file-bar"]');
@@ -98,7 +98,7 @@ test.describe('Git file bar', () => {
 
     const { repoName, npub } = await uploadGitRepo(page);
 
-    await page.goto(`/#/${npub}/public/${repoName}/${README_NAME}?g=${encodeURIComponent(repoName)}`);
+    await page.goto(`/git.html#/${npub}/public/${repoName}/${README_NAME}?g=${encodeURIComponent(repoName)}`);
     await waitForAppReady(page);
 
     const gitBar = page.locator('[data-testid="git-file-bar"]');
@@ -113,7 +113,7 @@ test.describe('Git file bar', () => {
 
     const { repoName, npub } = await uploadGitRepo(page);
 
-    await page.goto(`/#/${npub}/public/${repoName}?g=${encodeURIComponent(repoName)}`);
+    await page.goto(`/git.html#/${npub}/public/${repoName}?g=${encodeURIComponent(repoName)}`);
     await waitForAppReady(page);
 
     const fileList = page.locator('[data-testid="file-list"]').last();
@@ -138,5 +138,24 @@ test.describe('Git file bar', () => {
     const gitBar = page.locator('[data-testid="git-file-bar"]');
     await expect(gitBar).toBeVisible({ timeout: 60000 });
     await expect(gitBar.getByText(/\d+\s+(second|minute|hour|day|week|month|year)s?\s+ago/i)).toBeVisible();
+  });
+
+  test('direct deep links into repo subdirectories still use git UI without g param', async ({ page }) => {
+    test.slow();
+
+    const { repoName, npub } = await uploadGitRepo(page);
+
+    await page.goto(`/git.html#/${npub}/public/${repoName}/${SUBDIR_NAME}`);
+    await waitForAppReady(page);
+
+    await expect(page.getByRole('button', { name: /commits/i })).toBeVisible({ timeout: 60000 });
+
+    const fileList = page.locator('[data-testid="file-list"]').last();
+    const fileCell = fileList.locator('tbody tr td:nth-child(2)').filter({ hasText: SUBFILE_NAME }).first();
+    await expect(fileCell).toBeVisible({ timeout: 30000 });
+    await fileCell.click();
+
+    const gitBar = page.locator('[data-testid="git-file-bar"]');
+    await expect(gitBar).toBeVisible({ timeout: 60000 });
   });
 });
