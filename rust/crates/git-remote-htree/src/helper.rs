@@ -1593,12 +1593,9 @@ impl RemoteHelper {
                     let _ = std::io::stderr().flush();
                 }
 
-                // Create a HashTree for the store to use collect_hashes
-                let cached_store = cached_store::CachedStore::new(
-                    store.clone(),
-                    hashtree_blossom::BlossomStore::new(blossom.clone()),
-                );
-                let tree = HashTree::new(HashTreeConfig::new(Arc::new(cached_store)));
+                // Only walk the local store here. If the previous tree is missing locally,
+                // fall back to a full upload instead of blocking on remote Blossom reads.
+                let tree = HashTree::new(HashTreeConfig::new(store.clone()));
                 let old_cid = Cid {
                     hash: old_root,
                     key: old_encryption_key.copied(),
@@ -2097,11 +2094,203 @@ impl RemoteHelper {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::{Body, Bytes},
+        extract::{Path as AxumPath, State},
+        http::{header, HeaderMap, Response, StatusCode},
+        routing::put,
+        Router,
+    };
+    use hashtree_core::{HashTree, HashTreeConfig, MemoryStore, Store};
+    use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
+    use std::sync::Arc;
     use std::sync::Mutex;
+    use std::thread::JoinHandle;
     use tempfile::TempDir;
+    use tokio::sync::oneshot;
 
     const TEST_PUBKEY: &str = "4523be58d395b1b196a9b8c82b038b6895cb02b683d0c253a955068dba1facd0";
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[derive(Default)]
+    struct CountingBlossomState {
+        blobs: HashMap<String, Vec<u8>>,
+        get_requests: usize,
+    }
+
+    struct CountingBlossomServer {
+        state: Arc<Mutex<CountingBlossomState>>,
+        shutdown_tx: Option<oneshot::Sender<()>>,
+        server_thread: Option<JoinHandle<()>>,
+        base_url: String,
+    }
+
+    impl CountingBlossomServer {
+        fn new() -> Self {
+            let state = Arc::new(Mutex::new(CountingBlossomState::default()));
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fake blossom");
+            let port = listener.local_addr().expect("fake blossom addr").port();
+            listener
+                .set_nonblocking(true)
+                .expect("set fake blossom nonblocking");
+            let state_clone = Arc::clone(&state);
+            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+            let server_thread = std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .expect("build fake blossom runtime");
+
+                rt.block_on(async move {
+                    let app = Router::new()
+                        .route("/upload", put(upload_blob))
+                        .route("/:id", axum::routing::get(get_blob).head(head_blob))
+                        .with_state(state_clone);
+
+                    let listener = tokio::net::TcpListener::from_std(listener)
+                        .expect("tokio fake blossom listener");
+
+                    axum::serve(listener, app)
+                        .with_graceful_shutdown(async {
+                            let _ = shutdown_rx.await;
+                        })
+                        .await
+                        .expect("fake blossom serve");
+                });
+            });
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                    return Self {
+                        state,
+                        shutdown_tx: Some(shutdown_tx),
+                        server_thread: Some(server_thread),
+                        base_url: format!("http://127.0.0.1:{}", port),
+                    };
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+
+            panic!("fake blossom did not start");
+        }
+
+        fn base_url(&self) -> &str {
+            &self.base_url
+        }
+
+        fn get_request_count(&self) -> usize {
+            self.state.lock().expect("state lock").get_requests
+        }
+    }
+
+    impl Drop for CountingBlossomServer {
+        fn drop(&mut self) {
+            if let Some(tx) = self.shutdown_tx.take() {
+                let _ = tx.send(());
+            }
+            if let Some(handle) = self.server_thread.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn parse_hash_from_path(id: &str) -> Option<String> {
+        let hash = id.strip_suffix(".bin").unwrap_or(id);
+        if hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            Some(hash.to_ascii_lowercase())
+        } else {
+            None
+        }
+    }
+
+    async fn upload_blob(
+        State(state): State<Arc<Mutex<CountingBlossomState>>>,
+        headers: HeaderMap,
+        body: Bytes,
+    ) -> StatusCode {
+        let mut hasher = Sha256::new();
+        hasher.update(&body);
+        let computed_hash = hex::encode(hasher.finalize());
+
+        if let Some(expected_hash) = headers
+            .get("x-sha-256")
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.to_ascii_lowercase())
+        {
+            if expected_hash != computed_hash {
+                return StatusCode::BAD_REQUEST;
+            }
+        }
+
+        let mut state = state.lock().expect("state lock");
+        if state.blobs.insert(computed_hash, body.to_vec()).is_some() {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::OK
+        }
+    }
+
+    async fn head_blob(
+        State(state): State<Arc<Mutex<CountingBlossomState>>>,
+        AxumPath(id): AxumPath<String>,
+    ) -> Response<Body> {
+        let Some(hash) = parse_hash_from_path(&id) else {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Body::empty())
+                .unwrap();
+        };
+
+        let state = state.lock().expect("state lock");
+        if let Some(data) = state.blobs.get(&hash) {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .header(header::CONTENT_LENGTH, data.len().to_string())
+                .body(Body::empty())
+                .unwrap();
+        }
+
+        Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    async fn get_blob(
+        State(state): State<Arc<Mutex<CountingBlossomState>>>,
+        AxumPath(id): AxumPath<String>,
+    ) -> Response<Body> {
+        let Some(hash) = parse_hash_from_path(&id) else {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Body::empty())
+                .unwrap();
+        };
+
+        let data = {
+            let mut state = state.lock().expect("state lock");
+            state.get_requests += 1;
+            state.blobs.get(&hash).cloned()
+        };
+
+        match data {
+            Some(bytes) => Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .header(header::CONTENT_LENGTH, bytes.len().to_string())
+                .body(Body::from(bytes))
+                .unwrap(),
+            None => Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap(),
+        }
+    }
 
     struct HomeGuard {
         previous: Option<String>,
@@ -2205,6 +2394,32 @@ mod tests {
     fn create_test_helper() -> Option<RemoteHelper> {
         let config = Config::default();
         RemoteHelper::new(TEST_PUBKEY, "test-repo", None, None, false, config).ok()
+    }
+
+    fn create_test_helper_with_config(config: Config) -> Option<RemoteHelper> {
+        RemoteHelper::new(TEST_PUBKEY, "test-repo", None, None, false, config).ok()
+    }
+
+    fn write_test_config(home: &std::path::Path, blossom_url: &str, force_upload: bool) {
+        let config_dir = home.join(".hashtree");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        let config = format!(
+            r#"
+[server]
+enable_auth = false
+stun_port = 0
+
+[nostr]
+relays = []
+crawl_depth = 0
+
+[blossom]
+read_servers = ["{blossom_url}"]
+write_servers = ["{blossom_url}"]
+force_upload = {force_upload}
+"#
+        );
+        std::fs::write(config_dir.join("config.toml"), config).expect("write config");
     }
 
     #[test]
@@ -2634,6 +2849,74 @@ mod tests {
         assert_eq!(
             helper.storage.object_count().expect("object count"),
             exclusive.len()
+        );
+    }
+
+    #[test]
+    fn test_push_to_file_servers_with_diff_does_not_fetch_old_tree_from_blossom() {
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let home = TempDir::new().expect("temp home");
+        let _home_guard = HomeGuard::set(home.path());
+        let fake_blossom = CountingBlossomServer::new();
+        write_test_config(home.path(), fake_blossom.base_url(), true);
+
+        let mut config = Config::default();
+        config.nostr.relays = vec![];
+        config.blossom.read_servers = vec![fake_blossom.base_url().to_string()];
+        config.blossom.write_servers = vec![fake_blossom.base_url().to_string()];
+        config.blossom.force_upload = true;
+
+        let helper = create_test_helper_with_config(config).expect("helper");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+
+        let (old_cid, new_cid) = rt.block_on(async {
+            let old_store = Arc::new(MemoryStore::new());
+            let old_tree = HashTree::new(HashTreeConfig::new(old_store.clone()).public());
+            let (old_cid, _) = old_tree
+                .put(b"old tree exists only on blossom")
+                .await
+                .expect("build old tree");
+            let old_bytes = old_store
+                .get(&old_cid.hash)
+                .await
+                .expect("read old root")
+                .expect("old root bytes");
+
+            hashtree_blossom::BlossomClient::new_empty(nostr::Keys::generate())
+                .with_servers(vec![fake_blossom.base_url().to_string()])
+                .upload(&old_bytes)
+                .await
+                .expect("upload old tree to fake blossom");
+
+            let new_store = helper.storage.store().clone();
+            let new_tree = HashTree::new(HashTreeConfig::new(new_store).public());
+            let (new_cid, _) = new_tree
+                .put(b"new tree exists only locally")
+                .await
+                .expect("build new tree");
+
+            (old_cid, new_cid)
+        });
+
+        let result = helper.push_to_file_servers_with_diff(
+            &hex::encode(new_cid.hash),
+            None,
+            Some(&hex::encode(old_cid.hash)),
+            None,
+        );
+
+        assert!(
+            result.failed.is_empty(),
+            "diff upload should succeed without remote old-tree fetches: {:?}",
+            result.failed
+        );
+        assert_eq!(
+            fake_blossom.get_request_count(),
+            0,
+            "diff collection should not fetch the old tree from Blossom when it is missing locally"
         );
     }
 }

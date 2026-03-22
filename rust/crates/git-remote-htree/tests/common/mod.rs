@@ -578,6 +578,7 @@ impl TestServer {
         // Server config - no auth for testing
         let config_content = r#"
 [server]
+bind_address = "127.0.0.1:0"
 enable_auth = false
 stun_port = 0
 enable_webrtc = false
@@ -702,6 +703,7 @@ write_servers = ["{url}"]
         let config_content = format!(
             r#"
 [server]
+bind_address = "127.0.0.1:0"
 enable_auth = false
 stun_port = 0
 
