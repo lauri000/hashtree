@@ -32,7 +32,7 @@ git remote add htree htree://self/myrepo
 git push htree master
 ```
 
-View repos at files.iris.to, for example [hashtree/rust](https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/rust)
+View repos at git.iris.to, for example [hashtree/rust](https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/rust)
 
 ## Design
 

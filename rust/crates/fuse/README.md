@@ -22,4 +22,4 @@ let fs = HashtreeFuse::new(tree, root_cid, Some(publisher));
 
 Requires the `fuse` feature flag for the FUSE backend (`fuser` + `libc`).
 
-Part of [hashtree](https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree).
+Part of [hashtree](https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree).

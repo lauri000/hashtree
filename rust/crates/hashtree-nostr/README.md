@@ -13,4 +13,4 @@ and maintains thin B-tree indexes for lookups like:
 The layout is kept interoperable with the TypeScript `@hashtree/nostr`
 implementation.
 
-Part of [hashtree](https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree).
+Part of [hashtree](https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree).

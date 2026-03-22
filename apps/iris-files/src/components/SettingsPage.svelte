@@ -11,7 +11,6 @@
   import { blossomLogStore } from '../stores/blossomLog';
   import { BackButton } from './ui';
   import { UserRow } from './User';
-  import { isFilesApp } from '../appType';
   // Worker backend info
   let workerBackend = 'Web Worker';
 
@@ -1096,9 +1095,9 @@
           </span>
         </div>
         <a
-          href={isFilesApp() ? "#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree" : "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree"}
-          target={isFilesApp() ? undefined : "_blank"}
-          rel={isFilesApp() ? undefined : "noopener noreferrer"}
+          href="https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree"
+          target="_blank"
+          rel="noopener noreferrer"
           class="btn-ghost w-full flex items-center justify-center gap-2 no-underline"
         >
           <span class="i-lucide-code text-sm"></span>

@@ -11,4 +11,4 @@ Current uses include:
 - link indexes that point directly at content-addressed blobs
 - cross-language index interoperability with the TypeScript implementation
 
-Part of [hashtree](https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree).
+Part of [hashtree](https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree).

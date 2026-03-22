@@ -68,7 +68,7 @@
     </p>
     <div class="flex gap-3 justify-center">
       <a
-        href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/rust"
+        href="https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/rust"
         class="btn bg-[#b7410e] text-white hover:bg-[#b7410e]/80 inline-flex items-center gap-2 no-underline"
         target="_blank"
         rel="noopener"
@@ -76,7 +76,7 @@
         Rust
       </a>
       <a
-        href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/ts"
+        href="https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/ts"
         class="btn bg-[#3178c6] text-white hover:bg-[#3178c6]/80 inline-flex items-center gap-2 no-underline"
         target="_blank"
         rel="noopener"
@@ -334,11 +334,11 @@
     <p class="text-text-3 text-xs">
       Example:
       <a
-        href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/iris-client?tab=pulls"
+        href="https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/iris-client?tab=pulls"
         class="text-accent hover:underline break-all"
         target="_blank"
         rel="noopener"
-      >files.iris.to pull requests tab</a>
+      >git.iris.to pull requests tab</a>
     </p>
   </div>
 
@@ -399,7 +399,7 @@
     />
     <div class="flex flex-wrap gap-3 justify-center">
       <a
-        href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/apps/hashtree-cc"
+        href="https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/apps/hashtree-cc"
         class="btn-primary inline-flex items-center gap-2 no-underline"
         target="_blank"
         rel="noopener"
@@ -408,7 +408,7 @@
         App Source
       </a>
       <a
-        href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/ts"
+        href="https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/ts"
         class="btn-ghost inline-flex items-center gap-2 no-underline"
         target="_blank"
         rel="noopener"
@@ -504,7 +504,7 @@
   <!-- Links -->
   <div class="flex flex-wrap gap-3 justify-center">
     <a
-      href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree"
+      href="https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree"
       class="btn-primary inline-flex items-center gap-2 no-underline"
       target="_blank"
       rel="noopener"
@@ -513,7 +513,7 @@
       Source Code
     </a>
     <a
-      href="https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/docs/HTS-01.md"
+      href="https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/docs/HTS-01.md"
       class="btn-ghost inline-flex items-center gap-2 no-underline"
       target="_blank"
       rel="noopener"

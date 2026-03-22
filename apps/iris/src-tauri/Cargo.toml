@@ -4,8 +4,8 @@ version = "0.1.0"
 description = "Iris - Thin native shell with embedded htree daemon"
 authors = ["Martti Malmi"]
 license = "MIT"
-repository = "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree"
-homepage = "https://files.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/apps/iris"
+repository = "https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree"
+homepage = "https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/apps/iris"
 edition = "2021"
 rust-version = "1.77.2"
 
