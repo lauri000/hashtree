@@ -487,14 +487,24 @@ pub struct HashtreeStore {
 }
 
 impl HashtreeStore {
-    /// Create a new store with local LMDB storage only (10GB default limit)
+    /// Create a new store with the configured local storage limit.
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Self::with_options(path, None, 10 * 1024 * 1024 * 1024)
+        let config = hashtree_config::Config::load_or_default();
+        let max_size_bytes = config
+            .storage
+            .max_size_gb
+            .saturating_mul(1024 * 1024 * 1024);
+        Self::with_options(path, None, max_size_bytes)
     }
 
-    /// Create a new store with optional S3 backend (10GB default limit)
+    /// Create a new store with optional S3 backend and the configured local storage limit.
     pub fn with_s3<P: AsRef<Path>>(path: P, s3_config: Option<&S3Config>) -> Result<Self> {
-        Self::with_options(path, s3_config, 10 * 1024 * 1024 * 1024)
+        let config = hashtree_config::Config::load_or_default();
+        let max_size_bytes = config
+            .storage
+            .max_size_gb
+            .saturating_mul(1024 * 1024 * 1024);
+        Self::with_options(path, s3_config, max_size_bytes)
     }
 
     /// Create a new store with optional S3 backend and custom size limit

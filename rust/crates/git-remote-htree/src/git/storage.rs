@@ -13,7 +13,7 @@ use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use hashtree_config::{Config, StorageBackend};
-use hashtree_core::store::{Store, StoreError};
+use hashtree_core::store::{Store, StoreError, StoreStats};
 use hashtree_core::types::Hash;
 use hashtree_core::{Cid, DirEntry, HashTree, HashTreeConfig, LinkType};
 use hashtree_fs::FsBlobStore;
@@ -59,17 +59,46 @@ pub enum LocalStore {
 impl LocalStore {
     /// Create a new local store based on config
     pub fn new<P: AsRef<Path>>(path: P) -> std::result::Result<Self, StoreError> {
+        Self::new_with_max_bytes(path, 0)
+    }
+
+    /// Create a new local store based on config with an optional byte limit.
+    pub fn new_with_max_bytes<P: AsRef<Path>>(
+        path: P,
+        max_bytes: u64,
+    ) -> std::result::Result<Self, StoreError> {
         let config = Config::load_or_default();
         match config.storage.backend {
-            StorageBackend::Fs => Ok(LocalStore::Fs(FsBlobStore::new(path)?)),
+            StorageBackend::Fs => {
+                if max_bytes > 0 {
+                    Ok(LocalStore::Fs(FsBlobStore::with_max_bytes(
+                        path, max_bytes,
+                    )?))
+                } else {
+                    Ok(LocalStore::Fs(FsBlobStore::new(path)?))
+                }
+            }
             #[cfg(feature = "lmdb")]
-            StorageBackend::Lmdb => Ok(LocalStore::Lmdb(LmdbBlobStore::new(path)?)),
+            StorageBackend::Lmdb => {
+                if max_bytes > 0 {
+                    warn!(
+                        "LMDB backend ignores git cache eviction limits; configured limit will not be enforced"
+                    );
+                }
+                Ok(LocalStore::Lmdb(LmdbBlobStore::new(path)?))
+            }
             #[cfg(not(feature = "lmdb"))]
             StorageBackend::Lmdb => {
                 warn!(
                     "LMDB backend requested but lmdb feature not enabled, using filesystem storage"
                 );
-                Ok(LocalStore::Fs(FsBlobStore::new(path)?))
+                if max_bytes > 0 {
+                    Ok(LocalStore::Fs(FsBlobStore::with_max_bytes(
+                        path, max_bytes,
+                    )?))
+                } else {
+                    Ok(LocalStore::Fs(FsBlobStore::new(path)?))
+                }
             }
         }
     }
@@ -126,6 +155,54 @@ impl Store for LocalStore {
             LocalStore::Lmdb(store) => store.delete(hash).await,
         }
     }
+
+    fn set_max_bytes(&self, max: u64) {
+        match self {
+            LocalStore::Fs(store) => store.set_max_bytes(max),
+            #[cfg(feature = "lmdb")]
+            LocalStore::Lmdb(store) => store.set_max_bytes(max),
+        }
+    }
+
+    fn max_bytes(&self) -> Option<u64> {
+        match self {
+            LocalStore::Fs(store) => store.max_bytes(),
+            #[cfg(feature = "lmdb")]
+            LocalStore::Lmdb(store) => store.max_bytes(),
+        }
+    }
+
+    async fn stats(&self) -> StoreStats {
+        match self {
+            LocalStore::Fs(store) => match store.stats() {
+                Ok(stats) => StoreStats {
+                    count: stats.count as u64,
+                    bytes: stats.total_bytes,
+                    pinned_count: stats.pinned_count as u64,
+                    pinned_bytes: stats.pinned_bytes,
+                },
+                Err(_) => StoreStats::default(),
+            },
+            #[cfg(feature = "lmdb")]
+            LocalStore::Lmdb(store) => match store.stats() {
+                Ok(stats) => StoreStats {
+                    count: stats.count as u64,
+                    bytes: stats.total_bytes,
+                    pinned_count: 0,
+                    pinned_bytes: 0,
+                },
+                Err(_) => StoreStats::default(),
+            },
+        }
+    }
+
+    async fn evict_if_needed(&self) -> std::result::Result<u64, StoreError> {
+        match self {
+            LocalStore::Fs(store) => store.evict_if_needed().await,
+            #[cfg(feature = "lmdb")]
+            LocalStore::Lmdb(store) => store.evict_if_needed().await,
+        }
+    }
 }
 
 /// Git storage backed by HashTree with configurable persistence
@@ -143,6 +220,16 @@ pub struct GitStorage {
 impl GitStorage {
     /// Open or create a git storage at the given path
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let config = Config::load_or_default();
+        let max_size_bytes = config
+            .storage
+            .max_size_gb
+            .saturating_mul(1024 * 1024 * 1024);
+        Self::open_with_max_bytes(path, max_size_bytes)
+    }
+
+    /// Open or create a git storage at the given path with an explicit byte limit.
+    pub fn open_with_max_bytes(path: impl AsRef<Path>, max_size_bytes: u64) -> Result<Self> {
         let runtime = match Handle::try_current() {
             Ok(handle) => RuntimeExecutor::Handle(handle),
             Err(_) => {
@@ -154,7 +241,7 @@ impl GitStorage {
 
         let store_path = path.as_ref().join("blobs");
         let store = Arc::new(
-            LocalStore::new(&store_path)
+            LocalStore::new_with_max_bytes(&store_path, max_size_bytes)
                 .map_err(|e| Error::StorageError(format!("local store: {}", e)))?,
         );
 
@@ -169,6 +256,13 @@ impl GitStorage {
             refs: std::sync::RwLock::new(HashMap::new()),
             root_cid: std::sync::RwLock::new(None),
         })
+    }
+
+    /// Evict old local blobs if storage is over the configured limit.
+    pub fn evict_if_needed(&self) -> Result<u64> {
+        self.runtime
+            .block_on(self.store.evict_if_needed())
+            .map_err(|e| Error::StorageError(format!("evict: {}", e)))
     }
 
     /// Write an object, returning its ID
@@ -992,6 +1086,20 @@ mod tests {
         (storage, temp_dir)
     }
 
+    fn create_test_storage_with_limit(max_size_bytes: u64) -> (GitStorage, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = GitStorage::open_with_max_bytes(temp_dir.path(), max_size_bytes).unwrap();
+        (storage, temp_dir)
+    }
+
+    fn local_total_bytes(storage: &GitStorage) -> u64 {
+        match storage.store().as_ref() {
+            LocalStore::Fs(store) => store.stats().unwrap().total_bytes,
+            #[cfg(feature = "lmdb")]
+            LocalStore::Lmdb(store) => store.stats().unwrap().total_bytes,
+        }
+    }
+
     #[test]
     fn test_import_ref() {
         let (storage, _temp) = create_test_storage();
@@ -1119,5 +1227,36 @@ mod tests {
         // All gone
         assert!(!storage.has_ref("refs/heads/main").unwrap());
         assert_eq!(storage.object_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_evict_if_needed_respects_configured_limit() {
+        let (storage, _temp) = create_test_storage_with_limit(1_024);
+
+        storage
+            .write_raw_object(ObjectType::Blob, &vec![b'a'; 900])
+            .unwrap();
+        storage
+            .write_raw_object(ObjectType::Blob, &vec![b'b'; 900])
+            .unwrap();
+        storage
+            .write_ref(
+                "refs/heads/main",
+                &Ref::Direct(
+                    ObjectId::from_hex("0123456789abcdef0123456789abcdef01234567").unwrap(),
+                ),
+            )
+            .unwrap();
+
+        storage.build_tree().unwrap();
+
+        let before = local_total_bytes(&storage);
+        assert!(before > 1_024);
+
+        let freed = storage.evict_if_needed().unwrap();
+        assert!(freed > 0);
+
+        let after = local_total_bytes(&storage);
+        assert!(after <= 1_024);
     }
 }

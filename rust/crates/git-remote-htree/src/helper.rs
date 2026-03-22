@@ -149,16 +149,43 @@ fn create_local_store(
     use hashtree_fs::FsBlobStore;
 
     let config = Config::load_or_default();
+    let max_size_bytes = config
+        .storage
+        .max_size_gb
+        .saturating_mul(1024 * 1024 * 1024);
     match config.storage.backend {
-        StorageBackend::Fs => Ok(std::sync::Arc::new(FsBlobStore::new(path)?)),
+        StorageBackend::Fs => {
+            if max_size_bytes > 0 {
+                Ok(std::sync::Arc::new(FsBlobStore::with_max_bytes(
+                    path,
+                    max_size_bytes,
+                )?))
+            } else {
+                Ok(std::sync::Arc::new(FsBlobStore::new(path)?))
+            }
+        }
         #[cfg(feature = "lmdb")]
-        StorageBackend::Lmdb => Ok(std::sync::Arc::new(hashtree_lmdb::LmdbBlobStore::new(
-            path,
-        )?)),
+        StorageBackend::Lmdb => {
+            if max_size_bytes > 0 {
+                warn!(
+                    "LMDB backend ignores git cache eviction limits; configured limit will not be enforced"
+                );
+            }
+            Ok(std::sync::Arc::new(hashtree_lmdb::LmdbBlobStore::new(
+                path,
+            )?))
+        }
         #[cfg(not(feature = "lmdb"))]
         StorageBackend::Lmdb => {
             warn!("LMDB backend requested but lmdb feature not enabled, using filesystem storage");
-            Ok(std::sync::Arc::new(FsBlobStore::new(path)?))
+            if max_size_bytes > 0 {
+                Ok(std::sync::Arc::new(FsBlobStore::with_max_bytes(
+                    path,
+                    max_size_bytes,
+                )?))
+            } else {
+                Ok(std::sync::Arc::new(FsBlobStore::new(path)?))
+            }
         }
     }
 }
@@ -508,6 +535,7 @@ impl RemoteHelper {
         let blobs_path = data_dir.join("blobs");
         let local_store =
             create_local_store(&blobs_path).context("Failed to create local blob store")?;
+        let local_store_for_eviction = local_store.clone();
 
         // Create Blossom store for remote fallback
         let blossom_store = BlossomStore::with_servers(
@@ -744,6 +772,18 @@ impl RemoteHelper {
         }
 
         info!("Fetched {} git objects from hashtree", objects.len());
+        match local_store_for_eviction.evict_if_needed().await {
+            Ok(freed) if freed > 0 => {
+                info!(
+                    "Evicted {} bytes from shared git blob cache after fetch",
+                    freed
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                warn!("Failed to evict shared git blob cache after fetch: {}", err);
+            }
+        }
         Ok(objects)
     }
 
@@ -1237,6 +1277,19 @@ impl RemoteHelper {
         if let Some(path) = npub_url.strip_prefix("htree://") {
             let viewer_url = build_repo_viewer_url(path, self.url_secret.as_ref());
             eprintln!("View at: {}", viewer_url);
+        }
+
+        match self.storage.evict_if_needed() {
+            Ok(freed) if freed > 0 => {
+                info!(
+                    "Evicted {} bytes from shared git blob cache after push",
+                    freed
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                warn!("Failed to evict shared git blob cache after push: {}", err);
+            }
         }
 
         Ok(())
