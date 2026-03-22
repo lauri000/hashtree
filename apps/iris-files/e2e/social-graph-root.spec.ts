@@ -1,7 +1,7 @@
 import { test, expect } from './fixtures';
 import { finalizeEvent, getPublicKey, nip19 } from 'nostr-tools';
 import WebSocket from 'ws';
-import { disableOthersPool, setupPageErrorHandler, waitForAppReady, ensureLoggedIn, useLocalRelay, waitForRelayConnected } from './test-utils.js';
+import { disableOthersPool, setupPageErrorHandler, waitForAppReady, ensureLoggedIn, presetLocalRelayInDB, waitForRelayConnected } from './test-utils.js';
 import { BOOTSTRAP_SECKEY_HEX, FOLLOW_SECKEY_HEX, BOOTSTRAP_SECKEY, FOLLOW_SECKEY } from './nostr-test-keys';
 
 let relayUrl = '';
@@ -250,9 +250,10 @@ test.describe('Social graph root', () => {
 
     // Login first
     await page.goto('/');
+    await presetLocalRelayInDB(page, relayUrl);
+    await page.reload();
     await waitForAppReady(page);
     await disableOthersPool(page);
-    await useLocalRelay(page);
     await waitForRelayConnected(page, 30000);
     await ensureLoggedIn(page, 20000);
     await page.waitForFunction(() => (window as any).__testHelpers?.followPubkey, { timeout: 10000 });

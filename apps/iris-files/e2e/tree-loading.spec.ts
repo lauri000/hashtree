@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { waitForAppReady, ensureLoggedIn, disableOthersPool, useLocalRelay, presetProductionRelaysInDB, getTestRelayUrl } from './test-utils';
+import { waitForAppReady, ensureLoggedIn, disableOthersPool, useLocalRelay, presetProductionRelaysInDB, getTestRelayUrl, gotoGitApp } from './test-utils';
 
 /**
  * Test tree loading with production relays.
@@ -7,8 +7,9 @@ import { waitForAppReady, ensureLoggedIn, disableOthersPool, useLocalRelay, pres
  */
 test('measure tree loading time', async ({ page }) => {
   test.setTimeout(60000);
+  const gitAppPrefix = '/git.html';
 
-  await page.goto('/');
+  await gotoGitApp(page);
   await presetProductionRelaysInDB(page);
   await page.reload();
   await waitForAppReady(page);
@@ -23,13 +24,13 @@ test('measure tree loading time', async ({ page }) => {
 
   if (!isTestMode) {
     const startTime = Date.now();
-    await page.goto('/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree');
+    await page.goto(`${gitAppPrefix}#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree`);
 
     // Wait for README content from production relays/Blossom
     await expect(page.getByText('Content-addressed filesystem')).toBeVisible({ timeout: 45000 });
 
     // Git header should show latest commit (avoid "No commits yet" regressions)
-    const commitLink = page.locator('table thead a[href*="commit="]').first();
+    const commitLink = page.locator('a[href*="?commit="]').first();
     await expect(commitLink).toBeVisible({ timeout: 15000 });
     await expect(page.getByText('No commits yet')).not.toBeVisible({ timeout: 5000 });
 
@@ -50,8 +51,8 @@ test('measure tree loading time', async ({ page }) => {
   await expect(publicLink).toBeVisible({ timeout: 20000 });
 
   const npub = await page.evaluate(() => (window as any).__nostrStore?.getState?.()?.npub || '');
-  await page.goto(`/#/${npub}/public`);
-  await page.waitForURL(/\/#\/npub.*\/public/, { timeout: 15000 });
+  await page.goto(`${gitAppPrefix}#/${npub}/public`);
+  await page.waitForURL(/\/git\.html#\/npub.*\/public/, { timeout: 15000 });
 
   const filename = `README-${Date.now()}.md`;
   const content = 'Content-addressed filesystem';
@@ -64,9 +65,9 @@ test('measure tree loading time', async ({ page }) => {
 
   await expect(page.getByText(filename).first()).toBeVisible({ timeout: 20000 });
 
-  const treeUrl = `/#/${npub}/public`;
+  const treeUrl = `${gitAppPrefix}#/${npub}/public`;
 
-  await page.goto('/#/');
+  await page.goto(`${gitAppPrefix}#/`);
   const startTime = Date.now();
   await page.goto(treeUrl);
   await page.waitForFunction(
@@ -97,16 +98,16 @@ test('measure tree loading time', async ({ page }) => {
 
 test('direct nav loads repo on first page load', async ({ page }) => {
   test.setTimeout(60000);
-  await page.goto('/');
+  await gotoGitApp(page);
   await presetProductionRelaysInDB(page);
   await page.reload();
   await waitForAppReady(page);
 
-  await page.goto('/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree');
+  await page.goto('/git.html#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree');
   await waitForAppReady(page);
 
   await expect(page.getByText('Content-addressed filesystem')).toBeVisible({ timeout: 45000 });
-  const commitLink = page.locator('table thead a[href*="commit="]').first();
+  const commitLink = page.locator('a[href*="?commit="]').first();
   await expect(commitLink).toBeVisible({ timeout: 15000 });
   await expect(page.getByText('No commits yet')).not.toBeVisible({ timeout: 5000 });
 });

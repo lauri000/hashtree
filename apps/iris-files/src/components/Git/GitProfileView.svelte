@@ -11,7 +11,7 @@
   import ShareButton from '../ShareButton.svelte';
   import RepoCard from './RepoCard.svelte';
   import { buildGitHomeRepos } from './homeModel';
-  import { getFollowsMe, getFollowers, socialGraphStore } from '../../utils/socialGraph';
+  import { getFollowsMe, getFollowers, fetchUserFollows, fetchUserFollowers, socialGraphStore } from '../../utils/socialGraph';
 
   interface Props {
     npub: string;
@@ -102,6 +102,13 @@
   let knownFollowers = $derived.by(() => {
     graphVersion;
     return getFollowers(pubkeyHex);
+  });
+
+  $effect(() => {
+    if (pubkeyHex) {
+      fetchUserFollows(pubkeyHex);
+      fetchUserFollowers(pubkeyHex);
+    }
   });
 
   let treesStore = $derived(createTreesStore(npub));

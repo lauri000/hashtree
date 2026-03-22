@@ -67,9 +67,19 @@ jobs:
         run: pnpm test
 
   ts-e2e-tests:
-    name: TypeScript E2E Tests
+    name: TypeScript E2E Tests (${{ matrix.suite.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: ${{ matrix.suite.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - name: fast
+            command: pnpm test:e2e:fast
+            timeout: 45
+          - name: slow
+            command: pnpm test:e2e:slow
+            timeout: 30
     defaults:
       run:
         working-directory: ts
@@ -105,7 +115,7 @@ jobs:
         run: pnpm exec playwright install chromium --with-deps
 
       - name: Run E2E tests
-        run: pnpm test:e2e
+        run: ${{ matrix.suite.command }}
         env:
           CI: true
 
@@ -113,7 +123,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.suite.name }}
           path: ts/playwright-report/
           retention-days: 7
 

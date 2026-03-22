@@ -22,7 +22,7 @@ test.describe('Releases', () => {
       return { npub: parts[0], treeName: parts[1] };
     });
 
-    await page.goto(`/#/${route.npub}/${route.treeName}?tab=releases`);
+    await page.goto(`/git.html#/${route.npub}/${route.treeName}?tab=releases`);
     await expect(page.locator('text=Loading releases...')).not.toBeVisible({ timeout: 20000 });
     await expect(page.locator('text=No releases yet')).toBeVisible({ timeout: 20000 });
 

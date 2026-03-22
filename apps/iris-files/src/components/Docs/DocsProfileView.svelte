@@ -13,7 +13,7 @@
   import { Avatar, Name, Badge, FollowedBy } from '../User';
   import CopyText from '../CopyText.svelte';
   import ProxyImg from '../ProxyImg.svelte';
-  import { getFollowsMe, getFollowers, socialGraphStore } from '../../utils/socialGraph';
+  import { getFollowsMe, getFollowers, fetchUserFollows, fetchUserFollowers, socialGraphStore } from '../../utils/socialGraph';
   import DocCard from './DocCard.svelte';
 
   interface Props {
@@ -102,6 +102,13 @@
   let knownFollowers = $derived.by(() => {
     graphVersion;
     return getFollowers(pubkeyHex);
+  });
+
+  $effect(() => {
+    if (pubkeyHex) {
+      fetchUserFollows(pubkeyHex);
+      fetchUserFollowers(pubkeyHex);
+    }
   });
 
   // Trees store for this user's docs

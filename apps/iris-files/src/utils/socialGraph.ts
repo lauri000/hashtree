@@ -203,15 +203,17 @@ export function getFollowers(pubkey: string | null | undefined): Set<string> {
   // Trigger async fetch
   const adapter = getWorkerAdapter();
   if (adapter) {
+    const requestVersion = currentVersion;
     pendingFollowersFetches.add(pubkey);
     adapter.getFollowers(pubkey)
       .then(arr => {
         followersCache.set(pubkey, new Set(arr));
-        followersFetchedAtVersion.set(pubkey, socialGraphStore.getState().version);
         pendingFollowersFetches.delete(pubkey);
+        followersFetchedAtVersion.set(pubkey, requestVersion);
         // Only increment version if data actually changed
         const oldSize = cached?.size ?? 0;
-        if (arr.length !== oldSize) {
+        const resolvedVersion = socialGraphStore.getState().version;
+        if (arr.length !== oldSize || requestVersion < resolvedVersion) {
           socialGraphStore.incrementVersion();
         }
       })
