@@ -21,7 +21,7 @@ struct EnvVarGuard {
 }
 
 impl EnvVarGuard {
-    fn set(key: &'static str, value: &std::path::Path) -> Self {
+    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
         let previous = std::env::var_os(key);
         std::env::set_var(key, value);
         Self { key, previous }
@@ -121,6 +121,7 @@ async fn info_fetches_missing_hash_via_local_daemon() {
     std::fs::create_dir_all(&local_data_dir).expect("local store dir");
 
     let _config_env = EnvVarGuard::set("HTREE_CONFIG_DIR", &config_dir);
+    let _prefer_local_daemon = EnvVarGuard::set("HTREE_PREFER_LOCAL_DAEMON", "1");
 
     let mut daemon_config = Config::default();
     daemon_config.storage.data_dir = daemon_data_dir.to_string_lossy().to_string();
