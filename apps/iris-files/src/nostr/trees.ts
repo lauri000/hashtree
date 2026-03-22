@@ -14,6 +14,7 @@ import { ndk } from './ndk';
 import { updateLocalRootCache } from '../treeRootCache';
 import { parseRoute } from '../utils/route';
 import { getRefResolver } from '../refResolver';
+import { resolvePublishLabels } from './publishLabels';
 
 // Re-export visibility hex helpers from hashtree lib
 export { visibilityHex as linkKeyUtils } from '@hashtree/core';
@@ -50,12 +51,36 @@ export async function saveHashtree(
   const visibility = options.visibility ?? 'public';
   const resolver = getRefResolver();
 
-  // Optimistically update local state for offline-first behavior
   const currentSelected = state.selectedTree;
+  const selectedTreeLabels = currentSelected && currentSelected.name === name && currentSelected.pubkey === state.pubkey
+    ? currentSelected.labels
+    : undefined;
+
+  let publishLabels = resolvePublishLabels({
+    currentLabels: selectedTreeLabels,
+    explicitLabels: options.labels,
+  });
+
+  if (!publishLabels?.includes('git')) {
+    try {
+      const { isGitRepo } = await import('../utils/git');
+      if (await isGitRepo(rootCid)) {
+        publishLabels = resolvePublishLabels({
+          currentLabels: selectedTreeLabels,
+          explicitLabels: options.labels,
+          includeGitLabel: true,
+        });
+      }
+    } catch (error) {
+      console.debug('[nostr] Failed to infer git label during publish', error);
+    }
+  }
+
+  // Optimistically update local state for offline-first behavior
   if (currentSelected && currentSelected.name === name && currentSelected.pubkey === state.pubkey) {
     nostrStore.setSelectedTree({
       ...currentSelected,
-      labels: options.labels ?? currentSelected.labels,
+      labels: publishLabels,
       rootHash: toHex(rootCid.hash),
       rootKey: rootCid.key ? toHex(rootCid.key) : undefined,
       visibility,
@@ -64,7 +89,7 @@ export async function saveHashtree(
   }
 
   // Update treeRootCache immediately so local ops don't wait on publish
-  updateLocalRootCache(state.npub, name, rootCid.hash, rootCid.key, visibility, options.labels ?? currentSelected?.labels);
+  updateLocalRootCache(state.npub, name, rootCid.hash, rootCid.key, visibility, publishLabels);
 
   // Use resolver to publish - it handles all visibility encryption
   const result = await resolver.publish?.(
@@ -73,7 +98,7 @@ export async function saveHashtree(
     {
       visibility,
       linkKey: options.linkKey ? fromHex(options.linkKey) : undefined,
-      labels: options.labels,
+      labels: publishLabels,
     }
   );
 
