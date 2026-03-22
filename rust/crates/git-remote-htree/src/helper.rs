@@ -1048,8 +1048,28 @@ impl RemoteHelper {
             }
         }
 
-        // Fetch all git objects from remote hashtree
-        if let Some(root) = root_hash {
+        let preserved_refs: Vec<(String, String)> = refs
+            .iter()
+            .filter(|(ref_name, ref_value)| {
+                ref_name.starts_with("refs/")
+                    && !ref_value.starts_with("ref: ")
+                    && !self.push_specs.iter().any(|spec| spec.dst == **ref_name)
+            })
+            .map(|(ref_name, ref_value)| (ref_name.clone(), ref_value.clone()))
+            .collect();
+
+        if preserved_refs.is_empty() {
+            self.detail("  No untouched direct refs to preserve");
+            self.detail("  Remote state loaded");
+            return Ok(());
+        }
+
+        if self.import_preserved_remote_objects_from_local_git(&preserved_refs)? {
+            self.detail("  Reused preserved remote objects from local git");
+        } else if let Some(root) = root_hash {
+            self.detail(
+                "  Falling back to remote object import for preserved refs not available locally",
+            );
             let objects = self.fetch_all_git_objects(&root)?;
             self.detail(&format!("  Importing {} existing objects", objects.len()));
 
@@ -1058,10 +1078,96 @@ impl RemoteHelper {
                 // (that's what we store in build_objects_dir)
                 self.storage.import_compressed_object(&oid, content)?;
             }
+        } else {
+            bail!("No root hash found for repository - cannot preserve untouched refs");
         }
 
         self.detail("  Remote state loaded");
         Ok(())
+    }
+
+    fn import_preserved_remote_objects_from_local_git(
+        &self,
+        preserved_refs: &[(String, String)],
+    ) -> Result<bool> {
+        let mut include_shas: Vec<String> =
+            preserved_refs.iter().map(|(_, sha)| sha.clone()).collect();
+        include_shas.sort();
+        include_shas.dedup();
+
+        if include_shas.is_empty() {
+            return Ok(true);
+        }
+
+        let existing = self.git_batch_check_objects(include_shas.iter().map(|sha| sha.as_str()))?;
+        if existing.len() != include_shas.len() {
+            let missing: Vec<String> = include_shas
+                .iter()
+                .filter(|sha| !existing.contains(*sha))
+                .cloned()
+                .collect();
+            self.detail(&format!(
+                "  Local git is missing {} preserved remote tip(s): {}",
+                missing.len(),
+                missing
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            return Ok(false);
+        }
+
+        let exclude_shas = self.resolved_push_tip_shas();
+        let objects = match self.list_objects_for_shas(&include_shas, &exclude_shas) {
+            Ok(objects) => objects,
+            Err(err) => {
+                self.detail(&format!(
+                    "  Could not enumerate preserved remote objects from local git: {}",
+                    err
+                ));
+                return Ok(false);
+            }
+        };
+
+        self.detail(&format!(
+            "  Importing {} preserved object(s) from local git for {} untouched ref(s)",
+            objects.len(),
+            preserved_refs.len()
+        ));
+
+        let objects_with_content = match self.read_git_objects_batch(&objects) {
+            Ok(objects_with_content) => objects_with_content,
+            Err(err) => {
+                self.detail(&format!(
+                    "  Could not read preserved remote objects from local git: {}",
+                    err
+                ));
+                return Ok(false);
+            }
+        };
+
+        for (obj_type, content) in objects_with_content {
+            self.storage.write_raw_object(obj_type, &content)?;
+        }
+
+        Ok(true)
+    }
+
+    fn resolved_push_tip_shas(&self) -> Vec<String> {
+        let mut shas = Vec::new();
+        for spec in &self.push_specs {
+            if spec.src.is_empty() {
+                continue;
+            }
+            if let Ok(sha) = self.resolve_ref(&spec.src) {
+                shas.push(sha);
+            }
+        }
+        shas.sort();
+        shas.dedup();
+        shas
     }
 
     /// Resolve a ref to its sha
@@ -1865,20 +1971,40 @@ impl RemoteHelper {
 
     /// List objects that need to be pushed (not on remote)
     fn list_objects_to_push(&self, sha: &str) -> Result<Vec<String>> {
-        // Get all objects reachable from sha
-        let output = Command::new("git")
-            .args(["rev-list", "--objects", sha])
-            .output()?;
+        self.list_objects_for_shas(&[sha.to_string()], &[])
+    }
 
+    fn list_objects_for_shas(&self, include: &[String], exclude: &[String]) -> Result<Vec<String>> {
+        if include.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut command = Command::new("git");
+        command.arg("rev-list").arg("--objects");
+        for sha in include {
+            command.arg(sha);
+        }
+        if !exclude.is_empty() {
+            command.arg("--not");
+            for sha in exclude {
+                command.arg(sha);
+            }
+        }
+
+        let output = command.output()?;
         if !output.status.success() {
             bail!("Failed to list objects");
         }
 
+        let mut seen = HashSet::new();
         let mut objects = Vec::new();
         for line in String::from_utf8_lossy(&output.stdout).lines() {
             // Format: <sha> [path]
             if let Some(oid) = line.split_whitespace().next() {
-                objects.push(oid.to_string());
+                let oid = oid.to_string();
+                if seen.insert(oid.clone()) {
+                    objects.push(oid);
+                }
             }
         }
 
@@ -1971,8 +2097,110 @@ impl RemoteHelper {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
 
     const TEST_PUBKEY: &str = "4523be58d395b1b196a9b8c82b038b6895cb02b683d0c253a955068dba1facd0";
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct HomeGuard {
+        previous: Option<String>,
+    }
+
+    impl HomeGuard {
+        fn set(path: &std::path::Path) -> Self {
+            let previous = std::env::var("HOME").ok();
+            std::env::set_var("HOME", path);
+            Self { previous }
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.as_deref() {
+                std::env::set_var("HOME", previous);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+    }
+
+    struct CwdGuard {
+        previous: std::path::PathBuf,
+    }
+
+    impl CwdGuard {
+        fn set(path: &std::path::Path) -> Self {
+            let previous = std::env::current_dir().expect("current dir");
+            std::env::set_current_dir(path).expect("set current dir");
+            Self { previous }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.previous).expect("restore current dir");
+        }
+    }
+
+    fn git(repo: &std::path::Path, args: &[&str]) -> std::process::Output {
+        Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap_or_else(|err| panic!("git {:?} failed to start: {}", args, err))
+    }
+
+    fn create_repo_with_diverged_master_and_dev() -> (TempDir, TempDir, String, String, String) {
+        let home = TempDir::new().expect("temp home");
+        let _home_guard = HomeGuard::set(home.path());
+
+        let repo = TempDir::new().expect("temp repo");
+        assert!(git(repo.path(), &["init", "-b", "master"]).status.success());
+        assert!(
+            git(repo.path(), &["config", "user.email", "test@example.com"])
+                .status
+                .success()
+        );
+        assert!(git(repo.path(), &["config", "user.name", "Test User"])
+            .status
+            .success());
+
+        std::fs::write(repo.path().join("README.md"), "initial\n").unwrap();
+        assert!(git(repo.path(), &["add", "README.md"]).status.success());
+        assert!(git(repo.path(), &["commit", "-m", "Initial commit"])
+            .status
+            .success());
+        let base_sha = String::from_utf8_lossy(&git(repo.path(), &["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_string();
+
+        assert!(git(repo.path(), &["checkout", "-b", "dev"])
+            .status
+            .success());
+        std::fs::write(repo.path().join("dev-only.txt"), "dev-only\n").unwrap();
+        assert!(git(repo.path(), &["add", "dev-only.txt"]).status.success());
+        assert!(git(repo.path(), &["commit", "-m", "Dev commit"])
+            .status
+            .success());
+        let dev_sha = String::from_utf8_lossy(&git(repo.path(), &["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_string();
+
+        assert!(git(repo.path(), &["checkout", "master"]).status.success());
+        std::fs::write(repo.path().join("master-only.txt"), "master-only\n").unwrap();
+        assert!(git(repo.path(), &["add", "master-only.txt"])
+            .status
+            .success());
+        assert!(git(repo.path(), &["commit", "-m", "Master commit"])
+            .status
+            .success());
+        let master_sha = String::from_utf8_lossy(&git(repo.path(), &["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_string();
+
+        (home, repo, base_sha, master_sha, dev_sha)
+    }
 
     fn create_test_helper() -> Option<RemoteHelper> {
         let config = Config::default();
@@ -2338,6 +2566,74 @@ mod tests {
         assert_eq!(
             format_upload_progress(12, 34, 7, 0, 5, 2, false),
             "  Uploading: 12/34 (7 new, 5 exist, 2 FAILED)"
+        );
+    }
+
+    #[test]
+    fn test_list_objects_for_shas_excludes_shared_history() {
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let (home, repo, base_sha, master_sha, dev_sha) =
+            create_repo_with_diverged_master_and_dev();
+        let _home_guard = HomeGuard::set(home.path());
+        let _cwd_guard = CwdGuard::set(repo.path());
+
+        let helper = create_test_helper().expect("helper");
+        let full = helper
+            .list_objects_for_shas(std::slice::from_ref(&dev_sha), &[])
+            .expect("list full objects");
+        let exclusive = helper
+            .list_objects_for_shas(
+                std::slice::from_ref(&dev_sha),
+                std::slice::from_ref(&master_sha),
+            )
+            .expect("list exclusive objects");
+
+        assert!(full.contains(&base_sha));
+        assert!(full.contains(&dev_sha));
+        assert!(exclusive.contains(&dev_sha));
+        assert!(
+            !exclusive.contains(&base_sha),
+            "shared base history should be excluded"
+        );
+        assert!(
+            exclusive.len() < full.len(),
+            "excluding pushed history should reduce preserved-object count"
+        );
+    }
+
+    #[test]
+    fn test_import_preserved_remote_objects_from_local_git_uses_exclusive_history() {
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let (home, repo, _base_sha, master_sha, dev_sha) =
+            create_repo_with_diverged_master_and_dev();
+        let _home_guard = HomeGuard::set(home.path());
+        let _cwd_guard = CwdGuard::set(repo.path());
+
+        let mut helper = create_test_helper().expect("helper");
+        helper.push_specs.push(PushSpec {
+            src: "master".to_string(),
+            dst: "refs/heads/master".to_string(),
+            force: false,
+        });
+
+        let exclusive = helper
+            .list_objects_for_shas(
+                std::slice::from_ref(&dev_sha),
+                std::slice::from_ref(&master_sha),
+            )
+            .expect("list exclusive objects");
+
+        let imported = helper
+            .import_preserved_remote_objects_from_local_git(&[(
+                "refs/heads/dev".to_string(),
+                dev_sha.clone(),
+            )])
+            .expect("import preserved objects");
+
+        assert!(imported, "local git should satisfy preserved ref import");
+        assert_eq!(
+            helper.storage.object_count().expect("object count"),
+            exclusive.len()
         );
     }
 }
