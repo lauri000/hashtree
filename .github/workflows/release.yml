@@ -557,7 +557,7 @@ jobs:
         run: pnpm --dir apps/iris install --frozen-lockfile
 
       - name: Build Windows Iris bundles
-        run: pnpm --dir apps/iris exec tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi --ci
+        run: pnpm --dir apps/iris exec tauri build --target x86_64-pc-windows-msvc --bundles nsis --ci
 
       - name: Package Windows artifacts
         shell: pwsh
@@ -572,14 +572,10 @@ jobs:
           )
 
           $nsis = $null
-          $msi = $null
 
           foreach ($candidate in $candidates) {
             if (-not $nsis -and (Test-Path (Join-Path $candidate 'nsis'))) {
               $nsis = Get-ChildItem -Path (Join-Path $candidate 'nsis') -Filter '*-setup.exe' | Select-Object -First 1
-            }
-            if (-not $msi -and (Test-Path (Join-Path $candidate 'msi'))) {
-              $msi = Get-ChildItem -Path (Join-Path $candidate 'msi') -Filter '*.msi' | Select-Object -First 1
             }
           }
 
@@ -587,18 +583,10 @@ jobs:
             throw 'No Windows NSIS installer found in build output'
           }
 
-          if (-not $msi) {
-            throw 'No Windows MSI installer found in build output'
-          }
-
           Copy-Item $nsis.FullName 'dist/iris-windows-x64-setup.exe'
-          Copy-Item $msi.FullName 'dist/iris-windows-x64.msi'
 
           $nsisHash = (Get-FileHash 'dist/iris-windows-x64-setup.exe' -Algorithm SHA256).Hash.ToLower()
           "$nsisHash  iris-windows-x64-setup.exe" | Out-File -FilePath 'dist/iris-windows-x64-setup.exe.sha256' -Encoding ASCII
-
-          $msiHash = (Get-FileHash 'dist/iris-windows-x64.msi' -Algorithm SHA256).Hash.ToLower()
-          "$msiHash  iris-windows-x64.msi" | Out-File -FilePath 'dist/iris-windows-x64.msi.sha256' -Encoding ASCII
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -677,7 +665,7 @@ jobs:
             or install `iris-linux-x86_64.deb` with `sudo apt install ./iris-linux-x86_64.deb`.
 
             Windows:
-            Run `iris-windows-x64-setup.exe` or install `iris-windows-x64.msi`.
+            Run `iris-windows-x64-setup.exe`.
 
             ### Verify
             ```bash

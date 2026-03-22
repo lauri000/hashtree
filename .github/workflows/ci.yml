@@ -148,7 +148,7 @@ jobs:
           - name: Windows
             os: windows-latest
             rust_target: x86_64-pc-windows-msvc
-            tauri_bundles: nsis,msi
+            tauri_bundles: nsis
             tauri_args: --ci
     steps:
       - name: Checkout repository
