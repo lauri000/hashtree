@@ -6,8 +6,9 @@ use hashtree_cli::config::{
 #[cfg(feature = "p2p")]
 use hashtree_cli::WebRTCManager;
 use hashtree_cli::{
-    BackgroundSync, Config, FetchConfig, Fetcher, HashtreeServer, HashtreeStore, NostrKeys,
-    NostrResolverConfig, NostrRootResolver, NostrToBech32, RootResolver,
+    spawn_background_eviction_task, BackgroundSync, Config, FetchConfig, Fetcher, HashtreeServer,
+    HashtreeStore, NostrKeys, NostrResolverConfig, NostrRootResolver, NostrToBech32, RootResolver,
+    BACKGROUND_EVICTION_INTERVAL,
 };
 use hashtree_core::{Cid, HashTree, HashTreeConfig, NHashData};
 use std::collections::HashSet;
@@ -355,23 +356,11 @@ pub(crate) async fn run() -> Result<()> {
             };
 
             // Start background eviction task (runs every 5 minutes)
-            let eviction_store = Arc::clone(&store);
-            let eviction_handle = tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(300)); // 5 minutes
-                loop {
-                    interval.tick().await;
-                    match eviction_store.evict_if_needed() {
-                        Ok(freed) => {
-                            if freed > 0 {
-                                tracing::info!("Background eviction freed {} bytes", freed);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Background eviction error: {}", e);
-                        }
-                    }
-                }
-            });
+            let eviction_handle = spawn_background_eviction_task(
+                Arc::clone(&store),
+                BACKGROUND_EVICTION_INTERVAL,
+                "daemon",
+            );
 
             // Print startup info
             println!("Starting hashtree daemon on {}", addr);

@@ -5,6 +5,7 @@ pub mod cashu_cli;
 pub mod cashu_helper;
 pub mod config;
 pub mod daemon;
+pub mod eviction;
 pub mod fetch;
 pub mod nostr_relay;
 pub mod server;
@@ -23,6 +24,7 @@ pub mod p2p_common;
 pub mod socialgraph;
 
 pub use config::Config;
+pub use eviction::{spawn_background_eviction_task, BACKGROUND_EVICTION_INTERVAL};
 pub use fetch::{FetchConfig, Fetcher};
 pub use hashtree_resolver::nostr::{NostrResolverConfig, NostrRootResolver};
 pub use hashtree_resolver::{

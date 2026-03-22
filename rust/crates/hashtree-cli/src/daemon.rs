@@ -1,15 +1,14 @@
-use std::collections::HashSet;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-
 use anyhow::{Context, Result};
 use axum::Router;
 use nostr::nips::nip19::ToBech32;
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 
 use crate::config::{ensure_keys, parse_npub, pubkey_bytes, Config};
+use crate::eviction::{spawn_background_eviction_task, BACKGROUND_EVICTION_INTERVAL};
 use crate::nostr_relay::{NostrRelay, NostrRelayConfig};
 use crate::server::{AppState, HashtreeServer};
 use crate::socialgraph;
@@ -269,23 +268,11 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         });
     }
 
-    let eviction_store = Arc::clone(&store);
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(300));
-        loop {
-            interval.tick().await;
-            match eviction_store.evict_if_needed() {
-                Ok(freed) => {
-                    if freed > 0 {
-                        tracing::info!("Background eviction freed {} bytes", freed);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Background eviction error: {}", e);
-                }
-            }
-        }
-    });
+    spawn_background_eviction_task(
+        Arc::clone(&store),
+        BACKGROUND_EVICTION_INTERVAL,
+        "embedded daemon",
+    );
 
     let listener = TcpListener::bind(&opts.bind_address).await?;
     let local_addr = listener.local_addr()?;
