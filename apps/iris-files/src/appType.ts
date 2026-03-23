@@ -63,6 +63,10 @@ export function supportsGitFeatures(): boolean {
   return currentAppType === 'git';
 }
 
+export function shouldAssumeGitRepoDuringDetection(): boolean {
+  return currentAppType === 'git';
+}
+
 export function shouldShowGenericFileBrowser(): boolean {
   return currentAppType !== 'git';
 }

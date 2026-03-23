@@ -27,16 +27,18 @@
     gitRootCid: CID | null;
     /** Git root path from tree root, or empty string when the tree root is the repo root */
     gitRootPath: string | null;
+    /** When false, render repo layout immediately but defer git metadata until root detection resolves */
+    loadGitMetadata?: boolean;
     entries: TreeEntry[];
     canEdit: boolean;
     currentBranch: string | null;
     branches: string[];
   }
 
-  let { dirCid, gitRootCid, gitRootPath, entries, canEdit, currentBranch, branches }: Props = $props();
+  let { dirCid, gitRootCid, gitRootPath, loadGitMetadata = true, entries, canEdit, currentBranch, branches }: Props = $props();
 
-  // Use gitRootCid for git operations, fall back to dirCid if not provided (at git root)
-  let gitCid = $derived(gitRootCid ?? dirCid);
+  // Use gitRootCid for git operations once root detection is ready.
+  let gitCid = $derived(loadGitMetadata ? (gitRootCid ?? dirCid) : null);
 
   let route = $derived($routeStore);
   let currentPath = $derived(route.path);
@@ -65,6 +67,9 @@
   $effect(() => {
     const cid = gitCid;
     totalCommitCount = null;
+    if (!cid) {
+      return;
+    }
     let cancelled = false;
 
     import('../../utils/wasmGit').then(({ getCommitCountFast }) => {
@@ -106,7 +111,7 @@
   // Detached HEAD state - show short commit hash instead of branch name
   // While switching, show the target branch name optimistically
   let branchDisplay = $derived(
-    switchingToBranch || currentBranch || (headOid ? headOid.slice(0, 7) : 'detached')
+    switchingToBranch || currentBranch || (headOid ? headOid.slice(0, 7) : (loadGitMetadata ? 'detached' : 'loading'))
   );
 
   // Clear switchingToBranch once currentBranch catches up
@@ -118,6 +123,7 @@
 
   // Handle ?branch= URL parameter - automatically switch to specified branch
   $effect(() => {
+    if (!loadGitMetadata) return;
     const targetBranch = route.params.get('branch');
     const current = currentBranch;
     const availableBranches = branches;
@@ -266,6 +272,16 @@
     return `${basePath}?commit=${commitOid}`;
   }
 
+  function openHistory() {
+    if (!gitCid) return;
+    openGitHistoryModal({ dirCid: gitCid, canEdit, onCheckout: canEdit ? handleCheckout : undefined });
+  }
+
+  function openCommit() {
+    if (!gitCid) return;
+    openGitCommitModal({ dirCid: gitCid, onCommit: handleCommit });
+  }
+
   // Build parent directory href (for ".." navigation)
   let parentHref = $derived.by(() => {
     if (currentPath.length === 0) return null; // At root, no parent
@@ -318,6 +334,7 @@
 
   // Handle branch selection - checkout the branch
   async function handleBranchSelect(branch: string) {
+    if (!gitCid) return;
     // Skip if already on this branch or already switching
     if (branch === currentBranch || switchingToBranch) return;
 
@@ -377,6 +394,7 @@
 
   // Handle commit callback - replaces the git repo at its path
   async function handleCommit(newDirCid: CID): Promise<void> {
+    if (!gitCid) return;
     const { autosaveIfOwn } = await import('../../nostr');
     const { getCurrentRootCid } = await import('../../actions/route');
 
@@ -410,6 +428,7 @@
 
   // Handle checkout from history modal
   async function handleCheckout(commitSha: string): Promise<void> {
+    if (!gitCid) return;
     const { checkoutCommit } = await import('../../utils/git');
     const { autosaveIfOwn } = await import('../../nostr');
     const { getCurrentRootCid } = await import('../../actions/route');
@@ -459,34 +478,41 @@
 
   <!-- Branch selector row (above table, like GitHub) -->
   <div class="flex flex-wrap items-center gap-3 text-sm">
-    <!-- Branch dropdown - use gitCid for git operations -->
-    <BranchDropdown
-      {branches}
-      {currentBranch}
-      {branchDisplay}
-      {canEdit}
-      dirCid={gitCid}
-      npub={route.npub}
-      {repoPath}
-      onBranchSelect={handleBranchSelect}
-      loading={!!switchingToBranch}
-    />
+    {#if gitCid}
+      <!-- Branch dropdown - use gitCid for git operations -->
+      <BranchDropdown
+        {branches}
+        {currentBranch}
+        {branchDisplay}
+        {canEdit}
+        dirCid={gitCid}
+        npub={route.npub}
+        {repoPath}
+        onBranchSelect={handleBranchSelect}
+        loading={!!switchingToBranch}
+      />
+    {:else}
+      <button class="btn-ghost flex items-center gap-1 px-3 h-9 text-sm" disabled>
+        <span class="i-lucide-loader-2 animate-spin"></span>
+        <span>Loading repo</span>
+      </button>
+    {/if}
 
     <!-- Branch count -->
     <span class="flex items-center gap-1.5 text-sm text-text-2">
       <span class="i-lucide-git-branch text-text-3"></span>
-      <span>{branches.length} branch{branches.length !== 1 ? 'es' : ''}</span>
+      <span>{gitCid ? `${branches.length} branch${branches.length !== 1 ? 'es' : ''}` : 'Detecting branches...'}</span>
     </span>
 
     <!-- Git status indicator and commit button -->
     {#if canEdit}
-      {#if statusLoading}
+      {#if !gitCid || statusLoading}
         <span class="text-text-3 text-xs flex items-center gap-1">
           <span class="i-lucide-loader-2 animate-spin"></span>
         </span>
       {:else if totalChanges > 0}
         <button
-          onclick={() => openGitCommitModal({ dirCid: gitCid, onCommit: handleCommit })}
+          onclick={openCommit}
           class="btn-ghost flex items-center gap-1 px-2 h-8 text-sm"
           title="{totalChanges} uncommitted change{totalChanges !== 1 ? 's' : ''}"
         >
@@ -507,10 +533,11 @@
 
     <!-- Commits count (clickable) -->
     <button
-      onclick={() => openGitHistoryModal({ dirCid: gitCid, canEdit, onCheckout: canEdit ? handleCheckout : undefined })}
+      onclick={openHistory}
       class="flex items-center gap-1.5 text-sm text-text-2 hover:text-accent bg-transparent b-0 cursor-pointer"
+      disabled={!gitCid}
     >
-      {#if totalCommitCount !== null}
+      {#if gitCid && totalCommitCount !== null}
         <span class="i-lucide-history text-text-3"></span>
         <span>{totalCommitCount} commits</span>
       {:else}
@@ -528,7 +555,7 @@
   <!-- Directory listing table - GitHub style -->
   <div class="b-1 b-surface-3 b-solid rounded-lg overflow-hidden bg-surface-0" data-testid="file-list">
     <!-- File table with commit info header -->
-    <FileTable {entries} {fileCommits} {buildEntryHref} {buildCommitHref} {latestCommit} {commitsLoading} {parentHref} {ciStatus} {ciStatusStore} {repoPath} {ciConfig} />
+    <FileTable {entries} {fileCommits} {buildEntryHref} {buildCommitHref} {latestCommit} commitsLoading={!loadGitMetadata || commitsLoading} {parentHref} {ciStatus} {ciStatusStore} {repoPath} {ciConfig} />
   </div>
 
   <!-- README.md panel -->

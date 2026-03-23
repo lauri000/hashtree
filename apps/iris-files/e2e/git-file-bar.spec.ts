@@ -9,6 +9,7 @@ const SUBDIR_NAME = 'subdir';
 const SUBFILE_NAME = 'file.txt';
 const README_NAME = 'README.md';
 const GENERIC_SIDEBAR_SELECTOR = '[data-testid="file-list"][aria-label="File list"]';
+const GIT_PENDING_PLACEHOLDER_SELECTOR = 'div.flex-1.flex.items-center.justify-center.bg-surface-0';
 
 async function createTempGitRepo(): Promise<string> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'git-file-bar-'));
@@ -76,13 +77,15 @@ async function uploadGitRepo(page: Page): Promise<{ repoName: string; npub: stri
   return { repoName, npub };
 }
 
-async function installSidebarFlashTracker(page: Page): Promise<void> {
-  await page.addInitScript((selector: string) => {
-    (window as { __sidebarFlashSeen?: boolean }).__sidebarFlashSeen = false;
+async function installFlashTracker(page: Page, selector: string, key: string): Promise<void> {
+  await page.addInitScript(({ selector, key }: { selector: string; key: string }) => {
+    const trackerWindow = window as Window & { __flashTracker?: Record<string, boolean> };
+    trackerWindow.__flashTracker ??= {};
+    trackerWindow.__flashTracker[key] = false;
 
     const markIfSidebarVisible = () => {
       if (document.querySelector(selector)) {
-        (window as { __sidebarFlashSeen?: boolean }).__sidebarFlashSeen = true;
+        trackerWindow.__flashTracker![key] = true;
       }
     };
 
@@ -103,7 +106,11 @@ async function installSidebarFlashTracker(page: Page): Promise<void> {
     } else {
       document.addEventListener('DOMContentLoaded', startTracking, { once: true });
     }
-  }, GENERIC_SIDEBAR_SELECTOR);
+  }, { selector, key });
+}
+
+async function installSidebarFlashTracker(page: Page): Promise<void> {
+  await installFlashTracker(page, GENERIC_SIDEBAR_SELECTOR, 'sidebar');
 }
 
 test.describe('Git file bar', () => {
@@ -312,6 +319,7 @@ test.describe('Git file bar', () => {
     test.slow();
 
     const { repoName, npub } = await uploadGitRepo(page);
+    await installFlashTracker(page, GIT_PENDING_PLACEHOLDER_SELECTOR, 'git-pending');
 
     await page.goto(`/git.html#/${npub}/public/${repoName}/${SUBDIR_NAME}`);
     await waitForAppReady(page);
@@ -325,5 +333,11 @@ test.describe('Git file bar', () => {
 
     const gitBar = page.locator('[data-testid="git-file-bar"]');
     await expect(gitBar).toBeVisible({ timeout: 60000 });
+
+    const pendingFlashed = await page.evaluate(() => {
+      const trackerWindow = window as Window & { __flashTracker?: Record<string, boolean> };
+      return trackerWindow.__flashTracker?.['git-pending'] === true;
+    });
+    expect(pendingFlashed).toBe(false);
   });
 });

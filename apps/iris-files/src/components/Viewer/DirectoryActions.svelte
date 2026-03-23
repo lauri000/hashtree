@@ -12,7 +12,7 @@
   import ViewerHeader from './ViewerHeader.svelte';
   import { uploadFiles } from '../../stores/upload';
   import { LinkType, type TreeEntry as HashTreeEntry } from '@hashtree/core';
-  import { supportsGitFeatures } from '../../appType';
+  import { shouldAssumeGitRepoDuringDetection, supportsGitFeatures } from '../../appType';
   import { findNearestGitRootPath } from '../../utils/gitRoot';
 
   let route = $derived($routeStore);
@@ -53,14 +53,18 @@
   let gitRootFromUrl = $derived(route.params.get('g'));
   let detectedGitRootPath = $state<string | null>(null);
   let gitRepoDetectionResolved = $state(false);
+  const assumeGitRepoDuringDetection = shouldAssumeGitRepoDuringDetection();
   let effectiveGitRootPath = $derived(gitRootFromUrl ?? detectedGitRootPath);
-  let isInGitRepo = $derived(supportsGitFeatures() && (hasGitDir || effectiveGitRootPath !== null));
-  let isGitRepoDetectionPending = $derived(
+  let isInGitRepo = $derived(
     supportsGitFeatures() &&
-    route.treeName !== null &&
-    gitRootFromUrl === null &&
-    !hasGitDir &&
-    !gitRepoDetectionResolved
+    (assumeGitRepoDuringDetection || hasGitDir || effectiveGitRootPath !== null)
+  );
+  let gitMetadataReady = $derived(
+    !supportsGitFeatures() ||
+    !assumeGitRepoDuringDetection ||
+    hasGitDir ||
+    gitRootFromUrl !== null ||
+    gitRepoDetectionResolved
   );
 
   $effect(() => {
@@ -106,14 +110,14 @@
     return () => { cancelled = true; };
   });
 
-  // Resolve git root CID when we're in a subdirectory
-  // If at git root (hasGitDir), use currentDirCid
-  // If in subdirectory (gitRootFromUrl), resolve the path to get git root CID
+  // Resolve git root CID when it's known.
+  // In the git app we render repo layout optimistically, but avoid metadata fetches
+  // against the wrong CID until root detection resolves.
   let gitRootCid = $state<typeof currentDirCid>(null);
 
   $effect(() => {
-    if (hasGitDir) {
-      // We're at the git root - use current directory CID
+    if (hasGitDir || (gitMetadataReady && effectiveGitRootPath === null)) {
+      // We're at the git root, or detection resolved and current dir is the assumed root.
       gitRootCid = currentDirCid;
     } else if (effectiveGitRootPath !== null && rootCid) {
       // We're in a subdirectory - resolve gitRoot path to get CID
@@ -144,8 +148,8 @@
     }
   });
 
-  // Full git info (branches, etc) - loaded async using git root CID
-  let gitInfoStore = $derived(createGitInfoStore(gitRootCid));
+  // Full git info (branches, etc) - loaded async once metadata CID is ready
+  let gitInfoStore = $derived(createGitInfoStore(gitMetadataReady ? gitRootCid : null));
   let gitInfo = $state<{ isRepo: boolean; currentBranch: string | null; branches: string[]; loading: boolean }>({
     isRepo: false,
     currentBranch: null,
@@ -265,9 +269,7 @@
 </script>
 
 <!-- If this is a git repo or inside one (via gitRoot URL param), show GitHub-style directory listing -->
-{#if isGitRepoDetectionPending}
-  <div class="flex-1 flex items-center justify-center bg-surface-0"></div>
-{:else if isInGitRepo && currentDirCid}
+{#if isInGitRepo && currentDirCid}
   <div class="flex flex-col h-full">
     <!-- Header with back button, avatar, visibility, folder name -->
     <ViewerHeader
@@ -284,6 +286,7 @@
         dirCid={currentDirCid}
         {gitRootCid}
         gitRootPath={effectiveGitRootPath}
+        loadGitMetadata={gitMetadataReady}
         {entries}
         {canEdit}
         currentBranch={gitInfo.currentBranch}
