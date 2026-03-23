@@ -192,6 +192,18 @@ fn append_query(mut url: String, query: Option<&str>) -> String {
     url
 }
 
+fn append_fragment(mut url: String, fragment: Option<&str>) -> String {
+    if let Some(fragment) = fragment
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.trim_start_matches('#'))
+    {
+        url.push('#');
+        url.push_str(fragment);
+    }
+    url
+}
+
 fn append_query_params(url: &str, params: &[(&str, &str)]) -> Result<String, String> {
     let mut parsed = tauri::Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
     {
@@ -1477,6 +1489,7 @@ pub async fn create_htree_webview<R: Runtime>(
     treename: Option<String>,
     path: String,
     query: Option<String>,
+    fragment: Option<String>,
     x: f64,
     y: f64,
     width: f64,
@@ -1494,12 +1507,17 @@ pub async fn create_htree_webview<R: Runtime>(
         if let Some(nhash) = &nhash {
             let request_host = host.as_deref().unwrap_or(nhash);
             let (canonical_url, canonical_root) = if let Some(treename) = &treename {
-                let resolved_host =
-                    resolve_tree_request_host(request_host, crate::htree_protocol::get_self_npub())?;
+                let resolved_host = resolve_tree_request_host(
+                    request_host,
+                    crate::htree_protocol::get_self_npub(),
+                )?;
                 (
-                    append_query(
-                        htree_url_from_tree_host(resolved_host, treename, &path),
-                        query.as_deref(),
+                    append_fragment(
+                        append_query(
+                            htree_url_from_tree_host(resolved_host, treename, &path),
+                            query.as_deref(),
+                        ),
+                        fragment.as_deref(),
                     ),
                     htree_url_from_tree_host(resolved_host, treename, "/")
                         .trim_end_matches('/')
@@ -1507,7 +1525,10 @@ pub async fn create_htree_webview<R: Runtime>(
                 )
             } else {
                 (
-                    append_query(htree_url_from_nhash(request_host, &path), query.as_deref()),
+                    append_fragment(
+                        append_query(htree_url_from_nhash(request_host, &path), query.as_deref()),
+                        fragment.as_deref(),
+                    ),
                     htree_url_from_nhash(request_host, "/")
                         .trim_end_matches('/')
                         .to_string(),
@@ -1524,6 +1545,7 @@ pub async fn create_htree_webview<R: Runtime>(
                     ("iris_htree_canonical", &canonical_url),
                 ],
             )?;
+            let actual_url = append_fragment(actual_url, fragment.as_deref());
             let actual_root = daemon_proxy_url_from_nhash(&server_url, nhash, "/")?
                 .trim_end_matches('/')
                 .to_string();
@@ -1542,9 +1564,12 @@ pub async fn create_htree_webview<R: Runtime>(
                 .ok_or_else(|| "Either nhash or (host + treename) must be provided".to_string())?;
             let resolved_host =
                 resolve_tree_request_host(request_host, crate::htree_protocol::get_self_npub())?;
-            let canonical_url = append_query(
-                htree_url_from_tree_host(resolved_host, treename, &path),
-                query.as_deref(),
+            let canonical_url = append_fragment(
+                append_query(
+                    htree_url_from_tree_host(resolved_host, treename, &path),
+                    query.as_deref(),
+                ),
+                fragment.as_deref(),
             );
             let canonical_root = htree_url_from_tree_host(resolved_host, treename, "/")
                 .trim_end_matches('/')
@@ -1560,6 +1585,7 @@ pub async fn create_htree_webview<R: Runtime>(
                     ("iris_htree_canonical", &canonical_url),
                 ],
             )?;
+            let actual_url = append_fragment(actual_url, fragment.as_deref());
             let actual_root =
                 daemon_proxy_url_from_tree_host(&server_url, resolved_host, treename, "/")?
                     .trim_end_matches('/')
@@ -1729,6 +1755,7 @@ pub async fn create_htree_webview<R: Runtime>(
     treename: Option<String>,
     path: String,
     query: Option<String>,
+    fragment: Option<String>,
     x: f64,
     y: f64,
     width: f64,
@@ -1741,8 +1768,10 @@ pub async fn create_htree_webview<R: Runtime>(
     let (_canonical_url, actual_url, origin, canonical_url_root, actual_url_root) =
         if let Some(nhash) = &nhash {
             let request_host = host.as_deref().unwrap_or(nhash);
-            let canonical_url =
-                append_query(htree_url_from_nhash(request_host, &path), query.as_deref());
+            let canonical_url = append_fragment(
+                append_query(htree_url_from_nhash(request_host, &path), query.as_deref()),
+                fragment.as_deref(),
+            );
             let canonical_root = htree_url_from_nhash(request_host, "/")
                 .trim_end_matches('/')
                 .to_string();
@@ -1757,6 +1786,7 @@ pub async fn create_htree_webview<R: Runtime>(
                     ("iris_htree_canonical", &canonical_url),
                 ],
             )?;
+            let actual_url = append_fragment(actual_url, fragment.as_deref());
             let actual_root = daemon_proxy_url_from_nhash(&server_url, request_host, "/")?
                 .trim_end_matches('/')
                 .to_string();
@@ -1775,9 +1805,12 @@ pub async fn create_htree_webview<R: Runtime>(
                 .ok_or_else(|| "Either nhash or (host + treename) must be provided".to_string())?;
             let resolved_host =
                 resolve_tree_request_host(request_host, crate::htree_protocol::get_self_npub())?;
-            let canonical_url = append_query(
-                htree_url_from_tree_host(resolved_host, treename, &path),
-                query.as_deref(),
+            let canonical_url = append_fragment(
+                append_query(
+                    htree_url_from_tree_host(resolved_host, treename, &path),
+                    query.as_deref(),
+                ),
+                fragment.as_deref(),
             );
             let canonical_root = htree_url_from_tree_host(resolved_host, treename, "/")
                 .trim_end_matches('/')
@@ -1793,6 +1826,7 @@ pub async fn create_htree_webview<R: Runtime>(
                     ("iris_htree_canonical", &canonical_url),
                 ],
             )?;
+            let actual_url = append_fragment(actual_url, fragment.as_deref());
             let actual_root =
                 daemon_proxy_url_from_tree_host(&server_url, resolved_host, treename, "/")?
                     .trim_end_matches('/')
@@ -2210,6 +2244,18 @@ mod tests {
         assert_eq!(
             htree_url_from_tree_host("npub1example", "videos/My Clip", "/index.html"),
             "htree://npub1example/videos%2FMy%20Clip/index.html"
+        );
+    }
+
+    #[test]
+    fn append_fragment_keeps_hash_routes_after_query_strings() {
+        let url = append_fragment(
+            append_query("htree://npub1example/git/".to_string(), Some("smoke=1")),
+            Some("/npub1owner/hashtree?tab=pulls"),
+        );
+        assert_eq!(
+            url,
+            "htree://npub1example/git/?smoke=1#/npub1owner/hashtree?tab=pulls"
         );
     }
 

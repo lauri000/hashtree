@@ -62,6 +62,22 @@ test.describe('Address Bar', () => {
     expect(calls[0].args.path).toBe('/some/path');
   });
 
+  test('htree URL preserves git hash routes', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill('htree://npub1app123/git/#/npub1repo456/hashtree?tab=pulls');
+    await input.press('Enter');
+
+    const calls = await getInvocationsFor(page, 'create_htree_webview');
+    expect(calls.length).toBe(1);
+    expect(calls[0].args.npub).toBe('npub1app123');
+    expect(calls[0].args.treename).toBe('git');
+    expect(calls[0].args.path).toBe('/');
+    expect(calls[0].args.fragment).toBe('/npub1repo456/hashtree?tab=pulls');
+  });
+
   test('legacy dot-host htree URL stays backward compatible', async ({ tauriPage: page }) => {
     await openHome(page);
 

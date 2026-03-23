@@ -41,7 +41,7 @@ export async function createNip07Webview(
 
 export async function createHtreeWebview(
   label: string,
-  opts: { host?: string; nhash?: string; npub?: string; treename?: string; path: string; query?: string },
+  opts: { host?: string; nhash?: string; npub?: string; treename?: string; path: string; query?: string; fragment?: string },
   x: number,
   y: number,
   width: number,
@@ -55,6 +55,7 @@ export async function createHtreeWebview(
     treename: opts.treename ?? null,
     path: opts.path,
     query: opts.query ?? null,
+    fragment: opts.fragment ?? null,
     x,
     y,
     width,

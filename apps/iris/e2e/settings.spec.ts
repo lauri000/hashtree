@@ -1,26 +1,51 @@
 import { test, expect, getInvocationsFor, setupPageErrorHandler, gotoHome } from './fixtures';
 
+const DISTRIBUTED_OWNER = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
+
 async function openHome(page: import('@playwright/test').Page) {
   setupPageErrorHandler(page);
   await gotoHome(page);
 }
 
 test.describe('Settings Page', () => {
-  test('shows desktop app settings', async ({ tauriPage: page }) => {
+  test('shows tabbed settings sections', async ({ tauriPage: page }) => {
     await openHome(page);
     await page.getByTitle('Settings').click();
 
-    // Desktop section
-    await expect(page.getByText('Desktop App')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Desktop' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Privacy' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Network' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'About' })).toBeVisible();
+
     await expect(page.getByText('Launch at startup')).toBeVisible();
     await expect(page.getByText('Open Iris automatically when you log in')).toBeVisible();
+  });
 
-    // Daemon section (should show since mock returns URL)
-    await expect(page.getByText('Daemon')).toBeVisible();
+  test('network tab shows daemon settings', async ({ tauriPage: page }) => {
+    await openHome(page);
+    await page.getByTitle('Settings').click();
+
+    await page.getByRole('button', { name: 'Network' }).click();
+
+    await expect(page.getByRole('heading', { name: 'Daemon' })).toBeVisible();
     await expect(page.getByText('http://127.0.0.1:21417')).toBeVisible();
+  });
 
-    // About section
-    await expect(page.getByText('About')).toBeVisible();
+  test('about tab opens the hashtree repository in Iris Git', async ({ tauriPage: page }) => {
+    await openHome(page);
+    await page.getByTitle('Settings').click();
+
+    await page.getByRole('button', { name: 'About' }).click();
+    await expect(page.getByText('Source Browser')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Open hashtree repository' }).click();
+
+    const calls = await getInvocationsFor(page, 'create_htree_webview');
+    expect(calls.length).toBe(1);
+    expect(calls[0].args.npub).toBe(DISTRIBUTED_OWNER);
+    expect(calls[0].args.treename).toBe('git');
+    expect(calls[0].args.path).toBe('/');
+    expect(calls[0].args.fragment).toBe(`/${DISTRIBUTED_OWNER}/hashtree`);
   });
 
   test('autostart toggle sends invoke', async ({ tauriPage: page }) => {
@@ -41,8 +66,8 @@ test.describe('Settings Page', () => {
     await openHome(page);
     await page.getByTitle('Settings').click();
 
-    // Privacy section should be visible
-    await expect(page.getByText('Privacy')).toBeVisible();
+    await page.getByRole('button', { name: 'Privacy' }).click();
+
     await expect(page.getByText('Browsing history', { exact: true })).toBeVisible();
 
     // Click clear history

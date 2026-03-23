@@ -390,14 +390,25 @@
     return segments.length > 0 ? `/${segments.join('/')}` : '/';
   }
 
-  /** Parse htree://{self|npub}/treename/path, legacy htree://npub.treename/path, or htree://nhash/path */
-  function parseHtreeUrl(url: string): { host: string; nhash?: string; npub?: string; treename?: string; path: string; query?: string } | null {
+  /** Parse htree://{self|npub}/treename/path, legacy htree://npub.treename/path, or htree://nhash/path. */
+  function parseHtreeUrl(url: string): {
+    host: string;
+    nhash?: string;
+    npub?: string;
+    treename?: string;
+    path: string;
+    query?: string;
+    fragment?: string;
+  } | null {
     if (!url.startsWith('htree://')) return null;
     const rest = url.slice('htree://'.length);
-    const separatorMatch = rest.match(/[/?]/);
+    const fragmentIndex = rest.indexOf('#');
+    const fragment = fragmentIndex === -1 ? undefined : rest.slice(fragmentIndex + 1);
+    const withoutFragment = fragmentIndex === -1 ? rest : rest.slice(0, fragmentIndex);
+    const separatorMatch = withoutFragment.match(/[/?]/);
     const separatorIndex = separatorMatch?.index ?? -1;
-    const host = separatorIndex === -1 ? rest : rest.slice(0, separatorIndex);
-    const pathAndQuery = separatorIndex === -1 ? '' : rest.slice(separatorIndex);
+    const host = separatorIndex === -1 ? withoutFragment : withoutFragment.slice(0, separatorIndex);
+    const pathAndQuery = separatorIndex === -1 ? '' : withoutFragment.slice(separatorIndex);
     const queryIndex = pathAndQuery.indexOf('?');
     const rawPath = queryIndex === -1 ? pathAndQuery : pathAndQuery.slice(0, queryIndex);
     const query = queryIndex === -1 ? undefined : pathAndQuery.slice(queryIndex + 1);
@@ -407,20 +418,20 @@
       if (dotIndex !== -1) {
         const npub = host.slice(0, dotIndex);
         const treename = decodeUrlComponent(host.slice(dotIndex + 1));
-        return { host, npub, treename, path: decodePath(rawPath), query };
+        return { host, npub, treename, path: decodePath(rawPath), query, fragment };
       }
 
       const pathSegments = rawPath.split('/').filter(Boolean);
       const treename = pathSegments[0] ? decodeUrlComponent(pathSegments[0]) : '';
       const path = pathSegments.length > 1 ? `/${pathSegments.slice(1).map(decodeUrlComponent).join('/')}` : '/';
-      return { host, npub: host, treename, path, query };
+      return { host, npub: host, treename, path, query, fragment };
     } else if (host === 'self') {
       const pathSegments = rawPath.split('/').filter(Boolean);
       const treename = pathSegments[0] ? decodeUrlComponent(pathSegments[0]) : '';
       const path = pathSegments.length > 1 ? `/${pathSegments.slice(1).map(decodeUrlComponent).join('/')}` : '/';
-      return { host, treename, path, query };
+      return { host, treename, path, query, fragment };
     } else if (host.startsWith('nhash1')) {
-      return { host, nhash: host, path: decodePath(rawPath), query };
+      return { host, nhash: host, path: decodePath(rawPath), query, fragment };
     }
     return null;
   }
@@ -1292,7 +1303,7 @@
           })}
       />
     {:else if currentView === 'settings'}
-      <Settings />
+      <Settings onnavigate={(url) => navigate(url)} />
     {:else if !childWebviewReady || childLastError}
       <section class="flex flex-1 items-center justify-center p-6">
         <div

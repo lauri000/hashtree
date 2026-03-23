@@ -292,8 +292,9 @@ test.describe('Navigation', () => {
     await page.getByTitle('Settings').click();
 
     await expect(page.getByText('Settings')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Desktop' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Network' })).toBeVisible();
     await expect(page.getByText('Launch at startup')).toBeVisible();
-    await expect(page.getByText('Daemon')).toBeVisible();
   });
 
   test('back button from settings returns to launcher', async ({ tauriPage: page }) => {
