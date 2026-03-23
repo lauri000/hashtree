@@ -10,12 +10,17 @@
 
 use anyhow::{Context, Result};
 use hashtree_cli::HashtreeStore;
+use hashtree_config::StorageBackend;
 use nostr::{Keys, ToBech32};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
+
+const TEST_STORAGE_BACKEND: &str = "lmdb";
+const TEST_STORAGE_MAX_SIZE_GB: u64 = 10;
+const TEST_STORAGE_MAX_SIZE_BYTES: u64 = TEST_STORAGE_MAX_SIZE_GB * 1024 * 1024 * 1024;
 
 mod test_relay {
     use futures::{SinkExt, StreamExt};
@@ -638,6 +643,10 @@ stun_port = 0
 enable_webrtc = true
 public_writes = true
 
+[storage]
+backend = "{backend}"
+max_size_gb = {max_size_gb}
+
 [nostr]
 relays = {relays}
 
@@ -648,7 +657,9 @@ write_servers = []
 
 [sync]
 enabled = false
-"#
+"#,
+        backend = TEST_STORAGE_BACKEND,
+        max_size_gb = TEST_STORAGE_MAX_SIZE_GB,
     );
     fs::write(config_dir.join("config.toml"), config_content).context("Failed to write config")?;
     Ok(())
@@ -1167,8 +1178,12 @@ fn test_two_instances_connect_local_relay() -> Result<()> {
     )?;
 
     let expected = b"hello world\n".to_vec();
-    let store =
-        HashtreeStore::new(&instance_a.data_path).context("Failed to open instance A store")?;
+    let store = HashtreeStore::new_with_backend(
+        &instance_a.data_path,
+        StorageBackend::Lmdb,
+        TEST_STORAGE_MAX_SIZE_BYTES,
+    )
+    .context("Failed to open instance A store")?;
     let cid = store.put_blob(&expected).context("Failed to store blob")?;
     let url = format!("{}/{}", instance_b.base_url(), cid);
 
@@ -1251,7 +1266,11 @@ fn test_three_peers_chain_bootstrap_then_ac_connect_without_relay() -> Result<()
     wait_for_peer_data_channel(&instance_c.addr, &pubkey_a, Duration::from_secs(20))?;
 
     let expected = b"relayless-ac-mesh".to_vec();
-    let store = HashtreeStore::new(&instance_a.data_path)?;
+    let store = HashtreeStore::new_with_backend(
+        &instance_a.data_path,
+        StorageBackend::Lmdb,
+        TEST_STORAGE_MAX_SIZE_BYTES,
+    )?;
     let cid = store.put_blob(&expected)?;
     let url = format!("{}/{}", instance_c.base_url(), cid);
 

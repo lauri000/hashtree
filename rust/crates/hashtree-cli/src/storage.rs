@@ -494,7 +494,16 @@ impl HashtreeStore {
             .storage
             .max_size_gb
             .saturating_mul(1024 * 1024 * 1024);
-        Self::with_options(path, None, max_size_bytes)
+        Self::with_options_and_backend(path, None, max_size_bytes, &config.storage.backend)
+    }
+
+    /// Create a new store with an explicit local backend and size limit.
+    pub fn new_with_backend<P: AsRef<Path>>(
+        path: P,
+        backend: hashtree_config::StorageBackend,
+        max_size_bytes: u64,
+    ) -> Result<Self> {
+        Self::with_options_and_backend(path, None, max_size_bytes, &backend)
     }
 
     /// Create a new store with optional S3 backend and the configured local storage limit.
@@ -504,7 +513,7 @@ impl HashtreeStore {
             .storage
             .max_size_gb
             .saturating_mul(1024 * 1024 * 1024);
-        Self::with_options(path, s3_config, max_size_bytes)
+        Self::with_options_and_backend(path, s3_config, max_size_bytes, &config.storage.backend)
     }
 
     /// Create a new store with optional S3 backend and custom size limit
@@ -512,6 +521,16 @@ impl HashtreeStore {
         path: P,
         s3_config: Option<&S3Config>,
         max_size_bytes: u64,
+    ) -> Result<Self> {
+        let config = hashtree_config::Config::load_or_default();
+        Self::with_options_and_backend(path, s3_config, max_size_bytes, &config.storage.backend)
+    }
+
+    fn with_options_and_backend<P: AsRef<Path>>(
+        path: P,
+        s3_config: Option<&S3Config>,
+        max_size_bytes: u64,
+        backend: &hashtree_config::StorageBackend,
     ) -> Result<Self> {
         let path = path.as_ref();
         std::fs::create_dir_all(path)?;
@@ -532,10 +551,6 @@ impl HashtreeStore {
         let tree_refs = env.create_database(&mut wtxn, Some("tree_refs"))?;
         let cached_roots = env.create_database(&mut wtxn, Some("cached_roots"))?;
         wtxn.commit()?;
-
-        // Get storage backend from config
-        let config = hashtree_config::Config::load_or_default();
-        let backend = &config.storage.backend;
 
         // Create local blob store based on configured backend
         let local_store = Arc::new(
