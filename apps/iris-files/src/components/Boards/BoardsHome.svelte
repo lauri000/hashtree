@@ -7,6 +7,7 @@
   import { recentsStore, clearRecentsByPrefix } from '../../stores/recents';
   import { createTreesStore, type TreeEntry } from '../../stores';
   import VisibilityPicker from '../Modals/VisibilityPicker.svelte';
+  import Modal from '../ui/Modal.svelte';
   import BoardCard from './BoardCard.svelte';
 
   interface Props {
@@ -203,37 +204,36 @@
   </div>
 </div>
 
-{#if showCreate}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onclick={() => showCreate = false}>
-    <div class="bg-surface-1 rounded-lg shadow-lg w-full max-w-md mx-4 border border-surface-3 p-5 space-y-4" onclick={(e) => e.stopPropagation()}>
-      <div class="flex items-center justify-between">
-        <h3 class="text-lg font-semibold">Create Board</h3>
-        <button class="btn-ghost p-1" onclick={() => showCreate = false} aria-label="Close create board dialog">
-          <span class="i-lucide-x"></span>
-        </button>
-      </div>
-
-      <div class="space-y-3">
-        <input
-          class="input w-full"
-          placeholder="Board name"
-          bind:value={createName}
-          onkeydown={(e) => e.key === 'Enter' && handleCreateBoard()}
-        />
-        <VisibilityPicker value={createVisibility} onchange={(value) => createVisibility = value} />
-        {#if createError}
-          <p class="text-sm text-danger">{createError}</p>
-        {/if}
-      </div>
-
-      <div class="flex justify-end gap-2">
-        <button class="btn-ghost" onclick={() => showCreate = false}>Cancel</button>
-        <button class="btn-success" onclick={handleCreateBoard} disabled={creating || !createName.trim()}>
-          {creating ? 'Creating...' : 'Create'}
-        </button>
-      </div>
-    </div>
+<Modal
+  open={showCreate}
+  onClose={() => showCreate = false}
+  label="Create Board"
+  panelClass="bg-surface-1 rounded-lg shadow-lg w-full max-w-md mx-4 border border-surface-3 p-5 space-y-4"
+>
+  <div class="flex items-center justify-between">
+    <h3 class="text-lg font-semibold">Create Board</h3>
+    <button class="btn-ghost p-1" onclick={() => showCreate = false} aria-label="Close create board dialog">
+      <span class="i-lucide-x"></span>
+    </button>
   </div>
-{/if}
+
+  <div class="space-y-3">
+    <input
+      class="input w-full"
+      placeholder="Board name"
+      bind:value={createName}
+      onkeydown={(e) => e.key === 'Enter' && handleCreateBoard()}
+    />
+    <VisibilityPicker value={createVisibility} onchange={(value) => createVisibility = value} />
+    {#if createError}
+      <p class="text-sm text-danger">{createError}</p>
+    {/if}
+  </div>
+
+  <div class="flex justify-end gap-2">
+    <button class="btn-ghost" onclick={() => showCreate = false}>Cancel</button>
+    <button class="btn-success" onclick={handleCreateBoard} disabled={creating || !createName.trim()}>
+      {creating ? 'Creating...' : 'Create'}
+    </button>
+  </div>
+</Modal>

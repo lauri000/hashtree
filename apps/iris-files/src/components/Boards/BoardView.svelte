@@ -13,6 +13,7 @@
   import { updateLocalRootCacheHex } from '../../treeRootCache';
   import { open as openShareModal } from '../Modals/ShareModal.svelte';
   import CopyText from '../CopyText.svelte';
+  import Modal from '../ui/Modal.svelte';
   import VisibilityIcon from '../VisibilityIcon.svelte';
   import MediaPlayer from '../Viewer/MediaPlayer.svelte';
   import { Avatar, Name } from '../User';
@@ -2151,67 +2152,60 @@
   </div>
 {/if}
 
-{#if showColumnModal}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
-    data-modal-backdrop
-    onclick={closeColumnModal}
+<Modal
+  open={showColumnModal}
+  onClose={closeColumnModal}
+  label={columnModalMode === 'create' ? 'Create Column' : 'Edit Column'}
+  panelClass="w-full max-w-md mx-4"
+>
+  <form
+    class="bg-surface-1 rounded-lg shadow-lg border border-surface-3 p-5 space-y-4"
+    onsubmit={onColumnModalSubmit}
   >
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="w-full max-w-md mx-4" onclick={(event) => event.stopPropagation()}>
-      <form
-        class="bg-surface-1 rounded-lg shadow-lg border border-surface-3 p-5 space-y-4"
-        onsubmit={onColumnModalSubmit}
-      >
-        <div class="flex items-center justify-between">
-          <h3 class="text-lg font-semibold">{columnModalMode === 'create' ? 'Create Column' : 'Edit Column'}</h3>
-          <button type="button" class="btn-circle btn-ghost" onclick={closeColumnModal} aria-label="Close column dialog">
-            <span class="i-lucide-x"></span>
-          </button>
-        </div>
-
-        <div class="space-y-2">
-          <label class="text-sm font-medium" for="board-column-title">Column title</label>
-          <input
-            id="board-column-title"
-            class="input w-full text-sm"
-            bind:this={columnTitleInputRef}
-            bind:value={columnDraftTitle}
-            placeholder="Backlog"
-          />
-          {#if columnFormError}
-            <p class="text-xs text-danger">{columnFormError}</p>
-          {/if}
-        </div>
-
-        <div class="flex items-center justify-between gap-2">
-          {#if columnModalMode === 'edit'}
-            <button
-              type="button"
-              class="btn-danger"
-              aria-label="Delete column"
-              onclick={removeColumnFromModal}
-            >
-              <span class="i-lucide-trash-2 mr-1"></span>
-              Delete column
-            </button>
-          {:else}
-            <span></span>
-          {/if}
-          <div class="flex items-center gap-2">
-          <button type="button" class="btn-ghost" onclick={closeColumnModal}>Cancel</button>
-          <button type="submit" class="btn-primary">
-            {columnModalMode === 'create' ? 'Create Column' : 'Save Column'}
-          </button>
-          </div>
-        </div>
-      </form>
+    <div class="flex items-center justify-between">
+      <h3 class="text-lg font-semibold">{columnModalMode === 'create' ? 'Create Column' : 'Edit Column'}</h3>
+      <button type="button" class="btn-circle btn-ghost" onclick={closeColumnModal} aria-label="Close column dialog">
+        <span class="i-lucide-x"></span>
+      </button>
     </div>
-  </div>
-{/if}
+
+    <div class="space-y-2">
+      <label class="text-sm font-medium" for="board-column-title">Column title</label>
+      <input
+        id="board-column-title"
+        class="input w-full text-sm"
+        bind:this={columnTitleInputRef}
+        bind:value={columnDraftTitle}
+        placeholder="Backlog"
+      />
+      {#if columnFormError}
+        <p class="text-xs text-danger">{columnFormError}</p>
+      {/if}
+    </div>
+
+    <div class="flex items-center justify-between gap-2">
+      {#if columnModalMode === 'edit'}
+        <button
+          type="button"
+          class="btn-danger"
+          aria-label="Delete column"
+          onclick={removeColumnFromModal}
+        >
+          <span class="i-lucide-trash-2 mr-1"></span>
+          Delete column
+        </button>
+      {:else}
+        <span></span>
+      {/if}
+      <div class="flex items-center gap-2">
+      <button type="button" class="btn-ghost" onclick={closeColumnModal}>Cancel</button>
+      <button type="submit" class="btn-primary">
+        {columnModalMode === 'create' ? 'Create Column' : 'Save Column'}
+      </button>
+      </div>
+    </div>
+  </form>
+</Modal>
 
 {#if showCardModal}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -2722,101 +2716,102 @@
   </div>
 {/if}
 
-{#if showPermissionsModal && permissions}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onclick={() => showPermissionsModal = false}>
-    <div class="bg-surface-1 rounded-lg shadow-lg w-full max-w-lg mx-4 border border-surface-3 p-5 space-y-4" onclick={(e) => e.stopPropagation()}>
-      <div class="flex items-center justify-between">
-        <h3 class="text-lg font-semibold">Board Permissions</h3>
-        <button class="btn-circle btn-ghost" onclick={() => showPermissionsModal = false} aria-label="Close permissions dialog">
-          <span class="i-lucide-x"></span>
-        </button>
-      </div>
+{#if permissions}
+  <Modal
+    open={showPermissionsModal}
+    onClose={() => showPermissionsModal = false}
+    label="Board Permissions"
+    panelClass="bg-surface-1 rounded-lg shadow-lg w-full max-w-lg mx-4 border border-surface-3 p-5 space-y-4"
+  >
+    <div class="flex items-center justify-between">
+      <h3 class="text-lg font-semibold">Board Permissions</h3>
+      <button class="btn-circle btn-ghost" onclick={() => showPermissionsModal = false} aria-label="Close permissions dialog">
+        <span class="i-lucide-x"></span>
+      </button>
+    </div>
 
-      <div class="text-xs text-text-3">
-        {#if canManage}
-          Admins can manage admins/writers and edit cards. Writers can edit cards only.
-        {:else}
-          Admins can manage roles. Writers can edit cards.
-        {/if}
-      </div>
-
-      <div class="grid grid-cols-2 gap-3">
-        <div class="space-y-2">
-          <div class="text-sm font-medium">Admins</div>
-          <ul class="space-y-1 list-none m-0 p-0">
-            {#each permissions.admins as adminNpub (adminNpub)}
-              <li class="bg-surface-2 rounded px-2 py-1.5 flex items-center justify-between gap-2">
-                <span class="font-mono text-xs truncate">{adminNpub}</span>
-                {#if canManage}
-                  <button
-                    class="btn-circle btn-ghost text-danger"
-                    title="Remove admin"
-                    onclick={() => handleRemovePermission('admin', adminNpub)}
-                  >
-                    <span class="i-lucide-x text-xs"></span>
-                  </button>
-                {/if}
-              </li>
-            {/each}
-          </ul>
-        </div>
-
-        <div class="space-y-2">
-          <div class="text-sm font-medium">Writers</div>
-          <ul class="space-y-1 list-none m-0 p-0">
-            {#if permissions.writers.length === 0}
-              <li class="bg-surface-2 rounded px-2 py-1.5 text-xs text-text-3">No writers assigned</li>
-            {/if}
-            {#each permissions.writers as writerNpub (writerNpub)}
-              <li class="bg-surface-2 rounded px-2 py-1.5 flex items-center justify-between gap-2">
-                <span class="font-mono text-xs truncate">{writerNpub}</span>
-                {#if canManage}
-                  <button
-                    class="btn-circle btn-ghost text-danger"
-                    title="Remove writer"
-                    onclick={() => handleRemovePermission('writer', writerNpub)}
-                  >
-                    <span class="i-lucide-x text-xs"></span>
-                  </button>
-                {/if}
-              </li>
-            {/each}
-          </ul>
-        </div>
-      </div>
-
-      {#if !canWrite && userNpub}
-        <div class="rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 space-y-2">
-          <p class="text-sm text-text-2">Share your npub with an admin to request write access:</p>
-          <CopyText text={userNpub} displayText={shortNpub(userNpub)} class="text-sm" />
-        </div>
-      {/if}
-
+    <div class="text-xs text-text-3">
       {#if canManage}
-        <div class="space-y-2">
-          <div class="text-sm font-medium">Assign Role</div>
-          <div class="flex gap-2">
-            <input
-              class="input flex-1 font-mono text-sm"
-              placeholder="npub1..."
-              bind:value={permissionNpub}
-              onkeydown={(e) => e.key === 'Enter' && handleAddPermission()}
-            />
-            <select class="input w-28" bind:value={permissionRole}>
-              <option value="writer">Writer</option>
-              <option value="admin">Admin</option>
-            </select>
-            <button class="btn-success" onclick={handleAddPermission} disabled={savingPermissions}>
-              Add
-            </button>
-          </div>
-          {#if permissionError}
-            <p class="text-xs text-danger">{permissionError}</p>
-          {/if}
-        </div>
+        Admins can manage admins/writers and edit cards. Writers can edit cards only.
+      {:else}
+        Admins can manage roles. Writers can edit cards.
       {/if}
     </div>
-  </div>
+
+    <div class="grid grid-cols-2 gap-3">
+      <div class="space-y-2">
+        <div class="text-sm font-medium">Admins</div>
+        <ul class="space-y-1 list-none m-0 p-0">
+          {#each permissions.admins as adminNpub (adminNpub)}
+            <li class="bg-surface-2 rounded px-2 py-1.5 flex items-center justify-between gap-2">
+              <span class="font-mono text-xs truncate">{adminNpub}</span>
+              {#if canManage}
+                <button
+                  class="btn-circle btn-ghost text-danger"
+                  title="Remove admin"
+                  onclick={() => handleRemovePermission('admin', adminNpub)}
+                >
+                  <span class="i-lucide-x text-xs"></span>
+                </button>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      </div>
+
+      <div class="space-y-2">
+        <div class="text-sm font-medium">Writers</div>
+        <ul class="space-y-1 list-none m-0 p-0">
+          {#if permissions.writers.length === 0}
+            <li class="bg-surface-2 rounded px-2 py-1.5 text-xs text-text-3">No writers assigned</li>
+          {/if}
+          {#each permissions.writers as writerNpub (writerNpub)}
+            <li class="bg-surface-2 rounded px-2 py-1.5 flex items-center justify-between gap-2">
+              <span class="font-mono text-xs truncate">{writerNpub}</span>
+              {#if canManage}
+                <button
+                  class="btn-circle btn-ghost text-danger"
+                  title="Remove writer"
+                  onclick={() => handleRemovePermission('writer', writerNpub)}
+                >
+                  <span class="i-lucide-x text-xs"></span>
+                </button>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      </div>
+    </div>
+
+    {#if !canWrite && userNpub}
+      <div class="rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 space-y-2">
+        <p class="text-sm text-text-2">Share your npub with an admin to request write access:</p>
+        <CopyText text={userNpub} displayText={shortNpub(userNpub)} class="text-sm" />
+      </div>
+    {/if}
+
+    {#if canManage}
+      <div class="space-y-2">
+        <div class="text-sm font-medium">Assign Role</div>
+        <div class="flex gap-2">
+          <input
+            class="input flex-1 font-mono text-sm"
+            placeholder="npub1..."
+            bind:value={permissionNpub}
+            onkeydown={(e) => e.key === 'Enter' && handleAddPermission()}
+          />
+          <select class="input w-28" bind:value={permissionRole}>
+            <option value="writer">Writer</option>
+            <option value="admin">Admin</option>
+          </select>
+          <button class="btn-success" onclick={handleAddPermission} disabled={savingPermissions}>
+            Add
+          </button>
+        </div>
+        {#if permissionError}
+          <p class="text-xs text-danger">{permissionError}</p>
+        {/if}
+      </div>
+    {/if}
+  </Modal>
 {/if}

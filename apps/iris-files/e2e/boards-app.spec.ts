@@ -139,6 +139,41 @@ test.describe('Iris Boards App', () => {
     await expect(editInput).toHaveValue('Todo');
   });
 
+  test('boards dialogs close on Escape', async ({ page }) => {
+    setupPageErrorHandler(page);
+    await page.goto('/boards.html#/');
+    await waitForAppReady(page);
+    await disableOthersPool(page);
+    await ensureLoggedIn(page, 30000);
+    await waitForRelayConnected(page, 30000);
+
+    await page.getByRole('button', { name: /new board/i }).click();
+    await expect(page.getByRole('heading', { name: 'Create Board' })).toBeVisible({ timeout: 10000 });
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('heading', { name: 'Create Board' })).toHaveCount(0);
+
+    const boardName = `E2E Escape Close ${Date.now()}`;
+    await createBoard(page, boardName);
+
+    await page.getByRole('button', { name: /^add column$/i }).click();
+    await expect(page.getByRole('heading', { name: 'Create Column' })).toBeVisible({ timeout: 10000 });
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('heading', { name: 'Create Column' })).toHaveCount(0);
+
+    const todoColumn = page.getByTestId('board-column-Todo');
+    await expect(todoColumn).toBeVisible({ timeout: 10000 });
+    await todoColumn.hover();
+    await todoColumn.getByRole('button', { name: /edit column/i }).click();
+    await expect(page.getByRole('heading', { name: 'Edit Column' })).toBeVisible({ timeout: 10000 });
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('heading', { name: 'Edit Column' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: /permissions/i }).click();
+    await expect(page.getByRole('heading', { name: 'Board Permissions' })).toBeVisible({ timeout: 10000 });
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('heading', { name: 'Board Permissions' })).toHaveCount(0);
+  });
+
   test('trello-like cards use modal editing and can be dragged between columns', async ({ page }) => {
     setupPageErrorHandler(page);
     await page.goto('/boards.html#/');
