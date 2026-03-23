@@ -186,6 +186,20 @@ fn emit_upload_progress(
     let _ = std::io::stderr().flush();
 }
 
+fn queue_hash_if_new(
+    queue: &mut Vec<([u8; 32], Option<[u8; 32]>)>,
+    queued: &mut HashSet<[u8; 32]>,
+    hash: [u8; 32],
+    key: Option<[u8; 32]>,
+) -> bool {
+    if queued.insert(hash) {
+        queue.push((hash, key));
+        true
+    } else {
+        false
+    }
+}
+
 /// Create local blob store based on config
 fn create_local_store(
     path: &std::path::Path,
@@ -1621,7 +1635,7 @@ impl RemoteHelper {
             let skipped_server = Arc::new(AtomicUsize::new(0)); // Skipped due to server already having it
             let failed = Arc::new(AtomicUsize::new(0));
             let completed = Arc::new(AtomicUsize::new(0));
-            let total_seen = Arc::new(AtomicUsize::new(0));
+            let discovered_total = Arc::new(AtomicUsize::new(1));
             let discovery_complete = Arc::new(AtomicBool::new(false));
 
             // Collect old tree hashes if we have an old root
@@ -1727,7 +1741,7 @@ impl RemoteHelper {
                 let failed = Arc::clone(&failed);
                 let completed = Arc::clone(&completed);
                 let skipped_diff = Arc::clone(&skipped_diff);
-                let total_seen = Arc::clone(&total_seen);
+                let discovered_total = Arc::clone(&discovered_total);
                 let discovery_complete = Arc::clone(&discovery_complete);
                 let servers_needing_full = Arc::clone(&servers_needing_full);
 
@@ -1744,7 +1758,7 @@ impl RemoteHelper {
                             let failed = Arc::clone(&failed);
                             let completed = Arc::clone(&completed);
                             let skipped_diff = Arc::clone(&skipped_diff);
-                            let total_seen = Arc::clone(&total_seen);
+                            let discovered_total = Arc::clone(&discovered_total);
                             let discovery_complete = Arc::clone(&discovery_complete);
                             let servers_needing_full = Arc::clone(&servers_needing_full);
                             async move {
@@ -1767,7 +1781,7 @@ impl RemoteHelper {
                                 }
                                 let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
                                 if count == 1 || count.is_multiple_of(10) {
-                                    let discovered = total_seen.load(Ordering::Relaxed);
+                                    let discovered = discovered_total.load(Ordering::Relaxed);
                                     let total = discovery_complete
                                         .load(Ordering::Relaxed)
                                         .then_some(discovered);
@@ -1793,11 +1807,21 @@ impl RemoteHelper {
             // Walk tree and send blobs to upload channel
             // Queue entries are (hash, optional decryption key)
             let mut visited: HashSet<[u8; 32]> = HashSet::new();
-            let mut queue: Vec<([u8; 32], Option<[u8; 32]>)> = vec![(root_bytes, encryption_key.copied())];
+            let mut queued: HashSet<[u8; 32]> = HashSet::new();
+            let mut queue: Vec<([u8; 32], Option<[u8; 32]>)> = Vec::new();
+            let _ = queue_hash_if_new(&mut queue, &mut queued, root_bytes, encryption_key.copied());
 
             eprint!(
                 "{}",
-                format_upload_progress_discovering(0, 0, 0, 0, 0, 0, has_old_tree)
+                format_upload_progress_discovering(
+                    0,
+                    discovered_total.load(Ordering::Relaxed),
+                    0,
+                    0,
+                    0,
+                    0,
+                    has_old_tree
+                )
             );
             let _ = std::io::stderr().flush();
 
@@ -1806,7 +1830,7 @@ impl RemoteHelper {
                     continue;
                 }
                 visited.insert(hash);
-                let seen_count = total_seen.fetch_add(1, Ordering::Relaxed) + 1;
+                let discovered = discovered_total.load(Ordering::Relaxed);
 
                 // Check if this hash exists in old tree
                 let from_old_tree = old_hashes.contains(&hash);
@@ -1831,7 +1855,7 @@ impl RemoteHelper {
                         if count == 1 || count.is_multiple_of(10) {
                             emit_upload_progress(
                                 count,
-                                seen_count,
+                                discovered,
                                 None,
                                 uploaded.load(Ordering::Relaxed),
                                 skipped_diff.load(Ordering::Relaxed),
@@ -1857,7 +1881,7 @@ impl RemoteHelper {
                         if count == 1 || count.is_multiple_of(10) {
                             emit_upload_progress(
                                 count,
-                                seen_count,
+                                discovered,
                                 None,
                                 uploaded.load(Ordering::Relaxed),
                                 skipped_diff.load(Ordering::Relaxed),
@@ -1875,7 +1899,7 @@ impl RemoteHelper {
                         if count == 1 || count.is_multiple_of(10) {
                             emit_upload_progress(
                                 count,
-                                seen_count,
+                                discovered,
                                 None,
                                 uploaded.load(Ordering::Relaxed),
                                 skipped_diff.load(Ordering::Relaxed),
@@ -1901,8 +1925,8 @@ impl RemoteHelper {
                 // Check if it's a tree node and queue children with their keys
                 if let Some(node) = try_decode_tree_node(&plaintext) {
                     for link in node.links {
-                        if !visited.contains(&link.hash) {
-                            queue.push((link.hash, link.key));
+                        if queue_hash_if_new(&mut queue, &mut queued, link.hash, link.key) {
+                            discovered_total.fetch_add(1, Ordering::Relaxed);
                         }
                     }
                 }
@@ -1915,10 +1939,11 @@ impl RemoteHelper {
                 {
                     break; // Channel closed
                 }
-                if seen_count.is_multiple_of(100) {
+                let discovered = discovered_total.load(Ordering::Relaxed);
+                if discovered.is_multiple_of(100) {
                     emit_upload_progress(
                         completed.load(Ordering::Relaxed),
-                        seen_count,
+                        discovered,
                         None,
                         uploaded.load(Ordering::Relaxed),
                         skipped_diff.load(Ordering::Relaxed),
@@ -1931,7 +1956,7 @@ impl RemoteHelper {
 
             discovery_complete.store(true, Ordering::Relaxed);
 
-            let final_total_seen = total_seen.load(Ordering::Relaxed);
+            let final_total_seen = discovered_total.load(Ordering::Relaxed);
             emit_upload_progress(
                 completed.load(Ordering::Relaxed),
                 final_total_seen,
@@ -2872,6 +2897,33 @@ force_upload = {force_upload}
             format_upload_progress_discovering(12, 34, 7, 0, 5, 2, false),
             "  Uploading: 12/? (34 discovered, 7 new, 5 exist, 2 FAILED)"
         );
+    }
+
+    #[test]
+    fn test_queue_hash_if_new_counts_unique_hashes_when_queued() {
+        let mut queue = Vec::new();
+        let mut queued = HashSet::new();
+        let hash_a = [0x11; 32];
+        let hash_b = [0x22; 32];
+
+        assert!(queue_hash_if_new(&mut queue, &mut queued, hash_a, None));
+        assert!(!queue_hash_if_new(
+            &mut queue,
+            &mut queued,
+            hash_a,
+            Some([0x33; 32])
+        ));
+        assert!(queue_hash_if_new(
+            &mut queue,
+            &mut queued,
+            hash_b,
+            Some([0x44; 32])
+        ));
+
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queued.len(), 2);
+        assert_eq!(queue[0], (hash_a, None));
+        assert_eq!(queue[1], (hash_b, Some([0x44; 32])));
     }
 
     #[test]
