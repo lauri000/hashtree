@@ -82,7 +82,7 @@ export async function initReadonlyWorker(): Promise<void> {
 /**
  * Wait for window.nostr to be available
  */
-async function waitForNostrExtension(timeoutMs = 2000): Promise<boolean> {
+export async function waitForNostrExtension(timeoutMs = 2000): Promise<boolean> {
   if (window.nostr) return true;
 
   return new Promise((resolve) => {

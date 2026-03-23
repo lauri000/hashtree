@@ -3,9 +3,10 @@
    * UsersPage - manage saved accounts
    * Shows list of accounts, allows adding nsec accounts, switching between accounts, and removing accounts
    */
+  import { onMount } from 'svelte';
   import { navigate } from '../utils/navigate';
   import { accountsStore, createAccountFromNsec, saveActiveAccountToStorage, hasNostrExtension, type Account } from '../accounts';
-  import { loginWithNsec, loginWithExtension, generateNewKey, restoreSession } from '../nostr';
+  import { loginWithNsec, loginWithExtension, generateNewKey, restoreSession, waitForNostrExtension } from '../nostr';
   import { Avatar, Name } from './User';
   import { BackButton } from './ui';
 
@@ -20,12 +21,28 @@
   let accountsState = $derived($accountsStore);
   let accounts = $derived(accountsState.accounts);
   let activeAccountPubkey = $derived(accountsState.activeAccountPubkey);
-  let hasExtension = $derived(hasNostrExtension());
+  let hasExtension = $state(hasNostrExtension());
 
   // Sort accounts by creation time (oldest first)
   let sortedAccounts = $derived(
     [...accounts].sort((a, b) => a.addedAt - b.addedAt)
   );
+
+  onMount(() => {
+    if (hasExtension) return;
+
+    let cancelled = false;
+
+    waitForNostrExtension(5000).then((available) => {
+      if (!cancelled) {
+        hasExtension = available;
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  });
 
   function handleAddNsec() {
     nsecError = null;

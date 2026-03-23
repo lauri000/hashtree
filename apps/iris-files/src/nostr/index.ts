@@ -39,6 +39,7 @@ export {
   loginWithExtension,
   loginWithNsec,
   generateNewKey,
+  waitForNostrExtension,
   initReadonlyWorker,
   logout,
   getSecretKey,
