@@ -50,7 +50,12 @@ async function collectRepoFiles(rootDir: string, basePath = ''): Promise<Array<{
 async function uploadGitRepo(page: Page): Promise<{ repoName: string; npub: string }> {
   await navigateToPublicFolder(page, { requireRelay: false });
 
-  const npub = await page.evaluate(() => (window as any).__nostrStore?.getState?.()?.npub || '');
+  const npub = await page.evaluate(() => {
+    const appWindow = window as Window & {
+      __nostrStore?: { getState?: () => { npub?: string } };
+    };
+    return appWindow.__nostrStore?.getState?.()?.npub || '';
+  });
   const repoName = `git-bar-${Date.now()}`;
   const repoPath = await createTempGitRepo();
   const files = await collectRepoFiles(repoPath);
@@ -160,6 +165,95 @@ test.describe('Git file bar', () => {
     await expect(page.getByRole('button', { name: /commits/i })).toBeVisible({ timeout: 60000 });
     await expect(page.locator(GENERIC_SIDEBAR_SELECTOR)).toHaveCount(0);
     await page.waitForTimeout(250);
+
+    const sidebarFlashed = await page.evaluate(() => {
+      return (window as { __sidebarFlashSeen?: boolean }).__sidebarFlashSeen === true;
+    });
+    expect(sidebarFlashed).toBe(false);
+  });
+
+  test('git permalinks for subdirectory files do not render the generic file browser sidebar', async ({ page }) => {
+    test.slow();
+
+    const { repoName, npub } = await uploadGitRepo(page);
+
+    await page.goto(`/git.html#/${npub}/public/${repoName}?g=${encodeURIComponent(repoName)}`);
+    await waitForAppReady(page);
+
+    const repoFileList = page.locator('[data-testid="file-list"]').last();
+    const dirCell = repoFileList.locator('tbody tr td:nth-child(2)').filter({ hasText: SUBDIR_NAME }).first();
+    await expect(dirCell).toBeVisible({ timeout: 30000 });
+    await dirCell.click();
+    await page.waitForFunction(
+      (dir) => window.location.hash.includes(encodeURIComponent(dir)),
+      SUBDIR_NAME,
+      { timeout: 15000 }
+    );
+
+    const fileCell = repoFileList.locator('tbody tr td:nth-child(2)').filter({ hasText: SUBFILE_NAME }).first();
+    await expect(fileCell).toBeVisible({ timeout: 30000 });
+    await fileCell.click();
+    await page.waitForFunction(
+      (name) => window.location.hash.includes(encodeURIComponent(name)),
+      SUBFILE_NAME,
+      { timeout: 15000 }
+    );
+
+    const permalinkLink = page.getByTestId('viewer-permalink');
+    await expect(permalinkLink).toBeVisible({ timeout: 30000 });
+
+    const permalinkHref = await permalinkLink.getAttribute('href');
+    expect(permalinkHref).toBeTruthy();
+    expect(permalinkHref).toMatch(/^#\/nhash1/);
+
+    await page.goto(`/git.html${permalinkHref}`);
+    await waitForAppReady(page);
+
+    const sidebarFileBrowser = page.locator(GENERIC_SIDEBAR_SELECTOR);
+    await expect(sidebarFileBrowser).toHaveCount(0);
+    await expect(page.locator('[data-testid="viewer-header"]')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByText('hello from subdir')).toBeVisible({ timeout: 30000 });
+  });
+
+  test('clicking a git permalink does not flash the generic file browser sidebar', async ({ page }) => {
+    test.slow();
+
+    const { repoName, npub } = await uploadGitRepo(page);
+    await installSidebarFlashTracker(page);
+
+    await page.goto(`/git.html#/${npub}/public/${repoName}?g=${encodeURIComponent(repoName)}`);
+    await waitForAppReady(page);
+
+    const repoFileList = page.locator('[data-testid="file-list"]').last();
+    const dirCell = repoFileList.locator('tbody tr td:nth-child(2)').filter({ hasText: SUBDIR_NAME }).first();
+    await expect(dirCell).toBeVisible({ timeout: 30000 });
+    await dirCell.click();
+    await page.waitForFunction(
+      (dir) => window.location.hash.includes(encodeURIComponent(dir)),
+      SUBDIR_NAME,
+      { timeout: 15000 }
+    );
+
+    const fileCell = repoFileList.locator('tbody tr td:nth-child(2)').filter({ hasText: SUBFILE_NAME }).first();
+    await expect(fileCell).toBeVisible({ timeout: 30000 });
+    await fileCell.click();
+    await page.waitForFunction(
+      (name) => window.location.hash.includes(encodeURIComponent(name)),
+      SUBFILE_NAME,
+      { timeout: 15000 }
+    );
+
+    const permalinkLink = page.getByTestId('viewer-permalink');
+    await expect(permalinkLink).toBeVisible({ timeout: 30000 });
+
+    await page.evaluate(() => {
+      (window as { __sidebarFlashSeen?: boolean }).__sidebarFlashSeen = false;
+    });
+
+    await permalinkLink.click();
+    await page.waitForFunction(() => window.location.hash.startsWith('#/nhash1'), undefined, { timeout: 15000 });
+    await waitForAppReady(page);
+    await expect(page.locator(GENERIC_SIDEBAR_SELECTOR)).toHaveCount(0);
 
     const sidebarFlashed = await page.evaluate(() => {
       return (window as { __sidebarFlashSeen?: boolean }).__sidebarFlashSeen === true;

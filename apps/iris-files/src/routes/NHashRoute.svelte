@@ -6,7 +6,7 @@
   import { isViewingFileStore, currentHash, currentDirCidStore, createGitInfoStore } from '../stores';
   import { nhashDecode } from '@hashtree/core';
   import { getQueryParamsFromHash } from '../lib/router.svelte';
-  import { supportsGitFeatures } from '../appType';
+  import { shouldShowGenericFileBrowser, supportsGitFeatures } from '../appType';
 
   interface Props {
     nhash: string;
@@ -17,6 +17,7 @@
   let hash = $derived($currentHash);
   let isViewingFile = $derived($isViewingFileStore);
   let isValid = $state(true);
+  const showGenericFileBrowser = shouldShowGenericFileBrowser();
 
   // Check if current directory is a git repo
   let currentDirCid = $derived($currentDirCidStore);
@@ -24,8 +25,8 @@
   let gitInfo = $derived($gitInfoStore);
   let isGitRepo = $derived(supportsGitFeatures() && gitInfo.isRepo);
 
-  // In single-column layout, show viewer for git repos or files
-  let showViewer = $derived(isViewingFile || isGitRepo);
+  // In the git app, permalink routes should stay in the viewer flow with no generic file browser.
+  let showViewer = $derived(isViewingFile || isGitRepo || !showGenericFileBrowser);
 
   // Check if fullscreen mode from URL
   let isFullscreen = $derived.by(() => {
@@ -45,8 +46,8 @@
 </script>
 
 {#if isValid}
-  <!-- File browser - hidden in single-column when viewing file/git repo, hidden completely in fullscreen -->
-  {#if !isFullscreen}
+  <!-- File browser - disabled entirely in git app, hidden in single-column when viewing file/git repo -->
+  {#if showGenericFileBrowser && !isFullscreen}
     <div class={showViewer
       ? 'hidden lg:flex lg:w-80 shrink-0 flex-col min-h-0'
       : 'flex flex-1 lg:flex-none lg:w-80 shrink-0 flex-col min-h-0'}>
