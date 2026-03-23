@@ -151,6 +151,13 @@ pub struct PullRequestListItem {
 
 type FetchedRefs = (HashMap<String, String>, Option<String>, Option<[u8; 32]>);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitRepoAnnouncement {
+    repo_name: String,
+    created_at: Timestamp,
+    event_id: EventId,
+}
+
 /// A stored key with optional petname
 #[derive(Debug, Clone)]
 pub struct StoredKey {
@@ -463,6 +470,69 @@ where
     )
 }
 
+fn git_repo_name(event: &Event) -> Option<&str> {
+    let has_hashtree_label = event.tags.iter().any(|tag| {
+        let slice = tag.as_slice();
+        slice.len() >= 2 && slice[0].as_str() == "l" && slice[1].as_str() == LABEL_HASHTREE
+    });
+    let has_git_label = event.tags.iter().any(|tag| {
+        let slice = tag.as_slice();
+        slice.len() >= 2 && slice[0].as_str() == "l" && slice[1].as_str() == LABEL_GIT
+    });
+    if !has_hashtree_label || !has_git_label {
+        return None;
+    }
+
+    event.tags.iter().find_map(|tag| {
+        let slice = tag.as_slice();
+        if slice.len() < 2 || slice[0].as_str() != "d" {
+            return None;
+        }
+        let repo_name = slice[1].as_str();
+        if repo_name.is_empty() {
+            None
+        } else {
+            Some(repo_name)
+        }
+    })
+}
+
+fn list_git_repo_announcements(events: &[Event]) -> Vec<GitRepoAnnouncement> {
+    let mut latest_by_repo: HashMap<String, (Timestamp, EventId)> = HashMap::new();
+
+    for event in events {
+        let Some(repo_name) = git_repo_name(event) else {
+            continue;
+        };
+
+        let entry = latest_by_repo
+            .entry(repo_name.to_string())
+            .or_insert((event.created_at, event.id));
+        if (event.created_at, event.id) > (entry.0, entry.1) {
+            *entry = (event.created_at, event.id);
+        }
+    }
+
+    let mut repos: Vec<GitRepoAnnouncement> = latest_by_repo
+        .into_iter()
+        .map(|(repo_name, (created_at, event_id))| GitRepoAnnouncement {
+            repo_name,
+            created_at,
+            event_id,
+        })
+        .collect();
+    repos.sort_by(|left, right| left.repo_name.cmp(&right.repo_name));
+    repos
+}
+
+fn build_git_repo_list_filter(author: PublicKey) -> Filter {
+    Filter::new()
+        .kind(Kind::Custom(KIND_APP_DATA))
+        .author(author)
+        .custom_tag(SingleLetterTag::lowercase(Alphabet::L), vec![LABEL_GIT])
+        .limit(500)
+}
+
 fn build_repo_event_filter(author: PublicKey, repo_name: &str) -> Filter {
     Filter::new()
         .kind(Kind::Custom(KIND_APP_DATA))
@@ -767,6 +837,83 @@ impl NostrClient {
     #[allow(dead_code)]
     pub fn can_sign(&self) -> bool {
         self.keys.is_some()
+    }
+
+    pub fn list_repos(&self) -> Result<Vec<String>> {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?;
+
+        let result = rt.block_on(self.list_repos_async());
+        rt.shutdown_timeout(Duration::from_millis(500));
+        result
+    }
+
+    pub async fn list_repos_async(&self) -> Result<Vec<String>> {
+        let client = Client::default();
+
+        for relay in &self.relays {
+            if let Err(e) = client.add_relay(relay).await {
+                warn!("Failed to add relay {}: {}", relay, e);
+            }
+        }
+        client.connect().await;
+
+        let start = std::time::Instant::now();
+        loop {
+            let relays = client.relays().await;
+            let mut connected = false;
+            for relay in relays.values() {
+                if relay.is_connected().await {
+                    connected = true;
+                    break;
+                }
+            }
+            if connected {
+                break;
+            }
+            if start.elapsed() > Duration::from_secs(2) {
+                let _ = client.disconnect().await;
+                return Err(anyhow::anyhow!(
+                    "Failed to connect to any relay while listing repos"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let author = PublicKey::from_hex(&self.pubkey)
+            .map_err(|e| anyhow::anyhow!("Invalid pubkey: {}", e))?;
+        let filter = build_git_repo_list_filter(author);
+
+        let events = match tokio::time::timeout(
+            Duration::from_secs(3),
+            client.get_events_of(vec![filter], EventSource::relays(None)),
+        )
+        .await
+        {
+            Ok(Ok(events)) => events,
+            Ok(Err(e)) => {
+                let _ = client.disconnect().await;
+                return Err(anyhow::anyhow!(
+                    "Failed to fetch git repo events from relays: {}",
+                    e
+                ));
+            }
+            Err(_) => {
+                let _ = client.disconnect().await;
+                return Err(anyhow::anyhow!(
+                    "Timed out fetching git repo events from relays"
+                ));
+            }
+        };
+
+        let _ = client.disconnect().await;
+
+        Ok(list_git_repo_announcements(&events)
+            .into_iter()
+            .map(|repo| repo.repo_name)
+            .collect())
     }
 
     /// Fetch refs for a repository from nostr
@@ -2222,6 +2369,64 @@ mod tests {
 
         assert!(values.iter().any(|value| value == LABEL_GIT));
         assert!(values.iter().any(|value| value == "tools"));
+    }
+
+    #[test]
+    fn test_list_git_repo_announcements_filters_dedupes_and_sorts() {
+        let keys = Keys::generate();
+        let alpha_old = EventBuilder::new(
+            Kind::Custom(KIND_APP_DATA),
+            "old",
+            [
+                Tag::custom(TagKind::custom("d"), vec!["alpha".to_string()]),
+                Tag::custom(TagKind::custom("l"), vec![LABEL_HASHTREE.to_string()]),
+                Tag::custom(TagKind::custom("l"), vec![LABEL_GIT.to_string()]),
+            ],
+        )
+        .custom_created_at(Timestamp::from_secs(10))
+        .to_event(&keys)
+        .unwrap();
+        let alpha_new = EventBuilder::new(
+            Kind::Custom(KIND_APP_DATA),
+            "new",
+            [
+                Tag::custom(TagKind::custom("d"), vec!["alpha".to_string()]),
+                Tag::custom(TagKind::custom("l"), vec![LABEL_HASHTREE.to_string()]),
+                Tag::custom(TagKind::custom("l"), vec![LABEL_GIT.to_string()]),
+            ],
+        )
+        .custom_created_at(Timestamp::from_secs(20))
+        .to_event(&keys)
+        .unwrap();
+        let zeta = EventBuilder::new(
+            Kind::Custom(KIND_APP_DATA),
+            "zeta",
+            [
+                Tag::custom(TagKind::custom("d"), vec!["zeta/tools".to_string()]),
+                Tag::custom(TagKind::custom("l"), vec![LABEL_HASHTREE.to_string()]),
+                Tag::custom(TagKind::custom("l"), vec![LABEL_GIT.to_string()]),
+            ],
+        )
+        .custom_created_at(Timestamp::from_secs(15))
+        .to_event(&keys)
+        .unwrap();
+        let ignored = EventBuilder::new(
+            Kind::Custom(KIND_APP_DATA),
+            "ignored",
+            [
+                Tag::custom(TagKind::custom("d"), vec!["not-git".to_string()]),
+                Tag::custom(TagKind::custom("l"), vec![LABEL_HASHTREE.to_string()]),
+            ],
+        )
+        .custom_created_at(Timestamp::from_secs(30))
+        .to_event(&keys)
+        .unwrap();
+
+        let repos = list_git_repo_announcements(&[alpha_old, zeta, ignored, alpha_new]);
+        let names: Vec<&str> = repos.iter().map(|repo| repo.repo_name.as_str()).collect();
+
+        assert_eq!(names, vec!["alpha", "zeta/tools"]);
+        assert_eq!(repos[0].created_at, Timestamp::from_secs(20));
     }
 
     #[test]

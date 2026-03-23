@@ -261,6 +261,30 @@ fn test_cli_parses_release_publish_command() {
 }
 
 #[test]
+fn test_cli_parses_repos_command_default_owner() {
+    let cli = Cli::parse_from(["htree", "repos"]);
+
+    match cli.command {
+        Commands::Repos { owner } => {
+            assert_eq!(owner, None);
+        }
+        _ => panic!("expected repos command"),
+    }
+}
+
+#[test]
+fn test_cli_parses_repos_command_with_owner() {
+    let cli = Cli::parse_from(["htree", "repos", "coworker"]);
+
+    match cli.command {
+        Commands::Repos { owner } => {
+            assert_eq!(owner.as_deref(), Some("coworker"));
+        }
+        _ => panic!("expected repos command"),
+    }
+}
+
+#[test]
 fn test_cli_parses_socialgraph_index_command() {
     let cli = Cli::parse_from([
         "htree",

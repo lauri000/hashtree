@@ -122,6 +122,40 @@ pub mod test_relay {
             }
         }
 
+        if let Some(authors) = filter_obj.get("authors").and_then(Value::as_array) {
+            let event_author = event
+                .get("pubkey")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let author_match = authors
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|author| author == event_author);
+            if !author_match {
+                return false;
+            }
+        }
+
+        if let Some(l_values) = filter_obj.get("#l").and_then(Value::as_array) {
+            let accepted: Vec<String> = l_values
+                .iter()
+                .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                .collect();
+            if !accepted.is_empty() && !event_tag_matches(event, "l", &accepted) {
+                return false;
+            }
+        }
+
+        if let Some(d_values) = filter_obj.get("#d").and_then(Value::as_array) {
+            let accepted: Vec<String> = d_values
+                .iter()
+                .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                .collect();
+            if !accepted.is_empty() && !event_tag_matches(event, "d", &accepted) {
+                return false;
+            }
+        }
+
         if let Some(a_values) = filter_obj.get("#a").and_then(Value::as_array) {
             let accepted: Vec<String> = a_values
                 .iter()

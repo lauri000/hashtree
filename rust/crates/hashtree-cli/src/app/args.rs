@@ -253,6 +253,12 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: PrCommands,
     },
+
+    /// List published git repositories for yourself or another user
+    Repos {
+        /// Owner identity (defaults to self). Accepts alias, npub, or hex pubkey.
+        owner: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

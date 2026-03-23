@@ -1365,6 +1365,9 @@ pub(crate) async fn run() -> Result<()> {
                 super::pr::list_prs(repo.as_deref(), state).await?;
             }
         },
+        Commands::Repos { owner } => {
+            super::repos::list_repos(owner.as_deref()).await?;
+        }
     }
 
     Ok(())
