@@ -463,6 +463,41 @@ where
     )
 }
 
+fn build_repo_event_filter(author: PublicKey, repo_name: &str) -> Filter {
+    Filter::new()
+        .kind(Kind::Custom(KIND_APP_DATA))
+        .author(author)
+        .custom_tag(SingleLetterTag::lowercase(Alphabet::D), vec![repo_name])
+        .custom_tag(
+            SingleLetterTag::lowercase(Alphabet::L),
+            vec![LABEL_HASHTREE],
+        )
+        .limit(50)
+}
+
+fn next_replaceable_created_at(now: Timestamp, latest_existing: Option<Timestamp>) -> Timestamp {
+    match latest_existing {
+        Some(latest) if latest >= now => Timestamp::from_secs(latest.as_u64().saturating_add(1)),
+        _ => now,
+    }
+}
+
+async fn latest_repo_event_created_at(
+    client: &Client,
+    author: PublicKey,
+    repo_name: &str,
+    timeout: Duration,
+) -> Option<Timestamp> {
+    let events = client
+        .get_events_of(
+            vec![build_repo_event_filter(author, repo_name)],
+            EventSource::relays(Some(timeout)),
+        )
+        .await
+        .ok()?;
+    pick_latest_repo_event(events.iter(), repo_name).map(|event| event.created_at)
+}
+
 fn append_repo_discovery_labels(tags: &mut Vec<Tag>, repo_name: &str) {
     tags.push(Tag::custom(
         TagKind::custom("l"),
@@ -940,15 +975,7 @@ impl NostrClient {
         let author = PublicKey::from_hex(&self.pubkey)
             .map_err(|e| anyhow::anyhow!("Invalid pubkey: {}", e))?;
 
-        let filter = Filter::new()
-            .kind(Kind::Custom(KIND_APP_DATA))
-            .author(author)
-            .custom_tag(SingleLetterTag::lowercase(Alphabet::D), vec![repo_name])
-            .custom_tag(
-                SingleLetterTag::lowercase(Alphabet::L),
-                vec![LABEL_HASHTREE],
-            )
-            .limit(50);
+        let filter = build_repo_event_filter(author, repo_name);
 
         debug!("Querying relays for repo {} events", repo_name);
 
@@ -1568,6 +1595,17 @@ impl NostrClient {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
+        let publish_created_at = next_replaceable_created_at(
+            Timestamp::now(),
+            latest_repo_event_created_at(
+                &client,
+                keys.public_key(),
+                repo_name,
+                Duration::from_secs(2),
+            )
+            .await,
+        );
+
         // Build event with tags
         let mut tags = vec![
             Tag::custom(TagKind::custom("d"), vec![repo_name.to_string()]),
@@ -1608,6 +1646,7 @@ impl NostrClient {
 
         // Sign the event
         let event = EventBuilder::new(Kind::Custom(KIND_APP_DATA), root_hash, tags)
+            .custom_created_at(publish_created_at)
             .to_event(keys)
             .map_err(|e| anyhow::anyhow!("Failed to sign event: {}", e))?;
 
@@ -2105,6 +2144,30 @@ mod tests {
         };
         let picked = pick_latest_event([&event_a, &event_b]).unwrap();
         assert_eq!(picked.id, expected_id);
+    }
+
+    #[test]
+    fn test_next_replaceable_created_at_uses_now_when_existing_is_older() {
+        let now = Timestamp::from_secs(1_700_000_010);
+        let existing = Timestamp::from_secs(1_700_000_009);
+
+        assert_eq!(
+            next_replaceable_created_at(now, Some(existing)),
+            now,
+            "older repo events should not delay a new publish"
+        );
+    }
+
+    #[test]
+    fn test_next_replaceable_created_at_bumps_same_second_events() {
+        let now = Timestamp::from_secs(1_700_000_010);
+        let existing = Timestamp::from_secs(1_700_000_010);
+
+        assert_eq!(
+            next_replaceable_created_at(now, Some(existing)),
+            Timestamp::from_secs(1_700_000_011),
+            "same-second repo publishes need a strictly newer timestamp"
+        );
     }
 
     #[test]
