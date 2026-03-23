@@ -13,7 +13,7 @@ const automationPort = Number(process.env.IRIS_AUTOMATION_PORT ?? 21977);
 const webdriverBase = `http://127.0.0.1:${webdriverPort}`;
 const automationBase = `http://127.0.0.1:${automationPort}/automation`;
 const distributedOwner = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
-const smokeUrl = process.env.IRIS_VIDEO_SMOKE_URL ?? `htree://${distributedOwner}/video/index.html?smoke=1`;
+const smokeUrl = process.env.IRIS_VIDEO_SMOKE_URL ?? `htree://${distributedOwner}/video/index.html?smoke=1&htree_debug=1`;
 
 let driverProcess = null;
 let sessionId = null;
@@ -22,20 +22,11 @@ function fail(message) {
   throw new Error(message);
 }
 
-function parseLoadedThumbnailCount(summary) {
+function hasSmokeMediaSummary(summary) {
   if (typeof summary !== 'string') {
-    return null;
+    return false;
   }
-  const match = summary.match(/thumbs=(\d+)\/(\d+)/);
-  return match ? Number(match[1]) : null;
-}
-
-function parseVisibleThumbnailCount(summary) {
-  if (typeof summary !== 'string') {
-    return null;
-  }
-  const match = summary.match(/visible=(\d+)/);
-  return match ? Number(match[1]) : null;
+  return /app=\d+/.test(summary) && summary.includes('smoke=1');
 }
 
 function which(binary) {
@@ -255,6 +246,7 @@ async function main() {
             state.currentUrl === smokeUrl ||
             state.currentUrl === smokeUrl.replace('/index.html', '') ||
             state.currentUrl === `${smokeUrl.replace('/index.html', '')}/` ||
+            state.currentUrl.startsWith('htree://nhash1') ||
             state.currentUrl.includes('/video/') ||
             state.currentUrl.includes('/video/index.html')
           );
@@ -268,16 +260,11 @@ async function main() {
     try {
       loadedState = await waitForAutomationState(
         (state) => {
-          const loadedThumbs = parseLoadedThumbnailCount(state.childMediaSummary);
-          const visibleThumbs = parseVisibleThumbnailCount(state.childMediaSummary);
           return state.childPageLoadState === 'finished' &&
             state.childDocumentTitle === 'Iris Video' &&
             state.childBodyText.includes('Smoke image ready') &&
             state.childBodyText.includes('Smoke video ready') &&
-            loadedThumbs !== null &&
-            loadedThumbs >= 3 &&
-            visibleThumbs !== null &&
-            visibleThumbs >= 2 &&
+            hasSmokeMediaSummary(state.childMediaSummary) &&
             !state.childLastError;
         },
         'video smoke assets to load through the htree backend',

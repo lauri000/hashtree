@@ -971,10 +971,10 @@ mod tests {
     use super::build_menu;
     use super::{
         collect_supported_launch_deep_links, is_supported_launch_host, mobile_default_htree_paths,
-        normalize_automation_startup_url, normalize_supported_launch_deep_link,
-        resolve_iris_paths, tray_connection_status_from_peers, tray_menu_spec,
-        tray_primary_click_action, tray_status_text, DesktopPlatform, IrisPaths,
-        TrayConnectionStatus, TrayMenuItemSpec, TrayPeersResponse, TrayPrimaryClickAction,
+        normalize_automation_startup_url, normalize_supported_launch_deep_link, resolve_iris_paths,
+        tray_connection_status_from_peers, tray_menu_spec, tray_primary_click_action,
+        tray_status_text, DesktopPlatform, IrisPaths, TrayConnectionStatus, TrayMenuItemSpec,
+        TrayPeersResponse, TrayPrimaryClickAction,
     };
     use std::path::{Path, PathBuf};
 
@@ -1222,7 +1222,10 @@ mod tests {
         assert_eq!(normalize_automation_startup_url(""), None);
         assert_eq!(normalize_automation_startup_url("not a url"), None);
         assert_eq!(normalize_automation_startup_url("htree://nip07/"), None);
-        assert_eq!(normalize_automation_startup_url("https://files.iris.to"), None);
+        assert_eq!(
+            normalize_automation_startup_url("https://files.iris.to"),
+            None
+        );
     }
 
     #[test]

@@ -20,6 +20,7 @@ pub const DEFAULT_RELAYS: &[&str] = &[
     "wss://nos.lol",
     "wss://relay.primal.net",
     "wss://offchain.pub",
+    "wss://upload.iris.to/nostr",
 ];
 
 /// Top-level config structure
@@ -622,6 +623,12 @@ mod tests {
         assert!(!config.blossom.read_servers.is_empty());
         assert!(!config.blossom.write_servers.is_empty());
         assert!(!config.nostr.relays.is_empty());
+        assert!(
+            config
+                .nostr
+                .relays
+                .contains(&"wss://upload.iris.to/nostr".to_string())
+        );
     }
 
     #[test]

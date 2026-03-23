@@ -7,7 +7,7 @@ pub(crate) async fn add_directory<S: hashtree_core::store::Store>(
     respect_gitignore: bool,
 ) -> Result<hashtree_core::Cid> {
     use futures::io::AllowStdIo;
-    use hashtree_core::DirEntry;
+    use hashtree_core::{DirEntry, LinkType};
     use ignore::WalkBuilder;
     use std::collections::HashMap;
 
@@ -88,7 +88,7 @@ pub(crate) async fn add_directory<S: hashtree_core::store::Store>(
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
-                entries.push(DirEntry::from_cid(name, cid));
+                entries.push(DirEntry::from_cid(name, cid).with_link_type(LinkType::Dir));
             }
         }
 
@@ -105,4 +105,46 @@ pub(crate) async fn add_directory<S: hashtree_core::store::Store>(
         .get("")
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("No root directory"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::add_directory;
+    use hashtree_core::{
+        decode_tree_node, decrypt_chk, store::Store, HashTree, HashTreeConfig, LinkType,
+        MemoryStore,
+    };
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn add_directory_marks_nested_directories_as_dir_links() {
+        let temp_dir = TempDir::new().unwrap();
+        let site_dir = temp_dir.path().join("site");
+        let assets_dir = site_dir.join("assets");
+        std::fs::create_dir_all(&assets_dir).unwrap();
+        std::fs::write(site_dir.join("index.html"), "<html>ok</html>").unwrap();
+        std::fs::write(assets_dir.join("main.js"), "console.log('ok');").unwrap();
+
+        let store = Arc::new(MemoryStore::new());
+        let tree = HashTree::new(HashTreeConfig::new(store.clone()));
+        let root = add_directory(&tree, &site_dir, true).await.unwrap();
+
+        let root_bytes = Store::get(store.as_ref(), &root.hash)
+            .await
+            .unwrap()
+            .unwrap();
+        let root_plaintext = match root.key {
+            Some(key) => decrypt_chk(&root_bytes, &key).unwrap(),
+            None => root_bytes,
+        };
+        let root_node = decode_tree_node(&root_plaintext).unwrap();
+
+        let assets_link = root_node
+            .links
+            .iter()
+            .find(|link| link.name.as_deref() == Some("assets"))
+            .expect("assets link");
+        assert_eq!(assets_link.link_type, LinkType::Dir);
+    }
 }

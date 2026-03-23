@@ -19,6 +19,23 @@
   let imageError = $state('');
   let videoError = $state('');
 
+  async function probeAsset(
+    url: string,
+    onReady: () => void,
+    onError: (message: string) => void,
+  ): Promise<void> {
+    try {
+      const response = await fetch(url, { method: 'HEAD' });
+      if (!response.ok) {
+        onError(`Smoke asset failed (${response.status})`);
+        return;
+      }
+      onReady();
+    } catch {
+      onError('Smoke asset failed');
+    }
+  }
+
   function getCanonicalRuntimeUrl(): string | null {
     if (typeof window === 'undefined') return null;
     const canonical = window.__HTREE_CANONICAL_URL__;
@@ -84,6 +101,7 @@
   }
 
   function handleImageError(): void {
+    if (imageReady) return;
     imageReady = false;
     imageError = 'Smoke image failed';
     updateStatus();
@@ -96,6 +114,7 @@
   }
 
   function handleVideoError(): void {
+    if (videoReady) return;
     videoReady = false;
     videoError = 'Smoke video failed';
     updateStatus();
@@ -111,6 +130,16 @@
     imageUrl = getNpubFileUrl(currentTree.npub, currentTree.treeName, 'iris-logo.png');
     videoUrl = getNpubFileUrl(currentTree.npub, currentTree.treeName, 'smoke-video.webm');
     updateStatus();
+    void probeAsset(imageUrl, handleImageLoad, (message) => {
+      imageReady = false;
+      imageError = message;
+      updateStatus();
+    });
+    void probeAsset(videoUrl, handleVideoReady, (message) => {
+      videoReady = false;
+      videoError = message;
+      updateStatus();
+    });
   });
 </script>
 

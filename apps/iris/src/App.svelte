@@ -3,6 +3,7 @@
   import {
     automationUpdateState,
     automationShutdown,
+    cacheTreeRoot,
     createNip07Webview,
     createHtreeWebview,
     deepLinkFrontendReady,
@@ -25,11 +26,16 @@
     type WebviewPageLoadEvent,
     type HistoryEntry,
   } from './lib/tauri';
+  import { getSuggestedTreeRootHint } from './lib/apps';
   import { appsStore } from './stores/apps';
   import AppLauncher from './components/AppLauncher.svelte';
   import Settings from './components/Settings.svelte';
 
   type View = 'launcher' | 'settings' | 'webview';
+  type NavigateOptions = {
+    pushHistory?: boolean;
+    prewarmSuggestedTreeRoot?: boolean;
+  };
 
   const CHILD_LABEL = 'content';
   const TOOLBAR_BASE_HEIGHT = 48;
@@ -39,6 +45,7 @@
   const MACOS_FUNCTION_KEY_GLYPHS = /[\uF700-\uF8FF]/g;
   const MACOS_FUNCTION_KEY_GLYPHS_SINGLE = /[\uF700-\uF8FF]/;
   const LEGACY_MACOS_ARROW_KEY_CODES = new Set([63232, 63233, 63234, 63235]);
+  const RECOVERABLE_TREE_BODY_TEXTS = new Set(['Not found', 'Resolution timeout']);
   const PRIVATE_USE_ARROW_KEYS = {
     '\uF700': 'ArrowUp',
     '\uF701': 'ArrowDown',
@@ -78,6 +85,7 @@
   let webviewNavDepth = $state(0);          // user navigations within current webview
   let webviewFwdAvail = $state(0);          // forward steps available within webview
   let ignoreLocationEvents = 0;             // skip location events we caused
+  const treeRootRecoveryAttempts = new Map<string, number>();
   let childPageLoadState = $state('idle');
   let childPageLoadUrl = $state('');
   let childDocumentTitle = $state('');
@@ -352,7 +360,7 @@
     }
     if (currentView === 'webview' && previousUrl && shouldRecreateBrowserForUrl(event.url, previousUrl)) {
       currentUrl = previousUrl;
-      void navigate(event.url, false);
+      void navigate(event.url, { pushHistory: false });
       return;
     }
     if (isRecordableUrl(event.url)) {
@@ -472,8 +480,13 @@
     };
   }
 
-  /** Open a URL in the child webview, pushing to history. */
-  async function navigate(url: string, pushHistory = true) {
+  /** Open a URL in the child webview, optionally prewarming a suggested root hint. */
+  async function navigate(url: string, options: NavigateOptions = {}) {
+    const {
+      pushHistory = true,
+      prewarmSuggestedTreeRoot = false,
+    } = options;
+
     // Destroy existing child webview when switching origins or entering webview
     if (g.__irisChildReady) {
       if (currentView !== 'webview' || shouldRecreateBrowserForUrl(url, currentUrl)) {
@@ -500,7 +513,31 @@
       const htree = parseHtreeUrl(url);
       try {
         if (htree) {
-          await createHtreeWebview(CHILD_LABEL, htree, x, y, width, height);
+          const treeRootHint = prewarmSuggestedTreeRoot && htree.npub && htree.treename
+            ? getSuggestedTreeRootHint(htree.npub, htree.treename)
+            : null;
+          if (htree.npub && htree.treename) {
+            if (treeRootHint) {
+              await cacheTreeRoot(
+                htree.npub,
+                htree.treename,
+                treeRootHint.hash,
+                null,
+                null,
+                treeRootHint.nhash,
+              ).catch((error) => {
+                console.warn('[Iris] failed to prewarm tree root cache:', error);
+              });
+            }
+          }
+          await createHtreeWebview(
+            CHILD_LABEL,
+            htree,
+            x,
+            y,
+            width,
+            height,
+          );
         } else {
           await createNip07Webview(CHILD_LABEL, url, x, y, width, height);
         }
@@ -582,7 +619,7 @@
   async function refresh() {
     showMobileMenu = false;
     if (currentView === 'webview' && currentUrl && !childWebviewReady) {
-      await navigate(currentUrl, false);
+      await navigate(currentUrl, { pushHistory: false });
       return;
     }
     if (currentView === 'webview' && childWebviewReady) {
@@ -635,12 +672,42 @@
     childPageLoadUrl = event.url;
   }
 
+  async function maybeRecoverSuggestedTreeRoot(url: string, bodyText: string) {
+    if (!RECOVERABLE_TREE_BODY_TEXTS.has(bodyText.trim())) return;
+    const htree = parseHtreeUrl(url);
+    if (!htree?.npub || !htree.treename) return;
+    const treeRootHint = getSuggestedTreeRootHint(htree.npub, htree.treename);
+    if (!treeRootHint) return;
+
+    const attemptKey = `${url}|${bodyText.trim()}`;
+    const attempts = treeRootRecoveryAttempts.get(attemptKey) ?? 0;
+    if (attempts >= 1) return;
+    treeRootRecoveryAttempts.set(attemptKey, attempts + 1);
+
+    try {
+      await cacheTreeRoot(
+        htree.npub,
+        htree.treename,
+        treeRootHint.hash,
+        null,
+        null,
+        treeRootHint.nhash,
+      );
+      await reloadWebview(CHILD_LABEL);
+    } catch (error) {
+      console.warn('[Iris] failed to recover suggested tree root:', error);
+    }
+  }
+
   function handleDiagnosticEvent(event: WebviewDiagnosticEvent) {
     if (event.label !== CHILD_LABEL) return;
     if (event.title) childDocumentTitle = event.title;
     if (event.bodyText) childBodyText = event.bodyText;
     if (event.mediaSummary) childMediaSummary = event.mediaSummary;
     if (event.error) childLastError = event.error;
+    if (event.bodyText && currentUrl) {
+      void maybeRecoverSuggestedTreeRoot(currentUrl, event.bodyText);
+    }
   }
 
   async function handleDeleteHistoryItem(event: MouseEvent, path: string) {
@@ -796,7 +863,7 @@
       webviewFwdAvail++;
     } else if (historyIndex > 0) {
       historyIndex--;
-      await navigate(historyStack[historyIndex], false);
+      await navigate(historyStack[historyIndex], { pushHistory: false });
     } else {
       // At first page or no history — go to launcher
       historyIndex = -1;
@@ -813,7 +880,7 @@
       webviewFwdAvail--;
     } else if (historyIndex < historyStack.length - 1) {
       historyIndex++;
-      await navigate(historyStack[historyIndex], false);
+      await navigate(historyStack[historyIndex], { pushHistory: false });
     }
   }
 
@@ -1218,7 +1285,12 @@
   <!-- Content area -->
   <main class="min-h-0 flex-1 flex flex-col {isCompactToolbar ? 'order-1' : ''}">
     {#if currentView === 'launcher'}
-      <AppLauncher onnavigate={navigate} />
+      <AppLauncher
+        onnavigate={(url, options) =>
+          navigate(url, {
+            prewarmSuggestedTreeRoot: options?.prewarmSuggestedTreeRoot ?? false,
+          })}
+      />
     {:else if currentView === 'settings'}
       <Settings />
     {:else if !childWebviewReady || childLastError}

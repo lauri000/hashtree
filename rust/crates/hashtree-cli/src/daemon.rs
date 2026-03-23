@@ -209,8 +209,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     #[cfg(not(feature = "p2p"))]
     let webrtc_state: Option<Arc<crate::webrtc::WebRTCState>> = None;
 
-    let mut upstream_blossom = config.blossom.servers.clone();
-    upstream_blossom.extend(config.blossom.read_servers.clone());
+    let upstream_blossom = config.blossom.all_read_servers();
 
     let mut server = HashtreeServer::new(Arc::clone(&store), opts.bind_address.clone())
         .with_allowed_pubkeys(allowed_pubkeys.clone())
@@ -237,8 +236,6 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     }
 
     if config.sync.enabled {
-        let mut blossom_read_servers = config.blossom.servers.clone();
-        blossom_read_servers.extend(config.blossom.read_servers.clone());
         let sync_config = crate::sync::SyncConfig {
             sync_own: config.sync.sync_own,
             sync_followed: config.sync.sync_followed,

@@ -1,5 +1,5 @@
 import { test, expect, setupPageErrorHandler, gotoHome } from './fixtures';
-import { distributedOwner } from '../src/lib/apps';
+import { distributedOwner, getSuggestedTreeRootHint } from '../src/lib/apps';
 
 async function openHome(page: import('@playwright/test').Page) {
   setupPageErrorHandler(page);
@@ -52,10 +52,39 @@ test.describe('App Launcher', () => {
     await suggestions.getByText('Iris Files').click();
 
     const invocations = await page.evaluate(() => (window as any).__tauriInvocations);
+    const cacheCalls = invocations.filter((i: any) => i.cmd === 'cache_tree_root');
     const createCalls = invocations.filter((i: any) => i.cmd === 'create_htree_webview');
+    const treeRootHint = getSuggestedTreeRootHint(distributedOwner, 'files');
+
+    expect(cacheCalls.length).toBe(1);
+    expect(cacheCalls[0].args.npub).toBe(distributedOwner);
+    expect(cacheCalls[0].args.treeName).toBe('files');
+    expect(cacheCalls[0].args.hash).toBe(treeRootHint?.hash);
+    expect(cacheCalls[0].args.nhash).toBe(treeRootHint?.nhash);
     expect(createCalls.length).toBe(1);
     expect(createCalls[0].args.host).toBe(distributedOwner);
+    expect(createCalls[0].args.nhash).toBeNull();
+    expect(createCalls[0].args.npub).toBe(distributedOwner);
     expect(createCalls[0].args.treename).toBe('files');
+    expect(createCalls[0].args.path).toBe('/');
+  });
+
+  test('typing a suggested htree url does not prewarm the tree root hint', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const addressInput = page.locator('[data-testid="address-bar"] input');
+    await addressInput.click();
+    await addressInput.fill(`htree://${distributedOwner}/video`);
+    await addressInput.press('Enter');
+
+    const invocations = await page.evaluate(() => (window as any).__tauriInvocations);
+    const cacheCalls = invocations.filter((i: any) => i.cmd === 'cache_tree_root');
+    const createCalls = invocations.filter((i: any) => i.cmd === 'create_htree_webview');
+
+    expect(cacheCalls.length).toBe(0);
+    expect(createCalls.length).toBe(1);
+    expect(createCalls[0].args.host).toBe(distributedOwner);
+    expect(createCalls[0].args.treename).toBe('video');
     expect(createCalls[0].args.path).toBe('/');
   });
 

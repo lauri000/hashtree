@@ -289,9 +289,8 @@ pub(crate) async fn run() -> Result<()> {
                 Option<Arc<hashtree_cli::webrtc::WebRTCState>>,
             ) = (None, None, None);
 
-            // Combine legacy servers with read_servers for upstream cascade
-            let mut upstream_blossom = config.blossom.servers.clone();
-            upstream_blossom.extend(config.blossom.read_servers.clone());
+            // Combine legacy servers with configured public read servers.
+            let upstream_blossom = config.blossom.all_read_servers();
 
             // Set up server with allowed pubkeys for blossom write access
             let mut server = HashtreeServer::new(Arc::clone(&store), addr.clone())
@@ -316,9 +315,6 @@ pub(crate) async fn run() -> Result<()> {
 
             // Start background sync service if enabled
             let sync_handle = if config.sync.enabled {
-                // Combine legacy servers with read_servers for sync (reading)
-                let mut blossom_read_servers = config.blossom.servers.clone();
-                blossom_read_servers.extend(config.blossom.read_servers.clone());
                 let sync_config = hashtree_cli::sync::SyncConfig {
                     sync_own: config.sync.sync_own,
                     sync_followed: config.sync.sync_followed,

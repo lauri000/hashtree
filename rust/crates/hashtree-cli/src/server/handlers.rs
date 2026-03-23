@@ -39,6 +39,60 @@ pub async fn htree_test() -> impl IntoResponse {
         .unwrap()
 }
 
+#[derive(Deserialize)]
+pub struct CacheTreeRootRequest {
+    #[serde(rename = "npub")]
+    pub npub: String,
+    #[serde(rename = "treeName")]
+    pub tree_name: String,
+    pub hash: String,
+    pub key: Option<String>,
+    pub visibility: Option<String>,
+}
+
+pub async fn cache_tree_root(
+    State(state): State<AppState>,
+    Json(request): Json<CacheTreeRootRequest>,
+) -> impl IntoResponse {
+    let hash = match from_hex(&request.hash) {
+        Ok(value) => value,
+        Err(error) => {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from(format!("Invalid hash: {}", error)))
+                .unwrap();
+        }
+    };
+
+    let key = match request.key {
+        Some(value) => match from_hex(&value) {
+            Ok(decoded) => Some(decoded),
+            Err(error) => {
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from(format!("Invalid key: {}", error)))
+                    .unwrap();
+            }
+        },
+        None => None,
+    };
+
+    let cid = Cid {
+        hash,
+        key,
+    };
+    let cache_key = cache_tree_root_key(&request.npub, &request.tree_name, request.visibility.as_deref(), cid.key);
+    put_cached_tree_root(&state, cache_key, cid);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .body(Body::from("ok"))
+        .unwrap()
+}
+
 async fn list_directory_json(
     state: &AppState,
     cid: &Cid,
@@ -106,6 +160,17 @@ fn tree_root_cache_key(npub: &str, treename: &str, link_key: Option<[u8; 32]>) -
         Some(key) => format!("{}/{}?k={}", npub, treename, to_hex(&key)),
         None => format!("{}/{}", npub, treename),
     }
+}
+
+fn cache_tree_root_key(
+    npub: &str,
+    treename: &str,
+    visibility: Option<&str>,
+    key: Option<[u8; 32]>,
+) -> String {
+    let visibility = visibility.unwrap_or("public");
+    let link_key = if visibility == "public" { None } else { key };
+    tree_root_cache_key(npub, treename, link_key)
 }
 
 fn get_cached_tree_root(state: &AppState, cache_key: &str) -> Option<Cid> {
@@ -2128,7 +2193,7 @@ async fn query_upstream_blossom(servers: &[String], hash_hex: &str) -> Option<(V
         .ok()?;
 
     for server in servers {
-        let url = format!("{}/{}", server.trim_end_matches('/'), hash_hex);
+        let url = format!("{}/{}.bin", server.trim_end_matches('/'), hash_hex);
         tracing::debug!("Trying upstream Blossom: {}", url);
 
         match client.get(&url).send().await {
@@ -2181,13 +2246,21 @@ mod tests {
         Router,
     };
     use hashtree_core::DirEntry;
+    use sha2::Digest;
     use std::{collections::HashSet, net::SocketAddr};
     use tempfile::TempDir;
+
+    #[derive(Clone)]
+    struct UpstreamBlobTestState {
+        store: Arc<HashtreeStore>,
+        requested_ids: Arc<std::sync::Mutex<Vec<String>>>,
+    }
 
     async fn serve_blob_for_test(
         AxumState(store): AxumState<Arc<HashtreeStore>>,
         AxumPath(id): AxumPath<String>,
     ) -> Response<Body> {
+        let id = id.strip_suffix(".bin").unwrap_or(&id).to_string();
         let Ok(hash) = from_hex(&id) else {
             return Response::builder()
                 .status(StatusCode::BAD_REQUEST)
@@ -2196,6 +2269,35 @@ mod tests {
         };
 
         match store.get_blob(&hash) {
+            Ok(Some(data)) => Response::builder()
+                .status(StatusCode::OK)
+                .body(Body::from(data))
+                .unwrap(),
+            Ok(None) => Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("missing"))
+                .unwrap(),
+            Err(err) => Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from(err.to_string()))
+                .unwrap(),
+        }
+    }
+
+    async fn serve_blob_with_request_log_for_test(
+        AxumState(state): AxumState<UpstreamBlobTestState>,
+        AxumPath(id): AxumPath<String>,
+    ) -> Response<Body> {
+        state.requested_ids.lock().unwrap().push(id.clone());
+        let id = id.strip_suffix(".bin").unwrap_or(&id).to_string();
+        let Ok(hash) = from_hex(&id) else {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Body::from("invalid hash"))
+                .unwrap();
+        };
+
+        match state.store.get_blob(&hash) {
             Ok(Some(data)) => Response::builder()
                 .status(StatusCode::OK)
                 .body(Body::from(data))
@@ -2275,6 +2377,40 @@ mod tests {
         let hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         let result = query_upstream_blossom(&servers, hash).await;
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_query_upstream_blossom_uses_bin_suffix() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("store")).unwrap());
+        let requested_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let data = b"hello blossom";
+        store.put_blob(data).unwrap();
+        let hash_hex = hex::encode(sha2::Sha256::digest(data));
+
+        let upstream_router = Router::new()
+            .route("/:id", get(serve_blob_with_request_log_for_test))
+            .with_state(UpstreamBlobTestState {
+                store: store.clone(),
+                requested_ids: requested_ids.clone(),
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = listener.local_addr().unwrap();
+        let upstream_server =
+            tokio::spawn(async move { axum::serve(listener, upstream_router).await.unwrap() });
+
+        let result = query_upstream_blossom(&[format!("http://{}", upstream_addr)], &hash_hex)
+            .await
+            .expect("fetch blob");
+        assert_eq!(result.0, data);
+        assert_eq!(result.1, format!("http://{}", upstream_addr));
+        assert_eq!(
+            requested_ids.lock().unwrap().as_slice(),
+            &[format!("{}.bin", hash_hex)]
+        );
+
+        upstream_server.abort();
     }
 
     #[tokio::test]
@@ -2526,5 +2662,74 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body.as_ref(), main_js.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn cache_tree_root_seeds_mutable_root_cache() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());
+        let state = test_app_state(store, Vec::new());
+
+        let response = cache_tree_root(
+            State(state.clone()),
+            Json(CacheTreeRootRequest {
+                npub: "npub1example".to_string(),
+                tree_name: "video".to_string(),
+                hash: "988db3f24dc222715f1c1e1fa5876690d3147122243d72d85fd44283867cd61a"
+                    .to_string(),
+                key: None,
+                visibility: Some("public".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let cached = get_cached_tree_root(&state, "npub1example/video").expect("cached cid");
+        assert_eq!(
+            to_hex(&cached.hash),
+            "988db3f24dc222715f1c1e1fa5876690d3147122243d72d85fd44283867cd61a"
+        );
+        assert!(cached.key.is_none());
+    }
+
+    #[tokio::test]
+    async fn cache_tree_root_public_chk_uses_plain_mutable_cache_key() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());
+        let state = test_app_state(store, Vec::new());
+
+        let response = cache_tree_root(
+            State(state.clone()),
+            Json(CacheTreeRootRequest {
+                npub: "npub1example".to_string(),
+                tree_name: "video".to_string(),
+                hash: "be8f5da537f62d02d3ff113d213a7058116f790a8d0e158c2766543deda10e35"
+                    .to_string(),
+                key: Some(
+                    "34e24fadaddc60da2e761501aae44c1c2b6b8706b73dff736eb0fc7d803133bb"
+                        .to_string(),
+                ),
+                visibility: Some("public".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let cached = get_cached_tree_root(&state, "npub1example/video").expect("cached cid");
+        assert_eq!(
+            to_hex(&cached.hash),
+            "be8f5da537f62d02d3ff113d213a7058116f790a8d0e158c2766543deda10e35"
+        );
+        assert_eq!(
+            cached.key.map(|key| to_hex(&key)).as_deref(),
+            Some("34e24fadaddc60da2e761501aae44c1c2b6b8706b73dff736eb0fc7d803133bb")
+        );
+        assert!(get_cached_tree_root(
+            &state,
+            "npub1example/video?k=34e24fadaddc60da2e761501aae44c1c2b6b8706b73dff736eb0fc7d803133bb"
+        )
+        .is_none());
     }
 }

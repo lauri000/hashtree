@@ -63,6 +63,24 @@ export async function createHtreeWebview(
   });
 }
 
+export async function cacheTreeRoot(
+  npub: string,
+  treeName: string,
+  hash: string,
+  key?: string | null,
+  visibility?: string | null,
+  nhash?: string | null,
+): Promise<void> {
+  return invoke<void>('cache_tree_root', {
+    npub,
+    treeName,
+    hash,
+    key: key ?? null,
+    visibility: visibility ?? null,
+    nhash: nhash ?? null,
+  });
+}
+
 export async function closeWebview(label: string): Promise<void> {
   return invoke<void>('close_webview', { label });
 }

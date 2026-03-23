@@ -12,6 +12,7 @@
 import NDK, { NDKEvent, NDKPrivateKeySigner, type NDKFilter } from 'ndk';
 import NDKCacheAdapterDexie from 'ndk-cache';
 import { verifyEvent, matchFilter } from 'nostr-tools';
+import { resolveWorkerPublicAssetUrl } from '../lib/publicAssetUrl';
 import { NostrWasm } from './nostr-wasm';
 import type { SignedEvent, NostrFilter } from './protocol';
 
@@ -42,7 +43,10 @@ async function loadNostrWasm(): Promise<void> {
 
   try {
     // Fetch wasm from public directory (not base64 inlined)
-    const response = fetch(`${import.meta.env.BASE_URL}secp256k1.wasm`);
+    const response = fetch(resolveWorkerPublicAssetUrl(import.meta.env.BASE_URL, 'secp256k1.wasm', {
+      importMetaUrl: import.meta.url,
+      origin: self.location.origin,
+    }));
     wasmVerifier = await NostrWasm(response);
     console.log('[Worker NDK] nostr-wasm loaded from wasm file');
   } catch (err) {

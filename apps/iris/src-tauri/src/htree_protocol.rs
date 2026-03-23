@@ -10,6 +10,7 @@
 //! 3. Host-based npub: htree://npub1xyz.treename/path
 //! 4. Legacy path-based: htree:///htree/nhash1.../path
 
+use hashtree_core::nhash_decode;
 use once_cell::sync::OnceCell;
 use tracing::{debug, error, info};
 
@@ -282,26 +283,58 @@ pub fn cache_tree_root(
     hash: String,
     key: Option<String>,
     visibility: Option<String>,
+    nhash: Option<String>,
 ) -> Result<(), String> {
     // Forward to daemon's cache if available
     let port = DAEMON_PORT.get().copied().unwrap_or(21417);
     let url = format!("http://127.0.0.1:{}/api/cache-tree-root", port);
+    let (resolved_hash, resolved_key) = resolve_cached_tree_root_fields(hash, key, nhash)?;
 
     // Fire and forget - best effort cache update
     let body = serde_json::json!({
         "npub": npub,
         "treeName": tree_name,
-        "hash": hash,
-        "key": key,
+        "hash": resolved_hash,
+        "key": resolved_key,
         "visibility": visibility.unwrap_or_else(|| "public".to_string()),
     });
 
-    std::thread::spawn(move || {
-        let client = reqwest::blocking::Client::new();
-        let _ = client.post(&url).json(&body).send();
-    });
+    let response = reqwest::blocking::Client::new()
+        .post(&url)
+        .json(&body)
+        .send()
+        .map_err(|error| format!("Failed to cache tree root: {}", error))?;
+
+    if !response.status().is_success() {
+        let body = response
+            .text()
+            .unwrap_or_else(|_| "unknown error".to_string());
+        return Err(format!("Failed to cache tree root: {}", body));
+    }
 
     Ok(())
+}
+
+fn resolve_cached_tree_root_fields(
+    hash: String,
+    key: Option<String>,
+    nhash: Option<String>,
+) -> Result<(String, Option<String>), String> {
+    let Some(nhash) = nhash.filter(|value| !value.is_empty()) else {
+        return Ok((hash, key));
+    };
+
+    let decoded = nhash_decode(&nhash).map_err(|error| format!("Invalid nhash: {}", error))?;
+    let decoded_hash = hex::encode(decoded.hash);
+    if hash != decoded_hash {
+        return Err(format!(
+            "Hash does not match nhash: {} != {}",
+            hash, decoded_hash
+        ));
+    }
+
+    let decoded_key = decoded.decrypt_key.map(hex::encode);
+    Ok((hash, key.or(decoded_key)))
 }
 
 #[cfg(test)]
@@ -372,6 +405,28 @@ mod tests {
         let path = tree_root_index_fallback_path("/", "/nhash1abc123xyz", None)
             .expect("nhash root should fall back to index.html");
         assert_eq!(path, "/nhash1abc123xyz/index.html");
+    }
+
+    #[test]
+    fn resolve_cached_tree_root_fields_decodes_chk_key_from_nhash() {
+        let (hash, key) = resolve_cached_tree_root_fields(
+            "73cc3980d21e54bd449e4ecbf46fdfc6ace55cbcf992e9563cb4cd5e95e13298".to_string(),
+            None,
+            Some(
+                "nhash1qqs88npesrfpu49agj0yajl5dl0udt89tj70nyhf2c7tfn27jhsn9xq9yzuhzfsagjjn3scd47fccddtjzyrzpjkkgnpqjqwu2qzy45uzpaa597t675"
+                    .to_string(),
+            ),
+        )
+        .expect("decode nhash");
+
+        assert_eq!(
+            hash,
+            "73cc3980d21e54bd449e4ecbf46fdfc6ace55cbcf992e9563cb4cd5e95e13298"
+        );
+        assert_eq!(
+            key.as_deref(),
+            Some("b971261d44a538c30daf938c35ab9088310656b22610480ee28022569c107bda")
+        );
     }
 
     #[test]

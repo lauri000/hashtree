@@ -129,6 +129,24 @@ pub struct BlossomConfig {
     pub max_upload_mb: u64,
 }
 
+impl BlossomConfig {
+    pub fn all_read_servers(&self) -> Vec<String> {
+        let mut servers = self.servers.clone();
+        servers.extend(self.read_servers.clone());
+        servers.sort();
+        servers.dedup();
+        servers
+    }
+
+    pub fn all_write_servers(&self) -> Vec<String> {
+        let mut servers = self.servers.clone();
+        servers.extend(self.write_servers.clone());
+        servers.sort();
+        servers.dedup();
+        servers
+    }
+}
+
 // Keep in sync with hashtree-config/src/lib.rs
 fn default_read_servers() -> Vec<String> {
     vec![
@@ -310,6 +328,7 @@ fn default_relays() -> Vec<String> {
         "wss://relay.snort.social".to_string(),
         "wss://nos.lol".to_string(),
         "wss://temp.iris.to".to_string(),
+        "wss://upload.iris.to/nostr".to_string(),
     ]
 }
 
@@ -612,6 +631,12 @@ mod tests {
         assert_eq!(config.server.bind_address, "127.0.0.1:8080");
         assert!(config.server.enable_auth);
         assert_eq!(config.storage.max_size_gb, 10);
+        assert!(
+            config
+                .nostr
+                .relays
+                .contains(&"wss://upload.iris.to/nostr".to_string())
+        );
         assert_eq!(config.nostr.crawl_depth, 2);
         assert_eq!(config.nostr.max_write_distance, 3);
         assert_eq!(config.nostr.db_max_size_gb, 10);
@@ -727,5 +752,20 @@ chunk_target_bytes = 65536
         assert_eq!(password, p2);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_blossom_read_servers_exclude_write_only_servers() {
+        let mut config = BlossomConfig::default();
+        config.servers = vec!["https://legacy.server".to_string()];
+
+        let read = config.all_read_servers();
+        assert!(read.contains(&"https://legacy.server".to_string()));
+        assert!(read.contains(&"https://cdn.iris.to".to_string()));
+        assert!(!read.contains(&"https://upload.iris.to".to_string()));
+
+        let write = config.all_write_servers();
+        assert!(write.contains(&"https://legacy.server".to_string()));
+        assert!(write.contains(&"https://upload.iris.to".to_string()));
     }
 }

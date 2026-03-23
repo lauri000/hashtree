@@ -337,6 +337,7 @@ async function main() {
         state.currentUrl === defaultFilesUrl ||
         state.currentUrl === `${defaultFilesUrl}/` ||
         state.currentUrl === `${defaultFilesUrl}/index.html` ||
+        state.currentUrl.startsWith('htree://nhash1') ||
         state.currentUrl.includes('/files/') ||
         state.currentUrl.includes('/files/index.html')
       ),

@@ -68,20 +68,42 @@ export async function runPortableSmoke({ distDir, title, appName, screenshotPath
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   const documentResponses = [];
+  const localResponseFailures = [];
   const pageErrors = [];
   const consoleErrors = [];
+  const smokeOrigin = new URL(url).origin;
 
   page.on('response', (response) => {
     if (response.request().resourceType() === 'document') {
       documentResponses.push(response.url());
     }
+    if (response.status() < 400) {
+      return;
+    }
+    let responseUrl;
+    try {
+      responseUrl = new URL(response.url());
+    } catch {
+      return;
+    }
+    if (responseUrl.origin !== smokeOrigin) {
+      return;
+    }
+    if (responseUrl.pathname.startsWith('/htree/')) {
+      return;
+    }
+    localResponseFailures.push(`${response.status()} ${response.request().resourceType()} ${response.url()}`);
   });
   page.on('pageerror', (error) => {
     pageErrors.push(error.stack || error.message);
   });
   page.on('console', (message) => {
     if (message.type() === 'error') {
-      consoleErrors.push(message.text());
+      const text = message.text();
+      if (text === 'Failed to load resource: the server responded with a status of 404 (Not Found)') {
+        return;
+      }
+      consoleErrors.push(text);
     }
   });
 
@@ -101,6 +123,10 @@ export async function runPortableSmoke({ distDir, title, appName, screenshotPath
 
     if (documentResponses.length > 2) {
       throw new Error(`Portable build reloaded unexpectedly (${documentResponses.length} document responses)`);
+    }
+
+    if (localResponseFailures.length > 0) {
+      throw new Error(`Portable build hit local asset failures:\n${localResponseFailures.join('\n')}`);
     }
 
     const headerText = (await page.locator('header').textContent().catch(() => '')).toLowerCase();

@@ -15,9 +15,9 @@ use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl};
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 use std::time::Duration;
+use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl};
 use tauri::{LogicalPosition, LogicalSize, Rect, WebviewBuilder};
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use tauri_plugin_iris_mobile_browser::{
@@ -112,14 +112,24 @@ fn isolated_loopback_scope_label(canonical_root: &str) -> String {
     format!("tree-{}", hex::encode(&digest[..16]))
 }
 
-fn isolated_loopback_server_url(server_url: &str, canonical_root: &str) -> Result<String, String> {
+fn use_origin_isolated_loopback_hosts() -> bool {
+    !cfg!(target_os = "linux")
+}
+
+fn loopback_server_url(
+    server_url: &str,
+    canonical_root: &str,
+    use_origin_isolated_hosts: bool,
+) -> Result<String, String> {
     let mut url = tauri::Url::parse(server_url).map_err(|e| format!("Invalid base URL: {}", e))?;
-    let isolated_host = format!(
-        "{}.htree.localhost",
-        isolated_loopback_scope_label(canonical_root)
-    );
-    url.set_host(Some(&isolated_host))
-        .map_err(|e| format!("Failed to set isolated host: {}", e))?;
+    if use_origin_isolated_hosts {
+        let isolated_host = format!(
+            "{}.htree.localhost",
+            isolated_loopback_scope_label(canonical_root)
+        );
+        url.set_host(Some(&isolated_host))
+            .map_err(|e| format!("Failed to set isolated host: {}", e))?;
+    }
     Ok(url.into())
 }
 
@@ -129,12 +139,16 @@ fn daemon_proxy_url_from_nhash(
     path: &str,
 ) -> Result<String, String> {
     let canonical_root = htree_origin_from_nhash(nhash);
-    let isolated_server_url = isolated_loopback_server_url(server_url, &canonical_root)?;
+    let loopback_server_url = loopback_server_url(
+        server_url,
+        &canonical_root,
+        use_origin_isolated_loopback_hosts(),
+    )?;
     let mut segments = vec!["htree".to_string(), decode_url_component(nhash)];
     let path_segments = decode_path_segments(path);
     let is_tree_root = path_segments.is_empty();
     segments.extend(path_segments);
-    let url = http_url_with_segments(&isolated_server_url, &segments)?;
+    let url = http_url_with_segments(&loopback_server_url, &segments)?;
     if is_tree_root {
         Ok(format!("{}/", url.trim_end_matches('/')))
     } else {
@@ -149,7 +163,11 @@ fn daemon_proxy_url_from_tree_host(
     path: &str,
 ) -> Result<String, String> {
     let canonical_root = htree_origin_from_tree_host(host, treename);
-    let isolated_server_url = isolated_loopback_server_url(server_url, &canonical_root)?;
+    let loopback_server_url = loopback_server_url(
+        server_url,
+        &canonical_root,
+        use_origin_isolated_loopback_hosts(),
+    )?;
     let mut segments = vec![
         "htree".to_string(),
         decode_url_component(host),
@@ -158,7 +176,7 @@ fn daemon_proxy_url_from_tree_host(
     let path_segments = decode_path_segments(path);
     let is_tree_root = path_segments.is_empty();
     segments.extend(path_segments);
-    let url = http_url_with_segments(&isolated_server_url, &segments)?;
+    let url = http_url_with_segments(&loopback_server_url, &segments)?;
     if is_tree_root {
         Ok(format!("{}/", url.trim_end_matches('/')))
     } else {
@@ -631,6 +649,46 @@ pub fn generate_nip07_script(
     }}
   }}
 
+  function formatDebugValue(value) {{
+    if (value instanceof Error) {{
+      return value.stack || `${{value.name}}: ${{value.message}}`;
+    }}
+    if (typeof value === 'string') {{
+      return value;
+    }}
+    try {{
+      return JSON.stringify(value);
+    }} catch (_error) {{
+      return String(value);
+    }}
+  }}
+
+  function getDebugSummary() {{
+    try {{
+      const entries = Array.isArray(window.__HTREE_DEBUG_LOG__) ? window.__HTREE_DEBUG_LOG__ : [];
+      const relevant = entries.filter((entry) => {{
+        const event = entry?.event;
+        return event === 'window:error' ||
+          event === 'window:unhandledrejection' ||
+          event === 'console:error';
+      }});
+      if (relevant.length === 0) return '';
+      const tail = relevant.slice(-3).map((entry) => {{
+        const event = typeof entry?.event === 'string' ? entry.event : 'debug';
+        const data = entry?.data;
+        if (data?.message) return `${{event}} ${{data.message}}`;
+        if (Array.isArray(data?.args) && data.args.length > 0) {{
+          return `${{event}} ${{data.args.join(' ')}}`;
+        }}
+        if (data?.reason) return `${{event}} ${{data.reason}}`;
+        return event;
+      }});
+      return tail.join(' | ').slice(0, 240);
+    }} catch (_error) {{
+      return '';
+    }}
+  }}
+
   function getMediaSummary() {{
     try {{
       const images = Array.from(document.images || []);
@@ -646,13 +704,16 @@ pub fn generate_nip07_script(
       }});
       const videos = Array.from(document.querySelectorAll('video'));
       const readyVideos = videos.filter((video) => video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA);
-      return `thumbs=${{loadedThumbImages.length}}/${{thumbImages.length}} visible=${{visibleLoadedThumbImages.length}} videos=${{readyVideos.length}}/${{videos.length}}`;
+      const appChildren = document.getElementById('app')?.childElementCount ?? 0;
+      const smokeEnabled = new URLSearchParams(window.location.search).get('smoke') === '1' ? 1 : 0;
+      return `thumbs=${{loadedThumbImages.length}}/${{thumbImages.length}} visible=${{visibleLoadedThumbImages.length}} videos=${{readyVideos.length}}/${{videos.length}} app=${{appChildren}} smoke=${{smokeEnabled}}`;
     }} catch (_error) {{
       return '';
     }}
   }}
 
   function notifyDiagnostic(phase, errorMessage) {{
+    const debugSummary = getDebugSummary();
     postWebviewEvent({{
       kind: 'diagnostic',
       label: WEBVIEW_LABEL,
@@ -663,7 +724,7 @@ pub fn generate_nip07_script(
       readyState: document.readyState || '',
       bodyText: getBodyTextPreview(),
       mediaSummary: getMediaSummary(),
-      error: errorMessage || null
+      error: errorMessage || debugSummary || null
     }});
   }}
 
@@ -716,8 +777,19 @@ pub fn generate_nip07_script(
     }}
   }}, true);
   document.addEventListener('error', (event) => {{
-    if (event.target instanceof HTMLImageElement || event.target instanceof HTMLVideoElement) {{
-      queueDiagnostic('resource-error', `${{event.target.tagName.toLowerCase()}} failed to load`);
+    if (
+      event.target instanceof HTMLImageElement ||
+      event.target instanceof HTMLVideoElement ||
+      event.target instanceof HTMLScriptElement ||
+      event.target instanceof HTMLLinkElement
+    ) {{
+      const targetUrl = event.target instanceof HTMLImageElement || event.target instanceof HTMLVideoElement
+        ? (event.target.currentSrc || event.target.src || '')
+        : event.target instanceof HTMLScriptElement
+          ? (event.target.src || '')
+          : (event.target.href || '');
+      const suffix = targetUrl ? `: ${{targetUrl}}` : '';
+      queueDiagnostic('resource-error', `${{event.target.tagName.toLowerCase()}} failed to load${{suffix}}`);
     }}
   }}, true);
   document.addEventListener('loadeddata', (event) => {{
@@ -741,6 +813,13 @@ pub fn generate_nip07_script(
         : JSON.stringify(reason);
     notifyDiagnostic('unhandledrejection', message);
   }});
+  const originalConsoleError = console.error?.bind(console);
+  if (originalConsoleError) {{
+    console.error = (...args) => {{
+      queueDiagnostic('console-error', args.map(formatDebugValue).join(' ').slice(0, 240));
+      originalConsoleError(...args);
+    }};
+  }}
   queueMicrotask(() => {{
     updateCanonicalLocation();
     notifyLocation('init');
@@ -824,7 +903,9 @@ function getMediaSummary() {
     });
     const videos = Array.from(document.querySelectorAll('video'));
     const readyVideos = videos.filter((video) => video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA);
-    return `thumbs=${loadedThumbImages.length}/${thumbImages.length} visible=${visibleLoadedThumbImages.length} videos=${readyVideos.length}/${videos.length}`;
+    const appChildren = document.getElementById('app')?.childElementCount ?? 0;
+    const smokeEnabled = new URLSearchParams(window.location.search).get('smoke') === '1' ? 1 : 0;
+    return `thumbs=${loadedThumbImages.length}/${thumbImages.length} visible=${visibleLoadedThumbImages.length} videos=${readyVideos.length}/${videos.length} app=${appChildren} smoke=${smokeEnabled}`;
   } catch (_error) {
     return '';
   }
@@ -891,6 +972,31 @@ pub fn generate_webview_diagnostic_probe_script(
   }}
 
   {body_text_preview}
+  function getDebugSummary() {{
+    try {{
+      const entries = Array.isArray(window.__HTREE_DEBUG_LOG__) ? window.__HTREE_DEBUG_LOG__ : [];
+      const relevant = entries.filter((entry) => {{
+        const event = entry?.event;
+        return event === 'window:error' ||
+          event === 'window:unhandledrejection' ||
+          event === 'console:error';
+      }});
+      if (relevant.length === 0) return '';
+      const tail = relevant.slice(-3).map((entry) => {{
+        const event = typeof entry?.event === 'string' ? entry.event : 'debug';
+        const data = entry?.data;
+        if (data?.message) return `${{event}} ${{data.message}}`;
+        if (Array.isArray(data?.args) && data.args.length > 0) {{
+          return `${{event}} ${{data.args.join(' ')}}`;
+        }}
+        if (data?.reason) return `${{event}} ${{data.reason}}`;
+        return event;
+      }});
+      return tail.join(' | ').slice(0, 240);
+    }} catch (_error) {{
+      return '';
+    }}
+  }}
   {media_summary}
 
   const payload = {{
@@ -903,7 +1009,7 @@ pub fn generate_webview_diagnostic_probe_script(
     readyState: document.readyState || '',
     bodyText: getBodyTextPreview(),
     mediaSummary: getMediaSummary(),
-    error: null
+    error: getDebugSummary() || null
   }};
 
   fetch(WEBVIEW_ENDPOINT, {{
@@ -1387,13 +1493,28 @@ pub async fn create_htree_webview<R: Runtime>(
     let (canonical_url, actual_url, origin, canonical_url_root, actual_url_root) =
         if let Some(nhash) = &nhash {
             let request_host = host.as_deref().unwrap_or(nhash);
-            let canonical_url =
-                append_query(htree_url_from_nhash(request_host, &path), query.as_deref());
-            let canonical_root = htree_url_from_nhash(request_host, "/")
-                .trim_end_matches('/')
-                .to_string();
+            let (canonical_url, canonical_root) = if let Some(treename) = &treename {
+                let resolved_host =
+                    resolve_tree_request_host(request_host, crate::htree_protocol::get_self_npub())?;
+                (
+                    append_query(
+                        htree_url_from_tree_host(resolved_host, treename, &path),
+                        query.as_deref(),
+                    ),
+                    htree_url_from_tree_host(resolved_host, treename, "/")
+                        .trim_end_matches('/')
+                        .to_string(),
+                )
+            } else {
+                (
+                    append_query(htree_url_from_nhash(request_host, &path), query.as_deref()),
+                    htree_url_from_nhash(request_host, "/")
+                        .trim_end_matches('/')
+                        .to_string(),
+                )
+            };
             let actual_url = append_query(
-                daemon_proxy_url_from_nhash(&server_url, request_host, &path)?,
+                daemon_proxy_url_from_nhash(&server_url, nhash, &path)?,
                 query.as_deref(),
             );
             let actual_url = append_query_params(
@@ -1403,7 +1524,7 @@ pub async fn create_htree_webview<R: Runtime>(
                     ("iris_htree_canonical", &canonical_url),
                 ],
             )?;
-            let actual_root = daemon_proxy_url_from_nhash(&server_url, request_host, "/")?
+            let actual_root = daemon_proxy_url_from_nhash(&server_url, nhash, "/")?
                 .trim_end_matches('/')
                 .to_string();
             let origin = canonical_root.clone();
@@ -2122,13 +2243,15 @@ mod tests {
             parsed.path(),
             "/htree/npub1example/videos%2FMy%20Clip/index.html"
         );
-        assert!(
-            parsed
-                .host_str()
-                .expect("isolated host")
-                .ends_with(".htree.localhost"),
-            "expected isolated loopback host, got {url}"
-        );
+        let host = parsed.host_str().expect("loopback host");
+        if use_origin_isolated_loopback_hosts() {
+            assert!(
+                host.ends_with(".htree.localhost"),
+                "expected isolated loopback host, got {url}"
+            );
+        } else {
+            assert_eq!(host, "127.0.0.1", "expected plain loopback host, got {url}");
+        }
     }
 
     #[test]
@@ -2149,31 +2272,22 @@ mod tests {
                 .unwrap();
         let parsed = tauri::Url::parse(&url).expect("valid URL");
         assert_eq!(parsed.path(), "/htree/nhash1example/poster.png");
-        assert!(
-            parsed
-                .host_str()
-                .expect("isolated host")
-                .ends_with(".htree.localhost"),
-            "expected isolated loopback host, got {url}"
-        );
+        let host = parsed.host_str().expect("loopback host");
+        if use_origin_isolated_loopback_hosts() {
+            assert!(
+                host.ends_with(".htree.localhost"),
+                "expected isolated loopback host, got {url}"
+            );
+        } else {
+            assert_eq!(host, "127.0.0.1", "expected plain loopback host, got {url}");
+        }
     }
 
     #[test]
-    fn isolated_loopback_hosts_are_stable_per_tree_root() {
-        let first = daemon_proxy_url_from_tree_host(
-            "http://127.0.0.1:21417",
-            "npub1example",
-            "video",
-            "/index.html",
-        )
-        .unwrap();
-        let second = daemon_proxy_url_from_tree_host(
-            "http://127.0.0.1:21417",
-            "npub1example",
-            "video",
-            "/poster.png",
-        )
-        .unwrap();
+    fn origin_isolated_loopback_hosts_are_stable_per_tree_root() {
+        let canonical_root = htree_origin_from_tree_host("npub1example", "video");
+        let first = loopback_server_url("http://127.0.0.1:21417", &canonical_root, true).unwrap();
+        let second = loopback_server_url("http://127.0.0.1:21417", &canonical_root, true).unwrap();
         let first_host = tauri::Url::parse(&first)
             .expect("valid URL")
             .host_str()
@@ -2188,31 +2302,32 @@ mod tests {
     }
 
     #[test]
-    fn isolated_loopback_hosts_differ_across_tree_roots_and_nhashes() {
-        let owner_a = daemon_proxy_url_from_tree_host(
+    fn origin_isolated_loopback_hosts_differ_across_tree_roots_and_nhashes() {
+        let owner_a = loopback_server_url(
             "http://127.0.0.1:21417",
-            "npub1alice",
-            "video",
-            "/index.html",
+            &htree_origin_from_tree_host("npub1alice", "video"),
+            true,
         )
         .unwrap();
-        let owner_b = daemon_proxy_url_from_tree_host(
+        let owner_b = loopback_server_url(
             "http://127.0.0.1:21417",
-            "npub1bob",
-            "video",
-            "/index.html",
+            &htree_origin_from_tree_host("npub1bob", "video"),
+            true,
         )
         .unwrap();
-        let nhash =
-            daemon_proxy_url_from_nhash("http://127.0.0.1:21417", "nhash1example", "/index.html")
-                .unwrap();
+        let nhash = loopback_server_url(
+            "http://127.0.0.1:21417",
+            &htree_origin_from_nhash("nhash1example"),
+            true,
+        )
+        .unwrap();
         let owner_a_host = tauri::Url::parse(&owner_a)
-            .expect("valid owner A URL")
+            .expect("valid URL")
             .host_str()
             .expect("owner A host")
             .to_string();
         let owner_b_host = tauri::Url::parse(&owner_b)
-            .expect("valid owner B URL")
+            .expect("valid URL")
             .host_str()
             .expect("owner B host")
             .to_string();
@@ -2231,6 +2346,26 @@ mod tests {
         let url = canonicalize_child_webview_url(
             "http://tree-deadbeef.htree.localhost:21417/htree/npub1example/video/index.html?smoke=1&iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Fvideo%2Findex.html%3Fsmoke%3D1#/feed",
             "http://tree-deadbeef.htree.localhost:21417/htree/npub1example/video",
+            "htree://npub1example/video",
+        );
+        assert_eq!(url, "htree://npub1example/video/index.html?smoke=1#/feed");
+    }
+
+    #[test]
+    fn canonicalized_child_urls_map_back_from_plain_loopback_transport() {
+        let url = canonicalize_child_webview_url(
+            "http://127.0.0.1:21417/htree/npub1example/video/index.html?smoke=1&iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Fvideo%2Findex.html%3Fsmoke%3D1#/feed",
+            "http://127.0.0.1:21417/htree/npub1example/video",
+            "htree://npub1example/video",
+        );
+        assert_eq!(url, "htree://npub1example/video/index.html?smoke=1#/feed");
+    }
+
+    #[test]
+    fn canonicalized_child_urls_map_nhash_transport_back_to_tree_host_identity() {
+        let url = canonicalize_child_webview_url(
+            "http://127.0.0.1:21417/htree/nhash1example/index.html?smoke=1&iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Fvideo%2Findex.html%3Fsmoke%3D1#/feed",
+            "http://127.0.0.1:21417/htree/nhash1example",
             "htree://npub1example/video",
         );
         assert_eq!(url, "htree://npub1example/video/index.html?smoke=1#/feed");
