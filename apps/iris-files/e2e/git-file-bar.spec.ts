@@ -93,6 +93,31 @@ test.describe('Git file bar', () => {
     await expect(gitBar.getByText(/\d+\s+(second|minute|hour|day|week|month|year)s?\s+ago/i)).toBeVisible();
   });
 
+  test('does not render the file browser sidebar on repository pages', async ({ page }) => {
+    test.slow();
+
+    const { repoName, npub } = await uploadGitRepo(page);
+
+    await page.goto(`/git.html#/${npub}/public/${repoName}?g=${encodeURIComponent(repoName)}`);
+    await waitForAppReady(page);
+
+    const sidebarFileBrowser = page.locator('[data-testid="file-list"][aria-label="File list"]');
+    await expect(sidebarFileBrowser).toHaveCount(0);
+
+    const repoFileList = page.locator('[data-testid="file-list"]').last();
+    const readmeCell = repoFileList.locator('tbody tr td:nth-child(2)').filter({ hasText: README_NAME }).first();
+    await expect(readmeCell).toBeVisible({ timeout: 30000 });
+    await readmeCell.click();
+    await page.waitForFunction(
+      (name) => window.location.hash.includes(encodeURIComponent(name)),
+      README_NAME,
+      { timeout: 15000 }
+    );
+
+    await expect(sidebarFileBrowser).toHaveCount(0);
+    await expect(page.locator('[data-testid="viewer-header"]')).toBeVisible({ timeout: 30000 });
+  });
+
   test('clicking history opens git history modal', async ({ page }) => {
     test.slow();
 

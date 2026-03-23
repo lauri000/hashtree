@@ -8,7 +8,6 @@
   import { routeStore, treeRootStore, createTreesStore, currentDirCidStore } from '../../stores';
   import { nostrStore } from '../../nostr';
   import { navigate } from '../../lib/router.svelte';
-  import FileBrowser from '../FileBrowser.svelte';
   import ViewerHeader from '../Viewer/ViewerHeader.svelte';
   import RepoTabNav from './RepoTabNav.svelte';
 
@@ -139,11 +138,6 @@
     navigate(`/${npub}/${repoName}?merge=1&base=${baseBranch}&head=${headBranch}${linkKeySuffix}`);
   }
 </script>
-
-<!-- File browser on left - hidden on mobile -->
-<div class="hidden lg:flex lg:w-80 shrink-0 lg:border-r border-surface-3 flex-col min-h-0">
-  <FileBrowser />
-</div>
 
 <!-- Right panel with diff details - shown on mobile -->
 <div class="flex flex-1 flex-col min-w-0 min-h-0 bg-surface-0">

@@ -18,7 +18,6 @@
   import ItemStatusBadge from './ItemStatusBadge.svelte';
   import RepoTabNav from './RepoTabNav.svelte';
   import AuthorName from './AuthorName.svelte';
-  import FileBrowser from '../FileBrowser.svelte';
   import { ndk } from '../../nostr';
   import { currentDirCidStore, routeStore } from '../../stores';
   import { diffBranches } from '../../utils/git';
@@ -224,11 +223,6 @@
     navigate(`/${npub}/${repoName}?merge=1&base=${pr.targetBranch}&head=${pr.branch}${prParams}${linkKeySuffix}`);
   }
 </script>
-
-<!-- File browser on left - hidden on mobile since we're showing PR detail -->
-<div class="hidden lg:flex lg:w-80 shrink-0 lg:border-r border-surface-3 flex-col min-h-0">
-  <FileBrowser />
-</div>
 
 <!-- Right panel with PR detail - shown on mobile -->
 <div class="flex flex-1 flex-col min-w-0 min-h-0 bg-surface-0">

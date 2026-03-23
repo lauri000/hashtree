@@ -9,7 +9,6 @@
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { open as openReleaseModal } from './ReleaseModal.svelte';
   import RepoTabNav from './RepoTabNav.svelte';
-  import FileBrowser from '../FileBrowser.svelte';
   import ViewerHeader from '../Viewer/ViewerHeader.svelte';
 
   interface Props {
@@ -107,11 +106,6 @@
     return date.toLocaleDateString();
   }
 </script>
-
-<!-- File browser on left - hidden on mobile since we're showing releases content -->
-<div class="hidden lg:flex lg:w-80 shrink-0 lg:border-r border-surface-3 flex-col min-h-0">
-  <FileBrowser />
-</div>
 
 <!-- Right panel with releases - shown on mobile -->
 <div class="flex flex-1 flex-col min-w-0 min-h-0 bg-surface-0">

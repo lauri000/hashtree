@@ -4,13 +4,14 @@
   import Viewer from '../components/Viewer/Viewer.svelte';
   import StreamView from '../components/stream/StreamView.svelte';
   import { nostrStore } from '../nostr';
-  import { routeStore, addRecent, isViewingFileStore, currentHash, directoryEntriesStore } from '../stores';
+  import { routeStore, addRecent, isViewingFileStore, currentHash, directoryEntriesStore, currentDirCidStore, treeRootStore } from '../stores';
   import { LinkType } from '@hashtree/core';
   import { updateRecentVisibility } from '../stores/recents';
   import { nip19 } from 'nostr-tools';
   import { getQueryParamsFromHash } from '../lib/router.svelte';
   import { supportsDocumentFeatures, supportsGitFeatures } from '../appType';
   import { treeRootRegistry } from '../TreeRootRegistry';
+  import { findNearestGitRootPath } from '../utils/gitRoot';
 
   interface Props {
     npub?: string;
@@ -23,6 +24,8 @@
   // Use derived from routeStore for reactivity
   let route = $derived($routeStore);
   let hash = $derived($currentHash);
+  let rootCid = $derived($treeRootStore);
+  let currentDirCid = $derived($currentDirCidStore);
 
   // Check if fullscreen mode from URL
   let isFullscreen = $derived.by(() => {
@@ -40,20 +43,53 @@
   let isStreaming = $derived(route.params.get('stream') === '1' && isOwnTree);
   // Check if a file is selected (actual check from hashtree, not heuristic)
   let isViewingFile = $derived($isViewingFileStore);
+  let routeContentPath = $derived(isViewingFile ? route.path.slice(0, -1) : route.path);
 
   // Check if current directory is a git repo (quick check via .git dir for immediate UI)
   let dirEntries = $derived($directoryEntriesStore);
   let isGitRepo = $derived(supportsGitFeatures() && dirEntries.entries.some(e => e.name === '.git' && e.type === LinkType.Dir));
+  let gitRootFromUrl = $derived(route.params.get('g'));
+  let detectedGitRootPath = $state<string | null>(null);
+  let isInGitRepo = $derived(
+    supportsGitFeatures() && (isGitRepo || gitRootFromUrl !== null || detectedGitRootPath !== null)
+  );
 
   // Check if current directory is a Yjs document (contains .yjs file)
   let isYjsDocument = $derived(supportsDocumentFeatures() && dirEntries.entries.some(e => e.name === '.yjs' && e.type !== LinkType.Dir));
 
   // On mobile, show viewer for git repos, Yjs docs, or when file/stream selected
-  let hasFileSelected = $derived(isViewingFile || isStreaming || isGitRepo || isYjsDocument);
+  let hasFileSelected = $derived(isViewingFile || isStreaming || isInGitRepo || isYjsDocument);
 
   // Show stream view if streaming and logged in
   let isLoggedIn = $derived($nostrStore.isLoggedIn);
   let showStreamView = $derived(isStreaming && isLoggedIn);
+
+  $effect(() => {
+    const enabled = supportsGitFeatures();
+    const treeCid = rootCid;
+    const currentDir = currentDirCid;
+    const path = routeContentPath;
+    const explicitGitRoot = gitRootFromUrl;
+    const currentHasGitDir = isGitRepo;
+
+    if (!enabled || !treeCid || !currentDir || explicitGitRoot !== null || currentHasGitDir) {
+      detectedGitRootPath = null;
+      return;
+    }
+
+    let cancelled = false;
+    findNearestGitRootPath(treeCid, path).then((gitRootPath) => {
+      if (!cancelled) {
+        detectedGitRootPath = gitRootPath;
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        detectedGitRootPath = null;
+      }
+    });
+
+    return () => { cancelled = true; };
+  });
 
   // Use $effect to run when npub or treeName props change (not just on mount)
   // This is needed because the Router uses conditionals, not {#key}, so the component
@@ -220,7 +256,7 @@
 </script>
 
 <!-- File browser - hidden on mobile when file/stream selected, hidden completely in fullscreen -->
-{#if !isFullscreen}
+{#if !isFullscreen && !isInGitRepo}
   <div class={hasFileSelected
     ? 'hidden lg:flex lg:w-80 shrink-0 flex-col min-h-0'
     : 'flex flex-1 lg:flex-none lg:w-80 shrink-0 flex-col min-h-0'}>
@@ -228,7 +264,7 @@
   </div>
 {/if}
 <!-- Right panel (Viewer or StreamView) - shown on mobile when file/stream selected -->
-<div class={hasFileSelected || isFullscreen
+<div class={hasFileSelected || isFullscreen || isInGitRepo
   ? 'flex flex-1 flex-col min-w-0 min-h-0'
   : 'hidden lg:flex flex-1 flex-col min-w-0 min-h-0'}>
   {#if showStreamView}
