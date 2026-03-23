@@ -6,18 +6,47 @@ describe('release-site', () => {
     const parsed = parseArgs(['files']);
     expect(parsed.workerName).toBe('iris-files');
     expect(parsed.treeName).toBe('files');
+    expect(parsed.routes).toEqual([]);
+    expect(parsed.domains).toEqual([]);
   });
 
   it('uses the built-in Worker default for git', () => {
     const parsed = parseArgs(['git']);
     expect(parsed.workerName).toBe('iris-git');
     expect(parsed.treeName).toBe('git');
+    expect(parsed.routes).toEqual([]);
+    expect(parsed.domains).toEqual([]);
   });
 
-  it('uses the profile-specific Worker env var by default', () => {
-    const parsed = parseArgs(['video'], { CF_WORKER_NAME_VIDEO: 'iris-video' });
-    expect(parsed.workerName).toBe('iris-video');
+  it('uses the built-in Worker defaults for video, docs, and maps', () => {
+    const video = parseArgs(['video']);
+    const docs = parseArgs(['docs']);
+    const maps = parseArgs(['maps']);
+
+    expect(video.workerName).toBe('iris-video');
+    expect(video.routes).toEqual(['video.iris.to/*']);
+    expect(video.domains).toEqual([]);
+    expect(docs.workerName).toBe('iris-docs');
+    expect(docs.routes).toEqual(['docs.iris.to/*']);
+    expect(docs.domains).toEqual([]);
+    expect(maps.workerName).toBe('iris-maps');
+    expect(maps.routes).toEqual(['maps.iris.to/*']);
+    expect(maps.domains).toEqual([]);
+  });
+
+  it('uses the built-in Worker default and custom domain for boards', () => {
+    const parsed = parseArgs(['boards']);
+    expect(parsed.workerName).toBe('iris-boards');
+    expect(parsed.routes).toEqual([]);
+    expect(parsed.domains).toEqual(['boards.iris.to']);
+  });
+
+  it('uses the profile-specific Worker env var without production routes or domains', () => {
+    const parsed = parseArgs(['video'], { CF_WORKER_NAME_VIDEO: 'iris-video-preview' });
+    expect(parsed.workerName).toBe('iris-video-preview');
     expect(parsed.treeName).toBe('video');
+    expect(parsed.routes).toEqual([]);
+    expect(parsed.domains).toEqual([]);
   });
 
   it('lets an explicit Worker env var override the built-in files default', () => {
@@ -25,10 +54,12 @@ describe('release-site', () => {
     expect(parsed.workerName).toBe('iris-files-staging');
   });
 
-  it('falls back to the profile-specific Pages project env var when no Worker is configured', () => {
-    const parsed = parseArgs(['video'], { CF_PAGES_PROJECT_VIDEO: 'video-iris-to' });
+  it('supports explicitly switching a profile back to Pages', () => {
+    const parsed = parseArgs(['video', '--pages-only'], { CF_PAGES_PROJECT_VIDEO: 'video-iris-to' });
     expect(parsed.workerName).toBeUndefined();
     expect(parsed.pagesProject).toBe('video-iris-to');
+    expect(parsed.routes).toEqual([]);
+    expect(parsed.domains).toEqual([]);
   });
 
   it('supports the all profile without per-site overrides', () => {
@@ -74,6 +105,60 @@ describe('release-site', () => {
     expect(git.profile.distDir).toBe('iris-git');
     expect(maps.profile.distDir).toBe('dist-maps');
     expect(boards.profile.distDir).toBe('dist-boards');
+  });
+
+  it('adds the built-in production route for the video Worker release', () => {
+    const plan = createReleasePlan({
+      profileName: 'video',
+      workerName: 'iris-video',
+      routes: ['video.iris.to/*'],
+      domains: [],
+      treeName: 'video',
+      skipCloudflare: false,
+      workerCompatibilityDate: '2026-03-19',
+    });
+
+    expect(plan.steps.at(-1)?.command).toEqual([
+      'npx',
+      'wrangler@4',
+      'deploy',
+      '--assets',
+      'dist-video',
+      '--name',
+      'iris-video',
+      '--compatibility-date',
+      '2026-03-19',
+      '--keep-vars',
+      '--route',
+      'video.iris.to/*',
+    ]);
+  });
+
+  it('adds the built-in production custom domain for the boards Worker release', () => {
+    const plan = createReleasePlan({
+      profileName: 'boards',
+      workerName: 'iris-boards',
+      routes: [],
+      domains: ['boards.iris.to'],
+      treeName: 'boards',
+      skipCloudflare: false,
+      workerCompatibilityDate: '2026-03-19',
+    });
+
+    expect(plan.steps.at(-1)?.command).toEqual([
+      'npx',
+      'wrangler@4',
+      'deploy',
+      '--assets',
+      'dist-boards',
+      '--name',
+      'iris-boards',
+      '--compatibility-date',
+      '2026-03-19',
+      '--keep-vars',
+      '--domain',
+      'boards.iris.to',
+    ]);
   });
 
   it('builds a Worker release plan in build-test-publish-deploy order', () => {

@@ -73,15 +73,22 @@ npx wrangler deploy --assets ./dist --name iris-files --compatibility-date 2026-
 ```
 
 - Create or reuse one Worker static-assets service per site, for example `iris-files`.
-- Attach the desired custom domain to that Worker service in Cloudflare.
+- The built-in defaults are:
+  - `files` -> Worker `iris-files`
+  - `git` -> Worker `iris-git`
+  - `video` -> Worker `iris-video`, route `video.iris.to/*`
+  - `docs` -> Worker `iris-docs`, route `docs.iris.to/*`
+  - `maps` -> Worker `iris-maps`, route `maps.iris.to/*`
+  - `boards` -> Worker `iris-boards`, custom domain `boards.iris.to`
 - Authenticate Wrangler either with `wrangler login` or with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
 - `pnpm run release:iris -- files` defaults to the `iris-files` Worker service.
 - `pnpm run release:git:iris` publishes to the `git` hashtree tree and deploys the `iris-git` Worker service by default.
-- Set `CF_WORKER_NAME_*` environment variables only for profiles that do not have a built-in Worker target, or when you want to override the default.
+- Set `CF_WORKER_NAME_*` environment variables only when you want to override the default Worker target. Production routes/domains are only auto-attached when using the built-in Worker name.
 - Optionally set `CF_WORKER_COMPATIBILITY_DATE` if you do not want to use the script default.
 
 Cloudflare Pages fallback:
 
+- If you need Pages for a profile with a built-in Worker target, pass `--pages-only` together with `--pages-project` (or set `CF_PAGES_PROJECT_*`).
 - If a profile does not have a Worker service yet, you can still set `CF_PAGES_PROJECT_*` instead.
 - When both `CF_WORKER_NAME_*` and `CF_PAGES_PROJECT_*` are set for the same profile, the release script deploys to the Worker service.
 

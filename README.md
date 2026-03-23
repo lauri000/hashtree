@@ -8,6 +8,7 @@ Content-addressed filesystem on Nostr. Merkle roots can be published to get muta
 - `rust/` - Rust CLI/daemon, git remote helper, and crates. See [`rust/README.md`](rust/README.md).
 - `apps/` - Applications (web + desktop)
   - `iris-files/` - Iris Files app (Tauri desktop + web). See [`apps/iris-files/README.md`](apps/iris-files/README.md).
+  - `hashtree-cc/` - hashtree.cc landing page and file sharing app. See [`apps/hashtree-cc/README.md`](apps/hashtree-cc/README.md).
 
 ## Design highlights
 
@@ -58,6 +59,12 @@ The GitHub quick-install line above is kept until the first `hashtree-releases/l
 
 - Web app + JS SDK: follow [`ts/README.md`](ts/README.md)
 - CLI + daemon + git remote: follow [`rust/README.md`](rust/README.md)
+
+## Site Releases
+
+- Release all Cloudflare/hashtree static sites with `node ./scripts/release-sites.mjs`
+- Release only the Iris sites with `node ./apps/iris-files/scripts/release-site.mjs all`
+- Release only hashtree.cc with `node ./apps/hashtree-cc/scripts/release-site.mjs`
 
 ## Mobile FFI (optional)
 
