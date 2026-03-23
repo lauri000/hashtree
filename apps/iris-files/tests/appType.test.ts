@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  shouldOpenSourceCodeLinkInNewTab,
   setAppType,
+  shouldShowGenericFileBrowser,
   supportsDocumentFeatures,
   supportsGitFeatures,
 } from '../src/appType';
@@ -26,5 +28,21 @@ describe('app capabilities', () => {
     setAppType('git');
     expect(supportsDocumentFeatures()).toBe(false);
     expect(supportsGitFeatures()).toBe(true);
+  });
+
+  it('hides the generic file browser and keeps source links in-tab for git', () => {
+    setAppType('git');
+    expect(shouldShowGenericFileBrowser()).toBe(false);
+    expect(shouldOpenSourceCodeLinkInNewTab()).toBe(false);
+  });
+
+  it('keeps the generic file browser and external source links for non-git apps', () => {
+    setAppType('files');
+    expect(shouldShowGenericFileBrowser()).toBe(true);
+    expect(shouldOpenSourceCodeLinkInNewTab()).toBe(true);
+
+    setAppType('docs');
+    expect(shouldShowGenericFileBrowser()).toBe(true);
+    expect(shouldOpenSourceCodeLinkInNewTab()).toBe(true);
   });
 });

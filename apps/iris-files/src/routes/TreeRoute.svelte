@@ -9,7 +9,7 @@
   import { updateRecentVisibility } from '../stores/recents';
   import { nip19 } from 'nostr-tools';
   import { getQueryParamsFromHash } from '../lib/router.svelte';
-  import { supportsDocumentFeatures, supportsGitFeatures } from '../appType';
+  import { shouldShowGenericFileBrowser, supportsDocumentFeatures, supportsGitFeatures } from '../appType';
   import { treeRootRegistry } from '../TreeRootRegistry';
   import { findNearestGitRootPath } from '../utils/gitRoot';
 
@@ -20,6 +20,7 @@
   }
 
   let { npub, treeName }: Props = $props();
+  const showGenericFileBrowser = shouldShowGenericFileBrowser();
 
   // Use derived from routeStore for reactivity
   let route = $derived($routeStore);
@@ -59,6 +60,9 @@
 
   // On mobile, show viewer for git repos, Yjs docs, or when file/stream selected
   let hasFileSelected = $derived(isViewingFile || isStreaming || isInGitRepo || isYjsDocument);
+  let showViewerPane = $derived(
+    hasFileSelected || isFullscreen || isInGitRepo || !showGenericFileBrowser
+  );
 
   // Show stream view if streaming and logged in
   let isLoggedIn = $derived($nostrStore.isLoggedIn);
@@ -255,8 +259,8 @@
   });
 </script>
 
-<!-- File browser - hidden on mobile when file/stream selected, hidden completely in fullscreen -->
-{#if !isFullscreen && !isInGitRepo}
+<!-- File browser - git app uses repo/content views without the generic sidebar -->
+{#if showGenericFileBrowser && !isFullscreen && !isInGitRepo}
   <div class={hasFileSelected
     ? 'hidden lg:flex lg:w-80 shrink-0 flex-col min-h-0'
     : 'flex flex-1 lg:flex-none lg:w-80 shrink-0 flex-col min-h-0'}>
@@ -264,7 +268,7 @@
   </div>
 {/if}
 <!-- Right panel (Viewer or StreamView) - shown on mobile when file/stream selected -->
-<div class={hasFileSelected || isFullscreen || isInGitRepo
+<div class={showViewerPane
   ? 'flex flex-1 flex-col min-w-0 min-h-0'
   : 'hidden lg:flex flex-1 flex-col min-w-0 min-h-0'}>
   {#if showStreamView}

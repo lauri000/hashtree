@@ -9,10 +9,14 @@
   import { socialGraphStore, getGraphSize, getFollows } from '../utils/socialGraph';
   import { settingsStore, DEFAULT_NETWORK_SETTINGS, DEFAULT_IMGPROXY_SETTINGS, DEFAULT_STORAGE_SETTINGS } from '../stores/settings';
   import { blossomLogStore } from '../stores/blossomLog';
+  import { shouldOpenSourceCodeLinkInNewTab } from '../appType';
   import { BackButton } from './ui';
   import { UserRow } from './User';
   // Worker backend info
   let workerBackend = 'Web Worker';
+  const openSourceCodeInNewTab = shouldOpenSourceCodeLinkInNewTab();
+  const sourceCodeLinkTarget = openSourceCodeInNewTab ? '_blank' : '_self';
+  const sourceCodeLinkRel = openSourceCodeInNewTab ? 'noopener noreferrer' : undefined;
 
   // Check if user is logged in with nsec (can copy secret key)
   let nsec = $derived(getNsec());
@@ -1096,8 +1100,8 @@
         </div>
         <a
           href="https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree"
-          target="_blank"
-          rel="noopener noreferrer"
+          target={sourceCodeLinkTarget}
+          rel={sourceCodeLinkRel}
           class="btn-ghost w-full flex items-center justify-center gap-2 no-underline"
         >
           <span class="i-lucide-code text-sm"></span>

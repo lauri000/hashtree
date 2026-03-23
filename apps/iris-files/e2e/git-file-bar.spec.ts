@@ -8,6 +8,7 @@ import { execSync } from 'child_process';
 const SUBDIR_NAME = 'subdir';
 const SUBFILE_NAME = 'file.txt';
 const README_NAME = 'README.md';
+const GENERIC_SIDEBAR_SELECTOR = '[data-testid="file-list"][aria-label="File list"]';
 
 async function createTempGitRepo(): Promise<string> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'git-file-bar-'));
@@ -65,10 +66,39 @@ async function uploadGitRepo(page: Page): Promise<{ repoName: string; npub: stri
     await uploadFilesWithPaths(filesWithPaths);
   }, { repoName, files });
 
-  const repoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: repoName }).first();
-  await expect(repoLink).toBeVisible({ timeout: 30000 });
+  await page.waitForTimeout(250);
 
   return { repoName, npub };
+}
+
+async function installSidebarFlashTracker(page: Page): Promise<void> {
+  await page.addInitScript((selector: string) => {
+    (window as { __sidebarFlashSeen?: boolean }).__sidebarFlashSeen = false;
+
+    const markIfSidebarVisible = () => {
+      if (document.querySelector(selector)) {
+        (window as { __sidebarFlashSeen?: boolean }).__sidebarFlashSeen = true;
+      }
+    };
+
+    const startTracking = () => {
+      markIfSidebarVisible();
+      const observer = new MutationObserver(() => {
+        markIfSidebarVisible();
+      });
+      observer.observe(document.documentElement, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+      });
+    };
+
+    if (document.documentElement) {
+      startTracking();
+    } else {
+      document.addEventListener('DOMContentLoaded', startTracking, { once: true });
+    }
+  }, GENERIC_SIDEBAR_SELECTOR);
 }
 
 test.describe('Git file bar', () => {
@@ -101,7 +131,7 @@ test.describe('Git file bar', () => {
     await page.goto(`/git.html#/${npub}/public/${repoName}?g=${encodeURIComponent(repoName)}`);
     await waitForAppReady(page);
 
-    const sidebarFileBrowser = page.locator('[data-testid="file-list"][aria-label="File list"]');
+    const sidebarFileBrowser = page.locator(GENERIC_SIDEBAR_SELECTOR);
     await expect(sidebarFileBrowser).toHaveCount(0);
 
     const repoFileList = page.locator('[data-testid="file-list"]').last();
@@ -116,6 +146,25 @@ test.describe('Git file bar', () => {
 
     await expect(sidebarFileBrowser).toHaveCount(0);
     await expect(page.locator('[data-testid="viewer-header"]')).toBeVisible({ timeout: 30000 });
+  });
+
+  test('direct repository links never flash the generic file browser sidebar', async ({ page }) => {
+    test.slow();
+
+    const { repoName, npub } = await uploadGitRepo(page);
+    await installSidebarFlashTracker(page);
+
+    await page.goto(`/git.html#/${npub}/public/${repoName}`);
+    await waitForAppReady(page);
+
+    await expect(page.getByRole('button', { name: /commits/i })).toBeVisible({ timeout: 60000 });
+    await expect(page.locator(GENERIC_SIDEBAR_SELECTOR)).toHaveCount(0);
+    await page.waitForTimeout(250);
+
+    const sidebarFlashed = await page.evaluate(() => {
+      return (window as { __sidebarFlashSeen?: boolean }).__sidebarFlashSeen === true;
+    });
+    expect(sidebarFlashed).toBe(false);
   });
 
   test('clicking history opens git history modal', async ({ page }) => {

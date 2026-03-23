@@ -11,6 +11,8 @@ import {
   waitForRelayConnected,
 } from './test-utils.js';
 
+const SOURCE_CODE_URL = 'https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree';
+
 async function createTopLevelRepository(page: import('@playwright/test').Page, repoName: string) {
   await page.getByRole('button', { name: /New Repository/ }).first().click();
   await page.getByPlaceholder('Repository name...').fill(repoName);
@@ -88,5 +90,21 @@ test.describe('App flavors', () => {
     await expect(page.getByRole('link', { name: new RegExp(plainTreeName) })).not.toBeVisible();
     await expect(page.getByRole('button', { name: 'New Folder' })).not.toBeVisible();
     await expect(page.getByText('Add files to begin')).not.toBeVisible();
+  });
+
+  test('source code link stays in-tab on git and opens a new tab on other flavors', async ({ page }) => {
+    setupPageErrorHandler(page);
+
+    await page.goto('/git.html#/settings/app');
+    await expect(page.getByRole('button', { name: 'App', exact: true })).toBeVisible({ timeout: 10000 });
+    const gitSourceLink = page.locator(`a[href="${SOURCE_CODE_URL}"]`).first();
+    await expect(gitSourceLink).toBeVisible({ timeout: 10000 });
+    await expect(gitSourceLink).not.toHaveAttribute('target', '_blank');
+
+    await page.goto('/#/settings/app');
+    await expect(page.getByRole('button', { name: 'App', exact: true })).toBeVisible({ timeout: 10000 });
+    const filesSourceLink = page.locator(`a[href="${SOURCE_CODE_URL}"]`).first();
+    await expect(filesSourceLink).toBeVisible({ timeout: 10000 });
+    await expect(filesSourceLink).toHaveAttribute('target', '_blank');
   });
 });

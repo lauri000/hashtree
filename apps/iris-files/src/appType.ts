@@ -63,6 +63,14 @@ export function supportsGitFeatures(): boolean {
   return currentAppType === 'git';
 }
 
+export function shouldShowGenericFileBrowser(): boolean {
+  return currentAppType !== 'git';
+}
+
+export function shouldOpenSourceCodeLinkInNewTab(): boolean {
+  return currentAppType !== 'git';
+}
+
 export function getFolderCreationBehavior(): FolderCreationBehavior {
   return currentAppType === 'git'
     ? GIT_FOLDER_CREATION_BEHAVIOR

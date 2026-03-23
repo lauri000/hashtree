@@ -52,8 +52,16 @@
   // Check if we're inside a git repo subdirectory (gitRoot propagated via URL)
   let gitRootFromUrl = $derived(route.params.get('g'));
   let detectedGitRootPath = $state<string | null>(null);
+  let gitRepoDetectionResolved = $state(false);
   let effectiveGitRootPath = $derived(gitRootFromUrl ?? detectedGitRootPath);
   let isInGitRepo = $derived(supportsGitFeatures() && (hasGitDir || effectiveGitRootPath !== null));
+  let isGitRepoDetectionPending = $derived(
+    supportsGitFeatures() &&
+    route.treeName !== null &&
+    gitRootFromUrl === null &&
+    !hasGitDir &&
+    !gitRepoDetectionResolved
+  );
 
   $effect(() => {
     const enabled = supportsGitFeatures();
@@ -63,19 +71,35 @@
     const explicitGitRoot = gitRootFromUrl;
     const currentHasGitDir = hasGitDir;
 
-    if (!enabled || !treeCid || !currentDir || explicitGitRoot !== null || currentHasGitDir) {
+    if (!enabled) {
       detectedGitRootPath = null;
+      gitRepoDetectionResolved = true;
       return;
     }
 
+    if (!treeCid || !currentDir) {
+      detectedGitRootPath = null;
+      gitRepoDetectionResolved = false;
+      return;
+    }
+
+    if (explicitGitRoot !== null || currentHasGitDir) {
+      detectedGitRootPath = null;
+      gitRepoDetectionResolved = true;
+      return;
+    }
+
+    gitRepoDetectionResolved = false;
     let cancelled = false;
     findNearestGitRootPath(treeCid, path).then((gitRootPath) => {
       if (!cancelled) {
         detectedGitRootPath = gitRootPath;
+        gitRepoDetectionResolved = true;
       }
     }).catch(() => {
       if (!cancelled) {
         detectedGitRootPath = null;
+        gitRepoDetectionResolved = true;
       }
     });
 
@@ -241,7 +265,9 @@
 </script>
 
 <!-- If this is a git repo or inside one (via gitRoot URL param), show GitHub-style directory listing -->
-{#if isInGitRepo && currentDirCid}
+{#if isGitRepoDetectionPending}
+  <div class="flex-1 flex items-center justify-center bg-surface-0"></div>
+{:else if isInGitRepo && currentDirCid}
   <div class="flex flex-col h-full">
     <!-- Header with back button, avatar, visibility, folder name -->
     <ViewerHeader

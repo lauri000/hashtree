@@ -1,5 +1,11 @@
 <script lang="ts">
+  import { shouldOpenSourceCodeLinkInNewTab } from '../../appType';
   import { getNsec } from '../../nostr';
+
+  const openSourceCodeInNewTab = shouldOpenSourceCodeLinkInNewTab();
+  const sourceCodeLinkTarget = openSourceCodeInNewTab ? '_blank' : '_self';
+  const sourceCodeLinkRel = openSourceCodeInNewTab ? 'noopener noreferrer' : undefined;
+
   // Secret key
   let nsec = $derived(getNsec());
   let copiedNsec = $state(false);
@@ -67,8 +73,8 @@
       </div>
       <a
         href="https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree"
-        target="_blank"
-        rel="noopener noreferrer"
+        target={sourceCodeLinkTarget}
+        rel={sourceCodeLinkRel}
         class="btn-ghost w-full flex items-center justify-center gap-2 no-underline"
       >
         <span class="i-lucide-code text-sm"></span>
