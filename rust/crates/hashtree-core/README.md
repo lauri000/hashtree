@@ -42,4 +42,4 @@ Every stored item is either raw bytes or a tree node. Tree nodes are MessagePack
 
 The `Store` trait is just `get(hash) → bytes` and `put(hash, bytes)`. Works with any backend that can store/fetch by hash.
 
-Part of [hashtree-rs](https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree).
+Part of [hashtree-rs](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree).

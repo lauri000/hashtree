@@ -12,7 +12,7 @@ describe('shareUrls', () => {
       {
         id: 'htree',
         label: 'htree URL',
-        url: 'htree://npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/files#/npub1owner/public/share.txt?k=abc',
+        url: 'htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/files#/npub1owner/public/share.txt?k=abc',
       },
     ]);
   });
@@ -32,7 +32,7 @@ describe('shareUrls', () => {
       {
         id: 'htree',
         label: 'htree URL',
-        url: 'htree://npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/video#/npub1owner/videos%252Fdemo',
+        url: 'htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/video#/npub1owner/videos%252Fdemo',
       },
     ]);
   });
@@ -47,7 +47,7 @@ describe('shareUrls', () => {
       {
         id: 'htree',
         label: 'htree URL',
-        url: 'htree://npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/docs',
+        url: 'htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/docs',
       },
     ]);
   });
@@ -62,7 +62,7 @@ describe('shareUrls', () => {
       {
         id: 'htree',
         label: 'htree URL',
-        url: 'htree://npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/git#/npub1owner/repo?tab=pulls',
+        url: 'htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/git#/npub1owner/repo?tab=pulls',
       },
     ]);
   });

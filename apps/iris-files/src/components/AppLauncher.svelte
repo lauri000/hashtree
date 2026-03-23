@@ -4,7 +4,7 @@
 
   const baseUrl = import.meta.env.BASE_URL;
   const irisLogoUrl = `${baseUrl}iris-logo.png`;
-  const distributedOwner = 'npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce';
+  const distributedOwner = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
 
   // Default suggested apps
   const suggestions: AppBookmark[] = [

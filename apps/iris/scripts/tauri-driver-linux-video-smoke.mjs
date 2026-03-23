@@ -12,7 +12,7 @@ const webdriverPort = Number(process.env.TAURI_DRIVER_PORT ?? 4444);
 const automationPort = Number(process.env.IRIS_AUTOMATION_PORT ?? 21977);
 const webdriverBase = `http://127.0.0.1:${webdriverPort}`;
 const automationBase = `http://127.0.0.1:${automationPort}/automation`;
-const distributedOwner = 'npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce';
+const distributedOwner = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
 const smokeUrl = process.env.IRIS_VIDEO_SMOKE_URL ?? `htree://${distributedOwner}/video/index.html?smoke=1`;
 
 let driverProcess = null;

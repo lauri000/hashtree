@@ -8,7 +8,7 @@ export interface ShareUrlOption {
   url: string;
 }
 
-const DISTRIBUTED_APP_OWNER = 'npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce';
+const DISTRIBUTED_APP_OWNER = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
 
 const WEB_APP_URLS: Record<AppType, string> = {
   files: 'https://files.iris.to',

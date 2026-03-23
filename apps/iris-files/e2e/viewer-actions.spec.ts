@@ -140,7 +140,7 @@ test.describe('Viewer Actions', () => {
     await page.getByTestId('share-url-option-htree').click();
     await expect(page.getByTestId('share-url-option-htree')).toHaveAttribute('aria-pressed', 'true');
     await page.getByTestId('share-copy-url').click();
-    await expect.poll(async () => page.evaluate(() => navigator.clipboard.readText())).toContain('htree://npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/files#/');
+    await expect.poll(async () => page.evaluate(() => navigator.clipboard.readText())).toContain('htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/files#/');
     await expect.poll(async () => page.evaluate(() => navigator.clipboard.readText())).not.toContain('htree.localhost');
   });
 

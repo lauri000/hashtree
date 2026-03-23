@@ -237,7 +237,7 @@ fn ensure_aliases_file_hint() {
         "# Public read-only aliases for repos you clone or fetch.\n",
         "# Format: npub1... alias\n",
         "# Example:\n",
-        "# npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce sirius\n",
+        "# npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm sirius\n",
     );
 
     let _ = std::fs::OpenOptions::new()
@@ -2321,7 +2321,7 @@ mod tests {
 
     #[test]
     fn test_stored_key_from_npub_is_read_only() {
-        let npub = "npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce";
+        let npub = "npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm";
         let key = StoredKey::from_npub(npub, Some("sirius".to_string())).unwrap();
 
         assert!(key.secret_hex.is_none());
@@ -2332,7 +2332,7 @@ mod tests {
     #[test]
     fn test_resolve_self_identity_ignores_read_only_aliases() {
         let read_only = StoredKey::from_npub(
-            "npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce",
+            "npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm",
             Some("self".to_string()),
         )
         .unwrap();

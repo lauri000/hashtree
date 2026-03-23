@@ -30,7 +30,7 @@ fn test_resolve_identity_petname_from_npub_alias() {
     let config_dir = home.path().join(".hashtree");
     std::fs::create_dir_all(&config_dir).expect("create .hashtree dir");
 
-    let npub = "npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce";
+    let npub = "npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm";
     std::fs::write(config_dir.join("keys"), format!("{npub} sirius\n")).expect("write keys file");
 
     let _home_guard = HomeGuard::set(home.path());

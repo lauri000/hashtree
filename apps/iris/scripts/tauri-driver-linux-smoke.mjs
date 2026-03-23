@@ -13,7 +13,7 @@ const automationPort = Number(process.env.IRIS_AUTOMATION_PORT ?? 21977);
 const webdriverBase = `http://127.0.0.1:${webdriverPort}`;
 const automationBase = `http://127.0.0.1:${automationPort}/automation`;
 const elementRefKey = 'element-6066-11e4-a52e-4f735466cecf';
-const distributedOwner = 'npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce';
+const distributedOwner = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
 const defaultFilesUrl = `htree://${distributedOwner}/files`;
 
 let driverProcess = null;

@@ -32,7 +32,7 @@ git remote add htree htree://self/myrepo
 git push htree master
 ```
 
-View repos at git.iris.to, for example [hashtree/rust](https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree/rust)
+View repos at git.iris.to, for example [hashtree/rust](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree/rust)
 
 ## Design
 
@@ -124,7 +124,7 @@ nsec1abc123... work
 
 # Optional: configure read-only aliases in ~/.hashtree/aliases
 # Format: <npub or pubkey hex> [petname]
-npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce sirius
+npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm sirius
 
 # Use
 git remote add origin htree://work/myproject
@@ -182,7 +182,7 @@ nsec1xyz789... work
 Aliases file: `~/.hashtree/aliases`
 
 ```
-npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce sirius
+npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm sirius
 ```
 
 `git-remote-htree` auto-creates `~/.hashtree/aliases` with a commented example when the config directory exists. Public aliases in `~/.hashtree/keys` are still accepted for compatibility, but `aliases` is the preferred place for read-only identities.

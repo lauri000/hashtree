@@ -11,4 +11,4 @@ This crate exposes a small, FFI-friendly surface for:
 It is intended for mobile or native app shells that want Kotlin/Swift bindings
 without embedding the full hashtree CLI.
 
-Part of [hashtree](https://git.iris.to/#/npub1xndmdgymsf4a34rzr7346vp8qcptxf75pjqweh8naa8rklgxpfqqmfjtce/hashtree).
+Part of [hashtree](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree).
