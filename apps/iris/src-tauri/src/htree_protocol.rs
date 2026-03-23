@@ -315,6 +315,39 @@ pub fn cache_tree_root(
     Ok(())
 }
 
+#[tauri::command]
+pub fn clear_tree_root_cache(
+    npub: String,
+    tree_name: String,
+    key: Option<String>,
+    visibility: Option<String>,
+) -> Result<(), String> {
+    let port = DAEMON_PORT.get().copied().unwrap_or(21417);
+    let url = format!("http://127.0.0.1:{}/api/clear-tree-root-cache", port);
+
+    let body = serde_json::json!({
+        "npub": npub,
+        "treeName": tree_name,
+        "key": key,
+        "visibility": visibility.unwrap_or_else(|| "public".to_string()),
+    });
+
+    let response = reqwest::blocking::Client::new()
+        .post(&url)
+        .json(&body)
+        .send()
+        .map_err(|error| format!("Failed to clear tree root cache: {}", error))?;
+
+    if !response.status().is_success() {
+        let body = response
+            .text()
+            .unwrap_or_else(|_| "unknown error".to_string());
+        return Err(format!("Failed to clear tree root cache: {}", body));
+    }
+
+    Ok(())
+}
+
 fn resolve_cached_tree_root_fields(
     hash: String,
     key: Option<String>,

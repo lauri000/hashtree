@@ -795,6 +795,7 @@ pub fn run() {
             deep_link_frontend_ready,
             htree_protocol::get_htree_server_url,
             htree_protocol::cache_tree_root,
+            htree_protocol::clear_tree_root_cache,
             nip07::create_nip07_webview,
             nip07::create_htree_webview,
             nip07::close_webview,

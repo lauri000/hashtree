@@ -1,4 +1,11 @@
-import { test, expect, setupPageErrorHandler, gotoHome } from './fixtures';
+import {
+  test,
+  expect,
+  emitTauriEvent,
+  getInvocationsFor,
+  setupPageErrorHandler,
+  gotoHome,
+} from './fixtures';
 import { distributedOwner, getSuggestedTreeRootHint } from '../src/lib/apps';
 
 async function openHome(page: import('@playwright/test').Page) {
@@ -118,6 +125,44 @@ test.describe('App Launcher', () => {
     expect(createCalls[0].args.host).toBe(distributedOwner);
     expect(createCalls[0].args.treename).toBe('git');
     expect(createCalls[0].args.path).toBe('/');
+  });
+
+  test('blank built-in suggestion load clears stale cache and recreates the webview once', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const suggestions = page.locator('section').filter({
+      has: page.getByRole('heading', { name: 'Suggestions' }),
+    });
+    await suggestions.getByText('Iris Video').click();
+
+    await emitTauriEvent(page, 'child-webview-page-load', {
+      label: 'content',
+      url: `htree://${distributedOwner}/video`,
+      event: 'finished',
+    });
+
+    await expect.poll(async () => {
+      return {
+        cacheCalls: (await getInvocationsFor(page, 'cache_tree_root')).length,
+        clearCalls: (await getInvocationsFor(page, 'clear_tree_root_cache')).length,
+        closeCalls: (await getInvocationsFor(page, 'close_webview')).length,
+        createCalls: (await getInvocationsFor(page, 'create_htree_webview')).length,
+      };
+    }).toEqual({
+      cacheCalls: 1,
+      clearCalls: 1,
+      closeCalls: 1,
+      createCalls: 2,
+    });
+
+    const clearCalls = await getInvocationsFor(page, 'clear_tree_root_cache');
+    expect(clearCalls[0].args.npub).toBe(distributedOwner);
+    expect(clearCalls[0].args.treeName).toBe('video');
+
+    const createCalls = await getInvocationsFor(page, 'create_htree_webview');
+    expect(createCalls[1].args.host).toBe(distributedOwner);
+    expect(createCalls[1].args.treename).toBe('video');
+    expect(createCalls[1].args.path).toBe('/');
   });
 
   test('dismissed suggestions stay hidden after reload', async ({ tauriPage: page }) => {

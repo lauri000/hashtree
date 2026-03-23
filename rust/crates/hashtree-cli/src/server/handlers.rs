@@ -50,6 +50,16 @@ pub struct CacheTreeRootRequest {
     pub visibility: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct ClearTreeRootCacheRequest {
+    #[serde(rename = "npub")]
+    pub npub: String,
+    #[serde(rename = "treeName")]
+    pub tree_name: String,
+    pub key: Option<String>,
+    pub visibility: Option<String>,
+}
+
 pub async fn cache_tree_root(
     State(state): State<AppState>,
     Json(request): Json<CacheTreeRootRequest>,
@@ -79,12 +89,47 @@ pub async fn cache_tree_root(
         None => None,
     };
 
-    let cid = Cid {
-        hash,
-        key,
-    };
-    let cache_key = cache_tree_root_key(&request.npub, &request.tree_name, request.visibility.as_deref(), cid.key);
+    let cid = Cid { hash, key };
+    let cache_key = cache_tree_root_key(
+        &request.npub,
+        &request.tree_name,
+        request.visibility.as_deref(),
+        cid.key,
+    );
     put_cached_tree_root(&state, cache_key, cid);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .body(Body::from("ok"))
+        .unwrap()
+}
+
+pub async fn clear_tree_root_cache(
+    State(state): State<AppState>,
+    Json(request): Json<ClearTreeRootCacheRequest>,
+) -> impl IntoResponse {
+    let key = match request.key {
+        Some(value) => match from_hex(&value) {
+            Ok(decoded) => Some(decoded),
+            Err(error) => {
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from(format!("Invalid key: {}", error)))
+                    .unwrap();
+            }
+        },
+        None => None,
+    };
+
+    let cache_key = cache_tree_root_key(
+        &request.npub,
+        &request.tree_name,
+        request.visibility.as_deref(),
+        key,
+    );
+    remove_cached_tree_root(&state, &cache_key);
 
     Response::builder()
         .status(StatusCode::OK)
@@ -185,6 +230,15 @@ fn put_cached_tree_root(state: &AppState, cache_key: String, cid: Cid) {
     if let Ok(mut cache) = state.tree_root_cache.lock() {
         cache.insert(cache_key, cid);
     }
+}
+
+fn remove_cached_tree_root(state: &AppState, cache_key: &str) -> bool {
+    state
+        .tree_root_cache
+        .lock()
+        .ok()
+        .and_then(|mut cache| cache.remove(cache_key))
+        .is_some()
 }
 
 const DEFAULT_DIRECTORY_INDEXES: [&str; 2] = ["index.html", "index.htm"];
@@ -2707,8 +2761,7 @@ mod tests {
                 hash: "be8f5da537f62d02d3ff113d213a7058116f790a8d0e158c2766543deda10e35"
                     .to_string(),
                 key: Some(
-                    "34e24fadaddc60da2e761501aae44c1c2b6b8706b73dff736eb0fc7d803133bb"
-                        .to_string(),
+                    "34e24fadaddc60da2e761501aae44c1c2b6b8706b73dff736eb0fc7d803133bb".to_string(),
                 ),
                 visibility: Some("public".to_string()),
             }),
@@ -2731,5 +2784,43 @@ mod tests {
             "npub1example/video?k=34e24fadaddc60da2e761501aae44c1c2b6b8706b73dff736eb0fc7d803133bb"
         )
         .is_none());
+    }
+
+    #[tokio::test]
+    async fn clear_tree_root_cache_removes_seeded_mutable_root_cache() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());
+        let state = test_app_state(store, Vec::new());
+
+        let seed_response = cache_tree_root(
+            State(state.clone()),
+            Json(CacheTreeRootRequest {
+                npub: "npub1example".to_string(),
+                tree_name: "video".to_string(),
+                hash: "988db3f24dc222715f1c1e1fa5876690d3147122243d72d85fd44283867cd61a"
+                    .to_string(),
+                key: None,
+                visibility: Some("public".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(seed_response.status(), StatusCode::OK);
+        assert!(get_cached_tree_root(&state, "npub1example/video").is_some());
+
+        let clear_response = clear_tree_root_cache(
+            State(state.clone()),
+            Json(ClearTreeRootCacheRequest {
+                npub: "npub1example".to_string(),
+                tree_name: "video".to_string(),
+                key: None,
+                visibility: Some("public".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(clear_response.status(), StatusCode::OK);
+        assert!(get_cached_tree_root(&state, "npub1example/video").is_none());
     }
 }

@@ -4,6 +4,7 @@
     automationUpdateState,
     automationShutdown,
     cacheTreeRoot,
+    clearTreeRootCache,
     createNip07Webview,
     createHtreeWebview,
     deepLinkFrontendReady,
@@ -42,6 +43,7 @@
   const COMPACT_TOOLBAR_BREAKPOINT = 720;
   const DESKTOP_TRAFFIC_LIGHTS_PADDING = 88;
   const MOBILE_CHILD_WEBVIEWS_UNSUPPORTED = 'Mobile child webviews are not supported yet';
+  const BLANK_SUGGESTED_TREE_RECOVERY_DELAY_MS = 1500;
   const MACOS_FUNCTION_KEY_GLYPHS = /[\uF700-\uF8FF]/g;
   const MACOS_FUNCTION_KEY_GLYPHS_SINGLE = /[\uF700-\uF8FF]/;
   const LEGACY_MACOS_ARROW_KEY_CODES = new Set([63232, 63233, 63234, 63235]);
@@ -66,6 +68,7 @@
   let selectedIndex = $state(-1);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let blurTimer: ReturnType<typeof setTimeout> | null = null;
+  let blankSuggestedTreeRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
   let boundsRaf: number | null = null;
   let automationSyncRaf: number | null = null;
   let dropdownEl: HTMLDivElement | null = $state(null);
@@ -451,7 +454,27 @@
     };
   }
 
+  function clearBlankSuggestedTreeRecoveryTimer() {
+    if (blankSuggestedTreeRecoveryTimer) {
+      clearTimeout(blankSuggestedTreeRecoveryTimer);
+      blankSuggestedTreeRecoveryTimer = null;
+    }
+  }
+
+  function hasSuggestedTreeRootHint(url: string): boolean {
+    const htree = parseHtreeUrl(url);
+    return !!getSuggestedTreeRootHint(htree?.npub, htree?.treename);
+  }
+
+  function hasChildDiagnosticsSnapshot(): boolean {
+    return !!childDocumentTitle.trim() ||
+      !!childBodyText.trim() ||
+      !!childMediaSummary.trim() ||
+      !!childLastError.trim();
+  }
+
   function resetChildDiagnostics(loadState: string = 'idle', loadUrl: string = '') {
+    clearBlankSuggestedTreeRecoveryTimer();
     childPageLoadState = loadState;
     childPageLoadUrl = loadUrl;
     childDocumentTitle = '';
@@ -681,33 +704,54 @@
     if (event.label !== CHILD_LABEL) return;
     childPageLoadState = event.event;
     childPageLoadUrl = event.url;
+    if (event.event === 'started') {
+      clearBlankSuggestedTreeRecoveryTimer();
+      return;
+    }
+    if (event.event === 'finished' && currentUrl && hasSuggestedTreeRootHint(currentUrl)) {
+      const scheduledUrl = currentUrl;
+      clearBlankSuggestedTreeRecoveryTimer();
+      blankSuggestedTreeRecoveryTimer = setTimeout(() => {
+        blankSuggestedTreeRecoveryTimer = null;
+        if (
+          currentView !== 'webview' ||
+          currentUrl !== scheduledUrl ||
+          childPageLoadState !== 'finished' ||
+          hasChildDiagnosticsSnapshot()
+        ) {
+          return;
+        }
+        void recoverSuggestedTreeRoot(scheduledUrl, 'blank');
+      }, BLANK_SUGGESTED_TREE_RECOVERY_DELAY_MS);
+    }
   }
 
-  async function maybeRecoverSuggestedTreeRoot(url: string, bodyText: string) {
-    if (!RECOVERABLE_TREE_BODY_TEXTS.has(bodyText.trim())) return;
+  async function recoverSuggestedTreeRoot(url: string, reason: string) {
     const htree = parseHtreeUrl(url);
     if (!htree?.npub || !htree.treename) return;
-    const treeRootHint = getSuggestedTreeRootHint(htree.npub, htree.treename);
-    if (!treeRootHint) return;
+    if (!getSuggestedTreeRootHint(htree.npub, htree.treename)) return;
 
-    const attemptKey = `${url}|${bodyText.trim()}`;
+    const attemptKey = `${url}|${reason}`;
     const attempts = treeRootRecoveryAttempts.get(attemptKey) ?? 0;
     if (attempts >= 1) return;
     treeRootRecoveryAttempts.set(attemptKey, attempts + 1);
 
     try {
-      await cacheTreeRoot(
-        htree.npub,
-        htree.treename,
-        treeRootHint.hash,
-        null,
-        null,
-        treeRootHint.nhash,
-      );
-      await reloadWebview(CHILD_LABEL);
+      clearBlankSuggestedTreeRecoveryTimer();
+      await clearTreeRootCache(htree.npub, htree.treename, null, null)
+        .catch((error) => {
+          console.warn('[Iris] failed to clear suggested tree root cache:', error);
+        });
+      await destroyChildWebview();
+      await navigate(url, { pushHistory: false, prewarmSuggestedTreeRoot: false });
     } catch (error) {
       console.warn('[Iris] failed to recover suggested tree root:', error);
     }
+  }
+
+  async function maybeRecoverSuggestedTreeRoot(url: string, bodyText: string) {
+    if (!RECOVERABLE_TREE_BODY_TEXTS.has(bodyText.trim())) return;
+    await recoverSuggestedTreeRoot(url, bodyText.trim());
   }
 
   function handleDiagnosticEvent(event: WebviewDiagnosticEvent) {

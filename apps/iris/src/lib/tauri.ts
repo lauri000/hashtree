@@ -82,6 +82,20 @@ export async function cacheTreeRoot(
   });
 }
 
+export async function clearTreeRootCache(
+  npub: string,
+  treeName: string,
+  key?: string | null,
+  visibility?: string | null,
+): Promise<void> {
+  return invoke<void>('clear_tree_root_cache', {
+    npub,
+    treeName,
+    key: key ?? null,
+    visibility: visibility ?? null,
+  });
+}
+
 export async function closeWebview(label: string): Promise<void> {
   return invoke<void>('close_webview', { label });
 }

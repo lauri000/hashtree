@@ -93,6 +93,7 @@ async function mockTauriIPC(page: Page) {
             return Promise.resolve();
           case 'create_nip07_webview':
           case 'create_htree_webview':
+          case 'clear_tree_root_cache':
           case 'close_webview':
           case 'navigate_webview':
           case 'webview_history':
