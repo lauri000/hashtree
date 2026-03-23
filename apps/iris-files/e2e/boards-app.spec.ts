@@ -3,6 +3,9 @@ import { waitForAppReady, ensureLoggedIn, disableOthersPool, enableOthersPool, s
 import type { Page } from '@playwright/test';
 import { nip19 } from 'nostr-tools';
 
+// Run boards tests serially because they share relay-backed board state and realtime sync timing.
+test.describe.configure({ mode: 'serial' });
+
 type BoardsE2EWindow = Window & {
   __nostrStore?: {
     getState?: () => {
@@ -49,6 +52,22 @@ async function createBoard(
   await expect(page.locator(`text=${boardName}`)).toBeVisible({ timeout: 30000 });
   await expect(page.locator('text=Failed to create board.')).toHaveCount(0);
   return page.url();
+}
+
+async function ensureDistinctViewerIdentity(ownerPage: Page, viewerPage: Page): Promise<void> {
+  const ownerPubkey = await ownerPage.evaluate(() => (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey ?? null);
+  const initialViewerPubkey = await viewerPage.evaluate(() => (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey ?? null);
+  if (!ownerPubkey || initialViewerPubkey !== ownerPubkey) return;
+
+  await viewerPage.evaluate(async () => {
+    const { generateNewKey } = await import('/src/nostr');
+    await generateNewKey();
+  });
+  await viewerPage.waitForFunction((expectedOwnerPubkey) => {
+    const pubkey = (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey;
+    return !!pubkey && pubkey !== expectedOwnerPubkey;
+  }, ownerPubkey, { timeout: 20000 });
+  await waitForRelayConnected(viewerPage, 30000);
 }
 
 test.describe('Iris Boards App', () => {
@@ -233,6 +252,7 @@ test.describe('Iris Boards App', () => {
   });
 
   test('link-visible board syncs to another browser in realtime without reload', async ({ page, browser }) => {
+    test.setTimeout(120000);
     setupPageErrorHandler(page);
     await page.goto('/boards.html#/');
     await waitForAppReady(page);
@@ -278,7 +298,7 @@ test.describe('Iris Boards App', () => {
 
     await expect(page2.getByRole('heading', { name: boardName })).toBeVisible({ timeout: 30000 });
     await expect(page2.locator('text=Read-only')).toBeVisible({ timeout: 30000 });
-    await expect(page2.getByTestId('board-column-Todo')).toBeVisible({ timeout: 45000 });
+    await expect(page2.getByTestId('board-column-Todo')).toBeVisible({ timeout: 60000 });
     await expect(page2.getByRole('button', { name: /permissions/i })).toBeVisible({ timeout: 15000 });
 
     await page2.getByRole('button', { name: /permissions/i }).click();
@@ -303,7 +323,7 @@ test.describe('Iris Boards App', () => {
     await expect(page.getByTestId('board-card-Realtime card')).toBeVisible({ timeout: 10000 });
     await flushPendingPublishes(page);
 
-    await expect(page2.getByRole('heading', { name: /^Realtime card$/ })).toBeVisible({ timeout: 45000 });
+    await expect(page2.getByRole('heading', { name: /^Realtime card$/ })).toBeVisible({ timeout: 60000 });
 
     await page.getByTestId('board-card-Realtime card').getByRole('button', { name: /open card details/i }).click();
     await page.getByRole('dialog', { name: 'Card details' }).getByRole('button', { name: /edit card/i }).click();
@@ -312,8 +332,8 @@ test.describe('Iris Boards App', () => {
     await page.getByRole('button', { name: /^save card$/i }).click();
     await flushPendingPublishes(page);
 
-    await expect(page2.getByRole('heading', { name: /^Realtime card updated$/ })).toBeVisible({ timeout: 45000 });
-    await expect(page2.getByRole('heading', { name: /^Realtime card$/ })).toHaveCount(0, { timeout: 45000 });
+    await expect(page2.getByRole('heading', { name: /^Realtime card updated$/ })).toBeVisible({ timeout: 60000 });
+    await expect(page2.getByRole('heading', { name: /^Realtime card$/ })).toHaveCount(0, { timeout: 60000 });
 
     await expect.poll(async () => {
       return page2.evaluate(() => (window as BoardsE2EWindow).__boardLiveMarker);
@@ -323,6 +343,7 @@ test.describe('Iris Boards App', () => {
   });
 
   test('granting writer permission updates viewer live and enables editing', async ({ page, browser }) => {
+    test.setTimeout(120000);
     setupPageErrorHandler(page);
     await page.goto('/boards.html#/');
     await waitForAppReady(page);
@@ -369,8 +390,8 @@ test.describe('Iris Boards App', () => {
     const page2Npub = nip19.npubEncode(page2Pubkey as string);
 
     const page2Todo = page2.getByTestId('board-column-Todo');
-    await expect(page2Todo).toBeVisible({ timeout: 45000 });
-    await expect(page2.locator('text=Read-only')).toBeVisible({ timeout: 45000 });
+    await expect(page2Todo).toBeVisible({ timeout: 60000 });
+    await expect(page2.locator('text=Read-only')).toBeVisible({ timeout: 60000 });
     await expect(page2Todo.getByRole('button', { name: /add card/i })).toHaveCount(0);
 
     const liveMarker = await page2.evaluate(() => {
@@ -386,9 +407,9 @@ test.describe('Iris Boards App', () => {
     await page.getByRole('button', { name: /^add$/i }).click();
     await flushPendingPublishes(page);
 
-    await expect(page2.locator('text=Write access')).toBeVisible({ timeout: 45000 });
-    await expect(page2.locator('text=Read-only')).toHaveCount(0, { timeout: 45000 });
-    await expect(page2Todo.getByRole('button', { name: /add card/i })).toBeVisible({ timeout: 45000 });
+    await expect(page2.locator('text=Write access')).toBeVisible({ timeout: 60000 });
+    await expect(page2.locator('text=Read-only')).toHaveCount(0, { timeout: 60000 });
+    await expect(page2Todo.getByRole('button', { name: /add card/i })).toBeVisible({ timeout: 60000 });
 
     await expect.poll(async () => {
       return page2.evaluate(() => (window as BoardsE2EWindow).__boardPermissionMarker);
@@ -406,6 +427,79 @@ test.describe('Iris Boards App', () => {
     await page2.getByLabel('Card title').fill('Granted writer card updated');
     await page2.getByRole('button', { name: /^save card$/i }).click();
     await expect(page2.getByTestId('board-card-Granted writer card updated')).toBeVisible({ timeout: 10000 });
+
+    await context2.close();
+  });
+
+  test('non-owner sees link-required notice instead of placeholder board without link key', async ({ page, browser }) => {
+    setupPageErrorHandler(page);
+    await page.goto('/boards.html#/');
+    await waitForAppReady(page);
+    await ensureLoggedIn(page, 30000);
+    await enableOthersPool(page, 10);
+    await waitForRelayConnected(page, 30000);
+
+    const boardName = `E2E Locked Link Board ${Date.now()}`;
+    const shareUrl = await createBoard(page, boardName, 'link-visible');
+    expect(shareUrl).toMatch(/\?k=/);
+    await flushPendingPublishes(page);
+
+    const protectedUrl = shareUrl.replace(/\?k=[^&]+/, '');
+
+    const context2 = await browser.newContext();
+    const page2 = await context2.newPage();
+    setupPageErrorHandler(page2);
+
+    await page2.goto('/boards.html#/');
+    await waitForAppReady(page2, 60000);
+    await ensureLoggedIn(page2, 30000);
+    await enableOthersPool(page2, 10);
+    await waitForRelayConnected(page2, 30000);
+    await ensureDistinctViewerIdentity(page, page2);
+
+    await page2.goto(protectedUrl);
+    await waitForAppReady(page2, 60000);
+    await enableOthersPool(page2, 10);
+    await waitForRelayConnected(page2, 30000);
+
+    await expect(page2.getByText('Link Required')).toBeVisible({ timeout: 30000 });
+    await expect(page2.getByText('This board requires a special link to access. Ask the owner for the link with the access key.')).toBeVisible({ timeout: 30000 });
+    await expect(page2.getByTestId('board-column-Todo')).toHaveCount(0);
+
+    await context2.close();
+  });
+
+  test('non-owner sees private-board notice instead of placeholder board', async ({ page, browser }) => {
+    setupPageErrorHandler(page);
+    await page.goto('/boards.html#/');
+    await waitForAppReady(page);
+    await ensureLoggedIn(page, 30000);
+    await enableOthersPool(page, 10);
+    await waitForRelayConnected(page, 30000);
+
+    const boardName = `E2E Private Locked Board ${Date.now()}`;
+    const shareUrl = await createBoard(page, boardName, 'private');
+    await flushPendingPublishes(page);
+
+    const context2 = await browser.newContext();
+    const page2 = await context2.newPage();
+    setupPageErrorHandler(page2);
+
+    await page2.goto('/boards.html#/');
+    await waitForAppReady(page2, 60000);
+    await ensureLoggedIn(page2, 30000);
+    await enableOthersPool(page2, 10);
+    await waitForRelayConnected(page2, 30000);
+    await ensureDistinctViewerIdentity(page, page2);
+
+    await page2.goto(shareUrl);
+    await waitForAppReady(page2, 60000);
+    await enableOthersPool(page2, 10);
+    await waitForRelayConnected(page2, 30000);
+
+    await expect(page2.getByText('Private Board')).toBeVisible({ timeout: 30000 });
+    await expect(page2.getByText('This board is private and can only be accessed by its owner.')).toBeVisible({ timeout: 30000 });
+    await expect(page2.getByTestId('board-column-Todo')).toHaveCount(0);
 
     await context2.close();
   });

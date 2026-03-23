@@ -74,7 +74,16 @@
   });
 
   let currentTree = $derived(route.treeName ? trees.find(tree => tree.name === route.treeName) : null);
-  let visibility = $derived(currentTree?.visibility || 'public');
+  let resolvedVisibility = $derived(currentTree?.visibility);
+  let visibility = $derived(resolvedVisibility || 'public');
+  let linkKey = $derived(route.params.get('k'));
+  let missingDecryptionKey = $derived(!treeRoot?.key);
+  let isProtectedBoardWithoutAccess = $derived(
+    !isOwnBoard &&
+    missingDecryptionKey &&
+    !!currentTree &&
+    (resolvedVisibility === 'link-visible' || resolvedVisibility === 'private')
+  );
 
   let loading = $state(true);
   let savingBoard = $state(false);
@@ -802,8 +811,28 @@
   $effect(() => {
     const root = treeRoot;
     const treeName = route.treeName;
+    const currentVisibility = resolvedVisibility;
+    const protectedWithoutAccess = isProtectedBoardWithoutAccess;
 
-    if (!root || !treeName) {
+    if (!treeName) {
+      loading = true;
+      return;
+    }
+
+    if (!isOwnBoard && !root?.key && currentVisibility === undefined) {
+      loading = true;
+      return;
+    }
+
+    if (protectedWithoutAccess) {
+      board = null;
+      permissions = null;
+      loading = false;
+      error = null;
+      return;
+    }
+
+    if (!root) {
       loading = true;
       return;
     }
@@ -1841,6 +1870,41 @@
 {:else if error}
   <div class="flex-1 flex items-center justify-center text-text-3 p-6">
     <p>{error}</p>
+  </div>
+{:else if isProtectedBoardWithoutAccess}
+  <div class="flex-1 flex items-center justify-center p-8">
+    <div class="text-center">
+      <div class="inline-flex items-center justify-center mb-4">
+        {#if resolvedVisibility === 'link-visible'}
+          {#if linkKey}
+            <span class="i-lucide-key-round text-3xl text-danger"></span>
+          {:else}
+            <span class="relative inline-block shrink-0 text-3xl text-text-3">
+              <span class="i-lucide-link"></span>
+              <span class="i-lucide-lock absolute -bottom-0.5 -right-1.5 text-[0.6em]"></span>
+            </span>
+          {/if}
+        {:else}
+          <span class="i-lucide-lock text-3xl text-text-3"></span>
+        {/if}
+      </div>
+      <div class="text-text-2 font-medium mb-2">
+        {#if resolvedVisibility === 'link-visible'}
+          {linkKey ? 'Invalid Link Key' : 'Link Required'}
+        {:else}
+          Private Board
+        {/if}
+      </div>
+      <div class="text-text-3 text-sm max-w-xs mx-auto">
+        {#if resolvedVisibility === 'link-visible'}
+          {linkKey
+            ? 'The link key provided is invalid or has expired. Ask the owner for a new link.'
+            : 'This board requires a special link to access. Ask the owner for the link with the access key.'}
+        {:else}
+          This board is private and can only be accessed by its owner.
+        {/if}
+      </div>
+    </div>
   </div>
 {:else if board && permissions}
   <div class="flex-1 flex flex-col min-h-0">
