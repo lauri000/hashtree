@@ -12,6 +12,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -385,7 +386,7 @@ jobs:
         run: |
           mkdir -p dist
           APP_PATH="${{ steps.locate_app.outputs.app_path }}"
-          ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "dist/iris-macos-arm64.zip"
+          ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "dist/iris-${RELEASE_TAG}-macos-arm64.zip"
 
       - name: Verify packaged macOS app artifact
         shell: bash
@@ -394,7 +395,7 @@ jobs:
           rm -rf "${VERIFY_DIR}"
           mkdir -p "${VERIFY_DIR}"
 
-          ditto -x -k "dist/iris-macos-arm64.zip" "${VERIFY_DIR}"
+          ditto -x -k "dist/iris-${RELEASE_TAG}-macos-arm64.zip" "${VERIFY_DIR}"
 
           APP_PATH="$(find "${VERIFY_DIR}" -maxdepth 1 -name '*.app' -print -quit)"
           if [ -z "${APP_PATH}" ]; then
@@ -413,7 +414,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: iris-macos-arm64
-          path: dist/iris-macos-arm64.zip
+          path: dist/iris-${{ env.RELEASE_TAG }}-macos-arm64.zip
           retention-days: 7
 
       - name: Cleanup macOS signing keychain
@@ -509,16 +510,16 @@ jobs:
             exit 1
           fi
 
-          cp "${appimage}" dist/iris-linux-x86_64.AppImage
-          cp "${deb}" dist/iris-linux-x86_64.deb
-          sha256sum dist/iris-linux-x86_64.AppImage > dist/iris-linux-x86_64.AppImage.sha256
-          sha256sum dist/iris-linux-x86_64.deb > dist/iris-linux-x86_64.deb.sha256
+          cp "${appimage}" "dist/iris-${RELEASE_TAG}-linux-x86_64.AppImage"
+          cp "${deb}" "dist/iris-${RELEASE_TAG}-linux-x86_64.deb"
+          sha256sum "dist/iris-${RELEASE_TAG}-linux-x86_64.AppImage" > "dist/iris-${RELEASE_TAG}-linux-x86_64.AppImage.sha256"
+          sha256sum "dist/iris-${RELEASE_TAG}-linux-x86_64.deb" > "dist/iris-${RELEASE_TAG}-linux-x86_64.deb.sha256"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
           name: iris-linux-x86_64
-          path: dist/iris-linux-x86_64*
+          path: dist/iris-${{ env.RELEASE_TAG }}-linux-x86_64*
           retention-days: 7
 
   build-windows-app:
@@ -583,16 +584,16 @@ jobs:
             throw 'No Windows NSIS installer found in build output'
           }
 
-          Copy-Item $nsis.FullName 'dist/iris-windows-x64-setup.exe'
+          Copy-Item $nsis.FullName "dist/iris-$env:RELEASE_TAG-windows-x64-setup.exe"
 
-          $nsisHash = (Get-FileHash 'dist/iris-windows-x64-setup.exe' -Algorithm SHA256).Hash.ToLower()
-          "$nsisHash  iris-windows-x64-setup.exe" | Out-File -FilePath 'dist/iris-windows-x64-setup.exe.sha256' -Encoding ASCII
+          $nsisHash = (Get-FileHash "dist/iris-$env:RELEASE_TAG-windows-x64-setup.exe" -Algorithm SHA256).Hash.ToLower()
+          "$nsisHash  iris-$env:RELEASE_TAG-windows-x64-setup.exe" | Out-File -FilePath "dist/iris-$env:RELEASE_TAG-windows-x64-setup.exe.sha256" -Encoding ASCII
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: iris-windows-x64
-          path: dist/iris-windows-x64*
+          path: dist/iris-${{ env.RELEASE_TAG }}-windows-x64*
           retention-days: 7
 
   release:
@@ -658,14 +659,14 @@ jobs:
 
             ### Iris desktop app
             macOS:
-            Download `iris-macos-arm64.zip`, unzip it, and move `Iris.app` into `/Applications`.
+            Download `iris-${{ env.RELEASE_TAG }}-macos-arm64.zip`, unzip it, and move `Iris.app` into `/Applications`.
 
             Linux:
-            Download `iris-linux-x86_64.AppImage` and run `chmod +x iris-linux-x86_64.AppImage && ./iris-linux-x86_64.AppImage`,
-            or install `iris-linux-x86_64.deb` with `sudo apt install ./iris-linux-x86_64.deb`.
+            Download `iris-${{ env.RELEASE_TAG }}-linux-x86_64.AppImage` and run `chmod +x iris-${{ env.RELEASE_TAG }}-linux-x86_64.AppImage && ./iris-${{ env.RELEASE_TAG }}-linux-x86_64.AppImage`,
+            or install `iris-${{ env.RELEASE_TAG }}-linux-x86_64.deb` with `sudo apt install ./iris-${{ env.RELEASE_TAG }}-linux-x86_64.deb`.
 
             Windows:
-            Run `iris-windows-x64-setup.exe`.
+            Run `iris-${{ env.RELEASE_TAG }}-windows-x64-setup.exe`.
 
             ### Verify
             ```bash
