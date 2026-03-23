@@ -91,16 +91,68 @@ test.describe('App Launcher', () => {
     expect(createCalls[0].args.path).toBe('/');
   });
 
+  test('dismissed suggestions stay hidden after reload', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const suggestions = page.locator('section').filter({
+      has: page.getByRole('heading', { name: 'Suggestions' }),
+    });
+    const gitSuggestion = suggestions.locator('[role="button"]').filter({
+      has: page.getByText('Iris Git'),
+    });
+
+    await expect(gitSuggestion).toBeVisible();
+    await gitSuggestion.getByTitle('Dismiss suggestion').click();
+    await expect(gitSuggestion).not.toBeVisible();
+
+    await page.reload();
+    await gotoHome(page);
+
+    await expect(suggestions.getByText('Iris Git')).not.toBeVisible();
+    await expect(page.getByRole('button', { name: 'Reset suggestions' })).toBeVisible();
+  });
+
+  test('reset suggestions restores dismissed suggestions', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const suggestions = page.locator('section').filter({
+      has: page.getByRole('heading', { name: 'Suggestions' }),
+    });
+    const boardsSuggestion = suggestions.locator('[role="button"]').filter({
+      has: page.getByText('Iris Boards'),
+    });
+
+    await boardsSuggestion.getByTitle('Dismiss suggestion').click();
+    await expect(boardsSuggestion).not.toBeVisible();
+
+    await page.getByRole('button', { name: 'Reset suggestions' }).click();
+
+    await expect(suggestions.getByText('Iris Boards')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Reset suggestions' })).not.toBeVisible();
+  });
+
   test('add to favourites button works', async ({ tauriPage: page }) => {
     await openHome(page);
     await page.evaluate(() => localStorage.setItem('iris:apps', JSON.stringify([])));
     await page.reload();
     await gotoHome(page);
 
+    const favourites = page.locator('section').filter({
+      has: page.getByRole('heading', { name: 'Favourites' }),
+    });
+    const suggestions = page.locator('section').filter({
+      has: page.getByRole('heading', { name: 'Suggestions' }),
+    });
+
     await expect(page.getByText('No favourites yet')).toBeVisible();
 
-    await page.locator('button[title="Add to favourites"]').first().click();
+    const filesSuggestion = suggestions.locator('[role="button"]').filter({
+      has: page.getByText('Iris Files'),
+    });
+    await filesSuggestion.getByTitle('Add to favourites').click();
 
     await expect(page.getByText('No favourites yet')).not.toBeVisible();
+    await expect(favourites.getByText('Iris Files')).toBeVisible();
+    await expect(suggestions.getByText('Iris Files')).not.toBeVisible();
   });
 });

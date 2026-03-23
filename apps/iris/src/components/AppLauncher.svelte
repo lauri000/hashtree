@@ -1,6 +1,7 @@
 <script lang="ts">
   import { suggestedApps, type AppBookmark } from '../lib/apps';
   import { appsStore } from '../stores/apps';
+  import { dismissedSuggestionsStore } from '../stores/dismissedSuggestions';
 
   interface Props {
     onnavigate: (url: string) => void;
@@ -10,6 +11,12 @@
   const suggestions: readonly AppBookmark[] = suggestedApps;
 
   let favorites = $derived($appsStore);
+  let dismissedSuggestions = $derived($dismissedSuggestionsStore);
+  let visibleSuggestions = $derived(
+    suggestions.filter(
+      (app) => !favorites.some((favorite) => favorite.url === app.url) && !dismissedSuggestions.includes(app.url),
+    ),
+  );
 
   function openApp(app: AppBookmark) {
     onnavigate(app.url);
@@ -21,6 +28,14 @@
 
   function addToFavorites(app: AppBookmark) {
     appsStore.add({ ...app, addedAt: Date.now() });
+  }
+
+  function dismissSuggestion(url: string) {
+    dismissedSuggestionsStore.dismiss(url);
+  }
+
+  function resetSuggestions() {
+    dismissedSuggestionsStore.reset();
   }
 
   function getInitial(name: string): string {
@@ -92,39 +107,60 @@
 
     <!-- Suggestions -->
     <section>
-      <h2 class="text-lg font-semibold text-text-1 mb-4">Suggestions</h2>
-      <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        {#each suggestions as app (app.url)}
-          <div
-            role="button"
-            tabindex="0"
-            class="flex items-center gap-3 p-3 bg-surface-1 hover:bg-surface-2 rounded-xl transition-colors text-left cursor-pointer"
-            onclick={() => openApp(app)}
-            onkeydown={(e) => e.key === 'Enter' && openApp(app)}
+      <div class="mb-4 flex items-center justify-between gap-3">
+        <h2 class="text-lg font-semibold text-text-1">Suggestions</h2>
+        {#if dismissedSuggestions.length > 0}
+          <button
+            class="shrink-0 rounded-lg px-3 py-1.5 text-sm text-text-2 hover:bg-surface-2"
+            onclick={resetSuggestions}
           >
-            <div class="w-12 h-12 rounded-xl bg-surface-2 flex items-center justify-center shrink-0">
-              {#if app.icon}
-                <img src={app.icon} alt="" class="w-8 h-8 rounded-lg" />
-              {:else}
-                <span class="text-lg font-semibold text-text-2">{getInitial(app.name)}</span>
-              {/if}
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="text-sm font-medium text-text-1 truncate">{app.name}</div>
-              <div class="text-xs text-text-3 truncate">{getUrlLabel(app.url)}</div>
-            </div>
-            {#if !favorites.some(f => f.url === app.url)}
-              <button
-                class="shrink-0 p-1 rounded hover:bg-surface-3"
-                onclick={(e) => { e.stopPropagation(); addToFavorites(app); }}
-                title="Add to favourites"
-              >
-                <span class="i-lucide-plus text-text-3"></span>
-              </button>
-            {/if}
-          </div>
-        {/each}
+            Reset suggestions
+          </button>
+        {/if}
       </div>
+      {#if visibleSuggestions.length === 0}
+        <p class="text-text-3 text-sm">No suggestions right now.</p>
+      {:else}
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {#each visibleSuggestions as app (app.url)}
+            <div
+              role="button"
+              tabindex="0"
+              class="flex items-center gap-3 p-3 bg-surface-1 hover:bg-surface-2 rounded-xl transition-colors text-left cursor-pointer"
+              onclick={() => openApp(app)}
+              onkeydown={(e) => e.key === 'Enter' && openApp(app)}
+            >
+              <div class="w-12 h-12 rounded-xl bg-surface-2 flex items-center justify-center shrink-0">
+                {#if app.icon}
+                  <img src={app.icon} alt="" class="w-8 h-8 rounded-lg" />
+                {:else}
+                  <span class="text-lg font-semibold text-text-2">{getInitial(app.name)}</span>
+                {/if}
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="text-sm font-medium text-text-1 truncate">{app.name}</div>
+                <div class="text-xs text-text-3 truncate">{getUrlLabel(app.url)}</div>
+              </div>
+              <div class="flex shrink-0 items-center gap-1">
+                <button
+                  class="rounded p-1 hover:bg-surface-3"
+                  onclick={(e) => { e.stopPropagation(); addToFavorites(app); }}
+                  title="Add to favourites"
+                >
+                  <span class="i-lucide-plus text-text-3"></span>
+                </button>
+                <button
+                  class="rounded p-1 hover:bg-surface-3"
+                  onclick={(e) => { e.stopPropagation(); dismissSuggestion(app.url); }}
+                  title="Dismiss suggestion"
+                >
+                  <span class="i-lucide-x text-text-3"></span>
+                </button>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
     </section>
   </div>
 </div>
