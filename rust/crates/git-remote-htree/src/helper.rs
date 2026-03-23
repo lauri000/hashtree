@@ -117,17 +117,51 @@ fn format_upload_progress(
     }
 }
 
+fn format_upload_progress_discovering(
+    processed: usize,
+    discovered: usize,
+    uploaded: usize,
+    skipped_diff: usize,
+    skipped_server: usize,
+    failed: usize,
+    has_old_tree: bool,
+) -> String {
+    if has_old_tree {
+        if failed > 0 {
+            format!(
+                "  Uploading: {}/? ({} discovered, {} new, {} unchanged, {} exist, {} FAILED)",
+                processed, discovered, uploaded, skipped_diff, skipped_server, failed
+            )
+        } else {
+            format!(
+                "  Uploading: {}/? ({} discovered, {} new, {} unchanged, {} exist)",
+                processed, discovered, uploaded, skipped_diff, skipped_server
+            )
+        }
+    } else if failed > 0 {
+        format!(
+            "  Uploading: {}/? ({} discovered, {} new, {} exist, {} FAILED)",
+            processed, discovered, uploaded, skipped_server, failed
+        )
+    } else {
+        format!(
+            "  Uploading: {}/? ({} discovered, {} new, {} exist)",
+            processed, discovered, uploaded, skipped_server
+        )
+    }
+}
+
 fn emit_upload_progress(
     processed: usize,
-    total: usize,
+    discovered: usize,
+    total: Option<usize>,
     uploaded: usize,
     skipped_diff: usize,
     skipped_server: usize,
     failed: usize,
     has_old_tree: bool,
 ) {
-    eprint!(
-        "\r{}",
+    let line = if let Some(total) = total {
         format_upload_progress(
             processed,
             total,
@@ -137,7 +171,18 @@ fn emit_upload_progress(
             failed,
             has_old_tree,
         )
-    );
+    } else {
+        format_upload_progress_discovering(
+            processed,
+            discovered,
+            uploaded,
+            skipped_diff,
+            skipped_server,
+            failed,
+            has_old_tree,
+        )
+    };
+    eprint!("\r{}", line);
     let _ = std::io::stderr().flush();
 }
 
@@ -1566,7 +1611,7 @@ impl RemoteHelper {
         let verbose = self.is_slow(); // Capture before async block
         let force_upload = self.config.blossom.force_upload;
         let success = rt.block_on(async {
-            use std::sync::atomic::{AtomicUsize, Ordering};
+            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
             use std::sync::Arc;
             use tokio::sync::mpsc;
             use hashtree_core::{HashTree, HashTreeConfig, Cid, collect_hashes};
@@ -1577,6 +1622,7 @@ impl RemoteHelper {
             let failed = Arc::new(AtomicUsize::new(0));
             let completed = Arc::new(AtomicUsize::new(0));
             let total_seen = Arc::new(AtomicUsize::new(0));
+            let discovery_complete = Arc::new(AtomicBool::new(false));
 
             // Collect old tree hashes if we have an old root
             let old_hashes: HashSet<[u8; 32]> = if let Some(old_root) = old_root_bytes {
@@ -1682,6 +1728,7 @@ impl RemoteHelper {
                 let completed = Arc::clone(&completed);
                 let skipped_diff = Arc::clone(&skipped_diff);
                 let total_seen = Arc::clone(&total_seen);
+                let discovery_complete = Arc::clone(&discovery_complete);
                 let servers_needing_full = Arc::clone(&servers_needing_full);
 
                 tokio::spawn(async move {
@@ -1698,6 +1745,7 @@ impl RemoteHelper {
                             let completed = Arc::clone(&completed);
                             let skipped_diff = Arc::clone(&skipped_diff);
                             let total_seen = Arc::clone(&total_seen);
+                            let discovery_complete = Arc::clone(&discovery_complete);
                             let servers_needing_full = Arc::clone(&servers_needing_full);
                             async move {
                                 // If from old tree and some servers need full upload, push the
@@ -1719,9 +1767,14 @@ impl RemoteHelper {
                                 }
                                 let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
                                 if count == 1 || count.is_multiple_of(10) {
+                                    let discovered = total_seen.load(Ordering::Relaxed);
+                                    let total = discovery_complete
+                                        .load(Ordering::Relaxed)
+                                        .then_some(discovered);
                                     emit_upload_progress(
                                         count,
-                                        total_seen.load(Ordering::Relaxed),
+                                        discovered,
+                                        total,
                                         uploaded.load(Ordering::Relaxed),
                                         skipped_diff.load(Ordering::Relaxed),
                                         skipped_server.load(Ordering::Relaxed),
@@ -1742,7 +1795,10 @@ impl RemoteHelper {
             let mut visited: HashSet<[u8; 32]> = HashSet::new();
             let mut queue: Vec<([u8; 32], Option<[u8; 32]>)> = vec![(root_bytes, encryption_key.copied())];
 
-            eprint!("{}", format_upload_progress(0, 0, 0, 0, 0, 0, has_old_tree));
+            eprint!(
+                "{}",
+                format_upload_progress_discovering(0, 0, 0, 0, 0, 0, has_old_tree)
+            );
             let _ = std::io::stderr().flush();
 
             while let Some((hash, key)) = queue.pop() {
@@ -1776,6 +1832,7 @@ impl RemoteHelper {
                             emit_upload_progress(
                                 count,
                                 seen_count,
+                                None,
                                 uploaded.load(Ordering::Relaxed),
                                 skipped_diff.load(Ordering::Relaxed),
                                 skipped_server.load(Ordering::Relaxed),
@@ -1801,6 +1858,7 @@ impl RemoteHelper {
                             emit_upload_progress(
                                 count,
                                 seen_count,
+                                None,
                                 uploaded.load(Ordering::Relaxed),
                                 skipped_diff.load(Ordering::Relaxed),
                                 skipped_server.load(Ordering::Relaxed),
@@ -1818,6 +1876,7 @@ impl RemoteHelper {
                             emit_upload_progress(
                                 count,
                                 seen_count,
+                                None,
                                 uploaded.load(Ordering::Relaxed),
                                 skipped_diff.load(Ordering::Relaxed),
                                 skipped_server.load(Ordering::Relaxed),
@@ -1860,6 +1919,7 @@ impl RemoteHelper {
                     emit_upload_progress(
                         completed.load(Ordering::Relaxed),
                         seen_count,
+                        None,
                         uploaded.load(Ordering::Relaxed),
                         skipped_diff.load(Ordering::Relaxed),
                         skipped_server.load(Ordering::Relaxed),
@@ -1868,6 +1928,20 @@ impl RemoteHelper {
                     );
                 }
             }
+
+            discovery_complete.store(true, Ordering::Relaxed);
+
+            let final_total_seen = total_seen.load(Ordering::Relaxed);
+            emit_upload_progress(
+                completed.load(Ordering::Relaxed),
+                final_total_seen,
+                Some(final_total_seen),
+                uploaded.load(Ordering::Relaxed),
+                skipped_diff.load(Ordering::Relaxed),
+                skipped_server.load(Ordering::Relaxed),
+                failed.load(Ordering::Relaxed),
+                has_old_tree,
+            );
 
             // Close channel and wait for uploads to complete
             drop(tx);
@@ -1878,12 +1952,12 @@ impl RemoteHelper {
             let final_skipped_server = skipped_server.load(Ordering::Relaxed);
             let final_failed = failed.load(Ordering::Relaxed);
             let final_completed = completed.load(Ordering::Relaxed);
-            let final_total_seen = total_seen.load(Ordering::Relaxed);
 
             // Final progress
             emit_upload_progress(
                 final_completed,
                 final_total_seen,
+                Some(final_total_seen),
                 final_uploaded,
                 final_skipped_diff,
                 final_skipped_server,
@@ -2777,10 +2851,26 @@ force_upload = {force_upload}
     }
 
     #[test]
+    fn test_upload_progress_uses_unknown_total_while_discovering_old_tree() {
+        assert_eq!(
+            format_upload_progress_discovering(12, 34, 7, 5, 0, 0, true),
+            "  Uploading: 12/? (34 discovered, 7 new, 5 unchanged, 0 exist)"
+        );
+    }
+
+    #[test]
     fn test_upload_progress_includes_processed_over_total_for_new_tree_failures() {
         assert_eq!(
             format_upload_progress(12, 34, 7, 0, 5, 2, false),
             "  Uploading: 12/34 (7 new, 5 exist, 2 FAILED)"
+        );
+    }
+
+    #[test]
+    fn test_upload_progress_uses_unknown_total_while_discovering_new_tree_failures() {
+        assert_eq!(
+            format_upload_progress_discovering(12, 34, 7, 0, 5, 2, false),
+            "  Uploading: 12/? (34 discovered, 7 new, 5 exist, 2 FAILED)"
         );
     }
 
