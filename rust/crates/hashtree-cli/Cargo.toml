@@ -20,17 +20,17 @@ required-features = ["git-remote-wrapper"]
 
 [dependencies]
 # Git remote helper
-git-remote-htree = { version = "0.2.12", path = "../git-remote-htree" }
+git-remote-htree = { version = "0.2.13", path = "../git-remote-htree" }
 
 # Core hashtree crates
 hashtree-core.workspace = true
 hashtree-fs.workspace = true
-hashtree-fuse = { version = "0.2.12", path = "../fuse", optional = true, features = ["fuse"] }
+hashtree-fuse = { version = "0.2.13", path = "../fuse", optional = true, features = ["fuse"] }
 hashtree-lmdb = { workspace = true, optional = true }
 hashtree-blossom.workspace = true
 hashtree-config.workspace = true
 hashtree-nostr.workspace = true
-hashtree-nostr-bridge = { version = "0.2.12", path = "../hashtree-nostr-bridge" }
+hashtree-nostr-bridge = { version = "0.2.13", path = "../hashtree-nostr-bridge" }
 hashtree-resolver = { workspace = true, features = ["nostr"] }
 hashtree-webrtc = { workspace = true, optional = true }
 
@@ -102,7 +102,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rustls = { version = "0.23", features = ["ring"] }
 
 [features]
-default = ["p2p"]
+default = ["p2p", "lmdb"]
 cashu = ["dep:cdk", "dep:cdk-sqlite"]
 p2p = ["dep:hashtree-webrtc", "dep:webrtc"]
 stun = ["p2p", "dep:webrtc-stun"]

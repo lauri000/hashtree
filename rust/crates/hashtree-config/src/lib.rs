@@ -76,17 +76,17 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageBackend {
-    /// Filesystem storage (default) - stores in ~/.hashtree/blobs/{prefix}/{hash}
-    #[default]
-    Fs,
     /// LMDB storage - requires lmdb feature
+    #[default]
     Lmdb,
+    /// Filesystem storage - stores in ~/.hashtree/blobs/{prefix}/{hash}
+    Fs,
 }
 
 /// Storage configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
-    /// Storage backend: "fs" (default) or "lmdb"
+    /// Storage backend: "lmdb" (default) or "fs"
     #[serde(default)]
     pub backend: StorageBackend,
     #[serde(default = "default_data_dir")]
@@ -658,7 +658,7 @@ write_servers = ["https://custom.server"]
     #[test]
     fn test_storage_backend_default() {
         let config = Config::default();
-        assert_eq!(config.storage.backend, StorageBackend::Fs);
+        assert_eq!(config.storage.backend, StorageBackend::Lmdb);
     }
 
     #[test]

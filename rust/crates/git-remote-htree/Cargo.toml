@@ -61,7 +61,7 @@ clap.workspace = true
 rustls = { version = "0.23", features = ["ring"] }
 
 [features]
-default = []
+default = ["lmdb"]
 lmdb = ["dep:hashtree-lmdb"]
 
 [dev-dependencies]
