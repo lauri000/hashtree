@@ -109,6 +109,36 @@ test.describe('Iris Boards App', () => {
     expect(workerCrashed).toBe(false);
   });
 
+  test('create and edit column modals autofocus the column title input', async ({ page }) => {
+    setupPageErrorHandler(page);
+    await page.goto('/boards.html#/');
+    await waitForAppReady(page);
+    await disableOthersPool(page);
+    await ensureLoggedIn(page, 30000);
+    await waitForRelayConnected(page, 30000);
+
+    const boardName = `E2E Column Focus ${Date.now()}`;
+    await createBoard(page, boardName);
+
+    await page.getByRole('button', { name: /^add column$/i }).click();
+    await expect(page.getByRole('heading', { name: 'Create Column' })).toBeVisible({ timeout: 10000 });
+    const createInput = page.getByLabel('Column title');
+    await expect(createInput).toBeFocused();
+    await createInput.fill('Inbox');
+    await page.getByRole('button', { name: /^create column$/i }).click();
+    await expect(page.getByRole('heading', { name: 'Create Column' })).toHaveCount(0);
+
+    const todoColumn = page.getByTestId('board-column-Todo');
+    await expect(todoColumn).toBeVisible({ timeout: 10000 });
+    await todoColumn.hover();
+    await todoColumn.getByRole('button', { name: /edit column/i }).click();
+    await expect(page.getByRole('heading', { name: 'Edit Column' })).toBeVisible({ timeout: 10000 });
+
+    const editInput = page.getByLabel('Column title');
+    await expect(editInput).toBeFocused();
+    await expect(editInput).toHaveValue('Todo');
+  });
+
   test('trello-like cards use modal editing and can be dragged between columns', async ({ page }) => {
     setupPageErrorHandler(page);
     await page.goto('/boards.html#/');

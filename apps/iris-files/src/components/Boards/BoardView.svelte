@@ -138,6 +138,7 @@
   let columnModalColumnId = $state<string | null>(null);
   let columnDraftTitle = $state('');
   let columnFormError = $state('');
+  let columnTitleInputRef = $state<HTMLInputElement | null>(null);
 
   interface DragCardState {
     cardId: string;
@@ -185,6 +186,15 @@
     const card = column?.cards.find(item => item.id === cardViewCardId);
     if (!column || !card) return null;
     return { column, card };
+  });
+
+  $effect(() => {
+    if (showColumnModal && columnTitleInputRef) {
+      columnTitleInputRef.focus();
+      if (columnModalMode === 'edit') {
+        columnTitleInputRef.select();
+      }
+    }
   });
 
   function boardDisplayName(treeName: string | null): string {
@@ -2168,6 +2178,7 @@
           <input
             id="board-column-title"
             class="input w-full text-sm"
+            bind:this={columnTitleInputRef}
             bind:value={columnDraftTitle}
             placeholder="Backlog"
           />
