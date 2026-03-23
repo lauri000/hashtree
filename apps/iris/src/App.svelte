@@ -36,6 +36,7 @@
   type NavigateOptions = {
     pushHistory?: boolean;
     prewarmSuggestedTreeRoot?: boolean;
+    preferPlainLoopbackHost?: boolean;
   };
 
   const CHILD_LABEL = 'content';
@@ -44,6 +45,7 @@
   const DESKTOP_TRAFFIC_LIGHTS_PADDING = 88;
   const MOBILE_CHILD_WEBVIEWS_UNSUPPORTED = 'Mobile child webviews are not supported yet';
   const BLANK_SUGGESTED_TREE_RECOVERY_DELAY_MS = 1500;
+  const HTREE_LOAD_STALL_RECOVERY_DELAY_MS = 3000;
   const MACOS_FUNCTION_KEY_GLYPHS = /[\uF700-\uF8FF]/g;
   const MACOS_FUNCTION_KEY_GLYPHS_SINGLE = /[\uF700-\uF8FF]/;
   const LEGACY_MACOS_ARROW_KEY_CODES = new Set([63232, 63233, 63234, 63235]);
@@ -69,6 +71,7 @@
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let blurTimer: ReturnType<typeof setTimeout> | null = null;
   let blankSuggestedTreeRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  let childLoadStallRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
   let boundsRaf: number | null = null;
   let automationSyncRaf: number | null = null;
   let dropdownEl: HTMLDivElement | null = $state(null);
@@ -96,6 +99,8 @@
   let childMediaSummary = $state('');
   let childLastError = $state('');
   let childWebviewReady = $state(!!g.__irisChildReady);
+  let childUsesPlainLoopbackTransport = $state(false);
+  const plainLoopbackFallbackScopes = new Set<string>();
 
   let canGoBack = $derived(
     (currentView === 'webview' && webviewNavDepth > 0) ||
@@ -461,6 +466,13 @@
     }
   }
 
+  function clearChildLoadStallRecoveryTimer() {
+    if (childLoadStallRecoveryTimer) {
+      clearTimeout(childLoadStallRecoveryTimer);
+      childLoadStallRecoveryTimer = null;
+    }
+  }
+
   function hasSuggestedTreeRootHint(url: string): boolean {
     const htree = parseHtreeUrl(url);
     return !!getSuggestedTreeRootHint(htree?.npub, htree?.treename);
@@ -473,8 +485,35 @@
       !!childLastError.trim();
   }
 
+  function shouldUsePlainLoopbackTransport(url: string, preferPlainLoopbackHost: boolean): boolean {
+    return preferPlainLoopbackHost || plainLoopbackFallbackScopes.has(browserIsolationScope(url));
+  }
+
+  function scheduleHtreeLoadStallRecovery(url: string) {
+    clearChildLoadStallRecoveryTimer();
+    if (!parseHtreeUrl(url)) return;
+
+    const scheduledUrl = url;
+    childLoadStallRecoveryTimer = setTimeout(() => {
+      childLoadStallRecoveryTimer = null;
+      if (
+        currentView !== 'webview' ||
+        currentUrl !== scheduledUrl ||
+        childPageLoadState !== 'started' ||
+        hasChildDiagnosticsSnapshot()
+      ) {
+        return;
+      }
+      void recoverHtreeWebview(scheduledUrl, {
+        reason: 'stalled-start',
+        preferPlainLoopbackHost: true,
+      });
+    }, HTREE_LOAD_STALL_RECOVERY_DELAY_MS);
+  }
+
   function resetChildDiagnostics(loadState: string = 'idle', loadUrl: string = '') {
     clearBlankSuggestedTreeRecoveryTimer();
+    clearChildLoadStallRecoveryTimer();
     childPageLoadState = loadState;
     childPageLoadUrl = loadUrl;
     childDocumentTitle = '';
@@ -491,6 +530,7 @@
       // Webview might not exist, that's fine
     }
     setChildWebviewReady(false);
+    childUsesPlainLoopbackTransport = false;
     resetChildDiagnostics();
     scheduleAutomationStateSync();
   }
@@ -519,11 +559,20 @@
     const {
       pushHistory = true,
       prewarmSuggestedTreeRoot = false,
+      preferPlainLoopbackHost = false,
     } = options;
+    const htree = parseHtreeUrl(url);
+    const usePlainLoopbackTransport = htree
+      ? shouldUsePlainLoopbackTransport(url, preferPlainLoopbackHost)
+      : false;
 
     // Destroy existing child webview when switching origins or entering webview
     if (g.__irisChildReady) {
-      if (currentView !== 'webview' || shouldRecreateBrowserForUrl(url, currentUrl)) {
+      if (
+        currentView !== 'webview' ||
+        shouldRecreateBrowserForUrl(url, currentUrl) ||
+        (htree && usePlainLoopbackTransport)
+      ) {
         await destroyChildWebview();
       }
     }
@@ -544,7 +593,6 @@
     const height = Math.max(0, window.innerHeight - top - bottom);
 
     if (!g.__irisChildReady) {
-      const htree = parseHtreeUrl(url);
       try {
         if (htree) {
           const treeRootHint = prewarmSuggestedTreeRoot && htree.npub && htree.treename
@@ -571,9 +619,12 @@
             y,
             width,
             height,
+            usePlainLoopbackTransport,
           );
+          childUsesPlainLoopbackTransport = usePlainLoopbackTransport;
         } else {
           await createNip07Webview(CHILD_LABEL, url, x, y, width, height);
+          childUsesPlainLoopbackTransport = false;
         }
         setChildWebviewReady(true);
         scheduleWebviewBoundsUpdate();
@@ -588,6 +639,7 @@
         console.warn('[Iris] create webview failed, trying navigate:', createError);
         try {
           await navigateWebview(CHILD_LABEL, url);
+          childUsesPlainLoopbackTransport = false;
           setChildWebviewReady(true);
           scheduleWebviewBoundsUpdate();
           scheduleAutomationStateSync();
@@ -599,8 +651,11 @@
       }
     } else {
       await navigateWebview(CHILD_LABEL, url);
+      childUsesPlainLoopbackTransport = false;
       scheduleWebviewBoundsUpdate();
     }
+
+    scheduleHtreeLoadStallRecovery(url);
 
     if (pushHistory) {
       // Truncate any forward history, then push
@@ -708,7 +763,8 @@
       clearBlankSuggestedTreeRecoveryTimer();
       return;
     }
-    if (event.event === 'finished' && currentUrl && hasSuggestedTreeRootHint(currentUrl)) {
+    clearChildLoadStallRecoveryTimer();
+    if (event.event === 'finished' && currentUrl && parseHtreeUrl(currentUrl)) {
       const scheduledUrl = currentUrl;
       clearBlankSuggestedTreeRecoveryTimer();
       blankSuggestedTreeRecoveryTimer = setTimeout(() => {
@@ -721,15 +777,27 @@
         ) {
           return;
         }
-        void recoverSuggestedTreeRoot(scheduledUrl, 'blank');
+        void recoverHtreeWebview(scheduledUrl, {
+          reason: 'blank',
+          clearSuggestedTreeRootCache: hasSuggestedTreeRootHint(scheduledUrl),
+          preferPlainLoopbackHost: true,
+        });
       }, BLANK_SUGGESTED_TREE_RECOVERY_DELAY_MS);
     }
   }
 
-  async function recoverSuggestedTreeRoot(url: string, reason: string) {
+  async function recoverHtreeWebview(url: string, options: {
+    reason: string;
+    clearSuggestedTreeRootCache?: boolean;
+    preferPlainLoopbackHost?: boolean;
+  }) {
     const htree = parseHtreeUrl(url);
-    if (!htree?.npub || !htree.treename) return;
-    if (!getSuggestedTreeRootHint(htree.npub, htree.treename)) return;
+    if (!htree) return;
+    const {
+      reason,
+      clearSuggestedTreeRootCache = false,
+      preferPlainLoopbackHost = false,
+    } = options;
 
     const attemptKey = `${url}|${reason}`;
     const attempts = treeRootRecoveryAttempts.get(attemptKey) ?? 0;
@@ -738,20 +806,34 @@
 
     try {
       clearBlankSuggestedTreeRecoveryTimer();
-      await clearTreeRootCache(htree.npub, htree.treename, null, null)
-        .catch((error) => {
-          console.warn('[Iris] failed to clear suggested tree root cache:', error);
-        });
+      clearChildLoadStallRecoveryTimer();
+      if (preferPlainLoopbackHost) {
+        plainLoopbackFallbackScopes.add(browserIsolationScope(url));
+      }
+      if (clearSuggestedTreeRootCache && htree.npub && htree.treename) {
+        await clearTreeRootCache(htree.npub, htree.treename, null, null)
+          .catch((error) => {
+            console.warn('[Iris] failed to clear suggested tree root cache:', error);
+          });
+      }
       await destroyChildWebview();
-      await navigate(url, { pushHistory: false, prewarmSuggestedTreeRoot: false });
+      await navigate(url, {
+        pushHistory: false,
+        prewarmSuggestedTreeRoot: false,
+        preferPlainLoopbackHost,
+      });
     } catch (error) {
-      console.warn('[Iris] failed to recover suggested tree root:', error);
+      console.warn('[Iris] failed to recover htree webview:', error);
     }
   }
 
   async function maybeRecoverSuggestedTreeRoot(url: string, bodyText: string) {
     if (!RECOVERABLE_TREE_BODY_TEXTS.has(bodyText.trim())) return;
-    await recoverSuggestedTreeRoot(url, bodyText.trim());
+    await recoverHtreeWebview(url, {
+      reason: bodyText.trim(),
+      clearSuggestedTreeRootCache: hasSuggestedTreeRootHint(url),
+      preferPlainLoopbackHost: true,
+    });
   }
 
   function handleDiagnosticEvent(event: WebviewDiagnosticEvent) {

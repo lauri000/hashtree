@@ -41,11 +41,20 @@ export async function createNip07Webview(
 
 export async function createHtreeWebview(
   label: string,
-  opts: { host?: string; nhash?: string; npub?: string; treename?: string; path: string; query?: string; fragment?: string },
+  opts: {
+    host?: string;
+    nhash?: string;
+    npub?: string;
+    treename?: string;
+    path: string;
+    query?: string;
+    fragment?: string;
+  },
   x: number,
   y: number,
   width: number,
   height: number,
+  preferPlainLoopbackHost?: boolean,
 ): Promise<void> {
   return invoke<void>('create_htree_webview', {
     label,
@@ -61,6 +70,7 @@ export async function createHtreeWebview(
     width,
     height,
     scale: currentDeviceScale(),
+    preferPlainLoopbackHost: preferPlainLoopbackHost ?? null,
   });
 }
 

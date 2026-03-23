@@ -137,13 +137,11 @@ fn daemon_proxy_url_from_nhash(
     server_url: &str,
     nhash: &str,
     path: &str,
+    use_origin_isolated_hosts: bool,
 ) -> Result<String, String> {
     let canonical_root = htree_origin_from_nhash(nhash);
-    let loopback_server_url = loopback_server_url(
-        server_url,
-        &canonical_root,
-        use_origin_isolated_loopback_hosts(),
-    )?;
+    let loopback_server_url =
+        loopback_server_url(server_url, &canonical_root, use_origin_isolated_hosts)?;
     let mut segments = vec!["htree".to_string(), decode_url_component(nhash)];
     let path_segments = decode_path_segments(path);
     let is_tree_root = path_segments.is_empty();
@@ -161,13 +159,11 @@ fn daemon_proxy_url_from_tree_host(
     host: &str,
     treename: &str,
     path: &str,
+    use_origin_isolated_hosts: bool,
 ) -> Result<String, String> {
     let canonical_root = htree_origin_from_tree_host(host, treename);
-    let loopback_server_url = loopback_server_url(
-        server_url,
-        &canonical_root,
-        use_origin_isolated_loopback_hosts(),
-    )?;
+    let loopback_server_url =
+        loopback_server_url(server_url, &canonical_root, use_origin_isolated_hosts)?;
     let mut segments = vec![
         "htree".to_string(),
         decode_url_component(host),
@@ -1495,9 +1491,12 @@ pub async fn create_htree_webview<R: Runtime>(
     width: f64,
     height: f64,
     _scale: Option<f64>,
+    prefer_plain_loopback_host: Option<bool>,
 ) -> Result<(), String> {
     let server_url =
         crate::htree_protocol::get_htree_server_url().ok_or("htree server not running")?;
+    let use_origin_isolated_hosts =
+        use_origin_isolated_loopback_hosts() && !prefer_plain_loopback_host.unwrap_or(false);
 
     // The child webview keeps a canonical htree:// identity for permissions and
     // diagnostics, but it loads over a per-root loopback host so the browser's
@@ -1535,7 +1534,7 @@ pub async fn create_htree_webview<R: Runtime>(
                 )
             };
             let actual_url = append_query(
-                daemon_proxy_url_from_nhash(&server_url, nhash, &path)?,
+                daemon_proxy_url_from_nhash(&server_url, nhash, &path, use_origin_isolated_hosts)?,
                 query.as_deref(),
             );
             let actual_url = append_query_params(
@@ -1546,9 +1545,10 @@ pub async fn create_htree_webview<R: Runtime>(
                 ],
             )?;
             let actual_url = append_fragment(actual_url, fragment.as_deref());
-            let actual_root = daemon_proxy_url_from_nhash(&server_url, nhash, "/")?
-                .trim_end_matches('/')
-                .to_string();
+            let actual_root =
+                daemon_proxy_url_from_nhash(&server_url, nhash, "/", use_origin_isolated_hosts)?
+                    .trim_end_matches('/')
+                    .to_string();
             let origin = canonical_root.clone();
             (
                 canonical_url,
@@ -1575,7 +1575,13 @@ pub async fn create_htree_webview<R: Runtime>(
                 .trim_end_matches('/')
                 .to_string();
             let actual_url = append_query(
-                daemon_proxy_url_from_tree_host(&server_url, resolved_host, treename, &path)?,
+                daemon_proxy_url_from_tree_host(
+                    &server_url,
+                    resolved_host,
+                    treename,
+                    &path,
+                    use_origin_isolated_hosts,
+                )?,
                 query.as_deref(),
             );
             let actual_url = append_query_params(
@@ -1586,10 +1592,15 @@ pub async fn create_htree_webview<R: Runtime>(
                 ],
             )?;
             let actual_url = append_fragment(actual_url, fragment.as_deref());
-            let actual_root =
-                daemon_proxy_url_from_tree_host(&server_url, resolved_host, treename, "/")?
-                    .trim_end_matches('/')
-                    .to_string();
+            let actual_root = daemon_proxy_url_from_tree_host(
+                &server_url,
+                resolved_host,
+                treename,
+                "/",
+                use_origin_isolated_hosts,
+            )?
+            .trim_end_matches('/')
+            .to_string();
             let origin = canonical_root.clone();
             (
                 canonical_url,
@@ -1761,6 +1772,7 @@ pub async fn create_htree_webview<R: Runtime>(
     width: f64,
     height: f64,
     scale: f64,
+    _prefer_plain_loopback_host: Option<bool>,
 ) -> Result<(), String> {
     let server_url =
         crate::htree_protocol::get_htree_server_url().ok_or("htree server not running")?;
@@ -1776,7 +1788,12 @@ pub async fn create_htree_webview<R: Runtime>(
                 .trim_end_matches('/')
                 .to_string();
             let actual_url = append_query(
-                daemon_proxy_url_from_nhash(&server_url, request_host, &path)?,
+                daemon_proxy_url_from_nhash(
+                    &server_url,
+                    request_host,
+                    &path,
+                    use_origin_isolated_loopback_hosts(),
+                )?,
                 query.as_deref(),
             );
             let actual_url = append_query_params(
@@ -1787,9 +1804,14 @@ pub async fn create_htree_webview<R: Runtime>(
                 ],
             )?;
             let actual_url = append_fragment(actual_url, fragment.as_deref());
-            let actual_root = daemon_proxy_url_from_nhash(&server_url, request_host, "/")?
-                .trim_end_matches('/')
-                .to_string();
+            let actual_root = daemon_proxy_url_from_nhash(
+                &server_url,
+                request_host,
+                "/",
+                use_origin_isolated_loopback_hosts(),
+            )?
+            .trim_end_matches('/')
+            .to_string();
             let origin = canonical_root.clone();
             (
                 canonical_url,
@@ -1816,7 +1838,13 @@ pub async fn create_htree_webview<R: Runtime>(
                 .trim_end_matches('/')
                 .to_string();
             let actual_url = append_query(
-                daemon_proxy_url_from_tree_host(&server_url, resolved_host, treename, &path)?,
+                daemon_proxy_url_from_tree_host(
+                    &server_url,
+                    resolved_host,
+                    treename,
+                    &path,
+                    use_origin_isolated_loopback_hosts(),
+                )?,
                 query.as_deref(),
             );
             let actual_url = append_query_params(
@@ -1827,10 +1855,15 @@ pub async fn create_htree_webview<R: Runtime>(
                 ],
             )?;
             let actual_url = append_fragment(actual_url, fragment.as_deref());
-            let actual_root =
-                daemon_proxy_url_from_tree_host(&server_url, resolved_host, treename, "/")?
-                    .trim_end_matches('/')
-                    .to_string();
+            let actual_root = daemon_proxy_url_from_tree_host(
+                &server_url,
+                resolved_host,
+                treename,
+                "/",
+                use_origin_isolated_loopback_hosts(),
+            )?
+            .trim_end_matches('/')
+            .to_string();
             let origin = canonical_root.clone();
             (
                 canonical_url,
@@ -2282,6 +2315,7 @@ mod tests {
             "npub1example",
             "videos/My Clip",
             "/index.html",
+            use_origin_isolated_loopback_hosts(),
         )
         .unwrap();
         let parsed = tauri::Url::parse(&url).expect("valid URL");
@@ -2302,9 +2336,14 @@ mod tests {
 
     #[test]
     fn daemon_proxy_tree_root_urls_keep_trailing_slash() {
-        let url =
-            daemon_proxy_url_from_tree_host("http://127.0.0.1:21417", "npub1example", "video", "/")
-                .unwrap();
+        let url = daemon_proxy_url_from_tree_host(
+            "http://127.0.0.1:21417",
+            "npub1example",
+            "video",
+            "/",
+            use_origin_isolated_loopback_hosts(),
+        )
+        .unwrap();
         assert!(
             url.ends_with("/htree/npub1example/video/"),
             "expected tree root URL to keep trailing slash, got {url}"
@@ -2313,9 +2352,13 @@ mod tests {
 
     #[test]
     fn daemon_proxy_nhash_urls_use_embedded_server_paths() {
-        let url =
-            daemon_proxy_url_from_nhash("http://127.0.0.1:21417", "nhash1example", "/poster.png")
-                .unwrap();
+        let url = daemon_proxy_url_from_nhash(
+            "http://127.0.0.1:21417",
+            "nhash1example",
+            "/poster.png",
+            use_origin_isolated_loopback_hosts(),
+        )
+        .unwrap();
         let parsed = tauri::Url::parse(&url).expect("valid URL");
         assert_eq!(parsed.path(), "/htree/nhash1example/poster.png");
         let host = parsed.host_str().expect("loopback host");
@@ -2385,6 +2428,21 @@ mod tests {
         assert_ne!(owner_a_host, owner_b_host);
         assert_ne!(owner_a_host, nhash_host);
         assert_ne!(owner_b_host, nhash_host);
+    }
+
+    #[test]
+    fn daemon_proxy_tree_urls_can_use_plain_loopback_hosts_when_requested() {
+        let url = daemon_proxy_url_from_tree_host(
+            "http://127.0.0.1:21417",
+            "npub1example",
+            "video",
+            "/index.html",
+            false,
+        )
+        .unwrap();
+        let parsed = tauri::Url::parse(&url).expect("valid URL");
+        assert_eq!(parsed.host_str(), Some("127.0.0.1"));
+        assert_eq!(parsed.path(), "/htree/npub1example/video/index.html");
     }
 
     #[test]

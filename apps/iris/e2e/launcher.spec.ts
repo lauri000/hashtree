@@ -165,6 +165,32 @@ test.describe('App Launcher', () => {
     expect(createCalls[1].args.path).toBe('/');
   });
 
+  test('stalled htree suggestion load recreates the webview with plain loopback transport', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const suggestions = page.locator('section').filter({
+      has: page.getByRole('heading', { name: 'Suggestions' }),
+    });
+    await suggestions.getByText('Iris Video').click();
+
+    await expect.poll(async () => {
+      return {
+        closeCalls: (await getInvocationsFor(page, 'close_webview')).length,
+        createCalls: (await getInvocationsFor(page, 'create_htree_webview')).length,
+      };
+    }, { timeout: 5000 }).toEqual({
+      closeCalls: 1,
+      createCalls: 2,
+    });
+
+    const createCalls = await getInvocationsFor(page, 'create_htree_webview');
+    expect(createCalls[0].args.preferPlainLoopbackHost).toBe(false);
+    expect(createCalls[1].args.host).toBe(distributedOwner);
+    expect(createCalls[1].args.treename).toBe('video');
+    expect(createCalls[1].args.path).toBe('/');
+    expect(createCalls[1].args.preferPlainLoopbackHost).toBe(true);
+  });
+
   test('dismissed suggestions stay hidden after reload', async ({ tauriPage: page }) => {
     await openHome(page);
 
