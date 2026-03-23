@@ -7,6 +7,9 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUST_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
 DRY_RUN=""
 ALLOW_DIRTY="--allow-dirty"
 
@@ -50,6 +53,8 @@ publish_crate() {
 echo "Publishing hashtree crates to crates.io"
 echo ""
 
+cd "$RUST_DIR"
+
 # Check if logged in
 if [[ -z "$DRY_RUN" ]]; then
     echo "Checking crates.io authentication..."
@@ -65,6 +70,7 @@ publish_crate "hashtree-config"
 # hashtree-bep52 excluded - internal testing only
 
 # Tier 2: Depends on hashtree-core only
+publish_crate "hashtree-index"
 publish_crate "hashtree-lmdb"
 publish_crate "hashtree-fs"
 publish_crate "hashtree-fuse"
@@ -73,13 +79,15 @@ publish_crate "hashtree-blossom"  # optional deps on core, config
 publish_crate "hashtree-resolver"
 # hashtree-sim excluded - internal testing only
 
-# Tier 3: Depends on hashtree-core only (hashtree-sim is dev-dependency)
+# Tier 3: Depends on published core/index crates
+publish_crate "hashtree-nostr"
 publish_crate "hashtree-webrtc"
 
-# Tier 5: Depends on multiple crates
+# Tier 4: Depends on multiple crates
 publish_crate "git-remote-htree"
-publish_crate "hashtree-cashu-cli"
+publish_crate "hashtree-nostr-bridge"
 publish_crate "hashtree-cli"  # depends on git-remote-htree
+publish_crate "hashtree-cashu-cli"  # depends on hashtree-cli
 
 echo ""
 echo "=========================================="
