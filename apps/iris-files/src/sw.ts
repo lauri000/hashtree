@@ -17,6 +17,7 @@
 /// <reference lib="webworker" />
 import { precacheAndRoute } from 'workbox-precaching';
 import { shouldInterceptHtreeRequestForWorker } from './lib/swRoutePolicy';
+import { lookupWorkerPort, waitForWorkerPort } from './lib/swWorkerPort';
 
 declare let self: ServiceWorkerGlobalScope;
 
@@ -193,7 +194,16 @@ function handleWorkerMessage(event: MessageEvent): void {
     }
 
     case 'error': {
-      pending.reject(new Error(msg.message || 'Worker error'));
+      const headers = new Headers({
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cross-Origin-Resource-Policy': 'cross-origin',
+        'Cross-Origin-Embedder-Policy': 'credentialless',
+        'Access-Control-Allow-Origin': '*',
+      });
+      pending.resolve(new Response(msg.message || 'Worker error', {
+        status: typeof msg.status === 'number' ? msg.status : 500,
+        headers,
+      }));
       pendingRequests.delete(msg.requestId);
       break;
     }
@@ -255,8 +265,11 @@ const NPUB_PATTERN = /^npub1[a-z0-9]{58}$/;
 
 // Timeout for port responses
 // Must be long enough for: tree resolution + WebRTC peer attempts + Blossom fallback
-// 60s is more realistic for slow networks and peer discovery
-const PORT_TIMEOUT = 60000;
+// 20s covers the worker-side root wait and keeps stale-port failures bounded.
+const PORT_TIMEOUT = 20000;
+const PORT_REGISTRATION_WAIT_MS = 8000;
+const PORT_REGISTRATION_RETRY_WAIT_MS = 3000;
+const PORT_REGISTRATION_INTERVAL_MS = 50;
 
 /**
  * Guess MIME type from file path/extension
@@ -349,6 +362,37 @@ async function getWorkerPortForClient(clientId?: string | null): Promise<Message
   return defaultWorkerPort;
 }
 
+function lookupRegisteredWorkerPort(
+  clientId?: string | null,
+  clientKey?: string | null,
+): MessagePort | null {
+  return lookupWorkerPort(
+    {
+      byClientId: workerPorts,
+      byClientKey: workerPortsByClientKey,
+      defaultPort: defaultWorkerPort,
+    },
+    clientId,
+    clientKey,
+  );
+}
+
+function dropWorkerPortRegistration(
+  port: MessagePort,
+  clientId?: string | null,
+  clientKey?: string | null,
+): void {
+  if (clientKey && workerPortsByClientKey.get(clientKey) === port) {
+    workerPortsByClientKey.delete(clientKey);
+  }
+  if (clientId && workerPorts.get(clientId) === port) {
+    workerPorts.delete(clientId);
+  }
+  if (defaultWorkerPort === port) {
+    defaultWorkerPort = null;
+  }
+}
+
 function normalizeClientUrl(url: string): string {
   try {
     const parsed = new URL(url);
@@ -375,9 +419,9 @@ async function serveFile(
   clientKey?: string | null,
   referrer?: string | null
 ): Promise<Response> {
-  const directPort = clientKey ? workerPortsByClientKey.get(clientKey) : null;
   const resolvedClientId = await resolveClientId(clientId, referrer);
-  const port = directPort ?? await getWorkerPortForClient(resolvedClientId);
+  let port = lookupRegisteredWorkerPort(resolvedClientId, clientKey)
+    ?? await getWorkerPortForClient(resolvedClientId);
   const debug = resolveDebug(resolvedClientId ?? clientId ?? null, clientKey);
   swLog(debug, 'request:start', {
     requestId: request.requestId,
@@ -390,15 +434,46 @@ async function serveFile(
     clientId: resolvedClientId ?? clientId ?? null,
     clientKey: clientKey ?? null,
   });
+  if (!port) {
+    swLog(debug, 'request:wait-for-port', {
+      requestId: request.requestId,
+      clientId: resolvedClientId ?? clientId ?? null,
+      clientKey: clientKey ?? null,
+    });
+    port = await waitForWorkerPort(
+      () => lookupRegisteredWorkerPort(resolvedClientId, clientKey),
+      {
+        timeoutMs: PORT_REGISTRATION_WAIT_MS,
+        intervalMs: PORT_REGISTRATION_INTERVAL_MS,
+      },
+    );
+  }
   if (port) {
     try {
       return await serveFileViaWorker(request, port, debug);
     } catch (error) {
+      dropWorkerPortRegistration(port, resolvedClientId, clientKey);
       console.warn('[SW] Worker path failed, falling back to clients:', error);
       swLog(debug, 'request:worker-failed', {
         requestId: request.requestId,
         error: error instanceof Error ? error.message : String(error),
       });
+
+      const retriedPort = await waitForWorkerPort(
+        () => lookupRegisteredWorkerPort(resolvedClientId, clientKey),
+        {
+          timeoutMs: PORT_REGISTRATION_RETRY_WAIT_MS,
+          intervalMs: PORT_REGISTRATION_INTERVAL_MS,
+        },
+      );
+      if (retriedPort) {
+        swLog(debug, 'request:worker-retry', {
+          requestId: request.requestId,
+          clientId: resolvedClientId ?? clientId ?? null,
+          clientKey: clientKey ?? null,
+        });
+        return await serveFileViaWorker(request, retriedPort, debug);
+      }
     }
   } else {
     swLog(debug, 'request:no-port', { requestId: request.requestId });

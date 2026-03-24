@@ -325,11 +325,15 @@ interface StableThumbnailUrlOptions {
   treeName?: string | null;
   videoId?: string;
   hashPrefix?: string;
+  allowAliasFallback?: boolean;
 }
 
 export function getStableThumbnailUrl(options: StableThumbnailUrlOptions): string | null {
   if (options.thumbnailUrl) {
     return options.thumbnailUrl;
+  }
+  if (options.allowAliasFallback === false) {
+    return null;
   }
   if (options.rootCid) {
     return getThumbnailUrlFromCid(options.rootCid, options.videoId);

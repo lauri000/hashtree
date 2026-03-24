@@ -137,4 +137,20 @@ describe('mediaUrl thumbnail helpers', () => {
       '/htree/npub1example/videos%2FTest%20Clip/clips/demo%20reel/thumbnail?v=deadbeef&htree_c=test-media-client',
     );
   });
+
+  it('can disable alias fallback when a caller only wants exact thumbnail urls', () => {
+    installWindow();
+
+    expect(
+      getStableThumbnailUrl({
+        rootCid: {
+          hash: fromHex('8'.repeat(64)),
+        },
+        npub: 'npub1example',
+        treeName: 'videos/Test Clip',
+        videoId: 'clips/demo reel',
+        allowAliasFallback: false,
+      }),
+    ).toBeNull();
+  });
 });

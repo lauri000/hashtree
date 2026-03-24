@@ -798,6 +798,7 @@
                   href={video.href}
                   title={playlistInfo?.title || video.title}
                   duration={video.duration ?? playlistInfo?.duration}
+                  thumbnailUrl={playlistInfo?.thumbnailUrl}
                   ownerPubkey={video.ownerPubkey}
                   ownerNpub={video.ownerNpub}
                   treeName={video.treeName}

@@ -14,6 +14,35 @@ async function main() {
     title: 'Iris Video',
     appName: 'video',
     screenshotPath,
+    validatePage: async (page) => {
+      const hasVisibleThumbs = await page.waitForFunction(() => {
+        const thumbs = Array.from(document.querySelectorAll('.aspect-video'));
+        return thumbs.some((thumb) => {
+          const rect = thumb.getBoundingClientRect();
+          return rect.bottom > 0 && rect.top < window.innerHeight && rect.width > 0 && rect.height > 0;
+        });
+      }, undefined, { timeout: 10000 }).then(() => true).catch(() => false);
+
+      if (!hasVisibleThumbs) {
+        return;
+      }
+
+      await page.waitForFunction(() => {
+        const thumbs = Array.from(document.querySelectorAll('.aspect-video'));
+        const visible = thumbs.filter((thumb) => {
+          const rect = thumb.getBoundingClientRect();
+          return rect.bottom > 0 && rect.top < window.innerHeight && rect.width > 0 && rect.height > 0;
+        }).slice(0, 6);
+
+        if (visible.length === 0) return false;
+
+        return visible.every((thumb) => {
+          if (thumb.querySelector('.i-lucide-video')) return true;
+          const img = thumb.querySelector('img');
+          return !!img && !!img.currentSrc && img.complete && img.naturalWidth > 0;
+        });
+      }, undefined, { timeout: 30000 });
+    },
   });
 }
 

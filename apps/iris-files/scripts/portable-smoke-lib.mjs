@@ -63,7 +63,7 @@ async function startServer(rootDir) {
   };
 }
 
-export async function runPortableSmoke({ distDir, title, appName, screenshotPath }) {
+export async function runPortableSmoke({ distDir, title, appName, screenshotPath, validatePage }) {
   const { server, url } = await startServer(distDir);
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
@@ -135,6 +135,10 @@ export async function runPortableSmoke({ distDir, title, appName, screenshotPath
     if (!hasBrand && !hasLogin) {
       const bodyPreview = (await page.locator('body').innerText()).slice(0, 500);
       throw new Error(`Portable build did not render the ${appName} shell. Body preview: ${bodyPreview}`);
+    }
+
+    if (typeof validatePage === 'function') {
+      await validatePage(page);
     }
 
     if (pageErrors.length > 0) {
