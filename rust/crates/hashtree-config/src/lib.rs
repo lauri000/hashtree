@@ -623,12 +623,10 @@ mod tests {
         assert!(!config.blossom.read_servers.is_empty());
         assert!(!config.blossom.write_servers.is_empty());
         assert!(!config.nostr.relays.is_empty());
-        assert!(
-            config
-                .nostr
-                .relays
-                .contains(&"wss://upload.iris.to/nostr".to_string())
-        );
+        assert!(config
+            .nostr
+            .relays
+            .contains(&"wss://upload.iris.to/nostr".to_string()));
     }
 
     #[test]

@@ -27,6 +27,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
+const CID_RANGE_STREAM_CHUNK_SIZE: u64 = 256 * 1024;
+
 pub async fn serve_root() -> impl IntoResponse {
     root_page()
 }
@@ -551,6 +553,57 @@ async fn read_file_range_cid_with_fetch<S: Store>(
             Err(err) => return Err(err.to_string()),
         }
     }
+}
+
+fn stream_file_range_cid_with_fetch(
+    state: AppState,
+    cid: Cid,
+    start: u64,
+    end_inclusive: u64,
+) -> impl futures::Stream<Item = Result<Bytes, std::io::Error>> {
+    stream::unfold(
+        (state, cid, start, end_inclusive, false),
+        |(state, cid, offset, end_inclusive, finished)| async move {
+            if finished || offset > end_inclusive {
+                return None;
+            }
+
+            let chunk_end_inclusive = offset
+                .saturating_add(CID_RANGE_STREAM_CHUNK_SIZE - 1)
+                .min(end_inclusive);
+            let chunk_end_exclusive = chunk_end_inclusive.saturating_add(1);
+            let tree = HashTree::new(HashTreeConfig::new(state.store.store_arc()).public());
+
+            match read_file_range_cid_with_fetch(
+                &state,
+                &tree,
+                &cid,
+                offset,
+                Some(chunk_end_exclusive),
+            )
+            .await
+            {
+                Ok(Some(data)) if !data.is_empty() => Some((
+                    Ok(Bytes::from(data)),
+                    (
+                        state,
+                        cid,
+                        chunk_end_inclusive.saturating_add(1),
+                        end_inclusive,
+                        false,
+                    ),
+                )),
+                Ok(Some(_)) | Ok(None) => Some((
+                    Err(std::io::Error::other("CID range returned no data")),
+                    (state, cid, end_inclusive, end_inclusive, true),
+                )),
+                Err(err) => Some((
+                    Err(std::io::Error::other(err)),
+                    (state, cid, end_inclusive, end_inclusive, true),
+                )),
+            }
+        },
+    )
 }
 
 async fn get_size_cid_with_fetch<S: Store>(
@@ -1215,29 +1268,14 @@ async fn serve_cid_with_range(
             };
 
             let end_exclusive = end_inclusive.saturating_add(1);
-            let data =
-                match read_file_range_cid_with_fetch(state, &tree, cid, start, Some(end_exclusive))
-                    .await
-                {
-                    Ok(Some(data)) => data,
-                    Ok(None) => {
-                        return Response::builder()
-                            .status(StatusCode::NOT_FOUND)
-                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                            .body(Body::from("Not found"))
-                            .unwrap();
-                    }
-                    Err(e) => {
-                        return Response::builder()
-                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                            .body(Body::from(format!("Error: {}", e)))
-                            .unwrap();
-                    }
-                };
-
-            let content_length = data.len();
+            let content_length = end_exclusive.saturating_sub(start) as usize;
             let content_range = format!("bytes {}-{}/{}", start, end_inclusive, total_size);
+            let body = Body::from_stream(stream_file_range_cid_with_fetch(
+                state.clone(),
+                cid.clone(),
+                start,
+                end_inclusive,
+            ));
 
             let mut builder = Response::builder()
                 .status(StatusCode::PARTIAL_CONTENT)
@@ -1253,7 +1291,7 @@ async fn serve_cid_with_range(
             if is_localhost {
                 builder = builder.header("X-Source", "local");
             }
-            return builder.body(Body::from(data)).unwrap();
+            return builder.body(body).unwrap();
         }
     }
 
@@ -2348,9 +2386,11 @@ mod tests {
         Router,
     };
     use hashtree_core::DirEntry;
+    use http_body_util::BodyExt;
     use sha2::Digest;
     use std::{collections::HashSet, net::SocketAddr};
     use tempfile::TempDir;
+    use tokio::time::timeout;
 
     #[derive(Clone)]
     struct UpstreamBlobTestState {
@@ -2841,6 +2881,39 @@ mod tests {
         );
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body.as_ref(), b"6789");
+    }
+
+    #[tokio::test]
+    async fn serve_cid_with_range_streams_large_explicit_ranges() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("store")).unwrap());
+        let state = test_app_state(store.clone(), Vec::new());
+        let tree = HashTree::new(HashTreeConfig::new(store.store_arc()).public());
+        let data: Vec<u8> = (0..(5 * 1024 * 1024 + 17))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let (cid, _) = tree.put(&data).await.unwrap();
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            header::RANGE,
+            header::HeaderValue::from_str(&format!("bytes=0-{}", data.len() - 1)).unwrap(),
+        );
+
+        let response =
+            serve_cid_with_range(&state, &cid, headers, true, false, Some("clip.mp4")).await;
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+
+        let mut body = response.into_body();
+        let first_frame = timeout(Duration::from_secs(1), body.frame())
+            .await
+            .expect("first body frame should arrive quickly")
+            .expect("body should yield a frame")
+            .expect("body frame should be ok");
+        let first_chunk = first_frame
+            .into_data()
+            .expect("first frame should contain bytes");
+        assert_eq!(first_chunk.len(), CID_RANGE_STREAM_CHUNK_SIZE as usize);
     }
 
     fn copy_blob_between_stores(

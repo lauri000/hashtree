@@ -570,19 +570,15 @@ impl<S: Store> HashTree<S> {
         hash: &Hash,
         key: &EncryptionKey,
     ) -> Result<Option<Vec<u8>>, HashTreeError> {
-        let encrypted_data = match self
-            .store
-            .get(hash)
-            .await
-            .map_err(|e| HashTreeError::Store(e.to_string()))?
-        {
-            Some(d) => d,
-            None => return Ok(None),
-        };
-
-        let decrypted = decrypt_chk(&encrypted_data, key)
-            .map_err(|e| HashTreeError::Encryption(e.to_string()))?;
-        Ok(Some(decrypted))
+        self.get_cid_root_bytes(&Cid {
+            hash: *hash,
+            key: Some(*key),
+        })
+        .await
+        .map_err(|err| match err {
+            HashTreeError::Decryption(message) => HashTreeError::Encryption(message),
+            other => other,
+        })
     }
 
     fn ensure_size_limit(max_size: Option<u64>, actual_size: u64) -> Result<(), HashTreeError> {
@@ -790,8 +786,7 @@ impl<S: Store> HashTree<S> {
         Ok(Some(node))
     }
 
-    /// Get and decode a tree node using Cid (with decryption if key present)
-    pub async fn get_node(&self, cid: &Cid) -> Result<Option<TreeNode>, HashTreeError> {
+    async fn get_cid_root_bytes(&self, cid: &Cid) -> Result<Option<Vec<u8>>, HashTreeError> {
         let data = match self
             .store
             .get(&cid.hash)
@@ -802,11 +797,34 @@ impl<S: Store> HashTree<S> {
             None => return Ok(None),
         };
 
-        // Decrypt if key is present
-        let decrypted = if let Some(key) = &cid.key {
-            decrypt_chk(&data, key).map_err(|e| HashTreeError::Decryption(e.to_string()))?
-        } else {
-            data
+        let Some(key) = &cid.key else {
+            return Ok(Some(data));
+        };
+
+        let raw_is_tree = is_tree_node(&data);
+        match decrypt_chk(&data, key) {
+            Ok(decrypted) => {
+                if is_tree_node(&decrypted) || !raw_is_tree {
+                    Ok(Some(decrypted))
+                } else {
+                    Ok(Some(data))
+                }
+            }
+            Err(err) => {
+                if raw_is_tree {
+                    Ok(Some(data))
+                } else {
+                    Err(HashTreeError::Decryption(err.to_string()))
+                }
+            }
+        }
+    }
+
+    /// Get and decode a tree node using Cid (with decryption if key present)
+    pub async fn get_node(&self, cid: &Cid) -> Result<Option<TreeNode>, HashTreeError> {
+        let decrypted = match self.get_cid_root_bytes(cid).await? {
+            Some(d) => d,
+            None => return Ok(None),
         };
 
         if !is_tree_node(&decrypted) {
@@ -820,21 +838,9 @@ impl<S: Store> HashTree<S> {
     /// Get directory node, handling chunked directory data
     /// Use this when you know the target is a directory (from parent link_type)
     pub async fn get_directory_node(&self, cid: &Cid) -> Result<Option<TreeNode>, HashTreeError> {
-        let data = match self
-            .store
-            .get(&cid.hash)
-            .await
-            .map_err(|e| HashTreeError::Store(e.to_string()))?
-        {
+        let decrypted = match self.get_cid_root_bytes(cid).await? {
             Some(d) => d,
             None => return Ok(None),
-        };
-
-        // Decrypt if key is present
-        let decrypted = if let Some(key) = &cid.key {
-            decrypt_chk(&data, key).map_err(|e| HashTreeError::Decryption(e.to_string()))?
-        } else {
-            data
         };
 
         if !is_tree_node(&decrypted) {
@@ -2421,6 +2427,26 @@ mod tests {
 
         assert!(!tree.is_directory(&file_hash).await.unwrap());
         assert!(tree.is_directory(&dir_cid.hash).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_plaintext_directory_with_stray_key_still_lists_as_directory() {
+        let (_store, tree) = make_tree();
+
+        let file_hash = tree.put_blob(b"data").await.unwrap();
+        let dir_cid = tree
+            .put_directory(vec![DirEntry::new("thumbnail.jpg", file_hash).with_size(4)])
+            .await
+            .unwrap();
+        let legacy_cid = Cid {
+            hash: dir_cid.hash,
+            key: Some([7u8; 32]),
+        };
+
+        assert!(tree.is_dir(&legacy_cid).await.unwrap());
+        let entries = tree.list_directory(&legacy_cid).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "thumbnail.jpg");
     }
 
     #[tokio::test]

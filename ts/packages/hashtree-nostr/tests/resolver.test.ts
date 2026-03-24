@@ -449,6 +449,71 @@ describe('NostrRefResolver', () => {
     resolver.stop?.();
   }, 10000);
 
+  it('exposes event timestamps in subscribe callbacks and ignores older late events', async () => {
+    const { subscribe, publish } = createNostrFunctions(ndk);
+    const resolver = createNostrRefResolver({
+      subscribe,
+      publish,
+      getPubkey: () => pubkey,
+      nip19,
+    });
+
+    const treeName = `subscribe-metadata-${Date.now()}`;
+    const key = `${npub}/${treeName}`;
+    const newerHash = '4444'.repeat(16);
+    const olderHash = '5555'.repeat(16);
+    const now = Math.floor(Date.now() / 1000);
+    const newerCreatedAt = now - 10;
+    const olderCreatedAt = now - 20;
+
+    const updates: Array<{ hash: string; updatedAt: number | null }> = [];
+    const unsubscribe = resolver.subscribe(key, (received, _visibilityInfo, metadata) => {
+      if (!received) return;
+      updates.push({
+        hash: toHex(received.hash),
+        updatedAt: metadata?.updatedAt ?? null,
+      });
+    });
+
+    await new Promise(r => setTimeout(r, 100));
+
+    const newerEvent = new NDKEvent(ndk);
+    newerEvent.kind = 30078;
+    newerEvent.created_at = newerCreatedAt;
+    newerEvent.content = '';
+    newerEvent.tags = [
+      ['d', treeName],
+      ['l', 'hashtree'],
+      ['hash', newerHash],
+    ];
+    await newerEvent.publish();
+
+    await new Promise(r => setTimeout(r, 500));
+
+    const olderEvent = new NDKEvent(ndk);
+    olderEvent.kind = 30078;
+    olderEvent.created_at = olderCreatedAt;
+    olderEvent.content = '';
+    olderEvent.tags = [
+      ['d', treeName],
+      ['l', 'hashtree'],
+      ['hash', olderHash],
+    ];
+    await olderEvent.publish();
+
+    await new Promise(r => setTimeout(r, 500));
+
+    expect(updates.length).toBeGreaterThanOrEqual(1);
+    expect(updates[updates.length - 1]).toEqual({
+      hash: newerHash,
+      updatedAt: newerCreatedAt,
+    });
+    expect(updates.some((update) => update.hash === olderHash)).toBe(false);
+
+    unsubscribe();
+    resolver.stop?.();
+  }, 10000);
+
   it('should list and receive tree list updates', async () => {
     const { subscribe, publish } = createNostrFunctions(ndk);
     const resolver = createNostrRefResolver({

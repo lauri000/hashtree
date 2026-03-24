@@ -7,7 +7,15 @@
  * render cycle. Components can subscribe to hash changes and update directly
  * (e.g., MediaSource append) without triggering re-renders.
  */
-import type { RefResolver, CID, RefResolverListEntry, SubscribeVisibilityInfo, PublishOptions, PublishResult } from '@hashtree/core';
+import type {
+  RefResolver,
+  CID,
+  RefResolverListEntry,
+  SubscribeVisibilityInfo,
+  PublishOptions,
+  PublishResult,
+  RefResolverSubscriptionMetadata,
+} from '@hashtree/core';
 import { fromHex, toHex, cid } from '@hashtree/core';
 import {
   encryptKeyForLink,
@@ -43,7 +51,11 @@ export interface NostrFilter {
 // Subscription entry
 interface SubscriptionEntry {
   unsubscribe: () => void;
-  callbacks: Set<(cid: CID | null, visibilityInfo?: SubscribeVisibilityInfo) => void>;
+  callbacks: Set<(
+    cid: CID | null,
+    visibilityInfo?: SubscribeVisibilityInfo,
+    metadata?: RefResolverSubscriptionMetadata
+  ) => void>;
   currentHash: string | null;
   currentKey: string | null;
   currentVisibility: SubscribeVisibilityInfo | null;
@@ -319,7 +331,14 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
      * Callback fires on each update (including initial value).
      * This runs outside React render cycle.
      */
-    subscribe(key: string, callback: (cid: CID | null, visibilityInfo?: SubscribeVisibilityInfo) => void): () => void {
+    subscribe(
+      key: string,
+      callback: (
+        cid: CID | null,
+        visibilityInfo?: SubscribeVisibilityInfo,
+        metadata?: RefResolverSubscriptionMetadata
+      ) => void
+    ): () => void {
       const parsed = parseKey(key);
       if (!parsed) {
         callback(null);
@@ -341,7 +360,11 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
         });
         if (sub.currentHash) {
           const keyBytes = sub.currentKey ? fromHex(sub.currentKey) : undefined;
-          callback(cid(fromHex(sub.currentHash), keyBytes), sub.currentVisibility ?? undefined);
+          callback(
+            cid(fromHex(sub.currentHash), keyBytes),
+            sub.currentVisibility ?? undefined,
+            { updatedAt: sub.latestCreatedAt }
+          );
         }
       } else {
         // Helper to notify all callbacks
@@ -349,9 +372,10 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
           if (!subEntry.currentHash) return;
           const keyBytes = subEntry.currentKey ? fromHex(subEntry.currentKey) : undefined;
           const visibilityInfo = subEntry.currentVisibility ?? undefined;
+          const metadata = { updatedAt: subEntry.latestCreatedAt };
           for (const cb of subEntry.callbacks) {
             try {
-              cb(cid(fromHex(subEntry.currentHash), keyBytes), visibilityInfo);
+              cb(cid(fromHex(subEntry.currentHash), keyBytes), visibilityInfo, metadata);
             } catch (e) {
               console.error('Resolver callback error:', e);
             }
@@ -449,7 +473,11 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
         // Fire callback immediately with cached value if available
         if (cachedEntry?.hash) {
           const keyBytes = cachedEntry.key ? fromHex(cachedEntry.key) : undefined;
-          callback(cid(fromHex(cachedEntry.hash), keyBytes), sub.currentVisibility ?? undefined);
+          callback(
+            cid(fromHex(cachedEntry.hash), keyBytes),
+            sub.currentVisibility ?? undefined,
+            { updatedAt: sub.latestCreatedAt }
+          );
         }
       }
 

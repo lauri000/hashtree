@@ -274,10 +274,18 @@ export interface RefResolver {
    * Subscription stays open indefinitely until unsubscribed.
    *
    * @param key The key to watch
-   * @param callback Called with new CID (or null if deleted/unavailable) and visibility info
+   * @param callback Called with new CID (or null if deleted/unavailable), visibility info,
+   * and source metadata such as the underlying event timestamp
    * @returns Unsubscribe function
    */
-  subscribe(key: string, callback: (cid: CID | null, visibilityInfo?: SubscribeVisibilityInfo) => void): () => void;
+  subscribe(
+    key: string,
+    callback: (
+      cid: CID | null,
+      visibilityInfo?: SubscribeVisibilityInfo,
+      metadata?: RefResolverSubscriptionMetadata
+    ) => void
+  ): () => void;
 
   /**
    * Publish/update a CID (optional - only for writable backends)
@@ -318,4 +326,12 @@ export interface RefResolver {
    * @returns true if deleted successfully
    */
   delete?(key: string): Promise<boolean>;
+}
+
+/**
+ * Metadata that accompanies resolver subscription updates.
+ */
+export interface RefResolverSubscriptionMetadata {
+  /** Unix seconds from the underlying source event */
+  updatedAt: number;
 }

@@ -2148,7 +2148,7 @@ dependencies = [
 
 [[package]]
 name = "git-remote-htree"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2160,6 +2160,7 @@ dependencies = [
  "hashtree-config",
  "hashtree-core",
  "hashtree-fs",
+ "hashtree-lmdb",
  "hex",
  "libc",
  "nostr",
@@ -2361,7 +2362,7 @@ checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
 name = "hashtree-blossom"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2379,7 +2380,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-cli"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2394,6 +2395,7 @@ dependencies = [
  "hashtree-config",
  "hashtree-core",
  "hashtree-fs",
+ "hashtree-lmdb",
  "hashtree-nostr",
  "hashtree-nostr-bridge",
  "hashtree-resolver",
@@ -2407,6 +2409,7 @@ dependencies = [
  "nostr-sdk",
  "nostr-social-graph",
  "nostr-social-graph-heed",
+ "page_size",
  "rand 0.8.5",
  "reqwest",
  "rmp-serde",
@@ -2430,7 +2433,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-config"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -2440,7 +2443,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-core"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2459,7 +2462,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-fs"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "async-trait",
  "hashtree-core",
@@ -2471,7 +2474,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-index"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "futures",
  "hashtree-core",
@@ -2480,8 +2483,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashtree-lmdb"
+version = "0.2.13"
+dependencies = [
+ "async-trait",
+ "hashtree-core",
+ "heed",
+]
+
+[[package]]
 name = "hashtree-nostr"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "futures",
  "hashtree-core",
@@ -2495,7 +2507,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-nostr-bridge"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "hashtree-core",
  "hashtree-nostr",
@@ -2507,7 +2519,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-resolver"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "async-trait",
  "hashtree-core",
@@ -2519,7 +2531,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-webrtc"
-version = "0.2.11"
+version = "0.2.13"
 dependencies = [
  "async-trait",
  "bytes",

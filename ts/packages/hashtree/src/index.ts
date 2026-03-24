@@ -19,6 +19,7 @@ export type {
   SubscribeVisibilityInfo,
   PublishOptions,
   PublishResult,
+  RefResolverSubscriptionMetadata,
   // Legacy alias
   RefResolver as RootResolver,
 } from './types.js';

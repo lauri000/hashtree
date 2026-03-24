@@ -29,6 +29,26 @@ interface ReadState {
   bytesRead: number;
 }
 
+async function getRootNodeOrBlob(
+  store: Store,
+  hash: Hash,
+  key: EncryptionKey
+): Promise<Uint8Array | null> {
+  const encryptedData = await store.get(hash);
+  if (!encryptedData) return null;
+
+  const rawNode = tryDecodeTreeNode(encryptedData);
+  try {
+    const decrypted = await decryptChk(encryptedData, key);
+    return tryDecodeTreeNode(decrypted) || !rawNode ? decrypted : encryptedData;
+  } catch (error) {
+    if (rawNode) {
+      return encryptedData;
+    }
+    throw error;
+  }
+}
+
 function normalizeMaxBytes(maxBytes?: number): number | undefined {
   if (maxBytes === undefined) return undefined;
   if (!Number.isFinite(maxBytes) || maxBytes < 0) {
@@ -155,11 +175,8 @@ export async function readFileEncrypted(
   options: ReadEncryptedOptions = {}
 ): Promise<Uint8Array | null> {
   const maxBytes = normalizeMaxBytes(options.maxBytes);
-  const encryptedData = await store.get(hash);
-  if (!encryptedData) return null;
-
-  // CHK decrypt
-  const decrypted = await decryptChk(encryptedData, key);
+  const decrypted = await getRootNodeOrBlob(store, hash, key);
+  if (!decrypted) return null;
 
   // Check if it's a tree node
   const node = tryDecodeTreeNode(decrypted);
@@ -183,10 +200,8 @@ async function getEncryptedDirectoryNode(
   hash: Hash,
   key: EncryptionKey
 ): Promise<TreeNode | null> {
-  const encryptedData = await store.get(hash);
-  if (!encryptedData) return null;
-
-  const decrypted = await decryptChk(encryptedData, key);
+  const decrypted = await getRootNodeOrBlob(store, hash, key);
+  if (!decrypted) return null;
 
   // Check if it's directly a directory (small directory)
   const node = tryDecodeTreeNode(decrypted);
@@ -279,11 +294,8 @@ export async function* readFileEncryptedStream(
 ): AsyncGenerator<Uint8Array> {
   const { offset = 0, prefetch = 1 } = options;
 
-  const encryptedData = await store.get(hash);
-  if (!encryptedData) return;
-
-  // CHK decrypt
-  const decrypted = await decryptChk(encryptedData, key);
+  const decrypted = await getRootNodeOrBlob(store, hash, key);
+  if (!decrypted) return;
 
   const node = tryDecodeTreeNode(decrypted);
   if (node) {
@@ -411,10 +423,8 @@ export async function readFileEncryptedRange(
   start: number,
   end?: number
 ): Promise<Uint8Array | null> {
-  const encryptedData = await store.get(hash);
-  if (!encryptedData) return null;
-
-  const decrypted = await decryptChk(encryptedData, key);
+  const decrypted = await getRootNodeOrBlob(store, hash, key);
+  if (!decrypted) return null;
 
   const node = tryDecodeTreeNode(decrypted);
   if (!node) {
@@ -619,10 +629,7 @@ export async function getTreeNodeEncrypted(
   hash: Hash,
   key: EncryptionKey
 ): Promise<TreeNode | null> {
-  const encryptedData = await store.get(hash);
-  if (!encryptedData) return null;
-
-  const decrypted = await decryptChk(encryptedData, key);
-
+  const decrypted = await getRootNodeOrBlob(store, hash, key);
+  if (!decrypted) return null;
   return tryDecodeTreeNode(decrypted);
 }

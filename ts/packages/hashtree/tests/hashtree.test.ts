@@ -112,6 +112,22 @@ describe('HashTree', () => {
       expect(await tree.isDirectory(dirCid)).toBe(true);
     });
 
+    it('treats plaintext directory roots with a stray key as directories', async () => {
+      const { cid: fileCid } = await tree.putFile(new TextEncoder().encode('data'), { unencrypted: true });
+      const { cid: dirCid } = await tree.putDirectory([
+        { name: 'thumbnail.jpg', cid: fileCid, size: 4 },
+      ], { unencrypted: true });
+      const legacyCid: CID = {
+        hash: dirCid.hash,
+        key: new Uint8Array(32).fill(7),
+      };
+
+      expect(await tree.isDirectory(legacyCid)).toBe(true);
+      await expect(tree.listDirectory(legacyCid)).resolves.toMatchObject([
+        { name: 'thumbnail.jpg' },
+      ]);
+    });
+
     it('should stream file', async () => {
       const smallTree = new HashTree({ store, chunkSize: 5 });
       const data = new TextEncoder().encode('hello world!');

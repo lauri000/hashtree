@@ -87,16 +87,7 @@ fn proxy_to_daemon(
     path_and_query: &str,
     range_header: Option<&str>,
 ) -> tauri::http::Response<Vec<u8>> {
-    let port = match DAEMON_PORT.get() {
-        Some(p) => *p,
-        None => {
-            return tauri::http::Response::builder()
-                .status(503)
-                .header("content-type", "text/plain")
-                .body(b"Daemon not started yet".to_vec())
-                .unwrap();
-        }
-    };
+    let (port, daemon_port_known) = proxy_port_state(DAEMON_PORT.get().copied());
 
     let url = format!(
         "http://127.0.0.1:{}/htree/{}",
@@ -127,12 +118,26 @@ fn proxy_to_daemon(
         }
         Err(e) => {
             error!("Daemon proxy error for {}: {}", path_and_query, e);
+            if !daemon_port_known {
+                return tauri::http::Response::builder()
+                    .status(503)
+                    .header("content-type", "text/plain")
+                    .body(b"Daemon not started yet".to_vec())
+                    .unwrap();
+            }
             tauri::http::Response::builder()
                 .status(502)
                 .header("content-type", "text/plain")
                 .body(format!("Daemon proxy error: {}", e).into_bytes())
                 .unwrap()
         }
+    }
+}
+
+fn proxy_port_state(port: Option<u16>) -> (u16, bool) {
+    match port {
+        Some(port) => (port, true),
+        None => (21417, false),
     }
 }
 
@@ -539,5 +544,15 @@ mod tests {
         assert!(forwarded.iter().any(|(name, value)| {
             name == "content-type" && value == "application/octet-stream"
         }));
+    }
+
+    #[test]
+    fn proxy_port_state_uses_registered_daemon_port() {
+        assert_eq!(proxy_port_state(Some(32123)), (32123, true));
+    }
+
+    #[test]
+    fn proxy_port_state_falls_back_to_default_port() {
+        assert_eq!(proxy_port_state(None), (21417, false));
     }
 }

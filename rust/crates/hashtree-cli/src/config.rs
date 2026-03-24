@@ -631,12 +631,10 @@ mod tests {
         assert_eq!(config.server.bind_address, "127.0.0.1:8080");
         assert!(config.server.enable_auth);
         assert_eq!(config.storage.max_size_gb, 10);
-        assert!(
-            config
-                .nostr
-                .relays
-                .contains(&"wss://upload.iris.to/nostr".to_string())
-        );
+        assert!(config
+            .nostr
+            .relays
+            .contains(&"wss://upload.iris.to/nostr".to_string()));
         assert_eq!(config.nostr.crawl_depth, 2);
         assert_eq!(config.nostr.max_write_distance, 3);
         assert_eq!(config.nostr.db_max_size_gb, 10);
