@@ -1,7 +1,8 @@
+import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures';
 import { setupPageErrorHandler, navigateToPublicFolder, goToTreeList } from './test-utils.js';
 
-async function createAndEnterTree(page: any, name: string) {
+async function createAndEnterTree(page: Page, name: string) {
   await goToTreeList(page);
   await expect(page.getByRole('button', { name: 'New Folder' })).toBeVisible({ timeout: 10000 });
   await page.getByRole('button', { name: 'New Folder' }).click();
@@ -10,7 +11,7 @@ async function createAndEnterTree(page: any, name: string) {
   await expect(page.getByText('Empty directory')).toBeVisible({ timeout: 10000 });
 }
 
-async function createFile(page: any, name: string, content: string = '') {
+async function createFile(page: Page, name: string, content: string = '') {
   await page.getByRole('button', { name: /File/ }).first().click();
   await page.locator('input[placeholder="File name..."]').fill(name);
   await page.getByRole('button', { name: 'Create' }).click();
@@ -102,6 +103,32 @@ test.describe('Anchor Links', () => {
       // Line numbers should be visible
       await expect(page.locator('[data-line="1"]')).toBeVisible();
       await expect(page.locator('[data-line="5"]')).toBeVisible();
+    });
+
+    test('code viewer should keep source text on the same row as its line number', async ({ page }) => {
+      await createAndEnterTree(page, 'line-layout-test');
+      await createFile(page, 'Cargo.toml', '[workspace]\nmembers = ["crates/*"]');
+
+      await page.locator('a:has-text("Cargo.toml")').first().click();
+      await expect(page.locator('[data-line="1"]')).toBeVisible({ timeout: 10000 });
+
+      const lineMetrics = await page.locator('[data-line="1"]').evaluate((el) => {
+        const line = el.getBoundingClientRect();
+        const lineNumber = el.querySelector('.line-number')?.getBoundingClientRect();
+        const lineContent = el.querySelector('.line-content')?.getBoundingClientRect();
+        return {
+          lineHeight: line.height,
+          lineNumberTop: lineNumber?.top ?? null,
+          lineContentTop: lineContent?.top ?? null,
+          textContent: el.querySelector('.line-content')?.textContent ?? null,
+        };
+      });
+
+      expect(lineMetrics.textContent).toBe('[workspace]');
+      expect(lineMetrics.lineNumberTop).not.toBeNull();
+      expect(lineMetrics.lineContentTop).not.toBeNull();
+      expect(Math.abs((lineMetrics.lineNumberTop ?? 0) - (lineMetrics.lineContentTop ?? 0))).toBeLessThan(4);
+      expect(lineMetrics.lineHeight).toBeLessThan(40);
     });
 
     test('clicking line number should update URL with line reference', async ({ page }) => {

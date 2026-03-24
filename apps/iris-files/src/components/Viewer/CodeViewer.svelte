@@ -191,28 +191,19 @@
   }
 </script>
 
-<pre class="code-viewer"><code class="language-{language}"
-  >{#each lines as line, i (i)}
-    {@const lineNum = i + 1}
-    <span
-      class="code-line"
-      class:line-highlighted={isLineHighlighted(lineNum)}
-      data-line={lineNum}
-    >
-      <span
-        class="line-number"
-        role="button"
-        tabindex="0"
-        onclick={(e) => handleLineClick(lineNum, e)}
-        onkeydown={(e) => e.key === 'Enter' && handleLineClick(lineNum, e as unknown as MouseEvent)}
-      >{lineNum}</span>
-      <span class="line-content">
-        <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-        {@html line || ' '}
-      </span>
-    </span>
-  {/each}</code
-></pre>
+<!-- eslint-disable svelte/no-at-html-tags -->
+<pre class="code-viewer"><code class="language-{language}">{#each lines as line, i (i)}{@const lineNum = i + 1}<span
+  class="code-line"
+  class:line-highlighted={isLineHighlighted(lineNum)}
+  data-line={lineNum}
+><span
+  class="line-number"
+  role="button"
+  tabindex="0"
+  onclick={(e) => handleLineClick(lineNum, e)}
+  onkeydown={(e) => e.key === 'Enter' && handleLineClick(lineNum, e as unknown as MouseEvent)}
+>{lineNum}</span><span class="line-content"><!-- eslint-disable-next-line svelte/no-at-html-tags -->{@html line || '&nbsp;'}</span></span>{/each}</code></pre>
+<!-- eslint-enable svelte/no-at-html-tags -->
 
 <style>
   .code-viewer {
@@ -229,12 +220,12 @@
   .code-viewer code {
     font-family: inherit;
     display: block;
+    white-space: normal;
   }
 
   .code-line {
-    display: block;
-    white-space: pre-wrap;
-    word-break: break-word;
+    display: flex;
+    align-items: flex-start;
   }
 
   .code-line.line-highlighted {
@@ -242,8 +233,7 @@
   }
 
   .line-number {
-    display: inline-block;
-    width: 3.5em;
+    flex: 0 0 3.5em;
     padding-right: 1em;
     text-align: right;
     color: var(--text-3, #666);
@@ -256,7 +246,11 @@
   }
 
   .line-content {
-    display: inline;
+    flex: 1 1 auto;
+    min-width: 0;
+    display: block;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 
   /* Dark theme - matches app colors */
@@ -265,6 +259,10 @@
   :global(.code-viewer .token.doctype),
   :global(.code-viewer .token.cdata) {
     color: #6a737d;
+  }
+
+  :global(.code-viewer .token) {
+    display: inline;
   }
 
   :global(.code-viewer .token.punctuation) {
