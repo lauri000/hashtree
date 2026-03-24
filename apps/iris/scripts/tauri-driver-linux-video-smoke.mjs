@@ -12,8 +12,12 @@ const webdriverPort = Number(process.env.TAURI_DRIVER_PORT ?? 4444);
 const automationPort = Number(process.env.IRIS_AUTOMATION_PORT ?? 21977);
 const webdriverBase = `http://127.0.0.1:${webdriverPort}`;
 const automationBase = `http://127.0.0.1:${automationPort}/automation`;
+const elementRefKey = 'element-6066-11e4-a52e-4f735466cecf';
 const distributedOwner = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
 const smokeUrl = process.env.IRIS_VIDEO_SMOKE_URL ?? `htree://${distributedOwner}/video/index.html?smoke=1&htree_debug=1`;
+const smokeMode = process.env.IRIS_VIDEO_SMOKE_MODE ?? 'open_url';
+const genericVideoUrl = process.env.IRIS_VIDEO_GENERIC_URL ?? `htree://${distributedOwner}/video/`;
+const captureActualFramebuffer = process.env.IRIS_NATIVE_CAPTURE_FRAMEBUFFER === '1';
 
 let driverProcess = null;
 let sessionId = null;
@@ -27,6 +31,31 @@ function hasSmokeMediaSummary(summary) {
     return false;
   }
   return /app=\d+/.test(summary) && summary.includes('smoke=1');
+}
+
+function parseMediaSummary(summary) {
+  const match = String(summary ?? '').match(/thumbs=(\d+)\/(\d+) visible=(\d+) videos=(\d+)\/(\d+)/);
+  if (!match) {
+    return null;
+  }
+  return {
+    loadedThumbs: Number(match[1]),
+    totalThumbs: Number(match[2]),
+    visibleThumbs: Number(match[3]),
+    readyVideos: Number(match[4]),
+    totalVideos: Number(match[5]),
+  };
+}
+
+function hasVisibleVideoFeed(state) {
+  const media = parseMediaSummary(state.childMediaSummary);
+  return state.childPageLoadState === 'finished' &&
+    state.childDocumentTitle === 'Iris Video' &&
+    typeof state.childBodyText === 'string' &&
+    state.childBodyText.trim().length > 80 &&
+    !!media &&
+    media.loadedThumbs > 0 &&
+    media.visibleThumbs > 0;
 }
 
 function which(binary) {
@@ -129,6 +158,20 @@ async function createSession() {
   }
 }
 
+async function findElement(using, value) {
+  const payload = await request('POST', `/session/${sessionId}/element`, { using, value });
+  const element = payload.value;
+  const elementId = element?.[elementRefKey] ?? element?.ELEMENT;
+  if (!elementId) {
+    fail(`WebDriver did not return an element id for ${using}=${value}`);
+  }
+  return elementId;
+}
+
+async function clickElement(elementId) {
+  await request('POST', `/session/${sessionId}/element/${elementId}/click`, {});
+}
+
 async function deleteSession() {
   if (!sessionId) {
     return;
@@ -148,6 +191,27 @@ async function takeScreenshot(filename) {
   }
   await mkdir(artifactsDir, { recursive: true });
   await writeFile(path.join(artifactsDir, filename), Buffer.from(encoded, 'base64'));
+}
+
+async function takeFramebufferCapture(filename) {
+  if (!captureActualFramebuffer) {
+    return;
+  }
+  const importBinary = which('import');
+  if (!importBinary) {
+    console.warn('ImageMagick import is not installed; skipping framebuffer capture');
+    return;
+  }
+  await mkdir(artifactsDir, { recursive: true });
+  const target = path.join(artifactsDir, filename);
+  const result = spawnSync(importBinary, ['-window', 'root', target], {
+    cwd: appDir,
+    env: process.env,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    console.warn(`Framebuffer capture failed: ${result.stderr || result.stdout || result.status}`);
+  }
 }
 
 function maybeReexecUnderXvfb() {
@@ -207,6 +271,25 @@ async function waitForWebDriver() {
   }, 'tauri-driver to be ready');
 }
 
+function currentUrlMatchesVideo(state) {
+  return state.currentView === 'webview' &&
+    (
+      state.currentUrl === smokeUrl ||
+      state.currentUrl === smokeUrl.replace('/index.html', '') ||
+      state.currentUrl === `${smokeUrl.replace('/index.html', '')}/` ||
+      state.currentUrl === `htree://${distributedOwner}/video` ||
+      state.currentUrl === `htree://${distributedOwner}/video/` ||
+      state.currentUrl === `htree://${distributedOwner}/video/index.html` ||
+      state.currentUrl.startsWith('htree://nhash1') ||
+      state.currentUrl.includes('/video/') ||
+      state.currentUrl.includes('/video/index.html')
+    );
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function main() {
   if (process.platform !== 'linux') {
     fail('This native smoke harness is Linux-only. Use the Docker wrapper or a Linux VM.');
@@ -237,39 +320,57 @@ async function main() {
     );
     await takeScreenshot('video-smoke-launcher.png');
 
-    await postAutomationCommand({ action: 'open_url', url: smokeUrl });
+    if (smokeMode === 'suggestion_click') {
+      const videoCard = await findElement(
+        'xpath',
+        "//*[@role='button'][.//*[normalize-space(text())='Iris Video']]",
+      );
+      await clickElement(videoCard);
+    } else if (smokeMode === 'open_root') {
+      await postAutomationCommand({ action: 'open_url', url: genericVideoUrl });
+    } else {
+      await postAutomationCommand({ action: 'open_url', url: smokeUrl });
+    }
 
     await waitForAutomationState(
-      (state) => {
-        return state.currentView === 'webview' &&
-          (
-            state.currentUrl === smokeUrl ||
-            state.currentUrl === smokeUrl.replace('/index.html', '') ||
-            state.currentUrl === `${smokeUrl.replace('/index.html', '')}/` ||
-            state.currentUrl.startsWith('htree://nhash1') ||
-            state.currentUrl.includes('/video/') ||
-            state.currentUrl.includes('/video/index.html')
-          );
-      },
-      `Iris to open ${smokeUrl}`,
+      currentUrlMatchesVideo,
+      smokeMode === 'suggestion_click'
+        ? 'Iris Video suggestion to open through htree'
+        : smokeMode === 'open_root'
+          ? `Iris to open ${genericVideoUrl}`
+          : `Iris to open ${smokeUrl}`,
       60000,
     );
     await takeScreenshot('video-smoke-opened.png');
 
     let loadedState;
     try {
-      loadedState = await waitForAutomationState(
-        (state) => {
-          return state.childPageLoadState === 'finished' &&
-            state.childDocumentTitle === 'Iris Video' &&
-            state.childBodyText.includes('Smoke image ready') &&
-            state.childBodyText.includes('Smoke video ready') &&
-            hasSmokeMediaSummary(state.childMediaSummary) &&
-            !state.childLastError;
-        },
-        'video smoke assets to load through the htree backend',
-        120000,
-      );
+      if (smokeMode === 'suggestion_click' || smokeMode === 'open_root') {
+        loadedState = await waitForAutomationState(
+          (state) => hasVisibleVideoFeed(state),
+          smokeMode === 'suggestion_click'
+            ? 'Iris Video suggestion content and thumbnails to load through htree'
+            : 'Iris Video root URL content and thumbnails to load through htree',
+          120000,
+        );
+      } else {
+        loadedState = await waitForAutomationState(
+          (state) => {
+            const media = parseMediaSummary(state.childMediaSummary);
+            return state.childPageLoadState === 'finished' &&
+              state.childDocumentTitle === 'Iris Video' &&
+              state.childBodyText.includes('Smoke image ready') &&
+              state.childBodyText.includes('Smoke video ready') &&
+              !!media &&
+              media.loadedThumbs > 0 &&
+              media.visibleThumbs > 0 &&
+              hasSmokeMediaSummary(state.childMediaSummary) &&
+              (media.readyVideos > 0 || state.childBodyText.includes('Smoke video ready'));
+          },
+          'video smoke assets to load through the htree backend',
+          120000,
+        );
+      }
     } catch (error) {
       const failedState = await getAutomationState().catch(() => null);
       await takeScreenshot('video-smoke-failed.png').catch(() => {});
@@ -280,6 +381,12 @@ async function main() {
     }
 
     await takeScreenshot('video-smoke-loaded.png');
+    await takeFramebufferCapture('framebuffer.png');
+    if (smokeMode === 'suggestion_click' || smokeMode === 'open_root') {
+      await sleep(5000);
+      await takeScreenshot('video-smoke-loaded-late.png');
+      await takeFramebufferCapture('framebuffer-late.png');
+    }
     console.log('Video smoke URL:', smokeUrl);
     console.log('Video smoke body text:', loadedState.childBodyText);
     console.log('Video smoke media summary:', loadedState.childMediaSummary);

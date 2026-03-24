@@ -539,7 +539,7 @@ pub fn generate_nip07_script(
           if (invoke) {{
             await invoke('webview_event', {{
               payload,
-              session_token: SESSION_TOKEN
+              sessionToken: SESSION_TOKEN
             }});
           }} else {{
             const response = await fetch(WEBVIEW_ENDPOINT, {{
@@ -548,7 +548,7 @@ pub fn generate_nip07_script(
                 'Content-Type': 'text/plain;charset=UTF-8'
               }},
               body: JSON.stringify({{
-                sessionToken: SESSION_TOKEN,
+                session_token: SESSION_TOKEN,
                 payload
               }})
             }});
@@ -678,10 +678,17 @@ pub fn generate_nip07_script(
         const event = entry?.event;
         return event === 'window:error' ||
           event === 'window:unhandledrejection' ||
-          event === 'console:error';
+          event === 'console:error' ||
+          event === 'console:warn' ||
+          event === 'worker:ready' ||
+          (typeof event === 'string' && (
+            event.startsWith('worker:init:') ||
+            event.startsWith('media:setup:') ||
+            event.startsWith('prefix:')
+          ));
       }});
       if (relevant.length === 0) return '';
-      const tail = relevant.slice(-3).map((entry) => {{
+      const tail = relevant.slice(-5).map((entry) => {{
         const event = typeof entry?.event === 'string' ? entry.event : 'debug';
         const data = entry?.data;
         if (data?.message) return `${{event}} ${{data.message}}`;
@@ -689,9 +696,10 @@ pub fn generate_nip07_script(
           return `${{event}} ${{data.args.join(' ')}}`;
         }}
         if (data?.reason) return `${{event}} ${{data.reason}}`;
+        if (data) return `${{event}} ${{formatDebugValue(data)}}`;
         return event;
       }});
-      return tail.join(' | ').slice(0, 240);
+      return tail.join(' | ').slice(0, 480);
     }} catch (_error) {{
       return '';
     }}
@@ -699,22 +707,47 @@ pub fn generate_nip07_script(
 
   function getMediaSummary() {{
     try {{
-      const images = Array.from(document.images || []);
-      const thumbImages = images.filter((img) => (img.currentSrc || img.src || '').includes('/thumbnail'));
-      const loadedThumbImages = thumbImages.filter((img) => img.complete && img.naturalWidth > 0 && img.naturalHeight > 0);
-      const visibleLoadedThumbImages = loadedThumbImages.filter((img) => {{
-        const style = window.getComputedStyle(img);
-        const rect = img.getBoundingClientRect();
+      function isLoadedImage(img) {{
+        return img.dataset.htreeLoaded === '1' ||
+          (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0);
+      }}
+      function isVisibleElement(element) {{
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
         return style.display !== 'none' &&
           style.visibility !== 'hidden' &&
           rect.width > 20 &&
           rect.height > 20;
-      }});
+      }}
+      function isThumbnailCandidate(img) {{
+        const src = (img.currentSrc || img.src || '').toLowerCase();
+        const anchorHref = (img.closest('a')?.getAttribute('href') || '').toLowerCase();
+        const rect = img.getBoundingClientRect();
+        if (rect.width < 80 || rect.height < 45) {{
+          return false;
+        }}
+        return src.includes('/thumbnail') ||
+          anchorHref.includes('videos%2f') ||
+          anchorHref.includes('/videos/') ||
+          anchorHref.includes('/video/');
+      }}
+      const images = Array.from(document.images || []);
+      const thumbImages = images.filter(isThumbnailCandidate);
+      const loadedThumbImages = thumbImages.filter(isLoadedImage);
+      const visibleLoadedThumbImages = loadedThumbImages.filter(isVisibleElement);
       const videos = Array.from(document.querySelectorAll('video'));
-      const readyVideos = videos.filter((video) => video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA);
+      const readyVideos = videos.filter((video) =>
+        video.dataset.htreeReady === '1' ||
+        video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+      );
       const appChildren = document.getElementById('app')?.childElementCount ?? 0;
       const smokeEnabled = new URLSearchParams(window.location.search).get('smoke') === '1' ? 1 : 0;
-      return `thumbs=${{loadedThumbImages.length}}/${{thumbImages.length}} visible=${{visibleLoadedThumbImages.length}} videos=${{readyVideos.length}}/${{videos.length}} app=${{appChildren}} smoke=${{smokeEnabled}}`;
+      const workerReady = window.__workerAdapter || window.__getWorkerAdapter?.() ? 1 : 0;
+      const htreeBase = window.htree?.htreeBaseUrl ? 1 : 0;
+      const relayCount = Array.isArray(window.htree?.relays) ? window.htree.relays.length : 0;
+      const hasServiceWorkerController = navigator.serviceWorker?.controller ? 1 : 0;
+      const isCrossOriginIsolated = self.crossOriginIsolated ? 1 : 0;
+      return `thumbs=${{loadedThumbImages.length}}/${{thumbImages.length}} visible=${{visibleLoadedThumbImages.length}} videos=${{readyVideos.length}}/${{videos.length}} app=${{appChildren}} smoke=${{smokeEnabled}} worker=${{workerReady}} base=${{htreeBase}} relays=${{relayCount}} sw=${{hasServiceWorkerController}} coi=${{isCrossOriginIsolated}}`;
     }} catch (_error) {{
       return '';
     }}
@@ -778,9 +811,15 @@ pub fn generate_nip07_script(
     notifyDiagnostic('load');
     setTimeout(() => notifyDiagnostic('post-load'), 250);
     setTimeout(() => notifyDiagnostic('post-load-late'), 1500);
+    setTimeout(() => notifyDiagnostic('post-load-media'), 5000);
+    setTimeout(() => notifyDiagnostic('post-load-media-late'), 10000);
   }});
   document.addEventListener('load', (event) => {{
-    if (event.target instanceof HTMLImageElement || event.target instanceof HTMLVideoElement) {{
+    if (event.target instanceof HTMLImageElement) {{
+      event.target.dataset.htreeLoaded = '1';
+      queueDiagnostic('resource-load');
+    }} else if (event.target instanceof HTMLVideoElement) {{
+      event.target.dataset.htreeReady = '1';
       queueDiagnostic('resource-load');
     }}
   }}, true);
@@ -802,7 +841,20 @@ pub fn generate_nip07_script(
   }}, true);
   document.addEventListener('loadeddata', (event) => {{
     if (event.target instanceof HTMLVideoElement) {{
+      event.target.dataset.htreeReady = '1';
       queueDiagnostic('video-loadeddata');
+    }}
+  }}, true);
+  document.addEventListener('loadedmetadata', (event) => {{
+    if (event.target instanceof HTMLVideoElement) {{
+      event.target.dataset.htreeReady = '1';
+      queueDiagnostic('video-loadedmetadata');
+    }}
+  }}, true);
+  document.addEventListener('canplay', (event) => {{
+    if (event.target instanceof HTMLVideoElement) {{
+      event.target.dataset.htreeReady = '1';
+      queueDiagnostic('video-canplay');
     }}
   }}, true);
   window.addEventListener('error', (event) => {{
@@ -898,22 +950,47 @@ fn media_summary_js() -> &'static str {
     r#"
 function getMediaSummary() {
   try {
-    const images = Array.from(document.images || []);
-    const thumbImages = images.filter((img) => (img.currentSrc || img.src || '').includes('/thumbnail'));
-    const loadedThumbImages = thumbImages.filter((img) => img.complete && img.naturalWidth > 0 && img.naturalHeight > 0);
-    const visibleLoadedThumbImages = loadedThumbImages.filter((img) => {
-      const style = window.getComputedStyle(img);
-      const rect = img.getBoundingClientRect();
+    function isLoadedImage(img) {
+      return img.dataset.htreeLoaded === '1' ||
+        (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0);
+    }
+    function isVisibleElement(element) {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
       return style.display !== 'none' &&
         style.visibility !== 'hidden' &&
         rect.width > 20 &&
         rect.height > 20;
-    });
+    }
+    function isThumbnailCandidate(img) {
+      const src = (img.currentSrc || img.src || '').toLowerCase();
+      const anchorHref = (img.closest('a')?.getAttribute('href') || '').toLowerCase();
+      const rect = img.getBoundingClientRect();
+      if (rect.width < 80 || rect.height < 45) {
+        return false;
+      }
+      return src.includes('/thumbnail') ||
+        anchorHref.includes('videos%2f') ||
+        anchorHref.includes('/videos/') ||
+        anchorHref.includes('/video/');
+    }
+    const images = Array.from(document.images || []);
+    const thumbImages = images.filter(isThumbnailCandidate);
+    const loadedThumbImages = thumbImages.filter(isLoadedImage);
+    const visibleLoadedThumbImages = loadedThumbImages.filter(isVisibleElement);
     const videos = Array.from(document.querySelectorAll('video'));
-    const readyVideos = videos.filter((video) => video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA);
+    const readyVideos = videos.filter((video) =>
+      video.dataset.htreeReady === '1' ||
+      video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+    );
     const appChildren = document.getElementById('app')?.childElementCount ?? 0;
     const smokeEnabled = new URLSearchParams(window.location.search).get('smoke') === '1' ? 1 : 0;
-    return `thumbs=${loadedThumbImages.length}/${thumbImages.length} visible=${visibleLoadedThumbImages.length} videos=${readyVideos.length}/${videos.length} app=${appChildren} smoke=${smokeEnabled}`;
+    const workerReady = window.__workerAdapter || window.__getWorkerAdapter?.() ? 1 : 0;
+    const htreeBase = window.htree?.htreeBaseUrl ? 1 : 0;
+    const relayCount = Array.isArray(window.htree?.relays) ? window.htree.relays.length : 0;
+    const hasServiceWorkerController = navigator.serviceWorker?.controller ? 1 : 0;
+    const isCrossOriginIsolated = self.crossOriginIsolated ? 1 : 0;
+    return `thumbs=${loadedThumbImages.length}/${thumbImages.length} visible=${visibleLoadedThumbImages.length} videos=${readyVideos.length}/${videos.length} app=${appChildren} smoke=${smokeEnabled} worker=${workerReady} base=${htreeBase} relays=${relayCount} sw=${hasServiceWorkerController} coi=${isCrossOriginIsolated}`;
   } catch (_error) {
     return '';
   }
@@ -987,10 +1064,17 @@ pub fn generate_webview_diagnostic_probe_script(
         const event = entry?.event;
         return event === 'window:error' ||
           event === 'window:unhandledrejection' ||
-          event === 'console:error';
+          event === 'console:error' ||
+          event === 'console:warn' ||
+          event === 'worker:ready' ||
+          (typeof event === 'string' && (
+            event.startsWith('worker:init:') ||
+            event.startsWith('media:setup:') ||
+            event.startsWith('prefix:')
+          ));
       }});
       if (relevant.length === 0) return '';
-      const tail = relevant.slice(-3).map((entry) => {{
+      const tail = relevant.slice(-5).map((entry) => {{
         const event = typeof entry?.event === 'string' ? entry.event : 'debug';
         const data = entry?.data;
         if (data?.message) return `${{event}} ${{data.message}}`;
@@ -998,9 +1082,16 @@ pub fn generate_webview_diagnostic_probe_script(
           return `${{event}} ${{data.args.join(' ')}}`;
         }}
         if (data?.reason) return `${{event}} ${{data.reason}}`;
+        if (data) {{
+          try {{
+            return `${{event}} ${{JSON.stringify(data)}}`;
+          }} catch (_error) {{
+            return `${{event}} ${{String(data)}}`;
+          }}
+        }}
         return event;
       }});
-      return tail.join(' | ').slice(0, 240);
+      return tail.join(' | ').slice(0, 480);
     }} catch (_error) {{
       return '';
     }}
@@ -1023,7 +1114,7 @@ pub fn generate_webview_diagnostic_probe_script(
   fetch(WEBVIEW_ENDPOINT, {{
     method: 'POST',
     headers: {{ 'Content-Type': 'text/plain;charset=UTF-8' }},
-    body: JSON.stringify({{ sessionToken: SESSION_TOKEN, payload }})
+    body: JSON.stringify({{ session_token: SESSION_TOKEN, payload }})
   }}).catch((error) => {{
     console.warn('[WebviewProbe] Failed to send diagnostic', error);
   }});
@@ -2184,8 +2275,14 @@ pub fn webview_event<R: Runtime>(
     }
 
     debug!(
-        "[webview-event] kind={} label={} origin={} url={:?}",
-        payload.kind, payload.label, payload.origin, payload.url
+        "[webview-event] kind={} label={} origin={} url={:?} source={:?} media_summary={:?} error={:?}",
+        payload.kind,
+        payload.label,
+        payload.origin,
+        payload.url,
+        payload.source,
+        payload.media_summary,
+        payload.error
     );
 
     match payload.kind.as_str() {

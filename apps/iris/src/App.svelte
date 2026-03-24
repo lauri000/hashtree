@@ -276,6 +276,34 @@
       : error;
   }
 
+  function isFatalChildDiagnosticError(error: string, source?: string | null): boolean {
+    const trimmed = error.trim();
+    if (!trimmed) return false;
+
+    const lower = trimmed.toLowerCase();
+    if (
+      lower.includes('notification.is_permission_granted not allowed') ||
+      lower.includes("can't find variable: rtcpeerconnection") ||
+      trimmed.includes('console:warn') ||
+      trimmed.includes('worker:init:') ||
+      trimmed.includes('worker:ready') ||
+      trimmed.includes('media:setup:') ||
+      trimmed.includes('prefix:')
+    ) {
+      return false;
+    }
+
+    if (source === 'resource-error') return true;
+
+    return trimmed.includes('console:error') ||
+      trimmed.includes('window:error') ||
+      trimmed.includes('window:unhandledrejection') ||
+      lower.includes('failed to load') ||
+      lower.includes('invalid session token') ||
+      lower.includes('protocol bridge request failed') ||
+      lower.includes('could not open');
+  }
+
   function syncToolbarMode() {
     const nextIsCompactToolbar = window.innerWidth < COMPACT_TOOLBAR_BREAKPOINT;
     if (isCompactToolbar === nextIsCompactToolbar) return;
@@ -549,7 +577,7 @@
     }
 
     return {
-      top: toolbarHeight + (dropdownHeight > 0 ? dropdownHeight + 4 : 0),
+      top: toolbarHeight,
       bottom: 0,
     };
   }
@@ -841,7 +869,9 @@
     if (event.title) childDocumentTitle = event.title;
     if (event.bodyText) childBodyText = event.bodyText;
     if (event.mediaSummary) childMediaSummary = event.mediaSummary;
-    if (event.error) childLastError = event.error;
+    if (event.error && isFatalChildDiagnosticError(event.error, event.source)) {
+      childLastError = event.error;
+    }
     if (event.bodyText && currentUrl) {
       void maybeRecoverSuggestedTreeRoot(currentUrl, event.bodyText);
     }

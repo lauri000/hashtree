@@ -1016,6 +1016,8 @@ pub async fn htree_npub_path(
 
 /// Cache-Control header for immutable content-addressed data (1 year)
 const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+const CORP_CROSS_ORIGIN: &str = "cross-origin";
+const CROSS_ORIGIN_RESOURCE_POLICY_HEADER: &str = "cross-origin-resource-policy";
 
 /// Source of blob data for X-Source header
 #[derive(Debug, Clone)]
@@ -1042,7 +1044,8 @@ fn build_blob_response(data: Vec<u8>, source: BlobSource, is_localhost: bool) ->
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(header::CONTENT_LENGTH, data.len())
         .header(header::CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL)
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .header(CROSS_ORIGIN_RESOURCE_POLICY_HEADER, CORP_CROSS_ORIGIN);
 
     if is_localhost {
         builder = builder.header("X-Source", source.to_header_value());
@@ -1075,7 +1078,8 @@ fn build_json_response(
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .header(CROSS_ORIGIN_RESOURCE_POLICY_HEADER, CORP_CROSS_ORIGIN);
     if is_immutable {
         builder = builder.header(header::CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL);
     }
@@ -1182,7 +1186,8 @@ async fn serve_cid_with_range(
                     .header(header::CONTENT_LENGTH, content_length)
                     .header(header::CONTENT_RANGE, content_range)
                     .header(header::ACCEPT_RANGES, "bytes")
-                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .header(CROSS_ORIGIN_RESOURCE_POLICY_HEADER, CORP_CROSS_ORIGIN);
                 if is_immutable {
                     builder = builder.header(header::CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL);
                 }
@@ -1217,7 +1222,8 @@ async fn serve_cid_with_range(
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CONTENT_LENGTH, data.len())
         .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .header(CROSS_ORIGIN_RESOURCE_POLICY_HEADER, CORP_CROSS_ORIGIN);
     if is_immutable {
         builder = builder.header(header::CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL);
     }
@@ -2714,6 +2720,13 @@ mod tests {
         .into_response();
 
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(CROSS_ORIGIN_RESOURCE_POLICY_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(CORP_CROSS_ORIGIN)
+        );
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body.as_ref(), main_js.as_bytes());
     }
