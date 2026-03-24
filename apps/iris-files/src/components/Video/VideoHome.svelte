@@ -855,7 +855,7 @@
                 npub: video.ownerNpub,
                 treeName: video.treeName,
                 videoId: video.videoId || undefined,
-                allowAliasFallback: true,
+                allowAliasFallback: false,
               })}
               {#if playlistInfo && playlistInfo.videoCount >= 1}
                 <PlaylistCard
@@ -880,7 +880,6 @@
                   rootCid={video.rootCid ?? null}
                   rootHashHex={video.rootCid?.hash ? toHex(video.rootCid.hash) : null}
                   timestamp={video.timestamp}
-                  themeHover
                 />
               {/if}
             {/each}

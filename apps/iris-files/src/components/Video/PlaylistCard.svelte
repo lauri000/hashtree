@@ -3,10 +3,17 @@
    * PlaylistCard - Card for displaying a playlist in grids
    * Shows thumbnail with YouTube-style stacked effect and playlist overlay
    */
+  import { onDestroy } from 'svelte';
   import { Avatar, Name } from '../User';
   import { extractDominantColor, rgbToRgba, type RGB } from '../../utils/colorExtract';
   import { formatTimeAgo } from '../../utils/format';
   import { shouldEagerLoadMediaInNativeChildRuntime } from '../../lib/nativeHtree';
+  import {
+    appendMediaImageRetryParam,
+    getMediaImageRetryDelayMs,
+    isRetryableMediaImageUrl,
+    MAX_MEDIA_IMAGE_RETRIES,
+  } from '../../lib/mediaImageRetry';
 
   interface Props {
     href: string;
@@ -17,26 +24,64 @@
     visibility?: string;
     hideAuthor?: boolean;
     timestamp?: number | null;
+    themeHover?: boolean;
   }
 
-  let { href, title, videoCount, thumbnailUrl, ownerPubkey, visibility, hideAuthor = false, timestamp }: Props = $props();
+  let { href, title, videoCount, thumbnailUrl, ownerPubkey, visibility, hideAuthor = false, timestamp, themeHover = false }: Props = $props();
 
   let thumbnailError = $state(false);
   let lastLoadedUrl = $state<string | null>(null);
+  let retryCount = $state(0);
+  let renderedThumbnailUrl = $state<string | null>(null);
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
   const loadingStrategy = shouldEagerLoadMediaInNativeChildRuntime() ? 'eager' : 'lazy';
 
   // Reset error and track URL changes
   $effect.pre(() => {
-    if (thumbnailUrl && thumbnailUrl !== lastLoadedUrl) {
+    if (thumbnailUrl !== lastLoadedUrl) {
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
       thumbnailError = false;
-      lastLoadedUrl = thumbnailUrl;
+      retryCount = 0;
+      lastLoadedUrl = thumbnailUrl ?? null;
+      renderedThumbnailUrl = thumbnailUrl ?? null;
     }
   });
+
+  onDestroy(() => {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  });
+
+  function handleThumbnailError(event: Event): void {
+    const image = event.currentTarget as HTMLImageElement | null;
+    const baseUrl = thumbnailUrl ?? null;
+    if (!baseUrl || !isRetryableMediaImageUrl(baseUrl) || retryCount >= MAX_MEDIA_IMAGE_RETRIES) {
+      thumbnailError = true;
+      return;
+    }
+
+    const nextRetry = retryCount + 1;
+    retryCount = nextRetry;
+    const retryUrl = appendMediaImageRetryParam(baseUrl, nextRetry);
+    const delayMs = getMediaImageRetryDelayMs(nextRetry);
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (image && !image.isConnected) return;
+      thumbnailError = false;
+      renderedThumbnailUrl = retryUrl;
+    }, delayMs);
+  }
 
   // Extract dominant color from thumbnail for hover effect
   let themeColor = $state<RGB | null>(null);
 
   $effect(() => {
+    if (!themeHover) return;
     const url = thumbnailUrl;
     if (!url) return;
 
@@ -57,13 +102,13 @@
 
     <!-- Main thumbnail -->
     <div class="absolute inset-0 bg-surface-2 rounded-lg overflow-hidden">
-      {#if thumbnailUrl && !thumbnailError}
+      {#if renderedThumbnailUrl && !thumbnailError}
         <img
-          src={thumbnailUrl}
+          src={renderedThumbnailUrl}
           alt=""
           class="w-full h-full object-cover"
           loading={loadingStrategy}
-          onerror={() => thumbnailError = true}
+          onerror={handleThumbnailError}
         />
       {:else}
         <div class="w-full h-full flex items-center justify-center bg-surface-1">

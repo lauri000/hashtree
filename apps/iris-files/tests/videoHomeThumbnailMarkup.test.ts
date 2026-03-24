@@ -36,4 +36,8 @@ describe('video home thumbnail wiring', () => {
   it('rechecks pending feed thumbnails when a tree root arrives later', () => {
     expect(videoHomeSource).toContain('onCacheUpdate((npub, treeName) => {');
   });
+
+  it('does not enable decorative hover color extraction for feed cards', () => {
+    expect(videoHomeSource).not.toContain('themeHover');
+  });
 });
