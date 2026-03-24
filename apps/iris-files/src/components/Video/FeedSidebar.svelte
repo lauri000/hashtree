@@ -76,6 +76,7 @@
       treeName: video.treeName,
       videoId: video.videoId || undefined,
       videoPath: video.videoPath,
+      includeCommonFallbacks: false,
     });
   }
 

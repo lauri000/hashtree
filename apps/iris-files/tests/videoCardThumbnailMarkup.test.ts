@@ -12,6 +12,7 @@ describe('video card thumbnail wiring', () => {
 
   it('passes exact video fallback candidates to the thumbnail component', () => {
     expect(videoCardSource).toContain('getStableVideoCandidateUrls');
+    expect(videoCardSource).toContain('includeCommonFallbacks: false');
     expect(videoCardSource).toContain('fallbackVideoUrls={thumbnailVideoUrls}');
   });
 });

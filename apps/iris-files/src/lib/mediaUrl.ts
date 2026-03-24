@@ -287,6 +287,7 @@ interface StableVideoCandidateUrlOptions {
   treeName?: string | null;
   videoId?: string | null;
   videoPath?: string | null;
+  includeCommonFallbacks?: boolean;
 }
 
 export function getStableVideoCandidateUrls(options: StableVideoCandidateUrlOptions): string[] {
@@ -308,9 +309,11 @@ export function getStableVideoCandidateUrls(options: StableVideoCandidateUrlOpti
     addPath(options.videoPath);
   }
 
-  const prefix = options.videoId ? `${options.videoId}/` : '';
-  for (const fileName of COMMON_VIDEO_FILENAMES) {
-    addPath(`${prefix}${fileName}`);
+  if (options.includeCommonFallbacks !== false) {
+    const prefix = options.videoId ? `${options.videoId}/` : '';
+    for (const fileName of COMMON_VIDEO_FILENAMES) {
+      addPath(`${prefix}${fileName}`);
+    }
   }
 
   return Array.from(urls);

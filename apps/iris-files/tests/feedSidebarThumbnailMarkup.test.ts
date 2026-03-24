@@ -13,4 +13,8 @@ describe('feed sidebar thumbnail wiring', () => {
   it('avoids htree alias fallback when exact feed thumbnails are missing', () => {
     expect(feedSidebarSource).toContain('allowAliasFallback: false');
   });
+
+  it('does not guess common video filenames for sidebar thumbnail fallback', () => {
+    expect(feedSidebarSource).toContain('includeCommonFallbacks: false');
+  });
 });
