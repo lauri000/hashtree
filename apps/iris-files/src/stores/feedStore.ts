@@ -9,11 +9,14 @@ import { createFollowsStore, getFollowsSync } from './follows';
 import { getFollows as getSocialGraphFollows } from '../utils/socialGraph';
 import { getWorkerAdapter, waitForWorkerAdapter } from '../lib/workerInit';
 import { DEFAULT_BOOTSTRAP_PUBKEY, DEFAULT_VIDEO_FEED_PUBKEYS } from '../utils/constants';
-import { fromHex } from '@hashtree/core';
+import { fromHex, toHex } from '@hashtree/core';
 import { orderFeedWithInterleaving } from '../utils/feedOrder';
 import { clearDeletedVideo, getDeletedVideoTimestamp, recordDeletedVideo } from './videoDeletes';
 import { isHtreeDebugEnabled, logHtreeDebug } from '../lib/htreeDebug';
 import { getAppType } from '../appType';
+import { detectPlaylistForCard, getCachedPlaylistInfo, shouldRefreshPlaylistCardInfo } from './playlist';
+import { resolveFeedVideoRootCid, resolveFeedVideoRootCidAsync } from '../lib/videoFeedRoot';
+import { onCacheUpdate } from '../treeRootCache';
 
 const log = (event: string, data?: Record<string, unknown>) => {
   if (!isHtreeDebugEnabled()) return;
@@ -25,11 +28,18 @@ const RELAY_WAIT_TIMEOUT_MS = 10000;
 const RELAY_RETRY_TIMEOUT_MS = 30000;
 const EMPTY_FEED_RETRY_MS = 15000;
 const EMPTY_FEED_MAX_RETRIES = 3;
+const FEED_MEDIA_RESOLUTION_CONCURRENCY = 4;
+const FEED_MEDIA_RESOLUTION_MAX_RETRIES = 3;
 
 let retryOnRelayScheduled = false;
 let emptyFeedRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let emptyFeedRetryCount = 0;
 let activeSubscription: { stop: () => void } | null = null;
+const attemptedFeedMediaKeys = new Set<string>();
+const cachedFeedMediaByKey = new Map<string, Partial<FeedVideo>>();
+const inFlightFeedMediaKeys = new Set<string>();
+const feedMediaRetryCounts = new Map<string, number>();
+const feedMediaRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function clearEmptyFeedRetry(): void {
   if (emptyFeedRetryTimer) {
@@ -66,11 +76,244 @@ export interface FeedVideo {
   treeName: string | null;
   videoId?: string;
   duration?: number;
+  thumbnailUrl?: string;
   timestamp?: number;
   rootCid?: CID;
 }
 
 export const feedStore = writable<FeedVideo[]>([]);
+
+onCacheUpdate((npub, treeName) => {
+  const videos = get(feedStore);
+  if (!videos.some((video) => video.ownerNpub === npub && video.treeName === treeName)) {
+    return;
+  }
+  queueFeedVideoMediaResolution(videos);
+});
+
+function resetFeedMediaResolution(): void {
+  attemptedFeedMediaKeys.clear();
+  cachedFeedMediaByKey.clear();
+  inFlightFeedMediaKeys.clear();
+  for (const timer of feedMediaRetryTimers.values()) {
+    clearTimeout(timer);
+  }
+  feedMediaRetryTimers.clear();
+  feedMediaRetryCounts.clear();
+}
+
+function getFeedMediaResolutionKey(video: FeedVideo): string | null {
+  if (!video.ownerNpub || !video.treeName) return null;
+  const rootCid = resolveFeedVideoRootCid(video);
+  if (!rootCid?.hash) {
+    return `${video.ownerNpub}/${video.treeName}`;
+  }
+  return `${video.ownerNpub}/${video.treeName}/${toHex(rootCid.hash)}`;
+}
+
+function shouldResolveFeedVideoMedia(video: FeedVideo): boolean {
+  if (!video.ownerNpub || !video.treeName) return false;
+  return !video.thumbnailUrl || !video.duration || !resolveFeedVideoRootCid(video);
+}
+
+function sameCid(a?: CID | null, b?: CID | null): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return toHex(a.hash) === toHex(b.hash)
+    && ((a.key && b.key && toHex(a.key) === toHex(b.key)) || (!a.key && !b.key));
+}
+
+function applyCachedFeedMedia(videos: FeedVideo[]): FeedVideo[] {
+  let changed = false;
+  const nextVideos = videos.map((video) => {
+    const resolutionKey = getFeedMediaResolutionKey(video);
+    if (!resolutionKey) return video;
+
+    const cached = cachedFeedMediaByKey.get(resolutionKey);
+    if (!cached) return video;
+
+    const nextTitle = cached.title ?? video.title;
+    const nextDuration = cached.duration ?? video.duration;
+    const nextThumbnailUrl = cached.thumbnailUrl ?? video.thumbnailUrl;
+    const nextRootCid = cached.rootCid ?? video.rootCid;
+
+    if (
+      nextTitle === video.title &&
+      nextDuration === video.duration &&
+      nextThumbnailUrl === video.thumbnailUrl &&
+      sameCid(nextRootCid, video.rootCid)
+    ) {
+      return video;
+    }
+
+    changed = true;
+    return {
+      ...video,
+      title: nextTitle,
+      duration: nextDuration,
+      thumbnailUrl: nextThumbnailUrl,
+      rootCid: nextRootCid,
+    };
+  });
+
+  return changed ? nextVideos : videos;
+}
+
+export async function getFeedVideoResolvedMedia(video: FeedVideo): Promise<Partial<FeedVideo> | null> {
+  const rootCid = await resolveFeedVideoRootCidAsync(video);
+  if (!rootCid || !video.ownerNpub || !video.treeName) return null;
+
+  const cached = getCachedPlaylistInfo(video.ownerNpub, video.treeName);
+  const info = cached !== undefined && !shouldRefreshPlaylistCardInfo(cached)
+    ? cached
+    : await detectPlaylistForCard(rootCid, video.ownerNpub, video.treeName);
+
+  if (!info) return null;
+
+  const resolved: Partial<FeedVideo> = {};
+  if (!video.rootCid) {
+    resolved.rootCid = rootCid;
+  }
+  if (info.thumbnailUrl) {
+    resolved.thumbnailUrl = info.thumbnailUrl;
+  }
+  if (typeof info.duration === 'number') {
+    resolved.duration = info.duration;
+  }
+  if (typeof info.title === 'string' && info.title) {
+    resolved.title = info.title;
+  }
+
+  return Object.keys(resolved).length > 0 ? resolved : null;
+}
+
+async function resolveFeedVideoMedia(video: FeedVideo): Promise<void> {
+  const resolutionKey = getFeedMediaResolutionKey(video);
+  if (!resolutionKey) return;
+  if (!shouldResolveFeedVideoMedia(video)) return;
+  if (attemptedFeedMediaKeys.has(resolutionKey) || inFlightFeedMediaKeys.has(resolutionKey)) return;
+
+  inFlightFeedMediaKeys.add(resolutionKey);
+  try {
+    const resolved = await getFeedVideoResolvedMedia(video);
+    if (!resolved) {
+      scheduleFeedVideoMediaRetry(resolutionKey);
+      return;
+    }
+
+    const nextVideo = { ...video, ...resolved };
+    const nextResolutionKey = getFeedMediaResolutionKey(nextVideo) ?? resolutionKey;
+    cachedFeedMediaByKey.set(resolutionKey, {
+      ...cachedFeedMediaByKey.get(resolutionKey),
+      ...resolved,
+    });
+    if (nextResolutionKey !== resolutionKey) {
+      cachedFeedMediaByKey.set(nextResolutionKey, {
+        ...cachedFeedMediaByKey.get(nextResolutionKey),
+        ...resolved,
+      });
+    }
+    const retryTimer = feedMediaRetryTimers.get(resolutionKey) ?? feedMediaRetryTimers.get(nextResolutionKey);
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      feedMediaRetryTimers.delete(resolutionKey);
+      feedMediaRetryTimers.delete(nextResolutionKey);
+    }
+    feedMediaRetryCounts.delete(resolutionKey);
+    feedMediaRetryCounts.delete(nextResolutionKey);
+
+    feedStore.update((videos) => {
+      let changed = false;
+      const nextVideos = videos.map((candidate) => {
+        const candidateKey = getFeedMediaResolutionKey(candidate);
+        if (candidateKey !== resolutionKey && candidateKey !== nextResolutionKey) {
+          return candidate;
+        }
+
+        const nextTitle = resolved.title ?? candidate.title;
+        const nextDuration = resolved.duration ?? candidate.duration;
+        const nextThumbnailUrl = resolved.thumbnailUrl ?? candidate.thumbnailUrl;
+        const nextRootCid = resolved.rootCid ?? candidate.rootCid;
+
+        if (
+          nextTitle === candidate.title &&
+          nextDuration === candidate.duration &&
+          nextThumbnailUrl === candidate.thumbnailUrl &&
+          sameCid(nextRootCid, candidate.rootCid)
+        ) {
+          return candidate;
+        }
+
+        changed = true;
+        return {
+          ...candidate,
+          title: nextTitle,
+          duration: nextDuration,
+          thumbnailUrl: nextThumbnailUrl,
+          rootCid: nextRootCid,
+        };
+      });
+
+      return changed ? nextVideos : videos;
+    });
+
+    const mergedThumbnailUrl = resolved.thumbnailUrl ?? video.thumbnailUrl;
+    if (mergedThumbnailUrl) {
+      attemptedFeedMediaKeys.add(resolutionKey);
+      attemptedFeedMediaKeys.add(nextResolutionKey);
+    } else {
+      scheduleFeedVideoMediaRetry(nextResolutionKey);
+    }
+  } finally {
+    inFlightFeedMediaKeys.delete(resolutionKey);
+  }
+}
+
+function scheduleFeedVideoMediaRetry(resolutionKey: string): void {
+  if (feedMediaRetryTimers.has(resolutionKey)) return;
+
+  const attempt = (feedMediaRetryCounts.get(resolutionKey) ?? 0) + 1;
+  if (attempt > FEED_MEDIA_RESOLUTION_MAX_RETRIES) {
+    return;
+  }
+
+  feedMediaRetryCounts.set(resolutionKey, attempt);
+  const delayMs = 250 * (2 ** (attempt - 1));
+  const timer = setTimeout(() => {
+    feedMediaRetryTimers.delete(resolutionKey);
+    const current = get(feedStore).find((video) => getFeedMediaResolutionKey(video) === resolutionKey);
+    if (!current) return;
+    if (!shouldResolveFeedVideoMedia(current)) return;
+    void resolveFeedVideoMedia(current);
+  }, delayMs);
+
+  feedMediaRetryTimers.set(resolutionKey, timer);
+}
+
+function queueFeedVideoMediaResolution(videos: FeedVideo[]): void {
+  const pending = videos.filter((video) => {
+    const resolutionKey = getFeedMediaResolutionKey(video);
+    return !!resolutionKey
+      && shouldResolveFeedVideoMedia(video)
+      && !attemptedFeedMediaKeys.has(resolutionKey)
+      && !inFlightFeedMediaKeys.has(resolutionKey);
+  });
+
+  if (pending.length === 0) return;
+
+  void (async () => {
+    for (let i = 0; i < pending.length; i += FEED_MEDIA_RESOLUTION_CONCURRENCY) {
+      const batch = pending.slice(i, i + FEED_MEDIA_RESOLUTION_CONCURRENCY);
+      await Promise.all(batch.map((video) => resolveFeedVideoMedia(video)));
+    }
+  })();
+}
+
+export function setFeedVideos(videos: FeedVideo[]): void {
+  const hydratedVideos = applyCachedFeedMedia(videos);
+  feedStore.set(hydratedVideos);
+  queueFeedVideoMediaResolution(hydratedVideos);
+}
 
 // Track if we're already fetching to avoid duplicate requests
 let isFetching = false;
@@ -84,7 +327,8 @@ nostrStore.subscribe((state) => {
   if (state.pubkey === lastPubkey) return;
   lastPubkey = state.pubkey;
   resetFeedFetchState();
-  feedStore.set([]);
+  resetFeedMediaResolution();
+  setFeedVideos([]);
   log('reset:pubkey', { pubkey: state.pubkey });
 });
 
@@ -310,7 +554,7 @@ export async function fetchFeedVideos(): Promise<void> {
       const videos = orderFeedWithInterleaving(Array.from(seenVideos.values()));
       log('flush', { reason, count: videos.length });
       if (videos.length > 0) {
-        feedStore.set(videos);
+        setFeedVideos(videos);
         hasInitialFetch = true;
         clearEmptyFeedRetry();
       }
@@ -403,7 +647,7 @@ export async function fetchFeedVideos(): Promise<void> {
     log('complete', { count: videos.length });
 
     if (videos.length > 0) {
-      feedStore.set(videos);
+      setFeedVideos(videos);
       hasInitialFetch = true;
       clearEmptyFeedRetry();
     }
@@ -427,4 +671,5 @@ export function resetFeedFetchState(): void {
   clearEmptyFeedRetry();
   hasInitialFetch = false;
   isFetching = false;
+  resetFeedMediaResolution();
 }

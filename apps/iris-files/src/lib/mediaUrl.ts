@@ -243,13 +243,22 @@ export function getStableFileUrl(options: StableFileUrlOptions): string | null {
   if (options.cid) {
     const nhash = nhashEncode(options.cid);
     const fileName = options.path.split('/').filter(Boolean).at(-1) ?? 'file';
-    const url = `${getHtreePrefix()}/htree/${nhash}/${encodeURIComponent(fileName)}`;
-    return appendHtreeCacheBust(appendMediaClientKey(url));
+    return getEncodedNhashUrl(nhash, fileName);
   }
   if (options.npub && options.treeName) {
     return getNpubFileUrl(options.npub, options.treeName, options.path);
   }
   return null;
+}
+
+export function getEncodedNhashUrl(nhash: string, filename?: string): string {
+  const prefix = getHtreePrefix();
+  if (filename) {
+    return appendHtreeCacheBust(
+      appendMediaClientKey(`${prefix}/htree/${nhash}/${encodeURIComponent(filename)}`)
+    );
+  }
+  return appendHtreeCacheBust(appendMediaClientKey(`${prefix}/htree/${nhash}`));
 }
 
 /**
@@ -261,13 +270,7 @@ export function getStableFileUrl(options: StableFileUrlOptions): string | null {
  */
 export function getNhashFileUrl(cid: CID, filename?: string): string {
   const nhash = nhashEncode(cid);
-  const prefix = getHtreePrefix();
-  if (filename) {
-    return appendHtreeCacheBust(
-      appendMediaClientKey(`${prefix}/htree/${nhash}/${encodeURIComponent(filename)}`)
-    );
-  }
-  return appendHtreeCacheBust(appendMediaClientKey(`${prefix}/htree/${nhash}`));
+  return getEncodedNhashUrl(nhash, filename);
 }
 
 /**

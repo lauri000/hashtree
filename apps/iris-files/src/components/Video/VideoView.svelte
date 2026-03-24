@@ -39,7 +39,7 @@
   import { currentPlaylist, loadPlaylist, playNext, repeatMode, shuffleEnabled } from '../../stores/playlist';
   import type { CID } from '@hashtree/core';
   import { toHex, nhashEncode } from '@hashtree/core';
-  import { appendHtreeCacheBust, getHtreePrefix, getStableFileUrl, getStableThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
+  import { appendHtreeCacheBust, getHtreePrefix, getNhashFileUrl, getStableFileUrl, getStableThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
   import { logHtreeDebug } from '../../lib/htreeDebug';
   import { ensureMediaStreamingReady } from '../../lib/mediaStreamingSetup';
   import { NDKEvent, type NDKFilter } from 'ndk';
@@ -71,6 +71,7 @@
 
   // Thumbnail color for description box background
   let thumbnailColor = $state<{ r: number; g: number; b: number } | null>(null);
+  let videoThumbnailUrl = $state<string | null>(null);
 
   // Theater mode (from settings)
   let theaterMode = $derived($settingsStore.video.theaterMode);
@@ -873,6 +874,7 @@ async function syncTreeRootToWorker(
     videoFileName = '';
     videoCid = null;
     videoFolderCid = null;
+    videoThumbnailUrl = null;
     videoTitle = '';
     videoDescription = '';
     videoCreatedAt = null;
@@ -1231,6 +1233,15 @@ async function syncTreeRootToWorker(
     try {
       const entries = await tree.listDirectory(rootCid);
       if (isStaleMetadataLoad()) return;
+      const thumbEntry = entries?.find((entry) =>
+        entry.name.startsWith('thumbnail.') ||
+        entry.name.endsWith('.jpg') ||
+        entry.name.endsWith('.webp') ||
+        entry.name.endsWith('.png')
+      );
+      if (thumbEntry) {
+        videoThumbnailUrl = getNhashFileUrl(thumbEntry.cid, thumbEntry.name);
+      }
       const videoEntry = entries?.find(e =>
         e.name.startsWith('video.') ||
         e.name.endsWith('.webm') ||
@@ -1640,10 +1651,12 @@ async function syncTreeRootToWorker(
     });
 
     const thumbUrl = getStableThumbnailUrl({
+      thumbnailUrl: videoThumbnailUrl,
       rootCid,
       npub: currentNpub,
       treeName: currentTreeName,
       videoId: videoId || undefined,
+      allowAliasFallback: false,
     });
     if (!thumbUrl) return;
     const img = new Image();

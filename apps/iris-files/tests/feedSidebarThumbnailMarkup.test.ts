@@ -10,7 +10,7 @@ describe('feed sidebar thumbnail wiring', () => {
     expect(feedSidebarSource).toContain('thumbnailUrl: video.thumbnailUrl');
   });
 
-  it('allows htree alias fallback when exact feed thumbnails are missing', () => {
-    expect(feedSidebarSource).toContain('allowAliasFallback: true');
+  it('avoids htree alias fallback when exact feed thumbnails are missing', () => {
+    expect(feedSidebarSource).toContain('allowAliasFallback: false');
   });
 });

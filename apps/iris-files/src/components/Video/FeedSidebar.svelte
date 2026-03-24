@@ -64,7 +64,7 @@
       treeName: video.treeName,
       videoId: video.videoId || undefined,
       hashPrefix,
-      allowAliasFallback: true,
+      allowAliasFallback: false,
     });
   }
 

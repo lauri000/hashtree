@@ -6,8 +6,8 @@ const profileViewPath = path.resolve(process.cwd(), 'src/components/Video/VideoP
 const profileViewSource = fs.readFileSync(profileViewPath, 'utf8');
 
 describe('video profile thumbnail wiring', () => {
-  it('falls back to htree-derived playlist thumbnails when exact ones are missing', () => {
+  it('keeps profile playlist thumbnails on exact urls or placeholders', () => {
     expect(profileViewSource).toContain('thumbnailUrl={playlist.thumbnailUrl ?? getStableThumbnailUrl({');
-    expect(profileViewSource).toContain('allowAliasFallback: true');
+    expect(profileViewSource).toContain('allowAliasFallback: false');
   });
 });

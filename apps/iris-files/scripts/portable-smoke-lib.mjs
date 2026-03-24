@@ -100,7 +100,7 @@ export async function runPortableSmoke({ distDir, title, appName, screenshotPath
   page.on('console', (message) => {
     if (message.type() === 'error') {
       const text = message.text();
-      if (text === 'Failed to load resource: the server responded with a status of 404 (Not Found)') {
+      if (/^Failed to load resource: the server responded with a status of 404\b/.test(text)) {
         return;
       }
       consoleErrors.push(text);

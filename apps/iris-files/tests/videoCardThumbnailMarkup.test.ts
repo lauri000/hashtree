@@ -6,7 +6,7 @@ const videoCardPath = path.resolve(process.cwd(), 'src/components/Video/VideoCar
 const videoCardSource = fs.readFileSync(videoCardPath, 'utf8');
 
 describe('video card thumbnail wiring', () => {
-  it('allows htree alias fallback when exact thumbnail urls are unavailable', () => {
-    expect(videoCardSource).toContain('allowAliasFallback: true');
+  it('avoids htree alias fallback when exact thumbnail urls are unavailable', () => {
+    expect(videoCardSource).toContain('allowAliasFallback: false');
   });
 });

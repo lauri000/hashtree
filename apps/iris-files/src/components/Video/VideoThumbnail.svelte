@@ -3,8 +3,15 @@
    * VideoThumbnail - Reusable video thumbnail with duration and progress bar
    * Used by VideoCard, FeedSidebar, PlaylistSidebar, etc.
    */
+  import { onDestroy } from 'svelte';
   import { formatDuration } from '../../utils/format';
   import { shouldEagerLoadMediaInNativeChildRuntime } from '../../lib/nativeHtree';
+  import {
+    appendMediaImageRetryParam,
+    getMediaImageRetryDelayMs,
+    isRetryableMediaImageUrl,
+    MAX_MEDIA_IMAGE_RETRIES,
+  } from '../../lib/mediaImageRetry';
 
   interface Props {
     /** Thumbnail URL */
@@ -23,25 +30,61 @@
 
   let imageError = $state(false);
   let lastSrc = $state<string | null>(null);
+  let retryCount = $state(0);
+  let renderedSrc = $state<string | null>(null);
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
   const loadingStrategy = shouldEagerLoadMediaInNativeChildRuntime() ? 'eager' : 'lazy';
 
   // Reset error when src changes
   $effect.pre(() => {
-    if (src && src !== lastSrc) {
+    if (src !== lastSrc) {
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
       imageError = false;
-      lastSrc = src;
+      retryCount = 0;
+      lastSrc = src ?? null;
+      renderedSrc = src ?? null;
     }
   });
+
+  onDestroy(() => {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  });
+
+  function handleImageError(event: Event): void {
+    const image = event.currentTarget as HTMLImageElement | null;
+    const baseSrc = src ?? null;
+    if (!baseSrc || !isRetryableMediaImageUrl(baseSrc) || retryCount >= MAX_MEDIA_IMAGE_RETRIES) {
+      imageError = true;
+      return;
+    }
+
+    const nextRetry = retryCount + 1;
+    retryCount = nextRetry;
+    const retryUrl = appendMediaImageRetryParam(baseSrc, nextRetry);
+    const delayMs = getMediaImageRetryDelayMs(nextRetry);
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (image && !image.isConnected) return;
+      imageError = false;
+      renderedSrc = retryUrl;
+    }, delayMs);
+  }
 </script>
 
 <div class="relative bg-surface-2 overflow-hidden {className}">
-  {#if src && !imageError}
+  {#if renderedSrc && !imageError}
     <img
-      {src}
+      src={renderedSrc}
       alt=""
       class="absolute inset-0 w-full h-full object-cover"
       loading={loadingStrategy}
-      onerror={() => imageError = true}
+      onerror={handleImageError}
     />
   {:else}
     <div class="absolute inset-0 flex items-center justify-center">

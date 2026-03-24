@@ -17,7 +17,7 @@ import { getLocalRootCache, getLocalRootKey, onCacheUpdate } from '../treeRootCa
 import { LRUCache } from '../utils/lruCache';
 import { indexVideo } from './searchIndex';
 import { clearFeedPlaylistInfo } from './homeFeedCache';
-import { getHtreePrefix, getNhashFileUrl, getStableThumbnailUrl } from '../lib/mediaUrl';
+import { getEncodedNhashUrl, getHtreePrefix, getNhashFileUrl, getStableThumbnailUrl } from '../lib/mediaUrl';
 import { LinkType, type CID } from '@hashtree/core';
 
 // Cache playlist detection results to avoid layout shift on revisit
@@ -88,6 +88,24 @@ export function buildThumbnailUrl(
   return `${getHtreePrefix()}/htree/${npub}/${encodeURIComponent(treeName)}/${path}`;
 }
 
+function resolveEmbeddedThumbnailUrl(
+  value: unknown,
+  entries: Array<{ name: string; cid?: CID }>
+): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith('nhash1')) {
+    return getEncodedNhashUrl(trimmed);
+  }
+
+  const normalized = trimmed.split('/').filter(Boolean).at(-1);
+  if (!normalized) return undefined;
+  const entry = entries.find((candidate) => candidate.name === normalized && candidate.cid);
+  if (!entry?.cid) return undefined;
+  return getNhashFileUrl(entry.cid, entry.name);
+}
+
 /**
  * Find the first video entry in a playlist directory.
  * Returns the first child entry that actually contains a video file.
@@ -131,6 +149,10 @@ export interface PlaylistCardInfo {
   title?: string;
 }
 
+export function shouldRefreshPlaylistCardInfo(info: PlaylistCardInfo | null | undefined): boolean {
+  return !!info && !info.thumbnailUrl;
+}
+
 /** Helper to add timeout to promises */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   return Promise.race([
@@ -171,7 +193,6 @@ export async function detectPlaylistForCard(
   try {
     const entries = await withTimeout(tree.listDirectory(rootCid), 5000);
     if (!entries || entries.length === 0) {
-      playlistCache.set(cacheKey, null);
       return null;
     }
 
@@ -200,6 +221,9 @@ export async function detectPlaylistForCard(
         if (typeof videoMeta.title === 'string') {
           title = videoMeta.title;
         }
+        if (typeof videoMeta.thumbnail === 'string') {
+          thumbnailUrl = getEncodedNhashUrl(videoMeta.thumbnail);
+        }
       }
 
       // Fall back to metadata.json (legacy format)
@@ -210,6 +234,9 @@ export async function detectPlaylistForCard(
             const metadataData = await withTimeout(tree.readFile(metadataEntry.cid), 2000);
             if (metadataData) {
               const metadata = JSON.parse(new TextDecoder().decode(metadataData));
+              if (!thumbnailUrl) {
+                thumbnailUrl = resolveEmbeddedThumbnailUrl(metadata.thumbnail, entries);
+              }
               if (!duration && typeof metadata.duration === 'number') {
                 duration = metadata.duration;
               }
@@ -232,6 +259,9 @@ export async function detectPlaylistForCard(
             const infoData = await withTimeout(tree.readFile(infoEntry.cid), 2000);
             if (infoData) {
               const info = JSON.parse(new TextDecoder().decode(infoData));
+              if (!thumbnailUrl) {
+                thumbnailUrl = resolveEmbeddedThumbnailUrl(info.thumbnail, entries);
+              }
               if (!duration && typeof info.duration === 'number') {
                 duration = info.duration;
               }
@@ -278,7 +308,6 @@ export async function detectPlaylistForCard(
     playlistCache.set(cacheKey, info);
     return info;
   } catch {
-    playlistCache.set(cacheKey, null);
     return null;
   }
 }
@@ -475,7 +504,7 @@ async function loadPlaylistMetadata(
       }
       if (entryMeta?.thumbnail && typeof entryMeta.thumbnail === 'string') {
         // Thumbnail stored as nhash - use direct nhash URL
-        thumbnailUrl = `${getHtreePrefix()}/htree/${entryMeta.thumbnail}`;
+        thumbnailUrl = getEncodedNhashUrl(entryMeta.thumbnail);
       }
 
       // If we have full metadata from parent entry meta, skip subdirectory reads

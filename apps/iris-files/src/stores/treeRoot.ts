@@ -14,7 +14,13 @@
  */
 import { writable, get, type Readable } from 'svelte/store';
 import { fromHex, toHex, cid, visibilityHex } from '@hashtree/core';
-import type { CID, SubscribeVisibilityInfo, Hash, TreeVisibility } from '@hashtree/core';
+import type {
+  CID,
+  SubscribeVisibilityInfo,
+  Hash,
+  TreeVisibility,
+  RefResolverSubscriptionMetadata,
+} from '@hashtree/core';
 import { routeStore, parseRouteFromHash } from './route';
 import { getRefResolver, getResolverKey } from '../refResolver';
 import { nostrStore, decrypt } from '../nostr';
@@ -64,7 +70,12 @@ function waitForWorkerReady(): Promise<void> {
 // The actual data is stored in TreeRootRegistry
 const subscriptionState = new Map<string, {
   decryptedKey: Hash | undefined;
-  listeners: Set<(hash: Hash | null, encryptionKey?: Hash, visibilityInfo?: SubscribeVisibilityInfo) => void>;
+  listeners: Set<(
+    hash: Hash | null,
+    encryptionKey?: Hash,
+    visibilityInfo?: SubscribeVisibilityInfo,
+    metadata?: RefResolverSubscriptionMetadata
+  ) => void>;
   unsubscribeResolver: (() => void) | null;
   unsubscribeWorker: (() => void) | null;
 }>();
@@ -267,7 +278,9 @@ export function updateSubscriptionCache(
   }
   state.decryptedKey = encryptionKey;
   const visibilityInfo = getVisibilityInfoFromRegistry(key);
-  state.listeners.forEach(listener => listener(hash, encryptionKey, visibilityInfo));
+  state.listeners.forEach(listener => listener(hash, encryptionKey, visibilityInfo, {
+    updatedAt: options?.updatedAt ?? Math.floor(Date.now() / 1000),
+  }));
 }
 
 // Subscribe to registry updates to notify listeners
@@ -279,7 +292,9 @@ treeRootRegistry.subscribeAll((key, record) => {
   const state = subscriptionState.get(key);
   if (state) {
     const visibilityInfo = getVisibilityInfoFromRegistry(key);
-    state.listeners.forEach(listener => listener(record.hash, record.key, visibilityInfo));
+    state.listeners.forEach(listener => listener(record.hash, record.key, visibilityInfo, {
+      updatedAt: record.updatedAt,
+    }));
   }
   void syncActiveTreeRootFromRecord(key, record, state);
   void syncResolvedTreeRootToWorker(key, record);
@@ -341,12 +356,12 @@ async function startResolverSubscription(
   }
 
   const resolver = getRefResolver();
-  state.unsubscribeResolver = resolver.subscribe(key, (resolvedCid, visibilityInfo) => {
+  state.unsubscribeResolver = resolver.subscribe(key, (resolvedCid, visibilityInfo, metadata) => {
     const entry = subscriptionState.get(key);
     if (entry) {
       // Update registry with resolver data (only if newer)
       if (resolvedCid?.hash) {
-        const updatedAt = Math.floor(Date.now() / 1000);
+        const updatedAt = getResolverUpdatedAt(metadata);
 
         treeRootRegistry.setFromResolver(npub, treeName, resolvedCid.hash, updatedAt, {
           key: resolvedCid.key,
@@ -359,7 +374,12 @@ async function startResolverSubscription(
         });
       }
 
-      entry.listeners.forEach(listener => listener(resolvedCid?.hash ?? null, resolvedCid?.key, visibilityInfo));
+      entry.listeners.forEach(listener => listener(
+        resolvedCid?.hash ?? null,
+        resolvedCid?.key,
+        visibilityInfo,
+        metadata,
+      ));
     }
   });
 
@@ -376,9 +396,18 @@ async function startResolverSubscription(
   });
 }
 
+function getResolverUpdatedAt(metadata?: RefResolverSubscriptionMetadata): number {
+  return metadata?.updatedAt ?? Math.floor(Date.now() / 1000);
+}
+
 function subscribeToResolver(
   key: string,
-  callback: (hash: Hash | null, encryptionKey?: Hash, visibilityInfo?: SubscribeVisibilityInfo) => void
+  callback: (
+    hash: Hash | null,
+    encryptionKey?: Hash,
+    visibilityInfo?: SubscribeVisibilityInfo,
+    metadata?: RefResolverSubscriptionMetadata
+  ) => void
 ): () => void {
   let state = subscriptionState.get(key);
 
@@ -402,7 +431,7 @@ function subscribeToResolver(
   const record = treeRootRegistry.getByKey(key);
   if (record) {
     const visibilityInfo = getVisibilityInfoFromRegistry(key);
-    queueMicrotask(() => callback(record.hash, record.key, visibilityInfo));
+    queueMicrotask(() => callback(record.hash, record.key, visibilityInfo, { updatedAt: record.updatedAt }));
   }
 
   return () => {
@@ -713,7 +742,7 @@ export function createTreeRootStore(): Readable<CID | null> {
     }
 
     // Subscribe to resolver
-    activeUnsubscribe = subscribeToResolver(resolverKey, async (hash, encryptionKey, visibilityInfo) => {
+    activeUnsubscribe = subscribeToResolver(resolverKey, async (hash, encryptionKey, visibilityInfo, metadata) => {
       if (!hash) {
         const fallbackRoot = getTreeRootSync(route.npub, route.treeName);
         if (fallbackRoot) {
@@ -726,11 +755,14 @@ export function createTreeRootStore(): Readable<CID | null> {
         return;
       }
 
+      const updatedAt = getResolverUpdatedAt(metadata);
+
       console.log('[treeRoot] Resolver callback:', {
         hasHash: !!hash,
         hasEncryptionKey: !!encryptionKey,
         visibility: visibilityInfo?.visibility,
         hasEncryptedKey: !!visibilityInfo?.encryptedKey,
+        updatedAt,
       });
       logHtreeDebug('treeRoot:resolver', {
         resolverKey,
@@ -738,6 +770,7 @@ export function createTreeRootStore(): Readable<CID | null> {
         hasEncryptionKey: !!encryptionKey,
         visibility: visibilityInfo?.visibility ?? null,
         hasEncryptedKey: !!visibilityInfo?.encryptedKey,
+        updatedAt,
       });
 
       // Get current route params (not the closure-captured route from subscription time)

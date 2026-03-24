@@ -16,10 +16,10 @@ async function init() {
   const htreePromise = initHtreeApi();
   const workerPromise = initReadonlyWorker();
   const sessionPromise = restoreSession();
+  await swPromise;
   mount(VideoApp, {
     target: document.getElementById('app')!,
   });
-  await swPromise;
   await Promise.all([workerPromise, sessionPromise]);
   await htreePromise;
   mergeBootstrapIndex().catch(() => {});

@@ -12,6 +12,7 @@ import { subscribeToTreeRoots } from './treeRootSubscription';
 import { getErrorMessage } from '../utils/errorMessage';
 import { nhashDecode } from '@hashtree/core';
 import { nip19 } from 'nostr-tools';
+import { parseHttpByteRange } from '../lib/httpRange';
 
 // Thumbnail filename patterns to look for (in priority order)
 const THUMBNAIL_PATTERNS = ['thumbnail.jpg', 'thumbnail.webp', 'thumbnail.png', 'thumbnail.jpeg'];
@@ -28,6 +29,7 @@ interface SwFileRequest {
   path: string;
   start: number;
   end?: number;
+  rangeHeader?: string | null;
   mimeType: string;
   download?: boolean;
 }
@@ -49,6 +51,7 @@ interface SwFileResponse {
 const LIVE_STREAM_TIMEOUT = 10000; // 10 seconds
 const ROOT_WAIT_TIMEOUT_MS = 15000;
 const ROOT_WAIT_INTERVAL_MS = 200;
+const NHASH_HINT_DIRECTORY_TIMEOUT_MS = 250;
 
 // Chunk size for streaming to media port
 const MEDIA_CHUNK_SIZE = 256 * 1024; // 256KB chunks - matches videoChunker's firstChunkSize
@@ -356,7 +359,7 @@ function watchTreeRootForStream(
 async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
   if (!tree || !mediaPort) return;
 
-  const { requestId, npub, nhash, treeName, path, start, end, mimeType, download } = req;
+  const { requestId, npub, nhash, treeName, path, start, end, rangeHeader, mimeType, download } = req;
   logMediaDebug('sw:request', {
     requestId,
     npub: npub ?? null,
@@ -365,6 +368,7 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
     path,
     start,
     end: end ?? null,
+    rangeHeader: rangeHeader ?? null,
     mimeType,
     download: !!download,
   });
@@ -375,22 +379,12 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
     if (nhash) {
       // Direct nhash request - decode to CID
       const rootCid = nhashDecode(nhash);
-
-      // If path provided AND it contains a slash, navigate within the nhash directory
-      // Single filename without slashes is just a hint for MIME type - use rootCid directly
-      if (path && path.includes('/')) {
-        const entry = await tree.resolvePath(rootCid, path);
-        if (!entry) {
-          sendSwError(requestId, 404, `File not found: ${path}`);
-          return;
-        }
-        cid = entry.cid;
-      } else if (path && !path.includes('/')) {
-        // Try to resolve as file within directory first
-        const entry = await tree.resolvePath(rootCid, path);
-        cid = entry ? entry.cid : rootCid;
-      } else {
-        cid = rootCid;
+      cid = await resolveCidWithinRoot(rootCid, path || '', {
+        allowSingleSegmentRootFallback: true,
+      });
+      if (!cid) {
+        sendSwError(requestId, 404, `File not found: ${path}`);
+        return;
       }
     } else if (npub && treeName) {
       // Npub-based request - resolve through cached root
@@ -399,29 +393,12 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
         sendSwError(requestId, 404, 'Tree not found');
         return;
       }
-
-      // Handle thumbnail requests without extension
-      let resolvedPath = path || '';
-      if (resolvedPath.endsWith('/thumbnail') || resolvedPath === 'thumbnail') {
-        const dirPath = resolvedPath.endsWith('/thumbnail')
-          ? resolvedPath.slice(0, -'/thumbnail'.length)
-          : '';
-        const actualPath = await findThumbnailInDir(rootCid, dirPath);
-        if (actualPath) {
-          resolvedPath = actualPath;
-        }
-      }
-
-      // Navigate to file
-      if (resolvedPath) {
-        const entry = await tree.resolvePath(rootCid, resolvedPath);
-        if (!entry) {
-          sendSwError(requestId, 404, 'File not found');
-          return;
-        }
-        cid = entry.cid;
-      } else {
-        cid = rootCid;
+      cid = await resolveCidWithinRoot(rootCid, path || '', {
+        allowSingleSegmentRootFallback: false,
+      });
+      if (!cid) {
+        sendSwError(requestId, 404, 'File not found');
+        return;
       }
     }
 
@@ -443,6 +420,7 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
       path,
       start,
       end,
+      rangeHeader,
       mimeType,
       download,
     });
@@ -450,6 +428,70 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
     sendSwError(requestId, 500, getErrorMessage(err));
   }
 }
+
+async function resolveCidWithinRoot(
+  rootCid: CID,
+  path: string,
+  options?: { allowSingleSegmentRootFallback?: boolean }
+): Promise<CID | null> {
+  if (!tree) return null;
+
+  const resolvedPath = await normalizeAliasPath(rootCid, path);
+  if (!resolvedPath) {
+    return rootCid;
+  }
+
+  if (options?.allowSingleSegmentRootFallback && resolvedPath === path && !resolvedPath.includes('/')) {
+    const isDirectory = await canListDirectory(rootCid);
+    if (!isDirectory) {
+      return rootCid;
+    }
+  }
+
+  const entry = await tree.resolvePath(rootCid, resolvedPath);
+  if (entry) {
+    return entry.cid;
+  }
+
+  if (options?.allowSingleSegmentRootFallback && resolvedPath === path && !resolvedPath.includes('/')) {
+    return rootCid;
+  }
+
+  return null;
+}
+
+async function normalizeAliasPath(rootCid: CID, path: string): Promise<string> {
+  if (!path) return '';
+  if (path.endsWith('/thumbnail') || path === 'thumbnail') {
+    const dirPath = path.endsWith('/thumbnail')
+      ? path.slice(0, -'/thumbnail'.length)
+      : '';
+    const actualPath = await findThumbnailInDir(rootCid, dirPath);
+    if (actualPath) {
+      return actualPath;
+    }
+  }
+  return path;
+}
+
+async function canListDirectory(rootCid: CID): Promise<boolean> {
+  if (!tree) return false;
+  try {
+    const entries = await Promise.race([
+      tree.listDirectory(rootCid),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), NHASH_HINT_DIRECTORY_TIMEOUT_MS)),
+    ]);
+    return Array.isArray(entries);
+  } catch {
+    return false;
+  }
+}
+
+export const __test__ = {
+  resolveCidWithinRoot,
+  normalizeAliasPath,
+  canListDirectory,
+};
 
 async function waitForCachedRoot(npub: string, treeName: string): Promise<CID | null> {
   let cached = await getCachedRoot(npub, treeName);
@@ -558,16 +600,27 @@ async function streamSwResponse(
     path?: string;
     start?: number;
     end?: number;
+    rangeHeader?: string | null;
     mimeType?: string;
     download?: boolean;
   }
 ): Promise<void> {
   if (!tree || !mediaPort) return;
 
-  const { npub, path, start = 0, end, mimeType = 'application/octet-stream', download } = options;
+  const { npub, path, start = 0, end, rangeHeader, mimeType = 'application/octet-stream', download } = options;
 
-  const rangeStart = start;
-  const rangeEnd = end !== undefined ? Math.min(end, totalSize - 1) : totalSize - 1;
+  let rangeStart = start;
+  let rangeEnd = end !== undefined ? Math.min(end, totalSize - 1) : totalSize - 1;
+  if (rangeHeader) {
+    const parsedRange = parseHttpByteRange(rangeHeader, totalSize);
+    if (parsedRange.kind === 'range') {
+      rangeStart = parsedRange.range.start;
+      rangeEnd = parsedRange.range.endInclusive;
+    } else if (parsedRange.kind === 'unsatisfiable') {
+      sendSwError(requestId, 416, `Range not satisfiable for ${totalSize} byte file`);
+      return;
+    }
+  }
   const contentLength = rangeEnd - rangeStart + 1;
 
   // Build cache control header
@@ -596,7 +649,7 @@ async function streamSwResponse(
   }
 
   // Determine status (206 for range requests)
-  const isRangeRequest = end !== undefined || start > 0;
+  const isRangeRequest = !!rangeHeader || end !== undefined || start > 0;
   const status = isRangeRequest ? 206 : 200;
   if (isRangeRequest) {
     headers['Content-Range'] = `bytes ${rangeStart}-${rangeEnd}/${totalSize}`;

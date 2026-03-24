@@ -333,7 +333,7 @@
                 rootCid: getRootCidForTree(t),
                 npub,
                 treeName: t.name,
-                allowAliasFallback: true,
+                allowAliasFallback: false,
               })}
               ownerPubkey={playlist.ownerPubkey}
               visibility={playlist.visibility}

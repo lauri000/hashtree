@@ -1,11 +1,12 @@
 /**
  * Native htree host policy helpers.
  *
- * Iris injects a local daemon URL into native webviews. That direct HTTP
- * endpoint is useful for local/native pages, but secure HTTPS apps such as
- * video.iris.to must keep using same-origin /htree routes so the browser can
+ * Iris injects a local daemon URL into native webviews. Secure HTTPS apps such
+ * as video.iris.to must keep using same-origin /htree routes so the browser can
  * load media without mixed-content issues and the service worker can intercept
- * those requests.
+ * those requests. Native htree:// pages can safely use the loopback daemon
+ * directly for media and file fetches, which avoids buffering everything
+ * through the custom protocol handler.
  */
 
 declare global {
@@ -75,10 +76,9 @@ function getServerProtocol(serverUrl: string): string | null {
 export function shouldPreferSameOriginHtreeRoutes(): boolean {
   const serverUrl = getInjectedHtreeServerUrl();
   if (!serverUrl) return false;
-  const pageProtocol = getPageProtocol();
   const serverProtocol = getServerProtocol(serverUrl);
   if (serverProtocol !== 'http:') return false;
-  if (pageProtocol === 'https:' || pageProtocol === 'htree:') return true;
+  if (getPageProtocol() === 'https:') return true;
   if (hasCanonicalHtreeIdentity() && !isLoopbackChildRuntime()) return true;
   return false;
 }

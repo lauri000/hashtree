@@ -335,6 +335,7 @@ interface FileRequest {
   path: string;
   start: number;
   end?: number;
+  rangeHeader?: string | null;
   mimeType: string;
   download?: boolean;
 }
@@ -642,6 +643,7 @@ async function createNpubFileResponse(
     path: filePath,
     start,
     end,
+    rangeHeader,
     mimeType,
   };
 
@@ -684,6 +686,7 @@ async function createNhashFileResponse(
     path: filename,
     start,
     end,
+    rangeHeader,
     mimeType,
     download: forceDownload,
   };

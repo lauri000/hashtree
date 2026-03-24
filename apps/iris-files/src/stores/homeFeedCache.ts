@@ -9,6 +9,9 @@ import type { VideoItem } from '../components/Video/types';
 export interface PlaylistInfo {
   videoCount: number;
   thumbnailUrl?: string;
+  duration?: number;
+  createdAt?: number;
+  title?: string;
 }
 
 // Videos from followed users
