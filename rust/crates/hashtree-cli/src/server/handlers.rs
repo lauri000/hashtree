@@ -1089,6 +1089,55 @@ fn build_json_response(
     builder.body(Body::from(payload.to_string())).unwrap()
 }
 
+enum ParsedByteRange {
+    Satisfiable { start: u64, end_inclusive: u64 },
+    Unsatisfiable,
+}
+
+fn parse_byte_range(range_header: &str, total_size: u64) -> Option<ParsedByteRange> {
+    let bytes_range = range_header.strip_prefix("bytes=")?;
+    if bytes_range.contains(',') {
+        return None;
+    }
+
+    let (start_part, end_part) = bytes_range.split_once('-')?;
+    if total_size == 0 {
+        return Some(ParsedByteRange::Unsatisfiable);
+    }
+
+    if start_part.is_empty() {
+        let suffix_len = end_part.parse::<u64>().ok()?;
+        if suffix_len == 0 {
+            return Some(ParsedByteRange::Unsatisfiable);
+        }
+        let clamped_suffix_len = suffix_len.min(total_size);
+        return Some(ParsedByteRange::Satisfiable {
+            start: total_size - clamped_suffix_len,
+            end_inclusive: total_size - 1,
+        });
+    }
+
+    let start = start_part.parse::<u64>().ok()?;
+    if start >= total_size {
+        return Some(ParsedByteRange::Unsatisfiable);
+    }
+
+    let end_inclusive = if end_part.is_empty() {
+        total_size - 1
+    } else {
+        let parsed_end = end_part.parse::<u64>().ok()?;
+        if parsed_end < start {
+            return Some(ParsedByteRange::Unsatisfiable);
+        }
+        parsed_end.min(total_size - 1)
+    };
+
+    Some(ParsedByteRange::Satisfiable {
+        start,
+        end_inclusive,
+    })
+}
+
 async fn serve_cid_with_range(
     state: &AppState,
     cid: &Cid,
@@ -1103,62 +1152,44 @@ async fn serve_cid_with_range(
 
     let range_header = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
     if let Some(range_str) = range_header {
-        if let Some(bytes_range) = range_str.strip_prefix("bytes=") {
-            let parts: Vec<&str> = bytes_range.split('-').collect();
-            if parts.len() == 2 {
-                let start = parts[0].parse::<u64>().unwrap_or(0);
-                let end_opt = if parts[1].is_empty() {
-                    None
-                } else {
-                    parts[1].parse::<u64>().ok()
-                };
+        let total_size = match get_size_cid_with_fetch(state, &tree, cid).await {
+            Ok(Some(size)) => size,
+            Ok(None) => {
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from("Not found"))
+                    .unwrap();
+            }
+            Err(e) => {
+                return Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from(format!("Error: {}", e)))
+                    .unwrap();
+            }
+        };
 
-                let total_size = match get_size_cid_with_fetch(state, &tree, cid).await {
-                    Ok(Some(size)) => size,
-                    Ok(None) => {
-                        return Response::builder()
-                            .status(StatusCode::NOT_FOUND)
-                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                            .body(Body::from("Not found"))
-                            .unwrap();
-                    }
-                    Err(e) => {
-                        return Response::builder()
-                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                            .body(Body::from(format!("Error: {}", e)))
-                            .unwrap();
-                    }
-                };
-
-                if total_size == 0 || start >= total_size {
-                    return Response::builder()
-                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                        .header(header::CONTENT_TYPE, "text/plain")
-                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                        .body(Body::from("Range not satisfiable"))
-                        .unwrap();
-                }
-
-                let end_inclusive = end_opt.unwrap_or(total_size - 1).min(total_size - 1);
-                if end_inclusive < start {
-                    return Response::builder()
-                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                        .header(header::CONTENT_TYPE, "text/plain")
-                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                        .body(Body::from("Range not satisfiable"))
-                        .unwrap();
-                }
-
-                let end_exclusive = end_inclusive.saturating_add(1);
-                let data = match read_file_range_cid_with_fetch(
-                    state,
-                    &tree,
-                    cid,
+        if let Some(parsed_range) = parse_byte_range(range_str, total_size) {
+            let (start, end_inclusive) = match parsed_range {
+                ParsedByteRange::Satisfiable {
                     start,
-                    Some(end_exclusive),
-                )
-                .await
+                    end_inclusive,
+                } => (start, end_inclusive),
+                ParsedByteRange::Unsatisfiable => {
+                    return Response::builder()
+                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                        .header(header::CONTENT_TYPE, "text/plain")
+                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .body(Body::from("Range not satisfiable"))
+                        .unwrap();
+                }
+            };
+
+            let end_exclusive = end_inclusive.saturating_add(1);
+            let data =
+                match read_file_range_cid_with_fetch(state, &tree, cid, start, Some(end_exclusive))
+                    .await
                 {
                     Ok(Some(data)) => data,
                     Ok(None) => {
@@ -1177,25 +1208,24 @@ async fn serve_cid_with_range(
                     }
                 };
 
-                let content_length = data.len();
-                let content_range = format!("bytes {}-{}/{}", start, end_inclusive, total_size);
+            let content_length = data.len();
+            let content_range = format!("bytes {}-{}/{}", start, end_inclusive, total_size);
 
-                let mut builder = Response::builder()
-                    .status(StatusCode::PARTIAL_CONTENT)
-                    .header(header::CONTENT_TYPE, content_type)
-                    .header(header::CONTENT_LENGTH, content_length)
-                    .header(header::CONTENT_RANGE, content_range)
-                    .header(header::ACCEPT_RANGES, "bytes")
-                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                    .header(CROSS_ORIGIN_RESOURCE_POLICY_HEADER, CORP_CROSS_ORIGIN);
-                if is_immutable {
-                    builder = builder.header(header::CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL);
-                }
-                if is_localhost {
-                    builder = builder.header("X-Source", "local");
-                }
-                return builder.body(Body::from(data)).unwrap();
+            let mut builder = Response::builder()
+                .status(StatusCode::PARTIAL_CONTENT)
+                .header(header::CONTENT_TYPE, content_type)
+                .header(header::CONTENT_LENGTH, content_length)
+                .header(header::CONTENT_RANGE, content_range)
+                .header(header::ACCEPT_RANGES, "bytes")
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(CROSS_ORIGIN_RESOURCE_POLICY_HEADER, CORP_CROSS_ORIGIN);
+            if is_immutable {
+                builder = builder.header(header::CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL);
             }
+            if is_localhost {
+                builder = builder.header("X-Source", "local");
+            }
+            return builder.body(Body::from(data)).unwrap();
         }
     }
 
@@ -1257,151 +1287,135 @@ async fn serve_content_internal(
     let range_header = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
 
     if let Some(range_str) = range_header {
-        // Parse Range: bytes=start-end
-        if let Some(bytes_range) = range_str.strip_prefix("bytes=") {
-            let parts: Vec<&str> = bytes_range.split('-').collect();
-            if parts.len() == 2 {
-                if let Ok(start) = parts[0].parse::<u64>() {
-                    let end = if parts[1].is_empty() {
-                        None
-                    } else {
-                        parts[1].parse::<u64>().ok()
+        // Content type - hashtree doesn't store filenames, so default to octet-stream
+        let content_type = "application/octet-stream";
+
+        match store.get_file_chunk_metadata(hash) {
+            Ok(Some(metadata)) => {
+                let total_size = metadata.total_size;
+                if let Some(parsed_range) = parse_byte_range(range_str, total_size) {
+                    let (start, end_actual) = match parsed_range {
+                        ParsedByteRange::Satisfiable {
+                            start,
+                            end_inclusive,
+                        } => (start, end_inclusive),
+                        ParsedByteRange::Unsatisfiable => {
+                            return Response::builder()
+                                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                                .header(header::CONTENT_TYPE, "text/plain")
+                                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                                .body(Body::from("Range not satisfiable"))
+                                .unwrap()
+                                .into_response();
+                        }
                     };
 
-                    // Content type - hashtree doesn't store filenames, so default to octet-stream
-                    let content_type = "application/octet-stream";
+                    let content_length = end_actual - start + 1;
+                    let content_range = format!("bytes {}-{}/{}", start, end_actual, total_size);
 
-                    // Get metadata to determine total size
-                    match store.get_file_chunk_metadata(hash) {
-                        Ok(Some(metadata)) => {
-                            let total_size = metadata.total_size;
+                    if metadata.is_chunked {
+                        match state
+                            .store
+                            .clone()
+                            .stream_file_range_chunks_owned(hash, start, end_actual)
+                        {
+                            Ok(Some(chunks_iter)) => {
+                                let stream =
+                                    stream::iter(chunks_iter).map(|result| result.map(Bytes::from));
 
-                            if start >= total_size {
-                                return Response::builder()
-                                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                                    .header(header::CONTENT_TYPE, "text/plain")
-                                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                                    .body(Body::from("Range not satisfiable"))
+                                let mut builder = Response::builder()
+                                    .status(StatusCode::PARTIAL_CONTENT)
+                                    .header(header::CONTENT_TYPE, content_type)
+                                    .header(header::CONTENT_LENGTH, content_length)
+                                    .header(header::CONTENT_RANGE, content_range)
+                                    .header(header::ACCEPT_RANGES, "bytes")
+                                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+                                if is_immutable {
+                                    builder = builder
+                                        .header(header::CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL);
+                                }
+                                if is_localhost {
+                                    builder = builder.header("X-Source", "local");
+                                }
+                                return builder
+                                    .body(Body::from_stream(stream))
                                     .unwrap()
                                     .into_response();
                             }
-
-                            let end_actual = end.unwrap_or(total_size - 1).min(total_size - 1);
-                            let content_length = end_actual - start + 1;
-                            let content_range =
-                                format!("bytes {}-{}/{}", start, end_actual, total_size);
-
-                            // Use streaming for chunked files
-                            if metadata.is_chunked {
-                                match state
-                                    .store
-                                    .clone()
-                                    .stream_file_range_chunks_owned(hash, start, end_actual)
-                                {
-                                    Ok(Some(chunks_iter)) => {
-                                        let stream = stream::iter(chunks_iter)
-                                            .map(|result| result.map(Bytes::from));
-
-                                        let mut builder = Response::builder()
-                                            .status(StatusCode::PARTIAL_CONTENT)
-                                            .header(header::CONTENT_TYPE, content_type)
-                                            .header(header::CONTENT_LENGTH, content_length)
-                                            .header(header::CONTENT_RANGE, content_range)
-                                            .header(header::ACCEPT_RANGES, "bytes")
-                                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
-                                        if is_immutable {
-                                            builder = builder.header(
-                                                header::CACHE_CONTROL,
-                                                IMMUTABLE_CACHE_CONTROL,
-                                            );
-                                        }
-                                        if is_localhost {
-                                            builder = builder.header("X-Source", "local");
-                                        }
-                                        return builder
-                                            .body(Body::from_stream(stream))
-                                            .unwrap()
-                                            .into_response();
-                                    }
-                                    Ok(None) => {
-                                        return Response::builder()
-                                            .status(StatusCode::NOT_FOUND)
-                                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                                            .body(Body::from("File not found"))
-                                            .unwrap()
-                                            .into_response();
-                                    }
-                                    Err(e) => {
-                                        return Response::builder()
-                                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                                            .body(Body::from(format!("Error: {}", e)))
-                                            .unwrap()
-                                            .into_response();
-                                    }
-                                }
-                            } else {
-                                // For small non-chunked files, use buffered approach
-                                match store.get_file_range(hash, start, Some(end_actual)) {
-                                    Ok(Some((range_content, _))) => {
-                                        let mut builder = Response::builder()
-                                            .status(StatusCode::PARTIAL_CONTENT)
-                                            .header(header::CONTENT_TYPE, content_type)
-                                            .header(header::CONTENT_LENGTH, range_content.len())
-                                            .header(header::CONTENT_RANGE, content_range)
-                                            .header(header::ACCEPT_RANGES, "bytes")
-                                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
-                                        if is_immutable {
-                                            builder = builder.header(
-                                                header::CACHE_CONTROL,
-                                                IMMUTABLE_CACHE_CONTROL,
-                                            );
-                                        }
-                                        if is_localhost {
-                                            builder = builder.header("X-Source", "local");
-                                        }
-                                        return builder
-                                            .body(Body::from(range_content))
-                                            .unwrap()
-                                            .into_response();
-                                    }
-                                    Ok(None) => {
-                                        return Response::builder()
-                                            .status(StatusCode::NOT_FOUND)
-                                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                                            .body(Body::from("File not found"))
-                                            .unwrap()
-                                            .into_response();
-                                    }
-                                    Err(e) => {
-                                        return Response::builder()
-                                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                                            .body(Body::from(format!("Error: {}", e)))
-                                            .unwrap()
-                                            .into_response();
-                                    }
-                                }
+                            Ok(None) => {
+                                return Response::builder()
+                                    .status(StatusCode::NOT_FOUND)
+                                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                                    .body(Body::from("File not found"))
+                                    .unwrap()
+                                    .into_response();
+                            }
+                            Err(e) => {
+                                return Response::builder()
+                                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                                    .body(Body::from(format!("Error: {}", e)))
+                                    .unwrap()
+                                    .into_response();
                             }
                         }
-                        Ok(None) => {
-                            return Response::builder()
-                                .status(StatusCode::NOT_FOUND)
-                                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                                .body(Body::from("File not found"))
-                                .unwrap()
-                                .into_response();
-                        }
-                        Err(e) => {
-                            return Response::builder()
-                                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                                .body(Body::from(format!("Error: {}", e)))
-                                .unwrap()
-                                .into_response();
+                    } else {
+                        match store.get_file_range(hash, start, Some(end_actual)) {
+                            Ok(Some((range_content, _))) => {
+                                let mut builder = Response::builder()
+                                    .status(StatusCode::PARTIAL_CONTENT)
+                                    .header(header::CONTENT_TYPE, content_type)
+                                    .header(header::CONTENT_LENGTH, range_content.len())
+                                    .header(header::CONTENT_RANGE, content_range)
+                                    .header(header::ACCEPT_RANGES, "bytes")
+                                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+                                if is_immutable {
+                                    builder = builder
+                                        .header(header::CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL);
+                                }
+                                if is_localhost {
+                                    builder = builder.header("X-Source", "local");
+                                }
+                                return builder
+                                    .body(Body::from(range_content))
+                                    .unwrap()
+                                    .into_response();
+                            }
+                            Ok(None) => {
+                                return Response::builder()
+                                    .status(StatusCode::NOT_FOUND)
+                                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                                    .body(Body::from("File not found"))
+                                    .unwrap()
+                                    .into_response();
+                            }
+                            Err(e) => {
+                                return Response::builder()
+                                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                                    .body(Body::from(format!("Error: {}", e)))
+                                    .unwrap()
+                                    .into_response();
+                            }
                         }
                     }
                 }
+            }
+            Ok(None) => {
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from("File not found"))
+                    .unwrap()
+                    .into_response();
+            }
+            Err(e) => {
+                return Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from(format!("Error: {}", e)))
+                    .unwrap()
+                    .into_response();
             }
         }
     }
@@ -2729,6 +2743,85 @@ mod tests {
         );
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body.as_ref(), main_js.as_bytes());
+    }
+
+    #[test]
+    fn parse_byte_range_supports_suffix_requests() {
+        match parse_byte_range("bytes=-500", 1000) {
+            Some(ParsedByteRange::Satisfiable {
+                start,
+                end_inclusive,
+            }) => {
+                assert_eq!(start, 500);
+                assert_eq!(end_inclusive, 999);
+            }
+            _ => panic!("expected satisfiable suffix range"),
+        }
+    }
+
+    #[test]
+    fn parse_byte_range_clamps_large_suffix_requests() {
+        match parse_byte_range("bytes=-5000", 1000) {
+            Some(ParsedByteRange::Satisfiable {
+                start,
+                end_inclusive,
+            }) => {
+                assert_eq!(start, 0);
+                assert_eq!(end_inclusive, 999);
+            }
+            _ => panic!("expected satisfiable suffix range"),
+        }
+    }
+
+    #[tokio::test]
+    async fn serve_cid_with_range_honors_suffix_ranges() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("store")).unwrap());
+        let state = test_app_state(store.clone(), Vec::new());
+        let tree = HashTree::new(HashTreeConfig::new(store.store_arc()).public());
+        let data = b"0123456789";
+        let (cid, _) = tree.put(data).await.unwrap();
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(header::RANGE, header::HeaderValue::from_static("bytes=-4"));
+
+        let response =
+            serve_cid_with_range(&state, &cid, headers, false, false, Some("clip.mp4")).await;
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok()),
+            Some("bytes 6-9/10")
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), b"6789");
+    }
+
+    #[tokio::test]
+    async fn serve_content_internal_honors_suffix_ranges() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("store")).unwrap());
+        let state = test_app_state(store.clone(), Vec::new());
+        let tree = HashTree::new(HashTreeConfig::new(store.store_arc()).public());
+        let data = b"abcdefghij";
+        let (cid, _) = tree.put(data).await.unwrap();
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(header::RANGE, header::HeaderValue::from_static("bytes=-3"));
+
+        let response = serve_content_internal(&state, &cid.hash, headers, true, false).await;
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok()),
+            Some("bytes 7-9/10")
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), b"hij");
     }
 
     #[tokio::test]
