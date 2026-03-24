@@ -242,8 +242,8 @@ interface StableFileUrlOptions {
 export function getStableFileUrl(options: StableFileUrlOptions): string | null {
   if (options.cid) {
     const nhash = nhashEncode(options.cid);
-    const encodedPath = options.path.split('/').map(encodeURIComponent).join('/');
-    const url = `${getHtreePrefix()}/htree/${nhash}/${encodedPath || 'file'}`;
+    const fileName = options.path.split('/').filter(Boolean).at(-1) ?? 'file';
+    const url = `${getHtreePrefix()}/htree/${nhash}/${encodeURIComponent(fileName)}`;
     return appendHtreeCacheBust(appendMediaClientKey(url));
   }
   if (options.npub && options.treeName) {

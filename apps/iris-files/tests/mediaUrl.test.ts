@@ -46,7 +46,26 @@ describe('mediaUrl thumbnail helpers', () => {
         path: 'clips/demo reel/video.mp4',
       }),
     ).toBe(
-      `/htree/${nhashEncode(fileCid)}/clips/demo%20reel/video.mp4?htree_c=test-media-client`,
+      `/htree/${nhashEncode(fileCid)}/video.mp4?htree_c=test-media-client`,
+    );
+  });
+
+  it('drops playlist subdirectory prefixes once the file cid is known', () => {
+    installWindow();
+    const fileCid = {
+      hash: fromHex('8'.repeat(64)),
+      key: fromHex('9'.repeat(64)),
+    };
+
+    expect(
+      getStableFileUrl({
+        cid: fileCid,
+        npub: 'npub1example',
+        treeName: 'videos/Music',
+        path: 'video_1767136282070/video.mp4',
+      }),
+    ).toBe(
+      `/htree/${nhashEncode(fileCid)}/video.mp4?htree_c=test-media-client`,
     );
   });
 
