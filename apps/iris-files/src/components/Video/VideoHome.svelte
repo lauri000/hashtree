@@ -12,6 +12,7 @@
   import { createFollowsStore } from '../../stores';
   import { detectPlaylistForCard, getCachedPlaylistInfo } from '../../stores/playlist';
   import { indexVideo } from '../../stores/searchIndex';
+  import { updateSubscriptionCache } from '../../stores/treeRoot';
   import {
     videosByKey,
     socialVideosByKey,
@@ -396,6 +397,10 @@
 
       const hash = fromHex(hashTag);
       const encKey = keyTag ? fromHex(keyTag) : undefined;
+      updateSubscriptionCache(key, hash, encKey, {
+        updatedAt: eventTimestamp,
+        visibility,
+      });
 
       const title = dTag.slice(7); // Remove 'videos/' prefix
       videosByKey.set(key, {
@@ -798,6 +803,7 @@
                   treeName={video.treeName}
                   videoId={video.videoId}
                   visibility={video.visibility}
+                  rootCid={video.rootCid ?? null}
                   rootHashHex={video.rootCid?.hash ? toHex(video.rootCid.hash) : null}
                   timestamp={video.timestamp}
                   themeHover

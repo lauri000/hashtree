@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay, gotoGitApp, createPlainFolderInCurrentDirectory, ensureGitRepoInitialized, flushPendingPublishes } from './test-utils.js';
 
 test.describe('Git commit status indicator', () => {
   test.beforeEach(async ({ page }) => {
@@ -14,7 +14,7 @@ test.describe('Git commit status indicator', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder for our test repo
-    await createRepositoryInCurrentDirectory(page, 'status-indicator-test');
+    await createPlainFolderInCurrentDirectory(page, 'status-indicator-test');
 
     // Navigate into the folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'status-indicator-test' }).first();
@@ -45,6 +45,7 @@ test.describe('Git commit status indicator', () => {
 
     // Git Init
     await ensureGitRepoInitialized(page);
+    await flushPendingPublishes(page);
 
     // After git init with initial commit, should show "clean"
     const cleanIndicator = page.locator('[title="No uncommitted changes"]');
@@ -67,6 +68,7 @@ test.describe('Git commit status indicator', () => {
       rootCid = await tree.setEntry(rootCid, route.path, 'version.js', cid, size, LinkType.Blob);
       autosaveIfOwn(rootCid);
     });
+    await flushPendingPublishes(page);
 
     // Should show "uncommitted" indicator
     const uncommittedBtn = page.locator('button').filter({ hasText: /uncommitted/i });
@@ -96,7 +98,7 @@ test.describe('Git commit status indicator', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder for our test repo
-    await createRepositoryInCurrentDirectory(page, 'commit-link-test');
+    await createPlainFolderInCurrentDirectory(page, 'commit-link-test');
 
     // Navigate into the folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'commit-link-test' }).first();
@@ -126,6 +128,7 @@ test.describe('Git commit status indicator', () => {
 
     // Git Init
     await ensureGitRepoInitialized(page);
+    await flushPendingPublishes(page);
 
     // Wait for commits button
     const commitsBtn = page.getByRole('button', { name: /commits/i });

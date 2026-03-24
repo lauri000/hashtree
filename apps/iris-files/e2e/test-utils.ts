@@ -26,6 +26,11 @@ async function waitForTestHelpers(page: any, timeoutMs: number = 60000) {
   );
 }
 
+async function waitForAppShell(page: any, timeoutMs: number = 60000) {
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  await expect(page.locator('header').first()).toBeVisible({ timeout: timeoutMs });
+}
+
 async function waitForWorkerAdapter(page: any, timeoutMs: number = 60000) {
   await page.waitForFunction(
     () => {
@@ -65,8 +70,7 @@ export async function evaluateWithRetry<T, R>(
  * Call this after page.reload() before calling disableOthersPool or configureBlossomServers.
  */
 export async function waitForAppReady(page: any, timeoutMs: number = 60000) {
-  await page.waitForLoadState('domcontentloaded').catch(() => {});
-  await expect(page.locator('header').first()).toBeVisible({ timeout: timeoutMs });
+  await waitForAppShell(page, timeoutMs);
   await waitForTestHelpers(page, timeoutMs);
   await waitForWorkerAdapter(page, timeoutMs).catch(() => {});
 }
@@ -115,13 +119,54 @@ export async function createRepositoryInCurrentDirectory(
   await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: timeoutMs });
 }
 
+export async function createPlainFolderInCurrentDirectory(
+  page: any,
+  folderName: string,
+  timeoutMs: number = 15000
+) {
+  await page.evaluate(async (name: string) => {
+    const { createFolder } = await import('/src/actions/tree.ts');
+    await createFolder(name);
+  }, folderName);
+  await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: folderName }).first()).toBeVisible({ timeout: timeoutMs });
+}
+
 export async function ensureGitRepoInitialized(page: any, timeoutMs: number = 30000) {
+  await waitForTestHelpers(page);
+  await waitForWorkerAdapter(page).catch(() => {});
+
+  const getCurrentDirHash = async () => evaluateWithRetry(page, async () => {
+    const { useCurrentDirCid } = await import('/src/stores/index.ts');
+    const cid = useCurrentDirCid();
+    return cid?.hash ? Array.from(cid.hash).join(',') : null;
+  }, undefined).catch(() => null);
+
+  const waitForGitDirInCurrentDirectory = async (previousDirHash: string | null, requireHashChange: boolean) => {
+    await page.waitForFunction(
+      async ({ prevHash, mustChange }) => {
+        const { useCurrentDirCid } = await import('/src/stores/index.ts');
+        const { getTree } = await import('/src/store.ts');
+        const currentDirCid = useCurrentDirCid();
+        if (!currentDirCid) return false;
+        const currentHash = currentDirCid.hash ? Array.from(currentDirCid.hash).join(',') : null;
+        if (mustChange && currentHash === prevHash) return false;
+        const entries = await getTree().listDirectory(currentDirCid);
+        return entries.some((entry: { name: string }) => entry.name === '.git');
+      },
+      { prevHash: previousDirHash, mustChange: requireHashChange },
+      { timeout: timeoutMs }
+    );
+  };
+
+  const previousDirHash = await getCurrentDirHash();
   const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
   if (await gitInitBtn.isVisible().catch(() => false)) {
     await gitInitBtn.click();
     await page.getByRole('button', { name: 'Initializing...' }).waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    await waitForGitDirInCurrentDirectory(previousDirHash, true);
     await expect(gitInitBtn).not.toBeVisible({ timeout: timeoutMs });
-    return;
+  } else {
+    await waitForGitDirInCurrentDirectory(previousDirHash, false);
   }
 
   await expect(page.getByRole('button', { name: /commits/i })).toBeVisible({ timeout: timeoutMs });
@@ -276,23 +321,33 @@ export async function navigateToPublicFolder(
     await waitForRelay();
   }
 
-  if (await publicLink.isVisible().catch(() => false)) {
-    // Close any modal backdrop that might intercept clicks
-    const modalBackdrop = page.locator('[data-modal-backdrop], div.fixed.inset-0.bg-black\\/70').first();
-    if (await modalBackdrop.isVisible().catch(() => false)) {
-      await modalBackdrop.click({ position: { x: 5, y: 5 } }).catch(() => {});
-    }
+  const publicHash = await publicLink.getAttribute('href').catch(() => null);
+  const npubFromLink = publicHash?.match(/#\/(npub1[^/]+)/)?.[1] ?? null;
+  const resolvedNpub = npub ?? npubFromLink;
 
-    // Click into the public folder
-    await publicLink.click();
-  } else {
-    if (!npub) {
-      throw new Error('Failed to resolve logged-in npub for public folder navigation');
-    }
-    await safeGoto(page, `${appPath}#/${npub}/public`, { timeoutMs });
-    await waitForAppReady(page, timeoutMs);
-    await waitForRelay();
+  if (!resolvedNpub) {
+    throw new Error('Failed to resolve logged-in npub for public folder navigation');
   }
+
+  const targetHash = publicHash?.startsWith('#/') ? publicHash : `#/${resolvedNpub}/public`;
+  await page.evaluate((hash) => {
+    const nextHash = hash.startsWith('#') ? hash : `#${hash}`;
+    if (window.location.hash === nextHash) {
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+      return;
+    }
+    window.location.hash = nextHash;
+  }, targetHash).catch(() => {});
+  const navigatedByHash = await page.waitForFunction(
+    (hash) => window.location.hash === hash,
+    targetHash,
+    { timeout: 5000 }
+  ).then(() => true).catch(() => false);
+  if (!navigatedByHash) {
+    await safeGoto(page, `${appPath}${targetHash}`, { timeoutMs, retries: 3, delayMs: 500 });
+  }
+  await waitForAppReady(page, timeoutMs);
+  await waitForRelay();
 
   // Wait for navigation to complete and folder actions to be visible
   await page.waitForFunction(
@@ -330,7 +385,7 @@ export async function goToTreeList(page: any) {
  * IMPORTANT: Call this BEFORE any navigation or state changes in the test.
  */
 export async function disableOthersPool(page: any) {
-  await waitForTestHelpers(page);
+  await waitForAppShell(page);
   await waitForWorkerAdapter(page).catch(() => {});
   await page.waitForFunction(() => {
     const win = window as any;

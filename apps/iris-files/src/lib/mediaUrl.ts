@@ -284,6 +284,21 @@ export function getThumbnailUrl(npub: string, treeName: string, videoId?: string
 }
 
 /**
+ * Generate an immutable thumbnail URL from a known root CID.
+ *
+ * This avoids mutable-tree resolution races when the caller already knows the
+ * exact tree root from feed metadata.
+ */
+export function getThumbnailUrlFromCid(rootCid: CID, videoId?: string): string {
+  const path = videoId
+    ? `${videoId.split('/').map(encodeURIComponent).join('/')}/thumbnail`
+    : 'thumbnail';
+  const nhash = nhashEncode(rootCid);
+  const url = `${getHtreePrefix()}/htree/${nhash}/${path}`;
+  return appendHtreeCacheBust(appendMediaClientKey(url));
+}
+
+/**
  * Check if file streaming is available
  * - Tauri: Always available (server runs on fixed port)
  * - Web: Requires service worker to be ready

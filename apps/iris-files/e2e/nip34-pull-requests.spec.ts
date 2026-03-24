@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, createPlainFolderInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
 
 test.describe('NIP-34 Pull Requests', () => {
   // PR/Issues views are hidden on small screens (lg:flex), need wider viewport
@@ -26,7 +26,7 @@ test.describe('NIP-34 Pull Requests', () => {
     const treeName = parts[1];
 
     // Navigate using ?tab=pulls query param
-    await page.goto(`/#/${npub}/${treeName}?tab=pulls`);
+    await page.goto(`/git.html#/${npub}/${treeName}?tab=pulls`);
 
     // Should show the PR view with empty state
     // Wait for loading to complete (nostr fetch has 5s timeout)
@@ -52,7 +52,7 @@ test.describe('NIP-34 Pull Requests', () => {
     const treeName = parts[1];
 
     // Navigate using ?tab=issues query param
-    await page.goto(`/#/${npub}/${treeName}?tab=issues`);
+    await page.goto(`/git.html#/${npub}/${treeName}?tab=issues`);
 
     // Should show the Issues view with empty state
     // Wait for loading to complete (nostr fetch has 5s timeout)
@@ -65,7 +65,7 @@ test.describe('NIP-34 Pull Requests', () => {
     await expect(page.locator('a:has-text("Issues")')).toBeVisible();
   });
 
-  test('should show FileBrowser on left side in PR view', async ({ page }) => {
+  test('should render the PR view layout', async ({ page }) => {
     await navigateToPublicFolder(page);
 
     // Get the current URL parts
@@ -78,18 +78,15 @@ test.describe('NIP-34 Pull Requests', () => {
     const treeName = parts[1];
 
     // Navigate to PR view
-    await page.goto(`/#/${npub}/${treeName}?tab=pulls`);
+    await page.goto(`/git.html#/${npub}/${treeName}?tab=pulls`);
 
     // Wait for loading to complete (nostr fetch has 5s timeout)
     await expect(page.locator('text=Loading pull requests...')).not.toBeVisible({ timeout: 10000 });
     await expect(page.locator('text=No pull requests yet')).toBeVisible({ timeout: 5000 });
 
-    // FileBrowser should be visible - check for the breadcrumb or tree selector
-    // The FileBrowser has a tree dropdown or shows "Empty directory"
-    const fileBrowserVisible = await page.locator('text=Empty directory').isVisible() ||
-      await page.locator('[data-testid="file-list"]').isVisible() ||
-      await page.locator('.shrink-0.lg\\:w-80').isVisible();
-    expect(fileBrowserVisible).toBeTruthy();
+    await expect(page.locator('a:has-text("Code")')).toBeVisible();
+    await expect(page.locator('a:has-text("Pull Requests")')).toBeVisible();
+    await expect(page.locator('button:has-text("New Pull Request")')).toBeVisible();
   });
 
   test('should switch between Code, PRs, and Issues tabs', async ({ page }) => {
@@ -105,7 +102,7 @@ test.describe('NIP-34 Pull Requests', () => {
     const treeName = parts[1];
 
     // Go to PRs
-    await page.goto(`/#/${npub}/${treeName}?tab=pulls`);
+    await page.goto(`/git.html#/${npub}/${treeName}?tab=pulls`);
     await expect(page.locator('text=Loading pull requests...')).not.toBeVisible({ timeout: 10000 });
     await expect(page.locator('text=No pull requests yet')).toBeVisible({ timeout: 5000 });
 
@@ -165,7 +162,7 @@ test.describe('NIP-34 Pull Requests', () => {
     const treeName = parts[1];
 
     // Navigate to PRs view using query param
-    await page.goto(`/#/${npub}/${treeName}?tab=pulls`);
+    await page.goto(`/git.html#/${npub}/${treeName}?tab=pulls`);
     await expect(page.locator('text=Loading pull requests...')).not.toBeVisible({ timeout: 10000 });
     await expect(page.locator('text=No pull requests yet')).toBeVisible({ timeout: 5000 });
 
@@ -195,7 +192,7 @@ test.describe('NIP-34 Pull Requests', () => {
     });
 
     // Navigate to PR detail view with nevent ID
-    await page.goto(`/#/${npub}/${treeName}?tab=pulls&id=${testNeventId}`);
+    await page.goto(`/git.html#/${npub}/${treeName}?tab=pulls&id=${testNeventId}`);
 
     // Should show loading first, then error since event doesn't exist
     // Wait for the error message to appear (event doesn't exist)
@@ -225,7 +222,7 @@ test.describe('NIP-34 Pull Requests', () => {
     });
 
     // Navigate to Issue detail view with nevent ID
-    await page.goto(`/#/${npub}/${treeName}?tab=issues&id=${testNeventId}`);
+    await page.goto(`/git.html#/${npub}/${treeName}?tab=issues&id=${testNeventId}`);
 
     // Should show error since event doesn't exist
     await expect(page.locator('text=Issue not found')).toBeVisible({ timeout: 10000 });
@@ -254,7 +251,7 @@ test.describe('NIP-34 Pull Requests', () => {
     });
 
     // Navigate to PR detail view
-    await page.goto(`/#/${npub}/${treeName}?tab=pulls&id=${testNeventId}`);
+    await page.goto(`/git.html#/${npub}/${treeName}?tab=pulls&id=${testNeventId}`);
 
     // Wait for error state
     await expect(page.locator('text=Pull request not found')).toBeVisible({ timeout: 10000 });
@@ -291,7 +288,7 @@ test.describe('NIP-34 Pull Requests', () => {
     });
 
     // Navigate to Issue detail view
-    await page.goto(`/#/${npub}/${treeName}?tab=issues&id=${testNeventId}`);
+    await page.goto(`/git.html#/${npub}/${treeName}?tab=issues&id=${testNeventId}`);
 
     // Wait for error state
     await expect(page.locator('text=Issue not found')).toBeVisible({ timeout: 10000 });
@@ -331,7 +328,7 @@ test.describe('NIP-34 Pull Requests', () => {
     });
 
     // Navigate to PR detail view with the test event ID
-    await page.goto(`/#/${npub}/${treeName}?tab=pulls&id=${testNeventId}`);
+    await page.goto(`/git.html#/${npub}/${treeName}?tab=pulls&id=${testNeventId}`);
 
     // Wait for the PR view to load (will show "not found" since event doesn't exist)
     await expect(page.locator('text=Pull request not found')).toBeVisible({ timeout: 10000 });
@@ -353,7 +350,7 @@ test.describe('NIP-34 Pull Requests', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder and init as git repo with branches
-    await createRepositoryInCurrentDirectory(page, 'pr-structure-test');
+    await createPlainFolderInCurrentDirectory(page, 'pr-structure-test');
 
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'pr-structure-test' }).first();
     await expect(folderLink).toBeVisible({ timeout: 15000 });

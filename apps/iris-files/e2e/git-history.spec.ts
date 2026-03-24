@@ -1,5 +1,11 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, ensureLoggedIn, waitForAppReady, gotoGitApp } from './test-utils.js';
+import { setupPageErrorHandler, disableOthersPool, ensureLoggedIn, waitForAppReady, gotoGitApp } from './test-utils.js';
+
+async function ensureGitSession(page: any) {
+  await waitForAppReady(page);
+  await ensureLoggedIn(page);
+  await waitForAppReady(page);
+}
 
 test.describe('Git history features', () => {
   // Disable "others pool" to prevent WebRTC cross-talk from parallel tests
@@ -22,7 +28,7 @@ test.describe('Git history features', () => {
       }
     });
 
-    await navigateToPublicFolder(page);
+    await ensureGitSession(page);
 
     // Create a real git repo with commits using CLI
     const fs = await import('fs/promises');
@@ -255,7 +261,7 @@ test.describe('Git history features', () => {
     test.setTimeout(120000);
     page.setDefaultTimeout(60000);
 
-    await navigateToPublicFolder(page);
+    await ensureGitSession(page);
 
     // Import Node.js modules
     const fs = await import('fs/promises');
@@ -423,7 +429,7 @@ test.describe('Git history features', () => {
       }
     });
 
-    await navigateToPublicFolder(page);
+    await ensureGitSession(page);
 
     // Create a real git repo with commits using CLI
     const fs = await import('fs/promises');
@@ -539,17 +545,14 @@ test.describe('Git history features', () => {
       expect(result.readmeCommit?.message).toContain('Add README');
       expect(result.srcCommit?.message).toContain('Add src');
 
-      // Now test the UI - save as a tree and navigate to it
-      await page.evaluate(async ({ files, dirs }) => {
+      // Now test the UI - publish as a top-level git tree and open it in the git app
+      const ownerNpub = await page.evaluate(() => (window as any).__nostrStore?.getState?.().npub ?? null);
+      expect(ownerNpub).toBeTruthy();
+      await page.evaluate(async ({ files, dirs, repoName }) => {
         const { getTree, LinkType } = await import('/src/store.ts');
-        const { autosaveIfOwn } = await import('/src/nostr.ts');
-        const { getCurrentRootCid } = await import('/src/actions/route.ts');
-        const { getRouteSync } = await import('/src/stores/index.ts');
+        const { saveHashtree } = await import('/src/nostr.ts');
 
         const tree = getTree();
-        const route = getRouteSync();
-        const rootCid = getCurrentRootCid();
-        if (!rootCid) return;
 
         // Create the git repo directory
         let { cid: repoCid } = await tree.putDirectory([]);
@@ -582,18 +585,14 @@ test.describe('Git history features', () => {
           repoCid = await tree.setEntry(repoCid, parts, name, fileCid, size, LinkType.Blob);
         }
 
-        // Add to current directory as "test-git-repo"
-        const newRootCid = await tree.setEntry(rootCid, route.path, 'test-git-repo', repoCid, 0, LinkType.Dir);
-        autosaveIfOwn(newRootCid);
-      }, { files: allFiles, dirs: allDirs });
+        await saveHashtree(repoName, repoCid, { visibility: 'public', labels: ['git'] });
+      }, { files: allFiles, dirs: allDirs, repoName: 'test-git-repo' });
 
-      // Click into the git repo folder (wait for folder to appear in list)
-      const repoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'test-git-repo' }).first();
-      await expect(repoLink).toBeVisible({ timeout: 15000 });
-      await repoLink.click();
-
-      // Wait for navigation
-      await page.waitForURL(/test-git-repo/, { timeout: 10000 });
+      await page.evaluate(({ npub, repoName }) => {
+        window.location.hash = `#/${npub}/${repoName}`;
+      }, { npub: ownerNpub, repoName: 'test-git-repo' });
+      await page.waitForURL(/test-git-repo/, { timeout: 15000 });
+      await waitForAppReady(page, 30000);
 
       // Set larger viewport to see commit message column
       await page.setViewportSize({ width: 1200, height: 800 });
@@ -615,7 +614,7 @@ test.describe('Git history features', () => {
   test('getFileLastCommits should work in subdirectories', { timeout: 30000 }, async ({ page }) => {
     test.slow(); // This test involves git operations that take time
 
-    await navigateToPublicFolder(page);
+    await ensureGitSession(page);
 
     // Create a real git repo with commits in subdirectories
     const fs = await import('fs/promises');
@@ -760,7 +759,7 @@ test.describe('Git history features', () => {
   test('getFileLastCommits should use cache for repeated calls', { timeout: 120000 }, async ({ page }) => {
     test.setTimeout(120000);
     page.setDefaultTimeout(60000);
-    await navigateToPublicFolder(page);
+    await ensureGitSession(page);
 
     // Create a real git repo with commits
     const fs = await import('fs/promises');
@@ -891,7 +890,7 @@ test.describe('Git history features', () => {
     test.slow(); // Creating 60 commits and uploading large repo takes time
     page.setDefaultTimeout(60000);
 
-    await navigateToPublicFolder(page);
+    await ensureGitSession(page);
 
     // Create a git repo with many commits (more than initial load of 50)
     const fs = await import('fs/promises');
@@ -940,17 +939,14 @@ test.describe('Git history features', () => {
       const allFiles = allEntries.filter((e): e is FileEntry => e.type === 'file');
       const allDirs = allEntries.filter((e): e is DirEntry => e.type === 'dir').map(d => d.path);
 
-      // Upload repo to hashtree
-      const rootCidHex = await page.evaluate(async ({ files, dirs }) => {
+      // Upload repo to hashtree as a top-level git tree
+      const ownerNpub = await page.evaluate(() => (window as any).__nostrStore?.getState?.().npub ?? null);
+      expect(ownerNpub).toBeTruthy();
+      const rootCidHex = await page.evaluate(async ({ files, dirs, repoName }) => {
         const { getTree, LinkType } = await import('/src/store.ts');
-        const { autosaveIfOwn } = await import('/src/nostr.ts');
-        const { getCurrentRootCid } = await import('/src/actions/route.ts');
-        const { getRouteSync } = await import('/src/stores/index.ts');
+        const { saveHashtree } = await import('/src/nostr.ts');
 
         const tree = getTree();
-        const route = getRouteSync();
-        const rootCid = getCurrentRootCid();
-        if (!rootCid) return null;
 
         // Create the git repo directory
         let repoCid = (await tree.putDirectory([])).cid;
@@ -983,21 +979,19 @@ test.describe('Git history features', () => {
           repoCid = await tree.setEntry(repoCid, parts, name, fileCid, size, LinkType.Blob);
         }
 
-        // Add to current directory
-        const newRootCid = await tree.setEntry(rootCid, route.path, 'infinite-scroll-repo', repoCid, 0, LinkType.Dir);
-        autosaveIfOwn(newRootCid);
+        await saveHashtree(repoName, repoCid, { visibility: 'public', labels: ['git'] });
 
         // Return repoCid hash for verification
         return Array.from(repoCid.hash).map(b => b.toString(16).padStart(2, '0')).join('');
-      }, { files: allFiles, dirs: allDirs });
+      }, { files: allFiles, dirs: allDirs, repoName: 'infinite-scroll-repo' });
 
       expect(rootCidHex).not.toBeNull();
 
-      // Navigate to the repo folder
-      const repoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'infinite-scroll-repo' }).first();
-      await expect(repoLink).toBeVisible({ timeout: 15000 });
-      await repoLink.click();
-      await page.waitForURL(/infinite-scroll-repo/, { timeout: 10000 });
+      await page.evaluate(({ npub, repoName }) => {
+        window.location.hash = `#/${npub}/${repoName}`;
+      }, { npub: ownerNpub, repoName: 'infinite-scroll-repo' });
+      await page.waitForURL(/infinite-scroll-repo/, { timeout: 15000 });
+      await waitForAppReady(page, 30000);
 
       // Click the commits button to open the git history modal
       const commitsButton = page.locator('button:has-text("commits"), button:has(.i-lucide-history)').first();
@@ -1065,7 +1059,7 @@ test.describe('Git history features', () => {
       consoleLogs.push(msg.text());
     });
 
-    await navigateToPublicFolder(page);
+    await ensureGitSession(page);
 
     // Create a real git repo with commits
     const fs = await import('fs/promises');

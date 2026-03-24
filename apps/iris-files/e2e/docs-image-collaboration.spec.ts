@@ -226,6 +226,42 @@ async function waitForDeltasFolder(
   }, { timeout: timeoutMs, intervals: [1000, 2000, 3000] }).toBe(true);
 }
 
+async function getDeltasCount(
+  page: Page,
+  npub: string,
+  treeName: string,
+  docPath: string
+): Promise<number> {
+  return page.evaluate(async ({ targetNpub, targetTree, targetDoc }) => {
+    try {
+      const { getTreeRootSync } = await import('/src/stores');
+      const { getTree } = await import('/src/store');
+      const root = getTreeRootSync(targetNpub, targetTree);
+      if (!root) return -1;
+      const tree = getTree();
+      const deltasDir = await tree.resolvePath(root, `${targetDoc}/deltas`);
+      if (!deltasDir?.cid) return -1;
+      const entries = await tree.listDirectory(deltasDir.cid);
+      return entries.length;
+    } catch {
+      return -1;
+    }
+  }, { targetNpub: npub, targetTree: treeName, targetDoc: docPath });
+}
+
+async function waitForDeltasCountIncrease(
+  page: Page,
+  npub: string,
+  treeName: string,
+  docPath: string,
+  previousCount: number,
+  timeoutMs = 60000
+): Promise<void> {
+  await expect.poll(async () => {
+    return getDeltasCount(page, npub, treeName, docPath);
+  }, { timeout: timeoutMs, intervals: [1000, 2000, 3000] }).toBeGreaterThan(previousCount);
+}
+
 async function hasYjsEntry(
   page: Page,
   npub: string,
@@ -440,29 +476,25 @@ async function waitForSave(page: Page) {
   const savingStatus = page.locator('text=Saving');
   const savedStatus = page.locator('text=Saved').or(page.locator('text=/Saved \\d/'));
   const rootBefore = await getTreeRootHash(page);
+  let sawSaving = false;
 
-  const waitForSaved = async () => {
-    try {
-      await expect(savingStatus).toBeVisible({ timeout: 5000 });
-    } catch {
-      if (await savedStatus.isVisible().catch(() => false)) {
-        return true;
-      }
+  await expect.poll(async () => {
+    const currentRoot = await getTreeRootHash(page);
+    if (rootBefore && currentRoot && currentRoot !== rootBefore) {
+      return 'root';
     }
-    await expect(savedStatus).toBeVisible({ timeout: 30000 });
-    return true;
-  };
 
-  const waitForRoot = async () => {
-    if (!rootBefore) return false;
-    await waitForTreeRootChange(page, rootBefore, 60000);
-    return true;
-  };
+    if (await savingStatus.isVisible().catch(() => false)) {
+      sawSaving = true;
+      return 'saving';
+    }
 
-  await Promise.race([
-    waitForSaved(),
-    waitForRoot(),
-  ]).catch(() => {});
+    if (sawSaving && await savedStatus.isVisible().catch(() => false)) {
+      return 'saved';
+    }
+
+    return '';
+  }, { timeout: 60000, intervals: [250, 500, 1000, 2000, 3000] }).toMatch(/root|saved/);
 }
 
 // Helper to set editors using the Collaborators modal UI
@@ -787,9 +819,11 @@ test.describe('Document Image Collaboration', () => {
     // Type some text
     const editor = page.locator('.ProseMirror');
     await editor.click();
+    const rootBeforeText = await getTreeRootHash(page);
     await page.keyboard.type('Image persistence test: ');
-    await waitForSave(page);
+    await waitForTreeRootChange(page, rootBeforeText);
     const rootBeforeImage = await getTreeRootHash(page);
+    const deltasBeforeImage = await getDeltasCount(page, npub, 'public', 'image-persist-test');
 
     // Insert image via toolbar button
     console.log('Inserting image...');
@@ -803,8 +837,8 @@ test.describe('Document Image Collaboration', () => {
     fs.unlinkSync(tmpFile);
     console.log('Image uploaded via file input');
 
-    await waitForSave(page);
     await waitForTreeRootChange(page, rootBeforeImage);
+    await waitForDeltasCountIncrease(page, npub, 'public', 'image-persist-test', deltasBeforeImage, 60000);
     await flushPendingPublishes(page);
     const rootAfterImage = await getTreeRootHash(page);
     await waitForDeltasFolder(page, npub, 'public', 'image-persist-test', 60000);
@@ -834,102 +868,54 @@ test.describe('Document Image Collaboration', () => {
         attachmentFilename = decodeURIComponent(resolved.pathname.slice(idx + marker.length));
       }
     }
-    if (attachmentFilename) {
-      await waitForAttachment(page, npub, 'public', 'image-persist-test', attachmentFilename, 90000);
-    }
-
     // Refresh the page
     console.log('Refreshing page...');
     await page.reload();
     await waitForAppReady(page);
     await disableOthersPool(page);
     await configureBlossomServers(page);
-    if (rootAfterImage) {
-      await waitForTreeRootHash(page, npub, 'public', rootAfterImage, 60000);
-    }
-    // Re-open the document via the tree list to ensure attachments load after refresh
-    await safeGoto(page, toDocsUrl(`/${npub}/public`), { retries: 4, delayMs: 1500 });
-    await waitForAppReady(page);
-    if (rootAfterImage) {
-      await waitForTreeRootHash(page, npub, 'public', rootAfterImage, 60000);
-    }
-    const docLink = page.getByRole('link', { name: 'image-persist-test' }).first();
-    const alreadyInDoc = page.url().includes('image-persist-test');
-    if (!alreadyInDoc && await docLink.isVisible().catch(() => false)) {
-      await docLink.click();
-      await page.waitForURL(/image-persist-test/, { timeout: 60000 });
-      await waitForAppReady(page);
-    } else if (!alreadyInDoc) {
-      await safeGoto(page, toDocsUrl(`/${npub}/public/image-persist-test`), { retries: 4, delayMs: 1500 });
-      await waitForAppReady(page);
-    }
-    if (rootAfterImage) {
-      await waitForTreeRootHash(page, npub, 'public', rootAfterImage, 60000);
-    }
-    await page.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
-    await waitForYjsEntry(page, npub, 'public', 'image-persist-test', 90000);
-    await page.evaluate(() => (window as any).__reloadYjsEditors?.());
-    await expect.poll(async () => {
-      await page.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
-      return page.evaluate(async ({ targetNpub, targetTree, targetDoc }) => {
-        try {
-          const { getTreeRootSync } = await import('/src/stores');
-          const { getTree } = await import('/src/store');
-          const root = getTreeRootSync(targetNpub, targetTree);
-          if (!root) return false;
-          const tree = getTree();
-          const entry = await tree.resolvePath(root, `${targetDoc}/.yjs`);
-          if (!entry?.cid) return false;
-          const adapter = (window as any).__getWorkerAdapter?.() ?? (window as any).__workerAdapter;
-          if (!adapter?.readFile) return false;
-          const read = () => {
-            if (typeof adapter.readFileRange === 'function') {
-              return adapter.readFileRange(entry.cid, 0, 2048);
-            }
-            return adapter.readFile(entry.cid);
-          };
-          const data = await Promise.race([
-            read(),
-            new Promise<Uint8Array | null>((resolve) => {
-              setTimeout(() => resolve(null), 5000);
-            }),
-          ]);
-          return !!data && data.length > 0;
-        } catch {
-          return false;
+    await waitForRelayConnected(page, 30000);
+    await ensureDocsMediaReady(page);
+
+    let editorAfter = page.locator('.ProseMirror');
+    let imageRestored = false;
+    for (let attempt = 0; attempt < 5 && !imageRestored; attempt++) {
+      await openRemoteDocument(page, npub, 'public', 'image-persist-test', rootAfterImage ?? undefined);
+      editorAfter = page.locator('.ProseMirror');
+      await expect(editorAfter).toBeVisible({ timeout: 30000 });
+      const textRestored = await expect.poll(async () => {
+        await page.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
+        const text = await editorAfter.textContent().catch(() => '');
+        if (!text?.includes('Image persistence test')) {
+          await page.evaluate(() => (window as any).__reloadYjsEditors?.());
         }
-      }, { targetNpub: npub, targetTree: 'public', targetDoc: 'image-persist-test' });
-    }, { timeout: 90000, intervals: [1000, 2000, 3000] }).toBe(true);
-    await page.evaluate(async () => {
-      const { ensureMediaStreamingReady } = await import('/src/lib/mediaStreamingSetup.ts');
-      await ensureMediaStreamingReady(5, 1000);
-    });
+        return text?.includes('Image persistence test') ?? false;
+      }, { timeout: 20000, intervals: [1000, 2000, 3000] }).toBe(true).then(() => true).catch(() => false);
 
-    // Wait for editor to load
-    const editorAfter = page.locator('.ProseMirror');
-    await expect(editorAfter).toBeVisible({ timeout: 30000 });
-    await expect.poll(async () => {
-      await page.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
-      const text = await editorAfter.textContent().catch(() => '');
-      if (!text?.includes('Image persistence test')) {
+      if (!textRestored) {
         await page.evaluate(() => (window as any).__reloadYjsEditors?.());
+        await page.waitForTimeout(1000);
+        continue;
       }
-      return text?.includes('Image persistence test') ?? false;
-    }, { timeout: 60000, intervals: [1000, 2000, 3000] }).toBe(true);
 
-    // Verify image is still visible after refresh
-    if (attachmentFilename) {
-      await waitForAttachment(page, npub, 'public', 'image-persist-test', attachmentFilename, 90000);
+      imageRestored = await expect.poll(async () => {
+        await page.evaluate(() => (window as any).__workerAdapter?.sendHello?.());
+        const count = await editorAfter.locator('img').count().catch(() => 0);
+        if (count > 0) return true;
+        const hasImage = await hasProseMirrorImage(page);
+        if (!hasImage) {
+          await page.evaluate(() => (window as any).__reloadYjsEditors?.());
+        }
+        return hasImage;
+      }, { timeout: 20000, intervals: [1000, 2000, 3000] }).toBe(true).then(() => true).catch(() => false);
+
+      if (!imageRestored) {
+        await page.evaluate(() => (window as any).__reloadYjsEditors?.());
+        await page.waitForTimeout(1000);
+      }
     }
-    await expect.poll(async () => {
-      const count = await editorAfter.locator('img').count().catch(() => 0);
-      if (count > 0) return true;
-      const hasImage = await hasProseMirrorImage(page);
-      if (!hasImage) {
-        await page.evaluate(() => (window as any).__reloadYjsEditors?.());
-      }
-      return hasImage;
-    }, { timeout: 60000, intervals: [1000, 2000, 3000] }).toBe(true);
+
+    expect(imageRestored).toBe(true);
 
     const imageAfter = editorAfter.locator('img');
     const imageCount = await imageAfter.count().catch(() => 0);

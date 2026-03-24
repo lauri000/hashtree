@@ -344,8 +344,8 @@ class MsgpackWsClient {
 
 test.describe('rust WebSocket Integration', () => {
   // Serial mode: shares rust server process via beforeAll/afterAll
-  test.describe.configure({ mode: 'serial', timeout: 180000 });
-  test.setTimeout(180000);
+  test.describe.configure({ mode: 'serial', timeout: 300000 });
+  test.setTimeout(300000);
 
   let rustProcess: ChildProcess | null = null;
   let tempDir: string | null = null;
@@ -353,10 +353,12 @@ test.describe('rust WebSocket Integration', () => {
   let lockFd: number | null = null;
 
   test.beforeAll(async () => {
-    test.setTimeout(180000);
+    test.setTimeout(300000);
     // Check if rust binary exists (skip tests if not built)
+    const rustWorkspaceDir = path.resolve(__dirname, '../../../rust');
+    const rustBinaryPath = path.join(rustWorkspaceDir, 'target', 'release', 'htree');
     try {
-      execSync(`cargo metadata --manifest-path ${path.resolve(__dirname, '../../../rust/Cargo.toml')}`, { stdio: 'ignore' });
+      execSync(`cargo metadata --manifest-path ${path.resolve(rustWorkspaceDir, 'Cargo.toml')}`, { stdio: 'ignore' });
     } catch {
       console.log('rust not available, skipping ws-interop tests');
       test.skip();
@@ -385,13 +387,20 @@ test.describe('rust WebSocket Integration', () => {
       '',
     ].join('\n'), 'utf8');
 
-    // Start rust server
+    console.log('Building rust server binary...');
+    execSync('cargo build -p hashtree-cli --release --bin htree', {
+      cwd: rustWorkspaceDir,
+      env: { ...process.env, CARGO_TERM_COLOR: 'never' },
+      stdio: 'ignore',
+    });
+
+    // Start rust server from the prebuilt binary so startup isn't blocked on compilation.
     console.log('Starting rust server...');
     rustProcess = spawn(
-      'cargo',
-      ['run', '-p', 'hashtree-cli', '--release', '--', 'start', '--addr', `127.0.0.1:${RUST_SERVER_PORT}`, '--data-dir', tempDir],
+      rustBinaryPath,
+      ['start', '--addr', `127.0.0.1:${RUST_SERVER_PORT}`, '--data-dir', tempDir],
       {
-        cwd: path.resolve(__dirname, '../../../rust'),
+        cwd: rustWorkspaceDir,
         env: { ...process.env, RUST_LOG: 'hashtree_cli=debug', HTREE_CONFIG_DIR: configDir },
         stdio: ['ignore', 'pipe', 'pipe'],
       }

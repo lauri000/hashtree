@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, waitForAppReady, configureBlossomServers, useLocalRelay, waitForRelayConnected, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, waitForAppReady, configureBlossomServers, useLocalRelay, waitForRelayConnected, gotoGitApp, createPlainFolderInCurrentDirectory, ensureGitRepoInitialized, flushPendingPublishes } from './test-utils.js';
 import { execSync } from 'child_process';
 import { getPublicKey, nip19 } from 'nostr-tools';
 import WebSocket from 'ws';
@@ -121,7 +121,7 @@ test.describe('Git status after file edit', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder for our test repo
-    await createRepositoryInCurrentDirectory(page, 'subdir-test');
+    await createPlainFolderInCurrentDirectory(page, 'subdir-test');
 
     // Navigate into the folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'subdir-test' }).first();
@@ -164,6 +164,7 @@ test.describe('Git status after file edit', () => {
 
     // Git Init
     await ensureGitRepoInitialized(page);
+    await flushPendingPublishes(page);
 
     // Verify git repo detected and clean
     const cleanIndicator = page.locator('text=clean');
@@ -190,6 +191,7 @@ test.describe('Git status after file edit', () => {
 
       autosaveIfOwn(rootCid);
     });
+    await flushPendingPublishes(page);
 
     // Wait for new file to appear
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'newfile.txt' })).toBeVisible({ timeout: 15000 });
@@ -206,7 +208,7 @@ test.describe('Git status after file edit', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder for our test repo
-    await createRepositoryInCurrentDirectory(page, 'edit-in-subdir-test');
+    await createPlainFolderInCurrentDirectory(page, 'edit-in-subdir-test');
 
     // Navigate into the folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'edit-in-subdir-test' }).first();
@@ -243,6 +245,7 @@ test.describe('Git status after file edit', () => {
 
     // Git Init
     await ensureGitRepoInitialized(page);
+    await flushPendingPublishes(page);
 
     // Verify git repo detected and clean
     const cleanIndicator = page.locator('text=clean');
@@ -300,7 +303,7 @@ test.describe('Git status after file edit', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder for our test repo
-    await createRepositoryInCurrentDirectory(page, 'editor-test');
+    await createPlainFolderInCurrentDirectory(page, 'editor-test');
 
     // Navigate into the folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'editor-test' }).first();
@@ -333,6 +336,7 @@ test.describe('Git status after file edit', () => {
 
     // Git Init
     await ensureGitRepoInitialized(page);
+    await flushPendingPublishes(page);
 
     // Verify git repo detected and clean
     const cleanIndicator = page.locator('text=clean');
@@ -356,8 +360,9 @@ test.describe('Git status after file edit', () => {
     // Click Edit button to enter edit mode
     const editBtn = page.locator('[data-testid="viewer-edit"]');
     await expect(editBtn).toBeVisible({ timeout: 5000 });
-    await editBtn.click();
+    await editBtn.click({ force: true });
     console.log('[test] Clicked Edit button');
+    await page.waitForURL(/edit=1/, { timeout: 10000 });
 
     // Wait for the FileEditor to appear (textarea)
     const textarea = page.locator('textarea');
@@ -429,7 +434,7 @@ test.describe('Git status after file edit', () => {
     await navigateToPublicFolder(page);
 
     // Create a folder for our source repo
-    await createRepositoryInCurrentDirectory(page, 'fork-source-test');
+    await createPlainFolderInCurrentDirectory(page, 'fork-source-test');
 
     // Navigate into the folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'fork-source-test' }).first();
@@ -461,6 +466,7 @@ test.describe('Git status after file edit', () => {
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'README.md' })).toBeVisible({ timeout: 15000 });
 
     await ensureGitRepoInitialized(page);
+    await flushPendingPublishes(page);
 
     // Verify git repo detected and clean
     const cleanIndicator = page.locator('text=clean');
@@ -675,7 +681,7 @@ servers = [${blossomToml}]
 
       // Navigate directly to the pushed repo URL
       // This is the REAL flow - browser fetches from nostr/blossom
-      const repoUrl = `/#/${npub}/${repoName}`;
+      const repoUrl = `/git.html#/${npub}/${repoName}`;
       console.log('[test] Navigating to:', repoUrl);
 
       await page.waitForFunction(() => (window as any).__nostrStore?.getState?.().connectedRelays > 0, { timeout: 30000 });

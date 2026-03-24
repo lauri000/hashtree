@@ -156,7 +156,13 @@
   let cardDropTarget = $state<CardDropTarget | null>(null);
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let hydrateRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let hydrateRetryAttempts = 0;
+  let hydrateRetryKey: string | null = null;
   let loadGeneration = 0;
+  const HYDRATE_RETRY_DELAY_MS = 1500;
+  const LOCAL_HYDRATE_MAX_RETRIES = 3;
+  const REMOTE_HYDRATE_MAX_RETRIES = 24;
 
   let canManage = $derived(
     !!permissions && !!ownerNpub && canManageBoard(permissions, userNpub, ownerNpub)
@@ -599,9 +605,10 @@
     fallbackBoardId: string,
     fallbackTitle: string,
     fallbackUpdatedBy: string
-  ): Promise<{ board: BoardState | null; permissions: BoardPermissions | null }> {
+  ): Promise<{ board: BoardState | null; permissions: BoardPermissions | null; incomplete: boolean }> {
     const tree = getTree();
     const entries = await tree.listDirectory(dirCid);
+    let incomplete = false;
 
     const boardMetaEntry = findBlobEntry(entries, BOARD_META_FILE);
     const boardOrderEntry = findBlobEntry(entries, BOARD_ORDER_FILE);
@@ -609,6 +616,7 @@
     const columnsDirEntry = findDirEntry(entries, BOARD_COLUMNS_DIR);
 
     const boardMetaData = boardMetaEntry ? await tree.readFile(boardMetaEntry.cid) : null;
+    if (boardMetaEntry && boardMetaData === null) incomplete = true;
     const boardMeta = boardMetaData
       ? parseBoardMeta(boardMetaData, fallbackBoardId, fallbackTitle, fallbackUpdatedBy)
       : null;
@@ -617,11 +625,13 @@
       : null;
 
     const permissionsData = permissionsEntry ? await tree.readFile(permissionsEntry.cid) : null;
+    if (permissionsEntry && permissionsData === null) incomplete = true;
     const parsedPermissions = permissionsData && ownerNpub
       ? parseBoardPermissions(permissionsData, ownerNpub)
       : null;
 
     const boardOrderData = boardOrderEntry ? await tree.readFile(boardOrderEntry.cid) : null;
+    if (boardOrderEntry && boardOrderData === null) incomplete = true;
     const boardOrder = boardOrderData ? parseBoardOrder(boardOrderData) : parseBoardOrder(null);
 
     const parsedColumns: BoardColumn[] = [];
@@ -634,6 +644,7 @@
         const cardsDirEntry = findDirEntry(columnDirEntries, BOARD_CARDS_DIR);
 
         const columnMetaData = columnMetaEntry ? await tree.readFile(columnMetaEntry.cid) : null;
+        if (columnMetaEntry && columnMetaData === null) incomplete = true;
         const columnMeta = columnMetaData
           ? parseColumnMeta(columnMetaData, columnEntry.name)
           : { id: columnEntry.name, title: 'Untitled Column' };
@@ -653,7 +664,10 @@
           for (const cardEntry of cardEntries) {
             if (cardEntry.type === LinkType.Dir) continue;
             const cardData = await tree.readFile(cardEntry.cid);
-            if (!cardData) continue;
+            if (cardData === null) {
+              incomplete = true;
+              continue;
+            }
             const fallbackCardId = cardIdFromFilename(cardEntry.name);
             const card = parseCardData(cardData, fallbackCardId);
             if (!card) continue;
@@ -720,14 +734,14 @@
       parsedBoard = legacyBoardState;
     }
 
-    return { board: parsedBoard, permissions: parsedPermissions };
+    return { board: parsedBoard, permissions: parsedPermissions, incomplete };
   }
 
   async function loadParticipantData(
     participantNpub: string,
     treeName: string,
     boardPath: string[]
-  ): Promise<{ board: BoardState | null; permissions: BoardPermissions | null } | null> {
+  ): Promise<{ board: BoardState | null; permissions: BoardPermissions | null; incomplete: boolean } | null> {
     let participantRoot: CID | null = null;
 
     if (participantNpub === viewedNpub) {
@@ -749,7 +763,45 @@
     );
   }
 
+  function clearHydrateRetry(): void {
+    if (hydrateRetryTimer) {
+      clearTimeout(hydrateRetryTimer);
+      hydrateRetryTimer = null;
+    }
+  }
+
+  function getHydrateRetryKey(root: CID): string {
+    return `${route.isPermalink ? 'permalink' : 'tree'}:${route.npub ?? ''}:${route.treeName ?? ''}:${route.path.join('/')}:${toHex(root.hash)}:${root.key ? toHex(root.key) : ''}`;
+  }
+
+  function resetHydrateRetry(nextKey: string | null = null): void {
+    if (hydrateRetryKey === nextKey) return;
+    hydrateRetryKey = nextKey;
+    hydrateRetryAttempts = 0;
+    clearHydrateRetry();
+  }
+
+  function scheduleHydrateRetry(generation: number, root: CID): void {
+    const retryKey = getHydrateRetryKey(root);
+    if (hydrateRetryKey !== retryKey) {
+      resetHydrateRetry(retryKey);
+    }
+
+    const maxRetries = route.isPermalink || !isOwnBoard
+      ? REMOTE_HYDRATE_MAX_RETRIES
+      : LOCAL_HYDRATE_MAX_RETRIES;
+    if (hydrateRetryTimer || hydrateRetryAttempts >= maxRetries) return;
+
+    hydrateRetryAttempts += 1;
+    hydrateRetryTimer = setTimeout(() => {
+      hydrateRetryTimer = null;
+      if (generation !== loadGeneration) return;
+      void hydrateBoardState(generation, root);
+    }, HYDRATE_RETRY_DELAY_MS);
+  }
+
   async function hydrateBoardState(generation: number, root: CID) {
+    resetHydrateRetry(getHydrateRetryKey(root));
     if (!ownerNpub || !route.treeName) return;
     if (!route.treeName.startsWith('boards/')) {
       if (generation !== loadGeneration) return;
@@ -762,61 +814,78 @@
     const boardDirCid = await resolveBoardDirectory(root, route.path);
     if (!boardDirCid) {
       if (generation !== loadGeneration) return;
+      scheduleHydrateRetry(generation, root);
       error = 'Board not found.';
       loading = false;
       return;
     }
 
-    const localData = await loadBoardFromDirectory(
-      boardDirCid,
-      createBoardId(),
-      boardName,
-      viewedNpub || ownerNpub
-    );
+    try {
+      const localData = await loadBoardFromDirectory(
+        boardDirCid,
+        createBoardId(),
+        boardName,
+        viewedNpub || ownerNpub
+      );
 
-    const localPermissions = localData.permissions || createInitialBoardPermissions(
-      localData.board?.boardId || createBoardId(),
-      localData.board?.title || boardName,
-      ownerNpub
-    );
-
-    const permissionCandidates: BoardPermissions[] = [localPermissions];
-    const boardCandidates: BoardState[] = [];
-    if (localData.board) boardCandidates.push(localData.board);
-
-    const participants = new Set<string>([
-      ownerNpub,
-      ...localPermissions.admins,
-      ...localPermissions.writers,
-    ]);
-
-    for (const participant of participants) {
-      if (participant === viewedNpub) continue;
-      const participantData = await loadParticipantData(participant, route.treeName, route.path);
-      if (!participantData) continue;
-      if (participantData.permissions) permissionCandidates.push(participantData.permissions);
-      if (participantData.board) boardCandidates.push(participantData.board);
-    }
-
-    permissionCandidates.sort((a, b) => b.updatedAt - a.updatedAt);
-    const resolvedPermissions = permissionCandidates[0] || localPermissions;
-
-    if (boardCandidates.length === 0) {
-      boardCandidates.push(createInitialBoardState(
-        resolvedPermissions.boardId || createBoardId(),
-        resolvedPermissions.title || boardName,
+      const localPermissions = localData.permissions || createInitialBoardPermissions(
+        localData.board?.boardId || createBoardId(),
+        localData.board?.title || boardName,
         ownerNpub
-      ));
+      );
+
+      const permissionCandidates: BoardPermissions[] = [localPermissions];
+      const boardCandidates: BoardState[] = [];
+      let hasIncompleteData = localData.incomplete;
+      if (localData.board) boardCandidates.push(localData.board);
+
+      const participants = new Set<string>([
+        ownerNpub,
+        ...localPermissions.admins,
+        ...localPermissions.writers,
+      ]);
+
+      for (const participant of participants) {
+        if (participant === viewedNpub) continue;
+        const participantData = await loadParticipantData(participant, route.treeName, route.path);
+        if (!participantData) continue;
+        if (participantData.incomplete) hasIncompleteData = true;
+        if (participantData.permissions) permissionCandidates.push(participantData.permissions);
+        if (participantData.board) boardCandidates.push(participantData.board);
+      }
+
+      permissionCandidates.sort((a, b) => b.updatedAt - a.updatedAt);
+      const resolvedPermissions = permissionCandidates[0] || localPermissions;
+
+      if (boardCandidates.length === 0) {
+        boardCandidates.push(createInitialBoardState(
+          resolvedPermissions.boardId || createBoardId(),
+          resolvedPermissions.title || boardName,
+          ownerNpub
+        ));
+      }
+
+      boardCandidates.sort((a, b) => b.updatedAt - a.updatedAt);
+      const resolvedBoard = boardCandidates[0];
+
+      if (generation !== loadGeneration) return;
+      permissions = resolvedPermissions;
+      board = resolvedBoard;
+      error = null;
+      loading = false;
+
+      if (hasIncompleteData) {
+        scheduleHydrateRetry(generation, root);
+      } else {
+        hydrateRetryAttempts = 0;
+        clearHydrateRetry();
+      }
+    } catch {
+      if (generation !== loadGeneration) return;
+      scheduleHydrateRetry(generation, root);
+      error = 'Failed to load board.';
+      loading = false;
     }
-
-    boardCandidates.sort((a, b) => b.updatedAt - a.updatedAt);
-    const resolvedBoard = boardCandidates[0];
-
-    if (generation !== loadGeneration) return;
-    permissions = resolvedPermissions;
-    board = resolvedBoard;
-    error = null;
-    loading = false;
   }
 
   $effect(() => {
@@ -826,16 +895,19 @@
     const protectedWithoutAccess = isProtectedBoardWithoutAccess;
 
     if (!treeName) {
+      resetHydrateRetry();
       loading = true;
       return;
     }
 
     if (!isOwnBoard && !root?.key && currentVisibility === undefined) {
+      resetHydrateRetry();
       loading = true;
       return;
     }
 
     if (protectedWithoutAccess) {
+      resetHydrateRetry();
       board = null;
       permissions = null;
       loading = false;
@@ -844,10 +916,12 @@
     }
 
     if (!root) {
+      resetHydrateRetry();
       loading = true;
       return;
     }
 
+    resetHydrateRetry(getHydrateRetryKey(root));
     loadGeneration += 1;
     const generation = loadGeneration;
     loading = true;
@@ -1864,6 +1938,7 @@
 
   onDestroy(() => {
     if (saveTimer) clearTimeout(saveTimer);
+    clearHydrateRetry();
     for (const previewUrl of Object.values(localAttachmentPreviewUrls)) {
       URL.revokeObjectURL(previewUrl);
     }

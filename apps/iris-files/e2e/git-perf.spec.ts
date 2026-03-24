@@ -8,6 +8,8 @@ import { execSync } from 'child_process';
 const README_NAME = 'README.md';
 const SRC_DIR = 'src';
 const MAIN_FILE = 'main.ts';
+const GIT_APP_PREFIX = '/git.html';
+const REPO_OWNER_NPUB = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
 
 async function createTempGitRepo(): Promise<string> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'git-perf-'));
@@ -114,11 +116,11 @@ test.describe('Git performance', () => {
       await useLocalRelay(page);
       const { repoName, npub } = await uploadGitRepo(page);
       console.log('Navigating to local git repo...');
-      await page.goto(`/#/${npub}/public/${repoName}?g=${encodeURIComponent(repoName)}`);
+      await page.goto(`${GIT_APP_PREFIX}#/${npub}/public/${repoName}?g=${encodeURIComponent(repoName)}`);
     } else {
       // Navigate to hashtree repo with production config
       console.log('Navigating to hashtree repo...');
-      await page.goto('/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree');
+      await page.goto(`${GIT_APP_PREFIX}#/${REPO_OWNER_NPUB}/hashtree`);
     }
 
     await waitForAppReady(page);
@@ -131,11 +133,12 @@ test.describe('Git performance', () => {
     console.log('Waiting for directory listing...');
     await expect(page.locator('[data-testid="file-list"] table').first()).toBeVisible({ timeout: 60000 });
 
-    // Wait for file last commits to complete by polling our collected logs
+    // Wait for file last commits to complete by polling our collected logs.
+    // The commit-count fast path is opportunistic, so don't fail if its log is absent.
     console.log('Waiting for file commit info (file last commits)...');
     const startTime = Date.now();
 
-    // Poll until we see both completion logs
+    // Poll until we see the file-commit completion log.
     let fileCommitsTime = '';
     let commitCountTime = '';
 
@@ -156,7 +159,7 @@ test.describe('Git performance', () => {
         }
       }
 
-      return Boolean(fileCommitsTime && commitCountTime);
+      return Boolean(fileCommitsTime);
     }, { timeout: 90000, intervals: [500, 1000, 2000, 3000] }).toBe(true);
 
     const loadTime = Date.now() - startTime;

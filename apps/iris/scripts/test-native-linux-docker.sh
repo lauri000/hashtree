@@ -48,19 +48,26 @@ docker build \
   -t "${IMAGE_NAME}" \
   "${SCRIPT_DIR}"
 
-docker run --rm \
-  --platform "${PLATFORM}" \
-  --shm-size "${SHM_SIZE}" \
-  "${DOCKER_ENV_ARGS[@]}" \
-  -e "IRIS_NATIVE_DOCKER_COMMAND=${RUN_COMMAND}" \
-  -v "${REPO_ROOT}:/workspace" \
-  -v hashtree-iris-native-node-modules:/workspace/apps/iris/node_modules \
-  -v hashtree-iris-native-pnpm-store:/pnpm/store \
-  -v hashtree-iris-native-target:/workspace/apps/iris/src-tauri/target \
-  -v hashtree-iris-native-cargo-registry:/root/.cargo/registry \
-  -v hashtree-iris-native-cargo-git:/root/.cargo/git \
-  -w /workspace/apps/iris \
-  "${IMAGE_NAME}" \
+docker_run_args=(
+  docker run --rm
+  --platform "${PLATFORM}"
+  --shm-size "${SHM_SIZE}"
+)
+
+if ((${#DOCKER_ENV_ARGS[@]})); then
+  docker_run_args+=("${DOCKER_ENV_ARGS[@]}")
+fi
+
+docker_run_args+=(
+  -e "IRIS_NATIVE_DOCKER_COMMAND=${RUN_COMMAND}"
+  -v "${REPO_ROOT}:/workspace"
+  -v hashtree-iris-native-node-modules:/workspace/apps/iris/node_modules
+  -v hashtree-iris-native-pnpm-store:/pnpm/store
+  -v hashtree-iris-native-target:/workspace/apps/iris/src-tauri/target
+  -v hashtree-iris-native-cargo-registry:/root/.cargo/registry
+  -v hashtree-iris-native-cargo-git:/root/.cargo/git
+  -w /workspace/apps/iris
+  "${IMAGE_NAME}"
   bash -lc '
     set -euo pipefail
     pnpm config set store-dir /pnpm/store
@@ -71,3 +78,6 @@ docker run --rm \
       eval "${IRIS_NATIVE_DOCKER_COMMAND}"
     '"'"'
   '
+)
+
+"${docker_run_args[@]}"

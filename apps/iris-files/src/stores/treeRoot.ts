@@ -20,7 +20,9 @@ import { getRefResolver, getResolverKey } from '../refResolver';
 import { nostrStore, decrypt } from '../nostr';
 import { npubToPubkey } from '../nostr/trees';
 import { logHtreeDebug } from '../lib/htreeDebug';
+import { syncNativeTreeRootCache } from '../lib/nativeTreeRootCache';
 import { treeRootRegistry } from '../TreeRootRegistry';
+import type { TreeRootRecord } from '../TreeRootRegistry';
 
 // Wait for worker to be ready before creating subscriptions
 // This ensures the NDK transport plugin is registered
@@ -83,6 +85,46 @@ function getVisibilityInfoFromRegistry(key: string): SubscribeVisibilityInfo | u
 }
 
 const workerKeyMergeCache = new Map<string, string>();
+const workerRootCacheSync = new Map<string, string>();
+
+function getWorkerRootSignature(record: TreeRootRecord): string {
+  const labels = record.labels?.join(',') ?? '';
+  return `${toHex(record.hash)}:${record.key ? toHex(record.key) : ''}:${record.visibility}:${labels}`;
+}
+
+async function syncResolvedTreeRootToWorker(key: string, record: TreeRootRecord): Promise<void> {
+  if (record.source !== 'nostr' && record.source !== 'prefetch') return;
+
+  const signature = getWorkerRootSignature(record);
+  if (workerRootCacheSync.get(key) === signature) return;
+
+  const slashIndex = key.indexOf('/');
+  if (slashIndex <= 0 || slashIndex >= key.length - 1) return;
+
+  const npub = key.slice(0, slashIndex);
+  const treeName = key.slice(slashIndex + 1);
+
+  try {
+    const { getWorkerAdapter, waitForWorkerAdapter } = await import('../lib/workerInit');
+    const adapter = getWorkerAdapter() ?? await waitForWorkerAdapter(2000);
+    if (!adapter || !('setTreeRootCache' in adapter)) return;
+
+    await (adapter as {
+      setTreeRootCache: (
+        npub: string,
+        treeName: string,
+        hash: Hash,
+        key?: Hash,
+        visibility?: TreeVisibility,
+        labels?: string[]
+      ) => Promise<void>;
+    }).setTreeRootCache(npub, treeName, record.hash, record.key, record.visibility, record.labels);
+
+    workerRootCacheSync.set(key, signature);
+  } catch (err) {
+    console.warn('[treeRoot] Failed to sync resolved tree root to worker:', err);
+  }
+}
 
 async function mergeTreeRootKeyToWorker(
   npub: string,
@@ -154,6 +196,36 @@ async function hydrateTreeRootFromWorker(npub: string, treeName: string): Promis
   }
 }
 
+async function syncActiveTreeRootFromRecord(
+  key: string,
+  record: ReturnType<typeof treeRootRegistry.getByKey>,
+  state: {
+    decryptedKey: Hash | undefined;
+  } | undefined
+): Promise<void> {
+  if (!record) return;
+  if (key !== activeResolverKey) return;
+
+  const currentRoute = get(routeStore);
+  if (key !== getResolverKey(currentRoute.npub ?? undefined, currentRoute.treeName ?? undefined)) return;
+
+  let effectiveKey = record.key ?? state?.decryptedKey;
+  if (!effectiveKey && record.visibility === 'link-visible') {
+    const visibilityInfo = getVisibilityInfoFromRegistry(key);
+    const linkKeyFromUrl = currentRoute.params.get('k');
+    const decryptedKey = await decryptEncryptionKey(visibilityInfo, undefined, linkKeyFromUrl);
+    if (decryptedKey && state) {
+      state.decryptedKey = decryptedKey;
+    }
+    effectiveKey = decryptedKey ?? effectiveKey;
+  }
+
+  if (record.visibility === 'link-visible' && !effectiveKey) return;
+
+  treeRootStore.set(cid(record.hash, effectiveKey));
+  logHtreeDebug('treeRoot:set', { source: 'registry-active', resolverKey: key });
+}
+
 /**
  * Update the subscription cache directly (called from feed subscriptions).
  * Keeps backward compatibility while updating the registry for UI consumers.
@@ -175,6 +247,10 @@ export function updateSubscriptionCache(
       visibility,
       updatedAt,
     });
+    void syncNativeTreeRootCache(npub, treeName, { hash, key: encryptionKey }, visibility)
+      .catch((error) => {
+        console.warn('[treeRoot] Failed to sync native tree root cache:', error);
+      });
 
   }
 
@@ -196,22 +272,17 @@ export function updateSubscriptionCache(
 
 // Subscribe to registry updates to notify listeners
 treeRootRegistry.subscribeAll((key, record) => {
-  if (!record) return;
+  if (!record) {
+    workerRootCacheSync.delete(key);
+    return;
+  }
   const state = subscriptionState.get(key);
   if (state) {
     const visibilityInfo = getVisibilityInfoFromRegistry(key);
     state.listeners.forEach(listener => listener(record.hash, record.key, visibilityInfo));
   }
-
-  if (key !== activeResolverKey) return;
-  const currentRoute = get(routeStore);
-  if (key !== getResolverKey(currentRoute.npub ?? undefined, currentRoute.treeName ?? undefined)) return;
-
-  const effectiveKey = record.key ?? state?.decryptedKey;
-  if (record.visibility === 'link-visible' && !effectiveKey) return;
-
-  treeRootStore.set(cid(record.hash, effectiveKey));
-  logHtreeDebug('treeRoot:set', { source: 'registry-active', resolverKey: key });
+  void syncActiveTreeRootFromRecord(key, record, state);
+  void syncResolvedTreeRootToWorker(key, record);
 });
 
 /**

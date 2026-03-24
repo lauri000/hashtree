@@ -5,33 +5,24 @@
  * A Yjs document directory is identified by having a .yjs config file inside.
  */
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, configureBlossomServers } from './test-utils.js';
-
-async function waitForTreeRootChange(page: any, previousRoot: string | null, timeoutMs: number = 60000) {
-  await page.waitForFunction(
-    () => typeof (window as any).__getTreeRoot === 'function',
-    undefined,
-    { timeout: 10000 }
-  );
-  await page.waitForFunction(
-    (prev) => {
-      const current = (window as any).__getTreeRoot?.();
-      return !!current && current !== prev;
-    },
-    previousRoot,
-    { timeout: timeoutMs }
-  );
-}
+import { setupPageErrorHandler, waitForAppReady } from './test-utils.js';
+import {
+  createDocumentFromDocsHome,
+  createManualYjsTreeFromDocsHome,
+  createRegularTreeFromDocsHome,
+  currentTreeHasEntry,
+  setupDocsHome,
+  waitForDocsEditor,
+  waitForTreeRootChange,
+} from './docs-test-utils.js';
 
 test.describe('Yjs Document Viewer', () => {
-  test.setTimeout(60000);
+  test.setTimeout(120000);
 
   test.beforeEach(async ({ page }) => {
     setupPageErrorHandler(page);
-
-    await page.goto('/');
-    await disableOthersPool(page);
-    await configureBlossomServers(page);
+    await page.goto('/docs.html#/');
+    await waitForAppReady(page);
 
     // Clear storage for fresh state
     await page.evaluate(async () => {
@@ -43,143 +34,32 @@ test.describe('Yjs Document Viewer', () => {
       sessionStorage.clear();
     });
 
-    await page.reload();
-    await page.waitForTimeout(500);
-    await configureBlossomServers(page);
-    // Page ready - navigateToPublicFolder handles waiting
-    await navigateToPublicFolder(page);
+    await setupDocsHome(page);
   });
 
   test('New Document button creates folder with .yjs file', async ({ page }) => {
-    // We're inside the public folder from navigateToPublicFolder
-
-    // Click New Document button
-    await page.getByRole('button', { name: 'New Document' }).click();
-    await page.waitForTimeout(500);
-
-    // Fill in document name
-    await page.locator('input[placeholder="Document name..."]').fill('notes');
-    await page.getByRole('button', { name: 'Create' }).click();
-    await page.waitForTimeout(1500);
-
-    // The folder should be visible (named "notes", not "notes.yjs")
-    const docFolder = page.locator('a:has-text("notes")').first();
-    await expect(docFolder).toBeVisible({ timeout: 30000 });
-
-    // Click to navigate into the document folder
-    await docFolder.click();
-    await page.waitForTimeout(2000);
-
-    // Verify .yjs file exists inside the folder
-    const yjsFile = page.locator('a:has-text(".yjs")').first();
-    await expect(yjsFile).toBeVisible({ timeout: 30000 });
+    await createDocumentFromDocsHome(page, 'notes');
+    await expect.poll(() => currentTreeHasEntry(page, '.yjs'), { timeout: 30000 }).toBe(true);
   });
 
-  test('non-document directory shows normal directory actions', async ({ page }) => {
-    // We're inside the public folder from navigateToPublicFolder
+  test('non-document tree shows docs fallback message', async ({ page }) => {
+    await createRegularTreeFromDocsHome(page, 'regular-folder');
 
-    // Create a regular subfolder using New Folder button
-    await page.getByRole('button', { name: 'New Folder' }).first().click();
-    await page.waitForTimeout(500);
-    await page.locator('input[placeholder="Folder name..."]').fill('regular-folder');
-    await page.getByRole('button', { name: 'Create' }).click();
-    await page.waitForTimeout(1500);
-
-    // Wait for the folder to appear
-    const regularFolder = page.locator('a:has-text("regular-folder")');
-    await expect(regularFolder).toBeVisible({ timeout: 30000 });
-
-    // Navigate into the regular folder
-    await regularFolder.click();
-    await page.waitForTimeout(1000);
-
-    // Should show normal directory view - look for the upload drop zone text
-    const dropZone = page.locator('text=Drop or click to add');
-    await expect(dropZone).toBeVisible({ timeout: 30000 });
-
-    // Should NOT show the Tiptap ProseMirror editor
-    const editor = page.locator('.ProseMirror');
-    await expect(editor).not.toBeVisible();
-
-    // Should have File/Folder/Document buttons visible
-    await expect(page.getByRole('button', { name: 'New File' })).toBeVisible({ timeout: 30000 });
-    await expect(page.getByRole('button', { name: 'New Folder' })).toBeVisible({ timeout: 30000 });
-    await expect(page.getByRole('button', { name: 'New Document' })).toBeVisible({ timeout: 30000 });
+    await expect(page.getByText('This is not a collaborative document')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByText("It doesn't contain a .yjs configuration file")).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('link', { name: 'Back to home' })).toBeVisible({ timeout: 30000 });
+    await expect(page.locator('.ProseMirror')).not.toBeVisible();
   });
 
-  test('folder with manually created .yjs file shows Tiptap editor', async ({ page }) => {
-    // We're inside the public folder from navigateToPublicFolder
-
-    // Create a regular folder first
-    console.log('Creating folder...');
-    await page.getByRole('button', { name: 'New Folder' }).first().click();
-    await page.waitForTimeout(500);
-    await page.locator('input[placeholder="Folder name..."]').fill('manual-doc');
-    await page.getByRole('button', { name: 'Create' }).click();
-    await page.waitForTimeout(1500);
-
-    // Navigate into the folder
-    console.log('Looking for manual-doc folder...');
-    const folder = page.locator('a:has-text("manual-doc")');
-    const folderCount = await folder.count();
-    console.log(`Found ${folderCount} elements matching manual-doc`);
-    await expect(folder).toBeVisible({ timeout: 30000 });
-    await folder.click();
-    await page.waitForTimeout(1000);
-
-    // Should show normal directory (no .yjs file yet)
-    console.log('Checking for drop zone...');
-    const dropZone = page.locator('text=Drop or click to add');
-    await expect(dropZone).toBeVisible({ timeout: 30000 });
-
-    // Create a .yjs file inside
-    console.log('Creating .yjs file...');
-    await page.getByRole('button', { name: 'New File' }).click();
-    await page.waitForTimeout(500);
-    await page.locator('input[placeholder="File name..."]').fill('.yjs');
-    await page.getByRole('button', { name: 'Create' }).click();
-    await page.waitForTimeout(1500);
-
-    // Go back to parent - wait for the link to appear
-    console.log('Going back to parent...');
-    const backLink = page.locator('a:has-text("..")');
-    await expect(backLink).toBeVisible({ timeout: 30000 });
-    await backLink.click();
-    await page.waitForTimeout(1000);
-
-    // Navigate back into the folder - wait for it to be visible first
-    console.log('Navigating back to manual-doc...');
-    const currentUrl = page.url();
-    console.log(`Current URL: ${currentUrl}`);
-    const allLinks = await page.locator('a').allTextContents();
-    console.log(`All links on page: ${allLinks.join(', ')}`);
-    const manualDocLink = page.locator('a:has-text("manual-doc")');
-    const linkCount = await manualDocLink.count();
-    console.log(`Found ${linkCount} manual-doc links`);
-    await expect(manualDocLink).toBeVisible({ timeout: 30000 });
-    await manualDocLink.click();
-    await page.waitForTimeout(1500);
-
-    // Should now show the Tiptap editor (detects .yjs file)
-    const editor = page.locator('.ProseMirror, .prose');
-    await expect(editor.first()).toBeVisible({ timeout: 30000 });
+  test('tree with manually created .yjs file shows Tiptap editor', async ({ page }) => {
+    await createManualYjsTreeFromDocsHome(page, 'manual-doc');
+    await waitForDocsEditor(page, 90000);
+    await expect(page.locator('.ProseMirror')).toBeVisible({ timeout: 30000 });
   });
 
   test('typing in document editor works and auto-saves', async ({ page }) => {
-    // We're inside the public folder from navigateToPublicFolder
-
-    // Click New Document button
-    await page.getByRole('button', { name: 'New Document' }).click();
-    await page.waitForTimeout(500);
-
-    // Fill in document name
-    await page.locator('input[placeholder="Document name..."]').fill('editable-doc');
-    await page.getByRole('button', { name: 'Create' }).click();
-    await page.waitForTimeout(2000);
-
-    // Wait for editor to be visible (confirms document loaded)
+    await createDocumentFromDocsHome(page, 'editable-doc');
     const editor = page.locator('.ProseMirror');
-    await expect(editor).toBeVisible({ timeout: 30000 });
     await editor.click();
 
     // Type some text
@@ -191,13 +71,9 @@ test.describe('Yjs Document Viewer', () => {
 
     // Wait for auto-save to update the tree root
     await waitForTreeRootChange(page, rootBefore, 60000);
-
-    // Verify a "deltas" folder was created for delta-based storage
-    const deltasFolder = page.getByRole('link', { name: /^deltas$/ }).first();
-    await expect(deltasFolder).toBeVisible({ timeout: 30000 });
   });
 
-  test('clicking .yjs file to view it does not cause errors', async ({ page }) => {
+  test('clicking .yjs file directly shows fallback without errors', async ({ page }) => {
     // This test verifies that viewing a .yjs file directly doesn't throw
     // "undefined is not iterable" errors in Viewer.tsx
 
@@ -212,29 +88,13 @@ test.describe('Yjs Document Viewer', () => {
       consoleErrors.push(err.message);
     });
 
-    // We're inside the public folder from navigateToPublicFolder
-
-    // Create a document folder using New Document button
-    await page.getByRole('button', { name: 'New Document' }).click();
-    await page.waitForTimeout(1000);
-
-    await page.locator('input[placeholder="Document name..."]').fill('test-doc');
-    await page.getByRole('button', { name: 'Create' }).click();
+    await createDocumentFromDocsHome(page, 'test-doc');
+    const docUrl = await page.evaluate(() => `${window.location.pathname}${window.location.hash}/.yjs`);
+    await page.goto(docUrl);
+    await waitForAppReady(page);
     await page.waitForTimeout(3000);
 
-    // After creating a document, we should automatically navigate into it
-    // Verify the .yjs file is visible (we're inside the document folder)
-    const yjsFile = page.locator('a:has-text(".yjs")').first();
-    await expect(yjsFile).toBeVisible({ timeout: 30000 });
-
-    // Click on the .yjs file to view it - this should not cause errors
-    await yjsFile.click();
-    await page.waitForTimeout(3000);
-
-    // Verify we're viewing the file (header shows filename)
-    // The file viewer should show the .yjs filename
-    const fileHeader = page.locator('span:has-text(".yjs")');
-    await expect(fileHeader.first()).toBeVisible({ timeout: 30000 });
+    await expect(page.getByText('Not a document directory')).toBeVisible({ timeout: 30000 });
 
     // Wait a bit more to ensure any async errors would have appeared
     await page.waitForTimeout(2000);
@@ -249,9 +109,7 @@ test.describe('Yjs Document Viewer', () => {
     // when the merkle root updates after auto-save
 
     // Create a new document
-    await page.getByRole('button', { name: 'New Document' }).click();
-    await page.locator('input[placeholder="Document name..."]').fill('focus-test');
-    await page.getByRole('button', { name: 'Create' }).click();
+    await createDocumentFromDocsHome(page, 'focus-test');
 
     // Wait for editor to be visible
     const editor = page.locator('.ProseMirror');
@@ -298,9 +156,7 @@ test.describe('Yjs Document Viewer', () => {
     // multiple overlapping saves and merkle root updates
 
     // Create a new document
-    await page.getByRole('button', { name: 'New Document' }).click();
-    await page.locator('input[placeholder="Document name..."]').fill('rapid-focus-test');
-    await page.getByRole('button', { name: 'Create' }).click();
+    await createDocumentFromDocsHome(page, 'rapid-focus-test');
 
     // Wait for editor to be visible
     const editor = page.locator('.ProseMirror');

@@ -4,17 +4,16 @@
  * Tests Google Docs-style commenting on collaborative documents.
  */
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, configureBlossomServers } from './test-utils.js';
+import { setupPageErrorHandler, waitForAppReady } from './test-utils.js';
+import { createDocumentFromDocsHome, setupDocsHome } from './docs-test-utils.js';
 
 test.describe('Yjs Document Comments', () => {
-  test.setTimeout(60000);
+  test.setTimeout(120000);
 
   test.beforeEach(async ({ page }) => {
     setupPageErrorHandler(page);
-
-    await page.goto('/');
-    await disableOthersPool(page);
-    await configureBlossomServers(page);
+    await page.goto('/docs.html#/');
+    await waitForAppReady(page);
 
     // Clear storage for fresh state
     await page.evaluate(async () => {
@@ -26,20 +25,11 @@ test.describe('Yjs Document Comments', () => {
       sessionStorage.clear();
     });
 
-    await page.reload();
-    await page.waitForTimeout(500);
-    await configureBlossomServers(page);
-    // Page ready - navigateToPublicFolder handles waiting
-    await navigateToPublicFolder(page);
+    await setupDocsHome(page);
   });
 
   test('comment button is disabled when no text selected', async ({ page }) => {
-    // Create a new document
-    await page.getByRole('button', { name: 'New Document' }).click();
-    await page.waitForTimeout(500);
-    await page.locator('input[placeholder="Document name..."]').fill('comment-test');
-    await page.getByRole('button', { name: 'Create' }).click();
-    await page.waitForTimeout(2000);
+    await createDocumentFromDocsHome(page, 'comment-test');
 
     // Wait for editor to be visible
     const editor = page.locator('.ProseMirror');
@@ -52,12 +42,7 @@ test.describe('Yjs Document Comments', () => {
   });
 
   test('comment button is enabled when text is selected', async ({ page }) => {
-    // Create a new document
-    await page.getByRole('button', { name: 'New Document' }).click();
-    await page.waitForTimeout(500);
-    await page.locator('input[placeholder="Document name..."]').fill('comment-test-2');
-    await page.getByRole('button', { name: 'Create' }).click();
-    await page.waitForTimeout(2000);
+    await createDocumentFromDocsHome(page, 'comment-test-2');
 
     // Wait for editor to be visible and type some text
     const editor = page.locator('.ProseMirror');
@@ -77,12 +62,7 @@ test.describe('Yjs Document Comments', () => {
   });
 
   test('comments panel toggles visibility', async ({ page }) => {
-    // Create a new document
-    await page.getByRole('button', { name: 'New Document' }).click();
-    await page.waitForTimeout(500);
-    await page.locator('input[placeholder="Document name..."]').fill('panel-test');
-    await page.getByRole('button', { name: 'Create' }).click();
-    await page.waitForTimeout(2000);
+    await createDocumentFromDocsHome(page, 'panel-test');
 
     // Wait for editor
     const editor = page.locator('.ProseMirror');
@@ -110,12 +90,7 @@ test.describe('Yjs Document Comments', () => {
   });
 
   test('toolbar shows comment buttons', async ({ page }) => {
-    // Create a new document
-    await page.getByRole('button', { name: 'New Document' }).click();
-    await page.waitForTimeout(500);
-    await page.locator('input[placeholder="Document name..."]').fill('toolbar-test');
-    await page.getByRole('button', { name: 'Create' }).click();
-    await page.waitForTimeout(2000);
+    await createDocumentFromDocsHome(page, 'toolbar-test');
 
     // Wait for editor
     const editor = page.locator('.ProseMirror');

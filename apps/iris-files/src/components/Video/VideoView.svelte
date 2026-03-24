@@ -147,15 +147,27 @@ async function syncTreeRootToWorker(
       const { getWorkerAdapter, waitForWorkerAdapter } = await import('../../lib/workerInit');
       const adapter = getWorkerAdapter() ?? await waitForWorkerAdapter(10000);
       if (!adapter || !('setTreeRootCache' in adapter)) return;
-
-      const setRoot = (adapter as { setTreeRootCache: (npub: string, treeName: string, hash: Uint8Array, key?: Uint8Array, visibility?: TreeVisibility) => Promise<void> })
-        .setTreeRootCache;
+      const cacheAdapter = adapter as {
+        setTreeRootCache: (
+          npub: string,
+          treeName: string,
+          hash: Uint8Array,
+          key?: Uint8Array,
+          visibility?: TreeVisibility
+        ) => Promise<void>;
+      };
 
       // Under heavy load worker bootstrap may race with initial media fetches.
       // Retry once before giving up so /htree fetches have root context.
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          await setRoot(npubValue, treeNameValue, rootCidValue.hash, rootCidValue.key, visibility);
+          await cacheAdapter.setTreeRootCache(
+            npubValue,
+            treeNameValue,
+            rootCidValue.hash,
+            rootCidValue.key,
+            visibility
+          );
           workerRootSyncSignature = signature;
           return;
         } catch (err) {

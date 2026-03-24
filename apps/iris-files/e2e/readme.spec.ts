@@ -91,13 +91,16 @@ test.describe('README Panel', () => {
     await page.getByRole('button', { name: 'Folder' }).click();
     await page.locator('input[placeholder="Folder name..."]').fill('subdir');
     await page.getByRole('button', { name: 'Create' }).click();
-    await expect(page.getByText('Empty directory')).toBeVisible({ timeout: 10000 });
+    const subdirLink = page.locator('a:has-text("subdir")').first();
+    await expect(subdirLink).toBeVisible({ timeout: 10000 });
+    await subdirLink.click();
+    await expect(page.getByRole('button', { name: /File/ }).first()).toBeVisible({ timeout: 10000 });
 
     // Create README in subdir
     await createFile(page, 'README.md', '# Subdir Docs\n\nThis is the subdir readme.');
 
     // Go back to parent
-    await page.locator('a[href*="link-test"]').filter({ hasText: 'link-test' }).first().click();
+    await page.getByRole('link', { name: '..' }).click();
     await expect(page.getByRole('button', { name: /File/ }).first()).toBeVisible({ timeout: 10000 });
 
     // Create root README with relative link

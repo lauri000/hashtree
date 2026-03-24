@@ -184,7 +184,13 @@
           <span class="{entry.type === LinkType.Dir ? 'i-lucide-folder text-warning' : `${getFileIcon(entry.name)} text-text-2`}"></span>
         </td>
         <td class="py-2 px-3 {isGitDir ? 'text-text-3' : 'text-accent'} whitespace-nowrap">
-          {entry.name}
+          <a
+            href={href}
+            class="block no-underline {isGitDir ? 'text-text-3' : 'text-accent hover:underline'}"
+            onclick={(event) => event.stopPropagation()}
+          >
+            {entry.name}
+          </a>
         </td>
         <td class="py-2 px-3 truncate max-w-xs hidden md:table-cell" title={commitInfo?.message}>
           {#if commitInfo}

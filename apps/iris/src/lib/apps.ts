@@ -12,6 +12,10 @@ export interface SuggestedTreeRootHint {
   nhash: string;
 }
 
+function builtInAppUrl(treeName: string): string {
+  return `htree://${distributedOwner}/${treeName}/index.html`;
+}
+
 // Latest published public tree roots for built-in apps. These let Iris prewarm
 // mutable tree resolution from a known root while preserving the canonical
 // htree://npub/tree identity in the shell.
@@ -21,8 +25,8 @@ export const suggestedTreeRootHints: Readonly<Record<string, SuggestedTreeRootHi
     nhash: 'nhash1qqs88npesrfpu49agj0yajl5dl0udt89tj70nyhf2c7tfn27jhsn9xq9yzuhzfsagjjn3scd47fccddtjzyrzpjkkgnpqjqwu2qzy45uzpaa597t675',
   },
   [`${distributedOwner}/video`]: {
-    hash: 'bacd197a1a5359a3d881a76f1814a2299be3d7d0433f3124fc57580882a23110',
-    nhash: 'nhash1qqst4nge0gd9xkdrmzq6wmcczj3znxlr6lgyx0e3yn79wkqgs23rzyq9yr6dj9yndqqxvgx47e4z4nvq0uhv923amf3lcu87jvfljkhzmdngwf0t4xg',
+    hash: '5c70ef6e16b133ef4d9722624893c62ffc7ab5b53e4e88c4a618b97ee342b28a',
+    nhash: 'nhash1qqs9cu80dcttzvl0fktjycjgj0rzllr6kk6nun5gcjnp3wt7udpt9zs9yzl34wqdrg4l7lwq9t5a4ckwyyc9xp2m5w3n57fumaks4d7juv8ychcmedh',
   },
   [`${distributedOwner}/docs`]: {
     hash: '906bd6f6df5575a0693ed18377e29c3d861dffdfb7841a747b27bcad6beb047e',
@@ -50,12 +54,12 @@ export function getSuggestedTreeRootHint(host?: string, treename?: string): Sugg
 }
 
 export const suggestedIrisApps: readonly AppBookmark[] = [
-  { url: `htree://${distributedOwner}/files`, name: 'Iris Files', icon: '/iris-logo.png', addedAt: 0 },
-  { url: `htree://${distributedOwner}/video`, name: 'Iris Video', icon: '/iris-logo.png', addedAt: 0 },
-  { url: `htree://${distributedOwner}/docs`, name: 'Iris Docs', icon: '/iris-logo.png', addedAt: 0 },
-  { url: `htree://${distributedOwner}/git`, name: 'Iris Git', icon: '/iris-logo.png', addedAt: 0 },
-  { url: `htree://${distributedOwner}/maps`, name: 'Iris Maps', icon: '/iris-logo.png', addedAt: 0 },
-  { url: `htree://${distributedOwner}/boards`, name: 'Iris Boards', icon: '/iris-logo.png', addedAt: 0 },
+  { url: builtInAppUrl('files'), name: 'Iris Files', icon: '/iris-logo.png', addedAt: 0 },
+  { url: builtInAppUrl('video'), name: 'Iris Video', icon: '/iris-logo.png', addedAt: 0 },
+  { url: builtInAppUrl('docs'), name: 'Iris Docs', icon: '/iris-logo.png', addedAt: 0 },
+  { url: builtInAppUrl('git'), name: 'Iris Git', icon: '/iris-logo.png', addedAt: 0 },
+  { url: builtInAppUrl('maps'), name: 'Iris Maps', icon: '/iris-logo.png', addedAt: 0 },
+  { url: builtInAppUrl('boards'), name: 'Iris Boards', icon: '/iris-logo.png', addedAt: 0 },
 ];
 
 export const defaultFavoriteApps: readonly AppBookmark[] = [];

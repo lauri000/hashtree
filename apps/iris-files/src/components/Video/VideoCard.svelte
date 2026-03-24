@@ -147,11 +147,11 @@
     background: var(--hover-color, rgba(255, 255, 255, 0.08));
   }
 
-  .video-thumb {
+  :global(.video-thumb) {
     transition: border-radius 0.3s ease-out;
   }
 
-  .video-card:hover .video-thumb {
+  .video-card:hover :global(.video-thumb) {
     border-radius: 0;
   }
 </style>

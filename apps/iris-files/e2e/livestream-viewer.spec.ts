@@ -194,6 +194,33 @@ test.describe('Livestream Viewer Updates', () => {
     }, { timeout: timeoutMs, intervals: [500, 1000, 1500] }).toBe(true);
   }
 
+  async function ensureViewerOnStreamFile(
+    page: Page,
+    streamHash: string,
+    fileName: string,
+    timeoutMs: number = 30000
+  ): Promise<void> {
+    const videoElement = page.locator('video');
+    const fileLink = page.locator('[data-testid="file-list"] a').filter({ hasText: fileName }).first();
+    const filePattern = new RegExp(fileName.replace(/\./g, '\\.'));
+    await expect.poll(async () => {
+      const count = await videoElement.count().catch(() => 0);
+      if (count > 0) return true;
+      if (await fileLink.isVisible().catch(() => false)) {
+        await fileLink.click().catch(() => {});
+        await page.waitForURL(filePattern, { timeout: 5000 }).catch(() => {});
+      } else {
+        await page.evaluate((hash: string) => {
+          if (window.location.hash !== hash) {
+            window.location.hash = hash;
+            window.dispatchEvent(new HashChangeEvent('hashchange'));
+          }
+        }, streamHash);
+      }
+      return false;
+    }, { timeout: timeoutMs, intervals: [1000, 2000, 3000] }).toBe(true);
+  }
+
   async function collectPlaybackSamples(
     page: Page,
     sampleCount: number,
@@ -769,10 +796,12 @@ test.describe('Livestream Viewer Updates', () => {
     });
 
     const streamUrl = `http://localhost:5173/#/${npub}/public/${testFilename}.webm?live=1`;
+    const streamHash = `#/${npub}/public/${testFilename}.webm?live=1`;
     console.log(`Stream URL: ${streamUrl}`);
     await viewerPage.goto(streamUrl);
     await viewerPage.waitForFunction(() => !!navigator.serviceWorker?.controller, { timeout: 30000 });
     await waitForFileEntry(viewerPage, `${testFilename}.webm`, 30000);
+    await ensureViewerOnStreamFile(viewerPage, streamHash, `${testFilename}.webm`, 30000);
 
     // Wait for video to appear
     const videoElement = viewerPage.locator('video');

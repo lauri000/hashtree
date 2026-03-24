@@ -4,6 +4,7 @@
    * Used by VideoCard, FeedSidebar, PlaylistSidebar, etc.
    */
   import { formatDuration } from '../../utils/format';
+  import { shouldEagerLoadMediaInNativeChildRuntime } from '../../lib/nativeHtree';
 
   interface Props {
     /** Thumbnail URL */
@@ -22,6 +23,7 @@
 
   let imageError = $state(false);
   let lastSrc = $state<string | null>(null);
+  const loadingStrategy = shouldEagerLoadMediaInNativeChildRuntime() ? 'eager' : 'lazy';
 
   // Reset error when src changes
   $effect.pre(() => {
@@ -38,7 +40,7 @@
       {src}
       alt=""
       class="absolute inset-0 w-full h-full object-cover"
-      loading="lazy"
+      loading={loadingStrategy}
       onerror={() => imageError = true}
     />
   {:else}

@@ -212,6 +212,9 @@
       // Include uploader's npub so collaborator images can be resolved from their tree
       const uploaderNpub = userNpub;
       editor.chain().focus().setImage({ src: `attachments:${uploaderNpub}/${savedFilename}` }).run();
+      // The attachment write updates the tree separately; force a doc snapshot save so
+      // the image node itself survives reload even if the editor update is not observed.
+      scheduleSave();
     }
   }
 

@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { waitForAppReady, ensureLoggedIn, disableOthersPool, enableOthersPool, setupPageErrorHandler, flushPendingPublishes, waitForRelayConnected } from './test-utils';
+import { waitForAppReady, ensureLoggedIn, disableOthersPool, enableOthersPool, setupPageErrorHandler, flushPendingPublishes, waitForRelayConnected, useLocalRelay, configureBlossomServers } from './test-utils';
 import type { Page } from '@playwright/test';
 import { nip19 } from 'nostr-tools';
 
@@ -15,6 +15,33 @@ type BoardsE2EWindow = Window & {
   __boardLiveMarker?: string;
   __boardPermissionMarker?: string;
 };
+
+async function getCurrentRootSignature(page: Page): Promise<string | null> {
+  return page.evaluate(async () => {
+    const { getCurrentRootCid } = await import('/src/actions/route.ts');
+    const root = getCurrentRootCid();
+    if (!root) return null;
+    const hash = Array.from(root.hash).join(',');
+    const key = root.key ? Array.from(root.key).join(',') : '';
+    return `${hash}:${key}`;
+  });
+}
+
+async function flushBoardRootUpdate(
+  page: Page,
+  previousSignature: string | null,
+  timeoutMs: number = 20000
+): Promise<void> {
+  await page.waitForFunction(async (previous) => {
+    const { getCurrentRootCid } = await import('/src/actions/route.ts');
+    const root = getCurrentRootCid();
+    if (!root) return false;
+    const hash = Array.from(root.hash).join(',');
+    const key = root.key ? Array.from(root.key).join(',') : '';
+    return `${hash}:${key}` !== previous;
+  }, previousSignature, { timeout: timeoutMs });
+  await flushPendingPublishes(page);
+}
 
 async function createBoard(
   page: Page,
@@ -321,6 +348,8 @@ test.describe('Iris Boards App', () => {
     setupPageErrorHandler(page);
     await page.goto('/boards.html#/');
     await waitForAppReady(page);
+    await useLocalRelay(page);
+    await configureBlossomServers(page);
     await ensureLoggedIn(page, 30000);
     await enableOthersPool(page, 10);
     await waitForRelayConnected(page, 30000);
@@ -339,6 +368,8 @@ test.describe('Iris Boards App', () => {
 
     await page2.goto(shareUrl);
     await waitForAppReady(page2, 60000);
+    await useLocalRelay(page2);
+    await configureBlossomServers(page2);
     await ensureLoggedIn(page2, 30000);
     await enableOthersPool(page2, 10);
     await waitForRelayConnected(page2, 30000);
@@ -357,6 +388,8 @@ test.describe('Iris Boards App', () => {
       await waitForRelayConnected(page2, 30000);
       await page2.goto(shareUrl);
       await waitForAppReady(page2, 60000);
+      await useLocalRelay(page2);
+      await configureBlossomServers(page2);
       await enableOthersPool(page2, 10);
       await waitForRelayConnected(page2, 30000);
     }
@@ -380,22 +413,24 @@ test.describe('Iris Boards App', () => {
       return marker;
     });
 
+    const cardCreateRoot = await getCurrentRootSignature(page);
     await page1Todo.getByRole('button', { name: /add card/i }).click();
     await expect(page.getByRole('heading', { name: 'Create Card' })).toBeVisible({ timeout: 10000 });
     await page.getByLabel('Card title').fill('Realtime card');
     await page.getByLabel('Card description').fill('Should appear in browser 2 without reload.');
     await page.getByRole('button', { name: /^create card$/i }).click();
     await expect(page.getByTestId('board-card-Realtime card')).toBeVisible({ timeout: 10000 });
-    await flushPendingPublishes(page);
+    await flushBoardRootUpdate(page, cardCreateRoot);
 
     await expect(page2.getByRole('heading', { name: /^Realtime card$/ })).toBeVisible({ timeout: 60000 });
 
+    const cardEditRoot = await getCurrentRootSignature(page);
     await page.getByTestId('board-card-Realtime card').getByRole('button', { name: /open card details/i }).click();
     await page.getByRole('dialog', { name: 'Card details' }).getByRole('button', { name: /edit card/i }).click();
     await expect(page.getByRole('heading', { name: 'Edit Card' })).toBeVisible({ timeout: 10000 });
     await page.getByLabel('Card title').fill('Realtime card updated');
     await page.getByRole('button', { name: /^save card$/i }).click();
-    await flushPendingPublishes(page);
+    await flushBoardRootUpdate(page, cardEditRoot);
 
     await expect(page2.getByRole('heading', { name: /^Realtime card updated$/ })).toBeVisible({ timeout: 60000 });
     await expect(page2.getByRole('heading', { name: /^Realtime card$/ })).toHaveCount(0, { timeout: 60000 });
@@ -412,6 +447,8 @@ test.describe('Iris Boards App', () => {
     setupPageErrorHandler(page);
     await page.goto('/boards.html#/');
     await waitForAppReady(page);
+    await useLocalRelay(page);
+    await configureBlossomServers(page);
     await ensureLoggedIn(page, 30000);
     await enableOthersPool(page, 10);
     await waitForRelayConnected(page, 30000);
@@ -427,6 +464,8 @@ test.describe('Iris Boards App', () => {
 
     await page2.goto(shareUrl);
     await waitForAppReady(page2, 60000);
+    await useLocalRelay(page2);
+    await configureBlossomServers(page2);
     await ensureLoggedIn(page2, 30000);
     await enableOthersPool(page2, 10);
     await waitForRelayConnected(page2, 30000);
@@ -445,6 +484,8 @@ test.describe('Iris Boards App', () => {
       await waitForRelayConnected(page2, 30000);
       await page2.goto(shareUrl);
       await waitForAppReady(page2, 60000);
+      await useLocalRelay(page2);
+      await configureBlossomServers(page2);
       await enableOthersPool(page2, 10);
       await waitForRelayConnected(page2, 30000);
     }
@@ -465,16 +506,22 @@ test.describe('Iris Boards App', () => {
       return marker;
     });
 
+    const permissionsRoot = await getCurrentRootSignature(page);
     await page.getByRole('button', { name: /permissions/i }).click();
     await expect(page.getByRole('heading', { name: 'Board Permissions' })).toBeVisible({ timeout: 10000 });
     await page.getByPlaceholder('npub1...').fill(page2Npub);
     await page.getByRole('combobox').selectOption('writer');
     await page.getByRole('button', { name: /^add$/i }).click();
-    await flushPendingPublishes(page);
+    await flushBoardRootUpdate(page, permissionsRoot);
+    const updatedPermissionsRoot = await getCurrentRootSignature(page);
 
-    await expect(page2.locator('text=Write access')).toBeVisible({ timeout: 60000 });
-    await expect(page2.locator('text=Read-only')).toHaveCount(0, { timeout: 60000 });
-    await expect(page2Todo.getByRole('button', { name: /add card/i })).toBeVisible({ timeout: 60000 });
+    await expect.poll(async () => getCurrentRootSignature(page2), { timeout: 60000 }).toBe(updatedPermissionsRoot);
+
+    await expect.poll(async () => {
+      const readOnlyVisible = await page2.getByText('Read-only', { exact: true }).isVisible().catch(() => false);
+      const addCardVisible = await page2Todo.getByRole('button', { name: /add card/i }).isVisible().catch(() => false);
+      return !readOnlyVisible && addCardVisible;
+    }, { timeout: 60000, intervals: [1000, 2000, 3000] }).toBe(true);
 
     await expect.poll(async () => {
       return page2.evaluate(() => (window as BoardsE2EWindow).__boardPermissionMarker);

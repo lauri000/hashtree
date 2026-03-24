@@ -1,7 +1,10 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, disableOthersPool, waitForAppReady, presetProductionRelaysInDB } from './test-utils';
+import { setupPageErrorHandler, disableOthersPool, waitForAppReady, presetProductionRelaysInDB, gotoGitApp } from './test-utils';
 // Run tests in this file serially - they access shared Nostr repo state
 test.describe.configure({ mode: 'serial' });
+
+const REPO_OWNER_NPUB = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
+const REPO_URL = `/git.html#/${REPO_OWNER_NPUB}/hashtree`;
 
 /**
  * Test native git operations on the real hashtree repo
@@ -10,18 +13,18 @@ test.describe.configure({ mode: 'serial' });
 test.describe('Native git operations', () => {
   test('should load commit info for hashtree repo', async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/');
+    await gotoGitApp(page);
     await presetProductionRelaysInDB(page);
     await page.reload();
     await waitForAppReady(page);
 
     // Navigate to the hashtree repo (pushed earlier)
-    const url = '/#/npub10ugptv2thshtaulx2kwkyq9n4vlhqawylxrtu5xga5zetdejq7ys6c8t9m/hashtree';
-    await page.goto(url);
+    await page.goto(REPO_URL);
     await disableOthersPool(page);
 
-    await expect(page.locator('td:has-text("apps")').first()).toBeVisible({ timeout: 45000 });
-    await expect(page.locator('td:has-text("README.md")').first()).toBeVisible({ timeout: 10000 });
+    const fileList = page.locator('[data-testid="file-list"]').first();
+    await expect(fileList.getByRole('link', { name: 'apps', exact: true })).toBeVisible({ timeout: 45000 });
+    await expect(fileList.getByRole('link', { name: 'README.md', exact: true })).toBeVisible({ timeout: 10000 });
 
     // Wait for commit info to load (should show author name, not "Loading commit info...")
     // The native implementation should load quickly without wasm copy
@@ -36,28 +39,28 @@ test.describe('Native git operations', () => {
     await expect(page.locator('text=No commits yet')).not.toBeVisible();
 
     // Should show branch info
-    await expect(page.locator('text=master')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('button', { name: 'master' })).toBeVisible({ timeout: 10000 });
   });
 
   test('should show file commit info in directory listing', async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/');
+    await gotoGitApp(page);
     await presetProductionRelaysInDB(page);
     await page.reload();
     await waitForAppReady(page);
 
-    const url = '/#/npub10ugptv2thshtaulx2kwkyq9n4vlhqawylxrtu5xga5zetdejq7ys6c8t9m/hashtree';
-    await page.goto(url);
+    await page.goto(REPO_URL);
     await disableOthersPool(page);
 
-    await expect(page.locator('td:has-text("apps")').first()).toBeVisible({ timeout: 45000 });
+    const fileList = page.locator('[data-testid="file-list"]').first();
+    await expect(fileList.getByRole('link', { name: 'apps', exact: true })).toBeVisible({ timeout: 45000 });
 
     // Get file commit info for files - look for relative time indicators
     // Files should show "X days ago", "X hours ago", etc. from the native getFileLastCommitsNative
     await page.waitForTimeout(5000); // Give time for file commits to load
 
     // Check if any commit timestamps are shown (evidence that getFileLastCommitsNative works)
-    const timeIndicators = page.locator('td:has-text("ago")');
+    const timeIndicators = fileList.locator('td:has-text("ago")');
     const count = await timeIndicators.count();
 
     // We should have at least some files with commit info

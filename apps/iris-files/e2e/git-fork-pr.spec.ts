@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay, gotoGitApp, createPlainFolderInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
 
 // Helper to get npub from URL
 async function getNpub(page: any): Promise<string> {
@@ -25,7 +25,7 @@ test.describe('Git fork and PR workflow', () => {
     await navigateToPublicFolder(page);
 
     // Create folder
-    await createRepositoryInCurrentDirectory(page, 'original-repo');
+    await createPlainFolderInCurrentDirectory(page, 'original-repo');
 
     // Navigate into folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'original-repo' }).first();
@@ -117,11 +117,8 @@ test.describe('Git fork and PR workflow', () => {
     await page.waitForURL(/my-fork/, { timeout: 15000 });
     console.log('[test] Forked to my-fork');
 
-    // Wait for fork to load
+    // Wait for forked repo git UI to load
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'README.md' })).toBeVisible({ timeout: 15000 });
-    await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: '.git' })).toBeVisible({ timeout: 10000 });
-
-    // Verify git status shows clean
     await expect(page.locator('text=clean')).toBeVisible({ timeout: 15000 });
     console.log('[test] Fork loaded, status clean');
 
@@ -170,7 +167,7 @@ test.describe('Git fork and PR workflow', () => {
     await page.waitForTimeout(3000);
 
     // Navigate to original repo to create PR there
-    await page.goto(`http://localhost:5173/#/${userNpub}/original-repo?tab=pulls`);
+    await page.goto(`/git.html#/${userNpub}/original-repo?tab=pulls`);
 
     // Wait for pulls tab to be active (the link with Pull Requests text)
     await expect(page.getByRole('link', { name: 'Pull Requests' })).toBeVisible({ timeout: 15000 });

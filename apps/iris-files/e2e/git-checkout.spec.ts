@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, ensureGitRepoInitialized } from './test-utils.js';
 
 test.describe('Git checkout features', () => {
   // Disable "others pool" to prevent WebRTC cross-talk from parallel tests
@@ -186,8 +186,11 @@ test.describe('Git checkout features', () => {
     test.slow();
     await navigateToPublicFolder(page);
 
-    // Create a folder for our test repo
-    await createRepositoryInCurrentDirectory(page, 'checkout-test');
+    // Create a plain folder so Git Init owns the first commit in this test.
+    await page.evaluate(async () => {
+      const { createFolder } = await import('/src/actions/tree.ts');
+      await createFolder('checkout-test');
+    });
 
     // Navigate into the folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'checkout-test' }).first();
@@ -215,10 +218,10 @@ test.describe('Git checkout features', () => {
       autosaveIfOwn(rootCid);
     });
 
-    const fileList = page.getByRole('listbox', { name: 'File list' });
+    const fileList = page.locator('[data-testid="file-list"]').first();
 
     // Wait for file to appear
-    await expect(fileList.getByRole('link', { name: /initial\.txt/i })).toBeVisible({ timeout: 15000 });
+    await expect(fileList.getByRole('link', { name: 'initial.txt', exact: true })).toBeVisible({ timeout: 15000 });
 
     // Initialize git repo (creates first commit with initial.txt)
     await ensureGitRepoInitialized(page);
@@ -251,7 +254,7 @@ test.describe('Git checkout features', () => {
     });
 
     // Wait for the new file to appear
-    await expect(fileList.getByRole('link', { name: /added-later\.txt/i })).toBeVisible({ timeout: 15000 });
+    await expect(fileList.getByRole('link', { name: 'added-later.txt', exact: true })).toBeVisible({ timeout: 15000 });
 
     // Wait for uncommitted changes indicator and commit
     const uncommittedBtn = page.locator('button').filter({ hasText: /uncommitted/i });
@@ -270,8 +273,8 @@ test.describe('Git checkout features', () => {
 
     // Verify we now have 2 commits and both files visible
     await expect(commitsBtn).toContainText(/2/, { timeout: 20000 });
-    await expect(fileList.getByRole('link', { name: /initial\.txt/i })).toBeVisible();
-    await expect(fileList.getByRole('link', { name: /added-later\.txt/i })).toBeVisible();
+    await expect(fileList.getByRole('link', { name: 'initial.txt', exact: true })).toBeVisible();
+    await expect(fileList.getByRole('link', { name: 'added-later.txt', exact: true })).toBeVisible();
 
     // Open commit history
     await commitsBtn.click();
@@ -292,8 +295,8 @@ test.describe('Git checkout features', () => {
     // After checkout to initial commit:
     // - initial.txt should still be visible (was in first commit)
     // - added-later.txt should NOT be visible (was added in second commit)
-    await expect(fileList.getByRole('link', { name: /initial\.txt/i })).toBeVisible({ timeout: 15000 });
-    await expect(fileList.getByRole('link', { name: /added-later\.txt/i })).not.toBeVisible({ timeout: 5000 });
+    await expect(fileList.getByRole('link', { name: 'initial.txt', exact: true })).toBeVisible({ timeout: 15000 });
+    await expect(fileList.getByRole('link', { name: 'added-later.txt', exact: true })).not.toBeVisible({ timeout: 5000 });
 
     // After checkout to older commit, git log from HEAD only shows ancestors
     // So we expect 1 commit (the initial commit we checked out)

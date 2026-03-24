@@ -6,6 +6,7 @@
   import { Avatar, Name } from '../User';
   import { extractDominantColor, rgbToRgba, type RGB } from '../../utils/colorExtract';
   import { formatTimeAgo } from '../../utils/format';
+  import { shouldEagerLoadMediaInNativeChildRuntime } from '../../lib/nativeHtree';
 
   interface Props {
     href: string;
@@ -22,6 +23,7 @@
 
   let thumbnailError = $state(false);
   let lastLoadedUrl = $state<string | null>(null);
+  const loadingStrategy = shouldEagerLoadMediaInNativeChildRuntime() ? 'eager' : 'lazy';
 
   // Reset error and track URL changes
   $effect.pre(() => {
@@ -60,7 +62,7 @@
           src={thumbnailUrl}
           alt=""
           class="w-full h-full object-cover"
-          loading="lazy"
+          loading={loadingStrategy}
           onerror={() => thumbnailError = true}
         />
       {:else}

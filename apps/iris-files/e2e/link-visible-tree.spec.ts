@@ -569,7 +569,6 @@ test.describe('Link-visible Tree Visibility', () => {
         await waitForAppReady(page2, 60000);
         await disableOthersPool(page2);
         await configureBlossomServers(page2);
-        await waitForTreeRoot(page2, npub, treeName, 60000);
         await page2.evaluate(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
         linkRequiredVisible = await page2.getByText('Link Required').isVisible().catch(() => false);
         if (!linkRequiredVisible) {

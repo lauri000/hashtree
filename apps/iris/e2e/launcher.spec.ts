@@ -73,7 +73,7 @@ test.describe('App Launcher', () => {
     expect(createCalls[0].args.nhash).toBeNull();
     expect(createCalls[0].args.npub).toBe(distributedOwner);
     expect(createCalls[0].args.treename).toBe('files');
-    expect(createCalls[0].args.path).toBe('/');
+    expect(createCalls[0].args.path).toBe('/index.html');
   });
 
   test('typing a suggested htree url does not prewarm the tree root hint', async ({ tauriPage: page }) => {
@@ -108,7 +108,7 @@ test.describe('App Launcher', () => {
     expect(createCalls.length).toBe(1);
     expect(createCalls[0].args.host).toBe(distributedOwner);
     expect(createCalls[0].args.treename).toBe('boards');
-    expect(createCalls[0].args.path).toBe('/');
+    expect(createCalls[0].args.path).toBe('/index.html');
   });
 
   test('clicking Iris Git suggestion opens git tree', async ({ tauriPage: page }) => {
@@ -124,7 +124,7 @@ test.describe('App Launcher', () => {
     expect(createCalls.length).toBe(1);
     expect(createCalls[0].args.host).toBe(distributedOwner);
     expect(createCalls[0].args.treename).toBe('git');
-    expect(createCalls[0].args.path).toBe('/');
+    expect(createCalls[0].args.path).toBe('/index.html');
   });
 
   test('blank built-in suggestion load clears stale cache and recreates the webview once', async ({ tauriPage: page }) => {
@@ -162,7 +162,7 @@ test.describe('App Launcher', () => {
     const createCalls = await getInvocationsFor(page, 'create_htree_webview');
     expect(createCalls[1].args.host).toBe(distributedOwner);
     expect(createCalls[1].args.treename).toBe('video');
-    expect(createCalls[1].args.path).toBe('/');
+    expect(createCalls[1].args.path).toBe('/index.html');
   });
 
   test('stalled htree suggestion load recreates the webview with plain loopback transport', async ({ tauriPage: page }) => {
@@ -187,7 +187,7 @@ test.describe('App Launcher', () => {
     expect(createCalls[0].args.preferPlainLoopbackHost).toBe(false);
     expect(createCalls[1].args.host).toBe(distributedOwner);
     expect(createCalls[1].args.treename).toBe('video');
-    expect(createCalls[1].args.path).toBe('/');
+    expect(createCalls[1].args.path).toBe('/index.html');
     expect(createCalls[1].args.preferPlainLoopbackHost).toBe(true);
   });
 

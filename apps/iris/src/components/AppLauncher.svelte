@@ -58,7 +58,10 @@
 
   function getUrlLabel(url: string): string {
     if (url.startsWith('htree://')) {
-      return url.replace(/^htree:\/\//, '').replace(/\/$/, '');
+      return url
+        .replace(/^htree:\/\//, '')
+        .replace(/\/index\.html$/, '')
+        .replace(/\/$/, '');
     }
     try {
       return new URL(url).hostname;

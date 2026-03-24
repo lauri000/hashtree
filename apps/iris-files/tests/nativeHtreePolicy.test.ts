@@ -117,10 +117,10 @@ describe('native htree policy', () => {
     expect(mediaUrl.getHtreePrefix()).toBe('http://127.0.0.1:21417');
   });
 
-  it('keeps same-origin /htree routes on local child-webview pages with canonical htree identity', async () => {
+  it('uses the injected daemon URL on loopback child-webview pages with canonical htree identity', async () => {
     installWindow(
       'http:',
-      '127.0.0.1',
+      'tree-example.htree.localhost',
       undefined,
       '?iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Fvideo%2Findex.html'
     );
@@ -129,9 +129,18 @@ describe('native htree policy', () => {
     const mediaUrl = await import('../src/lib/mediaUrl');
 
     expect(nativeHtree.getInjectedHtreeServerUrl()).toBe('http://127.0.0.1:21417');
-    expect(nativeHtree.canUseInjectedHtreeServerUrl()).toBe(false);
-    expect(nativeHtree.shouldPreferSameOriginHtreeRoutes()).toBe(true);
-    expect(mediaUrl.getHtreePrefix()).toBe('');
+    expect(nativeHtree.canUseInjectedHtreeServerUrl()).toBe(true);
+    expect(nativeHtree.shouldPreferSameOriginHtreeRoutes()).toBe(false);
+    expect(nativeHtree.shouldEagerLoadMediaInNativeChildRuntime()).toBe(true);
+    expect(mediaUrl.getHtreePrefix()).toBe('http://127.0.0.1:21417');
+  });
+
+  it('keeps lazy media loading on regular https pages', async () => {
+    installWindow('https:', 'video.iris.to', 'http://127.0.0.1:21417');
+
+    const nativeHtree = await import('../src/lib/nativeHtree');
+
+    expect(nativeHtree.shouldEagerLoadMediaInNativeChildRuntime()).toBe(false);
   });
 
   it('keeps same-origin /htree routes on htree pages inside Iris', async () => {
@@ -169,10 +178,10 @@ describe('native htree policy', () => {
     expect(registerSWMock).not.toHaveBeenCalled();
   });
 
-  it('registers the service worker on local child-webview pages that preserve htree identity', async () => {
+  it('skips the service worker on loopback child-webview pages that preserve htree identity', async () => {
     installWindow(
       'http:',
-      '127.0.0.1',
+      'tree-example.htree.localhost',
       undefined,
       '?iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Fvideo%2Findex.html'
     );
@@ -181,13 +190,13 @@ describe('native htree policy', () => {
     const { initServiceWorker } = await import('../src/lib/swInit');
     await initServiceWorker();
 
-    expect(registerSWMock).toHaveBeenCalledTimes(1);
+    expect(registerSWMock).not.toHaveBeenCalled();
   });
 
-  it('does not force a reload when a local child-webview page is waiting for SW control', async () => {
+  it('does not try to reload for service-worker control on loopback child-webview pages', async () => {
     installWindow(
       'http:',
-      '127.0.0.1',
+      'tree-example.htree.localhost',
       undefined,
       '?iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Fvideo%2Findex.html'
     );
@@ -196,7 +205,7 @@ describe('native htree policy', () => {
     const { initServiceWorker } = await import('../src/lib/swInit');
     await initServiceWorker();
 
-    expect(registerSWMock).toHaveBeenCalledTimes(1);
+    expect(registerSWMock).not.toHaveBeenCalled();
     expect(window.location.reload).not.toHaveBeenCalled();
   });
 

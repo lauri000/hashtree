@@ -1,4 +1,4 @@
-import { test, expect, Page } from './fixtures';
+import { test, expect } from './fixtures';
 import { setupPageErrorHandler, disableOthersPool, configureBlossomServers, getTestBlossomUrl } from './test-utils';
 // Run tests in this file serially to avoid WebRTC/timing conflicts
 test.describe.configure({ mode: 'serial' });
@@ -122,17 +122,6 @@ test.describe('Playlist Management', () => {
     // Wait for video page to load
     await page.waitForTimeout(3000);
 
-    // Capture Nostr events
-    const publishedEvents: any[] = [];
-    await page.evaluate(() => {
-      (window as any).__publishedEvents = [];
-      const originalPublish = (window as any).ndk?.publish?.bind((window as any).ndk);
-      if ((window as any).ndk) {
-        const originalEventPublish = (window as any).ndk.constructor.prototype.publish;
-        // Hook NDKEvent.publish to capture events
-      }
-    });
-
     // Find and click the like button
     const likeBtn = page.locator('button[title="Like"]');
     await expect(likeBtn).toBeVisible({ timeout: 10000 });
@@ -219,7 +208,17 @@ test.describe('Playlist Management', () => {
       const sidebarVisible = await video2SidebarButton.isVisible().catch(() => false);
       return headingVisible || sidebarVisible;
     }, { timeout: 30000, intervals: [1000, 2000, 3000] }).toBe(true);
-    await expect(page.getByText('Delete Test Playlist').first()).toBeVisible({ timeout: 30000 });
+
+    const remainingEntries = await page.evaluate(async ({ targetNpub, targetTree }) => {
+      const { getTreeRootSync } = await import('/src/stores');
+      const { getTree } = await import('/src/store');
+      const root = getTreeRootSync(targetNpub, targetTree);
+      if (!root) return null;
+      const entries = await getTree().listDirectory(root);
+      return entries.map((entry: { name: string }) => entry.name).sort();
+    }, { targetNpub: playlist.npub, targetTree: playlist.treeName });
+
+    expect(remainingEntries).toEqual([playlist.videos[1].id]);
   });
 
   test('add to playlist button is visible on video pages', async ({ page }) => {
@@ -310,7 +309,7 @@ test.describe('Playlist Management', () => {
       const { getTree } = await import('/src/store.ts');
       const { nostrStore, saveHashtree } = await import('/src/nostr.ts');
       const hashtree = await import('/src/lib/nhash.ts');
-      const { toHex, videoChunker, cid } = hashtree;
+      const { videoChunker, cid } = hashtree;
 
       const tree = getTree();
       let npub: string = '';
@@ -416,7 +415,6 @@ test.describe('Playlist Management', () => {
     const playlistCard = page.getByText(playlistName.replace('videos/', ''));
 
     // Debug: log page content
-    const pageContent = await page.content();
     console.log('Looking for playlist:', playlistName);
     console.log('Page has Playlists section:', await playlistSection.isVisible().catch(() => false));
 
@@ -546,7 +544,7 @@ test.describe('Playlist Management', () => {
       // Create a playlist with 2 videos, publish to Nostr, and push to Blossom
       const blossomUrl = getTestBlossomUrl();
       const playlist = await pageA.evaluate(async (blossomServer: string) => {
-        const { getTree, getWebRTCStore } = await import('/src/store.ts');
+        const { getTree } = await import('/src/store.ts');
         const { nostrStore, saveHashtree } = await import('/src/nostr.ts');
         const hashtree = await import('/src/lib/nhash.ts');
         const { toHex, videoChunker, cid, BlossomStore } = hashtree;
@@ -606,10 +604,10 @@ test.describe('Playlist Management', () => {
           signer: async (event: any) => signEvent({ ...event, pubkey: '', id: '', sig: '' }),
         });
 
-        let pushResult = { attempted: true, success: false, error: '', pushed: 0 };
+        const pushResult = { attempted: true, success: false, error: '', pushed: 0 };
         try {
           await tree.push(rootDirResult.cid, blossomStore, {
-            onProgress: (current: number, total: number) => {
+            onProgress: (current: number, _total: number) => {
               pushResult.pushed = current;
             },
           });
@@ -763,7 +761,7 @@ test.describe('Playlist Management', () => {
     const result = await page.evaluate(async () => {
       const { getTree } = await import('/src/store.ts');
       const hashtree = await import('/src/lib/nhash.ts');
-      const { toHex, cid, LinkType } = hashtree;
+      const { toHex, LinkType } = hashtree;
 
       const tree = getTree();
 
