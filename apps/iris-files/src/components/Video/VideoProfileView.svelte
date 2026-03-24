@@ -90,7 +90,7 @@
   let playlistInfo = $state<Record<string, { videoCount: number; thumbnailUrl?: string }>>({});
 
   // Track video metadata (duration, title) for single videos
-  let videoMetadata = $state<Record<string, { duration?: number; thumbnailUrl?: string; createdAt?: number; title?: string }>>({});
+  let videoMetadata = $state<Record<string, { duration?: number; thumbnailUrl?: string; videoPath?: string; createdAt?: number; title?: string }>>({});
 
   // Track detection state - use $state so UI can react
   let detectionComplete = $state(false);
@@ -140,9 +140,9 @@
         const info = await detectPlaylistForCard(rootCid, npub!, t.name);
         if (info && info.videoCount >= MIN_VIDEOS_FOR_STRUCTURE) {
           playlistInfo = { ...playlistInfo, [t.name]: info };
-        } else if (info && (info.duration || info.thumbnailUrl)) {
+        } else if (info && (info.duration || info.thumbnailUrl || info.videoPath)) {
           // Store metadata for single videos (duration, thumbnail)
-          videoMetadata = { ...videoMetadata, [t.name]: { duration: info.duration, thumbnailUrl: info.thumbnailUrl, createdAt: info.createdAt, title: info.title } };
+          videoMetadata = { ...videoMetadata, [t.name]: { duration: info.duration, thumbnailUrl: info.thumbnailUrl, videoPath: info.videoPath, createdAt: info.createdAt, title: info.title } };
         }
       } catch { /* ignore */ }
     };
@@ -181,6 +181,7 @@
             treeName: t.name,
             rootCid: getRootCidForTree(t) ?? undefined,
             thumbnailUrl: videoMetadata[t.name]?.thumbnailUrl,
+            videoPath: videoMetadata[t.name]?.videoPath,
             visibility: t.visibility,
             href: `#/${npub}/${encodeTreeNameForUrl(t.name)}${t.linkKey ? `?k=${t.linkKey}` : ''}`,
             duration: videoMetadata[t.name]?.duration,
@@ -375,6 +376,7 @@
               ownerNpub={video.ownerNpub}
               treeName={video.treeName}
               thumbnailUrl={video.thumbnailUrl}
+              videoPath={video.videoPath}
               rootCid={video.rootCid ?? null}
               visibility={video.visibility}
               timestamp={video.timestamp}

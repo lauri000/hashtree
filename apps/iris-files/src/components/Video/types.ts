@@ -29,6 +29,8 @@ export interface VideoItem {
   rootCid?: import('@hashtree/core').CID;
   /** Preferred thumbnail URL when already resolved */
   thumbnailUrl?: string;
+  /** Exact in-tree video file path when known */
+  videoPath?: string;
   visibility?: string;
   href: string;
   timestamp?: number;

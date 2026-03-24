@@ -16,6 +16,8 @@
   interface Props {
     /** Thumbnail URL */
     src?: string | null;
+    /** Exact in-tree fallback video URLs to use when no image thumbnail is available */
+    fallbackVideoUrls?: string[] | null;
     /** Video duration in seconds */
     duration?: number;
     /** Watch progress percentage (0-100) */
@@ -26,26 +28,42 @@
     iconSize?: string;
   }
 
-  let { src, duration, progress = 0, class: className = '', iconSize = 'text-4xl' }: Props = $props();
+  let {
+    src,
+    fallbackVideoUrls = null,
+    duration,
+    progress = 0,
+    class: className = '',
+    iconSize = 'text-4xl'
+  }: Props = $props();
 
   let imageError = $state(false);
-  let lastSrc = $state<string | null>(null);
+  let lastMediaKey = $state('');
   let retryCount = $state(0);
   let renderedSrc = $state<string | null>(null);
+  let videoCandidateIndex = $state(0);
+  let videoReady = $state(false);
+  let videoFailed = $state(false);
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   const loadingStrategy = shouldEagerLoadMediaInNativeChildRuntime() ? 'eager' : 'lazy';
+  const resolvedFallbackVideoUrls = $derived.by(() => (fallbackVideoUrls ?? []).filter(Boolean));
+  const activeFallbackVideoUrl = $derived.by(() => resolvedFallbackVideoUrls[videoCandidateIndex] ?? null);
 
-  // Reset error when src changes
+  // Reset state when the image or fallback candidates change.
   $effect.pre(() => {
-    if (src !== lastSrc) {
+    const nextMediaKey = `${src ?? ''}::${resolvedFallbackVideoUrls.join('|')}`;
+    if (nextMediaKey !== lastMediaKey) {
       if (retryTimer) {
         clearTimeout(retryTimer);
         retryTimer = null;
       }
       imageError = false;
       retryCount = 0;
-      lastSrc = src ?? null;
       renderedSrc = src ?? null;
+      videoCandidateIndex = 0;
+      videoReady = false;
+      videoFailed = false;
+      lastMediaKey = nextMediaKey;
     }
   });
 
@@ -75,6 +93,31 @@
       renderedSrc = retryUrl;
     }, delayMs);
   }
+
+  function handleVideoLoadedMetadata(event: Event): void {
+    const video = event.currentTarget as HTMLVideoElement | null;
+    if (!video) return;
+    if (video.currentTime > 0 || !Number.isFinite(video.duration) || video.duration <= 0) return;
+    try {
+      video.currentTime = Math.min(0.05, video.duration / 10);
+    } catch {
+      // Some browsers disallow immediate seeking here; loadeddata still reveals frame 0.
+    }
+  }
+
+  function handleVideoLoadedData(): void {
+    videoReady = true;
+    videoFailed = false;
+  }
+
+  function handleVideoError(): void {
+    videoReady = false;
+    if (videoCandidateIndex + 1 < resolvedFallbackVideoUrls.length) {
+      videoCandidateIndex += 1;
+      return;
+    }
+    videoFailed = true;
+  }
 </script>
 
 <div class="relative bg-surface-2 overflow-hidden {className}">
@@ -86,7 +129,20 @@
       loading={loadingStrategy}
       onerror={handleImageError}
     />
-  {:else}
+  {:else if activeFallbackVideoUrl && !videoFailed}
+    <video
+      src={activeFallbackVideoUrl}
+      muted
+      playsinline
+      preload="metadata"
+      class="absolute inset-0 w-full h-full object-cover {videoReady ? '' : 'opacity-0'}"
+      onloadedmetadata={handleVideoLoadedMetadata}
+      onloadeddata={handleVideoLoadedData}
+      onerror={handleVideoError}
+    ></video>
+  {/if}
+
+  {#if (!renderedSrc || imageError) && (!activeFallbackVideoUrl || videoFailed || !videoReady)}
     <div class="absolute inset-0 flex items-center justify-center">
       <span class="i-lucide-video text-text-3 {iconSize}"></span>
     </div>

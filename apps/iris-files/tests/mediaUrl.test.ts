@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fromHex, nhashEncode } from '@hashtree/core';
 import {
   getStableFileUrl,
+  getStablePathUrl,
   getThumbnailUrlFromCid,
   getStableThumbnailUrl,
+  getStableVideoCandidateUrls,
 } from '../src/lib/mediaUrl';
 
 afterEach(() => {
@@ -81,6 +83,50 @@ describe('mediaUrl thumbnail helpers', () => {
     ).toBe(
       '/htree/npub1example/videos%2FTest%20Clip/clips/demo%20reel/video.mp4?htree_c=test-media-client',
     );
+  });
+
+  it('preserves full relative paths for immutable path urls', () => {
+    installWindow();
+    const rootCid = {
+      hash: fromHex('a'.repeat(64)),
+      key: fromHex('b'.repeat(64)),
+    };
+
+    expect(
+      getStablePathUrl({
+        rootCid,
+        npub: 'npub1example',
+        treeName: 'videos/Test Clip',
+        path: 'clips/demo reel/video.mp4',
+      }),
+    ).toBe(
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/video.mp4?htree_c=test-media-client`,
+    );
+  });
+
+  it('prefers the exact resolved video path before common fallback filenames', () => {
+    installWindow();
+    const rootCid = {
+      hash: fromHex('c'.repeat(64)),
+      key: fromHex('d'.repeat(64)),
+    };
+
+    expect(
+      getStableVideoCandidateUrls({
+        rootCid,
+        npub: 'npub1example',
+        treeName: 'videos/Test Clip',
+        videoPath: 'capture/final-cut.mov',
+      }),
+    ).toEqual([
+      `/htree/${nhashEncode(rootCid)}/capture/final-cut.mov?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.mp4?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.webm?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.mov?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.mkv?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.m4v?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.avi?htree_c=test-media-client`,
+    ]);
   });
 
   it('builds immutable thumbnail urls from a known root cid', () => {

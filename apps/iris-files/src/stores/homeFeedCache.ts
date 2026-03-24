@@ -9,6 +9,7 @@ import type { VideoItem } from '../components/Video/types';
 export interface PlaylistInfo {
   videoCount: number;
   thumbnailUrl?: string;
+  videoPath?: string;
   duration?: number;
   createdAt?: number;
   title?: string;

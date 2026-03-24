@@ -9,4 +9,9 @@ describe('video card thumbnail wiring', () => {
   it('avoids htree alias fallback when exact thumbnail urls are unavailable', () => {
     expect(videoCardSource).toContain('allowAliasFallback: false');
   });
+
+  it('passes exact video fallback candidates to the thumbnail component', () => {
+    expect(videoCardSource).toContain('getStableVideoCandidateUrls');
+    expect(videoCardSource).toContain('fallbackVideoUrls={thumbnailVideoUrls}');
+  });
 });

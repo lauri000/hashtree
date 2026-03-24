@@ -8,7 +8,7 @@
   import { toHex } from '@hashtree/core';
   import { formatTimeAgo } from '../../utils/format';
   import { Name } from '../User';
-  import { getStableThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
+  import { getStableThumbnailUrl, getStableVideoCandidateUrls, onHtreePrefixReady } from '../../lib/mediaUrl';
   import { logHtreeDebug } from '../../lib/htreeDebug';
   import { nostrStore } from '../../nostr';
   import { recentsStore, positionCacheVersion, getVideoPosition } from '../../stores/recents';
@@ -68,6 +68,17 @@
     });
   }
 
+  function buildFallbackVideoUrls(video: typeof feedVideos[0]): string[] {
+    void htreePrefixVersion;
+    return getStableVideoCandidateUrls({
+      rootCid: video.rootCid,
+      npub: video.ownerNpub,
+      treeName: video.treeName,
+      videoId: video.videoId || undefined,
+      videoPath: video.videoPath,
+    });
+  }
+
   // Get recents to look up duration (feedStore doesn't have it)
   let recents = $derived($recentsStore);
 
@@ -123,6 +134,7 @@
     <div class="space-y-2">
       {#each displayVideos as video (video.href)}
         {@const thumbnailUrl = buildThumbnailUrl(video)}
+        {@const fallbackVideoUrls = buildFallbackVideoUrls(video)}
         {@const duration = getVideoDuration(video)}
         {@const progress = videoProgress.get(video.href) ?? 0}
         <a
@@ -132,6 +144,7 @@
           <!-- Thumbnail -->
           <VideoThumbnail
             src={thumbnailUrl}
+            {fallbackVideoUrls}
             {duration}
             {progress}
             class="w-42 aspect-video shrink-0 rounded"

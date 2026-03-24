@@ -10,7 +10,8 @@ use axum::{
     response::{IntoResponse, Json},
 };
 use bytes::Bytes;
-use futures::stream::{self, StreamExt};
+use futures::future::BoxFuture;
+use futures::stream::{self, FuturesUnordered, StreamExt};
 use futures::FutureExt;
 use hashtree_core::{
     from_hex, nhash_decode, to_hex, Cid, HashTree, HashTreeConfig, HashTreeError, LinkType, Store,
@@ -340,7 +341,13 @@ async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool {
         &hash_hex[..16.min(hash_hex.len())]
     );
 
-    // Try WebRTC peers first
+    enum FetchResult {
+        WebRtc { data: Vec<u8>, peer_id: String },
+        Upstream { data: Vec<u8>, server: String },
+    }
+
+    let mut fetches: Vec<BoxFuture<'static, Option<FetchResult>>> = Vec::new();
+
     if let Some(ref webrtc_state) = state.webrtc_peers {
         tracing::info!(
             "[htree-fetch] Querying WebRTC peers for {}",
@@ -348,25 +355,19 @@ async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool {
         );
         let webrtc_state = webrtc_state.clone();
         let peer_hash_hex = hash_hex.clone();
-        if let Some((data, peer_id)) = await_fetch_task("webrtc", &hash_hex, async move {
-            query_webrtc_peers(&webrtc_state, &peer_hash_hex).await
-        })
-        .await
-        {
-            tracing::info!(
-                "[htree-fetch] Got {} bytes from peer {} for {}",
-                data.len(),
-                peer_id,
-                &hash_hex[..16.min(hash_hex.len())]
-            );
-            if let Err(e) = state.store.put_blob(&data) {
-                tracing::warn!("[htree-fetch] Failed to cache peer data: {}", e);
+        fetches.push(
+            async move {
+                let query_hash_hex = peer_hash_hex.clone();
+                await_fetch_task("webrtc", &peer_hash_hex, async move {
+                    query_webrtc_peers(&webrtc_state, &query_hash_hex).await
+                })
+                .await
+                .map(|(data, peer_id)| FetchResult::WebRtc { data, peer_id })
             }
-            return true;
-        }
+            .boxed(),
+        );
     }
 
-    // Try upstream Blossom servers
     if !state.upstream_blossom.is_empty() {
         tracing::info!(
             "[htree-fetch] Querying {} Blossom servers for {}",
@@ -375,28 +376,55 @@ async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool {
         );
         let upstream_blossom = state.upstream_blossom.clone();
         let upstream_hash_hex = hash_hex.clone();
-        if let Some((data, server)) = await_fetch_task("upstream", &hash_hex, async move {
-            query_upstream_blossom(&upstream_blossom, &upstream_hash_hex).await
-        })
-        .await
-        {
-            tracing::info!(
-                "[htree-fetch] Got {} bytes from upstream {} for {}",
-                data.len(),
-                server,
-                &hash_hex[..16.min(hash_hex.len())]
-            );
-            if let Err(e) = state.store.put_blob(&data) {
-                tracing::warn!("[htree-fetch] Failed to cache upstream data: {}", e);
+        fetches.push(
+            async move {
+                let query_hash_hex = upstream_hash_hex.clone();
+                await_fetch_task("upstream", &upstream_hash_hex, async move {
+                    query_upstream_blossom(&upstream_blossom, &query_hash_hex).await
+                })
+                .await
+                .map(|(data, server)| FetchResult::Upstream { data, server })
             }
-            return true;
+            .boxed(),
+        );
+    } else {
+        tracing::info!("[htree-fetch] No upstream Blossom servers configured");
+    }
+
+    if let Some(result) = first_available_fetch(fetches).await {
+        match result {
+            FetchResult::WebRtc { data, peer_id } => {
+                tracing::info!(
+                    "[htree-fetch] Got {} bytes from peer {} for {}",
+                    data.len(),
+                    peer_id,
+                    &hash_hex[..16.min(hash_hex.len())]
+                );
+                if let Err(e) = state.store.put_blob(&data) {
+                    tracing::warn!("[htree-fetch] Failed to cache peer data: {}", e);
+                }
+                return true;
+            }
+            FetchResult::Upstream { data, server } => {
+                tracing::info!(
+                    "[htree-fetch] Got {} bytes from upstream {} for {}",
+                    data.len(),
+                    server,
+                    &hash_hex[..16.min(hash_hex.len())]
+                );
+                if let Err(e) = state.store.put_blob(&data) {
+                    tracing::warn!("[htree-fetch] Failed to cache upstream data: {}", e);
+                }
+                return true;
+            }
         }
+    }
+
+    if !state.upstream_blossom.is_empty() {
         tracing::info!(
             "[htree-fetch] No upstream had {}",
             &hash_hex[..16.min(hash_hex.len())]
         );
-    } else {
-        tracing::info!("[htree-fetch] No upstream Blossom servers configured");
     }
 
     false
@@ -417,6 +445,21 @@ where
             None
         }
     }
+}
+
+async fn first_available_fetch<T>(futures: Vec<BoxFuture<'static, Option<T>>>) -> Option<T> {
+    let mut pending = FuturesUnordered::new();
+    for future in futures {
+        pending.push(future);
+    }
+
+    while let Some(result) = pending.next().await {
+        if let Some(value) = result {
+            return Some(value);
+        }
+    }
+
+    None
 }
 
 async fn ensure_blob_available(state: &AppState, hash: &[u8; 32]) -> Result<bool, String> {
@@ -2120,7 +2163,7 @@ pub async fn follow_distance(
 
 /// Timeout for HTTP resolver requests
 const HTTP_RESOLVER_TIMEOUT: Duration = Duration::from_secs(10);
-const HTTP_WEBRTC_FETCH_TIMEOUT: Duration = Duration::from_millis(2000);
+const HTTP_WEBRTC_FETCH_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// Create resolver config with HTTP timeout
 fn resolver_config() -> NostrResolverConfig {
@@ -2503,6 +2546,40 @@ mod tests {
         .await;
 
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn first_available_fetch_prefers_fast_success() {
+        let result = first_available_fetch(vec![
+            async {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Some("slow")
+            }
+            .boxed(),
+            async {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                Some("fast")
+            }
+            .boxed(),
+        ])
+        .await;
+
+        assert_eq!(result, Some("fast"));
+    }
+
+    #[tokio::test]
+    async fn first_available_fetch_skips_empty_results() {
+        let result = first_available_fetch(vec![
+            async { None::<&'static str> }.boxed(),
+            async {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                Some("available")
+            }
+            .boxed(),
+        ])
+        .await;
+
+        assert_eq!(result, Some("available"));
     }
 
     #[tokio::test]

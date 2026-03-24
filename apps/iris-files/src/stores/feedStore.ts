@@ -29,7 +29,7 @@ const RELAY_RETRY_TIMEOUT_MS = 30000;
 const EMPTY_FEED_RETRY_MS = 15000;
 const EMPTY_FEED_MAX_RETRIES = 3;
 const FEED_MEDIA_RESOLUTION_CONCURRENCY = 4;
-const FEED_MEDIA_RESOLUTION_MAX_RETRIES = 3;
+const FEED_MEDIA_RESOLUTION_MAX_RETRIES = 8;
 
 let retryOnRelayScheduled = false;
 let emptyFeedRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -77,6 +77,7 @@ export interface FeedVideo {
   videoId?: string;
   duration?: number;
   thumbnailUrl?: string;
+  videoPath?: string;
   timestamp?: number;
   rootCid?: CID;
 }
@@ -113,7 +114,7 @@ function getFeedMediaResolutionKey(video: FeedVideo): string | null {
 
 function shouldResolveFeedVideoMedia(video: FeedVideo): boolean {
   if (!video.ownerNpub || !video.treeName) return false;
-  return !video.thumbnailUrl || !video.duration || !resolveFeedVideoRootCid(video);
+  return (!video.thumbnailUrl && !video.videoPath) || !video.duration || !resolveFeedVideoRootCid(video);
 }
 
 function sameCid(a?: CID | null, b?: CID | null): boolean {
@@ -135,12 +136,14 @@ function applyCachedFeedMedia(videos: FeedVideo[]): FeedVideo[] {
     const nextTitle = cached.title ?? video.title;
     const nextDuration = cached.duration ?? video.duration;
     const nextThumbnailUrl = cached.thumbnailUrl ?? video.thumbnailUrl;
+    const nextVideoPath = cached.videoPath ?? video.videoPath;
     const nextRootCid = cached.rootCid ?? video.rootCid;
 
     if (
       nextTitle === video.title &&
       nextDuration === video.duration &&
       nextThumbnailUrl === video.thumbnailUrl &&
+      nextVideoPath === video.videoPath &&
       sameCid(nextRootCid, video.rootCid)
     ) {
       return video;
@@ -152,6 +155,7 @@ function applyCachedFeedMedia(videos: FeedVideo[]): FeedVideo[] {
       title: nextTitle,
       duration: nextDuration,
       thumbnailUrl: nextThumbnailUrl,
+      videoPath: nextVideoPath,
       rootCid: nextRootCid,
     };
   });
@@ -160,7 +164,7 @@ function applyCachedFeedMedia(videos: FeedVideo[]): FeedVideo[] {
 }
 
 export async function getFeedVideoResolvedMedia(video: FeedVideo): Promise<Partial<FeedVideo> | null> {
-  const rootCid = await resolveFeedVideoRootCidAsync(video);
+  const rootCid = await resolveFeedVideoRootCidAsync(video, 8000);
   if (!rootCid || !video.ownerNpub || !video.treeName) return null;
 
   const cached = getCachedPlaylistInfo(video.ownerNpub, video.treeName);
@@ -176,6 +180,9 @@ export async function getFeedVideoResolvedMedia(video: FeedVideo): Promise<Parti
   }
   if (info.thumbnailUrl) {
     resolved.thumbnailUrl = info.thumbnailUrl;
+  }
+  if (info.videoPath) {
+    resolved.videoPath = info.videoPath;
   }
   if (typeof info.duration === 'number') {
     resolved.duration = info.duration;
@@ -233,12 +240,14 @@ async function resolveFeedVideoMedia(video: FeedVideo): Promise<void> {
         const nextTitle = resolved.title ?? candidate.title;
         const nextDuration = resolved.duration ?? candidate.duration;
         const nextThumbnailUrl = resolved.thumbnailUrl ?? candidate.thumbnailUrl;
+        const nextVideoPath = resolved.videoPath ?? candidate.videoPath;
         const nextRootCid = resolved.rootCid ?? candidate.rootCid;
 
         if (
           nextTitle === candidate.title &&
           nextDuration === candidate.duration &&
           nextThumbnailUrl === candidate.thumbnailUrl &&
+          nextVideoPath === candidate.videoPath &&
           sameCid(nextRootCid, candidate.rootCid)
         ) {
           return candidate;
@@ -250,6 +259,7 @@ async function resolveFeedVideoMedia(video: FeedVideo): Promise<void> {
           title: nextTitle,
           duration: nextDuration,
           thumbnailUrl: nextThumbnailUrl,
+          videoPath: nextVideoPath,
           rootCid: nextRootCid,
         };
       });
@@ -257,8 +267,7 @@ async function resolveFeedVideoMedia(video: FeedVideo): Promise<void> {
       return changed ? nextVideos : videos;
     });
 
-    const mergedThumbnailUrl = resolved.thumbnailUrl ?? video.thumbnailUrl;
-    if (mergedThumbnailUrl) {
+    if (!shouldResolveFeedVideoMedia(nextVideo)) {
       attemptedFeedMediaKeys.add(resolutionKey);
       attemptedFeedMediaKeys.add(nextResolutionKey);
     } else {

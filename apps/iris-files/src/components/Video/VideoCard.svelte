@@ -6,7 +6,7 @@
   import type { CID } from '@hashtree/core';
   import VisibilityIcon from '../VisibilityIcon.svelte';
   import { Avatar, Name } from '../User';
-  import { getStableThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
+  import { getStableThumbnailUrl, getStableVideoCandidateUrls, onHtreePrefixReady } from '../../lib/mediaUrl';
   import { formatTimeAgo } from '../../utils/format';
   import { recentsStore, getVideoPosition } from '../../stores/recents';
   import { extractDominantColor, rgbToRgba, type RGB } from '../../utils/colorExtract';
@@ -24,6 +24,8 @@
     visibility?: string;
     /** Direct thumbnail URL (e.g., from nhash in metadata) */
     thumbnailUrl?: string | null;
+    /** Exact in-tree video file path when already resolved */
+    videoPath?: string | null;
     /** Root CID when already known, so media can use immutable nhash URLs */
     rootCid?: CID | null;
     /** Root hash hex prefix for cache busting (updates trigger thumbnail retry) */
@@ -38,7 +40,7 @@
     hideAuthor?: boolean;
   }
 
-  let { href, title, duration, ownerPubkey, ownerNpub, treeName, videoId, visibility, thumbnailUrl: propThumbnailUrl, rootCid = null, rootHashHex, timestamp, themeHover = false, noHover = false, hideAuthor = false }: Props = $props();
+  let { href, title, duration, ownerPubkey, ownerNpub, treeName, videoId, visibility, thumbnailUrl: propThumbnailUrl, videoPath = null, rootCid = null, rootHashHex, timestamp, themeHover = false, noHover = false, hideAuthor = false }: Props = $props();
 
   let htreePrefixVersion = $state(0);
   onHtreePrefixReady(() => {
@@ -57,6 +59,17 @@
       videoId: videoId || undefined,
       hashPrefix: rootHashHex?.slice(0, 8) || undefined,
       allowAliasFallback: false,
+    });
+  });
+
+  let thumbnailVideoUrls = $derived.by(() => {
+    void htreePrefixVersion;
+    return getStableVideoCandidateUrls({
+      rootCid,
+      npub: ownerNpub,
+      treeName,
+      videoId: videoId || undefined,
+      videoPath: videoPath || undefined,
     });
   });
 
@@ -109,6 +122,7 @@
   <!-- Thumbnail with 16:9 aspect ratio -->
   <VideoThumbnail
     src={thumbnailUrl}
+    fallbackVideoUrls={thumbnailVideoUrls}
     {duration}
     progress={watchProgress}
     class="video-thumb aspect-video rounded-lg z-10"

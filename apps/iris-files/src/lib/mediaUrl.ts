@@ -251,6 +251,71 @@ export function getStableFileUrl(options: StableFileUrlOptions): string | null {
   return null;
 }
 
+interface StablePathUrlOptions {
+  rootCid?: CID | null;
+  npub?: string | null;
+  treeName?: string | null;
+  path: string;
+}
+
+export function getStablePathUrl(options: StablePathUrlOptions): string | null {
+  if (options.rootCid) {
+    const nhash = nhashEncode(options.rootCid);
+    const encodedPath = options.path.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+    return appendHtreeCacheBust(
+      appendMediaClientKey(`${getHtreePrefix()}/htree/${nhash}/${encodedPath}`)
+    );
+  }
+  if (options.npub && options.treeName) {
+    return getNpubFileUrl(options.npub, options.treeName, options.path);
+  }
+  return null;
+}
+
+export const COMMON_VIDEO_FILENAMES = [
+  'video.mp4',
+  'video.webm',
+  'video.mov',
+  'video.mkv',
+  'video.m4v',
+  'video.avi',
+] as const;
+
+interface StableVideoCandidateUrlOptions {
+  rootCid?: CID | null;
+  npub?: string | null;
+  treeName?: string | null;
+  videoId?: string | null;
+  videoPath?: string | null;
+}
+
+export function getStableVideoCandidateUrls(options: StableVideoCandidateUrlOptions): string[] {
+  const urls = new Set<string>();
+
+  const addPath = (path: string) => {
+    const url = getStablePathUrl({
+      rootCid: options.rootCid,
+      npub: options.npub,
+      treeName: options.treeName,
+      path,
+    });
+    if (url) {
+      urls.add(url);
+    }
+  };
+
+  if (options.videoPath) {
+    addPath(options.videoPath);
+  }
+
+  const prefix = options.videoId ? `${options.videoId}/` : '';
+  for (const fileName of COMMON_VIDEO_FILENAMES) {
+    addPath(`${prefix}${fileName}`);
+  }
+
+  return Array.from(urls);
+}
+
 export function getEncodedNhashUrl(nhash: string, filename?: string): string {
   const prefix = getHtreePrefix();
   if (filename) {

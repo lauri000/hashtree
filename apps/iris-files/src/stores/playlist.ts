@@ -49,6 +49,11 @@ const MAX_PLAYLIST_SUBDIR_READS = 200;
 /** Limit total playlist metadata processing */
 const MAX_PLAYLIST_METADATA_ITEMS = 400;
 
+/** Time budget for resolving card metadata from tree contents */
+const PLAYLIST_ROOT_READ_TIMEOUT_MS = 8000;
+const PLAYLIST_SUBDIR_READ_TIMEOUT_MS = 2500;
+const PLAYLIST_METADATA_READ_TIMEOUT_MS = 2500;
+
 /** Video file extensions we recognize */
 export const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mkv', '.mov', '.avi', '.m4v'] as const;
 
@@ -141,6 +146,7 @@ export async function findFirstVideoEntry(rootCid: CID): Promise<string | null> 
 export interface PlaylistCardInfo {
   videoCount: number;
   thumbnailUrl?: string;
+  videoPath?: string;
   /** Duration in seconds (for single videos) */
   duration?: number;
   /** Created timestamp in seconds (for single videos) */
@@ -150,7 +156,7 @@ export interface PlaylistCardInfo {
 }
 
 export function shouldRefreshPlaylistCardInfo(info: PlaylistCardInfo | null | undefined): boolean {
-  return !!info && !info.thumbnailUrl;
+  return !!info && !info.thumbnailUrl && !info.videoPath;
 }
 
 /** Helper to add timeout to promises */
@@ -191,7 +197,7 @@ export async function detectPlaylistForCard(
   const tree = getTree();
 
   try {
-    const entries = await withTimeout(tree.listDirectory(rootCid), 5000);
+    const entries = await withTimeout(tree.listDirectory(rootCid), PLAYLIST_ROOT_READ_TIMEOUT_MS);
     if (!entries || entries.length === 0) {
       return null;
     }
@@ -202,14 +208,16 @@ export async function detectPlaylistForCard(
       let createdAt: number | undefined;
       let thumbnailUrl: string | undefined;
       let title: string | undefined;
+      let videoPath: string | undefined;
 
       // Try video file's link entry meta first (new format)
       const videoEntry = entries.find(e =>
         e.name.startsWith('video.') ||
-        e.name.endsWith('.webm') ||
-        e.name.endsWith('.mp4') ||
-        e.name.endsWith('.mov')
+        VIDEO_EXTENSIONS.some(ext => e.name.endsWith(ext))
       );
+      if (videoEntry) {
+        videoPath = videoEntry.name;
+      }
       if (videoEntry?.meta) {
         const videoMeta = videoEntry.meta as Record<string, unknown>;
         if (typeof videoMeta.duration === 'number') {
@@ -231,7 +239,7 @@ export async function detectPlaylistForCard(
         const metadataEntry = entries.find(e => e.name === 'metadata.json');
         if (metadataEntry) {
           try {
-            const metadataData = await withTimeout(tree.readFile(metadataEntry.cid), 2000);
+            const metadataData = await withTimeout(tree.readFile(metadataEntry.cid), PLAYLIST_METADATA_READ_TIMEOUT_MS);
             if (metadataData) {
               const metadata = JSON.parse(new TextDecoder().decode(metadataData));
               if (!thumbnailUrl) {
@@ -256,7 +264,7 @@ export async function detectPlaylistForCard(
         const infoEntry = entries.find(e => e.name === 'info.json');
         if (infoEntry) {
           try {
-            const infoData = await withTimeout(tree.readFile(infoEntry.cid), 2000);
+            const infoData = await withTimeout(tree.readFile(infoEntry.cid), PLAYLIST_METADATA_READ_TIMEOUT_MS);
             if (infoData) {
               const info = JSON.parse(new TextDecoder().decode(infoData));
               if (!thumbnailUrl) {
@@ -279,7 +287,7 @@ export async function detectPlaylistForCard(
         thumbnailUrl = getNhashFileUrl(thumbEntry.cid, thumbEntry.name);
       }
 
-      const info: PlaylistCardInfo = { videoCount: 0, duration, thumbnailUrl, createdAt, title };
+      const info: PlaylistCardInfo = { videoCount: 0, duration, thumbnailUrl, videoPath, createdAt, title };
       playlistCache.set(cacheKey, info);
       return info;
     }
@@ -291,7 +299,7 @@ export async function detectPlaylistForCard(
     const results = await Promise.all(
       sorted.slice(0, 5).map(async (entry) => {
         try {
-          const subEntries = await withTimeout(tree.listDirectory(entry.cid), 2000);
+          const subEntries = await withTimeout(tree.listDirectory(entry.cid), PLAYLIST_SUBDIR_READ_TIMEOUT_MS);
           if (subEntries) {
             const thumbEntry = findThumbnailEntry(subEntries);
             if (thumbEntry) {

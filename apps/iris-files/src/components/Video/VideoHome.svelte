@@ -231,7 +231,7 @@
       const result = info ?? { videoCount: 0 };
       setFeedPlaylistInfo(video.key, result);
       feedPlaylistInfo = { ...feedPlaylistInfo, [video.key]: result };
-      if (info?.thumbnailUrl) {
+      if (info?.thumbnailUrl || info?.videoPath) {
         clearPlaylistRetry(video.key);
       } else {
         schedulePlaylistRetry(video);
@@ -872,6 +872,7 @@
                   title={playlistInfo?.title || video.title}
                   duration={video.duration ?? playlistInfo?.duration}
                   thumbnailUrl={playlistInfo?.thumbnailUrl}
+                  videoPath={playlistInfo?.videoPath ?? video.videoPath}
                   ownerPubkey={video.ownerPubkey}
                   ownerNpub={video.ownerNpub}
                   treeName={video.treeName}
