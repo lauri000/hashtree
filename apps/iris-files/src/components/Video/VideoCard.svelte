@@ -56,7 +56,7 @@
       treeName,
       videoId: videoId || undefined,
       hashPrefix: rootHashHex?.slice(0, 8) || undefined,
-      allowAliasFallback: false,
+      allowAliasFallback: true,
     });
   });
 

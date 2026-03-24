@@ -58,11 +58,13 @@
     void htreePrefixVersion;
     const hashPrefix = video.rootCid?.hash ? toHex(video.rootCid.hash).slice(0, 8) : undefined;
     return getStableThumbnailUrl({
+      thumbnailUrl: video.thumbnailUrl,
       rootCid: video.rootCid,
       npub: video.ownerNpub,
       treeName: video.treeName,
       videoId: video.videoId || undefined,
       hashPrefix,
+      allowAliasFallback: true,
     });
   }
 

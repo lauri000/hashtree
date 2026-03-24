@@ -153,4 +153,20 @@ describe('mediaUrl thumbnail helpers', () => {
       }),
     ).toBeNull();
   });
+
+  it('can fall back to mutable thumbnail urls when alias fallback is enabled', () => {
+    installWindow();
+
+    expect(
+      getStableThumbnailUrl({
+        npub: 'npub1example',
+        treeName: 'videos/Test Clip',
+        videoId: 'clips/demo reel',
+        hashPrefix: 'deadbeef',
+        allowAliasFallback: true,
+      }),
+    ).toBe(
+      '/htree/npub1example/videos%2FTest%20Clip/clips/demo%20reel/thumbnail?v=deadbeef&htree_c=test-media-client',
+    );
+  });
 });

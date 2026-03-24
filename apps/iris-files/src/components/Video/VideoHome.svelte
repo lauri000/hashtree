@@ -10,7 +10,7 @@
   import { getWorkerAdapter, waitForWorkerAdapter } from '../../lib/workerInit';
   import { recentsStore, clearRecentsByPrefix, type RecentItem } from '../../stores/recents';
   import { createFollowsStore } from '../../stores';
-  import { detectPlaylistForCard, getCachedPlaylistInfo } from '../../stores/playlist';
+  import { detectPlaylistForCard, getCachedPlaylistInfo, shouldRefreshPlaylistCardInfo } from '../../stores/playlist';
   import { indexVideo } from '../../stores/searchIndex';
   import { updateSubscriptionCache } from '../../stores/treeRoot';
   import {
@@ -30,8 +30,11 @@
   import InfiniteScroll from '../InfiniteScroll.svelte';
   import { DEFAULT_BOOTSTRAP_PUBKEY, DEFAULT_VIDEO_FEED_PUBKEYS } from '../../utils/constants';
   import { orderFeedWithInterleaving } from '../../utils/feedOrder';
-  import { feedStore } from '../../stores/feedStore';
+  import { setFeedVideos } from '../../stores/feedStore';
   import { recordDeletedVideo, getDeletedVideoTimestamp, clearDeletedVideo } from '../../stores/videoDeletes';
+  import { resolveFeedVideoRootCid, resolveFeedVideoRootCidAsync } from '../../lib/videoFeedRoot';
+  import { getStableThumbnailUrl } from '../../lib/mediaUrl';
+  import { onCacheUpdate } from '../../treeRootCache';
 
   const MIN_FOLLOWS_THRESHOLD = 5;
   import VideoCard from './VideoCard.svelte';
@@ -120,6 +123,48 @@
   // Debounce playlist detection to avoid excessive calls
   let detectTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingVideos: VideoItem[] = [];
+  const playlistRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const playlistRetryCounts = new Map<string, number>();
+  const MAX_PLAYLIST_DETECTION_RETRIES = 6;
+
+  function clearPlaylistRetry(videoKey: string) {
+    const timer = playlistRetryTimers.get(videoKey);
+    if (timer) {
+      clearTimeout(timer);
+      playlistRetryTimers.delete(videoKey);
+    }
+    playlistRetryCounts.delete(videoKey);
+  }
+
+  function schedulePlaylistRetry(video: VideoItem) {
+    if (playlistRetryTimers.has(video.key)) return;
+    const nextAttempt = (playlistRetryCounts.get(video.key) ?? 0) + 1;
+    if (nextAttempt > MAX_PLAYLIST_DETECTION_RETRIES) return;
+    playlistRetryCounts.set(video.key, nextAttempt);
+    const delayMs = 250 * (2 ** (nextAttempt - 1));
+    const timer = setTimeout(() => {
+      playlistRetryTimers.delete(video.key);
+      void doDetectPlaylists([video]);
+    }, delayMs);
+    playlistRetryTimers.set(video.key, timer);
+  }
+
+  onMount(() => {
+    const unsubscribe = onCacheUpdate((npub, treeName) => {
+      const pending = untrack(() => feedVideos.filter((video) =>
+        video.ownerNpub === npub
+        && video.treeName === treeName
+        && !feedPlaylistInfo[video.key]?.thumbnailUrl
+      ));
+      if (pending.length > 0) {
+        void doDetectPlaylists(pending);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  });
 
   async function detectPlaylistsInFeed(videos: VideoItem[]) {
     // First, instantly populate from cache (no layout shift for known items)
@@ -127,9 +172,15 @@
     const uncached: VideoItem[] = [];
 
     for (const video of videos) {
+      const resolvedRootCid = resolveFeedVideoRootCid(video);
+
       // Check persistent cache first
       const persistentCached = getFeedPlaylistInfo(video.key);
       if (persistentCached !== undefined) {
+        if (shouldRefreshPlaylistCardInfo(persistentCached)) {
+          uncached.push(resolvedRootCid ? { ...video, rootCid: resolvedRootCid } : video);
+          continue;
+        }
         if (feedPlaylistInfo[video.key] === undefined) {
           updates[video.key] = persistentCached;
         }
@@ -139,11 +190,15 @@
 
       const cached = getCachedPlaylistInfo(video.ownerNpub, video.treeName);
       if (cached !== undefined) {
+        if (shouldRefreshPlaylistCardInfo(cached)) {
+          uncached.push(resolvedRootCid ? { ...video, rootCid: resolvedRootCid } : video);
+          continue;
+        }
         const info = cached ?? { videoCount: 0 };
         updates[video.key] = info;
         setFeedPlaylistInfo(video.key, info);
-      } else if (video.rootCid) {
-        uncached.push(video);
+      } else if (video.ownerNpub && video.treeName) {
+        uncached.push(resolvedRootCid ? { ...video, rootCid: resolvedRootCid } : video);
       }
     }
 
@@ -167,10 +222,20 @@
 
   async function doDetectPlaylists(videos: VideoItem[]) {
     const detectOne = async (video: VideoItem) => {
-      const info = await detectPlaylistForCard(video.rootCid!, video.ownerNpub!, video.treeName);
+      const rootCid = resolveFeedVideoRootCid(video) ?? await resolveFeedVideoRootCidAsync(video);
+      if (!rootCid) {
+        schedulePlaylistRetry(video);
+        return;
+      }
+      const info = await detectPlaylistForCard(rootCid, video.ownerNpub!, video.treeName);
       const result = info ?? { videoCount: 0 };
       setFeedPlaylistInfo(video.key, result);
       feedPlaylistInfo = { ...feedPlaylistInfo, [video.key]: result };
+      if (info?.thumbnailUrl) {
+        clearPlaylistRetry(video.key);
+      } else {
+        schedulePlaylistRetry(video);
+      }
     };
 
     // Process in parallel batches
@@ -644,7 +709,7 @@
 
   // Sync feedVideos to the shared store for use in sidebar
   $effect(() => {
-    feedStore.set(feedVideos.map(v => {
+    setFeedVideos(feedVideos.map(v => {
       const info = feedPlaylistInfo[v.key];
       return {
         href: v.href,
@@ -654,6 +719,7 @@
         treeName: v.treeName,
         videoId: v.videoId,
         duration: v.duration ?? info?.duration,
+        thumbnailUrl: info?.thumbnailUrl,
         timestamp: v.timestamp,
         rootCid: v.rootCid,
       };
@@ -784,12 +850,19 @@
           <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {#each feedVideos as video (video.href)}
               {@const playlistInfo = feedPlaylistInfo[video.key]}
+              {@const fallbackPlaylistThumbnail = getStableThumbnailUrl({
+                rootCid: video.rootCid ?? null,
+                npub: video.ownerNpub,
+                treeName: video.treeName,
+                videoId: video.videoId || undefined,
+                allowAliasFallback: true,
+              })}
               {#if playlistInfo && playlistInfo.videoCount >= 1}
                 <PlaylistCard
                   href={video.href}
                   title={video.title}
                   videoCount={playlistInfo.videoCount}
-                  thumbnailUrl={playlistInfo.thumbnailUrl}
+                  thumbnailUrl={playlistInfo.thumbnailUrl ?? fallbackPlaylistThumbnail}
                   ownerPubkey={video.ownerPubkey}
                   visibility={video.visibility}
                 />

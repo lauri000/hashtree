@@ -17,6 +17,7 @@
   import { getFollowers, fetchUserFollows, fetchUserFollowers, socialGraphStore } from '../../utils/socialGraph';
   import { getLocalRootCache, getLocalRootKey } from '../../treeRootCache';
   import { detectPlaylistForCard, MIN_VIDEOS_FOR_STRUCTURE } from '../../stores/playlist';
+  import { getStableThumbnailUrl } from '../../lib/mediaUrl';
   import type { CID } from '@hashtree/core';
 
   interface PlaylistInfo {
@@ -328,7 +329,12 @@
               href={playlist.href}
               title={playlist.title}
               videoCount={playlist.videoCount}
-              thumbnailUrl={playlist.thumbnailUrl}
+              thumbnailUrl={playlist.thumbnailUrl ?? getStableThumbnailUrl({
+                rootCid: getRootCidForTree(t),
+                npub,
+                treeName: t.name,
+                allowAliasFallback: true,
+              })}
               ownerPubkey={playlist.ownerPubkey}
               visibility={playlist.visibility}
               hideAuthor
