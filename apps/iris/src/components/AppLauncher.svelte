@@ -4,7 +4,7 @@
   import { dismissedSuggestionsStore } from '../stores/dismissedSuggestions';
 
   interface Props {
-    onnavigate: (url: string, options?: { prewarmSuggestedTreeRoot?: boolean }) => void;
+    onnavigate: (url: string) => void;
   }
 
   let { onnavigate }: Props = $props();
@@ -18,8 +18,8 @@
     ),
   );
 
-  function openApp(app: AppBookmark, prewarmSuggestedTreeRoot = false) {
-    onnavigate(app.url, { prewarmSuggestedTreeRoot });
+  function openApp(app: AppBookmark) {
+    onnavigate(app.url);
   }
 
   function removeFromFavorites(url: string) {
@@ -130,8 +130,8 @@
               role="button"
               tabindex="0"
               class="flex items-center gap-3 p-3 bg-surface-1 hover:bg-surface-2 rounded-xl transition-colors text-left cursor-pointer"
-              onclick={() => openApp(app, true)}
-              onkeydown={(e) => e.key === 'Enter' && openApp(app, true)}
+              onclick={() => openApp(app)}
+              onkeydown={(e) => e.key === 'Enter' && openApp(app)}
             >
               <div class="w-12 h-12 rounded-xl bg-surface-2 flex items-center justify-center shrink-0">
                 {#if app.icon}

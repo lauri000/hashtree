@@ -6,7 +6,7 @@ import {
   setupPageErrorHandler,
   gotoHome,
 } from './fixtures';
-import { distributedOwner, getSuggestedTreeRootHint } from '../src/lib/apps';
+import { distributedOwner } from '../src/lib/apps';
 
 async function openHome(page: import('@playwright/test').Page) {
   setupPageErrorHandler(page);
@@ -60,14 +60,13 @@ test.describe('App Launcher', () => {
 
     const invocations = await page.evaluate(() => (window as any).__tauriInvocations);
     const cacheCalls = invocations.filter((i: any) => i.cmd === 'cache_tree_root');
+    const clearCalls = invocations.filter((i: any) => i.cmd === 'clear_tree_root_cache');
     const createCalls = invocations.filter((i: any) => i.cmd === 'create_htree_webview');
-    const treeRootHint = getSuggestedTreeRootHint(distributedOwner, 'files');
 
-    expect(cacheCalls.length).toBe(1);
-    expect(cacheCalls[0].args.npub).toBe(distributedOwner);
-    expect(cacheCalls[0].args.treeName).toBe('files');
-    expect(cacheCalls[0].args.hash).toBe(treeRootHint?.hash);
-    expect(cacheCalls[0].args.nhash).toBe(treeRootHint?.nhash);
+    expect(cacheCalls.length).toBe(0);
+    expect(clearCalls.length).toBe(1);
+    expect(clearCalls[0].args.npub).toBe(distributedOwner);
+    expect(clearCalls[0].args.treeName).toBe('files');
     expect(createCalls.length).toBe(1);
     expect(createCalls[0].args.host).toBe(distributedOwner);
     expect(createCalls[0].args.nhash).toBeNull();
@@ -76,7 +75,7 @@ test.describe('App Launcher', () => {
     expect(createCalls[0].args.path).toBe('/index.html');
   });
 
-  test('typing a suggested htree url does not prewarm the tree root hint', async ({ tauriPage: page }) => {
+  test('typing a built-in htree url clears stale cache before opening', async ({ tauriPage: page }) => {
     await openHome(page);
 
     const addressInput = page.locator('[data-testid="address-bar"] input');
@@ -86,9 +85,13 @@ test.describe('App Launcher', () => {
 
     const invocations = await page.evaluate(() => (window as any).__tauriInvocations);
     const cacheCalls = invocations.filter((i: any) => i.cmd === 'cache_tree_root');
+    const clearCalls = invocations.filter((i: any) => i.cmd === 'clear_tree_root_cache');
     const createCalls = invocations.filter((i: any) => i.cmd === 'create_htree_webview');
 
     expect(cacheCalls.length).toBe(0);
+    expect(clearCalls.length).toBe(1);
+    expect(clearCalls[0].args.npub).toBe(distributedOwner);
+    expect(clearCalls[0].args.treeName).toBe('video');
     expect(createCalls.length).toBe(1);
     expect(createCalls[0].args.host).toBe(distributedOwner);
     expect(createCalls[0].args.treename).toBe('video');
@@ -149,8 +152,8 @@ test.describe('App Launcher', () => {
         createCalls: (await getInvocationsFor(page, 'create_htree_webview')).length,
       };
     }).toEqual({
-      cacheCalls: 1,
-      clearCalls: 1,
+      cacheCalls: 0,
+      clearCalls: 2,
       closeCalls: 1,
       createCalls: 2,
     });

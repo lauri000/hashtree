@@ -3,7 +3,6 @@
   import {
     automationUpdateState,
     automationShutdown,
-    cacheTreeRoot,
     clearTreeRootCache,
     createNip07Webview,
     createHtreeWebview,
@@ -27,7 +26,7 @@
     type WebviewPageLoadEvent,
     type HistoryEntry,
   } from './lib/tauri';
-  import { getSuggestedTreeRootHint } from './lib/apps';
+  import { isBuiltInIrisApp } from './lib/apps';
   import { appsStore } from './stores/apps';
   import AppLauncher from './components/AppLauncher.svelte';
   import Settings from './components/Settings.svelte';
@@ -35,7 +34,6 @@
   type View = 'launcher' | 'settings' | 'webview';
   type NavigateOptions = {
     pushHistory?: boolean;
-    prewarmSuggestedTreeRoot?: boolean;
     preferPlainLoopbackHost?: boolean;
   };
 
@@ -501,9 +499,9 @@
     }
   }
 
-  function hasSuggestedTreeRootHint(url: string): boolean {
+  function shouldRefreshBuiltInAppTreeRoot(url: string): boolean {
     const htree = parseHtreeUrl(url);
-    return !!getSuggestedTreeRootHint(htree?.npub, htree?.treename);
+    return isBuiltInIrisApp(htree?.npub, htree?.treename);
   }
 
   function hasChildDiagnosticsSnapshot(): boolean {
@@ -520,6 +518,7 @@
   function scheduleHtreeLoadStallRecovery(url: string) {
     clearChildLoadStallRecoveryTimer();
     if (!parseHtreeUrl(url)) return;
+    if (plainLoopbackFallbackScopes.has(browserIsolationScope(url))) return;
 
     const scheduledUrl = url;
     childLoadStallRecoveryTimer = setTimeout(() => {
@@ -582,11 +581,10 @@
     };
   }
 
-  /** Open a URL in the child webview, optionally prewarming a suggested root hint. */
+  /** Open a URL in the child webview. */
   async function navigate(url: string, options: NavigateOptions = {}) {
     const {
       pushHistory = true,
-      prewarmSuggestedTreeRoot = false,
       preferPlainLoopbackHost = false,
     } = options;
     const htree = parseHtreeUrl(url);
@@ -620,26 +618,18 @@
     const width = window.innerWidth;
     const height = Math.max(0, window.innerHeight - top - bottom);
 
+    if (htree?.npub && htree.treename && isBuiltInIrisApp(htree.npub, htree.treename)) {
+      // Built-in apps are released independently of the shell. Always drop any
+      // cached mutable root first so the daemon resolves the current app build.
+      await clearTreeRootCache(htree.npub, htree.treename, null, null)
+        .catch((error) => {
+          console.warn('[Iris] failed to clear built-in app tree root cache:', error);
+        });
+    }
+
     if (!g.__irisChildReady) {
       try {
         if (htree) {
-          const treeRootHint = prewarmSuggestedTreeRoot && htree.npub && htree.treename
-            ? getSuggestedTreeRootHint(htree.npub, htree.treename)
-            : null;
-          if (htree.npub && htree.treename) {
-            if (treeRootHint) {
-              await cacheTreeRoot(
-                htree.npub,
-                htree.treename,
-                treeRootHint.hash,
-                null,
-                null,
-                treeRootHint.nhash,
-              ).catch((error) => {
-                console.warn('[Iris] failed to prewarm tree root cache:', error);
-              });
-            }
-          }
           await createHtreeWebview(
             CHILD_LABEL,
             htree,
@@ -807,7 +797,6 @@
         }
         void recoverHtreeWebview(scheduledUrl, {
           reason: 'blank',
-          clearSuggestedTreeRootCache: hasSuggestedTreeRootHint(scheduledUrl),
           preferPlainLoopbackHost: true,
         });
       }, BLANK_SUGGESTED_TREE_RECOVERY_DELAY_MS);
@@ -816,14 +805,12 @@
 
   async function recoverHtreeWebview(url: string, options: {
     reason: string;
-    clearSuggestedTreeRootCache?: boolean;
     preferPlainLoopbackHost?: boolean;
   }) {
     const htree = parseHtreeUrl(url);
     if (!htree) return;
     const {
       reason,
-      clearSuggestedTreeRootCache = false,
       preferPlainLoopbackHost = false,
     } = options;
 
@@ -838,16 +825,9 @@
       if (preferPlainLoopbackHost) {
         plainLoopbackFallbackScopes.add(browserIsolationScope(url));
       }
-      if (clearSuggestedTreeRootCache && htree.npub && htree.treename) {
-        await clearTreeRootCache(htree.npub, htree.treename, null, null)
-          .catch((error) => {
-            console.warn('[Iris] failed to clear suggested tree root cache:', error);
-          });
-      }
       await destroyChildWebview();
       await navigate(url, {
         pushHistory: false,
-        prewarmSuggestedTreeRoot: false,
         preferPlainLoopbackHost,
       });
     } catch (error) {
@@ -857,9 +837,9 @@
 
   async function maybeRecoverSuggestedTreeRoot(url: string, bodyText: string) {
     if (!RECOVERABLE_TREE_BODY_TEXTS.has(bodyText.trim())) return;
+    if (!shouldRefreshBuiltInAppTreeRoot(url)) return;
     await recoverHtreeWebview(url, {
       reason: bodyText.trim(),
-      clearSuggestedTreeRootCache: hasSuggestedTreeRootHint(url),
       preferPlainLoopbackHost: true,
     });
   }
@@ -1453,10 +1433,7 @@
   <main class="min-h-0 flex-1 flex flex-col {isCompactToolbar ? 'order-1' : ''}">
     {#if currentView === 'launcher'}
       <AppLauncher
-        onnavigate={(url, options) =>
-          navigate(url, {
-            prewarmSuggestedTreeRoot: options?.prewarmSuggestedTreeRoot ?? false,
-          })}
+        onnavigate={(url) => navigate(url)}
       />
     {:else if currentView === 'settings'}
       <Settings onnavigate={(url) => navigate(url)} />
