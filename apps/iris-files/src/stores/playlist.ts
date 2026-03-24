@@ -90,7 +90,7 @@ export function buildThumbnailUrl(
 
 /**
  * Find the first video entry in a playlist directory.
- * Returns the first directory entry name (assumes subdirs are videos).
+ * Returns the first child entry that actually contains a video file.
  */
 export async function findFirstVideoEntry(rootCid: CID): Promise<string | null> {
   const tree = getTree();
@@ -102,9 +102,18 @@ export async function findFirstVideoEntry(rootCid: CID): Promise<string | null> 
     // If root has video file, it's a single video, not a playlist
     if (!isPlaylistStructure(entries)) return null;
 
-    // Return first entry (sorted for consistency)
     const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
-    return sorted[0]?.name ?? null;
+    for (const entry of sorted) {
+      try {
+        const subEntries = await withTimeout(tree.listDirectory(entry.cid), 2000);
+        if (subEntries && hasVideoFile(subEntries)) {
+          return entry.name;
+        }
+      } catch {
+        // Ignore unreadable entries and keep looking for the first real video.
+      }
+    }
+    return null;
   } catch {
     return null;
   }

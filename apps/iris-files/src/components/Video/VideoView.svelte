@@ -227,6 +227,13 @@ async function syncTreeRootToWorker(
     }));
   }
 
+  function canStartDirectVideoFallback(
+    isPlaylistVideoValue: boolean,
+    videoIdValue: string | null | undefined,
+  ): boolean {
+    return isPlaylistVideoValue && !!videoIdValue;
+  }
+
   function startDirectVideoFallback(npub: string, treeName: string, videoPathPrefix: string): boolean {
     if (!hasDirectHtreeServer()) {
       logVideoDebug('direct:skip', { reason: 'no-prefix', npub, treeName });
@@ -253,6 +260,16 @@ async function syncTreeRootToWorker(
         reason,
         npub: currentNpub ?? null,
         treeName: currentTreeName ?? null,
+      });
+      return;
+    }
+    if (!canStartDirectVideoFallback(isPlaylistVideo, currentVideoId)) {
+      logVideoDebug('direct:ensure-skip', {
+        reason,
+        npub: currentNpub,
+        treeName: currentTreeName,
+        playlistVideo: isPlaylistVideo,
+        videoId: currentVideoId ?? null,
       });
       return;
     }
@@ -816,7 +833,11 @@ async function syncTreeRootToWorker(
     // Skip reload if we already loaded this exact video
     if (videoKey === loadedVideoKey) {
       const videoPathPrefix = isPlaylist && currentVideoIdValue ? `${currentVideoIdValue}/` : '';
-      if (!videoSrc && hasDirectHtreeServer()) {
+      if (
+        !videoSrc &&
+        hasDirectHtreeServer() &&
+        canStartDirectVideoFallback(isPlaylist, currentVideoIdValue)
+      ) {
         error = null;
         startDirectVideoFallback(currentNpub, currentTreeName, videoPathPrefix);
       }
@@ -873,7 +894,10 @@ async function syncTreeRootToWorker(
       return;
     }
 
-    if (hasDirectHtreeServer()) {
+    if (
+      hasDirectHtreeServer() &&
+      canStartDirectVideoFallback(isPlaylist, currentVideoIdValue)
+    ) {
       const videoPathPrefix = isPlaylist && currentVideoIdValue ? `${currentVideoIdValue}/` : '';
       untrack(() => {
         startDirectVideoFallback(currentNpub, currentTreeName, videoPathPrefix);
@@ -988,9 +1012,7 @@ async function syncTreeRootToWorker(
     // For playlist videos, we need to first navigate to the video subdirectory
     let videoDirCid = rootCidParam;
     let videoPathPrefix = capturedIsPlaylistVideo && capturedVideoId ? `${capturedVideoId}/` : '';
-
-    // Start direct playback ASAP when local htree server is available.
-    startDirectVideoFallback(capturedNpub, capturedTreeName, videoPathPrefix);
+    const allowDirectFallback = canStartDirectVideoFallback(capturedIsPlaylistVideo, capturedVideoId);
 
     async function applyResolvedVideo(entryCid: CID, fileName: string) {
       videoCid = entryCid;
@@ -1095,7 +1117,11 @@ async function syncTreeRootToWorker(
       }
     }
 
-    if (!videoSrc && startDirectVideoFallback(capturedNpub, capturedTreeName, videoPathPrefix)) {
+    if (
+      !videoSrc &&
+      allowDirectFallback &&
+      startDirectVideoFallback(capturedNpub, capturedTreeName, videoPathPrefix)
+    ) {
       return;
     }
 
