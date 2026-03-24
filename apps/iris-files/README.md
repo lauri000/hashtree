@@ -66,6 +66,12 @@ pnpm run release:git:iris
 
 Each release script performs one build, runs focused tests against that exact build output, publishes the built directory to hashtree, and only then deploys the same directory to Cloudflare. If build or tests fail, neither hashtree nor Cloudflare upload runs.
 
+Frontend debug rule:
+
+- For TypeScript or UI changes, test the app shell from `http://localhost` / `pnpm tauri dev` while developing.
+- After publishing, test the released shell from the immutable `htree://nhash.../index.html` URL or the deployed HTTPS site.
+- Do not use the mutable `htree://npub.../<app>` app URL to verify unreleased frontend changes. That mutable tree only updates after the publish/release step, so it can easily serve an older app build while you are debugging new code.
+
 Cloudflare Worker static-assets setup:
 
 ```bash
