@@ -205,12 +205,45 @@ jobs:
           path: rust/dist/hashtree-*
           retention-days: 7
 
+  iris-release-metadata:
+    name: Determine Iris release metadata
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      asset_version: ${{ steps.version.outputs.asset_version }}
+      asset_prefix: ${{ steps.version.outputs.asset_prefix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Determine Iris asset version
+        id: version
+        shell: bash
+        run: |
+          asset_version="$(jq -r '.version' apps/iris/package.json)"
+          if [ -z "${asset_version}" ] || [ "${asset_version}" = "null" ]; then
+            echo "Iris version missing from apps/iris/package.json"
+            exit 1
+          fi
+
+          echo "asset_version=${asset_version}" >> "${GITHUB_OUTPUT}"
+          echo "asset_prefix=iris-${asset_version}" >> "${GITHUB_OUTPUT}"
+
   build-macos-app:
     name: Build macOS Iris app
     runs-on: macos-14
+    needs:
+      - iris-release-metadata
     permissions:
       contents: read
+    outputs:
+      release_ready: ${{ steps.release_gate.outputs.release_ready }}
+      release_reason: ${{ steps.release_gate.outputs.release_reason }}
     env:
+      IRIS_ASSET_PREFIX: ${{ needs.iris-release-metadata.outputs.asset_prefix }}
       MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
       MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
       MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -330,7 +363,9 @@ jobs:
           exit 1
 
       - name: Code sign macOS app
+        id: codesign
         if: steps.signing.outputs.enabled == 'true'
+        continue-on-error: true
         shell: bash
         run: |
           APP_PATH="${{ steps.locate_app.outputs.app_path }}"
@@ -348,7 +383,9 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
 
       - name: Notarize macOS app
-        if: steps.signing.outputs.enabled == 'true'
+        id: notarize
+        if: steps.signing.outputs.enabled == 'true' && steps.codesign.outcome == 'success'
+        continue-on-error: true
         shell: bash
         run: |
           APP_PATH="${{ steps.locate_app.outputs.app_path }}"
@@ -381,21 +418,49 @@ jobs:
           xcrun stapler staple "${APP_PATH}"
           xcrun stapler validate "${APP_PATH}"
 
+      - name: Determine Iris release readiness
+        id: release_gate
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [ "${{ steps.signing.outputs.enabled }}" != "true" ]; then
+            echo "release_ready=false" >> "${GITHUB_OUTPUT}"
+            echo "release_reason=macOS signing or notarization secrets were unavailable" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [ "${{ steps.codesign.outcome }}" != "success" ]; then
+            echo "release_ready=false" >> "${GITHUB_OUTPUT}"
+            echo "release_reason=macOS code signing failed" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [ "${{ steps.notarize.outcome }}" != "success" ]; then
+            echo "release_ready=false" >> "${GITHUB_OUTPUT}"
+            echo "release_reason=macOS notarization failed" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          echo "release_ready=true" >> "${GITHUB_OUTPUT}"
+          echo "release_reason=macOS signing and notarization succeeded" >> "${GITHUB_OUTPUT}"
+
       - name: Package macOS app artifact
+        if: steps.release_gate.outputs.release_ready == 'true'
         shell: bash
         run: |
           mkdir -p dist
           APP_PATH="${{ steps.locate_app.outputs.app_path }}"
-          ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "dist/iris-${RELEASE_TAG}-macos-arm64.zip"
+          ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "dist/${IRIS_ASSET_PREFIX}-macos-arm64.zip"
 
       - name: Verify packaged macOS app artifact
+        if: steps.release_gate.outputs.release_ready == 'true'
         shell: bash
         run: |
           VERIFY_DIR="$RUNNER_TEMP/iris-package-verify"
           rm -rf "${VERIFY_DIR}"
           mkdir -p "${VERIFY_DIR}"
 
-          ditto -x -k "dist/iris-${RELEASE_TAG}-macos-arm64.zip" "${VERIFY_DIR}"
+          ditto -x -k "dist/${IRIS_ASSET_PREFIX}-macos-arm64.zip" "${VERIFY_DIR}"
 
           APP_PATH="$(find "${VERIFY_DIR}" -maxdepth 1 -name '*.app' -print -quit)"
           if [ -z "${APP_PATH}" ]; then
@@ -411,11 +476,18 @@ jobs:
           fi
 
       - name: Upload macOS app artifact
+        if: steps.release_gate.outputs.release_ready == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: iris-macos-arm64
-          path: dist/iris-${{ env.RELEASE_TAG }}-macos-arm64.zip
+          path: dist/${{ env.IRIS_ASSET_PREFIX }}-macos-arm64.zip
           retention-days: 7
+
+      - name: Skip Iris release assets
+        if: steps.release_gate.outputs.release_ready != 'true'
+        shell: bash
+        run: |
+          echo "Iris release assets disabled: ${{ steps.release_gate.outputs.release_reason }}"
 
       - name: Cleanup macOS signing keychain
         if: ${{ always() }}
@@ -428,8 +500,12 @@ jobs:
   build-linux-app:
     name: Build Linux Iris app
     runs-on: ubuntu-24.04
+    needs:
+      - iris-release-metadata
     permissions:
       contents: read
+    env:
+      IRIS_ASSET_PREFIX: ${{ needs.iris-release-metadata.outputs.asset_prefix }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -510,23 +586,27 @@ jobs:
             exit 1
           fi
 
-          cp "${appimage}" "dist/iris-${RELEASE_TAG}-linux-x86_64.AppImage"
-          cp "${deb}" "dist/iris-${RELEASE_TAG}-linux-x86_64.deb"
-          sha256sum "dist/iris-${RELEASE_TAG}-linux-x86_64.AppImage" > "dist/iris-${RELEASE_TAG}-linux-x86_64.AppImage.sha256"
-          sha256sum "dist/iris-${RELEASE_TAG}-linux-x86_64.deb" > "dist/iris-${RELEASE_TAG}-linux-x86_64.deb.sha256"
+          cp "${appimage}" "dist/${IRIS_ASSET_PREFIX}-linux-x86_64.AppImage"
+          cp "${deb}" "dist/${IRIS_ASSET_PREFIX}-linux-x86_64.deb"
+          sha256sum "dist/${IRIS_ASSET_PREFIX}-linux-x86_64.AppImage" > "dist/${IRIS_ASSET_PREFIX}-linux-x86_64.AppImage.sha256"
+          sha256sum "dist/${IRIS_ASSET_PREFIX}-linux-x86_64.deb" > "dist/${IRIS_ASSET_PREFIX}-linux-x86_64.deb.sha256"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
           name: iris-linux-x86_64
-          path: dist/iris-${{ env.RELEASE_TAG }}-linux-x86_64*
+          path: dist/${{ env.IRIS_ASSET_PREFIX }}-linux-x86_64*
           retention-days: 7
 
   build-windows-app:
     name: Build Windows Iris app
     runs-on: windows-latest
+    needs:
+      - iris-release-metadata
     permissions:
       contents: read
+    env:
+      IRIS_ASSET_PREFIX: ${{ needs.iris-release-metadata.outputs.asset_prefix }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -584,22 +664,23 @@ jobs:
             throw 'No Windows NSIS installer found in build output'
           }
 
-          Copy-Item $nsis.FullName "dist/iris-$env:RELEASE_TAG-windows-x64-setup.exe"
+          Copy-Item $nsis.FullName "dist/$env:IRIS_ASSET_PREFIX-windows-x64-setup.exe"
 
-          $nsisHash = (Get-FileHash "dist/iris-$env:RELEASE_TAG-windows-x64-setup.exe" -Algorithm SHA256).Hash.ToLower()
-          "$nsisHash  iris-$env:RELEASE_TAG-windows-x64-setup.exe" | Out-File -FilePath "dist/iris-$env:RELEASE_TAG-windows-x64-setup.exe.sha256" -Encoding ASCII
+          $nsisHash = (Get-FileHash "dist/$env:IRIS_ASSET_PREFIX-windows-x64-setup.exe" -Algorithm SHA256).Hash.ToLower()
+          "$nsisHash  $env:IRIS_ASSET_PREFIX-windows-x64-setup.exe" | Out-File -FilePath "dist/$env:IRIS_ASSET_PREFIX-windows-x64-setup.exe.sha256" -Encoding ASCII
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: iris-windows-x64
-          path: dist/iris-${{ env.RELEASE_TAG }}-windows-x64*
+          path: dist/${{ env.IRIS_ASSET_PREFIX }}-windows-x64*
           retention-days: 7
 
   release:
     name: Create Release
     needs:
       - build
+      - iris-release-metadata
       - build-macos-app
       - build-linux-app
       - build-windows-app
@@ -607,14 +688,142 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
+      - name: Download hashtree artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          pattern: hashtree-*
+          path: artifacts/hashtree
+          merge-multiple: true
+
+      - name: Download Iris artifacts
+        if: needs.build-macos-app.outputs.release_ready == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: iris-*
+          path: artifacts/iris
           merge-multiple: true
 
       - name: List artifacts
-        run: ls -la artifacts/
+        shell: bash
+        run: find artifacts -maxdepth 2 -type f | sort
+
+      - name: Prepare release assets and notes
+        id: release_assets
+        shell: bash
+        env:
+          IRIS_ASSET_PREFIX: ${{ needs.iris-release-metadata.outputs.asset_prefix }}
+          IRIS_RELEASE_READY: ${{ needs.build-macos-app.outputs.release_ready }}
+          IRIS_RELEASE_REASON: ${{ needs.build-macos-app.outputs.release_reason }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          files=()
+          for file in artifacts/hashtree/*; do
+            if [ -f "${file}" ]; then
+              files+=("${file}")
+            fi
+          done
+
+          if [ "${IRIS_RELEASE_READY}" = "true" ]; then
+            for file in artifacts/iris/*; do
+              if [ -f "${file}" ]; then
+                files+=("${file}")
+              fi
+            done
+          else
+            echo "Skipping Iris release assets: ${IRIS_RELEASE_REASON}"
+          fi
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No release files found"
+            exit 1
+          fi
+
+          {
+            echo "files<<EOF"
+            printf '%s\n' "${files[@]}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+          cat > release-body.md <<EOF
+          ## Installation
+
+          ### Linux / macOS (auto-detect)
+          \`\`\`bash
+          curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hashtree-\$(uname -m | sed 's/arm64/aarch64/')-\$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/apple-darwin/' | sed 's/linux/unknown-linux-musl/').tar.gz | tar -xz && cd hashtree && ./install.sh
+          \`\`\`
+
+          ### macOS (manual)
+          \`\`\`bash
+          # Apple Silicon (M1/M2/M3)
+          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hashtree-aarch64-apple-darwin.tar.gz
+
+          # Intel Mac
+          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hashtree-x86_64-apple-darwin.tar.gz
+
+          tar -xzf hashtree-*.tar.gz && cd hashtree && ./install.sh
+          \`\`\`
+
+          ### Linux (manual)
+          \`\`\`bash
+          # x86_64
+          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hashtree-x86_64-unknown-linux-musl.tar.gz
+
+          # ARM64 (Raspberry Pi, etc.)
+          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hashtree-aarch64-unknown-linux-musl.tar.gz
+
+          tar -xzf hashtree-*.tar.gz && cd hashtree && ./install.sh
+          \`\`\`
+
+          ### Windows
+          Download \`hashtree-x86_64-pc-windows-msvc.zip\`, extract, and add the folder to PATH.
+          EOF
+
+          if [ "${IRIS_RELEASE_READY}" = "true" ]; then
+            cat >> release-body.md <<EOF
+
+          ### Iris desktop app
+          macOS:
+          Download \`${IRIS_ASSET_PREFIX}-macos-arm64.zip\`, unzip it, and move \`Iris.app\` into \`/Applications\`.
+
+          Linux:
+          Download \`${IRIS_ASSET_PREFIX}-linux-x86_64.AppImage\` and run \`chmod +x ${IRIS_ASSET_PREFIX}-linux-x86_64.AppImage && ./${IRIS_ASSET_PREFIX}-linux-x86_64.AppImage\`,
+          or install \`${IRIS_ASSET_PREFIX}-linux-x86_64.deb\` with \`sudo apt install ./${IRIS_ASSET_PREFIX}-linux-x86_64.deb\`.
+
+          Windows:
+          Run \`${IRIS_ASSET_PREFIX}-windows-x64-setup.exe\`.
+          EOF
+          else
+            cat >> release-body.md <<EOF
+
+          ### Iris desktop app
+          Iris desktop installers were not attached to this release because ${IRIS_RELEASE_REASON}.
+          EOF
+          fi
+
+          cat >> release-body.md <<EOF
+
+          ### Verify
+          \`\`\`bash
+          htree --help
+          htree cashu balance
+          git clone htree://npub1.../repo
+          \`\`\`
+
+          ## What's included
+          - \`htree\` - CLI + daemon for hashtree (add, get, push, start)
+          - \`htree-cashu\` - Cashu wallet helper for \`htree cashu\`
+          - \`git-remote-htree\` - Git remote helper for \`htree://\` URLs
+          - \`install.sh\` - Installer script (Unix)
+          - \`README.txt\` - Quick reference
+          EOF
+
+          if [ "${IRIS_RELEASE_READY}" = "true" ]; then
+            cat >> release-body.md <<EOF
+          - \`Iris\` desktop installers for macOS, Linux, and Windows - native shell with embedded htree daemon
+          EOF
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -623,62 +832,5 @@ jobs:
           name: ${{ github.event.inputs.tag || github.ref_name }}
           draft: false
           prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
-          files: artifacts/*
-          body: |
-            ## Installation
-
-            ### Linux / macOS (auto-detect)
-            ```bash
-            curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hashtree-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/apple-darwin/' | sed 's/linux/unknown-linux-musl/').tar.gz | tar -xz && cd hashtree && ./install.sh
-            ```
-
-            ### macOS (manual)
-            ```bash
-            # Apple Silicon (M1/M2/M3)
-            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hashtree-aarch64-apple-darwin.tar.gz
-            
-            # Intel Mac
-            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hashtree-x86_64-apple-darwin.tar.gz
-            
-            tar -xzf hashtree-*.tar.gz && cd hashtree && ./install.sh
-            ```
-
-            ### Linux (manual)
-            ```bash
-            # x86_64
-            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hashtree-x86_64-unknown-linux-musl.tar.gz
-            
-            # ARM64 (Raspberry Pi, etc.)
-            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hashtree-aarch64-unknown-linux-musl.tar.gz
-            
-            tar -xzf hashtree-*.tar.gz && cd hashtree && ./install.sh
-            ```
-
-            ### Windows
-            Download `hashtree-x86_64-pc-windows-msvc.zip`, extract, and add the folder to PATH.
-
-            ### Iris desktop app
-            macOS:
-            Download `iris-${{ env.RELEASE_TAG }}-macos-arm64.zip`, unzip it, and move `Iris.app` into `/Applications`.
-
-            Linux:
-            Download `iris-${{ env.RELEASE_TAG }}-linux-x86_64.AppImage` and run `chmod +x iris-${{ env.RELEASE_TAG }}-linux-x86_64.AppImage && ./iris-${{ env.RELEASE_TAG }}-linux-x86_64.AppImage`,
-            or install `iris-${{ env.RELEASE_TAG }}-linux-x86_64.deb` with `sudo apt install ./iris-${{ env.RELEASE_TAG }}-linux-x86_64.deb`.
-
-            Windows:
-            Run `iris-${{ env.RELEASE_TAG }}-windows-x64-setup.exe`.
-
-            ### Verify
-            ```bash
-            htree --help
-            htree cashu balance
-            git clone htree://npub1.../repo
-            ```
-
-            ## What's included
-            - `htree` — CLI + daemon for hashtree (add, get, push, start)
-            - `htree-cashu` — Cashu wallet helper for `htree cashu`
-            - `git-remote-htree` — Git remote helper for `htree://` URLs
-            - `install.sh` — Installer script (Unix)
-            - `README.txt` — Quick reference
-            - `Iris` desktop installers for macOS, Linux, and Windows — native shell with embedded htree daemon
+          files: ${{ steps.release_assets.outputs.files }}
+          body_path: release-body.md
