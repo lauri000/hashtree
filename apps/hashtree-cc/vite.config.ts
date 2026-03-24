@@ -50,8 +50,8 @@ export default defineConfig({
         name: 'hashtree.cc',
         short_name: 'hashtree.cc',
         description: 'Decentralized file sharing with hashtree',
-        theme_color: '#0f0f0f',
-        background_color: '#0f0f0f',
+        theme_color: '#916dfe',
+        background_color: '#f5f5f5',
         display: 'standalone',
         icons: [
           {

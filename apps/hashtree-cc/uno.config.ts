@@ -36,15 +36,15 @@ export default defineConfig({
   theme: {
     colors: {
       surface: {
-        0: '#0f0f0f',
-        1: '#181818',
-        2: '#232323',
-        3: '#3f3f3f',
+        0: 'rgb(var(--surface-0) / <alpha-value>)',
+        1: 'rgb(var(--surface-1) / <alpha-value>)',
+        2: 'rgb(var(--surface-2) / <alpha-value>)',
+        3: 'rgb(var(--surface-3) / <alpha-value>)',
       },
       text: {
-        1: '#ffffff',
-        2: '#aaaaaa',
-        3: '#606060',
+        1: 'rgb(var(--text-1) / <alpha-value>)',
+        2: 'rgb(var(--text-2) / <alpha-value>)',
+        3: 'rgb(var(--text-3) / <alpha-value>)',
       },
       accent: '#916dfe',
       success: '#2ba640',
