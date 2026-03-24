@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tracing::debug;
 
 const MAX_HISTORY_ENTRIES: usize = 1000;
+const LMDB_MAX_READERS: u32 = 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
@@ -46,6 +47,7 @@ impl HistoryStore {
             EnvOpenOptions::new()
                 .map_size(10 * 1024 * 1024)
                 .max_dbs(1)
+                .max_readers(LMDB_MAX_READERS)
                 .open(&history_dir)
                 .map_err(|e| format!("Failed to open history db: {}", e))?
         };

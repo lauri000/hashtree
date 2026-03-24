@@ -25,6 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const PRIORITY_OTHER: u8 = 64;
 pub const PRIORITY_FOLLOWED: u8 = 128;
 pub const PRIORITY_OWN: u8 = 255;
+const LMDB_MAX_READERS: u32 = 1024;
 
 /// Metadata for a synced tree (for eviction tracking)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -539,8 +540,10 @@ impl HashtreeStore {
             EnvOpenOptions::new()
                 .map_size(10 * 1024 * 1024 * 1024) // 10GB virtual address space
                 .max_dbs(8) // pins, blob_owners, pubkey_blobs, tree_meta, blob_trees, tree_refs, cached_roots, blobs
+                .max_readers(LMDB_MAX_READERS)
                 .open(path)?
         };
+        let _ = env.clear_stale_readers();
 
         let mut wtxn = env.write_txn()?;
         let pins = env.create_database(&mut wtxn, Some("pins"))?;
