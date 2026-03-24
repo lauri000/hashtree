@@ -8,7 +8,7 @@
   import { type CID, type TreeEntry } from '@hashtree/core';
   import YjsDocumentEditor from '../Viewer/YjsDocumentEditor.svelte';
   import { nostrStore } from '../../nostr';
-  import { nip19 } from 'nostr-tools';
+  import { syncSelectedTreeForOwnRoute } from '../../lib/selectedTree';
   import { addRecent, updateRecentVisibility } from '../../stores/recents';
 
   let route = $derived($routeStore);
@@ -20,41 +20,18 @@
     return `${route.npub}/${route.treeName}/${pathKey}?k=${linkKey}`;
   });
 
-  // Set selectedTree when viewing own document (required for autosave to work)
-  function setSelectedTreeIfOwn(npubStr: string, treeNameVal: string) {
-    let pubkey: string | null = null;
-    try {
-      const decoded = nip19.decode(npubStr);
-      if (decoded.type === 'npub') {
-        pubkey = decoded.data as string;
-      }
-    } catch {
-      return;
-    }
-
-    const state = nostrStore.getState();
-    if (pubkey && state.isLoggedIn && state.pubkey === pubkey) {
-      const currentSelected = state.selectedTree;
-      if (!currentSelected || currentSelected.name !== treeNameVal) {
-        nostrStore.setSelectedTree({
-          id: '',
-          name: treeNameVal,
-          pubkey,
-          rootHash: currentSelected?.rootHash || '',
-          rootKey: currentSelected?.rootKey,
-          visibility: currentSelected?.visibility ?? 'public',
-          created_at: Math.floor(Date.now() / 1000),
-        });
-      }
-    }
-  }
-
   // Set selectedTree when route changes
   $effect(() => {
     const npub = route.npub;
     const treeName = route.treeName;
+    const tree = route.treeName ? trees.find(t => t.name === route.treeName) : null;
     if (npub && treeName) {
-      setSelectedTreeIfOwn(npub, treeName);
+      syncSelectedTreeForOwnRoute(nostrStore, {
+        npub,
+        treeName,
+        visibility: tree?.visibility,
+        labels: tree?.labels,
+      });
     }
   });
 
@@ -70,9 +47,8 @@
     return unsub;
   });
 
-  let currentTreeVisibility = $derived(
-    route.treeName ? trees.find(t => t.name === route.treeName)?.visibility : undefined
-  );
+  let currentTree = $derived(route.treeName ? trees.find(t => t.name === route.treeName) : undefined);
+  let currentTreeVisibility = $derived(currentTree?.visibility);
 
   // Add to recents when viewing a doc
   $effect(() => {

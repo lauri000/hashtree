@@ -5,6 +5,7 @@
   import { marked } from 'marked';
   import { nip19 } from 'nostr-tools';
   import { getNhashFileUrl } from '../../lib/mediaUrl';
+  import { syncSelectedTreeForOwnRoute } from '../../lib/selectedTree';
   import { getTree } from '../../store';
   import { setUploadProgress } from '../../stores/upload';
   import { toast } from '../../stores/toast';
@@ -209,37 +210,17 @@
     return treeName.startsWith('boards/') ? treeName.slice(7) : treeName;
   }
 
-  function setSelectedTreeIfOwn(npubStr: string, treeNameVal: string) {
-    let pubkey: string | null = null;
-    try {
-      const decoded = nip19.decode(npubStr);
-      if (decoded.type === 'npub') pubkey = decoded.data as string;
-    } catch {
-      return;
-    }
-
-    const state = nostrStore.getState();
-    if (!pubkey || !state.isLoggedIn || state.pubkey !== pubkey) return;
-
-    const currentSelected = state.selectedTree;
-    if (!currentSelected || currentSelected.name !== treeNameVal) {
-      nostrStore.setSelectedTree({
-        id: '',
-        name: treeNameVal,
-        pubkey,
-        rootHash: currentSelected?.rootHash || '',
-        rootKey: currentSelected?.rootKey,
-        visibility: currentSelected?.visibility ?? 'public',
-        created_at: Math.floor(Date.now() / 1000),
-      });
-    }
-  }
-
   $effect(() => {
     const npub = route.npub;
     const treeName = route.treeName;
+    const tree = currentTree;
     if (!npub || !treeName) return;
-    setSelectedTreeIfOwn(npub, treeName);
+    syncSelectedTreeForOwnRoute(nostrStore, {
+      npub,
+      treeName,
+      visibility: tree?.visibility,
+      labels: tree?.labels,
+    });
   });
 
   $effect(() => {

@@ -9,6 +9,7 @@
   import { updateRecentVisibility } from '../stores/recents';
   import { nip19 } from 'nostr-tools';
   import { getQueryParamsFromHash } from '../lib/router.svelte';
+  import { buildSelectedTreeForOwnRoute, syncSelectedTreeForOwnRoute } from '../lib/selectedTree';
   import { shouldShowGenericFileBrowser, supportsDocumentFeatures, supportsGitFeatures } from '../appType';
   import { treeRootRegistry } from '../TreeRootRegistry';
   import { findNearestGitRootPath } from '../utils/gitRoot';
@@ -103,7 +104,12 @@
     if (npub && treeName) {
       // Set selectedTree immediately (synchronously) if viewing own tree
       // This ensures autosaveIfOwn works before async loadTree completes
-      setSelectedTreeIfOwn(npub, treeName);
+      syncSelectedTreeForOwnRoute(nostrStore, {
+        npub,
+        treeName,
+        visibility: treeRootRegistry.getVisibility(npub, treeName),
+        labels: treeRootRegistry.getLabels(npub, treeName),
+      });
 
       loadTree(npub, treeName);
 
@@ -123,36 +129,6 @@
       });
     }
   });
-
-  function setSelectedTreeIfOwn(npubStr: string, treeNameVal: string) {
-    // Decode npub synchronously
-    let pubkey: string | null = null;
-    try {
-      const decoded = nip19.decode(npubStr);
-      if (decoded.type === 'npub') {
-        pubkey = decoded.data as string;
-      }
-    } catch {
-      return;
-    }
-
-    const state = nostrStore.getState();
-    if (pubkey && state.isLoggedIn && state.pubkey === pubkey) {
-      const currentSelected = state.selectedTree;
-      if (!currentSelected || currentSelected.name !== treeNameVal) {
-        nostrStore.setSelectedTree({
-          id: '',
-          name: treeNameVal,
-          pubkey,
-          labels: treeRootRegistry.getLabels(npubStr, treeNameVal) ?? currentSelected?.labels,
-          rootHash: currentSelected?.rootHash || '',
-          rootKey: currentSelected?.rootKey,
-          visibility: currentSelected?.visibility ?? 'public',
-          created_at: Math.floor(Date.now() / 1000),
-        });
-      }
-    }
-  }
 
   let resolverUnsub: (() => void) | null = null;
 
@@ -221,21 +197,23 @@
             }
 
             if (pubkey) {
-              const currentSelected = nostrStore.getState().selectedTree;
-              if (!currentSelected || currentSelected.name === treeNameVal) {
+              const state = nostrStore.getState();
+              const baseSelectedTree = buildSelectedTreeForOwnRoute(state, {
+                npub: npubStr,
+                treeName: treeNameVal,
+                visibility: visibilityInfo?.visibility ?? treeRootRegistry.getVisibility(npubStr, treeNameVal),
+                labels: treeRootRegistry.getLabels(npubStr, treeNameVal),
+              });
+              if (baseSelectedTree) {
                 nostrStore.setSelectedTree({
-                  id: currentSelected?.id || '',
-                  name: treeNameVal,
-                  pubkey,
-                  labels: treeRootRegistry.getLabels(npubStr, treeNameVal) ?? currentSelected?.labels,
+                  ...baseSelectedTree,
                   rootHash: hashHex,
                   rootKey: keyHex,
-                  visibility: visibilityInfo?.visibility ?? 'public',
+                  visibility: visibilityInfo?.visibility ?? baseSelectedTree.visibility,
                   encryptedKey: visibilityInfo?.encryptedKey,
                   keyId: visibilityInfo?.keyId,
                   selfEncryptedKey: visibilityInfo?.selfEncryptedKey,
                   selfEncryptedLinkKey: visibilityInfo?.selfEncryptedLinkKey,
-                  created_at: currentSelected?.created_at || Math.floor(Date.now() / 1000),
                 });
               }
             }
