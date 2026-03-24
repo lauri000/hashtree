@@ -8,7 +8,7 @@
   import { toHex } from '@hashtree/core';
   import { formatTimeAgo } from '../../utils/format';
   import { Name } from '../User';
-  import { getThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
+  import { getStableThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
   import { logHtreeDebug } from '../../lib/htreeDebug';
   import { nostrStore } from '../../nostr';
   import { recentsStore, positionCacheVersion, getVideoPosition } from '../../stores/recents';
@@ -56,9 +56,14 @@
   // Build thumbnail URL for a video
   function buildThumbnailUrl(video: typeof feedVideos[0]): string | null {
     void htreePrefixVersion;
-    if (!video.ownerNpub || !video.treeName) return null;
     const hashPrefix = video.rootCid?.hash ? toHex(video.rootCid.hash).slice(0, 8) : undefined;
-    return getThumbnailUrl(video.ownerNpub, video.treeName, video.videoId || undefined, hashPrefix);
+    return getStableThumbnailUrl({
+      rootCid: video.rootCid,
+      npub: video.ownerNpub,
+      treeName: video.treeName,
+      videoId: video.videoId || undefined,
+      hashPrefix,
+    });
   }
 
   // Get recents to look up duration (feedStore doesn't have it)

@@ -157,6 +157,16 @@
   // Using Object.keys() ensures Svelte tracks the object
   let playlistTreeNames = $derived(new Set(Object.keys(playlistInfo)));
 
+  function getRootCidForTree(tree: TreeEntry): CID | null {
+    if (tree.hash) {
+      return { hash: tree.hash, key: tree.encryptionKey };
+    }
+    if (!npub) return null;
+    const localHash = getLocalRootCache(npub, tree.name);
+    if (!localHash) return null;
+    return { hash: localHash, key: getLocalRootKey(npub, tree.name) };
+  }
+
   // Combined list of videos and playlists (only show after detection completes)
   let videos = $derived(
     detectionComplete
@@ -168,6 +178,8 @@
             ownerPubkey: ownerPubkey,
             ownerNpub: npub,
             treeName: t.name,
+            rootCid: getRootCidForTree(t) ?? undefined,
+            thumbnailUrl: videoMetadata[t.name]?.thumbnailUrl,
             visibility: t.visibility,
             href: `#/${npub}/${encodeTreeNameForUrl(t.name)}${t.linkKey ? `?k=${t.linkKey}` : ''}`,
             duration: videoMetadata[t.name]?.duration,
@@ -356,6 +368,8 @@
               ownerPubkey={video.ownerPubkey}
               ownerNpub={video.ownerNpub}
               treeName={video.treeName}
+              thumbnailUrl={video.thumbnailUrl}
+              rootCid={video.rootCid ?? null}
               visibility={video.visibility}
               timestamp={video.timestamp}
               noHover

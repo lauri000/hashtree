@@ -542,19 +542,10 @@ impl<S: Store> HashTree<S> {
         key: &EncryptionKey,
         max_size: Option<u64>,
     ) -> Result<Option<Vec<u8>>, HashTreeError> {
-        let encrypted_data = match self
-            .store
-            .get(hash)
-            .await
-            .map_err(|e| HashTreeError::Store(e.to_string()))?
-        {
-            Some(d) => d,
+        let decrypted = match self.get_encrypted_root(hash, key).await? {
+            Some(data) => data,
             None => return Ok(None),
         };
-
-        // Decrypt the data
-        let decrypted = decrypt_chk(&encrypted_data, key)
-            .map_err(|e| HashTreeError::Encryption(e.to_string()))?;
 
         // Check if it's a tree node
         if is_tree_node(&decrypted) {
@@ -571,6 +562,26 @@ impl<S: Store> HashTree<S> {
 
         // Single chunk data
         Self::ensure_size_limit(max_size, decrypted.len() as u64)?;
+        Ok(Some(decrypted))
+    }
+
+    async fn get_encrypted_root(
+        &self,
+        hash: &Hash,
+        key: &EncryptionKey,
+    ) -> Result<Option<Vec<u8>>, HashTreeError> {
+        let encrypted_data = match self
+            .store
+            .get(hash)
+            .await
+            .map_err(|e| HashTreeError::Store(e.to_string()))?
+        {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        let decrypted = decrypt_chk(&encrypted_data, key)
+            .map_err(|e| HashTreeError::Encryption(e.to_string()))?;
         Ok(Some(decrypted))
     }
 
@@ -968,11 +979,26 @@ impl<S: Store> HashTree<S> {
         start: u64,
         end: Option<u64>,
     ) -> Result<Option<Vec<u8>>, HashTreeError> {
-        if let Some(_key) = cid.key {
-            let data = match self.get(cid, None).await? {
+        if let Some(key) = cid.key {
+            let data = match self.get_encrypted_root(&cid.hash, &key).await? {
                 Some(d) => d,
                 None => return Ok(None),
             };
+
+            if is_tree_node(&data) {
+                let node = decode_tree_node(&data)?;
+                let total_size: u64 = node.links.iter().map(|link| link.size).sum();
+                let actual_end = end.unwrap_or(total_size).min(total_size);
+                if start >= actual_end {
+                    return Ok(Some(vec![]));
+                }
+
+                let mut result = Vec::with_capacity((actual_end - start) as usize);
+                self.append_encrypted_range(&node, start, actual_end, 0, &mut result)
+                    .await?;
+                return Ok(Some(result));
+            }
+
             let start_idx = start as usize;
             let end_idx = end.map(|e| e as usize).unwrap_or(data.len());
             if start_idx >= data.len() {
@@ -983,6 +1009,64 @@ impl<S: Store> HashTree<S> {
         }
 
         self.read_file_range(&cid.hash, start, end).await
+    }
+
+    async fn append_encrypted_range(
+        &self,
+        node: &TreeNode,
+        start: u64,
+        end: u64,
+        base_offset: u64,
+        result: &mut Vec<u8>,
+    ) -> Result<(), HashTreeError> {
+        let mut current_offset = base_offset;
+
+        for link in &node.links {
+            let child_start = current_offset;
+            let child_end = child_start.saturating_add(link.size);
+            current_offset = child_end;
+
+            if child_end <= start {
+                continue;
+            }
+            if child_start >= end {
+                break;
+            }
+
+            let chunk_key = link
+                .key
+                .ok_or_else(|| HashTreeError::Encryption("missing chunk key".to_string()))?;
+
+            let encrypted_child = self
+                .store
+                .get(&link.hash)
+                .await
+                .map_err(|e| HashTreeError::Store(e.to_string()))?
+                .ok_or_else(|| HashTreeError::MissingChunk(to_hex(&link.hash)))?;
+            let decrypted_child = decrypt_chk(&encrypted_child, &chunk_key)
+                .map_err(|e| HashTreeError::Encryption(e.to_string()))?;
+
+            if is_tree_node(&decrypted_child) {
+                let child_node = decode_tree_node(&decrypted_child)?;
+                Box::pin(self.append_encrypted_range(&child_node, start, end, child_start, result))
+                    .await?;
+                continue;
+            }
+
+            let slice_start = if start > child_start {
+                (start - child_start) as usize
+            } else {
+                0
+            };
+            let slice_end = if end < child_end {
+                (end - child_start) as usize
+            } else {
+                decrypted_child.len()
+            };
+            result.extend_from_slice(&decrypted_child[slice_start..slice_end]);
+        }
+
+        Ok(())
     }
 
     /// Assemble only the chunks needed for a byte range
@@ -1469,11 +1553,15 @@ impl<S: Store> HashTree<S> {
 
     /// Get total size using a Cid (handles decryption if key present)
     pub async fn get_size_cid(&self, cid: &Cid) -> Result<u64, HashTreeError> {
-        if cid.key.is_some() {
-            let data = match self.get(cid, None).await? {
+        if let Some(key) = cid.key {
+            let data = match self.get_encrypted_root(&cid.hash, &key).await? {
                 Some(d) => d,
                 None => return Ok(0),
             };
+            if is_tree_node(&data) {
+                let node = decode_tree_node(&data)?;
+                return Ok(node.links.iter().map(|link| link.size).sum());
+            }
             return Ok(data.len() as u64);
         }
 
@@ -2404,6 +2492,50 @@ mod tests {
 
         let retrieved = tree.get(&cid, None).await.unwrap().unwrap();
         assert_eq!(retrieved, data);
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_range_reads_do_not_require_unrelated_leaf_chunks() {
+        let store = Arc::new(MemoryStore::new());
+        let tree = HashTree::new(HashTreeConfig::new(store.clone()).with_chunk_size(100));
+
+        let data: Vec<u8> = (0..350).map(|i| (i % 256) as u8).collect();
+        let (cid, _) = tree.put(&data).await.unwrap();
+        let root = tree.get_node(&cid).await.unwrap().unwrap();
+
+        store.delete(&root.links[3].hash).await.unwrap();
+
+        assert_eq!(tree.get_size_cid(&cid).await.unwrap(), data.len() as u64);
+        let range = tree
+            .read_file_range_cid(&cid, 0, Some(50))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(range, data[..50].to_vec());
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_range_reads_do_not_require_unrelated_nested_subtrees() {
+        let store = Arc::new(MemoryStore::new());
+        let tree = HashTree::new(
+            HashTreeConfig::new(store.clone())
+                .with_chunk_size(100)
+                .with_max_links(2),
+        );
+
+        let data: Vec<u8> = (0..500).map(|i| (i % 256) as u8).collect();
+        let (cid, _) = tree.put(&data).await.unwrap();
+        let root = tree.get_node(&cid).await.unwrap().unwrap();
+
+        store.delete(&root.links[1].hash).await.unwrap();
+
+        assert_eq!(tree.get_size_cid(&cid).await.unwrap(), data.len() as u64);
+        let range = tree
+            .read_file_range_cid(&cid, 0, Some(50))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(range, data[..50].to_vec());
     }
 
     #[tokio::test]

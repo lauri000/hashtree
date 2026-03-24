@@ -17,7 +17,7 @@ import { getLocalRootCache, getLocalRootKey, onCacheUpdate } from '../treeRootCa
 import { LRUCache } from '../utils/lruCache';
 import { indexVideo } from './searchIndex';
 import { clearFeedPlaylistInfo } from './homeFeedCache';
-import { getHtreePrefix } from '../lib/mediaUrl';
+import { getHtreePrefix, getStableThumbnailUrl } from '../lib/mediaUrl';
 import { LinkType, type CID } from '@hashtree/core';
 
 // Cache playlist detection results to avoid layout shift on revisit
@@ -237,7 +237,11 @@ export async function detectPlaylistForCard(
       // Find thumbnail
       const thumbEntry = findThumbnailEntry(entries);
       if (thumbEntry) {
-        thumbnailUrl = buildThumbnailUrl(npub, treeName, '', thumbEntry.name);
+        thumbnailUrl = getStableThumbnailUrl({
+          rootCid,
+          npub,
+          treeName,
+        }) ?? undefined;
       }
 
       const info: PlaylistCardInfo = { videoCount: 0, duration, thumbnailUrl, createdAt, title };
@@ -256,7 +260,12 @@ export async function detectPlaylistForCard(
           if (subEntries) {
             const thumbEntry = findThumbnailEntry(subEntries);
             if (thumbEntry) {
-              return buildThumbnailUrl(npub, treeName, entry.name, thumbEntry.name);
+              return getStableThumbnailUrl({
+                rootCid,
+                npub,
+                treeName,
+                videoId: entry.name,
+              });
             }
           }
         } catch { /* skip */ }
@@ -583,7 +592,12 @@ async function loadPlaylistMetadata(
       if (!thumbnailUrl) {
         const thumbEntry = findThumbnailEntry(subEntries);
         if (thumbEntry) {
-          thumbnailUrl = buildThumbnailUrl(npub, treeName, entry.name, thumbEntry.name);
+          thumbnailUrl = getStableThumbnailUrl({
+            rootCid,
+            npub,
+            treeName,
+            videoId: entry.name,
+          }) ?? undefined;
         }
       }
 

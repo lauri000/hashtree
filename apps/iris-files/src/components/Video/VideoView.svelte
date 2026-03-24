@@ -39,7 +39,7 @@
   import { currentPlaylist, loadPlaylist, playNext, repeatMode, shuffleEnabled } from '../../stores/playlist';
   import type { CID } from '@hashtree/core';
   import { toHex, nhashEncode } from '@hashtree/core';
-  import { appendHtreeCacheBust, getHtreePrefix, getNpubFileUrl, getNpubFileUrlAsync, getNhashFileUrl, getThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
+  import { appendHtreeCacheBust, getHtreePrefix, getStableFileUrl, getStableThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
   import { logHtreeDebug } from '../../lib/htreeDebug';
   import { ensureMediaStreamingReady } from '../../lib/mediaStreamingSetup';
   import { NDKEvent, type NDKFilter } from 'ndk';
@@ -715,11 +715,13 @@ async function syncTreeRootToWorker(
       if (prefixVersion !== lastPrefixVersion) {
         lastPrefixVersion = prefixVersion;
         if (videoSrc && videoFileName) {
-          const directPrefix = resolveDirectPrefix();
-          const nextSrc = directPrefix
-            ? buildDirectUrl(directPrefix, currentNpub, currentTreeName, `${videoPathPrefix}${videoFileName}`)
-            : getNpubFileUrl(currentNpub, currentTreeName, `${videoPathPrefix}${videoFileName}`);
-          if (videoSrc !== nextSrc) {
+          const nextSrc = getStableFileUrl({
+            cid: videoCid,
+            npub: currentNpub,
+            treeName: currentTreeName,
+            path: `${videoPathPrefix}${videoFileName}`,
+          });
+          if (nextSrc && videoSrc !== nextSrc) {
             videoSrc = nextSrc;
             error = null;
           }
@@ -739,6 +741,8 @@ async function syncTreeRootToWorker(
     // Reset state for new video
     videoSrc = '';
     videoFileName = '';
+    videoCid = null;
+    videoFolderCid = null;
     videoTitle = '';
     videoDescription = '';
     videoCreatedAt = null;
@@ -883,11 +887,13 @@ async function syncTreeRootToWorker(
     async function applyResolvedVideo(entryCid: CID, fileName: string) {
       videoCid = entryCid;
       videoFileName = fileName;
-      const directPrefix = resolveDirectPrefix();
-      const nextSrc = directPrefix
-        ? buildDirectUrl(directPrefix, capturedNpub, capturedTreeName, videoPathPrefix + fileName)
-        : await getNpubFileUrlAsync(capturedNpub, capturedTreeName, videoPathPrefix + fileName);
-      if (videoSrc !== nextSrc) {
+      const nextSrc = getStableFileUrl({
+        cid: entryCid,
+        npub: capturedNpub,
+        treeName: capturedTreeName,
+        path: videoPathPrefix + fileName,
+      });
+      if (nextSrc && videoSrc !== nextSrc) {
         videoSrc = nextSrc;
       }
       videoFallbackQueue = [];
@@ -1451,7 +1457,13 @@ async function syncTreeRootToWorker(
       thumbnailColor = null;
     });
 
-    const thumbUrl = getThumbnailUrl(currentNpub, currentTreeName, videoId || undefined);
+    const thumbUrl = getStableThumbnailUrl({
+      rootCid,
+      npub: currentNpub,
+      treeName: currentTreeName,
+      videoId: videoId || undefined,
+    });
+    if (!thumbUrl) return;
     const img = new Image();
     img.crossOrigin = 'anonymous';
 

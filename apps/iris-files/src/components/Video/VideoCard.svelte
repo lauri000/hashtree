@@ -3,9 +3,10 @@
    * VideoCard - 16:9 aspect ratio video card for video grid
    * SW handles finding the actual thumbnail file (jpg, webp, png, etc.)
    */
+  import type { CID } from '@hashtree/core';
   import VisibilityIcon from '../VisibilityIcon.svelte';
   import { Avatar, Name } from '../User';
-  import { getThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
+  import { getStableThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
   import { formatTimeAgo } from '../../utils/format';
   import { recentsStore, getVideoPosition } from '../../stores/recents';
   import { extractDominantColor, rgbToRgba, type RGB } from '../../utils/colorExtract';
@@ -23,6 +24,8 @@
     visibility?: string;
     /** Direct thumbnail URL (e.g., from nhash in metadata) */
     thumbnailUrl?: string | null;
+    /** Root CID when already known, so media can use immutable nhash URLs */
+    rootCid?: CID | null;
     /** Root hash hex prefix for cache busting (updates trigger thumbnail retry) */
     rootHashHex?: string | null;
     /** Unix timestamp in seconds for "ago" display */
@@ -35,7 +38,7 @@
     hideAuthor?: boolean;
   }
 
-  let { href, title, duration, ownerPubkey, ownerNpub, treeName, videoId, visibility, thumbnailUrl: propThumbnailUrl, rootHashHex, timestamp, themeHover = false, noHover = false, hideAuthor = false }: Props = $props();
+  let { href, title, duration, ownerPubkey, ownerNpub, treeName, videoId, visibility, thumbnailUrl: propThumbnailUrl, rootCid = null, rootHashHex, timestamp, themeHover = false, noHover = false, hideAuthor = false }: Props = $props();
 
   let htreePrefixVersion = $state(0);
   onHtreePrefixReady(() => {
@@ -46,9 +49,14 @@
   // Include hash prefix so URL changes when tree root updates, triggering retry for failed thumbnails
   let thumbnailUrl = $derived.by(() => {
     void htreePrefixVersion;
-    if (propThumbnailUrl) return propThumbnailUrl;
-    if (!ownerNpub || !treeName) return null;
-    return getThumbnailUrl(ownerNpub, treeName, videoId || undefined, rootHashHex?.slice(0, 8) || undefined);
+    return getStableThumbnailUrl({
+      thumbnailUrl: propThumbnailUrl,
+      rootCid,
+      npub: ownerNpub,
+      treeName,
+      videoId: videoId || undefined,
+      hashPrefix: rootHashHex?.slice(0, 8) || undefined,
+    });
   });
 
 

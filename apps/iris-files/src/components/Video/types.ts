@@ -27,6 +27,8 @@ export interface VideoItem {
   videoId?: string;
   /** Root CID for playlist detection */
   rootCid?: import('@hashtree/core').CID;
+  /** Preferred thumbnail URL when already resolved */
+  thumbnailUrl?: string;
   visibility?: string;
   href: string;
   timestamp?: number;

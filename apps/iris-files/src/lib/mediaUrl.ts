@@ -232,6 +232,26 @@ export async function getNpubFileUrlAsync(npub: string, treeName: string, path: 
   return getNpubFileUrl(npub, treeName, path);
 }
 
+interface StableFileUrlOptions {
+  cid?: CID | null;
+  npub?: string | null;
+  treeName?: string | null;
+  path: string;
+}
+
+export function getStableFileUrl(options: StableFileUrlOptions): string | null {
+  if (options.cid) {
+    const nhash = nhashEncode(options.cid);
+    const encodedPath = options.path.split('/').map(encodeURIComponent).join('/');
+    const url = `${getHtreePrefix()}/htree/${nhash}/${encodedPath || 'file'}`;
+    return appendHtreeCacheBust(appendMediaClientKey(url));
+  }
+  if (options.npub && options.treeName) {
+    return getNpubFileUrl(options.npub, options.treeName, options.path);
+  }
+  return null;
+}
+
 /**
  * Generate a file URL for direct nhash access (content-addressed)
  *
@@ -296,6 +316,28 @@ export function getThumbnailUrlFromCid(rootCid: CID, videoId?: string): string {
   const nhash = nhashEncode(rootCid);
   const url = `${getHtreePrefix()}/htree/${nhash}/${path}`;
   return appendHtreeCacheBust(appendMediaClientKey(url));
+}
+
+interface StableThumbnailUrlOptions {
+  thumbnailUrl?: string | null;
+  rootCid?: CID | null;
+  npub?: string | null;
+  treeName?: string | null;
+  videoId?: string;
+  hashPrefix?: string;
+}
+
+export function getStableThumbnailUrl(options: StableThumbnailUrlOptions): string | null {
+  if (options.thumbnailUrl) {
+    return options.thumbnailUrl;
+  }
+  if (options.rootCid) {
+    return getThumbnailUrlFromCid(options.rootCid, options.videoId);
+  }
+  if (options.npub && options.treeName) {
+    return getThumbnailUrl(options.npub, options.treeName, options.videoId, options.hashPrefix);
+  }
+  return null;
 }
 
 /**
