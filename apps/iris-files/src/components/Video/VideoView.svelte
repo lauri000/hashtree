@@ -46,6 +46,7 @@
   import { VideoZapButton } from '../Zaps';
   import { formatTimeAgo } from '../../utils/format';
   import { settingsStore } from '../../stores/settings';
+  import { buildPlaylistRedirectHash, isActiveVideoLoad } from './videoLoadGuard';
 
   let deleting = $state(false);
   let editing = $state(false);
@@ -890,7 +891,7 @@ async function syncTreeRootToWorker(
     }
 
     if (cid) {
-      untrack(() => loadVideo(cid));
+      untrack(() => loadVideo(cid, videoKey));
       return;
     }
 
@@ -970,7 +971,7 @@ async function syncTreeRootToWorker(
 
   // No blob URL cleanup needed - using SW URLs
 
-  async function loadVideo(rootCidParam: CID) {
+  async function loadVideo(rootCidParam: CID, expectedLoadKey: string) {
     // Capture reactive values at the start - they may change during async operations
     // due to navigation. Using captured values ensures consistent behavior.
     const capturedNpub = npub;
@@ -980,6 +981,18 @@ async function syncTreeRootToWorker(
     const capturedVisibility = effectiveVisibility;
 
     if (!capturedNpub || !capturedTreeName) return;
+
+    function isStaleLoad(stage: string): boolean {
+      if (isActiveVideoLoad(loadedVideoKey, expectedLoadKey)) {
+        return false;
+      }
+      logVideoDebug('load:stale', {
+        stage,
+        expected: expectedLoadKey,
+        active: loadedVideoKey,
+      });
+      return true;
+    }
 
     error = null;
     logVideoDebug('load:start', {
@@ -994,6 +1007,7 @@ async function syncTreeRootToWorker(
       console.warn('[VideoView] Media streaming setup failed:', err);
       return false;
     });
+    if (isStaleLoad('streaming-ready')) return;
     if (!streamingReady) {
       error = 'Video streaming unavailable. Please reload and try again.';
       loading = false;
@@ -1006,6 +1020,7 @@ async function syncTreeRootToWorker(
       rootCidParam,
       capturedVisibility ?? 'public'
     );
+    if (isStaleLoad('sync-root')) return;
 
     const tree = getTree();
 
@@ -1013,8 +1028,10 @@ async function syncTreeRootToWorker(
     let videoDirCid = rootCidParam;
     let videoPathPrefix = capturedIsPlaylistVideo && capturedVideoId ? `${capturedVideoId}/` : '';
     const allowDirectFallback = canStartDirectVideoFallback(capturedIsPlaylistVideo, capturedVideoId);
+    let resolvedVideo = false;
 
-    async function applyResolvedVideo(entryCid: CID, fileName: string) {
+    async function applyResolvedVideo(entryCid: CID, fileName: string): Promise<boolean> {
+      if (isStaleLoad(`apply:${fileName}`)) return false;
       videoCid = entryCid;
       videoFileName = fileName;
       const nextSrc = getStableFileUrl({
@@ -1028,10 +1045,12 @@ async function syncTreeRootToWorker(
       }
       videoFallbackQueue = [];
       loading = false;
+      resolvedVideo = true;
       logVideoDebug('load:resolved', {
         fileName,
         url: nextSrc,
       });
+      return true;
     }
 
     if (capturedIsPlaylistVideo && capturedVideoId) {
@@ -1043,6 +1062,7 @@ async function syncTreeRootToWorker(
           setTimeout(() => reject(new Error('Timeout: Video data not available from network')), 30000)
         );
         const videoDir = await Promise.race([resolvePromise, timeoutPromise]);
+        if (isStaleLoad('resolve-playlist-dir')) return;
         if (videoDir) {
           videoDirCid = videoDir.cid;
           videoPathPrefix = `${capturedVideoId}/`;
@@ -1055,6 +1075,7 @@ async function syncTreeRootToWorker(
           return;
         }
       } catch (e) {
+        if (isStaleLoad('resolve-playlist-error')) return;
         error = e instanceof Error ? e.message : `Failed to load video: ${e}`;
         loading = false;
         logVideoDebug('load:playlist-error', {
@@ -1065,7 +1086,7 @@ async function syncTreeRootToWorker(
       }
     }
 
-    // Store the video folder CID (for adding to other playlists)
+    if (isStaleLoad('set-video-folder')) return;
     videoFolderCid = videoDirCid;
 
     // Try common video filenames immediately (don't wait for directory listing)
@@ -1074,16 +1095,20 @@ async function syncTreeRootToWorker(
       try {
         const result = await resolvePathWithTimeout(tree, videoDirCid, name);
         if (result) {
-          await applyResolvedVideo(result.cid, name);
-          break;
+          const applied = await applyResolvedVideo(result.cid, name);
+          if (applied) {
+            break;
+          }
         }
+        if (isStaleLoad(`resolve-common:${name}`)) return;
       } catch {}
     }
 
     // If common names didn't work, list directory to find video
-    if (!videoSrc) {
+    if (!resolvedVideo) {
       try {
         const dir = await listDirectoryWithTimeout(tree, videoDirCid);
+        if (isStaleLoad('list-video-dir')) return;
         const videoEntry = dir?.find(e =>
           e.name.startsWith('video.') ||
           e.name.endsWith('.webm') ||
@@ -1102,30 +1127,38 @@ async function syncTreeRootToWorker(
     }
 
     // If still no video and NOT a playlist video, check if this is a playlist directory root
-    if (!videoSrc && !capturedIsPlaylistVideo) {
+    if (!resolvedVideo && !capturedIsPlaylistVideo) {
       const { findFirstVideoEntry } = await import('../../stores/playlist');
       const firstVideoId = await Promise.race([
         findFirstVideoEntry(rootCidParam),
         new Promise<null>((resolve) => setTimeout(() => resolve(null), VIDEO_RESOLVE_TIMEOUT_MS)),
       ]);
-      if (firstVideoId) {
-        // Redirect to first video in playlist using replaceState to avoid back-loop
-        const playlistUrl = `#/${capturedNpub}/${encodeURIComponent(capturedTreeName)}/${encodeURIComponent(firstVideoId)}`;
+      const playlistUrl = buildPlaylistRedirectHash({
+        activeLoadKey: loadedVideoKey,
+        expectedLoadKey,
+        npub: capturedNpub,
+        treeName: capturedTreeName,
+        firstVideoId,
+      });
+      if (playlistUrl) {
         history.replaceState(null, '', playlistUrl);
         window.dispatchEvent(new HashChangeEvent('hashchange'));
         return;
       }
+      if (isStaleLoad('redirect-first-playlist-video')) return;
     }
 
     if (
-      !videoSrc &&
+      !resolvedVideo &&
       allowDirectFallback &&
+      !isStaleLoad('direct-fallback') &&
       startDirectVideoFallback(capturedNpub, capturedTreeName, videoPathPrefix)
     ) {
       return;
     }
 
-    if (!videoSrc) {
+    if (!resolvedVideo) {
+      if (isStaleLoad('not-found')) return;
       error = 'Video file not found';
       loading = false;
       logVideoDebug('load:not-found', {
@@ -1135,6 +1168,8 @@ async function syncTreeRootToWorker(
       });
       return;
     }
+
+    if (isStaleLoad('post-resolve')) return;
 
     // Add to recents - use full path for playlist videos
     // Compute recentPath first so we can pass it to loadMetadata
@@ -1156,14 +1191,10 @@ async function syncTreeRootToWorker(
       visibility: videoVisibility,
     });
 
-    // Load metadata in background (don't block video playback)
-    // For playlist videos, load from the video subdirectory
-    // Pass recentPath so we can update the label when title loads
-    loadMetadata(videoDirCid, tree, recentPath);
+    loadMetadata(videoDirCid, tree, recentPath, expectedLoadKey);
 
-    // Load playlist if this is a playlist video
     if (capturedIsPlaylistVideo && capturedVideoId) {
-      loadPlaylistForVideo(rootCidParam, capturedNpub, capturedTreeName, capturedVideoId);
+      loadPlaylistForVideo(rootCidParam, capturedNpub, capturedTreeName, capturedVideoId, expectedLoadKey);
     }
   }
 
@@ -1172,12 +1203,14 @@ async function syncTreeRootToWorker(
     playlistRootCid: CID,
     playlistNpub: string,
     playlistTreeName: string,
-    videoId: string
+    videoId: string,
+    expectedLoadKey: string,
   ) {
     console.log('[VideoView] Loading playlist for video:', videoId, 'from', playlistTreeName);
 
     // Load the playlist using the already-resolved root CID (don't resolve again)
     const result = await loadPlaylist(playlistNpub, playlistTreeName, playlistRootCid, videoId);
+    if (!isActiveVideoLoad(loadedVideoKey, expectedLoadKey)) return;
 
     if (result) {
       console.log('[VideoView] Loaded playlist with', result.items.length, 'videos');
@@ -1185,10 +1218,19 @@ async function syncTreeRootToWorker(
   }
 
   /** Load title and description in background */
-  async function loadMetadata(rootCid: CID, tree: ReturnType<typeof getTree>, recentPath?: string) {
+  async function loadMetadata(
+    rootCid: CID,
+    tree: ReturnType<typeof getTree>,
+    recentPath?: string,
+    expectedLoadKey?: string,
+  ) {
+    const isStaleMetadataLoad = () =>
+      expectedLoadKey ? !isActiveVideoLoad(loadedVideoKey, expectedLoadKey) : false;
+
     // Try video file's link entry meta first (new format)
     try {
       const entries = await tree.listDirectory(rootCid);
+      if (isStaleMetadataLoad()) return;
       const videoEntry = entries?.find(e =>
         e.name.startsWith('video.') ||
         e.name.endsWith('.webm') ||
@@ -1215,8 +1257,10 @@ async function syncTreeRootToWorker(
     try {
       const metadataResult = await tree.resolvePath(rootCid, 'metadata.json');
       if (metadataResult) {
+        if (isStaleMetadataLoad()) return;
         const metadataData = await tree.readFile(metadataResult.cid);
         if (metadataData) {
+          if (isStaleMetadataLoad()) return;
           const metadata = JSON.parse(new TextDecoder().decode(metadataData));
           if (metadata.title && typeof metadata.title === 'string') {
             videoTitle = metadata.title;
@@ -1237,8 +1281,10 @@ async function syncTreeRootToWorker(
       try {
         const titleResult = await tree.resolvePath(rootCid, 'title.txt');
         if (titleResult) {
+          if (isStaleMetadataLoad()) return;
           const titleData = await tree.readFile(titleResult.cid);
           if (titleData) {
+            if (isStaleMetadataLoad()) return;
             videoTitle = new TextDecoder().decode(titleData).trim();
             if (recentPath) updateRecentLabel(recentPath, videoTitle);
           }
@@ -1251,8 +1297,10 @@ async function syncTreeRootToWorker(
       try {
         const descResult = await tree.resolvePath(rootCid, 'description.txt');
         if (descResult) {
+          if (isStaleMetadataLoad()) return;
           const descData = await tree.readFile(descResult.cid);
           if (descData) {
+            if (isStaleMetadataLoad()) return;
             videoDescription = new TextDecoder().decode(descData).trim();
           }
         }
