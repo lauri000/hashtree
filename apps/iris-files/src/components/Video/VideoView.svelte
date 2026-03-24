@@ -128,6 +128,9 @@
   let videoFolderCid = $state<CID | null>(null);  // CID of the video FOLDER (contains video.mp4, title.txt, etc.)
   let videoVisibility = $state<TreeVisibility>('public');
   let videoRef: HTMLVideoElement | undefined = $state();
+  let videoElementKey = $derived.by(() =>
+    `${npub ?? ''}/${treeName ?? ''}/${currentVideoId ?? ''}:${videoFileName}:${videoSrc}`
+  );
   const VIDEO_RESOLVE_TIMEOUT_MS = 10000;
 
   function logVideoDebug(event: string, data?: Record<string, unknown>) {
@@ -290,15 +293,87 @@ async function syncTreeRootToWorker(
     return true;
   }
 
+  function getVideoElementSnapshot(node: HTMLVideoElement | undefined): Record<string, unknown> {
+    return {
+      currentSrc: node?.currentSrc ?? null,
+      readyState: node?.readyState ?? null,
+      networkState: node?.networkState ?? null,
+      paused: node?.paused ?? null,
+      ended: node?.ended ?? null,
+      currentTime: node ? Math.round(node.currentTime * 1000) / 1000 : null,
+      duration: node && Number.isFinite(node.duration) ? Math.round(node.duration * 1000) / 1000 : null,
+      errorCode: node?.error?.code ?? null,
+      errorMessage: node?.error?.message ?? null,
+    };
+  }
+
+  async function probeVideoSource(url: string, reason: string): Promise<void> {
+    const startedAt = performance.now();
+    try {
+      const response = await fetch(url, {
+        headers: { Range: 'bytes=0-1023' },
+        cache: 'no-store',
+      });
+      const body = await response.arrayBuffer();
+      const details = {
+        reason,
+        url,
+        status: response.status,
+        ok: response.ok,
+        contentType: response.headers.get('content-type'),
+        contentRange: response.headers.get('content-range'),
+        contentLength: response.headers.get('content-length'),
+        bytesRead: body.byteLength,
+        elapsedMs: Math.round(performance.now() - startedAt),
+      };
+      logVideoDebug('player:probe', details);
+      if (!response.ok) {
+        console.error('[VideoView] Player probe failed:', details);
+      }
+    } catch (err) {
+      const details = {
+        reason,
+        url,
+        error: err instanceof Error ? err.message : String(err),
+        elapsedMs: Math.round(performance.now() - startedAt),
+      };
+      logVideoDebug('player:probe-error', details);
+      console.error('[VideoView] Player probe error:', details);
+    }
+  }
+
+  function attachVideoLifecycleLogging(node: HTMLVideoElement): () => void {
+    const events = ['loadstart', 'loadedmetadata', 'loadeddata', 'canplay', 'playing', 'waiting', 'stalled', 'suspend', 'abort', 'emptied'];
+    const listeners = events.map((eventName) => {
+      const handler = () => {
+        logVideoDebug(`player:${eventName}`, {
+          fileName: videoFileName,
+          url: videoSrc,
+          ...getVideoElementSnapshot(node),
+        });
+      };
+      node.addEventListener(eventName, handler);
+      return { eventName, handler };
+    });
+
+    return () => {
+      for (const { eventName, handler } of listeners) {
+        node.removeEventListener(eventName, handler);
+      }
+    };
+  }
+
   function handleVideoError() {
-    logVideoDebug('player:error', {
+    const details = {
       fileName: videoFileName,
       url: videoSrc,
-      readyState: videoRef?.readyState ?? null,
-      networkState: videoRef?.networkState ?? null,
-      errorCode: videoRef?.error?.code ?? null,
-      errorMessage: videoRef?.error?.message ?? null,
-    });
+      ...getVideoElementSnapshot(videoRef),
+    };
+    logVideoDebug('player:error', details);
+    console.error('[VideoView] Player error:', details);
+    if (videoSrc) {
+      void probeVideoSource(videoSrc, 'player:error');
+    }
     if (advanceVideoFallback()) {
       error = null;
       return;
@@ -308,6 +383,39 @@ async function syncTreeRootToWorker(
     }
     loading = false;
   }
+
+  $effect(() => {
+    const node = videoRef;
+    const currentSrc = videoSrc;
+    if (!node || !currentSrc) return;
+
+    logVideoDebug('player:attach', {
+      fileName: videoFileName,
+      url: currentSrc,
+      elementKey: videoElementKey,
+      canPlayMp4: node.canPlayType('video/mp4'),
+      canPlayWebm: node.canPlayType('video/webm'),
+      ...getVideoElementSnapshot(node),
+    });
+
+    const detach = attachVideoLifecycleLogging(node);
+    return () => {
+      detach();
+      logVideoDebug('player:detach', {
+        fileName: videoFileName,
+        url: currentSrc,
+        elementKey: videoElementKey,
+        ...getVideoElementSnapshot(node),
+      });
+      try {
+        node.pause();
+      } catch {}
+      try {
+        node.removeAttribute('src');
+        node.load();
+      } catch {}
+    };
+  });
 
   async function resolvePathWithTimeout(tree: ReturnType<typeof getTree>, cid: CID, path: string) {
     try {
@@ -1803,7 +1911,9 @@ async function syncTreeRootToWorker(
 {/snippet}
 
 <!--
-  Layout uses CSS-only approach to avoid remounting video element.
+  Layout uses CSS-only approach around the player container.
+  The video element itself is keyed by source so WebKit gets a clean media element
+  when navigating between clips.
   Theater mode: video full width, content+sidebar row below (max-w-6xl)
   Non-theater: constrained container (max-w-7xl), sidebar beside video+content
 -->
@@ -1845,24 +1955,26 @@ async function syncTreeRootToWorker(
               {error}
             </div>
           {:else if videoSrc}
-            <video
-              bind:this={videoRef}
-              use:applyVolumeSettings
-              src={videoSrc}
-              controls
-              autoplay
-              playsinline
-              muted={initialVideoSettings.muted}
-              class="w-full h-full"
-              preload="metadata"
-              onloadedmetadata={handleLoadedMetadata}
-              ontimeupdate={handleTimeUpdate}
-              onvolumechange={handleVolumeChange}
-              onerror={handleVideoError}
-              onended={handleEnded}
-            >
-              Your browser does not support the video tag.
-            </video>
+            {#key videoElementKey}
+              <video
+                bind:this={videoRef}
+                use:applyVolumeSettings
+                src={videoSrc}
+                controls
+                autoplay
+                playsinline
+                muted={initialVideoSettings.muted}
+                class="w-full h-full"
+                preload="metadata"
+                onloadedmetadata={handleLoadedMetadata}
+                ontimeupdate={handleTimeUpdate}
+                onvolumechange={handleVolumeChange}
+                onerror={handleVideoError}
+                onended={handleEnded}
+              >
+                Your browser does not support the video tag.
+              </video>
+            {/key}
           {/if}
         </div>
       </div>
