@@ -11,6 +11,7 @@ use axum::{
 };
 use bytes::Bytes;
 use futures::stream::{self, StreamExt};
+use futures::FutureExt;
 use hashtree_core::{
     from_hex, nhash_decode, to_hex, Cid, HashTree, HashTreeConfig, HashTreeError, LinkType, Store,
     TreeEntry,
@@ -343,7 +344,13 @@ async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool {
             "[htree-fetch] Querying WebRTC peers for {}",
             &hash_hex[..16.min(hash_hex.len())]
         );
-        if let Some((data, peer_id)) = query_webrtc_peers(webrtc_state, &hash_hex).await {
+        let webrtc_state = webrtc_state.clone();
+        let peer_hash_hex = hash_hex.clone();
+        if let Some((data, peer_id)) = await_fetch_task("webrtc", &hash_hex, async move {
+            query_webrtc_peers(&webrtc_state, &peer_hash_hex).await
+        })
+        .await
+        {
             tracing::info!(
                 "[htree-fetch] Got {} bytes from peer {} for {}",
                 data.len(),
@@ -364,8 +371,12 @@ async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool {
             state.upstream_blossom.len(),
             &hash_hex[..16.min(hash_hex.len())]
         );
-        if let Some((data, server)) =
-            query_upstream_blossom(&state.upstream_blossom, &hash_hex).await
+        let upstream_blossom = state.upstream_blossom.clone();
+        let upstream_hash_hex = hash_hex.clone();
+        if let Some((data, server)) = await_fetch_task("upstream", &hash_hex, async move {
+            query_upstream_blossom(&upstream_blossom, &upstream_hash_hex).await
+        })
+        .await
         {
             tracing::info!(
                 "[htree-fetch] Got {} bytes from upstream {} for {}",
@@ -387,6 +398,23 @@ async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool {
     }
 
     false
+}
+
+async fn await_fetch_task<F, T>(source: &str, hash_hex: &str, future: F) -> Option<T>
+where
+    F: std::future::Future<Output = Option<T>>,
+{
+    match std::panic::AssertUnwindSafe(future).catch_unwind().await {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::warn!(
+                "[htree-fetch] {} fetch task panicked for {}",
+                source,
+                &hash_hex[..16.min(hash_hex.len())],
+            );
+            None
+        }
+    }
 }
 
 async fn ensure_blob_available(state: &AppState, hash: &[u8; 32]) -> Result<bool, String> {
@@ -2438,6 +2466,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn await_fetch_task_returns_result() {
+        let result = await_fetch_task("test", "abc123", async { Some(7usize) }).await;
+        assert_eq!(result, Some(7));
+    }
+
+    #[tokio::test]
+    async fn await_fetch_task_recovers_from_panic() {
+        let result: Option<usize> = await_fetch_task("test", "abc123", async move {
+            panic!("boom");
+        })
+        .await;
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
     async fn test_query_upstream_blossom_invalid_server() {
         let servers = vec!["http://localhost:99999".to_string()];
         let result = query_upstream_blossom(&servers, "abc123").await;
@@ -2797,6 +2841,169 @@ mod tests {
         );
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body.as_ref(), b"6789");
+    }
+
+    fn copy_blob_between_stores(
+        source_store: &Arc<HashtreeStore>,
+        target_store: &Arc<HashtreeStore>,
+        hash: &[u8; 32],
+    ) {
+        let data = source_store
+            .get_blob(hash)
+            .unwrap()
+            .unwrap_or_else(|| panic!("missing blob {}", to_hex(hash)));
+        target_store.put_blob(&data).unwrap();
+    }
+
+    #[tokio::test]
+    async fn htree_npub_path_range_fetches_missing_nested_file_from_upstream() {
+        let source_dir = TempDir::new().unwrap();
+        let source_store =
+            Arc::new(HashtreeStore::new(source_dir.path().join("source-db")).unwrap());
+        let source_tree = HashTree::new(HashTreeConfig::new(source_store.store_arc()));
+
+        let video_data: Vec<u8> = (0..(3 * 1024 * 1024 + 137))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let (video_cid, _) = source_tree.put(&video_data).await.unwrap();
+        let child_dir_cid = source_tree
+            .put_directory(vec![
+                DirEntry::from_cid("video.mp4", &video_cid).with_link_type(LinkType::File)
+            ])
+            .await
+            .unwrap();
+        let root_cid = source_tree
+            .put_directory(vec![DirEntry::from_cid(
+                "video_1767136282070",
+                &child_dir_cid,
+            )
+            .with_link_type(LinkType::Dir)])
+            .await
+            .unwrap();
+
+        let upstream_router = Router::new()
+            .route("/:id", get(serve_blob_for_test))
+            .with_state(source_store.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = listener.local_addr().unwrap();
+        let upstream_server =
+            tokio::spawn(async move { axum::serve(listener, upstream_router).await.unwrap() });
+
+        let local_dir = TempDir::new().unwrap();
+        let local_store = Arc::new(HashtreeStore::new(local_dir.path().join("local-db")).unwrap());
+
+        // Simulate a warm playlist lookup: directory nodes are local, the media file is not.
+        copy_blob_between_stores(&source_store, &local_store, &root_cid.hash);
+        copy_blob_between_stores(&source_store, &local_store, &child_dir_cid.hash);
+
+        let state = test_app_state(
+            local_store.clone(),
+            vec![format!("http://{}", upstream_addr)],
+        );
+        put_cached_tree_root(
+            &state,
+            tree_root_cache_key("npub1example", "videos/Music", None),
+            root_cid.clone(),
+        );
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            header::RANGE,
+            header::HeaderValue::from_static("bytes=0-1023"),
+        );
+
+        let response = htree_npub_impl(
+            State(state),
+            "npub1example".to_string(),
+            "videos/Music".to_string(),
+            Some("video_1767136282070/video.mp4".to_string()),
+            Query(HashMap::new()),
+            headers,
+            axum::extract::ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 43123))),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), &video_data[..1024]);
+
+        upstream_server.abort();
+    }
+
+    #[tokio::test]
+    async fn htree_npub_path_range_fetches_missing_nested_file_chunks_from_upstream() {
+        let source_dir = TempDir::new().unwrap();
+        let source_store =
+            Arc::new(HashtreeStore::new(source_dir.path().join("source-db")).unwrap());
+        let source_tree = HashTree::new(HashTreeConfig::new(source_store.store_arc()));
+
+        let video_data: Vec<u8> = (0..(5 * 1024 * 1024 + 17))
+            .map(|i| 255 - (i % 251) as u8)
+            .collect();
+        let (video_cid, _) = source_tree.put(&video_data).await.unwrap();
+        let child_dir_cid = source_tree
+            .put_directory(vec![
+                DirEntry::from_cid("video.mp4", &video_cid).with_link_type(LinkType::File)
+            ])
+            .await
+            .unwrap();
+        let root_cid = source_tree
+            .put_directory(vec![DirEntry::from_cid(
+                "video_1767136255334",
+                &child_dir_cid,
+            )
+            .with_link_type(LinkType::Dir)])
+            .await
+            .unwrap();
+
+        let upstream_router = Router::new()
+            .route("/:id", get(serve_blob_for_test))
+            .with_state(source_store.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = listener.local_addr().unwrap();
+        let upstream_server =
+            tokio::spawn(async move { axum::serve(listener, upstream_router).await.unwrap() });
+
+        let local_dir = TempDir::new().unwrap();
+        let local_store = Arc::new(HashtreeStore::new(local_dir.path().join("local-db")).unwrap());
+
+        // Simulate a warmer cache: the file tree is local, but its encrypted chunks are not.
+        copy_blob_between_stores(&source_store, &local_store, &root_cid.hash);
+        copy_blob_between_stores(&source_store, &local_store, &child_dir_cid.hash);
+        copy_blob_between_stores(&source_store, &local_store, &video_cid.hash);
+
+        let state = test_app_state(
+            local_store.clone(),
+            vec![format!("http://{}", upstream_addr)],
+        );
+        put_cached_tree_root(
+            &state,
+            tree_root_cache_key("npub1example", "videos/Music", None),
+            root_cid.clone(),
+        );
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            header::RANGE,
+            header::HeaderValue::from_static("bytes=0-1023"),
+        );
+
+        let response = htree_npub_impl(
+            State(state),
+            "npub1example".to_string(),
+            "videos/Music".to_string(),
+            Some("video_1767136255334/video.mp4".to_string()),
+            Query(HashMap::new()),
+            headers,
+            axum::extract::ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 43123))),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), &video_data[..1024]);
+
+        upstream_server.abort();
     }
 
     #[tokio::test]
