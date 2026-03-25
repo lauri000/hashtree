@@ -7,6 +7,7 @@
 
 mod bluetooth;
 mod cashu;
+mod local_bus;
 mod multicast;
 mod peer;
 mod root_events;
@@ -18,6 +19,7 @@ mod tests;
 
 pub use bluetooth::{BluetoothBackendState, BluetoothConfig, BluetoothMesh};
 pub use cashu::{cashu_mint_metadata_path, CashuMintMetadataStore, CashuRoutingConfig};
+pub use local_bus::{LocalNostrBus, SharedLocalNostrBus};
 pub use multicast::{MulticastConfig, MulticastNostrBus};
 pub use peer::{ContentStore, Peer, PendingRequest};
 pub use root_events::PeerRootEvent;

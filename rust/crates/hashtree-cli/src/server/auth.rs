@@ -1,7 +1,7 @@
 use crate::nostr_relay::NostrRelay;
 use crate::socialgraph;
 use crate::storage::HashtreeStore;
-use crate::webrtc::WebRTCState;
+use crate::webrtc::{PeerRootEvent, WebRTCState};
 use axum::{
     body::Body,
     extract::ws::Message,
@@ -104,6 +104,13 @@ pub struct CachedResolvedPathEntry {
     pub link_type: LinkType,
 }
 
+#[derive(Debug, Clone)]
+pub struct CachedTreeRootEntry {
+    pub cid: Cid,
+    pub source: &'static str,
+    pub root_event: Option<PeerRootEvent>,
+}
+
 pub type SharedBlobFetch = Shared<BoxFuture<'static, bool>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,7 +183,7 @@ pub struct AppState {
     /// Nostr relay state for /ws and WebRTC Nostr messages
     pub nostr_relay: Option<Arc<NostrRelay>>,
     /// In-process cache for resolved mutable tree roots, keyed by npub/tree(+key)
-    pub tree_root_cache: Arc<StdMutex<HashMap<String, Cid>>>,
+    pub tree_root_cache: Arc<StdMutex<HashMap<String, CachedTreeRootEntry>>>,
     /// Shared in-flight blob fetches so concurrent misses only hit upstream once per hash
     pub inflight_blob_fetches: Arc<Mutex<HashMap<String, SharedBlobFetch>>>,
     /// Immutable directory listings keyed by CID

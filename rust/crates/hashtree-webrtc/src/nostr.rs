@@ -1,6 +1,7 @@
-//! Nostr relay transport implementation
+//! Nostr websocket signaling transport implementation
 //!
-//! Wraps nostr-sdk Client to implement the RelayTransport trait for production use.
+//! Wraps `nostr-sdk` to implement the generic signaling transport for
+//! production use over relay websockets.
 //! Uses NIP-17 style gift-wrapping for directed messages (offer, answer, candidate)
 //! to provide privacy from relays.
 
@@ -11,13 +12,13 @@ use std::time::Duration;
 use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, info, warn};
 
-use crate::transport::{RelayTransport, TransportError};
+use crate::transport::{SignalingTransport, TransportError};
 use crate::types::{SignalingMessage, NOSTR_KIND_HASHTREE};
 
 /// Hello tag for broadcast peer discovery
 const HELLO_TAG: &str = "hello";
 
-/// Nostr relay transport for production WebRTC signaling
+/// Nostr websocket signaling transport for production use.
 pub struct NostrRelayTransport {
     /// Our peer ID (pubkey:uuid)
     peer_id: String,
@@ -40,7 +41,7 @@ pub struct NostrRelayTransport {
 }
 
 impl NostrRelayTransport {
-    /// Create a new Nostr relay transport with its own client
+    /// Create a new Nostr signaling transport with its own client.
     pub fn new(keys: Keys, peer_uuid: String, debug: bool) -> Self {
         // Create client with in-memory database to avoid event deduplication
         let client = ClientBuilder::new()
@@ -55,7 +56,7 @@ impl NostrRelayTransport {
     ///
     /// This allows sharing the same relay connection pool with other components
     /// (e.g., Tauri's NostrManager). The client should already have relays added
-    /// but connect() will be called when RelayTransport::connect() is invoked.
+    /// but `connect()` will be called when the signaling transport is started.
     pub fn with_client(client: Client, keys: Keys, peer_uuid: String, debug: bool) -> Self {
         let pubkey = keys.public_key().to_hex();
         let peer_id = format!("{}:{}", pubkey, peer_uuid);
@@ -237,7 +238,7 @@ impl NostrRelayTransport {
 }
 
 #[async_trait]
-impl RelayTransport for NostrRelayTransport {
+impl SignalingTransport for NostrRelayTransport {
     async fn connect(&self, relays: &[String]) -> Result<(), TransportError> {
         // Add relays
         for relay in relays {
@@ -485,3 +486,5 @@ impl RelayTransport for NostrRelayTransport {
         &self.pubkey
     }
 }
+
+pub type NostrSignalingTransport = NostrRelayTransport;

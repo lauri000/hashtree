@@ -1,4 +1,4 @@
-use super::auth::{AppState, CachedResolvedPathEntry, LookupResult};
+use super::auth::{AppState, CachedResolvedPathEntry, CachedTreeRootEntry, LookupResult};
 use super::mime::get_mime_type;
 use super::ui::root_page;
 use crate::socialgraph;
@@ -103,7 +103,7 @@ pub async fn cache_tree_root(
         request.visibility.as_deref(),
         cid.key,
     );
-    put_cached_tree_root(&state, cache_key, cid);
+    put_cached_tree_root(&state, cache_key, cid, "cache", None);
 
     Response::builder()
         .status(StatusCode::OK)
@@ -244,14 +244,14 @@ async fn resolve_root_offline(
     link_key: Option<[u8; 32]>,
 ) -> Option<ResolvedRoot> {
     let cache_key = tree_root_cache_key(pubkey, treename, link_key);
-    if let Some(mut cid) = get_cached_tree_root(state, &cache_key) {
-        if cid.key.is_none() {
-            cid.key = link_key;
+    if let Some(mut cached) = get_cached_tree_root(state, &cache_key) {
+        if cached.cid.key.is_none() {
+            cached.cid.key = link_key;
         }
         return Some(ResolvedRoot {
-            cid,
+            cid: cached.cid,
             source: "cache",
-            root_event: None,
+            root_event: cached.root_event,
         });
     }
 
@@ -260,7 +260,13 @@ async fn resolve_root_offline(
             if cid.key.is_none() {
                 cid.key = link_key;
             }
-            put_cached_tree_root(state, cache_key.clone(), cid.clone());
+            put_cached_tree_root(
+                state,
+                cache_key.clone(),
+                cid.clone(),
+                "local-relay",
+                Some(root.clone()),
+            );
             return Some(ResolvedRoot {
                 cid,
                 source: "local-relay",
@@ -270,18 +276,24 @@ async fn resolve_root_offline(
     }
 
     if let Some(ref webrtc_state) = state.webrtc_peers {
-        if let Some(root) = webrtc_state
-            .resolve_root_from_multicast(pubkey, treename, Duration::from_secs(2))
+        if let Some((source, root)) = webrtc_state
+            .resolve_root_from_local_buses_with_source(pubkey, treename, Duration::from_secs(2))
             .await
         {
             if let Some(mut cid) = peer_root_to_cid(&root) {
                 if cid.key.is_none() {
                     cid.key = link_key;
                 }
-                put_cached_tree_root(state, cache_key.clone(), cid.clone());
+                put_cached_tree_root(
+                    state,
+                    cache_key.clone(),
+                    cid.clone(),
+                    source,
+                    Some(root.clone()),
+                );
                 return Some(ResolvedRoot {
                     cid,
-                    source: "multicast",
+                    source,
                     root_event: Some(root),
                 });
             }
@@ -295,7 +307,7 @@ async fn resolve_root_offline(
                 if cid.key.is_none() {
                     cid.key = link_key;
                 }
-                put_cached_tree_root(state, cache_key, cid.clone());
+                put_cached_tree_root(state, cache_key, cid.clone(), "webrtc", Some(root.clone()));
                 return Some(ResolvedRoot {
                     cid,
                     source: "webrtc",
@@ -367,7 +379,7 @@ fn cached_resolved_path_entry(entry: &ResolvedPathEntry) -> CachedResolvedPathEn
     }
 }
 
-fn get_cached_tree_root(state: &AppState, cache_key: &str) -> Option<Cid> {
+fn get_cached_tree_root(state: &AppState, cache_key: &str) -> Option<CachedTreeRootEntry> {
     state
         .tree_root_cache
         .lock()
@@ -375,9 +387,22 @@ fn get_cached_tree_root(state: &AppState, cache_key: &str) -> Option<Cid> {
         .and_then(|cache| cache.get(cache_key).cloned())
 }
 
-fn put_cached_tree_root(state: &AppState, cache_key: String, cid: Cid) {
+fn put_cached_tree_root(
+    state: &AppState,
+    cache_key: String,
+    cid: Cid,
+    source: &'static str,
+    root_event: Option<PeerRootEvent>,
+) {
     if let Ok(mut cache) = state.tree_root_cache.lock() {
-        cache.insert(cache_key, cid);
+        cache.insert(
+            cache_key,
+            CachedTreeRootEntry {
+                cid,
+                source,
+                root_event,
+            },
+        );
     }
 }
 
@@ -1256,6 +1281,8 @@ async fn htree_npub_impl(
                 &state,
                 tree_root_cache_key(&npub, &treename, link_key),
                 cid.clone(),
+                "nostr",
+                None,
             );
             cid
         };
@@ -3391,6 +3418,8 @@ mod tests {
             &state,
             tree_root_cache_key("npub1example", "videos/Music", None),
             root_cid.clone(),
+            "cache",
+            None,
         );
 
         let mut headers = axum::http::HeaderMap::new();
@@ -3467,6 +3496,8 @@ mod tests {
             &state,
             tree_root_cache_key("npub1example", "videos/Music", None),
             root_cid.clone(),
+            "cache",
+            None,
         );
 
         let mut headers = axum::http::HeaderMap::new();
@@ -3541,10 +3572,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let cached = get_cached_tree_root(&state, "npub1example/video").expect("cached cid");
         assert_eq!(
-            to_hex(&cached.hash),
+            to_hex(&cached.cid.hash),
             "988db3f24dc222715f1c1e1fa5876690d3147122243d72d85fd44283867cd61a"
         );
-        assert!(cached.key.is_none());
+        assert!(cached.cid.key.is_none());
     }
 
     #[tokio::test]
@@ -3620,11 +3651,11 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let cached = get_cached_tree_root(&state, "npub1example/video").expect("cached cid");
         assert_eq!(
-            to_hex(&cached.hash),
+            to_hex(&cached.cid.hash),
             "be8f5da537f62d02d3ff113d213a7058116f790a8d0e158c2766543deda10e35"
         );
         assert_eq!(
-            cached.key.map(|key| to_hex(&key)).as_deref(),
+            cached.cid.key.map(|key| to_hex(&key)).as_deref(),
             Some("34e24fadaddc60da2e761501aae44c1c2b6b8706b73dff736eb0fc7d803133bb")
         );
         assert!(get_cached_tree_root(
@@ -3670,5 +3701,46 @@ mod tests {
 
         assert_eq!(clear_response.status(), StatusCode::OK);
         assert!(get_cached_tree_root(&state, "npub1example/video").is_none());
+    }
+
+    #[tokio::test]
+    async fn cached_root_preserves_encrypted_key_metadata_for_followup_resolves() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());
+        let state = test_app_state(store, Vec::new());
+        let hash_hex = "cd".repeat(32);
+        let encrypted_key = "ef".repeat(32);
+        let cid = Cid::parse(&hash_hex).expect("valid cid");
+        let root_event = PeerRootEvent {
+            hash: hash_hex.clone(),
+            key: None,
+            encrypted_key: Some(encrypted_key.clone()),
+            self_encrypted_key: None,
+            event_id: "event-1".to_string(),
+            created_at: 1,
+            peer_id: "peer-a".to_string(),
+        };
+
+        put_cached_tree_root(
+            &state,
+            tree_root_cache_key("npub1example", "video", None),
+            cid.clone(),
+            "webrtc",
+            Some(root_event.clone()),
+        );
+
+        let resolved = resolve_root_offline(&state, "npub1example", "video", None)
+            .await
+            .expect("cached root should resolve");
+
+        assert_eq!(resolved.source, "cache");
+        assert_eq!(resolved.cid, cid);
+        assert_eq!(
+            resolved
+                .root_event
+                .as_ref()
+                .and_then(|root| root.encrypted_key.as_deref()),
+            Some(encrypted_key.as_str())
+        );
     }
 }

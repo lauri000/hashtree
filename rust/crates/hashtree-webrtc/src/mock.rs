@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
-use crate::transport::{DataChannel, PeerConnectionFactory, RelayTransport, TransportError};
+use crate::transport::{PeerLink, PeerLinkFactory, SignalingTransport, TransportError};
 use crate::types::SignalingMessage;
 
 // Global registry for mock channels (shared between offer/answer sides)
@@ -82,7 +82,7 @@ impl MockRelayTransport {
 }
 
 #[async_trait]
-impl RelayTransport for MockRelayTransport {
+impl SignalingTransport for MockRelayTransport {
     async fn connect(&self, _relays: &[String]) -> Result<(), TransportError> {
         self.connected.store(true, Ordering::Relaxed);
         Ok(())
@@ -235,7 +235,7 @@ impl MockDataChannel {
 }
 
 #[async_trait]
-impl DataChannel for MockDataChannel {
+impl PeerLink for MockDataChannel {
     async fn send(&self, data: Vec<u8>) -> Result<(), TransportError> {
         if !self.open.load(Ordering::Relaxed) {
             return Err(TransportError::Disconnected);
@@ -323,11 +323,11 @@ impl MockConnectionFactory {
 }
 
 #[async_trait]
-impl PeerConnectionFactory for MockConnectionFactory {
+impl PeerLinkFactory for MockConnectionFactory {
     async fn create_offer(
         &self,
         target_peer_id: &str,
-    ) -> Result<(Arc<dyn DataChannel>, String), TransportError> {
+    ) -> Result<(Arc<dyn PeerLink>, String), TransportError> {
         let target_node_id: u64 = target_peer_id.parse().unwrap_or(0);
 
         // Create channel pair
@@ -362,7 +362,7 @@ impl PeerConnectionFactory for MockConnectionFactory {
         &self,
         _from_peer_id: &str,
         offer_sdp: &str,
-    ) -> Result<(Arc<dyn DataChannel>, String), TransportError> {
+    ) -> Result<(Arc<dyn PeerLink>, String), TransportError> {
         // offer_sdp is the channel_id
         let channel_id = offer_sdp;
 
@@ -381,7 +381,7 @@ impl PeerConnectionFactory for MockConnectionFactory {
         &self,
         target_peer_id: &str,
         _answer_sdp: &str,
-    ) -> Result<Arc<dyn DataChannel>, TransportError> {
+    ) -> Result<Arc<dyn PeerLink>, TransportError> {
         // Get our pending channel
         let channel = self
             .pending
@@ -393,3 +393,5 @@ impl PeerConnectionFactory for MockConnectionFactory {
         Ok(channel)
     }
 }
+
+pub type MockSignalingTransport = MockRelayTransport;

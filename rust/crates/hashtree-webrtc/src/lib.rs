@@ -1,12 +1,15 @@
-//! WebRTC P2P transport for HashTree
+//! Mesh transport primitives for HashTree.
 //!
-//! This crate provides WebRTC-based peer-to-peer data exchange for hashtree,
-//! using Nostr relays for peer discovery and signaling.
+//! This crate provides the reusable router, signaling, peer-link, and store
+//! layers for hashtree mesh networking. The default production composition uses
+//! Nostr websockets for signaling and WebRTC for direct links, but the same
+//! abstractions support LAN buses, Bluetooth transports, and simulation.
 //!
 //! # Overview
 //!
-//! - **Peer Discovery**: Uses Nostr relay network for signaling
-//! - **Data Exchange**: WebRTC data channels for binary data transfer
+//! - **Storage Backend**: Any [`hashtree_core::Store`] implementation
+//! - **Peer Discovery**: Any [`SignalingTransport`] implementation
+//! - **Data Exchange**: Any [`PeerLink`] / [`PeerLinkFactory`] implementation
 //! - **Protocol**: Request/response with hash-based addressing
 //! - **Adaptive Selection**: Intelligent peer selection based on performance
 //!
@@ -14,16 +17,16 @@
 //!
 //! ```rust,no_run
 //! use hashtree_core::MemoryStore;
-//! use hashtree_webrtc::{WebRTCStore, WebRTCStoreConfig};
+//! use hashtree_webrtc::{MeshStore, MeshStoreConfig};
 //! use nostr_sdk::prelude::*;
 //! use std::sync::Arc;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let local_store = Arc::new(MemoryStore::new());
-//!     let config = WebRTCStoreConfig::default();
+//!     let config = MeshStoreConfig::default();
 //!
-//!     let mut store = WebRTCStore::new(local_store, config);
+//!     let mut store = MeshStore::new(local_store, config);
 //!
 //!     // Generate or load Nostr keys
 //!     let keys = Keys::generate();
@@ -58,9 +61,9 @@ pub use generic_store::{
 };
 pub use mock::{
     clear_channel_registry, MockConnectionFactory, MockDataChannel, MockLatencyMode, MockRelay,
-    MockRelayTransport,
+    MockRelayTransport, MockSignalingTransport,
 };
-pub use nostr::NostrRelayTransport;
+pub use nostr::{NostrRelayTransport, NostrSignalingTransport};
 pub use peer::{ForwardRequestCallback, Peer, PeerError};
 pub use peer_selector::{
     peer_principal, PeerMetadataSnapshot, PeerSelector, PeerStats, PersistedPeerMetadata,
@@ -74,18 +77,20 @@ pub use protocol::{
     DataRequest, DataResponse, FRAGMENT_SIZE, MSG_TYPE_QUOTE_REQUEST, MSG_TYPE_QUOTE_RESPONSE,
     MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE,
 };
-pub use real_factory::RealPeerConnectionFactory;
-pub use signaling::{PeerEntry, PeerRouter, SignalingManager};
-pub use store::{WebRTCStore, WebRTCStoreError};
+pub use real_factory::{RealPeerConnectionFactory, WebRtcPeerLinkFactory};
+pub use signaling::{MeshRouter, PeerEntry, PeerRouter, SignalingManager};
+pub use store::{MeshStore, MeshStoreError, WebRTCStore, WebRTCStoreError};
 pub use transport::{
-    DataChannel, PeerConnectionFactory, RelayTransport, SignalingConfig, TransportError,
+    DataChannel, MeshRouterConfig, PeerConnectionFactory, PeerLink, PeerLinkFactory,
+    RelayTransport, SignalingConfig, SignalingTransport, TransportError,
 };
 pub use types::{
     classifier_channel, decrement_htl_with_policy, is_polite_peer, should_forward,
     should_forward_htl, validate_mesh_frame, ClassifierRx, ClassifierTx, ClassifyRequest,
     ForwardRequest, ForwardRx, ForwardTx, HtlMode, HtlPolicy, IceCandidate, MeshNostrFrame,
-    MeshNostrPayload, PeerHTLConfig, PeerId, PeerPool, PeerState, PoolConfig, PoolSettings,
-    SignalingMessage, TimedSeenSet, WebRTCStats, WebRTCStoreConfig, BLOB_REQUEST_POLICY,
-    DATA_CHANNEL_LABEL, DECREMENT_AT_MAX_PROB, DECREMENT_AT_MIN_PROB, MAX_HTL, MESH_DEFAULT_HTL,
-    MESH_EVENT_POLICY, MESH_MAX_HTL, MESH_PROTOCOL, MESH_PROTOCOL_VERSION, NOSTR_KIND_HASHTREE,
+    MeshNostrPayload, MeshStats, MeshStoreConfig, PeerHTLConfig, PeerId, PeerPool, PeerState,
+    PoolConfig, PoolSettings, SignalingMessage, TimedSeenSet, WebRTCStats, WebRTCStoreConfig,
+    BLOB_REQUEST_POLICY, DATA_CHANNEL_LABEL, DECREMENT_AT_MAX_PROB, DECREMENT_AT_MIN_PROB, MAX_HTL,
+    MESH_DEFAULT_HTL, MESH_EVENT_POLICY, MESH_MAX_HTL, MESH_PROTOCOL, MESH_PROTOCOL_VERSION,
+    MESH_SIGNALING_EVENT_KIND, NOSTR_KIND_HASHTREE,
 };

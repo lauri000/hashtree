@@ -22,7 +22,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
-pub use auth::{new_lookup_cache, AppState, AuthCredentials};
+pub use auth::{new_lookup_cache, AppState, AuthCredentials, CachedTreeRootEntry};
 
 pub struct HashtreeServer {
     state: AppState,

@@ -14,9 +14,10 @@ use tokio::sync::RwLock;
 
 use hashtree_core::{HashTree, HashTreeConfig, MemoryStore, Store};
 use hashtree_webrtc::{
-    parse_message, DataMessage, GenericStore, GenericStoreRoutingConfig, MockConnectionFactory,
-    MockLatencyMode, MockRelay, MockRelayTransport, PoolConfig, PoolSettings, RelayTransport,
-    RequestDispatchConfig, ResponseBehaviorConfig, SelectionStrategy, SignalingManager,
+    parse_message, DataMessage, GenericStore, GenericStoreRoutingConfig, MeshRouter,
+    MockConnectionFactory, MockLatencyMode, MockRelay, MockRelayTransport, PoolConfig,
+    PoolSettings, RequestDispatchConfig, ResponseBehaviorConfig, SelectionStrategy,
+    SignalingTransport,
 };
 
 /// Simulation configuration
@@ -565,8 +566,8 @@ impl Simulation {
             other: selected_strategy.pool.clone(),
         };
 
-        // Create signaling manager
-        let signaling = Arc::new(SignalingManager::new(
+        // Create mesh router
+        let signaling = Arc::new(MeshRouter::new(
             node_id.clone(),
             node_id.clone(),
             transport.clone(),

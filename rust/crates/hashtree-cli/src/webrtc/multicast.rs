@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use nostr::{ClientMessage, Event, Filter, JsonUtil, Keys, RelayMessage};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::{HashMap, HashSet};
@@ -13,6 +14,7 @@ use super::root_events::{
     build_root_filter, is_hashtree_labeled_event, pick_latest_event, root_event_from_peer,
     PeerRootEvent, HASHTREE_KIND,
 };
+use super::LocalNostrBus;
 use crate::nostr_relay::NostrRelay;
 
 #[derive(Debug, Clone)]
@@ -22,6 +24,26 @@ pub struct MulticastConfig {
     pub port: u16,
     pub max_peers: usize,
     pub announce_interval_ms: u64,
+}
+
+#[async_trait]
+impl LocalNostrBus for MulticastNostrBus {
+    fn source_name(&self) -> &'static str {
+        "multicast"
+    }
+
+    async fn broadcast_event(&self, event: &Event) -> Result<()> {
+        MulticastNostrBus::broadcast_event(self, event).await
+    }
+
+    async fn query_root(
+        &self,
+        owner_pubkey: &str,
+        tree_name: &str,
+        timeout: Duration,
+    ) -> Option<PeerRootEvent> {
+        MulticastNostrBus::query_root(self, owner_pubkey, tree_name, timeout).await
+    }
 }
 
 impl MulticastConfig {
@@ -198,7 +220,7 @@ impl MulticastNostrBus {
         self.pending_queries.lock().await.remove(&subscription_id);
 
         let latest = pick_latest_event(events.iter())?;
-        root_event_from_peer(latest, "multicast", tree_name)
+        root_event_from_peer(latest, self.source_name(), tree_name)
     }
 
     async fn handle_datagram(&self, text: &str, signaling_tx: &mpsc::Sender<(String, Event)>) {

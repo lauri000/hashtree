@@ -11,33 +11,34 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::transport::{DataChannel, PeerConnectionFactory, RelayTransport, TransportError};
+use crate::transport::{PeerLink, PeerLinkFactory, SignalingTransport, TransportError};
 use crate::types::{is_polite_peer, ClassifyRequest, PeerPool, PoolSettings, SignalingMessage};
 
 /// Peer entry with pool classification and channel
 pub struct PeerEntry {
-    pub channel: Arc<dyn DataChannel>,
+    pub channel: Arc<dyn PeerLink>,
     pub pool: PeerPool,
 }
 
-/// Signaling manager handles peer discovery and connection establishment.
+/// Mesh router handles peer discovery and negotiated link establishment.
 ///
-/// This is the shared router logic between production transports and simulation.
-/// It uses traits for transport (relay) and connection factory (WebRTC or mock).
+/// This is the shared routing logic between production transports and simulation.
+/// It uses traits for signaling transport and negotiated link factories so the
+/// same router can drive Nostr websockets, LAN buses, BLE, WebRTC, or mocks.
 ///
 /// Uses WebRTC "perfect negotiation" pattern:
 /// - Both peers can send offers when they discover each other
 /// - On collision (both sent offers), "polite" peer backs off and accepts incoming
 /// - This ensures connections form even when one peer is satisfied but can accept
-pub struct SignalingManager<R: RelayTransport, F: PeerConnectionFactory> {
+pub struct MeshRouter<R: SignalingTransport, F: PeerLinkFactory> {
     /// Our peer ID (pubkey:uuid format)
     peer_id: String,
     /// Our pubkey (stored for future use in debugging/logging)
     #[allow(dead_code)]
     pubkey: String,
     /// Relay transport for signaling
-    relay: Arc<R>,
-    /// Connection factory for creating data channels
+    transport: Arc<R>,
+    /// Link factory for creating negotiated peer links
     conn_factory: Arc<F>,
     /// Connected peers
     peers: RwLock<HashMap<String, PeerEntry>>,
@@ -53,14 +54,15 @@ pub struct SignalingManager<R: RelayTransport, F: PeerConnectionFactory> {
     debug: bool,
 }
 
-pub type PeerRouter<R, F> = SignalingManager<R, F>;
+pub type SignalingManager<R, F> = MeshRouter<R, F>;
+pub type PeerRouter<R, F> = MeshRouter<R, F>;
 
-impl<R: RelayTransport + 'static, F: PeerConnectionFactory + 'static> SignalingManager<R, F> {
-    /// Create a new signaling manager
+impl<R: SignalingTransport + 'static, F: PeerLinkFactory + 'static> MeshRouter<R, F> {
+    /// Create a new mesh router.
     pub fn new(
         peer_id: String,
         pubkey: String,
-        relay: Arc<R>,
+        transport: Arc<R>,
         conn_factory: Arc<F>,
         pools: PoolSettings,
         debug: bool,
@@ -68,7 +70,7 @@ impl<R: RelayTransport + 'static, F: PeerConnectionFactory + 'static> SignalingM
         Self {
             peer_id,
             pubkey,
-            relay,
+            transport,
             conn_factory,
             peers: RwLock::new(HashMap::new()),
             pending_offers: RwLock::new(HashMap::new()),
@@ -95,7 +97,7 @@ impl<R: RelayTransport + 'static, F: PeerConnectionFactory + 'static> SignalingM
             peer_id: self.peer_id.clone(),
             roots,
         };
-        self.relay.publish(msg).await
+        self.transport.publish(msg).await
     }
 
     /// Count peers by pool
@@ -259,7 +261,7 @@ impl<R: RelayTransport + 'static, F: PeerConnectionFactory + 'static> SignalingM
                 target_peer_id: from_peer_id.to_string(),
                 sdp,
             };
-            self.relay.publish(offer_msg).await?;
+            self.transport.publish(offer_msg).await?;
         }
 
         Ok(())
@@ -341,7 +343,7 @@ impl<R: RelayTransport + 'static, F: PeerConnectionFactory + 'static> SignalingM
             target_peer_id: from_peer_id.to_string(),
             sdp: answer_sdp,
         };
-        self.relay.publish(answer_msg).await?;
+        self.transport.publish(answer_msg).await?;
 
         Ok(())
     }
@@ -372,7 +374,7 @@ impl<R: RelayTransport + 'static, F: PeerConnectionFactory + 'static> SignalingM
     }
 
     /// Get a peer's channel
-    pub async fn get_channel(&self, peer_id: &str) -> Option<Arc<dyn DataChannel>> {
+    pub async fn get_channel(&self, peer_id: &str) -> Option<Arc<dyn PeerLink>> {
         self.peers
             .read()
             .await

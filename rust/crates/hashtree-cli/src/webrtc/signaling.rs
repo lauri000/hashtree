@@ -27,6 +27,7 @@ use tracing::{debug, error, info, warn};
 
 use super::bluetooth::BluetoothMesh;
 use super::cashu::{CashuMintMetadataStore, CashuQuoteState, CashuRoutingConfig, NegotiatedQuote};
+use super::local_bus::SharedLocalNostrBus;
 use super::multicast::MulticastNostrBus;
 use super::peer::{ContentStore, Peer, PendingRequest};
 use super::root_events::{
@@ -79,7 +80,7 @@ pub struct PeerEntry {
     pub bytes_received: u64,
 }
 
-/// Shared state for WebRTC manager
+/// Shared state for the native mesh router.
 pub struct WebRTCState {
     pub peers: RwLock<HashMap<String, PeerEntry>>,
     pub connected_count: std::sync::atomic::AtomicUsize,
@@ -101,7 +102,9 @@ pub struct WebRTCState {
     request_timeout: Duration,
     /// Shared Cashu quote negotiation policy/state.
     cashu_quotes: Arc<CashuQuoteState>,
-    multicast_bus: RwLock<Option<Arc<MulticastNostrBus>>>,
+    /// Optional local buses such as multicast or BLE that carry signed Nostr
+    /// envelopes for nearby/offline peers.
+    local_buses: RwLock<Vec<SharedLocalNostrBus>>,
 }
 const SEEN_FRAME_CAP: usize = 4096;
 const SEEN_FRAME_TTL: Duration = Duration::from_secs(120);
@@ -180,12 +183,24 @@ impl WebRTCState {
             request_dispatch,
             request_timeout,
             cashu_quotes,
-            multicast_bus: RwLock::new(None),
+            local_buses: RwLock::new(Vec::new()),
         }
     }
 
+    pub async fn set_local_buses(&self, buses: Vec<SharedLocalNostrBus>) {
+        *self.local_buses.write().await = buses;
+    }
+
+    pub async fn add_local_bus(&self, bus: SharedLocalNostrBus) {
+        self.local_buses.write().await.push(bus);
+    }
+
     pub async fn set_multicast_bus(&self, bus: Option<Arc<MulticastNostrBus>>) {
-        *self.multicast_bus.write().await = bus;
+        let buses = bus
+            .into_iter()
+            .map(|bus| bus as SharedLocalNostrBus)
+            .collect();
+        self.set_local_buses(buses).await;
     }
 
     /// Get current bandwidth stats (bytes sent/received)
@@ -822,14 +837,40 @@ impl WebRTCState {
         None
     }
 
+    pub async fn resolve_root_from_local_buses_with_source(
+        &self,
+        owner_pubkey: &str,
+        tree_name: &str,
+        timeout: Duration,
+    ) -> Option<(&'static str, PeerRootEvent)> {
+        let buses = self.local_buses.read().await.clone();
+        for bus in buses {
+            if let Some(root) = bus.query_root(owner_pubkey, tree_name, timeout).await {
+                return Some((bus.source_name(), root));
+            }
+        }
+        None
+    }
+
+    pub async fn resolve_root_from_local_buses(
+        &self,
+        owner_pubkey: &str,
+        tree_name: &str,
+        timeout: Duration,
+    ) -> Option<PeerRootEvent> {
+        self.resolve_root_from_local_buses_with_source(owner_pubkey, tree_name, timeout)
+            .await
+            .map(|(_, root)| root)
+    }
+
     pub async fn resolve_root_from_multicast(
         &self,
         owner_pubkey: &str,
         tree_name: &str,
         timeout: Duration,
     ) -> Option<PeerRootEvent> {
-        let bus = self.multicast_bus.read().await.clone()?;
-        bus.query_root(owner_pubkey, tree_name, timeout).await
+        self.resolve_root_from_local_buses(owner_pubkey, tree_name, timeout)
+            .await
     }
 }
 
@@ -858,7 +899,7 @@ pub struct WebRTCManager {
     peer_classifier: PeerClassifier,
     /// Optional Nostr relay for data-channel relay messages
     nostr_relay: Option<Arc<NostrRelay>>,
-    multicast_bus: Option<Arc<MulticastNostrBus>>,
+    local_buses: Vec<SharedLocalNostrBus>,
     /// Channel for peer state events (connection success/failure)
     state_event_tx: mpsc::Sender<PeerStateEvent>,
     state_event_rx: Option<mpsc::Receiver<PeerStateEvent>>,
@@ -903,7 +944,7 @@ impl WebRTCManager {
             store: None,
             peer_classifier,
             nostr_relay: None,
-            multicast_bus: None,
+            local_buses: Vec::new(),
             state_event_tx,
             state_event_rx: Some(state_event_rx),
             mesh_frame_tx,
@@ -1198,8 +1239,9 @@ impl WebRTCManager {
                 .await
                 {
                     Ok(bus) => {
-                        self.state.set_multicast_bus(Some(bus.clone())).await;
-                        self.multicast_bus = Some(bus.clone());
+                        let local_bus: SharedLocalNostrBus = bus.clone();
+                        self.state.add_local_bus(local_bus.clone()).await;
+                        self.local_buses.push(local_bus);
                         let shutdown_rx = self.shutdown_rx.clone();
                         let signaling_tx = event_tx.clone();
                         tokio::spawn(async move {
@@ -1382,10 +1424,11 @@ impl WebRTCManager {
             }
         };
 
-        if let Some(bus) = &self.multicast_bus {
+        for bus in &self.local_buses {
             if let Err(err) = bus.broadcast_event(&event).await {
                 debug!(
-                    "Failed to broadcast signaling event over multicast ({}): {}",
+                    "Failed to broadcast signaling event over {} ({}): {}",
+                    bus.source_name(),
                     msg.msg_type(),
                     err
                 );
@@ -2391,7 +2434,36 @@ pub struct PeerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::webrtc::root_events::PeerRootEvent;
+    use anyhow::Result as AnyResult;
+    use async_trait::async_trait;
     use nostr::{EventBuilder, Keys, Tag};
+    use std::time::Duration;
+
+    struct TestLocalBus {
+        source: &'static str,
+        root: Option<PeerRootEvent>,
+    }
+
+    #[async_trait]
+    impl super::super::LocalNostrBus for TestLocalBus {
+        fn source_name(&self) -> &'static str {
+            self.source
+        }
+
+        async fn broadcast_event(&self, _event: &nostr::Event) -> AnyResult<()> {
+            Ok(())
+        }
+
+        async fn query_root(
+            &self,
+            _owner_pubkey: &str,
+            _tree_name: &str,
+            _timeout: Duration,
+        ) -> Option<PeerRootEvent> {
+            self.root.clone()
+        }
+    }
 
     #[test]
     fn root_event_from_peer_extracts_tags() {
@@ -2449,6 +2521,42 @@ mod tests {
         };
         let picked = pick_latest_event([&event_a, &event_b]).unwrap();
         assert_eq!(picked.id, expected);
+    }
+
+    #[tokio::test]
+    async fn resolve_root_from_local_buses_returns_source_and_first_match() {
+        let state = WebRTCState::new();
+        let root = PeerRootEvent {
+            hash: "ab".repeat(32),
+            key: None,
+            encrypted_key: None,
+            self_encrypted_key: None,
+            event_id: "event-1".to_string(),
+            created_at: 1,
+            peer_id: "bus-peer".to_string(),
+        };
+
+        state
+            .set_local_buses(vec![
+                Arc::new(TestLocalBus {
+                    source: "empty",
+                    root: None,
+                }),
+                Arc::new(TestLocalBus {
+                    source: "mock-bus",
+                    root: Some(root.clone()),
+                }),
+            ])
+            .await;
+
+        let resolved = state
+            .resolve_root_from_local_buses_with_source("owner", "tree", Duration::from_millis(10))
+            .await
+            .expect("expected root from local bus");
+
+        assert_eq!(resolved.0, "mock-bus");
+        assert_eq!(resolved.1.hash, root.hash);
+        assert_eq!(resolved.1.peer_id, root.peer_id);
     }
 
     #[test]

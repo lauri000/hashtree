@@ -1,7 +1,9 @@
-//! WebRTC-backed store implementation
+//! Default mesh-backed store implementation.
 //!
-//! Implements the Store trait by fetching data from connected WebRTC peers.
-//! Uses Nostr relays for peer discovery and signaling.
+//! This is the legacy concrete composition that pairs Nostr websocket
+//! signaling with WebRTC peer links. The generic storage boundary remains
+//! `hashtree_core::Store`, so the local backend can be memory, LMDB, Dexie via
+//! an embedding layer, or any other adapter that implements the trait.
 
 use crate::peer::{Peer, PeerError};
 use crate::peer_selector::PeerSelector;
@@ -33,6 +35,8 @@ pub enum WebRTCStoreError {
     #[error("Store error: {0}")]
     Store(#[from] StoreError),
 }
+
+pub type MeshStoreError = WebRTCStoreError;
 
 /// Peer entry with pool classification
 struct PeerEntry<S: Store> {
@@ -69,6 +73,8 @@ pub struct WebRTCStore<S: Store> {
     /// Adaptive peer selector for intelligent peer ordering
     peer_selector: Arc<RwLock<PeerSelector>>,
 }
+
+pub type MeshStore<S> = WebRTCStore<S>;
 
 impl<S: Store + 'static> WebRTCStore<S> {
     /// Create a new WebRTC store

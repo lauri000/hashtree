@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use hashtree_webrtc::{
-    clear_channel_registry, MockConnectionFactory, MockRelay, MockRelayTransport, PeerRouter,
-    PoolConfig, PoolSettings, RelayTransport,
+    clear_channel_registry, MeshRouter, MockConnectionFactory, MockRelay, MockRelayTransport,
+    PoolConfig, PoolSettings, SignalingTransport,
 };
 
-type TestRouter = PeerRouter<MockRelayTransport, MockConnectionFactory>;
+type TestRouter = MeshRouter<MockRelayTransport, MockConnectionFactory>;
 
 async fn drain_router_messages(
     routers: &[(&Arc<MockRelayTransport>, &Arc<TestRouter>)],
@@ -37,7 +37,7 @@ fn test_router(
 ) -> (Arc<MockRelayTransport>, Arc<TestRouter>) {
     let transport = Arc::new(relay.create_transport(peer_id.to_string(), pubkey.to_string()));
     let factory = Arc::new(MockConnectionFactory::new(peer_id.to_string(), 0));
-    let router = Arc::new(PeerRouter::new(
+    let router = Arc::new(MeshRouter::new(
         peer_id.to_string(),
         pubkey.to_string(),
         transport.clone(),

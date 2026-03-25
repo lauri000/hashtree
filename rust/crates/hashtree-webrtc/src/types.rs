@@ -1,7 +1,8 @@
-//! WebRTC transport types for P2P data exchange
+//! Mesh transport types for peer-to-peer data exchange.
 //!
-//! Defines message types for WebRTC signaling via Nostr relays
-//! and the data channel protocol for hash-based data requests.
+//! Defines signaling frames, negotiated peer-link messages, and shared mesh
+//! constants used across Nostr websocket transports, local buses, WebRTC, and
+//! simulation.
 
 use hashtree_core::Hash;
 use nostr_sdk::nostr::{Event, Kind};
@@ -43,7 +44,7 @@ impl PeerId {
     }
 }
 
-/// Signaling message types sent via Nostr relays
+/// Signaling message types exchanged over mesh signaling transports.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum SignalingMessage {
@@ -55,7 +56,7 @@ pub enum SignalingMessage {
         roots: Vec<String>,
     },
 
-    /// WebRTC offer (SDP)
+    /// Negotiation offer payload (currently SDP for WebRTC links).
     #[serde(rename = "offer")]
     Offer {
         #[serde(rename = "peerId")]
@@ -65,7 +66,7 @@ pub enum SignalingMessage {
         sdp: String,
     },
 
-    /// WebRTC answer (SDP)
+    /// Negotiation answer payload (currently SDP for WebRTC links).
     #[serde(rename = "answer")]
     Answer {
         #[serde(rename = "peerId")]
@@ -75,7 +76,7 @@ pub enum SignalingMessage {
         sdp: String,
     },
 
-    /// Single ICE candidate
+    /// Single candidate update for transports that need trickle negotiation.
     #[serde(rename = "candidate")]
     Candidate {
         #[serde(rename = "peerId")]
@@ -89,7 +90,7 @@ pub enum SignalingMessage {
         sdp_mid: Option<String>,
     },
 
-    /// Batched ICE candidates
+    /// Batched candidate updates.
     #[serde(rename = "candidates")]
     Candidates {
         #[serde(rename = "peerId")]
@@ -134,7 +135,7 @@ impl SignalingMessage {
 
 /// Perfect negotiation: determine if we are the "polite" peer
 ///
-/// In WebRTC perfect negotiation, both peers can send offers simultaneously.
+/// In perfect negotiation, both peers can send offers simultaneously.
 /// When a collision occurs (we receive an offer while we have a pending offer),
 /// the "polite" peer backs off and accepts the incoming offer instead.
 ///
@@ -148,7 +149,7 @@ pub fn is_polite_peer(local_peer_id: &str, remote_peer_id: &str) -> bool {
     local_peer_id < remote_peer_id
 }
 
-/// ICE candidate for WebRTC connection establishment
+/// Candidate metadata for transports that use ICE-style negotiation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IceCandidate {
     pub candidate: String,
@@ -158,7 +159,7 @@ pub struct IceCandidate {
     pub sdp_mid: Option<String>,
 }
 
-/// Data channel message types for hash-based data exchange
+/// Direct peer-link message types for hash-based data exchange.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum DataMessage {
@@ -445,7 +446,7 @@ pub fn classifier_channel(buffer: usize) -> (ClassifierTx, ClassifierRx) {
     mpsc::channel(buffer)
 }
 
-/// Configuration for WebRTC store
+/// Configuration for the default mesh-backed store composition.
 #[derive(Clone)]
 pub struct WebRTCStoreConfig {
     /// Nostr relays for signaling
@@ -496,22 +497,25 @@ impl Default for WebRTCStoreConfig {
     }
 }
 
+/// Backward-compatible alias for the generic mesh store configuration.
+pub type MeshStoreConfig = WebRTCStoreConfig;
+
 /// Connection state for a peer
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerState {
     /// Initial state
     New,
-    /// Connecting via signaling
+    /// Connecting via signaling.
     Connecting,
-    /// WebRTC connection established
+    /// Negotiated direct link established.
     Connected,
-    /// Data channel open and ready
+    /// Direct peer link open and ready for data.
     Ready,
     /// Connection failed or closed
     Disconnected,
 }
 
-/// Statistics for WebRTC store
+/// Statistics for the default mesh-backed store composition.
 #[derive(Debug, Clone, Default)]
 pub struct WebRTCStats {
     pub connected_peers: usize,
@@ -522,8 +526,12 @@ pub struct WebRTCStats {
     pub requests_fulfilled: u64,
 }
 
-/// Nostr event kind for WebRTC signaling (ephemeral, NIP-17 style)
+/// Backward-compatible alias for generic mesh store statistics.
+pub type MeshStats = WebRTCStats;
+
+/// Nostr event kind for hashtree signaling envelopes (ephemeral, NIP-17 style).
 pub const NOSTR_KIND_HASHTREE: u16 = 25050;
+pub const MESH_SIGNALING_EVENT_KIND: u16 = NOSTR_KIND_HASHTREE;
 
 /// Relayless mesh protocol constants for forwarding signaling events over data channels.
 pub const MESH_PROTOCOL: &str = "htree.nostr.mesh.v1";
@@ -675,5 +683,5 @@ pub fn validate_mesh_frame(frame: &MeshNostrFrame) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Data channel label
+/// Default WebRTC data channel label.
 pub const DATA_CHANNEL_LABEL: &str = "hashtree";

@@ -1,6 +1,7 @@
-//! Real WebRTC peer connection factory
+//! Real WebRTC peer-link factory
 //!
-//! Wraps the webrtc crate to implement PeerConnectionFactory for production use.
+//! Wraps the `webrtc` crate to implement the generic peer-link factory for
+//! production WebRTC use.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -8,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex, RwLock};
 
-use crate::transport::{DataChannel, PeerConnectionFactory, TransportError};
+use crate::transport::{PeerLink, PeerLinkFactory, TransportError};
 use crate::types::DATA_CHANNEL_LABEL;
 
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -23,7 +24,7 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 
-/// Wrapper around RTCDataChannel that implements our DataChannel trait
+/// Wrapper around `RTCDataChannel` that implements the generic peer-link trait.
 pub struct RealDataChannel {
     dc: Arc<RTCDataChannel>,
     /// Receiver for incoming messages (populated by on_message callback)
@@ -53,7 +54,7 @@ impl RealDataChannel {
 }
 
 #[async_trait]
-impl DataChannel for RealDataChannel {
+impl PeerLink for RealDataChannel {
     async fn send(&self, data: Vec<u8>) -> Result<(), TransportError> {
         self.dc
             .send(&bytes::Bytes::from(data))
@@ -88,7 +89,7 @@ struct PendingConnection {
     data_channel: Option<Arc<RTCDataChannel>>,
 }
 
-/// Real WebRTC peer connection factory
+/// Real WebRTC peer-link factory
 ///
 /// Creates actual WebRTC connections using the webrtc crate.
 pub struct RealPeerConnectionFactory {
@@ -171,11 +172,11 @@ impl Default for RealPeerConnectionFactory {
 }
 
 #[async_trait]
-impl PeerConnectionFactory for RealPeerConnectionFactory {
+impl PeerLinkFactory for RealPeerConnectionFactory {
     async fn create_offer(
         &self,
         target_peer_id: &str,
-    ) -> Result<(Arc<dyn DataChannel>, String), TransportError> {
+    ) -> Result<(Arc<dyn PeerLink>, String), TransportError> {
         let connection = self.create_connection().await?;
 
         // Create data channel (unordered for better performance - protocol is stateless)
@@ -212,7 +213,7 @@ impl PeerConnectionFactory for RealPeerConnectionFactory {
         );
 
         // Create channel wrapper with message handling
-        let channel: Arc<dyn DataChannel> = RealDataChannel::new(dc);
+        let channel: Arc<dyn PeerLink> = RealDataChannel::new(dc);
         Ok((channel, sdp))
     }
 
@@ -220,7 +221,7 @@ impl PeerConnectionFactory for RealPeerConnectionFactory {
         &self,
         from_peer_id: &str,
         offer_sdp: &str,
-    ) -> Result<(Arc<dyn DataChannel>, String), TransportError> {
+    ) -> Result<(Arc<dyn PeerLink>, String), TransportError> {
         let connection = self.create_connection().await?;
 
         // Set up data channel callback BEFORE setting remote description
@@ -278,7 +279,7 @@ impl PeerConnectionFactory for RealPeerConnectionFactory {
         );
 
         // Create channel wrapper with message handling
-        let channel: Arc<dyn DataChannel> = RealDataChannel::new(dc);
+        let channel: Arc<dyn PeerLink> = RealDataChannel::new(dc);
         Ok((channel, sdp))
     }
 
@@ -286,7 +287,7 @@ impl PeerConnectionFactory for RealPeerConnectionFactory {
         &self,
         target_peer_id: &str,
         answer_sdp: &str,
-    ) -> Result<Arc<dyn DataChannel>, TransportError> {
+    ) -> Result<Arc<dyn PeerLink>, TransportError> {
         let pending = self
             .pending
             .write()
@@ -311,3 +312,5 @@ impl PeerConnectionFactory for RealPeerConnectionFactory {
         Ok(RealDataChannel::new(dc))
     }
 }
+
+pub type WebRtcPeerLinkFactory = RealPeerConnectionFactory;

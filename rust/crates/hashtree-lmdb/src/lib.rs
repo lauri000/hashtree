@@ -94,7 +94,9 @@ impl LmdbBlobStore {
                 .last()
                 .transpose()
                 .map_err(|e| StoreError::Other(e.to_string()))?
-                .map(|(key, _)| Self::decode_order(key).map(|order| order.saturating_add(1)))
+                .map(|(key, _)| {
+                    Self::decode_order_from_order_key(key).map(|order| order.saturating_add(1))
+                })
                 .transpose()?
                 .unwrap_or(0);
             next
@@ -442,6 +444,16 @@ impl LmdbBlobStore {
         Ok(hash)
     }
 
+    fn decode_order_from_order_key(bytes: &[u8]) -> Result<u64, StoreError> {
+        if bytes.len() != ORDER_KEY_BYTES {
+            return Err(StoreError::Other(format!(
+                "invalid order key length: {}",
+                bytes.len()
+            )));
+        }
+        Self::decode_order(&bytes[..8])
+    }
+
     fn decode_pin_count(bytes: &[u8]) -> Result<u32, StoreError> {
         if bytes.len() != PIN_COUNT_BYTES {
             return Err(StoreError::Other(format!(
@@ -754,6 +766,27 @@ mod tests {
             "oldest unpinned blob should be evicted"
         );
         assert!(store.has(&h3).await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reopen_with_existing_eviction_order() -> Result<(), StoreError> {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("blobs");
+
+        {
+            let store = LmdbBlobStore::new(&path)?;
+            let h1 = sha256(b"aaaaaaaaaa");
+            let h2 = sha256(b"bbbbbbbbbb");
+            store.put(h1, b"aaaaaaaaaa".to_vec()).await?;
+            store.put(h2, b"bbbbbbbbbb".to_vec()).await?;
+        }
+
+        let reopened = LmdbBlobStore::new(&path)?;
+        let h3 = sha256(b"cccccccccc");
+        assert!(reopened.put(h3, b"cccccccccc".to_vec()).await?);
+        assert!(reopened.has(&h3).await?);
 
         Ok(())
     }

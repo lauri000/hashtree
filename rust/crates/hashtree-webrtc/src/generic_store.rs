@@ -1,8 +1,8 @@
-//! Generic P2P store using abstract transports
+//! Generic P2P store using abstract transports.
 //!
-//! This module provides a Store implementation that works with any
-//! RelayTransport and PeerConnectionFactory. Both production (real WebRTC)
-//! and simulation (mocks) use this same code.
+//! This module provides a store wrapper that works with any local storage
+//! backend plus any signaling transport and peer-link factory. Both production
+//! (Nostr websockets + WebRTC) and simulation (mocks) use this same code.
 
 use async_trait::async_trait;
 use std::collections::hash_map::DefaultHasher;
@@ -21,8 +21,8 @@ use crate::protocol::{
     encode_quote_response, encode_request, encode_response, hash_to_key, parse_message,
     DataMessage, DataQuoteRequest, DataQuoteResponse,
 };
-use crate::signaling::SignalingManager;
-use crate::transport::{PeerConnectionFactory, RelayTransport, TransportError};
+use crate::signaling::MeshRouter;
+use crate::transport::{PeerLinkFactory, SignalingTransport, TransportError};
 use crate::types::{PeerHTLConfig, SignalingMessage, MAX_HTL};
 
 const PEER_METADATA_POINTER_SLOT_KEY: &[u8] = b"hashtree-webrtc/peer-metadata/latest/v1";
@@ -58,7 +58,7 @@ struct IssuedQuote {
 
 /// Request dispatch strategy for peer queries.
 ///
-/// `GenericStore` supports two practical modes:
+/// `GenericStore` supports two practical retrieval modes:
 /// - Flood (`usize::MAX` fanout): maximize success/latency at bandwidth cost.
 /// - Staged hedging: probe a subset first, then expand.
 #[derive(Debug, Clone, Copy)]
@@ -226,21 +226,22 @@ impl Default for GenericStoreRoutingConfig {
     }
 }
 
-/// Generic P2P store that works with any transport implementation
+/// Generic mesh store that works with any storage backend and transport
+/// implementation.
 ///
 /// This is the shared code between production and simulation.
-/// - Production: GenericStore<NostrRelayTransport, RealPeerConnectionFactory>
-/// - Simulation: GenericStore<MockRelayTransport, MockConnectionFactory>
+/// - Production: `GenericStore<LmdbStore, NostrSignalingTransport, WebRtcPeerLinkFactory>`
+/// - Simulation: `GenericStore<MemoryStore, MockSignalingTransport, MockConnectionFactory>`
 pub struct GenericStore<S, R, F>
 where
     S: Store + Send + Sync + 'static,
-    R: RelayTransport + Send + Sync + 'static,
-    F: PeerConnectionFactory + Send + Sync + 'static,
+    R: SignalingTransport + Send + Sync + 'static,
+    F: PeerLinkFactory + Send + Sync + 'static,
 {
     /// Local backing store
     local_store: Arc<S>,
-    /// Signaling manager (handles peer discovery and connection)
-    signaling: Arc<SignalingManager<R, F>>,
+    /// Mesh router (handles peer discovery and connection)
+    signaling: Arc<MeshRouter<R, F>>,
     /// Per-peer HTL config
     htl_configs: RwLock<HashMap<String, PeerHTLConfig>>,
     /// Pending requests we sent
@@ -266,13 +267,13 @@ where
 impl<S, R, F> GenericStore<S, R, F>
 where
     S: Store + Send + Sync + 'static,
-    R: RelayTransport + Send + Sync + 'static,
-    F: PeerConnectionFactory + Send + Sync + 'static,
+    R: SignalingTransport + Send + Sync + 'static,
+    F: PeerLinkFactory + Send + Sync + 'static,
 {
     /// Create a new generic store
     pub fn new(
         local_store: Arc<S>,
-        signaling: Arc<SignalingManager<R, F>>,
+        signaling: Arc<MeshRouter<R, F>>,
         request_timeout: Duration,
         debug: bool,
     ) -> Self {
@@ -288,7 +289,7 @@ where
     /// Create a new generic store with explicit routing configuration.
     pub fn new_with_routing(
         local_store: Arc<S>,
-        signaling: Arc<SignalingManager<R, F>>,
+        signaling: Arc<MeshRouter<R, F>>,
         request_timeout: Duration,
         debug: bool,
         routing: GenericStoreRoutingConfig,
@@ -343,7 +344,7 @@ where
     }
 
     /// Get signaling manager reference
-    pub fn signaling(&self) -> &Arc<SignalingManager<R, F>> {
+    pub fn signaling(&self) -> &Arc<MeshRouter<R, F>> {
         &self.signaling
     }
 
@@ -1231,8 +1232,8 @@ where
 impl<S, R, F> Store for GenericStore<S, R, F>
 where
     S: Store + Send + Sync + 'static,
-    R: RelayTransport + Send + Sync + 'static,
-    F: PeerConnectionFactory + Send + Sync + 'static,
+    R: SignalingTransport + Send + Sync + 'static,
+    F: PeerLinkFactory + Send + Sync + 'static,
 {
     async fn put(&self, hash: Hash, data: Vec<u8>) -> Result<bool, StoreError> {
         self.local_store.put(hash, data).await
@@ -1297,7 +1298,7 @@ mod tests {
             node_id.to_string(),
             0,
         ));
-        let signaling = Arc::new(crate::signaling::SignalingManager::new(
+        let signaling = Arc::new(crate::signaling::MeshRouter::new(
             node_id.to_string(),
             node_id.to_string(),
             transport,
@@ -1325,7 +1326,7 @@ mod tests {
             node_id.to_string(),
             0,
         ));
-        let signaling = Arc::new(crate::signaling::SignalingManager::new(
+        let signaling = Arc::new(crate::signaling::MeshRouter::new(
             node_id.to_string(),
             node_id.to_string(),
             transport.clone(),
