@@ -10,4 +10,12 @@ describe('playlist card thumbnail wiring', () => {
     expect(playlistCardSource).toContain('themeHover?: boolean');
     expect(playlistCardSource).toContain('if (!themeHover) return;');
   });
+
+  it('keeps the placeholder visible until the playlist thumbnail image has actually loaded', () => {
+    expect(playlistCardSource).toContain('let thumbnailLoaded = $state(false);');
+    expect(playlistCardSource).toContain('thumbnailLoaded = false;');
+    expect(playlistCardSource).toContain('thumbnailLoaded = true;');
+    expect(playlistCardSource).toContain('class:opacity-0={!thumbnailLoaded}');
+    expect(playlistCardSource).toContain('{#if !renderedThumbnailUrl || thumbnailError || !thumbnailLoaded}');
+  });
 });

@@ -189,7 +189,7 @@ describe('mediaUrl thumbnail helpers', () => {
     );
   });
 
-  it('prefers exact immutable thumbnail files before alias fallback when the root is known', () => {
+  it('prefers the immutable thumbnail alias before speculative exact filename guesses when the root is known', () => {
     installWindow();
     const rootCid = {
       hash: fromHex('6'.repeat(64)),
@@ -203,10 +203,10 @@ describe('mediaUrl thumbnail helpers', () => {
         videoId: 'clips/demo reel',
         hashPrefix: 'deadbeef',
       }),
-    ).toBe(`/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpg?htree_c=test-media-client`);
+    ).toBe(`/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail?htree_c=test-media-client`);
   });
 
-  it('puts exact immutable thumbnail file guesses ahead of alias paths when tree identity is known', () => {
+  it('puts the immutable thumbnail alias ahead of speculative exact filename guesses when tree identity is known', () => {
     installWindow();
     const rootCid = {
       hash: fromHex('7'.repeat(64)),
@@ -223,16 +223,16 @@ describe('mediaUrl thumbnail helpers', () => {
       }),
     ).toEqual([
       '/htree/nhash1exact/thumbnail.jpg',
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail?htree_c=test-media-client`,
       `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpg?htree_c=test-media-client`,
       `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.webp?htree_c=test-media-client`,
       `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.png?htree_c=test-media-client`,
       `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpeg?htree_c=test-media-client`,
-      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail?htree_c=test-media-client`,
       '/htree/npub1example/videos%2FTest%20Clip/clips/demo%20reel/thumbnail?v=deadbeef&htree_c=test-media-client',
     ]);
   });
 
-  it('demotes an explicit alias url below exact immutable thumbnail file guesses', () => {
+  it('keeps an immutable alias ahead of speculative exact guesses even when an explicit alias url is provided', () => {
     installWindow();
     const rootCid = {
       hash: fromHex('9'.repeat(64)),
@@ -248,11 +248,11 @@ describe('mediaUrl thumbnail helpers', () => {
         hashPrefix: 'deadbeef',
       }),
     ).toEqual([
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail?htree_c=test-media-client`,
       `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpg?htree_c=test-media-client`,
       `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.webp?htree_c=test-media-client`,
       `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.png?htree_c=test-media-client`,
       `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpeg?htree_c=test-media-client`,
-      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail?htree_c=test-media-client`,
       '/htree/npub1example/videos%2FTest%20Clip/clips/demo%20reel/thumbnail?v=deadbeef&htree_c=test-media-client',
     ]);
   });
@@ -272,7 +272,7 @@ describe('mediaUrl thumbnail helpers', () => {
     );
   });
 
-  it('still uses immutable root thumbnail candidates when a caller disables mutable alias fallback', () => {
+  it('still uses the immutable root thumbnail alias when a caller disables mutable alias fallback', () => {
     installWindow();
 
     expect(
@@ -288,7 +288,7 @@ describe('mediaUrl thumbnail helpers', () => {
     ).toBe(
       `/htree/${nhashEncode({
         hash: fromHex('8'.repeat(64)),
-      })}/clips/demo%20reel/thumbnail.jpg?htree_c=test-media-client`,
+      })}/clips/demo%20reel/thumbnail?htree_c=test-media-client`,
     );
   });
 

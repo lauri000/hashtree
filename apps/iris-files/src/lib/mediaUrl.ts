@@ -442,9 +442,15 @@ export function getStableThumbnailCandidateUrls(options: StableThumbnailUrlOptio
   const urls = new Set<string>();
   const explicitThumbnailUrl = options.thumbnailUrl?.trim() || null;
   const explicitIsAlias = explicitThumbnailUrl ? isThumbnailAliasUrl(explicitThumbnailUrl) : false;
+  const immutableAliasUrl = options.rootCid
+    ? getThumbnailUrlFromCid(options.rootCid, options.videoId)
+    : null;
 
   if (explicitThumbnailUrl && !explicitIsAlias) {
     urls.add(explicitThumbnailUrl);
+  }
+  if (immutableAliasUrl) {
+    urls.add(immutableAliasUrl);
   }
   if (options.rootCid) {
     for (const exactUrl of getStableExactThumbnailUrls(options.rootCid, options.videoId)) {

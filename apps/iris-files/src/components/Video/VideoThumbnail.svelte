@@ -4,6 +4,7 @@
    * Used by VideoCard, FeedSidebar, PlaylistSidebar, etc.
    */
   import { onDestroy } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import { formatDuration } from '../../utils/format';
   import { shouldEagerLoadMediaInNativeChildRuntime } from '../../lib/nativeHtree';
   import {
@@ -48,6 +49,7 @@
   }: Props = $props();
 
   let imageError = $state(false);
+  let imageLoaded = $state(false);
   let lastMediaKey = $state('');
   let retryCount = $state(0);
   let imageCandidateIndex = $state(0);
@@ -73,7 +75,7 @@
     }
   }
   const resolvedImageCandidateUrls = $derived.by(() => {
-    const urls = new Set<string>();
+    const urls = new SvelteSet<string>();
     if (src) {
       urls.add(src);
     }
@@ -104,6 +106,7 @@
       clearImageLoadTimer();
       clearVideoLoadTimer();
       imageError = false;
+      imageLoaded = false;
       retryCount = 0;
       imageCandidateIndex = 0;
       renderedSrc = resolvedImageCandidateUrls[0] ?? null;
@@ -189,10 +192,12 @@
       imageCandidateIndex = nextIndex;
       retryCount = 0;
       imageError = false;
+      imageLoaded = false;
       renderedSrc = resolvedImageCandidateUrls[nextIndex] ?? null;
       return;
     }
     imageError = true;
+    imageLoaded = false;
   }
 
   function advanceVideoCandidateOrFail(): void {
@@ -243,6 +248,7 @@
 
   function handleImageLoad(): void {
     clearImageLoadTimer();
+    imageLoaded = true;
     if (retryTimer) {
       clearTimeout(retryTimer);
       retryTimer = null;
@@ -251,6 +257,7 @@
 
   function handleImageError(event: Event): void {
     clearImageLoadTimer();
+    imageLoaded = false;
     const image = event.currentTarget as HTMLImageElement | null;
     const baseSrc = resolvedImageCandidateUrls[imageCandidateIndex] ?? renderedSrc ?? null;
     if (!baseSrc || !isRetryableMediaImageUrl(baseSrc) || retryCount >= MAX_MEDIA_IMAGE_RETRIES) {
@@ -266,6 +273,7 @@
       retryTimer = null;
       if (image && !image.isConnected) return;
       imageError = false;
+      imageLoaded = false;
       renderedSrc = retryUrl;
     }, delayMs);
   }
@@ -320,6 +328,7 @@
       src={renderedSrc}
       alt=""
       class="absolute inset-0 w-full h-full object-cover"
+      class:opacity-0={!imageLoaded}
       loading={loadingStrategy}
       onload={handleImageLoad}
       onerror={handleImageError}
@@ -343,7 +352,7 @@
     ></video>
   {/if}
 
-  {#if (!renderedSrc || imageError) && !capturedVideoFrameUrl}
+  {#if (!renderedSrc || imageError || !imageLoaded) && !capturedVideoFrameUrl}
     <div class="absolute inset-0 flex items-center justify-center">
       <span class="i-lucide-video text-text-3 {iconSize}"></span>
     </div>

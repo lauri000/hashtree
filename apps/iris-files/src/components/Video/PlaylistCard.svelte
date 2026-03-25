@@ -30,6 +30,7 @@
   let { href, title, videoCount, thumbnailUrl, ownerPubkey, visibility, hideAuthor = false, timestamp, themeHover = false }: Props = $props();
 
   let thumbnailError = $state(false);
+  let thumbnailLoaded = $state(false);
   let lastLoadedUrl = $state<string | null>(null);
   let retryCount = $state(0);
   let renderedThumbnailUrl = $state<string | null>(null);
@@ -44,6 +45,7 @@
         retryTimer = null;
       }
       thumbnailError = false;
+      thumbnailLoaded = false;
       retryCount = 0;
       lastLoadedUrl = thumbnailUrl ?? null;
       renderedThumbnailUrl = thumbnailUrl ?? null;
@@ -60,6 +62,7 @@
   function handleThumbnailError(event: Event): void {
     const image = event.currentTarget as HTMLImageElement | null;
     const baseUrl = thumbnailUrl ?? null;
+    thumbnailLoaded = false;
     if (!baseUrl || !isRetryableMediaImageUrl(baseUrl) || retryCount >= MAX_MEDIA_IMAGE_RETRIES) {
       thumbnailError = true;
       return;
@@ -73,8 +76,13 @@
       retryTimer = null;
       if (image && !image.isConnected) return;
       thumbnailError = false;
+      thumbnailLoaded = false;
       renderedThumbnailUrl = retryUrl;
     }, delayMs);
+  }
+
+  function handleThumbnailLoad(): void {
+    thumbnailLoaded = true;
   }
 
   // Extract dominant color from thumbnail for hover effect
@@ -102,18 +110,22 @@
 
     <!-- Main thumbnail -->
     <div class="absolute inset-0 bg-surface-2 rounded-lg overflow-hidden">
+      {#if !renderedThumbnailUrl || thumbnailError || !thumbnailLoaded}
+        <div class="w-full h-full flex items-center justify-center bg-surface-1">
+          <span class="i-lucide-video text-4xl text-text-3"></span>
+        </div>
+      {/if}
+
       {#if renderedThumbnailUrl && !thumbnailError}
         <img
           src={renderedThumbnailUrl}
           alt=""
           class="w-full h-full object-cover"
+          class:opacity-0={!thumbnailLoaded}
           loading={loadingStrategy}
+          onload={handleThumbnailLoad}
           onerror={handleThumbnailError}
         />
-      {:else}
-        <div class="w-full h-full flex items-center justify-center bg-surface-1">
-          <span class="i-lucide-video text-4xl text-text-3"></span>
-        </div>
       {/if}
 
       <!-- Playlist count overlay (right side like YouTube) -->

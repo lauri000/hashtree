@@ -35,7 +35,11 @@ describe('video thumbnail fallback wiring', () => {
     expect(videoThumbnailSource).toContain('onerror={handleImageError}');
   });
 
-  it('keeps showing the placeholder while an exact video-frame fallback is still loading', () => {
-    expect(videoThumbnailSource).toContain('{#if (!renderedSrc || imageError) && !capturedVideoFrameUrl}');
+  it('keeps showing the placeholder until the image or exact video-frame fallback has actually loaded', () => {
+    expect(videoThumbnailSource).toContain('let imageLoaded = $state(false);');
+    expect(videoThumbnailSource).toContain('imageLoaded = false;');
+    expect(videoThumbnailSource).toContain('imageLoaded = true;');
+    expect(videoThumbnailSource).toContain('class:opacity-0={!imageLoaded}');
+    expect(videoThumbnailSource).toContain('{#if (!renderedSrc || imageError || !imageLoaded) && !capturedVideoFrameUrl}');
   });
 });
