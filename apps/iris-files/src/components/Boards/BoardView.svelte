@@ -1,5 +1,5 @@
   <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { cid as makeCid, fromHex, LinkType, nhashEncode, toHex, type CID, type TreeEntry, type TreeVisibility } from '@hashtree/core';
   import DOMPurify from 'dompurify';
   import { marked } from 'marked';
@@ -929,6 +929,8 @@
     const treeName = route.treeName;
     const currentVisibility = resolvedVisibility;
     const protectedWithoutAccess = isProtectedBoardWithoutAccess;
+    const previousRouteKey = untrack(() => hydratedRouteKey);
+    const hasBoard = untrack(() => !!board);
     const routeKey = getBoardRouteKey({
       npub: route.npub,
       treeName,
@@ -967,7 +969,7 @@
     resetHydrateRetry(getHydrateRetryKey(root));
     loadGeneration += 1;
     const generation = loadGeneration;
-    loading = shouldShowBoardLoading(hydratedRouteKey, routeKey, !!board);
+    loading = shouldShowBoardLoading(previousRouteKey, routeKey, hasBoard);
     error = null;
     void hydrateBoardState(generation, root, routeKey);
   });
