@@ -22,7 +22,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
-pub use auth::{AppState, AuthCredentials};
+pub use auth::{new_lookup_cache, AppState, AuthCredentials};
 
 pub struct HashtreeServer {
     state: AppState,
@@ -49,6 +49,13 @@ impl HashtreeServer {
                 socialgraph_snapshot_public: false,
                 nostr_relay: None,
                 tree_root_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+                inflight_blob_fetches: Arc::new(tokio::sync::Mutex::new(
+                    std::collections::HashMap::new(),
+                )),
+                directory_listing_cache: Arc::new(std::sync::Mutex::new(new_lookup_cache())),
+                resolved_path_cache: Arc::new(std::sync::Mutex::new(new_lookup_cache())),
+                thumbnail_path_cache: Arc::new(std::sync::Mutex::new(new_lookup_cache())),
+                cid_size_cache: Arc::new(std::sync::Mutex::new(new_lookup_cache())),
             },
             addr,
             extra_routes: None,

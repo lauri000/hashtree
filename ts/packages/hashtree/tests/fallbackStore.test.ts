@@ -74,4 +74,32 @@ describe('FallbackStore', () => {
 
     expect(primary.put).toHaveBeenCalledWith(HASH, new Uint8Array([9]));
   });
+
+  it('coalesces concurrent fallback reads for the same hash', async () => {
+    vi.useFakeTimers();
+
+    const primary = makePrimary();
+    const fallback = {
+      get: vi.fn().mockImplementation(
+        () => new Promise<Uint8Array | null>((resolve) => setTimeout(() => resolve(new Uint8Array([7])), 50))
+      ),
+    };
+
+    const store = new FallbackStore({
+      primary,
+      fallbacks: [fallback],
+      timeout: 500,
+    });
+
+    const first = store.get(HASH);
+    const second = store.get(HASH);
+
+    await vi.advanceTimersByTimeAsync(50);
+
+    await expect(first).resolves.toEqual(new Uint8Array([7]));
+    await expect(second).resolves.toEqual(new Uint8Array([7]));
+    expect(fallback.get).toHaveBeenCalledTimes(1);
+    expect(primary.put).toHaveBeenCalledTimes(1);
+    expect(primary.put).toHaveBeenCalledWith(HASH, new Uint8Array([7]));
+  });
 });

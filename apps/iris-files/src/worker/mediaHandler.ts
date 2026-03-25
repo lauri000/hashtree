@@ -7,13 +7,14 @@
 
 import type { HashTree, CID } from '@hashtree/core';
 import type { MediaRequestByCid, MediaRequestByPath, MediaResponse } from './protocol';
-import { getCachedRoot } from './treeRootCache';
+import { getCachedRoot, onCachedRootUpdate } from './treeRootCache';
 import { subscribeToTreeRoots } from './treeRootSubscription';
 import { getErrorMessage } from '../utils/errorMessage';
-import { nhashDecode } from '@hashtree/core';
+import { nhashDecode, toHex } from '@hashtree/core';
 import { nip19 } from 'nostr-tools';
 import { parseHttpByteRange } from '../lib/httpRange';
 import { isPlayableMediaFileName } from '../lib/playableMedia';
+import { LRUCache } from '../utils/lruCache';
 
 // Thumbnail filename patterns to look for (in priority order)
 const THUMBNAIL_PATTERNS = ['thumbnail.jpg', 'thumbnail.webp', 'thumbnail.png', 'thumbnail.jpeg'];
@@ -53,11 +54,26 @@ interface ResolvedRootEntry {
   size?: number;
 }
 
+interface CachedLookupValue<T> {
+  value: T;
+  expiresAt: number;
+}
+
+interface AsyncLookupCache<T> {
+  values: LRUCache<string, CachedLookupValue<T>>;
+  inflight: Map<string, Promise<T>>;
+}
+
 // Timeout for considering a stream "done" (no updates)
 const LIVE_STREAM_TIMEOUT = 10000; // 10 seconds
 const ROOT_WAIT_TIMEOUT_MS = 15000;
-const ROOT_WAIT_INTERVAL_MS = 200;
 const NHASH_HINT_DIRECTORY_TIMEOUT_MS = 250;
+const IMMUTABLE_LOOKUP_CACHE_HIT_TTL_MS = 5 * 60 * 1000;
+const IMMUTABLE_LOOKUP_CACHE_MISS_TTL_MS = 1000;
+const DIRECTORY_CACHE_SIZE = 1024;
+const RESOLVED_ENTRY_CACHE_SIZE = 2048;
+const FILE_SIZE_CACHE_SIZE = 1024;
+const THUMBNAIL_PATH_CACHE_SIZE = 1024;
 
 // Chunk size for streaming to media port
 const MEDIA_CHUNK_SIZE = 256 * 1024; // 256KB chunks - matches videoChunker's firstChunkSize
@@ -72,6 +88,15 @@ interface ActiveStream {
 }
 
 const activeMediaStreams = new Map<string, ActiveStream>();
+const inflightRootWaits = new Map<string, Promise<CID | null>>();
+const directoryLookupCache = createAsyncLookupCache<
+  Awaited<ReturnType<HashTree['listDirectory']>> | null
+>(DIRECTORY_CACHE_SIZE);
+const resolvedEntryLookupCache = createAsyncLookupCache<ResolvedRootEntry | null>(
+  RESOLVED_ENTRY_CACHE_SIZE
+);
+const fileSizeLookupCache = createAsyncLookupCache<number | null>(FILE_SIZE_CACHE_SIZE);
+const thumbnailPathLookupCache = createAsyncLookupCache<string | null>(THUMBNAIL_PATH_CACHE_SIZE);
 
 let mediaPort: MessagePort | null = null;
 let tree: HashTree | null = null;
@@ -86,11 +111,79 @@ function logMediaDebug(event: string, data?: Record<string, unknown>): void {
   }
 }
 
+function createAsyncLookupCache<T>(maxEntries: number): AsyncLookupCache<T> {
+  return {
+    values: new LRUCache<string, CachedLookupValue<T>>(maxEntries),
+    inflight: new Map<string, Promise<T>>(),
+  };
+}
+
+function clearAsyncLookupCache<T>(cache: AsyncLookupCache<T>): void {
+  cache.values.clear();
+  cache.inflight.clear();
+}
+
+function clearMediaLookupCaches(): void {
+  inflightRootWaits.clear();
+  clearAsyncLookupCache(directoryLookupCache);
+  clearAsyncLookupCache(resolvedEntryLookupCache);
+  clearAsyncLookupCache(fileSizeLookupCache);
+  clearAsyncLookupCache(thumbnailPathLookupCache);
+}
+
+function getLookupTtlMs<T>(value: T | null | undefined): number {
+  return value == null ? IMMUTABLE_LOOKUP_CACHE_MISS_TTL_MS : IMMUTABLE_LOOKUP_CACHE_HIT_TTL_MS;
+}
+
+async function loadCachedLookup<T>(
+  cache: AsyncLookupCache<T>,
+  key: string,
+  loader: () => Promise<T>,
+  ttlMsForValue: (value: T) => number,
+): Promise<T> {
+  const now = Date.now();
+  const cached = cache.values.get(key);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+  if (cached) {
+    cache.values.delete(key);
+  }
+
+  const inflight = cache.inflight.get(key);
+  if (inflight) {
+    return inflight;
+  }
+
+  const pending = loader()
+    .then((value) => {
+      const ttlMs = ttlMsForValue(value);
+      if (ttlMs > 0) {
+        cache.values.set(key, {
+          value,
+          expiresAt: Date.now() + ttlMs,
+        });
+      }
+      return value;
+    })
+    .finally(() => {
+      cache.inflight.delete(key);
+    });
+
+  cache.inflight.set(key, pending);
+  return pending;
+}
+
+function cidCacheKey(cid: CID): string {
+  return cid.key ? `${toHex(cid.hash)}?k=${toHex(cid.key)}` : toHex(cid.hash);
+}
+
 /**
  * Initialize the media handler with the HashTree instance
  */
 export function initMediaHandler(hashTree: HashTree): void {
   tree = hashTree;
+  clearMediaLookupCaches();
 }
 
 /**
@@ -443,56 +536,69 @@ async function resolveEntryWithinRoot(
 ): Promise<ResolvedRootEntry | null> {
   if (!tree) return null;
 
-  const resolvedPath = await normalizeAliasPath(rootCid, path);
-  if (!resolvedPath) {
-    return { cid: rootCid };
-  }
+  const cacheKey = [
+    cidCacheKey(rootCid),
+    options?.allowSingleSegmentRootFallback ? 'root-fallback' : 'strict',
+    path,
+  ].join('|');
 
-  if (
-    options?.allowSingleSegmentRootFallback &&
-    canFallbackToRootBlob(resolvedPath, path)
-  ) {
-    const isDirectory = await canListDirectory(rootCid);
-    if (!isDirectory) {
-      return { cid: rootCid };
-    }
-  }
-
-  if (isThumbnailAliasPath(path) && resolvedPath === path) {
-    return null;
-  }
-
-  const parts = resolvedPath.split('/').filter(Boolean);
-  const entryName = parts.pop();
-  const parentPath = parts.join('/');
-
-  if (entryName) {
-    const parentCid = parentPath
-      ? (await tree.resolvePath(rootCid, parentPath))?.cid ?? null
-      : rootCid;
-
-    if (parentCid) {
-      const entries = await listDirectoryWithTimeout(parentCid);
-      const directEntry = entries?.find((entry) => entry.name === entryName);
-      if (directEntry?.cid) {
-        return { cid: directEntry.cid, size: directEntry.size };
+  return loadCachedLookup(
+    resolvedEntryLookupCache,
+    cacheKey,
+    async () => {
+      const resolvedPath = await normalizeAliasPath(rootCid, path);
+      if (!resolvedPath) {
+        return { cid: rootCid };
       }
-    }
-  }
 
-  const entry = await tree.resolvePath(rootCid, resolvedPath);
-  if (entry) {
-    return { cid: entry.cid };
-  }
+      if (
+        options?.allowSingleSegmentRootFallback &&
+        canFallbackToRootBlob(resolvedPath, path)
+      ) {
+        const isDirectory = await canListDirectory(rootCid);
+        if (!isDirectory) {
+          return { cid: rootCid };
+        }
+      }
 
-  if (
-    options?.allowSingleSegmentRootFallback &&
-    canFallbackToRootBlob(resolvedPath, path)
-  ) {
-    return { cid: rootCid };
-  }
+      if (isThumbnailAliasPath(path) && resolvedPath === path) {
+        return null;
+      }
 
-  return null;
+      const parts = resolvedPath.split('/').filter(Boolean);
+      const entryName = parts.pop();
+      const parentPath = parts.join('/');
+
+      if (entryName) {
+        const parentCid = parentPath
+          ? (await tree.resolvePath(rootCid, parentPath))?.cid ?? null
+          : rootCid;
+
+        if (parentCid) {
+          const entries = await listDirectoryWithTimeout(parentCid);
+          const directEntry = entries?.find((entry) => entry.name === entryName);
+          if (directEntry?.cid) {
+            return { cid: directEntry.cid, size: directEntry.size };
+          }
+        }
+      }
+
+      const entry = await tree.resolvePath(rootCid, resolvedPath);
+      if (entry) {
+        return { cid: entry.cid };
+      }
+
+      if (
+        options?.allowSingleSegmentRootFallback &&
+        canFallbackToRootBlob(resolvedPath, path)
+      ) {
+        return { cid: rootCid };
+      }
+
+      return null;
+    },
+    (value) => getLookupTtlMs(value),
+  );
 }
 
 async function resolveCidWithinRoot(
@@ -545,30 +651,64 @@ export const __test__ = {
 
 async function listDirectoryWithTimeout(cid: CID): Promise<Awaited<ReturnType<HashTree['listDirectory']>> | null> {
   if (!tree) return null;
-  return Promise.race([
-    tree.listDirectory(cid),
-    new Promise<null>((resolve) => setTimeout(() => resolve(null), NHASH_HINT_DIRECTORY_TIMEOUT_MS)),
-  ]);
+  return loadCachedLookup(
+    directoryLookupCache,
+    cidCacheKey(cid),
+    async () => Promise.race([
+      tree.listDirectory(cid),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), NHASH_HINT_DIRECTORY_TIMEOUT_MS)),
+    ]),
+    (value) => getLookupTtlMs(value),
+  );
 }
 
 async function waitForCachedRoot(npub: string, treeName: string): Promise<CID | null> {
   let cached = await getCachedRoot(npub, treeName);
   if (cached) return cached;
 
+  const cacheKey = `${npub}/${treeName}`;
+  const inflight = inflightRootWaits.get(cacheKey);
+  if (inflight) {
+    return inflight;
+  }
+
   const pubkey = decodeNpubToPubkey(npub);
   if (pubkey) {
     subscribeToTreeRoots(pubkey);
   }
 
-  const deadline = Date.now() + ROOT_WAIT_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, ROOT_WAIT_INTERVAL_MS));
-    cached = await getCachedRoot(npub, treeName);
-    if (cached) return cached;
-  }
+  const pending = new Promise<CID | null>((resolve) => {
+    let settled = false;
+    const finish = (cid: CID | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      unsubscribe();
+      resolve(cid);
+    };
 
-  logMediaDebug('root:timeout', { npub, treeName });
-  return null;
+    const unsubscribe = onCachedRootUpdate((updatedNpub, updatedTreeName, cid) => {
+      if (updatedNpub === npub && updatedTreeName === treeName && cid) {
+        finish(cid);
+      }
+    });
+
+    const timeout = setTimeout(() => {
+      logMediaDebug('root:timeout', { npub, treeName });
+      finish(null);
+    }, ROOT_WAIT_TIMEOUT_MS);
+
+    void getCachedRoot(npub, treeName).then((current) => {
+      if (current) {
+        finish(current);
+      }
+    });
+  }).finally(() => {
+    inflightRootWaits.delete(cacheKey);
+  });
+
+  inflightRootWaits.set(cacheKey, pending);
+  return pending;
 }
 
 function decodeNpubToPubkey(npub: string): string | null {
@@ -602,18 +742,25 @@ function sendSwError(requestId: string, status: number, message: string): void {
 async function getFileSize(cid: CID): Promise<number | null> {
   if (!tree) return null;
 
-  const treeNode = await tree.getTreeNode(cid);
-  if (treeNode) {
-    // Chunked file - sum link sizes from decrypted tree node
-    return treeNode.links.reduce((sum, l) => sum + l.size, 0);
-  }
+  return loadCachedLookup(
+    fileSizeLookupCache,
+    cidCacheKey(cid),
+    async () => {
+      const treeNode = await tree.getTreeNode(cid);
+      if (treeNode) {
+        // Chunked file - sum link sizes from decrypted tree node
+        return treeNode.links.reduce((sum, l) => sum + l.size, 0);
+      }
 
-  // Single blob - fetch to check existence and get size
-  const blob = await tree.getBlob(cid.hash);
-  if (!blob) return null;
+      // Single blob - fetch to check existence and get size
+      const blob = await tree.getBlob(cid.hash);
+      if (!blob) return null;
 
-  // For encrypted blobs, decrypted size = encrypted size - 16 (nonce overhead)
-  return cid.key ? Math.max(0, blob.length - 16) : blob.length;
+      // For encrypted blobs, decrypted size = encrypted size - 16 (nonce overhead)
+      return cid.key ? Math.max(0, blob.length - 16) : blob.length;
+    },
+    (value) => getLookupTtlMs(value),
+  );
 }
 
 /**
@@ -622,54 +769,61 @@ async function getFileSize(cid: CID): Promise<number | null> {
 async function findThumbnailInDir(rootCid: CID, dirPath: string): Promise<string | null> {
   if (!tree) return null;
 
-  try {
-    // Get directory CID
-    const dirEntry = dirPath
-      ? await tree.resolvePath(rootCid, dirPath)
-      : { cid: rootCid };
-    if (!dirEntry) return null;
+  return loadCachedLookup(
+    thumbnailPathLookupCache,
+    `${cidCacheKey(rootCid)}|${dirPath}`,
+    async () => {
+      try {
+        // Get directory CID
+        const dirEntry = dirPath
+          ? await tree.resolvePath(rootCid, dirPath)
+          : { cid: rootCid };
+        if (!dirEntry) return null;
 
-    // List directory contents
-    const entries = await listDirectoryWithTimeout(dirEntry.cid);
-    if (!entries) return null;
+        // List directory contents
+        const entries = await listDirectoryWithTimeout(dirEntry.cid);
+        if (!entries) return null;
 
-    // Find first matching thumbnail pattern
-    for (const pattern of THUMBNAIL_PATTERNS) {
-      if (entries.some(e => e.name === pattern)) {
-        return dirPath ? `${dirPath}/${pattern}` : pattern;
-      }
-    }
-
-    const hasPlayableMediaFile = entries.some((entry) => isPlayableMediaFileName(entry.name));
-    if (!hasPlayableMediaFile && entries.length > 0) {
-      const sortedEntries = [...entries].sort((a, b) => a.name.localeCompare(b.name));
-      for (const entry of sortedEntries.slice(0, 3)) {
-        if (entry.name.endsWith('.json') || entry.name.endsWith('.txt')) {
-          continue;
+        // Find first matching thumbnail pattern
+        for (const pattern of THUMBNAIL_PATTERNS) {
+          if (entries.some(e => e.name === pattern)) {
+            return dirPath ? `${dirPath}/${pattern}` : pattern;
+          }
         }
 
-        try {
-          const subEntries = await listDirectoryWithTimeout(entry.cid);
-          if (!subEntries) {
-            continue;
-          }
+        const hasPlayableMediaFile = entries.some((entry) => isPlayableMediaFileName(entry.name));
+        if (!hasPlayableMediaFile && entries.length > 0) {
+          const sortedEntries = [...entries].sort((a, b) => a.name.localeCompare(b.name));
+          for (const entry of sortedEntries.slice(0, 3)) {
+            if (entry.name.endsWith('.json') || entry.name.endsWith('.txt')) {
+              continue;
+            }
 
-          for (const pattern of THUMBNAIL_PATTERNS) {
-            if (subEntries.some((candidate) => candidate.name === pattern)) {
-              const prefix = dirPath ? `${dirPath}/${entry.name}` : entry.name;
-              return `${prefix}/${pattern}`;
+            try {
+              const subEntries = await listDirectoryWithTimeout(entry.cid);
+              if (!subEntries) {
+                continue;
+              }
+
+              for (const pattern of THUMBNAIL_PATTERNS) {
+                if (subEntries.some((candidate) => candidate.name === pattern)) {
+                  const prefix = dirPath ? `${dirPath}/${entry.name}` : entry.name;
+                  return `${prefix}/${pattern}`;
+                }
+              }
+            } catch {
+              continue;
             }
           }
-        } catch {
-          continue;
         }
-      }
-    }
 
-    return null;
-  } catch {
-    return null;
-  }
+        return null;
+      } catch {
+        return null;
+      }
+    },
+    (value) => getLookupTtlMs(value),
+  );
 }
 
 /**

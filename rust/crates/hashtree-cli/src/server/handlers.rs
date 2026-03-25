@@ -1,4 +1,4 @@
-use super::auth::AppState;
+use super::auth::{AppState, CachedResolvedPathEntry, LookupResult};
 use super::mime::get_mime_type;
 use super::ui::root_page;
 use crate::socialgraph;
@@ -220,6 +220,47 @@ fn cache_tree_root_key(
     let visibility = visibility.unwrap_or("public");
     let link_key = if visibility == "public" { None } else { key };
     tree_root_cache_key(npub, treename, link_key)
+}
+
+fn cid_cache_key(cid: &Cid) -> String {
+    match cid.key {
+        Some(key) => format!("{}?k={}", to_hex(&cid.hash), to_hex(&key)),
+        None => to_hex(&cid.hash),
+    }
+}
+
+fn resolved_path_cache_key(root_cid: &Cid, path: &str) -> String {
+    format!("{}|{}", cid_cache_key(root_cid), path)
+}
+
+fn get_cached_lookup<T: Clone>(
+    cache: &std::sync::Arc<std::sync::Mutex<super::auth::TimedLruCache<String, LookupResult<T>>>>,
+    key: &str,
+) -> Option<Option<T>> {
+    cache
+        .lock()
+        .ok()
+        .and_then(|mut cache| cache.get_cloned(&key.to_string()))
+        .map(LookupResult::into_option)
+}
+
+fn put_cached_lookup<T: Clone>(
+    cache: &std::sync::Arc<std::sync::Mutex<super::auth::TimedLruCache<String, LookupResult<T>>>>,
+    key: String,
+    value: Option<T>,
+) {
+    if let Ok(mut cache) = cache.lock() {
+        let cached = LookupResult::from_option(value);
+        let ttl = cached.ttl();
+        cache.put(key, cached, ttl);
+    }
+}
+
+fn cached_resolved_path_entry(entry: &ResolvedPathEntry) -> CachedResolvedPathEntry {
+    CachedResolvedPathEntry {
+        cid: entry.cid.clone(),
+        link_type: entry.link_type,
+    }
 }
 
 fn get_cached_tree_root(state: &AppState, cache_key: &str) -> Option<Cid> {
@@ -467,7 +508,36 @@ async fn ensure_blob_available(state: &AppState, hash: &[u8; 32]) -> Result<bool
         return Ok(true);
     }
 
-    Ok(fetch_and_cache_blob(state, hash).await)
+    let hash_hex = to_hex(hash);
+    let fetch = {
+        let mut inflight = state.inflight_blob_fetches.lock().await;
+        if let Some(existing) = inflight.get(&hash_hex) {
+            existing.clone()
+        } else {
+            let state = state.clone();
+            let hash_bytes = *hash;
+            let hash_hex_for_task = hash_hex.clone();
+            let fetch = async move {
+                let fetched = fetch_and_cache_blob(&state, &hash_bytes).await;
+                state
+                    .inflight_blob_fetches
+                    .lock()
+                    .await
+                    .remove(&hash_hex_for_task);
+                fetched
+            }
+            .boxed()
+            .shared();
+            inflight.insert(hash_hex.clone(), fetch.clone());
+            fetch
+        }
+    };
+
+    if fetch.await {
+        return Ok(true);
+    }
+
+    state.store.blob_exists(hash).map_err(|e| e.to_string())
 }
 
 async fn fetch_missing_chunk(
@@ -489,17 +559,31 @@ async fn list_directory_with_fetch<S: Store>(
     tree: &HashTree<S>,
     cid: &Cid,
 ) -> Result<Option<Vec<TreeEntry>>, String> {
+    let cache_key = cid_cache_key(cid);
+    if let Some(cached) = get_cached_lookup(&state.directory_listing_cache, &cache_key) {
+        return Ok(cached);
+    }
+
     let mut seen_missing = HashSet::new();
 
     loop {
         if !ensure_blob_available(state, &cid.hash).await? {
+            put_cached_lookup(&state.directory_listing_cache, cache_key.clone(), None);
             return Ok(None);
         }
 
         match tree.list_directory(cid).await {
-            Ok(entries) => return Ok(Some(entries)),
+            Ok(entries) => {
+                put_cached_lookup(
+                    &state.directory_listing_cache,
+                    cache_key.clone(),
+                    Some(entries.clone()),
+                );
+                return Ok(Some(entries));
+            }
             Err(HashTreeError::MissingChunk(missing)) => {
                 if !fetch_missing_chunk(state, &mut seen_missing, &missing).await? {
+                    put_cached_lookup(&state.directory_listing_cache, cache_key.clone(), None);
                     return Ok(None);
                 }
             }
@@ -514,12 +598,26 @@ async fn resolve_path_with_fetch<S: Store>(
     root_cid: &Cid,
     path: &str,
 ) -> Result<Option<ResolvedPathEntry>, String> {
+    let cache_key = resolved_path_cache_key(root_cid, path);
+    if let Some(cached) = get_cached_lookup(&state.resolved_path_cache, &cache_key) {
+        return Ok(cached.map(|entry| ResolvedPathEntry {
+            cid: entry.cid,
+            link_type: entry.link_type,
+        }));
+    }
+
     let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     if parts.is_empty() {
-        return Ok(Some(ResolvedPathEntry {
+        let entry = ResolvedPathEntry {
             cid: root_cid.clone(),
             link_type: LinkType::Dir,
-        }));
+        };
+        put_cached_lookup(
+            &state.resolved_path_cache,
+            cache_key,
+            Some(cached_resolved_path_entry(&entry)),
+        );
+        return Ok(Some(entry));
     }
 
     let mut current_cid = root_cid.clone();
@@ -528,10 +626,14 @@ async fn resolve_path_with_fetch<S: Store>(
     for part in parts {
         let entries = match list_directory_with_fetch(state, tree, &current_cid).await? {
             Some(entries) => entries,
-            None => return Ok(None),
+            None => {
+                put_cached_lookup(&state.resolved_path_cache, cache_key, None);
+                return Ok(None);
+            }
         };
 
         let Some(entry) = entries.into_iter().find(|entry| entry.name == part) else {
+            put_cached_lookup(&state.resolved_path_cache, cache_key, None);
             return Ok(None);
         };
 
@@ -542,10 +644,16 @@ async fn resolve_path_with_fetch<S: Store>(
         };
     }
 
-    Ok(Some(ResolvedPathEntry {
+    let entry = ResolvedPathEntry {
         cid: current_cid,
         link_type: current_link_type,
-    }))
+    };
+    put_cached_lookup(
+        &state.resolved_path_cache,
+        cache_key,
+        Some(cached_resolved_path_entry(&entry)),
+    );
+    Ok(Some(entry))
 }
 
 async fn get_cid_with_fetch<S: Store>(
@@ -654,17 +762,27 @@ async fn get_size_cid_with_fetch<S: Store>(
     tree: &HashTree<S>,
     cid: &Cid,
 ) -> Result<Option<u64>, String> {
+    let cache_key = cid_cache_key(cid);
+    if let Some(cached) = get_cached_lookup(&state.cid_size_cache, &cache_key) {
+        return Ok(cached);
+    }
+
     let mut seen_missing = HashSet::new();
 
     loop {
         if !ensure_blob_available(state, &cid.hash).await? {
+            put_cached_lookup(&state.cid_size_cache, cache_key.clone(), None);
             return Ok(None);
         }
 
         match tree.get_size_cid(cid).await {
-            Ok(size) => return Ok(Some(size)),
+            Ok(size) => {
+                put_cached_lookup(&state.cid_size_cache, cache_key.clone(), Some(size));
+                return Ok(Some(size));
+            }
             Err(HashTreeError::MissingChunk(missing)) => {
                 if !fetch_missing_chunk(state, &mut seen_missing, &missing).await? {
+                    put_cached_lookup(&state.cid_size_cache, cache_key.clone(), None);
                     return Ok(None);
                 }
             }
@@ -892,6 +1010,11 @@ async fn resolve_thumbnail_path<S: Store>(
         return Ok(None);
     }
 
+    let cache_key = resolved_path_cache_key(root, path);
+    if let Some(cached) = get_cached_lookup(&state.thumbnail_path_cache, &cache_key) {
+        return Ok(cached);
+    }
+
     let dir_path = if path == "thumbnail" {
         ""
     } else {
@@ -906,20 +1029,28 @@ async fn resolve_thumbnail_path<S: Store>(
             .map(|entry| entry.cid)
     };
     let Some(dir_entry) = dir_entry else {
+        put_cached_lookup(&state.thumbnail_path_cache, cache_key, None);
         return Ok(None);
     };
 
     let Some(entries) = list_directory_with_fetch(state, tree, &dir_entry).await? else {
+        put_cached_lookup(&state.thumbnail_path_cache, cache_key, None);
         return Ok(None);
     };
 
     for pattern in THUMBNAIL_PATTERNS {
         if entries.iter().any(|e| e.name == *pattern) {
-            return Ok(Some(if dir_path.is_empty() {
+            let resolved = if dir_path.is_empty() {
                 (*pattern).to_string()
             } else {
                 format!("{}/{}", dir_path, pattern)
-            }));
+            };
+            put_cached_lookup(
+                &state.thumbnail_path_cache,
+                cache_key,
+                Some(resolved.clone()),
+            );
+            return Ok(Some(resolved));
         }
     }
 
@@ -949,12 +1080,19 @@ async fn resolve_thumbnail_path<S: Store>(
                     } else {
                         format!("{}/{}", dir_path, entry.name)
                     };
-                    return Ok(Some(format!("{}/{}", prefix, pattern)));
+                    let resolved = format!("{}/{}", prefix, pattern);
+                    put_cached_lookup(
+                        &state.thumbnail_path_cache,
+                        cache_key,
+                        Some(resolved.clone()),
+                    );
+                    return Ok(Some(resolved));
                 }
             }
         }
     }
 
+    put_cached_lookup(&state.thumbnail_path_cache, cache_key, None);
     Ok(None)
 }
 
@@ -2514,6 +2652,17 @@ mod tests {
             socialgraph_snapshot_public: false,
             nostr_relay: None,
             tree_root_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            inflight_blob_fetches: Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+            directory_listing_cache: Arc::new(std::sync::Mutex::new(
+                crate::server::new_lookup_cache(),
+            )),
+            resolved_path_cache: Arc::new(std::sync::Mutex::new(crate::server::new_lookup_cache())),
+            thumbnail_path_cache: Arc::new(
+                std::sync::Mutex::new(crate::server::new_lookup_cache()),
+            ),
+            cid_size_cache: Arc::new(std::sync::Mutex::new(crate::server::new_lookup_cache())),
         }
     }
 
@@ -2644,6 +2793,52 @@ mod tests {
             requested_ids.lock().unwrap().as_slice(),
             &[format!("{}.bin", hash_hex)]
         );
+
+        upstream_server.abort();
+    }
+
+    #[tokio::test]
+    async fn ensure_blob_available_coalesces_concurrent_upstream_fetches() {
+        let source_dir = TempDir::new().unwrap();
+        let source_store =
+            Arc::new(HashtreeStore::new(source_dir.path().join("source-db")).unwrap());
+        let requested_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let data = b"shared-upstream-blob";
+        source_store.put_blob(data).unwrap();
+        let hash = from_hex(&hex::encode(sha2::Sha256::digest(data))).unwrap();
+
+        let upstream_router = Router::new()
+            .route("/:id", get(serve_blob_with_request_log_for_test))
+            .with_state(UpstreamBlobTestState {
+                store: source_store.clone(),
+                requested_ids: requested_ids.clone(),
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = listener.local_addr().unwrap();
+        let upstream_server =
+            tokio::spawn(async move { axum::serve(listener, upstream_router).await.unwrap() });
+
+        let local_dir = TempDir::new().unwrap();
+        let local_store = Arc::new(HashtreeStore::new(local_dir.path().join("local-db")).unwrap());
+        let state = test_app_state(
+            local_store.clone(),
+            vec![format!("http://{}", upstream_addr)],
+        );
+
+        let (first, second, third) = tokio::join!(
+            ensure_blob_available(&state, &hash),
+            ensure_blob_available(&state, &hash),
+            ensure_blob_available(&state, &hash),
+        );
+
+        assert_eq!(first.unwrap(), true);
+        assert_eq!(second.unwrap(), true);
+        assert_eq!(third.unwrap(), true);
+        assert_eq!(
+            requested_ids.lock().unwrap().as_slice(),
+            &[format!("{}.bin", hex::encode(hash))]
+        );
+        assert!(local_store.get_blob(&hash).unwrap().is_some());
 
         upstream_server.abort();
     }

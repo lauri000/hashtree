@@ -91,4 +91,52 @@ describe('mediaHandler thumbnail aliases', () => {
     await expect(result).resolves.toBeNull();
     expect(resolvePath).not.toHaveBeenCalled();
   });
+
+  it('coalesces concurrent immutable thumbnail lookups for the same root path', async () => {
+    let releaseList: ((entries: Array<{ name: string; cid: CID; size: number }>) => void) | null = null;
+    listDirectory.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseList = resolve;
+        })
+    );
+
+    const first = __test__.resolveCidWithinRoot(ROOT, 'thumbnail', {
+      allowSingleSegmentRootFallback: true,
+    });
+    const second = __test__.resolveCidWithinRoot(ROOT, 'thumbnail', {
+      allowSingleSegmentRootFallback: true,
+    });
+
+    await Promise.resolve();
+
+    expect(listDirectory).toHaveBeenCalledTimes(1);
+
+    releaseList?.([{ name: 'thumbnail.jpg', cid: ROOT_THUMB, size: 123 }]);
+
+    await expect(first).resolves.toBe(ROOT_THUMB);
+    await expect(second).resolves.toBe(ROOT_THUMB);
+  });
+
+  it('clears immutable lookup caches when initialized with a new tree', async () => {
+    listDirectory.mockResolvedValue([{ name: 'thumbnail.jpg', cid: ROOT_THUMB, size: 1 }]);
+
+    await expect(
+      __test__.resolveCidWithinRoot(ROOT, 'thumbnail', { allowSingleSegmentRootFallback: true })
+    ).resolves.toBe(ROOT_THUMB);
+    expect(listDirectory).toHaveBeenCalledTimes(1);
+
+    const nextListDirectory = vi.fn().mockResolvedValue([
+      { name: 'thumbnail.jpg', cid: CHILD_THUMB, size: 2 },
+    ]);
+    initMediaHandler({
+      resolvePath: vi.fn(),
+      listDirectory: nextListDirectory,
+    } as unknown as HashTree);
+
+    await expect(
+      __test__.resolveCidWithinRoot(ROOT, 'thumbnail', { allowSingleSegmentRootFallback: true })
+    ).resolves.toBe(CHILD_THUMB);
+    expect(nextListDirectory).toHaveBeenCalledTimes(1);
+  });
 });

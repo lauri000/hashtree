@@ -9,13 +9,102 @@ use axum::{
     http::{header, Request, Response, StatusCode},
     middleware::Next,
 };
-use hashtree_core::Cid;
+use futures::future::{BoxFuture, Shared};
+use hashtree_core::{Cid, LinkType, TreeEntry};
+use lru::LruCache;
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
+use std::num::NonZeroUsize;
 use std::sync::{
     atomic::{AtomicU32, AtomicU64, Ordering},
     Arc, Mutex as StdMutex,
 };
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex};
+
+const LOOKUP_CACHE_CAPACITY: usize = 4096;
+const LOOKUP_CACHE_HIT_TTL: Duration = Duration::from_secs(300);
+const LOOKUP_CACHE_MISS_TTL: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Clone)]
+pub enum LookupResult<T> {
+    Hit(T),
+    Miss,
+}
+
+impl<T> LookupResult<T> {
+    pub fn from_option(value: Option<T>) -> Self {
+        match value {
+            Some(value) => Self::Hit(value),
+            None => Self::Miss,
+        }
+    }
+
+    pub fn into_option(self) -> Option<T> {
+        match self {
+            Self::Hit(value) => Some(value),
+            Self::Miss => None,
+        }
+    }
+
+    pub fn ttl(&self) -> Duration {
+        match self {
+            Self::Hit(_) => LOOKUP_CACHE_HIT_TTL,
+            Self::Miss => LOOKUP_CACHE_MISS_TTL,
+        }
+    }
+}
+
+pub struct TimedLruCache<K, V> {
+    cache: LruCache<K, TimedValue<V>>,
+}
+
+#[derive(Clone)]
+struct TimedValue<V> {
+    value: V,
+    expires_at: Instant,
+}
+
+impl<K: Eq + Hash, V: Clone> TimedLruCache<K, V> {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            cache: LruCache::new(NonZeroUsize::new(capacity.max(1)).unwrap()),
+        }
+    }
+
+    pub fn get_cloned(&mut self, key: &K) -> Option<V> {
+        let now = Instant::now();
+        if let Some(entry) = self.cache.get(key) {
+            if entry.expires_at > now {
+                return Some(entry.value.clone());
+            }
+        }
+        self.cache.pop(key);
+        None
+    }
+
+    pub fn put(&mut self, key: K, value: V, ttl: Duration) {
+        self.cache.put(
+            key,
+            TimedValue {
+                value,
+                expires_at: Instant::now() + ttl,
+            },
+        );
+    }
+}
+
+pub fn new_lookup_cache<K: Eq + Hash, V: Clone>() -> TimedLruCache<K, V> {
+    TimedLruCache::new(LOOKUP_CACHE_CAPACITY)
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedResolvedPathEntry {
+    pub cid: Cid,
+    pub link_type: LinkType,
+}
+
+pub type SharedBlobFetch = Shared<BoxFuture<'static, bool>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WsProtocol {
@@ -88,6 +177,17 @@ pub struct AppState {
     pub nostr_relay: Option<Arc<NostrRelay>>,
     /// In-process cache for resolved mutable tree roots, keyed by npub/tree(+key)
     pub tree_root_cache: Arc<StdMutex<HashMap<String, Cid>>>,
+    /// Shared in-flight blob fetches so concurrent misses only hit upstream once per hash
+    pub inflight_blob_fetches: Arc<Mutex<HashMap<String, SharedBlobFetch>>>,
+    /// Immutable directory listings keyed by CID
+    pub directory_listing_cache: Arc<StdMutex<TimedLruCache<String, LookupResult<Vec<TreeEntry>>>>>,
+    /// Immutable resolved paths keyed by root CID + path
+    pub resolved_path_cache:
+        Arc<StdMutex<TimedLruCache<String, LookupResult<CachedResolvedPathEntry>>>>,
+    /// Immutable thumbnail alias resolutions keyed by root CID + alias path
+    pub thumbnail_path_cache: Arc<StdMutex<TimedLruCache<String, LookupResult<String>>>>,
+    /// Immutable file sizes keyed by CID
+    pub cid_size_cache: Arc<StdMutex<TimedLruCache<String, LookupResult<u64>>>>,
 }
 
 #[derive(Clone)]

@@ -7,7 +7,7 @@
  * Example: local (Dexie) -> WebRTC -> Blossom
  */
 
-import type { Store, Hash } from '../types.js';
+import { toHex, type Store, type Hash } from '../types.js';
 
 /** Minimal interface for read-only fallback sources */
 export interface ReadableStore {
@@ -32,6 +32,7 @@ export class FallbackStore implements Store {
   private primary: Store;
   private fallbacks: WritableStore[];
   private timeout: number;
+  private inflightReads = new Map<string, Promise<Uint8Array | null>>();
 
   constructor(config: FallbackStoreConfig) {
     this.primary = config.primary;
@@ -64,6 +65,41 @@ export class FallbackStore implements Store {
       return null;
     }
 
+    const key = toHex(hash);
+    let pending = this.inflightReads.get(key);
+    if (!pending) {
+      pending = this.loadFromFallbacks(hash).finally(() => {
+        if (this.inflightReads.get(key) === pending) {
+          this.inflightReads.delete(key);
+        }
+      });
+      this.inflightReads.set(key, pending);
+    }
+
+    data = await pending;
+    return data;
+  }
+
+  async has(hash: Hash): Promise<boolean> {
+    return this.primary.has(hash);
+  }
+
+  async delete(hash: Hash): Promise<boolean> {
+    return this.primary.delete(hash);
+  }
+
+  /** Add a fallback store dynamically */
+  addFallback(store: WritableStore): void {
+    this.fallbacks.push(store);
+  }
+
+  /** Remove a fallback store */
+  removeFallback(store: WritableStore): void {
+    const idx = this.fallbacks.indexOf(store);
+    if (idx >= 0) this.fallbacks.splice(idx, 1);
+  }
+
+  private async loadFromFallbacks(hash: Hash): Promise<Uint8Array | null> {
     const pendingFetches = this.fallbacks.map((store) => {
       const fetchPromise = store.get(hash)
         .then((lateData) => {
@@ -82,7 +118,7 @@ export class FallbackStore implements Store {
       return Promise.race([fetchPromise, timeoutPromise]);
     });
 
-    data = await new Promise<Uint8Array | null>((resolve) => {
+    const data = await new Promise<Uint8Array | null>((resolve) => {
       let settled = false;
       let remaining = pendingFetches.length;
 
@@ -110,29 +146,6 @@ export class FallbackStore implements Store {
       }
     });
 
-    if (data) {
-      await this.primary.put(hash, data);
-    }
-
     return data;
-  }
-
-  async has(hash: Hash): Promise<boolean> {
-    return this.primary.has(hash);
-  }
-
-  async delete(hash: Hash): Promise<boolean> {
-    return this.primary.delete(hash);
-  }
-
-  /** Add a fallback store dynamically */
-  addFallback(store: WritableStore): void {
-    this.fallbacks.push(store);
-  }
-
-  /** Remove a fallback store */
-  removeFallback(store: WritableStore): void {
-    const idx = this.fallbacks.indexOf(store);
-    if (idx >= 0) this.fallbacks.splice(idx, 1);
   }
 }
