@@ -1,18 +1,20 @@
   <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { cid as makeCid, fromHex, LinkType, nhashEncode, toHex, type CID, type TreeEntry } from '@hashtree/core';
+  import { cid as makeCid, fromHex, LinkType, nhashEncode, toHex, type CID, type TreeEntry, type TreeVisibility } from '@hashtree/core';
   import DOMPurify from 'dompurify';
   import { marked } from 'marked';
   import { nip19 } from 'nostr-tools';
   import { getNhashFileUrl } from '../../lib/mediaUrl';
+  import { treeRootRegistry } from '../../TreeRootRegistry';
   import { getBoardRouteKey, shouldShowBoardLoading } from '../../lib/boards/viewState';
   import { syncSelectedTreeForOwnRoute } from '../../lib/selectedTree';
   import { getTree } from '../../store';
   import { setUploadProgress } from '../../stores/upload';
   import { toast } from '../../stores/toast';
-  import { routeStore, treeRootStore, createTreesStore, waitForTreeRoot, getTreeRootSync, addRecent, updateRecentVisibility } from '../../stores';
-  import { autosaveIfOwn, nostrStore } from '../../nostr';
+  import { routeStore, treeRootStore, createTreesStore, waitForTreeRoot, getTreeRootSync, addRecent, updateRecentVisibility, getLinkKey, storeLinkKey } from '../../stores';
+  import { autosaveIfOwn, linkKeyUtils, nostrStore, saveHashtree } from '../../nostr';
   import { updateLocalRootCacheHex } from '../../treeRootCache';
+  import VisibilityPicker from '../Modals/VisibilityPicker.svelte';
   import { open as openShareModal } from '../Modals/ShareModal.svelte';
   import CopyText from '../CopyText.svelte';
   import Modal from '../ui/Modal.svelte';
@@ -35,6 +37,8 @@
     createBoardId,
     createInitialBoardPermissions,
     createInitialBoardState,
+    buildBoardVisibilityQueryString,
+    isProtectedBoardWithoutAccess as computeProtectedBoardWithoutAccess,
     isValidNpub,
     parseBoardMeta,
     parseBoardOrder,
@@ -42,7 +46,10 @@
     parseColumnMeta,
     parseBoardPermissions,
     parseBoardState,
+    resolveBoardPublishLabels,
     removeBoardPermission,
+    resolveBoardVisibility,
+    resolveBoardVisibilityLinkKey,
     serializeBoardMeta,
     serializeBoardOrder,
     serializeCardData,
@@ -66,7 +73,7 @@
 
   let targetNpub = $derived(viewedNpub || userNpub);
   let treesStore = $derived(createTreesStore(targetNpub));
-  let trees = $state<Array<{ name: string; visibility?: string }>>([]);
+  let trees = $state<Array<{ name: string; visibility?: TreeVisibility; labels?: string[] }>>([]);
 
   $effect(() => {
     const store = treesStore;
@@ -77,15 +84,19 @@
   });
 
   let currentTree = $derived(route.treeName ? trees.find(tree => tree.name === route.treeName) : null);
-  let resolvedVisibility = $derived(currentTree?.visibility);
-  let visibility = $derived(resolvedVisibility || 'public');
+  let routeVisibility = $derived.by(() => {
+    treeRoot;
+    if (!route.npub || !route.treeName) return undefined;
+    return treeRootRegistry.getVisibility(route.npub, route.treeName);
+  });
+  let resolvedVisibility = $derived(
+    resolveBoardVisibility(currentTree?.visibility as 'public' | 'link-visible' | 'private' | undefined, routeVisibility)
+  );
+  let visibility = $derived((resolvedVisibility || 'public') as TreeVisibility);
   let linkKey = $derived(route.params.get('k'));
   let missingDecryptionKey = $derived(!treeRoot?.key);
   let isProtectedBoardWithoutAccess = $derived(
-    !isOwnBoard &&
-    missingDecryptionKey &&
-    !!currentTree &&
-    (resolvedVisibility === 'link-visible' || resolvedVisibility === 'private')
+    computeProtectedBoardWithoutAccess(isOwnBoard, !missingDecryptionKey, resolvedVisibility)
   );
 
   let loading = $state(true);
@@ -99,6 +110,9 @@
   let permissionRole = $state<BoardRole>('writer');
   let permissionNpub = $state('');
   let permissionError = $state('');
+  let visibilityDraft = $state<TreeVisibility>('public');
+  let visibilityError = $state('');
+  let savingVisibility = $state(false);
 
   let showCardModal = $state(false);
   let cardModalMode = $state<'create' | 'edit'>('create');
@@ -1072,15 +1086,15 @@
     return boardDirCid;
   }
 
-  async function persistBoardDirectory(nextBoard: BoardState, nextPermissions: BoardPermissions): Promise<boolean> {
-    if (!userNpub || !route.treeName) return false;
+  async function buildUpdatedBoardRootCid(nextBoard: BoardState, nextPermissions: BoardPermissions): Promise<CID | null> {
+    if (!userNpub || !route.treeName) return null;
     const tree = getTree();
     const rootCid = await ensureOwnRootCid();
-    if (!rootCid) return false;
+    if (!rootCid) return null;
 
     const boardDirCid = await buildBoardDirectoryCid(nextBoard, nextPermissions);
     const boardPath = route.path;
-    const newRootCid = boardPath.length === 0
+    return boardPath.length === 0
       ? boardDirCid
       : await tree.setEntry(
         rootCid,
@@ -1090,7 +1104,11 @@
         0,
         LinkType.Dir
       );
+  }
 
+  async function persistBoardDirectory(nextBoard: BoardState, nextPermissions: BoardPermissions): Promise<boolean> {
+    const newRootCid = await buildUpdatedBoardRootCid(nextBoard, nextPermissions);
+    if (!newRootCid) return false;
     publishUpdatedRoot(newRootCid);
     return true;
   }
@@ -1130,6 +1148,75 @@
       if (success) permissions = syncedPermissions;
     } finally {
       savingPermissions = false;
+    }
+  }
+
+  function updateBoardVisibilityUrl(nextVisibility: TreeVisibility, nextLinkKey?: string): void {
+    const currentHashPath = window.location.hash.split('?')[0] || '#/';
+    const nextQuery = buildBoardVisibilityQueryString(route.params, nextVisibility, nextLinkKey);
+    const nextHash = nextQuery ? `${currentHashPath}?${nextQuery}` : currentHashPath;
+
+    if (window.location.hash !== nextHash) {
+      window.location.hash = nextHash;
+    }
+  }
+
+  async function handleUpdateVisibility() {
+    if (!isOwnBoard || !userNpub || !route.treeName || !board || !permissions) return;
+
+    const nextVisibility = visibilityDraft;
+    if (nextVisibility === visibility) {
+      visibilityError = '';
+      return;
+    }
+
+    savingVisibility = true;
+    visibilityError = '';
+
+    try {
+      if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+      }
+
+      const nextRootCid = await buildUpdatedBoardRootCid(board, permissions);
+      if (!nextRootCid) {
+        visibilityError = 'Could not prepare the board for publishing.';
+        return;
+      }
+
+      const nextLinkKey = resolveBoardVisibilityLinkKey(
+        nextVisibility,
+        linkKey,
+        getLinkKey(userNpub, route.treeName),
+        () => linkKeyUtils.generateLinkKey()
+      );
+
+      const result = await saveHashtree(route.treeName, nextRootCid, {
+        visibility: nextVisibility,
+        linkKey: nextLinkKey,
+        labels: resolveBoardPublishLabels(currentTree?.labels ?? nostrStore.getState().selectedTree?.labels),
+      });
+
+      if (!result.success) {
+        visibilityError = 'Could not update board visibility.';
+        return;
+      }
+
+      const persistedLinkKey = nextVisibility === 'link-visible'
+        ? (result.linkKey ?? nextLinkKey)
+        : undefined;
+
+      if (persistedLinkKey) {
+        await storeLinkKey(userNpub, route.treeName, persistedLinkKey);
+      }
+
+      updateRecentVisibility(`/${userNpub}/${route.treeName}`, nextVisibility);
+      updateBoardVisibilityUrl(nextVisibility, persistedLinkKey);
+      visibilityDraft = nextVisibility;
+      showPermissionsModal = false;
+    } finally {
+      savingVisibility = false;
     }
   }
 
@@ -1972,6 +2059,8 @@
     permissionNpub = '';
     permissionRole = 'writer';
     permissionError = '';
+    visibilityDraft = visibility;
+    visibilityError = '';
     showPermissionsModal = true;
   }
 
@@ -2105,7 +2194,7 @@
         <div class="mt-1 flex items-center gap-2 text-xs text-text-3">
           <VisibilityIcon {visibility} class="text-xs" />
           {#if canWrite}<span class="text-success">Write access</span>{:else}<span>Read-only</span>{/if}
-          {#if savingBoard || savingPermissions}<span class="animate-pulse">Saving...</span>{/if}
+          {#if savingBoard || savingPermissions || savingVisibility}<span class="animate-pulse">Saving...</span>{/if}
         </div>
       </div>
       <div class="flex items-center gap-2">
@@ -2898,6 +2987,49 @@
         Admins can manage admins/writers and edit cards. Writers can edit cards only.
       {:else}
         Admins can manage roles. Writers can edit cards.
+      {/if}
+    </div>
+
+    <div class="rounded-lg border border-surface-3 bg-surface-2 px-3 py-3 space-y-3">
+      <div class="flex items-center justify-between gap-3">
+        <div>
+          <div class="text-sm font-medium">Visibility</div>
+          <p class="text-xs text-text-3 mt-1">This controls who can open the shared board link.</p>
+        </div>
+        <div class="inline-flex items-center gap-2 text-xs text-text-3">
+          <VisibilityIcon {visibility} class="text-sm" />
+          <span>{visibility}</span>
+        </div>
+      </div>
+
+      {#if isOwnBoard}
+        <VisibilityPicker value={visibilityDraft} onchange={(value) => {
+          visibilityDraft = value;
+          visibilityError = '';
+        }} />
+        <div class="flex items-center justify-between gap-3">
+          <p class="text-xs text-text-3">
+            Public boards are open to everyone. Link-visible boards need the URL key. Private boards are owner-only.
+          </p>
+          <button
+            class="btn-primary shrink-0"
+            onclick={handleUpdateVisibility}
+            disabled={savingVisibility || visibilityDraft === visibility}
+          >
+            {#if savingVisibility}
+              Updating...
+            {:else if visibilityDraft === visibility}
+              Current
+            {:else}
+              Update Visibility
+            {/if}
+          </button>
+        </div>
+        {#if visibilityError}
+          <p class="text-xs text-danger">{visibilityError}</p>
+        {/if}
+      {:else}
+        <p class="text-xs text-text-3">Only the board owner can change visibility for the shared board link.</p>
       {/if}
     </div>
 
