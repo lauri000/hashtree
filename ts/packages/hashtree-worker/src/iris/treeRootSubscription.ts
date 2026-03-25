@@ -21,6 +21,7 @@ export interface TreeRootRecord {
   hash: Uint8Array;
   key?: Uint8Array;
   visibility: TreeVisibility;
+  labels?: string[];
   updatedAt: number;
   encryptedKey?: string;
   keyId?: string;
@@ -42,10 +43,22 @@ export interface ParsedTreeRootEvent {
   hash: string;
   key?: string;
   visibility: TreeVisibility;
+  labels?: string[];
   encryptedKey?: string;
   keyId?: string;
   selfEncryptedKey?: string;
   selfEncryptedLinkKey?: string;
+}
+
+function parseLabels(event: SignedEvent): string[] | undefined {
+  const seen = new Set<string>();
+  const labels: string[] = [];
+  for (const tag of event.tags) {
+    if (tag[0] !== 'l' || !tag[1] || seen.has(tag[1])) continue;
+    seen.add(tag[1]);
+    labels.push(tag[1]);
+  }
+  return labels.length > 0 ? labels : undefined;
 }
 
 function parseLegacyContent(event: SignedEvent): LegacyContentPayload | null {
@@ -108,6 +121,7 @@ export function parseTreeRootEvent(event: SignedEvent): ParsedTreeRootEvent | nu
     hash,
     key,
     visibility,
+    labels: parseLabels(event),
     encryptedKey,
     keyId,
     selfEncryptedKey,
@@ -192,6 +206,7 @@ export async function handleTreeRootEvent(event: SignedEvent): Promise<void> {
     hash,
     key,
     visibility,
+    labels: parsed.labels,
     updatedAt: event.created_at,
     encryptedKey: parsed.encryptedKey,
     keyId: parsed.keyId,
@@ -201,6 +216,7 @@ export async function handleTreeRootEvent(event: SignedEvent): Promise<void> {
 
   // Update cache
   await setCachedRoot(npub, treeName, { hash, key }, visibility, {
+    labels: parsed.labels,
     encryptedKey: parsed.encryptedKey,
     keyId: parsed.keyId,
     selfEncryptedKey: parsed.selfEncryptedKey,

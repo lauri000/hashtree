@@ -235,7 +235,6 @@ export function subscribe(subId: string, filters: NostrFilter[]): void {
   });
 
   subscriptions.set(subId, sub);
-  console.log('[Worker NDK] Subscribed:', subId);
 }
 
 /**
@@ -246,7 +245,6 @@ export function unsubscribe(subId: string): void {
   if (sub) {
     sub.stop();
     subscriptions.delete(subId);
-    console.log('[Worker NDK] Unsubscribed:', subId);
   }
 }
 

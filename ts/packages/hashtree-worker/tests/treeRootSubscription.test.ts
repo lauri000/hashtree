@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import type { SignedEvent } from '../src/worker/protocol';
-import { parseTreeRootEvent } from '../src/worker/treeRootSubscription';
+import { describe, expect, it } from 'vitest';
+import type { SignedEvent } from '../src/iris/protocol';
+import { parseTreeRootEvent } from '../src/iris/treeRootSubscription';
 
 function buildEvent(overrides: Partial<SignedEvent>): SignedEvent {
   return {

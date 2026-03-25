@@ -23,10 +23,10 @@ import type {
   CID,
   WebRTCCommand,
 } from '@hashtree/core';
+import type { TreeRootInfo } from '@hashtree/worker/protocol';
 import { generateRequestId } from '@hashtree/core';
 import { WebRTCProxy } from './webrtcProxy';
 import { getErrorMessage } from './utils/errorMessage';
-import type { TreeRootInfo } from './worker/protocol';
 
 type PendingRequest = {
   resolve: (value: unknown) => void;

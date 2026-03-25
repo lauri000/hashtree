@@ -8,7 +8,7 @@
 
 import type { HashTree, CID } from '@hashtree/core';
 import type { MediaRequestByCid, MediaRequestByPath, MediaResponse } from './protocol';
-import { getCachedRoot } from './treeRootCache';
+import { getCachedRoot, onCachedRootUpdate } from './treeRootCache';
 import { subscribeToTreeRoots } from './treeRootSubscription';
 import { getErrorMessage } from './utils/errorMessage';
 import { nhashDecode, toHex } from '@hashtree/core';
@@ -17,6 +17,24 @@ import { LRUCache } from './utils/lruCache';
 
 // Thumbnail filename patterns to look for (in priority order)
 const THUMBNAIL_PATTERNS = ['thumbnail.jpg', 'thumbnail.webp', 'thumbnail.png', 'thumbnail.jpeg'];
+const PLAYABLE_MEDIA_EXTENSION_SET = new Set([
+  '.mp4',
+  '.webm',
+  '.mkv',
+  '.mov',
+  '.avi',
+  '.m4v',
+  '.ogv',
+  '.3gp',
+  '.mp3',
+  '.wav',
+  '.flac',
+  '.m4a',
+  '.aac',
+  '.ogg',
+  '.oga',
+  '.opus',
+]);
 
 /**
  * SW FileRequest format (from service worker)
@@ -30,6 +48,7 @@ interface SwFileRequest {
   path: string;
   start: number;
   end?: number;
+  rangeHeader?: string | null;
   mimeType: string;
   download?: boolean;
 }
@@ -69,7 +88,6 @@ interface AsyncLookupCache<T> {
 // Timeout for considering a stream "done" (no updates)
 const LIVE_STREAM_TIMEOUT = 10000; // 10 seconds
 const ROOT_WAIT_TIMEOUT_MS = 15000;
-const ROOT_WAIT_INTERVAL_MS = 200;
 const NHASH_HINT_DIRECTORY_TIMEOUT_MS = 250;
 const IMMUTABLE_LOOKUP_CACHE_HIT_TTL_MS = 5 * 60 * 1000;
 const IMMUTABLE_LOOKUP_CACHE_MISS_TTL_MS = 1000;
@@ -91,6 +109,7 @@ interface ActiveStream {
 }
 
 const activeMediaStreams = new Map<string, ActiveStream>();
+const inflightRootWaits = new Map<string, Promise<CID | null>>();
 const directoryLookupCache = createAsyncLookupCache(DIRECTORY_CACHE_SIZE);
 const resolvedEntryLookupCache = createAsyncLookupCache(RESOLVED_ENTRY_CACHE_SIZE);
 const fileSizeLookupCache = createAsyncLookupCache(FILE_SIZE_CACHE_SIZE);
@@ -122,6 +141,7 @@ function clearAsyncLookupCache<T>(cache: AsyncLookupCache<T>): void {
 }
 
 function clearMediaLookupCaches(): void {
+  inflightRootWaits.clear();
   clearAsyncLookupCache(directoryLookupCache);
   clearAsyncLookupCache(resolvedEntryLookupCache);
   clearAsyncLookupCache(fileSizeLookupCache);
@@ -456,7 +476,7 @@ function watchTreeRootForStream(
 async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
   if (!tree || !mediaPort) return;
 
-  const { requestId, npub, nhash, treeName, path, start, end, mimeType, download } = req;
+  const { requestId, npub, nhash, treeName, path, start, end, rangeHeader, mimeType, download } = req;
   logMediaDebug('sw:request', {
     requestId,
     npub: npub ?? null,
@@ -465,6 +485,7 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
     path,
     start,
     end: end ?? null,
+    rangeHeader: rangeHeader ?? null,
     mimeType,
     download: !!download,
   });
@@ -516,6 +537,7 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
       path,
       start,
       end,
+      rangeHeader,
       mimeType,
       download,
     });
@@ -525,23 +547,52 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
 }
 
 async function waitForCachedRoot(npub: string, treeName: string): Promise<CID | null> {
-  let cached = await getCachedRoot(npub, treeName);
+  const cached = await getCachedRoot(npub, treeName);
   if (cached) return cached;
+
+  const cacheKey = `${npub}/${treeName}`;
+  const inflight = inflightRootWaits.get(cacheKey);
+  if (inflight) {
+    return inflight;
+  }
 
   const pubkey = decodeNpubToPubkey(npub);
   if (pubkey) {
     subscribeToTreeRoots(pubkey);
   }
 
-  const deadline = Date.now() + ROOT_WAIT_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, ROOT_WAIT_INTERVAL_MS));
-    cached = await getCachedRoot(npub, treeName);
-    if (cached) return cached;
-  }
+  const pending = new Promise<CID | null>((resolve) => {
+    let settled = false;
+    const finish = (cid: CID | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      unsubscribe();
+      resolve(cid);
+    };
 
-  logMediaDebug('root:timeout', { npub, treeName });
-  return null;
+    const unsubscribe = onCachedRootUpdate((updatedNpub, updatedTreeName, cid) => {
+      if (updatedNpub === npub && updatedTreeName === treeName && cid) {
+        finish(cid);
+      }
+    });
+
+    const timeout = setTimeout(() => {
+      logMediaDebug('root:timeout', { npub, treeName });
+      finish(null);
+    }, ROOT_WAIT_TIMEOUT_MS);
+
+    void getCachedRoot(npub, treeName).then((current) => {
+      if (current) {
+        finish(current);
+      }
+    });
+  }).finally(() => {
+    inflightRootWaits.delete(cacheKey);
+  });
+
+  inflightRootWaits.set(cacheKey, pending);
+  return pending;
 }
 
 function decodeNpubToPubkey(npub: string): string | null {
@@ -612,6 +663,14 @@ async function resolveEntryWithinRoot(
   );
 }
 
+async function resolveCidWithinRoot(
+  rootCid: CID,
+  path: string,
+  options?: { allowSingleSegmentRootFallback?: boolean }
+): Promise<CID | null> {
+  return (await resolveEntryWithinRoot(rootCid, path, options))?.cid ?? null;
+}
+
 async function resolvePathFromDirectoryListings(
   rootCid: CID,
   path: string
@@ -655,6 +714,15 @@ function isThumbnailAliasPath(path: string): boolean {
   return path === 'thumbnail' || path.endsWith('/thumbnail');
 }
 
+async function normalizeAliasPath(rootCid: CID, path: string): Promise<string> {
+  if (!path) return '';
+  const resolvedThumbnail = await resolveThumbnailAliasEntry(rootCid, path);
+  if (resolvedThumbnail) {
+    return resolvedThumbnail.path;
+  }
+  return path;
+}
+
 async function canListDirectory(rootCid: CID): Promise<boolean> {
   if (!tree) return false;
   try {
@@ -667,6 +735,12 @@ async function canListDirectory(rootCid: CID): Promise<boolean> {
     return false;
   }
 }
+
+export const __test__ = {
+  resolveCidWithinRoot,
+  normalizeAliasPath,
+  canListDirectory,
+};
 
 async function resolveThumbnailAliasEntry(
   rootCid: CID,
@@ -769,6 +843,37 @@ async function findThumbnailLookupInDir(
           }
         }
 
+        const hasPlayableMediaFile = entries.some((entry) => isPlayableMediaFileName(entry.name));
+        if (!hasPlayableMediaFile && entries.length > 0) {
+          const sortedEntries = [...entries].sort((a, b) => a.name.localeCompare(b.name));
+          for (const entry of sortedEntries.slice(0, 3)) {
+            if (entry.name.endsWith('.json') || entry.name.endsWith('.txt')) {
+              continue;
+            }
+
+            try {
+              const subEntries = await listDirectoryWithTimeout(entry.cid);
+              if (!subEntries) {
+                continue;
+              }
+
+              for (const pattern of THUMBNAIL_PATTERNS) {
+                const directMatch = subEntries.find((candidate) => candidate.name === pattern && candidate.cid);
+                if (directMatch?.cid) {
+                  const prefix = dirPath ? `${dirPath}/${entry.name}` : entry.name;
+                  return {
+                    path: `${prefix}/${pattern}`,
+                    cid: directMatch.cid,
+                    size: directMatch.size,
+                  };
+                }
+              }
+            } catch {
+              continue;
+            }
+          }
+        }
+
         return null;
       } catch {
         return null;
@@ -790,16 +895,27 @@ async function streamSwResponse(
     path?: string;
     start?: number;
     end?: number;
+    rangeHeader?: string | null;
     mimeType?: string;
     download?: boolean;
   }
 ): Promise<void> {
   if (!tree || !mediaPort) return;
 
-  const { npub, path, start = 0, end, mimeType = 'application/octet-stream', download } = options;
+  const { npub, path, start = 0, end, rangeHeader, mimeType = 'application/octet-stream', download } = options;
 
-  const rangeStart = start;
-  const rangeEnd = end !== undefined ? Math.min(end, totalSize - 1) : totalSize - 1;
+  let rangeStart = start;
+  let rangeEnd = end !== undefined ? Math.min(end, totalSize - 1) : totalSize - 1;
+  if (rangeHeader) {
+    const parsedRange = parseHttpByteRange(rangeHeader, totalSize);
+    if (parsedRange.kind === 'range') {
+      rangeStart = parsedRange.range.start;
+      rangeEnd = parsedRange.range.endInclusive;
+    } else if (parsedRange.kind === 'unsatisfiable') {
+      sendSwError(requestId, 416, `Range not satisfiable for ${totalSize} byte file`);
+      return;
+    }
+  }
   const contentLength = rangeEnd - rangeStart + 1;
 
   // Build cache control header
@@ -828,7 +944,7 @@ async function streamSwResponse(
   }
 
   // Determine status (206 for range requests)
-  const isRangeRequest = end !== undefined || start > 0;
+  const isRangeRequest = !!rangeHeader || end !== undefined || start > 0;
   const status = isRangeRequest ? 206 : 200;
   if (isRangeRequest) {
     headers['Content-Range'] = `bytes ${rangeStart}-${rangeEnd}/${totalSize}`;
@@ -869,4 +985,80 @@ async function streamSwResponse(
 
   // Signal done
   mediaPort.postMessage({ type: 'done', requestId } as SwFileResponse);
+}
+
+interface ResolvedByteRange {
+  start: number;
+  endInclusive: number;
+}
+
+type ParsedHttpRange =
+  | { kind: 'range'; range: ResolvedByteRange }
+  | { kind: 'unsatisfiable' }
+  | { kind: 'unsupported' };
+
+function parseHttpByteRange(
+  rangeHeader: string | null | undefined,
+  totalSize: number,
+): ParsedHttpRange {
+  if (!rangeHeader) return { kind: 'unsupported' };
+  const bytesRange = rangeHeader.startsWith('bytes=')
+    ? rangeHeader.slice('bytes='.length)
+    : null;
+  if (!bytesRange || bytesRange.includes(',')) return { kind: 'unsupported' };
+  if (totalSize <= 0) return { kind: 'unsatisfiable' };
+
+  const parts = bytesRange.split('-', 2);
+  if (parts.length !== 2) return { kind: 'unsupported' };
+  const [startPart, endPart] = parts;
+
+  if (!startPart) {
+    const suffixLength = Number.parseInt(endPart, 10);
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) {
+      return { kind: 'unsatisfiable' };
+    }
+    const clampedSuffix = Math.min(suffixLength, totalSize);
+    return {
+      kind: 'range',
+      range: {
+        start: totalSize - clampedSuffix,
+        endInclusive: totalSize - 1,
+      },
+    };
+  }
+
+  const start = Number.parseInt(startPart, 10);
+  if (!Number.isFinite(start) || start < 0 || start >= totalSize) {
+    return { kind: 'unsatisfiable' };
+  }
+
+  const endInclusive = endPart ? Number.parseInt(endPart, 10) : totalSize - 1;
+  if (!Number.isFinite(endInclusive) || endInclusive < start) {
+    return { kind: 'unsatisfiable' };
+  }
+
+  return {
+    kind: 'range',
+    range: {
+      start,
+      endInclusive: Math.min(endInclusive, totalSize - 1),
+    },
+  };
+}
+
+function isPlayableMediaFileName(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  if (!normalized || normalized.endsWith('/')) {
+    return false;
+  }
+  if (normalized.startsWith('video.')) {
+    return true;
+  }
+
+  const lastDot = normalized.lastIndexOf('.');
+  if (lastDot === -1) {
+    return false;
+  }
+
+  return PLAYABLE_MEDIA_EXTENSION_SET.has(normalized.slice(lastDot));
 }

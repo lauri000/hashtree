@@ -8,10 +8,7 @@
  */
 
 import type { CID } from '@hashtree/core';
-import type {
-  BlossomBandwidthStats,
-  BlossomBandwidthServerStats,
-} from '@hashtree/core/worker';
+import type { BlossomBandwidthStats } from '@hashtree/core/worker';
 
 // Re-export common types from hashtree's worker protocol
 export type {
@@ -30,6 +27,7 @@ export interface TreeRootInfo {
   hash: Uint8Array;
   key?: Uint8Array;
   visibility: TreeVisibility;
+  labels?: string[];
   updatedAt: number;
   encryptedKey?: string;
   keyId?: string;
@@ -80,7 +78,7 @@ export type WorkerRequest =
   | { type: 'resolveRoot'; id: string; npub: string; path?: string }
 
   // Tree root cache and subscriptions
-  | { type: 'setTreeRootCache'; id: string; npub: string; treeName: string; hash: Uint8Array; key?: Uint8Array; visibility: TreeVisibility }
+  | { type: 'setTreeRootCache'; id: string; npub: string; treeName: string; hash: Uint8Array; key?: Uint8Array; visibility: TreeVisibility; labels?: string[] }
   | { type: 'getTreeRootInfo'; id: string; npub: string; treeName: string }
   | { type: 'mergeTreeRootKey'; id: string; npub: string; treeName: string; hash: Uint8Array; key: Uint8Array }
   | { type: 'subscribeTreeRoots'; id: string; pubkey: string }
@@ -200,7 +198,7 @@ export type WorkerResponse =
   | { type: 'blossomPushComplete'; treeName: string; pushed: number; skipped: number; failed: number }
 
   // Tree root updates (worker → main thread notification)
-  | { type: 'treeRootUpdate'; npub: string; treeName: string; hash: Uint8Array; key?: Uint8Array; visibility: TreeVisibility; updatedAt: number; encryptedKey?: string; keyId?: string; selfEncryptedKey?: string; selfEncryptedLinkKey?: string }
+  | { type: 'treeRootUpdate'; npub: string; treeName: string; hash: Uint8Array; key?: Uint8Array; visibility: TreeVisibility; labels?: string[]; updatedAt: number; encryptedKey?: string; keyId?: string; selfEncryptedKey?: string; selfEncryptedLinkKey?: string }
   | { type: 'treeRootInfo'; id: string; record?: TreeRootInfo; error?: string }
 
   // SocialGraph responses

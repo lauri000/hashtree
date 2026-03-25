@@ -21,6 +21,7 @@ interface CachedRoot {
   hash: Uint8Array;        // Root hash
   key?: Uint8Array;        // CHK decryption key (for encrypted trees)
   visibility: TreeVisibility;
+  labels?: string[];
   updatedAt: number;       // Unix timestamp
   encryptedKey?: string;   // For link-visible trees
   keyId?: string;          // For link-visible trees
@@ -31,9 +32,16 @@ interface CachedRoot {
 // In-memory LRU cache for fast lookups (limited to 1000 entries to prevent memory leak)
 // Data is backed by persistent store so eviction is safe
 const memoryCache = new LRUCache<string, CachedRoot>(1000);
+const updateListeners = new Set<(npub: string, treeName: string, cid: CID | null) => void>();
 
 // Store reference
 let store: Store | null = null;
+
+function notifyUpdate(npub: string, treeName: string, cid: CID | null): void {
+  for (const listener of updateListeners) {
+    listener(npub, treeName, cid);
+  }
+}
 
 /**
  * Initialize the cache with a store
@@ -114,6 +122,7 @@ export async function setCachedRoot(
   cid: CID,
   visibility: TreeVisibility = 'public',
   options?: {
+    labels?: string[];
     encryptedKey?: string;
     keyId?: string;
     selfEncryptedKey?: string;
@@ -122,11 +131,13 @@ export async function setCachedRoot(
 ): Promise<void> {
   const cacheKey = `${npub}/${treeName}`;
   const now = Math.floor(Date.now() / 1000);
+  const existing = await getCachedRootInfo(npub, treeName);
 
   const cached: CachedRoot = {
     hash: cid.hash,
     key: cid.key,
     visibility,
+    labels: options?.labels ?? existing?.labels,
     updatedAt: now,
     encryptedKey: options?.encryptedKey,
     keyId: options?.keyId,
@@ -136,6 +147,7 @@ export async function setCachedRoot(
 
   // Update memory cache
   memoryCache.set(cacheKey, cached);
+  notifyUpdate(npub, treeName, { hash: cached.hash, key: cached.key });
 
   // Persist to store
   if (store) {
@@ -167,6 +179,7 @@ export async function mergeCachedRootKey(
   };
 
   memoryCache.set(cacheKey, merged);
+  notifyUpdate(npub, treeName, { hash: merged.hash, key: merged.key });
 
   if (store) {
     const storageKey = await makeStorageKey(npub, treeName);
@@ -185,6 +198,7 @@ export async function removeCachedRoot(npub: string, treeName: string): Promise<
 
   // Remove from memory cache
   memoryCache.delete(cacheKey);
+  notifyUpdate(npub, treeName, null);
 
   // Remove from persistent store
   if (store) {
@@ -231,6 +245,15 @@ export function listCachedRoots(npub: string): Array<{
  */
 export function clearMemoryCache(): void {
   memoryCache.clear();
+}
+
+export function onCachedRootUpdate(
+  listener: (npub: string, treeName: string, cid: CID | null) => void
+): () => void {
+  updateListeners.add(listener);
+  return () => {
+    updateListeners.delete(listener);
+  };
 }
 
 /**

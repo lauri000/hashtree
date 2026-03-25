@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CID, HashTree } from '@hashtree/core';
-import { __test__, initMediaHandler } from '../src/worker/mediaHandler';
+import { __test__, initMediaHandler } from '../src/iris/mediaHandler';
 
 const ROOT: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i), key: undefined };
 const CHILD_DIR: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 1), key: undefined };
