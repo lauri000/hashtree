@@ -70,8 +70,20 @@ pub enum LocalStore {
 }
 
 impl LocalStore {
-    /// Create a new local store based on config
+    /// Create a new unbounded local store.
+    ///
+    /// Higher-level stores that need quota enforcement should manage eviction
+    /// above this layer so tree metadata, pins, and archival policies stay
+    /// coherent.
     pub fn new<P: AsRef<Path>>(path: P, backend: &StorageBackend) -> Result<Self, StoreError> {
+        Self::new_unbounded(path, backend)
+    }
+
+    /// Create a new unbounded local store for a specific backend.
+    pub fn new_unbounded<P: AsRef<Path>>(
+        path: P,
+        backend: &StorageBackend,
+    ) -> Result<Self, StoreError> {
         match backend {
             StorageBackend::Fs => Ok(LocalStore::Fs(FsBlobStore::new(path)?)),
             #[cfg(feature = "lmdb")]
@@ -517,7 +529,11 @@ impl HashtreeStore {
         Self::with_options_and_backend(path, s3_config, max_size_bytes, &config.storage.backend)
     }
 
-    /// Create a new store with optional S3 backend and custom size limit
+    /// Create a new store with optional S3 backend and custom size limit.
+    ///
+    /// The raw local blob backend remains unbounded. `HashtreeStore` enforces
+    /// `max_size_bytes` at the tree-management layer so eviction can honor pins,
+    /// orphan handling, and local-only eviction when S3 is used as archive.
     pub fn with_options<P: AsRef<Path>>(
         path: P,
         s3_config: Option<&S3Config>,
@@ -555,9 +571,11 @@ impl HashtreeStore {
         let cached_roots = env.create_database(&mut wtxn, Some("cached_roots"))?;
         wtxn.commit()?;
 
-        // Create local blob store based on configured backend
+        // Intentionally keep the raw blob backend unbounded here. HashtreeStore
+        // owns quota policy above this layer, where it can coordinate eviction
+        // with tree refs, blob ownership, pins, and S3 archival behavior.
         let local_store = Arc::new(
-            LocalStore::new(path.join("blobs"), backend)
+            LocalStore::new_unbounded(path.join("blobs"), backend)
                 .map_err(|e| anyhow::anyhow!("Failed to create blob store: {}", e))?,
         );
 
