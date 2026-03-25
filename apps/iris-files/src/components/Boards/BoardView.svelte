@@ -2246,7 +2246,7 @@
             ondragend={handleColumnDragEnd}
             ondragover={(event) => handleColumnReorderDragOver(event as DragEvent, column.id)}
             ondrop={(event) => handleColumnReorderDrop(event as DragEvent, column.id)}
-            class={`group w-80 max-w-80 shrink-0 bg-surface-1 rounded-xl border border-surface-3 p-3 shadow-sm space-y-3 ${canWrite ? 'cursor-grab active:cursor-grabbing' : ''} ${draggingColumn?.columnId === column.id ? 'opacity-50' : ''} ${columnDropTargetClass(column.id)}`}
+            class={`board-column-hover w-80 max-w-80 shrink-0 bg-surface-1 rounded-xl border border-surface-3 p-3 shadow-sm space-y-3 ${canWrite ? 'cursor-grab active:cursor-grabbing' : ''} ${draggingColumn?.columnId === column.id ? 'opacity-50' : ''} ${columnDropTargetClass(column.id)}`}
           >
             <div class="flex items-start justify-between gap-2">
               <div class="min-w-0">
@@ -2258,7 +2258,7 @@
               {#if canWrite}
                 <div class="h-8 w-8 shrink-0">
                   <button
-                    class="btn-circle btn-ghost h-8 w-8 min-h-8 min-w-8 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto"
+                    class="board-column-action btn-circle btn-ghost h-8 w-8 min-h-8 min-w-8 opacity-0 pointer-events-none transition-opacity"
                     aria-label="Edit column"
                     title="Edit column"
                     onclick={() => openEditColumnModal(column.id, column.title)}
@@ -2291,7 +2291,7 @@
                   ondragend={handleCardDragEnd}
                   ondragover={(event) => handleCardDragOver(event as DragEvent, column.id, card.id)}
                   ondrop={(event) => handleCardDrop(event as DragEvent, column.id, card.id)}
-                  class={`group bg-surface-0 border border-surface-3 rounded-lg p-3 transition-shadow ${canWrite ? 'cursor-grab active:cursor-grabbing hover:shadow-md' : ''} ${draggingCard?.cardId === card.id ? 'opacity-50' : ''} ${cardDropTargetClass(column.id, card.id)}`}
+                  class={`board-card-hover bg-surface-0 border border-surface-3 rounded-lg p-3 transition-shadow ${canWrite ? 'cursor-grab active:cursor-grabbing hover:shadow-md' : ''} ${draggingCard?.cardId === card.id ? 'opacity-50' : ''} ${cardDropTargetClass(column.id, card.id)}`}
                 >
                   <div class="flex items-start gap-2">
                     <button
@@ -2309,7 +2309,7 @@
                       <div class="h-8 w-8 shrink-0">
                         <button
                           type="button"
-                          class="btn-circle btn-ghost h-8 w-8 min-h-8 min-w-8 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto"
+                          class="board-card-action btn-circle btn-ghost h-8 w-8 min-h-8 min-w-8 opacity-0 pointer-events-none transition-opacity"
                           aria-label="Quick edit card"
                           title="Edit card"
                           onclick={(event) => {
@@ -2418,6 +2418,22 @@
     </div>
   </div>
 {/if}
+
+<style>
+  .board-column-hover:hover .board-column-action,
+  .board-column-hover:focus-within .board-column-action,
+  .board-column-action:focus {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .board-card-hover:hover .board-card-action,
+  .board-card-hover:focus-within .board-card-action,
+  .board-card-action:focus {
+    opacity: 1;
+    pointer-events: auto;
+  }
+</style>
 
 <Modal
   open={showColumnModal}

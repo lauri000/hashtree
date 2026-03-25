@@ -6,10 +6,13 @@ const boardViewPath = path.resolve(process.cwd(), 'src/components/Boards/BoardVi
 const boardViewSource = fs.readFileSync(boardViewPath, 'utf8');
 
 describe('boards column action markup', () => {
-  it('renders edit column button with hover-reveal behavior', () => {
-    expect(boardViewSource).toMatch(
-      /<button[\s\S]*class="[^"]*opacity-0[^"]*group-hover:opacity-100[^"]*"[\s\S]*aria-label="Edit column"/
-    );
+  it('uses separate hover scopes for columns and cards', () => {
+    expect(boardViewSource).toContain('board-column-hover');
+    expect(boardViewSource).toContain('board-column-action');
+    expect(boardViewSource).toContain('board-card-hover');
+    expect(boardViewSource).toContain('board-card-action');
+    expect(boardViewSource).not.toContain('group-hover:opacity-100');
+    expect(boardViewSource).not.toContain('group-focus-within:opacity-100');
   });
 
   it('does not render a remove column button in the column header', () => {
