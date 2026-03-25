@@ -305,7 +305,6 @@ export function getStableResolvedMediaUrls(options: StableResolvedMediaUrlOption
 }
 
 export const COMMON_VIDEO_FILENAMES = PREFERRED_PLAYABLE_MEDIA_FILENAMES;
-const COMMON_THUMBNAIL_FILENAMES = ['thumbnail.jpg', 'thumbnail.webp', 'thumbnail.png', 'thumbnail.jpeg'] as const;
 
 interface StableVideoCandidateUrlOptions {
   rootCid?: CID | null;
@@ -415,15 +414,6 @@ export function getThumbnailUrlFromCid(rootCid: CID, videoId?: string): string {
   return appendHtreeCacheBust(appendMediaClientKey(url));
 }
 
-function getStableExactThumbnailUrls(rootCid: CID, videoId?: string): string[] {
-  return COMMON_THUMBNAIL_FILENAMES
-    .map((fileName) => getStablePathUrl({
-      rootCid,
-      path: videoId ? `${videoId}/${fileName}` : fileName,
-    }))
-    .filter((url): url is string => !!url);
-}
-
 function isThumbnailAliasUrl(url: string): boolean {
   return /\/thumbnail(?:[?#]|$)/.test(url) && !/\/thumbnail\.[^/?#]+(?:[?#]|$)/.test(url);
 }
@@ -452,16 +442,8 @@ export function getStableThumbnailCandidateUrls(options: StableThumbnailUrlOptio
   if (immutableAliasUrl) {
     urls.add(immutableAliasUrl);
   }
-  if (options.rootCid) {
-    for (const exactUrl of getStableExactThumbnailUrls(options.rootCid, options.videoId)) {
-      urls.add(exactUrl);
-    }
-  }
   if (explicitThumbnailUrl && explicitIsAlias) {
     urls.add(explicitThumbnailUrl);
-  }
-  if (options.rootCid) {
-    urls.add(getThumbnailUrlFromCid(options.rootCid, options.videoId));
   }
   const canUseMutableAlias = options.allowAliasFallback !== false && options.npub && options.treeName;
   if (canUseMutableAlias) {

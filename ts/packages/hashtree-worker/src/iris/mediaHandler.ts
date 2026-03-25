@@ -88,7 +88,7 @@ interface AsyncLookupCache<T> {
 // Timeout for considering a stream "done" (no updates)
 const LIVE_STREAM_TIMEOUT = 10000; // 10 seconds
 const ROOT_WAIT_TIMEOUT_MS = 15000;
-const NHASH_HINT_DIRECTORY_TIMEOUT_MS = 250;
+const NHASH_HINT_DIRECTORY_TIMEOUT_MS = 1000;
 const IMMUTABLE_LOOKUP_CACHE_HIT_TTL_MS = 5 * 60 * 1000;
 const IMMUTABLE_LOOKUP_CACHE_MISS_TTL_MS = 1000;
 const DIRECTORY_CACHE_SIZE = 1024;
@@ -498,6 +498,7 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
       const rootCid = nhashDecode(nhash);
       resolvedEntry = await resolveEntryWithinRoot(rootCid, path || '', {
         allowSingleSegmentRootFallback: true,
+        expectedMimeType: mimeType,
       });
       if (!resolvedEntry) {
         sendSwError(requestId, 404, `File not found: ${path}`);
@@ -512,6 +513,7 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
       }
       resolvedEntry = await resolveEntryWithinRoot(rootCid, path || '', {
         allowSingleSegmentRootFallback: false,
+        expectedMimeType: mimeType,
       });
       if (!resolvedEntry) {
         sendSwError(requestId, 404, 'File not found');
@@ -609,7 +611,7 @@ function decodeNpubToPubkey(npub: string): string | null {
 async function resolveEntryWithinRoot(
   rootCid: CID,
   path: string,
-  options?: { allowSingleSegmentRootFallback?: boolean }
+  options?: { allowSingleSegmentRootFallback?: boolean; expectedMimeType?: string }
 ): Promise<ResolvedRootEntry | null> {
   if (!tree) return null;
 
@@ -637,7 +639,7 @@ async function resolveEntryWithinRoot(
 
       if (
         options?.allowSingleSegmentRootFallback &&
-        canFallbackToRootBlob(path, path)
+        await canFallbackToRootBlob(rootCid, path, path, options?.expectedMimeType)
       ) {
         const isDirectory = await canListDirectory(rootCid);
         if (!isDirectory) {
@@ -652,7 +654,7 @@ async function resolveEntryWithinRoot(
 
       if (
         options?.allowSingleSegmentRootFallback &&
-        canFallbackToRootBlob(path, path)
+        await canFallbackToRootBlob(rootCid, path, path, options?.expectedMimeType)
       ) {
         return { cid: rootCid };
       }
@@ -666,7 +668,7 @@ async function resolveEntryWithinRoot(
 async function resolveCidWithinRoot(
   rootCid: CID,
   path: string,
-  options?: { allowSingleSegmentRootFallback?: boolean }
+  options?: { allowSingleSegmentRootFallback?: boolean; expectedMimeType?: string }
 ): Promise<CID | null> {
   return (await resolveEntryWithinRoot(rootCid, path, options))?.cid ?? null;
 }
@@ -704,14 +706,89 @@ async function resolvePathFromDirectoryListings(
   return null;
 }
 
-function canFallbackToRootBlob(resolvedPath: string, originalPath: string): boolean {
+function hasImageBlobSignature(blob: Uint8Array): boolean {
+  if (blob.length >= 3 && blob[0] === 0xff && blob[1] === 0xd8 && blob[2] === 0xff) {
+    return true;
+  }
+  if (
+    blob.length >= 8
+    && blob[0] === 0x89
+    && blob[1] === 0x50
+    && blob[2] === 0x4e
+    && blob[3] === 0x47
+    && blob[4] === 0x0d
+    && blob[5] === 0x0a
+    && blob[6] === 0x1a
+    && blob[7] === 0x0a
+  ) {
+    return true;
+  }
+  if (
+    blob.length >= 12
+    && blob[0] === 0x52
+    && blob[1] === 0x49
+    && blob[2] === 0x46
+    && blob[3] === 0x46
+    && blob[8] === 0x57
+    && blob[9] === 0x45
+    && blob[10] === 0x42
+    && blob[11] === 0x50
+  ) {
+    return true;
+  }
+  if (
+    blob.length >= 6
+    && blob[0] === 0x47
+    && blob[1] === 0x49
+    && blob[2] === 0x46
+    && blob[3] === 0x38
+    && (blob[4] === 0x37 || blob[4] === 0x39)
+    && blob[5] === 0x61
+  ) {
+    return true;
+  }
+  return false;
+}
+
+async function canFallbackToRootBlob(
+  rootCid: CID,
+  resolvedPath: string,
+  originalPath: string,
+  expectedMimeType?: string,
+): Promise<boolean> {
   if (resolvedPath !== originalPath) return false;
   if (resolvedPath.includes('/')) return false;
+  if (isExactThumbnailFilenamePath(resolvedPath)) {
+    if (!expectedMimeType?.startsWith('image/')) {
+      return false;
+    }
+    if (!tree) {
+      return false;
+    }
+    try {
+      if (typeof tree.readFileRange === 'function') {
+        const header = await tree.readFileRange(rootCid, 0, 64);
+        return !!header && hasImageBlobSignature(header);
+      }
+      if (typeof tree.getBlob === 'function') {
+        const blob = await tree.getBlob(rootCid.hash);
+        return !!blob && hasImageBlobSignature(blob);
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
   return /\.[A-Za-z0-9]{1,16}$/.test(resolvedPath);
 }
 
 function isThumbnailAliasPath(path: string): boolean {
   return path === 'thumbnail' || path.endsWith('/thumbnail');
+}
+
+function isExactThumbnailFilenamePath(path: string): boolean {
+  const fileName = path.split('/').filter(Boolean).at(-1)?.toLowerCase() ?? '';
+  return fileName.startsWith('thumbnail.');
 }
 
 async function normalizeAliasPath(rootCid: CID, path: string): Promise<string> {

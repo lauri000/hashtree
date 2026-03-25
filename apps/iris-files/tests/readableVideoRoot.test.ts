@@ -4,6 +4,7 @@ import { toHex, type CID } from '@hashtree/core';
 const listDirectory = vi.fn();
 const resolvePath = vi.fn();
 const readFileRange = vi.fn();
+const readFile = vi.fn();
 const ndkFetchEvents = vi.fn();
 const npubToPubkey = vi.fn();
 const querySync = vi.fn();
@@ -15,6 +16,7 @@ vi.mock('../src/store', () => ({
     listDirectory,
     resolvePath,
     readFileRange,
+    readFile,
   }),
 }));
 
@@ -49,6 +51,7 @@ describe('resolveReadableVideoRoot', () => {
     listDirectory.mockReset();
     resolvePath.mockReset();
     readFileRange.mockReset();
+    readFile.mockReset();
     ndkFetchEvents.mockReset();
     npubToPubkey.mockReset();
     querySync.mockReset();
@@ -153,6 +156,31 @@ describe('resolveReadableVideoRoot', () => {
 
     const { resolveReadableVideoRoot } = await import('../src/lib/readableVideoRoot');
     await expect(resolveReadableVideoRoot({
+      rootCid: ROOT,
+      npub: 'npub1example',
+      treeName: 'videos/Test',
+    })).resolves.toEqual(FALLBACK);
+  });
+
+  it('falls back to the most recent readable prior root with thumbnail evidence when the current root is thumbnail-less', async () => {
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid, ROOT)) return [{ name: 'video.mp4' }];
+      if (sameHash(cid, FALLBACK)) return [{ name: 'video.mp4' }, { name: 'thumbnail.jpg' }];
+      return [];
+    });
+    ndkFetchEvents.mockResolvedValue(new Set([
+      {
+        created_at: 20,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(ROOT.hash).toString('hex')]],
+      },
+      {
+        created_at: 10,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(FALLBACK.hash).toString('hex')]],
+      },
+    ]));
+
+    const { resolveReadableThumbnailRoot } = await import('../src/lib/readableVideoRoot');
+    await expect(resolveReadableThumbnailRoot({
       rootCid: ROOT,
       npub: 'npub1example',
       treeName: 'videos/Test',

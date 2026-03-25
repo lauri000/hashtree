@@ -17,7 +17,7 @@ import { getLocalRootCache, getLocalRootKey, onCacheUpdate } from '../treeRootCa
 import { LRUCache } from '../utils/lruCache';
 import { indexVideo } from './searchIndex';
 import { clearFeedPlaylistInfo } from './homeFeedCache';
-import { getEncodedNhashUrl, getHtreePrefix, getNhashFileUrl, getStableThumbnailUrl } from '../lib/mediaUrl';
+import { getEncodedNhashUrl, getHtreePrefix, getNhashFileUrl } from '../lib/mediaUrl';
 import { getInitialPlaylistItemTitle } from '../lib/videoDisplayTitle';
 import { LinkType, toHex, type CID } from '@hashtree/core';
 import { findPlayableMediaEntry, isPlayableMediaFileName, PLAYABLE_MEDIA_EXTENSIONS } from '../lib/playableMedia';
@@ -171,6 +171,13 @@ export function shouldRefreshPlaylistCardInfo(info: PlaylistCardInfo | null | un
   return !!info && !info.thumbnailUrl && !info.videoPath;
 }
 
+function sameHash(a: CID | null | undefined, b: CID | null | undefined): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return toHex(a.hash) === toHex(b.hash)
+    && ((a.key && b.key && toHex(a.key) === toHex(b.key)) || (!a.key && !b.key));
+}
+
 /** Helper to add timeout to promises */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   return Promise.race([
@@ -225,7 +232,6 @@ export async function detectPlaylistForCard(
   const cached = playlistCache.get(cacheKey);
   if (cached !== undefined) return cached;
 
-  const tree = getTree();
   const effectiveRootCid = await resolveReadableVideoRoot({
     rootCid,
     npub,
@@ -235,13 +241,23 @@ export async function detectPlaylistForCard(
   if (!effectiveRootCid) {
     return null;
   }
+  return detectPlaylistForCardAtRoot(effectiveRootCid, rootCid, treeName, cacheKey);
+}
+
+async function detectPlaylistForCardAtRoot(
+  effectiveRootCid: CID,
+  originalRootCid: CID,
+  treeName: string,
+  cacheKey: string,
+): Promise<PlaylistCardInfo | null> {
+  const tree = getTree();
 
   try {
     const entries = await withTimeout(tree.listDirectory(effectiveRootCid), PLAYLIST_ROOT_READ_TIMEOUT_MS);
     if (!entries || entries.length === 0) {
       const directRootInfo = await detectDirectRootMediaInfo(effectiveRootCid, treeName);
       if (directRootInfo) {
-        if (toHex(effectiveRootCid.hash) === toHex(rootCid.hash)) {
+        if (sameHash(effectiveRootCid, originalRootCid)) {
           playlistCache.set(cacheKey, directRootInfo);
         }
         return directRootInfo;
@@ -340,7 +356,7 @@ export async function detectPlaylistForCard(
         createdAt,
         title,
       };
-      if (toHex(effectiveRootCid.hash) === toHex(rootCid.hash)) {
+      if (sameHash(effectiveRootCid, originalRootCid)) {
         playlistCache.set(cacheKey, info);
       }
       return info;
@@ -367,7 +383,7 @@ export async function detectPlaylistForCard(
 
     const thumbnailUrl = results.find(r => r !== null) ?? undefined;
     const info: PlaylistCardInfo = { videoCount: entries.length, thumbnailUrl, rootCid: effectiveRootCid };
-    if (toHex(effectiveRootCid.hash) === toHex(rootCid.hash)) {
+    if (sameHash(effectiveRootCid, originalRootCid)) {
       playlistCache.set(cacheKey, info);
     }
     return info;

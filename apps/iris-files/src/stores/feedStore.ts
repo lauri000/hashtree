@@ -17,6 +17,7 @@ import { getAppType } from '../appType';
 import { detectPlaylistForCard, getCachedPlaylistInfo, shouldRefreshPlaylistCardInfo } from './playlist';
 import { resolveFeedVideoRootCid, resolveFeedVideoRootCidAsync } from '../lib/videoFeedRoot';
 import { onCacheUpdate } from '../treeRootCache';
+import { resolveReadableThumbnailRoot, resolveReadableVideoRoot } from '../lib/readableVideoRoot';
 
 const log = (event: string, data?: Record<string, unknown>) => {
   if (!isHtreeDebugEnabled()) return;
@@ -179,23 +180,51 @@ function applyCachedFeedMedia(videos: FeedVideo[]): FeedVideo[] {
 }
 
 export async function getFeedVideoResolvedMedia(video: FeedVideo): Promise<Partial<FeedVideo> | null> {
-  const rootCid = await resolveFeedVideoRootCidAsync(video, 8000);
-  if (!rootCid || !video.ownerNpub || !video.treeName) return null;
+  const latestRootCid = await resolveFeedVideoRootCidAsync(video, 8000);
+  if (!latestRootCid || !video.ownerNpub || !video.treeName) return null;
+
+  const rootCid = await resolveReadableVideoRoot({
+    rootCid: latestRootCid,
+    npub: video.ownerNpub,
+    treeName: video.treeName,
+    videoId: video.videoId ?? null,
+    priority: 'background',
+  }) ?? latestRootCid;
 
   const cached = getCachedPlaylistInfo(video.ownerNpub, video.treeName);
   const info = cached !== undefined && !shouldRefreshPlaylistCardInfo(cached)
     ? cached
     : await detectPlaylistForCard(rootCid, video.ownerNpub, video.treeName);
+  const playbackRootCid = info?.rootCid ?? rootCid;
+  let thumbnailUrl = info?.thumbnailUrl;
 
-  if (!info) return null;
+  if (!thumbnailUrl) {
+    const thumbnailRootCid = await resolveReadableThumbnailRoot({
+      rootCid: playbackRootCid,
+      npub: video.ownerNpub,
+      treeName: video.treeName,
+      videoId: video.videoId ?? null,
+      priority: 'background',
+    }) ?? playbackRootCid;
+
+    if (!sameCid(thumbnailRootCid, playbackRootCid)) {
+      const thumbnailInfo = await detectPlaylistForCard(thumbnailRootCid, video.ownerNpub, video.treeName);
+      thumbnailUrl = thumbnailInfo?.thumbnailUrl;
+    }
+  }
 
   const resolved: Partial<FeedVideo> = {};
-  const resolvedRootCid = info.rootCid ?? rootCid;
-  if (!sameCid(resolvedRootCid, video.rootCid)) {
+  if (!sameCid(rootCid, video.rootCid)) {
+    resolved.rootCid = rootCid;
+  }
+  if (!info) return Object.keys(resolved).length > 0 ? resolved : null;
+
+  const resolvedRootCid = playbackRootCid;
+  if (!sameCid(resolvedRootCid, resolved.rootCid ?? video.rootCid)) {
     resolved.rootCid = resolvedRootCid;
   }
-  if (info.thumbnailUrl) {
-    resolved.thumbnailUrl = info.thumbnailUrl;
+  if (thumbnailUrl) {
+    resolved.thumbnailUrl = thumbnailUrl;
   }
   if (info.videoPath) {
     resolved.videoPath = info.videoPath;

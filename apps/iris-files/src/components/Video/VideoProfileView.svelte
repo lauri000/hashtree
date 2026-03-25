@@ -26,6 +26,7 @@
     treeName: string;
     ownerNpub: string | undefined;
     ownerPubkey: string | null;
+    rootCid?: CID;
     visibility: string | undefined;
     href: string;
     videoCount: number;
@@ -203,6 +204,7 @@
               ownerPubkey: ownerPubkey,
               ownerNpub: npub,
               treeName: t.name,
+              rootCid: getRootCidForTree(t) ?? undefined,
               visibility: t.visibility,
               href: `#/${npub}/${encodeTreeNameForUrl(t.name)}`,
               videoCount: info?.videoCount || 0,
@@ -331,11 +333,14 @@
               title={playlist.title}
               videoCount={playlist.videoCount}
               thumbnailUrl={playlist.thumbnailUrl ?? getStableThumbnailUrl({
-                rootCid: getRootCidForTree(t),
-                npub,
-                treeName: t.name,
-                allowAliasFallback: false,
+                rootCid: playlist.rootCid ?? null,
+                npub: playlist.ownerNpub ?? null,
+                treeName: playlist.treeName,
+                allowAliasFallback: true,
               })}
+              ownerNpub={playlist.ownerNpub}
+              treeName={playlist.treeName}
+              rootCid={playlist.rootCid ?? null}
               ownerPubkey={playlist.ownerPubkey}
               visibility={playlist.visibility}
               hideAuthor

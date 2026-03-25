@@ -224,10 +224,6 @@ describe('mediaUrl thumbnail helpers', () => {
     ).toEqual([
       '/htree/nhash1exact/thumbnail.jpg',
       `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail?htree_c=test-media-client`,
-      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpg?htree_c=test-media-client`,
-      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.webp?htree_c=test-media-client`,
-      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.png?htree_c=test-media-client`,
-      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpeg?htree_c=test-media-client`,
       '/htree/npub1example/videos%2FTest%20Clip/clips/demo%20reel/thumbnail?v=deadbeef&htree_c=test-media-client',
     ]);
   });
@@ -249,10 +245,6 @@ describe('mediaUrl thumbnail helpers', () => {
       }),
     ).toEqual([
       `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail?htree_c=test-media-client`,
-      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpg?htree_c=test-media-client`,
-      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.webp?htree_c=test-media-client`,
-      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.png?htree_c=test-media-client`,
-      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpeg?htree_c=test-media-client`,
       '/htree/npub1example/videos%2FTest%20Clip/clips/demo%20reel/thumbnail?v=deadbeef&htree_c=test-media-client',
     ]);
   });

@@ -3,23 +3,24 @@
    * PlaylistCard - Card for displaying a playlist in grids
    * Shows thumbnail with YouTube-style stacked effect and playlist overlay
    */
-  import { onDestroy } from 'svelte';
+  import type { CID } from '@hashtree/core';
   import { Avatar, Name } from '../User';
   import { extractDominantColor, rgbToRgba, type RGB } from '../../utils/colorExtract';
   import { formatTimeAgo } from '../../utils/format';
-  import { shouldEagerLoadMediaInNativeChildRuntime } from '../../lib/nativeHtree';
-  import {
-    appendMediaImageRetryParam,
-    getMediaImageRetryDelayMs,
-    isRetryableMediaImageUrl,
-    MAX_MEDIA_IMAGE_RETRIES,
-  } from '../../lib/mediaImageRetry';
+  import { getStableThumbnailCandidateUrls, onHtreePrefixReady } from '../../lib/mediaUrl';
+  import VideoThumbnail from './VideoThumbnail.svelte';
 
   interface Props {
     href: string;
     title: string;
     videoCount: number;
-    thumbnailUrl?: string;
+    thumbnailUrl?: string | null;
+    ownerNpub?: string | null;
+    treeName?: string | null;
+    videoId?: string | null;
+    rootCid?: CID | null;
+    rootHashHex?: string | null;
+    allowAliasFallback?: boolean;
     ownerPubkey?: string | null;
     visibility?: string;
     hideAuthor?: boolean;
@@ -27,73 +28,40 @@
     themeHover?: boolean;
   }
 
-  let { href, title, videoCount, thumbnailUrl, ownerPubkey, visibility, hideAuthor = false, timestamp, themeHover = false }: Props = $props();
+  let {
+    href,
+    title,
+    videoCount,
+    thumbnailUrl,
+    ownerNpub,
+    treeName,
+    videoId = null,
+    rootCid = null,
+    rootHashHex = null,
+    allowAliasFallback = true,
+    ownerPubkey,
+    visibility,
+    hideAuthor = false,
+    timestamp,
+    themeHover = false,
+  }: Props = $props();
 
-  let thumbnailError = $state(false);
-  let thumbnailLoaded = $state(false);
-  let lastLoadedUrl = $state<string | null>(null);
-  let retryCount = $state(0);
-  let renderedThumbnailUrl = $state<string | null>(null);
-  let thumbnailEl = $state<HTMLImageElement | null>(null);
-  let retryTimer: ReturnType<typeof setTimeout> | null = null;
-  const loadingStrategy = shouldEagerLoadMediaInNativeChildRuntime() ? 'eager' : 'lazy';
-
-  // Reset error and track URL changes
-  $effect.pre(() => {
-    if (thumbnailUrl !== lastLoadedUrl) {
-      if (retryTimer) {
-        clearTimeout(retryTimer);
-        retryTimer = null;
-      }
-      thumbnailError = false;
-      thumbnailLoaded = false;
-      retryCount = 0;
-      lastLoadedUrl = thumbnailUrl ?? null;
-      renderedThumbnailUrl = thumbnailUrl ?? null;
-    }
+  let htreePrefixVersion = $state(0);
+  onHtreePrefixReady(() => {
+    htreePrefixVersion += 1;
   });
 
-  onDestroy(() => {
-    if (retryTimer) {
-      clearTimeout(retryTimer);
-      retryTimer = null;
-    }
-  });
-
-  function handleThumbnailError(event: Event): void {
-    const image = event.currentTarget as HTMLImageElement | null;
-    const baseUrl = thumbnailUrl ?? null;
-    thumbnailLoaded = false;
-    if (!baseUrl || !isRetryableMediaImageUrl(baseUrl) || retryCount >= MAX_MEDIA_IMAGE_RETRIES) {
-      thumbnailError = true;
-      return;
-    }
-
-    const nextRetry = retryCount + 1;
-    retryCount = nextRetry;
-    const retryUrl = appendMediaImageRetryParam(baseUrl, nextRetry);
-    const delayMs = getMediaImageRetryDelayMs(nextRetry);
-    retryTimer = setTimeout(() => {
-      retryTimer = null;
-      if (image && !image.isConnected) return;
-      thumbnailError = false;
-      thumbnailLoaded = false;
-      renderedThumbnailUrl = retryUrl;
-    }, delayMs);
-  }
-
-  function handleThumbnailLoad(): void {
-    thumbnailLoaded = true;
-  }
-
-  $effect(() => {
-    const image = thumbnailEl;
-    if (!image || !renderedThumbnailUrl || thumbnailError) {
-      return;
-    }
-    if (image.complete && image.naturalWidth > 0) {
-      handleThumbnailLoad();
-    }
+  let thumbnailUrls = $derived.by(() => {
+    void htreePrefixVersion;
+    return getStableThumbnailCandidateUrls({
+      thumbnailUrl,
+      rootCid,
+      npub: ownerNpub,
+      treeName,
+      videoId: videoId || undefined,
+      hashPrefix: rootHashHex?.slice(0, 8) || undefined,
+      allowAliasFallback,
+    });
   });
 
   // Extract dominant color from thumbnail for hover effect
@@ -101,7 +69,7 @@
 
   $effect(() => {
     if (!themeHover) return;
-    const url = thumbnailUrl;
+    const url = thumbnailUrls[0] ?? null;
     if (!url) return;
 
     themeColor = null;
@@ -121,24 +89,11 @@
 
     <!-- Main thumbnail -->
     <div class="absolute inset-0 bg-surface-2 rounded-lg overflow-hidden">
-      {#if !renderedThumbnailUrl || thumbnailError || !thumbnailLoaded}
-        <div class="w-full h-full flex items-center justify-center bg-surface-1">
-          <span class="i-lucide-video text-4xl text-text-3"></span>
-        </div>
-      {/if}
-
-      {#if renderedThumbnailUrl && !thumbnailError}
-        <img
-          bind:this={thumbnailEl}
-          src={renderedThumbnailUrl}
-          alt=""
-          class="w-full h-full object-cover"
-          class:opacity-0={!thumbnailLoaded}
-          loading={loadingStrategy}
-          onload={handleThumbnailLoad}
-          onerror={handleThumbnailError}
-        />
-      {/if}
+      <VideoThumbnail
+        src={thumbnailUrls[0] ?? null}
+        fallbackImageUrls={thumbnailUrls.slice(1)}
+        class="w-full h-full"
+      />
 
       <!-- Playlist count overlay (right side like YouTube) -->
       <div class="absolute right-0 top-0 h-full w-24 bg-black/80 flex flex-col items-center justify-center">

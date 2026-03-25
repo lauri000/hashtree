@@ -10,6 +10,8 @@ const resolverResolve = vi.fn();
 const ndkFetchEvent = vi.fn();
 const npubToPubkey = vi.fn();
 const pubkeyToNpub = vi.fn();
+const resolveReadableVideoRoot = vi.fn();
+const resolveReadableThumbnailRoot = vi.fn();
 const cacheListeners: Array<(npub: string, treeName: string) => void> = [];
 
 vi.mock('../src/stores/playlist', () => ({
@@ -34,6 +36,11 @@ vi.mock('../src/refResolver', () => ({
   getRefResolver: () => ({
     resolve: resolverResolve,
   }),
+}));
+
+vi.mock('../src/lib/readableVideoRoot', () => ({
+  resolveReadableVideoRoot,
+  resolveReadableThumbnailRoot,
 }));
 
 vi.mock('../src/nostr', () => ({
@@ -70,10 +77,14 @@ describe('getFeedVideoResolvedMedia', () => {
     ndkFetchEvent.mockReset();
     npubToPubkey.mockReset();
     pubkeyToNpub.mockReset();
+    resolveReadableVideoRoot.mockReset();
+    resolveReadableThumbnailRoot.mockReset();
     cacheListeners.length = 0;
     ndkFetchEvent.mockResolvedValue(null);
     npubToPubkey.mockReturnValue(null);
     pubkeyToNpub.mockImplementation((value: string) => value);
+    resolveReadableVideoRoot.mockImplementation(async ({ rootCid }: { rootCid?: CID | null }) => rootCid ?? null);
+    resolveReadableThumbnailRoot.mockImplementation(async ({ rootCid }: { rootCid?: CID | null }) => rootCid ?? null);
   });
 
   afterEach(() => {
@@ -255,6 +266,64 @@ describe('getFeedVideoResolvedMedia', () => {
       title: 'Resolver title',
     });
     expect(resolverResolve).toHaveBeenCalledWith('npub1example/videos/Resolver');
+  });
+
+  it('keeps a readable fallback root even when thumbnail detection still returns empty', async () => {
+    const FALLBACK_ROOT: CID = { hash: Uint8Array.from({ length: 32 }, () => 0x44) };
+    getCachedPlaylistInfo.mockReturnValue(undefined);
+    resolveReadableVideoRoot.mockResolvedValue(FALLBACK_ROOT);
+    detectPlaylistForCard.mockResolvedValue(null);
+
+    const { getFeedVideoResolvedMedia } = await import('../src/stores/feedStore');
+    const video: FeedVideo = {
+      href: '#/npub1example/videos%2FRemember%20this',
+      title: 'Remember this',
+      ownerPubkey: 'pubkey',
+      ownerNpub: 'npub1example',
+      treeName: 'videos/Remember this',
+      rootCid: ROOT,
+    };
+
+    await expect(getFeedVideoResolvedMedia(video)).resolves.toEqual({
+      rootCid: FALLBACK_ROOT,
+    });
+    expect(detectPlaylistForCard).toHaveBeenCalledWith(FALLBACK_ROOT, 'npub1example', 'videos/Remember this');
+  });
+
+  it('backfills feed thumbnails from a historical thumbnail-rich root without changing playback root', async () => {
+    const THUMBNAIL_ROOT: CID = { hash: Uint8Array.from({ length: 32 }, () => 0x55) };
+    getCachedPlaylistInfo.mockReturnValue(undefined);
+    resolveReadableThumbnailRoot.mockResolvedValue(THUMBNAIL_ROOT);
+    detectPlaylistForCard
+      .mockResolvedValueOnce({
+        videoCount: 0,
+        rootCid: ROOT,
+        duration: 44,
+        title: 'Current root title',
+      })
+      .mockResolvedValueOnce({
+        videoCount: 0,
+        rootCid: THUMBNAIL_ROOT,
+        thumbnailUrl: '/htree/nhash1historic/thumbnail.jpg',
+      });
+
+    const { getFeedVideoResolvedMedia } = await import('../src/stores/feedStore');
+    const video: FeedVideo = {
+      href: '#/npub1example/videos%2FDonkey',
+      title: 'Donkey',
+      ownerPubkey: 'pubkey',
+      ownerNpub: 'npub1example',
+      treeName: 'videos/Donkey',
+      rootCid: ROOT,
+    };
+
+    await expect(getFeedVideoResolvedMedia(video)).resolves.toEqual({
+      thumbnailUrl: '/htree/nhash1historic/thumbnail.jpg',
+      duration: 44,
+      title: 'Current root title',
+    });
+    expect(detectPlaylistForCard).toHaveBeenNthCalledWith(1, ROOT, 'npub1example', 'videos/Donkey');
+    expect(detectPlaylistForCard).toHaveBeenNthCalledWith(2, THUMBNAIL_ROOT, 'npub1example', 'videos/Donkey');
   });
 
   it('falls back to the author tree event when resolver misses for a social feed video', async () => {
