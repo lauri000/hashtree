@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::socialgraph;
-use crate::webrtc::{MulticastConfig, PeerClassifier, PeerPool, WebRTCConfig};
+use crate::webrtc::{BluetoothConfig, MulticastConfig, PeerClassifier, PeerPool, WebRTCConfig};
 
 fn relay_is_loopback(relay: &str) -> bool {
     relay.contains("://127.0.0.1") || relay.contains("://localhost") || relay.contains("://[::1]")
@@ -31,6 +31,10 @@ pub fn default_webrtc_config(config: &Config) -> WebRTCConfig {
             port: config.server.multicast_port,
             max_peers: config.server.max_multicast_peers,
             ..Default::default()
+        },
+        bluetooth: BluetoothConfig {
+            enabled: config.server.enable_bluetooth,
+            max_peers: config.server.max_bluetooth_peers,
         },
         ..Default::default()
     }
@@ -90,5 +94,16 @@ mod tests {
 
         let webrtc = default_webrtc_config(&config);
         assert!(!webrtc.stun_servers.is_empty());
+    }
+
+    #[test]
+    fn default_webrtc_config_maps_bluetooth_limits() {
+        let mut config = Config::default();
+        config.server.enable_bluetooth = true;
+        config.server.max_bluetooth_peers = 3;
+
+        let webrtc = default_webrtc_config(&config);
+        assert!(webrtc.bluetooth.enabled);
+        assert_eq!(webrtc.bluetooth.max_peers, 3);
     }
 }

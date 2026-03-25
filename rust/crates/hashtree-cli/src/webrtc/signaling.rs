@@ -25,6 +25,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
+use super::bluetooth::BluetoothMesh;
 use super::cashu::{CashuMintMetadataStore, CashuQuoteState, CashuRoutingConfig, NegotiatedQuote};
 use super::multicast::MulticastNostrBus;
 use super::peer::{ContentStore, Peer, PendingRequest};
@@ -838,7 +839,9 @@ impl Default for WebRTCState {
     }
 }
 
-/// WebRTC manager handles peer discovery and connection management
+pub type PeerRouterState = WebRTCState;
+
+/// Native peer router handles peer discovery and transport fan-out.
 pub struct WebRTCManager {
     config: WebRTCConfig,
     my_peer_id: PeerId,
@@ -1135,10 +1138,10 @@ impl WebRTCManager {
             < self.config.multicast.max_peers
     }
 
-    /// Start the WebRTC manager - connects to relays and handles signaling
+    /// Start the native peer router - connects transports and handles signaling.
     pub async fn run(&mut self) -> Result<()> {
         info!(
-            "Starting WebRTC manager with peer ID: {}",
+            "Starting peer router with peer ID: {}",
             self.my_peer_id.short()
         );
 
@@ -1159,6 +1162,11 @@ impl WebRTCManager {
             .mesh_frame_rx
             .take()
             .expect("mesh_frame_rx already taken");
+
+        if self.config.bluetooth.is_enabled() {
+            let bluetooth = BluetoothMesh::new(self.config.bluetooth.clone());
+            let _ = bluetooth.start().await;
+        }
 
         // Create a shared write channel for all relay tasks
         let (relay_write_tx, _) = tokio::sync::broadcast::channel::<SignalingMessage>(100);
@@ -2367,6 +2375,8 @@ impl WebRTCManager {
             .store(connected_count, std::sync::atomic::Ordering::Relaxed);
     }
 }
+
+pub type PeerRouter = WebRTCManager;
 
 // Keep the old PeerState for backward compatibility with tests
 #[allow(dead_code)]

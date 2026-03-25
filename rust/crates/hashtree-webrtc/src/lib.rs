@@ -75,7 +75,7 @@ pub use protocol::{
     MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE,
 };
 pub use real_factory::RealPeerConnectionFactory;
-pub use signaling::{PeerEntry, SignalingManager};
+pub use signaling::{PeerEntry, PeerRouter, SignalingManager};
 pub use store::{WebRTCStore, WebRTCStoreError};
 pub use transport::{
     DataChannel, PeerConnectionFactory, RelayTransport, SignalingConfig, TransportError,

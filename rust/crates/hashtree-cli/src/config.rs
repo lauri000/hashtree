@@ -45,6 +45,13 @@ pub struct ServerConfig {
     /// Set to 0 to disable multicast even when enable_multicast is true.
     #[serde(default = "default_max_multicast_peers")]
     pub max_multicast_peers: usize,
+    /// Enable native Bluetooth discovery/transport for nearby peers.
+    #[serde(default = "default_enable_bluetooth")]
+    pub enable_bluetooth: bool,
+    /// Maximum peers admitted from Bluetooth discovery.
+    /// Set to 0 to disable Bluetooth even when enable_bluetooth is true.
+    #[serde(default = "default_max_bluetooth_peers")]
+    pub max_bluetooth_peers: usize,
     /// Allow anyone with valid Nostr auth to write (default: true)
     /// When false, only social graph members can write
     #[serde(default = "default_public_writes")]
@@ -377,6 +384,14 @@ fn default_max_multicast_peers() -> usize {
     0
 }
 
+fn default_enable_bluetooth() -> bool {
+    false
+}
+
+fn default_max_bluetooth_peers() -> usize {
+    0
+}
+
 fn default_data_dir() -> String {
     hashtree_config::get_hashtree_dir()
         .join("data")
@@ -399,6 +414,8 @@ impl Default for ServerConfig {
             multicast_group: default_multicast_group(),
             multicast_port: default_multicast_port(),
             max_multicast_peers: default_max_multicast_peers(),
+            enable_bluetooth: default_enable_bluetooth(),
+            max_bluetooth_peers: default_max_bluetooth_peers(),
             public_writes: default_public_writes(),
             socialgraph_snapshot_public: default_socialgraph_snapshot_public(),
         }
@@ -667,6 +684,8 @@ mod tests {
         assert_eq!(config.server.multicast_group, "239.255.42.98");
         assert_eq!(config.server.multicast_port, 48555);
         assert_eq!(config.server.max_multicast_peers, 0);
+        assert!(!config.server.enable_bluetooth);
+        assert_eq!(config.server.max_bluetooth_peers, 0);
         assert_eq!(config.storage.max_size_gb, 10);
         assert!(config
             .nostr
@@ -732,12 +751,16 @@ enable_multicast = true
 multicast_group = "239.255.42.99"
 multicast_port = 49001
 max_multicast_peers = 12
+enable_bluetooth = true
+max_bluetooth_peers = 6
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert!(config.server.enable_multicast);
         assert_eq!(config.server.multicast_group, "239.255.42.99");
         assert_eq!(config.server.multicast_port, 49_001);
         assert_eq!(config.server.max_multicast_peers, 12);
+        assert!(config.server.enable_bluetooth);
+        assert_eq!(config.server.max_bluetooth_peers, 6);
     }
 
     #[test]

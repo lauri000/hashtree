@@ -258,6 +258,8 @@ pub struct WebRTCConfig {
     pub debug: bool,
     /// Optional LAN multicast transport for offline discovery + root lookup.
     pub multicast: super::multicast::MulticastConfig,
+    /// Optional native Bluetooth peer transport.
+    pub bluetooth: super::bluetooth::BluetoothConfig,
     /// Pool settings for follows and other peers
     pub pools: PoolSettings,
     /// Retrieval peer selection strategy (shared with simulation).
@@ -289,6 +291,7 @@ impl Default for WebRTCConfig {
             ],
             debug: false,
             multicast: super::multicast::MulticastConfig::default(),
+            bluetooth: super::bluetooth::BluetoothConfig::default(),
             pools: PoolSettings::default(),
             request_selection_strategy: SelectionStrategy::TitForTat,
             request_fairness_enabled: true,
@@ -301,6 +304,8 @@ impl Default for WebRTCConfig {
         }
     }
 }
+
+pub type PeerRouterConfig = WebRTCConfig;
 
 /// Peer connection status
 #[derive(Debug, Clone)]

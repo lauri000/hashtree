@@ -1,10 +1,11 @@
 //! Simulation tools for hashtree P2P protocols
 //!
-//! Provides simulation using the same code as production WebRTCStore with mock transports.
+//! Provides simulation and router tests using the same code as production transports.
 //!
 //! ## Architecture
 //!
 //! - `webrtc_sim::Simulation` - uses GenericStore with mock transports
+//! - Shared router tests - exercise the production signaling/router core directly
 //! - `WsRelay` - WebSocket Nostr relay for integration testing
 
 pub mod cashu_test_mint;

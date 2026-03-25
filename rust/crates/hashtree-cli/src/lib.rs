@@ -36,9 +36,10 @@ pub use storage::{
     PRIORITY_OWN,
 };
 pub use sync::{BackgroundSync, SyncConfig, SyncPriority, SyncStatus, SyncTask};
-pub use webrtc::{ConnectionState, WebRTCState};
 #[cfg(feature = "p2p")]
 pub use webrtc::{
-    ContentStore, DataMessage, PeerClassifier, PeerId, PeerPool, PoolConfig, PoolSettings,
+    BluetoothBackendState, BluetoothConfig, ContentStore, DataMessage, PeerClassifier, PeerId,
+    PeerPool, PeerRouter, PeerRouterConfig, PeerRouterState, PoolConfig, PoolSettings,
     WebRTCConfig, WebRTCManager,
 };
+pub use webrtc::{ConnectionState, WebRTCState};

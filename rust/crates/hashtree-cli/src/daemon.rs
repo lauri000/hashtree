@@ -15,7 +15,7 @@ use crate::socialgraph;
 use crate::storage::HashtreeStore;
 
 #[cfg(feature = "p2p")]
-use crate::webrtc::{ContentStore, WebRTCManager, WebRTCState};
+use crate::webrtc::{ContentStore, PeerRouter, WebRTCState};
 #[cfg(not(feature = "p2p"))]
 use crate::WebRTCState;
 
@@ -138,8 +138,13 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     );
 
     #[cfg(feature = "p2p")]
+    let peer_router_enabled = config.server.enable_webrtc
+        || (config.server.enable_multicast && config.server.max_multicast_peers > 0)
+        || (config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0);
+
+    #[cfg(feature = "p2p")]
     let webrtc_state: Option<Arc<WebRTCState>> = {
-        let (webrtc_state, webrtc_handle) = if config.server.enable_webrtc {
+        let (webrtc_state, webrtc_handle) = if peer_router_enabled {
             let webrtc_config = crate::p2p_common::default_webrtc_config(&config);
             let peer_classifier = crate::p2p_common::build_peer_classifier(
                 opts.data_dir.clone(),
@@ -181,7 +186,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
                 None
             };
 
-            let mut manager = WebRTCManager::new_with_store_and_classifier_and_cashu(
+            let mut manager = PeerRouter::new_with_store_and_classifier_and_cashu(
                 keys.clone(),
                 webrtc_config,
                 Arc::clone(&store) as Arc<dyn ContentStore>,
@@ -195,7 +200,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
             let webrtc_state = manager.state();
             let handle = tokio::spawn(async move {
                 if let Err(e) = manager.run().await {
-                    tracing::error!("WebRTC manager error: {}", e);
+                    tracing::error!("Peer router error: {}", e);
                 }
             });
             (Some(webrtc_state), Some(handle))

@@ -4,7 +4,7 @@ use hashtree_cli::config::{
     ensure_auth_cookie, ensure_keys, ensure_keys_string, parse_npub, pubkey_bytes,
 };
 #[cfg(feature = "p2p")]
-use hashtree_cli::WebRTCManager;
+use hashtree_cli::PeerRouter;
 use hashtree_cli::{
     spawn_background_eviction_task, BackgroundSync, Config, FetchConfig, Fetcher, HashtreeServer,
     HashtreeStore, NostrKeys, NostrResolverConfig, NostrRootResolver, NostrToBech32, RootResolver,
@@ -190,6 +190,11 @@ pub(crate) async fn run() -> Result<()> {
                 data_dir.clone(),
             );
 
+            #[cfg(feature = "p2p")]
+            let peer_router_enabled = config.server.enable_webrtc
+                || (config.server.enable_multicast && config.server.max_multicast_peers > 0)
+                || (config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0);
+
             // Start STUN server and WebRTC if P2P feature enabled
             #[cfg(feature = "p2p")]
             let (stun_handle, webrtc_handle, webrtc_state) = {
@@ -209,7 +214,7 @@ pub(crate) async fn run() -> Result<()> {
                 };
 
                 // Start WebRTC signaling manager if enabled
-                let (webrtc_handle, webrtc_state) = if config.server.enable_webrtc {
+                let (webrtc_handle, webrtc_state) = if peer_router_enabled {
                     let webrtc_config = hashtree_cli::p2p_common::default_webrtc_config(&config);
                     let peer_classifier = hashtree_cli::p2p_common::build_peer_classifier(
                         data_dir.clone(),
@@ -253,7 +258,7 @@ pub(crate) async fn run() -> Result<()> {
                         None
                     };
 
-                    let mut manager = WebRTCManager::new_with_store_and_classifier_and_cashu(
+                    let mut manager = PeerRouter::new_with_store_and_classifier_and_cashu(
                         keys.clone(),
                         webrtc_config,
                         Arc::clone(&store) as Arc<dyn hashtree_cli::ContentStore>,
@@ -270,7 +275,7 @@ pub(crate) async fn run() -> Result<()> {
                     // Spawn the manager in a background task
                     let handle = tokio::spawn(async move {
                         if let Err(e) = manager.run().await {
-                            tracing::error!("WebRTC manager error: {}", e);
+                            tracing::error!("Peer router error: {}", e);
                         }
                     });
                     (Some(handle), Some(webrtc_state))
@@ -383,6 +388,20 @@ pub(crate) async fn run() -> Result<()> {
             #[cfg(feature = "p2p")]
             if config.server.enable_webrtc {
                 println!("WebRTC: enabled (P2P connections)");
+            }
+            #[cfg(feature = "p2p")]
+            if config.server.enable_multicast && config.server.max_multicast_peers > 0 {
+                println!(
+                    "Multicast: enabled (max {} peers)",
+                    config.server.max_multicast_peers
+                );
+            }
+            #[cfg(feature = "p2p")]
+            if config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0 {
+                println!(
+                    "Bluetooth: enabled (max {} peers)",
+                    config.server.max_bluetooth_peers
+                );
             }
             println!(
                 "Social graph: enabled (crawl_depth={}, max_write_distance={})",

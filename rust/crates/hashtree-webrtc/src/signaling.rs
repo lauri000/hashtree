@@ -20,9 +20,9 @@ pub struct PeerEntry {
     pub pool: PeerPool,
 }
 
-/// Signaling manager handles peer discovery and connection establishment
+/// Signaling manager handles peer discovery and connection establishment.
 ///
-/// This is the shared code between production and simulation.
+/// This is the shared router logic between production transports and simulation.
 /// It uses traits for transport (relay) and connection factory (WebRTC or mock).
 ///
 /// Uses WebRTC "perfect negotiation" pattern:
@@ -52,6 +52,8 @@ pub struct SignalingManager<R: RelayTransport, F: PeerConnectionFactory> {
     /// Debug mode
     debug: bool,
 }
+
+pub type PeerRouter<R, F> = SignalingManager<R, F>;
 
 impl<R: RelayTransport + 'static, F: PeerConnectionFactory + 'static> SignalingManager<R, F> {
     /// Create a new signaling manager
