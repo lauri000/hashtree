@@ -13,6 +13,7 @@ import { nhashEncode, type CID } from '@hashtree/core';
 import { getMediaClientId } from './mediaClient';
 import { logHtreeDebug } from './htreeDebug';
 import { canUseInjectedHtreeServerUrl, getInjectedHtreeServerUrl } from './nativeHtree';
+import { PREFERRED_PLAYABLE_MEDIA_FILENAMES } from './playableMedia';
 
 const LOCAL_PROBE_TIMEOUT_MS = 500;
 const LOCAL_PROBE_INTERVAL_MS = 1000;
@@ -272,14 +273,8 @@ export function getStablePathUrl(options: StablePathUrlOptions): string | null {
   return null;
 }
 
-export const COMMON_VIDEO_FILENAMES = [
-  'video.mp4',
-  'video.webm',
-  'video.mov',
-  'video.mkv',
-  'video.m4v',
-  'video.avi',
-] as const;
+export const COMMON_VIDEO_FILENAMES = PREFERRED_PLAYABLE_MEDIA_FILENAMES;
+const COMMON_THUMBNAIL_FILENAMES = ['thumbnail.jpg', 'thumbnail.webp', 'thumbnail.png', 'thumbnail.jpeg'] as const;
 
 interface StableVideoCandidateUrlOptions {
   rootCid?: CID | null;
@@ -389,6 +384,19 @@ export function getThumbnailUrlFromCid(rootCid: CID, videoId?: string): string {
   return appendHtreeCacheBust(appendMediaClientKey(url));
 }
 
+function getStableExactThumbnailUrls(rootCid: CID, videoId?: string): string[] {
+  return COMMON_THUMBNAIL_FILENAMES
+    .map((fileName) => getStablePathUrl({
+      rootCid,
+      path: videoId ? `${videoId}/${fileName}` : fileName,
+    }))
+    .filter((url): url is string => !!url);
+}
+
+function isThumbnailAliasUrl(url: string): boolean {
+  return /\/thumbnail(?:[?#]|$)/.test(url) && !/\/thumbnail\.[^/?#]+(?:[?#]|$)/.test(url);
+}
+
 interface StableThumbnailUrlOptions {
   thumbnailUrl?: string | null;
   rootCid?: CID | null;
@@ -399,20 +407,34 @@ interface StableThumbnailUrlOptions {
   allowAliasFallback?: boolean;
 }
 
-export function getStableThumbnailUrl(options: StableThumbnailUrlOptions): string | null {
-  if (options.thumbnailUrl) {
-    return options.thumbnailUrl;
-  }
-  if (options.allowAliasFallback === false) {
-    return null;
+export function getStableThumbnailCandidateUrls(options: StableThumbnailUrlOptions): string[] {
+  const urls = new Set<string>();
+  const explicitThumbnailUrl = options.thumbnailUrl?.trim() || null;
+  const explicitIsAlias = explicitThumbnailUrl ? isThumbnailAliasUrl(explicitThumbnailUrl) : false;
+
+  if (explicitThumbnailUrl && !explicitIsAlias) {
+    urls.add(explicitThumbnailUrl);
   }
   if (options.rootCid) {
-    return getThumbnailUrlFromCid(options.rootCid, options.videoId);
+    for (const exactUrl of getStableExactThumbnailUrls(options.rootCid, options.videoId)) {
+      urls.add(exactUrl);
+    }
   }
-  if (options.npub && options.treeName) {
-    return getThumbnailUrl(options.npub, options.treeName, options.videoId, options.hashPrefix);
+  if (explicitThumbnailUrl && explicitIsAlias) {
+    urls.add(explicitThumbnailUrl);
   }
-  return null;
+  if (options.rootCid) {
+    urls.add(getThumbnailUrlFromCid(options.rootCid, options.videoId));
+  }
+  const canUseMutableAlias = options.allowAliasFallback !== false && options.npub && options.treeName;
+  if (canUseMutableAlias) {
+    urls.add(getThumbnailUrl(options.npub, options.treeName, options.videoId, options.hashPrefix));
+  }
+  return Array.from(urls);
+}
+
+export function getStableThumbnailUrl(options: StableThumbnailUrlOptions): string | null {
+  return getStableThumbnailCandidateUrls(options)[0] ?? null;
 }
 
 /**

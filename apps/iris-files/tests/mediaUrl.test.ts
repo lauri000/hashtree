@@ -3,6 +3,7 @@ import { fromHex, nhashEncode } from '@hashtree/core';
 import {
   getStableFileUrl,
   getStablePathUrl,
+  getStableThumbnailCandidateUrls,
   getThumbnailUrlFromCid,
   getStableThumbnailUrl,
   getStableVideoCandidateUrls,
@@ -122,10 +123,20 @@ describe('mediaUrl thumbnail helpers', () => {
       `/htree/${nhashEncode(rootCid)}/capture/final-cut.mov?htree_c=test-media-client`,
       `/htree/${nhashEncode(rootCid)}/video.mp4?htree_c=test-media-client`,
       `/htree/${nhashEncode(rootCid)}/video.webm?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.m4v?htree_c=test-media-client`,
       `/htree/${nhashEncode(rootCid)}/video.mov?htree_c=test-media-client`,
       `/htree/${nhashEncode(rootCid)}/video.mkv?htree_c=test-media-client`,
-      `/htree/${nhashEncode(rootCid)}/video.m4v?htree_c=test-media-client`,
       `/htree/${nhashEncode(rootCid)}/video.avi?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.ogv?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.3gp?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.mp3?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.m4a?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.aac?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.ogg?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.oga?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.opus?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.wav?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/video.flac?htree_c=test-media-client`,
     ]);
   });
 
@@ -152,7 +163,7 @@ describe('mediaUrl thumbnail helpers', () => {
     );
   });
 
-  it('prefers immutable thumbnail urls when a root cid is known', () => {
+  it('prefers exact immutable thumbnail files before alias fallback when the root is known', () => {
     installWindow();
     const rootCid = {
       hash: fromHex('6'.repeat(64)),
@@ -166,7 +177,58 @@ describe('mediaUrl thumbnail helpers', () => {
         videoId: 'clips/demo reel',
         hashPrefix: 'deadbeef',
       }),
-    ).toBe(`/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail?htree_c=test-media-client`);
+    ).toBe(`/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpg?htree_c=test-media-client`);
+  });
+
+  it('puts exact immutable thumbnail file guesses ahead of alias paths when tree identity is known', () => {
+    installWindow();
+    const rootCid = {
+      hash: fromHex('7'.repeat(64)),
+    };
+
+    expect(
+      getStableThumbnailCandidateUrls({
+        thumbnailUrl: '/htree/nhash1exact/thumbnail.jpg',
+        rootCid,
+        npub: 'npub1example',
+        treeName: 'videos/Test Clip',
+        videoId: 'clips/demo reel',
+        hashPrefix: 'deadbeef',
+      }),
+    ).toEqual([
+      '/htree/nhash1exact/thumbnail.jpg',
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpg?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.webp?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.png?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpeg?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail?htree_c=test-media-client`,
+      '/htree/npub1example/videos%2FTest%20Clip/clips/demo%20reel/thumbnail?v=deadbeef&htree_c=test-media-client',
+    ]);
+  });
+
+  it('demotes an explicit alias url below exact immutable thumbnail file guesses', () => {
+    installWindow();
+    const rootCid = {
+      hash: fromHex('9'.repeat(64)),
+    };
+
+    expect(
+      getStableThumbnailCandidateUrls({
+        thumbnailUrl: `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail?htree_c=test-media-client`,
+        rootCid,
+        npub: 'npub1example',
+        treeName: 'videos/Test Clip',
+        videoId: 'clips/demo reel',
+        hashPrefix: 'deadbeef',
+      }),
+    ).toEqual([
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpg?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.webp?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.png?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpeg?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail?htree_c=test-media-client`,
+      '/htree/npub1example/videos%2FTest%20Clip/clips/demo%20reel/thumbnail?v=deadbeef&htree_c=test-media-client',
+    ]);
   });
 
   it('falls back to mutable thumbnail urls when no root cid is available', () => {
@@ -184,7 +246,7 @@ describe('mediaUrl thumbnail helpers', () => {
     );
   });
 
-  it('can disable alias fallback when a caller only wants exact thumbnail urls', () => {
+  it('still uses immutable root thumbnail candidates when a caller disables mutable alias fallback', () => {
     installWindow();
 
     expect(
@@ -197,7 +259,11 @@ describe('mediaUrl thumbnail helpers', () => {
         videoId: 'clips/demo reel',
         allowAliasFallback: false,
       }),
-    ).toBeNull();
+    ).toBe(
+      `/htree/${nhashEncode({
+        hash: fromHex('8'.repeat(64)),
+      })}/clips/demo%20reel/thumbnail.jpg?htree_c=test-media-client`,
+    );
   });
 
   it('can fall back to mutable thumbnail urls when alias fallback is enabled', () => {

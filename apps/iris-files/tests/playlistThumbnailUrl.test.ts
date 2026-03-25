@@ -1,13 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { nhashEncode, type CID } from '@hashtree/core';
+import { nhashEncode, toHex, type CID } from '@hashtree/core';
 
 const listDirectory = vi.fn();
 const readFile = vi.fn();
+const readFileRange = vi.fn();
+const resolvePath = vi.fn();
+const ndkFetchEvents = vi.fn();
+const npubToPubkey = vi.fn();
 
 vi.mock('../src/store', () => ({
   getTree: () => ({
     listDirectory,
     readFile,
+    readFileRange,
+    resolvePath,
   }),
   localStore: {
     put: vi.fn(),
@@ -17,6 +23,13 @@ vi.mock('../src/store', () => ({
     count: vi.fn(),
     totalBytes: vi.fn(),
   },
+}));
+
+vi.mock('../src/nostr', () => ({
+  ndk: {
+    fetchEvents: ndkFetchEvents,
+  },
+  npubToPubkey,
 }));
 
 function installWindow(): void {
@@ -46,11 +59,20 @@ const VIDEO_DIR_B: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 2
 const THUMB_A: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 3) };
 const THUMB_B: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 4) };
 
+function sameHash(cid: CID, other: CID): boolean {
+  return toHex(cid.hash) === toHex(other.hash);
+}
+
 describe('detectPlaylistForCard thumbnail urls', () => {
   beforeEach(() => {
     vi.resetModules();
     listDirectory.mockReset();
     readFile.mockReset();
+    readFileRange.mockReset();
+    resolvePath.mockReset();
+    ndkFetchEvents.mockReset();
+    npubToPubkey.mockReset();
+    npubToPubkey.mockReturnValue('pubkey1');
     installWindow();
   });
 
@@ -73,6 +95,27 @@ describe('detectPlaylistForCard thumbnail urls', () => {
     const info = await detectPlaylistForCard(ROOT, 'npub1example', 'videos/Test Clip');
 
     expect(info?.videoCount).toBe(0);
+    expect(info?.thumbnailUrl).toBe(
+      `/htree/${nhashEncode(THUMB_A)}/thumbnail.jpg?htree_c=test-media-client`,
+    );
+  });
+
+  it('detects legacy audio uploads as single media items', async () => {
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (cid === ROOT) {
+        return [
+          { name: 'video.mp3', cid: VIDEO_DIR_A },
+          { name: 'thumbnail.jpg', cid: THUMB_A },
+        ];
+      }
+      return [];
+    });
+
+    const { detectPlaylistForCard } = await import('../src/stores/playlist');
+    const info = await detectPlaylistForCard(ROOT, 'npub1example', 'videos/B Sirius Baby');
+
+    expect(info?.videoCount).toBe(0);
+    expect(info?.videoPath).toBe('video.mp3');
     expect(info?.thumbnailUrl).toBe(
       `/htree/${nhashEncode(THUMB_A)}/thumbnail.jpg?htree_c=test-media-client`,
     );
@@ -189,10 +232,61 @@ describe('detectPlaylistForCard thumbnail urls', () => {
 
     const { detectPlaylistForCard } = await import('../src/stores/playlist');
 
-    await expect(detectPlaylistForCard(ROOT, 'npub1example', 'videos/Retry')).resolves.toBeNull();
     await expect(detectPlaylistForCard(ROOT, 'npub1example', 'videos/Retry')).resolves.toMatchObject({
       videoCount: 1,
       thumbnailUrl: `/htree/${nhashEncode(THUMB_A)}/thumbnail.webp?htree_c=test-media-client`,
     });
+  });
+
+  it('falls back to a prior readable root when the latest root is empty', async () => {
+    const FALLBACK_ROOT: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 33) };
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid, ROOT)) {
+        return [];
+      }
+      if (sameHash(cid, FALLBACK_ROOT)) {
+        return [
+          { name: 'video.mp4', cid: VIDEO_DIR_A },
+          { name: 'thumbnail.jpg', cid: THUMB_A },
+        ];
+      }
+      return [];
+    });
+    ndkFetchEvents.mockResolvedValue(new Set([
+      {
+        created_at: 20,
+        tags: [['d', 'videos/Broken'], ['hash', Buffer.from(ROOT.hash).toString('hex')]],
+      },
+      {
+        created_at: 10,
+        tags: [['d', 'videos/Broken'], ['hash', Buffer.from(FALLBACK_ROOT.hash).toString('hex')]],
+      },
+    ]));
+
+    const { detectPlaylistForCard } = await import('../src/stores/playlist');
+    const info = await detectPlaylistForCard(ROOT, 'npub1example', 'videos/Broken');
+
+    expect(info?.rootCid).toEqual(FALLBACK_ROOT);
+    expect(info?.videoCount).toBe(0);
+    expect(info?.thumbnailUrl).toBe(
+      `/htree/${nhashEncode(THUMB_A)}/thumbnail.jpg?htree_c=test-media-client`,
+    );
+  });
+
+  it('treats direct-root playable blobs as single videos even when the root is not listable', async () => {
+    listDirectory.mockResolvedValue([]);
+    readFileRange.mockResolvedValue(new Uint8Array([
+      0x00, 0x00, 0x00, 0x18,
+      0x66, 0x74, 0x79, 0x70,
+      0x69, 0x73, 0x6f, 0x6d,
+    ]));
+
+    const { detectPlaylistForCard } = await import('../src/stores/playlist');
+    const info = await detectPlaylistForCard(ROOT, 'npub1example', 'videos/Mine Bombers in-game music');
+
+    expect(info?.videoCount).toBe(0);
+    expect(info?.videoPath).toBe('video.mp4');
+    expect(info?.title).toBe('Mine Bombers in-game music');
+    expect(info?.rootCid).toEqual(ROOT);
   });
 });

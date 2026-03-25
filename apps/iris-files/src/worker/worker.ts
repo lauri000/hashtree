@@ -73,6 +73,7 @@ let webrtc: WebRTCController | null = null;
 let webrtcStarted = false;
 let _config: WorkerConfig | null = null;
 const WEBRTC_REQUEST_TIMEOUT_MS = 5000;
+const REMOTE_READ_TIMEOUT_MS = 15000;
 const treeRootSubscriptionRefs = new Map<string, number>();
 
 // Storage quota management
@@ -731,7 +732,7 @@ async function handleInit(id: string, cfg: WorkerConfig) {
     store = new DexieStore(storeName);
 
     // Initialize FallbackStore with local store (WebRTC and Blossom added dynamically)
-    fallbackStore = new FallbackStore({ primary: store, fallbacks: [] });
+    fallbackStore = new FallbackStore({ primary: store, fallbacks: [], timeout: REMOTE_READ_TIMEOUT_MS });
 
     // Initialize HashTree with fallback store (enables remote fetching)
     tree = new HashTree({ store: fallbackStore });

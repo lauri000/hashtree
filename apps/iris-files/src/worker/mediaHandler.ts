@@ -13,6 +13,7 @@ import { getErrorMessage } from '../utils/errorMessage';
 import { nhashDecode } from '@hashtree/core';
 import { nip19 } from 'nostr-tools';
 import { parseHttpByteRange } from '../lib/httpRange';
+import { isPlayableMediaFileName } from '../lib/playableMedia';
 
 // Thumbnail filename patterns to look for (in priority order)
 const THUMBNAIL_PATTERNS = ['thumbnail.jpg', 'thumbnail.webp', 'thumbnail.png', 'thumbnail.jpeg'];
@@ -45,6 +46,11 @@ interface SwFileResponse {
   totalSize?: number;
   data?: Uint8Array;
   message?: string;
+}
+
+interface ResolvedRootEntry {
+  cid: CID;
+  size?: number;
 }
 
 // Timeout for considering a stream "done" (no updates)
@@ -93,6 +99,7 @@ export function initMediaHandler(hashTree: HashTree): void {
 export function registerMediaPort(port: MessagePort, debug?: boolean): void {
   mediaPort = port;
   mediaDebugEnabled = !!debug;
+  port.start?.();
 
   port.onmessage = async (e: MessageEvent) => {
     const req = e.data;
@@ -374,15 +381,15 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
   });
 
   try {
-    let cid: CID | null = null;
+    let resolvedEntry: ResolvedRootEntry | null = null;
 
     if (nhash) {
       // Direct nhash request - decode to CID
       const rootCid = nhashDecode(nhash);
-      cid = await resolveCidWithinRoot(rootCid, path || '', {
+      resolvedEntry = await resolveEntryWithinRoot(rootCid, path || '', {
         allowSingleSegmentRootFallback: true,
       });
-      if (!cid) {
+      if (!resolvedEntry) {
         sendSwError(requestId, 404, `File not found: ${path}`);
         return;
       }
@@ -393,29 +400,29 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
         sendSwError(requestId, 404, 'Tree not found');
         return;
       }
-      cid = await resolveCidWithinRoot(rootCid, path || '', {
+      resolvedEntry = await resolveEntryWithinRoot(rootCid, path || '', {
         allowSingleSegmentRootFallback: false,
       });
-      if (!cid) {
+      if (!resolvedEntry) {
         sendSwError(requestId, 404, 'File not found');
         return;
       }
     }
 
-    if (!cid) {
+    if (!resolvedEntry?.cid) {
       sendSwError(requestId, 400, 'Invalid request');
       return;
     }
 
     // Get file size
-    const totalSize = await getFileSize(cid);
+    const totalSize = resolvedEntry.size ?? await getFileSize(resolvedEntry.cid);
     if (totalSize === null) {
       sendSwError(requestId, 404, 'File data not found');
       return;
     }
 
     // Stream the content
-    await streamSwResponse(requestId, cid, totalSize, {
+    await streamSwResponse(requestId, resolvedEntry.cid, totalSize, {
       npub,
       path,
       start,
@@ -429,35 +436,81 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
   }
 }
 
-async function resolveCidWithinRoot(
+async function resolveEntryWithinRoot(
   rootCid: CID,
   path: string,
   options?: { allowSingleSegmentRootFallback?: boolean }
-): Promise<CID | null> {
+): Promise<ResolvedRootEntry | null> {
   if (!tree) return null;
 
   const resolvedPath = await normalizeAliasPath(rootCid, path);
   if (!resolvedPath) {
-    return rootCid;
+    return { cid: rootCid };
   }
 
-  if (options?.allowSingleSegmentRootFallback && resolvedPath === path && !resolvedPath.includes('/')) {
+  if (
+    options?.allowSingleSegmentRootFallback &&
+    canFallbackToRootBlob(resolvedPath, path)
+  ) {
     const isDirectory = await canListDirectory(rootCid);
     if (!isDirectory) {
-      return rootCid;
+      return { cid: rootCid };
+    }
+  }
+
+  if (isThumbnailAliasPath(path) && resolvedPath === path) {
+    return null;
+  }
+
+  const parts = resolvedPath.split('/').filter(Boolean);
+  const entryName = parts.pop();
+  const parentPath = parts.join('/');
+
+  if (entryName) {
+    const parentCid = parentPath
+      ? (await tree.resolvePath(rootCid, parentPath))?.cid ?? null
+      : rootCid;
+
+    if (parentCid) {
+      const entries = await listDirectoryWithTimeout(parentCid);
+      const directEntry = entries?.find((entry) => entry.name === entryName);
+      if (directEntry?.cid) {
+        return { cid: directEntry.cid, size: directEntry.size };
+      }
     }
   }
 
   const entry = await tree.resolvePath(rootCid, resolvedPath);
   if (entry) {
-    return entry.cid;
+    return { cid: entry.cid };
   }
 
-  if (options?.allowSingleSegmentRootFallback && resolvedPath === path && !resolvedPath.includes('/')) {
-    return rootCid;
+  if (
+    options?.allowSingleSegmentRootFallback &&
+    canFallbackToRootBlob(resolvedPath, path)
+  ) {
+    return { cid: rootCid };
   }
 
   return null;
+}
+
+async function resolveCidWithinRoot(
+  rootCid: CID,
+  path: string,
+  options?: { allowSingleSegmentRootFallback?: boolean }
+): Promise<CID | null> {
+  return (await resolveEntryWithinRoot(rootCid, path, options))?.cid ?? null;
+}
+
+function canFallbackToRootBlob(resolvedPath: string, originalPath: string): boolean {
+  if (resolvedPath !== originalPath) return false;
+  if (resolvedPath.includes('/')) return false;
+  return /\.[A-Za-z0-9]{1,16}$/.test(resolvedPath);
+}
+
+function isThumbnailAliasPath(path: string): boolean {
+  return path === 'thumbnail' || path.endsWith('/thumbnail');
 }
 
 async function normalizeAliasPath(rootCid: CID, path: string): Promise<string> {
@@ -477,10 +530,7 @@ async function normalizeAliasPath(rootCid: CID, path: string): Promise<string> {
 async function canListDirectory(rootCid: CID): Promise<boolean> {
   if (!tree) return false;
   try {
-    const entries = await Promise.race([
-      tree.listDirectory(rootCid),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), NHASH_HINT_DIRECTORY_TIMEOUT_MS)),
-    ]);
+    const entries = await listDirectoryWithTimeout(rootCid);
     return Array.isArray(entries);
   } catch {
     return false;
@@ -492,6 +542,14 @@ export const __test__ = {
   normalizeAliasPath,
   canListDirectory,
 };
+
+async function listDirectoryWithTimeout(cid: CID): Promise<Awaited<ReturnType<HashTree['listDirectory']>> | null> {
+  if (!tree) return null;
+  return Promise.race([
+    tree.listDirectory(cid),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), NHASH_HINT_DIRECTORY_TIMEOUT_MS)),
+  ]);
+}
 
 async function waitForCachedRoot(npub: string, treeName: string): Promise<CID | null> {
   let cached = await getCachedRoot(npub, treeName);
@@ -572,13 +630,39 @@ async function findThumbnailInDir(rootCid: CID, dirPath: string): Promise<string
     if (!dirEntry) return null;
 
     // List directory contents
-    const entries = await tree.listDirectory(dirEntry.cid);
+    const entries = await listDirectoryWithTimeout(dirEntry.cid);
     if (!entries) return null;
 
     // Find first matching thumbnail pattern
     for (const pattern of THUMBNAIL_PATTERNS) {
       if (entries.some(e => e.name === pattern)) {
         return dirPath ? `${dirPath}/${pattern}` : pattern;
+      }
+    }
+
+    const hasPlayableMediaFile = entries.some((entry) => isPlayableMediaFileName(entry.name));
+    if (!hasPlayableMediaFile && entries.length > 0) {
+      const sortedEntries = [...entries].sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of sortedEntries.slice(0, 3)) {
+        if (entry.name.endsWith('.json') || entry.name.endsWith('.txt')) {
+          continue;
+        }
+
+        try {
+          const subEntries = await listDirectoryWithTimeout(entry.cid);
+          if (!subEntries) {
+            continue;
+          }
+
+          for (const pattern of THUMBNAIL_PATTERNS) {
+            if (subEntries.some((candidate) => candidate.name === pattern)) {
+              const prefix = dirPath ? `${dirPath}/${entry.name}` : entry.name;
+              return `${prefix}/${pattern}`;
+            }
+          }
+        } catch {
+          continue;
+        }
       }
     }
 

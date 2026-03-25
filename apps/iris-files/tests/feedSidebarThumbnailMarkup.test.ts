@@ -10,11 +10,17 @@ describe('feed sidebar thumbnail wiring', () => {
     expect(feedSidebarSource).toContain('thumbnailUrl: video.thumbnailUrl');
   });
 
-  it('avoids htree alias fallback when exact feed thumbnails are missing', () => {
-    expect(feedSidebarSource).toContain('allowAliasFallback: false');
+  it('uses ordered htree thumbnail candidates for sidebar cards', () => {
+    expect(feedSidebarSource).toContain('getStableThumbnailCandidateUrls');
+    expect(feedSidebarSource).toContain('fallbackImageUrls={thumbnailUrls.slice(1)}');
   });
 
   it('does not guess common video filenames for sidebar thumbnail fallback', () => {
     expect(feedSidebarSource).toContain('includeCommonFallbacks: false');
+  });
+
+  it('uses the shorter guessed-thumbnail stall timeout for unresolved sidebar cards', () => {
+    expect(feedSidebarSource).toContain('@const imageCandidateStallTimeoutMs = video.thumbnailUrl ? 8000 : 2500');
+    expect(feedSidebarSource).toContain('{imageCandidateStallTimeoutMs}');
   });
 });

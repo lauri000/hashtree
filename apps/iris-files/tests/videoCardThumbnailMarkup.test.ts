@@ -6,13 +6,19 @@ const videoCardPath = path.resolve(process.cwd(), 'src/components/Video/VideoCar
 const videoCardSource = fs.readFileSync(videoCardPath, 'utf8');
 
 describe('video card thumbnail wiring', () => {
-  it('avoids htree alias fallback when exact thumbnail urls are unavailable', () => {
-    expect(videoCardSource).toContain('allowAliasFallback: false');
+  it('uses ordered htree thumbnail candidates instead of a single fragile thumbnail url', () => {
+    expect(videoCardSource).toContain('getStableThumbnailCandidateUrls');
+    expect(videoCardSource).toContain('fallbackImageUrls={thumbnailUrls.slice(1)}');
   });
 
   it('passes exact video fallback candidates to the thumbnail component', () => {
     expect(videoCardSource).toContain('getStableVideoCandidateUrls');
     expect(videoCardSource).toContain('includeCommonFallbacks: false');
     expect(videoCardSource).toContain('fallbackVideoUrls={thumbnailVideoUrls}');
+  });
+
+  it('uses a shorter stall timeout for guessed thumbnails than for explicit resolved thumbnails', () => {
+    expect(videoCardSource).toContain('let imageCandidateStallTimeoutMs = $derived(propThumbnailUrl ? 8000 : 2500);');
+    expect(videoCardSource).toContain('{imageCandidateStallTimeoutMs}');
   });
 });

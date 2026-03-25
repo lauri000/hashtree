@@ -7,20 +7,23 @@ import { mergeBootstrapIndex } from './stores/searchIndex';
 import { setAppType } from './appType';
 import { initHtreeApi } from './lib/htreeApi';
 import { installHtreeDebugCapture } from './lib/htreeDebug';
+import { ensureMediaStreamingReady } from './lib/mediaStreamingSetup';
 
 setAppType('video');
 installHtreeDebugCapture();
 
 async function init() {
   const swPromise = initServiceWorker({ requireCrossOriginIsolation: true });
+  await swPromise;
   const htreePromise = initHtreeApi();
   const workerPromise = initReadonlyWorker();
   const sessionPromise = restoreSession();
-  await swPromise;
+  await workerPromise;
+  await ensureMediaStreamingReady().catch(() => false);
   mount(VideoApp, {
     target: document.getElementById('app')!,
   });
-  await Promise.all([workerPromise, sessionPromise]);
+  await sessionPromise;
   await htreePromise;
   mergeBootstrapIndex().catch(() => {});
 }

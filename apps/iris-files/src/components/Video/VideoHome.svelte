@@ -8,11 +8,17 @@
   import { nip19 } from 'nostr-tools';
   import { ndk, nostrStore } from '../../nostr';
   import { getWorkerAdapter, waitForWorkerAdapter } from '../../lib/workerInit';
+  import type { CID } from '@hashtree/core';
   import { recentsStore, clearRecentsByPrefix, type RecentItem } from '../../stores/recents';
   import { createFollowsStore } from '../../stores';
-  import { detectPlaylistForCard, getCachedPlaylistInfo, shouldRefreshPlaylistCardInfo } from '../../stores/playlist';
+  import {
+    detectPlaylistForCard,
+    detectVideoCardInfo,
+    getCachedPlaylistInfo,
+    shouldRefreshPlaylistCardInfo,
+  } from '../../stores/playlist';
   import { indexVideo } from '../../stores/searchIndex';
-  import { updateSubscriptionCache } from '../../stores/treeRoot';
+  import { getTreeRootSync, updateSubscriptionCache, waitForTreeRoot } from '../../stores/treeRoot';
   import {
     videosByKey,
     socialVideosByKey,
@@ -24,13 +30,17 @@
     setFeedPlaylistInfo,
     clearFeedPlaylistInfo,
     getAllFeedPlaylistInfo,
+    getRecentVideoCardInfo,
+    recentVideoCardInfoVersion,
+    setRecentVideoCardInfo,
     type PlaylistInfo,
+    type RecentVideoCardInfo,
   } from '../../stores/homeFeedCache';
   import { fromHex, nhashEncode, toHex } from '@hashtree/core';
   import InfiniteScroll from '../InfiniteScroll.svelte';
   import { DEFAULT_BOOTSTRAP_PUBKEY, DEFAULT_VIDEO_FEED_PUBKEYS } from '../../utils/constants';
   import { orderFeedWithInterleaving } from '../../utils/feedOrder';
-  import { setFeedVideos } from '../../stores/feedStore';
+  import { feedStore, setFeedVideos } from '../../stores/feedStore';
   import { recordDeletedVideo, getDeletedVideoTimestamp, clearDeletedVideo } from '../../stores/videoDeletes';
   import { resolveFeedVideoRootCid, resolveFeedVideoRootCidAsync } from '../../lib/videoFeedRoot';
   import { getStableThumbnailUrl } from '../../lib/mediaUrl';
@@ -116,6 +126,22 @@
       .filter((v, i, arr) => arr.findIndex(x => x.href === v.href) === i)
       .slice(0, 10)
   );
+  let recentCardInfoByKey = $state<Record<string, RecentVideoCardInfo>>({});
+  let resolvedRecentCardInfoByKey = $derived.by(() => {
+    void $recentVideoCardInfoVersion;
+    const next: Record<string, RecentVideoCardInfo> = {};
+    for (const video of recentVideos) {
+      const cached = getRecentVideoCardInfo(video.key);
+      const detected = recentCardInfoByKey[video.key];
+      if (cached || detected) {
+        next[video.key] = {
+          ...(cached ?? { videoCount: 0 }),
+          ...(detected ?? {}),
+        };
+      }
+    }
+    return next;
+  });
 
   // Playlist detection for feed videos - initialize from persistent cache
   let feedPlaylistInfo = $state<Record<string, PlaylistInfo>>(getAllFeedPlaylistInfo());
@@ -123,9 +149,14 @@
   // Debounce playlist detection to avoid excessive calls
   let detectTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingVideos: VideoItem[] = [];
+  let recentDetectTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingRecentVideos: VideoItem[] = [];
   const playlistRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const playlistRetryCounts = new Map<string, number>();
+  const recentRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const recentRetryCounts = new Map<string, number>();
   const MAX_PLAYLIST_DETECTION_RETRIES = 6;
+  const MAX_RECENT_MEDIA_RETRIES = 6;
 
   function clearPlaylistRetry(videoKey: string) {
     const timer = playlistRetryTimers.get(videoKey);
@@ -149,6 +180,28 @@
     playlistRetryTimers.set(video.key, timer);
   }
 
+  function clearRecentRetry(videoKey: string) {
+    const timer = recentRetryTimers.get(videoKey);
+    if (timer) {
+      clearTimeout(timer);
+      recentRetryTimers.delete(videoKey);
+    }
+    recentRetryCounts.delete(videoKey);
+  }
+
+  function scheduleRecentRetry(video: VideoItem) {
+    if (recentRetryTimers.has(video.key)) return;
+    const nextAttempt = (recentRetryCounts.get(video.key) ?? 0) + 1;
+    if (nextAttempt > MAX_RECENT_MEDIA_RETRIES) return;
+    recentRetryCounts.set(video.key, nextAttempt);
+    const delayMs = 250 * (2 ** (nextAttempt - 1));
+    const timer = setTimeout(() => {
+      recentRetryTimers.delete(video.key);
+      void doDetectRecentMedia([video]);
+    }, delayMs);
+    recentRetryTimers.set(video.key, timer);
+  }
+
   onMount(() => {
     const unsubscribe = onCacheUpdate((npub, treeName) => {
       const pending = untrack(() => feedVideos.filter((video) =>
@@ -158,6 +211,14 @@
       ));
       if (pending.length > 0) {
         void doDetectPlaylists(pending);
+      }
+      const pendingRecents = untrack(() => recentVideos.filter((video) =>
+        video.ownerNpub === npub
+        && video.treeName === treeName
+        && !resolvedRecentCardInfoByKey[video.key]?.thumbnailUrl
+      ));
+      if (pendingRecents.length > 0) {
+        void doDetectRecentMedia(pendingRecents);
       }
     });
 
@@ -239,11 +300,79 @@
     };
 
     // Process in parallel batches
-    const CONCURRENCY = 4;
+    const CONCURRENCY = 2;
     for (let i = 0; i < videos.length; i += CONCURRENCY) {
       await Promise.all(videos.slice(i, i + CONCURRENCY).map(detectOne));
     }
   }
+
+  function detectRecentMedia(videos: VideoItem[]) {
+    const uncached = videos.filter((video) => {
+      if (!video.ownerNpub || !video.treeName) return false;
+      const existing = resolvedRecentCardInfoByKey[video.key];
+      return !existing?.thumbnailUrl && !existing?.videoPath;
+    });
+
+    if (uncached.length === 0) {
+      return;
+    }
+
+    pendingRecentVideos = [...pendingRecentVideos, ...uncached];
+    if (recentDetectTimer) clearTimeout(recentDetectTimer);
+    recentDetectTimer = setTimeout(() => {
+      const toProcess = pendingRecentVideos;
+      pendingRecentVideos = [];
+      recentDetectTimer = null;
+      void doDetectRecentMedia(toProcess);
+    }, 100);
+  }
+
+  async function doDetectRecentMedia(videos: VideoItem[]) {
+    const detectOne = async (video: VideoItem) => {
+      if (!video.ownerNpub || !video.treeName) return;
+
+      const rootCid = resolveFeedVideoRootCid(video)
+        ?? getTreeRootSync(video.ownerNpub, video.treeName)
+        ?? await resolveFeedVideoRootCidAsync(video, 3000)
+        ?? await waitForTreeRoot(video.ownerNpub, video.treeName, 8000);
+      if (!rootCid) {
+        scheduleRecentRetry(video);
+        return;
+      }
+
+      const info = await detectVideoCardInfo(rootCid, video.ownerNpub, video.treeName, video.videoId);
+      const mediaRootCid = info?.rootCid ?? rootCid;
+      const fallbackThumbnailUrl = getStableThumbnailUrl({
+        rootCid: mediaRootCid,
+        npub: video.ownerNpub,
+        treeName: video.treeName,
+        videoId: video.videoId || undefined,
+        allowAliasFallback: true,
+      });
+      const nextInfo: RecentVideoCardInfo = {
+        ...(info ?? { videoCount: 0 }),
+        rootCid: info?.rootCid ?? rootCid,
+        thumbnailUrl: info?.thumbnailUrl ?? fallbackThumbnailUrl ?? undefined,
+      };
+
+      setRecentVideoCardInfo(video.key, nextInfo);
+      recentCardInfoByKey = { ...recentCardInfoByKey, [video.key]: nextInfo };
+      if (nextInfo.thumbnailUrl || nextInfo.videoPath) {
+        clearRecentRetry(video.key);
+      } else {
+        scheduleRecentRetry(video);
+      }
+    };
+
+    const CONCURRENCY = 2;
+    for (let i = 0; i < videos.length; i += CONCURRENCY) {
+      await Promise.all(videos.slice(i, i + CONCURRENCY).map(detectOne));
+    }
+  }
+
+  $effect(() => {
+    detectRecentMedia(recentVideos);
+  });
 
   // Get user's follows
   let follows = $state<string[]>([]);
@@ -707,6 +836,15 @@
     return orderFeedWithInterleaving(result, targetCount);
   });
 
+  let resolvedFeedVideoByKey = $derived.by(() => {
+    const map = new Map<string, (typeof $feedStore)[number]>();
+    for (const video of $feedStore) {
+      if (!video.ownerNpub || !video.treeName) continue;
+      map.set(`${video.ownerNpub}/${video.treeName}`, video);
+    }
+    return map;
+  });
+
   // Sync feedVideos to the shared store for use in sidebar
   $effect(() => {
     setFeedVideos(feedVideos.map(v => {
@@ -821,16 +959,21 @@
         <div class="relative -mx-4">
           <div class="flex gap-3 overflow-x-auto pb-2 px-4 scrollbar-thin">
             {#each recentVideos as video (video.href)}
+              {@const recentCardInfo = resolvedRecentCardInfoByKey[video.key]}
               <div class="shrink-0 w-64 md:w-80">
                 <VideoCard
                   href={video.href}
                   title={video.title}
-                  duration={video.duration}
+                  duration={video.duration ?? recentCardInfo?.duration}
+                  thumbnailUrl={recentCardInfo?.thumbnailUrl}
+                  videoPath={recentCardInfo?.videoPath}
                   ownerPubkey={video.ownerPubkey}
                   ownerNpub={video.ownerNpub}
                   treeName={video.treeName}
                   videoId={video.videoId}
                   visibility={video.visibility}
+                  rootCid={recentCardInfo?.rootCid ?? null}
+                  rootHashHex={recentCardInfo?.rootCid?.hash ? toHex(recentCardInfo.rootCid.hash) : null}
                   timestamp={video.timestamp}
                   noHover
                 />
@@ -850,11 +993,13 @@
           <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {#each feedVideos as video (video.href)}
               {@const playlistInfo = feedPlaylistInfo[video.key]}
+              {@const resolvedVideo = resolvedFeedVideoByKey.get(video.key)}
               {@const fallbackPlaylistThumbnail = getStableThumbnailUrl({
-                rootCid: video.rootCid ?? null,
-                npub: video.ownerNpub,
-                treeName: video.treeName,
-                videoId: video.videoId || undefined,
+                thumbnailUrl: resolvedVideo?.thumbnailUrl ?? playlistInfo?.thumbnailUrl,
+                rootCid: resolvedVideo?.rootCid ?? video.rootCid ?? null,
+                npub: resolvedVideo?.ownerNpub ?? video.ownerNpub,
+                treeName: resolvedVideo?.treeName ?? video.treeName,
+                videoId: resolvedVideo?.videoId ?? (video.videoId || undefined),
                 allowAliasFallback: false,
               })}
               {#if playlistInfo && playlistInfo.videoCount >= 1}
@@ -869,18 +1014,18 @@
               {:else}
                 <VideoCard
                   href={video.href}
-                  title={playlistInfo?.title || video.title}
-                  duration={video.duration ?? playlistInfo?.duration}
-                  thumbnailUrl={playlistInfo?.thumbnailUrl}
-                  videoPath={playlistInfo?.videoPath ?? video.videoPath}
-                  ownerPubkey={video.ownerPubkey}
-                  ownerNpub={video.ownerNpub}
-                  treeName={video.treeName}
-                  videoId={video.videoId}
-                  visibility={video.visibility}
-                  rootCid={video.rootCid ?? null}
-                  rootHashHex={video.rootCid?.hash ? toHex(video.rootCid.hash) : null}
-                  timestamp={video.timestamp}
+                  title={playlistInfo?.title || resolvedVideo?.title || video.title}
+                  duration={resolvedVideo?.duration ?? video.duration ?? playlistInfo?.duration}
+                  thumbnailUrl={resolvedVideo?.thumbnailUrl ?? playlistInfo?.thumbnailUrl}
+                  videoPath={resolvedVideo?.videoPath ?? playlistInfo?.videoPath ?? video.videoPath}
+                  ownerPubkey={resolvedVideo?.ownerPubkey ?? video.ownerPubkey}
+                  ownerNpub={resolvedVideo?.ownerNpub ?? video.ownerNpub}
+                  treeName={resolvedVideo?.treeName ?? video.treeName}
+                  videoId={resolvedVideo?.videoId ?? video.videoId}
+                  visibility={resolvedVideo?.visibility ?? video.visibility}
+                  rootCid={resolvedVideo?.rootCid ?? video.rootCid ?? null}
+                  rootHashHex={(resolvedVideo?.rootCid ?? video.rootCid)?.hash ? toHex((resolvedVideo?.rootCid ?? video.rootCid).hash) : null}
+                  timestamp={resolvedVideo?.timestamp ?? video.timestamp}
                 />
               {/if}
             {/each}

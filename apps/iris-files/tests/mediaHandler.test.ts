@@ -77,4 +77,18 @@ describe('mediaHandler thumbnail aliases', () => {
     await expect(result).resolves.toBe(ROOT);
     expect(resolvePath).not.toHaveBeenCalled();
   });
+
+  it('does not treat a thumbnail alias as a direct file cid when the root is not a directory', async () => {
+    vi.useFakeTimers();
+    listDirectory.mockImplementation(() => new Promise(() => {}));
+
+    const result = __test__.resolveCidWithinRoot(ROOT, 'thumbnail', {
+      allowSingleSegmentRootFallback: true,
+    });
+
+    await vi.advanceTimersByTimeAsync(250);
+
+    await expect(result).resolves.toBeNull();
+    expect(resolvePath).not.toHaveBeenCalled();
+  });
 });

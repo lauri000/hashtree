@@ -10,7 +10,7 @@
   import { nip19 } from 'nostr-tools';
   import { getTree } from '../../store';
   import { ndk, nostrStore, npubToPubkey } from '../../nostr';
-  import { treeRootStore, createTreesStore, routeStore } from '../../stores';
+  import { treeRootStore, createTreesStore, routeStore, invalidateTreeRoot, updateSubscriptionCache, waitForTreeRoot } from '../../stores';
   import ShareButton from '../ShareButton.svelte';
   import { open as openBlossomPushModal } from '../Modals/BlossomPushModal.svelte';
   import { open as openAddToPlaylistModal } from '../Modals/AddToPlaylistModal.svelte';
@@ -39,7 +39,7 @@
   import { currentPlaylist, loadPlaylist, playNext, repeatMode, shuffleEnabled } from '../../stores/playlist';
   import type { CID } from '@hashtree/core';
   import { toHex, nhashEncode } from '@hashtree/core';
-  import { appendHtreeCacheBust, getHtreePrefix, getNhashFileUrl, getStableFileUrl, getStableThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
+  import { appendHtreeCacheBust, getHtreePrefix, getNhashFileUrl, getStableFileUrl, getStablePathUrl, getStableThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
   import { logHtreeDebug } from '../../lib/htreeDebug';
   import { ensureMediaStreamingReady } from '../../lib/mediaStreamingSetup';
   import { NDKEvent, type NDKFilter } from 'ndk';
@@ -47,6 +47,11 @@
   import { formatTimeAgo } from '../../utils/format';
   import { settingsStore } from '../../stores/settings';
   import { buildPlaylistRedirectHash, isActiveVideoLoad } from './videoLoadGuard';
+  import { findPlayableMediaEntry, isAudioMediaFileName, PREFERRED_PLAYABLE_MEDIA_FILENAMES } from '../../lib/playableMedia';
+  import { resolveReadableVideoRoot } from '../../lib/readableVideoRoot';
+  import { readDirectPlayableMediaFileName } from '../../lib/directPlayableRoot';
+  import { resolveFeedVideoRootCidAsync } from '../../lib/videoFeedRoot';
+  import { setRecentVideoCardInfo } from '../../stores/homeFeedCache';
 
   let deleting = $state(false);
   let editing = $state(false);
@@ -72,6 +77,7 @@
   // Thumbnail color for description box background
   let thumbnailColor = $state<{ r: number; g: number; b: number } | null>(null);
   let videoThumbnailUrl = $state<string | null>(null);
+  let displayedRouteKey = $state<string | null>(null);
 
   // Theater mode (from settings)
   let theaterMode = $derived($settingsStore.video.theaterMode);
@@ -129,7 +135,8 @@
   let videoCid = $state<CID | null>(null);  // CID of the video FILE (video.mp4)
   let videoFolderCid = $state<CID | null>(null);  // CID of the video FOLDER (contains video.mp4, title.txt, etc.)
   let videoVisibility = $state<TreeVisibility>('public');
-  let videoRef: HTMLVideoElement | undefined = $state();
+  let videoRef: HTMLMediaElement | undefined = $state();
+  let isAudioOnly = $derived(videoFileName ? isAudioMediaFileName(videoFileName) : false);
   let videoElementKey = $derived.by(() =>
     `${npub ?? ''}/${treeName ?? ''}/${currentVideoId ?? ''}:${videoFileName}:${videoSrc}`
   );
@@ -200,6 +207,9 @@ async function syncTreeRootToWorker(
       if (typeof baseUrl === 'string' && baseUrl.trim()) {
         return baseUrl.trim().replace(/\/$/, '');
       }
+      if (window.location?.origin) {
+        return window.location.origin.replace(/\/$/, '');
+      }
     }
     return '';
   }
@@ -220,13 +230,54 @@ async function syncTreeRootToWorker(
   }
 
   function buildDirectVideoCandidates(npub: string, treeName: string, videoPathPrefix: string) {
-    const candidates = ['video.mp4', 'video.webm', 'video.mov', 'video.mkv'];
+    const candidates = PREFERRED_PLAYABLE_MEDIA_FILENAMES;
     const prefix = resolveDirectPrefix();
     if (!prefix) return [];
     return candidates.map((fileName) => ({
       fileName,
       url: buildDirectUrl(prefix, npub, treeName, `${videoPathPrefix}${fileName}`),
     }));
+  }
+
+  function buildStableVideoCandidates(
+    rootCidValue: CID | null | undefined,
+    npub: string,
+    treeName: string,
+    videoPathPrefix: string,
+  ) {
+    return PREFERRED_PLAYABLE_MEDIA_FILENAMES.map((fileName) => ({
+      fileName,
+      url: getStablePathUrl({
+        rootCid: rootCidValue,
+        npub,
+        treeName,
+        path: `${videoPathPrefix}${fileName}`,
+      }),
+    })).filter((candidate): candidate is { fileName: string; url: string } => !!candidate.url);
+  }
+
+  function buildResolvedVideoUrl(
+    rootCidValue: CID | null | undefined,
+    fileCidValue: CID,
+    npubValue: string,
+    treeNameValue: string,
+    path: string,
+  ): string | null {
+    const treePathUrl = getStablePathUrl({
+      rootCid: rootCidValue,
+      npub: npubValue,
+      treeName: treeNameValue,
+      path,
+    });
+    if (treePathUrl) {
+      return treePathUrl;
+    }
+    return getStableFileUrl({
+      cid: fileCidValue,
+      npub: npubValue,
+      treeName: treeNameValue,
+      path,
+    });
   }
 
   function canStartDirectVideoFallback(
@@ -237,6 +288,10 @@ async function syncTreeRootToWorker(
   }
 
   function startDirectVideoFallback(npub: string, treeName: string, videoPathPrefix: string): boolean {
+    if (!videoPathPrefix) {
+      logVideoDebug('direct:skip', { reason: 'no-video-prefix', npub, treeName });
+      return false;
+    }
     if (!hasDirectHtreeServer()) {
       logVideoDebug('direct:skip', { reason: 'no-prefix', npub, treeName });
       return false;
@@ -248,6 +303,29 @@ async function syncTreeRootToWorker(
     videoSrc = candidates[0].url;
     loading = false;
     logVideoDebug('direct:start', {
+      fileName: videoFileName,
+      url: videoSrc,
+    });
+    return true;
+  }
+
+  function startMutableVideoFallback(
+    rootCidValue: CID | null | undefined,
+    npub: string,
+    treeName: string,
+    videoPathPrefix: string,
+  ): boolean {
+    const candidates = buildStableVideoCandidates(rootCidValue, npub, treeName, videoPathPrefix);
+    if (candidates.length === 0) {
+      logVideoDebug('fallback:skip', { reason: 'no-candidates', npub, treeName, videoPathPrefix });
+      return false;
+    }
+    videoFallbackQueue = candidates.slice(1);
+    videoFileName = candidates[0].fileName;
+    videoSrc = candidates[0].url;
+    loading = false;
+    logVideoDebug('fallback:start', {
+      mode: rootCidValue ? 'stable-root-path' : 'tree-path',
       fileName: videoFileName,
       url: videoSrc,
     });
@@ -312,7 +390,7 @@ async function syncTreeRootToWorker(
     return true;
   }
 
-  function getVideoElementSnapshot(node: HTMLVideoElement | undefined): Record<string, unknown> {
+  function getVideoElementSnapshot(node: HTMLMediaElement | undefined): Record<string, unknown> {
     return {
       currentSrc: node?.currentSrc ?? null,
       readyState: node?.readyState ?? null,
@@ -361,7 +439,7 @@ async function syncTreeRootToWorker(
     }
   }
 
-  function attachVideoLifecycleLogging(node: HTMLVideoElement): () => void {
+  function attachVideoLifecycleLogging(node: HTMLMediaElement): () => void {
     const events = ['loadstart', 'loadedmetadata', 'loadeddata', 'canplay', 'playing', 'waiting', 'stalled', 'suspend', 'abort', 'emptied'];
     const listeners = events.map((eventName) => {
       const handler = () => {
@@ -494,7 +572,7 @@ async function syncTreeRootToWorker(
   const initialVideoSettings = getSavedVideoSettings();
 
   // Apply saved volume/muted settings via action
-  function applyVolumeSettings(node: HTMLVideoElement) {
+  function applyVolumeSettings(node: HTMLMediaElement) {
     node.volume = initialVideoSettings.volume;
     node.muted = initialVideoSettings.muted;
   }
@@ -585,12 +663,7 @@ async function syncTreeRootToWorker(
 
       // Find video file entry
       const entries = await tree.listDirectory(rootCid);
-      const videoEntry = entries?.find(e =>
-        e.name.startsWith('video.') ||
-        e.name.endsWith('.webm') ||
-        e.name.endsWith('.mp4') ||
-        e.name.endsWith('.mov')
-      );
+      const videoEntry = entries ? findPlayableMediaEntry(entries) : undefined;
       if (!videoEntry) return;
 
       // Get existing metadata from link entry
@@ -738,6 +811,7 @@ async function syncTreeRootToWorker(
     rootCidUnsub();
   });
   let lastRootHash = $state<string | null>(null);
+  let pendingFallbackRootVideoKey = $state<string | null>(null);
 
   $effect(() => {
     const cid = rootCid;
@@ -795,6 +869,7 @@ async function syncTreeRootToWorker(
   let lastPrefixVersion = $state(0);
   let missingPropsLogged = $state(false);
   let loadEffectRuns = $state(0);
+  const staleRootRefreshAttempts = new Set<string>();
 
   // Load video when rootCid or videoPath changes
   // For playlist videos, rootCid is the same but videoPath changes
@@ -829,8 +904,31 @@ async function syncTreeRootToWorker(
     }
     missingPropsLogged = false;
 
-    // Build a key to identify this specific video
+    const routeKey = path;
+
+    // Build a key to identify this specific video source
     const videoKey = `${cid ? toHex(cid.hash) : 'no-root'}:${path}`;
+
+    if (routeKey === displayedRouteKey && !!videoSrc && !cid) {
+      error = null;
+      logVideoDebug('load:hold-existing-no-root', {
+        routeKey,
+      });
+      return;
+    }
+
+    if (routeKey === displayedRouteKey && !!videoSrc && !!cid && videoKey !== loadedVideoKey) {
+      error = null;
+      loading = false;
+      loadedVideoKey = videoKey;
+      lastPrefixVersion = prefixVersion;
+      logVideoDebug('load:refresh-existing', {
+        routeKey,
+        rootCid: toHex(cid.hash).slice(0, 8),
+      });
+      untrack(() => loadVideo(cid, videoKey));
+      return;
+    }
 
     // Skip reload if we already loaded this exact video
     if (videoKey === loadedVideoKey) {
@@ -846,12 +944,15 @@ async function syncTreeRootToWorker(
       if (prefixVersion !== lastPrefixVersion) {
         lastPrefixVersion = prefixVersion;
         if (videoSrc && videoFileName) {
-          const nextSrc = getStableFileUrl({
-            cid: videoCid,
-            npub: currentNpub,
-            treeName: currentTreeName,
-            path: `${videoPathPrefix}${videoFileName}`,
-          });
+          const nextSrc = videoCid
+            ? buildResolvedVideoUrl(
+                videoFolderCid ?? cid,
+                videoCid,
+                currentNpub,
+                currentTreeName,
+                videoFolderCid ? videoFileName : `${videoPathPrefix}${videoFileName}`,
+              )
+            : null;
           if (nextSrc && videoSrc !== nextSrc) {
             videoSrc = nextSrc;
             error = null;
@@ -883,6 +984,7 @@ async function syncTreeRootToWorker(
     positionRestored = false;
     videoFallbackQueue = [];
     loadedVideoKey = videoKey;
+    displayedRouteKey = routeKey;
     lastPrefixVersion = prefixVersion;
 
     // Clear playlist if navigating to a non-playlist video
@@ -895,6 +997,35 @@ async function syncTreeRootToWorker(
     if (cid) {
       untrack(() => loadVideo(cid, videoKey));
       return;
+    }
+
+    if (pendingFallbackRootVideoKey !== videoKey) {
+      pendingFallbackRootVideoKey = videoKey;
+      void (async () => {
+        try {
+          const fallbackRoot = await resolveFeedVideoRootCidAsync({
+            ownerNpub: currentNpub,
+            treeName: currentTreeName,
+          }, 4000);
+          if (!fallbackRoot) return;
+          if (!isActiveVideoLoad(loadedVideoKey, videoKey)) return;
+          updateSubscriptionCache(
+            `${currentNpub}/${currentTreeName}`,
+            fallbackRoot.hash,
+            fallbackRoot.key,
+            { updatedAt: Math.floor(Date.now() / 1000) },
+          );
+          logVideoDebug('root:fallback-resolved', {
+            npub: currentNpub,
+            treeName: currentTreeName,
+            hash: toHex(fallbackRoot.hash).slice(0, 8),
+          });
+        } finally {
+          if (pendingFallbackRootVideoKey === videoKey) {
+            pendingFallbackRootVideoKey = null;
+          }
+        }
+      })();
     }
 
     if (
@@ -1026,8 +1157,51 @@ async function syncTreeRootToWorker(
 
     const tree = getTree();
 
+    async function retryWithFreshTreeRoot(reason: string): Promise<boolean> {
+      if (staleRootRefreshAttempts.has(expectedLoadKey)) {
+        return false;
+      }
+      staleRootRefreshAttempts.add(expectedLoadKey);
+      logVideoDebug('load:refresh-root', {
+        npub: capturedNpub,
+        treeName: capturedTreeName,
+        reason,
+      });
+      loadedVideoKey = null;
+      await invalidateTreeRoot(capturedNpub, capturedTreeName);
+      const refreshedRoot = await waitForTreeRoot(capturedNpub, capturedTreeName, 12000);
+      if (isStaleLoad('refresh-root')) return true;
+      if (!refreshedRoot) {
+        return false;
+      }
+      logVideoDebug('load:refresh-root:resolved', {
+        npub: capturedNpub,
+        treeName: capturedTreeName,
+        rootCid: toHex(refreshedRoot.hash).slice(0, 8),
+      });
+      return true;
+    }
+
     // For playlist videos, we need to first navigate to the video subdirectory
-    let videoDirCid = rootCidParam;
+    const effectiveRootCid = await resolveReadableVideoRoot({
+      rootCid: rootCidParam,
+      npub: capturedNpub,
+      treeName: capturedTreeName,
+      videoId: capturedIsPlaylistVideo ? capturedVideoId : undefined,
+      priority: 'foreground',
+    });
+    if (isStaleLoad('resolve-readable-root')) return;
+    if (effectiveRootCid && rootCidParam && toHex(effectiveRootCid.hash) !== toHex(rootCidParam.hash)) {
+      logVideoDebug('load:root-fallback', {
+        npub: capturedNpub,
+        treeName: capturedTreeName,
+        videoId: capturedVideoId,
+        fromHash: toHex(rootCidParam.hash).slice(0, 8),
+        toHash: toHex(effectiveRootCid.hash).slice(0, 8),
+      });
+    }
+
+    let videoDirCid = effectiveRootCid ?? rootCidParam;
     let videoPathPrefix = capturedIsPlaylistVideo && capturedVideoId ? `${capturedVideoId}/` : '';
     const allowDirectFallback = canStartDirectVideoFallback(capturedIsPlaylistVideo, capturedVideoId);
     let resolvedVideo = false;
@@ -1036,12 +1210,13 @@ async function syncTreeRootToWorker(
       if (isStaleLoad(`apply:${fileName}`)) return false;
       videoCid = entryCid;
       videoFileName = fileName;
-      const nextSrc = getStableFileUrl({
-        cid: entryCid,
-        npub: capturedNpub,
-        treeName: capturedTreeName,
-        path: videoPathPrefix + fileName,
-      });
+      const nextSrc = buildResolvedVideoUrl(
+        videoDirCid,
+        entryCid,
+        capturedNpub,
+        capturedTreeName,
+        fileName,
+      );
       if (nextSrc && videoSrc !== nextSrc) {
         videoSrc = nextSrc;
       }
@@ -1059,7 +1234,7 @@ async function syncTreeRootToWorker(
       // Navigate to the video subdirectory within the playlist
       try {
         // Add timeout to prevent hanging if Blossom is unreachable
-        const resolvePromise = tree.resolvePath(rootCidParam, capturedVideoId);
+        const resolvePromise = tree.resolvePath(effectiveRootCid ?? rootCidParam, capturedVideoId);
         const timeoutPromise = new Promise<null>((_, reject) =>
           setTimeout(() => reject(new Error('Timeout: Video data not available from network')), 30000)
         );
@@ -1091,48 +1266,63 @@ async function syncTreeRootToWorker(
     if (isStaleLoad('set-video-folder')) return;
     videoFolderCid = videoDirCid;
 
-    // Try common video filenames immediately (don't wait for directory listing)
-    const commonNames = ['video.webm', 'video.mp4', 'video.mov', 'video.mkv'];
-    for (const name of commonNames) {
-      try {
-        const result = await resolvePathWithTimeout(tree, videoDirCid, name);
-        if (result) {
-          const applied = await applyResolvedVideo(result.cid, name);
-          if (applied) {
-            break;
-          }
-        }
-        if (isStaleLoad(`resolve-common:${name}`)) return;
-      } catch {}
+    // Prefer actual directory contents over guessed filenames to avoid slow sequential misses.
+    let videoDirEntries: Awaited<ReturnType<ReturnType<typeof getTree>['listDirectory']>> | null = null;
+    try {
+      const dir = await listDirectoryWithTimeout(tree, videoDirCid);
+      videoDirEntries = dir;
+      if (isStaleLoad('list-video-dir')) return;
+      logVideoDebug('list:result', {
+        treeName: capturedTreeName,
+        entryCount: dir?.length ?? 0,
+        entries: dir?.slice(0, 12).map((entry) => entry.name) ?? [],
+      });
+      const videoEntry = dir ? findPlayableMediaEntry(dir) : undefined;
+
+      if (videoEntry) {
+        await applyResolvedVideo(videoEntry.cid, videoEntry.name);
+      }
+    } catch {}
+
+    if (!resolvedVideo) {
+      const directMediaFileName = await readDirectPlayableMediaFileName(tree, videoDirCid, VIDEO_RESOLVE_TIMEOUT_MS);
+      if (isStaleLoad('probe-direct-root-media')) return;
+      if (directMediaFileName) {
+        logVideoDebug('resolve:direct-root-media', {
+          treeName: capturedTreeName,
+          fileName: directMediaFileName,
+        });
+        await applyResolvedVideo(videoDirCid, directMediaFileName);
+      }
     }
 
-    // If common names didn't work, list directory to find video
-    if (!resolvedVideo) {
-      try {
-        const dir = await listDirectoryWithTimeout(tree, videoDirCid);
-        if (isStaleLoad('list-video-dir')) return;
-        const videoEntry = dir?.find(e =>
-          e.name.startsWith('video.') ||
-          e.name.endsWith('.webm') ||
-          e.name.endsWith('.mp4') ||
-          e.name.endsWith('.mov') ||
-          e.name.endsWith('.mkv')
-        );
-
-        if (videoEntry) {
-          const videoResult = await resolvePathWithTimeout(tree, videoDirCid, videoEntry.name);
-          if (videoResult) {
-            await applyResolvedVideo(videoResult.cid, videoEntry.name);
-          }
-        }
-      } catch {}
+    // If directory contents are incomplete or empty, probe canonical media filenames in parallel.
+    if (!resolvedVideo && (!videoDirEntries || videoDirEntries.length === 0 || !findPlayableMediaEntry(videoDirEntries))) {
+      const candidates = await Promise.all(
+        PREFERRED_PLAYABLE_MEDIA_FILENAMES.map(async (name) => ({
+          name,
+          result: await resolvePathWithTimeout(tree, videoDirCid, name),
+        }))
+      );
+      if (isStaleLoad('resolve-preferred-media')) return;
+      logVideoDebug('resolve:preferred-results', {
+        treeName: capturedTreeName,
+        results: candidates.map((candidate) => ({
+          name: candidate.name,
+          found: !!candidate.result,
+        })),
+      });
+      const match = candidates.find((candidate) => candidate.result);
+      if (match?.result) {
+        await applyResolvedVideo(match.result.cid, match.name);
+      }
     }
 
     // If still no video and NOT a playlist video, check if this is a playlist directory root
     if (!resolvedVideo && !capturedIsPlaylistVideo) {
       const { findFirstVideoEntry } = await import('../../stores/playlist');
       const firstVideoId = await Promise.race([
-        findFirstVideoEntry(rootCidParam),
+        findFirstVideoEntry(effectiveRootCid ?? rootCidParam),
         new Promise<null>((resolve) => setTimeout(() => resolve(null), VIDEO_RESOLVE_TIMEOUT_MS)),
       ]);
       const playlistUrl = buildPlaylistRedirectHash({
@@ -1155,6 +1345,21 @@ async function syncTreeRootToWorker(
       allowDirectFallback &&
       !isStaleLoad('direct-fallback') &&
       startDirectVideoFallback(capturedNpub, capturedTreeName, videoPathPrefix)
+    ) {
+      return;
+    }
+
+    if (!resolvedVideo && !capturedIsPlaylistVideo) {
+      const refreshed = await retryWithFreshTreeRoot('unreadable-root');
+      if (refreshed) {
+        return;
+      }
+    }
+
+    if (
+      !resolvedVideo &&
+      !isStaleLoad('mutable-fallback') &&
+      startMutableVideoFallback(videoDirCid, capturedNpub, capturedTreeName, videoPathPrefix)
     ) {
       return;
     }
@@ -1196,7 +1401,7 @@ async function syncTreeRootToWorker(
     loadMetadata(videoDirCid, tree, recentPath, expectedLoadKey);
 
     if (capturedIsPlaylistVideo && capturedVideoId) {
-      loadPlaylistForVideo(rootCidParam, capturedNpub, capturedTreeName, capturedVideoId, expectedLoadKey);
+      loadPlaylistForVideo(effectiveRootCid ?? rootCidParam, capturedNpub, capturedTreeName, capturedVideoId, expectedLoadKey);
     }
   }
 
@@ -1242,12 +1447,7 @@ async function syncTreeRootToWorker(
       if (thumbEntry) {
         videoThumbnailUrl = getNhashFileUrl(thumbEntry.cid, thumbEntry.name);
       }
-      const videoEntry = entries?.find(e =>
-        e.name.startsWith('video.') ||
-        e.name.endsWith('.webm') ||
-        e.name.endsWith('.mp4') ||
-        e.name.endsWith('.mov')
-      );
+      const videoEntry = entries ? findPlayableMediaEntry(entries) : undefined;
       if (videoEntry?.meta) {
         const meta = videoEntry.meta as Record<string, unknown>;
         if (meta.title && typeof meta.title === 'string') {
@@ -1476,12 +1676,7 @@ async function syncTreeRootToWorker(
 
       // Find video file entry
       const entries = await tree.listDirectory(currentRootCid);
-      const videoEntry = entries?.find(e =>
-        e.name.startsWith('video.') ||
-        e.name.endsWith('.webm') ||
-        e.name.endsWith('.mp4') ||
-        e.name.endsWith('.mov')
-      );
+      const videoEntry = entries ? findPlayableMediaEntry(entries) : undefined;
       if (!videoEntry) throw new Error('Video file not found');
 
       // Get existing metadata from link entry or legacy metadata.json
@@ -1563,6 +1758,31 @@ async function syncTreeRootToWorker(
       return `${npub}/${treeName}/${currentVideoId}`;
     }
     return `${npub}/${treeName}`;
+  });
+
+  let currentRecentPath = $derived.by(() => {
+    if (!npub || !treeName) return null;
+    return isPlaylistVideo && currentVideoId
+      ? `/${npub}/${treeName}/${currentVideoId}`
+      : `/${npub}/${treeName}`;
+  });
+
+  $effect(() => {
+    const recentPath = currentRecentPath;
+    const mediaRootCid = videoFolderCid || rootCid;
+    const resolvedVideoPath = videoFileName;
+    const resolvedThumbnailUrl = videoThumbnailUrl;
+    if (!recentPath) return;
+    if (!mediaRootCid && !resolvedVideoPath && !resolvedThumbnailUrl) return;
+
+    setRecentVideoCardInfo(recentPath, {
+      videoCount: 0,
+      rootCid: mediaRootCid ?? null,
+      videoPath: resolvedVideoPath || undefined,
+      thumbnailUrl: resolvedThumbnailUrl || undefined,
+      duration: Number.isFinite(videoRef?.duration) ? Math.round(videoRef.duration) : undefined,
+      title: videoTitle || undefined,
+    });
   });
 
   // Subscribe to likes for this video
@@ -2043,24 +2263,47 @@ async function syncTreeRootToWorker(
             </div>
           {:else if videoSrc}
             {#key videoElementKey}
-              <video
-                bind:this={videoRef}
-                use:applyVolumeSettings
-                src={videoSrc}
-                controls
-                autoplay
-                playsinline
-                muted={initialVideoSettings.muted}
-                class="w-full h-full"
-                preload="metadata"
-                onloadedmetadata={handleLoadedMetadata}
-                ontimeupdate={handleTimeUpdate}
-                onvolumechange={handleVolumeChange}
-                onerror={handleVideoError}
-                onended={handleEnded}
-              >
-                Your browser does not support the video tag.
-              </video>
+              {#if isAudioOnly}
+                <div class="w-full h-full flex flex-col items-center justify-center gap-6 bg-surface-2 px-6">
+                  <span class="i-lucide-audio-lines text-7xl text-text-3"></span>
+                  <audio
+                    bind:this={videoRef}
+                    use:applyVolumeSettings
+                    src={videoSrc}
+                    controls
+                    autoplay
+                    muted={initialVideoSettings.muted}
+                    class="w-full max-w-2xl"
+                    preload="metadata"
+                    onloadedmetadata={handleLoadedMetadata}
+                    ontimeupdate={handleTimeUpdate}
+                    onvolumechange={handleVolumeChange}
+                    onerror={handleVideoError}
+                    onended={handleEnded}
+                  >
+                    Your browser does not support the audio tag.
+                  </audio>
+                </div>
+              {:else}
+                <video
+                  bind:this={videoRef}
+                  use:applyVolumeSettings
+                  src={videoSrc}
+                  controls
+                  autoplay
+                  playsinline
+                  muted={initialVideoSettings.muted}
+                  class="w-full h-full"
+                  preload="metadata"
+                  onloadedmetadata={handleLoadedMetadata}
+                  ontimeupdate={handleTimeUpdate}
+                  onvolumechange={handleVolumeChange}
+                  onerror={handleVideoError}
+                  onended={handleEnded}
+                >
+                  Your browser does not support the video tag.
+                </video>
+              {/if}
             {/key}
           {/if}
         </div>

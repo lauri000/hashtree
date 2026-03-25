@@ -6,7 +6,7 @@
   import type { CID } from '@hashtree/core';
   import VisibilityIcon from '../VisibilityIcon.svelte';
   import { Avatar, Name } from '../User';
-  import { getStableThumbnailUrl, getStableVideoCandidateUrls, onHtreePrefixReady } from '../../lib/mediaUrl';
+  import { getStableThumbnailCandidateUrls, getStableVideoCandidateUrls, onHtreePrefixReady } from '../../lib/mediaUrl';
   import { formatTimeAgo } from '../../utils/format';
   import { recentsStore, getVideoPosition } from '../../stores/recents';
   import { extractDominantColor, rgbToRgba, type RGB } from '../../utils/colorExtract';
@@ -49,16 +49,15 @@
 
   // Build thumbnail URL - use prop if provided, otherwise use unified thumbnail URL
   // Include hash prefix so URL changes when tree root updates, triggering retry for failed thumbnails
-  let thumbnailUrl = $derived.by(() => {
+  let thumbnailUrls = $derived.by(() => {
     void htreePrefixVersion;
-    return getStableThumbnailUrl({
+    return getStableThumbnailCandidateUrls({
       thumbnailUrl: propThumbnailUrl,
       rootCid,
       npub: ownerNpub,
       treeName,
       videoId: videoId || undefined,
       hashPrefix: rootHashHex?.slice(0, 8) || undefined,
-      allowAliasFallback: false,
     });
   });
 
@@ -73,6 +72,8 @@
       includeCommonFallbacks: false,
     });
   });
+
+  let imageCandidateStallTimeoutMs = $derived(propThumbnailUrl ? 8000 : 2500);
 
 
   // Build path for recents lookup (matches how VideoView stores it)
@@ -102,7 +103,7 @@
 
   $effect(() => {
     if (!themeHover) return;
-    const url = thumbnailUrl;
+    const url = thumbnailUrls[0] ?? null;
     if (!url) return;
 
     themeColor = null;
@@ -122,8 +123,10 @@
 >
   <!-- Thumbnail with 16:9 aspect ratio -->
   <VideoThumbnail
-    src={thumbnailUrl}
+    src={thumbnailUrls[0] ?? null}
+    fallbackImageUrls={thumbnailUrls.slice(1)}
     fallbackVideoUrls={thumbnailVideoUrls}
+    {imageCandidateStallTimeoutMs}
     {duration}
     progress={watchProgress}
     class="video-thumb aspect-video rounded-lg z-10"

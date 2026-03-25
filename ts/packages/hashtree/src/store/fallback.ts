@@ -60,36 +60,61 @@ export class FallbackStore implements Store {
     let data = await this.primary.get(hash);
     if (data) return data;
 
-    // Try fallbacks with timeout
-    for (const store of this.fallbacks) {
-      try {
-        const fetchPromise = store.get(hash);
-        fetchPromise.then((lateData) => {
+    if (this.fallbacks.length === 0) {
+      return null;
+    }
+
+    const pendingFetches = this.fallbacks.map((store) => {
+      const fetchPromise = store.get(hash)
+        .then((lateData) => {
           if (lateData) {
             this.primary.put(hash, lateData).catch(() => {
               // Ignore cache errors for late data
             });
           }
-        }).catch(() => {
-          // Ignore fallback errors
-        });
-        const timeoutPromise = new Promise<null>(resolve =>
-          setTimeout(() => resolve(null), this.timeout)
-        );
+          return lateData;
+        })
+        .catch(() => null);
+      const timeoutPromise = new Promise<Uint8Array | null>((resolve) =>
+        setTimeout(() => resolve(null), this.timeout)
+      );
 
-        data = await Promise.race([fetchPromise, timeoutPromise]);
+      return Promise.race([fetchPromise, timeoutPromise]);
+    });
 
-        if (data) {
-          // Cache to primary
-          await this.primary.put(hash, data);
-          return data;
-        }
-      } catch {
-        // Continue to next fallback
+    data = await new Promise<Uint8Array | null>((resolve) => {
+      let settled = false;
+      let remaining = pendingFetches.length;
+
+      for (const fetchPromise of pendingFetches) {
+        fetchPromise
+          .then((result) => {
+            if (settled) return;
+            if (result) {
+              settled = true;
+              resolve(result);
+              return;
+            }
+            remaining -= 1;
+            if (remaining === 0) {
+              resolve(null);
+            }
+          })
+          .catch(() => {
+            if (settled) return;
+            remaining -= 1;
+            if (remaining === 0) {
+              resolve(null);
+            }
+          });
       }
+    });
+
+    if (data) {
+      await this.primary.put(hash, data);
     }
 
-    return null;
+    return data;
   }
 
   async has(hash: Hash): Promise<boolean> {

@@ -84,6 +84,7 @@ const EXISTENCE_CHECK_THRESHOLD = 256 * 1024;
 
 /** Timeout for HEAD requests (5 seconds) */
 const HEAD_TIMEOUT_MS = 5000;
+const GET_TIMEOUT_MS = 5000;
 
 /** Per-hash failure tracking */
 interface HashAttempts {
@@ -331,23 +332,23 @@ export class BlossomStore implements StoreWithMeta {
 
   async get(hash: Hash): Promise<Uint8Array | null> {
     const hashHex = toHex(hash);
+    const readServers = this.servers.filter((server) => {
+      if (server.read === false) return false;
+      if (this.isServerInBackoff(server.url)) return false;
+      return true;
+    });
 
-    // Try each read-enabled server until success, respecting backoff
-    for (const server of this.servers) {
-      // Skip write-only servers (read defaults to true if not specified)
-      if (server.read === false) {
-        continue;
-      }
-      // Skip servers in backoff
-      if (this.isServerInBackoff(server.url)) {
-        continue;
-      }
+    if (readServers.length === 0) {
+      return null;
+    }
 
+    const pendingFetches = readServers.map(async (server): Promise<Uint8Array | null> => {
       try {
-        const response = await fetch(`${server.url}/${hashHex}.bin`);
+        const response = await fetch(`${server.url}/${hashHex}.bin`, {
+          signal: AbortSignal.timeout(GET_TIMEOUT_MS),
+        });
         if (response.ok) {
           const data = new Uint8Array(await response.arrayBuffer());
-          // Verify hash
           const computed = await sha256(data);
           if (toHex(computed) === hashHex) {
             this.log({ operation: 'get', server: server.url, hash: hashHex, success: true, bytes: data.length });
@@ -356,22 +357,52 @@ export class BlossomStore implements StoreWithMeta {
           }
           this.log({ operation: 'get', server: server.url, hash: hashHex, success: false, error: 'Hash mismatch' });
           this.recordError(server.url);
-        } else if (response.status === 404) {
+          return null;
+        }
+
+        if (response.status === 404) {
           // 404 is not an error - blob just doesn't exist on this server
           this.log({ operation: 'get', server: server.url, hash: hashHex, success: false, error: '404' });
-        } else {
-          // Other errors trigger backoff
-          this.log({ operation: 'get', server: server.url, hash: hashHex, success: false, error: `${response.status}` });
-          this.recordError(server.url);
+          return null;
         }
+
+        this.log({ operation: 'get', server: server.url, hash: hashHex, success: false, error: `${response.status}` });
+        this.recordError(server.url);
+        return null;
       } catch (e) {
         this.log({ operation: 'get', server: server.url, hash: hashHex, success: false, error: e instanceof Error ? e.message : 'Network error' });
         this.recordError(server.url);
-        continue;
+        return null;
       }
-    }
+    });
 
-    return null;
+    return await new Promise<Uint8Array | null>((resolve) => {
+      let settled = false;
+      let remaining = pendingFetches.length;
+
+      for (const fetchPromise of pendingFetches) {
+        fetchPromise
+          .then((result) => {
+            if (settled) return;
+            if (result) {
+              settled = true;
+              resolve(result);
+              return;
+            }
+            remaining -= 1;
+            if (remaining === 0) {
+              resolve(null);
+            }
+          })
+          .catch(() => {
+            if (settled) return;
+            remaining -= 1;
+            if (remaining === 0) {
+              resolve(null);
+            }
+          });
+      }
+    });
   }
 
   async has(hash: Hash): Promise<boolean> {

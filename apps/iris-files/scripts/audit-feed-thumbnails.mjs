@@ -11,6 +11,7 @@ const SCREENSHOT_PATH = path.join(OUT_DIR, 'feed-thumbnail-audit.png');
 const THUMB_FILENAMES = ['thumbnail.jpg', 'thumbnail.webp', 'thumbnail.png', 'thumbnail.jpeg'];
 const FETCH_TIMEOUT_MS = 2000;
 const CLASSIFY_CONCURRENCY = 6;
+const APP_SETTLE_MS = 10000;
 
 function parseHref(href) {
   if (!href || !href.startsWith('#/')) return null;
@@ -168,7 +169,8 @@ const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1600, height: 1400 } });
 
 try {
-  await page.goto(ORIGIN, { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto(ORIGIN, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(APP_SETTLE_MS);
 
   let stablePasses = 0;
   let lastCardCount = 0;

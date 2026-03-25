@@ -8,7 +8,7 @@
   import { toHex } from '@hashtree/core';
   import { formatTimeAgo } from '../../utils/format';
   import { Name } from '../User';
-  import { getStableThumbnailUrl, getStableVideoCandidateUrls, onHtreePrefixReady } from '../../lib/mediaUrl';
+  import { getStableThumbnailCandidateUrls, getStableVideoCandidateUrls, onHtreePrefixReady } from '../../lib/mediaUrl';
   import { logHtreeDebug } from '../../lib/htreeDebug';
   import { nostrStore } from '../../nostr';
   import { recentsStore, positionCacheVersion, getVideoPosition } from '../../stores/recents';
@@ -54,17 +54,16 @@
   );
 
   // Build thumbnail URL for a video
-  function buildThumbnailUrl(video: typeof feedVideos[0]): string | null {
+  function buildThumbnailUrls(video: typeof feedVideos[0]): string[] {
     void htreePrefixVersion;
     const hashPrefix = video.rootCid?.hash ? toHex(video.rootCid.hash).slice(0, 8) : undefined;
-    return getStableThumbnailUrl({
+    return getStableThumbnailCandidateUrls({
       thumbnailUrl: video.thumbnailUrl,
       rootCid: video.rootCid,
       npub: video.ownerNpub,
       treeName: video.treeName,
       videoId: video.videoId || undefined,
       hashPrefix,
-      allowAliasFallback: false,
     });
   }
 
@@ -134,8 +133,9 @@
   {#if displayVideos.length > 0}
     <div class="space-y-2">
       {#each displayVideos as video (video.href)}
-        {@const thumbnailUrl = buildThumbnailUrl(video)}
+        {@const thumbnailUrls = buildThumbnailUrls(video)}
         {@const fallbackVideoUrls = buildFallbackVideoUrls(video)}
+        {@const imageCandidateStallTimeoutMs = video.thumbnailUrl ? 8000 : 2500}
         {@const duration = getVideoDuration(video)}
         {@const progress = videoProgress.get(video.href) ?? 0}
         <a
@@ -144,8 +144,10 @@
         >
           <!-- Thumbnail -->
           <VideoThumbnail
-            src={thumbnailUrl}
+            src={thumbnailUrls[0] ?? null}
+            fallbackImageUrls={thumbnailUrls.slice(1)}
             {fallbackVideoUrls}
+            {imageCandidateStallTimeoutMs}
             {duration}
             {progress}
             class="w-42 aspect-video shrink-0 rounded"

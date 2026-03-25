@@ -67,6 +67,10 @@
     }
     return { component: VideoHome, params: {} };
   });
+
+  let MatchedRouteComponent = $derived(matchedRoute.component);
 </script>
 
-<svelte:component this={matchedRoute.component} {...matchedRoute.params} />
+{#key currentPath}
+  <MatchedRouteComponent {...matchedRoute.params} />
+{/key}

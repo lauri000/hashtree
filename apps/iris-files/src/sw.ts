@@ -17,16 +17,12 @@
 /// <reference lib="webworker" />
 import { precacheAndRoute } from 'workbox-precaching';
 import { shouldInterceptHtreeRequestForWorker } from './lib/swRoutePolicy';
+import { getSameOriginResponseMode } from './lib/swSameOriginPolicy';
 import { lookupWorkerPort, waitForWorkerPort } from './lib/swWorkerPort';
 
 declare let self: ServiceWorkerGlobalScope;
 
 const isTestMode = !!import.meta.env.VITE_TEST_MODE;
-
-// Precache static assets (injected by VitePWA)
-if (!isTestMode) {
-  precacheAndRoute(self.__WB_MANIFEST);
-}
 
 if (isTestMode) {
   self.addEventListener('install', (event) => {
@@ -115,6 +111,7 @@ self.addEventListener('message', (event: ExtendableMessageEvent) => {
     if (clientKey) {
       workerPortsByClientKey.set(clientKey, port);
     }
+    port.start?.();
     const debugEnabled = !!event.data?.debug;
     if (clientId) {
       if (debugEnabled) debugByClientId.set(clientId, true);
@@ -719,8 +716,7 @@ function addCrossOriginHeaders(response: Response): Response {
 }
 
 /**
- * Add CORP header for same-origin resources
- * Required for scripts (including worker scripts) when COEP: credentialless is active
+ * Add CORP header for same-origin worker/script resources.
  */
 function addCORPHeader(response: Response): Response {
   if (response.type === 'opaque' || response.type === 'opaqueredirect') {
@@ -729,6 +725,7 @@ function addCORPHeader(response: Response): Response {
 
   const newHeaders = new Headers(response.headers);
   newHeaders.set('Cross-Origin-Resource-Policy', 'same-origin');
+  newHeaders.set('Cross-Origin-Embedder-Policy', 'credentialless');
 
   return new Response(response.body, {
     status: response.status,
@@ -751,6 +748,14 @@ function addCORSHeaders(response: Response): Response {
     statusText: response.statusText,
     headers: newHeaders,
   });
+}
+
+async function fetchSameOriginWithCache(request: Request): Promise<Response> {
+  const cached = await caches.match(request);
+  if (cached) {
+    return cached;
+  }
+  return fetch(request);
 }
 
 /**
@@ -817,22 +822,24 @@ self.addEventListener('fetch', (event: FetchEvent) => {
     }
   }
 
-  // For same-origin requests, add cross-origin isolation headers
-  // This enables SharedArrayBuffer for FFmpeg WASM transcoding
+  // For same-origin requests, only navigations need synthetic COOP/COEP
+  // headers. Worker and script assets also need CORP under COEP, but ordinary
+  // media and fetch traffic should pass through untouched.
   if (url.origin === self.location.origin) {
-    // Navigation requests need COOP/COEP headers
-    if (event.request.mode === 'navigate') {
+    const mode = getSameOriginResponseMode(event.request);
+    if (mode === 'document-coi') {
       event.respondWith(
         fetch(event.request).then(addCrossOriginHeaders)
       );
       return;
     }
 
-    // In cross-origin isolated context, ALL same-origin resources need CORP headers
-    // This includes worker scripts and all their module imports
-    event.respondWith(
-      fetch(event.request).then(addCORPHeader)
-    );
+    if (mode === 'subresource-corp') {
+      event.respondWith(fetchSameOriginWithCache(event.request).then(addCORPHeader));
+      return;
+    }
+
+    event.respondWith(fetchSameOriginWithCache(event.request));
     return;
   }
 
@@ -850,3 +857,10 @@ self.addEventListener('activate', (event: ExtendableEvent) => {
   console.log('[SW] Activating...');
   event.waitUntil(self.clients.claim());
 });
+
+// Register Workbox after the custom fetch handler so same-origin worker/script
+// assets can be rewrapped with the COEP/CORP headers cross-origin isolated
+// pages require.
+if (!isTestMode) {
+  precacheAndRoute(self.__WB_MANIFEST);
+}

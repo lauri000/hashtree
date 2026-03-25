@@ -343,6 +343,50 @@ describe('getFeedVideoResolvedMedia', () => {
     unsubscribe();
   });
 
+  it('re-resolves feed items even when raw event metadata already has a thumbnail and duration', async () => {
+    const BETTER_ROOT: CID = { hash: Uint8Array.from({ length: 32 }, () => 0x22) };
+    getCachedPlaylistInfo.mockReturnValue(undefined);
+    detectPlaylistForCard.mockResolvedValue({
+      videoCount: 0,
+      rootCid: BETTER_ROOT,
+      thumbnailUrl: '/htree/nhash1better/thumbnail.jpg',
+      duration: 201,
+      title: 'Readable title',
+    });
+
+    const { feedStore, setFeedVideos } = await import('../src/stores/feedStore');
+    const video: FeedVideo = {
+      href: '#/npub1example/videos%2FReadable',
+      title: 'Raw title',
+      ownerPubkey: 'pubkey',
+      ownerNpub: 'npub1example',
+      treeName: 'videos/Readable',
+      rootCid: ROOT,
+      thumbnailUrl: '/htree/nhash1raw/thumbnail.webp',
+      duration: 33,
+    };
+
+    let currentVideos: FeedVideo[] = [];
+    const unsubscribe = feedStore.subscribe((value) => {
+      currentVideos = value;
+    });
+
+    setFeedVideos([video]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(detectPlaylistForCard).toHaveBeenCalledWith(ROOT, 'npub1example', 'videos/Readable');
+    expect(currentVideos[0]).toMatchObject({
+      title: 'Readable title',
+      duration: 201,
+      thumbnailUrl: '/htree/nhash1better/thumbnail.jpg',
+      rootCid: BETTER_ROOT,
+    });
+
+    unsubscribe();
+  });
+
   it('retries feed media resolution when a tree root arrives after the initial miss', async () => {
     vi.useFakeTimers();
     getCachedPlaylistInfo.mockReturnValue(undefined);

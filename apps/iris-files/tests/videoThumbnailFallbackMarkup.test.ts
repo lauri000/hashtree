@@ -6,6 +6,12 @@ const videoThumbnailPath = path.resolve(process.cwd(), 'src/components/Video/Vid
 const videoThumbnailSource = fs.readFileSync(videoThumbnailPath, 'utf8');
 
 describe('video thumbnail fallback wiring', () => {
+  it('supports ordered fallback image candidates before giving up to a placeholder', () => {
+    expect(videoThumbnailSource).toContain('fallbackImageUrls?: string[] | null');
+    expect(videoThumbnailSource).toContain('resolvedImageCandidateUrls');
+    expect(videoThumbnailSource).toContain('fallbackImageUrls ?? []');
+  });
+
   it('supports exact video fallback candidates when no image thumbnail is available', () => {
     expect(videoThumbnailSource).toContain('fallbackVideoUrls?: string[] | null');
     expect(videoThumbnailSource).toContain('<video');
@@ -15,5 +21,21 @@ describe('video thumbnail fallback wiring', () => {
     expect(videoThumbnailSource).toContain('onloadeddata={handleVideoLoadedData}');
     expect(videoThumbnailSource).toContain("video.removeAttribute('src')");
     expect(videoThumbnailSource).toContain('onerror={handleVideoError}');
+  });
+
+  it('times out a stalled image candidate without giving up on the whole thumbnail, and still times out hidden video-frame fallbacks', () => {
+    expect(videoThumbnailSource).toContain('IMAGE_CANDIDATE_STALL_TIMEOUT_MS');
+    expect(videoThumbnailSource).toContain('imageCandidateStallTimeoutMs?: number');
+    expect(videoThumbnailSource).toContain('imageCandidateStallTimeoutMs = IMAGE_CANDIDATE_STALL_TIMEOUT_MS');
+    expect(videoThumbnailSource).toContain('VIDEO_FALLBACK_LOAD_TIMEOUT_MS');
+    expect(videoThumbnailSource).toContain('clearImageLoadTimer');
+    expect(videoThumbnailSource).toContain('advanceImageCandidateOrFail');
+    expect(videoThumbnailSource).toContain('advanceVideoCandidateOrFail');
+    expect(videoThumbnailSource).toContain('onload={handleImageLoad}');
+    expect(videoThumbnailSource).toContain('onerror={handleImageError}');
+  });
+
+  it('keeps showing the placeholder while an exact video-frame fallback is still loading', () => {
+    expect(videoThumbnailSource).toContain('{#if (!renderedSrc || imageError) && !capturedVideoFrameUrl}');
   });
 });

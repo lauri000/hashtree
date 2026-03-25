@@ -6,6 +6,9 @@ const getLocalRootKey = vi.fn();
 const resolverResolve = vi.fn();
 const ndkFetchEvent = vi.fn();
 const npubToPubkey = vi.fn();
+const querySync = vi.fn();
+const closePool = vi.fn();
+const destroyPool = vi.fn();
 
 vi.mock('../src/treeRootCache', () => ({
   getLocalRootCache,
@@ -25,6 +28,16 @@ vi.mock('../src/nostr', () => ({
   npubToPubkey,
 }));
 
+vi.mock('nostr-tools', () => ({
+  SimplePool: vi.fn(function MockSimplePool() {
+    return {
+      querySync,
+      close: closePool,
+      destroy: destroyPool,
+    };
+  }),
+}));
+
 const ROOT: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 1) };
 const ROOT_KEY = Uint8Array.from({ length: 32 }, (_, i) => i + 33);
 
@@ -36,6 +49,9 @@ describe('resolveFeedVideoRootCid', () => {
     resolverResolve.mockReset();
     ndkFetchEvent.mockReset();
     npubToPubkey.mockReset();
+    querySync.mockReset();
+    closePool.mockReset();
+    destroyPool.mockReset();
   });
 
   afterEach(() => {
@@ -86,5 +102,31 @@ describe('resolveFeedVideoRootCid', () => {
       authors: ['f'.repeat(64)],
       '#d': ['videos/Donkey Kong Country Soundtrack Full OST'],
     }, { closeOnEose: true });
+  });
+
+  it('falls back to a raw relay query when mutable resolution and ndk fetch miss', async () => {
+    resolverResolve.mockResolvedValue(null);
+    npubToPubkey.mockReturnValue('f'.repeat(64));
+    ndkFetchEvent.mockResolvedValue(null);
+    querySync.mockResolvedValue(new Set([
+      {
+        created_at: 10,
+        tags: [
+          ['d', 'videos/Mine Bombers in-game music'],
+          ['hash', '33'.repeat(32)],
+        ],
+      },
+    ]));
+
+    const { resolveFeedVideoRootCidAsync } = await import('../src/lib/videoFeedRoot');
+    await expect(resolveFeedVideoRootCidAsync({
+      ownerNpub: 'npub1example',
+      treeName: 'videos/Mine Bombers in-game music',
+    }, 1)).resolves.toEqual(cid(
+      Uint8Array.from({ length: 32 }, () => 0x33),
+    ));
+    expect(querySync).toHaveBeenCalled();
+    expect(closePool).toHaveBeenCalled();
+    expect(destroyPool).toHaveBeenCalled();
   });
 });

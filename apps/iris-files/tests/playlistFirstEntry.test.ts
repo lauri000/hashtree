@@ -58,4 +58,25 @@ describe('findFirstVideoEntry', () => {
     const { findFirstVideoEntry } = await import('../src/stores/playlist');
     await expect(findFirstVideoEntry(ROOT)).resolves.toBeNull();
   });
+
+  it('treats audio-only video directories as playable playlist entries', async () => {
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (cid === ROOT) {
+        return [
+          { name: 'audio_track', cid: CID_A },
+          { name: 'notes', cid: CID_B },
+        ];
+      }
+      if (cid === CID_A) {
+        return [{ name: 'video.mp3' }];
+      }
+      if (cid === CID_B) {
+        return [{ name: 'description.txt' }];
+      }
+      return [];
+    });
+
+    const { findFirstVideoEntry } = await import('../src/stores/playlist');
+    await expect(findFirstVideoEntry(ROOT)).resolves.toBe('audio_track');
+  });
 });

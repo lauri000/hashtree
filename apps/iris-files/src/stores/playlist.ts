@@ -18,7 +18,10 @@ import { LRUCache } from '../utils/lruCache';
 import { indexVideo } from './searchIndex';
 import { clearFeedPlaylistInfo } from './homeFeedCache';
 import { getEncodedNhashUrl, getHtreePrefix, getNhashFileUrl, getStableThumbnailUrl } from '../lib/mediaUrl';
-import { LinkType, type CID } from '@hashtree/core';
+import { LinkType, toHex, type CID } from '@hashtree/core';
+import { findPlayableMediaEntry, isPlayableMediaFileName, PLAYABLE_MEDIA_EXTENSIONS } from '../lib/playableMedia';
+import { resolveReadableVideoRoot } from '../lib/readableVideoRoot';
+import { readDirectPlayableMediaFileName } from '../lib/directPlayableRoot';
 
 // Cache playlist detection results to avoid layout shift on revisit
 // Key: "npub/treeName", Value: PlaylistCardInfo or null (for single videos)
@@ -55,14 +58,11 @@ const PLAYLIST_SUBDIR_READ_TIMEOUT_MS = 2500;
 const PLAYLIST_METADATA_READ_TIMEOUT_MS = 2500;
 
 /** Video file extensions we recognize */
-export const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mkv', '.mov', '.avi', '.m4v'] as const;
+export const VIDEO_EXTENSIONS = PLAYABLE_MEDIA_EXTENSIONS;
 
 /** Check if entries contain a video file */
 export function hasVideoFile(entries: { name: string }[]): boolean {
-  return entries.some(e =>
-    e.name.startsWith('video.') ||
-    VIDEO_EXTENSIONS.some(ext => e.name.endsWith(ext))
-  );
+  return entries.some(e => isPlayableMediaFileName(e.name));
 }
 
 /** Check if root is a playlist (no video file at root = playlist) */
@@ -147,6 +147,7 @@ export interface PlaylistCardInfo {
   videoCount: number;
   thumbnailUrl?: string;
   videoPath?: string;
+  rootCid?: CID;
   /** Duration in seconds (for single videos) */
   duration?: number;
   /** Created timestamp in seconds (for single videos) */
@@ -165,6 +166,25 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
     promise,
     new Promise<null>(resolve => setTimeout(() => resolve(null), ms))
   ]);
+}
+
+async function detectDirectRootMediaInfo(rootCid: CID, treeName?: string): Promise<PlaylistCardInfo | null> {
+  const tree = getTree();
+  const videoPath = await readDirectPlayableMediaFileName(tree, rootCid, PLAYLIST_METADATA_READ_TIMEOUT_MS);
+  if (!videoPath) {
+    return null;
+  }
+
+  const title = treeName?.startsWith('videos/')
+    ? treeName.slice(7)
+    : treeName;
+
+  return {
+    videoCount: 0,
+    rootCid,
+    videoPath,
+    title: title || undefined,
+  };
 }
 
 /**
@@ -195,10 +215,26 @@ export async function detectPlaylistForCard(
   if (cached !== undefined) return cached;
 
   const tree = getTree();
+  const effectiveRootCid = await resolveReadableVideoRoot({
+    rootCid,
+    npub,
+    treeName,
+    priority: 'background',
+  });
+  if (!effectiveRootCid) {
+    return null;
+  }
 
   try {
-    const entries = await withTimeout(tree.listDirectory(rootCid), PLAYLIST_ROOT_READ_TIMEOUT_MS);
+    const entries = await withTimeout(tree.listDirectory(effectiveRootCid), PLAYLIST_ROOT_READ_TIMEOUT_MS);
     if (!entries || entries.length === 0) {
+      const directRootInfo = await detectDirectRootMediaInfo(effectiveRootCid, treeName);
+      if (directRootInfo) {
+        if (toHex(effectiveRootCid.hash) === toHex(rootCid.hash)) {
+          playlistCache.set(cacheKey, directRootInfo);
+        }
+        return directRootInfo;
+      }
       return null;
     }
 
@@ -211,10 +247,7 @@ export async function detectPlaylistForCard(
       let videoPath: string | undefined;
 
       // Try video file's link entry meta first (new format)
-      const videoEntry = entries.find(e =>
-        e.name.startsWith('video.') ||
-        VIDEO_EXTENSIONS.some(ext => e.name.endsWith(ext))
-      );
+      const videoEntry = findPlayableMediaEntry(entries);
       if (videoEntry) {
         videoPath = videoEntry.name;
       }
@@ -287,8 +320,18 @@ export async function detectPlaylistForCard(
         thumbnailUrl = getNhashFileUrl(thumbEntry.cid, thumbEntry.name);
       }
 
-      const info: PlaylistCardInfo = { videoCount: 0, duration, thumbnailUrl, videoPath, createdAt, title };
-      playlistCache.set(cacheKey, info);
+      const info: PlaylistCardInfo = {
+        videoCount: 0,
+        rootCid: effectiveRootCid,
+        duration,
+        thumbnailUrl,
+        videoPath,
+        createdAt,
+        title,
+      };
+      if (toHex(effectiveRootCid.hash) === toHex(rootCid.hash)) {
+        playlistCache.set(cacheKey, info);
+      }
       return info;
     }
 
@@ -312,9 +355,134 @@ export async function detectPlaylistForCard(
     );
 
     const thumbnailUrl = results.find(r => r !== null) ?? undefined;
-    const info: PlaylistCardInfo = { videoCount: entries.length, thumbnailUrl };
-    playlistCache.set(cacheKey, info);
+    const info: PlaylistCardInfo = { videoCount: entries.length, thumbnailUrl, rootCid: effectiveRootCid };
+    if (toHex(effectiveRootCid.hash) === toHex(rootCid.hash)) {
+      playlistCache.set(cacheKey, info);
+    }
     return info;
+  } catch {
+    return null;
+  }
+}
+
+async function readSingleVideoCardInfo(rootCid: CID): Promise<PlaylistCardInfo | null> {
+  const tree = getTree();
+
+  try {
+    const entries = await withTimeout(tree.listDirectory(rootCid), PLAYLIST_ROOT_READ_TIMEOUT_MS);
+    if (!entries || entries.length === 0) {
+      return detectDirectRootMediaInfo(rootCid);
+    }
+
+    let duration: number | undefined;
+    let createdAt: number | undefined;
+    let thumbnailUrl: string | undefined;
+    let title: string | undefined;
+    let videoPath: string | undefined;
+
+    const videoEntry = findPlayableMediaEntry(entries);
+    if (videoEntry) {
+      videoPath = videoEntry.name;
+    }
+    if (videoEntry?.meta) {
+      const videoMeta = videoEntry.meta as Record<string, unknown>;
+      if (typeof videoMeta.duration === 'number') {
+        duration = videoMeta.duration;
+      }
+      if (typeof videoMeta.createdAt === 'number') {
+        createdAt = videoMeta.createdAt;
+      }
+      if (typeof videoMeta.title === 'string') {
+        title = videoMeta.title;
+      }
+      if (typeof videoMeta.thumbnail === 'string') {
+        thumbnailUrl = getEncodedNhashUrl(videoMeta.thumbnail);
+      }
+    }
+
+    if (!duration || !createdAt || !title) {
+      const metadataEntry = entries.find(e => e.name === 'metadata.json');
+      if (metadataEntry) {
+        try {
+          const metadataData = await withTimeout(tree.readFile(metadataEntry.cid), PLAYLIST_METADATA_READ_TIMEOUT_MS);
+          if (metadataData) {
+            const metadata = JSON.parse(new TextDecoder().decode(metadataData));
+            if (!thumbnailUrl) {
+              thumbnailUrl = resolveEmbeddedThumbnailUrl(metadata.thumbnail, entries);
+            }
+            if (!duration && typeof metadata.duration === 'number') {
+              duration = metadata.duration;
+            }
+            if (!createdAt && typeof metadata.createdAt === 'number') {
+              createdAt = metadata.createdAt;
+            }
+            if (!title && typeof metadata.title === 'string') {
+              title = metadata.title;
+            }
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    if (!duration || !title) {
+      const infoEntry = entries.find(e => e.name === 'info.json');
+      if (infoEntry) {
+        try {
+          const infoData = await withTimeout(tree.readFile(infoEntry.cid), PLAYLIST_METADATA_READ_TIMEOUT_MS);
+          if (infoData) {
+            const info = JSON.parse(new TextDecoder().decode(infoData));
+            if (!thumbnailUrl) {
+              thumbnailUrl = resolveEmbeddedThumbnailUrl(info.thumbnail, entries);
+            }
+            if (!duration && typeof info.duration === 'number') {
+              duration = info.duration;
+            }
+            if (!title && typeof info.title === 'string') {
+              title = info.title;
+            }
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    const thumbEntry = findThumbnailEntry(entries);
+    if (thumbEntry) {
+      thumbnailUrl = getNhashFileUrl(thumbEntry.cid, thumbEntry.name);
+    }
+
+    return { videoCount: 0, rootCid, duration, thumbnailUrl, videoPath, createdAt, title };
+  } catch {
+    return null;
+  }
+}
+
+export async function detectVideoCardInfo(
+  rootCid: CID,
+  npub: string,
+  treeName: string,
+  videoId?: string
+): Promise<PlaylistCardInfo | null> {
+  if (!videoId) {
+    return detectPlaylistForCard(rootCid, npub, treeName);
+  }
+
+  const tree = getTree();
+  const effectiveRootCid = await resolveReadableVideoRoot({
+    rootCid,
+    npub,
+    treeName,
+    videoId,
+    priority: 'background',
+  });
+  if (!effectiveRootCid) {
+    return null;
+  }
+  try {
+    const videoDir = await withTimeout(tree.resolvePath(effectiveRootCid, videoId), PLAYLIST_SUBDIR_READ_TIMEOUT_MS);
+    if (!videoDir) {
+      return null;
+    }
+    return await readSingleVideoCardInfo(videoDir.cid);
   } catch {
     return null;
   }
@@ -554,12 +722,7 @@ async function loadPlaylistMetadata(
 
       // Try video file's link entry meta first (new format)
       if (title === entry.name) {
-        const videoEntry = subEntries.find(e =>
-          e.name.startsWith('video.') ||
-          e.name.endsWith('.webm') ||
-          e.name.endsWith('.mp4') ||
-          e.name.endsWith('.mov')
-        );
+        const videoEntry = findPlayableMediaEntry(subEntries);
         if (videoEntry?.meta) {
           const videoMeta = videoEntry.meta as Record<string, unknown>;
           if (videoMeta.title && typeof videoMeta.title === 'string') {

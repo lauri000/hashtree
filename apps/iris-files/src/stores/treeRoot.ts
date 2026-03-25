@@ -27,6 +27,10 @@ import { nostrStore, decrypt } from '../nostr';
 import { npubToPubkey } from '../nostr/trees';
 import { logHtreeDebug } from '../lib/htreeDebug';
 import { syncNativeTreeRootCache } from '../lib/nativeTreeRootCache';
+import {
+  getTreeRootSubscriptionPlan,
+  shouldStartTreeRootSubscription,
+} from '../lib/treeRootSubscriptionPlan';
 import { treeRootRegistry } from '../TreeRootRegistry';
 import type { TreeRootRecord } from '../TreeRootRegistry';
 
@@ -78,6 +82,7 @@ const subscriptionState = new Map<string, {
   ) => void>;
   unsubscribeResolver: (() => void) | null;
   unsubscribeWorker: (() => void) | null;
+  workerHydrateRetryTimer: ReturnType<typeof setTimeout> | null;
 }>();
 
 /**
@@ -207,6 +212,46 @@ async function hydrateTreeRootFromWorker(npub: string, treeName: string): Promis
   }
 }
 
+const WORKER_HYDRATE_RETRY_DELAYS_MS = [250, 1000, 2500, 5000];
+
+function clearWorkerHydrateRetry(key: string): void {
+  const state = subscriptionState.get(key);
+  if (!state?.workerHydrateRetryTimer) return;
+  clearTimeout(state.workerHydrateRetryTimer);
+  state.workerHydrateRetryTimer = null;
+}
+
+function scheduleWorkerHydrateRetry(
+  key: string,
+  npub: string,
+  treeName: string,
+  options?: { skipWorkerHydrate?: boolean },
+  attempt: number = 0
+): void {
+  if (options?.skipWorkerHydrate) return;
+  const delay = WORKER_HYDRATE_RETRY_DELAYS_MS[attempt];
+  if (delay === undefined) return;
+
+  const state = subscriptionState.get(key);
+  if (!state) return;
+  clearWorkerHydrateRetry(key);
+
+  state.workerHydrateRetryTimer = setTimeout(() => {
+    const active = subscriptionState.get(key);
+    if (!active) return;
+
+    active.workerHydrateRetryTimer = null;
+
+    void hydrateTreeRootFromWorker(npub, treeName).then((hydrated) => {
+      if (hydrated) {
+        logHtreeDebug('treeRoot:hydrate-retry', { resolverKey: key, attempt: attempt + 1 });
+        return;
+      }
+      scheduleWorkerHydrateRetry(key, npub, treeName, options, attempt + 1);
+    });
+  }, delay);
+}
+
 async function syncActiveTreeRootFromRecord(
   key: string,
   record: ReturnType<typeof treeRootRegistry.getByKey>,
@@ -319,7 +364,7 @@ export function subscribeToTreeRoot(
  */
 async function startResolverSubscription(
   key: string,
-  options?: { force?: boolean }
+  options?: { force?: boolean; skipWorkerHydrate?: boolean }
 ): Promise<void> {
   const workerReady = await Promise.race([
     waitForWorkerReady().then(() => true),
@@ -334,11 +379,12 @@ async function startResolverSubscription(
 
   // Don't create subscription if one already exists unless forced
   if (state.unsubscribeResolver || state.unsubscribeWorker) {
-    if (!options?.force) return;
-    state.unsubscribeResolver?.();
-    state.unsubscribeResolver = null;
-    state.unsubscribeWorker?.();
-    state.unsubscribeWorker = null;
+  if (!options?.force) return;
+  state.unsubscribeResolver?.();
+  state.unsubscribeResolver = null;
+  state.unsubscribeWorker?.();
+  state.unsubscribeWorker = null;
+  clearWorkerHydrateRetry(key);
   }
 
   const slashIndex = key.indexOf('/');
@@ -347,11 +393,24 @@ async function startResolverSubscription(
   const treeName = key.slice(slashIndex + 1);
 
   const subscribed = await ensureWorkerTreeRootSubscription(npub);
-  const hydrated = await hydrateTreeRootFromWorker(npub, treeName);
-  if (subscribed || hydrated) {
+  const hydrated = options?.skipWorkerHydrate
+    ? false
+    : await hydrateTreeRootFromWorker(npub, treeName);
+  const subscriptionPlan = getTreeRootSubscriptionPlan({
+    workerSubscribed: subscribed,
+    workerHydrated: hydrated,
+  });
+
+  if (subscriptionPlan.attachWorkerSubscription) {
     state.unsubscribeWorker = () => {
       void unsubscribeWorkerTreeRootSubscription(npub);
     };
+    if (!hydrated) {
+      scheduleWorkerHydrateRetry(key, npub, treeName, options);
+    }
+  }
+
+  if (!subscriptionPlan.useResolverSubscription) {
     return;
   }
 
@@ -387,11 +446,20 @@ async function startResolverSubscription(
     const active = subscriptionState.get(key);
     if (!active || active.unsubscribeWorker) return;
     const subscribed = await ensureWorkerTreeRootSubscription(npub);
-    const hydrated = await hydrateTreeRootFromWorker(npub, treeName);
-    if (subscribed || hydrated) {
+    const hydrated = options?.skipWorkerHydrate
+      ? false
+      : await hydrateTreeRootFromWorker(npub, treeName);
+    const retryPlan = getTreeRootSubscriptionPlan({
+      workerSubscribed: subscribed,
+      workerHydrated: hydrated,
+    });
+    if (retryPlan.attachWorkerSubscription) {
       active.unsubscribeWorker = () => {
         void unsubscribeWorkerTreeRootSubscription(npub);
       };
+      if (!hydrated) {
+        scheduleWorkerHydrateRetry(key, npub, treeName, options);
+      }
     }
   });
 }
@@ -410,6 +478,7 @@ function subscribeToResolver(
   ) => void
 ): () => void {
   let state = subscriptionState.get(key);
+  const hadState = !!state;
 
   if (!state) {
     state = {
@@ -417,11 +486,19 @@ function subscribeToResolver(
       listeners: new Set(),
       unsubscribeResolver: null,
       unsubscribeWorker: null,
+      workerHydrateRetryTimer: null,
     };
     subscriptionState.set(key, state);
+  }
 
-    // Start the subscription asynchronously after worker is ready
-    // This ensures the NDK transport plugin is registered before subscribing
+  if (shouldStartTreeRootSubscription({
+    hasState: hadState,
+    hasResolverSubscription: !!state.unsubscribeResolver,
+    hasWorkerSubscription: !!state.unsubscribeWorker,
+  })) {
+    // Start or restart the subscription asynchronously after worker is ready.
+    // Cached state entries are retained even when listeners drop to zero, so we
+    // must restart the underlying subscriptions when a new consumer arrives.
     startResolverSubscription(key);
   }
 
@@ -446,6 +523,7 @@ function subscribeToResolver(
         cached.unsubscribeResolver = null;
         cached.unsubscribeWorker?.();
         cached.unsubscribeWorker = null;
+        clearWorkerHydrateRetry(key);
         // Keep the cached data, just stop the subscription
         // subscriptionState.delete(key);
       }
@@ -453,9 +531,12 @@ function subscribeToResolver(
   };
 }
 
-function refreshResolverSubscription(key: string): void {
+function refreshResolverSubscription(
+  key: string,
+  options?: { skipWorkerHydrate?: boolean }
+): void {
   if (!subscriptionState.has(key)) return;
-  startResolverSubscription(key, { force: true });
+  startResolverSubscription(key, { force: true, skipWorkerHydrate: options?.skipWorkerHydrate });
 }
 
 /**
@@ -1105,10 +1186,21 @@ export function waitForTreeRoot(
 /**
  * Invalidate and refresh the cached root CID
  */
-export function invalidateTreeRoot(npub: string | null | undefined, treeName: string | null | undefined): void {
+export async function invalidateTreeRoot(npub: string | null | undefined, treeName: string | null | undefined): Promise<void> {
   const key = getResolverKey(npub ?? undefined, treeName ?? undefined);
   if (!key) return;
-  // The resolver subscription will automatically pick up the new value
+  if (npub && treeName) {
+    treeRootRegistry.delete(npub, treeName);
+  }
+  workerKeyMergeCache.delete(key);
+  workerRootCacheSync.delete(key);
+
+  if (activeResolverKey === key) {
+    treeRootStore.set(null);
+  }
+
+  refreshResolverSubscription(key, { skipWorkerHydrate: true });
+  scheduleResolverRetry(key);
 }
 
 // Synchronously parse initial permalink (no resolver needed for nhash URLs)

@@ -20,6 +20,19 @@ function contentTypeFor(filePath) {
   return MIME_TYPES.get(path.extname(filePath)) ?? 'application/octet-stream';
 }
 
+function shouldIgnoreConsoleError(text) {
+  if (/^Failed to load resource: the server responded with a status of 404\b/.test(text)) {
+    return true;
+  }
+  if (/^WebSocket connection to 'wss?:\/\/[^']+' failed:/.test(text)) {
+    return true;
+  }
+  if (/^WebSocket is already in CLOSING or CLOSED state\.?$/.test(text)) {
+    return true;
+  }
+  return false;
+}
+
 function safeJoin(rootDir, requestPath) {
   const normalized = requestPath === '/' ? '/index.html' : requestPath;
   const fullPath = path.resolve(rootDir, `.${normalized}`);
@@ -100,7 +113,7 @@ export async function runPortableSmoke({ distDir, title, appName, screenshotPath
   page.on('console', (message) => {
     if (message.type() === 'error') {
       const text = message.text();
-      if (/^Failed to load resource: the server responded with a status of 404\b/.test(text)) {
+      if (shouldIgnoreConsoleError(text)) {
         return;
       }
       consoleErrors.push(text);

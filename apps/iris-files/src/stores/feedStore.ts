@@ -28,7 +28,7 @@ const RELAY_WAIT_TIMEOUT_MS = 10000;
 const RELAY_RETRY_TIMEOUT_MS = 30000;
 const EMPTY_FEED_RETRY_MS = 15000;
 const EMPTY_FEED_MAX_RETRIES = 3;
-const FEED_MEDIA_RESOLUTION_CONCURRENCY = 4;
+const FEED_MEDIA_RESOLUTION_CONCURRENCY = 16;
 const FEED_MEDIA_RESOLUTION_MAX_RETRIES = 8;
 
 let retryOnRelayScheduled = false;
@@ -112,9 +112,24 @@ function getFeedMediaResolutionKey(video: FeedVideo): string | null {
   return `${video.ownerNpub}/${video.treeName}/${toHex(rootCid.hash)}`;
 }
 
+function hasResolvedFeedVideoMedia(video: FeedVideo, cached?: Partial<FeedVideo>): boolean {
+  const resolvedRootCid = cached?.rootCid ?? resolveFeedVideoRootCid(video);
+  const resolvedThumbnailUrl = cached?.thumbnailUrl ?? video.thumbnailUrl;
+  const resolvedVideoPath = cached?.videoPath ?? video.videoPath;
+  const resolvedDuration = cached?.duration ?? video.duration;
+
+  return !!resolvedRootCid
+    && (typeof resolvedDuration === 'number')
+    && (!!resolvedThumbnailUrl || !!resolvedVideoPath);
+}
+
 function shouldResolveFeedVideoMedia(video: FeedVideo): boolean {
   if (!video.ownerNpub || !video.treeName) return false;
-  return (!video.thumbnailUrl && !video.videoPath) || !video.duration || !resolveFeedVideoRootCid(video);
+  const resolutionKey = getFeedMediaResolutionKey(video);
+  if (!resolutionKey) return false;
+  const cached = cachedFeedMediaByKey.get(resolutionKey);
+  if (!cached) return true;
+  return !hasResolvedFeedVideoMedia(video, cached);
 }
 
 function sameCid(a?: CID | null, b?: CID | null): boolean {
@@ -175,8 +190,9 @@ export async function getFeedVideoResolvedMedia(video: FeedVideo): Promise<Parti
   if (!info) return null;
 
   const resolved: Partial<FeedVideo> = {};
-  if (!video.rootCid) {
-    resolved.rootCid = rootCid;
+  const resolvedRootCid = info.rootCid ?? rootCid;
+  if (!sameCid(resolvedRootCid, video.rootCid)) {
+    resolved.rootCid = resolvedRootCid;
   }
   if (info.thumbnailUrl) {
     resolved.thumbnailUrl = info.thumbnailUrl;

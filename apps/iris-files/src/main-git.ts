@@ -14,10 +14,10 @@ async function init() {
     target: document.getElementById('app')!,
   });
   const swPromise = initServiceWorker();
+  await swPromise;
   const htreePromise = initHtreeApi();
   const workerPromise = initReadonlyWorker();
   const sessionPromise = restoreSession();
-  await swPromise;
   await Promise.all([workerPromise, sessionPromise]);
   await htreePromise;
   await waitForRelayConnection();

@@ -4,6 +4,8 @@
  */
 import { SortedMap } from '../utils/SortedMap';
 import { SvelteSet } from 'svelte/reactivity';
+import type { CID } from '@hashtree/core';
+import { writable } from 'svelte/store';
 import type { VideoItem } from '../components/Video/types';
 
 export interface PlaylistInfo {
@@ -13,6 +15,10 @@ export interface PlaylistInfo {
   duration?: number;
   createdAt?: number;
   title?: string;
+}
+
+export interface RecentVideoCardInfo extends PlaylistInfo {
+  rootCid?: CID | null;
 }
 
 // Videos from followed users
@@ -30,6 +36,10 @@ export const socialSeenEventIds = new SvelteSet<string>();
 
 // Playlist detection results for feed videos
 const feedPlaylistInfoCache: Record<string, PlaylistInfo> = {};
+
+// Resolved media for recent cards keyed by recent path.
+const recentVideoCardInfoCache: Record<string, RecentVideoCardInfo> = {};
+export const recentVideoCardInfoVersion = writable(0);
 
 // Track which user the cache is for
 let cachedForPubkey: string | null = null;
@@ -92,4 +102,23 @@ export function getAllFeedPlaylistInfo(): Record<string, PlaylistInfo> {
  */
 export function clearFeedPlaylistInfo(key: string): void {
   delete feedPlaylistInfoCache[key];
+}
+
+export function getRecentVideoCardInfo(key: string): RecentVideoCardInfo | undefined {
+  return recentVideoCardInfoCache[key];
+}
+
+export function setRecentVideoCardInfo(key: string, info: RecentVideoCardInfo): void {
+  const existing = recentVideoCardInfoCache[key];
+  recentVideoCardInfoCache[key] = {
+    ...(existing ?? {}),
+    ...info,
+    rootCid: info.rootCid ?? existing?.rootCid ?? null,
+  };
+  recentVideoCardInfoVersion.update((version) => version + 1);
+}
+
+export function clearRecentVideoCardInfo(key: string): void {
+  delete recentVideoCardInfoCache[key];
+  recentVideoCardInfoVersion.update((version) => version + 1);
 }

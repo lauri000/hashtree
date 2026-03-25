@@ -12,12 +12,20 @@
     isRetryableMediaImageUrl,
     MAX_MEDIA_IMAGE_RETRIES,
   } from '../../lib/mediaImageRetry';
+  import { isAudioMediaFileName } from '../../lib/playableMedia';
+
+  const IMAGE_CANDIDATE_STALL_TIMEOUT_MS = 8000;
+  const VIDEO_FALLBACK_LOAD_TIMEOUT_MS = 2500;
 
   interface Props {
     /** Thumbnail URL */
     src?: string | null;
+    /** Additional image URLs to try when the primary thumbnail fails */
+    fallbackImageUrls?: string[] | null;
     /** Exact in-tree fallback video URLs to use when no image thumbnail is available */
     fallbackVideoUrls?: string[] | null;
+    /** Milliseconds to wait before advancing from a stalled image candidate */
+    imageCandidateStallTimeoutMs?: number;
     /** Video duration in seconds */
     duration?: number;
     /** Watch progress percentage (0-100) */
@@ -30,7 +38,9 @@
 
   let {
     src,
+    fallbackImageUrls = null,
     fallbackVideoUrls = null,
+    imageCandidateStallTimeoutMs = IMAGE_CANDIDATE_STALL_TIMEOUT_MS,
     duration,
     progress = 0,
     class: className = '',
@@ -40,6 +50,7 @@
   let imageError = $state(false);
   let lastMediaKey = $state('');
   let retryCount = $state(0);
+  let imageCandidateIndex = $state(0);
   let renderedSrc = $state<string | null>(null);
   let videoCandidateIndex = $state(0);
   let videoFailed = $state(false);
@@ -47,9 +58,35 @@
   let capturedVideoFrameUrl = $state<string | null>(null);
   let containerEl = $state<HTMLDivElement | null>(null);
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let imageLoadTimer: ReturnType<typeof setTimeout> | null = null;
+  let videoLoadTimer: ReturnType<typeof setTimeout> | null = null;
   let capturedFrameObjectUrl: string | null = null;
   const loadingStrategy = shouldEagerLoadMediaInNativeChildRuntime() ? 'eager' : 'lazy';
-  const resolvedFallbackVideoUrls = $derived.by(() => (fallbackVideoUrls ?? []).filter(Boolean));
+  function canUseVideoFrameFallback(url: string): boolean {
+    try {
+      const parsed = new URL(url, window.location.href);
+      const fileName = parsed.pathname.split('/').filter(Boolean).at(-1) ?? '';
+      return !isAudioMediaFileName(fileName);
+    } catch {
+      const fileName = url.split('?')[0]?.split('/').filter(Boolean).at(-1) ?? '';
+      return !isAudioMediaFileName(fileName);
+    }
+  }
+  const resolvedImageCandidateUrls = $derived.by(() => {
+    const urls = new Set<string>();
+    if (src) {
+      urls.add(src);
+    }
+    for (const url of fallbackImageUrls ?? []) {
+      if (url) {
+        urls.add(url);
+      }
+    }
+    return Array.from(urls);
+  });
+  const resolvedFallbackVideoUrls = $derived.by(() =>
+    (fallbackVideoUrls ?? []).filter((url): url is string => !!url && canUseVideoFrameFallback(url))
+  );
   const activeFallbackVideoUrl = $derived.by(() =>
     fallbackVisible && !capturedVideoFrameUrl
       ? resolvedFallbackVideoUrls[videoCandidateIndex] ?? null
@@ -58,15 +95,18 @@
 
   // Reset state when the image or fallback candidates change.
   $effect.pre(() => {
-    const nextMediaKey = `${src ?? ''}::${resolvedFallbackVideoUrls.join('|')}`;
+    const nextMediaKey = `${resolvedImageCandidateUrls.join('|')}::${resolvedFallbackVideoUrls.join('|')}`;
     if (nextMediaKey !== lastMediaKey) {
       if (retryTimer) {
         clearTimeout(retryTimer);
         retryTimer = null;
       }
+      clearImageLoadTimer();
+      clearVideoLoadTimer();
       imageError = false;
       retryCount = 0;
-      renderedSrc = src ?? null;
+      imageCandidateIndex = 0;
+      renderedSrc = resolvedImageCandidateUrls[0] ?? null;
       videoCandidateIndex = 0;
       videoFailed = false;
       clearCapturedVideoFrame();
@@ -100,8 +140,24 @@
       clearTimeout(retryTimer);
       retryTimer = null;
     }
+    clearImageLoadTimer();
+    clearVideoLoadTimer();
     clearCapturedVideoFrame();
   });
+
+  function clearImageLoadTimer(): void {
+    if (imageLoadTimer) {
+      clearTimeout(imageLoadTimer);
+      imageLoadTimer = null;
+    }
+  }
+
+  function clearVideoLoadTimer(): void {
+    if (videoLoadTimer) {
+      clearTimeout(videoLoadTimer);
+      videoLoadTimer = null;
+    }
+  }
 
   function clearCapturedVideoFrame(): void {
     if (capturedFrameObjectUrl) {
@@ -122,11 +178,83 @@
     }
   }
 
+  function advanceImageCandidateOrFail(): void {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    clearImageLoadTimer();
+    if (imageCandidateIndex + 1 < resolvedImageCandidateUrls.length) {
+      const nextIndex = imageCandidateIndex + 1;
+      imageCandidateIndex = nextIndex;
+      retryCount = 0;
+      imageError = false;
+      renderedSrc = resolvedImageCandidateUrls[nextIndex] ?? null;
+      return;
+    }
+    imageError = true;
+  }
+
+  function advanceVideoCandidateOrFail(): void {
+    clearVideoLoadTimer();
+    stopVideo(containerEl?.querySelector('video') ?? null);
+    if (videoCandidateIndex + 1 < resolvedFallbackVideoUrls.length) {
+      videoCandidateIndex += 1;
+      return;
+    }
+    videoFailed = true;
+  }
+
+  $effect(() => {
+    if (!renderedSrc || imageError || capturedVideoFrameUrl) {
+      clearImageLoadTimer();
+      return;
+    }
+
+    const candidate = renderedSrc;
+    clearImageLoadTimer();
+    imageLoadTimer = setTimeout(() => {
+      if (renderedSrc !== candidate || imageError || capturedVideoFrameUrl) return;
+      advanceImageCandidateOrFail();
+    }, imageCandidateStallTimeoutMs);
+
+    return () => {
+      clearImageLoadTimer();
+    };
+  });
+
+  $effect(() => {
+    if (!activeFallbackVideoUrl || videoFailed || capturedVideoFrameUrl) {
+      clearVideoLoadTimer();
+      return;
+    }
+
+    clearVideoLoadTimer();
+    const candidate = activeFallbackVideoUrl;
+    videoLoadTimer = setTimeout(() => {
+      if (activeFallbackVideoUrl !== candidate || videoFailed || capturedVideoFrameUrl) return;
+      advanceVideoCandidateOrFail();
+    }, VIDEO_FALLBACK_LOAD_TIMEOUT_MS);
+
+    return () => {
+      clearVideoLoadTimer();
+    };
+  });
+
+  function handleImageLoad(): void {
+    clearImageLoadTimer();
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  }
+
   function handleImageError(event: Event): void {
+    clearImageLoadTimer();
     const image = event.currentTarget as HTMLImageElement | null;
-    const baseSrc = src ?? null;
+    const baseSrc = resolvedImageCandidateUrls[imageCandidateIndex] ?? renderedSrc ?? null;
     if (!baseSrc || !isRetryableMediaImageUrl(baseSrc) || retryCount >= MAX_MEDIA_IMAGE_RETRIES) {
-      imageError = true;
+      advanceImageCandidateOrFail();
       return;
     }
 
@@ -165,6 +293,7 @@
     const video = event.currentTarget as HTMLVideoElement | null;
     if (!video) return;
 
+    clearVideoLoadTimer();
     const frameUrl = await captureVideoFrame(video);
     stopVideo(video);
 
@@ -181,11 +310,7 @@
 
   function handleVideoError(event: Event): void {
     stopVideo(event.currentTarget as HTMLVideoElement | null);
-    if (videoCandidateIndex + 1 < resolvedFallbackVideoUrls.length) {
-      videoCandidateIndex += 1;
-      return;
-    }
-    videoFailed = true;
+    advanceVideoCandidateOrFail();
   }
 </script>
 
@@ -196,6 +321,7 @@
       alt=""
       class="absolute inset-0 w-full h-full object-cover"
       loading={loadingStrategy}
+      onload={handleImageLoad}
       onerror={handleImageError}
     />
   {:else if capturedVideoFrameUrl}
@@ -217,7 +343,7 @@
     ></video>
   {/if}
 
-  {#if (!renderedSrc || imageError) && !capturedVideoFrameUrl && (!activeFallbackVideoUrl || videoFailed)}
+  {#if (!renderedSrc || imageError) && !capturedVideoFrameUrl}
     <div class="absolute inset-0 flex items-center justify-center">
       <span class="i-lucide-video text-text-3 {iconSize}"></span>
     </div>
