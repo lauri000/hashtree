@@ -186,7 +186,13 @@
               {/if}
             </div>
             <!-- Title -->
-            <p class="text-xs text-text-1 line-clamp-2 p-1 {isCurrent ? 'text-accent' : ''}">{item.title}</p>
+            {#if item.title}
+              <p class="text-xs text-text-1 line-clamp-2 p-1 {isCurrent ? 'text-accent' : ''}">{item.title}</p>
+            {:else}
+              <div class="p-1">
+                <div class="h-3 w-5/6 rounded bg-surface-3/80 animate-pulse"></div>
+              </div>
+            {/if}
           </button>
         {/each}
       </div>
@@ -279,7 +285,13 @@
 
               <!-- Info -->
               <div class="flex-1 min-w-0">
-                <p class="text-sm text-text-1 line-clamp-2 {isCurrent ? 'text-accent' : ''}">{item.title}</p>
+                {#if item.title}
+                  <p class="text-sm text-text-1 line-clamp-2 {isCurrent ? 'text-accent' : ''}">{item.title}</p>
+                {:else}
+                  <div class="mt-1">
+                    <div class="h-4 w-5/6 rounded bg-surface-3/80 animate-pulse"></div>
+                  </div>
+                {/if}
                 {#if item.duration}
                   <p class="text-xs text-text-3 mt-0.5">{formatDuration(item.duration)}</p>
                 {/if}

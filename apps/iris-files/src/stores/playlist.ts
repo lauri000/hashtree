@@ -18,6 +18,7 @@ import { LRUCache } from '../utils/lruCache';
 import { indexVideo } from './searchIndex';
 import { clearFeedPlaylistInfo } from './homeFeedCache';
 import { getEncodedNhashUrl, getHtreePrefix, getNhashFileUrl, getStableThumbnailUrl } from '../lib/mediaUrl';
+import { getInitialPlaylistItemTitle } from '../lib/videoDisplayTitle';
 import { LinkType, toHex, type CID } from '@hashtree/core';
 import { findPlayableMediaEntry, isPlayableMediaFileName, PLAYABLE_MEDIA_EXTENSIONS } from '../lib/playableMedia';
 import { resolveReadableVideoRoot } from '../lib/readableVideoRoot';
@@ -608,10 +609,10 @@ export async function loadPlaylist(
     // Sort entries by name for consistent ordering
     videoEntries.sort((a, b) => a.name.localeCompare(b.name));
 
-    // Create skeleton items with folder names as titles (shown immediately)
+    // Avoid flashing synthetic generated folder ids like video_123456789 while metadata loads.
     const skeletonItems: PlaylistItem[] = videoEntries.map(entry => ({
       id: entry.name,
-      title: entry.name, // Default to folder name
+      title: getInitialPlaylistItemTitle(entry.name),
       cid: entry.cid,
     }));
 

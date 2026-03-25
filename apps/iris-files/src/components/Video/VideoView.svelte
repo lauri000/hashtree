@@ -52,6 +52,7 @@
   import { resolveReadableVideoRoot } from '../../lib/readableVideoRoot';
   import { readDirectPlayableMediaFileName } from '../../lib/directPlayableRoot';
   import { resolveFeedVideoRootCidAsync } from '../../lib/videoFeedRoot';
+  import { getVideoDisplayTitle } from '../../lib/videoDisplayTitle';
   import { setRecentVideoCardInfo } from '../../stores/homeFeedCache';
 
   let deleting = $state(false);
@@ -677,8 +678,13 @@ async function syncTreeRootToWorker(
     return null;
   });
 
-  // Video title from title.txt or video path (last segment for playlists)
-  let title = $derived(videoTitle || currentVideoId || videoPath || 'Video');
+  // Keep synthetic playlist folder ids out of the UI while metadata is still loading.
+  let title = $derived(getVideoDisplayTitle({
+    videoTitle,
+    currentVideoId,
+    videoPath,
+    treeName,
+  }));
 
   // Current user
   let currentUserNpub = $derived($nostrStore.npub);
@@ -1331,14 +1337,15 @@ async function syncTreeRootToWorker(
       ? `/${capturedNpub}/${capturedTreeName}/${capturedVideoId}`
       : `/${capturedNpub}/${capturedTreeName}`;
 
-    const treeTitle = capturedTreeName?.startsWith('videos/')
-      ? capturedTreeName.slice(7)
-      : capturedTreeName;
-
     addRecent({
       type: 'tree',
       path: recentPath,
-      label: videoTitle || treeTitle || capturedVideoId || videoPath || 'Video',
+      label: getVideoDisplayTitle({
+        videoTitle,
+        currentVideoId: capturedVideoId,
+        videoPath,
+        treeName: capturedTreeName,
+      }),
       npub: capturedNpub,
       treeName: capturedTreeName,
       videoId: capturedIsPlaylistVideo ? capturedVideoId : undefined,
