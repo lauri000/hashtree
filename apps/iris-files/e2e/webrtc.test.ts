@@ -1,5 +1,6 @@
 import { test, expect, Browser, Page, BrowserContext } from './fixtures';
 import { chromium } from '@playwright/test';
+import { attachRenderLoopGuardToContext, formatRenderLoopFailures } from './renderLoopGuard';
 import { waitForAppReady, ensureLoggedIn, waitForRelayConnected } from './test-utils.js';
 
 // Increase timeout for WebRTC tests as they involve network signaling
@@ -12,6 +13,7 @@ test.describe('WebRTC P2P Connection', () => {
   let context2: BrowserContext;
   let page1: Page;
   let page2: Page;
+  let renderLoopFailures: Set<string>;
 
   test.beforeAll(async () => {
     // Launch two separate browser instances
@@ -25,9 +27,13 @@ test.describe('WebRTC P2P Connection', () => {
   });
 
   test.beforeEach(async () => {
+    renderLoopFailures = new Set();
+
     // Create fresh contexts for each test
     context1 = await browser1.newContext();
     context2 = await browser2.newContext();
+    attachRenderLoopGuardToContext(context1, renderLoopFailures);
+    attachRenderLoopGuardToContext(context2, renderLoopFailures);
     page1 = await context1.newPage();
     page2 = await context2.newPage();
 
@@ -41,6 +47,9 @@ test.describe('WebRTC P2P Connection', () => {
   test.afterEach(async () => {
     await context1?.close();
     await context2?.close();
+    if (renderLoopFailures.size > 0) {
+      throw new Error(formatRenderLoopFailures(renderLoopFailures));
+    }
   });
 
   async function clearStorage(page: Page) {

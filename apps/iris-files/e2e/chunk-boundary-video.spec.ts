@@ -9,6 +9,7 @@ import { chromium } from '@playwright/test';
 import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'url';
+import { attachRenderLoopGuardToContext, formatRenderLoopFailures } from './renderLoopGuard';
 import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, waitForAppReady, safeGoto, safeReload } from './test-utils';
 // Tests create their own browser contexts - safe for parallel execution
 
@@ -17,6 +18,13 @@ const __dirname = path.dirname(__filename);
 
 // Use a video larger than 2MB to ensure multiple chunks
 const TEST_VIDEO = path.join(__dirname, 'fixtures', 'big-buck-bunny-30s.webm');
+
+type VideoWithPlaybackQuality = HTMLVideoElement & {
+  getVideoPlaybackQuality?: () => {
+    totalVideoFrames?: number;
+    corruptedVideoFrames?: number;
+  };
+};
 
 test.describe('Chunk Boundary Video', () => {
   test('uploaded video plays without garbling at chunk boundaries', async () => {
@@ -31,8 +39,11 @@ test.describe('Chunk Boundary Video', () => {
     const browser = await chromium.launch({
       args: ['--autoplay-policy=no-user-gesture-required'],
     });
+    const renderLoopFailures = new Set<string>();
     const context = await browser.newContext();
+    attachRenderLoopGuardToContext(context, renderLoopFailures);
     const page = await context.newPage();
+    let testError: unknown = null;
 
     page.on('console', msg => {
       const text = msg.text();
@@ -173,14 +184,14 @@ test.describe('Chunk Boundary Video', () => {
       }, { timeout: 60000, intervals: [1000, 2000, 3000, 5000] }).toBe(true);
 
       const playbackState = await page.evaluate(() => {
-        const video = document.querySelector('video') as HTMLVideoElement | null;
+        const video = document.querySelector('video') as VideoWithPlaybackQuality | null;
         if (!video) {
           return { ok: false, error: 'Video element missing' };
         }
         let decodedFrames: number | null = null;
         let corruptedFrames: number | null = null;
-        if ('getVideoPlaybackQuality' in video) {
-          const q = (video as any).getVideoPlaybackQuality();
+        if (typeof video.getVideoPlaybackQuality === 'function') {
+          const q = video.getVideoPlaybackQuality();
           decodedFrames = q?.totalVideoFrames ?? 0;
           corruptedFrames = q?.corruptedVideoFrames ?? 0;
         }
@@ -209,9 +220,18 @@ test.describe('Chunk Boundary Video', () => {
         }
       }
 
+      if (renderLoopFailures.size > 0) {
+        throw new Error(formatRenderLoopFailures(renderLoopFailures));
+      }
+    } catch (error) {
+      testError = error;
+      throw error;
     } finally {
       await context.close();
       await browser.close();
+      if (!testError && renderLoopFailures.size > 0) {
+        throw new Error(formatRenderLoopFailures(renderLoopFailures));
+      }
     }
   });
 });

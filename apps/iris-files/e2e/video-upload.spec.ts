@@ -1,8 +1,19 @@
-import { test, expect, Page } from '@playwright/test';
+import { test, expect, type Page } from './fixtures';
 import fs from 'fs';
 import path from 'path';
 
 const TEST_VIDEO_PATH = path.resolve(process.cwd(), 'e2e/fixtures/Big_Buck_Bunny_360_10s_1MB.mp4');
+
+type WorkerAdapterLike = {
+  sendHello?: () => Promise<void> | void;
+  readFile?: (cid: unknown) => Promise<Uint8Array | null>;
+  readFileRange?: (cid: unknown, start: number, end: number) => Promise<Uint8Array | null>;
+};
+
+type VideoUploadTestWindow = Window & {
+  __getWorkerAdapter?: () => WorkerAdapterLike | null | undefined;
+  __workerAdapter?: WorkerAdapterLike | null;
+};
 
 async function ensureTestVideo(): Promise<string> {
   if (!fs.existsSync(TEST_VIDEO_PATH)) {
@@ -51,7 +62,8 @@ async function waitForVideoData(page: Page, timeoutMs = 180000) {
         if (!root) return { ok: false, reason: 'missing-root', ...status };
 
         status.hasRootKey = !!root.key;
-        const adapter = (window as any).__getWorkerAdapter?.() ?? (window as any).__workerAdapter;
+        const adapter = (window as VideoUploadTestWindow).__getWorkerAdapter?.()
+          ?? (window as VideoUploadTestWindow).__workerAdapter;
         if (!adapter?.readFile && !adapter?.readFileRange) {
           return { ok: false, reason: 'adapter-not-ready', ...status };
         }
@@ -291,7 +303,9 @@ test.describe('Video Upload with Visibility', () => {
       const treeName = match?.[2] ? decodeURIComponent(match[2]) : null;
       const stores = await import('/src/stores');
       const root = npub && treeName ? stores.getTreeRootSync(npub, treeName) : null;
-      const adapter = (window as any).__getWorkerAdapter?.() ?? (window as any).__workerAdapter ?? null;
+      const adapter = (window as VideoUploadTestWindow).__getWorkerAdapter?.()
+        ?? (window as VideoUploadTestWindow).__workerAdapter
+        ?? null;
       let resolveVideo = null;
       if (root) {
         try {

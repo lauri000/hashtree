@@ -14,6 +14,7 @@ import { chromium } from '@playwright/test';
 import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'url';
+import { attachRenderLoopGuardToContext, formatRenderLoopFailures } from './renderLoopGuard';
 import { setupPageErrorHandler, followUser, waitForAppReady, ensureLoggedIn, useLocalRelay, waitForRelayConnected, configureBlossomServers } from './test-utils';
 // Run tests in this file serially to avoid WebRTC/timing conflicts
 test.describe.configure({ mode: 'serial' });
@@ -23,6 +24,39 @@ const __dirname = path.dirname(__filename);
 
 // Y4M video file for Chromium's fake camera (10 seconds, 320x240, 15fps)
 const FAKE_CAM_VIDEO = path.join(__dirname, 'fixtures', 'test-video-fake-cam.y4m');
+
+type WorkerAdapterLike = {
+  sendHello?: () => Promise<void> | void;
+};
+
+type NostrStoreLike = {
+  getState?: () => {
+    npub?: string | null;
+  };
+};
+
+type PeerLike = {
+  pubkey?: string;
+  isConnected?: boolean;
+};
+
+type WebRtcStoreLike = {
+  getPeers?: () => PeerLike[];
+};
+
+type VideoWithPlaybackQuality = HTMLVideoElement & {
+  getVideoPlaybackQuality?: () => {
+    totalVideoFrames?: number;
+    droppedVideoFrames?: number;
+    corruptedVideoFrames?: number;
+  };
+};
+
+type VirtualCameraTestWindow = Window & {
+  __nostrStore?: NostrStoreLike;
+  __getWorkerAdapter?: () => WorkerAdapterLike | null | undefined;
+  webrtcStore?: WebRtcStoreLike;
+};
 
 // Setup fresh user with cleared storage
 async function setupFreshUser(page: Page): Promise<void> {
@@ -65,7 +99,7 @@ async function dismissBlockingModal(page: Page): Promise<void> {
 // Get user's npub (prefer store; fallback to UI navigation)
 async function getNpub(page: Page): Promise<string> {
   const npub = await page.evaluate(() => {
-    const store = (window as any).__nostrStore;
+    const store = (window as VirtualCameraTestWindow).__nostrStore;
     return store?.getState?.()?.npub ?? null;
   });
   if (npub) return npub;
@@ -94,6 +128,7 @@ test.describe('Virtual Camera Livestream', () => {
 
     const relayUrl = `ws://localhost:4736/w${testInfo.workerIndex}`;
     process.env.PW_TEST_RELAY_URL = relayUrl;
+    const renderLoopFailures = new Set<string>();
 
     // Launch browser with fake camera args
     const browser = await chromium.launch({
@@ -113,6 +148,8 @@ test.describe('Virtual Camera Livestream', () => {
     const contextB = await browser.newContext({
       permissions: ['camera', 'microphone'],
     });
+    attachRenderLoopGuardToContext(contextA, renderLoopFailures);
+    attachRenderLoopGuardToContext(contextB, renderLoopFailures);
     await contextA.addInitScript((url: string) => {
       (window as unknown as { __testRelayUrl?: string }).__testRelayUrl = url;
     }, relayUrl);
@@ -149,6 +186,8 @@ test.describe('Virtual Camera Livestream', () => {
     setupPageErrorHandler(pageA);
     setupPageErrorHandler(pageB);
 
+    let testError: unknown = null;
+
     try {
       // === Setup Broadcaster ===
       console.log('\n=== Setting up Broadcaster (Virtual Camera) ===');
@@ -172,14 +211,14 @@ test.describe('Virtual Camera Livestream', () => {
 
       // Prompt WebRTC connections
       await Promise.all([
-        pageA.evaluate(() => (window as any).__getWorkerAdapter?.()?.sendHello?.()),
-        pageB.evaluate(() => (window as any).__getWorkerAdapter?.()?.sendHello?.()),
+        pageA.evaluate(() => (window as VirtualCameraTestWindow).__getWorkerAdapter?.()?.sendHello?.()),
+        pageB.evaluate(() => (window as VirtualCameraTestWindow).__getWorkerAdapter?.()?.sendHello?.()),
       ]);
       await pageA.waitForTimeout(5000);
 
       const peersA = await pageA.evaluate(() => {
-        const store = (window as any).webrtcStore;
-        return store?.getPeers?.()?.map((p: any) => ({
+        const store = (window as VirtualCameraTestWindow).webrtcStore;
+        return store?.getPeers?.()?.map((p) => ({
           pubkey: p.pubkey?.slice(0, 16),
           isConnected: p.isConnected,
         })) || [];
@@ -235,10 +274,10 @@ test.describe('Virtual Camera Livestream', () => {
 
       const getViewerState = async () => {
         return await pageB.evaluate(() => {
-          const video = document.querySelector('video') as HTMLVideoElement;
+          const video = document.querySelector('video') as VideoWithPlaybackQuality | null;
           let decodedFrames = 0, droppedFrames = 0, corruptedFrames = 0;
-          if (video && 'getVideoPlaybackQuality' in video) {
-            const quality = (video as any).getVideoPlaybackQuality();
+          if (video && typeof video.getVideoPlaybackQuality === 'function') {
+            const quality = video.getVideoPlaybackQuality();
             decodedFrames = quality?.totalVideoFrames || 0;
             droppedFrames = quality?.droppedVideoFrames || 0;
             corruptedFrames = quality?.corruptedVideoFrames || 0;
@@ -273,8 +312,6 @@ test.describe('Virtual Camera Livestream', () => {
 
       // Sample duration and size every 3 seconds for 30 seconds
       console.log('\n=== Tracking stream growth (real MediaRecorder) ===');
-      let durationGrowthCount = 0;
-      let prevDuration = 0;
       let sizeGrowthCount = 0;
 
       for (let i = 0; i < 10; i++) {
@@ -305,14 +342,6 @@ test.describe('Virtual Camera Livestream', () => {
           size: broadcasterSize,
           viewerSize: viewerFileSize || 0,
         });
-
-        // Only count growth between finite durations
-        if (isFinite(duration) && isFinite(prevDuration) && duration > prevDuration + 0.5) {
-          durationGrowthCount++;
-        }
-        if (isFinite(duration)) {
-          prevDuration = duration;
-        }
 
         console.log(
           `t=${i * 3}s: viewer_dur=${isFinite(duration) ? duration.toFixed(1) : 'Inf'}s, ` +
@@ -442,10 +471,19 @@ test.describe('Virtual Camera Livestream', () => {
       console.log(`  Frames: ${finalState.decodedFrames} decoded, ${finalState.corruptedFrames} corrupted`);
       console.log(`  Buffered: ${finalState.buffered.toFixed(1)}s`);
 
+      if (renderLoopFailures.size > 0) {
+        throw new Error(formatRenderLoopFailures(renderLoopFailures));
+      }
+    } catch (error) {
+      testError = error;
+      throw error;
     } finally {
       await contextA.close();
       await contextB.close();
       await browser.close();
+      if (!testError && renderLoopFailures.size > 0) {
+        throw new Error(formatRenderLoopFailures(renderLoopFailures));
+      }
     }
   });
 });
