@@ -79,6 +79,13 @@ export function shouldPreferSameOriginHtreeRoutes(): boolean {
   const serverProtocol = getServerProtocol(serverUrl);
   if (serverProtocol !== 'http:') return false;
   if (getPageProtocol() === 'https:') return true;
+  if (getPageProtocol() === 'htree:') {
+    const hostname = getPageHostname();
+    if (hostname?.startsWith('npub1') || hostname === 'self') {
+      return true;
+    }
+    return false;
+  }
   if (hasCanonicalHtreeIdentity() && !isLoopbackChildRuntime()) return true;
   return false;
 }

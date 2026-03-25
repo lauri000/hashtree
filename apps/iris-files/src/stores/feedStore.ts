@@ -14,6 +14,7 @@ import { orderFeedWithInterleaving } from '../utils/feedOrder';
 import { clearDeletedVideo, getDeletedVideoTimestamp, recordDeletedVideo } from './videoDeletes';
 import { isHtreeDebugEnabled, logHtreeDebug } from '../lib/htreeDebug';
 import { getAppType } from '../appType';
+import { isThumbnailAliasUrl } from '../lib/mediaUrl';
 import { detectPlaylistForCard, getCachedPlaylistInfo, shouldRefreshPlaylistCardInfo } from './playlist';
 import { resolveFeedVideoRootCid, resolveFeedVideoRootCidAsync } from '../lib/videoFeedRoot';
 import { onCacheUpdate } from '../treeRootCache';
@@ -198,7 +199,7 @@ export async function getFeedVideoResolvedMedia(video: FeedVideo): Promise<Parti
   const playbackRootCid = info?.rootCid ?? rootCid;
   let thumbnailUrl = info?.thumbnailUrl;
 
-  if (!thumbnailUrl) {
+  if (!thumbnailUrl || isThumbnailAliasUrl(thumbnailUrl)) {
     const thumbnailRootCid = await resolveReadableThumbnailRoot({
       rootCid: playbackRootCid,
       npub: video.ownerNpub,
@@ -208,7 +209,9 @@ export async function getFeedVideoResolvedMedia(video: FeedVideo): Promise<Parti
     }) ?? playbackRootCid;
 
     if (!sameCid(thumbnailRootCid, playbackRootCid)) {
-      const thumbnailInfo = await detectPlaylistForCard(thumbnailRootCid, video.ownerNpub, video.treeName);
+      const thumbnailInfo = await detectPlaylistForCard(thumbnailRootCid, video.ownerNpub, video.treeName, {
+        cacheScope: 'root',
+      });
       thumbnailUrl = thumbnailInfo?.thumbnailUrl;
     }
   }

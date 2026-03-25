@@ -4,16 +4,18 @@ import { SimplePool } from 'nostr-tools';
 import { npubToPubkey, ndk } from '../nostr';
 import { getTree } from '../store';
 import { logHtreeDebug } from './htreeDebug';
+import { getInjectedHtreeServerUrl } from './nativeHtree';
 import { findPlayableMediaEntry } from './playableMedia';
 import { readDirectPlayableMediaFileName } from './directPlayableRoot';
 
 const ROOT_READ_TIMEOUT_MS = 8000;
-const ROOT_HISTORY_FETCH_TIMEOUT_MS = 3000;
+const ROOT_HISTORY_FETCH_TIMEOUT_MS = 5000;
 const MAX_ROOT_HISTORY_CANDIDATES = 20;
 const FALLBACK_CACHE_TTL_MS = 10000;
 const NO_FALLBACK_CACHE_TTL_MS = 10000;
+const ROOT_HISTORY_CACHE_TTL_MS = 30000;
 const MAX_PLAYLIST_CHILD_PROBES = 12;
-const READABLE_ROOT_HISTORY_CONCURRENCY = 2;
+const READABLE_ROOT_HISTORY_CONCURRENCY = 4;
 const THUMBNAIL_PROBE_METADATA_TIMEOUT_MS = 2500;
 const DEFAULT_HISTORY_RELAYS = [
   'wss://relay.damus.io',
@@ -27,12 +29,18 @@ const DEFAULT_HISTORY_RELAYS = [
 
 const inFlightReadableRoots = new Map<string, Promise<CID | null>>();
 const inFlightThumbnailRoots = new Map<string, Promise<CID | null>>();
+const inFlightRootHistoryEvents = new Map<string, Promise<NDKEvent[]>>();
 const readableRootCache = new Map<string, { cid: CID | null; expiresAt: number }>();
 const thumbnailRootCache = new Map<string, { cid: CID | null; expiresAt: number }>();
+const rootHistoryEventCache = new Map<string, { events: NDKEvent[]; expiresAt: number }>();
 const readableRootHistoryWaiters: Array<() => void> = [];
 let activeBackgroundReadableRootHistoryLookups = 0;
 let activeForegroundReadableRootHistoryLookups = 0;
 const TIMEOUT = Symbol('timeout');
+
+function isHexPubkey(value: string | null | undefined): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
+}
 
 function wakeReadableRootHistoryWaiter(): void {
   if (activeForegroundReadableRootHistoryLookups > 0) {
@@ -130,6 +138,12 @@ function getHistoryRelayUrls(): string[] {
 }
 
 async function queryRawTreeRootEvents(pubkey: string, treeName: string): Promise<NDKEvent[] | null> {
+  if (!isHexPubkey(pubkey)) {
+    return null;
+  }
+  if (getInjectedHtreeServerUrl()) {
+    return null;
+  }
   const relayUrls = getHistoryRelayUrls();
   if (relayUrls.length === 0) {
     return null;
@@ -148,7 +162,7 @@ async function queryRawTreeRootEvents(pubkey: string, treeName: string): Promise
       }),
       ROOT_HISTORY_FETCH_TIMEOUT_MS + 500,
     );
-    return events === TIMEOUT ? null : events;
+    return events === TIMEOUT ? null : Array.from(events);
   } catch {
     return null;
   } finally {
@@ -158,6 +172,67 @@ async function queryRawTreeRootEvents(pubkey: string, treeName: string): Promise
     try {
       pool.destroy();
     } catch {}
+  }
+}
+
+function getHistoryCacheKey(pubkey: string, treeName: string): string {
+  return `${pubkey}/${treeName}`;
+}
+
+function normalizeHistoricalEvents(events: Iterable<NDKEvent> | null | undefined): NDKEvent[] {
+  return events ? Array.from(events) : [];
+}
+
+async function getHistoricalRootEvents(pubkey: string, treeName: string): Promise<NDKEvent[]> {
+  const cacheKey = getHistoryCacheKey(pubkey, treeName);
+  const cached = rootHistoryEventCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.events;
+  }
+  if (cached) {
+    rootHistoryEventCache.delete(cacheKey);
+  }
+
+  const existing = inFlightRootHistoryEvents.get(cacheKey);
+  if (existing) {
+    return await existing;
+  }
+
+  const lookup = (async (): Promise<NDKEvent[]> => {
+    let ndkEvents: Iterable<NDKEvent> | null = null;
+    try {
+      const timedEvents = await withTimeout(
+        ndk.fetchEvents({
+          kinds: [30078],
+          authors: [pubkey],
+          '#d': [treeName],
+          limit: MAX_ROOT_HISTORY_CANDIDATES,
+        }),
+        ROOT_HISTORY_FETCH_TIMEOUT_MS,
+      );
+      ndkEvents = timedEvents === TIMEOUT ? null : timedEvents;
+    } catch {
+      ndkEvents = null;
+    }
+
+    const rawEvents = await queryRawTreeRootEvents(pubkey, treeName);
+    const merged = uniqueEvents([
+      ...normalizeHistoricalEvents(ndkEvents),
+      ...normalizeHistoricalEvents(rawEvents),
+    ]).sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
+
+    rootHistoryEventCache.set(cacheKey, {
+      events: merged,
+      expiresAt: Date.now() + ROOT_HISTORY_CACHE_TTL_MS,
+    });
+    return merged;
+  })();
+
+  inFlightRootHistoryEvents.set(cacheKey, lookup);
+  try {
+    return await lookup;
+  } finally {
+    inFlightRootHistoryEvents.delete(cacheKey);
   }
 }
 
@@ -360,7 +435,7 @@ async function queryHistoricalRootCandidate(
 ): Promise<CID | null> {
   const { rootCid, npub, treeName, videoId, priority, logSuffix } = options;
   const pubkey = npubToPubkey(npub);
-  if (!pubkey) {
+  if (!isHexPubkey(pubkey)) {
     return null;
   }
 
@@ -372,56 +447,24 @@ async function queryHistoricalRootCandidate(
   });
 
   return await withReadableRootHistorySlot(priority, async (): Promise<CID | null> => {
-    let events: Awaited<ReturnType<typeof ndk.fetchEvents>> | null = null;
-    try {
-      const timedEvents = await withTimeout(
-        ndk.fetchEvents({
-          kinds: [30078],
-          authors: [pubkey],
-          '#d': [treeName],
-          limit: MAX_ROOT_HISTORY_CANDIDATES,
-        }),
-        ROOT_HISTORY_FETCH_TIMEOUT_MS,
-      );
-      events = timedEvents === TIMEOUT ? null : timedEvents;
-    } catch {
-      return null;
-    }
-    if (!events) {
-      events = new Set();
+    const events = await getHistoricalRootEvents(pubkey, treeName);
+    if (events.length > 0) {
+      logHtreeDebug(`video-root:${logSuffix}:probe-history:merged`, {
+        npub,
+        treeName,
+        videoId: videoId ?? null,
+        rootHash: toHex(rootCid.hash).slice(0, 8),
+        events: events.length,
+      });
     }
 
-    const candidateSets = [
-      Array.from(events).sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)),
-      (() => {
-        const rawEvents = queryRawTreeRootEvents(pubkey, treeName);
-        return rawEvents;
-      })(),
-    ] as const;
-
-    for (const source of candidateSets) {
-      const resolvedEvents = source instanceof Promise ? await source : source;
-      if (!resolvedEvents || resolvedEvents.length === 0) {
+    for (const event of events) {
+      const candidate = parseTreeRootCid(event);
+      if (!candidate || sameCid(candidate, rootCid)) {
         continue;
       }
-      if (source instanceof Promise) {
-        logHtreeDebug(`video-root:${logSuffix}:probe-history:raw`, {
-          npub,
-          treeName,
-          videoId: videoId ?? null,
-          rootHash: toHex(rootCid.hash).slice(0, 8),
-          events: resolvedEvents.length,
-        });
-      }
-      const sortedEvents = uniqueEvents(resolvedEvents).sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
-      for (const event of sortedEvents) {
-        const candidate = parseTreeRootCid(event);
-        if (!candidate || sameCid(candidate, rootCid)) {
-          continue;
-        }
-        if (await predicate(candidate)) {
-          return candidate;
-        }
+      if (await predicate(candidate)) {
+        return candidate;
       }
     }
 

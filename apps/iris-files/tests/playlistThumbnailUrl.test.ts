@@ -72,7 +72,7 @@ describe('detectPlaylistForCard thumbnail urls', () => {
     resolvePath.mockReset();
     ndkFetchEvents.mockReset();
     npubToPubkey.mockReset();
-    npubToPubkey.mockReturnValue('pubkey1');
+    npubToPubkey.mockReturnValue('f'.repeat(64));
     installWindow();
   });
 
@@ -270,6 +270,37 @@ describe('detectPlaylistForCard thumbnail urls', () => {
     expect(info?.videoCount).toBe(0);
     expect(info?.thumbnailUrl).toBe(
       `/htree/${nhashEncode(THUMB_A)}/thumbnail.jpg?htree_c=test-media-client`,
+    );
+  });
+
+  it('can inspect an alternate immutable root without reusing a stale tree-scoped cache entry', async () => {
+    const THUMBNAIL_ROOT: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 33) };
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid, ROOT)) {
+        return [
+          { name: 'video.mp4', cid: VIDEO_DIR_A },
+        ];
+      }
+      if (sameHash(cid, THUMBNAIL_ROOT)) {
+        return [
+          { name: 'video.mp4', cid: VIDEO_DIR_A },
+          { name: 'thumbnail.jpg', cid: THUMB_B },
+        ];
+      }
+      return [];
+    });
+
+    const { detectPlaylistForCard } = await import('../src/stores/playlist');
+
+    const currentInfo = await detectPlaylistForCard(ROOT, 'npub1example', 'videos/Donkey');
+    expect(currentInfo?.thumbnailUrl).toBeUndefined();
+
+    const thumbnailInfo = await detectPlaylistForCard(THUMBNAIL_ROOT, 'npub1example', 'videos/Donkey', {
+      cacheScope: 'root',
+    });
+    expect(thumbnailInfo?.rootCid).toEqual(THUMBNAIL_ROOT);
+    expect(thumbnailInfo?.thumbnailUrl).toBe(
+      `/htree/${nhashEncode(THUMB_B)}/thumbnail.jpg?htree_c=test-media-client`,
     );
   });
 

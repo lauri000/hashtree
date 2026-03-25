@@ -2,7 +2,7 @@ import 'virtual:uno.css';
 import BoardsApp from './BoardsApp.svelte';
 import { mount } from 'svelte';
 import { initServiceWorker } from './lib/swInit';
-import { restoreSession, initReadonlyWorker } from './nostr/auth';
+import { restoreSession, initReadonlyBackend } from './nostr/auth';
 import { setAppType } from './appType';
 import { initHtreeApi } from './lib/htreeApi';
 
@@ -15,9 +15,9 @@ async function init() {
   const swPromise = initServiceWorker();
   await swPromise;
   const htreePromise = initHtreeApi();
-  const workerPromise = initReadonlyWorker();
+  const backendPromise = initReadonlyBackend();
   const sessionPromise = restoreSession();
-  await Promise.all([workerPromise, sessionPromise]);
+  await Promise.all([backendPromise, sessionPromise]);
   await htreePromise;
 }
 

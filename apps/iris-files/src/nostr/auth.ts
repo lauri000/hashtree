@@ -4,7 +4,7 @@
 import { generateSecretKey, getPublicKey, nip19, nip44 } from 'nostr-tools';
 import { ndk, NDKPrivateKeySigner, NDKNip07Signer, NDKEvent } from './ndk';
 import { nostrStore } from './store';
-import { initHashtreeWorker, getWorkerAdapter, updateFollowsSubscription, waitForWorkerAdapter } from '../lib/workerInit';
+import { initHashtreeBackend, getWorkerAdapter, updateFollowsSubscription, waitForWorkerAdapter } from '../lib/workerInit';
 import {
   accountsStore,
   initAccountsStore,
@@ -43,15 +43,15 @@ export function getNsec(): string | null {
 }
 
 /**
- * Initialize or update worker with user identity.
+ * Initialize or update backend with user identity.
  */
-async function initOrUpdateWorkerIdentity(pubkey: string, nsecHex?: string): Promise<void> {
+async function initOrUpdateBackendIdentity(pubkey: string, nsecHex?: string): Promise<void> {
   const adapter = getWorkerAdapter();
   if (adapter) {
     await adapter.setIdentity(pubkey, nsecHex);
     updateFollowsSubscription(pubkey);
   } else {
-    await initHashtreeWorker({ pubkey, nsec: nsecHex });
+    await initHashtreeBackend({ pubkey, nsec: nsecHex });
     const readyAdapter = getWorkerAdapter();
     if (readyAdapter) {
       await readyAdapter.setIdentity(pubkey, nsecHex);
@@ -61,22 +61,26 @@ async function initOrUpdateWorkerIdentity(pubkey: string, nsecHex?: string): Pro
 }
 
 /**
- * Initialize the worker early for read-only access.
+ * Initialize the backend early for read-only access.
  * This avoids waiting on login flows before connecting to relays.
  */
-export async function initReadonlyWorker(): Promise<void> {
+export async function initReadonlyBackend(): Promise<void> {
   if (getWorkerAdapter()) return;
   if (secretKey) {
     const pubkey = getPublicKey(secretKey);
     const nsecHex = Array.from(secretKey).map(b => b.toString(16).padStart(2, '0')).join('');
-    await initHashtreeWorker({ pubkey, nsec: nsecHex });
+    await initHashtreeBackend({ pubkey, nsec: nsecHex });
     return;
   }
   ensureBootstrapIdentity();
   const nsecHex = bootstrapSecretKey
     ? Array.from(bootstrapSecretKey).map(b => b.toString(16).padStart(2, '0')).join('')
     : undefined;
-  await initHashtreeWorker({ pubkey: bootstrapPubkey, nsec: nsecHex });
+  await initHashtreeBackend({ pubkey: bootstrapPubkey, nsec: nsecHex });
+}
+
+export async function initReadonlyWorker(): Promise<void> {
+  return initReadonlyBackend();
 }
 
 /**
@@ -201,7 +205,7 @@ export async function loginWithExtension(): Promise<boolean> {
     accountsStore.setActiveAccount(pk);
     saveActiveAccountToStorage(pk);
 
-    await initOrUpdateWorkerIdentity(pk);
+    await initOrUpdateBackendIdentity(pk);
 
     // Run migrations in background (delay to allow relays to connect)
     if (needsMigrations()) {
@@ -252,7 +256,7 @@ export async function loginWithNsec(nsec: string, save = true): Promise<boolean>
     }
 
     const nsecHex = Array.from(secretKey).map(b => b.toString(16).padStart(2, '0')).join('');
-    await initOrUpdateWorkerIdentity(pk, nsecHex);
+    await initOrUpdateBackendIdentity(pk, nsecHex);
 
     // Initialize wallet with secret key
     initWallet(secretKey).catch(e => {
@@ -299,7 +303,7 @@ async function applySecretKey(nextKey: Uint8Array): Promise<{ nsec: string; npub
   }
 
   const nsecHex = Array.from(nextKey).map(b => b.toString(16).padStart(2, '0')).join('');
-  await initOrUpdateWorkerIdentity(pk, nsecHex);
+  await initOrUpdateBackendIdentity(pk, nsecHex);
 
   // Initialize wallet with secret key
   initWallet(nextKey).catch(e => {
@@ -343,7 +347,7 @@ async function createDefaultFolders() {
       adapter = await waitForWorkerAdapter(10000);
     }
     if (!adapter) {
-      throw new Error('Worker not ready');
+      throw new Error('Backend not ready');
     }
 
     const { createTree } = await import('../actions');

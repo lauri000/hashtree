@@ -40,6 +40,7 @@ export {
   loginWithNsec,
   generateNewKey,
   waitForNostrExtension,
+  initReadonlyBackend,
   initReadonlyWorker,
   logout,
   getSecretKey,

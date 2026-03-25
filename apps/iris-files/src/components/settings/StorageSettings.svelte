@@ -1,6 +1,7 @@
 <script lang="ts">
   import { nip19 } from 'nostr-tools';
   import { nostrStore } from '../../nostr';
+  import { getInjectedHtreeServerUrl } from '../../lib/nativeHtree';
   import { appStore, formatBytes, updateStorageStats } from '../../store';
   import { settingsStore, DEFAULT_STORAGE_SETTINGS } from '../../stores/settings';
 
@@ -15,8 +16,7 @@
   let appState = $derived($appStore);
   let stats = $derived(appState.stats);
 
-  // Worker backend info
-  let workerBackend = 'Web Worker';
+  const backendType = getInjectedHtreeServerUrl() ? 'Rust Backend' : 'Web Worker';
 
   // Republish state
   let isRepublishing = $state(false);
@@ -104,17 +104,17 @@
 </script>
 
 <div class="p-4 space-y-6 max-w-2xl mx-auto">
-  <!-- Worker Backend -->
+  <!-- Backend -->
   <div>
     <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-3">
-      Worker Backend
+      Backend
     </h3>
     <div class="bg-surface-2 rounded p-3 text-sm">
       <div class="flex justify-between">
         <span class="text-muted">Type</span>
         <span class="text-text-1 flex items-center gap-1.5">
           <span class="w-2 h-2 rounded-full bg-info"></span>
-          {workerBackend}
+          {backendType}
         </span>
       </div>
     </div>

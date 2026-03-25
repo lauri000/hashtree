@@ -27,8 +27,8 @@ describe('vite base path', () => {
     expect(config.base).toBe('/hashtree/');
   });
 
-  it('uses / outside GitHub Pages builds', async () => {
+  it('uses a relative base outside GitHub Pages builds', async () => {
     const config = await loadViteConfig();
-    expect(config.base ?? '/').toBe('/');
+    expect(config.base ?? '/').toBe('./');
   });
 });

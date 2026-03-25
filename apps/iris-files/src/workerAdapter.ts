@@ -1308,17 +1308,27 @@ export class WorkerAdapter {
 // Singleton Instance
 // ============================================================================
 
-let instance: WorkerAdapter | null = null;
+export type BackendAdapter = Pick<WorkerAdapter, keyof WorkerAdapter>;
+
+let instance: BackendAdapter | null = null;
 
 // Expose on window for tests to reliably access (avoids Vite module duplication issues)
 declare global {
   interface Window {
-    __workerAdapter?: WorkerAdapter | null;
+    __workerAdapter?: BackendAdapter | null;
   }
 }
 
-export function getWorkerAdapter(): WorkerAdapter | null {
+export function getWorkerAdapter(): BackendAdapter | null {
   return instance;
+}
+
+export function setWorkerAdapterInstance(adapter: BackendAdapter | null): void {
+  instance = adapter;
+
+  if (typeof window !== 'undefined') {
+    window.__workerAdapter = instance;
+  }
 }
 
 export async function initWorkerAdapter(
@@ -1326,18 +1336,18 @@ export async function initWorkerAdapter(
   config: WorkerConfig
 ): Promise<WorkerAdapter> {
   if (instance) {
-    return instance;
+    return instance as WorkerAdapter;
   }
 
   instance = new WorkerAdapter(workerFactory, config);
-  await instance.init();
+  await (instance as WorkerAdapter).init();
 
   // Expose on window for tests
   if (typeof window !== 'undefined') {
     window.__workerAdapter = instance;
   }
 
-  return instance;
+  return instance as WorkerAdapter;
 }
 
 export function closeWorkerAdapter(): void {
@@ -1349,3 +1359,7 @@ export function closeWorkerAdapter(): void {
 
 // Re-export types for consumers
 export type { PeerStats, RelayStats };
+export type {
+  BlossomBandwidthStats as WorkerBlossomBandwidthStats,
+  BlossomUploadProgress as WorkerBlossomUploadProgress,
+};

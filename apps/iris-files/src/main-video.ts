@@ -2,7 +2,7 @@ import 'virtual:uno.css';
 import VideoApp from './VideoApp.svelte';
 import { mount } from 'svelte';
 import { initServiceWorker } from './lib/swInit';
-import { restoreSession, initReadonlyWorker } from './nostr/auth';
+import { restoreSession, initReadonlyBackend } from './nostr/auth';
 import { mergeBootstrapIndex } from './stores/searchIndex';
 import { setAppType } from './appType';
 import { initHtreeApi } from './lib/htreeApi';
@@ -16,9 +16,9 @@ async function init() {
   const swPromise = initServiceWorker({ requireCrossOriginIsolation: true });
   await swPromise;
   const htreePromise = initHtreeApi();
-  const workerPromise = initReadonlyWorker();
+  const backendPromise = initReadonlyBackend();
   const sessionPromise = restoreSession();
-  await workerPromise;
+  await backendPromise;
   await ensureMediaStreamingReady().catch(() => false);
   mount(VideoApp, {
     target: document.getElementById('app')!,

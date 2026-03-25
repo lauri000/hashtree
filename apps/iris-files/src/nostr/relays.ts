@@ -8,6 +8,23 @@ import { nostrStore, type RelayStatus, type RelayInfo } from './store';
 import { settingsStore, DEFAULT_NETWORK_SETTINGS } from '../stores/settings';
 import { getWorkerAdapter } from '../lib/workerInit';
 
+let relayTrackingInitialized = false;
+
+function relayStatusMapsEqual(a: Map<string, RelayStatus>, b: Map<string, RelayStatus>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [key, value] of a.entries()) {
+    if (b.get(key) !== value) return false;
+  }
+  return true;
+}
+
+function relayInfoListsEqual(a: RelayInfo[], b: RelayInfo[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((relay, index) =>
+    relay.url === b[index]?.url && relay.status === b[index]?.status
+  );
+}
+
 // Normalize relay URL (remove trailing slash)
 export function normalizeRelayUrl(url: string): string {
   return url.replace(/\/$/, '');
@@ -19,7 +36,10 @@ export function normalizeRelayUrl(url: string): string {
 export async function updateConnectedRelayCount(): Promise<void> {
   const adapter = getWorkerAdapter();
   if (!adapter) {
-    nostrStore.setConnectedRelays(0);
+    const state = nostrStore.getState();
+    if (state.connectedRelays !== 0) {
+      nostrStore.setConnectedRelays(0);
+    }
     return;
   }
 
@@ -63,9 +83,16 @@ export async function updateConnectedRelayCount(): Promise<void> {
 
     discoveredRelays.sort((a, b) => a.url.localeCompare(b.url));
 
-    nostrStore.setConnectedRelays(connected);
-    nostrStore.setRelayStatuses(statuses);
-    nostrStore.setDiscoveredRelays(discoveredRelays);
+    const state = nostrStore.getState();
+    if (state.connectedRelays !== connected) {
+      nostrStore.setConnectedRelays(connected);
+    }
+    if (!relayStatusMapsEqual(state.relayStatuses, statuses)) {
+      nostrStore.setRelayStatuses(statuses);
+    }
+    if (!relayInfoListsEqual(state.discoveredRelays, discoveredRelays)) {
+      nostrStore.setDiscoveredRelays(discoveredRelays);
+    }
   } catch (err) {
     console.error('[Relays] Failed to get relay stats:', err);
   }
@@ -76,6 +103,9 @@ export async function updateConnectedRelayCount(): Promise<void> {
  * Polls worker periodically for relay status updates.
  */
 export function initRelayTracking(): void {
+  if (relayTrackingInitialized) return;
+  relayTrackingInitialized = true;
+
   // Poll immediately
   void updateConnectedRelayCount();
 

@@ -57,12 +57,13 @@ describe('resolveReadableVideoRoot', () => {
     querySync.mockReset();
     poolClose.mockReset();
     poolDestroy.mockReset();
-    npubToPubkey.mockReturnValue('pubkey1');
+    npubToPubkey.mockReturnValue('f'.repeat(64));
     querySync.mockResolvedValue([]);
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('keeps the current root when it is readable', async () => {
@@ -187,6 +188,69 @@ describe('resolveReadableVideoRoot', () => {
     })).resolves.toEqual(FALLBACK);
   });
 
+  it('waits for a slower raw relay history response when ndk history is empty and the raw response contains a thumbnail-rich prior root', async () => {
+    vi.useFakeTimers();
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid, ROOT)) return [{ name: 'video.mp4' }];
+      if (sameHash(cid, FALLBACK)) return [{ name: 'video.mp4' }, { name: 'thumbnail.jpg' }];
+      return [];
+    });
+    ndkFetchEvents.mockResolvedValue(new Set());
+    querySync.mockImplementation(() => new Promise((resolve) => {
+      setTimeout(() => {
+        resolve([
+          {
+            created_at: 20,
+            tags: [['d', 'videos/Test'], ['hash', Buffer.from(ROOT.hash).toString('hex')]],
+          },
+          {
+            created_at: 10,
+            tags: [['d', 'videos/Test'], ['hash', Buffer.from(FALLBACK.hash).toString('hex')]],
+          },
+        ]);
+      }, 3600);
+    }));
+
+    const { resolveReadableThumbnailRoot } = await import('../src/lib/readableVideoRoot');
+    const resultPromise = resolveReadableThumbnailRoot({
+      rootCid: ROOT,
+      npub: 'npub1example',
+      treeName: 'videos/Test',
+    });
+
+    await vi.advanceTimersByTimeAsync(8000);
+    await vi.advanceTimersByTimeAsync(3600);
+
+    await expect(resultPromise).resolves.toEqual(FALLBACK);
+    expect(querySync).toHaveBeenCalledTimes(1);
+  });
+
+  it('avoids raw relay history queries in native mode', async () => {
+    vi.stubGlobal('window', {
+      location: {
+        protocol: 'htree:',
+        hostname: 'npub1example',
+        search: '',
+      },
+      __HTREE_SERVER_URL__: 'http://127.0.0.1:21417',
+    });
+    listDirectory.mockResolvedValue([]);
+    ndkFetchEvents.mockResolvedValue(new Set([
+      {
+        created_at: 20,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(ROOT.hash).toString('hex')]],
+      },
+    ]));
+
+    const { resolveReadableVideoRoot } = await import('../src/lib/readableVideoRoot');
+    await expect(resolveReadableVideoRoot({
+      rootCid: ROOT,
+      npub: 'npub1example',
+      treeName: 'videos/Test',
+    })).resolves.toEqual(ROOT);
+    expect(querySync).not.toHaveBeenCalled();
+  });
+
   it('treats direct-root playable blobs as readable without falling back to history', async () => {
     listDirectory.mockResolvedValue([]);
     readFileRange.mockResolvedValue(new Uint8Array([
@@ -289,6 +353,8 @@ describe('resolveReadableVideoRoot', () => {
   it('prioritizes foreground root fallback ahead of queued background probes', async () => {
     let releaseBackgroundOne: ((value: Set<never>) => void) | null = null;
     let releaseBackgroundTwo: ((value: Set<never>) => void) | null = null;
+    let releaseBackgroundThree: ((value: Set<never>) => void) | null = null;
+    let releaseBackgroundFour: ((value: Set<never>) => void) | null = null;
 
     listDirectory.mockImplementation(async (cid: CID) => {
       if (sameHash(cid, FALLBACK)) return [{ name: 'video.mp4' }];
@@ -300,6 +366,12 @@ describe('resolveReadableVideoRoot', () => {
       }))
       .mockImplementationOnce(() => new Promise((resolve) => {
         releaseBackgroundTwo = resolve as (value: Set<never>) => void;
+      }))
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        releaseBackgroundThree = resolve as (value: Set<never>) => void;
+      }))
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        releaseBackgroundFour = resolve as (value: Set<never>) => void;
       }))
       .mockResolvedValueOnce(new Set([
         {
@@ -326,6 +398,18 @@ describe('resolveReadableVideoRoot', () => {
       treeName: 'videos/Background Two',
       priority: 'background',
     });
+    const backgroundThree = resolveReadableVideoRoot({
+      rootCid: ROOT,
+      npub: 'npub1example',
+      treeName: 'videos/Background Three',
+      priority: 'background',
+    });
+    const backgroundFour = resolveReadableVideoRoot({
+      rootCid: ROOT_B,
+      npub: 'npub1example',
+      treeName: 'videos/Background Four',
+      priority: 'background',
+    });
 
     await Promise.resolve();
     await Promise.resolve();
@@ -339,8 +423,12 @@ describe('resolveReadableVideoRoot', () => {
 
     releaseBackgroundOne?.(new Set());
     releaseBackgroundTwo?.(new Set());
+    releaseBackgroundThree?.(new Set());
+    releaseBackgroundFour?.(new Set());
 
     await expect(backgroundOne).resolves.toEqual(ROOT);
     await expect(backgroundTwo).resolves.toEqual(ROOT_B);
+    await expect(backgroundThree).resolves.toEqual(ROOT);
+    await expect(backgroundFour).resolves.toEqual(ROOT_B);
   });
 });

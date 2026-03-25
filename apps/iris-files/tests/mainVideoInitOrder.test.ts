@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mount = vi.fn();
 const initServiceWorker = vi.fn();
-const initReadonlyWorker = vi.fn();
+const initReadonlyBackend = vi.fn();
 const restoreSession = vi.fn();
 const initHtreeApi = vi.fn();
 const mergeBootstrapIndex = vi.fn();
@@ -29,7 +29,7 @@ describe('main-video init order', () => {
     vi.resetModules();
     mount.mockReset();
     initServiceWorker.mockReset();
-    initReadonlyWorker.mockReset();
+    initReadonlyBackend.mockReset();
     restoreSession.mockReset();
     initHtreeApi.mockReset();
     mergeBootstrapIndex.mockReset();
@@ -51,14 +51,14 @@ describe('main-video init order', () => {
     });
 
     initServiceWorker.mockReturnValue(swReady);
-    initReadonlyWorker.mockResolvedValue(undefined);
+    initReadonlyBackend.mockResolvedValue(undefined);
     restoreSession.mockResolvedValue(undefined);
     initHtreeApi.mockResolvedValue(undefined);
     mergeBootstrapIndex.mockResolvedValue(undefined);
 
     vi.doMock('svelte', () => ({ mount }));
     vi.doMock('../src/lib/swInit', () => ({ initServiceWorker }));
-    vi.doMock('../src/nostr/auth', () => ({ initReadonlyWorker, restoreSession }));
+    vi.doMock('../src/nostr/auth', () => ({ initReadonlyBackend, restoreSession }));
     vi.doMock('../src/stores/searchIndex', () => ({ mergeBootstrapIndex }));
     vi.doMock('../src/appType', () => ({ setAppType }));
     vi.doMock('../src/lib/htreeApi', () => ({ initHtreeApi }));

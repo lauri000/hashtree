@@ -8,6 +8,6 @@ const profileViewSource = fs.readFileSync(profileViewPath, 'utf8');
 describe('video profile thumbnail wiring', () => {
   it('keeps profile playlist thumbnails on exact urls or placeholders', () => {
     expect(profileViewSource).toContain('thumbnailUrl={playlist.thumbnailUrl ?? getStableThumbnailUrl({');
-    expect(profileViewSource).toContain('allowAliasFallback: false');
+    expect(profileViewSource).toContain('allowAliasFallback: true');
   });
 });

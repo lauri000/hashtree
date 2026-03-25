@@ -43,7 +43,7 @@
   import { feedStore, setFeedVideos } from '../../stores/feedStore';
   import { recordDeletedVideo, getDeletedVideoTimestamp, clearDeletedVideo } from '../../stores/videoDeletes';
   import { resolveFeedVideoRootCid, resolveFeedVideoRootCidAsync } from '../../lib/videoFeedRoot';
-  import { getStableThumbnailUrl } from '../../lib/mediaUrl';
+  import { getStableThumbnailUrl, isThumbnailAliasUrl } from '../../lib/mediaUrl';
   import { onCacheUpdate } from '../../treeRootCache';
   import { resolveReadableThumbnailRoot, resolveReadableVideoRoot } from '../../lib/readableVideoRoot';
 
@@ -308,7 +308,7 @@
       const info = await detectPlaylistForCard(rootCid, video.ownerNpub!, video.treeName);
       const playbackRootCid = info?.rootCid ?? rootCid;
       let thumbnailUrl = info?.thumbnailUrl;
-      if (!thumbnailUrl) {
+      if (!thumbnailUrl || isThumbnailAliasUrl(thumbnailUrl)) {
         const thumbnailRootCid = await resolveReadableThumbnailRoot({
           rootCid: playbackRootCid,
           npub: video.ownerNpub!,
@@ -316,7 +316,9 @@
           priority: 'background',
         }) ?? playbackRootCid;
         if (!sameCid(thumbnailRootCid, playbackRootCid)) {
-          const thumbnailInfo = await detectPlaylistForCard(thumbnailRootCid, video.ownerNpub!, video.treeName);
+          const thumbnailInfo = await detectPlaylistForCard(thumbnailRootCid, video.ownerNpub!, video.treeName, {
+            cacheScope: 'root',
+          });
           thumbnailUrl = thumbnailInfo?.thumbnailUrl;
         }
       }
@@ -383,7 +385,7 @@
       const info = await detectVideoCardInfo(rootCid, video.ownerNpub, video.treeName, video.videoId);
       const mediaRootCid = info?.rootCid ?? rootCid;
       let thumbnailUrl = info?.thumbnailUrl;
-      if (!thumbnailUrl) {
+      if (!thumbnailUrl || isThumbnailAliasUrl(thumbnailUrl)) {
         const thumbnailRootCid = await resolveReadableThumbnailRoot({
           rootCid: mediaRootCid,
           npub: video.ownerNpub,

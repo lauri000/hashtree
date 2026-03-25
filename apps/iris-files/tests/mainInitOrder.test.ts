@@ -16,10 +16,10 @@ function readSource(relativePath: string): string {
 }
 
 describe('app init order', () => {
-  it.each(MAIN_ENTRY_FILES)('%s waits for the service worker before starting worker/session init', (relativePath) => {
+  it.each(MAIN_ENTRY_FILES)('%s waits for the service worker before starting backend/session init', (relativePath) => {
     const source = readSource(relativePath);
     const swAwaitIndex = source.indexOf('await swPromise;');
-    const workerIndex = source.indexOf('const workerPromise = initReadonlyWorker();');
+    const workerIndex = source.indexOf('const backendPromise = initReadonlyBackend();');
     const sessionIndex = source.indexOf('const sessionPromise = restoreSession();');
 
     expect(swAwaitIndex).toBeGreaterThan(-1);
@@ -30,7 +30,7 @@ describe('app init order', () => {
   it('mounts the video app only after the service worker settles', () => {
     const source = readSource('src/main-video.ts');
     const swAwaitIndex = source.indexOf('await swPromise;');
-    const workerAwaitIndex = source.indexOf('await workerPromise;');
+    const workerAwaitIndex = source.indexOf('await backendPromise;');
     const mediaAwaitIndex = source.indexOf('await ensureMediaStreamingReady().catch(() => false);');
     const mountIndex = source.indexOf('mount(VideoApp');
 

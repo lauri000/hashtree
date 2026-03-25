@@ -9,6 +9,7 @@
 #![cfg_attr(any(target_os = "android", target_os = "ios"), allow(dead_code))]
 
 pub mod automation;
+pub mod backend_routes;
 pub mod history;
 pub mod htree_protocol;
 pub mod nip07;
@@ -169,6 +170,7 @@ async fn start_daemon<R: tauri::Runtime + 'static>(
     // Add extra routes for relay proxy and NIP-07
     let app_for_webview_bridge = app.clone();
     let extra_routes = Router::<AppState>::new()
+        .merge(backend_routes::router())
         .route("/relay", any(relay_proxy::handle_relay_websocket))
         .route(
             "/__iris_nip07",

@@ -1,10 +1,10 @@
 /**
- * Shared state and store instances using Svelte stores
+ * Shared state and store instances using Svelte stores.
  *
  * Storage architecture:
- * - WorkerStore: Primary storage, proxies to worker thread
- * - Worker owns: DexieStore (IndexedDB), Blossom fallback
- * - Main thread: UI coordination only
+ * - backend store: primary storage adapter
+ * - backend owns: local cache and Blossom fallback
+ * - main thread: UI coordination only
  */
 import { writable, get } from 'svelte/store';
 import { HashTree, LinkType, type WorkerBlossomBandwidthStats } from '@hashtree/core';
@@ -26,8 +26,8 @@ import {
 // Re-export LinkType for e2e tests that can't import 'hashtree' directly
 export { LinkType };
 
-// Export localStore - always uses WorkerStore (no fallback)
-// Worker MUST be initialized before using storage
+// Export localStore - always uses the active backend adapter.
+// The backend must be initialized before using storage.
 export const localStore = {
   async put(hash: Uint8Array, data: Uint8Array): Promise<boolean> {
     return getWorkerStore().put(hash, data);
@@ -63,7 +63,7 @@ export const localStore = {
   },
 };
 
-// HashTree instance - uses localStore which routes to worker
+// HashTree instance - uses localStore which routes to the active backend
 const _tree = new HashTree({ store: localStore });
 
 // Getter for tree - always returns current instance
@@ -110,11 +110,11 @@ const DEFAULT_BLOSSOM_BANDWIDTH: BlossomBandwidthState = {
   servers: [],
 };
 
-// App state store interface (simplified - WebRTC stats come from worker)
+// App state store interface (simplified - mesh stats come from the active backend)
 interface AppState {
   // Storage stats
   stats: StorageStats;
-  // WebRTC peer count (from worker)
+  // WebRTC peer count (from backend)
   peerCount: number;
   // Peer list for connectivity indicator
   peers: PeerInfo[];
@@ -122,7 +122,7 @@ interface AppState {
   meshBandwidthHistory: MeshBandwidthHistoryPoint[];
   meshUploadBandwidth: number;
   meshDownloadBandwidth: number;
-  // Blossom bandwidth stats from worker
+  // Blossom bandwidth stats from backend
   blossomBandwidth: BlossomBandwidthState;
 }
 

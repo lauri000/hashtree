@@ -129,4 +129,25 @@ describe('resolveFeedVideoRootCid', () => {
     expect(closePool).toHaveBeenCalled();
     expect(destroyPool).toHaveBeenCalled();
   });
+
+  it('avoids raw relay queries in native mode', async () => {
+    vi.stubGlobal('window', {
+      location: {
+        protocol: 'htree:',
+        hostname: 'npub1example',
+        search: '',
+      },
+      __HTREE_SERVER_URL__: 'http://127.0.0.1:21417',
+    });
+    resolverResolve.mockResolvedValue(null);
+    npubToPubkey.mockReturnValue('f'.repeat(64));
+    ndkFetchEvent.mockResolvedValue(null);
+
+    const { resolveFeedVideoRootCidAsync } = await import('../src/lib/videoFeedRoot');
+    await expect(resolveFeedVideoRootCidAsync({
+      ownerNpub: 'npub1example',
+      treeName: 'videos/Mine Bombers in-game music',
+    }, 1)).resolves.toBeNull();
+    expect(querySync).not.toHaveBeenCalled();
+  });
 });

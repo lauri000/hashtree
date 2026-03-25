@@ -1,5 +1,6 @@
 import { cid, fromHex, type CID } from '@hashtree/core';
 import { getLocalRootCache, getLocalRootKey } from '../treeRootCache';
+import { getInjectedHtreeServerUrl } from './nativeHtree';
 
 const DEFAULT_TREE_ROOT_RELAYS = [
   'wss://relay.damus.io',
@@ -16,6 +17,10 @@ type FeedVideoRootSource = {
   ownerNpub?: string | null;
   treeName?: string | null;
 };
+
+function isHexPubkey(value: string | null | undefined): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
+}
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   return Promise.race([
@@ -64,7 +69,7 @@ export async function resolveFeedVideoRootCidAsync(
   try {
     const { ndk, npubToPubkey } = await import('../nostr');
     const ownerPubkey = npubToPubkey(video.ownerNpub);
-    if (!ownerPubkey) return null;
+    if (!isHexPubkey(ownerPubkey)) return null;
 
     const event = await withTimeout(ndk.fetchEvent({
       kinds: [30078],
@@ -82,10 +87,14 @@ export async function resolveFeedVideoRootCidAsync(
     // Fall through to raw relay query.
   }
 
+  if (getInjectedHtreeServerUrl()) {
+    return null;
+  }
+
   try {
     const { npubToPubkey } = await import('../nostr');
     const ownerPubkey = npubToPubkey(video.ownerNpub);
-    if (!ownerPubkey) return null;
+    if (!isHexPubkey(ownerPubkey)) return null;
 
     const { SimplePool } = await import('nostr-tools');
     const pool = new SimplePool();

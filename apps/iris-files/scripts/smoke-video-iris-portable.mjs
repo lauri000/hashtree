@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { runPortableSmoke } from './portable-smoke-lib.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -17,7 +17,15 @@ const playlistRouteHash = '#/npub1g53mukxnjkcmr94fhryzkqutdz2ukq4ks0gvy5af25rgmw
 
 async function main() {
   const assetNames = await readdir(path.join(distDir, 'assets'));
-  const workerAsset = assetNames.find((name) => /^hashtree\.worker-.*\.js$/.test(name));
+  const workerAssets = assetNames.filter((name) => /^hashtree\.worker-.*\.js$/.test(name));
+  const workerAsset = workerAssets.length === 0
+    ? null
+    : (await Promise.all(
+      workerAssets.map(async (name) => ({
+        name,
+        size: (await stat(path.join(distDir, 'assets', name))).size,
+      })),
+    )).sort((a, b) => b.size - a.size)[0]?.name ?? null;
   if (!workerAsset) {
     throw new Error('Portable video build is missing the hashtree worker asset');
   }

@@ -323,7 +323,56 @@ describe('getFeedVideoResolvedMedia', () => {
       title: 'Current root title',
     });
     expect(detectPlaylistForCard).toHaveBeenNthCalledWith(1, ROOT, 'npub1example', 'videos/Donkey');
-    expect(detectPlaylistForCard).toHaveBeenNthCalledWith(2, THUMBNAIL_ROOT, 'npub1example', 'videos/Donkey');
+    expect(detectPlaylistForCard).toHaveBeenNthCalledWith(
+      2,
+      THUMBNAIL_ROOT,
+      'npub1example',
+      'videos/Donkey',
+      { cacheScope: 'root' },
+    );
+  });
+
+  it('still probes a historical thumbnail root when the current card info only has an alias thumbnail url', async () => {
+    const THUMBNAIL_ROOT: CID = { hash: Uint8Array.from({ length: 32 }, () => 0x66) };
+    getCachedPlaylistInfo.mockReturnValue(undefined);
+    resolveReadableThumbnailRoot.mockResolvedValue(THUMBNAIL_ROOT);
+    detectPlaylistForCard
+      .mockResolvedValueOnce({
+        videoCount: 0,
+        rootCid: ROOT,
+        duration: 44,
+        title: 'Current root title',
+        thumbnailUrl: '/htree/npub1example/videos%2FDonkey/thumbnail?v=deadbeef',
+      })
+      .mockResolvedValueOnce({
+        videoCount: 0,
+        rootCid: THUMBNAIL_ROOT,
+        thumbnailUrl: '/htree/nhash1historic/thumbnail.jpg',
+      });
+
+    const { getFeedVideoResolvedMedia } = await import('../src/stores/feedStore');
+    const video: FeedVideo = {
+      href: '#/npub1example/videos%2FDonkey',
+      title: 'Donkey',
+      ownerPubkey: 'pubkey',
+      ownerNpub: 'npub1example',
+      treeName: 'videos/Donkey',
+      rootCid: ROOT,
+    };
+
+    await expect(getFeedVideoResolvedMedia(video)).resolves.toEqual({
+      thumbnailUrl: '/htree/nhash1historic/thumbnail.jpg',
+      duration: 44,
+      title: 'Current root title',
+    });
+    expect(resolveReadableThumbnailRoot).toHaveBeenCalledTimes(1);
+    expect(detectPlaylistForCard).toHaveBeenNthCalledWith(
+      2,
+      THUMBNAIL_ROOT,
+      'npub1example',
+      'videos/Donkey',
+      { cacheScope: 'root' },
+    );
   });
 
   it('falls back to the author tree event when resolver misses for a social feed video', async () => {

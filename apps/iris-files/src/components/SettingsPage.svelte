@@ -10,10 +10,10 @@
   import { settingsStore, DEFAULT_NETWORK_SETTINGS, DEFAULT_IMGPROXY_SETTINGS, DEFAULT_STORAGE_SETTINGS } from '../stores/settings';
   import { blossomLogStore } from '../stores/blossomLog';
   import { shouldOpenSourceCodeLinkInNewTab } from '../appType';
+  import { getInjectedHtreeServerUrl } from '../lib/nativeHtree';
   import { BackButton } from './ui';
   import { UserRow } from './User';
-  // Worker backend info
-  let workerBackend = 'Web Worker';
+  const backendType = getInjectedHtreeServerUrl() ? 'Rust Backend' : 'Web Worker';
   const openSourceCodeInNewTab = shouldOpenSourceCodeLinkInNewTab();
   const sourceCodeLinkTarget = openSourceCodeInNewTab ? '_blank' : '_self';
   const sourceCodeLinkRel = openSourceCodeInNewTab ? 'noopener noreferrer' : undefined;
@@ -929,17 +929,17 @@
       </div>
     </div>
 
-    <!-- Worker Backend -->
+    <!-- Backend -->
     <div>
       <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-3">
-        Worker Backend
+        Backend
       </h3>
       <div class="bg-surface-2 rounded p-3 text-sm">
         <div class="flex justify-between">
           <span class="text-muted">Type</span>
           <span class="text-text-1 flex items-center gap-1.5">
             <span class="w-2 h-2 rounded-full bg-info"></span>
-            {workerBackend}
+            {backendType}
           </span>
         </div>
       </div>

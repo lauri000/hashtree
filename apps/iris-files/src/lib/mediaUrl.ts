@@ -9,7 +9,7 @@
  * - Tauri: http://127.0.0.1:21417/htree/{...} (same path structure, fixed port)
  */
 
-import { nhashEncode, type CID } from '@hashtree/core';
+import { nhashDecode, nhashEncode, type CID } from '@hashtree/core';
 import { getMediaClientId } from './mediaClient';
 import { logHtreeDebug } from './htreeDebug';
 import { canUseInjectedHtreeServerUrl, getInjectedHtreeServerUrl } from './nativeHtree';
@@ -18,6 +18,7 @@ import { PREFERRED_PLAYABLE_MEDIA_FILENAMES } from './playableMedia';
 const LOCAL_PROBE_TIMEOUT_MS = 500;
 const LOCAL_PROBE_INTERVAL_MS = 1000;
 const PREFIX_READY_TIMEOUT_MS = 15000;
+const COMMON_THUMBNAIL_FILENAMES = ['thumbnail.jpg', 'thumbnail.webp', 'thumbnail.png', 'thumbnail.jpeg'] as const;
 
 let cachedPrefix = '';
 const prefixListeners = new Set<(prefix: string) => void>();
@@ -414,8 +415,26 @@ export function getThumbnailUrlFromCid(rootCid: CID, videoId?: string): string {
   return appendHtreeCacheBust(appendMediaClientKey(url));
 }
 
-function isThumbnailAliasUrl(url: string): boolean {
+export function isThumbnailAliasUrl(url: string): boolean {
   return /\/thumbnail(?:[?#]|$)/.test(url) && !/\/thumbnail\.[^/?#]+(?:[?#]|$)/.test(url);
+}
+
+function getImmutableThumbnailAliasRootCid(url: string): CID | null {
+  if (!isThumbnailAliasUrl(url)) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(url, 'http://localhost');
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const nhash = parts.find((part) => part.startsWith('nhash1'));
+    if (!nhash) {
+      return null;
+    }
+    return nhashDecode(nhash);
+  } catch {
+    return null;
+  }
 }
 
 interface StableThumbnailUrlOptions {
@@ -428,10 +447,30 @@ interface StableThumbnailUrlOptions {
   allowAliasFallback?: boolean;
 }
 
+function appendImmutableThumbnailFileCandidates(
+  urls: Set<string>,
+  rootCid?: CID | null,
+  videoId?: string,
+): void {
+  if (!rootCid) return;
+  for (const fileName of COMMON_THUMBNAIL_FILENAMES) {
+    const candidate = getStablePathUrl({
+      rootCid,
+      path: videoId ? `${videoId}/${fileName}` : fileName,
+    });
+    if (candidate) {
+      urls.add(candidate);
+    }
+  }
+}
+
 export function getStableThumbnailCandidateUrls(options: StableThumbnailUrlOptions): string[] {
   const urls = new Set<string>();
   const explicitThumbnailUrl = options.thumbnailUrl?.trim() || null;
   const explicitIsAlias = explicitThumbnailUrl ? isThumbnailAliasUrl(explicitThumbnailUrl) : false;
+  const explicitImmutableAliasRootCid = explicitThumbnailUrl
+    ? getImmutableThumbnailAliasRootCid(explicitThumbnailUrl)
+    : null;
   const immutableAliasUrl = options.rootCid
     ? getThumbnailUrlFromCid(options.rootCid, options.videoId)
     : null;
@@ -439,6 +478,8 @@ export function getStableThumbnailCandidateUrls(options: StableThumbnailUrlOptio
   if (explicitThumbnailUrl && !explicitIsAlias) {
     urls.add(explicitThumbnailUrl);
   }
+  appendImmutableThumbnailFileCandidates(urls, explicitImmutableAliasRootCid, options.videoId);
+  appendImmutableThumbnailFileCandidates(urls, options.rootCid, options.videoId);
   if (immutableAliasUrl) {
     urls.add(immutableAliasUrl);
   }

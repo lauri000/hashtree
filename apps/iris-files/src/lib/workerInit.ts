@@ -1,11 +1,17 @@
 /**
- * Worker Initialization
+ * Backend Initialization
  *
- * Initializes the hashtree worker for offloading storage and networking
- * from the main thread.
+ * Initializes either the browser worker runtime or the native Rust-backed
+ * backend, depending on the current host environment.
  */
 
-import { initWorkerAdapter, getWorkerAdapter as getWebWorkerAdapter, type WorkerAdapter } from '../workerAdapter';
+import {
+  initWorkerAdapter,
+  getWorkerAdapter as getSharedBackendAdapter,
+  setWorkerAdapterInstance,
+  type BackendAdapter,
+} from '../workerAdapter';
+import { initNativeBackend } from '../nativeAdapter';
 import { settingsStore, waitForSettingsLoaded } from '../stores/settings';
 import { refreshWebRTCStats, setBlossomBandwidth } from '../store';
 import { get } from 'svelte/store';
@@ -15,29 +21,27 @@ import { ndk } from '../nostr/ndk';
 import { initRelayTracking } from '../nostr/relays';
 import { getAppType } from '../appType';
 import { logHtreeDebug } from './htreeDebug';
-import { canUseInjectedHtreeServerUrl } from './nativeHtree';
+import { getInjectedHtreeServerUrl } from './nativeHtree';
 import { treeRootRegistry } from '../TreeRootRegistry';
 import { initializePublishFn } from '../treeRootCache';
 import { setupMediaStreaming } from './mediaStreamingSetup';
 import type { NDKEvent, NDKFilter, NDKSubscription } from 'ndk';
 import type { WorkerNostrFilter, WorkerSignedEvent } from '@hashtree/core';
-// Import worker using Vite's ?worker query - returns a Worker constructor
-import HashtreeWorker from '../workers/hashtree.worker.ts?worker';
 
 const isTestMode = !!import.meta.env.VITE_TEST_MODE;
 
 /**
- * Get the active worker adapter
+ * Get the active backend adapter
  */
-export function getWorkerAdapter(): WorkerAdapter | null {
-  return getWebWorkerAdapter();
+export function getWorkerAdapter(): BackendAdapter | null {
+  return getSharedBackendAdapter();
 }
 
 if (typeof window !== 'undefined') {
-  (window as typeof window & { __getWorkerAdapter?: () => WorkerAdapter | null }).__getWorkerAdapter = getWorkerAdapter;
+  (window as typeof window & { __getWorkerAdapter?: () => BackendAdapter | null }).__getWorkerAdapter = getWorkerAdapter;
 }
 
-export async function waitForWorkerAdapter(maxWaitMs = 5000): Promise<WorkerAdapter | null> {
+export async function waitForWorkerAdapter(maxWaitMs = 5000): Promise<BackendAdapter | null> {
   const start = Date.now();
   let adapter = getWorkerAdapter();
   while (!adapter && Date.now() - start < maxWaitMs) {
@@ -280,11 +284,15 @@ export interface WorkerInitIdentity {
   nsec?: string;  // hex-encoded secret key (only for nsec login)
 }
 
+function shouldUseNativeBackend(): boolean {
+  return !!getInjectedHtreeServerUrl();
+}
+
 /**
  * Wait for service worker to be ready (needed for COOP/COEP headers)
  */
 async function waitForServiceWorker(maxWaitMs?: number): Promise<boolean> {
-  if (canUseInjectedHtreeServerUrl()) return true;
+  if (shouldUseNativeBackend()) return true;
   if (!('serviceWorker' in navigator)) return true;
 
   try {
@@ -308,10 +316,10 @@ async function waitForServiceWorker(maxWaitMs?: number): Promise<boolean> {
 }
 
 /**
- * Initialize the hashtree worker with user identity.
+ * Initialize the active hashtree backend with user identity.
  * Safe to call multiple times - only initializes once.
  */
-export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<void> {
+export async function initHashtreeBackend(identity: WorkerInitIdentity): Promise<void> {
   if (initialized) return;
   if (initPromise) {
     await initPromise;
@@ -320,9 +328,11 @@ export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<
 
   initPromise = (async () => {
     const t0 = performance.now();
-    const logT = (msg: string) => console.log(`[initHashtreeWorker] ${msg}: ${Math.round(performance.now() - t0)}ms`);
+    const logT = (msg: string) => console.log(`[initHashtreeBackend] ${msg}: ${Math.round(performance.now() - t0)}ms`);
+    const backendMode = shouldUseNativeBackend() ? 'native' : 'worker';
     logHtreeDebug('worker:init:start', {
       appType: getAppType(),
+      backend: backendMode,
     });
 
     try {
@@ -362,76 +372,86 @@ export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<
         nsec: identity.nsec,
       };
 
-      logT('Starting web worker');
-      await initWorkerAdapter(HashtreeWorker, config);
-      logT('Web worker ready');
-      logHtreeDebug('worker:init:ready', { backend: 'worker' });
+      let adapter: BackendAdapter | null = null;
+      if (backendMode === 'native') {
+        logT('Starting native backend');
+        adapter = await initNativeBackend(config);
+        setWorkerAdapterInstance(adapter);
+        logT('Native backend ready');
+      } else {
+        const { default: HashtreeWorker } = await import('../workers/hashtree.worker.ts?worker');
+        logT('Starting web worker');
+        adapter = await initWorkerAdapter(HashtreeWorker, config);
+        logT('Web worker ready');
+      }
+      logHtreeDebug('worker:init:ready', { backend: backendMode });
 
       initialized = true;
-      logHtreeDebug('worker:init:done', { backend: 'worker' });
+      logHtreeDebug('worker:init:done', { backend: backendMode });
 
-      // Register worker as transport plugin for NDK publishes and subscriptions
-      const adapter = getWorkerAdapter();
+      // Hook shared backend callbacks and runtime bridges
+      adapter = getWorkerAdapter();
       if (adapter) {
         adapter.onBlossomBandwidth((stats) => {
           setBlossomBandwidth(stats);
         });
 
-        // Set up event dispatch from worker to NDK subscriptions
-        adapter.onEvent((event: WorkerSignedEvent) => {
-          ndk.subManager.dispatchEvent(event as unknown as NDKEvent, undefined, false);
-        });
-
-        const attachWorkerSubscription = (subscription: NDKSubscription, filters: NDKFilter[]) => {
-          if (workerSubscriptionIds.has(subscription)) return;
-          const subId = adapter.subscribe(
-            filters as unknown as WorkerNostrFilter[],
-            undefined, // events use global onEvent callback
-            () => {
-              subscription.emit('eose', subscription);
-            }
-          );
-          workerSubscriptionIds.set(subscription, subId);
-          subscription.on('close', () => {
-            adapter.unsubscribe(subId);
-            workerSubscriptionIds.delete(subscription);
+        if (backendMode === 'worker') {
+          // Set up event dispatch from worker to NDK subscriptions
+          adapter.onEvent((event: WorkerSignedEvent) => {
+            ndk.subManager.dispatchEvent(event as unknown as NDKEvent, undefined, false);
           });
-        };
 
-        ndk.transportPlugins.push({
-          name: 'worker',
-          onPublish: async (event) => {
-            try {
-              await adapter.publish({
-                id: event.id!,
-                pubkey: event.pubkey,
-                kind: event.kind!,
-                content: event.content,
-                tags: event.tags,
-                created_at: event.created_at!,
-                sig: event.sig!,
-              });
-            } catch (err) {
-              console.warn('[WorkerInit] Publish failed:', err);
-            }
-          },
-          onSubscribe: (subscription, filters) => {
-            attachWorkerSubscription(subscription, filters);
-          },
-        });
-        console.log('[WorkerInit] Registered worker transport plugin for NDK');
+          const attachWorkerSubscription = (subscription: NDKSubscription, filters: NDKFilter[]) => {
+            if (workerSubscriptionIds.has(subscription)) return;
+            const subId = adapter.subscribe(
+              filters as unknown as WorkerNostrFilter[],
+              undefined,
+              () => {
+                subscription.emit('eose', subscription);
+              }
+            );
+            workerSubscriptionIds.set(subscription, subId);
+            subscription.on('close', () => {
+              adapter.unsubscribe(subId);
+              workerSubscriptionIds.delete(subscription);
+            });
+          };
 
-        // Attach any subscriptions created before the transport plugin was registered.
-        let attachedCount = 0;
-        for (const subscription of ndk.subManager.subscriptions.values()) {
-          attachWorkerSubscription(subscription, subscription.filters);
-          attachedCount += 1;
+          ndk.transportPlugins.push({
+            name: 'worker',
+            onPublish: async (event) => {
+              try {
+                await adapter.publish({
+                  id: event.id!,
+                  pubkey: event.pubkey,
+                  kind: event.kind!,
+                  content: event.content,
+                  tags: event.tags,
+                  created_at: event.created_at!,
+                  sig: event.sig!,
+                });
+              } catch (err) {
+                console.warn('[WorkerInit] Publish failed:', err);
+              }
+            },
+            onSubscribe: (subscription, filters) => {
+              attachWorkerSubscription(subscription, filters);
+            },
+          });
+          console.log('[WorkerInit] Registered worker transport plugin for NDK');
+
+          let attachedCount = 0;
+          for (const subscription of ndk.subManager.subscriptions.values()) {
+            attachWorkerSubscription(subscription, subscription.filters);
+            attachedCount += 1;
+          }
+          if (attachedCount > 0) {
+            console.log('[WorkerInit] Attached existing NDK subscriptions to worker:', attachedCount);
+          }
         }
-        if (attachedCount > 0) {
-          console.log('[WorkerInit] Attached existing NDK subscriptions to worker:', attachedCount);
-        }
 
-        // Signal that the worker is ready for tree root subscriptions
+        // Signal that the backend is ready for tree root subscriptions
         import('../stores/treeRoot').then(({ signalWorkerReady }) => {
           signalWorkerReady();
         });
@@ -475,7 +495,7 @@ export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<
         console.warn('[WorkerInit] Media streaming setup failed:', err);
       });
     } catch (err) {
-      console.error('[WorkerInit] Failed to initialize worker:', err);
+      console.error('[WorkerInit] Failed to initialize backend:', err);
     }
   })();
 
@@ -518,4 +538,8 @@ export async function waitForRelayConnection(maxWait = 5000): Promise<boolean> {
   }
 
   return false;
+}
+
+export async function initHashtreeWorker(identity: WorkerInitIdentity): Promise<void> {
+  return initHashtreeBackend(identity);
 }

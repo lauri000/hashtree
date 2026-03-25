@@ -565,18 +565,18 @@ async function decryptEncryptionKey(
 
   // Link-visible tree with linkKey from URL
   if (visibilityInfo.visibility === 'link-visible' && linkKey) {
-    console.log('[decryptEncryptionKey] Link-visible with k= param:', {
+    logHtreeDebug('treeRoot:decrypt-link', {
       hasEncryptedKey: !!visibilityInfo.encryptedKey,
-      encryptedKeyPrefix: visibilityInfo.encryptedKey?.slice(0, 16),
+      encryptedKeyPrefix: visibilityInfo.encryptedKey?.slice(0, 16) ?? null,
       linkKeyPrefix: linkKey.slice(0, 16),
     });
 
     if (visibilityInfo.encryptedKey) {
       try {
         const decryptedHex = await visibilityHex.decryptKeyFromLink(visibilityInfo.encryptedKey, linkKey);
-        console.log('[decryptEncryptionKey] XOR decrypt result:', {
+        logHtreeDebug('treeRoot:decrypt-link-result', {
           success: !!decryptedHex,
-          resultPrefix: decryptedHex?.slice(0, 16),
+          resultPrefix: decryptedHex?.slice(0, 16) ?? null,
         });
         if (decryptedHex) {
           return fromHex(decryptedHex);
@@ -838,13 +838,6 @@ export function createTreeRootStore(): Readable<CID | null> {
 
       const updatedAt = getResolverUpdatedAt(metadata);
 
-      console.log('[treeRoot] Resolver callback:', {
-        hasHash: !!hash,
-        hasEncryptionKey: !!encryptionKey,
-        visibility: visibilityInfo?.visibility,
-        hasEncryptedKey: !!visibilityInfo?.encryptedKey,
-        updatedAt,
-      });
       logHtreeDebug('treeRoot:resolver', {
         resolverKey,
         hasHash: !!hash,
@@ -957,26 +950,26 @@ export function createTreeRootStore(): Readable<CID | null> {
                 selfEncryptedKey = (entries[0] as { selfEncryptedKey?: string }).selfEncryptedKey;
               }
 
-              console.log('[treeRoot] Migration check:', {
+              logHtreeDebug('treeRoot:migration-check', {
                 hasSelfEncryptedKey: !!selfEncryptedKey,
                 hasEncryptedKey: !!encryptedKeyHex,
-                visibility,
+                visibility: visibility ?? null,
               });
 
               if (encryptedKeyHex && selfEncryptedKey) {
                 try {
                   // Decrypt contentKey from selfEncryptedKey
                   const contentKeyHex = await decrypt(state.pubkey!, selfEncryptedKey);
-                  console.log('[treeRoot] Decrypted selfEncryptedKey:', {
-                    contentKeyHex: contentKeyHex?.slice(0, 16) + '...',
-                    length: contentKeyHex?.length,
+                  logHtreeDebug('treeRoot:migration-decrypted', {
+                    contentKeyHex: contentKeyHex ? `${contentKeyHex.slice(0, 16)}...` : null,
+                    length: contentKeyHex?.length ?? null,
                   });
                   if (contentKeyHex && contentKeyHex.length === 64) {
                     // Derive linkKey = XOR(encryptedKey, contentKey)
                     const linkKeyHex = visibilityHex.encryptKeyForLink(contentKeyHex, encryptedKeyHex);
 
-                    console.log('[treeRoot] Computed linkKey from selfEncryptedKey:', {
-                      linkKeyHex: linkKeyHex.slice(0, 16) + '...',
+                    logHtreeDebug('treeRoot:migration-linkkey', {
+                      linkKeyHex: `${linkKeyHex.slice(0, 16)}...`,
                     });
 
                     const currentHash = window.location.hash;
@@ -1008,11 +1001,11 @@ export function createTreeRootStore(): Readable<CID | null> {
                 const cachedKey = getLocalRootKey(npubStr, treeName);
                 const contentKey = decryptedKey || cachedKey;
 
-                console.log('[treeRoot] Migration fallback:', {
+                logHtreeDebug('treeRoot:migration-fallback', {
                   hasDecryptedKey: !!decryptedKey,
                   hasCachedKey: !!cachedKey,
                   hasContentKey: !!contentKey,
-                  encryptedKeyHex: encryptedKeyHex?.slice(0, 16) + '...',
+                  encryptedKeyHex: encryptedKeyHex ? `${encryptedKeyHex.slice(0, 16)}...` : null,
                 });
 
                 if (contentKey) {
@@ -1020,9 +1013,9 @@ export function createTreeRootStore(): Readable<CID | null> {
                     const contentKeyHex = toHex(contentKey);
                     const linkKeyHex = visibilityHex.encryptKeyForLink(contentKeyHex, encryptedKeyHex);
 
-                    console.log('[treeRoot] Migration computed linkKey:', {
-                      contentKeyHex: contentKeyHex.slice(0, 16) + '...',
-                      linkKeyHex: linkKeyHex.slice(0, 16) + '...',
+                    logHtreeDebug('treeRoot:migration-computed-linkkey', {
+                      contentKeyHex: `${contentKeyHex.slice(0, 16)}...`,
+                      linkKeyHex: `${linkKeyHex.slice(0, 16)}...`,
                     });
 
                     const currentHash = window.location.hash;
@@ -1041,7 +1034,7 @@ export function createTreeRootStore(): Readable<CID | null> {
                     console.debug('[treeRoot] Could not derive linkKey from contentKey:', e);
                   }
                 } else {
-                  console.log('[treeRoot] Migration: no contentKey available, cannot derive linkKey');
+                  logHtreeDebug('treeRoot:migration-no-content-key');
                 }
               }
             }
@@ -1058,12 +1051,12 @@ export function createTreeRootStore(): Readable<CID | null> {
       // BUT: if we already have encryptionKey from local cache (owner just created tree),
       // we can proceed without waiting for visibilityInfo
       if (linkKeyFromUrl && !visibilityInfo?.encryptedKey && !encryptionKey && !effectiveKey) {
-        console.log('[treeRoot] Have k= param but no encryptedKey yet, waiting for resolver...');
+        logHtreeDebug('treeRoot:wait-encrypted-key', { resolverKey });
         return;
       }
 
       if (visibility === 'link-visible' && !effectiveKey) {
-        console.log('[treeRoot] Link-visible but no decryptedKey yet, waiting...');
+        logHtreeDebug('treeRoot:wait-decrypted-key', { resolverKey });
         // Don't set the store - wait for next callback with key
         return;
       }
