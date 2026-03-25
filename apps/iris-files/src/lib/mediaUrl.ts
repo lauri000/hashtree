@@ -273,6 +273,37 @@ export function getStablePathUrl(options: StablePathUrlOptions): string | null {
   return null;
 }
 
+interface StableResolvedMediaUrlOptions {
+  rootCid?: CID | null;
+  cid?: CID | null;
+  npub?: string | null;
+  treeName?: string | null;
+  path: string;
+}
+
+export function getStableResolvedMediaUrls(options: StableResolvedMediaUrlOptions): string[] {
+  const urls = new Set<string>();
+  const pathUrl = getStablePathUrl({
+    rootCid: options.rootCid,
+    npub: options.npub,
+    treeName: options.treeName,
+    path: options.path,
+  });
+  if (pathUrl) {
+    urls.add(pathUrl);
+  }
+  const fileUrl = getStableFileUrl({
+    cid: options.cid,
+    npub: options.npub,
+    treeName: options.treeName,
+    path: options.path,
+  });
+  if (fileUrl) {
+    urls.add(fileUrl);
+  }
+  return Array.from(urls);
+}
+
 export const COMMON_VIDEO_FILENAMES = PREFERRED_PLAYABLE_MEDIA_FILENAMES;
 const COMMON_THUMBNAIL_FILENAMES = ['thumbnail.jpg', 'thumbnail.webp', 'thumbnail.png', 'thumbnail.jpeg'] as const;
 

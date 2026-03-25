@@ -406,7 +406,7 @@
         {:else}
           <!-- Amount selection -->
           <div class="mb-4">
-            <label class="block text-sm text-text-2 mb-2">Amount</label>
+            <p class="block text-sm text-text-2 mb-2">Amount</p>
             <div class="grid grid-cols-4 gap-2 mb-3">
               {#each TIP_AMOUNTS as amount (amount)}
                 <button
@@ -426,6 +426,7 @@
 
             <div class="relative">
               <input
+                id="zap-custom-amount"
                 type="text"
                 inputmode="decimal"
                 value={customAmount}
@@ -433,6 +434,7 @@
                 placeholder="Custom amount..."
                 class="w-full bg-surface-2 border border-surface-3 rounded-lg p-3 text-text-1 focus:border-accent focus:outline-none"
                 data-testid="zap-custom-amount"
+                aria-label="Custom amount"
               />
               <span class="absolute right-3 top-1/2 -translate-y-1/2 text-text-3 text-sm">$</span>
             </div>
@@ -447,10 +449,11 @@
           <!-- Comment -->
           {#if lnurlData?.commentAllowed}
             <div class="mb-4">
-              <label class="block text-sm text-text-2 mb-2">
+              <label for="zap-comment-input" class="block text-sm text-text-2 mb-2">
                 Comment (optional, max {lnurlData.commentAllowed} chars)
               </label>
               <input
+                id="zap-comment-input"
                 type="text"
                 bind:value={comment}
                 maxlength={lnurlData.commentAllowed}

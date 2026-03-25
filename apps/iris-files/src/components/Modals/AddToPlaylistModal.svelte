@@ -306,7 +306,7 @@
       <!-- Header -->
       <div class="p-4 border-b border-surface-3 flex items-center justify-between">
         <h2 class="text-lg font-semibold">Save to playlist</h2>
-        <button onclick={close} class="btn-ghost p-1">
+        <button onclick={close} class="btn-ghost p-1" aria-label="Close save to playlist dialog">
           <span class="i-lucide-x text-lg"></span>
         </button>
       </div>

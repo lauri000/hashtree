@@ -291,7 +291,9 @@
       return false;
     }
 
-    if (source === 'resource-error') return true;
+    if (source === 'resource-error') {
+      return lower.startsWith('script failed to load') || lower.startsWith('link failed to load');
+    }
 
     return trimmed.includes('console:error') ||
       trimmed.includes('window:error') ||
@@ -1205,11 +1207,9 @@
                 data-tauri-drag-region="false"
                 class="shrink-0 text-text-3 hover:text-text-1"
                 onclick={refresh}
-                title={childLastError || (isChildLoading ? 'Loading' : 'Refresh')}
+                title={isChildLoading ? 'Loading' : 'Refresh'}
               >
-                {#if childLastError}
-                  <span class="i-lucide-triangle-alert text-sm text-red-400"></span>
-                {:else if isChildLoading}
+                {#if isChildLoading}
                   <span class="i-lucide-loader-circle text-sm animate-spin"></span>
                 {:else}
                   <span class="i-lucide-refresh-cw text-sm"></span>
@@ -1341,11 +1341,9 @@
               data-tauri-drag-region="false"
               class="shrink-0 text-text-3 hover:text-text-1"
               onclick={refresh}
-              title={childLastError || (isChildLoading ? 'Loading' : 'Refresh')}
+              title={isChildLoading ? 'Loading' : 'Refresh'}
             >
-              {#if childLastError}
-                <span class="i-lucide-triangle-alert text-sm text-red-400"></span>
-              {:else if isChildLoading}
+              {#if isChildLoading}
                 <span class="i-lucide-loader-circle text-sm animate-spin"></span>
               {:else}
                 <span class="i-lucide-refresh-cw text-sm"></span>

@@ -425,8 +425,9 @@
 
         <!-- Title -->
         <div>
-          <label class="block text-sm text-text-2 mb-1">Title</label>
+          <label for="video-upload-title" class="block text-sm text-text-2 mb-1">Title</label>
           <input
+            id="video-upload-title"
             type="text"
             bind:value={title}
             class="w-full bg-surface-0 border border-surface-3 rounded-lg p-3 text-text-1 focus:border-accent focus:outline-none"
@@ -437,8 +438,9 @@
 
         <!-- Description -->
         <div>
-          <label class="block text-sm text-text-2 mb-1">Description (optional)</label>
+          <label for="video-upload-description" class="block text-sm text-text-2 mb-1">Description (optional)</label>
           <textarea
+            id="video-upload-description"
             bind:value={description}
             class="w-full bg-surface-0 border border-surface-3 rounded-lg p-3 text-text-1 resize-none focus:border-accent focus:outline-none"
             placeholder="Video description..."
@@ -449,7 +451,7 @@
 
         <!-- Visibility -->
         <div>
-          <label class="block text-sm text-text-2 mb-2">Visibility</label>
+          <p class="block text-sm text-text-2 mb-2">Visibility</p>
           <div class="flex gap-2">
             <button
               type="button"

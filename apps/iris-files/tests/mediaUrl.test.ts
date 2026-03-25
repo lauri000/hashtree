@@ -3,6 +3,7 @@ import { fromHex, nhashEncode } from '@hashtree/core';
 import {
   getStableFileUrl,
   getStablePathUrl,
+  getStableResolvedMediaUrls,
   getStableThumbnailCandidateUrls,
   getThumbnailUrlFromCid,
   getStableThumbnailUrl,
@@ -137,6 +138,31 @@ describe('mediaUrl thumbnail helpers', () => {
       `/htree/${nhashEncode(rootCid)}/video.opus?htree_c=test-media-client`,
       `/htree/${nhashEncode(rootCid)}/video.wav?htree_c=test-media-client`,
       `/htree/${nhashEncode(rootCid)}/video.flac?htree_c=test-media-client`,
+    ]);
+  });
+
+  it('keeps a direct file url as a fallback when an immutable directory path is known', () => {
+    installWindow();
+    const rootCid = {
+      hash: fromHex('e'.repeat(64)),
+      key: fromHex('f'.repeat(64)),
+    };
+    const fileCid = {
+      hash: fromHex('1'.repeat(64)),
+      key: fromHex('2'.repeat(64)),
+    };
+
+    expect(
+      getStableResolvedMediaUrls({
+        rootCid,
+        cid: fileCid,
+        npub: 'npub1example',
+        treeName: 'videos/Music',
+        path: 'video.mp4',
+      }),
+    ).toEqual([
+      `/htree/${nhashEncode(rootCid)}/video.mp4?htree_c=test-media-client`,
+      `/htree/${nhashEncode(fileCid)}/video.mp4?htree_c=test-media-client`,
     ]);
   });
 

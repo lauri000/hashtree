@@ -40,7 +40,7 @@
   import { currentPlaylist, loadPlaylist, playNext, repeatMode, shuffleEnabled } from '../../stores/playlist';
   import type { CID } from '@hashtree/core';
   import { toHex, nhashEncode } from '@hashtree/core';
-  import { getHtreePrefix, getNhashFileUrl, getStableFileUrl, getStablePathUrl, getStableThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
+  import { getHtreePrefix, getNhashFileUrl, getStableFileUrl, getStablePathUrl, getStableResolvedMediaUrls, getStableThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
   import { logHtreeDebug } from '../../lib/htreeDebug';
   import { ensureMediaStreamingReady } from '../../lib/mediaStreamingSetup';
   import { NDKEvent, type NDKFilter } from 'ndk';
@@ -241,6 +241,26 @@ async function syncTreeRootToWorker(
       treeName: treeNameValue,
       path,
     });
+  }
+
+  function buildResolvedVideoFallbackQueue(
+    rootCidValue: CID | null | undefined,
+    fileCidValue: CID,
+    npubValue: string,
+    treeNameValue: string,
+    path: string,
+    preferredUrl: string | null,
+    fileName: string,
+  ): Array<{ url: string; fileName: string }> {
+    return getStableResolvedMediaUrls({
+      rootCid: rootCidValue,
+      cid: fileCidValue,
+      npub: npubValue,
+      treeName: treeNameValue,
+      path,
+    })
+      .filter((url) => !!url && url !== preferredUrl)
+      .map((url) => ({ url, fileName }));
   }
 
   function startMutableVideoFallback(
@@ -770,7 +790,7 @@ async function syncTreeRootToWorker(
   let lastPrefixVersion = $state(0);
   let missingPropsLogged = $state(false);
   let loadEffectRuns = $state(0);
-  const staleRootRefreshAttempts = new Set<string>();
+  const staleRootRefreshAttempts = new SvelteSet<string>();
 
   // Load video when rootCid or videoPath changes
   // For playlist videos, rootCid is the same but videoPath changes
@@ -1123,12 +1143,22 @@ async function syncTreeRootToWorker(
       if (nextSrc && videoSrc !== nextSrc) {
         videoSrc = nextSrc;
       }
-      videoFallbackQueue = [];
+      const fallbackQueue = buildResolvedVideoFallbackQueue(
+        videoDirCid,
+        entryCid,
+        capturedNpub,
+        capturedTreeName,
+        fileName,
+        nextSrc,
+        fileName,
+      );
+      videoFallbackQueue = fallbackQueue;
       loading = false;
       resolvedVideo = true;
       logVideoDebug('load:resolved', {
         fileName,
         url: nextSrc,
+        fallbackCount: fallbackQueue.length,
       });
       return true;
     }
@@ -2012,8 +2042,9 @@ async function syncTreeRootToWorker(
       <!-- Edit form -->
       <div class="space-y-4">
         <div>
-          <label class="block text-sm text-text-2 mb-1">Title</label>
+          <label for="video-edit-title" class="block text-sm text-text-2 mb-1">Title</label>
           <input
+            id="video-edit-title"
             type="text"
             bind:value={editTitle}
             class="w-full bg-surface-0 border border-surface-3 rounded-lg p-3 text-text-1 focus:border-accent focus:outline-none"
@@ -2022,8 +2053,9 @@ async function syncTreeRootToWorker(
           />
         </div>
         <div>
-          <label class="block text-sm text-text-2 mb-1">Description</label>
+          <label for="video-edit-description" class="block text-sm text-text-2 mb-1">Description</label>
           <textarea
+            id="video-edit-description"
             bind:value={editDescription}
             class="textarea w-full resize-none"
             placeholder="Video description..."

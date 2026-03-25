@@ -544,8 +544,9 @@
               <!-- Playlist name input (only for multiple videos) -->
               {#if selectedVideos.length > 1}
                 <div class="mb-3">
-                  <label class="block text-sm text-text-2 mb-1">Playlist Name</label>
+                  <label for="import-playlist-name" class="block text-sm text-text-2 mb-1">Playlist Name</label>
                   <input
+                    id="import-playlist-name"
                     type="text"
                     bind:value={playlistName}
                     class="w-full bg-surface-0 border border-surface-3 rounded-lg p-2 text-text-1 focus:border-accent focus:outline-none"
@@ -588,7 +589,7 @@
 
             <!-- Visibility -->
             <div>
-              <label class="block text-sm text-text-2 mb-2">Visibility</label>
+              <p class="block text-sm text-text-2 mb-2">Visibility</p>
               <div class="flex gap-2">
                 <button
                   type="button"

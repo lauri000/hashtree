@@ -196,6 +196,31 @@ test.describe('Navigation', () => {
     await expect(page.getByText('Iris uses child webviews for in-app pages, and the current mobile runtime does not provide them yet.')).toBeVisible();
   });
 
+  test('ignores child media resource errors in shell chrome', async ({ tauriPage: page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openHome(page);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill('https://video.iris.to');
+    await input.press('Enter');
+
+    await emitTauriEvent(page, 'child-webview-diagnostic', {
+      label: 'content',
+      url: 'https://video.iris.to',
+      source: 'resource-error',
+      title: 'Iris Video',
+      bodyText: 'Recent videos',
+      mediaSummary: 'thumbs=3/4 visible=2 videos=1/1',
+      error: 'img failed to load: https://video.iris.to/htree/thumbnail.webp',
+    });
+
+    await expect(page.getByTestId('webview-error')).toBeHidden();
+
+    await expect(page.getByTestId('address-bar')).toBeVisible();
+    await expect(page.locator('.i-lucide-triangle-alert')).toHaveCount(0);
+  });
+
   test('toolbar does not depend on the JS drag fallback', async ({ tauriPage: page }) => {
     await openHome(page);
     await expect(page.locator('input[placeholder="Search or enter address"]')).toBeVisible();
