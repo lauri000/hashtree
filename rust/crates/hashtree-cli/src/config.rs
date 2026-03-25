@@ -32,6 +32,19 @@ pub struct ServerConfig {
     /// Enable WebRTC P2P connections
     #[serde(default = "default_enable_webrtc")]
     pub enable_webrtc: bool,
+    /// Enable LAN multicast discovery/signaling for native peers.
+    #[serde(default = "default_enable_multicast")]
+    pub enable_multicast: bool,
+    /// IPv4 multicast group used for LAN discovery/signaling.
+    #[serde(default = "default_multicast_group")]
+    pub multicast_group: String,
+    /// UDP port used for LAN multicast discovery/signaling.
+    #[serde(default = "default_multicast_port")]
+    pub multicast_port: u16,
+    /// Maximum peers admitted from LAN multicast discovery.
+    /// Set to 0 to disable multicast even when enable_multicast is true.
+    #[serde(default = "default_max_multicast_peers")]
+    pub max_multicast_peers: usize,
     /// Allow anyone with valid Nostr auth to write (default: true)
     /// When false, only social graph members can write
     #[serde(default = "default_public_writes")]
@@ -348,6 +361,22 @@ fn default_enable_webrtc() -> bool {
     true
 }
 
+fn default_enable_multicast() -> bool {
+    false
+}
+
+fn default_multicast_group() -> String {
+    "239.255.42.98".to_string()
+}
+
+fn default_multicast_port() -> u16 {
+    48555
+}
+
+fn default_max_multicast_peers() -> usize {
+    0
+}
+
 fn default_data_dir() -> String {
     hashtree_config::get_hashtree_dir()
         .join("data")
@@ -366,6 +395,10 @@ impl Default for ServerConfig {
             enable_auth: default_enable_auth(),
             stun_port: default_stun_port(),
             enable_webrtc: default_enable_webrtc(),
+            enable_multicast: default_enable_multicast(),
+            multicast_group: default_multicast_group(),
+            multicast_port: default_multicast_port(),
+            max_multicast_peers: default_max_multicast_peers(),
             public_writes: default_public_writes(),
             socialgraph_snapshot_public: default_socialgraph_snapshot_public(),
         }
@@ -630,6 +663,10 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.server.bind_address, "127.0.0.1:8080");
         assert!(config.server.enable_auth);
+        assert!(!config.server.enable_multicast);
+        assert_eq!(config.server.multicast_group, "239.255.42.98");
+        assert_eq!(config.server.multicast_port, 48555);
+        assert_eq!(config.server.max_multicast_peers, 0);
         assert_eq!(config.storage.max_size_gb, 10);
         assert!(config
             .nostr
@@ -685,6 +722,22 @@ max_write_distance = 5
         assert_eq!(config.nostr.max_write_distance, 5);
         assert_eq!(config.nostr.db_max_size_gb, 10);
         assert_eq!(config.nostr.spambox_max_size_gb, 1);
+    }
+
+    #[test]
+    fn test_server_config_deserialize_with_multicast() {
+        let toml_str = r#"
+[server]
+enable_multicast = true
+multicast_group = "239.255.42.99"
+multicast_port = 49001
+max_multicast_peers = 12
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.server.enable_multicast);
+        assert_eq!(config.server.multicast_group, "239.255.42.99");
+        assert_eq!(config.server.multicast_port, 49_001);
+        assert_eq!(config.server.max_multicast_peers, 12);
     }
 
     #[test]

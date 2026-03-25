@@ -256,6 +256,8 @@ pub struct WebRTCConfig {
     pub stun_servers: Vec<String>,
     /// Enable debug logging
     pub debug: bool,
+    /// Optional LAN multicast transport for offline discovery + root lookup.
+    pub multicast: super::multicast::MulticastConfig,
     /// Pool settings for follows and other peers
     pub pools: PoolSettings,
     /// Retrieval peer selection strategy (shared with simulation).
@@ -286,6 +288,7 @@ impl Default for WebRTCConfig {
                 "stun:stun.cloudflare.com:3478".to_string(),
             ],
             debug: false,
+            multicast: super::multicast::MulticastConfig::default(),
             pools: PoolSettings::default(),
             request_selection_strategy: SelectionStrategy::TitForTat,
             request_fairness_enabled: true,

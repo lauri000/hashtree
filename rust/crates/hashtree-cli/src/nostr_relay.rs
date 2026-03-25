@@ -244,6 +244,59 @@ mod imp {
             self.next_client_id.fetch_add(1, Ordering::SeqCst)
         }
 
+        pub async fn ingest_trusted_event(&self, event: Event) -> Result<()> {
+            event
+                .verify()
+                .map_err(|e| anyhow::anyhow!("invalid signature: {}", e))?;
+
+            let is_ephemeral = event.kind.is_ephemeral();
+            {
+                let mut recent = self.recent_events.lock().await;
+                recent.insert(event.clone());
+            }
+
+            if !is_ephemeral {
+                self.trusted.ingest(&event)?;
+            }
+
+            self.broadcast_event(&event).await;
+            Ok(())
+        }
+
+        pub async fn query_events(&self, filter: &NostrFilter, limit: usize) -> Vec<Event> {
+            let limit = limit.min(self.config.max_query_limit);
+            if limit == 0 {
+                return Vec::new();
+            }
+
+            let mut seen: HashSet<EventId> = HashSet::new();
+            let mut events = Vec::new();
+
+            let recent = {
+                let cache = self.recent_events.lock().await;
+                cache.matching(filter)
+            };
+            for event in recent {
+                if seen.insert(event.id) {
+                    events.push(event);
+                    if events.len() >= limit {
+                        return events;
+                    }
+                }
+            }
+
+            for event in self.trusted.query(filter, limit) {
+                if seen.insert(event.id) {
+                    events.push(event);
+                    if events.len() >= limit {
+                        break;
+                    }
+                }
+            }
+
+            events
+        }
+
         pub async fn register_client(
             &self,
             client_id: u64,

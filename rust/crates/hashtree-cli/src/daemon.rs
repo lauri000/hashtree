@@ -140,7 +140,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     #[cfg(feature = "p2p")]
     let webrtc_state: Option<Arc<WebRTCState>> = {
         let (webrtc_state, webrtc_handle) = if config.server.enable_webrtc {
-            let webrtc_config = crate::p2p_common::default_webrtc_config(&config.nostr.relays);
+            let webrtc_config = crate::p2p_common::default_webrtc_config(&config);
             let peer_classifier = crate::p2p_common::build_peer_classifier(
                 opts.data_dir.clone(),
                 Arc::clone(&social_graph_store),

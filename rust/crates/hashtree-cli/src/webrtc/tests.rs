@@ -54,6 +54,8 @@ fn test_webrtc_config_default() {
     assert!(config.max_outbound > 0);
     assert!(config.max_inbound > 0);
     assert!(!config.stun_servers.is_empty());
+    assert!(!config.multicast.enabled);
+    assert_eq!(config.multicast.max_peers, 0);
     assert_eq!(
         config.request_selection_strategy,
         SelectionStrategy::TitForTat

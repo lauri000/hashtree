@@ -6,7 +6,9 @@
 //! - Message types: hello, offer, answer, candidate
 
 mod cashu;
+mod multicast;
 mod peer;
+mod root_events;
 mod signaling;
 pub mod types;
 
@@ -14,7 +16,10 @@ pub mod types;
 mod tests;
 
 pub use cashu::{cashu_mint_metadata_path, CashuMintMetadataStore, CashuRoutingConfig};
+pub use multicast::{MulticastConfig, MulticastNostrBus};
 pub use peer::{ContentStore, Peer, PendingRequest};
+pub use root_events::PeerRootEvent;
+pub(crate) use root_events::{build_root_filter, pick_latest_event, root_event_from_peer};
 pub use signaling::{ConnectionState, PeerClassifier, PeerEntry, WebRTCManager, WebRTCState};
 pub use types::{
     encode_request, DataMessage, DataRequest, PeerDirection, PeerId, PeerPool, PoolConfig,

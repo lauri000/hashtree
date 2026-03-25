@@ -15,8 +15,8 @@ use hashtree_webrtc::{
     build_hedged_wave_plan, normalize_dispatch_config, sync_selector_peers, PeerSelector,
 };
 use nostr::{
-    nips::nip44, Alphabet, ClientMessage, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey,
-    RelayMessage, SingleLetterTag, Tag,
+    nips::nip44, ClientMessage, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey,
+    RelayMessage, Tag,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,7 +26,12 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
 use super::cashu::{CashuMintMetadataStore, CashuQuoteState, CashuRoutingConfig, NegotiatedQuote};
+use super::multicast::MulticastNostrBus;
 use super::peer::{ContentStore, Peer, PendingRequest};
+use super::root_events::{
+    build_root_filter, hashtree_event_identifier, is_hashtree_labeled_event, pick_latest_event,
+    root_event_from_peer, PeerRootEvent,
+};
 use super::types::{
     decrement_htl_with_policy, encode_quote_request, encode_request, should_forward_htl,
     validate_mesh_frame, DataQuoteRequest, DataRequest, MeshNostrFrame, MeshNostrPayload,
@@ -68,6 +73,7 @@ pub struct PeerEntry {
     pub last_seen: Instant,
     pub peer: Option<Peer>,
     pub pool: PeerPool,
+    pub multicast_origin: bool,
     pub bytes_sent: u64,
     pub bytes_received: u64,
 }
@@ -94,21 +100,8 @@ pub struct WebRTCState {
     request_timeout: Duration,
     /// Shared Cashu quote negotiation policy/state.
     cashu_quotes: Arc<CashuQuoteState>,
+    multicast_bus: RwLock<Option<Arc<MulticastNostrBus>>>,
 }
-
-#[derive(Debug, Clone)]
-pub struct PeerRootEvent {
-    pub hash: String,
-    pub key: Option<String>,
-    pub encrypted_key: Option<String>,
-    pub self_encrypted_key: Option<String>,
-    pub event_id: String,
-    pub created_at: u64,
-    pub peer_id: String,
-}
-
-const HASHTREE_KIND: u16 = 30078;
-const HASHTREE_LABEL: &str = "hashtree";
 const SEEN_FRAME_CAP: usize = 4096;
 const SEEN_FRAME_TTL: Duration = Duration::from_secs(120);
 const SEEN_EVENT_CAP: usize = 8192;
@@ -120,87 +113,6 @@ type ConnectedPeer = (
     PendingRequestsMap,
     Arc<webrtc::data_channel::RTCDataChannel>,
 );
-
-fn hashtree_event_identifier(event: &nostr::Event) -> Option<String> {
-    event.tags.iter().find_map(|tag| {
-        let slice = tag.as_slice();
-        if slice.len() >= 2 && slice[0].as_str() == "d" {
-            Some(slice[1].to_string())
-        } else {
-            None
-        }
-    })
-}
-
-fn is_hashtree_labeled_event(event: &nostr::Event) -> bool {
-    event.tags.iter().any(|tag| {
-        let slice = tag.as_slice();
-        slice.len() >= 2 && slice[0].as_str() == "l" && slice[1].as_str() == HASHTREE_LABEL
-    })
-}
-
-fn pick_latest_event<'a, I>(events: I) -> Option<&'a nostr::Event>
-where
-    I: IntoIterator<Item = &'a nostr::Event>,
-{
-    events.into_iter().max_by(|a, b| {
-        let ordering = a.created_at.cmp(&b.created_at);
-        if ordering == std::cmp::Ordering::Equal {
-            a.id.cmp(&b.id)
-        } else {
-            ordering
-        }
-    })
-}
-
-fn root_event_from_peer(
-    event: &nostr::Event,
-    peer_id: &str,
-    tree_name: &str,
-) -> Option<PeerRootEvent> {
-    if hashtree_event_identifier(event).as_deref() != Some(tree_name)
-        || !is_hashtree_labeled_event(event)
-    {
-        return None;
-    }
-
-    let mut key = None;
-    let mut encrypted_key = None;
-    let mut self_encrypted_key = None;
-    let mut hash_tag = None;
-
-    for tag in &event.tags {
-        let slice = tag.as_slice();
-        if slice.len() < 2 {
-            continue;
-        }
-        match slice[0].as_str() {
-            "hash" => hash_tag = Some(slice[1].to_string()),
-            "key" => key = Some(slice[1].to_string()),
-            "encryptedKey" => encrypted_key = Some(slice[1].to_string()),
-            "selfEncryptedKey" => self_encrypted_key = Some(slice[1].to_string()),
-            _ => {}
-        }
-    }
-
-    let hash = hash_tag.or_else(|| {
-        if event.content.is_empty() {
-            None
-        } else {
-            Some(event.content.clone())
-        }
-    })?;
-
-    Some(PeerRootEvent {
-        hash,
-        key,
-        encrypted_key,
-        self_encrypted_key,
-        event_id: event.id.to_hex(),
-        created_at: event.created_at.as_u64(),
-        peer_id: peer_id.to_string(),
-    })
-}
 
 impl WebRTCState {
     pub fn new() -> Self {
@@ -267,7 +179,12 @@ impl WebRTCState {
             request_dispatch,
             request_timeout,
             cashu_quotes,
+            multicast_bus: RwLock::new(None),
         }
+    }
+
+    pub async fn set_multicast_bus(&self, bus: Option<Arc<MulticastNostrBus>>) {
+        *self.multicast_bus.write().await = bus;
     }
 
     /// Get current bandwidth stats (bytes sent/received)
@@ -839,19 +756,7 @@ impl WebRTCState {
         tree_name: &str,
         per_peer_timeout: Duration,
     ) -> Option<PeerRootEvent> {
-        let author = PublicKey::from_hex(owner_pubkey).ok()?;
-        let filter = Filter::new()
-            .kind(Kind::Custom(HASHTREE_KIND))
-            .author(author)
-            .custom_tag(
-                SingleLetterTag::lowercase(Alphabet::D),
-                vec![tree_name.to_string()],
-            )
-            .custom_tag(
-                SingleLetterTag::lowercase(Alphabet::L),
-                vec![HASHTREE_LABEL.to_string()],
-            )
-            .limit(50);
+        let filter = build_root_filter(owner_pubkey, tree_name)?;
 
         let peers = self.peers.read().await;
         for entry in peers.values() {
@@ -915,6 +820,16 @@ impl WebRTCState {
 
         None
     }
+
+    pub async fn resolve_root_from_multicast(
+        &self,
+        owner_pubkey: &str,
+        tree_name: &str,
+        timeout: Duration,
+    ) -> Option<PeerRootEvent> {
+        let bus = self.multicast_bus.read().await.clone()?;
+        bus.query_root(owner_pubkey, tree_name, timeout).await
+    }
 }
 
 impl Default for WebRTCState {
@@ -940,6 +855,7 @@ pub struct WebRTCManager {
     peer_classifier: PeerClassifier,
     /// Optional Nostr relay for data-channel relay messages
     nostr_relay: Option<Arc<NostrRelay>>,
+    multicast_bus: Option<Arc<MulticastNostrBus>>,
     /// Channel for peer state events (connection success/failure)
     state_event_tx: mpsc::Sender<PeerStateEvent>,
     state_event_rx: Option<mpsc::Receiver<PeerStateEvent>>,
@@ -984,6 +900,7 @@ impl WebRTCManager {
             store: None,
             peer_classifier,
             nostr_relay: None,
+            multicast_bus: None,
             state_event_tx,
             state_event_rx: Some(state_event_rx),
             mesh_frame_tx,
@@ -1196,6 +1113,28 @@ impl WebRTCManager {
         self.my_peer_id.uuid.as_str() < their_uuid
     }
 
+    fn can_track_multicast_peer(
+        &self,
+        source: &str,
+        peer_key: &str,
+        peers: &HashMap<String, PeerEntry>,
+    ) -> bool {
+        if source != "multicast" {
+            return true;
+        }
+        if peers.contains_key(peer_key) {
+            return true;
+        }
+        if self.config.multicast.max_peers == 0 {
+            return false;
+        }
+        peers
+            .values()
+            .filter(|entry| entry.multicast_origin && entry.state != ConnectionState::Failed)
+            .count()
+            < self.config.multicast.max_peers
+    }
+
     /// Start the WebRTC manager - connects to relays and handles signaling
     pub async fn run(&mut self) -> Result<()> {
         info!(
@@ -1239,6 +1178,35 @@ impl WebRTCManager {
                     error!("Relay {} error: {}", url, e);
                 }
             });
+        }
+
+        if self.config.multicast.is_enabled() {
+            if let Some(relay) = self.nostr_relay.clone() {
+                match MulticastNostrBus::bind(
+                    self.config.multicast.clone(),
+                    self.keys.clone(),
+                    relay,
+                )
+                .await
+                {
+                    Ok(bus) => {
+                        self.state.set_multicast_bus(Some(bus.clone())).await;
+                        self.multicast_bus = Some(bus.clone());
+                        let shutdown_rx = self.shutdown_rx.clone();
+                        let signaling_tx = event_tx.clone();
+                        tokio::spawn(async move {
+                            if let Err(err) = bus.run(shutdown_rx, signaling_tx).await {
+                                error!("Multicast bus error: {}", err);
+                            }
+                        });
+                    }
+                    Err(err) => {
+                        warn!("Failed to start multicast bus: {}", err);
+                    }
+                }
+            } else {
+                warn!("Multicast enabled but Nostr relay is unavailable");
+            }
         }
 
         // Process incoming events and outgoing signaling messages
@@ -1405,6 +1373,16 @@ impl WebRTCManager {
                 return;
             }
         };
+
+        if let Some(bus) = &self.multicast_bus {
+            if let Err(err) = bus.broadcast_event(&event).await {
+                debug!(
+                    "Failed to broadcast signaling event over multicast ({}): {}",
+                    msg.msg_type(),
+                    err
+                );
+            }
+        }
 
         let mut frame =
             MeshNostrFrame::new_event(event, &self.my_peer_id.to_string(), MESH_DEFAULT_HTL);
@@ -1648,7 +1626,7 @@ impl WebRTCManager {
 
             if let Some(their_uuid) = get_tag("peerId") {
                 debug!("Received hello from {} via {}", &sender_pubkey[..8], relay);
-                self.handle_hello(&sender_pubkey, &their_uuid, relay_write_tx)
+                self.handle_hello(&sender_pubkey, &their_uuid, relay, relay_write_tx)
                     .await?;
             }
             return Ok(());
@@ -1718,7 +1696,7 @@ impl WebRTCManager {
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("Missing SDP in offer"))?;
                     let offer = serde_json::json!({ "type": "offer", "sdp": sdp });
-                    self.handle_offer(sender_pubkey, their_uuid, offer, relay_write_tx)
+                    self.handle_offer(sender_pubkey, their_uuid, offer, relay, relay_write_tx)
                         .await?;
                 }
                 "answer" => {
@@ -1800,7 +1778,7 @@ impl WebRTCManager {
                     return Ok(()); // Not for us
                 }
                 if let Err(e) = self
-                    .handle_offer(sender_pubkey, &their_uuid, offer, relay_write_tx)
+                    .handle_offer(sender_pubkey, &their_uuid, offer, relay, relay_write_tx)
                     .await
                 {
                     error!(
@@ -1855,15 +1833,25 @@ impl WebRTCManager {
         &self,
         sender_pubkey: &str,
         their_uuid: &str,
+        source: &str,
         relay_write_tx: &tokio::sync::broadcast::Sender<SignalingMessage>,
     ) -> Result<()> {
         let full_peer_id = PeerId::new(sender_pubkey.to_string(), Some(their_uuid.to_string()));
         let peer_key = full_peer_id.to_string();
         let mut already_discovered = false;
+        let mut multicast_origin = source == "multicast";
 
         // Check if we already have this peer
         {
             let peers = self.state.peers.read().await;
+            if !self.can_track_multicast_peer(source, &peer_key, &peers) {
+                debug!(
+                    "Ignoring hello from {} via multicast - max_multicast_peers={} reached",
+                    full_peer_id.short(),
+                    self.config.multicast.max_peers
+                );
+                return Ok(());
+            }
             if let Some(entry) = peers.get(&peer_key) {
                 // Already connected or connecting, just update last_seen
                 if entry.state == ConnectionState::Connected
@@ -1872,6 +1860,7 @@ impl WebRTCManager {
                     return Ok(());
                 }
                 already_discovered = true;
+                multicast_origin |= entry.multicast_origin;
             }
         }
 
@@ -1932,6 +1921,7 @@ impl WebRTCManager {
                     last_seen: Instant::now(),
                     peer: None,
                     pool,
+                    multicast_origin,
                     bytes_sent: 0,
                     bytes_received: 0,
                 },
@@ -2022,6 +2012,7 @@ impl WebRTCManager {
         sender_pubkey: &str,
         their_uuid: &str,
         offer: serde_json::Value,
+        source: &str,
         relay_write_tx: &tokio::sync::broadcast::Sender<SignalingMessage>,
     ) -> Result<()> {
         debug!(
@@ -2031,6 +2022,7 @@ impl WebRTCManager {
         );
         let full_peer_id = PeerId::new(sender_pubkey.to_string(), Some(their_uuid.to_string()));
         let peer_key = full_peer_id.to_string();
+        let mut multicast_origin = source == "multicast";
 
         // Classify the peer into a pool
         let pool = (self.peer_classifier)(sender_pubkey);
@@ -2044,6 +2036,14 @@ impl WebRTCManager {
         // Check if we already have this peer with an actual connection
         {
             let peers = self.state.peers.read().await;
+            if !self.can_track_multicast_peer(source, &peer_key, &peers) {
+                warn!(
+                    "Rejecting offer from {} via multicast - max_multicast_peers={} reached",
+                    full_peer_id.short(),
+                    self.config.multicast.max_peers
+                );
+                return Ok(());
+            }
             debug!(
                 "Checking for existing peer, peer_key: {}, known_peers: {}",
                 peer_key,
@@ -2058,6 +2058,7 @@ impl WebRTCManager {
                     );
                     return Ok(());
                 }
+                multicast_origin |= entry.multicast_origin;
                 debug!(
                     "Peer {} exists but has no connection, proceeding",
                     full_peer_id.short()
@@ -2122,6 +2123,7 @@ impl WebRTCManager {
                     last_seen: Instant::now(),
                     peer: Some(peer),
                     pool,
+                    multicast_origin,
                     bytes_sent: 0,
                     bytes_received: 0,
                 },
@@ -2386,11 +2388,11 @@ mod tests {
         let keys = Keys::generate();
         let hash = "ab".repeat(32);
         let event = EventBuilder::new(
-            Kind::Custom(HASHTREE_KIND),
+            Kind::Custom(super::super::root_events::HASHTREE_KIND),
             "",
             [
                 Tag::parse(&["d", "repo"]).unwrap(),
-                Tag::parse(&["l", HASHTREE_LABEL]).unwrap(),
+                Tag::parse(&["l", super::super::root_events::HASHTREE_LABEL]).unwrap(),
                 Tag::parse(&["hash", &hash]).unwrap(),
                 Tag::parse(&["encryptedKey", &"11".repeat(32)]).unwrap(),
             ],
@@ -2413,14 +2415,22 @@ mod tests {
     fn pick_latest_event_prefers_higher_event_id_on_timestamp_tie() {
         let keys = Keys::generate();
         let created_at = nostr::Timestamp::from_secs(1_700_000_000);
-        let event_a = EventBuilder::new(Kind::Custom(HASHTREE_KIND), "", [])
-            .custom_created_at(created_at)
-            .to_event(&keys)
-            .unwrap();
-        let event_b = EventBuilder::new(Kind::Custom(HASHTREE_KIND), "", [])
-            .custom_created_at(created_at)
-            .to_event(&keys)
-            .unwrap();
+        let event_a = EventBuilder::new(
+            Kind::Custom(super::super::root_events::HASHTREE_KIND),
+            "",
+            [],
+        )
+        .custom_created_at(created_at)
+        .to_event(&keys)
+        .unwrap();
+        let event_b = EventBuilder::new(
+            Kind::Custom(super::super::root_events::HASHTREE_KIND),
+            "",
+            [],
+        )
+        .custom_created_at(created_at)
+        .to_event(&keys)
+        .unwrap();
 
         let expected = if event_a.id > event_b.id {
             event_a.id

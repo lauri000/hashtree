@@ -2,7 +2,10 @@ use super::auth::{AppState, CachedResolvedPathEntry, LookupResult};
 use super::mime::get_mime_type;
 use super::ui::root_page;
 use crate::socialgraph;
-use crate::webrtc::{ConnectionState, WebRTCState};
+use crate::webrtc::{
+    build_root_filter, pick_latest_event, root_event_from_peer, ConnectionState, PeerRootEvent,
+    WebRTCState,
+};
 use axum::{
     body::Body,
     extract::{Multipart, Path, Query, State},
@@ -202,6 +205,107 @@ async fn resolve_npub_root(
     }
 
     resolver.resolve_wait(key).await
+}
+
+#[derive(Clone)]
+struct ResolvedRoot {
+    cid: Cid,
+    source: &'static str,
+    root_event: Option<PeerRootEvent>,
+}
+
+fn peer_root_to_cid(root: &PeerRootEvent) -> Option<Cid> {
+    let mut cid = Cid::parse(&root.hash).ok()?;
+    if cid.key.is_none() {
+        cid.key = root
+            .key
+            .as_deref()
+            .and_then(|key_hex| from_hex(key_hex).ok());
+    }
+    Some(cid)
+}
+
+async fn resolve_root_from_local_relay(
+    state: &AppState,
+    pubkey: &str,
+    treename: &str,
+) -> Option<PeerRootEvent> {
+    let relay = state.nostr_relay.as_ref()?;
+    let filter = build_root_filter(pubkey, treename)?;
+    let events = relay.query_events(&filter, 50).await;
+    let latest = pick_latest_event(events.iter())?;
+    root_event_from_peer(latest, "local-relay", treename)
+}
+
+async fn resolve_root_offline(
+    state: &AppState,
+    pubkey: &str,
+    treename: &str,
+    link_key: Option<[u8; 32]>,
+) -> Option<ResolvedRoot> {
+    let cache_key = tree_root_cache_key(pubkey, treename, link_key);
+    if let Some(mut cid) = get_cached_tree_root(state, &cache_key) {
+        if cid.key.is_none() {
+            cid.key = link_key;
+        }
+        return Some(ResolvedRoot {
+            cid,
+            source: "cache",
+            root_event: None,
+        });
+    }
+
+    if let Some(root) = resolve_root_from_local_relay(state, pubkey, treename).await {
+        if let Some(mut cid) = peer_root_to_cid(&root) {
+            if cid.key.is_none() {
+                cid.key = link_key;
+            }
+            put_cached_tree_root(state, cache_key.clone(), cid.clone());
+            return Some(ResolvedRoot {
+                cid,
+                source: "local-relay",
+                root_event: Some(root),
+            });
+        }
+    }
+
+    if let Some(ref webrtc_state) = state.webrtc_peers {
+        if let Some(root) = webrtc_state
+            .resolve_root_from_multicast(pubkey, treename, Duration::from_secs(2))
+            .await
+        {
+            if let Some(mut cid) = peer_root_to_cid(&root) {
+                if cid.key.is_none() {
+                    cid.key = link_key;
+                }
+                put_cached_tree_root(state, cache_key.clone(), cid.clone());
+                return Some(ResolvedRoot {
+                    cid,
+                    source: "multicast",
+                    root_event: Some(root),
+                });
+            }
+        }
+
+        if let Some(root) = webrtc_state
+            .resolve_root_from_peers(pubkey, treename, Duration::from_secs(4))
+            .await
+        {
+            if let Some(mut cid) = peer_root_to_cid(&root) {
+                if cid.key.is_none() {
+                    cid.key = link_key;
+                }
+                put_cached_tree_root(state, cache_key, cid.clone());
+                return Some(ResolvedRoot {
+                    cid,
+                    source: "webrtc",
+                    root_event: Some(root),
+                });
+            }
+        }
+    }
+
+    None
 }
 
 fn tree_root_cache_key(npub: &str, treename: &str, link_key: Option<[u8; 32]>) -> String {
@@ -1108,50 +1212,53 @@ async fn htree_npub_impl(
     let is_localhost = connect_info.0.ip().is_loopback();
     let key = format!("{}/{}", npub, treename);
     let link_key = parse_hex_key(params.get("k"));
-    let cache_key = tree_root_cache_key(&npub, &treename, link_key);
+    let resolved =
+        if let Some(resolved) = resolve_root_offline(&state, &npub, &treename, link_key).await {
+            resolved.cid
+        } else {
+            let resolver = match NostrRootResolver::new(resolver_config()).await {
+                Ok(r) => r,
+                Err(e) => {
+                    return Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .body(Body::from(format!("Failed to create resolver: {}", e)))
+                        .unwrap();
+                }
+            };
 
-    let resolved = if let Some(cid) = get_cached_tree_root(&state, &cache_key) {
-        cid
-    } else {
-        let resolver = match NostrRootResolver::new(resolver_config()).await {
-            Ok(r) => r,
-            Err(e) => {
-                return Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                    .body(Body::from(format!("Failed to create resolver: {}", e)))
-                    .unwrap();
-            }
+            let cid = match tokio::time::timeout(
+                HTTP_RESOLVER_TIMEOUT,
+                resolve_npub_root(&key, &resolver, link_key),
+            )
+            .await
+            {
+                Ok(Ok(cid)) => cid,
+                Ok(Err(e)) => {
+                    let _ = resolver.stop().await;
+                    return Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .body(Body::from(format!("Resolution failed: {}", e)))
+                        .unwrap();
+                }
+                Err(_) => {
+                    let _ = resolver.stop().await;
+                    return Response::builder()
+                        .status(StatusCode::GATEWAY_TIMEOUT)
+                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .body(Body::from("Resolution timeout"))
+                        .unwrap();
+                }
+            };
+            let _ = resolver.stop().await;
+            put_cached_tree_root(
+                &state,
+                tree_root_cache_key(&npub, &treename, link_key),
+                cid.clone(),
+            );
+            cid
         };
-
-        let cid = match tokio::time::timeout(
-            HTTP_RESOLVER_TIMEOUT,
-            resolve_npub_root(&key, &resolver, link_key),
-        )
-        .await
-        {
-            Ok(Ok(cid)) => cid,
-            Ok(Err(e)) => {
-                let _ = resolver.stop().await;
-                return Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                    .body(Body::from(format!("Resolution failed: {}", e)))
-                    .unwrap();
-            }
-            Err(_) => {
-                let _ = resolver.stop().await;
-                return Response::builder()
-                    .status(StatusCode::GATEWAY_TIMEOUT)
-                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                    .body(Body::from("Resolution timeout"))
-                    .unwrap();
-            }
-        };
-        let _ = resolver.stop().await;
-        put_cached_tree_root(&state, cache_key, cid.clone());
-        cid
-    };
 
     let mut cid = resolved;
     if cid.key.is_none() {
@@ -2321,6 +2428,10 @@ pub async fn resolve_and_serve(
     let (pubkey, treename) = params;
     let key = format!("{}/{}", pubkey, treename);
 
+    if let Some(resolved) = resolve_root_offline(&state, &pubkey, &treename, None).await {
+        return serve_content_internal(&state, &resolved.cid.hash, headers, false, false).await;
+    }
+
     let resolver = match NostrRootResolver::new(resolver_config()).await {
         Ok(r) => r,
         Err(e) => {
@@ -2391,6 +2502,24 @@ pub async fn resolve_to_hash(
     let (pubkey, treename) = params;
     let key = format!("{}/{}", pubkey, treename);
 
+    if let Some(resolved) = resolve_root_offline(&state, &pubkey, &treename, None).await {
+        let mut payload = json!({
+            "key": key,
+            "hash": to_hex(&resolved.cid.hash),
+            "cid": resolved.cid.to_string(),
+            "source": resolved.source,
+        });
+        if let Some(root) = resolved.root_event {
+            payload["peer"] = json!(root.peer_id);
+            payload["event_id"] = json!(root.event_id);
+            payload["created_at"] = json!(root.created_at);
+            payload["key_tag"] = json!(root.key);
+            payload["encryptedKey"] = json!(root.encrypted_key);
+            payload["selfEncryptedKey"] = json!(root.self_encrypted_key);
+        }
+        return Json(payload);
+    }
+
     let resolver = match NostrRootResolver::new(resolver_config()).await {
         Ok(r) => r,
         Err(e) => {
@@ -2417,27 +2546,8 @@ pub async fn resolve_to_hash(
         return result;
     }
 
-    if let Some(ref webrtc_state) = state.webrtc_peers {
-        if let Some(root) = webrtc_state
-            .resolve_root_from_peers(&pubkey, &treename, Duration::from_secs(4))
-            .await
-        {
-            return Json(json!({
-                "key": key,
-                "hash": root.hash,
-                "source": "webrtc",
-                "peer": root.peer_id,
-                "event_id": root.event_id,
-                "created_at": root.created_at,
-                "key_tag": root.key,
-                "encryptedKey": root.encrypted_key,
-                "selfEncryptedKey": root.self_encrypted_key,
-            }));
-        }
-    }
-
     Json(json!({
-        "error": "Resolution failed via relays and peers",
+        "error": "Resolution failed via relays, multicast, and peers",
         "key": key
     }))
 }
@@ -2558,6 +2668,8 @@ async fn query_upstream_blossom(servers: &[String], hash_hex: &str) -> Option<(V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nostr_relay::{NostrRelay, NostrRelayConfig};
+    use crate::socialgraph;
     use crate::storage::HashtreeStore;
     use axum::{
         body::{to_bytes, Body},
@@ -2568,6 +2680,9 @@ mod tests {
     };
     use hashtree_core::DirEntry;
     use http_body_util::BodyExt;
+    use nostr::{
+        nips::nip19::ToBech32, Alphabet, EventBuilder, Keys, Kind, SingleLetterTag, Tag, TagKind,
+    };
     use sha2::Digest;
     use std::{collections::HashSet, net::SocketAddr};
     use tempfile::TempDir;
@@ -2664,6 +2779,33 @@ mod tests {
             ),
             cid_size_cache: Arc::new(std::sync::Mutex::new(crate::server::new_lookup_cache())),
         }
+    }
+
+    async fn test_nostr_relay(dir: &TempDir, allowed_pubkey: String) -> Arc<NostrRelay> {
+        let graph_store =
+            socialgraph::open_social_graph_store_with_mapsize(dir.path(), Some(128 * 1024 * 1024))
+                .unwrap();
+        let backend: Arc<dyn socialgraph::SocialGraphBackend> = graph_store.clone();
+        let mut allowed = HashSet::new();
+        allowed.insert(allowed_pubkey);
+        let access = Arc::new(socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            allowed,
+        ));
+
+        Arc::new(
+            NostrRelay::new(
+                backend,
+                dir.path().join("relay"),
+                Some(access),
+                NostrRelayConfig {
+                    spambox_db_max_bytes: 0,
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        )
     }
 
     #[tokio::test]
@@ -3403,6 +3545,54 @@ mod tests {
             "988db3f24dc222715f1c1e1fa5876690d3147122243d72d85fd44283867cd61a"
         );
         assert!(cached.key.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_root_offline_accepts_npub_owner_for_local_relay_events() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());
+        let keys = Keys::generate();
+        let relay = test_nostr_relay(&temp_dir, keys.public_key().to_hex()).await;
+        let state = AppState {
+            nostr_relay: Some(relay.clone()),
+            ..test_app_state(store, Vec::new())
+        };
+        let hash_hex = "ab".repeat(32);
+        let tree_name = "offline-tree";
+        let event = EventBuilder::new(
+            Kind::Custom(30078),
+            "",
+            [
+                Tag::identifier(tree_name.to_string()),
+                Tag::custom(
+                    TagKind::SingleLetter(SingleLetterTag::lowercase(Alphabet::L)),
+                    vec!["hashtree".to_string()],
+                ),
+                Tag::custom(TagKind::Custom("hash".into()), vec![hash_hex.clone()]),
+            ],
+        )
+        .to_event(&keys)
+        .unwrap();
+        relay.ingest_trusted_event(event.clone()).await.unwrap();
+
+        let resolved = resolve_root_offline(
+            &state,
+            &keys.public_key().to_bech32().unwrap(),
+            tree_name,
+            None,
+        )
+        .await
+        .expect("offline root should resolve from local relay with npub");
+
+        assert_eq!(resolved.source, "local-relay");
+        assert_eq!(to_hex(&resolved.cid.hash), hash_hex);
+        assert_eq!(
+            resolved
+                .root_event
+                .as_ref()
+                .map(|root| root.event_id.as_str()),
+            Some(event.id.to_hex().as_str())
+        );
     }
 
     #[tokio::test]

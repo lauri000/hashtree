@@ -210,8 +210,7 @@ pub(crate) async fn run() -> Result<()> {
 
                 // Start WebRTC signaling manager if enabled
                 let (webrtc_handle, webrtc_state) = if config.server.enable_webrtc {
-                    let webrtc_config =
-                        hashtree_cli::p2p_common::default_webrtc_config(&config.nostr.relays);
+                    let webrtc_config = hashtree_cli::p2p_common::default_webrtc_config(&config);
                     let peer_classifier = hashtree_cli::p2p_common::build_peer_classifier(
                         data_dir.clone(),
                         Arc::clone(&social_graph_store),
