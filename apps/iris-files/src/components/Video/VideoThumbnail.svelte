@@ -59,6 +59,7 @@
   let fallbackVisible = $state(typeof IntersectionObserver === 'undefined');
   let capturedVideoFrameUrl = $state<string | null>(null);
   let containerEl = $state<HTMLDivElement | null>(null);
+  let imageEl = $state<HTMLImageElement | null>(null);
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let imageLoadTimer: ReturnType<typeof setTimeout> | null = null;
   let videoLoadTimer: ReturnType<typeof setTimeout> | null = null;
@@ -246,6 +247,16 @@
     };
   });
 
+  $effect(() => {
+    const image = imageEl;
+    if (!image || !renderedSrc || imageError || capturedVideoFrameUrl) {
+      return;
+    }
+    if (image.complete && image.naturalWidth > 0) {
+      handleImageLoad();
+    }
+  });
+
   function handleImageLoad(): void {
     clearImageLoadTimer();
     imageLoaded = true;
@@ -325,6 +336,7 @@
 <div bind:this={containerEl} class="relative bg-surface-2 overflow-hidden {className}">
   {#if renderedSrc && !imageError}
     <img
+      bind:this={imageEl}
       src={renderedSrc}
       alt=""
       class="absolute inset-0 w-full h-full object-cover"

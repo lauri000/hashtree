@@ -34,6 +34,7 @@
   let lastLoadedUrl = $state<string | null>(null);
   let retryCount = $state(0);
   let renderedThumbnailUrl = $state<string | null>(null);
+  let thumbnailEl = $state<HTMLImageElement | null>(null);
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   const loadingStrategy = shouldEagerLoadMediaInNativeChildRuntime() ? 'eager' : 'lazy';
 
@@ -85,6 +86,16 @@
     thumbnailLoaded = true;
   }
 
+  $effect(() => {
+    const image = thumbnailEl;
+    if (!image || !renderedThumbnailUrl || thumbnailError) {
+      return;
+    }
+    if (image.complete && image.naturalWidth > 0) {
+      handleThumbnailLoad();
+    }
+  });
+
   // Extract dominant color from thumbnail for hover effect
   let themeColor = $state<RGB | null>(null);
 
@@ -118,6 +129,7 @@
 
       {#if renderedThumbnailUrl && !thumbnailError}
         <img
+          bind:this={thumbnailEl}
           src={renderedThumbnailUrl}
           alt=""
           class="w-full h-full object-cover"

@@ -37,8 +37,11 @@ describe('video thumbnail fallback wiring', () => {
 
   it('keeps showing the placeholder until the image or exact video-frame fallback has actually loaded', () => {
     expect(videoThumbnailSource).toContain('let imageLoaded = $state(false);');
+    expect(videoThumbnailSource).toContain('let imageEl = $state<HTMLImageElement | null>(null);');
     expect(videoThumbnailSource).toContain('imageLoaded = false;');
     expect(videoThumbnailSource).toContain('imageLoaded = true;');
+    expect(videoThumbnailSource).toContain('if (image.complete && image.naturalWidth > 0) {');
+    expect(videoThumbnailSource).toContain('bind:this={imageEl}');
     expect(videoThumbnailSource).toContain('class:opacity-0={!imageLoaded}');
     expect(videoThumbnailSource).toContain('{#if (!renderedSrc || imageError || !imageLoaded) && !capturedVideoFrameUrl}');
   });
