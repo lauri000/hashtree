@@ -54,6 +54,10 @@ interface ResolvedRootEntry {
   size?: number;
 }
 
+interface ResolvedThumbnailLookup extends ResolvedRootEntry {
+  path: string;
+}
+
 interface CachedLookupValue<T> {
   value: T;
   expiresAt: number;
@@ -96,7 +100,9 @@ const resolvedEntryLookupCache = createAsyncLookupCache<ResolvedRootEntry | null
   RESOLVED_ENTRY_CACHE_SIZE
 );
 const fileSizeLookupCache = createAsyncLookupCache<number | null>(FILE_SIZE_CACHE_SIZE);
-const thumbnailPathLookupCache = createAsyncLookupCache<string | null>(THUMBNAIL_PATH_CACHE_SIZE);
+const thumbnailPathLookupCache = createAsyncLookupCache<ResolvedThumbnailLookup | null>(
+  THUMBNAIL_PATH_CACHE_SIZE
+);
 
 let mediaPort: MessagePort | null = null;
 let tree: HashTree | null = null;
@@ -293,7 +299,7 @@ async function handleMediaRequestByPath(req: MediaRequestByPath): Promise<void> 
 
     // Navigate to file within tree if path specified
     if (filePath) {
-      const resolved = await tree.resolvePath(cid, filePath);
+      const resolved = await resolvePathFromDirectoryListings(cid, filePath);
       if (!resolved) {
         mediaPort.postMessage({
           type: 'error',
@@ -411,7 +417,7 @@ function watchTreeRootForStream(
       // Navigate to file
       let fileCid: CID = cid;
       if (filePath) {
-        const resolved = await tree.resolvePath(cid, filePath);
+        const resolved = await resolvePathFromDirectoryListings(cid, filePath);
         if (!resolved) {
           scheduleNext();
           return;
@@ -546,14 +552,21 @@ async function resolveEntryWithinRoot(
     resolvedEntryLookupCache,
     cacheKey,
     async () => {
-      const resolvedPath = await normalizeAliasPath(rootCid, path);
-      if (!resolvedPath) {
+      if (!path) {
         return { cid: rootCid };
+      }
+
+      const resolvedThumbnail = await resolveThumbnailAliasEntry(rootCid, path);
+      if (resolvedThumbnail) {
+        return { cid: resolvedThumbnail.cid, size: resolvedThumbnail.size };
+      }
+      if (isThumbnailAliasPath(path)) {
+        return null;
       }
 
       if (
         options?.allowSingleSegmentRootFallback &&
-        canFallbackToRootBlob(resolvedPath, path)
+        canFallbackToRootBlob(path, path)
       ) {
         const isDirectory = await canListDirectory(rootCid);
         if (!isDirectory) {
@@ -561,36 +574,14 @@ async function resolveEntryWithinRoot(
         }
       }
 
-      if (isThumbnailAliasPath(path) && resolvedPath === path) {
-        return null;
-      }
-
-      const parts = resolvedPath.split('/').filter(Boolean);
-      const entryName = parts.pop();
-      const parentPath = parts.join('/');
-
-      if (entryName) {
-        const parentCid = parentPath
-          ? (await tree.resolvePath(rootCid, parentPath))?.cid ?? null
-          : rootCid;
-
-        if (parentCid) {
-          const entries = await listDirectoryWithTimeout(parentCid);
-          const directEntry = entries?.find((entry) => entry.name === entryName);
-          if (directEntry?.cid) {
-            return { cid: directEntry.cid, size: directEntry.size };
-          }
-        }
-      }
-
-      const entry = await tree.resolvePath(rootCid, resolvedPath);
+      const entry = await resolvePathFromDirectoryListings(rootCid, path);
       if (entry) {
-        return { cid: entry.cid };
+        return entry;
       }
 
       if (
         options?.allowSingleSegmentRootFallback &&
-        canFallbackToRootBlob(resolvedPath, path)
+        canFallbackToRootBlob(path, path)
       ) {
         return { cid: rootCid };
       }
@@ -599,6 +590,39 @@ async function resolveEntryWithinRoot(
     },
     (value) => getLookupTtlMs(value),
   );
+}
+
+async function resolvePathFromDirectoryListings(
+  rootCid: CID,
+  path: string
+): Promise<ResolvedRootEntry | null> {
+  if (!tree) return null;
+
+  const parts = path.split('/').filter(Boolean);
+  if (parts.length === 0) {
+    return { cid: rootCid };
+  }
+
+  let currentCid = rootCid;
+  for (let i = 0; i < parts.length; i += 1) {
+    const entries = await listDirectoryWithTimeout(currentCid);
+    if (!entries) {
+      return null;
+    }
+
+    const entry = entries.find((candidate) => candidate.name === parts[i]);
+    if (!entry?.cid) {
+      return null;
+    }
+
+    if (i === parts.length - 1) {
+      return { cid: entry.cid, size: entry.size };
+    }
+
+    currentCid = entry.cid;
+  }
+
+  return null;
 }
 
 async function resolveCidWithinRoot(
@@ -621,14 +645,9 @@ function isThumbnailAliasPath(path: string): boolean {
 
 async function normalizeAliasPath(rootCid: CID, path: string): Promise<string> {
   if (!path) return '';
-  if (path.endsWith('/thumbnail') || path === 'thumbnail') {
-    const dirPath = path.endsWith('/thumbnail')
-      ? path.slice(0, -'/thumbnail'.length)
-      : '';
-    const actualPath = await findThumbnailInDir(rootCid, dirPath);
-    if (actualPath) {
-      return actualPath;
-    }
+  const resolvedThumbnail = await resolveThumbnailAliasEntry(rootCid, path);
+  if (resolvedThumbnail) {
+    return resolvedThumbnail.path;
   }
   return path;
 }
@@ -636,6 +655,9 @@ async function normalizeAliasPath(rootCid: CID, path: string): Promise<string> {
 async function canListDirectory(rootCid: CID): Promise<boolean> {
   if (!tree) return false;
   try {
+    if ('isDirectory' in tree && typeof tree.isDirectory === 'function') {
+      return await tree.isDirectory(rootCid);
+    }
     const entries = await listDirectoryWithTimeout(rootCid);
     return Array.isArray(entries);
   } catch {
@@ -648,6 +670,20 @@ export const __test__ = {
   normalizeAliasPath,
   canListDirectory,
 };
+
+async function resolveThumbnailAliasEntry(
+  rootCid: CID,
+  path: string
+): Promise<ResolvedThumbnailLookup | null> {
+  if (!isThumbnailAliasPath(path)) {
+    return null;
+  }
+
+  const dirPath = path.endsWith('/thumbnail')
+    ? path.slice(0, -'/thumbnail'.length)
+    : '';
+  return findThumbnailLookupInDir(rootCid, dirPath);
+}
 
 async function listDirectoryWithTimeout(cid: CID): Promise<Awaited<ReturnType<HashTree['listDirectory']>> | null> {
   if (!tree) return null;
@@ -663,7 +699,7 @@ async function listDirectoryWithTimeout(cid: CID): Promise<Awaited<ReturnType<Ha
 }
 
 async function waitForCachedRoot(npub: string, treeName: string): Promise<CID | null> {
-  let cached = await getCachedRoot(npub, treeName);
+  const cached = await getCachedRoot(npub, treeName);
   if (cached) return cached;
 
   const cacheKey = `${npub}/${treeName}`;
@@ -766,7 +802,10 @@ async function getFileSize(cid: CID): Promise<number | null> {
 /**
  * Find actual thumbnail file in a directory
  */
-async function findThumbnailInDir(rootCid: CID, dirPath: string): Promise<string | null> {
+async function findThumbnailLookupInDir(
+  rootCid: CID,
+  dirPath: string
+): Promise<ResolvedThumbnailLookup | null> {
   if (!tree) return null;
 
   return loadCachedLookup(
@@ -776,7 +815,7 @@ async function findThumbnailInDir(rootCid: CID, dirPath: string): Promise<string
       try {
         // Get directory CID
         const dirEntry = dirPath
-          ? await tree.resolvePath(rootCid, dirPath)
+          ? await resolvePathFromDirectoryListings(rootCid, dirPath)
           : { cid: rootCid };
         if (!dirEntry) return null;
 
@@ -786,8 +825,13 @@ async function findThumbnailInDir(rootCid: CID, dirPath: string): Promise<string
 
         // Find first matching thumbnail pattern
         for (const pattern of THUMBNAIL_PATTERNS) {
-          if (entries.some(e => e.name === pattern)) {
-            return dirPath ? `${dirPath}/${pattern}` : pattern;
+          const directMatch = entries.find((entry) => entry.name === pattern && entry.cid);
+          if (directMatch?.cid) {
+            return {
+              path: dirPath ? `${dirPath}/${pattern}` : pattern,
+              cid: directMatch.cid,
+              size: directMatch.size,
+            };
           }
         }
 
@@ -806,9 +850,14 @@ async function findThumbnailInDir(rootCid: CID, dirPath: string): Promise<string
               }
 
               for (const pattern of THUMBNAIL_PATTERNS) {
-                if (subEntries.some((candidate) => candidate.name === pattern)) {
+                const directMatch = subEntries.find((candidate) => candidate.name === pattern && candidate.cid);
+                if (directMatch?.cid) {
                   const prefix = dirPath ? `${dirPath}/${entry.name}` : entry.name;
-                  return `${prefix}/${pattern}`;
+                  return {
+                    path: `${prefix}/${pattern}`,
+                    cid: directMatch.cid,
+                    size: directMatch.size,
+                  };
                 }
               }
             } catch {

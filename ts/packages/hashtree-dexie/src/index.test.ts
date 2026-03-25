@@ -269,6 +269,34 @@ describe('DexieStore', () => {
       expect(await store.has(hash3)).toBe(true);
     });
 
+    it('should honor a recent get during eviction without waiting for background lastAccess writes', async () => {
+      const data1 = new Uint8Array(100);
+      const data2 = new Uint8Array(100);
+      const data3 = new Uint8Array(100);
+      data1[0] = 1;
+      data2[0] = 2;
+      data3[0] = 3;
+
+      const hash1 = makeHash(data1);
+      const hash2 = makeHash(data2);
+      const hash3 = makeHash(data3);
+
+      await store.put(hash1, data1);
+      await new Promise(r => setTimeout(r, 50));
+      await store.put(hash2, data2);
+      await new Promise(r => setTimeout(r, 50));
+      await store.put(hash3, data3);
+
+      await new Promise(r => setTimeout(r, 50));
+      await store.get(hash1);
+
+      await store.evict(200);
+
+      expect(await store.has(hash1)).toBe(true);
+      expect(await store.has(hash2)).toBe(false);
+      expect(await store.has(hash3)).toBe(true);
+    });
+
     it('should return 0 when store is empty', async () => {
       const evicted = await store.evict(100);
       expect(evicted).toBe(0);

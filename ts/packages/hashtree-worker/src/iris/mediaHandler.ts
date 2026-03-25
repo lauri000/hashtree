@@ -11,8 +11,9 @@ import type { MediaRequestByCid, MediaRequestByPath, MediaResponse } from './pro
 import { getCachedRoot } from './treeRootCache';
 import { subscribeToTreeRoots } from './treeRootSubscription';
 import { getErrorMessage } from './utils/errorMessage';
-import { nhashDecode } from '@hashtree/core';
+import { nhashDecode, toHex } from '@hashtree/core';
 import { nip19 } from 'nostr-tools';
+import { LRUCache } from './utils/lruCache';
 
 // Thumbnail filename patterns to look for (in priority order)
 const THUMBNAIL_PATTERNS = ['thumbnail.jpg', 'thumbnail.webp', 'thumbnail.png', 'thumbnail.jpeg'];
@@ -46,10 +47,36 @@ interface SwFileResponse {
   message?: string;
 }
 
+interface ResolvedRootEntry {
+  cid: CID;
+  size?: number;
+}
+
+interface ResolvedThumbnailLookup extends ResolvedRootEntry {
+  path: string;
+}
+
+interface CachedLookupValue<T> {
+  value: T;
+  expiresAt: number;
+}
+
+interface AsyncLookupCache<T> {
+  values: LRUCache<string, CachedLookupValue<T>>;
+  inflight: Map<string, Promise<T>>;
+}
+
 // Timeout for considering a stream "done" (no updates)
 const LIVE_STREAM_TIMEOUT = 10000; // 10 seconds
 const ROOT_WAIT_TIMEOUT_MS = 15000;
 const ROOT_WAIT_INTERVAL_MS = 200;
+const NHASH_HINT_DIRECTORY_TIMEOUT_MS = 250;
+const IMMUTABLE_LOOKUP_CACHE_HIT_TTL_MS = 5 * 60 * 1000;
+const IMMUTABLE_LOOKUP_CACHE_MISS_TTL_MS = 1000;
+const DIRECTORY_CACHE_SIZE = 1024;
+const RESOLVED_ENTRY_CACHE_SIZE = 2048;
+const FILE_SIZE_CACHE_SIZE = 1024;
+const THUMBNAIL_PATH_CACHE_SIZE = 1024;
 
 // Chunk size for streaming to media port
 const MEDIA_CHUNK_SIZE = 256 * 1024; // 256KB chunks - matches videoChunker's firstChunkSize
@@ -64,6 +91,10 @@ interface ActiveStream {
 }
 
 const activeMediaStreams = new Map<string, ActiveStream>();
+const directoryLookupCache = createAsyncLookupCache(DIRECTORY_CACHE_SIZE);
+const resolvedEntryLookupCache = createAsyncLookupCache(RESOLVED_ENTRY_CACHE_SIZE);
+const fileSizeLookupCache = createAsyncLookupCache(FILE_SIZE_CACHE_SIZE);
+const thumbnailPathLookupCache = createAsyncLookupCache(THUMBNAIL_PATH_CACHE_SIZE);
 
 let mediaPort: MessagePort | null = null;
 let tree: HashTree | null = null;
@@ -78,11 +109,78 @@ function logMediaDebug(event: string, data?: Record<string, unknown>): void {
   }
 }
 
+function createAsyncLookupCache<T>(maxEntries: number): AsyncLookupCache<T> {
+  return {
+    values: new LRUCache<string, CachedLookupValue<T>>(maxEntries),
+    inflight: new Map<string, Promise<T>>(),
+  };
+}
+
+function clearAsyncLookupCache<T>(cache: AsyncLookupCache<T>): void {
+  cache.values.clear();
+  cache.inflight.clear();
+}
+
+function clearMediaLookupCaches(): void {
+  clearAsyncLookupCache(directoryLookupCache);
+  clearAsyncLookupCache(resolvedEntryLookupCache);
+  clearAsyncLookupCache(fileSizeLookupCache);
+  clearAsyncLookupCache(thumbnailPathLookupCache);
+}
+
+function getLookupTtlMs<T>(value: T | null | undefined): number {
+  return value == null ? IMMUTABLE_LOOKUP_CACHE_MISS_TTL_MS : IMMUTABLE_LOOKUP_CACHE_HIT_TTL_MS;
+}
+
+async function loadCachedLookup<T>(
+  cache: AsyncLookupCache<T>,
+  key: string,
+  loader: () => Promise<T>,
+  ttlMsForValue: (value: T) => number,
+): Promise<T> {
+  const now = Date.now();
+  const cached = cache.values.get(key);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+  if (cached) {
+    cache.values.delete(key);
+  }
+
+  const inflight = cache.inflight.get(key);
+  if (inflight) {
+    return inflight;
+  }
+
+  const pending = loader()
+    .then((value) => {
+      const ttlMs = ttlMsForValue(value);
+      if (ttlMs > 0) {
+        cache.values.set(key, {
+          value,
+          expiresAt: Date.now() + ttlMs,
+        });
+      }
+      return value;
+    })
+    .finally(() => {
+      cache.inflight.delete(key);
+    });
+
+  cache.inflight.set(key, pending);
+  return pending;
+}
+
+function cidCacheKey(cid: CID): string {
+  return cid.key ? `${toHex(cid.hash)}?k=${toHex(cid.key)}` : toHex(cid.hash);
+}
+
 /**
  * Initialize the media handler with the HashTree instance
  */
 export function initMediaHandler(hashTree: HashTree): void {
   tree = hashTree;
+  clearMediaLookupCaches();
 }
 
 /**
@@ -91,6 +189,7 @@ export function initMediaHandler(hashTree: HashTree): void {
 export function registerMediaPort(port: MessagePort, debug?: boolean): void {
   mediaPort = port;
   mediaDebugEnabled = !!debug;
+  port.start?.();
 
   port.onmessage = async (e: MessageEvent) => {
     const req = e.data;
@@ -191,7 +290,7 @@ async function handleMediaRequestByPath(req: MediaRequestByPath): Promise<void> 
 
     // Navigate to file within tree if path specified
     if (filePath) {
-      const resolved = await tree.resolvePath(cid, filePath);
+      const resolved = await resolvePathFromDirectoryListings(cid, filePath);
       if (!resolved) {
         mediaPort.postMessage({
           type: 'error',
@@ -309,7 +408,7 @@ function watchTreeRootForStream(
       // Navigate to file
       let fileCid: CID = cid;
       if (filePath) {
-        const resolved = await tree.resolvePath(cid, filePath);
+        const resolved = await resolvePathFromDirectoryListings(cid, filePath);
         if (!resolved) {
           scheduleNext();
           return;
@@ -371,27 +470,17 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
   });
 
   try {
-    let cid: CID | null = null;
+    let resolvedEntry: ResolvedRootEntry | null = null;
 
     if (nhash) {
       // Direct nhash request - decode to CID
       const rootCid = nhashDecode(nhash);
-
-      // If path provided AND it contains a slash, navigate within the nhash directory
-      // Single filename without slashes is just a hint for MIME type - use rootCid directly
-      if (path && path.includes('/')) {
-        const entry = await tree.resolvePath(rootCid, path);
-        if (!entry) {
-          sendSwError(requestId, 404, `File not found: ${path}`);
-          return;
-        }
-        cid = entry.cid;
-      } else if (path && !path.includes('/')) {
-        // Try to resolve as file within directory first
-        const entry = await tree.resolvePath(rootCid, path);
-        cid = entry ? entry.cid : rootCid;
-      } else {
-        cid = rootCid;
+      resolvedEntry = await resolveEntryWithinRoot(rootCid, path || '', {
+        allowSingleSegmentRootFallback: true,
+      });
+      if (!resolvedEntry) {
+        sendSwError(requestId, 404, `File not found: ${path}`);
+        return;
       }
     } else if (npub && treeName) {
       // Npub-based request - resolve through cached root
@@ -400,46 +489,29 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
         sendSwError(requestId, 404, 'Tree not found');
         return;
       }
-
-      // Handle thumbnail requests without extension
-      let resolvedPath = path || '';
-      if (resolvedPath.endsWith('/thumbnail') || resolvedPath === 'thumbnail') {
-        const dirPath = resolvedPath.endsWith('/thumbnail')
-          ? resolvedPath.slice(0, -'/thumbnail'.length)
-          : '';
-        const actualPath = await findThumbnailInDir(rootCid, dirPath);
-        if (actualPath) {
-          resolvedPath = actualPath;
-        }
-      }
-
-      // Navigate to file
-      if (resolvedPath) {
-        const entry = await tree.resolvePath(rootCid, resolvedPath);
-        if (!entry) {
-          sendSwError(requestId, 404, 'File not found');
-          return;
-        }
-        cid = entry.cid;
-      } else {
-        cid = rootCid;
+      resolvedEntry = await resolveEntryWithinRoot(rootCid, path || '', {
+        allowSingleSegmentRootFallback: false,
+      });
+      if (!resolvedEntry) {
+        sendSwError(requestId, 404, 'File not found');
+        return;
       }
     }
 
-    if (!cid) {
+    if (!resolvedEntry?.cid) {
       sendSwError(requestId, 400, 'Invalid request');
       return;
     }
 
     // Get file size
-    const totalSize = await getFileSize(cid);
+    const totalSize = resolvedEntry.size ?? await getFileSize(resolvedEntry.cid);
     if (totalSize === null) {
       sendSwError(requestId, 404, 'File data not found');
       return;
     }
 
     // Stream the content
-    await streamSwResponse(requestId, cid, totalSize, {
+    await streamSwResponse(requestId, resolvedEntry.cid, totalSize, {
       npub,
       path,
       start,
@@ -483,6 +555,146 @@ function decodeNpubToPubkey(npub: string): string | null {
   }
 }
 
+async function resolveEntryWithinRoot(
+  rootCid: CID,
+  path: string,
+  options?: { allowSingleSegmentRootFallback?: boolean }
+): Promise<ResolvedRootEntry | null> {
+  if (!tree) return null;
+
+  const cacheKey = [
+    cidCacheKey(rootCid),
+    options?.allowSingleSegmentRootFallback ? 'root-fallback' : 'strict',
+    path,
+  ].join('|');
+
+  return loadCachedLookup(
+    resolvedEntryLookupCache,
+    cacheKey,
+    async () => {
+      if (!path) {
+        return { cid: rootCid };
+      }
+
+      const resolvedThumbnail = await resolveThumbnailAliasEntry(rootCid, path);
+      if (resolvedThumbnail) {
+        return { cid: resolvedThumbnail.cid, size: resolvedThumbnail.size };
+      }
+      if (isThumbnailAliasPath(path)) {
+        return null;
+      }
+
+      if (
+        options?.allowSingleSegmentRootFallback &&
+        canFallbackToRootBlob(path, path)
+      ) {
+        const isDirectory = await canListDirectory(rootCid);
+        if (!isDirectory) {
+          return { cid: rootCid };
+        }
+      }
+
+      const entry = await resolvePathFromDirectoryListings(rootCid, path);
+      if (entry) {
+        return entry;
+      }
+
+      if (
+        options?.allowSingleSegmentRootFallback &&
+        canFallbackToRootBlob(path, path)
+      ) {
+        return { cid: rootCid };
+      }
+
+      return null;
+    },
+    (value) => getLookupTtlMs(value),
+  );
+}
+
+async function resolvePathFromDirectoryListings(
+  rootCid: CID,
+  path: string
+): Promise<ResolvedRootEntry | null> {
+  if (!tree) return null;
+
+  const parts = path.split('/').filter(Boolean);
+  if (parts.length === 0) {
+    return { cid: rootCid };
+  }
+
+  let currentCid = rootCid;
+  for (let i = 0; i < parts.length; i += 1) {
+    const entries = await listDirectoryWithTimeout(currentCid);
+    if (!entries) {
+      return null;
+    }
+
+    const entry = entries.find((candidate) => candidate.name === parts[i]);
+    if (!entry?.cid) {
+      return null;
+    }
+
+    if (i === parts.length - 1) {
+      return { cid: entry.cid, size: entry.size };
+    }
+
+    currentCid = entry.cid;
+  }
+
+  return null;
+}
+
+function canFallbackToRootBlob(resolvedPath: string, originalPath: string): boolean {
+  if (resolvedPath !== originalPath) return false;
+  if (resolvedPath.includes('/')) return false;
+  return /\.[A-Za-z0-9]{1,16}$/.test(resolvedPath);
+}
+
+function isThumbnailAliasPath(path: string): boolean {
+  return path === 'thumbnail' || path.endsWith('/thumbnail');
+}
+
+async function canListDirectory(rootCid: CID): Promise<boolean> {
+  if (!tree) return false;
+  try {
+    if ('isDirectory' in tree && typeof tree.isDirectory === 'function') {
+      return await tree.isDirectory(rootCid);
+    }
+    const entries = await listDirectoryWithTimeout(rootCid);
+    return Array.isArray(entries);
+  } catch {
+    return false;
+  }
+}
+
+async function resolveThumbnailAliasEntry(
+  rootCid: CID,
+  path: string
+): Promise<ResolvedThumbnailLookup | null> {
+  if (!isThumbnailAliasPath(path)) {
+    return null;
+  }
+
+  const dirPath = path.endsWith('/thumbnail')
+    ? path.slice(0, -'/thumbnail'.length)
+    : '';
+  return findThumbnailLookupInDir(rootCid, dirPath);
+}
+
+async function listDirectoryWithTimeout(cid: CID): Promise<Awaited<ReturnType<HashTree['listDirectory']>> | null> {
+  if (!tree) return null;
+  return loadCachedLookup(
+    directoryLookupCache,
+    cidCacheKey(cid),
+    async () => Promise.race([
+      tree.listDirectory(cid),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), NHASH_HINT_DIRECTORY_TIMEOUT_MS)),
+    ]),
+    (value) => getLookupTtlMs(value),
+  );
+}
+
 /**
  * Send error response to SW
  */
@@ -503,48 +715,67 @@ function sendSwError(requestId: string, status: number, message: string): void {
 async function getFileSize(cid: CID): Promise<number | null> {
   if (!tree) return null;
 
-  const treeNode = await tree.getTreeNode(cid);
-  if (treeNode) {
-    // Chunked file - sum link sizes from decrypted tree node
-    return treeNode.links.reduce((sum, l) => sum + l.size, 0);
-  }
+  return loadCachedLookup(
+    fileSizeLookupCache,
+    cidCacheKey(cid),
+    async () => {
+      const treeNode = await tree.getTreeNode(cid);
+      if (treeNode) {
+        // Chunked file - sum link sizes from decrypted tree node
+        return treeNode.links.reduce((sum, l) => sum + l.size, 0);
+      }
 
-  // Single blob - fetch to check existence and get size
-  const blob = await tree.getBlob(cid.hash);
-  if (!blob) return null;
+      // Single blob - fetch to check existence and get size
+      const blob = await tree.getBlob(cid.hash);
+      if (!blob) return null;
 
-  // For encrypted blobs, decrypted size = encrypted size - 16 (nonce overhead)
-  return cid.key ? Math.max(0, blob.length - 16) : blob.length;
+      // For encrypted blobs, decrypted size = encrypted size - 16 (nonce overhead)
+      return cid.key ? Math.max(0, blob.length - 16) : blob.length;
+    },
+    (value) => getLookupTtlMs(value),
+  );
 }
 
 /**
  * Find actual thumbnail file in a directory
  */
-async function findThumbnailInDir(rootCid: CID, dirPath: string): Promise<string | null> {
+async function findThumbnailLookupInDir(
+  rootCid: CID,
+  dirPath: string
+): Promise<ResolvedThumbnailLookup | null> {
   if (!tree) return null;
 
-  try {
-    // Get directory CID
-    const dirEntry = dirPath
-      ? await tree.resolvePath(rootCid, dirPath)
-      : { cid: rootCid };
-    if (!dirEntry) return null;
+  return loadCachedLookup(
+    thumbnailPathLookupCache,
+    `${cidCacheKey(rootCid)}|${dirPath}`,
+    async () => {
+      try {
+        const dirEntry = dirPath
+          ? await resolvePathFromDirectoryListings(rootCid, dirPath)
+          : { cid: rootCid };
+        if (!dirEntry) return null;
 
-    // List directory contents
-    const entries = await tree.listDirectory(dirEntry.cid);
-    if (!entries) return null;
+        const entries = await listDirectoryWithTimeout(dirEntry.cid);
+        if (!entries) return null;
 
-    // Find first matching thumbnail pattern
-    for (const pattern of THUMBNAIL_PATTERNS) {
-      if (entries.some(e => e.name === pattern)) {
-        return dirPath ? `${dirPath}/${pattern}` : pattern;
+        for (const pattern of THUMBNAIL_PATTERNS) {
+          const directMatch = entries.find((entry) => entry.name === pattern && entry.cid);
+          if (directMatch?.cid) {
+            return {
+              path: dirPath ? `${dirPath}/${pattern}` : pattern,
+              cid: directMatch.cid,
+              size: directMatch.size,
+            };
+          }
+        }
+
+        return null;
+      } catch {
+        return null;
       }
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
+    },
+    (value) => getLookupTtlMs(value),
+  );
 }
 
 /**

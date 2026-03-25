@@ -13,8 +13,16 @@ interface BlobEntry {
   lastAccess: number;
 }
 
+interface BlobAccessEntry {
+  hashHex: string;
+  lastAccess: number;
+}
+
+const LAST_ACCESS_FLUSH_DELAY_MS = 50;
+
 class HashTreeDB extends Dexie {
   blobs!: Table<BlobEntry, string>;
+  accesses!: Table<BlobAccessEntry, string>;
 
   constructor(dbName: string) {
     super(dbName);
@@ -34,6 +42,24 @@ class HashTreeDB extends Dexie {
         blob.lastAccess = now;
       });
     });
+
+    // Version 3: Track access timestamps in a separate table so read hits
+    // don't need to rewrite blob payload rows.
+    this.version(3).stores({
+      blobs: '&hashHex, lastAccess',
+      accesses: '&hashHex, lastAccess',
+    }).upgrade(async (tx) => {
+      const blobs = await tx.table('blobs').toArray() as BlobEntry[];
+      const accessesTable = tx.table('accesses');
+      await Promise.all(
+        blobs.map((blob) =>
+          accessesTable.put({
+            hashHex: blob.hashHex,
+            lastAccess: blob.lastAccess ?? Date.now(),
+          }),
+        ),
+      );
+    });
   }
 }
 
@@ -43,16 +69,77 @@ class HashTreeDB extends Dexie {
  */
 export class DexieStore implements Store {
   private db: HashTreeDB;
+  private pendingLastAccessUpdates = new Map<string, number>();
+  private lastAccessFlushPromise: Promise<void> | null = null;
+  private lastAccessFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(dbName: string = 'hashtree') {
     this.db = new HashTreeDB(dbName);
   }
 
+  private scheduleLastAccessTouch(hashHex: string): void {
+    this.pendingLastAccessUpdates.set(hashHex, Date.now());
+    if (this.lastAccessFlushTimer !== null) {
+      return;
+    }
+
+    this.lastAccessFlushTimer = setTimeout(() => {
+      this.lastAccessFlushTimer = null;
+      void this.flushPendingLastAccessUpdates();
+    }, LAST_ACCESS_FLUSH_DELAY_MS);
+  }
+
+  private async flushPendingLastAccessUpdates(): Promise<void> {
+    if (this.lastAccessFlushTimer !== null) {
+      clearTimeout(this.lastAccessFlushTimer);
+      this.lastAccessFlushTimer = null;
+    }
+
+    if (this.lastAccessFlushPromise) {
+      await this.lastAccessFlushPromise;
+      if (this.pendingLastAccessUpdates.size === 0) {
+        return;
+      }
+    }
+
+    if (this.pendingLastAccessUpdates.size === 0) {
+      return;
+    }
+
+    const updates = Array.from(
+      this.pendingLastAccessUpdates,
+      ([hashHex, lastAccess]) => ({ hashHex, lastAccess }),
+    );
+    this.pendingLastAccessUpdates.clear();
+
+    const pending = this.db.accesses
+      .bulkPut(updates)
+      .then(() => undefined)
+      .catch((e) => {
+        console.error('[DexieStore] lastAccess flush error:', e);
+      })
+      .finally(() => {
+        this.lastAccessFlushPromise = null;
+      });
+
+    this.lastAccessFlushPromise = pending;
+    await pending;
+
+    if (this.pendingLastAccessUpdates.size > 0) {
+      await this.flushPendingLastAccessUpdates();
+    }
+  }
+
   async put(hash: Hash, data: Uint8Array): Promise<boolean> {
     const hashHex = toHex(hash);
+    const lastAccess = Date.now();
     try {
-      // Store directly - IDB will clone the data internally
-      await this.db.blobs.put({ hashHex, data, lastAccess: Date.now() });
+      await this.flushPendingLastAccessUpdates();
+      await this.db.transaction('rw', this.db.blobs, this.db.accesses, async () => {
+        // Store directly - IDB will clone the data internally
+        await this.db.blobs.put({ hashHex, data, lastAccess });
+        await this.db.accesses.put({ hashHex, lastAccess });
+      });
       return true;
     } catch (e) {
       console.error('[DexieStore] put error:', e);
@@ -67,9 +154,8 @@ export class DexieStore implements Store {
       const entry = await this.db.blobs.get(hashHex);
       if (!entry) return null;
 
-      // Update lastAccess timestamp for LRU tracking (fire-and-forget)
-      // We need to re-put the entry to avoid fake-indexeddb corruption issues with partial updates
-      this.db.blobs.put({ ...entry, lastAccess: Date.now() }).catch(() => {});
+      // Batch LRU touch updates so hot read paths stay read-heavy.
+      this.scheduleLastAccessTouch(hashHex);
 
       // Return directly - IDB returns a fresh copy already
       // Only slice if the view doesn't match the buffer (rare edge case)
@@ -100,9 +186,13 @@ export class DexieStore implements Store {
   async delete(hash: Hash): Promise<boolean> {
     const hashHex = toHex(hash);
     try {
+      await this.flushPendingLastAccessUpdates();
       const existed = await this.has(hash);
       if (existed) {
-        await this.db.blobs.delete(hashHex);
+        await this.db.transaction('rw', this.db.blobs, this.db.accesses, async () => {
+          await this.db.blobs.delete(hashHex);
+          await this.db.accesses.delete(hashHex);
+        });
         return true;
       }
       return false;
@@ -131,7 +221,11 @@ export class DexieStore implements Store {
    */
   async clear(): Promise<void> {
     try {
-      await this.db.blobs.clear();
+      await this.flushPendingLastAccessUpdates();
+      await this.db.transaction('rw', this.db.blobs, this.db.accesses, async () => {
+        await this.db.blobs.clear();
+        await this.db.accesses.clear();
+      });
     } catch (e) {
       console.error('[DexieStore] clear error:', e);
     }
@@ -172,11 +266,12 @@ export class DexieStore implements Store {
    */
   async evict(maxBytes: number): Promise<number> {
     try {
+      await this.flushPendingLastAccessUpdates();
       const currentBytes = await this.totalBytes();
       if (currentBytes <= maxBytes) return 0;
 
-      // Get entries sorted by lastAccess (oldest first)
-      const entries = await this.db.blobs.orderBy('lastAccess').toArray();
+      // Get entries sorted by lastAccess (oldest first) from the lightweight access table.
+      const entries = await this.db.accesses.orderBy('lastAccess').toArray();
 
       let bytesRemoved = 0;
       let entriesRemoved = 0;
@@ -185,8 +280,12 @@ export class DexieStore implements Store {
       for (const entry of entries) {
         if (bytesRemoved >= targetRemoval) break;
 
-        await this.db.blobs.delete(entry.hashHex);
-        bytesRemoved += entry.data.byteLength;
+        const blob = await this.db.blobs.get(entry.hashHex);
+        await this.db.transaction('rw', this.db.blobs, this.db.accesses, async () => {
+          await this.db.blobs.delete(entry.hashHex);
+          await this.db.accesses.delete(entry.hashHex);
+        });
+        bytesRemoved += blob?.data.byteLength ?? 0;
         entriesRemoved++;
       }
 
@@ -202,6 +301,11 @@ export class DexieStore implements Store {
    * Close the database connection
    */
   close(): void {
+    if (this.lastAccessFlushTimer !== null) {
+      clearTimeout(this.lastAccessFlushTimer);
+      this.lastAccessFlushTimer = null;
+    }
+    this.pendingLastAccessUpdates.clear();
     this.db.close();
   }
 

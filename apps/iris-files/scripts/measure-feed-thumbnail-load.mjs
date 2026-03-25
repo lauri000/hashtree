@@ -59,6 +59,66 @@ async function getVisibleThumbnailStats(page) {
   });
 }
 
+async function getVisibleThumbnailUrls(page, limit = 5) {
+  return page.evaluate((maxUrls) => {
+    const seen = new Set();
+    return Array.from(document.querySelectorAll('a[href^="#/npub"] img'))
+      .map((img) => img.getAttribute('src'))
+      .filter((src) => !!src && src.startsWith('/htree/'))
+      .filter((src) => {
+        if (!src || seen.has(src)) return false;
+        seen.add(src);
+        return true;
+      })
+      .slice(0, maxUrls);
+  }, limit);
+}
+
+async function probeOfflineThumbnailFetches(page, context) {
+  const urls = await getVisibleThumbnailUrls(page);
+  if (urls.length === 0) {
+    return {
+      totalTested: 0,
+      allOk: false,
+      results: [],
+    };
+  }
+
+  await context.setOffline(true);
+  try {
+    const results = await page.evaluate(async (srcs) => {
+      const offlineResults = [];
+      for (const src of srcs) {
+        try {
+          const response = await fetch(src, { cache: 'no-store' });
+          const bytes = await response.arrayBuffer();
+          offlineResults.push({
+            src,
+            ok: response.ok,
+            status: response.status,
+            bytes: bytes.byteLength,
+          });
+        } catch (error) {
+          offlineResults.push({
+            src,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      return offlineResults;
+    }, urls);
+
+    return {
+      totalTested: results.length,
+      allOk: results.length > 0 && results.every((result) => result.ok),
+      results,
+    };
+  } finally {
+    await context.setOffline(false);
+  }
+}
+
 async function waitForVisibleThumbnailSettlement(page) {
   const startedAt = Date.now();
   let firstVisibleAt = 0;
@@ -148,6 +208,7 @@ try {
   const warm = await measurePass(page, 'warm-reload', () =>
     page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 })
   );
+  const offlineCacheProbe = await probeOfflineThumbnailFetches(page, context);
 
   await mkdir(OUT_DIR, { recursive: true });
   await page.screenshot({ path: SCREENSHOT_PATH, fullPage: true });
@@ -157,6 +218,7 @@ try {
     measuredAt: new Date().toISOString(),
     cold,
     warm,
+    offlineCacheProbe,
     improvementMs: cold.navigationAndSettleMs - warm.navigationAndSettleMs,
   };
 

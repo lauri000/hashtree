@@ -29,32 +29,23 @@ describe('mediaHandler thumbnail aliases', () => {
   });
 
   it('resolves a root thumbnail alias for immutable nhash requests', async () => {
-    resolvePath.mockImplementation(async (cid: CID, path: string) => {
-      if (cid === ROOT && path === 'thumbnail.jpg') {
-        return { cid: ROOT_THUMB };
-      }
-      return null;
-    });
-    listDirectory.mockResolvedValue([{ name: 'thumbnail.jpg' }]);
+    resolvePath.mockResolvedValue(null);
+    listDirectory.mockResolvedValue([{ name: 'thumbnail.jpg', cid: ROOT_THUMB, size: 123 }]);
 
     await expect(
       __test__.resolveCidWithinRoot(ROOT, 'thumbnail', { allowSingleSegmentRootFallback: true })
     ).resolves.toBe(ROOT_THUMB);
+    expect(resolvePath).not.toHaveBeenCalled();
   });
 
   it('resolves nested thumbnail aliases before looking up the file cid', async () => {
-    resolvePath.mockImplementation(async (cid: CID, path: string) => {
-      if (cid === ROOT && path === 'video_123') {
-        return { cid: CHILD_DIR };
-      }
-      if (cid === ROOT && path === 'video_123/thumbnail.jpg') {
-        return { cid: CHILD_THUMB };
-      }
-      return null;
-    });
+    resolvePath.mockResolvedValue(null);
     listDirectory.mockImplementation(async (cid: CID) => {
+      if (cid === ROOT) {
+        return [{ name: 'video_123', cid: CHILD_DIR, size: 0 }];
+      }
       if (cid === CHILD_DIR) {
-        return [{ name: 'thumbnail.jpg' }];
+        return [{ name: 'thumbnail.jpg', cid: CHILD_THUMB, size: 1 }];
       }
       return [];
     });
@@ -62,6 +53,25 @@ describe('mediaHandler thumbnail aliases', () => {
     await expect(
       __test__.resolveCidWithinRoot(ROOT, 'video_123/thumbnail', { allowSingleSegmentRootFallback: true })
     ).resolves.toBe(CHILD_THUMB);
+    expect(resolvePath).not.toHaveBeenCalled();
+  });
+
+  it('resolves nested direct file paths from cached directory listings instead of tree.resolvePath', async () => {
+    resolvePath.mockResolvedValue(null);
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (cid === ROOT) {
+        return [{ name: 'video_123', cid: CHILD_DIR, size: 0 }];
+      }
+      if (cid === CHILD_DIR) {
+        return [{ name: 'thumbnail.jpg', cid: CHILD_THUMB, size: 321 }];
+      }
+      return [];
+    });
+
+    await expect(
+      __test__.resolveCidWithinRoot(ROOT, 'video_123/thumbnail.jpg', { allowSingleSegmentRootFallback: false })
+    ).resolves.toBe(CHILD_THUMB);
+    expect(resolvePath).not.toHaveBeenCalled();
   });
 
   it('treats immutable single-segment paths as direct file cids when the root is not a directory', async () => {
