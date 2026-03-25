@@ -26,6 +26,7 @@ impl Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
+    // ── Daemon ──────────────────────────────────────────────
     /// Start the hashtree daemon
     Start {
         #[arg(long, default_value = "127.0.0.1:8080")]
@@ -44,30 +45,28 @@ pub(crate) enum Commands {
         pid_file: Option<PathBuf>,
     },
 
-    /// Mount a hashtree via FUSE
-    #[cfg(feature = "fuse")]
-    Mount {
-        /// Target to mount (nhash, npub/tree, or htree:// URL)
-        target: String,
-        /// Mount point directory
-        mountpoint: PathBuf,
-        /// Visibility: public, link-visible, or private
+    /// Stop the hashtree daemon
+    Stop {
+        /// PID file (default: ~/.hashtree/htree.pid)
         #[arg(long)]
-        visibility: Option<String>,
-        /// Link key for link-visible trees (hex)
-        #[arg(long)]
-        link_key: Option<String>,
-        /// Use private visibility (NIP-44 to self)
-        #[arg(long)]
-        private: bool,
-        /// Override Nostr relays (comma-separated)
-        #[arg(long)]
-        relays: Option<String>,
-        /// Allow other users to access the mount
-        #[arg(long)]
-        allow_other: bool,
+        pid_file: Option<PathBuf>,
     },
 
+    /// Show daemon status (peers, storage, etc.)
+    Status {
+        /// Daemon address (default: 127.0.0.1:8080)
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        addr: String,
+    },
+
+    /// Show connected P2P peers
+    Peer {
+        /// Daemon address (default: 127.0.0.1:8080)
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        addr: String,
+    },
+
+    // ── Content ─────────────────────────────────────────────
     /// Add file or directory to hashtree (like ipfs add)
     Add {
         /// Path to file or directory
@@ -104,9 +103,22 @@ pub(crate) enum Commands {
         cid: String,
     },
 
-    /// List all pinned CIDs
-    Pins,
+    /// Push content to file servers (Blossom)
+    Push {
+        /// CID (hash or hash:key) to push
+        cid: String,
+        /// File server URL (overrides config)
+        #[arg(long, short)]
+        server: Option<String>,
+    },
 
+    /// Get information about a CID
+    Info {
+        /// CID to inspect
+        cid: String,
+    },
+
+    // ── Pinning ─────────────────────────────────────────────
     /// Pin a CID
     Pin {
         /// CID to pin
@@ -119,38 +131,47 @@ pub(crate) enum Commands {
         cid: String,
     },
 
-    /// Get information about a CID
-    Info {
-        /// CID to inspect
-        cid: String,
-    },
+    /// List all pinned CIDs
+    Pins,
 
+    // ── Storage ─────────────────────────────────────────────
     /// Get storage statistics
     Stats,
-
-    /// Show daemon status (peers, storage, etc.)
-    Status {
-        /// Daemon address (default: 127.0.0.1:8080)
-        #[arg(long, default_value = "127.0.0.1:8080")]
-        addr: String,
-    },
-
-    /// Stop the hashtree daemon
-    Stop {
-        /// PID file (default: ~/.hashtree/htree.pid)
-        #[arg(long)]
-        pid_file: Option<PathBuf>,
-    },
 
     /// Run garbage collection
     Gc,
 
-    /// Show or set your nostr identity
-    User {
-        /// npub or nsec to set as active identity (omit to show current)
-        identity: Option<String>,
+    /// Manage storage limits and eviction
+    Storage {
+        #[command(subcommand)]
+        command: StorageCommands,
     },
 
+    /// Mount a hashtree via FUSE
+    #[cfg(feature = "fuse")]
+    Mount {
+        /// Target to mount (nhash, npub/tree, or htree:// URL)
+        target: String,
+        /// Mount point directory
+        mountpoint: PathBuf,
+        /// Visibility: public, link-visible, or private
+        #[arg(long)]
+        visibility: Option<String>,
+        /// Link key for link-visible trees (hex)
+        #[arg(long)]
+        link_key: Option<String>,
+        /// Use private visibility (NIP-44 to self)
+        #[arg(long)]
+        private: bool,
+        /// Override Nostr relays (comma-separated)
+        #[arg(long)]
+        relays: Option<String>,
+        /// Allow other users to access the mount
+        #[arg(long)]
+        allow_other: bool,
+    },
+
+    // ── Publishing & Git ────────────────────────────────────
     /// Publish a hash to Nostr under a ref name
     Publish {
         /// The ref name to publish under (e.g., "mydata" -> npub.../mydata)
@@ -168,6 +189,38 @@ pub(crate) enum Commands {
         command: ReleaseCommands,
     },
 
+    /// List published git repositories for yourself or another user
+    Repos {
+        /// Owner identity (defaults to self). Accepts alias, npub, or hex pubkey.
+        owner: Option<String>,
+    },
+
+    /// Pull request management
+    Pr {
+        #[command(subcommand)]
+        command: PrCommands,
+    },
+
+    // ── Identity & Social ───────────────────────────────────
+    /// Show or set your nostr identity
+    User {
+        /// npub or nsec to set as active identity (omit to show current)
+        identity: Option<String>,
+    },
+
+    /// Show or update your Nostr profile
+    Profile {
+        /// Set display name
+        #[arg(long)]
+        name: Option<String>,
+        /// Set about/bio
+        #[arg(long)]
+        about: Option<String>,
+        /// Set profile picture URL
+        #[arg(long)]
+        picture: Option<String>,
+    },
+
     /// Follow a user (adds to your contact list)
     Follow {
         /// npub of user to follow
@@ -179,6 +232,9 @@ pub(crate) enum Commands {
         /// npub of user to unfollow
         npub: String,
     },
+
+    /// List users you follow
+    Following,
 
     /// Mute a user (adds to your mute list)
     Mute {
@@ -195,9 +251,6 @@ pub(crate) enum Commands {
         npub: String,
     },
 
-    /// List users you follow
-    Following,
-
     /// List users you mute
     Muted,
 
@@ -207,57 +260,11 @@ pub(crate) enum Commands {
         command: SocialGraphCommands,
     },
 
-    /// Show or update your Nostr profile
-    Profile {
-        /// Set display name
-        #[arg(long)]
-        name: Option<String>,
-        /// Set about/bio
-        #[arg(long)]
-        about: Option<String>,
-        /// Set profile picture URL
-        #[arg(long)]
-        picture: Option<String>,
-    },
-
-    /// Push content to file servers (Blossom)
-    Push {
-        /// CID (hash or hash:key) to push
-        cid: String,
-        /// File server URL (overrides config)
-        #[arg(long, short)]
-        server: Option<String>,
-    },
-
-    /// Manage storage limits and eviction
-    Storage {
-        #[command(subcommand)]
-        command: StorageCommands,
-    },
-
-    /// Show connected P2P peers
-    Peer {
-        /// Daemon address (default: 127.0.0.1:8080)
-        #[arg(long, default_value = "127.0.0.1:8080")]
-        addr: String,
-    },
-
+    // ── Wallet ──────────────────────────────────────────────
     /// Manage Cashu wallet and accepted mints
     Cashu {
         #[command(subcommand)]
         command: CashuCommands,
-    },
-
-    /// Pull request management
-    Pr {
-        #[command(subcommand)]
-        command: PrCommands,
-    },
-
-    /// List published git repositories for yourself or another user
-    Repos {
-        /// Owner identity (defaults to self). Accepts alias, npub, or hex pubkey.
-        owner: Option<String>,
     },
 }
 
