@@ -2,7 +2,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
 
-const ORIGIN = process.argv[2] ?? 'https://video.iris.to/';
+const args = process.argv.slice(2).filter((arg) => arg !== '--');
+const ORIGIN = args[0] ?? 'https://video.iris.to/';
 const OUT_DIR = path.resolve(import.meta.dirname, '..', 'test-results');
 const JSON_PATH = path.join(OUT_DIR, 'feed-thumbnail-timing.json');
 const SCREENSHOT_PATH = path.join(OUT_DIR, 'feed-thumbnail-timing-warm.png');

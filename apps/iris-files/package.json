@@ -30,6 +30,7 @@
     "smoke:video:iris": "node ./scripts/smoke-video-iris-portable.mjs",
     "smoke:boards:iris": "node ./scripts/smoke-boards-iris-portable.mjs",
     "measure:video:thumbnails": "node ./scripts/measure-feed-thumbnail-load.mjs",
+    "audit:video:thumbnails": "node ./scripts/audit-feed-thumbnails.mjs",
     "test:docs:iris": "pnpm run build:docs && pnpm run smoke:docs:iris",
     "test:files:iris": "pnpm run build && pnpm run smoke:files:iris",
     "test:git:iris": "pnpm run build:git && pnpm run smoke:git:iris",

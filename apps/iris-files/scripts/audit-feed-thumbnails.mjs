@@ -2,8 +2,9 @@ import { writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
 
-const ORIGIN = process.argv[2] ?? 'https://video.iris.to/';
-const DAEMON = process.argv[3] ?? 'http://127.0.0.1:21417';
+const args = process.argv.slice(2).filter((arg) => arg !== '--');
+const ORIGIN = args[0] ?? 'https://video.iris.to/';
+const DAEMON = args[1] ?? 'http://127.0.0.1:21417';
 const OUT_DIR = path.resolve(import.meta.dirname, '..', 'test-results');
 const JSON_PATH = path.join(OUT_DIR, 'feed-thumbnail-audit.json');
 const SCREENSHOT_PATH = path.join(OUT_DIR, 'feed-thumbnail-audit.png');
@@ -77,6 +78,20 @@ async function classifyTree(card) {
     if (/\/htree\/npub1[^/]+\/[^?]+\/thumbnail(\?|$)/i.test(normalized)) {
       return { resolve: 'skipped_loaded', source: 'dom_mutable_thumbnail_alias' };
     }
+
+    return {
+      resolve: 'skipped_loaded',
+      source: 'dom_loaded_img',
+      sourceDetail: normalized,
+    };
+  }
+
+  if (card.videoSrc && (card.videoReadyState ?? 0) >= 2 && (card.videoWidth ?? 0) > 0) {
+    return {
+      resolve: 'skipped_loaded',
+      source: 'dom_loaded_video',
+      sourceDetail: String(card.videoSrc),
+    };
   }
 
   const parsed = parseHref(card.href);
@@ -247,7 +262,8 @@ try {
     placeholders: audited.filter((item) => item.domStatus === 'placeholder').length,
     brokenImg: audited.filter((item) => item.domStatus === 'broken_img').length,
     noImg: audited.filter((item) => item.domStatus === 'no_img').length,
-    unresolved: audited.filter((item) => item.resolve !== 'ok').length,
+    notLoaded: audited.filter((item) => item.domStatus !== 'loaded').length,
+    resolveFailures: audited.filter((item) => !['ok', 'skipped_loaded'].includes(item.resolve)).length,
     bySource: Object.fromEntries(
       Array.from(
         audited.reduce((map, item) => {
