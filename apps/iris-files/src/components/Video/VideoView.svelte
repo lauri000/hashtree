@@ -5,6 +5,7 @@
    *
    * Uses Service Worker streaming via /htree/ URLs (no blob URLs!)
    */
+  import { get } from 'svelte/store';
   import { onDestroy, onMount, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { nip19 } from 'nostr-tools';
@@ -39,14 +40,14 @@
   import { currentPlaylist, loadPlaylist, playNext, repeatMode, shuffleEnabled } from '../../stores/playlist';
   import type { CID } from '@hashtree/core';
   import { toHex, nhashEncode } from '@hashtree/core';
-  import { appendHtreeCacheBust, getHtreePrefix, getNhashFileUrl, getStableFileUrl, getStablePathUrl, getStableThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
+  import { getHtreePrefix, getNhashFileUrl, getStableFileUrl, getStablePathUrl, getStableThumbnailUrl, onHtreePrefixReady } from '../../lib/mediaUrl';
   import { logHtreeDebug } from '../../lib/htreeDebug';
   import { ensureMediaStreamingReady } from '../../lib/mediaStreamingSetup';
   import { NDKEvent, type NDKFilter } from 'ndk';
   import { VideoZapButton } from '../Zaps';
   import { formatTimeAgo } from '../../utils/format';
   import { settingsStore } from '../../stores/settings';
-  import { buildPlaylistRedirectHash, isActiveVideoLoad } from './videoLoadGuard';
+  import { buildPlaylistRedirectHash, consumePendingPlaylistRedirect, isActiveVideoLoad, rememberPendingPlaylistRedirect } from './videoLoadGuard';
   import { findPlayableMediaEntry, isAudioMediaFileName, PREFERRED_PLAYABLE_MEDIA_FILENAMES } from '../../lib/playableMedia';
   import { resolveReadableVideoRoot } from '../../lib/readableVideoRoot';
   import { readDirectPlayableMediaFileName } from '../../lib/directPlayableRoot';
@@ -200,45 +201,6 @@ async function syncTreeRootToWorker(
     logVideoDebug('prefix:ready', { prefix });
   });
 
-  function resolveDirectPrefix(): string {
-    if (htreePrefix) return htreePrefix;
-    if (typeof window !== 'undefined') {
-      const baseUrl = window.htree?.htreeBaseUrl;
-      if (typeof baseUrl === 'string' && baseUrl.trim()) {
-        return baseUrl.trim().replace(/\/$/, '');
-      }
-      if (window.location?.origin) {
-        return window.location.origin.replace(/\/$/, '');
-      }
-    }
-    return '';
-  }
-
-  function hasDirectHtreeServer(): boolean {
-    const prefix = resolveDirectPrefix();
-    if (prefix && prefix !== htreePrefix) {
-      htreePrefix = prefix;
-      logVideoDebug('prefix:sync', { prefix });
-    }
-    return !!prefix;
-  }
-
-  function buildDirectUrl(prefix: string, npub: string, treeName: string, path: string): string {
-    const encodedTreeName = encodeURIComponent(treeName);
-    const encodedPath = path.split('/').map(encodeURIComponent).join('/');
-    return appendHtreeCacheBust(`${prefix}/htree/${npub}/${encodedTreeName}/${encodedPath}`);
-  }
-
-  function buildDirectVideoCandidates(npub: string, treeName: string, videoPathPrefix: string) {
-    const candidates = PREFERRED_PLAYABLE_MEDIA_FILENAMES;
-    const prefix = resolveDirectPrefix();
-    if (!prefix) return [];
-    return candidates.map((fileName) => ({
-      fileName,
-      url: buildDirectUrl(prefix, npub, treeName, `${videoPathPrefix}${fileName}`),
-    }));
-  }
-
   function buildStableVideoCandidates(
     rootCidValue: CID | null | undefined,
     npub: string,
@@ -280,35 +242,6 @@ async function syncTreeRootToWorker(
     });
   }
 
-  function canStartDirectVideoFallback(
-    isPlaylistVideoValue: boolean,
-    videoIdValue: string | null | undefined,
-  ): boolean {
-    return isPlaylistVideoValue && !!videoIdValue;
-  }
-
-  function startDirectVideoFallback(npub: string, treeName: string, videoPathPrefix: string): boolean {
-    if (!videoPathPrefix) {
-      logVideoDebug('direct:skip', { reason: 'no-video-prefix', npub, treeName });
-      return false;
-    }
-    if (!hasDirectHtreeServer()) {
-      logVideoDebug('direct:skip', { reason: 'no-prefix', npub, treeName });
-      return false;
-    }
-    const candidates = buildDirectVideoCandidates(npub, treeName, videoPathPrefix);
-    if (candidates.length === 0) return false;
-    videoFallbackQueue = candidates.slice(1);
-    videoFileName = candidates[0].fileName;
-    videoSrc = candidates[0].url;
-    loading = false;
-    logVideoDebug('direct:start', {
-      fileName: videoFileName,
-      url: videoSrc,
-    });
-    return true;
-  }
-
   function startMutableVideoFallback(
     rootCidValue: CID | null | undefined,
     npub: string,
@@ -332,49 +265,11 @@ async function syncTreeRootToWorker(
     return true;
   }
 
-  function ensureDirectVideoFallback(reason: string): void {
-    const currentNpub = npub;
-    const currentTreeName = treeName;
-    if (!currentNpub || !currentTreeName) {
-      logVideoDebug('direct:ensure-skip', {
-        reason,
-        npub: currentNpub ?? null,
-        treeName: currentTreeName ?? null,
-      });
-      return;
-    }
-    if (!canStartDirectVideoFallback(isPlaylistVideo, currentVideoId)) {
-      logVideoDebug('direct:ensure-skip', {
-        reason,
-        npub: currentNpub,
-        treeName: currentTreeName,
-        playlistVideo: isPlaylistVideo,
-        videoId: currentVideoId ?? null,
-      });
-      return;
-    }
-    if (videoSrc) return;
-    const videoPathPrefix = isPlaylistVideo && currentVideoId ? `${currentVideoId}/` : '';
-    if (!hasDirectHtreeServer()) {
-      logVideoDebug('direct:ensure-pending', { reason, prefix: htreePrefix });
-      return;
-    }
-    startDirectVideoFallback(currentNpub, currentTreeName, videoPathPrefix);
-    logVideoDebug('direct:ensure', { reason });
-  }
-
   onMount(() => {
     logVideoDebug('mount', {
       npub: npub ?? null,
       treeName: treeName ?? null,
     });
-    ensureDirectVideoFallback('mount');
-    const timer = setTimeout(() => {
-      ensureDirectVideoFallback('mount:timeout');
-    }, 1500);
-    return () => {
-      clearTimeout(timer);
-    };
   });
 
   function advanceVideoFallback(): boolean {
@@ -383,7 +278,7 @@ async function syncTreeRootToWorker(
     videoFallbackQueue = rest;
     videoFileName = next.fileName;
     videoSrc = next.url;
-    logVideoDebug('direct:advance', {
+    logVideoDebug('fallback:advance', {
       fileName: videoFileName,
       url: videoSrc,
     });
@@ -932,15 +827,6 @@ async function syncTreeRootToWorker(
 
     // Skip reload if we already loaded this exact video
     if (videoKey === loadedVideoKey) {
-      const videoPathPrefix = isPlaylist && currentVideoIdValue ? `${currentVideoIdValue}/` : '';
-      if (
-        !videoSrc &&
-        hasDirectHtreeServer() &&
-        canStartDirectVideoFallback(isPlaylist, currentVideoIdValue)
-      ) {
-        error = null;
-        startDirectVideoFallback(currentNpub, currentTreeName, videoPathPrefix);
-      }
       if (prefixVersion !== lastPrefixVersion) {
         lastPrefixVersion = prefixVersion;
         if (videoSrc && videoFileName) {
@@ -1026,16 +912,6 @@ async function syncTreeRootToWorker(
           }
         }
       })();
-    }
-
-    if (
-      hasDirectHtreeServer() &&
-      canStartDirectVideoFallback(isPlaylist, currentVideoIdValue)
-    ) {
-      const videoPathPrefix = isPlaylist && currentVideoIdValue ? `${currentVideoIdValue}/` : '';
-      untrack(() => {
-        startDirectVideoFallback(currentNpub, currentTreeName, videoPathPrefix);
-      });
     }
   });
 
@@ -1156,6 +1032,26 @@ async function syncTreeRootToWorker(
     if (isStaleLoad('sync-root')) return;
 
     const tree = getTree();
+    const subscriptionKey = `${capturedNpub}/${capturedTreeName}`;
+
+    function syncResolvedRootCache(nextRoot: CID): void {
+      updateSubscriptionCache(
+        subscriptionKey,
+        nextRoot.hash,
+        nextRoot.key,
+        {
+          updatedAt: Math.floor(Date.now() / 1000),
+          visibility: capturedVisibility ?? 'public',
+        },
+      );
+      updateLocalRootCacheHex(
+        capturedNpub,
+        capturedTreeName,
+        toHex(nextRoot.hash),
+        nextRoot.key ? toHex(nextRoot.key) : undefined,
+        capturedVisibility ?? 'public',
+      );
+    }
 
     async function retryWithFreshTreeRoot(reason: string): Promise<boolean> {
       if (staleRootRefreshAttempts.has(expectedLoadKey)) {
@@ -1199,17 +1095,18 @@ async function syncTreeRootToWorker(
         fromHash: toHex(rootCidParam.hash).slice(0, 8),
         toHash: toHex(effectiveRootCid.hash).slice(0, 8),
       });
+      syncResolvedRootCache(effectiveRootCid);
     }
 
     let videoDirCid = effectiveRootCid ?? rootCidParam;
     let videoPathPrefix = capturedIsPlaylistVideo && capturedVideoId ? `${capturedVideoId}/` : '';
-    const allowDirectFallback = canStartDirectVideoFallback(capturedIsPlaylistVideo, capturedVideoId);
     let resolvedVideo = false;
 
     async function applyResolvedVideo(entryCid: CID, fileName: string): Promise<boolean> {
       if (isStaleLoad(`apply:${fileName}`)) return false;
       videoCid = entryCid;
       videoFileName = fileName;
+      error = null;
       const nextSrc = buildResolvedVideoUrl(
         videoDirCid,
         entryCid,
@@ -1233,23 +1130,69 @@ async function syncTreeRootToWorker(
     if (capturedIsPlaylistVideo && capturedVideoId) {
       // Navigate to the video subdirectory within the playlist
       try {
-        // Add timeout to prevent hanging if Blossom is unreachable
-        const resolvePromise = tree.resolvePath(effectiveRootCid ?? rootCidParam, capturedVideoId);
-        const timeoutPromise = new Promise<null>((_, reject) =>
-          setTimeout(() => reject(new Error('Timeout: Video data not available from network')), 30000)
+        const pendingRedirect = consumePendingPlaylistRedirect(
+          capturedNpub,
+          capturedTreeName,
+          capturedVideoId,
         );
-        const videoDir = await Promise.race([resolvePromise, timeoutPromise]);
-        if (isStaleLoad('resolve-playlist-dir')) return;
-        if (videoDir) {
-          videoDirCid = videoDir.cid;
+        if (pendingRedirect?.rootCid) {
+          syncResolvedRootCache(pendingRedirect.rootCid);
+        }
+        const existingPlaylist = get(currentPlaylist);
+        const existingPlaylistItem = existingPlaylist
+          && existingPlaylist.npub === capturedNpub
+          && existingPlaylist.treeName === capturedTreeName
+          ? existingPlaylist.items.find((item) => item.id === capturedVideoId)
+          : undefined;
+        if (pendingRedirect?.videoCid) {
+          videoDirCid = pendingRedirect.videoCid;
           videoPathPrefix = `${capturedVideoId}/`;
-        } else {
-          error = `Video "${capturedVideoId}" not found in playlist`;
-          loading = false;
-          logVideoDebug('load:missing-playlist', {
+          logVideoDebug('load:playlist-item-pending', {
             videoId: capturedVideoId,
+            cid: toHex(pendingRedirect.videoCid.hash).slice(0, 8),
           });
-          return;
+        } else if (existingPlaylistItem?.cid) {
+          videoDirCid = existingPlaylistItem.cid;
+          videoPathPrefix = `${capturedVideoId}/`;
+          logVideoDebug('load:playlist-item-cached', {
+            videoId: capturedVideoId,
+            cid: toHex(existingPlaylistItem.cid.hash).slice(0, 8),
+          });
+        } else {
+          const playlistRootCid = pendingRedirect?.rootCid ?? effectiveRootCid ?? rootCidParam;
+          const listedPlaylistEntries = await listDirectoryWithTimeout(tree, playlistRootCid);
+          if (isStaleLoad('list-playlist-root')) return;
+          const listedPlaylistEntry = listedPlaylistEntries?.find((entry) => entry.name === capturedVideoId);
+          if (listedPlaylistEntry?.cid) {
+            videoDirCid = listedPlaylistEntry.cid;
+            videoPathPrefix = `${capturedVideoId}/`;
+            logVideoDebug('load:playlist-item-listed', {
+              videoId: capturedVideoId,
+              cid: toHex(listedPlaylistEntry.cid.hash).slice(0, 8),
+            });
+          } else {
+          // Add timeout to prevent hanging if Blossom is unreachable
+            const resolvePromise = tree.resolvePath(playlistRootCid, capturedVideoId);
+            const timeoutPromise = new Promise<null>((_, reject) =>
+              setTimeout(() => reject(new Error('Timeout: Video data not available from network')), 30000)
+            );
+            const videoDir = await Promise.race([resolvePromise, timeoutPromise]);
+            if (isStaleLoad('resolve-playlist-dir')) return;
+            if (videoDir) {
+              videoDirCid = videoDir.cid;
+              videoPathPrefix = `${capturedVideoId}/`;
+            } else {
+              const refreshed = await retryWithFreshTreeRoot('missing-playlist-child');
+              if (refreshed) return;
+              if (isStaleLoad('refresh-missing-playlist-child')) return;
+              error = `Video "${capturedVideoId}" not found in playlist`;
+              loading = false;
+              logVideoDebug('load:missing-playlist', {
+                videoId: capturedVideoId,
+              });
+              return;
+            }
+          }
         }
       } catch (e) {
         if (isStaleLoad('resolve-playlist-error')) return;
@@ -1321,10 +1264,23 @@ async function syncTreeRootToWorker(
     // If still no video and NOT a playlist video, check if this is a playlist directory root
     if (!resolvedVideo && !capturedIsPlaylistVideo) {
       const { findFirstVideoEntry } = await import('../../stores/playlist');
+      const playlistRootCid = effectiveRootCid ?? rootCidParam;
       const firstVideoId = await Promise.race([
-        findFirstVideoEntry(effectiveRootCid ?? rootCidParam),
+        findFirstVideoEntry(playlistRootCid),
         new Promise<null>((resolve) => setTimeout(() => resolve(null), VIDEO_RESOLVE_TIMEOUT_MS)),
       ]);
+      if (firstVideoId) {
+        const firstVideoDir = await resolvePathWithTimeout(tree, playlistRootCid, firstVideoId);
+        rememberPendingPlaylistRedirect({
+          npub: capturedNpub,
+          treeName: capturedTreeName,
+          videoId: firstVideoId,
+          rootCid: playlistRootCid,
+          videoCid: firstVideoDir?.cid ?? null,
+        });
+        await loadPlaylist(capturedNpub, capturedTreeName, playlistRootCid, firstVideoId);
+        if (isStaleLoad('preload-playlist-before-redirect')) return;
+      }
       const playlistUrl = buildPlaylistRedirectHash({
         activeLoadKey: loadedVideoKey,
         expectedLoadKey,
@@ -1338,15 +1294,6 @@ async function syncTreeRootToWorker(
         return;
       }
       if (isStaleLoad('redirect-first-playlist-video')) return;
-    }
-
-    if (
-      !resolvedVideo &&
-      allowDirectFallback &&
-      !isStaleLoad('direct-fallback') &&
-      startDirectVideoFallback(capturedNpub, capturedTreeName, videoPathPrefix)
-    ) {
-      return;
     }
 
     if (!resolvedVideo && !capturedIsPlaylistVideo) {

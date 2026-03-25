@@ -125,18 +125,28 @@ export async function findFirstVideoEntry(rootCid: CID): Promise<string | null> 
     // If root has video file, it's a single video, not a playlist
     if (!isPlaylistStructure(entries)) return null;
 
-    const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
+    const sorted = entries
+      .filter((entry) => !!entry?.cid)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const fallbackEntry = sorted.find((entry) => /^video[_-]/i.test(entry.name))
+      ?? sorted.find((entry) => !/\.[a-z0-9]{1,8}$/i.test(entry.name))
+      ?? sorted[0];
+    let hadIndeterminateChild = false;
     for (const entry of sorted) {
       try {
         const subEntries = await withTimeout(tree.listDirectory(entry.cid), 2000);
+        if (subEntries === null) {
+          hadIndeterminateChild = true;
+          continue;
+        }
         if (subEntries && hasVideoFile(subEntries)) {
           return entry.name;
         }
       } catch {
-        // Ignore unreadable entries and keep looking for the first real video.
+        hadIndeterminateChild = true;
       }
     }
-    return null;
+    return hadIndeterminateChild ? fallbackEntry?.name ?? null : null;
   } catch {
     return null;
   }

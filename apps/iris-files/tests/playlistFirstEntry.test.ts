@@ -79,4 +79,26 @@ describe('findFirstVideoEntry', () => {
     const { findFirstVideoEntry } = await import('../src/stores/playlist');
     await expect(findFirstVideoEntry(ROOT)).resolves.toBe('audio_track');
   });
+
+  it('falls back to the first video-like child when child directory reads are indeterminate', async () => {
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (cid === ROOT) {
+        return [
+          { name: 'video_1767136152580', cid: CID_A },
+          { name: 'video_1767136255334', cid: CID_B },
+          { name: 'notes.txt', cid: CID_C },
+        ];
+      }
+      if (cid === CID_A) {
+        throw new Error('temporary read failure');
+      }
+      if (cid === CID_B) {
+        throw new Error('temporary read failure');
+      }
+      return [];
+    });
+
+    const { findFirstVideoEntry } = await import('../src/stores/playlist');
+    await expect(findFirstVideoEntry(ROOT)).resolves.toBe('video_1767136152580');
+  });
 });
