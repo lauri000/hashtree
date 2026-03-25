@@ -25,7 +25,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::runtime::{Handle, Runtime};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use super::object::{parse_tree, GitObject, ObjectId, ObjectType};
 use super::refs::{validate_ref_name, Ref};
@@ -57,18 +57,12 @@ pub enum LocalStore {
 }
 
 impl LocalStore {
-    /// Create a new local store based on config
-    pub fn new<P: AsRef<Path>>(path: P) -> std::result::Result<Self, StoreError> {
-        Self::new_with_max_bytes(path, 0)
-    }
-
-    /// Create a new local store based on config with an optional byte limit.
-    pub fn new_with_max_bytes<P: AsRef<Path>>(
+    fn new_for_backend<P: AsRef<Path>>(
         path: P,
+        backend: StorageBackend,
         max_bytes: u64,
     ) -> std::result::Result<Self, StoreError> {
-        let config = Config::load_or_default();
-        match config.storage.backend {
+        match backend {
             StorageBackend::Fs => {
                 if max_bytes > 0 {
                     Ok(LocalStore::Fs(FsBlobStore::with_max_bytes(
@@ -81,11 +75,12 @@ impl LocalStore {
             #[cfg(feature = "lmdb")]
             StorageBackend::Lmdb => {
                 if max_bytes > 0 {
-                    warn!(
-                        "LMDB backend ignores git cache eviction limits; configured limit will not be enforced"
-                    );
+                    Ok(LocalStore::Lmdb(LmdbBlobStore::with_max_bytes(
+                        path, max_bytes,
+                    )?))
+                } else {
+                    Ok(LocalStore::Lmdb(LmdbBlobStore::new(path)?))
                 }
-                Ok(LocalStore::Lmdb(LmdbBlobStore::new(path)?))
             }
             #[cfg(not(feature = "lmdb"))]
             StorageBackend::Lmdb => {
@@ -101,6 +96,20 @@ impl LocalStore {
                 }
             }
         }
+    }
+
+    /// Create a new local store based on config
+    pub fn new<P: AsRef<Path>>(path: P) -> std::result::Result<Self, StoreError> {
+        Self::new_with_max_bytes(path, 0)
+    }
+
+    /// Create a new local store based on config with an optional byte limit.
+    pub fn new_with_max_bytes<P: AsRef<Path>>(
+        path: P,
+        max_bytes: u64,
+    ) -> std::result::Result<Self, StoreError> {
+        let config = Config::load_or_default();
+        Self::new_for_backend(path, config.storage.backend, max_bytes)
     }
 
     /// List all hashes in the store
@@ -230,6 +239,15 @@ impl GitStorage {
 
     /// Open or create a git storage at the given path with an explicit byte limit.
     pub fn open_with_max_bytes(path: impl AsRef<Path>, max_size_bytes: u64) -> Result<Self> {
+        let config = Config::load_or_default();
+        Self::open_with_backend_and_max_bytes(path, config.storage.backend, max_size_bytes)
+    }
+
+    pub fn open_with_backend_and_max_bytes(
+        path: impl AsRef<Path>,
+        backend: StorageBackend,
+        max_size_bytes: u64,
+    ) -> Result<Self> {
         let runtime = match Handle::try_current() {
             Ok(handle) => RuntimeExecutor::Handle(handle),
             Err(_) => {
@@ -241,7 +259,7 @@ impl GitStorage {
 
         let store_path = path.as_ref().join("blobs");
         let store = Arc::new(
-            LocalStore::new_with_max_bytes(&store_path, max_size_bytes)
+            LocalStore::new_for_backend(&store_path, backend, max_size_bytes)
                 .map_err(|e| Error::StorageError(format!("local store: {}", e)))?,
         );
 
@@ -1088,7 +1106,12 @@ mod tests {
 
     fn create_test_storage_with_limit(max_size_bytes: u64) -> (GitStorage, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        let storage = GitStorage::open_with_max_bytes(temp_dir.path(), max_size_bytes).unwrap();
+        let storage = GitStorage::open_with_backend_and_max_bytes(
+            temp_dir.path(),
+            StorageBackend::Fs,
+            max_size_bytes,
+        )
+        .unwrap();
         (storage, temp_dir)
     }
 

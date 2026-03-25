@@ -224,16 +224,11 @@ fn create_local_store(
             }
         }
         #[cfg(feature = "lmdb")]
-        StorageBackend::Lmdb => {
-            if max_size_bytes > 0 {
-                warn!(
-                    "LMDB backend ignores git cache eviction limits; configured limit will not be enforced"
-                );
-            }
-            Ok(std::sync::Arc::new(hashtree_lmdb::LmdbBlobStore::new(
-                path,
-            )?))
-        }
+        StorageBackend::Lmdb => Ok(std::sync::Arc::new(if max_size_bytes > 0 {
+            hashtree_lmdb::LmdbBlobStore::with_max_bytes(path, max_size_bytes)?
+        } else {
+            hashtree_lmdb::LmdbBlobStore::new(path)?
+        })),
         #[cfg(not(feature = "lmdb"))]
         StorageBackend::Lmdb => {
             warn!("LMDB backend requested but lmdb feature not enabled, using filesystem storage");
