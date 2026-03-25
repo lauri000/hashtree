@@ -5,6 +5,7 @@
   import { marked } from 'marked';
   import { nip19 } from 'nostr-tools';
   import { getNhashFileUrl } from '../../lib/mediaUrl';
+  import { getBoardRouteKey, shouldShowBoardLoading } from '../../lib/boards/viewState';
   import { syncSelectedTreeForOwnRoute } from '../../lib/selectedTree';
   import { getTree } from '../../store';
   import { setUploadProgress } from '../../stores/upload';
@@ -173,6 +174,7 @@
   let hydrateRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let hydrateRetryAttempts = 0;
   let hydrateRetryKey: string | null = null;
+  let hydratedRouteKey: string | null = null;
   let loadGeneration = 0;
   const HYDRATE_RETRY_DELAY_MS = 1500;
   const LOCAL_HYDRATE_MAX_RETRIES = 3;
@@ -784,7 +786,7 @@
     clearHydrateRetry();
   }
 
-  function scheduleHydrateRetry(generation: number, root: CID): void {
+  function scheduleHydrateRetry(generation: number, root: CID, routeKey: string): void {
     const retryKey = getHydrateRetryKey(root);
     if (hydrateRetryKey !== retryKey) {
       resetHydrateRetry(retryKey);
@@ -799,11 +801,11 @@
     hydrateRetryTimer = setTimeout(() => {
       hydrateRetryTimer = null;
       if (generation !== loadGeneration) return;
-      void hydrateBoardState(generation, root);
+      void hydrateBoardState(generation, root, routeKey);
     }, HYDRATE_RETRY_DELAY_MS);
   }
 
-  async function hydrateBoardState(generation: number, root: CID) {
+  async function hydrateBoardState(generation: number, root: CID, routeKey: string) {
     resetHydrateRetry(getHydrateRetryKey(root));
     if (!ownerNpub || !route.treeName) return;
     if (!route.treeName.startsWith('boards/')) {
@@ -817,7 +819,7 @@
     const boardDirCid = await resolveBoardDirectory(root, route.path);
     if (!boardDirCid) {
       if (generation !== loadGeneration) return;
-      scheduleHydrateRetry(generation, root);
+      scheduleHydrateRetry(generation, root, routeKey);
       error = 'Board not found.';
       loading = false;
       return;
@@ -874,18 +876,19 @@
       if (generation !== loadGeneration) return;
       permissions = resolvedPermissions;
       board = resolvedBoard;
+      hydratedRouteKey = routeKey;
       error = null;
       loading = false;
 
       if (hasIncompleteData) {
-        scheduleHydrateRetry(generation, root);
+        scheduleHydrateRetry(generation, root, routeKey);
       } else {
         hydrateRetryAttempts = 0;
         clearHydrateRetry();
       }
     } catch {
       if (generation !== loadGeneration) return;
-      scheduleHydrateRetry(generation, root);
+      scheduleHydrateRetry(generation, root, routeKey);
       error = 'Failed to load board.';
       loading = false;
     }
@@ -896,8 +899,14 @@
     const treeName = route.treeName;
     const currentVisibility = resolvedVisibility;
     const protectedWithoutAccess = isProtectedBoardWithoutAccess;
+    const routeKey = getBoardRouteKey({
+      npub: route.npub,
+      treeName,
+      path: route.path,
+    });
 
     if (!treeName) {
+      hydratedRouteKey = null;
       resetHydrateRetry();
       loading = true;
       return;
@@ -910,6 +919,7 @@
     }
 
     if (protectedWithoutAccess) {
+      hydratedRouteKey = routeKey;
       resetHydrateRetry();
       board = null;
       permissions = null;
@@ -927,9 +937,9 @@
     resetHydrateRetry(getHydrateRetryKey(root));
     loadGeneration += 1;
     const generation = loadGeneration;
-    loading = true;
+    loading = shouldShowBoardLoading(hydratedRouteKey, routeKey, !!board);
     error = null;
-    void hydrateBoardState(generation, root);
+    void hydrateBoardState(generation, root, routeKey);
   });
 
   async function ensureOwnRootCid(): Promise<CID | null> {
