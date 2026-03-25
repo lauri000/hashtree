@@ -25,8 +25,8 @@ pub use peer::{ContentStore, Peer, PendingRequest};
 pub use root_events::PeerRootEvent;
 pub(crate) use root_events::{build_root_filter, pick_latest_event, root_event_from_peer};
 pub use signaling::{
-    ConnectionState, PeerClassifier, PeerEntry, PeerRouter, PeerRouterState, WebRTCManager,
-    WebRTCState,
+    ConnectionState, PeerClassifier, PeerEntry, PeerRouter, PeerRouterState, PeerSignalPath,
+    PeerTransport, WebRTCManager, WebRTCState,
 };
 pub use types::{
     encode_request, DataMessage, DataRequest, PeerDirection, PeerId, PeerPool, PeerRouterConfig,

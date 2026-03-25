@@ -2,7 +2,8 @@
   import { nip19 } from 'nostr-tools';
   import { nostrStore } from '../../nostr';
   import { settingsStore } from '../../stores/settings';
-  import { appStore, formatBytes, refreshWebRTCStats, getLifetimeStats, blockPeer, unblockPeer, getWebRTCStore } from '../../store';
+  import { appStore, formatBandwidth, formatBytes, refreshWebRTCStats, getLifetimeStats, blockPeer, unblockPeer, getWebRTCStore } from '../../store';
+  import BandwidthHistoryChart from '../BandwidthHistoryChart.svelte';
   import { UserRow } from '../User';
 
   // Pool settings
@@ -14,12 +15,16 @@
   let peerList = $derived(appState.peers
     .filter(p => p.state === 'connected')
     .map(p => ({
+      id: p.id,
       peerId: p.peerId,
       pubkey: p.pubkey,
       state: p.state,
       pool: p.pool,
       bytesSent: p.bytesSent,
       bytesReceived: p.bytesReceived,
+      transport: p.transport,
+      source: p.source,
+      signalPaths: p.signalPaths,
     })));
   let webrtcStats = $derived({
     bytesSent: peerList.reduce((sum, p) => sum + p.bytesSent, 0),
@@ -37,6 +42,9 @@
     forwardedSuppressed: number;
   };
   let perPeerStats = $state(new Map<string, PeerDiagnostics>());
+  let uploadBandwidth = $derived(appState.meshUploadBandwidth);
+  let downloadBandwidth = $derived(appState.meshDownloadBandwidth);
+  let bandwidthHistory = $derived(appState.meshBandwidthHistory);
   let lifetimeStats = $derived.by(() => {
     webrtcStats;
     return getLifetimeStats();
@@ -195,22 +203,22 @@
   <!-- Peers -->
   <div>
     <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-1">
-      Peers ({peerList.length})
+      Mesh Peers ({peerList.length})
     </h3>
-    <p class="text-xs text-text-3 mb-3">WebRTC connections for file exchange</p>
+    <p class="text-xs text-text-3 mb-3">WebRTC and native mesh connections for file exchange</p>
 
     <!-- Transfer stats -->
     {#if isLoggedIn}
       <div class="bg-surface-2 rounded p-3 mb-3">
         <div class="grid grid-cols-3 gap-x-3 gap-y-2 text-xs mb-3">
-          <div class="text-text-3 text-center">Session</div>
+          <div class="text-text-3 text-center">Live</div>
           <div class="text-center">
             <span class="text-success font-mono">{formatBytes(webrtcStats?.bytesSent ?? 0)}</span>
-            <span class="text-text-3 ml-1">up</span>
+            <span class="text-text-3 ml-1">sent</span>
           </div>
           <div class="text-center">
             <span class="text-accent font-mono">{formatBytes(webrtcStats?.bytesReceived ?? 0)}</span>
-            <span class="text-text-3 ml-1">down</span>
+            <span class="text-text-3 ml-1">recv</span>
           </div>
         </div>
         <div class="grid grid-cols-3 gap-x-3 gap-y-2 text-xs">
@@ -224,6 +232,19 @@
             <span class="text-text-3 ml-1">down</span>
           </div>
         </div>
+        <div class="mt-3 grid grid-cols-2 gap-3 text-xs">
+          <div class="flex items-center justify-between rounded bg-surface-1/70 px-2 py-2">
+            <span class="text-text-3">Upload</span>
+            <span class="font-mono text-success">{formatBandwidth(uploadBandwidth)}</span>
+          </div>
+          <div class="flex items-center justify-between rounded bg-surface-1/70 px-2 py-2">
+            <span class="text-text-3">Download</span>
+            <span class="font-mono text-accent">{formatBandwidth(downloadBandwidth)}</span>
+          </div>
+        </div>
+        <div class="mt-3">
+          <BandwidthHistoryChart history={bandwidthHistory} />
+        </div>
       </div>
     {/if}
 
@@ -233,12 +254,12 @@
       </div>
     {:else if peerList.length === 0}
       <div class="bg-surface-2 rounded p-3 text-sm text-muted">
-        No peers connected
+        No mesh peers connected
       </div>
     {:else}
       <div class="bg-surface-2 rounded divide-y divide-surface-3">
-        {#each peerList as peer (peer.peerId)}
-          {@const peerStats = getPeerStats(peer.peerId)}
+        {#each peerList as peer (peer.id)}
+          {@const peerStats = getPeerStats(peer.id)}
           <div class="flex flex-col p-3 hover:bg-surface-3 transition-colors">
             <div class="flex items-center gap-2 text-sm">
               <span
@@ -257,6 +278,14 @@
                   class="flex-1 min-w-0"
                 />
               </a>
+              <span class="rounded bg-surface-1 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-3">
+                {peer.transport}
+              </span>
+              {#if peer.signalPaths.length > 0}
+                <span class="rounded bg-surface-1 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-3">
+                  {peer.signalPaths.join('+')}
+                </span>
+              {/if}
               <span class="text-xs text-muted font-mono shrink-0">
                 {getPeerUuid(peer.peerId).slice(0, 8)}
               </span>
@@ -284,15 +313,21 @@
                 </span>
               </div>
               <div class="mt-1 ml-4 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-text-3 font-mono">
-                <span title="Hash queries sent to this peer">sent q: {peerStats.requestsSent}</span>
-                <span title="Hash queries received from this peer">recv q: {peerStats.requestsReceived}</span>
-                <span title="Responses sent to this peer">sent r: {peerStats.responsesSent}</span>
-                <span title="Responses received from this peer">recv r: {peerStats.responsesReceived}</span>
-                <span title="Requests from this peer that we forwarded upstream">fwd: {peerStats.forwardedRequests}</span>
-                <span title="Forwarded requests from this peer later resolved">fwd ok: {peerStats.forwardedResolved}</span>
-                <span class="col-span-2" title="Duplicate forwarded requests suppressed while hash was already in-flight">
-                  fwd dup-suppressed: {peerStats.forwardedSuppressed}
-                </span>
+                {#if peerStats.requestsSent > 0 || peerStats.requestsReceived > 0 || peerStats.responsesSent > 0 || peerStats.responsesReceived > 0 || peerStats.forwardedRequests > 0 || peerStats.forwardedResolved > 0 || peerStats.forwardedSuppressed > 0}
+                  <span title="Hash queries sent to this peer">sent q: {peerStats.requestsSent}</span>
+                  <span title="Hash queries received from this peer">recv q: {peerStats.requestsReceived}</span>
+                  <span title="Responses sent to this peer">sent r: {peerStats.responsesSent}</span>
+                  <span title="Responses received from this peer">recv r: {peerStats.responsesReceived}</span>
+                  <span title="Requests from this peer that we forwarded upstream">fwd: {peerStats.forwardedRequests}</span>
+                  <span title="Forwarded requests from this peer later resolved">fwd ok: {peerStats.forwardedResolved}</span>
+                  <span class="col-span-2" title="Duplicate forwarded requests suppressed while hash was already in-flight">
+                    fwd dup-suppressed: {peerStats.forwardedSuppressed}
+                  </span>
+                {:else}
+                  <span class="col-span-2" title="This peer is tracked via the native daemon, so only transport byte counters are available right now">
+                    native transport counters only
+                  </span>
+                {/if}
               </div>
             {/if}
           </div>

@@ -270,12 +270,14 @@
   let peerList = $derived(appState.peers
     .filter(p => p.state === 'connected')
     .map(p => ({
+      id: p.id,
       peerId: p.peerId,
       pubkey: p.pubkey,
       state: p.state,
       pool: p.pool,
       bytesSent: p.bytesSent,
       bytesReceived: p.bytesReceived,
+      isSelf: false,
     })));
   let myPeerId = $state<string | null>(null);
   let webrtcStats = $derived({
@@ -284,7 +286,7 @@
     bytesForwarded: 0,
   });
   let perPeerStats = $derived(new Map(
-    peerList.map(p => [p.peerId, { bytesSent: p.bytesSent, bytesReceived: p.bytesReceived, bytesForwarded: 0 }])
+    peerList.map(p => [p.id, { bytesSent: p.bytesSent, bytesReceived: p.bytesReceived, bytesForwarded: 0, receiveErrors: 0 }])
   ));
   let uploadBandwidth = $state(0);
   let downloadBandwidth = $state(0);
@@ -806,8 +808,8 @@
         </div>
       {:else}
         <div class="bg-surface-2 rounded divide-y divide-surface-3">
-          {#each peerList as peer (peer.peerId)}
-            {@const peerStats = getPeerStats(peer.peerId)}
+          {#each peerList as peer (peer.id)}
+            {@const peerStats = getPeerStats(peer.id)}
             <div class="flex flex-col p-3 hover:bg-surface-3 transition-colors">
               <div class="flex items-center gap-2 text-sm">
                 <span

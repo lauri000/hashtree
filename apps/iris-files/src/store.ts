@@ -11,6 +11,17 @@ import { HashTree, LinkType, type WorkerBlossomBandwidthStats } from '@hashtree/
 import { getWorkerStore } from './stores/workerStore';
 import { closeWorkerAdapter } from './workerAdapter';
 import { getWorkerAdapter } from './lib/workerInit';
+import { nostrStore } from './nostr';
+import {
+  advanceMeshBandwidthHistory,
+  calculateMeshTotals,
+  fetchDaemonMeshStats,
+  mergeMeshPeers,
+  normalizeWorkerPeerStats,
+  type MeshBandwidthHistoryPoint,
+  type MeshHistoryCursor,
+  type MeshPeerInfo,
+} from './lib/meshStats';
 
 // Re-export LinkType for e2e tests that can't import 'hashtree' directly
 export { LinkType };
@@ -66,18 +77,12 @@ export interface StorageStats {
   bytes: number;
 }
 
-// Peer info for connectivity indicator
-export interface PeerInfo {
-  peerId: string;
-  pubkey: string;
-  state: 'connected' | 'disconnected';
-  pool: 'follows' | 'others';
-  bytesSent: number;
-  bytesReceived: number;
-}
+// Peer info for connectivity indicator / settings UI
+export type PeerInfo = MeshPeerInfo;
 
 // Detailed peer stats for getStats()
 export interface DetailedPeerStats {
+  id: string;
   peerId: string;
   pubkey: string;
   connected: boolean;
@@ -91,6 +96,9 @@ export interface DetailedPeerStats {
   forwardedRequests: number;
   forwardedResolved: number;
   forwardedSuppressed: number;
+  transport: string;
+  source: 'worker' | 'daemon';
+  signalPaths: string[];
 }
 
 export type BlossomBandwidthState = WorkerBlossomBandwidthStats;
@@ -110,18 +118,50 @@ interface AppState {
   peerCount: number;
   // Peer list for connectivity indicator
   peers: PeerInfo[];
+  // Recent per-second mesh bandwidth samples
+  meshBandwidthHistory: MeshBandwidthHistoryPoint[];
+  meshUploadBandwidth: number;
+  meshDownloadBandwidth: number;
   // Blossom bandwidth stats from worker
   blossomBandwidth: BlossomBandwidthState;
 }
 
 // Create Svelte store for app state
 function createAppStore() {
+  let workerPeers: PeerInfo[] = [];
+  let daemonPeers: PeerInfo[] = [];
+  let meshHistoryCursor: MeshHistoryCursor | null = null;
+
   const { subscribe, update } = writable<AppState>({
     stats: { items: 0, bytes: 0 },
     peerCount: 0,
     peers: [],
+    meshBandwidthHistory: [],
+    meshUploadBandwidth: 0,
+    meshDownloadBandwidth: 0,
     blossomBandwidth: DEFAULT_BLOSSOM_BANDWIDTH,
   });
+
+  const updatePeerState = () => {
+    const peers = mergeMeshPeers(workerPeers, daemonPeers);
+    const totals = calculateMeshTotals(peers);
+    const sample = advanceMeshBandwidthHistory(
+      meshHistoryCursor,
+      get(appStore).meshBandwidthHistory,
+      totals,
+      Date.now(),
+    );
+    meshHistoryCursor = sample.nextCursor;
+
+    update(state => ({
+      ...state,
+      peers,
+      peerCount: peers.filter(p => p.state === 'connected').length,
+      meshBandwidthHistory: sample.history,
+      meshUploadBandwidth: sample.rates.uploadBps,
+      meshDownloadBandwidth: sample.rates.downloadBps,
+    }));
+  };
 
   return {
     subscribe,
@@ -135,7 +175,19 @@ function createAppStore() {
     },
 
     setPeers: (peers: PeerInfo[]) => {
-      update(state => ({ ...state, peers, peerCount: peers.filter(p => p.state === 'connected').length }));
+      workerPeers = peers;
+      updatePeerState();
+    },
+
+    setPeerSources: (sources: { workerPeers?: PeerInfo[]; daemonPeers?: PeerInfo[] }) => {
+      workerPeers = sources.workerPeers ?? workerPeers;
+      daemonPeers = sources.daemonPeers ?? daemonPeers;
+      updatePeerState();
+    },
+
+    setDaemonPeers: (peers: PeerInfo[]) => {
+      daemonPeers = peers;
+      updatePeerState();
     },
 
     setBlossomBandwidth: (blossomBandwidth: BlossomBandwidthState) => {
@@ -222,7 +274,7 @@ const webrtcStoreProxy = {
   get: async (hash: string) => {
     const adapter = getWorkerAdapter();
     if (!adapter) return null;
-    return adapter.get(hash);
+    return adapter.get(hash as unknown as Uint8Array);
   },
   setPoolConfig: (_config: unknown) => {
     // Pool config is managed by worker, no-op for now
@@ -238,7 +290,7 @@ const webrtcStoreProxy = {
     const adapter = getWorkerAdapter();
     if (!adapter) return false;
     // Get current user's pubkey
-    const myPubkey = get(appStore).pubkey;
+    const myPubkey = get(nostrStore).pubkey;
     if (!myPubkey) return false;
     try {
       return await adapter.isFollowing(myPubkey, pubkey);
@@ -249,19 +301,42 @@ const webrtcStoreProxy = {
   getStats: async () => {
     const adapter = getWorkerAdapter();
     if (!adapter) {
-      return {
-        aggregate: {
+      const daemonPeers = get(appStore).peers.filter((peer) => peer.source === 'daemon');
+      const aggregate = {
+        requestsSent: 0,
+        requestsReceived: 0,
+        responsesSent: 0,
+        responsesReceived: 0,
+        bytesSent: daemonPeers.reduce((sum, peer) => sum + peer.bytesSent, 0),
+        bytesReceived: daemonPeers.reduce((sum, peer) => sum + peer.bytesReceived, 0),
+        forwardedRequests: 0,
+        forwardedResolved: 0,
+        forwardedSuppressed: 0,
+      };
+      const perPeer = new Map<string, DetailedPeerStats>(
+        daemonPeers.map((peer) => [peer.id, {
+          id: peer.id,
+          peerId: peer.peerId,
+          pubkey: peer.pubkey,
+          connected: peer.state === 'connected',
+          pool: peer.pool === 'follows' ? 'follows' : 'other',
           requestsSent: 0,
           requestsReceived: 0,
           responsesSent: 0,
           responsesReceived: 0,
-          bytesSent: 0,
-          bytesReceived: 0,
+          bytesSent: peer.bytesSent,
+          bytesReceived: peer.bytesReceived,
           forwardedRequests: 0,
           forwardedResolved: 0,
           forwardedSuppressed: 0,
-        },
-        perPeer: new Map(),
+          transport: peer.transport,
+          source: peer.source,
+          signalPaths: peer.signalPaths,
+        }]),
+      );
+      return {
+        aggregate,
+        perPeer,
       };
     }
 
@@ -293,11 +368,13 @@ const webrtcStoreProxy = {
       aggregate.forwardedResolved += p.forwardedResolved;
       aggregate.forwardedSuppressed += p.forwardedSuppressed;
 
-      perPeer.set(p.peerId, {
+      const workerPeerId = `worker:webrtc:${p.peerId}`;
+      perPeer.set(workerPeerId, {
+        id: workerPeerId,
         peerId: p.peerId,
         pubkey: p.pubkey,
         connected: p.connected,
-        pool: 'other', // Worker doesn't track pool in stats
+        pool: (p as { pool?: string }).pool === 'follows' ? 'follows' : 'other',
         requestsSent: p.requestsSent,
         requestsReceived: p.requestsReceived,
         responsesSent: p.responsesSent,
@@ -307,6 +384,34 @@ const webrtcStoreProxy = {
         forwardedRequests: p.forwardedRequests,
         forwardedResolved: p.forwardedResolved,
         forwardedSuppressed: p.forwardedSuppressed,
+        transport: 'webrtc',
+        source: 'worker',
+        signalPaths: ['relay'],
+      });
+    }
+
+    const daemonPeers = get(appStore).peers.filter((peer) => peer.source === 'daemon');
+    for (const peer of daemonPeers) {
+      aggregate.bytesSent += peer.bytesSent;
+      aggregate.bytesReceived += peer.bytesReceived;
+      perPeer.set(peer.id, {
+        id: peer.id,
+        peerId: peer.peerId,
+        pubkey: peer.pubkey,
+        connected: peer.state === 'connected',
+        pool: peer.pool === 'follows' ? 'follows' : 'other',
+        requestsSent: 0,
+        requestsReceived: 0,
+        responsesSent: 0,
+        responsesReceived: 0,
+        bytesSent: peer.bytesSent,
+        bytesReceived: peer.bytesReceived,
+        forwardedRequests: 0,
+        forwardedResolved: 0,
+        forwardedSuppressed: 0,
+        transport: peer.transport,
+        source: peer.source,
+        signalPaths: peer.signalPaths,
       });
     }
 
@@ -350,23 +455,17 @@ if (typeof window !== 'undefined' && !('webrtcStore' in window)) {
 // Refresh WebRTC stats from worker
 export async function refreshWebRTCStats(): Promise<void> {
   const adapter = getWorkerAdapter();
-  if (!adapter) return;
+  const workerPromise = adapter
+    ? adapter.getPeerStats()
+      .then((stats) => normalizeWorkerPeerStats(stats))
+      .catch((): PeerInfo[] => [])
+    : Promise.resolve<PeerInfo[]>([]);
+  const daemonPromise = fetchDaemonMeshStats()
+    .then((stats) => stats?.peers ?? [])
+    .catch((): PeerInfo[] => []);
 
-  try {
-    const stats = await adapter.getPeerStats();
-    // Use pool from worker stats directly - worker has authoritative follows set
-    const peers: PeerInfo[] = stats.map(p => ({
-      peerId: p.peerId,
-      pubkey: p.pubkey,
-      state: p.connected ? 'connected' : 'disconnected',
-      pool: p.pool === 'follows' ? 'follows' : 'others',
-      bytesSent: p.bytesSent,
-      bytesReceived: p.bytesReceived,
-    }));
-    appStore.setPeers(peers);
-  } catch {
-    // Worker not ready or other error
-  }
+  const [workerPeers, daemonPeers] = await Promise.all([workerPromise, daemonPromise]);
+  appStore.setPeerSources({ workerPeers, daemonPeers });
 }
 
 export function setBlossomBandwidth(stats: BlossomBandwidthState): void {
@@ -384,18 +483,17 @@ export function setBlossomBandwidth(stats: BlossomBandwidthState): void {
 
 export function getBandwidthUsageTotals() {
   const state = get(appStore);
-  const webrtcBytesSent = state.peers.reduce((sum, peer) => sum + peer.bytesSent, 0);
-  const webrtcBytesReceived = state.peers.reduce((sum, peer) => sum + peer.bytesReceived, 0);
+  const meshTotals = calculateMeshTotals(state.peers);
   const blossomBytesSent = state.blossomBandwidth.totalBytesSent;
   const blossomBytesReceived = state.blossomBandwidth.totalBytesReceived;
 
   return {
-    webrtcBytesSent,
-    webrtcBytesReceived,
+    webrtcBytesSent: meshTotals.totalBytesSent,
+    webrtcBytesReceived: meshTotals.totalBytesReceived,
     blossomBytesSent,
     blossomBytesReceived,
-    totalBytesSent: webrtcBytesSent + blossomBytesSent,
-    totalBytesReceived: webrtcBytesReceived + blossomBytesReceived,
+    totalBytesSent: meshTotals.totalBytesSent + blossomBytesSent,
+    totalBytesReceived: meshTotals.totalBytesReceived + blossomBytesReceived,
     blossomServers: state.blossomBandwidth.servers,
     peers: state.peers,
   };
@@ -403,7 +501,6 @@ export function getBandwidthUsageTotals() {
 
 export function getLifetimeStats() {
   const state = get(appStore);
-  const bytesSent = state.peers.reduce((sum, peer) => sum + peer.bytesSent, 0);
-  const bytesReceived = state.peers.reduce((sum, peer) => sum + peer.bytesReceived, 0);
+  const { totalBytesSent: bytesSent, totalBytesReceived: bytesReceived } = calculateMeshTotals(state.peers);
   return { bytesSent, bytesReceived, bytesForwarded: 0 };
 }

@@ -29,7 +29,7 @@ pub(crate) async fn list_peers(addr: &str) -> Result<()> {
         .and_then(|e| e.as_bool())
         .unwrap_or(false)
     {
-        println!("WebRTC is not enabled");
+        println!("Peer router is not enabled");
         return Ok(());
     }
 
@@ -91,6 +91,21 @@ pub(crate) async fn list_peers(addr: &str) -> Result<()> {
         };
 
         let profile_name = fetch_profile_name(relays, pubkey_hex).await;
+        let transport = peer
+            .get("transport")
+            .and_then(|v| v.as_str())
+            .unwrap_or("webrtc");
+        let signal_paths = peer
+            .get("signal_paths")
+            .and_then(|v| v.as_array())
+            .map(|paths| {
+                paths
+                    .iter()
+                    .filter_map(|path| path.as_str())
+                    .collect::<Vec<_>>()
+                    .join("+")
+            })
+            .filter(|paths| !paths.is_empty());
 
         // Get bandwidth stats
         let bytes_sent = peer.get("bytes_sent").and_then(|b| b.as_u64()).unwrap_or(0);
@@ -105,6 +120,11 @@ pub(crate) async fn list_peers(addr: &str) -> Result<()> {
             String::new()
         };
 
+        let transport_part = match signal_paths {
+            Some(paths) => format!(" [{} via {}]", transport, paths),
+            None => format!(" [{}]", transport),
+        };
+
         let bandwidth_part = if bytes_sent > 0 || bytes_received > 0 {
             format!(
                 " [\u{2191}{} \u{2193}{}]",
@@ -115,7 +135,10 @@ pub(crate) async fn list_peers(addr: &str) -> Result<()> {
             String::new()
         };
 
-        println!("  {}{}{}", npub, name_part, bandwidth_part);
+        println!(
+            "  {}{}{}{}",
+            npub, name_part, transport_part, bandwidth_part
+        );
     }
 
     if !follows.is_empty() {

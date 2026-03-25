@@ -2176,37 +2176,75 @@ pub async fn health_check() -> impl IntoResponse {
         .unwrap()
 }
 
-/// Get connected WebRTC peers
-pub async fn webrtc_peers(State(state): State<AppState>) -> impl IntoResponse {
-    use crate::webrtc::ConnectionState;
+fn peer_transport_counts(
+    peers: &std::collections::HashMap<String, crate::webrtc::PeerEntry>,
+) -> serde_json::Value {
+    use crate::webrtc::PeerTransport;
 
+    let webrtc = peers
+        .values()
+        .filter(|entry| entry.transport == PeerTransport::WebRtc)
+        .count();
+    let bluetooth = peers
+        .values()
+        .filter(|entry| entry.transport == PeerTransport::Bluetooth)
+        .count();
+    json!({
+        "webrtc": webrtc,
+        "bluetooth": bluetooth,
+    })
+}
+
+fn peer_entry_json(id: &str, entry: &crate::webrtc::PeerEntry) -> serde_json::Value {
+    let rtc_state = entry.peer.as_ref().map(|p| format!("{:?}", p.state()));
+    let signal_paths: Vec<_> = entry
+        .signal_paths
+        .iter()
+        .map(|path| path.to_string())
+        .collect();
+
+    json!({
+        "id": id,
+        "peer_id": entry.peer_id.to_string(),
+        "pubkey": entry.peer_id.pubkey.clone(),
+        "state": format!("{:?}", entry.state),
+        "rtc_state": rtc_state,
+        "pool": format!("{:?}", entry.pool),
+        "transport": entry.transport.to_string(),
+        "signal_paths": signal_paths,
+        "connected": entry.state == crate::webrtc::ConnectionState::Connected,
+        "has_data_channel": entry.peer.as_ref().map(|p| p.has_data_channel()).unwrap_or(false),
+        "bytes_sent": entry.bytes_sent,
+        "bytes_received": entry.bytes_received,
+    })
+}
+
+/// Get connected mesh peers
+pub async fn webrtc_peers(State(state): State<AppState>) -> impl IntoResponse {
     let Some(ref webrtc_state) = state.webrtc_peers else {
         return Json(json!({
             "enabled": false,
+            "transport_counts": {
+                "webrtc": 0,
+                "bluetooth": 0
+            },
             "peers": []
         }));
     };
 
     let peers = webrtc_state.peers.read().await;
     let (mesh_received, mesh_forwarded, mesh_dropped_duplicate) = webrtc_state.get_mesh_stats();
-    let peer_list: Vec<_> = peers.iter().map(|(id, entry)| {
-        let rtc_state = entry.peer.as_ref().map(|p| format!("{:?}", p.state()));
-        json!({
-            "id": id,
-            "pubkey": entry.peer_id.pubkey,
-            "state": format!("{:?}", entry.state),
-            "rtc_state": rtc_state,
-            "pool": format!("{:?}", entry.pool),
-            "connected": entry.state == ConnectionState::Connected,
-            "has_data_channel": entry.peer.as_ref().map(|p| p.has_data_channel()).unwrap_or(false),
-        })
-    }).collect();
+    let peer_list: Vec<_> = peers
+        .iter()
+        .map(|(id, entry)| peer_entry_json(id, entry))
+        .collect();
 
     Json(json!({
         "enabled": true,
         "total": peers.len(),
         "connected": peer_list.iter().filter(|p| p["connected"].as_bool().unwrap_or(false)).count(),
         "with_data_channel": peer_list.iter().filter(|p| p["has_data_channel"].as_bool().unwrap_or(false)).count(),
+        "transport_counts": peer_transport_counts(&peers),
         "mesh_received": mesh_received,
         "mesh_forwarded": mesh_forwarded,
         "mesh_dropped_duplicate": mesh_dropped_duplicate,
@@ -2229,8 +2267,8 @@ pub async fn daemon_status(
             .into_response();
     }
 
-    // WebRTC peers
-    let webrtc = if let Some(ref webrtc_state) = state.webrtc_peers {
+    // Mesh peers
+    let mesh = if let Some(ref webrtc_state) = state.webrtc_peers {
         let peers = webrtc_state.peers.read().await;
         let connected = peers
             .values()
@@ -2250,21 +2288,15 @@ pub async fn daemon_status(
         let (mesh_received, mesh_forwarded, mesh_dropped_duplicate) = webrtc_state.get_mesh_stats();
         // Per-peer stats
         let peer_stats: Vec<_> = peers
-            .values()
-            .map(|e| {
-                json!({
-                    "peer_id": e.peer_id.short(),
-                    "pubkey": e.peer_id.pubkey.clone(),
-                    "bytes_sent": e.bytes_sent,
-                    "bytes_received": e.bytes_received,
-                })
-            })
+            .iter()
+            .map(|(id, entry)| peer_entry_json(id, entry))
             .collect();
         json!({
             "enabled": true,
             "total_peers": peers.len(),
             "connected": connected,
             "with_data_channel": with_data_channel,
+            "transport_counts": peer_transport_counts(&peers),
             "bytes_sent": bytes_sent,
             "bytes_received": bytes_received,
             "mesh_received": mesh_received,
@@ -2283,7 +2315,8 @@ pub async fn daemon_status(
 
     Json(json!({
         "status": "running",
-        "webrtc": webrtc,
+        "mesh": mesh.clone(),
+        "webrtc": mesh,
         "upstream": upstream,
     }))
     .into_response()
@@ -2698,6 +2731,10 @@ mod tests {
     use crate::nostr_relay::{NostrRelay, NostrRelayConfig};
     use crate::socialgraph;
     use crate::storage::HashtreeStore;
+    use crate::webrtc::{
+        ConnectionState, PeerDirection, PeerEntry, PeerPool, PeerSignalPath, PeerTransport,
+        WebRTCState,
+    };
     use axum::{
         body::{to_bytes, Body},
         extract::{Path as AxumPath, State as AxumState},
@@ -2711,7 +2748,11 @@ mod tests {
         nips::nip19::ToBech32, Alphabet, EventBuilder, Keys, Kind, SingleLetterTag, Tag, TagKind,
     };
     use sha2::Digest;
-    use std::{collections::HashSet, net::SocketAddr};
+    use std::{
+        collections::{BTreeSet, HashSet},
+        net::SocketAddr,
+        time::Instant,
+    };
     use tempfile::TempDir;
     use tokio::time::timeout;
 
@@ -2808,6 +2849,34 @@ mod tests {
         }
     }
 
+    async fn sample_webrtc_state() -> Arc<WebRTCState> {
+        let state = Arc::new(WebRTCState::new());
+        let peer_id = crate::webrtc::PeerId::new(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            Some("peer-session".to_string()),
+        );
+        let peer_key = peer_id.to_string();
+        let signal_paths = BTreeSet::from([PeerSignalPath::Relay, PeerSignalPath::Multicast]);
+        state.peers.write().await.insert(
+            peer_key.clone(),
+            PeerEntry {
+                peer_id,
+                direction: PeerDirection::Outbound,
+                state: ConnectionState::Connected,
+                last_seen: Instant::now(),
+                peer: None,
+                pool: PeerPool::Follows,
+                transport: PeerTransport::WebRtc,
+                signal_paths,
+                bytes_sent: 64,
+                bytes_received: 128,
+            },
+        );
+        state.record_sent(&peer_key, 16).await;
+        state.record_received(&peer_key, 32).await;
+        state
+    }
+
     async fn test_nostr_relay(dir: &TempDir, allowed_pubkey: String) -> Arc<NostrRelay> {
         let graph_store =
             socialgraph::open_social_graph_store_with_mapsize(dir.path(), Some(128 * 1024 * 1024))
@@ -2852,6 +2921,57 @@ mod tests {
         .await;
 
         assert_eq!(result, Some((b"ok".to_vec(), "peer-a".to_string())));
+    }
+
+    #[tokio::test]
+    async fn webrtc_peers_reports_transport_and_signal_paths() {
+        let temp = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp.path()).unwrap());
+        let mut state = test_app_state(store, vec![]);
+        state.webrtc_peers = Some(sample_webrtc_state().await);
+
+        let response = webrtc_peers(AxumState(state)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["enabled"], true);
+        assert_eq!(json["transport_counts"]["webrtc"], 1);
+        assert_eq!(json["transport_counts"]["bluetooth"], 0);
+        assert_eq!(json["peers"][0]["transport"], "webrtc");
+        assert_eq!(json["peers"][0]["bytes_sent"], 80);
+        assert_eq!(json["peers"][0]["bytes_received"], 160);
+        assert_eq!(
+            json["peers"][0]["signal_paths"],
+            json!(["relay", "multicast"])
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_status_exposes_mesh_alias_with_transport_metadata() {
+        let temp = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp.path()).unwrap());
+        let mut state = test_app_state(store, vec![]);
+        state.webrtc_peers = Some(sample_webrtc_state().await);
+
+        let response = daemon_status(
+            AxumState(state),
+            axum::extract::ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 21417))),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["mesh"]["enabled"], true);
+        assert_eq!(json["mesh"]["transport_counts"]["webrtc"], 1);
+        assert_eq!(json["mesh"]["bytes_sent"], 16);
+        assert_eq!(json["mesh"]["bytes_received"], 32);
+        assert_eq!(json["mesh"]["peers"][0]["transport"], "webrtc");
+        assert_eq!(json["webrtc"], json["mesh"]);
     }
 
     #[tokio::test]

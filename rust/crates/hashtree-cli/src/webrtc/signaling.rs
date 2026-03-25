@@ -18,7 +18,7 @@ use nostr::{
     nips::nip44, ClientMessage, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey,
     RelayMessage, Tag,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -46,6 +46,60 @@ use crate::nostr_relay::NostrRelay;
 
 /// Callback type for classifying peers into pools
 pub type PeerClassifier = Arc<dyn Fn(&str) -> PeerPool + Send + Sync>;
+
+/// Active data transport used for a peer session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PeerTransport {
+    WebRtc,
+    Bluetooth,
+}
+
+impl PeerTransport {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            PeerTransport::WebRtc => "webrtc",
+            PeerTransport::Bluetooth => "bluetooth",
+        }
+    }
+}
+
+impl std::fmt::Display for PeerTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str((*self).as_str())
+    }
+}
+
+/// Signaling/discovery path through which a peer was seen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PeerSignalPath {
+    Relay,
+    Multicast,
+    Bluetooth,
+}
+
+impl PeerSignalPath {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            PeerSignalPath::Relay => "relay",
+            PeerSignalPath::Multicast => "multicast",
+            PeerSignalPath::Bluetooth => "bluetooth",
+        }
+    }
+
+    pub fn from_source_name(source: &str) -> Self {
+        match source {
+            "multicast" => PeerSignalPath::Multicast,
+            "bluetooth" => PeerSignalPath::Bluetooth,
+            _ => PeerSignalPath::Relay,
+        }
+    }
+}
+
+impl std::fmt::Display for PeerSignalPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str((*self).as_str())
+    }
+}
 
 /// Connection state for a peer
 #[derive(Debug, Clone, PartialEq)]
@@ -75,7 +129,8 @@ pub struct PeerEntry {
     pub last_seen: Instant,
     pub peer: Option<Peer>,
     pub pool: PeerPool,
-    pub multicast_origin: bool,
+    pub transport: PeerTransport,
+    pub signal_paths: BTreeSet<PeerSignalPath>,
     pub bytes_sent: u64,
     pub bytes_received: u64,
 }
@@ -1174,7 +1229,10 @@ impl WebRTCManager {
         }
         peers
             .values()
-            .filter(|entry| entry.multicast_origin && entry.state != ConnectionState::Failed)
+            .filter(|entry| {
+                entry.signal_paths.contains(&PeerSignalPath::Multicast)
+                    && entry.state != ConnectionState::Failed
+            })
             .count()
             < self.config.multicast.max_peers
     }
@@ -1890,7 +1948,7 @@ impl WebRTCManager {
         let full_peer_id = PeerId::new(sender_pubkey.to_string(), Some(their_uuid.to_string()));
         let peer_key = full_peer_id.to_string();
         let mut already_discovered = false;
-        let mut multicast_origin = source == "multicast";
+        let mut signal_paths = BTreeSet::from([PeerSignalPath::from_source_name(source)]);
 
         // Check if we already have this peer
         {
@@ -1911,7 +1969,7 @@ impl WebRTCManager {
                     return Ok(());
                 }
                 already_discovered = true;
-                multicast_origin |= entry.multicast_origin;
+                signal_paths.extend(entry.signal_paths.iter().copied());
             }
         }
 
@@ -1972,7 +2030,8 @@ impl WebRTCManager {
                     last_seen: Instant::now(),
                     peer: None,
                     pool,
-                    multicast_origin,
+                    transport: PeerTransport::WebRtc,
+                    signal_paths,
                     bytes_sent: 0,
                     bytes_received: 0,
                 },
@@ -2073,7 +2132,7 @@ impl WebRTCManager {
         );
         let full_peer_id = PeerId::new(sender_pubkey.to_string(), Some(their_uuid.to_string()));
         let peer_key = full_peer_id.to_string();
-        let mut multicast_origin = source == "multicast";
+        let mut signal_paths = BTreeSet::from([PeerSignalPath::from_source_name(source)]);
 
         // Classify the peer into a pool
         let pool = (self.peer_classifier)(sender_pubkey);
@@ -2109,7 +2168,7 @@ impl WebRTCManager {
                     );
                     return Ok(());
                 }
-                multicast_origin |= entry.multicast_origin;
+                signal_paths.extend(entry.signal_paths.iter().copied());
                 debug!(
                     "Peer {} exists but has no connection, proceeding",
                     full_peer_id.short()
@@ -2174,7 +2233,8 @@ impl WebRTCManager {
                     last_seen: Instant::now(),
                     peer: Some(peer),
                     pool,
-                    multicast_origin,
+                    transport: PeerTransport::WebRtc,
+                    signal_paths,
                     bytes_sent: 0,
                     bytes_received: 0,
                 },
