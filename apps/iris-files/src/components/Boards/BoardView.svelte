@@ -141,6 +141,7 @@
   let columnDraftTitle = $state('');
   let columnFormError = $state('');
   let columnTitleInputRef = $state<HTMLInputElement | null>(null);
+  let cardTitleInputRef = $state<HTMLInputElement | null>(null);
 
   interface DragCardState {
     cardId: string;
@@ -155,6 +156,18 @@
 
   let draggingCard = $state<DragCardState | null>(null);
   let cardDropTarget = $state<CardDropTarget | null>(null);
+
+  interface DragColumnState {
+    columnId: string;
+  }
+
+  interface ColumnDropTarget {
+    columnId: string;
+    position: 'before' | 'after';
+  }
+
+  let draggingColumn = $state<DragColumnState | null>(null);
+  let columnDropTarget = $state<ColumnDropTarget | null>(null);
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let hydrateRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -201,6 +214,15 @@
       columnTitleInputRef.focus();
       if (columnModalMode === 'edit') {
         columnTitleInputRef.select();
+      }
+    }
+  });
+
+  $effect(() => {
+    if (showCardModal && cardTitleInputRef) {
+      cardTitleInputRef.focus();
+      if (cardModalMode === 'edit') {
+        cardTitleInputRef.select();
       }
     }
   });
@@ -1780,6 +1802,8 @@
   function clearDragState() {
     draggingCard = null;
     cardDropTarget = null;
+    draggingColumn = null;
+    columnDropTarget = null;
   }
 
   function handleCardDragEnd() {
@@ -1853,6 +1877,71 @@
     return cardDropTarget.position === 'after'
       ? 'ring-2 ring-emerald-500/80 ring-offset-1 ring-offset-surface-1'
       : 'ring-2 ring-accent/80 ring-offset-1 ring-offset-surface-1';
+  }
+
+  function handleColumnDragStart(event: DragEvent, columnId: string) {
+    if (!canWrite) return;
+    // Don't start column drag if a card is being dragged (event bubbled up)
+    const target = event.target as HTMLElement;
+    if (target.closest('[data-card-id]')) return;
+    draggingColumn = { columnId };
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('application/x-board-column', columnId);
+    }
+  }
+
+  function handleColumnReorderDragOver(event: DragEvent, columnId: string) {
+    if (!canWrite || !draggingColumn) return;
+    // Don't allow dropping on self
+    if (draggingColumn.columnId === columnId) return;
+    // Don't interfere with card drags
+    if (draggingCard) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.currentTarget as HTMLElement;
+    const rect = target.getBoundingClientRect();
+    const position: 'before' | 'after' = event.clientX > rect.left + rect.width / 2 ? 'after' : 'before';
+    columnDropTarget = { columnId, position };
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  }
+
+  function handleColumnReorderDrop(event: DragEvent, columnId: string) {
+    if (!canWrite || !draggingColumn || draggingCard) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.currentTarget as HTMLElement;
+    const rect = target.getBoundingClientRect();
+    const position: 'before' | 'after' = event.clientX > rect.left + rect.width / 2 ? 'after' : 'before';
+    moveColumn(draggingColumn.columnId, columnId, position);
+    draggingColumn = null;
+    columnDropTarget = null;
+  }
+
+  function handleColumnDragEnd() {
+    draggingColumn = null;
+    columnDropTarget = null;
+  }
+
+  function moveColumn(fromColumnId: string, toColumnId: string, position: 'before' | 'after') {
+    if (fromColumnId === toColumnId) return;
+    mutateBoard(next => {
+      const fromIndex = next.columns.findIndex(col => col.id === fromColumnId);
+      const toIndex = next.columns.findIndex(col => col.id === toColumnId);
+      if (fromIndex === -1 || toIndex === -1) return;
+      const [column] = next.columns.splice(fromIndex, 1);
+      // Recalculate target index after removal
+      const newToIndex = next.columns.findIndex(col => col.id === toColumnId);
+      const insertIndex = position === 'after' ? newToIndex + 1 : newToIndex;
+      next.columns.splice(insertIndex, 0, column);
+    });
+  }
+
+  function columnDropTargetClass(columnId: string): string {
+    if (!columnDropTarget || columnDropTarget.columnId !== columnId) return '';
+    return columnDropTarget.position === 'after'
+      ? 'ring-2 ring-accent/80 ring-offset-2 ring-offset-surface-0'
+      : 'ring-2 ring-emerald-500/80 ring-offset-2 ring-offset-surface-0';
   }
 
   function isUploadingCard(columnId: string, cardId: string): boolean {
@@ -2035,7 +2124,14 @@
         {#each board.columns as column (column.id)}
           <section
             data-testid={`board-column-${column.title}`}
-            class="group w-80 max-w-80 shrink-0 bg-surface-1 rounded-xl border border-surface-3 p-3 shadow-sm space-y-3"
+            role="group"
+            aria-label={`${column.title} column`}
+            draggable={canWrite}
+            ondragstart={(event) => handleColumnDragStart(event as DragEvent, column.id)}
+            ondragend={handleColumnDragEnd}
+            ondragover={(event) => handleColumnReorderDragOver(event as DragEvent, column.id)}
+            ondrop={(event) => handleColumnReorderDrop(event as DragEvent, column.id)}
+            class={`group w-80 max-w-80 shrink-0 bg-surface-1 rounded-xl border border-surface-3 p-3 shadow-sm space-y-3 ${canWrite ? 'cursor-grab active:cursor-grabbing' : ''} ${draggingColumn?.columnId === column.id ? 'opacity-50' : ''} ${columnDropTargetClass(column.id)}`}
           >
             <div class="flex items-start justify-between gap-2">
               <div class="min-w-0">
@@ -2291,6 +2387,7 @@
             id="board-card-title"
             aria-label="Card title"
             class="input w-full text-sm"
+            bind:this={cardTitleInputRef}
             bind:value={cardDraftTitle}
             placeholder="Task title"
           />
