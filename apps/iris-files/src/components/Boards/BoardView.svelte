@@ -6,7 +6,7 @@
   import { nip19 } from 'nostr-tools';
   import { getNhashFileUrl } from '../../lib/mediaUrl';
   import { treeRootRegistry } from '../../TreeRootRegistry';
-  import { getBoardRouteKey, shouldShowBoardLoading } from '../../lib/boards/viewState';
+  import { getBoardRouteKey, shouldApplyHydratedBoardState, shouldShowBoardLoading } from '../../lib/boards/viewState';
   import { syncSelectedTreeForOwnRoute } from '../../lib/selectedTree';
   import { getTree } from '../../store';
   import { setUploadProgress } from '../../stores/upload';
@@ -886,10 +886,26 @@
 
       boardCandidates.sort((a, b) => b.updatedAt - a.updatedAt);
       const resolvedBoard = boardCandidates[0];
+      const shouldApplyBoard = shouldApplyHydratedBoardState(
+        hydratedRouteKey,
+        routeKey,
+        board?.updatedAt,
+        resolvedBoard?.updatedAt
+      );
+      const shouldApplyPermissions = shouldApplyHydratedBoardState(
+        hydratedRouteKey,
+        routeKey,
+        permissions?.updatedAt,
+        resolvedPermissions?.updatedAt
+      );
 
       if (generation !== loadGeneration) return;
-      permissions = resolvedPermissions;
-      board = resolvedBoard;
+      if (shouldApplyPermissions) {
+        permissions = resolvedPermissions;
+      }
+      if (shouldApplyBoard) {
+        board = resolvedBoard;
+      }
       hydratedRouteKey = routeKey;
       error = null;
       loading = false;
@@ -1126,8 +1142,7 @@
         : createInitialBoardPermissions(nextBoard.boardId, nextBoard.title, userNpub, nextBoard.updatedAt);
 
       const success = await persistBoardDirectory(nextBoard, nextPermissions);
-      if (success) {
-        board = nextBoard;
+      if (success && !permissions) {
         permissions = nextPermissions;
       }
     } finally {
@@ -1139,12 +1154,13 @@
     if (!canManage || !board) return;
     savingPermissions = true;
     try {
+      const boardSnapshot = cloneBoardState(board);
       const syncedPermissions: BoardPermissions = {
         ...nextPermissions,
-        boardId: board.boardId,
-        title: board.title,
+        boardId: boardSnapshot.boardId,
+        title: boardSnapshot.title,
       };
-      const success = await persistBoardDirectory(board, syncedPermissions);
+      const success = await persistBoardDirectory(boardSnapshot, syncedPermissions);
       if (success) permissions = syncedPermissions;
     } finally {
       savingPermissions = false;
@@ -1220,21 +1236,21 @@
     }
   }
 
-  function queueBoardSave(nextBoard: BoardState) {
-    board = nextBoard;
+  function queueBoardSave() {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      void persistBoard(nextBoard);
+      saveTimer = null;
+      if (!board) return;
+      void persistBoard(cloneBoardState(board));
     }, 700);
   }
 
   function mutateBoard(mutator: (next: BoardState) => void) {
     if (!board || !userNpub || !canWrite) return;
-    const next = cloneBoardState(board);
-    mutator(next);
-    next.updatedAt = Date.now();
-    next.updatedBy = userNpub;
-    queueBoardSave(next);
+    mutator(board);
+    board.updatedAt = Date.now();
+    board.updatedBy = userNpub;
+    queueBoardSave();
   }
 
   function normalizeTitle(value: string, fallback: string): string {

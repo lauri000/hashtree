@@ -16,3 +16,14 @@ export function shouldShowBoardLoading(
   if (!hasBoard) return true;
   return previousRouteKey !== nextRouteKey;
 }
+
+export function shouldApplyHydratedBoardState(
+  previousRouteKey: string | null,
+  nextRouteKey: string,
+  currentUpdatedAt: number | null | undefined,
+  hydratedUpdatedAt: number | null | undefined
+): boolean {
+  if (previousRouteKey !== nextRouteKey) return true;
+  if (!currentUpdatedAt || !hydratedUpdatedAt) return true;
+  return hydratedUpdatedAt >= currentUpdatedAt;
+}
