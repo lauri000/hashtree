@@ -43,6 +43,13 @@ pub fn generate_uuid() -> String {
     )
 }
 
+fn configured_peer_uuid() -> Option<String> {
+    std::env::var("HTREE_PEER_UUID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 /// Peer identifier combining pubkey and session UUID
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PeerId {
@@ -54,7 +61,9 @@ impl PeerId {
     pub fn new(pubkey: String, uuid: Option<String>) -> Self {
         Self {
             pubkey,
-            uuid: uuid.unwrap_or_else(generate_uuid),
+            uuid: uuid
+                .or_else(configured_peer_uuid)
+                .unwrap_or_else(generate_uuid),
         }
     }
 
@@ -244,6 +253,8 @@ impl SignalingMessage {
 pub struct WebRTCConfig {
     /// Nostr relays for signaling
     pub relays: Vec<String>,
+    /// Whether negotiated WebRTC signaling should run at all.
+    pub signaling_enabled: bool,
     /// Maximum outbound connections (legacy, use pools instead)
     pub max_outbound: usize,
     /// Maximum inbound connections (legacy, use pools instead)
@@ -280,6 +291,7 @@ impl Default for WebRTCConfig {
                 "wss://temp.iris.to".to_string(),
                 "wss://relay.snort.social".to_string(),
             ],
+            signaling_enabled: true,
             max_outbound: 6,
             max_inbound: 6,
             hello_interval_ms: 3000,

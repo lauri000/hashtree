@@ -138,9 +138,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     );
 
     #[cfg(feature = "p2p")]
-    let peer_router_enabled = config.server.enable_webrtc
-        || (config.server.enable_multicast && config.server.max_multicast_peers > 0)
-        || (config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0);
+    let peer_router_enabled = crate::p2p_common::peer_router_enabled(&config);
 
     #[cfg(feature = "p2p")]
     let webrtc_state: Option<Arc<WebRTCState>> = {

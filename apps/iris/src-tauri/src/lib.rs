@@ -12,6 +12,7 @@ pub mod automation;
 pub mod backend_routes;
 pub mod history;
 pub mod htree_protocol;
+pub mod mobile_bluetooth;
 pub mod nip07;
 pub mod permissions;
 pub mod relay_proxy;
@@ -152,6 +153,22 @@ fn resolve_iris_paths(
     }
 }
 
+#[cfg(target_os = "android")]
+fn ensure_mobile_peer_id() -> Result<String, String> {
+    let (keys, _) = hashtree_cli::config::ensure_keys()
+        .map_err(|error| format!("Failed to load keys for Android Bluetooth: {}", error))?;
+    let peer_uuid = std::env::var("HTREE_PEER_UUID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            let value = hashtree_cli::webrtc::types::generate_uuid();
+            std::env::set_var("HTREE_PEER_UUID", &value);
+            value
+        });
+    Ok(format!("{}:{}", keys.public_key().to_hex(), peer_uuid))
+}
+
 /// Start the embedded htree daemon
 async fn start_daemon<R: tauri::Runtime + 'static>(
     app: AppHandle<R>,
@@ -160,8 +177,19 @@ async fn start_daemon<R: tauri::Runtime + 'static>(
     relay_proxy::init_relay_proxy_state();
 
     let bind_address = daemon_bind_address();
+    let config_path = hashtree_cli::config::get_config_path();
     let mut config =
         hashtree_cli::Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
+    info!(
+        "Embedded daemon config loaded from {:?}: webrtc={} multicast={} (max {}) bluetooth={} (max {}) relays={}",
+        config_path,
+        config.server.enable_webrtc,
+        config.server.enable_multicast,
+        config.server.max_multicast_peers,
+        config.server.enable_bluetooth,
+        config.server.max_bluetooth_peers,
+        config.nostr.relays.len(),
+    );
     config.storage.data_dir = data_dir.to_string_lossy().to_string();
     config.server.bind_address = bind_address.clone();
     config.server.enable_auth = false;
@@ -735,6 +763,11 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_iris_mobile_browser::init());
     }
 
+    #[cfg(target_os = "android")]
+    {
+        builder = builder.plugin(tauri_plugin_iris_mobile_bluetooth::init());
+    }
+
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
         builder = builder
@@ -867,6 +900,30 @@ pub fn run() {
 
             std::env::set_var("HTREE_CONFIG_DIR", &paths.htree_config_dir);
             std::env::set_var("HTREE_DATA_DIR", &paths.htree_data_dir);
+
+            #[cfg(target_os = "android")]
+            if let Err(error) = mobile_bluetooth::install_from_app(&app.handle()) {
+                tracing::warn!("Failed to install Android Bluetooth bridge: {}", error);
+            }
+            #[cfg(target_os = "android")]
+            match hashtree_cli::Config::load() {
+                Ok(config)
+                    if config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0 =>
+                {
+                    match ensure_mobile_peer_id()
+                        .and_then(|peer_id| mobile_bluetooth::prestart_from_app(&app.handle(), peer_id))
+                    {
+                        Ok(()) => info!("Prestarted Android Bluetooth plugin from app setup"),
+                        Err(error) => {
+                            tracing::warn!("Failed to prestart Android Bluetooth plugin: {}", error)
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!("Failed to load config for Android Bluetooth prestart: {}", error)
+                }
+            }
 
             // Initialize NIP-07 permission state
             let permission_store = Arc::new(permissions::PermissionStore::new(None));

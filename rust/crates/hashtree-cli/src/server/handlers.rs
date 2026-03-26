@@ -2196,7 +2196,10 @@ fn peer_transport_counts(
 }
 
 fn peer_entry_json(id: &str, entry: &crate::webrtc::PeerEntry) -> serde_json::Value {
-    let rtc_state = entry.peer.as_ref().map(|p| format!("{:?}", p.state()));
+    let rtc_state = entry
+        .peer
+        .as_ref()
+        .and_then(|p| p.as_webrtc().map(|peer| format!("{:?}", peer.state())));
     let signal_paths: Vec<_> = entry
         .signal_paths
         .iter()
@@ -2213,7 +2216,7 @@ fn peer_entry_json(id: &str, entry: &crate::webrtc::PeerEntry) -> serde_json::Va
         "transport": entry.transport.to_string(),
         "signal_paths": signal_paths,
         "connected": entry.state == crate::webrtc::ConnectionState::Connected,
-        "has_data_channel": entry.peer.as_ref().map(|p| p.has_data_channel()).unwrap_or(false),
+        "has_data_channel": entry.peer.as_ref().map(|p| p.is_ready()).unwrap_or(false),
         "bytes_sent": entry.bytes_sent,
         "bytes_received": entry.bytes_received,
     })
@@ -2278,10 +2281,7 @@ pub async fn daemon_status(
             .values()
             .filter(|e| {
                 e.state == ConnectionState::Connected
-                    && e.peer
-                        .as_ref()
-                        .map(|p| p.has_data_channel())
-                        .unwrap_or(false)
+                    && e.peer.as_ref().map(|p| p.is_ready()).unwrap_or(false)
             })
             .count();
         let (bytes_sent, bytes_received) = webrtc_state.get_bandwidth();

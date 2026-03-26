@@ -9,6 +9,16 @@ fn relay_is_loopback(relay: &str) -> bool {
     relay.contains("://127.0.0.1") || relay.contains("://localhost") || relay.contains("://[::1]")
 }
 
+pub fn peer_router_enabled(config: &Config) -> bool {
+    config.server.enable_webrtc
+        || (config.server.enable_multicast && config.server.max_multicast_peers > 0)
+        || (config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0)
+}
+
+pub fn should_start_stun_server(config: &Config) -> bool {
+    config.server.enable_webrtc && config.server.stun_port > 0
+}
+
 /// Build default WebRTC config from daemon/app config.
 pub fn default_webrtc_config(config: &Config) -> WebRTCConfig {
     let local_only_relays = !config.nostr.relays.is_empty()
@@ -17,14 +27,22 @@ pub fn default_webrtc_config(config: &Config) -> WebRTCConfig {
             .relays
             .iter()
             .all(|relay| relay_is_loopback(relay));
-
-    WebRTCConfig {
-        relays: config.nostr.relays.clone(),
-        stun_servers: if config.server.enable_multicast && local_only_relays {
+    let relays = if config.server.enable_webrtc {
+        config.nostr.relays.clone()
+    } else {
+        Vec::new()
+    };
+    let stun_servers =
+        if !config.server.enable_webrtc || (config.server.enable_multicast && local_only_relays) {
             Vec::new()
         } else {
             WebRTCConfig::default().stun_servers
-        },
+        };
+
+    WebRTCConfig {
+        relays,
+        signaling_enabled: config.server.enable_webrtc,
+        stun_servers,
         multicast: MulticastConfig {
             enabled: config.server.enable_multicast,
             group: config.server.multicast_group.clone(),
@@ -103,7 +121,34 @@ mod tests {
         config.server.max_bluetooth_peers = 3;
 
         let webrtc = default_webrtc_config(&config);
+        assert!(webrtc.signaling_enabled);
         assert!(webrtc.bluetooth.enabled);
         assert_eq!(webrtc.bluetooth.max_peers, 3);
+    }
+
+    #[test]
+    fn default_webrtc_config_strips_relays_and_stun_when_webrtc_disabled() {
+        let mut config = Config::default();
+        config.server.enable_webrtc = false;
+        config.server.enable_bluetooth = true;
+        config.server.max_bluetooth_peers = 2;
+        config.server.stun_port = 3478;
+        config.nostr.relays = vec!["wss://relay.example".to_string()];
+
+        let webrtc = default_webrtc_config(&config);
+        assert!(!webrtc.signaling_enabled);
+        assert!(webrtc.relays.is_empty());
+        assert!(webrtc.stun_servers.is_empty());
+    }
+
+    #[test]
+    fn stun_server_only_starts_when_webrtc_is_enabled() {
+        let mut config = Config::default();
+        config.server.stun_port = 3478;
+
+        assert!(should_start_stun_server(&config));
+
+        config.server.enable_webrtc = false;
+        assert!(!should_start_stun_server(&config));
     }
 }

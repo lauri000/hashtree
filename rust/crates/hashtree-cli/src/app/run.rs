@@ -191,15 +191,13 @@ pub(crate) async fn run() -> Result<()> {
             );
 
             #[cfg(feature = "p2p")]
-            let peer_router_enabled = config.server.enable_webrtc
-                || (config.server.enable_multicast && config.server.max_multicast_peers > 0)
-                || (config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0);
+            let peer_router_enabled = hashtree_cli::p2p_common::peer_router_enabled(&config);
 
             // Start STUN server and WebRTC if P2P feature enabled
             #[cfg(feature = "p2p")]
             let (stun_handle, webrtc_handle, webrtc_state) = {
                 // Start STUN server if configured
-                let stun_handle = if config.server.stun_port > 0 {
+                let stun_handle = if hashtree_cli::p2p_common::should_start_stun_server(&config) {
                     let stun_addr: std::net::SocketAddr =
                         format!("0.0.0.0:{}", config.server.stun_port)
                             .parse()

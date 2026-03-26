@@ -25,7 +25,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
-use super::bluetooth::BluetoothMesh;
+use super::bluetooth::{BluetoothMesh, BluetoothPeerRegistrar, BluetoothRuntimeContext};
 use super::cashu::{CashuMintMetadataStore, CashuQuoteState, CashuRoutingConfig, NegotiatedQuote};
 use super::local_bus::SharedLocalNostrBus;
 use super::multicast::MulticastNostrBus;
@@ -34,6 +34,7 @@ use super::root_events::{
     build_root_filter, hashtree_event_identifier, is_hashtree_labeled_event, pick_latest_event,
     root_event_from_peer, PeerRootEvent,
 };
+use super::session::MeshPeer;
 use super::types::{
     decrement_htl_with_policy, encode_quote_request, encode_request, should_forward_htl,
     validate_mesh_frame, DataQuoteRequest, DataRequest, MeshNostrFrame, MeshNostrPayload,
@@ -127,7 +128,7 @@ pub struct PeerEntry {
     pub direction: PeerDirection,
     pub state: ConnectionState,
     pub last_seen: Instant,
-    pub peer: Option<Peer>,
+    pub peer: Option<MeshPeer>,
     pub pool: PeerPool,
     pub transport: PeerTransport,
     pub signal_paths: BTreeSet<PeerSignalPath>,
@@ -172,6 +173,7 @@ type ConnectedPeer = (
     PendingRequestsMap,
     Arc<webrtc::data_channel::RTCDataChannel>,
 );
+type ConnectedSession = (String, MeshPeer);
 
 impl WebRTCState {
     pub fn new() -> Self {
@@ -326,38 +328,37 @@ impl WebRTCState {
         hash_hex: &str,
     ) -> Option<(Vec<u8>, String)> {
         use super::types::BLOB_REQUEST_POLICY;
-        use tokio::sync::oneshot::error::TryRecvError;
 
         let peers = self.peers.read().await;
 
-        // Collect connected peers with data channels
-        // We need to collect the Arc references first, then acquire locks outside the iterator
         let peer_refs: Vec<_> = peers
             .values()
             .filter(|p| p.state == ConnectionState::Connected && p.peer.is_some())
-            .filter_map(|p| {
-                p.peer.as_ref().map(|peer| {
-                    (
-                        p.peer_id.to_string(),
-                        peer.data_channel.clone(),
-                        peer.pending_requests.clone(),
-                    )
-                })
-            })
+            .filter_map(|p| p.peer.clone().map(|peer| (p.peer_id.to_string(), peer)))
             .collect();
 
         drop(peers); // Release the read lock
 
-        // Now acquire locks and filter to peers with active data channels
         let mut connected_peers: Vec<ConnectedPeer> = Vec::new();
-        for (peer_id, dc_mutex, pending) in peer_refs {
-            let dc_guard = dc_mutex.lock().await;
-            if let Some(dc) = dc_guard.as_ref() {
-                connected_peers.push((peer_id, pending, dc.clone()));
+        let mut connected_sessions: Vec<ConnectedSession> = Vec::new();
+        for (peer_id, peer) in peer_refs {
+            if !peer.is_ready() {
+                continue;
             }
+            if let Some(webrtc_peer) = peer.as_webrtc() {
+                let dc_guard = webrtc_peer.data_channel.lock().await;
+                if let Some(dc) = dc_guard.as_ref() {
+                    connected_peers.push((
+                        peer_id.clone(),
+                        webrtc_peer.pending_requests.clone(),
+                        dc.clone(),
+                    ));
+                }
+            }
+            connected_sessions.push((peer_id, peer));
         }
 
-        if connected_peers.is_empty() {
+        if connected_sessions.is_empty() {
             debug!(
                 "No connected peers to query for {}",
                 &hash_hex[..8.min(hash_hex.len())]
@@ -382,32 +383,47 @@ impl WebRTCState {
             }
         };
 
-        let connected_peer_ids: Vec<String> = connected_peers
+        let connected_peer_ids: Vec<String> = connected_sessions
             .iter()
-            .map(|(peer_id, _, _)| peer_id.clone())
+            .map(|(peer_id, _)| peer_id.clone())
             .collect();
         sync_selector_peers(self.peer_selector.as_ref(), &connected_peer_ids).await;
 
         let ordered_peer_ids = self.peer_selector.write().await.select_peers();
-        let mut by_peer: HashMap<
+        let mut quote_by_peer: HashMap<
             String,
             (
                 PendingRequestsMap,
                 Arc<webrtc::data_channel::RTCDataChannel>,
             ),
         > = connected_peers
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|(peer_id, pending, dc)| (peer_id, (pending, dc)))
             .collect();
-
-        let mut ordered_peers: Vec<ConnectedPeer> = Vec::new();
-        for peer_id in ordered_peer_ids {
-            if let Some((pending, dc)) = by_peer.remove(&peer_id) {
-                ordered_peers.push((peer_id, pending, dc));
+        let mut ordered_quote_peers: Vec<ConnectedPeer> = Vec::new();
+        for peer_id in &ordered_peer_ids {
+            if let Some((pending, dc)) = quote_by_peer.remove(peer_id) {
+                ordered_quote_peers.push((peer_id.clone(), pending, dc));
             }
         }
-        for (peer_id, (pending, dc)) in by_peer {
-            ordered_peers.push((peer_id, pending, dc));
+        for (peer_id, (pending, dc)) in quote_by_peer {
+            ordered_quote_peers.push((peer_id, pending, dc));
+        }
+
+        let mut by_peer: HashMap<String, MeshPeer> = connected_sessions
+            .into_iter()
+            .map(|(peer_id, peer)| (peer_id, peer))
+            .collect();
+
+        let mut ordered_peers: Vec<ConnectedSession> = Vec::new();
+        for peer_id in ordered_peer_ids {
+            if let Some(peer) = by_peer.remove(&peer_id) {
+                ordered_peers.push((peer_id, peer));
+            }
+        }
+        for (peer_id, peer) in by_peer {
+            ordered_peers.push((peer_id, peer));
         }
 
         let dispatch = normalize_dispatch_config(self.request_dispatch, ordered_peers.len());
@@ -432,7 +448,7 @@ impl WebRTCState {
                     requested_mint,
                     payment_sat,
                     quote_ttl_ms,
-                    &ordered_peers,
+                    &ordered_quote_peers,
                 )
                 .await
             {
@@ -443,7 +459,7 @@ impl WebRTCState {
                         expected_hash,
                         &quote.peer_id,
                         Some(&quote),
-                        &ordered_peers,
+                        &ordered_quote_peers,
                     )
                     .await
                 {
@@ -467,7 +483,8 @@ impl WebRTCState {
             Err(_) => return None,
         };
         let wire_len = wire.len() as u64;
-        let wait_window = Duration::from_millis(dispatch.hedge_interval_ms.max(1));
+        let hedge_wait_window = Duration::from_millis(dispatch.hedge_interval_ms.max(1));
+        let per_request_timeout = self.request_timeout;
 
         let mut next_peer_idx = 0usize;
         for wave_size in wave_plan {
@@ -475,124 +492,81 @@ impl WebRTCState {
             let to = (next_peer_idx + wave_size).min(ordered_peers.len());
             next_peer_idx = to;
 
-            #[allow(clippy::type_complexity)]
-            let mut outstanding: Vec<(
-                String,
-                Arc<Mutex<HashMap<String, PendingRequest>>>,
-                Instant,
-                tokio::sync::oneshot::Receiver<Option<Vec<u8>>>,
-            )> = Vec::new();
-
-            for (peer_id, pending_requests, dc) in &ordered_peers[from..to] {
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                {
-                    let mut pending = pending_requests.lock().await;
-                    pending.insert(
-                        hash_hex.to_string(),
-                        PendingRequest::standard(hash_bytes.clone(), tx),
-                    );
-                }
-
-                if dc.send(&bytes::Bytes::copy_from_slice(&wire)).await.is_ok() {
-                    self.record_sent(peer_id, wire_len).await;
-                    self.peer_selector
-                        .write()
-                        .await
-                        .record_request(peer_id, wire_len);
-                    outstanding.push((
-                        peer_id.clone(),
-                        pending_requests.clone(),
-                        Instant::now(),
-                        rx,
-                    ));
-                } else {
-                    let mut pending = pending_requests.lock().await;
-                    pending.remove(hash_hex);
-                    self.peer_selector.write().await.record_failure(peer_id);
-                }
-            }
-
-            if outstanding.is_empty() {
+            if from == to {
                 continue;
             }
 
-            let deadline = Instant::now() + wait_window;
-            let mut success: Option<(String, Vec<u8>, u64)> = None;
-            while !outstanding.is_empty() && Instant::now() < deadline {
-                let mut i = 0usize;
-                while i < outstanding.len() {
-                    let mut drop_entry = false;
-                    let (peer_id, pending_requests, sent_at, rx) = &mut outstanding[i];
-                    match rx.try_recv() {
-                        Ok(Some(data)) => {
-                            let rtt_ms = sent_at.elapsed().as_millis() as u64;
-                            if hashtree_core::sha256(&data) == expected_hash {
-                                success = Some((peer_id.clone(), data, rtt_ms));
-                                break;
-                            }
-                            self.peer_selector.write().await.record_failure(peer_id);
-                            let mut pending = pending_requests.lock().await;
-                            pending.remove(hash_hex);
-                            drop_entry = true;
-                        }
-                        Ok(None) => {
-                            let mut pending = pending_requests.lock().await;
-                            pending.remove(hash_hex);
-                            drop_entry = true;
-                        }
-                        Err(TryRecvError::Closed) => {
-                            let mut pending = pending_requests.lock().await;
-                            pending.remove(hash_hex);
-                            drop_entry = true;
-                        }
-                        Err(TryRecvError::Empty) => {}
-                    }
+            let (result_tx, mut result_rx) =
+                mpsc::channel::<(String, Instant, Result<Option<Vec<u8>>>)>(to - from);
 
-                    if drop_entry {
-                        outstanding.swap_remove(i);
-                    } else {
-                        i += 1;
-                    }
+            for (peer_id, peer) in &ordered_peers[from..to] {
+                if peer.transport() != PeerTransport::Bluetooth {
+                    self.record_sent(peer_id, wire_len).await;
                 }
+                self.peer_selector
+                    .write()
+                    .await
+                    .record_request(peer_id, wire_len);
 
-                if success.is_some() {
-                    break;
-                }
+                let peer_id = peer_id.clone();
+                let peer = peer.clone();
+                let hash_hex = hash_hex.to_string();
+                let result_tx = result_tx.clone();
+                let per_request_timeout = per_request_timeout;
+                tokio::spawn(async move {
+                    let started = Instant::now();
+                    let result = peer.request(&hash_hex, per_request_timeout).await;
+                    let _ = result_tx.send((peer_id, started, result)).await;
+                });
+            }
+            drop(result_tx);
 
+            let is_last_wave = next_peer_idx >= ordered_peers.len();
+            let deadline = Instant::now()
+                + if is_last_wave {
+                    per_request_timeout
+                } else {
+                    hedge_wait_window
+                };
+            loop {
                 let now = Instant::now();
                 if now >= deadline {
                     break;
                 }
-                tokio::time::sleep(Duration::from_millis(10).min(deadline - now)).await;
-            }
-
-            if let Some((peer_id, data, rtt_ms)) = success {
-                self.record_received(&peer_id, data.len() as u64).await;
-                self.peer_selector.write().await.record_success(
-                    &peer_id,
-                    rtt_ms,
-                    data.len() as u64,
-                );
-
-                for (other_peer_id, pending_requests, _, _) in outstanding {
-                    if other_peer_id != peer_id {
-                        let mut pending = pending_requests.lock().await;
-                        pending.remove(hash_hex);
+                let remaining = deadline.saturating_duration_since(now);
+                match tokio::time::timeout(remaining, result_rx.recv()).await {
+                    Ok(Some((peer_id, started, Ok(Some(data))))) => {
+                        let rtt_ms = started.elapsed().as_millis() as u64;
+                        if hashtree_core::sha256(&data) == expected_hash {
+                            let should_record = {
+                                let peers = self.peers.read().await;
+                                peers
+                                    .get(&peer_id)
+                                    .map(|entry| entry.transport != PeerTransport::Bluetooth)
+                                    .unwrap_or(true)
+                            };
+                            if should_record {
+                                self.record_received(&peer_id, data.len() as u64).await;
+                            }
+                            self.peer_selector.write().await.record_success(
+                                &peer_id,
+                                rtt_ms,
+                                data.len() as u64,
+                            );
+                            debug!(
+                                "Got response from peer {} for {}",
+                                peer_id,
+                                &hash_hex[..8.min(hash_hex.len())]
+                            );
+                            return Some((data, peer_id));
+                        }
+                        self.peer_selector.write().await.record_failure(&peer_id);
                     }
+                    Ok(Some((peer_id, _, Ok(None)))) | Ok(Some((peer_id, _, Err(_)))) => {
+                        self.peer_selector.write().await.record_timeout(&peer_id);
+                    }
+                    Ok(None) | Err(_) => break,
                 }
-
-                debug!(
-                    "Got response from peer {} for {}",
-                    peer_id,
-                    &hash_hex[..8.min(hash_hex.len())]
-                );
-                return Some((data, peer_id));
-            }
-
-            for (peer_id, pending_requests, _, _) in outstanding {
-                let mut pending = pending_requests.lock().await;
-                pending.remove(hash_hex);
-                self.peer_selector.write().await.record_timeout(&peer_id);
             }
         }
 
@@ -837,7 +811,7 @@ impl WebRTCState {
             let Some(peer) = entry.peer.as_ref() else {
                 continue;
             };
-            if !peer.has_data_channel() {
+            if !peer.is_ready() {
                 continue;
             }
 
@@ -1264,7 +1238,19 @@ impl WebRTCManager {
 
         if self.config.bluetooth.is_enabled() {
             let bluetooth = BluetoothMesh::new(self.config.bluetooth.clone());
-            let _ = bluetooth.start().await;
+            let context = BluetoothRuntimeContext {
+                my_peer_id: self.my_peer_id.clone(),
+                store: self.store.clone(),
+                nostr_relay: self.nostr_relay.clone(),
+                mesh_frame_tx: self.mesh_frame_tx.clone(),
+                registrar: BluetoothPeerRegistrar::new(
+                    self.state.clone(),
+                    self.peer_classifier.clone(),
+                    self.config.pools.clone(),
+                    self.config.bluetooth.max_peers,
+                ),
+            };
+            let _ = bluetooth.start(context).await;
         }
 
         // Create a shared write channel for all relay tasks
@@ -1323,11 +1309,13 @@ impl WebRTCManager {
         let mut cleanup_interval = tokio::time::interval(Duration::from_secs(30));
         let mut hello_ticker =
             tokio::time::interval(Duration::from_millis(self.config.hello_interval_ms));
-        self.dispatch_signaling_message(
-            SignalingMessage::hello(&self.my_peer_id.uuid),
-            &relay_write_tx,
-        )
-        .await;
+        if self.config.signaling_enabled {
+            self.dispatch_signaling_message(
+                SignalingMessage::hello(&self.my_peer_id.uuid),
+                &relay_write_tx,
+            )
+            .await;
+        }
         loop {
             tokio::select! {
                 _ = shutdown_rx.changed() => {
@@ -1351,7 +1339,7 @@ impl WebRTCManager {
                 Some((from_peer_id, frame)) = mesh_frame_rx.recv() => {
                     self.handle_mesh_frame(from_peer_id, frame, &relay_write_tx).await;
                 }
-                _ = hello_ticker.tick() => {
+                _ = hello_ticker.tick(), if self.config.signaling_enabled => {
                     self.dispatch_signaling_message(
                         SignalingMessage::hello(&self.my_peer_id.uuid),
                         &relay_write_tx,
@@ -1467,6 +1455,14 @@ impl WebRTCManager {
         msg: SignalingMessage,
         relay_write_tx: &tokio::sync::broadcast::Sender<SignalingMessage>,
     ) {
+        if !self.config.signaling_enabled {
+            debug!(
+                "Skipping signaling message {} because WebRTC signaling is disabled",
+                msg.msg_type()
+            );
+            return;
+        }
+
         if relay_write_tx.send(msg.clone()).is_err() {
             debug!(
                 "No relay subscribers for signaling message {}",
@@ -1525,7 +1521,7 @@ impl WebRTCManager {
                 entry
                     .peer
                     .as_ref()
-                    .map(|peer| peer.has_data_channel())
+                    .map(|peer| peer.is_ready())
                     .unwrap_or(false)
             })
             .filter(|entry| {
@@ -1538,8 +1534,8 @@ impl WebRTCManager {
                     (
                         entry.peer_id.to_string(),
                         entry.peer_id.short(),
-                        peer.data_channel.clone(),
-                        *peer.htl_config(),
+                        peer.clone(),
+                        peer.htl_config(),
                     )
                 })
             })
@@ -1547,7 +1543,7 @@ impl WebRTCManager {
         drop(peers);
 
         let mut forwarded = 0usize;
-        for (_peer_key, peer_short, dc_mutex, htl_cfg) in peer_refs {
+        for (_peer_key, peer_short, peer, htl_cfg) in peer_refs {
             let next_htl = decrement_htl_with_policy(frame.htl, &MESH_EVENT_POLICY, &htl_cfg);
             if !should_forward_htl(next_htl) {
                 continue;
@@ -1555,25 +1551,10 @@ impl WebRTCManager {
 
             let mut outbound = frame.clone();
             outbound.htl = next_htl;
-            let text = match serde_json::to_string(&outbound) {
-                Ok(text) => text,
-                Err(e) => {
-                    debug!("Failed to serialize mesh frame for {}: {}", peer_short, e);
-                    continue;
-                }
-            };
-
-            let dc_guard = dc_mutex.lock().await;
-            let Some(dc) = dc_guard.as_ref() else {
-                continue;
-            };
-            if dc.ready_state()
-                != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open
-            {
-                continue;
-            }
-            if dc.send_text(text).await.is_ok() {
+            if peer.send_mesh_frame_text(&outbound).await.is_ok() {
                 forwarded += 1;
+            } else {
+                debug!("Failed to forward mesh frame to {}", peer_short);
             }
         }
 
@@ -1706,6 +1687,10 @@ impl WebRTCManager {
         event: &nostr::Event,
         relay_write_tx: &tokio::sync::broadcast::Sender<SignalingMessage>,
     ) -> Result<()> {
+        if !self.config.signaling_enabled {
+            return Ok(());
+        }
+
         // Must be kind 25050
         if event.kind != Kind::Ephemeral(WEBRTC_KIND as u16) {
             return Ok(());
@@ -2073,7 +2058,7 @@ impl WebRTCManager {
         );
 
         // Create peer connection with content store and state events
-        let mut peer = Peer::new_with_store_and_events(
+        let peer = Peer::new_with_store_and_events(
             peer_id.clone(),
             PeerDirection::Outbound,
             self.my_peer_id.clone(),
@@ -2097,7 +2082,7 @@ impl WebRTCManager {
             let mut peers = self.state.peers.write().await;
             if let Some(entry) = peers.get_mut(&peer_key) {
                 entry.state = ConnectionState::Connecting;
-                entry.peer = Some(peer);
+                entry.peer = Some(MeshPeer::WebRtc(Arc::new(peer)));
                 entry.pool = pool;
             }
         }
@@ -2199,7 +2184,7 @@ impl WebRTCManager {
 
         // Create peer connection with content store and state events
         debug!("Creating peer connection for {}", full_peer_id.short());
-        let mut peer = Peer::new_with_store_and_events(
+        let peer = Peer::new_with_store_and_events(
             full_peer_id.clone(),
             PeerDirection::Inbound,
             self.my_peer_id.clone(),
@@ -2231,7 +2216,7 @@ impl WebRTCManager {
                     direction: PeerDirection::Inbound,
                     state: ConnectionState::Connecting,
                     last_seen: Instant::now(),
-                    peer: Some(peer),
+                    peer: Some(MeshPeer::WebRtc(Arc::new(peer))),
                     pool,
                     transport: PeerTransport::WebRtc,
                     signal_paths,
@@ -2278,20 +2263,26 @@ impl WebRTCManager {
                 );
                 return Ok(());
             }
-            if let Some(ref mut peer) = entry.peer {
-                // Check WebRTC signaling state before applying answer
-                use webrtc::peer_connection::signaling_state::RTCSignalingState;
-                let signaling_state = peer.signaling_state();
-                if signaling_state != RTCSignalingState::HaveLocalOffer {
+            if let Some(peer) = entry.peer.as_ref() {
+                if let Some(webrtc_peer) = peer.as_webrtc() {
+                    use webrtc::peer_connection::signaling_state::RTCSignalingState;
+                    let signaling_state = webrtc_peer.signaling_state();
+                    if signaling_state != RTCSignalingState::HaveLocalOffer {
+                        debug!(
+                            "Ignoring answer from {} - signaling state is {:?}, not HaveLocalOffer",
+                            full_peer_id.short(),
+                            signaling_state
+                        );
+                        return Ok(());
+                    }
+                    webrtc_peer.handle_answer(answer).await?;
+                    info!("Applied answer from {}", full_peer_id.short());
+                } else {
                     debug!(
-                        "Ignoring answer from {} - signaling state is {:?}, not HaveLocalOffer",
-                        full_peer_id.short(),
-                        signaling_state
+                        "Peer {} does not use answer signaling",
+                        full_peer_id.short()
                     );
-                    return Ok(());
                 }
-                peer.handle_answer(answer).await?;
-                info!("Applied answer from {}", full_peer_id.short());
             } else {
                 debug!("Peer {} has no connection object", full_peer_id.short());
             }
@@ -2316,7 +2307,7 @@ impl WebRTCManager {
 
         let mut peers = self.state.peers.write().await;
         if let Some(entry) = peers.get_mut(&peer_key) {
-            if let Some(ref mut peer) = entry.peer {
+            if let Some(peer) = entry.peer.as_ref().and_then(|peer| peer.as_webrtc()) {
                 peer.handle_candidate(candidate).await?;
             }
         }
@@ -2342,7 +2333,7 @@ impl WebRTCManager {
 
         let mut peers = self.state.peers.write().await;
         if let Some(entry) = peers.get_mut(&peer_key) {
-            if let Some(ref mut peer) = entry.peer {
+            if let Some(peer) = entry.peer.as_ref().and_then(|peer| peer.as_webrtc()) {
                 for candidate in candidates {
                     if let Err(e) = peer.handle_candidate(candidate).await {
                         debug!("Failed to add candidate: {}", e);
@@ -2444,6 +2435,12 @@ impl WebRTCManager {
                         entry.state = ConnectionState::Connected;
                     }
                     connected_count += 1;
+                } else if entry.state == ConnectionState::Connected {
+                    info!(
+                        "Removing disconnected peer {} after transport closed",
+                        entry.peer_id.short()
+                    );
+                    to_remove.push(key.clone());
                 } else if entry.state == ConnectionState::Connecting
                     && entry.last_seen.elapsed() > stale_timeout
                 {
@@ -2495,6 +2492,8 @@ pub struct PeerState {
 mod tests {
     use super::*;
     use crate::webrtc::root_events::PeerRootEvent;
+    use crate::webrtc::session::TestMeshPeer;
+    use crate::webrtc::SelectionStrategy;
     use anyhow::Result as AnyResult;
     use async_trait::async_trait;
     use nostr::{EventBuilder, Keys, Tag};
@@ -2617,6 +2616,126 @@ mod tests {
         assert_eq!(resolved.0, "mock-bus");
         assert_eq!(resolved.1.hash, root.hash);
         assert_eq!(resolved.1.peer_id, root.peer_id);
+    }
+
+    #[tokio::test]
+    async fn request_from_peers_with_source_accepts_generic_mesh_peers() {
+        let state = WebRTCState::new();
+        let data = b"offline-over-ble".to_vec();
+        let hash_hex = hex::encode(hashtree_core::sha256(&data));
+
+        state.peers.write().await.insert(
+            "peer-a".to_string(),
+            PeerEntry {
+                peer_id: PeerId::new("peer-a-pub".to_string(), Some("session-a".to_string())),
+                direction: PeerDirection::Outbound,
+                state: ConnectionState::Connected,
+                last_seen: Instant::now(),
+                peer: Some(MeshPeer::mock_for_tests(TestMeshPeer::with_response(Some(
+                    data.clone(),
+                )))),
+                pool: PeerPool::Other,
+                transport: PeerTransport::Bluetooth,
+                signal_paths: BTreeSet::from([PeerSignalPath::Bluetooth]),
+                bytes_sent: 0,
+                bytes_received: 0,
+            },
+        );
+
+        let resolved = state
+            .request_from_peers_with_source(&hash_hex)
+            .await
+            .expect("expected mock mesh peer response");
+
+        assert_eq!(resolved.0, data);
+        assert_eq!(resolved.1, "peer-a-pub:session-a");
+    }
+
+    #[tokio::test]
+    async fn request_from_peers_with_source_waits_full_timeout_for_last_generic_peer() {
+        let state = WebRTCState::new_with_routing_and_cashu(
+            SelectionStrategy::TitForTat,
+            true,
+            RequestDispatchConfig {
+                initial_fanout: 1,
+                hedge_fanout: 1,
+                max_fanout: 1,
+                hedge_interval_ms: 50,
+            },
+            Duration::from_millis(400),
+            CashuRoutingConfig::default(),
+            None,
+            None,
+        );
+        let data = b"slow-offline-over-ble".to_vec();
+        let hash_hex = hex::encode(hashtree_core::sha256(&data));
+
+        state.peers.write().await.insert(
+            "peer-a".to_string(),
+            PeerEntry {
+                peer_id: PeerId::new("peer-a-pub".to_string(), Some("session-a".to_string())),
+                direction: PeerDirection::Outbound,
+                state: ConnectionState::Connected,
+                last_seen: Instant::now(),
+                peer: Some(MeshPeer::mock_for_tests(
+                    TestMeshPeer::with_delayed_response(
+                        Some(data.clone()),
+                        Duration::from_millis(200),
+                    ),
+                )),
+                pool: PeerPool::Other,
+                transport: PeerTransport::Bluetooth,
+                signal_paths: BTreeSet::from([PeerSignalPath::Bluetooth]),
+                bytes_sent: 0,
+                bytes_received: 0,
+            },
+        );
+
+        let resolved = state
+            .request_from_peers_with_source(&hash_hex)
+            .await
+            .expect("expected delayed mock mesh peer response");
+
+        assert_eq!(resolved.0, data);
+        assert_eq!(resolved.1, "peer-a-pub:session-a");
+    }
+
+    #[tokio::test]
+    async fn dispatch_signaling_message_is_noop_when_signaling_disabled() {
+        let keys = Keys::generate();
+        let mut config = WebRTCConfig::default();
+        config.signaling_enabled = false;
+        let manager = WebRTCManager::new(keys, config);
+        let peer_id = PeerId::new("peer-a-pub".to_string(), Some("session-a".to_string()));
+        let peer_key = peer_id.to_string();
+        let peer = MeshPeer::mock_for_tests(TestMeshPeer::with_response(None));
+        let peer_ref = peer.mock_ref().expect("mock peer").clone();
+
+        manager.state.peers.write().await.insert(
+            peer_key,
+            PeerEntry {
+                peer_id,
+                direction: PeerDirection::Outbound,
+                state: ConnectionState::Connected,
+                last_seen: Instant::now(),
+                peer: Some(peer),
+                pool: PeerPool::Other,
+                transport: PeerTransport::Bluetooth,
+                signal_paths: BTreeSet::from([PeerSignalPath::Bluetooth]),
+                bytes_sent: 0,
+                bytes_received: 0,
+            },
+        );
+
+        let (relay_tx, _) = tokio::sync::broadcast::channel(4);
+        manager
+            .dispatch_signaling_message(
+                SignalingMessage::hello(&manager.my_peer_id.uuid),
+                &relay_tx,
+            )
+            .await;
+
+        assert_eq!(peer_ref.sent_frame_count().await, 0);
     }
 
     #[test]

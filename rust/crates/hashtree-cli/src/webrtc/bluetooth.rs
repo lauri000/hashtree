@@ -1,4 +1,34 @@
-use tracing::{info, warn};
+use anyhow::{anyhow, Result};
+use async_trait::async_trait;
+#[cfg(target_os = "macos")]
+use futures::StreamExt;
+use std::collections::BTreeSet;
+#[cfg(target_os = "macos")]
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+use tracing::{debug, info, warn};
+
+use crate::nostr_relay::NostrRelay;
+
+use super::bluetooth_peer::{BluetoothFrame, BluetoothLink};
+use super::peer::ContentStore;
+use super::session::MeshPeer;
+use super::signaling::{
+    ConnectionState, PeerClassifier, PeerEntry, PeerSignalPath, PeerTransport, WebRTCState,
+};
+use super::types::{MeshNostrFrame, PeerDirection, PeerId, PeerPool, PoolSettings};
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const HTREE_BLE_SERVICE_UUID: &str = "f18ef5f6-b7ee-4f40-b869-10a2d4f35932";
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const HTREE_BLE_RX_CHARACTERISTIC_UUID: &str = "0bb5f5c9-6369-4511-a84f-4d4c14d8f8d4";
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const HTREE_BLE_TX_CHARACTERISTIC_UUID: &str = "4ec9c0c2-97c6-4f46-9fd1-927d699b2f6d";
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const HTREE_BLE_CHUNK_BYTES: usize = 180;
+const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Configuration for the optional Bluetooth peer transport.
 #[derive(Debug, Clone)]
@@ -25,14 +55,212 @@ impl Default for BluetoothConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BluetoothBackendState {
     Disabled,
+    Running,
     Unsupported,
 }
 
-/// Placeholder native Bluetooth backend.
-///
-/// The daemon can safely construct and start this on any host. Until the
-/// radio-specific implementation lands, enabling Bluetooth just emits a clear
-/// warning and leaves the rest of the daemon running.
+#[derive(Clone)]
+pub struct PendingBluetoothLink {
+    pub link: Arc<dyn BluetoothLink>,
+    pub direction: PeerDirection,
+    pub local_hello_sent: bool,
+    pub peer_hint: Option<String>,
+}
+
+#[async_trait]
+pub trait MobileBluetoothBridge: Send + Sync {
+    async fn start(&self, local_peer_id: String) -> Result<mpsc::Receiver<PendingBluetoothLink>>;
+}
+
+static MOBILE_BLUETOOTH_BRIDGE: OnceLock<Arc<dyn MobileBluetoothBridge>> = OnceLock::new();
+
+pub fn install_mobile_bluetooth_bridge(bridge: Arc<dyn MobileBluetoothBridge>) -> Result<()> {
+    MOBILE_BLUETOOTH_BRIDGE
+        .set(bridge)
+        .map_err(|_| anyhow!("mobile bluetooth bridge already installed"))
+}
+
+fn mobile_bluetooth_bridge() -> Option<Arc<dyn MobileBluetoothBridge>> {
+    MOBILE_BLUETOOTH_BRIDGE.get().cloned()
+}
+
+#[derive(Clone)]
+pub struct BluetoothPeerRegistrar {
+    state: Arc<WebRTCState>,
+    peer_classifier: PeerClassifier,
+    pools: PoolSettings,
+    max_bluetooth_peers: usize,
+}
+
+impl BluetoothPeerRegistrar {
+    pub fn new(
+        state: Arc<WebRTCState>,
+        peer_classifier: PeerClassifier,
+        pools: PoolSettings,
+        max_bluetooth_peers: usize,
+    ) -> Self {
+        Self {
+            state,
+            peer_classifier,
+            pools,
+            max_bluetooth_peers,
+        }
+    }
+
+    async fn pool_counts(&self) -> (usize, usize) {
+        let peers = self.state.peers.read().await;
+        let mut follows = 0usize;
+        let mut other = 0usize;
+        for entry in peers.values() {
+            if entry.state != ConnectionState::Connected {
+                continue;
+            }
+            match entry.pool {
+                PeerPool::Follows => follows += 1,
+                PeerPool::Other => other += 1,
+            }
+        }
+        (follows, other)
+    }
+
+    async fn bluetooth_peer_count(&self, peer_key: &str) -> usize {
+        let peers = self.state.peers.read().await;
+        peers
+            .values()
+            .filter(|entry| entry.transport == PeerTransport::Bluetooth)
+            .filter(|entry| entry.state == ConnectionState::Connected)
+            .filter(|entry| entry.peer_id.to_string() != peer_key)
+            .count()
+    }
+
+    pub async fn register_connected_peer(
+        &self,
+        peer_id: PeerId,
+        direction: PeerDirection,
+        peer: MeshPeer,
+    ) -> bool {
+        let peer_key = peer_id.to_string();
+        let pool = (self.peer_classifier)(&peer_id.pubkey);
+        let (follows, other) = self.pool_counts().await;
+        let can_accept_pool = match pool {
+            PeerPool::Follows => follows < self.pools.follows.max_connections,
+            PeerPool::Other => other < self.pools.other.max_connections,
+        };
+        if !can_accept_pool {
+            warn!(
+                "Bluetooth peer {} rejected because pool {:?} is full",
+                peer_id.short(),
+                pool
+            );
+            return false;
+        }
+
+        if self.max_bluetooth_peers == 0
+            || self.bluetooth_peer_count(&peer_key).await >= self.max_bluetooth_peers
+        {
+            warn!(
+                "Bluetooth peer {} rejected because max_bluetooth_peers={} reached",
+                peer_id.short(),
+                self.max_bluetooth_peers
+            );
+            return false;
+        }
+
+        let mut peers = self.state.peers.write().await;
+        let was_connected = peers
+            .get(&peer_key)
+            .map(|entry| entry.state == ConnectionState::Connected)
+            .unwrap_or(false);
+        let replaced = peers.insert(
+            peer_key,
+            PeerEntry {
+                peer_id,
+                direction,
+                state: ConnectionState::Connected,
+                last_seen: Instant::now(),
+                peer: Some(peer),
+                pool,
+                transport: PeerTransport::Bluetooth,
+                signal_paths: BTreeSet::from([PeerSignalPath::Bluetooth]),
+                bytes_sent: 0,
+                bytes_received: 0,
+            },
+        );
+        drop(peers);
+
+        if let Some(previous) = replaced.and_then(|entry| entry.peer) {
+            let _ = previous.close().await;
+        }
+
+        if !was_connected {
+            self.state
+                .connected_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        true
+    }
+
+    pub async fn unregister_peer(&self, peer_id: &PeerId) {
+        let peer_key = peer_id.to_string();
+        let removed = self.state.peers.write().await.remove(&peer_key);
+        if let Some(entry) = removed {
+            if entry.state == ConnectionState::Connected {
+                self.state
+                    .connected_count
+                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Some(peer) = entry.peer {
+                let _ = peer.close().await;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::webrtc::session::{MeshPeer, TestMeshPeer};
+
+    #[tokio::test]
+    async fn register_connected_peer_closes_replaced_session() {
+        let state = Arc::new(WebRTCState::new());
+        let registrar = BluetoothPeerRegistrar::new(
+            state.clone(),
+            Arc::new(|_| PeerPool::Other),
+            PoolSettings::default(),
+            2,
+        );
+
+        let peer_id = PeerId::new("peer-pub".to_string(), Some("session".to_string()));
+        let first = MeshPeer::mock_for_tests(TestMeshPeer::with_response(None));
+        let second = MeshPeer::mock_for_tests(TestMeshPeer::with_response(None));
+        let first_ref = first.mock_ref().expect("mock peer").clone();
+
+        assert!(
+            registrar
+                .register_connected_peer(peer_id.clone(), PeerDirection::Outbound, first)
+                .await
+        );
+        assert!(
+            registrar
+                .register_connected_peer(peer_id, PeerDirection::Outbound, second)
+                .await
+        );
+
+        assert!(first_ref.is_closed());
+    }
+}
+
+#[derive(Clone)]
+pub struct BluetoothRuntimeContext {
+    pub my_peer_id: PeerId,
+    pub store: Option<Arc<dyn ContentStore>>,
+    pub nostr_relay: Option<Arc<NostrRelay>>,
+    pub mesh_frame_tx: mpsc::Sender<(PeerId, MeshNostrFrame)>,
+    pub registrar: BluetoothPeerRegistrar,
+}
+
+/// Native Bluetooth backend. Nearby BLE links become transport-native mesh peers.
 pub struct BluetoothMesh {
     config: BluetoothConfig,
 }
@@ -42,16 +270,405 @@ impl BluetoothMesh {
         Self { config }
     }
 
-    pub async fn start(&self) -> BluetoothBackendState {
+    pub async fn start(&self, context: BluetoothRuntimeContext) -> BluetoothBackendState {
         if !self.config.is_enabled() {
             info!("Bluetooth transport disabled");
             return BluetoothBackendState::Disabled;
         }
 
-        warn!(
-            "Bluetooth transport requested (max_peers={}) but no native backend is implemented for this build yet",
-            self.config.max_peers
-        );
-        BluetoothBackendState::Unsupported
+        let mut started = false;
+
+        if let Some(bridge) = mobile_bluetooth_bridge() {
+            info!(
+                "Starting mobile Bluetooth bridge for peer {}",
+                context.my_peer_id.short()
+            );
+            match bridge.start(context.my_peer_id.to_string()).await {
+                Ok(mut rx) => {
+                    info!("Mobile Bluetooth bridge is running");
+                    let ctx = context.clone();
+                    tokio::spawn(async move {
+                        while let Some(link) = rx.recv().await {
+                            if let Err(err) = handle_pending_link(link, ctx.clone()).await {
+                                warn!("Mobile Bluetooth link failed: {}", err);
+                            }
+                        }
+                    });
+                    started = true;
+                }
+                Err(err) => {
+                    warn!("Failed to start mobile Bluetooth bridge: {}", err);
+                }
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            if let Err(err) = macos::start_macos_central(self.config.clone(), context.clone()).await
+            {
+                warn!("Failed to start macOS Bluetooth central: {}", err);
+            } else {
+                started = true;
+            }
+        }
+
+        if started {
+            BluetoothBackendState::Running
+        } else {
+            warn!(
+                "Bluetooth transport requested (max_peers={}) but no native backend is available for this build",
+                self.config.max_peers
+            );
+            BluetoothBackendState::Unsupported
+        }
+    }
+}
+
+async fn handle_pending_link(
+    link: PendingBluetoothLink,
+    context: BluetoothRuntimeContext,
+) -> Result<()> {
+    if let Some(peer_hint) = link.peer_hint.as_deref() {
+        debug!("Handling pending Bluetooth link {}", peer_hint);
+    }
+    let remote_peer_id = receive_remote_hello(&link.link).await?;
+    if !link.local_hello_sent {
+        send_hello(&link.link, &context.my_peer_id).await?;
+    }
+
+    let peer = MeshPeer::Bluetooth(super::BluetoothPeer::new(
+        remote_peer_id.clone(),
+        link.direction,
+        link.link,
+        context.store.clone(),
+        context.nostr_relay.clone(),
+        Some(context.mesh_frame_tx.clone()),
+        Some(context.registrar.state.clone()),
+    ));
+
+    if !context
+        .registrar
+        .register_connected_peer(remote_peer_id.clone(), link.direction, peer)
+        .await
+    {
+        warn!("Rejecting Bluetooth peer {}", remote_peer_id.short());
+    } else {
+        info!("Bluetooth peer {} connected", remote_peer_id.short());
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BluetoothHello {
+    #[serde(rename = "type")]
+    kind: String,
+    peer_id: String,
+}
+
+async fn send_hello(link: &Arc<dyn BluetoothLink>, my_peer_id: &PeerId) -> Result<()> {
+    let hello = BluetoothHello {
+        kind: "hello".to_string(),
+        peer_id: my_peer_id.to_string(),
+    };
+    link.send(BluetoothFrame::Text(serde_json::to_string(&hello)?))
+        .await
+}
+
+async fn receive_remote_hello(link: &Arc<dyn BluetoothLink>) -> Result<PeerId> {
+    let result = tokio::time::timeout(HELLO_TIMEOUT, async {
+        loop {
+            match link.recv().await {
+                Some(BluetoothFrame::Text(text)) => {
+                    if let Ok(hello) = serde_json::from_str::<BluetoothHello>(&text) {
+                        if hello.kind == "hello" {
+                            return PeerId::from_string(&hello.peer_id)
+                                .ok_or_else(|| anyhow!("invalid peer id in Bluetooth hello"));
+                        }
+                    }
+                }
+                Some(BluetoothFrame::Binary(_)) => {}
+                None => return Err(anyhow!("bluetooth link closed before hello")),
+            }
+        }
+    })
+    .await;
+
+    match result {
+        Ok(peer_id) => peer_id,
+        Err(_) => Err(anyhow!("timed out waiting for Bluetooth hello")),
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use super::*;
+    use btleplug::api::{
+        Central, CharPropFlags, Characteristic, Manager as _, Peripheral as _, ScanFilter,
+        ValueNotification, WriteType,
+    };
+    use btleplug::platform::{Manager, Peripheral};
+    use tokio::sync::Mutex;
+    use uuid::Uuid;
+
+    pub(super) async fn start_macos_central(
+        config: BluetoothConfig,
+        context: BluetoothRuntimeContext,
+    ) -> Result<()> {
+        let manager = Manager::new().await?;
+        let adapters = manager.adapters().await?;
+        let Some(adapter) = adapters.into_iter().next() else {
+            warn!("No Bluetooth adapters available on macOS");
+            return Ok(());
+        };
+
+        tokio::spawn(async move {
+            let service_uuid = Uuid::parse_str(HTREE_BLE_SERVICE_UUID).expect("valid UUID");
+            let mut connected: HashMap<String, Peripheral> = HashMap::new();
+            loop {
+                if let Err(err) = adapter.start_scan(ScanFilter::default()).await {
+                    warn!("Failed to start BLE scan: {}", err);
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+
+                let peripherals = match adapter.peripherals().await {
+                    Ok(peripherals) => peripherals,
+                    Err(err) => {
+                        warn!("Failed to list BLE peripherals: {}", err);
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                };
+
+                connected.retain(|_, peripheral| {
+                    futures::executor::block_on(async {
+                        peripheral.is_connected().await.unwrap_or(false)
+                    })
+                });
+
+                for peripheral in peripherals {
+                    if connected.len() >= config.max_peers {
+                        break;
+                    }
+                    let peripheral_id = peripheral.id().to_string();
+                    if connected.contains_key(&peripheral_id) {
+                        continue;
+                    }
+                    let properties = match peripheral.properties().await {
+                        Ok(Some(properties)) => properties,
+                        _ => continue,
+                    };
+                    if !properties.services.contains(&service_uuid) {
+                        continue;
+                    }
+                    match connect_peripheral(peripheral.clone()).await {
+                        Ok(Some(link)) => {
+                            connected.insert(peripheral_id.clone(), peripheral);
+                            let pending = PendingBluetoothLink {
+                                link,
+                                direction: PeerDirection::Outbound,
+                                local_hello_sent: false,
+                                peer_hint: Some(peripheral_id),
+                            };
+                            if let Err(err) = handle_pending_link(pending, context.clone()).await {
+                                warn!("Failed to attach BLE peripheral: {}", err);
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            debug!("Skipping BLE peripheral {}: {}", peripheral_id, err);
+                        }
+                    }
+                }
+
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn connect_peripheral(peripheral: Peripheral) -> Result<Option<Arc<dyn BluetoothLink>>> {
+        let rx_uuid = Uuid::parse_str(HTREE_BLE_RX_CHARACTERISTIC_UUID)?;
+        let tx_uuid = Uuid::parse_str(HTREE_BLE_TX_CHARACTERISTIC_UUID)?;
+
+        if !peripheral.is_connected().await? {
+            peripheral.connect().await?;
+        }
+        peripheral.discover_services().await?;
+
+        let characteristics = peripheral.characteristics();
+        let Some(rx_char) = characteristics.iter().find(|c| c.uuid == rx_uuid).cloned() else {
+            return Ok(None);
+        };
+        let Some(tx_char) = characteristics.iter().find(|c| c.uuid == tx_uuid).cloned() else {
+            return Ok(None);
+        };
+        if !tx_char.properties.contains(CharPropFlags::NOTIFY) {
+            return Ok(None);
+        }
+        peripheral.subscribe(&tx_char).await?;
+        let notifications = peripheral.notifications().await?;
+
+        let initial_frames = match peripheral.read(&tx_char).await {
+            Ok(bytes) if !bytes.is_empty() => {
+                let mut decoder = FrameDecoder::new();
+                match decoder.push(&bytes) {
+                    Ok(frames) => frames,
+                    Err(err) => {
+                        debug!("Discarding malformed initial BLE frame: {}", err);
+                        Vec::new()
+                    }
+                }
+            }
+            Ok(_) => Vec::new(),
+            Err(err) => {
+                debug!("Initial BLE read failed: {}", err);
+                Vec::new()
+            }
+        };
+
+        Ok(Some(MacosCentralLink::new(
+            peripheral,
+            rx_char,
+            notifications,
+            initial_frames,
+        )))
+    }
+
+    struct FrameDecoder {
+        buffer: Vec<u8>,
+    }
+
+    impl FrameDecoder {
+        fn new() -> Self {
+            Self { buffer: Vec::new() }
+        }
+
+        fn push(&mut self, chunk: &[u8]) -> Result<Vec<BluetoothFrame>> {
+            self.buffer.extend_from_slice(chunk);
+            let mut frames = Vec::new();
+            loop {
+                if self.buffer.len() < 5 {
+                    break;
+                }
+                let kind = self.buffer[0];
+                let len = u32::from_be_bytes([
+                    self.buffer[1],
+                    self.buffer[2],
+                    self.buffer[3],
+                    self.buffer[4],
+                ]) as usize;
+                if self.buffer.len() < 5 + len {
+                    break;
+                }
+                let payload = self.buffer[5..5 + len].to_vec();
+                self.buffer.drain(..5 + len);
+                let frame = match kind {
+                    1 => BluetoothFrame::Text(String::from_utf8(payload)?),
+                    2 => BluetoothFrame::Binary(payload),
+                    _ => return Err(anyhow!("unknown bluetooth frame kind {}", kind)),
+                };
+                frames.push(frame);
+            }
+            Ok(frames)
+        }
+    }
+
+    fn encode_frame(frame: BluetoothFrame) -> Vec<u8> {
+        match frame {
+            BluetoothFrame::Text(text) => {
+                let payload = text.into_bytes();
+                let mut out = Vec::with_capacity(5 + payload.len());
+                out.push(1);
+                out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+                out.extend_from_slice(&payload);
+                out
+            }
+            BluetoothFrame::Binary(payload) => {
+                let mut out = Vec::with_capacity(5 + payload.len());
+                out.push(2);
+                out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+                out.extend_from_slice(&payload);
+                out
+            }
+        }
+    }
+
+    struct MacosCentralLink {
+        peripheral: Peripheral,
+        rx_char: Characteristic,
+        open: std::sync::atomic::AtomicBool,
+        rx: Mutex<mpsc::Receiver<BluetoothFrame>>,
+    }
+
+    impl MacosCentralLink {
+        fn new(
+            peripheral: Peripheral,
+            rx_char: Characteristic,
+            mut notifications: impl futures::Stream<Item = ValueNotification> + Send + Unpin + 'static,
+            initial_frames: Vec<BluetoothFrame>,
+        ) -> Arc<Self> {
+            let (tx, rx) = mpsc::channel(64);
+            let link = Arc::new(Self {
+                peripheral,
+                rx_char,
+                open: std::sync::atomic::AtomicBool::new(true),
+                rx: Mutex::new(rx),
+            });
+
+            for frame in initial_frames {
+                let _ = tx.try_send(frame);
+            }
+
+            let weak = Arc::downgrade(&link);
+            tokio::spawn(async move {
+                let mut decoder = FrameDecoder::new();
+                while let Some(notification) = notifications.next().await {
+                    let Ok(frames) = decoder.push(&notification.value) else {
+                        break;
+                    };
+                    for frame in frames {
+                        if tx.send(frame).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                if let Some(link) = weak.upgrade() {
+                    link.open.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+            });
+
+            link
+        }
+    }
+
+    #[async_trait]
+    impl BluetoothLink for MacosCentralLink {
+        async fn send(&self, frame: BluetoothFrame) -> Result<()> {
+            let bytes = encode_frame(frame);
+            for chunk in bytes.chunks(HTREE_BLE_CHUNK_BYTES) {
+                self.peripheral
+                    .write(&self.rx_char, chunk, WriteType::WithResponse)
+                    .await?;
+            }
+            Ok(())
+        }
+
+        async fn recv(&self) -> Option<BluetoothFrame> {
+            self.rx.lock().await.recv().await
+        }
+
+        fn is_open(&self) -> bool {
+            self.open.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        async fn close(&self) -> Result<()> {
+            self.open.store(false, std::sync::atomic::Ordering::Relaxed);
+            let _ = self.peripheral.disconnect().await;
+            Ok(())
+        }
     }
 }

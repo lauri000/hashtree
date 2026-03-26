@@ -754,7 +754,7 @@ impl Peer {
     }
 
     /// Setup event handlers for the peer connection
-    pub async fn setup_handlers(&mut self) -> Result<()> {
+    pub async fn setup_handlers(&self) -> Result<()> {
         let peer_id = self.peer_id.clone();
         let signaling_tx = self.signaling_tx.clone();
         let my_peer_id_str = self.my_peer_id.to_string();
@@ -823,7 +823,7 @@ impl Peer {
     }
 
     /// Initiate connection (create offer) - for outbound connections
-    pub async fn connect(&mut self) -> Result<serde_json::Value> {
+    pub async fn connect(&self) -> Result<serde_json::Value> {
         println!("[Peer {}] Creating data channel...", self.peer_id.short());
         // Create data channel first
         // Use unordered for better performance - protocol is stateless (each message self-describes)
@@ -886,7 +886,7 @@ impl Peer {
     }
 
     /// Handle incoming offer and create answer
-    pub async fn handle_offer(&mut self, offer: serde_json::Value) -> Result<serde_json::Value> {
+    pub async fn handle_offer(&self, offer: serde_json::Value) -> Result<serde_json::Value> {
         let sdp = offer
             .get("sdp")
             .and_then(|s| s.as_str())
@@ -988,7 +988,7 @@ impl Peer {
     }
 
     /// Handle incoming answer
-    pub async fn handle_answer(&mut self, answer: serde_json::Value) -> Result<()> {
+    pub async fn handle_answer(&self, answer: serde_json::Value) -> Result<()> {
         let sdp = answer
             .get("sdp")
             .and_then(|s| s.as_str())
@@ -1001,7 +1001,7 @@ impl Peer {
     }
 
     /// Handle incoming ICE candidate
-    pub async fn handle_candidate(&mut self, candidate: serde_json::Value) -> Result<()> {
+    pub async fn handle_candidate(&self, candidate: serde_json::Value) -> Result<()> {
         let candidate_str = candidate
             .get("candidate")
             .and_then(|c| c.as_str())
@@ -1035,7 +1035,7 @@ impl Peer {
     }
 
     /// Setup data channel handlers
-    async fn setup_data_channel(&mut self, dc: Arc<RTCDataChannel>) -> Result<()> {
+    async fn setup_data_channel(&self, dc: Arc<RTCDataChannel>) -> Result<()> {
         let peer_id = self.peer_id.clone();
         let message_tx = self.message_tx.clone();
         let pending_requests = self.pending_requests.clone();
@@ -1486,6 +1486,16 @@ impl Peer {
 
     /// Request content by hash from this peer
     pub async fn request(&self, hash_hex: &str) -> Result<Option<Vec<u8>>> {
+        self.request_with_timeout(hash_hex, std::time::Duration::from_secs(10))
+            .await
+    }
+
+    /// Request content by hash from this peer with an explicit timeout.
+    pub async fn request_with_timeout(
+        &self,
+        hash_hex: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Option<Vec<u8>>> {
         let dc_guard = self.data_channel.lock().await;
         let dc = dc_guard
             .as_ref()
@@ -1524,7 +1534,7 @@ impl Peer {
         );
 
         // Wait for response with timeout
-        match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
+        match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(data)) => Ok(data),
             Ok(Err(_)) => {
                 // Channel closed
