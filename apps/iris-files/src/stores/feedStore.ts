@@ -14,7 +14,6 @@ import { orderFeedWithInterleaving } from '../utils/feedOrder';
 import { clearDeletedVideo, getDeletedVideoTimestamp, recordDeletedVideo } from './videoDeletes';
 import { isHtreeDebugEnabled, logHtreeDebug } from '../lib/htreeDebug';
 import { getAppType } from '../appType';
-import { isThumbnailAliasUrl } from '../lib/mediaUrl';
 import { detectPlaylistForCard, getCachedPlaylistInfo, shouldRefreshPlaylistCardInfo } from './playlist';
 import { resolveFeedVideoRootCid, resolveFeedVideoRootCidAsync } from '../lib/videoFeedRoot';
 import { onCacheUpdate } from '../treeRootCache';
@@ -352,6 +351,7 @@ function queueFeedVideoMediaResolution(videos: FeedVideo[]): void {
     const resolutionKey = getFeedMediaResolutionKey(video);
     return !!resolutionKey
       && shouldResolveFeedVideoMedia(video)
+      && !feedMediaRetryTimers.has(resolutionKey)
       && !attemptedFeedMediaKeys.has(resolutionKey)
       && !inFlightFeedMediaKeys.has(resolutionKey);
   });

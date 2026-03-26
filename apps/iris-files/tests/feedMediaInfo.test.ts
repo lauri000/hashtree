@@ -271,6 +271,38 @@ describe('getFeedVideoResolvedMedia', () => {
     unsubscribe();
   });
 
+  it('does not bypass a scheduled media retry when repeated raw feed flushes arrive', async () => {
+    vi.useFakeTimers();
+    getCachedPlaylistInfo.mockReturnValue(undefined);
+    detectPlaylistForCard.mockResolvedValue(null);
+
+    const { setFeedVideos } = await import('../src/stores/feedStore');
+    const video: FeedVideo = {
+      href: '#/npub1example/videos%2FIdle',
+      title: 'Idle',
+      ownerPubkey: 'pubkey',
+      ownerNpub: 'npub1example',
+      treeName: 'videos/Idle',
+      rootCid: ROOT,
+    };
+
+    setFeedVideos([video]);
+    await flushAsyncUpdates();
+    expect(detectPlaylistForCard).toHaveBeenCalledTimes(1);
+
+    setFeedVideos([video]);
+    await flushAsyncUpdates();
+    setFeedVideos([video]);
+    await flushAsyncUpdates();
+    expect(detectPlaylistForCard).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(249);
+    expect(detectPlaylistForCard).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(detectPlaylistForCard).toHaveBeenCalledTimes(2);
+  });
+
   it('falls back to resolver lookups when a social feed video is not yet in local root cache', async () => {
     getCachedPlaylistInfo.mockReturnValue(undefined);
     resolverResolve.mockResolvedValue(ROOT);
