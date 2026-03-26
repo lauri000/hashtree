@@ -9,11 +9,13 @@ import android.bluetooth.BluetoothGattServer
 import android.bluetooth.BluetoothGattServerCallback
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.Context
+import android.os.Build
 import android.os.ParcelUuid
 import android.util.Base64
 import android.util.Log
@@ -94,8 +96,9 @@ private fun helloPayload(localPeerId: String): ByteArray {
 
 @TauriPlugin
 class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin(activity) {
+    private val appContext: Context = activity.applicationContext
     private val bluetoothManager =
-        activity.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        appContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager.adapter
     private val advertiser: BluetoothLeAdvertiser? = bluetoothAdapter?.bluetoothLeAdvertiser
 
@@ -213,7 +216,7 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
                 }
             }
 
-            gattServer = bluetoothManager.openGattServer(activity, serverCallback)
+            gattServer = bluetoothManager.openGattServer(appContext, serverCallback)
             if (gattServer == null) {
                 Log.e(TAG, "Failed to open Bluetooth GATT server")
                 invoke.reject("Failed to open Bluetooth GATT server")
@@ -269,6 +272,7 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
                 advertiseCallback,
             )
 
+            MobileBluetoothForegroundService.start(appContext)
             Log.i(TAG, "Bluetooth advertising and GATT server started")
             invoke.resolve()
         } catch (error: SecurityException) {
@@ -284,6 +288,7 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
     fun stop(invoke: Invoke) {
         Log.i(TAG, "stop invoked")
         stopInternal()
+        MobileBluetoothForegroundService.stop(appContext)
         invoke.resolve()
     }
 
@@ -304,8 +309,7 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
         val payload = Base64.decode(args.payloadBase64, Base64.DEFAULT)
         val frame = encodeFrame(args.kind, payload)
         for (chunk in frame.asList().chunked(CHUNK_BYTES)) {
-            characteristic.value = chunk.toByteArray()
-            if (!server.notifyCharacteristicChanged(device, characteristic, false)) {
+            if (!notifyCharacteristicChanged(server, device, characteristic, chunk.toByteArray())) {
                 invoke.reject("Failed to notify Bluetooth peer")
                 return
             }
@@ -330,6 +334,7 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
     override fun onDestroy() {
         super.onDestroy()
         stopInternal()
+        MobileBluetoothForegroundService.stop(appContext)
     }
 
     private fun sendHello(device: BluetoothDevice) {
@@ -337,8 +342,7 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
         val server = gattServer ?: return
         val frame = encodeFrame("text", helloPayload(localPeerId))
         for (chunk in frame.asList().chunked(CHUNK_BYTES)) {
-            characteristic.value = chunk.toByteArray()
-            server.notifyCharacteristicChanged(device, characteristic, false)
+            notifyCharacteristicChanged(server, device, characteristic, chunk.toByteArray())
         }
     }
 
@@ -369,5 +373,21 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
         devices.clear()
         subscribed.clear()
         decoders.clear()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun notifyCharacteristicChanged(
+        server: BluetoothGattServer,
+        device: BluetoothDevice,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray,
+    ): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            server.notifyCharacteristicChanged(device, characteristic, false, value) ==
+                BluetoothStatusCodes.SUCCESS
+        } else {
+            characteristic.value = value
+            server.notifyCharacteristicChanged(device, characteristic, false)
+        }
     }
 }

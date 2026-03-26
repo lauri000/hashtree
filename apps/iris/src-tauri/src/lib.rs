@@ -1391,4 +1391,26 @@ mod tests {
             plist_path
         );
     }
+
+    #[test]
+    fn android_mobile_bluetooth_plugin_declares_background_service_support() {
+        let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("plugins/mobile-bluetooth/android/src/main/AndroidManifest.xml");
+        let manifest =
+            std::fs::read_to_string(&manifest_path).expect("failed to read Android manifest");
+
+        for required in [
+            "android.permission.FOREGROUND_SERVICE",
+            "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE",
+            "android.permission.POST_NOTIFICATIONS",
+            "MobileBluetoothForegroundService",
+            "android:foregroundServiceType=\"connectedDevice\"",
+        ] {
+            assert!(
+                manifest.contains(required),
+                "expected {required:?} in {:?}",
+                manifest_path
+            );
+        }
+    }
 }
