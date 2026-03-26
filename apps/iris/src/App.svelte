@@ -1338,7 +1338,7 @@
                 title={isChildLoading ? 'Loading' : 'Refresh'}
               >
                 {#if isChildLoading}
-                  <span class="i-lucide-loader-circle text-sm animate-spin"></span>
+                  <span class="i-lucide-loader-2 text-sm animate-spin"></span>
                 {:else}
                   <span class="i-lucide-refresh-cw text-sm"></span>
                 {/if}
@@ -1508,7 +1508,7 @@
               title={isChildLoading ? 'Loading' : 'Refresh'}
             >
               {#if isChildLoading}
-                <span class="i-lucide-loader-circle text-sm animate-spin"></span>
+                <span class="i-lucide-loader-2 text-sm animate-spin"></span>
               {:else}
                 <span class="i-lucide-refresh-cw text-sm"></span>
               {/if}
@@ -1650,7 +1650,7 @@
             {/if}
           </div>
         {:else}
-          <span data-testid="webview-loading-spinner" class="i-lucide-loader-circle animate-spin text-2xl text-text-2"></span>
+          <span data-testid="webview-loading-spinner" class="i-lucide-loader-2 animate-spin text-2xl text-text-2"></span>
         {/if}
       </section>
     {/if}
