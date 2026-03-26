@@ -29,6 +29,8 @@ use hashtree_core::{decrypt, xor_keys};
 
 const HASHTREE_KIND: u16 = 30078;
 const HASHTREE_LABEL: &str = "hashtree";
+const DEFAULT_SUCCESSFUL_RELAY_QUORUM: usize = 2;
+const DEFAULT_SOFT_RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Configuration for NostrRootResolver
 #[derive(Clone)]
@@ -230,6 +232,12 @@ impl NostrRootResolver {
             return Ok(Vec::new());
         }
 
+        let relay_count = self.config.relays.len();
+        let successful_relay_quorum = relay_count.min(DEFAULT_SUCCESSFUL_RELAY_QUORUM).max(1);
+        let soft_timeout = self
+            .config
+            .resolve_timeout
+            .min(DEFAULT_SOFT_RESOLVE_TIMEOUT);
         let mut join_set = JoinSet::new();
         for relay in self.config.relays.iter().cloned() {
             let client = self.client.clone();
@@ -246,21 +254,44 @@ impl NostrRootResolver {
         let mut events_by_id: HashMap<EventId, Event> = HashMap::new();
         let mut successful_relays = 0usize;
         let mut errors = Vec::new();
+        let mut soft_timeout_elapsed = false;
+        let soft_timeout_sleep = tokio::time::sleep(soft_timeout);
+        tokio::pin!(soft_timeout_sleep);
 
-        while let Some(joined) = join_set.join_next().await {
-            match joined {
-                Ok((relay, Ok(events))) => {
-                    successful_relays += 1;
-                    for event in events {
-                        events_by_id.entry(event.id).or_insert(event);
+        while !join_set.is_empty() {
+            tokio::select! {
+                joined = join_set.join_next() => {
+                    let Some(joined) = joined else {
+                        break;
+                    };
+                    match joined {
+                        Ok((relay, Ok(events))) => {
+                            successful_relays += 1;
+                            for event in events {
+                                events_by_id.entry(event.id).or_insert(event);
+                            }
+                            let _ = relay;
+                        }
+                        Ok((relay, Err(err))) => {
+                            errors.push(format!("{relay}: {err}"));
+                        }
+                        Err(err) => {
+                            errors.push(format!("join error: {err}"));
+                        }
                     }
-                    let _ = relay;
+
+                    if successful_relays >= successful_relay_quorum && !events_by_id.is_empty() {
+                        return Ok(events_by_id.values().cloned().collect());
+                    }
+                    if soft_timeout_elapsed && successful_relays > 0 {
+                        return Ok(events_by_id.values().cloned().collect());
+                    }
                 }
-                Ok((relay, Err(err))) => {
-                    errors.push(format!("{relay}: {err}"));
-                }
-                Err(err) => {
-                    errors.push(format!("join error: {err}"));
+                _ = &mut soft_timeout_sleep, if !soft_timeout_elapsed => {
+                    soft_timeout_elapsed = true;
+                    if successful_relays > 0 {
+                        return Ok(events_by_id.values().cloned().collect());
+                    }
                 }
             }
         }
@@ -792,6 +823,10 @@ mod tests {
 
     impl TestRelay {
         fn with_events(events: Vec<Event>) -> Self {
+            Self::with_events_and_delay(events, Duration::ZERO)
+        }
+
+        fn with_events_and_delay(events: Vec<Event>, response_delay: Duration) -> Self {
             let stored_events = Arc::new(Mutex::new(
                 events
                     .into_iter()
@@ -801,10 +836,7 @@ mod tests {
             let (shutdown, _) = broadcast::channel(1);
 
             let std_listener = TcpListener::bind("127.0.0.1:0").expect("bind relay listener");
-            let port = std_listener
-                .local_addr()
-                .expect("relay local addr")
-                .port();
+            let port = std_listener.local_addr().expect("relay local addr").port();
             std_listener
                 .set_nonblocking(true)
                 .expect("set relay listener nonblocking");
@@ -831,7 +863,12 @@ mod tests {
                                 if let Ok((stream, _)) = accepted {
                                     let relay_events = Arc::clone(&relay_events);
                                     tokio::spawn(async move {
-                                        handle_test_relay_connection(stream, relay_events).await;
+                                        handle_test_relay_connection(
+                                            stream,
+                                            relay_events,
+                                            response_delay,
+                                        )
+                                        .await;
                                     });
                                 }
                             }
@@ -888,7 +925,10 @@ mod tests {
         };
 
         if let Some(kinds) = filter_obj.get("kinds").and_then(Value::as_array) {
-            let event_kind = event.get("kind").and_then(Value::as_i64).unwrap_or_default();
+            let event_kind = event
+                .get("kind")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
             if !kinds
                 .iter()
                 .any(|kind| kind.as_i64().is_some_and(|value| value == event_kind))
@@ -934,7 +974,11 @@ mod tests {
         true
     }
 
-    async fn handle_test_relay_connection(stream: TcpStream, events: Arc<Mutex<Vec<Value>>>) {
+    async fn handle_test_relay_connection(
+        stream: TcpStream,
+        events: Arc<Mutex<Vec<Value>>>,
+        response_delay: Duration,
+    ) {
         let ws_stream = match accept_async(stream).await {
             Ok(ws) => ws,
             Err(_) => return,
@@ -968,6 +1012,10 @@ mod tests {
                     };
                     let filters: Vec<Value> = parsed.iter().skip(2).cloned().collect();
                     let snapshot = events.lock().expect("relay events lock").clone();
+
+                    if !response_delay.is_zero() {
+                        tokio::time::sleep(response_delay).await;
+                    }
 
                     for event in snapshot {
                         let matched = if filters.is_empty() {
@@ -1193,7 +1241,10 @@ mod tests {
             .expect("create resolver");
 
             let key = format!("{}/{}", keys.public_key().to_bech32().unwrap(), tree_name);
-            let resolved = resolver.resolve(&key).await.expect("resolve via healthy relay");
+            let resolved = resolver
+                .resolve(&key)
+                .await
+                .expect("resolve via healthy relay");
 
             assert_eq!(
                 resolved,
@@ -1201,6 +1252,101 @@ mod tests {
                     hash: from_hex(hash).unwrap(),
                     key: None,
                 })
+            );
+        });
+    }
+
+    #[test]
+    fn test_resolve_returns_after_quick_quorum() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("build test runtime");
+
+        runtime.block_on(async {
+            let keys = Keys::generate();
+            let tree_name = "video";
+            let hash = "c94a1b5bde1d7a32b96df53086a27f4385a631e1e39a5aac97589d20c49c5022";
+            let event = build_hashtree_event(&keys, tree_name, 1_774_517_172, hash, "");
+            let quick_hit = TestRelay::with_events(vec![event]);
+            let quick_empty = TestRelay::with_events(Vec::new());
+            let slow_empty =
+                TestRelay::with_events_and_delay(Vec::new(), Duration::from_millis(1200));
+
+            let resolver = NostrRootResolver::new(NostrResolverConfig {
+                relays: vec![quick_hit.url(), quick_empty.url(), slow_empty.url()],
+                resolve_timeout: Duration::from_millis(1500),
+                secret_key: None,
+            })
+            .await
+            .expect("create resolver");
+
+            let key = format!("{}/{}", keys.public_key().to_bech32().unwrap(), tree_name);
+            let started = std::time::Instant::now();
+            let resolved = resolver
+                .resolve(&key)
+                .await
+                .expect("resolve from quick quorum");
+
+            assert_eq!(
+                resolved,
+                Some(Cid {
+                    hash: from_hex(hash).unwrap(),
+                    key: None,
+                })
+            );
+            assert!(
+                started.elapsed() < Duration::from_millis(800),
+                "resolve waited too long: {:?}",
+                started.elapsed()
+            );
+        });
+    }
+
+    #[test]
+    fn test_resolve_uses_soft_deadline_for_partial_results() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("build test runtime");
+
+        runtime.block_on(async {
+            let keys = Keys::generate();
+            let tree_name = "video";
+            let hash = "c94a1b5bde1d7a32b96df53086a27f4385a631e1e39a5aac97589d20c49c5022";
+            let event = build_hashtree_event(&keys, tree_name, 1_774_517_172, hash, "");
+            let quick_hit = TestRelay::with_events(vec![event]);
+            let slow_empty_a = TestRelay::with_events_and_delay(Vec::new(), Duration::from_secs(5));
+            let slow_empty_b = TestRelay::with_events_and_delay(Vec::new(), Duration::from_secs(5));
+
+            let resolver = NostrRootResolver::new(NostrResolverConfig {
+                relays: vec![quick_hit.url(), slow_empty_a.url(), slow_empty_b.url()],
+                resolve_timeout: Duration::from_secs(6),
+                secret_key: None,
+            })
+            .await
+            .expect("create resolver");
+
+            let key = format!("{}/{}", keys.public_key().to_bech32().unwrap(), tree_name);
+            let started = std::time::Instant::now();
+            let resolved = resolver
+                .resolve(&key)
+                .await
+                .expect("resolve from partial results");
+
+            assert_eq!(
+                resolved,
+                Some(Cid {
+                    hash: from_hex(hash).unwrap(),
+                    key: None,
+                })
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(4),
+                "resolve missed the soft deadline: {:?}",
+                started.elapsed()
             );
         });
     }
