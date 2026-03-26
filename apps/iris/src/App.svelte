@@ -3,11 +3,11 @@
   import {
     automationUpdateState,
     automationShutdown,
-    clearTreeRootCache,
     createNip07Webview,
     createHtreeWebview,
     deepLinkFrontendReady,
     closeWebview,
+    getHtreeServerUrl,
     navigateWebview,
     onAutomationCommand,
     webviewHistory,
@@ -253,6 +253,43 @@
       }
     }
     return 'Failed to open page.';
+  }
+
+  async function refreshTreeRoot(npub: string, treename: string): Promise<boolean> {
+    try {
+      const serverUrl = await getHtreeServerUrl();
+      const refreshUrl =
+        `${serverUrl}/api/resolve/${encodeURIComponent(npub)}/${encodeURIComponent(treename)}?refresh=1`;
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        try {
+          const response = await fetch(refreshUrl, {
+            cache: 'no-store',
+            signal: controller.signal,
+          });
+          const payload = await response.json().catch(() => null) as { error?: string } | null;
+          if (response.ok && !payload?.error) {
+            return true;
+          }
+        } catch (error) {
+          if (attempt === 2) {
+            console.warn('[Iris] failed to refresh tree root:', npub, treename, formatWebviewError(error));
+          }
+        } finally {
+          clearTimeout(timeout);
+        }
+
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+        }
+      }
+    } catch (error) {
+      console.warn('[Iris] failed to refresh tree root:', npub, treename, formatWebviewError(error));
+    }
+
+    return false;
   }
 
   function isUnsupportedChildWebviewError(message: string): boolean {
@@ -629,12 +666,10 @@
     const height = Math.max(0, window.innerHeight - top - bottom);
 
     if (htree?.npub && htree.treename && isBuiltInIrisApp(htree.npub, htree.treename)) {
-      // Built-in apps are released independently of the shell. Always drop any
-      // cached mutable root first so the daemon resolves the current app build.
-      await clearTreeRootCache(htree.npub, htree.treename, null, null)
-        .catch((error) => {
-          console.warn('[Iris] failed to clear built-in app tree root cache:', error);
-        });
+      // Built-in apps are released independently of the shell. Refresh the
+      // mutable root before navigation, but keep the previous cached root if
+      // relays are flaky so the app can still load.
+      await refreshTreeRoot(htree.npub, htree.treename);
     }
 
     if (!g.__irisChildReady) {

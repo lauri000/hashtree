@@ -357,6 +357,28 @@ fn tree_root_cache_key(npub: &str, treename: &str, link_key: Option<[u8; 32]>) -
     }
 }
 
+fn cache_public_tree_root(state: &AppState, npub: &str, treename: &str, cid: &Cid) {
+    put_cached_tree_root(
+        state,
+        cache_tree_root_key(npub, treename, Some("public"), cid.key),
+        cid.clone(),
+        "nostr",
+        None,
+    );
+}
+
+fn query_flag(params: &HashMap<String, String>, name: &str) -> bool {
+    params
+        .get(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn cache_tree_root_key(
     npub: &str,
     treename: &str,
@@ -2153,6 +2175,9 @@ pub async fn serve_npub(
     // npub routes are mutable - the reference can change over time
     match tokio::time::timeout(HTTP_RESOLVER_TIMEOUT, resolver.resolve_wait(&key)).await {
         Ok(Ok(cid)) => {
+            if let Some((pubkey, treename)) = key.split_once('/') {
+                cache_public_tree_root(&state, pubkey, treename, &cid);
+            }
             let _ = resolver.stop().await;
             serve_content_internal(&state, &cid.hash, headers, false, false).await
         }
@@ -2696,6 +2721,7 @@ pub async fn resolve_and_serve(
     // This is a mutable route (npub/treename can change over time)
     match tokio::time::timeout(HTTP_RESOLVER_TIMEOUT, resolver.resolve_wait(&key)).await {
         Ok(Ok(cid)) => {
+            cache_public_tree_root(&state, &pubkey, &treename, &cid);
             let _ = resolver.stop().await;
             serve_content_internal(&state, &cid.hash, headers, false, false).await
         }
@@ -2739,26 +2765,32 @@ pub async fn resolve_and_serve(
 pub async fn resolve_to_hash(
     State(state): State<AppState>,
     Path(params): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let (pubkey, treename) = params;
     let key = format!("{}/{}", pubkey, treename);
+    let refresh = query_flag(&query, "refresh")
+        || query_flag(&query, "force")
+        || query_flag(&query, "skipCache");
 
-    if let Some(resolved) = resolve_root_offline(&state, &pubkey, &treename, None).await {
-        let mut payload = json!({
-            "key": key,
-            "hash": to_hex(&resolved.cid.hash),
-            "cid": resolved.cid.to_string(),
-            "source": resolved.source,
-        });
-        if let Some(root) = resolved.root_event {
-            payload["peer"] = json!(root.peer_id);
-            payload["event_id"] = json!(root.event_id);
-            payload["created_at"] = json!(root.created_at);
-            payload["key_tag"] = json!(root.key);
-            payload["encryptedKey"] = json!(root.encrypted_key);
-            payload["selfEncryptedKey"] = json!(root.self_encrypted_key);
+    if !refresh {
+        if let Some(resolved) = resolve_root_offline(&state, &pubkey, &treename, None).await {
+            let mut payload = json!({
+                "key": key,
+                "hash": to_hex(&resolved.cid.hash),
+                "cid": resolved.cid.to_string(),
+                "source": resolved.source,
+            });
+            if let Some(root) = resolved.root_event {
+                payload["peer"] = json!(root.peer_id);
+                payload["event_id"] = json!(root.event_id);
+                payload["created_at"] = json!(root.created_at);
+                payload["key_tag"] = json!(root.key);
+                payload["encryptedKey"] = json!(root.encrypted_key);
+                payload["selfEncryptedKey"] = json!(root.self_encrypted_key);
+            }
+            return Json(payload);
         }
-        return Json(payload);
     }
 
     let resolver = match NostrRootResolver::new(resolver_config(&state)).await {
@@ -2773,12 +2805,15 @@ pub async fn resolve_to_hash(
 
     let relay_result =
         match tokio::time::timeout(HTTP_RESOLVER_TIMEOUT, resolver.resolve_wait(&key)).await {
-            Ok(Ok(cid)) => Some(Json(json!({
-                "key": key,
-                "hash": to_hex(&cid.hash),
-                "cid": cid.to_string(),
-                "source": "nostr",
-            }))),
+            Ok(Ok(cid)) => {
+                cache_public_tree_root(&state, &pubkey, &treename, &cid);
+                Some(Json(json!({
+                    "key": key,
+                    "hash": to_hex(&cid.hash),
+                    "cid": cid.to_string(),
+                    "source": "nostr",
+                })))
+            }
             Ok(Err(_)) | Err(_) => None,
         };
 
@@ -4076,6 +4111,46 @@ mod tests {
 
         assert_eq!(config.relays, state.nostr_relay_urls);
         assert_eq!(config.resolve_timeout, HTTP_RESOLVER_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn resolve_to_hash_refresh_skips_cached_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());
+        let state = test_app_state(store, Vec::new());
+        let hash_hex = "11".repeat(32);
+        let cid = Cid::parse(&hash_hex).expect("valid cid");
+        put_cached_tree_root(
+            &state,
+            tree_root_cache_key("npub1example", "video", None),
+            cid,
+            "cache",
+            None,
+        );
+
+        let cached = resolve_to_hash(
+            State(state.clone()),
+            Path(("npub1example".to_string(), "video".to_string())),
+            Query(HashMap::new()),
+        )
+        .await
+        .into_response();
+        let cached_body = to_bytes(cached.into_body(), usize::MAX).await.unwrap();
+        let cached_json: serde_json::Value = serde_json::from_slice(&cached_body).unwrap();
+        assert_eq!(cached_json["hash"], hash_hex);
+        assert_eq!(cached_json["source"], "cache");
+
+        let refresh = resolve_to_hash(
+            State(state),
+            Path(("npub1example".to_string(), "video".to_string())),
+            Query(HashMap::from([("refresh".to_string(), "1".to_string())])),
+        )
+        .await
+        .into_response();
+        let refresh_body = to_bytes(refresh.into_body(), usize::MAX).await.unwrap();
+        let refresh_json: serde_json::Value = serde_json::from_slice(&refresh_body).unwrap();
+        assert!(refresh_json.get("error").is_some());
+        assert_eq!(refresh_json["key"], "npub1example/video");
     }
 
     #[tokio::test]

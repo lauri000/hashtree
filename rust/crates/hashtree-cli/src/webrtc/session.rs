@@ -115,7 +115,9 @@ pub struct TestMeshPeer {
     request_response: tokio::sync::Mutex<Option<Vec<u8>>>,
     response_delay: Duration,
     query_events: tokio::sync::Mutex<Vec<Event>>,
+    query_delay: Duration,
     sent_frames: tokio::sync::Mutex<Vec<MeshNostrFrame>>,
+    close_delay: Duration,
     closed: std::sync::atomic::AtomicBool,
 }
 
@@ -129,7 +131,9 @@ impl TestMeshPeer {
             request_response: tokio::sync::Mutex::new(response),
             response_delay: Duration::ZERO,
             query_events: tokio::sync::Mutex::new(Vec::new()),
+            query_delay: Duration::ZERO,
             sent_frames: tokio::sync::Mutex::new(Vec::new()),
+            close_delay: Duration::ZERO,
             closed: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -142,7 +146,9 @@ impl TestMeshPeer {
             request_response: tokio::sync::Mutex::new(response),
             response_delay,
             query_events: tokio::sync::Mutex::new(Vec::new()),
+            query_delay: Duration::ZERO,
             sent_frames: tokio::sync::Mutex::new(Vec::new()),
+            close_delay: Duration::ZERO,
             closed: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -155,7 +161,39 @@ impl TestMeshPeer {
             request_response: tokio::sync::Mutex::new(None),
             response_delay: Duration::ZERO,
             query_events: tokio::sync::Mutex::new(events),
+            query_delay: Duration::ZERO,
             sent_frames: tokio::sync::Mutex::new(Vec::new()),
+            close_delay: Duration::ZERO,
+            closed: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub fn with_delayed_events(events: Vec<Event>, query_delay: Duration) -> Self {
+        Self {
+            ready: true,
+            connected: true,
+            htl_config: PeerHTLConfig::from_flags(false, false),
+            request_response: tokio::sync::Mutex::new(None),
+            response_delay: Duration::ZERO,
+            query_events: tokio::sync::Mutex::new(events),
+            query_delay,
+            sent_frames: tokio::sync::Mutex::new(Vec::new()),
+            close_delay: Duration::ZERO,
+            closed: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub fn with_delayed_close(close_delay: Duration) -> Self {
+        Self {
+            ready: true,
+            connected: false,
+            htl_config: PeerHTLConfig::from_flags(false, false),
+            request_response: tokio::sync::Mutex::new(None),
+            response_delay: Duration::ZERO,
+            query_events: tokio::sync::Mutex::new(Vec::new()),
+            query_delay: Duration::ZERO,
+            sent_frames: tokio::sync::Mutex::new(Vec::new()),
+            close_delay,
             closed: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -172,6 +210,9 @@ impl TestMeshPeer {
         _filters: Vec<Filter>,
         _timeout: Duration,
     ) -> Result<Vec<Event>> {
+        if !self.query_delay.is_zero() {
+            tokio::time::sleep(self.query_delay).await;
+        }
         Ok(self.query_events.lock().await.clone())
     }
 
@@ -181,6 +222,9 @@ impl TestMeshPeer {
     }
 
     pub async fn close(&self) -> Result<()> {
+        if !self.close_delay.is_zero() {
+            tokio::time::sleep(self.close_delay).await;
+        }
         self.closed
             .store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(())

@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
+use tokio::task::JoinSet;
 
 use hashtree_core::{decrypt, xor_keys};
 
@@ -222,6 +223,60 @@ impl NostrRootResolver {
     /// Extract Cid from event tags
     fn cid_from_event(&self, event: &Event) -> Option<Cid> {
         Self::cid_from_event_with_keys(event, self.config.secret_key.as_ref())
+    }
+
+    async fn fetch_events_from_relays(&self, filter: Filter) -> Result<Vec<Event>, ResolverError> {
+        if self.config.relays.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut join_set = JoinSet::new();
+        for relay in self.config.relays.iter().cloned() {
+            let client = self.client.clone();
+            let filter = filter.clone();
+            let timeout = self.config.resolve_timeout;
+            join_set.spawn(async move {
+                let result = client
+                    .get_events_from(vec![relay.clone()], vec![filter], Some(timeout))
+                    .await;
+                (relay, result)
+            });
+        }
+
+        let mut events_by_id: HashMap<EventId, Event> = HashMap::new();
+        let mut successful_relays = 0usize;
+        let mut errors = Vec::new();
+
+        while let Some(joined) = join_set.join_next().await {
+            match joined {
+                Ok((relay, Ok(events))) => {
+                    successful_relays += 1;
+                    for event in events {
+                        events_by_id.entry(event.id).or_insert(event);
+                    }
+                    let _ = relay;
+                }
+                Ok((relay, Err(err))) => {
+                    errors.push(format!("{relay}: {err}"));
+                }
+                Err(err) => {
+                    errors.push(format!("join error: {err}"));
+                }
+            }
+        }
+
+        if successful_relays == 0 {
+            let detail = if errors.is_empty() {
+                "no relays succeeded".to_string()
+            } else {
+                errors.join("; ")
+            };
+            return Err(ResolverError::Network(format!(
+                "Failed to get events from configured relays: {detail}"
+            )));
+        }
+
+        Ok(events_by_id.into_values().collect())
     }
 
     fn cid_from_event_with_keys(event: &Event, keys: Option<&Keys>) -> Option<Cid> {
@@ -439,12 +494,7 @@ impl RootResolver for NostrRootResolver {
             );
 
         // Fetch events from relays
-        let source = EventSource::relays(Some(self.config.resolve_timeout));
-        let events = self
-            .client
-            .get_events_of(vec![filter], source)
-            .await
-            .map_err(|e| ResolverError::Network(e.to_string()))?;
+        let events = self.fetch_events_from_relays(filter).await?;
 
         let latest_event = pick_latest_event(events.iter().filter(|event| {
             event_identifier(event).as_deref() == Some(&tree_name) && is_hashtree_event(event)
@@ -472,12 +522,7 @@ impl RootResolver for NostrRootResolver {
                 vec![tree_name.clone()],
             );
 
-        let source = EventSource::relays(Some(self.config.resolve_timeout));
-        let events = self
-            .client
-            .get_events_of(vec![filter], source)
-            .await
-            .map_err(|e| ResolverError::Network(e.to_string()))?;
+        let events = self.fetch_events_from_relays(filter).await?;
 
         let latest_event = pick_latest_event(events.iter().filter(|event| {
             event_identifier(event).as_deref() == Some(&tree_name) && is_hashtree_event(event)
@@ -697,12 +742,7 @@ impl RootResolver for NostrRootResolver {
                 vec![HASHTREE_LABEL],
             );
 
-        let source = EventSource::relays(Some(self.config.resolve_timeout));
-        let events = self
-            .client
-            .get_events_of(vec![filter], source)
-            .await
-            .map_err(|e| ResolverError::Network(e.to_string()))?;
+        let events = self.fetch_events_from_relays(filter).await?;
 
         // Deduplicate by d-tag, keeping latest event
         let mut entries_by_d_tag: HashMap<String, &Event> = HashMap::new();
@@ -737,7 +777,235 @@ impl RootResolver for NostrRootResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::{SinkExt, StreamExt};
     use std::collections::HashMap;
+    use std::net::TcpListener;
+    use std::sync::Mutex;
+    use tokio::net::TcpStream;
+    use tokio::sync::broadcast;
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+    struct TestRelay {
+        port: u16,
+        shutdown: broadcast::Sender<()>,
+    }
+
+    impl TestRelay {
+        fn with_events(events: Vec<Event>) -> Self {
+            let stored_events = Arc::new(Mutex::new(
+                events
+                    .into_iter()
+                    .map(|event| serde_json::to_value(event).expect("event to value"))
+                    .collect::<Vec<_>>(),
+            ));
+            let (shutdown, _) = broadcast::channel(1);
+
+            let std_listener = TcpListener::bind("127.0.0.1:0").expect("bind relay listener");
+            let port = std_listener
+                .local_addr()
+                .expect("relay local addr")
+                .port();
+            std_listener
+                .set_nonblocking(true)
+                .expect("set relay listener nonblocking");
+
+            let relay_events = Arc::clone(&stored_events);
+            let shutdown_tx = shutdown.clone();
+
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .expect("build relay runtime");
+
+                runtime.block_on(async move {
+                    let listener =
+                        tokio::net::TcpListener::from_std(std_listener).expect("tokio listener");
+                    let mut shutdown_rx = shutdown_tx.subscribe();
+
+                    loop {
+                        tokio::select! {
+                            _ = shutdown_rx.recv() => break,
+                            accepted = listener.accept() => {
+                                if let Ok((stream, _)) = accepted {
+                                    let relay_events = Arc::clone(&relay_events);
+                                    tokio::spawn(async move {
+                                        handle_test_relay_connection(stream, relay_events).await;
+                                    });
+                                }
+                            }
+                        }
+                    }
+                });
+            });
+
+            std::thread::sleep(Duration::from_millis(100));
+
+            Self { port, shutdown }
+        }
+
+        fn url(&self) -> String {
+            format!("ws://127.0.0.1:{}", self.port)
+        }
+    }
+
+    impl Drop for TestRelay {
+        fn drop(&mut self) {
+            let _ = self.shutdown.send(());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn event_tag_matches(event: &Value, name: &str, accepted: &[String]) -> bool {
+        let Some(tags) = event.get("tags").and_then(Value::as_array) else {
+            return false;
+        };
+
+        tags.iter().any(|tag| {
+            let Some(arr) = tag.as_array() else {
+                return false;
+            };
+            if arr.len() < 2 {
+                return false;
+            }
+            let Some(tag_name) = arr.first().and_then(Value::as_str) else {
+                return false;
+            };
+            if tag_name != name {
+                return false;
+            }
+            let Some(tag_value) = arr.get(1).and_then(Value::as_str) else {
+                return false;
+            };
+            accepted.iter().any(|value| value == tag_value)
+        })
+    }
+
+    fn event_matches_filter(event: &Value, filter: &Value) -> bool {
+        let Some(filter_obj) = filter.as_object() else {
+            return true;
+        };
+
+        if let Some(kinds) = filter_obj.get("kinds").and_then(Value::as_array) {
+            let event_kind = event.get("kind").and_then(Value::as_i64).unwrap_or_default();
+            if !kinds
+                .iter()
+                .any(|kind| kind.as_i64().is_some_and(|value| value == event_kind))
+            {
+                return false;
+            }
+        }
+
+        if let Some(authors) = filter_obj.get("authors").and_then(Value::as_array) {
+            let event_author = event
+                .get("pubkey")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !authors
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|author| author == event_author)
+            {
+                return false;
+            }
+        }
+
+        if let Some(d_values) = filter_obj.get("#d").and_then(Value::as_array) {
+            let accepted: Vec<String> = d_values
+                .iter()
+                .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                .collect();
+            if !accepted.is_empty() && !event_tag_matches(event, "d", &accepted) {
+                return false;
+            }
+        }
+
+        if let Some(l_values) = filter_obj.get("#l").and_then(Value::as_array) {
+            let accepted: Vec<String> = l_values
+                .iter()
+                .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                .collect();
+            if !accepted.is_empty() && !event_tag_matches(event, "l", &accepted) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    async fn handle_test_relay_connection(stream: TcpStream, events: Arc<Mutex<Vec<Value>>>) {
+        let ws_stream = match accept_async(stream).await {
+            Ok(ws) => ws,
+            Err(_) => return,
+        };
+        let (mut write, mut read) = ws_stream.split();
+
+        while let Some(message) = read.next().await {
+            let text = match message {
+                Ok(Message::Text(text)) => text,
+                Ok(Message::Ping(data)) => {
+                    let _ = write.send(Message::Pong(data)).await;
+                    continue;
+                }
+                Ok(Message::Close(_)) => break,
+                _ => continue,
+            };
+
+            let parsed: Vec<Value> = match serde_json::from_str(&text) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            let Some(message_type) = parsed.first().and_then(Value::as_str) else {
+                continue;
+            };
+
+            match message_type {
+                "REQ" => {
+                    let Some(sub_id) = parsed.get(1).and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let filters: Vec<Value> = parsed.iter().skip(2).cloned().collect();
+                    let snapshot = events.lock().expect("relay events lock").clone();
+
+                    for event in snapshot {
+                        let matched = if filters.is_empty() {
+                            true
+                        } else {
+                            filters
+                                .iter()
+                                .any(|filter| event_matches_filter(&event, filter))
+                        };
+                        if matched {
+                            let message = serde_json::json!(["EVENT", sub_id, event]);
+                            let _ = write.send(Message::Text(message.to_string())).await;
+                        }
+                    }
+
+                    let eose = serde_json::json!(["EOSE", sub_id]);
+                    let _ = write.send(Message::Text(eose.to_string())).await;
+                }
+                "EVENT" => {
+                    let Some(event) = parsed.get(1).cloned() else {
+                        continue;
+                    };
+                    let Some(id) = event
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                    else {
+                        continue;
+                    };
+                    events.lock().expect("relay events lock").push(event);
+                    let ok = serde_json::json!(["OK", id, true, ""]);
+                    let _ = write.send(Message::Text(ok.to_string())).await;
+                }
+                "CLOSE" => {}
+                _ => {}
+            }
+        }
+    }
 
     fn build_hashtree_event(
         keys: &Keys,
@@ -898,5 +1166,42 @@ mod tests {
             second.id
         };
         assert_eq!(selected.id, expected);
+    }
+
+    #[test]
+    fn test_resolve_succeeds_when_some_relays_fail() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("build test runtime");
+
+        runtime.block_on(async {
+            let keys = Keys::generate();
+            let tree_name = "video";
+            let hash = "c94a1b5bde1d7a32b96df53086a27f4385a631e1e39a5aac97589d20c49c5022";
+            let event = build_hashtree_event(&keys, tree_name, 1_774_517_172, hash, "");
+            let good_relay = TestRelay::with_events(vec![event]);
+            let bad_relay = "ws://127.0.0.1:9".to_string();
+
+            let resolver = NostrRootResolver::new(NostrResolverConfig {
+                relays: vec![bad_relay, good_relay.url()],
+                resolve_timeout: Duration::from_millis(400),
+                secret_key: None,
+            })
+            .await
+            .expect("create resolver");
+
+            let key = format!("{}/{}", keys.public_key().to_bech32().unwrap(), tree_name);
+            let resolved = resolver.resolve(&key).await.expect("resolve via healthy relay");
+
+            assert_eq!(
+                resolved,
+                Some(Cid {
+                    hash: from_hex(hash).unwrap(),
+                    key: None,
+                })
+            );
+        });
     }
 }
