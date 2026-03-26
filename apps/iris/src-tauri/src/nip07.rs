@@ -744,7 +744,10 @@ pub fn generate_nip07_script(
       const smokeEnabled = new URLSearchParams(window.location.search).get('smoke') === '1' ? 1 : 0;
       const workerReady = window.__workerAdapter || window.__getWorkerAdapter?.() ? 1 : 0;
       const htreeBase = window.htree?.htreeBaseUrl ? 1 : 0;
-      const relayCount = Array.isArray(window.htree?.relays) ? window.htree.relays.length : 0;
+      const transportRelays = window.__nostrStore?.getState?.()?.transportRelays;
+      const relayCount = Array.isArray(transportRelays) && transportRelays.length > 0
+        ? transportRelays.length
+        : (Array.isArray(window.htree?.relays) ? window.htree.relays.length : 0);
       const hasServiceWorkerController = navigator.serviceWorker?.controller ? 1 : 0;
       const isCrossOriginIsolated = self.crossOriginIsolated ? 1 : 0;
       return `thumbs=${{loadedThumbImages.length}}/${{thumbImages.length}} visible=${{visibleLoadedThumbImages.length}} videos=${{readyVideos.length}}/${{videos.length}} app=${{appChildren}} smoke=${{smokeEnabled}} worker=${{workerReady}} base=${{htreeBase}} relays=${{relayCount}} sw=${{hasServiceWorkerController}} coi=${{isCrossOriginIsolated}}`;
@@ -987,7 +990,10 @@ function getMediaSummary() {
     const smokeEnabled = new URLSearchParams(window.location.search).get('smoke') === '1' ? 1 : 0;
     const workerReady = window.__workerAdapter || window.__getWorkerAdapter?.() ? 1 : 0;
     const htreeBase = window.htree?.htreeBaseUrl ? 1 : 0;
-    const relayCount = Array.isArray(window.htree?.relays) ? window.htree.relays.length : 0;
+    const transportRelays = window.__nostrStore?.getState?.()?.transportRelays;
+    const relayCount = Array.isArray(transportRelays) && transportRelays.length > 0
+      ? transportRelays.length
+      : (Array.isArray(window.htree?.relays) ? window.htree.relays.length : 0);
     const hasServiceWorkerController = navigator.serviceWorker?.controller ? 1 : 0;
     const isCrossOriginIsolated = self.crossOriginIsolated ? 1 : 0;
     return `thumbs=${loadedThumbImages.length}/${thumbImages.length} visible=${visibleLoadedThumbImages.length} videos=${readyVideos.length}/${videos.length} app=${appChildren} smoke=${smokeEnabled} worker=${workerReady} base=${htreeBase} relays=${relayCount} sw=${hasServiceWorkerController} coi=${isCrossOriginIsolated}`;

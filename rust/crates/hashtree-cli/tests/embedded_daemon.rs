@@ -1,7 +1,10 @@
 use std::time::Duration;
 
+use futures::{SinkExt, StreamExt};
+use nostr::{JsonUtil, RelayMessage as NostrRelayMessage};
 use serde_json::Value;
 use tempfile::TempDir;
+use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
 #[tokio::test]
 async fn embedded_daemon_serves_htree_test() {
@@ -86,6 +89,72 @@ async fn embedded_daemon_uses_default_blossom_servers_when_config_is_empty() {
     assert!(
         blossom_servers >= 2,
         "expected embedded daemon to keep default blossom read servers, got {blossom_servers}"
+    );
+}
+
+#[tokio::test]
+async fn embedded_daemon_accepts_ws_route_with_trailing_slash() {
+    let dir = TempDir::new().expect("temp dir");
+    std::env::set_var("HTREE_CONFIG_DIR", dir.path());
+    std::env::set_var("HTREE_DATA_DIR", dir.path());
+
+    let data_dir = dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+    let mut config = hashtree_cli::Config::default();
+    config.storage.data_dir = data_dir.to_string_lossy().to_string();
+    config.server.enable_auth = false;
+    config.server.enable_webrtc = false;
+    config.server.enable_multicast = false;
+    config.server.max_multicast_peers = 0;
+    config.server.enable_bluetooth = false;
+    config.server.max_bluetooth_peers = 0;
+    config.server.stun_port = 0;
+    config.nostr.relays.clear();
+
+    let info = hashtree_cli::daemon::start_embedded(hashtree_cli::daemon::EmbeddedDaemonOptions {
+        config,
+        data_dir: data_dir.clone(),
+        bind_address: "127.0.0.1:0".to_string(),
+        relays: None,
+        extra_routes: None,
+        cors: None,
+    })
+    .await
+    .expect("start embedded daemon");
+
+    let url = format!("ws://127.0.0.1:{}/ws/", info.port);
+    let (mut socket, _) = connect_async(url).await.expect("connect ws route with trailing slash");
+
+    socket
+        .send(WsMessage::Text(
+            nostr::ClientMessage::req(
+                nostr::SubscriptionId::new("test-sub"),
+                vec![nostr::Filter::new()
+                    .authors(vec![nostr::Keys::generate().public_key()])
+                    .kinds(vec![nostr::Kind::from(30078_u16)])],
+            )
+            .as_json()
+            .into(),
+        ))
+        .await
+        .expect("send req");
+
+    let response = tokio::time::timeout(Duration::from_secs(5), socket.next())
+        .await
+        .expect("response timeout")
+        .expect("response present")
+        .expect("response websocket");
+    let WsMessage::Text(text) = response else {
+        panic!("expected text relay response");
+    };
+    assert!(
+        matches!(
+            NostrRelayMessage::from_json(text.as_str()).expect("parse relay response"),
+            NostrRelayMessage::EndOfStoredEvents(subscription_id)
+                if subscription_id == nostr::SubscriptionId::new("test-sub")
+        ),
+        "expected EOSE response over /ws/ route"
     );
 }
 

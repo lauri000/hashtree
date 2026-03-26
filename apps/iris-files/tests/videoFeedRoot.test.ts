@@ -49,6 +49,7 @@ const ROOT_KEY = Uint8Array.from({ length: 32 }, (_, i) => i + 33);
 describe('resolveFeedVideoRootCid', () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.useRealTimers();
     getLocalRootCache.mockReset();
     getLocalRootKey.mockReset();
     resolverResolve.mockReset();
@@ -159,6 +160,38 @@ describe('resolveFeedVideoRootCid', () => {
       undefined,
       { updatedAt: expect.any(Number), visibility: 'public' },
     );
+  });
+
+  it('starts ndk fallback immediately when the resolver hangs', async () => {
+    resolverResolve.mockImplementation(() => new Promise((resolve) => {
+      setTimeout(() => resolve(ROOT), 20);
+    }));
+    npubToPubkey.mockReturnValue('f'.repeat(64));
+    ndkFetchEvent.mockResolvedValue({
+      created_at: 12,
+      tags: [
+        ['d', 'videos/Resolver Hang'],
+        ['hash', '55'.repeat(32)],
+      ],
+    });
+
+    const { resolveFeedVideoRootCidAsync } = await import('../src/lib/videoFeedRoot');
+    const resultPromise = resolveFeedVideoRootCidAsync({
+      ownerNpub: 'npub1example',
+      treeName: 'videos/Resolver Hang',
+    }, 1000);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(ndkFetchEvent).toHaveBeenCalledWith({
+      kinds: [30078],
+      authors: ['f'.repeat(64)],
+      '#d': ['videos/Resolver Hang'],
+    }, { closeOnEose: true });
+
+    await expect(resultPromise).resolves.toEqual(cid(
+      Uint8Array.from({ length: 32 }, () => 0x55),
+    ));
   });
 
   it('coalesces concurrent async root resolution for the same feed tree', async () => {

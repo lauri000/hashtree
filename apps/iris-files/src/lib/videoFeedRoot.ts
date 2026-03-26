@@ -16,6 +16,11 @@ const FEED_ROOT_MISS_CACHE_TTL_MS = 5_000;
 const feedRootResolutionCache = new Map<string, { cid: CID | null; expiresAt: number }>();
 const inFlightFeedRootResolutions = new Map<string, Promise<CID | null>>();
 
+interface ResolvedTreeRoot {
+  cid: CID;
+  updatedAt?: number;
+}
+
 type FeedVideoRootSource = {
   rootCid?: CID | null;
   ownerNpub?: string | null;
@@ -35,6 +40,42 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | nul
 
 function getFeedRootCacheKey(npub: string, treeName: string): string {
   return `${npub}/${treeName}`;
+}
+
+function firstNonNull<T>(promises: Array<Promise<T | null>>): Promise<T | null> {
+  if (promises.length === 0) {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolve) => {
+    let pending = promises.length;
+    let settled = false;
+
+    const settleNull = () => {
+      pending -= 1;
+      if (!settled && pending === 0) {
+        settled = true;
+        resolve(null);
+      }
+    };
+
+    for (const promise of promises) {
+      promise
+        .then((value) => {
+          if (settled) return;
+          if (value) {
+            settled = true;
+            resolve(value);
+            return;
+          }
+          settleNull();
+        })
+        .catch(() => {
+          if (settled) return;
+          settleNull();
+        });
+    }
+  });
 }
 
 async function cacheResolvedFeedTreeRoot(
@@ -104,105 +145,109 @@ export async function resolveFeedVideoRootCidAsync(
   }
 
   const lookup = (async (): Promise<CID | null> => {
-    try {
-      const { getRefResolver } = await import('../refResolver');
-      const resolver = getRefResolver();
-      const resolved = await withTimeout(
-        resolver.resolve(`${video.ownerNpub}/${video.treeName}`),
-        timeoutMs,
-      );
-      if (resolved) {
-        await cacheResolvedFeedTreeRoot(video.ownerNpub!, video.treeName!, resolved);
-        return resolved;
-      }
-    } catch {
-      // Fall through to direct Nostr tree-event lookup.
-    }
-
-    try {
-      const { ndk, npubToPubkey } = await import('../nostr');
-      const ownerPubkey = npubToPubkey(video.ownerNpub);
-      if (!isHexPubkey(ownerPubkey)) {
-        if (!fallbackRootCid) {
-          await cacheResolvedFeedTreeRoot(video.ownerNpub!, video.treeName!, null);
-        }
-        return fallbackRootCid;
-      }
-
-      const event = await withTimeout(ndk.fetchEvent({
-        kinds: [30078],
-        authors: [ownerPubkey],
-        '#d': [video.treeName],
-      }, { closeOnEose: true }), timeoutMs);
-      if (event) {
-        const hashHex = event.tags.find((tag) => tag[0] === 'hash')?.[1];
-        if (hashHex) {
-          const keyHex = event.tags.find((tag) => tag[0] === 'key')?.[1];
-          const resolved = cid(fromHex(hashHex), keyHex ? fromHex(keyHex) : undefined);
-          await cacheResolvedFeedTreeRoot(video.ownerNpub!, video.treeName!, resolved, event.created_at);
-          return resolved;
-        }
-      }
-    } catch {
-      // Fall through to raw relay query.
-    }
-
+    let resolvedOwnerPubkey: string | null = null;
     try {
       const { npubToPubkey } = await import('../nostr');
-      const ownerPubkey = npubToPubkey(video.ownerNpub);
-      if (!isHexPubkey(ownerPubkey)) {
-        if (!fallbackRootCid) {
-          await cacheResolvedFeedTreeRoot(video.ownerNpub!, video.treeName!, null);
-        }
-        return fallbackRootCid;
-      }
+      resolvedOwnerPubkey = npubToPubkey(video.ownerNpub);
+    } catch {
+      resolvedOwnerPubkey = null;
+    }
 
-      const { SimplePool } = await import('nostr-tools');
-      const pool = new SimplePool();
-      try {
-        const events = await withTimeout(
-          pool.querySync(
-            DEFAULT_TREE_ROOT_RELAYS,
-            {
+    const lookupTasks: Array<Promise<ResolvedTreeRoot | null>> = [
+      (async (): Promise<ResolvedTreeRoot | null> => {
+        try {
+          const { getRefResolver } = await import('../refResolver');
+          const resolver = getRefResolver();
+          const resolved = await withTimeout(
+            resolver.resolve(`${video.ownerNpub}/${video.treeName}`),
+            timeoutMs,
+          );
+          return resolved ? { cid: resolved } : null;
+        } catch {
+          return null;
+        }
+      })(),
+    ];
+
+    if (isHexPubkey(resolvedOwnerPubkey)) {
+      lookupTasks.push(
+        (async (): Promise<ResolvedTreeRoot | null> => {
+          try {
+            const { ndk } = await import('../nostr');
+            const event = await withTimeout(ndk.fetchEvent({
               kinds: [30078],
-              authors: [ownerPubkey],
+              authors: [resolvedOwnerPubkey],
               '#d': [video.treeName],
-              limit: 4,
-            },
-            { maxWait: timeoutMs },
-          ),
-          timeoutMs + 500,
+            }, { closeOnEose: true }), timeoutMs);
+            const hashHex = event?.tags.find((tag) => tag[0] === 'hash')?.[1];
+            if (!hashHex) {
+              return null;
+            }
+            const keyHex = event.tags.find((tag) => tag[0] === 'key')?.[1];
+            return {
+              cid: cid(fromHex(hashHex), keyHex ? fromHex(keyHex) : undefined),
+              updatedAt: event.created_at,
+            };
+          } catch {
+            return null;
+          }
+        })(),
+        (async (): Promise<ResolvedTreeRoot | null> => {
+          try {
+            const { SimplePool } = await import('nostr-tools');
+            const pool = new SimplePool();
+            try {
+              const events = await withTimeout(
+                pool.querySync(
+                  DEFAULT_TREE_ROOT_RELAYS,
+                  {
+                    kinds: [30078],
+                    authors: [resolvedOwnerPubkey],
+                    '#d': [video.treeName],
+                    limit: 4,
+                  },
+                  { maxWait: timeoutMs },
+                ),
+                timeoutMs + 500,
+              );
+              const sortedEvents = events
+                ? Array.from(events).sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
+                : [];
+              const latestEvent = sortedEvents[0];
+              const hashHex = latestEvent?.tags.find((tag) => tag[0] === 'hash')?.[1];
+              if (!hashHex) {
+                return null;
+              }
+              const keyHex = latestEvent.tags.find((tag) => tag[0] === 'key')?.[1];
+              return {
+                cid: cid(fromHex(hashHex), keyHex ? fromHex(keyHex) : undefined),
+                updatedAt: latestEvent.created_at,
+              };
+            } finally {
+              try {
+                pool.close(DEFAULT_TREE_ROOT_RELAYS);
+              } catch {}
+              try {
+                pool.destroy();
+              } catch {}
+            }
+          } catch {
+            return null;
+          }
+        })(),
+      );
+    }
+
+    try {
+      const resolved = await firstNonNull(lookupTasks);
+      if (resolved) {
+        await cacheResolvedFeedTreeRoot(
+          video.ownerNpub!,
+          video.treeName!,
+          resolved.cid,
+          resolved.updatedAt,
         );
-        const sortedEvents = events
-          ? Array.from(events).sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
-          : [];
-        const latestEvent = sortedEvents[0];
-        if (!latestEvent) {
-          if (!fallbackRootCid) {
-            await cacheResolvedFeedTreeRoot(video.ownerNpub!, video.treeName!, null);
-          }
-          return fallbackRootCid;
-        }
-
-        const hashHex = latestEvent.tags.find((tag) => tag[0] === 'hash')?.[1];
-        if (!hashHex) {
-          if (!fallbackRootCid) {
-            await cacheResolvedFeedTreeRoot(video.ownerNpub!, video.treeName!, null);
-          }
-          return fallbackRootCid;
-        }
-
-        const keyHex = latestEvent.tags.find((tag) => tag[0] === 'key')?.[1];
-        const resolved = cid(fromHex(hashHex), keyHex ? fromHex(keyHex) : undefined);
-        await cacheResolvedFeedTreeRoot(video.ownerNpub!, video.treeName!, resolved, latestEvent.created_at);
-        return resolved;
-      } finally {
-        try {
-          pool.close(DEFAULT_TREE_ROOT_RELAYS);
-        } catch {}
-        try {
-          pool.destroy();
-        } catch {}
+        return resolved.cid;
       }
     } catch {
       if (!fallbackRootCid) {
@@ -210,6 +255,11 @@ export async function resolveFeedVideoRootCidAsync(
       }
       return fallbackRootCid;
     }
+
+    if (!fallbackRootCid) {
+      await cacheResolvedFeedTreeRoot(video.ownerNpub!, video.treeName!, null);
+    }
+    return fallbackRootCid;
   })();
 
   inFlightFeedRootResolutions.set(cacheKey, lookup);

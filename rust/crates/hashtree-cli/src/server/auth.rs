@@ -20,7 +20,10 @@ use std::sync::{
     Arc, Mutex as StdMutex,
 };
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, Mutex};
+use tokio::{
+    sync::{mpsc, watch, Mutex},
+    task::JoinHandle,
+};
 
 const LOOKUP_CACHE_CAPACITY: usize = 4096;
 const LOOKUP_CACHE_HIT_TTL: Duration = Duration::from_secs(300);
@@ -127,10 +130,18 @@ pub struct PendingRequest {
     pub origin_protocol: WsProtocol,
 }
 
+pub struct UpstreamNostrSubscription {
+    pub close_tx: watch::Sender<bool>,
+    pub tasks: Vec<JoinHandle<()>>,
+}
+
 pub struct WsRelayState {
     pub clients: Mutex<HashMap<u64, mpsc::UnboundedSender<Message>>>,
     pub pending: Mutex<HashMap<(u64, u32), PendingRequest>>,
     pub client_protocols: Mutex<HashMap<u64, WsProtocol>>,
+    pub upstream_nostr_subscriptions: Mutex<HashMap<(u64, String), UpstreamNostrSubscription>>,
+    pub upstream_seen_events: Mutex<HashMap<(u64, String), HashSet<String>>>,
+    pub upstream_pending_eose: Mutex<HashMap<(u64, String), usize>>,
     pub next_client_id: AtomicU64,
     pub next_request_id: AtomicU32,
 }
@@ -141,6 +152,9 @@ impl WsRelayState {
             clients: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             client_protocols: Mutex::new(HashMap::new()),
+            upstream_nostr_subscriptions: Mutex::new(HashMap::new()),
+            upstream_seen_events: Mutex::new(HashMap::new()),
+            upstream_pending_eose: Mutex::new(HashMap::new()),
             next_client_id: AtomicU64::new(1),
             next_request_id: AtomicU32::new(1),
         }

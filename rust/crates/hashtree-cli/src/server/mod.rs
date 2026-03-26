@@ -159,6 +159,7 @@ impl HashtreeServer {
         let public_routes = Router::new()
             .route("/", get(handlers::serve_root))
             .route("/ws", get(ws_relay::ws_data))
+            .route("/ws/", get(ws_relay::ws_data))
             .route(
                 "/htree/test",
                 get(handlers::htree_test).head(handlers::htree_test),

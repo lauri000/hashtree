@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 describe('native daemon relay selection', () => {
-  it('routes native mode through the embedded daemon websocket relay', async () => {
+  it('routes native mode through only the embedded daemon websocket relay', async () => {
     installWindow('http://127.0.0.1:21417');
     const { getEffectiveNdkRelayUrls, getNativeDaemonRelayUrl } = await import('../src/nostr/ndk');
 

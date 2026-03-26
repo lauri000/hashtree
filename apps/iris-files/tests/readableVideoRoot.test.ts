@@ -271,7 +271,7 @@ describe('resolveReadableVideoRoot', () => {
     expect(querySync).toHaveBeenCalledTimes(1);
   });
 
-  it('avoids raw relay history queries in native mode', async () => {
+  it('still allows raw relay history queries in native mode when ndk history misses', async () => {
     vi.stubGlobal('window', {
       location: {
         protocol: 'htree:',
@@ -280,21 +280,69 @@ describe('resolveReadableVideoRoot', () => {
       },
       __HTREE_SERVER_URL__: 'http://127.0.0.1:21417',
     });
-    listDirectory.mockResolvedValue([]);
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid, ROOT)) return [{ name: 'video.mp4' }];
+      if (sameHash(cid, FALLBACK)) return [{ name: 'video.mp4' }, { name: 'thumbnail.jpg' }];
+      return [];
+    });
     ndkFetchEvents.mockResolvedValue(new Set([
       {
         created_at: 20,
         tags: [['d', 'videos/Test'], ['hash', Buffer.from(ROOT.hash).toString('hex')]],
       },
     ]));
+    querySync.mockResolvedValue([
+      {
+        created_at: 20,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(ROOT.hash).toString('hex')]],
+      },
+      {
+        created_at: 10,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(FALLBACK.hash).toString('hex')]],
+      },
+    ]);
 
-    const { resolveReadableVideoRoot } = await import('../src/lib/readableVideoRoot');
-    await expect(resolveReadableVideoRoot({
+    const { resolveReadableThumbnailRoot } = await import('../src/lib/readableVideoRoot');
+    await expect(resolveReadableThumbnailRoot({
       rootCid: ROOT,
       npub: 'npub1example',
       treeName: 'videos/Test',
-    })).resolves.toEqual(ROOT);
-    expect(querySync).not.toHaveBeenCalled();
+    })).resolves.toEqual(FALLBACK);
+    expect(querySync).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts raw relay history lookup immediately when ndk history hangs', async () => {
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid, ROOT)) return [{ name: 'video.mp4' }];
+      if (sameHash(cid, FALLBACK)) return [{ name: 'video.mp4' }, { name: 'thumbnail.jpg' }];
+      return [];
+    });
+    ndkFetchEvents.mockImplementation(() => new Promise((resolve) => {
+      setTimeout(() => resolve(new Set()), 20);
+    }));
+    querySync.mockResolvedValue([
+      {
+        created_at: 20,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(ROOT.hash).toString('hex')]],
+      },
+      {
+        created_at: 10,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(FALLBACK.hash).toString('hex')]],
+      },
+    ]);
+
+    const { resolveReadableThumbnailRoot } = await import('../src/lib/readableVideoRoot');
+    const resultPromise = resolveReadableThumbnailRoot({
+      rootCid: ROOT,
+      npub: 'npub1example',
+      treeName: 'videos/Test',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(querySync).toHaveBeenCalledTimes(1);
+
+    await expect(resultPromise).resolves.toEqual(FALLBACK);
   });
 
   it('treats direct-root playable blobs as readable without falling back to history', async () => {

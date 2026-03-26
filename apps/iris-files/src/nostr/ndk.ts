@@ -121,9 +121,14 @@ export function getNdkRelayStats(): Array<{
   eventsReceived: number;
   eventsSent: number;
 }> {
+  const connectedRelayUrls = new Set(
+    typeof ndk.pool?.connectedRelays === 'function'
+      ? ndk.pool.connectedRelays().map((relay) => normalizeRelayUrl(relay.url))
+      : [],
+  );
   return Array.from(ndk.pool.relays.values()).map((relay) => ({
     url: relay.url,
-    connected: relay.status >= 5,
+    connected: connectedRelayUrls.has(normalizeRelayUrl(relay.url)) || relay.connectivity?.connected === true,
     eventsReceived: 0,
     eventsSent: 0,
   }));

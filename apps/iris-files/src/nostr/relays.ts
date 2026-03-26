@@ -1,37 +1,20 @@
-/**
- * Relay Management
- *
- * Relays run in the worker. This file provides relay status tracking
- * by polling the worker and updating the nostrStore.
- */
 import { nostrStore, type RelayStatus, type RelayInfo } from './store';
 import { settingsStore, DEFAULT_NETWORK_SETTINGS } from '../stores/settings';
 import { getWorkerAdapter } from '../lib/workerInit';
+import {
+  buildRelayStatusSnapshot,
+  normalizeRelayUrl,
+  relayInfoListsEqual,
+  relayStatusMapsEqual,
+} from './relayStatusSnapshot';
+
+export { normalizeRelayUrl } from './relayStatusSnapshot';
 
 let relayTrackingInitialized = false;
 
-function relayStatusMapsEqual(a: Map<string, RelayStatus>, b: Map<string, RelayStatus>): boolean {
-  if (a.size !== b.size) return false;
-  for (const [key, value] of a.entries()) {
-    if (b.get(key) !== value) return false;
-  }
-  return true;
-}
-
-function relayInfoListsEqual(a: RelayInfo[], b: RelayInfo[]): boolean {
-  if (a.length !== b.length) return false;
-  return a.every((relay, index) =>
-    relay.url === b[index]?.url && relay.status === b[index]?.status
-  );
-}
-
-// Normalize relay URL (remove trailing slash)
-export function normalizeRelayUrl(url: string): string {
-  return url.replace(/\/$/, '');
-}
-
 /**
- * Update relay status by polling the worker
+ * Update relay status by polling the current adapter. In native mode this is
+ * the main-thread NDK transport; in web mode it is the worker relay pool.
  */
 export async function updateConnectedRelayCount(): Promise<void> {
   const adapter = getWorkerAdapter();
@@ -39,6 +22,9 @@ export async function updateConnectedRelayCount(): Promise<void> {
     const state = nostrStore.getState();
     if (state.connectedRelays !== 0) {
       nostrStore.setConnectedRelays(0);
+    }
+    if (state.transportRelays.length !== 0) {
+      nostrStore.setTransportRelays([]);
     }
     return;
   }
@@ -52,46 +38,20 @@ export async function updateConnectedRelayCount(): Promise<void> {
       ? settings.network.relays
       : DEFAULT_NETWORK_SETTINGS.relays;
 
-    // Normalize configured relays for comparison
-    const configuredNormalized = new Set(configuredRelays.map(normalizeRelayUrl));
-
-    // Initialize status maps
-    const statuses = new Map<string, RelayStatus>();
-    const discoveredRelays: RelayInfo[] = [];
-    let connected = 0;
-
-    // Initialize all configured relays as disconnected
-    for (const url of configuredRelays) {
-      statuses.set(normalizeRelayUrl(url), 'disconnected');
-    }
-
-    // Update with actual statuses from worker
-    for (const relay of stats) {
-      const status: RelayStatus = relay.connected ? 'connected' : 'disconnected';
-      const normalizedUrl = normalizeRelayUrl(relay.url);
-
-      if (configuredNormalized.has(normalizedUrl)) {
-        statuses.set(normalizedUrl, status);
-      } else {
-        discoveredRelays.push({ url: normalizedUrl, status });
-      }
-
-      if (relay.connected) {
-        connected++;
-      }
-    }
-
-    discoveredRelays.sort((a, b) => a.url.localeCompare(b.url));
+    const snapshot = buildRelayStatusSnapshot(configuredRelays, stats);
 
     const state = nostrStore.getState();
-    if (state.connectedRelays !== connected) {
-      nostrStore.setConnectedRelays(connected);
+    if (state.connectedRelays !== snapshot.connectedRelays) {
+      nostrStore.setConnectedRelays(snapshot.connectedRelays);
     }
-    if (!relayStatusMapsEqual(state.relayStatuses, statuses)) {
-      nostrStore.setRelayStatuses(statuses);
+    if (!relayStatusMapsEqual(state.relayStatuses, snapshot.relayStatuses)) {
+      nostrStore.setRelayStatuses(snapshot.relayStatuses);
     }
-    if (!relayInfoListsEqual(state.discoveredRelays, discoveredRelays)) {
-      nostrStore.setDiscoveredRelays(discoveredRelays);
+    if (!relayInfoListsEqual(state.transportRelays, snapshot.transportRelays)) {
+      nostrStore.setTransportRelays(snapshot.transportRelays);
+    }
+    if (!relayInfoListsEqual(state.discoveredRelays, snapshot.discoveredRelays)) {
+      nostrStore.setDiscoveredRelays(snapshot.discoveredRelays);
     }
   } catch (err) {
     console.error('[Relays] Failed to get relay stats:', err);

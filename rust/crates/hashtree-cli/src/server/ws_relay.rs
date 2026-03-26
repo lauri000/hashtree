@@ -9,13 +9,14 @@ use futures::{SinkExt, StreamExt};
 use hashtree_core::from_hex;
 use nostr::{
     ClientMessage as NostrClientMessage, JsonUtil as NostrJsonUtil,
-    RelayMessage as NostrRelayMessage,
+    Filter as NostrFilter, RelayMessage as NostrRelayMessage, SubscriptionId,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, time::Duration};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
+use tokio_tungstenite::{connect_async, tungstenite::Message as TungsteniteMessage};
 
-use super::auth::{AppState, PendingRequest, WsProtocol};
+use super::auth::{AppState, PendingRequest, UpstreamNostrSubscription, WsProtocol};
 use crate::webrtc::types::{
     encode_request, encode_response, parse_message, DataMessage, DataRequest, DataResponse, MAX_HTL,
 };
@@ -116,6 +117,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         _ = recv_task => {},
     }
 
+    close_all_upstream_nostr_subscriptions(&state, client_id).await;
+
     {
         let mut clients = state.ws_relay.clients.lock().await;
         clients.remove(&client_id);
@@ -148,6 +151,283 @@ fn parse_ws_text_message(text: &str) -> Option<WsTextMessage> {
 
     None
 }
+async fn close_upstream_nostr_subscription(
+    state: &AppState,
+    client_id: u64,
+    subscription_id: &SubscriptionId,
+) {
+    let key = (client_id, subscription_id.to_string());
+    let subscription = {
+        let mut subscriptions = state.ws_relay.upstream_nostr_subscriptions.lock().await;
+        subscriptions.remove(&key)
+    };
+    if let Some(subscription) = subscription {
+        let _ = subscription.close_tx.send(true);
+        for task in subscription.tasks {
+            task.abort();
+        }
+    }
+    state
+        .ws_relay
+        .upstream_pending_eose
+        .lock()
+        .await
+        .remove(&key);
+    state.ws_relay.upstream_seen_events.lock().await.remove(&key);
+}
+
+async fn close_all_upstream_nostr_subscriptions(state: &AppState, client_id: u64) {
+    let keys = {
+        let subscriptions = state.ws_relay.upstream_nostr_subscriptions.lock().await;
+        subscriptions
+            .keys()
+            .filter(|(id, _)| *id == client_id)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    for (_, sub_id) in keys {
+        close_upstream_nostr_subscription(state, client_id, &SubscriptionId::new(sub_id)).await;
+    }
+}
+
+async fn forward_upstream_nostr_message(
+    state: &AppState,
+    client_id: u64,
+    subscription_id: &SubscriptionId,
+    text: &str,
+) {
+    let Ok(message) = NostrRelayMessage::from_json(text) else {
+        return;
+    };
+
+    match message {
+        NostrRelayMessage::Event {
+            subscription_id: sid,
+            event,
+        } if sid == *subscription_id => {
+            let event = *event;
+            let key = (client_id, subscription_id.to_string());
+            let event_id = event.id.to_hex();
+            let inserted = {
+                let mut seen_events = state.ws_relay.upstream_seen_events.lock().await;
+                seen_events.entry(key).or_default().insert(event_id)
+            };
+            if !inserted {
+                return;
+            }
+            if let Some(relay) = &state.nostr_relay {
+                let _ = relay.ingest_trusted_event_silent(event.clone()).await;
+            }
+            send_nostr(
+                state,
+                client_id,
+                NostrRelayMessage::event(subscription_id.clone(), event),
+            )
+            .await;
+        }
+        NostrRelayMessage::Closed {
+            subscription_id: sid,
+            message,
+        } if sid == *subscription_id => {
+            send_nostr(
+                state,
+                client_id,
+                NostrRelayMessage::closed(subscription_id.clone(), message),
+            )
+            .await;
+        }
+        _ => {}
+    }
+}
+
+async fn mark_upstream_nostr_relay_complete(
+    state: &AppState,
+    client_id: u64,
+    subscription_id: &SubscriptionId,
+) {
+    let key = (client_id, subscription_id.to_string());
+    let should_send_eose = {
+        let mut pending = state.ws_relay.upstream_pending_eose.lock().await;
+        let Some(remaining) = pending.get_mut(&key) else {
+            return;
+        };
+        if *remaining > 0 {
+            *remaining -= 1;
+        }
+        if *remaining == 0 {
+            pending.remove(&key);
+            true
+        } else {
+            false
+        }
+    };
+
+    if should_send_eose {
+        send_nostr(state, client_id, NostrRelayMessage::eose(subscription_id.clone())).await;
+    }
+}
+
+async fn run_upstream_nostr_subscription(
+    state: AppState,
+    client_id: u64,
+    relay_url: String,
+    subscription_id: SubscriptionId,
+    filters: Vec<NostrFilter>,
+    mut close_rx: watch::Receiver<bool>,
+) {
+    let mut relay_complete = false;
+    let Ok((socket, _)) = connect_async(relay_url.as_str()).await else {
+        tracing::warn!(
+            "upstream nostr relay connect failed: client_id={} subscription_id={} relay={}",
+            client_id,
+            subscription_id,
+            relay_url,
+        );
+        mark_upstream_nostr_relay_complete(&state, client_id, &subscription_id).await;
+        return;
+    };
+    let (mut write, mut read) = socket.split();
+    let request = NostrClientMessage::req(subscription_id.clone(), filters).as_json();
+    if write
+        .send(TungsteniteMessage::Text(request.into()))
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            "upstream nostr relay request send failed: client_id={} subscription_id={} relay={}",
+            client_id,
+            subscription_id,
+            relay_url,
+        );
+        mark_upstream_nostr_relay_complete(&state, client_id, &subscription_id).await;
+        return;
+    }
+
+    loop {
+        tokio::select! {
+            _ = close_rx.changed() => {
+                if *close_rx.borrow() {
+                    let close = NostrClientMessage::close(subscription_id.clone()).as_json();
+                    let _ = write.send(TungsteniteMessage::Text(close.into())).await;
+                    let _ = write.close().await;
+                    break;
+                }
+            }
+            message = read.next() => {
+                match message {
+                    Some(Ok(TungsteniteMessage::Text(text))) => {
+                        if matches!(
+                            NostrRelayMessage::from_json(text.as_str()),
+                            Ok(NostrRelayMessage::EndOfStoredEvents(sid)) if sid == subscription_id
+                        ) {
+                            if !relay_complete {
+                                relay_complete = true;
+                                mark_upstream_nostr_relay_complete(&state, client_id, &subscription_id).await;
+                            }
+                            continue;
+                        }
+                        forward_upstream_nostr_message(&state, client_id, &subscription_id, &text).await;
+                    }
+                    Some(Ok(TungsteniteMessage::Ping(payload))) => {
+                        let _ = write.send(TungsteniteMessage::Pong(payload)).await;
+                    }
+                    Some(Ok(TungsteniteMessage::Close(_))) | None => {
+                        if !relay_complete {
+                            mark_upstream_nostr_relay_complete(&state, client_id, &subscription_id).await;
+                        }
+                        break;
+                    }
+                    Some(Err(_)) => {
+                        if !relay_complete {
+                            mark_upstream_nostr_relay_complete(&state, client_id, &subscription_id).await;
+                        }
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+async fn start_upstream_nostr_subscription(
+    state: &AppState,
+    client_id: u64,
+    subscription_id: SubscriptionId,
+    filters: Vec<NostrFilter>,
+) -> usize {
+    close_upstream_nostr_subscription(state, client_id, &subscription_id).await;
+    if state.nostr_relay_urls.is_empty() || filters.is_empty() {
+        tracing::info!(
+            "upstream nostr relay skipped: client_id={} subscription_id={} relays={} filters={}",
+            client_id,
+            subscription_id,
+            state.nostr_relay_urls.len(),
+            filters.len(),
+        );
+        return 0;
+    }
+
+    let mut relay_urls = Vec::new();
+    let mut seen = HashSet::new();
+    for relay in &state.nostr_relay_urls {
+        let relay = relay.trim();
+        if relay.is_empty() || !seen.insert(relay.to_string()) {
+            continue;
+        }
+        relay_urls.push(relay.to_string());
+    }
+    if relay_urls.is_empty() {
+        tracing::info!(
+            "upstream nostr relay skipped after normalization: client_id={} subscription_id={}",
+            client_id,
+            subscription_id,
+        );
+        return 0;
+    }
+
+    tracing::info!(
+        "upstream nostr relay start: client_id={} subscription_id={} relays={}",
+        client_id,
+        subscription_id,
+        relay_urls.len(),
+    );
+
+    let key = (client_id, subscription_id.to_string());
+    state
+        .ws_relay
+        .upstream_seen_events
+        .lock()
+        .await
+        .insert(key.clone(), HashSet::new());
+    state
+        .ws_relay
+        .upstream_pending_eose
+        .lock()
+        .await
+        .insert(key.clone(), relay_urls.len());
+
+    let (close_tx, close_rx) = watch::channel(false);
+    let mut tasks = Vec::new();
+    for relay_url in &relay_urls {
+        tasks.push(tokio::spawn(run_upstream_nostr_subscription(
+            state.clone(),
+            client_id,
+            relay_url.clone(),
+            subscription_id.clone(),
+            filters.clone(),
+            close_rx.clone(),
+        )));
+    }
+
+    state
+        .ws_relay
+        .upstream_nostr_subscriptions
+        .lock()
+        .await
+        .insert(key, UpstreamNostrSubscription { close_tx, tasks });
+    relay_urls.len()
+}
 
 async fn handle_message(client_id: u64, msg: Message, state: &AppState) {
     match msg {
@@ -174,7 +454,80 @@ async fn handle_message(client_id: u64, msg: Message, state: &AppState) {
                     }
                     WsTextMessage::Nostr(msg) => {
                         if let Some(relay) = &state.nostr_relay {
-                            relay.handle_client_message(client_id, msg).await;
+                            match msg {
+                                NostrClientMessage::Req {
+                                    subscription_id,
+                                    filters,
+                                } => {
+                                    let local_events = match relay
+                                        .register_subscription_query(
+                                            client_id,
+                                            subscription_id.clone(),
+                                            filters.clone(),
+                                        )
+                                        .await
+                                    {
+                                        Ok(events) => events,
+                                        Err(message) => {
+                                            send_nostr(
+                                                state,
+                                                client_id,
+                                                NostrRelayMessage::closed(subscription_id, message),
+                                            )
+                                            .await;
+                                            return;
+                                        }
+                                    };
+
+                                    let upstream_relays = start_upstream_nostr_subscription(
+                                        state,
+                                        client_id,
+                                        subscription_id.clone(),
+                                        filters,
+                                    )
+                                    .await;
+                                    if upstream_relays > 0 {
+                                        let key = (client_id, subscription_id.to_string());
+                                        let mut seen_events = state.ws_relay.upstream_seen_events.lock().await;
+                                        seen_events
+                                            .entry(key)
+                                            .or_default()
+                                            .extend(local_events.iter().map(|event| event.id.to_hex()));
+                                    }
+                                    for event in local_events {
+                                        send_nostr(
+                                            state,
+                                            client_id,
+                                            NostrRelayMessage::event(subscription_id.clone(), event),
+                                        )
+                                        .await;
+                                    }
+                                    if upstream_relays == 0 {
+                                        send_nostr(
+                                            state,
+                                            client_id,
+                                            NostrRelayMessage::eose(subscription_id),
+                                        )
+                                        .await;
+                                    }
+                                }
+                                NostrClientMessage::Close(subscription_id) => {
+                                    close_upstream_nostr_subscription(
+                                        state,
+                                        client_id,
+                                        &subscription_id,
+                                    )
+                                    .await;
+                                    relay.handle_client_message(
+                                        client_id,
+                                        NostrClientMessage::Close(subscription_id.clone()),
+                                    )
+                                    .await;
+                                }
+                                other => {
+                                    relay.handle_client_message(client_id, other).await;
+                                }
+                            }
                         } else {
                             handle_nostr_message(client_id, msg, state).await;
                         }
@@ -688,8 +1041,16 @@ async fn set_client_protocol(state: &AppState, client_id: u64, protocol: WsProto
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use futures::{SinkExt, StreamExt};
+    use crate::nostr_relay::{NostrRelay, NostrRelayConfig};
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{accept_async, tungstenite::Message as TungsteniteMessage};
     use nostr::secp256k1::schnorr::Signature;
-    use nostr::{EventBuilder, Keys, Kind, SubscriptionId};
+    use nostr::{EventBuilder, Filter, Keys, Kind, SubscriptionId};
 
     #[test]
     fn parse_ws_text_message_detects_nostr_req() {
@@ -755,5 +1116,255 @@ mod tests {
             NostrRelayMessage::Ok { status, .. } => assert!(!*status),
             other => panic!("expected OK=false, got {:?}", other),
         }
+    }
+
+    async fn spawn_mock_upstream_relay(events: Vec<nostr::Event>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind relay");
+        let addr = listener.local_addr().expect("relay addr");
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept relay");
+            let ws = accept_async(stream).await.expect("accept websocket");
+            let (mut write, mut read) = ws.split();
+
+            while let Some(Ok(message)) = read.next().await {
+                let TungsteniteMessage::Text(text) = message else {
+                    continue;
+                };
+                let Ok(parsed) = NostrClientMessage::from_json(text.as_bytes()) else {
+                    continue;
+                };
+                if let NostrClientMessage::Req {
+                    subscription_id,
+                    filters,
+                } = parsed
+                {
+                    for event in events
+                        .iter()
+                        .filter(|event| filters.iter().any(|filter| filter.match_event(event)))
+                    {
+                        let _ = write
+                            .send(TungsteniteMessage::Text(
+                                NostrRelayMessage::event(subscription_id.clone(), event.clone())
+                                    .as_json()
+                                    .into(),
+                            ))
+                            .await;
+                    }
+                    let _ = write
+                        .send(TungsteniteMessage::Text(
+                            NostrRelayMessage::eose(subscription_id).as_json().into(),
+                        ))
+                        .await;
+                }
+            }
+        });
+        format!("ws://{}", addr)
+    }
+
+    fn test_app_state(
+        tmp: &TempDir,
+        relay: Arc<NostrRelay>,
+        relay_url: String,
+    ) -> Result<AppState> {
+        let store = Arc::new(crate::storage::HashtreeStore::with_options(
+            tmp.path(),
+            None,
+            128 * 1024 * 1024,
+        )?);
+        Ok(AppState {
+            store,
+            auth: None,
+            webrtc_peers: None,
+            ws_relay: Arc::new(super::super::auth::WsRelayState::new()),
+            max_upload_bytes: 5 * 1024 * 1024,
+            public_writes: true,
+            allowed_pubkeys: HashSet::new(),
+            upstream_blossom: Vec::new(),
+            social_graph: None,
+            social_graph_store: None,
+            social_graph_root: None,
+            socialgraph_snapshot_public: false,
+            nostr_relay: Some(relay),
+            nostr_relay_urls: vec![relay_url],
+            tree_root_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            inflight_blob_fetches: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            directory_listing_cache: Arc::new(std::sync::Mutex::new(super::super::auth::new_lookup_cache())),
+            resolved_path_cache: Arc::new(std::sync::Mutex::new(super::super::auth::new_lookup_cache())),
+            thumbnail_path_cache: Arc::new(std::sync::Mutex::new(super::super::auth::new_lookup_cache())),
+            cid_size_cache: Arc::new(std::sync::Mutex::new(super::super::auth::new_lookup_cache())),
+        })
+    }
+
+    #[tokio::test]
+    async fn upstream_proxy_forwards_events_and_caches_them() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::new(),
+        ));
+
+        let keys = Keys::generate();
+        let relay = Arc::new(NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([keys.public_key().to_hex()]),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?);
+
+        let event = EventBuilder::new(
+            Kind::from(30078_u16),
+            "",
+            [
+                nostr::Tag::parse(&["d", "videos/Test"]).expect("d tag"),
+                nostr::Tag::parse(&["l", "hashtree"]).expect("label tag"),
+            ],
+        )
+        .to_event(&keys)?;
+
+        let relay_url = spawn_mock_upstream_relay(vec![event.clone()]).await;
+        let filter = Filter::new()
+            .authors(vec![event.pubkey])
+            .kinds(vec![event.kind]);
+        let state = test_app_state(&tmp, relay.clone(), relay_url)?;
+        let client_id = 7_u64;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        state.ws_relay.clients.lock().await.insert(client_id, tx);
+        let subscription_id = SubscriptionId::new("sub-1");
+
+        start_upstream_nostr_subscription(&state, client_id, subscription_id.clone(), vec![filter.clone()]).await;
+
+        let forwarded = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await?
+            .expect("forwarded upstream event");
+        let Message::Text(text) = forwarded else {
+            panic!("expected text event");
+        };
+        match NostrRelayMessage::from_json(text.as_str())? {
+            NostrRelayMessage::Event { subscription_id: sid, event: forwarded_event } => {
+                assert_eq!(sid, subscription_id);
+                assert_eq!(forwarded_event.id, event.id);
+            }
+            other => panic!("expected forwarded EVENT, got {:?}", other),
+        }
+
+        let eose = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await?
+            .expect("forwarded upstream eose");
+        let Message::Text(eose_text) = eose else {
+            panic!("expected text eose");
+        };
+        match NostrRelayMessage::from_json(eose_text.as_str())? {
+            NostrRelayMessage::EndOfStoredEvents(sid) => {
+                assert_eq!(sid, subscription_id);
+            }
+            other => panic!("expected forwarded EOSE, got {:?}", other),
+        }
+
+        let events = relay.query_events(&filter, 10).await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, event.id);
+
+        close_upstream_nostr_subscription(&state, client_id, &subscription_id).await;
+        assert!(state.ws_relay.upstream_nostr_subscriptions.lock().await.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn req_waits_for_upstream_event_before_eose() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::new(),
+        ));
+
+        let keys = Keys::generate();
+        let relay = Arc::new(NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([keys.public_key().to_hex()]),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?);
+
+        let event = EventBuilder::new(
+            Kind::from(30078_u16),
+            "",
+            [
+                nostr::Tag::parse(&["d", "videos/Test"]).expect("d tag"),
+                nostr::Tag::parse(&["l", "hashtree"]).expect("label tag"),
+            ],
+        )
+        .to_event(&keys)?;
+
+        let relay_url = spawn_mock_upstream_relay(vec![event.clone()]).await;
+        let state = test_app_state(&tmp, relay.clone(), relay_url)?;
+        let client_id = 11_u64;
+        let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+        let (relay_tx, _relay_rx) = mpsc::unbounded_channel();
+        state.ws_relay.clients.lock().await.insert(client_id, ws_tx);
+        relay.register_client(client_id, relay_tx, None).await;
+
+        let request = NostrClientMessage::req(
+            SubscriptionId::new("feed"),
+            vec![Filter::new()
+                .authors(vec![event.pubkey])
+                .kinds(vec![event.kind])],
+        )
+        .as_json();
+
+        handle_message(client_id, Message::Text(request.into()), &state).await;
+
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), ws_rx.recv())
+            .await?
+            .expect("first forwarded message");
+        let Message::Text(first_text) = first else {
+            panic!("expected text event");
+        };
+        match NostrRelayMessage::from_json(first_text.as_str())? {
+            NostrRelayMessage::Event { event: forwarded_event, .. } => {
+                assert_eq!(forwarded_event.id, event.id);
+            }
+            other => panic!("expected upstream EVENT before EOSE, got {:?}", other),
+        }
+
+        let second = tokio::time::timeout(std::time::Duration::from_secs(2), ws_rx.recv())
+            .await?
+            .expect("second forwarded message");
+        let Message::Text(second_text) = second else {
+            panic!("expected text eose");
+        };
+        match NostrRelayMessage::from_json(second_text.as_str())? {
+            NostrRelayMessage::EndOfStoredEvents(sid) => {
+                assert_eq!(sid, SubscriptionId::new("feed"));
+            }
+            other => panic!("expected aggregated EOSE, got {:?}", other),
+        }
+
+        Ok(())
     }
 }

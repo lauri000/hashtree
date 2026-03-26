@@ -2513,6 +2513,7 @@ pub async fn daemon_status(
     // Upstream servers
     let upstream = json!({
         "blossom_servers": state.upstream_blossom.len(),
+        "nostr_relays": state.nostr_relay_urls.len(),
     });
 
     Json(json!({
@@ -3194,6 +3195,10 @@ mod tests {
         let store = Arc::new(HashtreeStore::new(temp.path()).unwrap());
         let mut state = test_app_state(store, vec![]);
         state.webrtc_peers = Some(sample_webrtc_state().await);
+        state.nostr_relay_urls = vec![
+            "wss://relay.damus.io".to_string(),
+            "wss://nos.lol".to_string(),
+        ];
 
         let response = daemon_status(
             AxumState(state),
@@ -3212,6 +3217,7 @@ mod tests {
         assert_eq!(json["mesh"]["bytes_received"], 32);
         assert_eq!(json["mesh"]["peers"][0]["transport"], "webrtc");
         assert_eq!(json["webrtc"], json["mesh"]);
+        assert_eq!(json["upstream"]["nostr_relays"], 2);
     }
 
     #[tokio::test]

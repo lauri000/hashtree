@@ -7,14 +7,22 @@
    */
   import { appStore } from '../store';
   import { nostrStore } from '../nostr';
+  import { getNativeDaemonRelayUrl } from '../nostr/ndk';
 
   let peerCount = $derived($appStore.peerCount);
   let peersList = $derived($appStore.peers);
   let connectedRelays = $derived($nostrStore.connectedRelays);
+  let transportRelays = $derived($nostrStore.transportRelays);
   let configuredRelays = $derived($nostrStore.relays);
   let configuredRelayCount = $derived(configuredRelays.length);
+  let transportRelayCount = $derived(transportRelays.length);
+  const nativeDaemonRelayUrl = getNativeDaemonRelayUrl();
 
-  let displayRelays = $derived.by(() => connectedRelays > 0 ? connectedRelays : configuredRelayCount);
+  let displayRelays = $derived.by(() => {
+    if (connectedRelays > 0) return connectedRelays;
+    if (transportRelayCount > 0) return transportRelayCount;
+    return configuredRelayCount;
+  });
 
   // Count peers in follows pool
   let followsPeers = $derived(peersList.filter(p => p.pool === 'follows' && p.state === 'connected').length);
@@ -45,13 +53,26 @@
   });
 
   let title = $derived.by(() => {
+    const connectedTransportRelays = transportRelays.filter((relay) => relay.status === 'connected');
+    const primaryTransport = connectedTransportRelays[0]?.url ?? transportRelays[0]?.url ?? null;
+    const isDaemonTransport = primaryTransport === nativeDaemonRelayUrl;
+
     if (!isOnline) return 'Offline';
     if (connectedRelays === 0) {
+      if (primaryTransport) {
+        return isDaemonTransport
+          ? `Connecting via embedded daemon relay (${primaryTransport})`
+          : `Connecting to ${primaryTransport}`;
+      }
       return configuredRelayCount > 0
-        ? `Connecting to ${configuredRelayCount} relay${configuredRelayCount !== 1 ? 's' : ''}`
+        ? `Connecting to ${configuredRelayCount} configured relay${configuredRelayCount !== 1 ? 's' : ''}`
         : 'No relays configured';
     }
-    if (peerCount === 0) return `${connectedRelays} relay${connectedRelays !== 1 ? 's' : ''}, no peers`;
+    if (peerCount === 0) {
+      return isDaemonTransport && primaryTransport
+        ? `Embedded daemon relay connected (${primaryTransport}), no peers`
+        : `${connectedRelays} relay${connectedRelays !== 1 ? 's' : ''}, no peers`;
+    }
     if (followsPeers > 0) {
       return `${followsPeers} follow${followsPeers !== 1 ? 's' : ''}, ${peerCount - followsPeers} other, ${connectedRelays} relay${connectedRelays !== 1 ? 's' : ''}`;
     }

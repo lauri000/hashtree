@@ -3,6 +3,7 @@
   import { settingsStore, DEFAULT_NETWORK_SETTINGS } from '../../stores/settings';
   import { blossomLogStore } from '../../stores/blossomLog';
   import { appStore, formatBytes } from '../../store';
+  import { getNativeDaemonRelayUrl } from '../../nostr/ndk';
 
   // Network settings
   let networkSettings = $derived($settingsStore.network);
@@ -13,8 +14,11 @@
 
   // Relay statuses
   let relayStatuses = $derived($nostrStore.relayStatuses);
+  let transportRelays = $derived($nostrStore.transportRelays);
   let discoveredRelays = $derived($nostrStore.discoveredRelays);
   let showDiscoveredRelays = $state(false);
+  const nativeDaemonRelayUrl = getNativeDaemonRelayUrl();
+  const usesEmbeddedDaemonRelay = !!nativeDaemonRelayUrl;
 
   // Blossom log
   let blossomLogs = $derived($blossomLogStore);
@@ -108,20 +112,56 @@
     editingBlossom = false;
   }
 
+  function formatRelayRole(url: string): string {
+    if (nativeDaemonRelayUrl && url === nativeDaemonRelayUrl) {
+      return 'Embedded daemon relay';
+    }
+    return 'Direct transport relay';
+  }
+
 </script>
 
 <div class="p-4 space-y-6 max-w-2xl mx-auto">
+  {#if transportRelays.length > 0}
+    <div>
+      <div class="flex items-center justify-between mb-1">
+        <h3 class="text-xs font-medium text-muted uppercase tracking-wide">
+          Transport ({transportRelays.length})
+        </h3>
+      </div>
+      <p class="text-xs text-text-3 mb-3">
+        Live relay sockets currently used by this app
+      </p>
+      <div class="bg-surface-2 rounded divide-y divide-surface-3">
+        {#each transportRelays as relay (relay.url)}
+          <div class="flex items-center gap-2 p-3 text-sm">
+            <span class="w-2 h-2 rounded-full {getStatusColor(relay.status)} shrink-0"></span>
+            <div class="min-w-0 flex-1">
+              <div class="truncate text-text-1">{relay.url}</div>
+              <div class="truncate text-xs text-text-3">{formatRelayRole(relay.url)}</div>
+            </div>
+            <span class="text-xs text-text-3">{relay.status.charAt(0).toUpperCase() + relay.status.slice(1)}</span>
+          </div>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
   <!-- Relays -->
   <div>
     <div class="flex items-center justify-between mb-1">
       <h3 class="text-xs font-medium text-muted uppercase tracking-wide">
-        Relays ({networkSettings.relays.length})
+        {usesEmbeddedDaemonRelay ? 'Upstream Relays' : 'Relays'} ({networkSettings.relays.length})
       </h3>
       <button onclick={() => editingRelays = !editingRelays} class="btn-ghost text-xs">
         {editingRelays ? 'Done' : 'Edit'}
       </button>
     </div>
-    <p class="text-xs text-text-3 mb-3">Nostr servers for peer discovery and data sync</p>
+    <p class="text-xs text-text-3 mb-3">
+      {usesEmbeddedDaemonRelay
+        ? 'Nostr servers managed by the embedded daemon for peer discovery and data sync'
+        : 'Nostr servers for peer discovery and data sync'}
+    </p>
     <div class="bg-surface-2 rounded divide-y divide-surface-3">
       {#each networkSettings.relays as relay (relay)}
         {@const status = getRelayStatus(relay)}
@@ -132,6 +172,8 @@
             <button onclick={() => removeRelay(relay)} class="btn-ghost p-1 text-danger" title="Remove relay">
               <span class="i-lucide-x text-sm"></span>
             </button>
+          {:else if usesEmbeddedDaemonRelay}
+            <span class="text-xs text-text-3">Configured upstream</span>
           {:else}
             <span class="text-xs text-text-3">{status.charAt(0).toUpperCase() + status.slice(1)}</span>
           {/if}
@@ -153,7 +195,7 @@
     {/if}
 
     <!-- Discovered Relays -->
-    {#if discoveredRelays.length > 0}
+    {#if discoveredRelays.length > 0 && !usesEmbeddedDaemonRelay}
       <div class="bg-surface-2 rounded mt-1">
         <button
           onclick={() => showDiscoveredRelays = !showDiscoveredRelays}

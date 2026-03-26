@@ -4,7 +4,6 @@ import { SimplePool } from 'nostr-tools';
 import { npubToPubkey, ndk } from '../nostr';
 import { getTree } from '../store';
 import { logHtreeDebug } from './htreeDebug';
-import { getInjectedHtreeServerUrl } from './nativeHtree';
 import { findPlayableMediaEntry } from './playableMedia';
 import { readDirectPlayableMediaFileName } from './directPlayableRoot';
 
@@ -97,9 +96,6 @@ async function queryRawTreeRootEvents(pubkey: string, treeName: string): Promise
   if (!isHexPubkey(pubkey)) {
     return null;
   }
-  if (getInjectedHtreeServerUrl()) {
-    return null;
-  }
   const relayUrls = getHistoryRelayUrls();
   if (relayUrls.length === 0) {
     return null;
@@ -155,23 +151,28 @@ async function getHistoricalRootEvents(pubkey: string, treeName: string): Promis
   }
 
   const lookup = (async (): Promise<NDKEvent[]> => {
-    let ndkEvents: Iterable<NDKEvent> | null = null;
-    try {
-      const timedEvents = await withTimeout(
-        ndk.fetchEvents({
-          kinds: [30078],
-          authors: [pubkey],
-          '#d': [treeName],
-          limit: MAX_ROOT_HISTORY_CANDIDATES,
-        }),
-        ROOT_HISTORY_FETCH_TIMEOUT_MS,
-      );
-      ndkEvents = timedEvents === TIMEOUT ? null : timedEvents;
-    } catch {
-      ndkEvents = null;
-    }
+    const [ndkEventsResult, rawEventsResult] = await Promise.allSettled([
+      (async (): Promise<Iterable<NDKEvent> | null> => {
+        try {
+          const timedEvents = await withTimeout(
+            ndk.fetchEvents({
+              kinds: [30078],
+              authors: [pubkey],
+              '#d': [treeName],
+              limit: MAX_ROOT_HISTORY_CANDIDATES,
+            }),
+            ROOT_HISTORY_FETCH_TIMEOUT_MS,
+          );
+          return timedEvents === TIMEOUT ? null : timedEvents;
+        } catch {
+          return null;
+        }
+      })(),
+      queryRawTreeRootEvents(pubkey, treeName),
+    ]);
 
-    const rawEvents = await queryRawTreeRootEvents(pubkey, treeName);
+    const ndkEvents = ndkEventsResult.status === 'fulfilled' ? ndkEventsResult.value : null;
+    const rawEvents = rawEventsResult.status === 'fulfilled' ? rawEventsResult.value : null;
     const merged = uniqueEvents([
       ...normalizeHistoricalEvents(ndkEvents),
       ...normalizeHistoricalEvents(rawEvents),

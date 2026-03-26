@@ -292,6 +292,14 @@ mod imp {
         }
 
         pub async fn ingest_trusted_event(&self, event: Event) -> Result<()> {
+            self.ingest_trusted_event_inner(event, true).await
+        }
+
+        pub async fn ingest_trusted_event_silent(&self, event: Event) -> Result<()> {
+            self.ingest_trusted_event_inner(event, false).await
+        }
+
+        async fn ingest_trusted_event_inner(&self, event: Event, broadcast: bool) -> Result<()> {
             event
                 .verify()
                 .map_err(|e| anyhow::anyhow!("invalid signature: {}", e))?;
@@ -308,7 +316,9 @@ mod imp {
                     .ingest_with_storage_class(&event, storage_class)?;
             }
 
-            self.broadcast_event(&event).await;
+            if broadcast {
+                self.broadcast_event(&event).await;
+            }
             Ok(())
         }
 
@@ -408,6 +418,64 @@ mod imp {
             }
         }
 
+        pub async fn register_subscription_query(
+            &self,
+            client_id: u64,
+            subscription_id: SubscriptionId,
+            mut filters: Vec<NostrFilter>,
+        ) -> std::result::Result<Vec<Event>, &'static str> {
+            if !self.allow_req(client_id).await {
+                return Err("rate limited");
+            }
+
+            if filters.len() > self.config.max_filters_per_sub {
+                filters.truncate(self.config.max_filters_per_sub);
+            }
+
+            {
+                let mut subs = self.subscriptions.lock().await;
+                let entry = subs.entry(client_id).or_default();
+                if !entry.contains_key(&subscription_id)
+                    && entry.len() >= self.config.max_subs_per_client
+                {
+                    return Err("too many subscriptions");
+                }
+                entry.insert(subscription_id, filters.clone());
+            }
+
+            let mut seen: HashSet<EventId> = HashSet::new();
+            let mut events = Vec::new();
+            for filter in &filters {
+                let limit = filter
+                    .limit
+                    .unwrap_or(self.config.max_query_limit)
+                    .min(self.config.max_query_limit);
+                if limit == 0 {
+                    continue;
+                }
+
+                if !prefers_trusted_only(filter) {
+                    let recent = {
+                        let cache = self.recent_events.lock().await;
+                        cache.matching(filter)
+                    };
+                    for event in recent {
+                        if seen.insert(event.id) {
+                            events.push(event);
+                        }
+                    }
+                }
+
+                for event in self.trusted.query(filter, limit) {
+                    if seen.insert(event.id) {
+                        events.push(event);
+                    }
+                }
+            }
+
+            Ok(events)
+        }
+
         async fn handle_auth(&self, client_id: u64, event: Event) {
             let ok = event.verify().is_ok();
             let message = if ok { "" } else { "invalid auth" };
@@ -486,76 +554,32 @@ mod imp {
             &self,
             client_id: u64,
             subscription_id: SubscriptionId,
-            mut filters: Vec<NostrFilter>,
+            filters: Vec<NostrFilter>,
         ) {
-            if !self.allow_req(client_id).await {
-                self.send_to_client(
-                    client_id,
-                    NostrRelayMessage::closed(subscription_id, "rate limited"),
-                )
-                .await;
-                return;
-            }
-
-            if filters.len() > self.config.max_filters_per_sub {
-                filters.truncate(self.config.max_filters_per_sub);
-            }
-
+            match self
+                .register_subscription_query(client_id, subscription_id.clone(), filters)
+                .await
             {
-                let mut subs = self.subscriptions.lock().await;
-                let entry = subs.entry(client_id).or_default();
-                if !entry.contains_key(&subscription_id)
-                    && entry.len() >= self.config.max_subs_per_client
-                {
-                    self.send_to_client(
-                        client_id,
-                        NostrRelayMessage::closed(subscription_id, "too many subscriptions"),
-                    )
-                    .await;
-                    return;
-                }
-                entry.insert(subscription_id.clone(), filters.clone());
-            }
-
-            let mut seen: HashSet<EventId> = HashSet::new();
-            for filter in &filters {
-                let limit = filter
-                    .limit
-                    .unwrap_or(self.config.max_query_limit)
-                    .min(self.config.max_query_limit);
-                if limit == 0 {
-                    continue;
-                }
-
-                if !prefers_trusted_only(filter) {
-                    let recent = {
-                        let cache = self.recent_events.lock().await;
-                        cache.matching(filter)
-                    };
-                    for event in recent {
-                        if seen.insert(event.id) {
-                            self.send_to_client(
-                                client_id,
-                                NostrRelayMessage::event(subscription_id.clone(), event),
-                            )
-                            .await;
-                        }
-                    }
-                }
-
-                for event in self.trusted.query(filter, limit) {
-                    if seen.insert(event.id) {
+                Ok(events) => {
+                    for event in events {
                         self.send_to_client(
                             client_id,
                             NostrRelayMessage::event(subscription_id.clone(), event),
                         )
                         .await;
                     }
+
+                    self.send_to_client(client_id, NostrRelayMessage::eose(subscription_id))
+                        .await;
+                }
+                Err(message) => {
+                    self.send_to_client(
+                        client_id,
+                        NostrRelayMessage::closed(subscription_id, message),
+                    )
+                    .await;
                 }
             }
-
-            self.send_to_client(client_id, NostrRelayMessage::eose(subscription_id))
-                .await;
         }
 
         async fn handle_count(

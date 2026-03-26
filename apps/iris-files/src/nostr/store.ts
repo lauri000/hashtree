@@ -42,6 +42,8 @@ export interface NostrState {
   relays: string[];
   relayStatuses: Map<string, RelayStatus>;
   connectedRelays: number;
+  /** Actual transport relays the app currently has sockets to. */
+  transportRelays: RelayInfo[];
   /** Relays discovered by NDK (outbox model, etc) that aren't in configured list */
   discoveredRelays: RelayInfo[];
 }
@@ -56,6 +58,7 @@ function createNostrStore() {
     relays: defaultRelays,
     relayStatuses: new Map(defaultRelays.map(url => [url, 'disconnected' as RelayStatus])),
     connectedRelays: 0,
+    transportRelays: [],
     discoveredRelays: [],
   });
 
@@ -84,6 +87,10 @@ function createNostrStore() {
 
     setConnectedRelays: (count: number) => {
       update(state => ({ ...state, connectedRelays: count }));
+    },
+
+    setTransportRelays: (relays: RelayInfo[]) => {
+      update(state => ({ ...state, transportRelays: relays }));
     },
 
     setRelayStatus: (url: string, status: RelayStatus) => {
