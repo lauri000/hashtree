@@ -74,6 +74,7 @@
   let targetNpub = $derived(viewedNpub || userNpub);
   let treesStore = $derived(createTreesStore(targetNpub));
   let trees = $state<Array<{ name: string; visibility?: TreeVisibility; labels?: string[] }>>([]);
+  let ownerPubkey = $derived(ownerNpub ? npubToPubkey(ownerNpub) : null);
 
   $effect(() => {
     const store = treesStore;
@@ -2208,7 +2209,18 @@
 
     <div class="flex items-center justify-between gap-3 px-4 py-3 border-b border-surface-3 bg-surface-0">
       <div class="min-w-0">
-        <h1 class="text-lg font-semibold truncate">{board.title}</h1>
+        {#if ownerNpub && ownerPubkey}
+          <a
+            href={`#/${ownerNpub}/profile`}
+            aria-label="View board owner profile"
+            data-testid="board-owner-link"
+            class="inline-flex max-w-full items-center gap-2 no-underline text-xs text-text-3 hover:text-text-2"
+          >
+            <Avatar pubkey={ownerPubkey} size={20} showBadge class="shrink-0" />
+            <Name pubkey={ownerPubkey} class="min-w-0 truncate font-medium" />
+          </a>
+        {/if}
+        <h1 class={`text-lg font-semibold truncate ${ownerPubkey ? 'mt-1' : ''}`}>{board.title}</h1>
         <div class="mt-1 flex items-center gap-2 text-xs text-text-3">
           <VisibilityIcon {visibility} class="text-xs" />
           {#if canWrite}<span class="text-success">Write access</span>{:else}<span>Read-only</span>{/if}
