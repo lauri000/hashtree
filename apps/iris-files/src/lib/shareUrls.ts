@@ -42,6 +42,17 @@ export function getDefaultHtreeAppUrl(appType: AppType): string {
   return `htree://${DISTRIBUTED_APP_OWNER}/${appType}`;
 }
 
+export function getCanonicalGitRepositoryUrl(repoPath = 'hashtree'): string {
+  const normalizedPath = repoPath
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .join('/');
+  return normalizedPath
+    ? `${getDefaultHtreeAppUrl('git')}/#/${DISTRIBUTED_APP_OWNER}/${normalizedPath}`
+    : `${getDefaultHtreeAppUrl('git')}/#/${DISTRIBUTED_APP_OWNER}`;
+}
+
 export function createShareUrlOptions(appType: AppType, rawUrl: string): ShareUrlOption[] {
   const hashSuffix = extractHashSuffix(rawUrl);
   return [

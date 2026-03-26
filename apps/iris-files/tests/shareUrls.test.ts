@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createShareUrlOptions } from '../src/lib/shareUrls';
+import { createShareUrlOptions, getCanonicalGitRepositoryUrl } from '../src/lib/shareUrls';
 
 describe('shareUrls', () => {
   it('maps hosted files routes to web and htree app URLs', () => {
@@ -65,5 +65,14 @@ describe('shareUrls', () => {
         url: 'htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/git#/npub1owner/repo?tab=pulls',
       },
     ]);
+  });
+
+  it('builds canonical iris-git repository URLs', () => {
+    expect(getCanonicalGitRepositoryUrl()).toBe(
+      'htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/git/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree',
+    );
+    expect(getCanonicalGitRepositoryUrl('hashtree/apps/iris-files')).toBe(
+      'htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/git/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree/apps/iris-files',
+    );
   });
 });

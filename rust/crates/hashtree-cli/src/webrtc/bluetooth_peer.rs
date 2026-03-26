@@ -79,6 +79,31 @@ impl BluetoothPeer {
 
     fn spawn_reader(peer: Arc<Self>) {
         tokio::spawn(async move {
+            let mut nostr_forward_task = None;
+            let mut nostr_client_id = None;
+
+            if let Some(relay) = peer.nostr_relay.as_ref() {
+                let client_id = relay.next_client_id();
+                let (nostr_tx, mut nostr_rx) = mpsc::unbounded_channel::<String>();
+                relay
+                    .register_client(client_id, nostr_tx, Some(peer.peer_id.pubkey.clone()))
+                    .await;
+                nostr_client_id = Some(client_id);
+
+                let peer_for_forward = peer.clone();
+                nostr_forward_task = Some(tokio::spawn(async move {
+                    while let Some(text) = nostr_rx.recv().await {
+                        if peer_for_forward
+                            .send_frame(BluetoothFrame::Text(text))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }));
+            }
+
             while let Some(frame) = peer.link.recv().await {
                 match frame {
                     BluetoothFrame::Binary(data) => {
@@ -91,9 +116,17 @@ impl BluetoothPeer {
                         }
                     }
                     BluetoothFrame::Text(text) => {
-                        peer.handle_text_frame(text).await;
+                        peer.handle_text_frame(text, nostr_client_id).await;
                     }
                 }
+            }
+
+            if let (Some(relay), Some(client_id)) = (peer.nostr_relay.as_ref(), nostr_client_id) {
+                relay.unregister_client(client_id).await;
+            }
+
+            if let Some(task) = nostr_forward_task {
+                let _ = task.await;
             }
         });
     }
@@ -128,7 +161,7 @@ impl BluetoothPeer {
         Ok(())
     }
 
-    async fn handle_text_frame(&self, text: String) {
+    async fn handle_text_frame(&self, text: String, nostr_client_id: Option<u64>) {
         self.record_received(text.len() as u64).await;
         if let Ok(mesh_frame) = serde_json::from_str::<MeshNostrFrame>(&text) {
             if let Some(tx) = self.mesh_frame_tx.as_ref() {
@@ -152,13 +185,9 @@ impl BluetoothPeer {
 
         if let Some(relay) = self.nostr_relay.as_ref() {
             if let Ok(nostr_msg) = NostrClientMessage::from_json(&text) {
-                let client_id = relay.next_client_id();
-                let (tx, _rx) = mpsc::unbounded_channel::<String>();
-                relay
-                    .register_client(client_id, tx, Some(self.peer_id.pubkey.clone()))
-                    .await;
-                relay.handle_client_message(client_id, nostr_msg).await;
-                relay.unregister_client(client_id).await;
+                if let Some(client_id) = nostr_client_id {
+                    relay.handle_client_message(client_id, nostr_msg).await;
+                }
             }
         }
     }
@@ -362,9 +391,13 @@ impl BluetoothLink for MockBluetoothLink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nostr_relay::{NostrRelay, NostrRelayConfig};
     use crate::webrtc::signaling::{ConnectionState, PeerEntry, PeerSignalPath, PeerTransport};
+    use nostr::{EventBuilder, Filter, Keys, Kind};
+    use std::collections::HashSet;
     use std::sync::Arc;
     use std::time::Instant;
+    use tempfile::TempDir;
 
     struct TestStore {
         blobs: HashMap<String, Vec<u8>>,
@@ -497,5 +530,75 @@ mod tests {
         drop(peers);
 
         responder.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bluetooth_peer_round_trips_nostr_queries_over_mock_link() -> Result<()> {
+        let (link_a, link_b) = MockBluetoothLink::pair();
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let author_keys = Keys::generate();
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::from([author_keys.public_key().to_hex()]),
+        ));
+        let relay = Arc::new(NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([author_keys.public_key().to_hex()]),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?);
+
+        let requester = BluetoothPeer::new(
+            PeerId::new("peer-a".to_string(), Some("sess-a".to_string())),
+            PeerDirection::Outbound,
+            link_a,
+            None,
+            None,
+            None,
+            None,
+        );
+        let responder = BluetoothPeer::new(
+            PeerId::new("peer-b".to_string(), Some("sess-b".to_string())),
+            PeerDirection::Inbound,
+            link_b,
+            None,
+            Some(relay.clone()),
+            None,
+            None,
+        );
+
+        let event =
+            EventBuilder::new(Kind::TextNote, "bluetooth nostr relay", []).to_event(&author_keys)?;
+        relay.ingest_trusted_event(event.clone()).await?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let events = requester
+            .query_nostr_events(
+                vec![
+                    Filter::new()
+                        .authors(vec![event.pubkey])
+                        .kinds(vec![event.kind]),
+                ],
+                Duration::from_secs(1),
+            )
+            .await?;
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, event.id);
+        responder.close().await?;
+        Ok(())
     }
 }

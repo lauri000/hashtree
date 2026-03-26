@@ -1,10 +1,12 @@
 <script lang="ts">
   import { shouldOpenSourceCodeLinkInNewTab } from '../../appType';
+  import { getCanonicalGitRepositoryUrl } from '../../lib/shareUrls';
   import { getNsec } from '../../nostr';
 
   const openSourceCodeInNewTab = shouldOpenSourceCodeLinkInNewTab();
   const sourceCodeLinkTarget = openSourceCodeInNewTab ? '_blank' : '_self';
   const sourceCodeLinkRel = openSourceCodeInNewTab ? 'noopener noreferrer' : undefined;
+  const sourceCodeUrl = getCanonicalGitRepositoryUrl('hashtree');
 
   // Secret key
   let nsec = $derived(getNsec());
@@ -72,7 +74,7 @@
         </span>
       </div>
       <a
-        href="https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree"
+        href={sourceCodeUrl}
         target={sourceCodeLinkTarget}
         rel={sourceCodeLinkRel}
         class="btn-ghost w-full flex items-center justify-center gap-2 no-underline"

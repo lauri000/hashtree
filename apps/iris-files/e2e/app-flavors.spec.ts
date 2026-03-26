@@ -11,7 +11,8 @@ import {
   waitForRelayConnected,
 } from './test-utils.js';
 
-const SOURCE_CODE_URL = 'https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree';
+const SOURCE_CODE_URL =
+  'htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/git/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree';
 
 async function createTopLevelRepository(page: import('@playwright/test').Page, repoName: string) {
   await page.getByRole('button', { name: /New Repository/ }).first().click();

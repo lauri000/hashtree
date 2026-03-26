@@ -211,6 +211,22 @@ fn append_query_params(url: &str, params: &[(&str, &str)]) -> Result<String, Str
     Ok(parsed.into())
 }
 
+fn append_internal_htree_query_params(
+    url: &str,
+    server_url: &str,
+    canonical_url: &str,
+    cache_bust: Option<&str>,
+) -> Result<String, String> {
+    let mut params = vec![
+        ("iris_htree_server", server_url),
+        ("iris_htree_canonical", canonical_url),
+    ];
+    if let Some(cache_bust) = cache_bust.map(str::trim).filter(|value| !value.is_empty()) {
+        params.push(("iris_htree_root", cache_bust));
+    }
+    append_query_params(url, &params)
+}
+
 fn resolve_tree_request_host<'a>(
     request_host: &'a str,
     self_npub: Option<&'a str>,
@@ -548,7 +564,7 @@ pub fn generate_nip07_script(
                 'Content-Type': 'text/plain;charset=UTF-8'
               }},
               body: JSON.stringify({{
-                session_token: SESSION_TOKEN,
+                sessionToken: SESSION_TOKEN,
                 payload
               }})
             }});
@@ -1120,7 +1136,7 @@ pub fn generate_webview_diagnostic_probe_script(
   fetch(WEBVIEW_ENDPOINT, {{
     method: 'POST',
     headers: {{ 'Content-Type': 'text/plain;charset=UTF-8' }},
-    body: JSON.stringify({{ session_token: SESSION_TOKEN, payload }})
+    body: JSON.stringify({{ sessionToken: SESSION_TOKEN, payload }})
   }}).catch((error) => {{
     console.warn('[WebviewProbe] Failed to send diagnostic', error);
   }});
@@ -1583,6 +1599,7 @@ pub async fn create_htree_webview<R: Runtime>(
     path: String,
     query: Option<String>,
     fragment: Option<String>,
+    cache_bust: Option<String>,
     x: f64,
     y: f64,
     width: f64,
@@ -1634,12 +1651,11 @@ pub async fn create_htree_webview<R: Runtime>(
                 daemon_proxy_url_from_nhash(&server_url, nhash, &path, use_origin_isolated_hosts)?,
                 query.as_deref(),
             );
-            let actual_url = append_query_params(
+            let actual_url = append_internal_htree_query_params(
                 &actual_url,
-                &[
-                    ("iris_htree_server", &server_url),
-                    ("iris_htree_canonical", &canonical_url),
-                ],
+                &server_url,
+                &canonical_url,
+                cache_bust.as_deref(),
             )?;
             let actual_url = append_fragment(actual_url, fragment.as_deref());
             let actual_root =
@@ -1681,12 +1697,11 @@ pub async fn create_htree_webview<R: Runtime>(
                 )?,
                 query.as_deref(),
             );
-            let actual_url = append_query_params(
+            let actual_url = append_internal_htree_query_params(
                 &actual_url,
-                &[
-                    ("iris_htree_server", &server_url),
-                    ("iris_htree_canonical", &canonical_url),
-                ],
+                &server_url,
+                &canonical_url,
+                cache_bust.as_deref(),
             )?;
             let actual_url = append_fragment(actual_url, fragment.as_deref());
             let actual_root = daemon_proxy_url_from_tree_host(
@@ -1864,6 +1879,7 @@ pub async fn create_htree_webview<R: Runtime>(
     path: String,
     query: Option<String>,
     fragment: Option<String>,
+    cache_bust: Option<String>,
     x: f64,
     y: f64,
     width: f64,
@@ -1893,12 +1909,11 @@ pub async fn create_htree_webview<R: Runtime>(
                 )?,
                 query.as_deref(),
             );
-            let actual_url = append_query_params(
+            let actual_url = append_internal_htree_query_params(
                 &actual_url,
-                &[
-                    ("iris_htree_server", &server_url),
-                    ("iris_htree_canonical", &canonical_url),
-                ],
+                &server_url,
+                &canonical_url,
+                cache_bust.as_deref(),
             )?;
             let actual_url = append_fragment(actual_url, fragment.as_deref());
             let actual_root = daemon_proxy_url_from_nhash(
@@ -1944,12 +1959,11 @@ pub async fn create_htree_webview<R: Runtime>(
                 )?,
                 query.as_deref(),
             );
-            let actual_url = append_query_params(
+            let actual_url = append_internal_htree_query_params(
                 &actual_url,
-                &[
-                    ("iris_htree_server", &server_url),
-                    ("iris_htree_canonical", &canonical_url),
-                ],
+                &server_url,
+                &canonical_url,
+                cache_bust.as_deref(),
             )?;
             let actual_url = append_fragment(actual_url, fragment.as_deref());
             let actual_root = daemon_proxy_url_from_tree_host(
@@ -2033,7 +2047,9 @@ fn strip_internal_htree_query_params(url: &str) -> String {
 
     let retained_query: Vec<(String, String)> = parsed
         .query_pairs()
-        .filter(|(key, _)| key != "iris_htree_server" && key != "iris_htree_canonical")
+        .filter(|(key, _)| {
+            key != "iris_htree_server" && key != "iris_htree_canonical" && key != "iris_htree_root"
+        })
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect();
 
@@ -2259,6 +2275,7 @@ pub struct WebviewEventRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WebviewEventHttpEnvelope {
+    #[serde(rename = "sessionToken", alias = "session_token")]
     session_token: String,
     payload: WebviewEventRequest,
 }
@@ -2581,7 +2598,7 @@ mod tests {
     #[test]
     fn canonicalized_child_urls_strip_internal_query_params_without_removing_user_query() {
         let url = canonicalize_child_webview_url(
-            "htree://npub1example/video/index.html?smoke=1&iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Fvideo%2Findex.html%3Fsmoke%3D1",
+            "htree://npub1example/video/index.html?smoke=1&iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Fvideo%2Findex.html%3Fsmoke%3D1&iris_htree_root=97562a6d",
             "http://127.0.0.1:21417/htree/npub1example/video",
             "htree://npub1example/video",
         );
@@ -2619,5 +2636,25 @@ mod tests {
             webview_url_for_parsed_url(&url),
             WebviewUrl::CustomProtocol(_)
         ));
+    }
+
+    #[test]
+    fn webview_event_http_envelope_accepts_legacy_session_token_key() {
+        let envelope: WebviewEventHttpEnvelope = serde_json::from_str(
+            r#"{
+                "session_token": "legacy-token",
+                "payload": {
+                    "kind": "location",
+                    "label": "content",
+                    "origin": "htree://npub1example/git",
+                    "url": "htree://npub1example/git/index.html"
+                }
+            }"#,
+        )
+        .expect("legacy envelope should deserialize");
+
+        assert_eq!(envelope.session_token, "legacy-token");
+        assert_eq!(envelope.payload.kind, "location");
+        assert_eq!(envelope.payload.label, "content");
     }
 }

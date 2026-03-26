@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { minidenticon } from 'minidenticons';
   import BandwidthHistoryChart from './BandwidthHistoryChart.svelte';
+  import { animalName } from '../lib/animalName';
   import {
     isAutostartEnabled,
     toggleAutostart,
@@ -296,6 +298,32 @@
 
   function peerLabel(peer: MeshPeerInfo, index: number): string {
     return `${peerKindLabel(peer)} ${index + 1}`;
+  }
+
+  function peerIdentitySeed(peer: MeshPeerInfo): string {
+    return peer.pubkey || peer.peerId || peer.id;
+  }
+
+  function peerIdentityLabel(peer: MeshPeerInfo, index: number): string {
+    if (peer.transport.toLowerCase() === 'bluetooth') {
+      try {
+        return animalName(peerIdentitySeed(peer));
+      } catch {
+        // Fall back to the generic label below.
+      }
+    }
+    return peerLabel(peer, index);
+  }
+
+  function peerIdentitySubtitle(peer: MeshPeerInfo): string {
+    if (peer.transport.toLowerCase() === 'bluetooth') {
+      return peerKindLabel(peer);
+    }
+    return peerSignalSummary(peer);
+  }
+
+  function peerIdenticonUri(peer: MeshPeerInfo): string {
+    return `data:image/svg+xml;utf8,${encodeURIComponent(minidenticon(peerIdentitySeed(peer), 48, 48))}`;
   }
 
   function peerSignalSummary(peer: MeshPeerInfo): string {
@@ -919,20 +947,34 @@
                   <div class="p-3">
                     <div class="flex items-center gap-2 text-sm">
                       <span class={`h-2 w-2 shrink-0 rounded-full ${stateColor(peer.state)}`}></span>
-                      <span class="min-w-0 flex-1 font-medium text-text-1 truncate">
-                        {peerLabel(peer, index)}
-                      </span>
-                      <span class="rounded bg-surface-1 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-3">
-                        {transportLabel(peer.transport)}
-                      </span>
-                      {#if relationshipLabel(peer.pool)}
+                      <div class="min-w-0 flex flex-1 items-center gap-2">
+                        <div class="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-surface-1">
+                          <img src={peerIdenticonUri(peer)} alt="" width="24" height="24" class="h-6 w-6" />
+                        </div>
+                        <div class="min-w-0 flex-1">
+                          <div class="truncate font-medium text-text-1">
+                            {peerIdentityLabel(peer, index)}
+                          </div>
+                          <div class="truncate text-[11px] text-text-3">
+                            {peerIdentitySubtitle(peer)}
+                          </div>
+                        </div>
+                      </div>
+                      <div class="flex shrink-0 items-center gap-1">
                         <span class="rounded bg-surface-1 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-3">
-                          {relationshipLabel(peer.pool)}
+                          {transportLabel(peer.transport)}
                         </span>
-                      {/if}
+                        {#if relationshipLabel(peer.pool)}
+                          <span class="rounded bg-surface-1 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-3">
+                            {relationshipLabel(peer.pool)}
+                          </span>
+                        {/if}
+                      </div>
                     </div>
                     <div class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-3">
-                      <span>{peerSignalSummary(peer)}</span>
+                      {#if peer.transport.toLowerCase() === 'bluetooth'}
+                        <span>{peerSignalSummary(peer)}</span>
+                      {/if}
                       <span class="text-success">
                         <span class="i-lucide-arrow-up inline-block align-middle mr-0.5"></span>{formatBytes(peer.bytesSent)}
                       </span>
