@@ -5,6 +5,12 @@
   import { appStore, formatBytes } from '../../store';
   import { getNativeDaemonRelayUrl } from '../../nostr/ndk';
 
+  interface Props {
+    embedded?: boolean;
+  }
+
+  let { embedded = false }: Props = $props();
+
   // Network settings
   let networkSettings = $derived($settingsStore.network);
   let newRelayUrl = $state('');
@@ -114,19 +120,19 @@
 
   function formatRelayRole(url: string): string {
     if (nativeDaemonRelayUrl && url === nativeDaemonRelayUrl) {
-      return 'Embedded daemon relay';
+      return 'Embedded daemon transport relay';
     }
     return 'Direct transport relay';
   }
 
 </script>
 
-<div class="p-4 space-y-6 max-w-2xl mx-auto">
+<div class:root-layout={!embedded} class:embedded-layout={embedded}>
   {#if transportRelays.length > 0}
     <div>
       <div class="flex items-center justify-between mb-1">
         <h3 class="text-xs font-medium text-muted uppercase tracking-wide">
-          Transport ({transportRelays.length})
+          Local Transport ({transportRelays.length})
         </h3>
       </div>
       <p class="text-xs text-text-3 mb-3">
@@ -323,3 +329,17 @@
     {/if}
   </div>
 </div>
+
+<style>
+  .root-layout {
+    padding: 1rem;
+    max-width: 42rem;
+    margin: 0 auto;
+  }
+
+  .embedded-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+</style>

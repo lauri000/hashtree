@@ -1,13 +1,11 @@
 <script lang="ts">
   import { currentPath, navigate } from '../../lib/router.svelte';
-  import ServersSettings from './ServersSettings.svelte';
-  import P2PSettings from './P2PSettings.svelte';
+  import NetworkSettings from './NetworkSettings.svelte';
   import StorageSettings from './StorageSettings.svelte';
   import AppSettings from './AppSettings.svelte';
 
   const tabs = [
-    { id: 'servers', label: 'Servers', icon: 'i-lucide-server' },
-    { id: 'p2p', label: 'P2P', icon: 'i-lucide-share-2' },
+    { id: 'network', label: 'Network', icon: 'i-lucide-server' },
     { id: 'storage', label: 'Storage', icon: 'i-lucide-hard-drive' },
     { id: 'app', label: 'App', icon: 'i-lucide-settings' },
   ] as const;
@@ -17,10 +15,9 @@
   // Parse current tab from path
   let activeTab = $derived.by((): TabId => {
     const path = $currentPath;
-    if (path.startsWith('/settings/p2p')) return 'p2p';
     if (path.startsWith('/settings/storage')) return 'storage';
     if (path.startsWith('/settings/app')) return 'app';
-    return 'servers'; // default
+    return 'network'; // default
   });
 
   function selectTab(id: TabId) {
@@ -47,10 +44,8 @@
 
   <!-- Tab content -->
   <div class="flex-1 overflow-auto">
-    {#if activeTab === 'servers'}
-      <ServersSettings />
-    {:else if activeTab === 'p2p'}
-      <P2PSettings />
+    {#if activeTab === 'network'}
+      <NetworkSettings />
     {:else if activeTab === 'storage'}
       <StorageSettings />
     {:else if activeTab === 'app'}

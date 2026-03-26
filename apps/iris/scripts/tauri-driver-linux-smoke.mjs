@@ -200,6 +200,13 @@ async function getWindowRect() {
 }
 
 async function takeScreenshot(filename) {
+  const importBinary = getFramebufferCaptureBinary();
+  if (importBinary) {
+    const captured = captureFramebufferToFile(importBinary, filename);
+    if (captured) {
+      return;
+    }
+  }
   const payload = await request('GET', `/session/${sessionId}/screenshot`);
   const encoded = payload.value;
   if (!encoded) {
@@ -207,6 +214,27 @@ async function takeScreenshot(filename) {
   }
   await mkdir(artifactsDir, { recursive: true });
   await writeFile(path.join(artifactsDir, filename), Buffer.from(encoded, 'base64'));
+}
+
+function getFramebufferCaptureBinary() {
+  if (process.env.IRIS_NATIVE_CAPTURE_FRAMEBUFFER === '0') {
+    return null;
+  }
+  return which('import');
+}
+
+function captureFramebufferToFile(importBinary, filename) {
+  const target = path.join(artifactsDir, filename);
+  const result = spawnSync(importBinary, ['-window', 'root', target], {
+    cwd: appDir,
+    env: process.env,
+    encoding: 'utf8',
+  });
+  if (result.status === 0) {
+    return true;
+  }
+  console.warn(`Framebuffer capture failed: ${result.stderr || result.stdout || result.status}`);
+  return false;
 }
 
 function maybeReexecUnderXvfb() {

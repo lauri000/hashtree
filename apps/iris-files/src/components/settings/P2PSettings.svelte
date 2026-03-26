@@ -6,6 +6,12 @@
   import BandwidthHistoryChart from '../BandwidthHistoryChart.svelte';
   import { UserRow } from '../User';
 
+  interface Props {
+    embedded?: boolean;
+  }
+
+  let { embedded = false }: Props = $props();
+
   // Pool settings
   let poolSettings = $derived($settingsStore.pools);
 
@@ -98,7 +104,7 @@
   }
 </script>
 
-<div class="p-4 space-y-6 max-w-2xl mx-auto">
+<div class:root-layout={!embedded} class:embedded-layout={embedded}>
   <!-- WebRTC Pool Settings -->
   <div>
     <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-1">
@@ -370,3 +376,17 @@
     {/if}
   </div>
 </div>
+
+<style>
+  .root-layout {
+    padding: 1rem;
+    max-width: 42rem;
+    margin: 0 auto;
+  }
+
+  .embedded-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+</style>

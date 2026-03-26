@@ -16,6 +16,15 @@ export function normalizeRelayUrl(url: string): string {
   return url.trim().replace(/\/+$/, '');
 }
 
+function isLocalTransportRelay(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
 function relayStatusMapsEqual(a: Map<string, RelayStatus>, b: Map<string, RelayStatus>): boolean {
   if (a.size !== b.size) return false;
   for (const [key, value] of a.entries()) {
@@ -65,7 +74,7 @@ export function buildRelayStatusSnapshot(
 
     if (configuredNormalized.has(normalizedUrl)) {
       relayStatuses.set(normalizedUrl, status);
-    } else {
+    } else if (!isLocalTransportRelay(normalizedUrl)) {
       discoveredRelays.push({ url: normalizedUrl, status });
     }
 

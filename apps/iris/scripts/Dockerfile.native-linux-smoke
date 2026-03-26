@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dbus-x11 \
     file \
     git \
+    imagemagick \
     xauth \
     build-essential \
     pkg-config \

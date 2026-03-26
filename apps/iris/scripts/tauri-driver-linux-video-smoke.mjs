@@ -17,8 +17,6 @@ const distributedOwner = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk
 const smokeUrl = process.env.IRIS_VIDEO_SMOKE_URL ?? `htree://${distributedOwner}/video/index.html?smoke=1&htree_debug=1`;
 const smokeMode = process.env.IRIS_VIDEO_SMOKE_MODE ?? 'open_url';
 const genericVideoUrl = process.env.IRIS_VIDEO_GENERIC_URL ?? `htree://${distributedOwner}/video/`;
-const captureActualFramebuffer = process.env.IRIS_NATIVE_CAPTURE_FRAMEBUFFER === '1';
-
 let driverProcess = null;
 let sessionId = null;
 
@@ -184,6 +182,13 @@ async function deleteSession() {
 }
 
 async function takeScreenshot(filename) {
+  const importBinary = getFramebufferCaptureBinary();
+  if (importBinary) {
+    const captured = captureFramebufferToFile(importBinary, filename);
+    if (captured) {
+      return;
+    }
+  }
   const payload = await request('GET', `/session/${sessionId}/screenshot`);
   const encoded = payload.value;
   if (!encoded) {
@@ -193,25 +198,34 @@ async function takeScreenshot(filename) {
   await writeFile(path.join(artifactsDir, filename), Buffer.from(encoded, 'base64'));
 }
 
-async function takeFramebufferCapture(filename) {
-  if (!captureActualFramebuffer) {
-    return;
+function getFramebufferCaptureBinary() {
+  if (process.env.IRIS_NATIVE_CAPTURE_FRAMEBUFFER === '0') {
+    return null;
   }
-  const importBinary = which('import');
-  if (!importBinary) {
-    console.warn('ImageMagick import is not installed; skipping framebuffer capture');
-    return;
-  }
-  await mkdir(artifactsDir, { recursive: true });
+  return which('import');
+}
+
+function captureFramebufferToFile(importBinary, filename) {
   const target = path.join(artifactsDir, filename);
   const result = spawnSync(importBinary, ['-window', 'root', target], {
     cwd: appDir,
     env: process.env,
     encoding: 'utf8',
   });
-  if (result.status !== 0) {
-    console.warn(`Framebuffer capture failed: ${result.stderr || result.stdout || result.status}`);
+  if (result.status === 0) {
+    return true;
   }
+  console.warn(`Framebuffer capture failed: ${result.stderr || result.stdout || result.status}`);
+  return false;
+}
+
+async function takeFramebufferCapture(filename) {
+  const importBinary = getFramebufferCaptureBinary();
+  if (!importBinary) {
+    return;
+  }
+  await mkdir(artifactsDir, { recursive: true });
+  captureFramebufferToFile(importBinary, filename);
 }
 
 function maybeReexecUnderXvfb() {

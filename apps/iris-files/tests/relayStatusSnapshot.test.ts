@@ -12,9 +12,7 @@ describe('buildRelayStatusSnapshot', () => {
     expect(snapshot.transportRelays).toEqual([
       { url: 'ws://127.0.0.1:21417/ws', status: 'connected' },
     ]);
-    expect(snapshot.discoveredRelays).toEqual([
-      { url: 'ws://127.0.0.1:21417/ws', status: 'connected' },
-    ]);
+    expect(snapshot.discoveredRelays).toEqual([]);
     expect(Array.from(snapshot.relayStatuses.entries())).toEqual([
       ['wss://relay.damus.io', 'disconnected'],
       ['wss://relay.primal.net', 'disconnected'],

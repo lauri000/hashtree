@@ -1,0 +1,9 @@
+<script lang="ts">
+  import ServersSettings from './ServersSettings.svelte';
+  import P2PSettings from './P2PSettings.svelte';
+</script>
+
+<div class="p-4 max-w-2xl mx-auto space-y-6">
+  <ServersSettings embedded={true} />
+  <P2PSettings embedded={true} />
+</div>
