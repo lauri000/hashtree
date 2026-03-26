@@ -572,9 +572,10 @@
     if (isAddressFocused) return null;
     const htree = parseHtreeUrl(currentUrl);
     if (!htree?.npub) return null;
+    const historyEntry = buildHistoryEntry(currentUrl, childDocumentTitle);
     return {
       host: htree.npub,
-      pathLabel: htreePathLabel(htree),
+      displayLabel: historyEntry.label,
     };
   });
 
@@ -583,19 +584,27 @@
     if (!htree?.npub) return null;
     return {
       host: htree.npub,
-      pathLabel: htreePathLabel(htree),
+      displayLabel: entry.label.trim() || htree.treename || urlToDisplay(entry.path),
     };
+  }
+
+  function historyWebLabel(entry: HistoryEntry): string {
+    return entry.label.trim() || urlToDisplay(entry.path);
   }
 
   function isRecordableUrl(url: string): boolean {
     return url.startsWith('http://') || url.startsWith('https://') || url.startsWith('htree://');
   }
 
-  function buildHistoryEntry(url: string) {
+  function buildHistoryEntry(url: string, preferredLabel?: string) {
     const htree = parseHtreeUrl(url);
+    const trimmedLabel = preferredLabel?.trim() ?? '';
+    const fallbackLabel = htree?.treename || urlToDisplay(url);
     return {
       path: url,
-      label: htree?.treename || urlToDisplay(url),
+      label: trimmedLabel && trimmedLabel !== urlToDisplay(url) && trimmedLabel !== url
+        ? trimmedLabel
+        : fallbackLabel,
       entry_type: htree ? 'tree' : 'web',
       npub: htree?.npub ?? null,
       tree_name: htree?.treename ?? null,
@@ -973,6 +982,10 @@
   function handleDiagnosticEvent(event: WebviewDiagnosticEvent) {
     if (event.label !== CHILD_LABEL) return;
     if (event.title) childDocumentTitle = event.title;
+    if (event.title && currentUrl && isRecordableUrl(currentUrl)) {
+      recordHistoryVisit(buildHistoryEntry(currentUrl, event.title))
+        .catch((error) => console.warn('[Iris] record history failed:', error));
+    }
     if (event.bodyText) childBodyText = event.bodyText;
     if (event.mediaSummary) childMediaSummary = event.mediaSummary;
     if (event.error && isFatalChildDiagnosticError(event.error, event.source)) {
@@ -1357,7 +1370,7 @@
                     />
                   </div>
                   <span data-testid="address-path" class="min-w-0 truncate text-sm text-text-2">
-                    {blurredOwnerSummary.pathLabel}
+                    {blurredOwnerSummary.displayLabel}
                   </span>
                 </div>
               {/if}
@@ -1424,10 +1437,10 @@
                           maxWidthClass="max-w-40"
                           size="xs"
                         />
-                        <span class="min-w-0 truncate">{ownerSummary.pathLabel}</span>
+                        <span class="min-w-0 truncate">{ownerSummary.displayLabel}</span>
                       </div>
                     {:else}
-                      <div class="truncate">{item.label}</div>
+                      <div class="truncate">{historyWebLabel(item)}</div>
                     {/if}
                   </div>
                   <button
@@ -1526,7 +1539,7 @@
                   />
                 </div>
                 <span data-testid="address-path" class="min-w-0 truncate text-sm text-text-2">
-                  {blurredOwnerSummary.pathLabel}
+                  {blurredOwnerSummary.displayLabel}
                 </span>
               </div>
             {/if}
@@ -1591,10 +1604,10 @@
                         maxWidthClass="max-w-48"
                         size="xs"
                       />
-                      <span class="min-w-0 truncate">{ownerSummary.pathLabel}</span>
+                      <span class="min-w-0 truncate">{ownerSummary.displayLabel}</span>
                     </div>
                   {:else}
-                    <div class="truncate">{item.label}</div>
+                    <div class="truncate">{historyWebLabel(item)}</div>
                   {/if}
                 </div>
                 <button

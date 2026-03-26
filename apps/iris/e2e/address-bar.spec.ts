@@ -203,7 +203,7 @@ test.describe('Address Bar', () => {
 
     await expect(page.getByTestId('address-owner-pill')).toBeVisible();
     await expect(page.getByTestId('address-owner-name')).toHaveText(DISTRIBUTED_OWNER_PROFILE_NAME);
-    await expect(page.getByTestId('address-path')).toHaveText('/video/index.html');
+    await expect(page.getByTestId('address-path')).toHaveText('video');
     await expect(input).toHaveValue(`${distributedOwner}/video/index.html`);
 
     await page.getByTestId('address-path').click();
@@ -254,7 +254,7 @@ test.describe('Address Bar', () => {
     const dropdown = page.locator('[role="listbox"]');
     await expect(dropdown).toBeVisible();
     await expect(dropdown.getByText(DISTRIBUTED_OWNER_PROFILE_NAME).first()).toBeVisible();
-    await expect(dropdown.getByText('/video/index.html').first()).toBeVisible();
+    await expect(dropdown.getByText('video').first()).toBeVisible();
   });
 
   test('empty address bar submit does nothing', async ({ tauriPage: page }) => {
