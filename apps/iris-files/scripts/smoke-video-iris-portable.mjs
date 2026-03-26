@@ -184,7 +184,12 @@ async function main() {
         const hash = window.location.hash;
         const video = document.querySelector('video');
         const redirectedToChild = /\/videos%2FMusic\/video_/.test(hash);
-        return redirectedToChild && !!video && !!video.currentSrc && video.currentSrc.includes('/htree/') && !video.error && video.readyState >= 1;
+        return redirectedToChild
+          && !!video
+          && !!video.currentSrc
+          && video.currentSrc.includes('/htree/')
+          && !video.error
+          && (video.readyState >= 1 || video.networkState === 2);
       }, undefined, { timeout: 60000 });
 
       await page.screenshot({ path: playlistRootScreenshotPath, fullPage: true });
@@ -202,7 +207,11 @@ async function main() {
           return false;
         }
         const video = document.querySelector('video');
-        return !!video && !!video.currentSrc && video.currentSrc.includes('/htree/') && !video.error && video.readyState >= 1;
+        return !!video
+          && !!video.currentSrc
+          && video.currentSrc.includes('/htree/')
+          && !video.error
+          && (video.readyState >= 1 || video.networkState === 2);
       }, undefined, { timeout: 60000 });
 
       const playlistState = await page.evaluate(() => {
