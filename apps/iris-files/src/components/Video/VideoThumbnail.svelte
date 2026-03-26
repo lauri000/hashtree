@@ -343,7 +343,7 @@
   }
 </script>
 
-<div bind:this={containerEl} class="relative bg-surface-2 overflow-hidden {className}">
+<div bind:this={containerEl} class="relative bg-media-placeholder overflow-hidden {className}">
   {#if renderedSrc && !imageError}
     <img
       bind:this={imageEl}
@@ -375,9 +375,9 @@
   {/if}
 
   {#if (!renderedSrc || imageError || !imageLoaded) && !capturedVideoFrameUrl}
-    <div class="absolute inset-0 bg-surface-2">
+    <div class="absolute inset-0 bg-media-placeholder">
       <div class="absolute inset-0 flex items-center justify-center">
-        <span class="i-lucide-video text-text-3 {iconSize}"></span>
+        <span class="i-lucide-video text-media-placeholder-icon {iconSize}"></span>
       </div>
     </div>
   {/if}

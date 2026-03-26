@@ -7,12 +7,21 @@ const THUMBNAIL_WIDTH = 300;
 const THUMBNAIL_HEIGHT = 424; // A4 aspect ratio (1:1.414)
 const THUMBNAIL_FILENAME = '.thumbnail.jpg';
 
+function getThumbnailBackgroundColor(): string {
+  if (typeof window === 'undefined' || typeof getComputedStyle !== 'function') {
+    return 'rgb(24 24 24)';
+  }
+  const surface = getComputedStyle(document.documentElement).getPropertyValue('--surface-1').trim();
+  return surface ? `rgb(${surface})` : 'rgb(24 24 24)';
+}
+
 /**
  * Capture a thumbnail of an element
  * Returns JPEG data as Uint8Array, or null if capture fails
  */
 export async function captureThumbnail(element: HTMLElement): Promise<Uint8Array | null> {
   try {
+    const backgroundColor = getThumbnailBackgroundColor();
     // Dynamically import html2canvas to avoid loading it until needed
     const html2canvas = (await import('html2canvas')).default;
 
@@ -22,7 +31,7 @@ export async function captureThumbnail(element: HTMLElement): Promise<Uint8Array
       logging: false,
       useCORS: true,
       allowTaint: true,
-      backgroundColor: '#161b22', // Match surface-1 background
+      backgroundColor,
       width: Math.min(element.scrollWidth, 800),
       height: Math.min(element.scrollHeight, 1200),
     });
@@ -35,7 +44,7 @@ export async function captureThumbnail(element: HTMLElement): Promise<Uint8Array
     if (!ctx) return null;
 
     // Fill with background color
-    ctx.fillStyle = '#161b22';
+    ctx.fillStyle = backgroundColor;
     ctx.fillRect(0, 0, THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT);
 
     // Calculate scaling to fit while maintaining aspect ratio

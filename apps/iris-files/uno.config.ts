@@ -60,22 +60,22 @@ export default defineConfig({
     presetTypography({
       cssExtend: {
         'p,li,td,th': {
-          color: '#ffffff',
+          color: 'rgb(var(--text-1))',
         },
         'h1,h2,h3,h4,h5,h6': {
-          color: '#ffffff',
+          color: 'rgb(var(--text-1))',
         },
         'a': {
           color: '#7647FE',
         },
         'code': {
-          color: '#ffffff',
-          background: '#272727',
+          color: 'rgb(var(--text-1))',
+          background: 'rgb(var(--surface-2))',
           padding: '0.2em 0.4em',
           'border-radius': '4px',
         },
         'pre': {
-          background: '#212121',
+          background: 'rgb(var(--surface-1))',
           'border-radius': '6px',
         },
         'pre code': {
@@ -83,45 +83,45 @@ export default defineConfig({
           padding: '0',
         },
         'blockquote': {
-          'border-left-color': '#3f3f3f',
-          color: '#aaaaaa',
+          'border-left-color': 'rgb(var(--surface-3))',
+          color: 'rgb(var(--text-2))',
         },
         'hr': {
-          'border-color': '#3f3f3f',
+          'border-color': 'rgb(var(--surface-3))',
         },
         'table': {
-          'border-color': '#3f3f3f',
+          'border-color': 'rgb(var(--surface-3))',
         },
         'th,td': {
-          'border-color': '#3f3f3f',
+          'border-color': 'rgb(var(--surface-3))',
         },
         'strong': {
-          color: '#ffffff',
+          color: 'rgb(var(--text-1))',
         },
       },
     }),
   ],
   theme: {
     colors: {
-      // YouTube dark theme colors
       surface: {
-        0: '#0f0f0f',
-        1: '#212121',
-        2: '#272727',
-        3: '#3f3f3f',
+        0: 'rgb(var(--surface-0) / <alpha-value>)',
+        1: 'rgb(var(--surface-1) / <alpha-value>)',
+        2: 'rgb(var(--surface-2) / <alpha-value>)',
+        3: 'rgb(var(--surface-3) / <alpha-value>)',
       },
       text: {
-        1: '#ffffff',
-        2: '#aaaaaa',
-        3: '#606060',
+        1: 'rgb(var(--text-1) / <alpha-value>)',
+        2: 'rgb(var(--text-2) / <alpha-value>)',
+        3: 'rgb(var(--text-3) / <alpha-value>)',
       },
       accent: '#916dfe',
       success: '#2ba640',
       danger: '#ff0000',
       warning: '#ffcc00',
-      // YouTube specific
+      'media-placeholder': 'rgb(var(--media-placeholder) / <alpha-value>)',
+      'media-placeholder-icon': 'rgb(var(--media-placeholder-icon))',
       'yt-red': '#ff0000',
-      'yt-desc-hover': '#392b07',
+      'yt-desc-hover': 'rgb(var(--yt-desc-hover) / <alpha-value>)',
     },
     borderRadius: {
       DEFAULT: '6px',
