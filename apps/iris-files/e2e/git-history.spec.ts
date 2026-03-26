@@ -1,7 +1,14 @@
 import { test, expect } from './fixtures';
+import type { Page } from '@playwright/test';
 import { setupPageErrorHandler, disableOthersPool, ensureLoggedIn, waitForAppReady, gotoGitApp } from './test-utils.js';
 
-async function ensureGitSession(page: any) {
+type NostrStoreWindow = Window & {
+  __nostrStore?: {
+    getState?: () => { npub?: string | null };
+  };
+};
+
+async function ensureGitSession(page: Page) {
   await waitForAppReady(page);
   await ensureLoggedIn(page);
   await waitForAppReady(page);
@@ -165,16 +172,16 @@ test.describe('Git history features', () => {
         const { getLog } = await import('/src/utils/git.ts');
 
         try {
-          const result = await getLog(rootCid, { debug: true }) as any;
-          const commits = result.commits || result;
-          const debug = result.debug || [];
+          const result = await getLog(rootCid, { debug: true });
+          const commits = result.commits;
+          const debug = result.debug;
           return {
             success: true,
-            commitCount: Array.isArray(commits) ? commits.length : 0,
-            commits: Array.isArray(commits) ? commits.map((c: any) => ({
+            commitCount: commits.length,
+            commits: commits.map((c) => ({
               message: c.message?.trim() || '',
               author: c.author || ''
-            })) : [],
+            })),
             error: null,
             debug,
             verifyInfo
@@ -310,15 +317,15 @@ test.describe('Git history features', () => {
           rootCid = await tree.setEntry(rootCid, parts, name, fileCid, size, LinkType.Blob);
         }
 
-        const logResult = await getLog(rootCid, { depth: 10, debug: true }) as any;
-        const commits = Array.isArray(logResult) ? logResult : logResult.commits;
-        const debug = Array.isArray(logResult) ? [] : (logResult.debug || []);
+        const logResult = await getLog(rootCid, { depth: 10, debug: true });
+        const commits = logResult.commits;
+        const debug = logResult.debug;
         const head = await getHead(rootCid);
         const commitView = await getCommitViewData(rootCid, 'HEAD');
 
         return {
           commitCount: commits.length,
-          commitMessages: commits.map((commit: any) => commit.message?.trim() || ''),
+          commitMessages: commits.map((commit) => commit.message?.trim() || ''),
           debug,
           head,
           commitView: commitView ? {
@@ -697,7 +704,10 @@ test.describe('Git history features', () => {
       expect(result.srcCommit?.message).toContain('Add src');
 
       // Now test the UI - publish as a top-level git tree and open it in the git app
-      const ownerNpub = await page.evaluate(() => (window as any).__nostrStore?.getState?.().npub ?? null);
+      const ownerNpub = await page.evaluate(() => {
+        const store = (window as NostrStoreWindow).__nostrStore;
+        return store?.getState?.().npub ?? null;
+      });
       expect(ownerNpub).toBeTruthy();
       await page.evaluate(async ({ files, dirs, repoName }) => {
         const { getTree, LinkType } = await import('/src/store.ts');
@@ -1091,7 +1101,10 @@ test.describe('Git history features', () => {
       const allDirs = allEntries.filter((e): e is DirEntry => e.type === 'dir').map(d => d.path);
 
       // Upload repo to hashtree as a top-level git tree
-      const ownerNpub = await page.evaluate(() => (window as any).__nostrStore?.getState?.().npub ?? null);
+      const ownerNpub = await page.evaluate(() => {
+        const store = (window as NostrStoreWindow).__nostrStore;
+        return store?.getState?.().npub ?? null;
+      });
       expect(ownerNpub).toBeTruthy();
       const rootCidHex = await page.evaluate(async ({ files, dirs, repoName }) => {
         const { getTree, LinkType } = await import('/src/store.ts');

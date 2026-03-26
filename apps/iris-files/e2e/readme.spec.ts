@@ -1,8 +1,9 @@
 import { test, expect } from './fixtures';
+import type { Page } from '@playwright/test';
 import { setupPageErrorHandler, navigateToPublicFolder, goToTreeList } from './test-utils.js';
 
 // Helper to create tree and navigate into it
-async function createAndEnterTree(page: any, name: string) {
+async function createAndEnterTree(page: Page, name: string) {
   await goToTreeList(page);
   await expect(page.getByRole('button', { name: 'New Folder' })).toBeVisible({ timeout: 10000 });
   await page.getByRole('button', { name: 'New Folder' }).click();
@@ -12,7 +13,7 @@ async function createAndEnterTree(page: any, name: string) {
 }
 
 // Helper to create a file
-async function createFile(page: any, name: string, content: string = '') {
+async function createFile(page: Page, name: string, content: string = '') {
   await page.getByRole('button', { name: /File/ }).first().click();
   await page.locator('input[placeholder="File name..."]').fill(name);
   await page.getByRole('button', { name: 'Create' }).click();
