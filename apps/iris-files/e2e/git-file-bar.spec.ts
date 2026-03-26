@@ -121,6 +121,50 @@ test.describe('Git file bar', () => {
     await disableOthersPool(page);
   });
 
+  test('repo pages keep git path context visible and constrain the main column', async ({ page }) => {
+    test.slow();
+
+    await page.setViewportSize({ width: 1600, height: 900 });
+
+    const { repoName, npub } = await uploadGitRepo(page);
+
+    await page.goto(`/git.html#/${npub}/public/${repoName}?g=${encodeURIComponent(repoName)}`);
+    await waitForAppReady(page);
+
+    const repoColumn = page.getByTestId('repo-main-column');
+    await expect(repoColumn).toBeVisible({ timeout: 30000 });
+    const repoColumnBox = await repoColumn.boundingBox();
+    expect(repoColumnBox?.width ?? 0).toBeLessThanOrEqual(1290);
+
+    const repoFileList = page.locator('[data-testid="file-list"]').last();
+    const dirCell = repoFileList.locator('tbody tr td:nth-child(2)').filter({ hasText: SUBDIR_NAME }).first();
+    await expect(dirCell).toBeVisible({ timeout: 30000 });
+    await dirCell.click();
+    await page.waitForFunction(
+      (dir) => window.location.hash.includes(encodeURIComponent(dir)),
+      SUBDIR_NAME,
+      { timeout: 15000 }
+    );
+
+    await expect(page.getByTestId('viewer-context')).toHaveText(`${repoName} / ${SUBDIR_NAME}`);
+
+    const fileCell = repoFileList.locator('tbody tr td:nth-child(2)').filter({ hasText: SUBFILE_NAME }).first();
+    await expect(fileCell).toBeVisible({ timeout: 30000 });
+    await fileCell.click();
+    await page.waitForFunction(
+      (name) => window.location.hash.includes(encodeURIComponent(name)),
+      SUBFILE_NAME,
+      { timeout: 15000 }
+    );
+
+    await expect(page.getByTestId('viewer-context')).toHaveText(`${repoName} / ${SUBDIR_NAME} / ${SUBFILE_NAME}`);
+
+    const fileColumn = page.getByTestId('repo-file-column');
+    await expect(fileColumn).toBeVisible({ timeout: 30000 });
+    const fileColumnBox = await fileColumn.boundingBox();
+    expect(fileColumnBox?.width ?? 0).toBeLessThanOrEqual(1290);
+  });
+
   test('shows commit info when viewing a file in git repo', async ({ page }) => {
     test.slow();
 

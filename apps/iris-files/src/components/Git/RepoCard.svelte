@@ -26,8 +26,7 @@
       <VisibilityIcon {visibility} class="text-text-3" />
     </div>
 
-    <div class="mt-auto space-y-2">
-      <div class="text-[0.65rem] uppercase tracking-[0.24em] text-text-3">Repository</div>
+    <div class="mt-auto space-y-1.5">
       <h3 class="m-0 text-lg font-semibold text-text-1 break-all">{name}</h3>
       <div class="text-sm text-text-2">{updatedLabel}</div>
     </div>

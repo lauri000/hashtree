@@ -87,6 +87,7 @@ test.describe('App flavors', () => {
 
     await expect(page.getByRole('heading', { name: 'Repositories' })).toBeVisible();
     await expect(page.getByRole('link', { name: new RegExp(repoName) })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Repository', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('link', { name: new RegExp(plainTreeName) })).not.toBeVisible();
     await expect(page.getByRole('button', { name: 'New Folder' })).not.toBeVisible();
     await expect(page.getByText('Add files to begin')).not.toBeVisible();

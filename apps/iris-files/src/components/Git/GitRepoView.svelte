@@ -481,7 +481,7 @@
   <RepoTabNav npub={route.npub} repoName={repoPath} activeTab="code" />
 {/if}
 
-<div class="flex flex-col gap-4 p-3">
+<div class="mx-auto flex w-full max-w-7xl flex-col gap-4 p-3" data-testid="repo-main-column">
   <!-- Folder actions -->
   <FolderActions {dirCid} {canEdit} />
 

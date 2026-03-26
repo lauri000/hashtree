@@ -14,6 +14,7 @@
   import { LinkType, type TreeEntry as HashTreeEntry } from '@hashtree/core';
   import { shouldAssumeGitRepoDuringDetection, supportsGitFeatures } from '../../appType';
   import { findNearestGitRootPath } from '../../utils/gitRoot';
+  import { resolveGitViewContext } from '../../utils/gitViewContext';
 
   let route = $derived($routeStore);
   let rootCid = $derived($treeRootStore);
@@ -266,6 +267,17 @@
     }
     return currentTreeName || '';
   });
+
+  let gitContextLabel = $derived.by(() => {
+    if (!isInGitRepo) return null;
+    const label = resolveGitViewContext({
+      treeName: currentTreeName,
+      gitRootPath: effectiveGitRootPath,
+      fallbackGitRootParts: hasGitDir ? currentPath : [],
+      currentPath,
+    }).label;
+    return label && label !== currentDirName ? label : null;
+  });
 </script>
 
 <!-- If this is a git repo or inside one (via gitRoot URL param), show GitHub-style directory listing -->
@@ -280,6 +292,8 @@
       visibility={currentTree?.visibility}
       icon="i-lucide-folder-open text-warning"
       name={currentDirName}
+      contextLabel={gitContextLabel}
+      constrained={true}
     />
     <div class="flex-1 overflow-auto">
       <GitRepoView

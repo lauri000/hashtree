@@ -27,6 +27,7 @@
   import FileGitBar from '../Git/FileGitBar.svelte';
   import { supportsDocumentFeatures, supportsGitFeatures } from '../../appType';
   import { findNearestGitRootPath } from '../../utils/gitRoot';
+  import { resolveGitViewContext } from '../../utils/gitViewContext';
 
   let route = $derived($routeStore);
   let rootCid = $derived($treeRootStore);
@@ -145,6 +146,17 @@
     }
 
     return undefined;
+  });
+
+  let gitFileContextLabel = $derived.by(() => {
+    if (!isInGitRepo) return null;
+    const fallbackGitRootParts = hasGitDir ? urlPath.slice(0, -1) : [];
+    return resolveGitViewContext({
+      treeName: currentTreeName,
+      gitRootPath: effectiveGitRootPath,
+      fallbackGitRootParts,
+      currentPath: urlPath,
+    }).label;
   });
 
   // For video streaming: compute effective tree name by absorbing path segments
@@ -666,6 +678,8 @@
     return '#/' + parts.map(encodeURIComponent).join('/') + linkKeySuffix;
   });
 
+  let constrainGitFileLayout = $derived(isInGitRepo && !isFullscreen);
+
   // Get file icon based on extension
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   function _getFileIcon(_filename: string): string {
@@ -776,94 +790,107 @@
     <!-- Header - hidden in fullscreen -->
     {#if !isFullscreen}
     <div class="shrink-0 px-3 py-2 border-b border-surface-2 flex flex-wrap items-center justify-between gap-2" data-testid="viewer-header">
-      <div class="flex items-center gap-2 min-w-0">
-        <a href={backUrl} class="btn-ghost p-1 no-underline" title="Back to folder" data-testid="viewer-back">
-          <span class="i-lucide-chevron-left text-lg"></span>
-        </a>
-        <TreeRow
-          name={entryFromStore.name}
-          isFolder={false}
-          ownerPubkey={viewedNpub ? npubToPubkey(viewedNpub) : null}
-          showHashIcon={route.isPermalink && !viewedNpub}
-          visibility={currentTree?.visibility}
-          hasKey={!!rootCid?.key}
-        />
-        {#if isLiveStream}
-          <span class="ml-2 px-1.5 py-0.5 text-xs font-bold bg-red-600 text-white rounded animate-pulse">LIVE</span>
-        {/if}
-      </div>
-      <div class="flex items-center gap-1 flex-wrap">
-        <button onclick={handleDownload} class="btn-ghost" title="Download file" data-testid="viewer-download" disabled={loading && !isVideo}>
-          Download
-        </button>
-        {#if permalinkUrl}
-          <a href={permalinkUrl} class="btn-ghost no-underline" title={entryFromStore?.cid?.hash ? toHex(entryFromStore.cid.hash) : ''} data-testid="viewer-permalink">
-            Permalink
+      <div class="mx-auto flex w-full items-center justify-between gap-2 {constrainGitFileLayout ? 'max-w-7xl' : ''}">
+        <div class="flex items-center gap-2 min-w-0">
+          <a href={backUrl} class="btn-ghost p-1 no-underline" title="Back to folder" data-testid="viewer-back">
+            <span class="i-lucide-chevron-left text-lg"></span>
           </a>
-        {/if}
-        <button onclick={toggleFullscreen} class="btn-ghost" title={isFullscreen ? "Exit fullscreen" : "Fullscreen"} data-testid="viewer-fullscreen">
-          <span class={isFullscreen ? "i-lucide-minimize text-base" : "i-lucide-maximize text-base"}></span>
-        </button>
-        <button onclick={handleShare} class="btn-ghost" title="Share" data-testid="viewer-share">
-          <span class="i-lucide-share text-base"></span>
-        </button>
-        {#if entryFromStore?.cid}
-          <button
-            onclick={() => openBlossomPushModal(entryFromStore.cid, entryFromStore.name, false, route.npub ? npubToPubkey(route.npub) : undefined, route.treeName)}
-            class="btn-ghost"
-            title="Push to file servers"
-            data-testid="viewer-push"
-          >
-            <span class="i-lucide-upload-cloud text-base"></span>
+          <div class="min-w-0">
+            {#if gitFileContextLabel}
+              <div class="truncate text-xs text-text-3 leading-tight" data-testid="viewer-context">{gitFileContextLabel}</div>
+            {/if}
+            <div class="flex min-w-0 items-center gap-2">
+              <TreeRow
+                name={entryFromStore.name}
+                isFolder={false}
+                ownerPubkey={viewedNpub ? npubToPubkey(viewedNpub) : null}
+                showHashIcon={route.isPermalink && !viewedNpub}
+                visibility={currentTree?.visibility}
+                hasKey={!!rootCid?.key}
+              />
+              {#if isLiveStream}
+                <span class="ml-2 px-1.5 py-0.5 text-xs font-bold bg-red-600 text-white rounded animate-pulse">LIVE</span>
+              {/if}
+            </div>
+          </div>
+        </div>
+        <div class="flex items-center gap-1 flex-wrap">
+          <button onclick={handleDownload} class="btn-ghost" title="Download file" data-testid="viewer-download" disabled={loading && !isVideo}>
+            Download
           </button>
-        {/if}
-        {#if canEdit}
-          <button onclick={() => openRenameModal(entryFromStore.name)} class="btn-ghost" data-testid="viewer-rename">Rename</button>
-          {#if isTextFile || isHtml}
+          {#if permalinkUrl}
+            <a href={permalinkUrl} class="btn-ghost no-underline" title={entryFromStore?.cid?.hash ? toHex(entryFromStore.cid.hash) : ''} data-testid="viewer-permalink">
+              Permalink
+            </a>
+          {/if}
+          <button onclick={toggleFullscreen} class="btn-ghost" title={isFullscreen ? "Exit fullscreen" : "Fullscreen"} data-testid="viewer-fullscreen">
+            <span class={isFullscreen ? "i-lucide-minimize text-base" : "i-lucide-maximize text-base"}></span>
+          </button>
+          <button onclick={handleShare} class="btn-ghost" title="Share" data-testid="viewer-share">
+            <span class="i-lucide-share text-base"></span>
+          </button>
+          {#if entryFromStore?.cid}
             <button
-              onclick={enterEditMode}
+              onclick={() => openBlossomPushModal(entryFromStore.cid, entryFromStore.name, false, route.npub ? npubToPubkey(route.npub) : undefined, route.treeName)}
               class="btn-ghost"
-              disabled={loading || fileContent === null}
-              data-testid="viewer-edit"
+              title="Push to file servers"
+              data-testid="viewer-push"
             >
-              Edit
+              <span class="i-lucide-upload-cloud text-base"></span>
             </button>
           {/if}
-          <button onclick={handleDelete} class="btn-ghost text-danger" data-testid="viewer-delete">Delete</button>
-        {/if}
-        <!-- Prev/Next file navigation - mobile only -->
-        {#if filesOnly.length > 1 && prevFile && nextFile}
-          <button
-            onclick={() => navigateToFile(prevFile.name)}
-            class="btn-ghost lg:hidden"
-            title={`Previous: ${prevFile.name}`}
-          >
-            <span class="i-lucide-chevron-left text-base"></span>
-          </button>
-          <button
-            onclick={() => navigateToFile(nextFile.name)}
-            class="btn-ghost lg:hidden"
-            title={`Next: ${nextFile.name}`}
-          >
-            <span class="i-lucide-chevron-right text-base"></span>
-          </button>
-        {/if}
+          {#if canEdit}
+            <button onclick={() => openRenameModal(entryFromStore.name)} class="btn-ghost" data-testid="viewer-rename">Rename</button>
+            {#if isTextFile || isHtml}
+              <button
+                onclick={enterEditMode}
+                class="btn-ghost"
+                disabled={loading || fileContent === null}
+                data-testid="viewer-edit"
+              >
+                Edit
+              </button>
+            {/if}
+            <button onclick={handleDelete} class="btn-ghost text-danger" data-testid="viewer-delete">Delete</button>
+          {/if}
+          <!-- Prev/Next file navigation - mobile only -->
+          {#if filesOnly.length > 1 && prevFile && nextFile}
+            <button
+              onclick={() => navigateToFile(prevFile.name)}
+              class="btn-ghost lg:hidden"
+              title={`Previous: ${prevFile.name}`}
+            >
+              <span class="i-lucide-chevron-left text-base"></span>
+            </button>
+            <button
+              onclick={() => navigateToFile(nextFile.name)}
+              class="btn-ghost lg:hidden"
+              title={`Next: ${nextFile.name}`}
+            >
+              <span class="i-lucide-chevron-right text-base"></span>
+            </button>
+          {/if}
+        </div>
       </div>
     </div>
     {/if}
 
-    <!-- Git file bar - shows commit info when viewing a file in a git repo -->
-    {#if isInGitRepo && gitRootCid && urlFileName && !isFullscreen}
-      <FileGitBar
-        {gitRootCid}
-        fileName={urlFileName}
-        subpath={fileSubpath}
-        {canEdit}
-      />
-    {/if}
+    <div
+      class="flex-1 flex flex-col min-h-0 {constrainGitFileLayout ? 'mx-auto w-full max-w-7xl' : ''}"
+      data-testid={constrainGitFileLayout ? 'repo-file-column' : undefined}
+    >
+      <!-- Git file bar - shows commit info when viewing a file in a git repo -->
+      {#if isInGitRepo && gitRootCid && urlFileName && !isFullscreen}
+        <FileGitBar
+          {gitRootCid}
+          fileName={urlFileName}
+          subpath={fileSubpath}
+          {canEdit}
+        />
+      {/if}
 
-    <!-- Content -->
-    {#if isVideo && entryFromStore?.cid}
+      <!-- Content -->
+      {#if isVideo && entryFromStore?.cid}
       <!-- Key by filename to prevent remount on CID change during live streaming -->
       {#key urlFileName}
         <MediaPlayer
@@ -984,6 +1011,7 @@
         </div>
       {/key}
     {/if}
+  </div>
   </div>
 {:else if hasTreeContext && isYjsDocument && currentDirCid}
   <!-- Yjs Document view - show Tiptap editor -->
