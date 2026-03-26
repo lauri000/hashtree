@@ -421,6 +421,11 @@ mod macos {
             warn!("No Bluetooth adapters available on macOS");
             return Ok(());
         };
+        info!(
+            "Starting macOS Bluetooth central for peer {} (max_peers={})",
+            context.my_peer_id.short(),
+            config.max_peers
+        );
 
         tokio::spawn(async move {
             let service_uuid = Uuid::parse_str(HTREE_BLE_SERVICE_UUID).expect("valid UUID");
@@ -463,6 +468,10 @@ mod macos {
                     if !properties.services.contains(&service_uuid) {
                         continue;
                     }
+                    info!(
+                        "Discovered BLE peripheral {} advertising htree service",
+                        peripheral_id
+                    );
                     match connect_peripheral(peripheral.clone()).await {
                         Ok(Some(link)) => {
                             connected.insert(peripheral_id.clone(), peripheral);
@@ -478,7 +487,7 @@ mod macos {
                         }
                         Ok(None) => {}
                         Err(err) => {
-                            debug!("Skipping BLE peripheral {}: {}", peripheral_id, err);
+                            warn!("Skipping BLE peripheral {}: {}", peripheral_id, err);
                         }
                     }
                 }
@@ -493,43 +502,89 @@ mod macos {
     async fn connect_peripheral(peripheral: Peripheral) -> Result<Option<Arc<dyn BluetoothLink>>> {
         let rx_uuid = Uuid::parse_str(HTREE_BLE_RX_CHARACTERISTIC_UUID)?;
         let tx_uuid = Uuid::parse_str(HTREE_BLE_TX_CHARACTERISTIC_UUID)?;
+        let peripheral_id = peripheral.id().to_string();
 
         if !peripheral.is_connected().await? {
+            info!("Connecting to BLE peripheral {}", peripheral_id);
             peripheral.connect().await?;
         }
-        peripheral.discover_services().await?;
+        let mut rx_char = None;
+        let mut tx_char = None;
+        for attempt in 1..=6 {
+            info!(
+                "Discovering BLE services for {} (attempt {}/6)",
+                peripheral_id, attempt
+            );
+            peripheral.discover_services().await?;
 
-        let characteristics = peripheral.characteristics();
-        let Some(rx_char) = characteristics.iter().find(|c| c.uuid == rx_uuid).cloned() else {
+            let characteristics = peripheral.characteristics();
+            if !characteristics.is_empty() {
+                let uuids = characteristics
+                    .iter()
+                    .map(|c| c.uuid.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                info!(
+                    "BLE peripheral {} characteristics: {}",
+                    peripheral_id, uuids
+                );
+            }
+            rx_char = characteristics.iter().find(|c| c.uuid == rx_uuid).cloned();
+            tx_char = characteristics.iter().find(|c| c.uuid == tx_uuid).cloned();
+            if rx_char.is_some() && tx_char.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        let Some(rx_char) = rx_char else {
+            warn!("BLE peripheral {} missing RX characteristic", peripheral_id);
+            let _ = peripheral.disconnect().await;
             return Ok(None);
         };
-        let Some(tx_char) = characteristics.iter().find(|c| c.uuid == tx_uuid).cloned() else {
+        let Some(tx_char) = tx_char else {
+            warn!("BLE peripheral {} missing TX characteristic", peripheral_id);
+            let _ = peripheral.disconnect().await;
             return Ok(None);
         };
         if !tx_char.properties.contains(CharPropFlags::NOTIFY) {
+            warn!(
+                "BLE peripheral {} TX characteristic is missing NOTIFY",
+                peripheral_id
+            );
+            let _ = peripheral.disconnect().await;
             return Ok(None);
         }
-        peripheral.subscribe(&tx_char).await?;
         let notifications = peripheral.notifications().await?;
+        info!("Subscribing to BLE notifications for {}", peripheral_id);
+        peripheral.subscribe(&tx_char).await?;
 
         let initial_frames = match peripheral.read(&tx_char).await {
             Ok(bytes) if !bytes.is_empty() => {
+                info!(
+                    "Read initial BLE hello bytes from {} ({} bytes)",
+                    peripheral_id,
+                    bytes.len()
+                );
                 let mut decoder = FrameDecoder::new();
                 match decoder.push(&bytes) {
                     Ok(frames) => frames,
                     Err(err) => {
-                        debug!("Discarding malformed initial BLE frame: {}", err);
+                        warn!(
+                            "Discarding malformed initial BLE frame from {}: {}",
+                            peripheral_id, err
+                        );
                         Vec::new()
                     }
                 }
             }
             Ok(_) => Vec::new(),
             Err(err) => {
-                debug!("Initial BLE read failed: {}", err);
+                warn!("Initial BLE read failed for {}: {}", peripheral_id, err);
                 Vec::new()
             }
         };
 
+        info!("BLE peripheral {} ready for mesh traffic", peripheral_id);
         Ok(Some(MacosCentralLink::new(
             peripheral,
             rx_char,

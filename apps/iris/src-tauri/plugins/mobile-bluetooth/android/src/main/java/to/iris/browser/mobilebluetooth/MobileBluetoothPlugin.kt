@@ -26,6 +26,9 @@ import app.tauri.plugin.Plugin
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import org.json.JSONArray
 
 private const val TAG = "MobileBluetoothPlugin"
 private val SERVICE_UUID: UUID = UUID.fromString("f18ef5f6-b7ee-4f40-b869-10a2d4f35932")
@@ -122,6 +125,9 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
                 return
             }
 
+            val serviceAdded = CountDownLatch(1)
+            var serviceAddedOk = false
+
             val serverCallback = object : BluetoothGattServerCallback() {
                 override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
                     val address = device.address
@@ -196,9 +202,23 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
                         gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
                     }
                 }
+
+                override fun onServiceAdded(status: Int, service: BluetoothGattService) {
+                    if (service.uuid != SERVICE_UUID) {
+                        return
+                    }
+                    serviceAddedOk = status == BluetoothGatt.GATT_SUCCESS
+                    Log.i(TAG, "Service add callback for ${service.uuid} status=$status")
+                    serviceAdded.countDown()
+                }
             }
 
             gattServer = bluetoothManager.openGattServer(activity, serverCallback)
+            if (gattServer == null) {
+                Log.e(TAG, "Failed to open Bluetooth GATT server")
+                invoke.reject("Failed to open Bluetooth GATT server")
+                return
+            }
             val rx = BluetoothGattCharacteristic(
                 RX_UUID,
                 BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
@@ -219,7 +239,22 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
             val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
             service.addCharacteristic(rx)
             service.addCharacteristic(tx)
-            gattServer?.addService(service)
+            if (gattServer?.addService(service) != true) {
+                Log.e(TAG, "Failed to queue Bluetooth GATT service")
+                invoke.reject("Failed to add Bluetooth GATT service")
+                return
+            }
+            if (!serviceAdded.await(3, TimeUnit.SECONDS)) {
+                Log.e(TAG, "Timed out waiting for Bluetooth GATT service registration")
+                invoke.reject("Timed out waiting for Bluetooth GATT service registration")
+                return
+            }
+            if (!serviceAddedOk) {
+                Log.e(TAG, "Bluetooth GATT service registration failed")
+                invoke.reject("Bluetooth GATT service registration failed")
+                return
+            }
+            Log.i(TAG, "Bluetooth GATT service registered, starting advertising")
 
             advertiser.startAdvertising(
                 AdvertiseSettings.Builder()
@@ -276,6 +311,20 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
             }
         }
         invoke.resolve()
+    }
+
+    @Command
+    fun listPeers(invoke: Invoke) {
+        val peers = JSONArray()
+        devices.keys.sorted().forEach { address ->
+            val peer = JSObject()
+            peer.put("address", address)
+            peer.put("ready", subscribed.contains(address))
+            peers.put(peer)
+        }
+        val payload = JSObject()
+        payload.put("peers", peers)
+        invoke.resolve(payload)
     }
 
     override fun onDestroy() {

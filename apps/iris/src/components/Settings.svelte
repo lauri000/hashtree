@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import BandwidthHistoryChart from './BandwidthHistoryChart.svelte';
   import {
     isAutostartEnabled,
     toggleAutostart,
@@ -7,6 +8,18 @@
     clearHistory,
   } from '../lib/tauri';
   import { distributedOwner } from '../lib/apps';
+  import {
+    advanceMeshBandwidthHistory,
+    emptyDaemonMeshStatus,
+    formatBandwidth,
+    formatBytes,
+    parseDaemonMeshStatus,
+    shortIdentifier,
+    type DaemonMeshStatus,
+    type MeshBandwidthHistoryPoint,
+    type MeshHistoryCursor,
+    type MeshPeerInfo,
+  } from '../lib/mesh';
 
   interface Props {
     onnavigate: (url: string) => void | Promise<void>;
@@ -42,6 +55,13 @@
   let autostart = $state(false);
   let daemonUrl = $state('');
   let historyCleared = $state(false);
+  let meshStatus = $state<DaemonMeshStatus>(emptyDaemonMeshStatus());
+  let meshBandwidthHistory = $state<MeshBandwidthHistoryPoint[]>([]);
+  let meshHistoryCursor = $state<MeshHistoryCursor | null>(null);
+  let meshUploadBandwidth = $state(0);
+  let meshDownloadBandwidth = $state(0);
+  let networkStatusLoaded = $state(false);
+  let networkStatusError = $state('');
 
   const buildLabel = (() => {
     const buildTime = import.meta.env.VITE_BUILD_TIME;
@@ -53,13 +73,27 @@
     }
   })();
 
-  onMount(async () => {
-    autostart = await isAutostartEnabled();
-    try {
-      daemonUrl = await getHtreeServerUrl();
-    } catch {
-      daemonUrl = '';
-    }
+  onMount(() => {
+    let interval: ReturnType<typeof setInterval> | undefined;
+
+    void (async () => {
+      autostart = await isAutostartEnabled();
+      try {
+        daemonUrl = await getHtreeServerUrl();
+        await refreshNetworkStatus();
+        interval = setInterval(() => {
+          void refreshNetworkStatus();
+        }, 1000);
+      } catch {
+        daemonUrl = '';
+        networkStatusLoaded = true;
+        networkStatusError = 'Embedded daemon unavailable';
+      }
+    })();
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
   });
 
   async function handleAutostartToggle() {
@@ -78,6 +112,59 @@
 
   function openSource(url: string) {
     void onnavigate(url);
+  }
+
+  async function refreshNetworkStatus() {
+    if (!daemonUrl) {
+      networkStatusLoaded = true;
+      return;
+    }
+
+    try {
+      const response = await fetch(`${daemonUrl}/api/status`, {
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const payload = await response.json();
+      const nextStatus = parseDaemonMeshStatus(payload);
+      const sample = advanceMeshBandwidthHistory(
+        meshHistoryCursor,
+        meshBandwidthHistory,
+        {
+          totalBytesSent: nextStatus.totalBytesSent,
+          totalBytesReceived: nextStatus.totalBytesReceived,
+        },
+        Date.now(),
+      );
+      meshStatus = nextStatus;
+      meshHistoryCursor = sample.nextCursor;
+      meshBandwidthHistory = sample.history;
+      meshUploadBandwidth = sample.rates.uploadBps;
+      meshDownloadBandwidth = sample.rates.downloadBps;
+      networkStatusError = '';
+    } catch (error) {
+      networkStatusError = error instanceof Error ? error.message : 'Failed to load daemon status';
+    } finally {
+      networkStatusLoaded = true;
+    }
+  }
+
+  function stateColor(state: MeshPeerInfo['state']): string {
+    return state === 'connected' ? 'bg-success' : 'bg-surface-3';
+  }
+
+  function poolLabel(pool: MeshPeerInfo['pool']): string {
+    return pool === 'follows' ? 'follow' : 'other';
+  }
+
+  function transportLabel(transport: string): string {
+    return transport.toLowerCase();
+  }
+
+  function peerLabel(peer: MeshPeerInfo): string {
+    return shortIdentifier(peer.pubkey || peer.peerId, 10, 6);
   }
 </script>
 
@@ -153,22 +240,141 @@
           </div>
         </div>
       {:else if activeTab === 'network'}
-        <div>
-          <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-1">
-            Daemon
-          </h3>
-          <p class="text-xs text-text-3 mb-3">Embedded htree server used by the shell</p>
-          <div class="bg-surface-2 rounded p-3 space-y-3">
-            <div class="flex items-center justify-between gap-4">
-              <span class="text-sm text-text-3">Server URL</span>
-              <span class="text-sm text-text-1 font-mono break-all text-right">
-                {daemonUrl || 'Unavailable'}
-              </span>
+        <div class="space-y-6">
+          <div>
+            <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-1">
+              Daemon
+            </h3>
+            <p class="text-xs text-text-3 mb-3">Embedded htree server used by the shell</p>
+            <div class="bg-surface-2 rounded p-3 space-y-3">
+              <div class="flex items-center justify-between gap-4">
+                <span class="text-sm text-text-3">Server URL</span>
+                <span class="text-sm text-text-1 font-mono break-all text-right">
+                  {daemonUrl || 'Unavailable'}
+                </span>
+              </div>
+              <div class="flex items-center justify-between gap-4">
+                <span class="text-sm text-text-3">Transport</span>
+                <span class="text-sm text-text-1">Embedded local daemon</span>
+              </div>
+              <div class="flex items-center justify-between gap-4">
+                <span class="text-sm text-text-3">Status</span>
+                <span class="text-sm text-text-1">
+                  {#if networkStatusError}
+                    Degraded
+                  {:else if networkStatusLoaded}
+                    Running
+                  {:else}
+                    Loading
+                  {/if}
+                </span>
+              </div>
             </div>
-            <div class="flex items-center justify-between gap-4">
-              <span class="text-sm text-text-3">Transport</span>
-              <span class="text-sm text-text-1">Embedded local daemon</span>
+            {#if networkStatusError}
+              <p class="mt-2 text-xs text-text-3">{networkStatusError}</p>
+            {/if}
+          </div>
+
+          <div>
+            <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-1">
+              Mesh
+            </h3>
+            <p class="text-xs text-text-3 mb-3">
+              Nearby Bluetooth and WebRTC transport activity from the embedded daemon
+            </p>
+
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div class="rounded bg-surface-2 p-3">
+                <div class="text-xs uppercase tracking-wide text-text-3">Peers</div>
+                <div class="mt-1 text-lg font-semibold text-text-1">{meshStatus.connected} connected</div>
+                <div class="mt-2 flex flex-wrap gap-2 text-xs text-text-3">
+                  <span class="rounded bg-surface-1 px-2 py-1">{meshStatus.totalPeers} total</span>
+                  <span class="rounded bg-surface-1 px-2 py-1">{meshStatus.withDataChannel} ready</span>
+                </div>
+              </div>
+
+              <div class="rounded bg-surface-2 p-3">
+                <div class="text-xs uppercase tracking-wide text-text-3">Transports</div>
+                <div class="mt-1 flex flex-wrap gap-2 text-sm text-text-1">
+                  <span class="rounded bg-surface-1 px-2 py-1">
+                    {meshStatus.transportCounts.bluetooth ?? 0} bluetooth
+                  </span>
+                  <span class="rounded bg-surface-1 px-2 py-1">
+                    {meshStatus.transportCounts.webrtc ?? 0} webrtc
+                  </span>
+                </div>
+                <div class="mt-2 text-xs text-text-3">
+                  {meshStatus.blossomServers} blossom servers
+                </div>
+              </div>
             </div>
+
+            <div class="mt-3 rounded bg-surface-2 p-3">
+              <div class="grid grid-cols-2 gap-3 text-xs">
+                <div class="flex items-center justify-between rounded bg-surface-1/70 px-2 py-2">
+                  <span class="text-text-3">Upload</span>
+                  <span class="font-mono text-success">{formatBandwidth(meshUploadBandwidth)}</span>
+                </div>
+                <div class="flex items-center justify-between rounded bg-surface-1/70 px-2 py-2">
+                  <span class="text-text-3">Download</span>
+                  <span class="font-mono text-accent">{formatBandwidth(meshDownloadBandwidth)}</span>
+                </div>
+                <div class="flex items-center justify-between rounded bg-surface-1/70 px-2 py-2">
+                  <span class="text-text-3">Sent</span>
+                  <span class="font-mono text-success">{formatBytes(meshStatus.totalBytesSent)}</span>
+                </div>
+                <div class="flex items-center justify-between rounded bg-surface-1/70 px-2 py-2">
+                  <span class="text-text-3">Received</span>
+                  <span class="font-mono text-accent">{formatBytes(meshStatus.totalBytesReceived)}</span>
+                </div>
+              </div>
+              <div class="mt-3">
+                <BandwidthHistoryChart history={meshBandwidthHistory} />
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-1">
+              Active Peers
+            </h3>
+            <p class="text-xs text-text-3 mb-3">Connected peers and transport byte counters</p>
+            {#if meshStatus.peers.length === 0}
+              <div class="rounded bg-surface-2 p-3 text-sm text-text-3">
+                No mesh peers connected
+              </div>
+            {:else}
+              <div class="bg-surface-2 rounded divide-y divide-surface-3">
+                {#each meshStatus.peers as peer (peer.id)}
+                  <div class="p-3">
+                    <div class="flex items-center gap-2 text-sm">
+                      <span class={`h-2 w-2 shrink-0 rounded-full ${stateColor(peer.state)}`}></span>
+                      <span class="min-w-0 flex-1 font-medium text-text-1 truncate">
+                        {peerLabel(peer)}
+                      </span>
+                      <span class="rounded bg-surface-1 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-3">
+                        {transportLabel(peer.transport)}
+                      </span>
+                      <span class="rounded bg-surface-1 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-3">
+                        {poolLabel(peer.pool)}
+                      </span>
+                    </div>
+                    <div class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-3">
+                      {#if peer.signalPaths.length > 0}
+                        <span>{peer.signalPaths.join(' + ')}</span>
+                      {/if}
+                      <span class="font-mono">{shortIdentifier(peer.peerId, 8, 4)}</span>
+                      <span class="text-success">
+                        <span class="i-lucide-arrow-up inline-block align-middle mr-0.5"></span>{formatBytes(peer.bytesSent)}
+                      </span>
+                      <span class="text-accent">
+                        <span class="i-lucide-arrow-down inline-block align-middle mr-0.5"></span>{formatBytes(peer.bytesReceived)}
+                      </span>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            {/if}
           </div>
         </div>
       {:else if activeTab === 'about'}

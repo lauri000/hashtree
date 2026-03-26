@@ -3747,6 +3747,103 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn htree_npub_path_thumbnail_falls_back_to_historical_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());
+        let tree = HashTree::new(HashTreeConfig::new(store.store_arc()).public());
+        let keys = Keys::generate();
+        let relay = test_nostr_relay(&temp_dir, keys.public_key().to_hex()).await;
+
+        let thumb_bytes = vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46];
+        let (thumb_cid, _) = tree.put(&thumb_bytes).await.unwrap();
+        let historical_root = tree
+            .put_directory(vec![
+                DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File),
+            ])
+            .await
+            .unwrap();
+        let (video_cid, _) = tree.put(b"video-data").await.unwrap();
+        let current_root = tree
+            .put_directory(vec![
+                DirEntry::from_cid("video.mp4", &video_cid).with_link_type(LinkType::File),
+            ])
+            .await
+            .unwrap();
+
+        let tree_name = "videos/Mine Bombers in-game music";
+        let historical_event = EventBuilder::new(
+            Kind::Custom(30078),
+            "",
+            [
+                Tag::identifier(tree_name.to_string()),
+                Tag::custom(
+                    TagKind::SingleLetter(SingleLetterTag::lowercase(Alphabet::L)),
+                    vec!["hashtree".to_string()],
+                ),
+                Tag::custom(
+                    TagKind::Custom("hash".into()),
+                    vec![to_hex(&historical_root.hash)],
+                ),
+            ],
+        )
+        .custom_created_at(Timestamp::from(10))
+        .to_event(&keys)
+        .unwrap();
+        relay
+            .ingest_trusted_event(historical_event.clone())
+            .await
+            .unwrap();
+
+        let current_event = EventBuilder::new(
+            Kind::Custom(30078),
+            "",
+            [
+                Tag::identifier(tree_name.to_string()),
+                Tag::custom(
+                    TagKind::SingleLetter(SingleLetterTag::lowercase(Alphabet::L)),
+                    vec!["hashtree".to_string()],
+                ),
+                Tag::custom(
+                    TagKind::Custom("hash".into()),
+                    vec![to_hex(&current_root.hash)],
+                ),
+            ],
+        )
+        .custom_created_at(Timestamp::from(20))
+        .to_event(&keys)
+        .unwrap();
+        relay.ingest_trusted_event(current_event).await.unwrap();
+
+        let state = AppState {
+            nostr_relay: Some(relay),
+            ..test_app_state(store, Vec::new())
+        };
+        let npub = keys.public_key().to_bech32().unwrap();
+        put_cached_tree_root(
+            &state,
+            tree_root_cache_key(&npub, tree_name, None),
+            current_root.clone(),
+            "cache",
+            None,
+        );
+
+        let response = htree_npub_impl(
+            State(state),
+            npub,
+            tree_name.to_string(),
+            Some("thumbnail".to_string()),
+            Query(HashMap::new()),
+            axum::http::HeaderMap::new(),
+            axum::extract::ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 43123))),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), thumb_bytes.as_slice());
+    }
+
+    #[tokio::test]
     async fn cache_tree_root_public_chk_uses_plain_mutable_cache_key() {
         let temp_dir = TempDir::new().unwrap();
         let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());

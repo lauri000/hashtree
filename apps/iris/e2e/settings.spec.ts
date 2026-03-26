@@ -31,6 +31,79 @@ test.describe('Settings Page', () => {
     await expect(page.getByText('http://127.0.0.1:21417')).toBeVisible();
   });
 
+  test('network tab shows mesh traffic and bluetooth peers from daemon status', async ({ tauriPage: page }) => {
+    await page.route('http://127.0.0.1:21417/api/status', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'running',
+          mesh: {
+            enabled: true,
+            total_peers: 2,
+            connected: 2,
+            with_data_channel: 2,
+            bytes_sent: 15360,
+            bytes_received: 28672,
+            transport_counts: {
+              webrtc: 1,
+              bluetooth: 1,
+            },
+            peers: [
+              {
+                id: 'peer-a',
+                peer_id: 'peer-a',
+                pubkey: 'f'.repeat(64),
+                state: 'Connected',
+                pool: 'Follows',
+                transport: 'bluetooth',
+                signal_paths: ['bluetooth'],
+                connected: true,
+                has_data_channel: true,
+                bytes_sent: 4096,
+                bytes_received: 8192,
+              },
+              {
+                id: 'peer-b',
+                peer_id: 'peer-b',
+                pubkey: 'e'.repeat(64),
+                state: 'Connected',
+                pool: 'Other',
+                transport: 'webrtc',
+                signal_paths: ['relay'],
+                connected: true,
+                has_data_channel: true,
+                bytes_sent: 11264,
+                bytes_received: 20480,
+              },
+            ],
+          },
+          webrtc: {
+            enabled: true,
+          },
+          upstream: {
+            blossom_servers: 2,
+          },
+        }),
+      });
+    });
+
+    await openHome(page);
+    await page.getByTitle('Settings').click();
+    await page.getByRole('button', { name: 'Network' }).click();
+
+    await expect(page.getByRole('heading', { name: 'Mesh' })).toBeVisible();
+    await expect(page.getByText('2 connected')).toBeVisible();
+    await expect(page.getByText('1 bluetooth')).toBeVisible();
+    await expect(page.getByText('1 webrtc')).toBeVisible();
+    await expect(page.getByText('Upload', { exact: true })).toBeVisible();
+    await expect(page.getByText('Download', { exact: true })).toBeVisible();
+    await expect(page.getByText('Recent Throughput')).toBeVisible();
+    await expect(page.getByText('Active Peers')).toBeVisible();
+    await expect(page.getByText('relay', { exact: true })).toBeVisible();
+    await expect(page.getByText('blossom servers')).toBeVisible();
+  });
+
   test('about tab opens the hashtree repository in Iris Git', async ({ tauriPage: page }) => {
     await openHome(page);
     await page.getByTitle('Settings').click();

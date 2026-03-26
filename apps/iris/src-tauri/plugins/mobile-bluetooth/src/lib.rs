@@ -93,6 +93,21 @@ struct FramePayload {
 }
 
 #[cfg(target_os = "android")]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerSnapshot {
+    pub address: String,
+    pub ready: bool,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PeerSnapshotResponse {
+    peers: Vec<PeerSnapshot>,
+}
+
+#[cfg(target_os = "android")]
 fn decode_channel_payload<T: for<'de> Deserialize<'de>>(
     body: InvokeResponseBody,
 ) -> tauri::Result<T> {
@@ -218,6 +233,20 @@ impl<R: Runtime> MobileBluetooth<R> {
         _payload: Vec<u8>,
     ) -> Result<(), String> {
         Err("mobile bluetooth is only available on Android".to_string())
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn list_peers(&self) -> Result<Vec<PeerSnapshot>, String> {
+        let response = self
+            .handle
+            .run_mobile_plugin::<PeerSnapshotResponse>("listPeers", serde_json::json!({}))
+            .map_err(|error| error.to_string())?;
+        Ok(response.peers)
+    }
+
+    #[cfg(not(target_os = "android"))]
+    pub fn list_peers(&self) -> Result<Vec<()>, String> {
+        Ok(Vec::new())
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<MobileBluetoothEvent> {

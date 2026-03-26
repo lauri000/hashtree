@@ -26,7 +26,7 @@
     type WebviewPageLoadEvent,
     type HistoryEntry,
   } from './lib/tauri';
-  import { isBuiltInIrisApp } from './lib/apps';
+  import { bookmarkSavedName, isBuiltInIrisApp } from './lib/apps';
   import { appsStore } from './stores/apps';
   import AppLauncher from './components/AppLauncher.svelte';
   import Settings from './components/Settings.svelte';
@@ -184,6 +184,14 @@
     return MACOS_FUNCTION_KEY_GLYPHS_SINGLE.test(event.key) || isLegacyMacosArrowKeyCode(event);
   }
 
+  function isEscapeKey(event: KeyboardEvent): boolean {
+    return event.key === 'Escape'
+      || event.key === 'Esc'
+      || event.code === 'Escape'
+      || event.keyCode === 27
+      || event.which === 27;
+  }
+
   function moveAddressCaret(direction: -1 | 1) {
     const input = addressInputEl;
     if (!input) return;
@@ -339,7 +347,7 @@
       return;
     }
 
-    if (key === 'Escape' || key === 'Esc') {
+    if (isEscapeKey(event)) {
       event.preventDefault();
       event.stopPropagation();
       dismissDropdown();
@@ -720,8 +728,11 @@
     if (isFavorited) {
       appsStore.remove(currentUrl);
     } else {
-      const hostname = (() => { try { return new URL(currentUrl).hostname; } catch { return currentUrl; } })();
-      appsStore.add({ url: currentUrl, name: hostname, addedAt: Date.now() });
+      appsStore.add({
+        url: currentUrl,
+        name: bookmarkSavedName(currentUrl, childDocumentTitle),
+        addedAt: Date.now(),
+      });
     }
   }
 
@@ -981,12 +992,12 @@
       addressInputEl?.focus();
       return;
     }
-    if ((event.key === 'Escape' || event.key === 'Esc') && showMobileMenu) {
+    if (isEscapeKey(event) && showMobileMenu) {
       event.preventDefault();
       showMobileMenu = false;
       return;
     }
-    if ((event.key !== 'Escape' && event.key !== 'Esc') || !showDropdown) return;
+    if (!isEscapeKey(event) || !showDropdown) return;
     event.preventDefault();
     dismissDropdown();
   }

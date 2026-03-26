@@ -43,11 +43,17 @@ test.describe('App Launcher', () => {
     await expect(suggestions.getByText('Iris Boards')).toBeVisible();
     await expect(suggestions.getByText('hashtree.cc')).toBeVisible();
     await expect(suggestions.getByText('Iris Social')).toBeVisible();
+    await expect(suggestions.getByText('files', { exact: true })).not.toBeVisible();
+    await expect(suggestions.getByText('video', { exact: true })).not.toBeVisible();
+    await expect(suggestions.getByText('docs', { exact: true })).not.toBeVisible();
+    await expect(suggestions.getByText('git', { exact: true })).not.toBeVisible();
+    await expect(suggestions.getByText('maps', { exact: true })).not.toBeVisible();
+    await expect(suggestions.getByText('boards', { exact: true })).not.toBeVisible();
+    await expect(suggestions.getByText('iris.to', { exact: true })).not.toBeVisible();
 
-    const hashtreeSuggestion = suggestions.locator('[role="button"]').filter({
-      has: page.getByText('hashtree.cc'),
-    });
+    const hashtreeSuggestion = page.getByTestId('suggestion-card-hashtree-cc');
     await expect(hashtreeSuggestion.locator('img')).toHaveAttribute('src', /hashtree-cc-favicon\.svg$/);
+    await expect(suggestions).not.toContainText(distributedOwner);
   });
 
   test('clicking suggestion triggers webview creation', async ({ tauriPage: page }) => {
@@ -200,12 +206,10 @@ test.describe('App Launcher', () => {
     const suggestions = page.locator('section').filter({
       has: page.getByRole('heading', { name: 'Suggestions' }),
     });
-    const gitSuggestion = suggestions.locator('[role="button"]').filter({
-      has: page.getByText('Iris Git'),
-    });
+    const gitSuggestion = page.getByTestId('suggestion-card-iris-git');
 
     await expect(gitSuggestion).toBeVisible();
-    await gitSuggestion.getByTitle('Dismiss suggestion').click();
+    await page.getByTestId('suggestion-dismiss-iris-git').click();
     await expect(gitSuggestion).not.toBeVisible();
 
     await page.reload();
@@ -221,17 +225,37 @@ test.describe('App Launcher', () => {
     const suggestions = page.locator('section').filter({
       has: page.getByRole('heading', { name: 'Suggestions' }),
     });
-    const boardsSuggestion = suggestions.locator('[role="button"]').filter({
-      has: page.getByText('Iris Boards'),
-    });
+    const boardsSuggestion = page.getByTestId('suggestion-card-iris-boards');
 
-    await boardsSuggestion.getByTitle('Dismiss suggestion').click();
+    await page.getByTestId('suggestion-dismiss-iris-boards').click();
     await expect(boardsSuggestion).not.toBeVisible();
 
     await page.getByRole('button', { name: 'Reset suggestions' }).click();
 
     await expect(suggestions.getByText('Iris Boards')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Reset suggestions' })).not.toBeVisible();
+  });
+
+  test('favorites render a human-readable name instead of a raw npub label', async ({ tauriPage: page }) => {
+    await openHome(page);
+    await page.evaluate((owner) => {
+      localStorage.setItem('iris:apps', JSON.stringify([
+        {
+          url: `htree://${owner}/video/index.html`,
+          name: owner,
+          addedAt: Date.now(),
+        },
+      ]));
+    }, distributedOwner);
+    await page.reload();
+    await gotoHome(page);
+
+    const favourites = page.locator('section').filter({
+      has: page.getByRole('heading', { name: 'Favourites' }),
+    });
+
+    await expect(favourites.getByText('Iris Video')).toBeVisible();
+    await expect(favourites).not.toContainText(distributedOwner);
   });
 
   test('add to favourites button works', async ({ tauriPage: page }) => {
@@ -249,13 +273,13 @@ test.describe('App Launcher', () => {
 
     await expect(page.getByText('No favourites yet')).toBeVisible();
 
-    const filesSuggestion = suggestions.locator('[role="button"]').filter({
-      has: page.getByText('Iris Files'),
-    });
-    await filesSuggestion.getByTitle('Add to favourites').click();
+    await page.getByTestId('suggestion-add-iris-files').click();
 
     await expect(page.getByText('No favourites yet')).not.toBeVisible();
     await expect(favourites.getByText('Iris Files')).toBeVisible();
     await expect(suggestions.getByText('Iris Files')).not.toBeVisible();
+    await expect(page.getByTestId('favorite-icon-iris-files')).not.toHaveClass(
+      /(bg-orange-500|bg-blue-500|bg-green-500|bg-purple-500|bg-pink-500|bg-yellow-500|bg-red-500|bg-teal-500)/,
+    );
   });
 });

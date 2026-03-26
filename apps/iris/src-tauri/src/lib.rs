@@ -924,7 +924,6 @@ pub fn run() {
                     tracing::warn!("Failed to load config for Android Bluetooth prestart: {}", error)
                 }
             }
-
             // Initialize NIP-07 permission state
             let permission_store = Arc::new(permissions::PermissionStore::new(None));
             let nip07_state = Arc::new(nip07::Nip07State::new(permission_store));
@@ -1372,6 +1371,23 @@ mod tests {
         assert!(
             plist.contains("<string>htree</string>"),
             "expected htree URL scheme in {:?}",
+            plist_path
+        );
+    }
+
+    #[test]
+    fn macos_info_plist_declares_bluetooth_usage_descriptions() {
+        let plist_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Info.plist");
+        let plist = std::fs::read_to_string(&plist_path).expect("failed to read macOS Info.plist");
+
+        assert!(
+            plist.contains("<key>NSBluetoothAlwaysUsageDescription</key>"),
+            "expected NSBluetoothAlwaysUsageDescription in {:?}",
+            plist_path
+        );
+        assert!(
+            plist.contains("<key>NSBluetoothPeripheralUsageDescription</key>"),
+            "expected NSBluetoothPeripheralUsageDescription in {:?}",
             plist_path
         );
     }

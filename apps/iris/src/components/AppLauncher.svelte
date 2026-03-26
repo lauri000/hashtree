@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { suggestedApps, type AppBookmark } from '../lib/apps';
+  import { bookmarkDisplayName, suggestedApps, type AppBookmark } from '../lib/apps';
   import { appsStore } from '../stores/apps';
   import { dismissedSuggestionsStore } from '../stores/dismissedSuggestions';
 
@@ -56,18 +56,12 @@
     return colors[name.charCodeAt(0) % colors.length];
   }
 
-  function getUrlLabel(url: string): string {
-    if (url.startsWith('htree://')) {
-      return url
-        .replace(/^htree:\/\//, '')
-        .replace(/\/index\.html$/, '')
-        .replace(/\/$/, '');
-    }
-    try {
-      return new URL(url).hostname;
-    } catch {
-      return url;
-    }
+  function slugifyName(name: string): string {
+    return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  }
+
+  function favoriteName(app: AppBookmark): string {
+    return bookmarkDisplayName(app);
   }
 </script>
 
@@ -81,19 +75,26 @@
       {:else}
         <div class="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-4">
           {#each favorites as app (app.url)}
+            {@const displayName = favoriteName(app)}
             <div class="group relative">
               <button
                 class="w-full flex flex-col items-center gap-2"
                 onclick={() => openApp(app)}
+                data-testid={`favorite-${slugifyName(displayName)}`}
               >
-                <div class="w-14 h-14 rounded-xl {getColor(app.name)} flex items-center justify-center text-white text-xl font-semibold shadow-lg hover:scale-105 transition-transform">
+                <div
+                  class={`w-14 h-14 rounded-xl flex items-center justify-center text-white text-xl font-semibold shadow-lg hover:scale-105 transition-transform ${
+                    app.icon ? '' : getColor(displayName)
+                  }`}
+                  data-testid={`favorite-icon-${slugifyName(displayName)}`}
+                >
                   {#if app.icon}
-                    <img src={app.icon} alt="" class="w-10 h-10 rounded-lg" />
+                    <img src={app.icon} alt="" class="w-14 h-14 rounded-xl" />
                   {:else}
-                    {getInitial(app.name)}
+                    {getInitial(displayName)}
                   {/if}
                 </div>
-                <span class="text-xs text-text-2 truncate w-full text-center">{app.name}</span>
+                <span class="text-xs text-text-2 truncate w-full text-center">{displayName}</span>
               </button>
               <button
                 class="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-surface-2 text-text-3 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-xs hover:bg-red-600 hover:text-white"
@@ -127,26 +128,29 @@
         <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
           {#each visibleSuggestions as app (app.url)}
             <div
-              role="button"
-              tabindex="0"
-              class="flex items-center gap-3 p-3 bg-surface-1 hover:bg-surface-2 rounded-xl transition-colors text-left cursor-pointer"
-              onclick={() => openApp(app)}
-              onkeydown={(e) => e.key === 'Enter' && openApp(app)}
+              class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 p-3 bg-surface-1 hover:bg-surface-2 rounded-xl transition-colors"
+              data-testid={`suggestion-card-${slugifyName(app.name)}`}
             >
-              <div class="w-12 h-12 rounded-xl bg-surface-2 flex items-center justify-center shrink-0">
-                {#if app.icon}
-                  <img src={app.icon} alt="" class="w-8 h-8 rounded-lg" />
-                {:else}
-                  <span class="text-lg font-semibold text-text-2">{getInitial(app.name)}</span>
-                {/if}
-              </div>
-              <div class="min-w-0 flex-1">
-                <div class="text-sm font-medium text-text-1 truncate">{app.name}</div>
-                <div class="text-xs text-text-3 truncate">{getUrlLabel(app.url)}</div>
-              </div>
-              <div class="flex shrink-0 items-center gap-1">
+              <button
+                class="min-w-0 flex items-center gap-3 text-left"
+                data-testid={`suggestion-open-${slugifyName(app.name)}`}
+                onclick={() => openApp(app)}
+              >
+                <div class="w-12 h-12 rounded-xl bg-surface-2 flex items-center justify-center shrink-0">
+                  {#if app.icon}
+                    <img src={app.icon} alt="" class="w-8 h-8 rounded-lg" />
+                  {:else}
+                    <span class="text-lg font-semibold text-text-2">{getInitial(app.name)}</span>
+                  {/if}
+                </div>
+                <div class="min-w-0 flex-1">
+                  <div class="text-sm font-medium text-text-1 truncate">{app.name}</div>
+                </div>
+              </button>
+              <div class="flex shrink-0 items-center gap-1 self-stretch">
                 <button
                   class="rounded p-1 hover:bg-surface-3"
+                  data-testid={`suggestion-add-${slugifyName(app.name)}`}
                   onclick={(e) => { e.stopPropagation(); addToFavorites(app); }}
                   title="Add to favourites"
                 >
@@ -154,6 +158,7 @@
                 </button>
                 <button
                   class="rounded p-1 hover:bg-surface-3"
+                  data-testid={`suggestion-dismiss-${slugifyName(app.name)}`}
                   onclick={(e) => { e.stopPropagation(); dismissSuggestion(app.url); }}
                   title="Dismiss suggestion"
                 >

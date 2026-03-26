@@ -37,3 +37,105 @@ export const suggestedApps: readonly AppBookmark[] = [
 export function cloneBookmarks(bookmarks: readonly AppBookmark[]): AppBookmark[] {
   return bookmarks.map((bookmark) => ({ ...bookmark }));
 }
+
+function titleCaseWords(value: string): string {
+  return value
+    .split(/[\s._-]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+function humanizeTreeName(treeName: string): string {
+  if (!treeName) return '';
+  if (treeName === 'hashtree-cc') return 'hashtree.cc';
+  return titleCaseWords(treeName);
+}
+
+function parseHtreeBookmarkUrl(url: string): { host: string; treeName: string } | null {
+  if (!url.startsWith('htree://')) return null;
+  const trimmed = url
+    .replace(/^htree:\/\//, '')
+    .split(/[?#]/, 1)[0]
+    .replace(/\/index\.html$/, '')
+    .replace(/\/$/, '');
+  const [rawHost = '', ...pathParts] = trimmed
+    .split('/')
+    .filter(Boolean)
+    .map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch {
+        return part;
+      }
+    });
+
+  if (!rawHost) return null;
+  if (rawHost.startsWith('npub1') && rawHost.includes('.')) {
+    const dotIndex = rawHost.indexOf('.');
+    return {
+      host: rawHost.slice(0, dotIndex),
+      treeName: rawHost.slice(dotIndex + 1),
+    };
+  }
+
+  return {
+    host: rawHost,
+    treeName: pathParts[0] ?? '',
+  };
+}
+
+function isPlaceholderBookmarkName(name: string, url: string): boolean {
+  const trimmed = name.trim();
+  if (!trimmed) return true;
+  if (trimmed.startsWith('npub1') || trimmed.startsWith('nhash1') || trimmed.startsWith('htree://')) {
+    return true;
+  }
+  if (trimmed === url) {
+    return true;
+  }
+  try {
+    const parsedUrl = new URL(url);
+    if (trimmed === parsedUrl.hostname || trimmed === parsedUrl.href) {
+      return true;
+    }
+  } catch {
+    // Ignore non-HTTP URLs here.
+  }
+  return false;
+}
+
+function inferredBookmarkName(url: string): string {
+  const htree = parseHtreeBookmarkUrl(url);
+  if (htree) {
+    const owner = htree.host === 'self' ? distributedOwner : htree.host;
+    if (isBuiltInIrisApp(owner, htree.treeName)) {
+      return `Iris ${humanizeTreeName(htree.treeName)}`;
+    }
+    if (htree.treeName) {
+      return humanizeTreeName(htree.treeName);
+    }
+    if (htree.host.startsWith('nhash1')) {
+      return 'Shared Tree';
+    }
+  }
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
+export function bookmarkDisplayName(bookmark: Pick<AppBookmark, 'url' | 'name'>): string {
+  if (!isPlaceholderBookmarkName(bookmark.name, bookmark.url)) {
+    return bookmark.name;
+  }
+  return inferredBookmarkName(bookmark.url);
+}
+
+export function bookmarkSavedName(url: string, title?: string): string {
+  if (title && !isPlaceholderBookmarkName(title, url)) {
+    return title.trim();
+  }
+  return inferredBookmarkName(url);
+}

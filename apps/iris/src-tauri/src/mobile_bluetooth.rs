@@ -117,6 +117,28 @@ where
         &self,
         local_peer_id: String,
     ) -> anyhow::Result<mpsc::Receiver<PendingBluetoothLink>> {
+        let (pending_tx, pending_rx) = mpsc::channel::<PendingBluetoothLink>(32);
+        let mut events = self.state.bluetooth.subscribe();
+        let state = self.state.clone();
+        let pending_tx_for_events = pending_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(event) => {
+                        if let Err(error) =
+                            handle_mobile_event(state.clone(), &pending_tx_for_events, event).await
+                        {
+                            warn!("Android Bluetooth bridge event failed: {}", error);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!("Android Bluetooth bridge lagged by {} events", skipped);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+
         info!(
             "Starting Android Bluetooth bridge for peer {}",
             local_peer_id
@@ -132,26 +154,16 @@ where
             info!("Android Bluetooth bridge start command accepted");
         }
 
-        let (pending_tx, pending_rx) = mpsc::channel::<PendingBluetoothLink>(32);
-        let mut events = self.state.bluetooth.subscribe();
-        let state = self.state.clone();
-        tokio::spawn(async move {
-            loop {
-                match events.recv().await {
-                    Ok(event) => {
-                        if let Err(error) =
-                            handle_mobile_event(state.clone(), &pending_tx, event).await
-                        {
-                            warn!("Android Bluetooth bridge event failed: {}", error);
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        warn!("Android Bluetooth bridge lagged by {} events", skipped);
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
+        for peer in self
+            .state
+            .bluetooth
+            .list_peers()
+            .map_err(anyhow::Error::msg)?
+        {
+            if peer.ready {
+                emit_pending_link(self.state.clone(), &pending_tx, peer.address).await;
             }
-        });
+        }
 
         Ok(pending_rx)
     }
