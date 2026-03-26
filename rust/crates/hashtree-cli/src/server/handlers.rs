@@ -2698,7 +2698,7 @@ pub async fn resolve_and_serve(
         return serve_content_internal(&state, &resolved.cid.hash, headers, false, false).await;
     }
 
-            let resolver = match NostrRootResolver::new(resolver_config(&state)).await {
+    let resolver = match NostrRootResolver::new(resolver_config(&state)).await {
         Ok(r) => r,
         Err(e) => {
             return Response::builder()
@@ -3122,7 +3122,7 @@ mod tests {
                 .unwrap();
         let backend: Arc<dyn socialgraph::SocialGraphBackend> = graph_store.clone();
         let mut allowed = HashSet::new();
-        allowed.insert(allowed_pubkey);
+        allowed.insert(allowed_pubkey.clone());
         let access = Arc::new(socialgraph::SocialGraphAccessControl::new(
             Arc::clone(&backend),
             0,
@@ -3133,6 +3133,7 @@ mod tests {
             NostrRelay::new(
                 backend,
                 dir.path().join("relay"),
+                HashSet::from([allowed_pubkey]),
                 Some(access),
                 NostrRelayConfig {
                     spambox_db_max_bytes: 0,

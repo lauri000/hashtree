@@ -41,7 +41,7 @@ mod imp {
     use super::*;
     use anyhow::Result;
 
-    use crate::socialgraph::{SocialGraphAccessControl, SocialGraphBackend};
+    use crate::socialgraph::{EventStorageClass, SocialGraphAccessControl, SocialGraphBackend};
     use tracing::warn;
 
     fn prefers_trusted_only(filter: &NostrFilter) -> bool {
@@ -87,6 +87,18 @@ mod imp {
 
         fn ingest(&self, event: &Event) -> Result<()> {
             crate::socialgraph::ingest_parsed_event(self.store.as_ref(), event)
+        }
+
+        fn ingest_with_storage_class(
+            &self,
+            event: &Event,
+            storage_class: EventStorageClass,
+        ) -> Result<()> {
+            crate::socialgraph::ingest_parsed_event_with_storage_class(
+                self.store.as_ref(),
+                event,
+                storage_class,
+            )
         }
 
         fn query(&self, filter: &NostrFilter, limit: usize) -> Vec<Event> {
@@ -220,6 +232,7 @@ mod imp {
     pub struct NostrRelay {
         config: NostrRelayConfig,
         trusted: NostrStore,
+        public_pubkeys: HashSet<String>,
         spambox: Option<SpamboxStore>,
         social_graph: Option<Arc<SocialGraphAccessControl>>,
         clients: Mutex<HashMap<u64, ClientState>>,
@@ -232,6 +245,7 @@ mod imp {
         pub fn new(
             trusted_store: Arc<dyn SocialGraphBackend>,
             data_dir: PathBuf,
+            public_pubkeys: HashSet<String>,
             social_graph: Option<Arc<SocialGraphAccessControl>>,
             config: NostrRelayConfig,
         ) -> Result<Self> {
@@ -263,6 +277,7 @@ mod imp {
             Ok(Self {
                 config,
                 trusted: NostrStore::new(trusted_store),
+                public_pubkeys,
                 spambox,
                 social_graph,
                 clients: Mutex::new(HashMap::new()),
@@ -288,7 +303,9 @@ mod imp {
             }
 
             if !is_ephemeral {
-                self.trusted.ingest(&event)?;
+                let storage_class = self.event_storage_class(&event);
+                self.trusted
+                    .ingest_with_storage_class(&event, storage_class)?;
             }
 
             self.broadcast_event(&event).await;
@@ -433,7 +450,10 @@ mod imp {
             }
             if !is_ephemeral {
                 let stored = if trusted {
-                    self.trusted.ingest(&event).is_ok()
+                    let storage_class = self.event_storage_class(&event);
+                    self.trusted
+                        .ingest_with_storage_class(&event, storage_class)
+                        .is_ok()
                 } else {
                     match self.spambox.as_ref() {
                         Some(spambox) => spambox.ingest(&event).await,
@@ -599,6 +619,14 @@ mod imp {
             true
         }
 
+        fn event_storage_class(&self, event: &Event) -> EventStorageClass {
+            if self.public_pubkeys.contains(&event.pubkey.to_hex()) {
+                EventStorageClass::Public
+            } else {
+                EventStorageClass::Ambient
+            }
+        }
+
         async fn allow_spambox_event(&self, client_id: u64) -> bool {
             let mut clients = self.clients.lock().await;
             let Some(state) = clients.get_mut(&client_id) else {
@@ -693,6 +721,7 @@ mod tests {
         let relay = NostrRelay::new(
             Arc::clone(&backend),
             tmp.path().to_path_buf(),
+            HashSet::from([keys.public_key().to_hex()]),
             Some(access),
             relay_config,
         )?;
@@ -783,6 +812,7 @@ mod tests {
         let relay = NostrRelay::new(
             Arc::clone(&backend),
             tmp.path().to_path_buf(),
+            HashSet::new(),
             Some(access),
             relay_config,
         )?;
@@ -820,6 +850,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relay_routes_non_authored_trusted_events_to_ambient_index() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let authored_keys = Keys::generate();
+        let remote_keys = Keys::generate();
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::from([authored_keys.public_key().to_hex()]),
+        ));
+
+        let relay = NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([authored_keys.public_key().to_hex()]),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?;
+
+        let ambient_event = EventBuilder::new(Kind::TextNote, "ambient", [])
+            .custom_created_at(nostr::Timestamp::from_secs(5))
+            .to_event(&remote_keys)?;
+        relay.ingest_trusted_event(ambient_event.clone()).await?;
+
+        let filter = Filter::new()
+            .author(remote_keys.public_key())
+            .kind(Kind::TextNote);
+        let ambient_only = graph_store
+            .query_events_in_scope(
+                &filter,
+                10,
+                crate::socialgraph::EventQueryScope::AmbientOnly,
+            )
+            .unwrap();
+        assert_eq!(ambient_only.len(), 1);
+        assert_eq!(ambient_only[0].id, ambient_event.id);
+
+        let public_only = graph_store
+            .query_events_in_scope(&filter, 10, crate::socialgraph::EventQueryScope::PublicOnly)
+            .unwrap();
+        assert!(public_only.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn relay_serves_parameterized_replaceable_queries() -> Result<()> {
         let tmp = TempDir::new()?;
         let graph_store = {
@@ -843,6 +930,7 @@ mod tests {
         let relay = NostrRelay::new(
             Arc::clone(&backend),
             tmp.path().to_path_buf(),
+            HashSet::from([keys.public_key().to_hex()]),
             Some(access),
             NostrRelayConfig {
                 spambox_db_max_bytes: 0,

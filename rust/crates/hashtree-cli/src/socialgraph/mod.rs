@@ -35,9 +35,30 @@ pub type UserSet = BTreeSet<[u8; 32]>;
 
 const DEFAULT_ROOT_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 const EVENTS_ROOT_FILE: &str = "events-root.msgpack";
+const AMBIENT_EVENTS_ROOT_FILE: &str = "events-root-ambient.msgpack";
+const AMBIENT_EVENTS_BLOB_DIR: &str = "ambient-blobs";
 const UNKNOWN_FOLLOW_DISTANCE: u32 = 1000;
 const DEFAULT_SOCIALGRAPH_MAP_SIZE_BYTES: u64 = 64 * 1024 * 1024;
 const SOCIALGRAPH_MAX_DBS: u32 = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventStorageClass {
+    Public,
+    Ambient,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EventQueryScope {
+    PublicOnly,
+    AmbientOnly,
+    All,
+}
+
+struct EventIndexBucket {
+    event_store: NostrEventStore<StorageRouter>,
+    root_path: PathBuf,
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StoredCid {
@@ -68,8 +89,8 @@ pub struct UpstreamGraphBackendError(String);
 pub struct SocialGraphStore {
     graph: StdMutex<HeedSocialGraph>,
     distance_cache: StdMutex<Option<DistanceCache>>,
-    event_store: NostrEventStore<StorageRouter>,
-    events_root_path: PathBuf,
+    public_events: EventIndexBucket,
+    ambient_events: EventIndexBucket,
 }
 
 pub trait SocialGraphBackend: Send + Sync {
@@ -81,9 +102,27 @@ pub trait SocialGraphBackend: Send + Sync {
     fn is_overmuted_user(&self, user_pk: &[u8; 32], threshold: f64) -> Result<bool>;
     fn snapshot_chunks(&self, root: &[u8; 32], options: &BinaryBudget) -> Result<Vec<Bytes>>;
     fn ingest_event(&self, event: &Event) -> Result<()>;
+    fn ingest_event_with_storage_class(
+        &self,
+        event: &Event,
+        storage_class: EventStorageClass,
+    ) -> Result<()> {
+        let _ = storage_class;
+        self.ingest_event(event)
+    }
     fn ingest_events(&self, events: &[Event]) -> Result<()> {
         for event in events {
             self.ingest_event(event)?;
+        }
+        Ok(())
+    }
+    fn ingest_events_with_storage_class(
+        &self,
+        events: &[Event],
+        storage_class: EventStorageClass,
+    ) -> Result<()> {
+        for event in events {
+            self.ingest_event_with_storage_class(event, storage_class)?;
         }
         Ok(())
     }
@@ -144,6 +183,22 @@ pub fn open_social_graph_store_at_path_with_storage(
     store: Arc<StorageRouter>,
     mapsize_bytes: Option<u64>,
 ) -> Result<Arc<SocialGraphStore>> {
+    let ambient_backend = store.local_store().backend();
+    let ambient_local = Arc::new(
+        LocalStore::new(db_dir.join(AMBIENT_EVENTS_BLOB_DIR), &ambient_backend).map_err(|err| {
+            anyhow::anyhow!("Failed to create social graph ambient blob store: {err}")
+        })?,
+    );
+    let ambient_store = Arc::new(StorageRouter::new(ambient_local));
+    open_social_graph_store_at_path_with_storage_split(db_dir, store, ambient_store, mapsize_bytes)
+}
+
+pub fn open_social_graph_store_at_path_with_storage_split(
+    db_dir: &Path,
+    public_store: Arc<StorageRouter>,
+    ambient_store: Arc<StorageRouter>,
+    mapsize_bytes: Option<u64>,
+) -> Result<Arc<SocialGraphStore>> {
     std::fs::create_dir_all(db_dir)?;
     if let Some(size) = mapsize_bytes {
         ensure_social_graph_mapsize(db_dir, size)?;
@@ -154,8 +209,14 @@ pub fn open_social_graph_store_at_path_with_storage(
     Ok(Arc::new(SocialGraphStore {
         graph: StdMutex::new(graph),
         distance_cache: StdMutex::new(None),
-        event_store: NostrEventStore::new(store),
-        events_root_path: db_dir.join(EVENTS_ROOT_FILE),
+        public_events: EventIndexBucket {
+            event_store: NostrEventStore::new(public_store),
+            root_path: db_dir.join(EVENTS_ROOT_FILE),
+        },
+        ambient_events: EventIndexBucket {
+            event_store: NostrEventStore::new(ambient_store),
+            root_path: db_dir.join(AMBIENT_EVENTS_ROOT_FILE),
+        },
     }))
 }
 
@@ -211,11 +272,27 @@ pub fn ingest_parsed_event(
     backend.ingest_event(event)
 }
 
+pub fn ingest_parsed_event_with_storage_class(
+    backend: &(impl SocialGraphBackend + ?Sized),
+    event: &Event,
+    storage_class: EventStorageClass,
+) -> Result<()> {
+    backend.ingest_event_with_storage_class(event, storage_class)
+}
+
 pub fn ingest_parsed_events(
     backend: &(impl SocialGraphBackend + ?Sized),
     events: &[Event],
 ) -> Result<()> {
     backend.ingest_events(events)
+}
+
+pub fn ingest_parsed_events_with_storage_class(
+    backend: &(impl SocialGraphBackend + ?Sized),
+    events: &[Event],
+    storage_class: EventStorageClass,
+) -> Result<()> {
+    backend.ingest_events_with_storage_class(events, storage_class)
 }
 
 pub fn ingest_graph_parsed_events(
@@ -376,60 +453,13 @@ impl SocialGraphStore {
     }
 
     fn ingest_event(&self, event: &Event) -> Result<()> {
-        let current_root = self.events_root()?;
-        let next_root = self.store_event(current_root.as_ref(), event)?;
-        self.write_events_root(Some(&next_root))?;
-
-        if is_social_graph_event(event.kind) {
-            {
-                let mut graph = self.graph.lock().unwrap();
-                graph
-                    .handle_event(&graph_event_from_nostr(event), true, 0.0)
-                    .context("ingest social graph event into nostr-social-graph")?;
-            }
-            self.invalidate_distance_cache();
-        }
-
-        Ok(())
+        self.ingest_event_with_storage_class(event, self.default_storage_class_for(event)?)
     }
 
     fn ingest_events(&self, events: &[Event]) -> Result<()> {
-        if events.is_empty() {
-            return Ok(());
-        }
-
-        let mut current_root = self.events_root()?;
         for event in events {
-            let next_root = self.store_event(current_root.as_ref(), event)?;
-            current_root = Some(next_root);
+            self.ingest_event(event)?;
         }
-        self.write_events_root(current_root.as_ref())?;
-
-        let graph_events = events
-            .iter()
-            .filter(|event| is_social_graph_event(event.kind))
-            .collect::<Vec<_>>();
-        if graph_events.is_empty() {
-            return Ok(());
-        }
-
-        {
-            let mut graph = self.graph.lock().unwrap();
-            let mut snapshot = SocialGraph::from_state(
-                graph
-                    .export_state()
-                    .context("export social graph state for batch ingest")?,
-            )
-            .context("rebuild social graph state for batch ingest")?;
-            for event in graph_events {
-                snapshot.handle_event(&graph_event_from_nostr(event), true, 0.0);
-            }
-            graph
-                .replace_state(&snapshot.export_state())
-                .context("replace batched social graph state")?;
-        }
-        self.invalidate_distance_cache();
-
         Ok(())
     }
 
@@ -462,64 +492,126 @@ impl SocialGraphStore {
     }
 
     fn query_events(&self, filter: &Filter, limit: usize) -> Result<Vec<Event>> {
+        self.query_events_in_scope(filter, limit, EventQueryScope::All)
+    }
+
+    fn default_storage_class_for(&self, event: &Event) -> Result<EventStorageClass> {
+        let graph = self.graph.lock().unwrap();
+        let root_hex = graph.get_root().context("read social graph root")?;
+        if root_hex != DEFAULT_ROOT_HEX && root_hex == event.pubkey.to_hex() {
+            return Ok(EventStorageClass::Public);
+        }
+        Ok(EventStorageClass::Ambient)
+    }
+
+    fn bucket(&self, storage_class: EventStorageClass) -> &EventIndexBucket {
+        match storage_class {
+            EventStorageClass::Public => &self.public_events,
+            EventStorageClass::Ambient => &self.ambient_events,
+        }
+    }
+
+    fn ingest_event_with_storage_class(
+        &self,
+        event: &Event,
+        storage_class: EventStorageClass,
+    ) -> Result<()> {
+        let current_root = self.bucket(storage_class).events_root()?;
+        let next_root = self
+            .bucket(storage_class)
+            .store_event(current_root.as_ref(), event)?;
+        self.bucket(storage_class)
+            .write_events_root(Some(&next_root))?;
+
+        if is_social_graph_event(event.kind) {
+            {
+                let mut graph = self.graph.lock().unwrap();
+                graph
+                    .handle_event(&graph_event_from_nostr(event), true, 0.0)
+                    .context("ingest social graph event into nostr-social-graph")?;
+            }
+            self.invalidate_distance_cache();
+        }
+
+        Ok(())
+    }
+
+    fn ingest_events_with_storage_class(
+        &self,
+        events: &[Event],
+        storage_class: EventStorageClass,
+    ) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+
+        let bucket = self.bucket(storage_class);
+        let mut current_root = bucket.events_root()?;
+        for event in events {
+            let next_root = bucket.store_event(current_root.as_ref(), event)?;
+            current_root = Some(next_root);
+        }
+        bucket.write_events_root(current_root.as_ref())?;
+
+        let graph_events = events
+            .iter()
+            .filter(|event| is_social_graph_event(event.kind))
+            .collect::<Vec<_>>();
+        if graph_events.is_empty() {
+            return Ok(());
+        }
+
+        {
+            let mut graph = self.graph.lock().unwrap();
+            let mut snapshot = SocialGraph::from_state(
+                graph
+                    .export_state()
+                    .context("export social graph state for batch ingest")?,
+            )
+            .context("rebuild social graph state for batch ingest")?;
+            for event in graph_events {
+                snapshot.handle_event(&graph_event_from_nostr(event), true, 0.0);
+            }
+            graph
+                .replace_state(&snapshot.export_state())
+                .context("replace batched social graph state")?;
+        }
+        self.invalidate_distance_cache();
+
+        Ok(())
+    }
+
+    pub(crate) fn query_events_in_scope(
+        &self,
+        filter: &Filter,
+        limit: usize,
+        scope: EventQueryScope,
+    ) -> Result<Vec<Event>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
 
-        let events_root = self.events_root()?;
-        let Some(root) = events_root.as_ref() else {
-            return Ok(Vec::new());
+        let buckets: &[&EventIndexBucket] = match scope {
+            EventQueryScope::PublicOnly => &[&self.public_events],
+            EventQueryScope::AmbientOnly => &[&self.ambient_events],
+            EventQueryScope::All => &[&self.public_events, &self.ambient_events],
         };
+
         let mut candidates = Vec::new();
-        let mut seen: HashSet<[u8; 32]> = HashSet::new();
-
-        if let Some(ids) = filter.ids.as_ref() {
-            for id in ids {
-                let id_bytes = id.to_bytes();
-                if !seen.insert(id_bytes) {
-                    continue;
-                }
-                if let Some(event) = self.load_event_by_id(root, &id.to_hex())? {
-                    if filter.match_event(&event) {
-                        candidates.push(event);
-                    }
-                }
-                if candidates.len() >= limit {
-                    break;
-                }
-            }
-        } else {
-            let base_events = match self.best_indexed_candidates(root, filter, limit)? {
-                Some(events) => events,
-                None => self.load_recent_events(root)?,
-            };
-
-            for event in base_events {
-                let id_bytes = event.id.to_bytes();
-                if !seen.insert(id_bytes) {
-                    continue;
-                }
-                if filter.match_event(&event) {
-                    candidates.push(event);
-                }
-                if candidates.len() >= limit {
-                    break;
-                }
-            }
+        for bucket in buckets {
+            candidates.extend(bucket.query_events(filter, limit)?);
         }
 
-        candidates.sort_by(|a, b| {
-            b.created_at
-                .as_u64()
-                .cmp(&a.created_at.as_u64())
-                .then_with(|| a.id.cmp(&b.id))
-        });
-        candidates.truncate(limit);
-        Ok(candidates)
+        let mut deduped = dedupe_events(candidates);
+        deduped.retain(|event| filter.match_event(event));
+        deduped.truncate(limit);
+        Ok(deduped)
     }
+}
 
+impl EventIndexBucket {
     fn events_root(&self) -> Result<Option<Cid>> {
-        let Ok(bytes) = std::fs::read(&self.events_root_path) else {
+        let Ok(bytes) = std::fs::read(&self.root_path) else {
             return Ok(None);
         };
         decode_cid(&bytes)
@@ -527,16 +619,16 @@ impl SocialGraphStore {
 
     fn write_events_root(&self, root: Option<&Cid>) -> Result<()> {
         let Some(root) = root else {
-            if self.events_root_path.exists() {
-                std::fs::remove_file(&self.events_root_path)?;
+            if self.root_path.exists() {
+                std::fs::remove_file(&self.root_path)?;
             }
             return Ok(());
         };
 
         let encoded = encode_cid(root)?;
-        let tmp_path = self.events_root_path.with_extension("tmp");
+        let tmp_path = self.root_path.with_extension("tmp");
         std::fs::write(&tmp_path, encoded)?;
-        std::fs::rename(tmp_path, &self.events_root_path)?;
+        std::fs::rename(tmp_path, &self.root_path)?;
         Ok(())
     }
 
@@ -711,6 +803,63 @@ impl SocialGraphStore {
 
         Ok(None)
     }
+
+    fn query_events(&self, filter: &Filter, limit: usize) -> Result<Vec<Event>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let events_root = self.events_root()?;
+        let Some(root) = events_root.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let mut candidates = Vec::new();
+        let mut seen: HashSet<[u8; 32]> = HashSet::new();
+
+        if let Some(ids) = filter.ids.as_ref() {
+            for id in ids {
+                let id_bytes = id.to_bytes();
+                if !seen.insert(id_bytes) {
+                    continue;
+                }
+                if let Some(event) = self.load_event_by_id(root, &id.to_hex())? {
+                    if filter.match_event(&event) {
+                        candidates.push(event);
+                    }
+                }
+                if candidates.len() >= limit {
+                    break;
+                }
+            }
+        } else {
+            let base_events = match self.best_indexed_candidates(root, filter, limit)? {
+                Some(events) => events,
+                None => self.load_recent_events(root)?,
+            };
+
+            for event in base_events {
+                let id_bytes = event.id.to_bytes();
+                if !seen.insert(id_bytes) {
+                    continue;
+                }
+                if filter.match_event(&event) {
+                    candidates.push(event);
+                }
+                if candidates.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        candidates.sort_by(|a, b| {
+            b.created_at
+                .as_u64()
+                .cmp(&a.created_at.as_u64())
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        candidates.truncate(limit);
+        Ok(candidates)
+    }
 }
 
 fn dedupe_events(events: Vec<Event>) -> Vec<Event> {
@@ -763,8 +912,24 @@ impl SocialGraphBackend for SocialGraphStore {
         SocialGraphStore::ingest_event(self, event)
     }
 
+    fn ingest_event_with_storage_class(
+        &self,
+        event: &Event,
+        storage_class: EventStorageClass,
+    ) -> Result<()> {
+        SocialGraphStore::ingest_event_with_storage_class(self, event, storage_class)
+    }
+
     fn ingest_events(&self, events: &[Event]) -> Result<()> {
         SocialGraphStore::ingest_events(self, events)
+    }
+
+    fn ingest_events_with_storage_class(
+        &self,
+        events: &[Event],
+        storage_class: EventStorageClass,
+    ) -> Result<()> {
+        SocialGraphStore::ingest_events_with_storage_class(self, events, storage_class)
     }
 
     fn ingest_graph_events(&self, events: &[Event]) -> Result<()> {
@@ -930,8 +1095,26 @@ where
         self.as_ref().ingest_event(event)
     }
 
+    fn ingest_event_with_storage_class(
+        &self,
+        event: &Event,
+        storage_class: EventStorageClass,
+    ) -> Result<()> {
+        self.as_ref()
+            .ingest_event_with_storage_class(event, storage_class)
+    }
+
     fn ingest_events(&self, events: &[Event]) -> Result<()> {
         self.as_ref().ingest_events(events)
+    }
+
+    fn ingest_events_with_storage_class(
+        &self,
+        events: &[Event],
+        storage_class: EventStorageClass,
+    ) -> Result<()> {
+        self.as_ref()
+            .ingest_events_with_storage_class(events, storage_class)
     }
 
     fn ingest_graph_events(&self, events: &[Event]) -> Result<()> {
@@ -1162,6 +1345,90 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].id, newer.id);
         assert_eq!(events[1].id, older.id);
+    }
+
+    #[test]
+    fn test_public_and_ambient_indexes_stay_separate() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let public_keys = Keys::generate();
+        let ambient_keys = Keys::generate();
+
+        let public_event = EventBuilder::new(Kind::TextNote, "public", [])
+            .custom_created_at(Timestamp::from_secs(5))
+            .to_event(&public_keys)
+            .unwrap();
+        let ambient_event = EventBuilder::new(Kind::TextNote, "ambient", [])
+            .custom_created_at(Timestamp::from_secs(6))
+            .to_event(&ambient_keys)
+            .unwrap();
+
+        ingest_parsed_event_with_storage_class(
+            &graph_store,
+            &public_event,
+            EventStorageClass::Public,
+        )
+        .unwrap();
+        ingest_parsed_event_with_storage_class(
+            &graph_store,
+            &ambient_event,
+            EventStorageClass::Ambient,
+        )
+        .unwrap();
+
+        let filter = Filter::new().kind(Kind::TextNote);
+        let all_events = graph_store
+            .query_events_in_scope(&filter, 10, EventQueryScope::All)
+            .unwrap();
+        assert_eq!(all_events.len(), 2);
+
+        let public_events = graph_store
+            .query_events_in_scope(&filter, 10, EventQueryScope::PublicOnly)
+            .unwrap();
+        assert_eq!(public_events.len(), 1);
+        assert_eq!(public_events[0].id, public_event.id);
+
+        let ambient_events = graph_store
+            .query_events_in_scope(&filter, 10, EventQueryScope::AmbientOnly)
+            .unwrap();
+        assert_eq!(ambient_events.len(), 1);
+        assert_eq!(ambient_events[0].id, ambient_event.id);
+    }
+
+    #[test]
+    fn test_default_ingest_classifies_root_author_as_public() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let root_keys = Keys::generate();
+        let other_keys = Keys::generate();
+        set_social_graph_root(&graph_store, &root_keys.public_key().to_bytes());
+
+        let root_event = EventBuilder::new(Kind::TextNote, "root", [])
+            .custom_created_at(Timestamp::from_secs(5))
+            .to_event(&root_keys)
+            .unwrap();
+        let other_event = EventBuilder::new(Kind::TextNote, "other", [])
+            .custom_created_at(Timestamp::from_secs(6))
+            .to_event(&other_keys)
+            .unwrap();
+
+        ingest_parsed_event(&graph_store, &root_event).unwrap();
+        ingest_parsed_event(&graph_store, &other_event).unwrap();
+
+        let filter = Filter::new().kind(Kind::TextNote);
+        let public_events = graph_store
+            .query_events_in_scope(&filter, 10, EventQueryScope::PublicOnly)
+            .unwrap();
+        assert_eq!(public_events.len(), 1);
+        assert_eq!(public_events[0].id, root_event.id);
+
+        let ambient_events = graph_store
+            .query_events_in_scope(&filter, 10, EventQueryScope::AmbientOnly)
+            .unwrap();
+        assert_eq!(ambient_events.len(), 1);
+        assert_eq!(ambient_events[0].id, other_event.id);
     }
 
     #[test]

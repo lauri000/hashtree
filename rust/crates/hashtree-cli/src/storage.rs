@@ -98,6 +98,14 @@ impl LocalStore {
         }
     }
 
+    pub fn backend(&self) -> StorageBackend {
+        match self {
+            LocalStore::Fs(_) => StorageBackend::Fs,
+            #[cfg(feature = "lmdb")]
+            LocalStore::Lmdb(_) => StorageBackend::Lmdb,
+        }
+    }
+
     /// Sync put operation
     pub fn put_sync(&self, hash: Hash, data: &[u8]) -> Result<bool, StoreError> {
         match self {

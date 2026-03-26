@@ -42,7 +42,7 @@ async fn make_relay(dir: &TempDir, allowed_pubkey: String) -> Result<Arc<NostrRe
         socialgraph::open_social_graph_store_with_mapsize(dir.path(), Some(128 * 1024 * 1024))?;
     let backend: Arc<dyn socialgraph::SocialGraphBackend> = graph_store.clone();
     let mut allowed = HashSet::new();
-    allowed.insert(allowed_pubkey);
+    allowed.insert(allowed_pubkey.clone());
     let access = Arc::new(socialgraph::SocialGraphAccessControl::new(
         Arc::clone(&backend),
         0,
@@ -52,6 +52,7 @@ async fn make_relay(dir: &TempDir, allowed_pubkey: String) -> Result<Arc<NostrRe
     Ok(Arc::new(NostrRelay::new(
         backend,
         dir.path().to_path_buf(),
+        HashSet::from([allowed_pubkey]),
         Some(access),
         NostrRelayConfig {
             spambox_db_max_bytes: 0,

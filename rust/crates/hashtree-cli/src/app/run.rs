@@ -153,10 +153,13 @@ pub(crate) async fn run() -> Result<()> {
                 spambox_db_max_bytes,
                 ..Default::default()
             };
+            let mut public_event_pubkeys = HashSet::new();
+            public_event_pubkeys.insert(hex::encode(pk_bytes));
             let nostr_relay = Arc::new(
                 hashtree_cli::nostr_relay::NostrRelay::new(
                     Arc::clone(&social_graph_store),
                     data_dir.clone(),
+                    public_event_pubkeys,
                     Some(social_graph.clone()),
                     nostr_relay_config,
                 )
