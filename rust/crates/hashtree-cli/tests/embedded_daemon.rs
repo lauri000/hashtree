@@ -89,6 +89,92 @@ async fn embedded_daemon_uses_default_blossom_servers_when_config_is_empty() {
     );
 }
 
+#[tokio::test]
+async fn embedded_daemon_background_services_follow_live_relay_settings() {
+    let dir = TempDir::new().expect("temp dir");
+    std::env::set_var("HTREE_CONFIG_DIR", dir.path());
+    std::env::set_var("HTREE_DATA_DIR", dir.path());
+
+    let data_dir = dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+    let mut config = hashtree_cli::Config::default();
+    config.storage.data_dir = data_dir.to_string_lossy().to_string();
+    config.server.enable_auth = false;
+    config.server.enable_webrtc = false;
+    config.server.enable_multicast = false;
+    config.server.max_multicast_peers = 0;
+    config.server.enable_bluetooth = false;
+    config.server.max_bluetooth_peers = 0;
+    config.server.stun_port = 0;
+    config.nostr.enabled = true;
+    config.nostr.relays = vec!["ws://127.0.0.1:1".to_string()];
+    config.nostr.crawl_depth = 1;
+    config.sync.enabled = true;
+    config.sync.sync_own = true;
+    config.sync.sync_followed = false;
+
+    let info = hashtree_cli::daemon::start_embedded(hashtree_cli::daemon::EmbeddedDaemonOptions {
+        config: config.clone(),
+        data_dir: data_dir.clone(),
+        bind_address: "127.0.0.1:0".to_string(),
+        relays: None,
+        extra_routes: None,
+        cors: None,
+    })
+    .await
+    .expect("start embedded daemon");
+
+    let controller = info
+        .background_services_controller
+        .clone()
+        .expect("background services controller");
+
+    let initial = controller.status().await;
+    assert!(
+        initial.crawler_active,
+        "crawler should start when relays are enabled"
+    );
+    assert!(
+        initial.sync_active,
+        "background sync should start when relays are enabled"
+    );
+
+    let mut relays_disabled = config.clone();
+    relays_disabled.nostr.enabled = false;
+
+    let disabled = controller
+        .apply_config(&relays_disabled)
+        .await
+        .expect("disable relay-backed background services");
+    assert!(
+        !disabled.crawler_active,
+        "crawler should stop when relays are disabled"
+    );
+    assert!(
+        !disabled.sync_active,
+        "background sync should stop when relays are disabled"
+    );
+
+    let restarted = controller
+        .apply_config(&config)
+        .await
+        .expect("re-enable relay-backed background services");
+    assert!(
+        restarted.crawler_active,
+        "crawler should restart when relays return"
+    );
+    assert!(
+        restarted.sync_active,
+        "background sync should restart when relays return"
+    );
+
+    controller
+        .apply_config(&relays_disabled)
+        .await
+        .expect("shut down background services");
+}
+
 #[cfg(feature = "p2p")]
 #[tokio::test]
 async fn embedded_daemon_exposes_live_peer_router_controller() {

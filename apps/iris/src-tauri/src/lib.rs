@@ -88,6 +88,8 @@ const DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS: usize = 6;
 #[derive(Default)]
 struct DaemonRuntimeState {
     peer_router_controller: RwLock<Option<Arc<hashtree_cli::daemon::EmbeddedPeerRouterController>>>,
+    background_services_controller:
+        RwLock<Option<Arc<hashtree_cli::daemon::EmbeddedBackgroundServicesController>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -856,12 +858,23 @@ async fn update_daemon_transport_settings<R: tauri::Runtime>(
         }
     }
 
-    let controller = { daemon_runtime.peer_router_controller.read().clone() };
-    if let Some(controller) = controller {
+    let peer_router_controller = { daemon_runtime.peer_router_controller.read().clone() };
+    if let Some(controller) = peer_router_controller {
         controller
             .apply_config(&config)
             .await
             .map_err(|error| format!("Failed to apply daemon transport settings: {}", error))?;
+    }
+
+    let background_services_controller =
+        { daemon_runtime.background_services_controller.read().clone() };
+    if let Some(controller) = background_services_controller {
+        controller.apply_config(&config).await.map_err(|error| {
+            format!(
+                "Failed to apply daemon background service settings: {}",
+                error
+            )
+        })?;
     }
 
     Ok(applied)
@@ -893,12 +906,23 @@ async fn update_daemon_network_settings<R: tauri::Runtime>(
         }
     }
 
-    let controller = { daemon_runtime.peer_router_controller.read().clone() };
-    if let Some(controller) = controller {
+    let peer_router_controller = { daemon_runtime.peer_router_controller.read().clone() };
+    if let Some(controller) = peer_router_controller {
         controller
             .apply_config(&config)
             .await
             .map_err(|error| format!("Failed to apply daemon network settings: {}", error))?;
+    }
+
+    let background_services_controller =
+        { daemon_runtime.background_services_controller.read().clone() };
+    if let Some(controller) = background_services_controller {
+        controller.apply_config(&config).await.map_err(|error| {
+            format!(
+                "Failed to apply daemon background service settings: {}",
+                error
+            )
+        })?;
     }
 
     Ok(applied)
@@ -1323,6 +1347,8 @@ pub fn run() {
                     Ok(info) => {
                         *daemon_runtime_state.peer_router_controller.write() =
                             info.peer_router_controller.clone();
+                        *daemon_runtime_state.background_services_controller.write() =
+                            info.background_services_controller.clone();
                         htree_protocol::set_daemon_port(info.port);
                         htree_protocol::set_self_npub(info.npub.clone());
                         info!("Embedded daemon started on port {}", info.port);

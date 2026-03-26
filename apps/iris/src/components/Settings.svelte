@@ -51,6 +51,7 @@
       url: `htree://${distributedOwner}/git/#/${distributedOwner}/hashtree/apps/iris`,
     },
   ] as const;
+  const NETWORK_STATUS_POLL_INTERVAL_MS = 2000;
 
   let { onnavigate }: Props = $props();
 
@@ -97,6 +98,7 @@
   let daemonNetworkSaved = $state(false);
   let newRelayUrl = $state('');
   let newBlossomUrl = $state('');
+  let networkStatusPollInterval: ReturnType<typeof setInterval> | null = null;
 
   const buildLabel = (() => {
     const buildTime = import.meta.env.VITE_BUILD_TIME;
@@ -109,17 +111,12 @@
   })();
 
   onMount(() => {
-    let interval: ReturnType<typeof setInterval> | undefined;
-
     void (async () => {
       autostart = await isAutostartEnabled();
       await refreshDaemonNetworkSettings();
       try {
         daemonUrl = await getHtreeServerUrl();
-        await refreshNetworkStatus();
-        interval = setInterval(() => {
-          void refreshNetworkStatus();
-        }, 1000);
+        networkStatusError = '';
       } catch {
         daemonUrl = '';
         networkStatusLoaded = true;
@@ -128,7 +125,23 @@
     })();
 
     return () => {
-      if (interval) clearInterval(interval);
+      stopNetworkStatusPolling();
+    };
+  });
+
+  $effect(() => {
+    const shouldPollNetworkStatus = activeTab === 'network' && daemonUrl.length > 0;
+    stopNetworkStatusPolling();
+
+    if (!shouldPollNetworkStatus) return;
+
+    void refreshNetworkStatus();
+    networkStatusPollInterval = setInterval(() => {
+      void refreshNetworkStatus();
+    }, NETWORK_STATUS_POLL_INTERVAL_MS);
+
+    return () => {
+      stopNetworkStatusPolling();
     };
   });
 
@@ -227,6 +240,13 @@
       networkStatusError = error instanceof Error ? error.message : 'Failed to load daemon status';
     } finally {
       networkStatusLoaded = true;
+    }
+  }
+
+  function stopNetworkStatusPolling() {
+    if (networkStatusPollInterval) {
+      clearInterval(networkStatusPollInterval);
+      networkStatusPollInterval = null;
     }
   }
 
@@ -826,13 +846,27 @@
 
               <div class="rounded bg-surface-2 p-3">
                 <div class="text-xs uppercase tracking-wide text-text-3">Transports</div>
-                <div class="mt-1 flex flex-wrap gap-2 text-sm text-text-1">
-                  <span class="rounded bg-surface-1 px-2 py-1">
-                    {meshStatus.transportCounts.bluetooth ?? 0} bluetooth
-                  </span>
-                  <span class="rounded bg-surface-1 px-2 py-1">
-                    {meshStatus.transportCounts.webrtc ?? 0} webrtc
-                  </span>
+                <div class="mt-2 grid gap-2 sm:grid-cols-2">
+                  <div
+                    role="group"
+                    aria-label={`Bluetooth ${formatCount(meshStatus.transportCounts.bluetooth ?? 0, 'peer', 'peers')}`}
+                    class="flex items-center justify-between rounded bg-surface-1 px-3 py-2 text-sm"
+                  >
+                    <span class="text-text-3">Bluetooth</span>
+                    <span class="font-medium text-text-1">
+                      {formatCount(meshStatus.transportCounts.bluetooth ?? 0, 'peer', 'peers')}
+                    </span>
+                  </div>
+                  <div
+                    role="group"
+                    aria-label={`WebRTC ${formatCount(meshStatus.transportCounts.webrtc ?? 0, 'peer', 'peers')}`}
+                    class="flex items-center justify-between rounded bg-surface-1 px-3 py-2 text-sm"
+                  >
+                    <span class="text-text-3">WebRTC</span>
+                    <span class="font-medium text-text-1">
+                      {formatCount(meshStatus.transportCounts.webrtc ?? 0, 'peer', 'peers')}
+                    </span>
+                  </div>
                 </div>
                 <div class="mt-2 text-xs text-text-3">
                   {formatCount(activeBlossomReadServerCount, 'blossom read server', 'blossom read servers')} · {formatCount(activeRelayCount, 'relay', 'relays')}

@@ -65,6 +65,45 @@ test.describe('Settings Page', () => {
     await expect(page.getByRole('heading', { name: 'Local Service' })).toBeVisible();
   });
 
+  test('network status polling starts only on the network tab', async ({ tauriPage: page }) => {
+    let statusRequests = 0;
+    await page.route('http://127.0.0.1:21417/api/status', async (route) => {
+      statusRequests += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'running',
+          mesh: {
+            enabled: true,
+            total_peers: 0,
+            connected: 0,
+            with_data_channel: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
+            transport_counts: {
+              webrtc: 0,
+              bluetooth: 0,
+            },
+            peers: [],
+          },
+          upstream: {
+            blossom_servers: 0,
+          },
+        }),
+      });
+    });
+
+    await openHome(page);
+    await page.getByTitle('Settings').click();
+    await page.waitForTimeout(250);
+    expect(statusRequests).toBe(0);
+
+    await page.getByRole('button', { name: 'Network' }).click();
+    await expect(page.getByRole('heading', { name: 'Local Service' })).toBeVisible();
+    await expect.poll(() => statusRequests).toBeGreaterThan(0);
+  });
+
   test('network tab applies relay and blossom config edits', async ({ tauriPage: page }) => {
     await openHome(page);
     await page.getByTitle('Settings').click();
@@ -188,8 +227,8 @@ test.describe('Settings Page', () => {
 
     await expect(page.getByRole('heading', { name: 'Mesh' })).toBeVisible();
     await expect(page.getByText('2 connected')).toBeVisible();
-    await expect(page.getByText('1 bluetooth', { exact: true })).toBeVisible();
-    await expect(page.getByText('1 webrtc', { exact: true })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'Bluetooth 1 peer' })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'WebRTC 1 peer' })).toBeVisible();
     await expect(page.getByText('Upload', { exact: true })).toBeVisible();
     await expect(page.getByText('Download', { exact: true })).toBeVisible();
     await expect(page.getByText('Recent Throughput')).toBeVisible();

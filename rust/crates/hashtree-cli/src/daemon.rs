@@ -1,15 +1,12 @@
 use anyhow::{Context, Result};
 use axum::Router;
 use nostr::nips::nip19::ToBech32;
-#[cfg(feature = "p2p")]
 use nostr::Keys;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-#[cfg(feature = "p2p")]
 use tokio::sync::Mutex;
-#[cfg(feature = "p2p")]
 use tokio::task::JoinHandle;
 use tower_http::cors::CorsLayer;
 
@@ -29,6 +26,172 @@ use crate::WebRTCState;
 struct PeerRouterRuntime {
     shutdown: Arc<tokio::sync::watch::Sender<bool>>,
     join: JoinHandle<()>,
+}
+
+struct BackgroundSyncRuntime {
+    service: Arc<crate::sync::BackgroundSync>,
+    join: JoinHandle<()>,
+}
+
+struct BackgroundServicesRuntime {
+    crawler: Option<socialgraph::crawler::SocialGraphTaskHandles>,
+    sync: Option<BackgroundSyncRuntime>,
+}
+
+impl BackgroundServicesRuntime {
+    fn status(&self) -> EmbeddedBackgroundServicesStatus {
+        EmbeddedBackgroundServicesStatus {
+            crawler_active: self.crawler.is_some(),
+            sync_active: self.sync.is_some(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddedBackgroundServicesStatus {
+    pub crawler_active: bool,
+    pub sync_active: bool,
+}
+
+pub struct EmbeddedBackgroundServicesController {
+    keys: Keys,
+    data_dir: PathBuf,
+    store: Arc<HashtreeStore>,
+    graph_store: Arc<dyn socialgraph::SocialGraphBackend>,
+    spambox: Option<Arc<dyn socialgraph::SocialGraphBackend>>,
+    webrtc_state: Option<Arc<WebRTCState>>,
+    runtime: Mutex<BackgroundServicesRuntime>,
+}
+
+impl EmbeddedBackgroundServicesController {
+    pub fn new(
+        keys: Keys,
+        data_dir: PathBuf,
+        store: Arc<HashtreeStore>,
+        graph_store: Arc<dyn socialgraph::SocialGraphBackend>,
+        spambox: Option<Arc<dyn socialgraph::SocialGraphBackend>>,
+        webrtc_state: Option<Arc<WebRTCState>>,
+    ) -> Self {
+        Self {
+            keys,
+            data_dir,
+            store,
+            graph_store,
+            spambox,
+            webrtc_state,
+            runtime: Mutex::new(BackgroundServicesRuntime {
+                crawler: None,
+                sync: None,
+            }),
+        }
+    }
+
+    pub async fn status(&self) -> EmbeddedBackgroundServicesStatus {
+        self.runtime.lock().await.status()
+    }
+
+    async fn shutdown_crawler(crawler: &mut Option<socialgraph::crawler::SocialGraphTaskHandles>) {
+        let Some(handles) = crawler.take() else {
+            return;
+        };
+
+        let _ = handles.shutdown_tx.send(true);
+
+        let mut crawl_handle = handles.crawl_handle;
+        match tokio::time::timeout(std::time::Duration::from_secs(3), &mut crawl_handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::warn!("Crawler task ended with join error: {}", err),
+            Err(_) => {
+                tracing::warn!("Timed out waiting for crawler task shutdown");
+                crawl_handle.abort();
+            }
+        }
+
+        let mut local_list_handle = handles.local_list_handle;
+        match tokio::time::timeout(std::time::Duration::from_secs(3), &mut local_list_handle).await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::warn!("Local list task ended with join error: {}", err),
+            Err(_) => {
+                tracing::warn!("Timed out waiting for local list task shutdown");
+                local_list_handle.abort();
+            }
+        }
+    }
+
+    async fn shutdown_sync(sync: &mut Option<BackgroundSyncRuntime>) {
+        let Some(runtime) = sync.take() else {
+            return;
+        };
+
+        runtime.service.shutdown();
+        let mut join = runtime.join;
+        match tokio::time::timeout(std::time::Duration::from_secs(3), &mut join).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::warn!("Background sync task ended with join error: {}", err),
+            Err(_) => {
+                tracing::warn!("Timed out waiting for background sync shutdown");
+                join.abort();
+            }
+        }
+    }
+
+    pub async fn apply_config(&self, config: &Config) -> Result<EmbeddedBackgroundServicesStatus> {
+        let mut runtime = self.runtime.lock().await;
+
+        Self::shutdown_crawler(&mut runtime.crawler).await;
+        Self::shutdown_sync(&mut runtime.sync).await;
+
+        let active_relays = config.nostr.active_relays();
+
+        if config.nostr.enabled && config.nostr.crawl_depth > 0 && !active_relays.is_empty() {
+            runtime.crawler = Some(socialgraph::crawler::spawn_social_graph_tasks(
+                self.graph_store.clone(),
+                self.keys.clone(),
+                active_relays.clone(),
+                config.nostr.crawl_depth,
+                self.spambox.clone(),
+                self.data_dir.clone(),
+            ));
+        }
+
+        if config.sync.enabled
+            && (config.sync.sync_own || config.sync.sync_followed)
+            && !active_relays.is_empty()
+        {
+            let sync_config = crate::sync::SyncConfig {
+                sync_own: config.sync.sync_own,
+                sync_followed: config.sync.sync_followed,
+                relays: active_relays,
+                max_concurrent: config.sync.max_concurrent,
+                webrtc_timeout_ms: config.sync.webrtc_timeout_ms,
+                blossom_timeout_ms: config.sync.blossom_timeout_ms,
+            };
+
+            let sync_keys = nostr_sdk::Keys::parse(&self.keys.secret_key().to_bech32()?)
+                .context("Failed to parse keys for sync")?;
+            let service = Arc::new(
+                crate::sync::BackgroundSync::new(
+                    sync_config,
+                    self.store.clone(),
+                    sync_keys,
+                    self.webrtc_state.clone(),
+                )
+                .await
+                .context("Failed to create background sync service")?,
+            );
+            let contacts_file = self.data_dir.join("contacts.json");
+            let service_for_task = service.clone();
+            let join = tokio::spawn(async move {
+                if let Err(err) = service_for_task.run(contacts_file).await {
+                    tracing::error!("Background sync error: {}", err);
+                }
+            });
+            runtime.sync = Some(BackgroundSyncRuntime { service, join });
+        }
+
+        Ok(runtime.status())
+    }
 }
 
 #[cfg(feature = "p2p")]
@@ -126,6 +289,8 @@ pub struct EmbeddedDaemonInfo {
     #[cfg(feature = "p2p")]
     #[allow(dead_code)]
     pub peer_router_controller: Option<Arc<EmbeddedPeerRouterController>>,
+    #[allow(dead_code)]
+    pub background_services_controller: Option<Arc<EmbeddedBackgroundServicesController>>,
 }
 
 pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemonInfo> {
@@ -220,14 +385,6 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     let crawler_spambox_backend = crawler_spambox
         .clone()
         .map(|store| store as Arc<dyn socialgraph::SocialGraphBackend>);
-    let _crawler_tasks = socialgraph::crawler::spawn_social_graph_tasks(
-        graph_store.clone(),
-        keys.clone(),
-        config.nostr.active_relays(),
-        config.nostr.crawl_depth,
-        crawler_spambox_backend,
-        opts.data_dir.clone(),
-    );
 
     #[cfg(feature = "p2p")]
     let (webrtc_state, peer_router_controller): (
@@ -298,6 +455,16 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     #[cfg(not(feature = "p2p"))]
     let peer_router_controller = None;
 
+    let background_services_controller = Arc::new(EmbeddedBackgroundServicesController::new(
+        keys.clone(),
+        opts.data_dir.clone(),
+        Arc::clone(&store),
+        Arc::clone(&social_graph_store),
+        crawler_spambox_backend,
+        webrtc_state.clone(),
+    ));
+    background_services_controller.apply_config(&config).await?;
+
     let upstream_blossom = config.blossom.all_read_servers();
 
     let mut server = HashtreeServer::new(Arc::clone(&store), opts.bind_address.clone())
@@ -322,36 +489,6 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     }
     if let Some(cors) = opts.cors {
         server = server.with_cors(cors);
-    }
-
-    if config.sync.enabled {
-        let sync_config = crate::sync::SyncConfig {
-            sync_own: config.sync.sync_own,
-            sync_followed: config.sync.sync_followed,
-            relays: config.nostr.active_relays(),
-            max_concurrent: config.sync.max_concurrent,
-            webrtc_timeout_ms: config.sync.webrtc_timeout_ms,
-            blossom_timeout_ms: config.sync.blossom_timeout_ms,
-        };
-
-        let sync_keys = nostr_sdk::Keys::parse(&keys.secret_key().to_bech32()?)
-            .context("Failed to parse keys for sync")?;
-
-        let sync_service = crate::sync::BackgroundSync::new(
-            sync_config,
-            Arc::clone(&store),
-            sync_keys,
-            webrtc_state.clone(),
-        )
-        .await
-        .context("Failed to create background sync service")?;
-
-        let contacts_file = opts.data_dir.join("contacts.json");
-        tokio::spawn(async move {
-            if let Err(e) = sync_service.run(contacts_file).await {
-                tracing::error!("Background sync error: {}", e);
-            }
-        });
     }
 
     spawn_background_eviction_task(
@@ -384,5 +521,6 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         webrtc_state,
         #[cfg(feature = "p2p")]
         peer_router_controller,
+        background_services_controller: Some(background_services_controller),
     })
 }

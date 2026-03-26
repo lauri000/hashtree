@@ -1,4 +1,15 @@
 import { test as base, type Page } from '@playwright/test';
+import {
+  attachRenderLoopGuardToPage,
+  formatRenderLoopFailures,
+  isRenderLoopMessage,
+} from './renderLoopGuard';
+
+type Fixtures = {
+  tauriPage: Page;
+  renderLoopErrors: Set<string>;
+  renderLoopGuard: void;
+};
 
 /**
  * Mock Tauri IPC so the shell UI can render in a regular browser.
@@ -234,9 +245,23 @@ async function mockTauriIPC(page: Page) {
   });
 }
 
-export const test = base.extend<{ tauriPage: Page }>({
-  tauriPage: async ({ page }, use) => {
+export const test = base.extend<Fixtures>({
+  renderLoopErrors: async ({}, use) => {
+    await use(new Set<string>());
+  },
+  renderLoopGuard: [async ({ renderLoopErrors }, use) => {
+    const before = new Set(renderLoopErrors);
+    await use();
+    const failures = new Set(
+      Array.from(renderLoopErrors).filter((message) => !before.has(message)),
+    );
+    if (failures.size > 0) {
+      throw new Error(formatRenderLoopFailures(failures));
+    }
+  }, { auto: true }],
+  tauriPage: async ({ page, renderLoopErrors }, use) => {
     await mockTauriIPC(page);
+    attachRenderLoopGuardToPage(page, renderLoopErrors);
     await use(page);
   },
 });
@@ -246,6 +271,7 @@ export { expect } from '@playwright/test';
 export function setupPageErrorHandler(page: Page) {
   page.on('pageerror', (err: Error) => {
     const msg = err.message;
+    if (isRenderLoopMessage(msg)) return;
     if (!msg.includes('rate-limited') && !msg.includes('pow:') && !msg.includes('bits needed')) {
       console.log('Page error:', msg);
     }
