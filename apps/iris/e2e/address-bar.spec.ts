@@ -1,4 +1,6 @@
 import { test, expect, getInvocationsFor, setupPageErrorHandler, gotoHome } from './fixtures';
+import { distributedOwner } from '../src/lib/apps';
+import { ownerDisplayName, ownerProfileUrl } from '../src/lib/addressIdentity';
 
 async function openHome(page: import('@playwright/test').Page) {
   setupPageErrorHandler(page);
@@ -186,6 +188,54 @@ test.describe('Address Bar', () => {
     await page.getByTitle('Home').click();
   });
 
+  test('blurred htree npub routes render an owner pill and restore the full URL on focus', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const url = `htree://${distributedOwner}/video/index.html`;
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill(url);
+    await input.press('Enter');
+    await expect.poll(async () => (await getInvocationsFor(page, 'create_htree_webview')).length).toBe(1);
+    await page.locator('main').click({ position: { x: 20, y: 20 } });
+
+    await expect(page.getByTestId('address-owner-pill')).toBeVisible();
+    await expect(page.getByTestId('address-owner-name')).toHaveText(ownerDisplayName(distributedOwner));
+    await expect(page.getByTestId('address-path')).toHaveText('/video/index.html');
+    await expect(input).toHaveValue(`${distributedOwner}/video/index.html`);
+
+    await page.getByTestId('address-path').click();
+    await expect(page.getByTestId('address-owner-pill')).toHaveCount(0);
+    await expect(input).toHaveValue(url);
+  });
+
+  test('clicking the blurred owner pill opens the distributed iris-files profile route', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const url = `htree://${distributedOwner}/video/index.html`;
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill(url);
+    await input.press('Enter');
+    await expect.poll(async () => (await getInvocationsFor(page, 'create_htree_webview')).length).toBe(1);
+    await page.locator('main').click({ position: { x: 20, y: 20 } });
+
+    const ownerPill = page.getByTestId('address-owner-pill');
+    await expect(ownerPill).toBeVisible();
+    await expect(ownerPill).toHaveAttribute('data-profile-url', ownerProfileUrl(distributedOwner));
+    await ownerPill.evaluate((element) => {
+      (element as HTMLButtonElement).click();
+    });
+
+    await expect.poll(async () => (await getInvocationsFor(page, 'create_htree_webview')).length).toBe(2);
+    const calls = await getInvocationsFor(page, 'create_htree_webview');
+    expect(calls.length).toBe(2);
+    expect(calls[1].args.npub).toBe(distributedOwner);
+    expect(calls[1].args.treename).toBe('files');
+    expect(calls[1].args.path).toBe('/index.html');
+    expect(calls[1].args.fragment).toBe(`/${distributedOwner}/profile`);
+  });
+
   test('empty address bar submit does nothing', async ({ tauriPage: page }) => {
     await openHome(page);
 
@@ -322,6 +372,50 @@ test.describe('Address Bar', () => {
     expect(result.right.value).toBe('abcdef');
     expect(result.right.start).toBe(3);
     expect(result.right.end).toBe(3);
+    await expect(input).toHaveValue('abcdef');
+  });
+
+  test('macOS private-use arrow keyup sanitizes late glyph insertion', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.fill('abcdef');
+
+    const result = await input.evaluate((element) => {
+      const field = element as HTMLInputElement;
+      field.focus();
+      field.setSelectionRange(3, 3);
+
+      const dispatchArrow = (type: 'keydown' | 'keyup') => {
+        const event = new KeyboardEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          key: '\uF703',
+        });
+        Object.defineProperty(event, 'keyCode', { get: () => 39 });
+        Object.defineProperty(event, 'which', { get: () => 39 });
+        field.dispatchEvent(event);
+      };
+
+      dispatchArrow('keydown');
+      field.value = 'abc\uF703def';
+      field.setSelectionRange(4, 4);
+      dispatchArrow('keyup');
+
+      return new Promise<{ value: string; start: number | null; end: number | null }>((resolve) => {
+        requestAnimationFrame(() => {
+          resolve({
+            value: field.value,
+            start: field.selectionStart,
+            end: field.selectionEnd,
+          });
+        });
+      });
+    });
+
+    expect(result.value).toBe('abcdef');
+    expect(result.start).toBe(3);
+    expect(result.end).toBe(3);
     await expect(input).toHaveValue('abcdef');
   });
 
@@ -479,7 +573,7 @@ test.describe('Address Bar Autocomplete', () => {
     await expect(dropdown).toBeVisible();
 
     await input.press('Escape');
-    await expect(dropdown).not.toBeVisible();
+    await expect.poll(async () => await dropdown.count()).toBe(0);
   });
 
   test('clicking dropdown item navigates to that URL', async ({ tauriPage: page }) => {

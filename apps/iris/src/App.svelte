@@ -27,7 +27,9 @@
     type HistoryEntry,
   } from './lib/tauri';
   import { bookmarkSavedName, isBuiltInIrisApp } from './lib/apps';
+  import { ownerProfileUrl } from './lib/addressIdentity';
   import { appsStore } from './stores/apps';
+  import AddressOwnerPill from './components/AddressOwnerPill.svelte';
   import AppLauncher from './components/AppLauncher.svelte';
   import Settings from './components/Settings.svelte';
 
@@ -223,6 +225,9 @@
     const removedBeforeEnd = (rawValue.slice(0, selectionEnd).match(MACOS_FUNCTION_KEY_GLYPHS) ?? []).length;
 
     addressValue = sanitizedValue;
+    if (input) {
+      input.value = sanitizedValue;
+    }
 
     requestAnimationFrame(() => {
       if (!addressInputEl) return;
@@ -375,6 +380,29 @@
     debouncedSearch(sanitizedValue);
   }
 
+  function handleAddressKeyUp(event: KeyboardEvent) {
+    if (!isMacosFunctionArrowEvent(event)) return;
+    sanitizeAddressFieldValue();
+  }
+
+  function handleAddressChromeClick(event: MouseEvent) {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest('button')) return;
+    if (isAddressFocused) return;
+    addressInputEl?.focus();
+  }
+
+  function handleAddressChromeKeyDown(event: KeyboardEvent) {
+    if (isAddressFocused) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest('button') || target.closest('input')) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    addressInputEl?.focus();
+  }
+
   function handleAddressKeyDown(event: KeyboardEvent) {
     const key = normalizedAddressKey(event);
     const isMacosFunctionArrow = isMacosFunctionArrowEvent(event);
@@ -516,6 +544,38 @@
     }
     return null;
   }
+
+  function htreePathLabel(htree: {
+    treename?: string;
+    path: string;
+    query?: string;
+    fragment?: string;
+  }): string {
+    let label = htree.treename ? `/${htree.treename}` : '';
+    if (htree.path && htree.path !== '/') {
+      label += htree.path.startsWith('/') ? htree.path : `/${htree.path}`;
+    }
+    if (!label) {
+      label = '/';
+    }
+    if (htree.query) {
+      label += `?${htree.query}`;
+    }
+    if (htree.fragment) {
+      label += `#${htree.fragment}`;
+    }
+    return label;
+  }
+
+  let blurredOwnerSummary = $derived.by(() => {
+    if (isAddressFocused) return null;
+    const htree = parseHtreeUrl(currentUrl);
+    if (!htree?.npub) return null;
+    return {
+      host: htree.npub,
+      pathLabel: htreePathLabel(htree),
+    };
+  });
 
   function isRecordableUrl(url: string): boolean {
     return url.startsWith('http://') || url.startsWith('https://') || url.startsWith('htree://');
@@ -780,6 +840,14 @@
     if (currentView === 'webview' && childWebviewReady) {
       await reloadWebview(CHILD_LABEL);
     }
+  }
+
+  async function openAddressOwnerProfile(host: string) {
+    showMobileMenu = false;
+    closeDropdown();
+    isAddressFocused = false;
+    addressInputEl?.blur();
+    await navigate(ownerProfileUrl(host));
   }
 
   async function fetchDropdownItems(query: string) {
@@ -1247,6 +1315,11 @@
             data-testid="address-bar"
             data-tauri-drag-region="false"
             class="w-full min-w-0 flex items-center gap-2 rounded-full bg-surface-0 b-1 b-solid b-surface-3 px-4 py-2 transition-all {isAddressFocused ? 'b-accent' : ''}"
+            role="button"
+            tabindex={isAddressFocused ? -1 : 0}
+            aria-label="Focus address bar"
+            onclick={handleAddressChromeClick}
+            onkeydown={handleAddressChromeKeyDown}
           >
             {#if currentUrl && !isAddressFocused}
               <button
@@ -1263,24 +1336,40 @@
               </button>
             {/if}
             <span data-tauri-drag-region="false" class="i-lucide-search text-sm text-muted shrink-0"></span>
-            <input
-              type="text"
-              data-tauri-drag-region="false"
-              autocorrect="off"
-              autocapitalize="none"
-              autocomplete="off"
-              bind:this={addressInputEl}
-              bind:value={addressValue}
-              onfocus={handleAddressFocus}
-              onblur={handleAddressBlur}
-              onbeforeinput={handleAddressBeforeInput}
-              onkeypress={handleAddressKeyPress}
-              oninput={handleAddressInput}
-              onkeydown={handleAddressKeyDown}
-              placeholder="Search or enter address"
-              spellcheck={false}
-              class="bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted flex-1 min-w-0 text-left"
-            />
+            <div class="relative min-w-0 flex-1">
+              {#if blurredOwnerSummary}
+                <div class="absolute inset-0 flex items-center gap-2 pr-2">
+                  <div class="shrink-0">
+                    <AddressOwnerPill
+                      host={blurredOwnerSummary.host}
+                      openProfile={() => void openAddressOwnerProfile(blurredOwnerSummary.host)}
+                    />
+                  </div>
+                  <span data-testid="address-path" class="min-w-0 truncate text-sm text-text-2">
+                    {blurredOwnerSummary.pathLabel}
+                  </span>
+                </div>
+              {/if}
+              <input
+                type="text"
+                data-tauri-drag-region="false"
+                autocorrect="off"
+                autocapitalize="none"
+                autocomplete="off"
+                bind:this={addressInputEl}
+                bind:value={addressValue}
+                onfocus={handleAddressFocus}
+                onblur={handleAddressBlur}
+                onbeforeinput={handleAddressBeforeInput}
+                onkeypress={handleAddressKeyPress}
+                oninput={handleAddressInput}
+                onkeydown={handleAddressKeyDown}
+                onkeyup={handleAddressKeyUp}
+                placeholder="Search or enter address"
+                spellcheck={false}
+                class={`w-full bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted min-w-0 text-left ${blurredOwnerSummary ? 'relative z-10 pointer-events-none text-transparent' : ''}`}
+              />
+            </div>
             {#if !isAddressFocused}
               <button
                 data-tauri-drag-region="false"
@@ -1381,6 +1470,11 @@
           data-testid="address-bar"
           data-tauri-drag-region="false"
           class="w-full min-w-0 max-w-lg flex items-center gap-2 px-3 py-1 rounded-full bg-surface-0 b-1 b-solid b-surface-3 transition-colors {isAddressFocused ? 'b-accent' : ''}"
+          role="button"
+          tabindex={isAddressFocused ? -1 : 0}
+          aria-label="Focus address bar"
+          onclick={handleAddressChromeClick}
+          onkeydown={handleAddressChromeKeyDown}
         >
           {#if currentUrl}
             <button
@@ -1397,24 +1491,40 @@
             </button>
           {/if}
           <span data-tauri-drag-region="false" class="i-lucide-search text-sm text-muted shrink-0"></span>
-          <input
-            type="text"
-            data-tauri-drag-region="false"
-            autocorrect="off"
-            autocapitalize="none"
-            autocomplete="off"
-            bind:this={addressInputEl}
-            bind:value={addressValue}
-            onfocus={handleAddressFocus}
-            onblur={handleAddressBlur}
-            onbeforeinput={handleAddressBeforeInput}
-            onkeypress={handleAddressKeyPress}
-            oninput={handleAddressInput}
-            onkeydown={handleAddressKeyDown}
-            placeholder="Search or enter address"
-            spellcheck={false}
-            class="bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted flex-1 min-w-0 text-center"
-          />
+          <div class="relative min-w-0 flex-1">
+            {#if blurredOwnerSummary}
+              <div class="absolute inset-0 flex items-center gap-2 pr-2">
+                <div class="shrink-0">
+                  <AddressOwnerPill
+                    host={blurredOwnerSummary.host}
+                    openProfile={() => void openAddressOwnerProfile(blurredOwnerSummary.host)}
+                  />
+                </div>
+                <span data-testid="address-path" class="min-w-0 truncate text-sm text-text-2">
+                  {blurredOwnerSummary.pathLabel}
+                </span>
+              </div>
+            {/if}
+            <input
+              type="text"
+              data-tauri-drag-region="false"
+              autocorrect="off"
+              autocapitalize="none"
+              autocomplete="off"
+              bind:this={addressInputEl}
+              bind:value={addressValue}
+              onfocus={handleAddressFocus}
+              onblur={handleAddressBlur}
+              onbeforeinput={handleAddressBeforeInput}
+              onkeypress={handleAddressKeyPress}
+              oninput={handleAddressInput}
+              onkeydown={handleAddressKeyDown}
+              onkeyup={handleAddressKeyUp}
+              placeholder="Search or enter address"
+              spellcheck={false}
+              class={`w-full bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted min-w-0 text-center ${blurredOwnerSummary ? 'relative z-10 pointer-events-none text-transparent text-left' : ''}`}
+            />
+          </div>
           <button
             data-tauri-drag-region="false"
             class="shrink-0 text-text-3 hover:text-text-1 disabled:opacity-30"
