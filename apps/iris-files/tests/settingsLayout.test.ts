@@ -5,6 +5,7 @@ import path from 'node:path';
 const root = path.resolve(process.cwd(), 'src', 'components', 'settings');
 const settingsLayoutSource = fs.readFileSync(path.join(root, 'SettingsLayout.svelte'), 'utf8');
 const networkSettingsSource = fs.readFileSync(path.join(root, 'NetworkSettings.svelte'), 'utf8');
+const serversSettingsSource = fs.readFileSync(path.join(root, 'ServersSettings.svelte'), 'utf8');
 
 describe('shared settings layout', () => {
   it('uses a single Network tab for server and peer settings', () => {
@@ -20,5 +21,11 @@ describe('shared settings layout', () => {
     expect(settingsLayoutSource).toContain("return 'network'; // default");
     expect(networkSettingsSource).toContain('<ServersSettings embedded={true} />');
     expect(networkSettingsSource).toContain('<P2PSettings embedded={true} />');
+  });
+
+  it('shows embedded daemon transport and upstream relays inside one relay section', () => {
+    expect(serversSettingsSource).toContain('Relays');
+    expect(serversSettingsSource).toContain('Configured upstream relays');
+    expect(serversSettingsSource).not.toContain('Local Transport (');
   });
 });

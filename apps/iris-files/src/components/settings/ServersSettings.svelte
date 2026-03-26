@@ -23,6 +23,7 @@
   let transportRelays = $derived($nostrStore.transportRelays);
   let discoveredRelays = $derived($nostrStore.discoveredRelays);
   let showDiscoveredRelays = $state(false);
+  let showUpstreamRelays = $state(false);
   const nativeDaemonRelayUrl = getNativeDaemonRelayUrl();
   const usesEmbeddedDaemonRelay = !!nativeDaemonRelayUrl;
 
@@ -128,64 +129,108 @@
 </script>
 
 <div class:root-layout={!embedded} class:embedded-layout={embedded}>
-  {#if transportRelays.length > 0}
-    <div>
-      <div class="flex items-center justify-between mb-1">
-        <h3 class="text-xs font-medium text-muted uppercase tracking-wide">
-          Local Transport ({transportRelays.length})
-        </h3>
-      </div>
-      <p class="text-xs text-text-3 mb-3">
-        Live relay sockets currently used by this app
-      </p>
-      <div class="bg-surface-2 rounded divide-y divide-surface-3">
-        {#each transportRelays as relay (relay.url)}
-          <div class="flex items-center gap-2 p-3 text-sm">
-            <span class="w-2 h-2 rounded-full {getStatusColor(relay.status)} shrink-0"></span>
-            <div class="min-w-0 flex-1">
-              <div class="truncate text-text-1">{relay.url}</div>
-              <div class="truncate text-xs text-text-3">{formatRelayRole(relay.url)}</div>
-            </div>
-            <span class="text-xs text-text-3">{relay.status.charAt(0).toUpperCase() + relay.status.slice(1)}</span>
-          </div>
-        {/each}
-      </div>
-    </div>
-  {/if}
-
   <!-- Relays -->
   <div>
     <div class="flex items-center justify-between mb-1">
       <h3 class="text-xs font-medium text-muted uppercase tracking-wide">
-        {usesEmbeddedDaemonRelay ? 'Upstream Relays' : 'Relays'} ({networkSettings.relays.length})
+        Relays
       </h3>
       <button onclick={() => editingRelays = !editingRelays} class="btn-ghost text-xs">
-        {editingRelays ? 'Done' : 'Edit'}
+        {editingRelays ? 'Done' : usesEmbeddedDaemonRelay ? 'Edit upstream' : 'Edit'}
       </button>
     </div>
     <p class="text-xs text-text-3 mb-3">
       {usesEmbeddedDaemonRelay
-        ? 'Nostr servers managed by the embedded daemon for peer discovery and data sync'
+        ? 'Connected through the local daemon relay; expand upstream relays to edit the daemon relay list'
         : 'Nostr servers for peer discovery and data sync'}
     </p>
-    <div class="bg-surface-2 rounded divide-y divide-surface-3">
-      {#each networkSettings.relays as relay (relay)}
-        {@const status = getRelayStatus(relay)}
-        <div class="flex items-center gap-2 p-3 text-sm">
-          <span class="w-2 h-2 rounded-full {getStatusColor(status)} shrink-0"></span>
-          <span class="text-text-1 truncate flex-1">{formatServerLabel(relay)}</span>
-          {#if editingRelays}
-            <button onclick={() => removeRelay(relay)} class="btn-ghost p-1 text-danger" title="Remove relay">
-              <span class="i-lucide-x text-sm"></span>
-            </button>
-          {:else if usesEmbeddedDaemonRelay}
-            <span class="text-xs text-text-3">Configured upstream</span>
-          {:else}
-            <span class="text-xs text-text-3">{status.charAt(0).toUpperCase() + status.slice(1)}</span>
+    {#if usesEmbeddedDaemonRelay}
+      <div class="bg-surface-2 rounded divide-y divide-surface-3">
+        {#if transportRelays.length > 0}
+          {#each transportRelays as relay (relay.url)}
+            <div class="flex items-center gap-2 p-3 text-sm">
+              <span class="w-2 h-2 rounded-full {getStatusColor(relay.status)} shrink-0"></span>
+              <div class="min-w-0 flex-1">
+                <div class="truncate text-text-1">{relay.url}</div>
+                <div class="truncate text-xs text-text-3">{formatRelayRole(relay.url)}</div>
+              </div>
+              <span class="text-xs text-text-3">{relay.status.charAt(0).toUpperCase() + relay.status.slice(1)}</span>
+            </div>
+          {/each}
+        {:else}
+          <div class="p-3 text-sm text-text-3">No live relay socket</div>
+        {/if}
+      </div>
+
+      <div class="bg-surface-2 rounded mt-1">
+        <button
+          onclick={() => showUpstreamRelays = !showUpstreamRelays}
+          class="btn-ghost b-0 flex items-center gap-1 p-3 text-sm text-text-1 w-full"
+        >
+          <span class="i-lucide-chevron-right text-sm transition-transform {(showUpstreamRelays || editingRelays) ? 'rotate-90' : ''}"></span>
+          Configured upstream relays ({networkSettings.relays.length})
+        </button>
+        {#if showUpstreamRelays || editingRelays}
+          <div class="divide-y divide-surface-3">
+            {#each networkSettings.relays as relay (relay)}
+              <div class="flex items-center gap-2 p-3 text-sm">
+                <span class="w-2 h-2 rounded-full bg-text-3 shrink-0"></span>
+                <span class="text-text-1 truncate flex-1">{formatServerLabel(relay)}</span>
+                {#if editingRelays}
+                  <button onclick={() => removeRelay(relay)} class="btn-ghost p-1 text-danger" title="Remove relay">
+                    <span class="i-lucide-x text-sm"></span>
+                  </button>
+                {:else}
+                  <span class="text-xs text-text-3">Managed by daemon</span>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {:else}
+      <div class="bg-surface-2 rounded divide-y divide-surface-3">
+        {#each networkSettings.relays as relay (relay)}
+          {@const status = getRelayStatus(relay)}
+          <div class="flex items-center gap-2 p-3 text-sm">
+            <span class="w-2 h-2 rounded-full {getStatusColor(status)} shrink-0"></span>
+            <span class="text-text-1 truncate flex-1">{formatServerLabel(relay)}</span>
+            {#if editingRelays}
+              <button onclick={() => removeRelay(relay)} class="btn-ghost p-1 text-danger" title="Remove relay">
+                <span class="i-lucide-x text-sm"></span>
+              </button>
+            {:else}
+              <span class="text-xs text-text-3">{status.charAt(0).toUpperCase() + status.slice(1)}</span>
+            {/if}
+          </div>
+        {/each}
+      </div>
+
+      <!-- Discovered Relays -->
+      {#if discoveredRelays.length > 0}
+        <div class="bg-surface-2 rounded mt-1">
+          <button
+            onclick={() => showDiscoveredRelays = !showDiscoveredRelays}
+            class="btn-ghost b-0 flex items-center gap-1 p-3 text-sm text-text-1 w-full"
+          >
+            <span class="i-lucide-chevron-right text-sm transition-transform {showDiscoveredRelays ? 'rotate-90' : ''}"></span>
+            Discovered relays ({discoveredRelays.length})
+          </button>
+          {#if showDiscoveredRelays}
+            <div class="divide-y divide-surface-3">
+              {#each discoveredRelays as relay (relay.url)}
+                <div class="flex items-center gap-2 p-3 text-sm">
+                  <span class="w-2 h-2 rounded-full {getStatusColor(relay.status)} shrink-0"></span>
+                  <span class="text-text-1 truncate flex-1">{formatServerLabel(relay.url)}</span>
+                  <span class="text-xs text-text-3">{relay.status.charAt(0).toUpperCase() + relay.status.slice(1)}</span>
+                </div>
+              {/each}
+            </div>
           {/if}
         </div>
-      {/each}
-    </div>
+      {/if}
+    {/if}
+
     {#if editingRelays}
       <div class="mt-2 flex gap-2">
         <input
@@ -198,30 +243,6 @@
         <button onclick={addRelay} class="btn-primary text-sm">Add</button>
       </div>
       <button onclick={resetRelays} class="btn-ghost mt-2 text-xs text-text-3">Reset to defaults</button>
-    {/if}
-
-    <!-- Discovered Relays -->
-    {#if discoveredRelays.length > 0 && !usesEmbeddedDaemonRelay}
-      <div class="bg-surface-2 rounded mt-1">
-        <button
-          onclick={() => showDiscoveredRelays = !showDiscoveredRelays}
-          class="btn-ghost b-0 flex items-center gap-1 p-3 text-sm text-text-1 w-full"
-        >
-          <span class="i-lucide-chevron-right text-sm transition-transform {showDiscoveredRelays ? 'rotate-90' : ''}"></span>
-          Discovered relays ({discoveredRelays.length})
-        </button>
-        {#if showDiscoveredRelays}
-          <div class="divide-y divide-surface-3">
-            {#each discoveredRelays as relay (relay.url)}
-              <div class="flex items-center gap-2 p-3 text-sm">
-                <span class="w-2 h-2 rounded-full {getStatusColor(relay.status)} shrink-0"></span>
-                <span class="text-text-1 truncate flex-1">{formatServerLabel(relay.url)}</span>
-                <span class="text-xs text-text-3">{relay.status.charAt(0).toUpperCase() + relay.status.slice(1)}</span>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </div>
     {/if}
   </div>
 
