@@ -80,6 +80,49 @@ describe('resolveReadableVideoRoot', () => {
     expect(ndkFetchEvents).not.toHaveBeenCalled();
   });
 
+  it('checks fetchability before keeping a foreground single-file root', async () => {
+    vi.stubGlobal('window', {
+      localStorage: {
+        getItem: vi.fn(() => null),
+        setItem: vi.fn(),
+      },
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        arrayBuffer: vi.fn(async () => new ArrayBuffer(0)),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: vi.fn(async () => Uint8Array.from([1, 2, 3]).buffer),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid, ROOT)) return [{ name: 'video.mp4' }];
+      if (sameHash(cid, FALLBACK)) return [{ name: 'thumbnail.jpg' }, { name: 'video.mp4' }];
+      return [];
+    });
+    ndkFetchEvents.mockResolvedValue(new Set([
+      {
+        created_at: 20,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(ROOT.hash).toString('hex')]],
+      },
+      {
+        created_at: 10,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(FALLBACK.hash).toString('hex')]],
+      },
+    ]));
+
+    const { resolveReadableVideoRoot } = await import('../src/lib/readableVideoRoot');
+    await expect(resolveReadableVideoRoot({
+      rootCid: ROOT,
+      npub: 'npub1example',
+      treeName: 'videos/Test',
+      priority: 'foreground',
+    })).resolves.toEqual(FALLBACK);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('tries history fallback when the current root readability check times out', async () => {
     vi.useFakeTimers();
     listDirectory.mockImplementation(async (cid: CID) => {

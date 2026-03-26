@@ -902,6 +902,7 @@ export async function resolveReadableVideoRoot(options: {
     && isReadableVideoProfile(optimisticCurrentRootProfile)
     && optimisticCurrentRootProfile.preference === 0
     && optimisticCurrentRootProfile.playableCount <= 1
+    && priority !== 'foreground'
   ) {
     logHtreeDebug('video-root:current-readable', {
       npub,
