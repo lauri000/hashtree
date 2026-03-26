@@ -18,6 +18,22 @@ const brand = getAppBrand('video');
 
 export const sanitizeVideoHtml = sanitizePortableHtml;
 
+export function formatVideoMigrationDevLogLine(rawBody: string): string {
+  try {
+    const parsed = JSON.parse(rawBody) as {
+      kind?: string;
+      at?: string;
+      payload?: Record<string, unknown>;
+    };
+    const at = typeof parsed.at === 'string' ? parsed.at : new Date().toISOString();
+    const kind = typeof parsed.kind === 'string' ? parsed.kind : 'unknown';
+    const payload = parsed.payload ? ` ${JSON.stringify(parsed.payload)}` : '';
+    return `[video-migration] ${at} ${kind}${payload}`;
+  } catch {
+    return `[video-migration] invalid-log ${rawBody}`;
+  }
+}
+
 function videoEntryPlugin(): Plugin {
   return {
     name: 'video-entry',
@@ -41,6 +57,40 @@ function videoEntryPlugin(): Plugin {
   };
 }
 
+function videoMigrationDevLogPlugin(): Plugin {
+  return {
+    name: 'video-migration-dev-log',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (!req.url?.startsWith('/__video_migration_log')) {
+          next();
+          return;
+        }
+
+        if (req.method !== 'POST') {
+          res.statusCode = 405;
+          res.end('Method Not Allowed');
+          return;
+        }
+
+        let body = '';
+        req.on('data', (chunk) => {
+          body += String(chunk);
+        });
+        req.on('end', () => {
+          console.log(formatVideoMigrationDevLogLine(body));
+          res.statusCode = 204;
+          res.end();
+        });
+        req.on('error', () => {
+          res.statusCode = 500;
+          res.end('Log read error');
+        });
+      });
+    },
+  };
+}
+
 export default defineConfig({
   base: portableAssetBase,
   define: {
@@ -48,6 +98,7 @@ export default defineConfig({
   },
   plugins: [
     videoEntryPlugin(),
+    videoMigrationDevLogPlugin(),
     UnoCSS(),
     svelte(),
     VitePWA({

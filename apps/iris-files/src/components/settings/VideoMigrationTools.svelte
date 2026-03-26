@@ -1,6 +1,7 @@
 <script lang="ts">
   import { toHex } from '@hashtree/core';
   import { loginWithExtension, nostrStore } from '../../nostr';
+  import { logVideoMigrationEvent } from '../../lib/videoMigrationLog';
   import {
     publishVideoMigration,
     scanVideoMigrations,
@@ -47,15 +48,29 @@
 
   async function connectExtension() {
     actionError = null;
+    logVideoMigrationEvent('connect-extension:start', {
+      currentNpub,
+      isLoggedIn,
+    });
     const success = await loginWithExtension();
     if (!success) {
       actionError = 'NIP-7 login failed.';
+      logVideoMigrationEvent('connect-extension:error', {
+        currentNpub,
+      });
+      return;
     }
+    logVideoMigrationEvent('connect-extension:success', {
+      currentNpub: $nostrStore.npub,
+    });
   }
 
   async function runScan() {
     if (!currentNpub) {
       scanError = 'Log in with the account you want to repair before scanning.';
+      logVideoMigrationEvent('scan:blocked', {
+        reason: 'missing-current-npub',
+      });
       return;
     }
 
@@ -63,16 +78,48 @@
     scanError = null;
     actionError = null;
     progress = { stage: 'list', current: 0, total: 0 };
+    logVideoMigrationEvent('scan:start', {
+      npub: currentNpub,
+    });
 
     try {
       items = await scanVideoMigrations({
         npub: currentNpub,
         onProgress: (next) => {
           progress = next;
+          logVideoMigrationEvent(`scan:${next.stage}`, {
+            current: next.current,
+            total: next.total,
+            treeName: next.treeName ?? null,
+          });
         },
+      });
+      logVideoMigrationEvent('scan:complete', {
+        npub: currentNpub,
+        totals: {
+          total: items.length,
+          ready: items.filter((item) => item.status === 'ready').length,
+          clean: items.filter((item) => item.status === 'clean').length,
+          blocked: items.filter((item) => item.status === 'unfixable').length,
+          error: items.filter((item) => item.status === 'error').length,
+        },
+        items: items.map((item) => ({
+          treeName: item.treeName,
+          status: item.status,
+          issueCodes: item.issueCodes,
+          unresolvedIssueCodes: item.unresolvedIssueCodes,
+          currentRoot: shortRoot(item.currentRootCid),
+          publishRoot: shortRoot(item.publishBaseRootCid),
+          publishBlockedReason: item.publishBlockedReason ?? null,
+          error: item.error ?? null,
+        })),
       });
     } catch (error) {
       scanError = error instanceof Error ? error.message : 'Failed to scan videos.';
+      logVideoMigrationEvent('scan:error', {
+        npub: currentNpub,
+        error,
+      });
     } finally {
       scanning = false;
       progress = null;
@@ -103,11 +150,28 @@
   async function publishOne(item: VideoMigrationCandidate) {
     actionError = null;
     activeTreeName = item.treeName;
+    logVideoMigrationEvent('publish:start', {
+      treeName: item.treeName,
+      visibility: item.visibility,
+      issueCodes: item.issueCodes,
+      currentRoot: shortRoot(item.currentRootCid),
+      publishRoot: shortRoot(item.publishBaseRootCid),
+    });
     try {
       const result = await publishVideoMigration(item);
       markPublished(item.treeName, result.cid);
+      logVideoMigrationEvent('publish:success', {
+        treeName: item.treeName,
+        visibility: result.visibility,
+        cid: shortRoot(result.cid),
+        blossom: result.blossom ?? null,
+      });
     } catch (error) {
       actionError = error instanceof Error ? error.message : `Failed to publish ${item.displayName}.`;
+      logVideoMigrationEvent('publish:error', {
+        treeName: item.treeName,
+        error,
+      });
     } finally {
       activeTreeName = null;
     }
@@ -117,14 +181,27 @@
     batchPublishing = true;
     actionError = null;
     const failures: string[] = [];
+    logVideoMigrationEvent('publish-all:start', {
+      count: readyItems.length,
+      treeNames: readyItems.map((item) => item.treeName),
+    });
 
     for (const item of readyItems) {
       activeTreeName = item.treeName;
       try {
         const result = await publishVideoMigration(item);
         markPublished(item.treeName, result.cid);
+        logVideoMigrationEvent('publish-all:item-success', {
+          treeName: item.treeName,
+          cid: shortRoot(result.cid),
+          blossom: result.blossom ?? null,
+        });
       } catch (error) {
         failures.push(`${item.displayName}: ${error instanceof Error ? error.message : 'publish failed'}`);
+        logVideoMigrationEvent('publish-all:item-error', {
+          treeName: item.treeName,
+          error,
+        });
       }
     }
 
@@ -133,6 +210,10 @@
     if (failures.length > 0) {
       actionError = failures.join(' | ');
     }
+    logVideoMigrationEvent('publish-all:complete', {
+      attempted: readyItems.length,
+      failures,
+    });
   }
 </script>
 

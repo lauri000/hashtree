@@ -24,4 +24,20 @@ describe('video portable build config', () => {
     expect(sanitized).toContain('<script type="module" src="./assets/main.js"></script>');
     expect(sanitized).toContain('<link rel="stylesheet" href="./assets/main.css">');
   });
+
+  it('formats dev migration logs for terminal output', async () => {
+    const configModule = await import('../vite.video.config.ts');
+    const line = configModule.formatVideoMigrationDevLogLine(JSON.stringify({
+      kind: 'scan:complete',
+      at: '2026-03-27T01:00:00.000Z',
+      payload: {
+        npub: 'npub1example',
+        totals: { ready: 2, clean: 1 },
+      },
+    }));
+
+    expect(line).toContain('[video-migration] 2026-03-27T01:00:00.000Z scan:complete');
+    expect(line).toContain('"npub":"npub1example"');
+    expect(line).toContain('"ready":2');
+  });
 });
