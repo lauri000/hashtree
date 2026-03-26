@@ -28,6 +28,7 @@ import app.tauri.plugin.Plugin
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.json.JSONArray
@@ -105,10 +106,11 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
     private var gattServer: BluetoothGattServer? = null
     private var txCharacteristic: BluetoothGattCharacteristic? = null
     private var localPeerId: String = ""
-    private val devices = mutableMapOf<String, BluetoothDevice>()
-    private val subscribed = mutableSetOf<String>()
-    private val decoders = mutableMapOf<String, FrameDecoder>()
+    private val devices = ConcurrentHashMap<String, BluetoothDevice>()
+    private val subscribed = ConcurrentHashMap.newKeySet<String>()
+    private val decoders = ConcurrentHashMap<String, FrameDecoder>()
     private val advertiseCallback = object : AdvertiseCallback() {}
+    private var bluetoothActive = false
 
     @Command
     fun start(invoke: Invoke) {
@@ -176,7 +178,7 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
                 ) {
                     if (characteristic.uuid == RX_UUID) {
                         Log.d(TAG, "Received BLE write from ${device.address} (${value.size} bytes)")
-                        val decoder = decoders.getOrPut(device.address) { FrameDecoder() }
+                        val decoder = decoders.computeIfAbsent(device.address) { FrameDecoder() }
                         decoder.append(value).forEach { frame ->
                             triggerFrame(device.address, frame.kind, frame.payload)
                         }
@@ -272,7 +274,8 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
                 advertiseCallback,
             )
 
-            MobileBluetoothForegroundService.start(appContext)
+            disconnectUnreadyDevices("gatt-restart")
+            bluetoothActive = true
             Log.i(TAG, "Bluetooth advertising and GATT server started")
             invoke.resolve()
         } catch (error: SecurityException) {
@@ -287,8 +290,8 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
     @Command
     fun stop(invoke: Invoke) {
         Log.i(TAG, "stop invoked")
+        bluetoothActive = false
         stopInternal()
-        MobileBluetoothForegroundService.stop(appContext)
         invoke.resolve()
     }
 
@@ -319,6 +322,7 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
 
     @Command
     fun listPeers(invoke: Invoke) {
+        Log.i(TAG, "listPeers returning ${devices.size} device(s); ready=${subscribed.size}")
         val peers = JSONArray()
         devices.keys.sorted().forEach { address ->
             val peer = JSObject()
@@ -333,8 +337,8 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
 
     override fun onDestroy() {
         super.onDestroy()
+        bluetoothActive = false
         stopInternal()
-        MobileBluetoothForegroundService.stop(appContext)
     }
 
     private fun sendHello(device: BluetoothDevice) {
@@ -362,6 +366,7 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
 
     private fun stopInternal() {
         Log.d(TAG, "Stopping Bluetooth advertiser and GATT server")
+        disconnectUnreadyDevices("stop")
         try {
             advertiser?.stopAdvertising(advertiseCallback)
         } catch (_: Exception) {}
@@ -373,6 +378,23 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
         devices.clear()
         subscribed.clear()
         decoders.clear()
+    }
+
+    private fun disconnectUnreadyDevices(reason: String) {
+        val server = gattServer ?: return
+        devices.entries
+            .sortedBy { it.key }
+            .forEach { (address, device) ->
+                if (subscribed.contains(address)) {
+                    return@forEach
+                }
+                Log.i(TAG, "Disconnecting BLE device $address to recover clean startup ($reason)")
+                try {
+                    server.cancelConnection(device)
+                } catch (error: Exception) {
+                    Log.w(TAG, "Failed to cancel BLE connection for $address", error)
+                }
+            }
     }
 
     @Suppress("DEPRECATION")

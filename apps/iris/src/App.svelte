@@ -39,6 +39,10 @@
     pushHistory?: boolean;
     preferPlainLoopbackHost?: boolean;
   };
+  type ResolvedTreeRoot = {
+    hash?: string | null;
+    cid?: string | null;
+  };
 
   const CHILD_LABEL = 'content';
   const TOOLBAR_BASE_HEIGHT = 48;
@@ -46,7 +50,9 @@
   const DESKTOP_TRAFFIC_LIGHTS_PADDING = 88;
   const MOBILE_CHILD_WEBVIEWS_UNSUPPORTED = 'Mobile child webviews are not supported yet';
   const BLANK_SUGGESTED_TREE_RECOVERY_DELAY_MS = 1500;
-  const HTREE_LOAD_STALL_RECOVERY_DELAY_MS = 3000;
+  const BUILT_IN_TREE_ROOT_REFRESH_TIMEOUT_MS = 5000;
+  const HTREE_LOAD_STALL_RECOVERY_DELAY_MS = 8000;
+  const VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX = 96;
   const MACOS_FUNCTION_KEY_GLYPHS = /[\uF700-\uF8FF]/g;
   const MACOS_FUNCTION_KEY_GLYPHS_SINGLE = /[\uF700-\uF8FF]/;
   const LEGACY_MACOS_ARROW_KEY_CODES = new Set([63232, 63233, 63234, 63235]);
@@ -81,6 +87,7 @@
   let isCompactToolbar = $state(
     typeof window !== 'undefined' && window.innerWidth < COMPACT_TOOLBAR_BREAKPOINT
   );
+  let keyboardInsetBottom = $state(0);
   let showMobileMenu = $state(false);
   let mobileMenuEl: HTMLDivElement | null = $state(null);
 
@@ -261,41 +268,32 @@
     return 'Failed to open page.';
   }
 
-  async function refreshTreeRoot(npub: string, treename: string): Promise<boolean> {
+  async function refreshTreeRoot(npub: string, treename: string): Promise<ResolvedTreeRoot | null> {
     try {
       const serverUrl = await getHtreeServerUrl();
       const refreshUrl =
         `${serverUrl}/api/resolve/${encodeURIComponent(npub)}/${encodeURIComponent(treename)}?refresh=1`;
-
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 15000);
-        try {
-          const response = await fetch(refreshUrl, {
-            cache: 'no-store',
-            signal: controller.signal,
-          });
-          const payload = await response.json().catch(() => null) as { error?: string } | null;
-          if (response.ok && !payload?.error) {
-            return true;
-          }
-        } catch (error) {
-          if (attempt === 2) {
-            console.warn('[Iris] failed to refresh tree root:', npub, treename, formatWebviewError(error));
-          }
-        } finally {
-          clearTimeout(timeout);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), BUILT_IN_TREE_ROOT_REFRESH_TIMEOUT_MS);
+      try {
+        const response = await fetch(refreshUrl, {
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        const payload = await response.json().catch(() => null) as ResolvedTreeRoot & { error?: string } | null;
+        if (response.ok && !payload?.error) {
+          return payload;
         }
-
-        if (attempt < 2) {
-          await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
-        }
+      } catch (error) {
+        console.warn('[Iris] failed to refresh tree root:', npub, treename, formatWebviewError(error));
+      } finally {
+        clearTimeout(timeout);
       }
     } catch (error) {
       console.warn('[Iris] failed to refresh tree root:', npub, treename, formatWebviewError(error));
     }
 
-    return false;
+    return null;
   }
 
   function isUnsupportedChildWebviewError(message: string): boolean {
@@ -357,9 +355,38 @@
 
   function syncToolbarMode() {
     const nextIsCompactToolbar = window.innerWidth < COMPACT_TOOLBAR_BREAKPOINT;
-    if (isCompactToolbar === nextIsCompactToolbar) return;
-    isCompactToolbar = nextIsCompactToolbar;
-    showMobileMenu = false;
+    if (isCompactToolbar !== nextIsCompactToolbar) {
+      isCompactToolbar = nextIsCompactToolbar;
+      showMobileMenu = false;
+    }
+    syncKeyboardInsetBottom();
+  }
+
+  function computeKeyboardInsetBottom(): number {
+    if (!isCompactToolbar || typeof window === 'undefined') {
+      return 0;
+    }
+
+    const viewport = window.visualViewport;
+    if (!viewport) {
+      return 0;
+    }
+
+    const overlap = window.innerHeight - (viewport.height + viewport.offsetTop);
+    if (overlap < VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX) {
+      return 0;
+    }
+
+    return Math.max(0, Math.round(overlap));
+  }
+
+  function syncKeyboardInsetBottom() {
+    const nextKeyboardInsetBottom = computeKeyboardInsetBottom();
+    if (keyboardInsetBottom === nextKeyboardInsetBottom) {
+      return;
+    }
+    keyboardInsetBottom = nextKeyboardInsetBottom;
+    scheduleWebviewBoundsUpdate();
   }
 
   function handleAddressBeforeInput(event: InputEvent) {
@@ -688,20 +715,18 @@
   }
 
   function browserViewportInsets() {
-    const dropdownHeight = showDropdown ? (dropdownEl?.offsetHeight ?? 0) : 0;
     const mobileMenuHeight = showMobileMenu ? (mobileMenuEl?.offsetHeight ?? 0) : 0;
     const safeAreaTop = safeAreaTopInsetEl?.offsetHeight ?? 0;
 
     if (isCompactToolbar) {
-      const overlayHeight = Math.max(dropdownHeight, mobileMenuHeight);
       return {
         top: safeAreaTop,
-        bottom: toolbarHeight + (overlayHeight > 0 ? overlayHeight + 8 : 0),
+        bottom: toolbarHeight + keyboardInsetBottom + (mobileMenuHeight > 0 ? mobileMenuHeight + 8 : 0),
       };
     }
 
     return {
-      top: toolbarHeight + (dropdownHeight > 0 ? dropdownHeight + 8 : 0),
+      top: toolbarHeight,
       bottom: 0,
     };
   }
@@ -742,12 +767,13 @@
     const y = top;
     const width = window.innerWidth;
     const height = Math.max(0, window.innerHeight - top - bottom);
+    let builtInTreeRoot: ResolvedTreeRoot | null = null;
 
     if (htree?.npub && htree.treename && isBuiltInIrisApp(htree.npub, htree.treename)) {
       // Built-in apps are released independently of the shell. Refresh the
       // mutable root before navigation, but keep the previous cached root if
       // relays are flaky so the app can still load.
-      await refreshTreeRoot(htree.npub, htree.treename);
+      builtInTreeRoot = await refreshTreeRoot(htree.npub, htree.treename);
     }
 
     if (!g.__irisChildReady) {
@@ -755,7 +781,10 @@
         if (htree) {
           await createHtreeWebview(
             CHILD_LABEL,
-            htree,
+            {
+              ...htree,
+              cacheBust: builtInTreeRoot?.cid ?? builtInTreeRoot?.hash ?? undefined,
+            },
             x,
             y,
             width,
@@ -1209,6 +1238,7 @@
   });
 
   onMount(async () => {
+    const visualViewport = window.visualViewport;
     const unlistenLocation = await onChildWebviewLocation(handleLocationChange);
     const unlistenPageLoad = await onChildWebviewPageLoad(handlePageLoadEvent);
     const unlistenDiagnostic = await onChildWebviewDiagnostic(handleDiagnosticEvent);
@@ -1226,16 +1256,21 @@
       console.warn('[Iris] deep-link initialization failed:', error);
     }
     syncToolbarMode();
+    syncKeyboardInsetBottom();
     scheduleAutomationStateSync();
     window.addEventListener('keydown', handleGlobalKeyDown);
     window.addEventListener('pointerdown', handleGlobalPointerDown);
     window.addEventListener('resize', syncToolbarMode);
     window.addEventListener('resize', scheduleWebviewBoundsUpdate);
+    visualViewport?.addEventListener('resize', syncKeyboardInsetBottom);
+    visualViewport?.addEventListener('scroll', syncKeyboardInsetBottom);
     return () => {
       window.removeEventListener('keydown', handleGlobalKeyDown);
       window.removeEventListener('pointerdown', handleGlobalPointerDown);
       window.removeEventListener('resize', syncToolbarMode);
       window.removeEventListener('resize', scheduleWebviewBoundsUpdate);
+      visualViewport?.removeEventListener('resize', syncKeyboardInsetBottom);
+      visualViewport?.removeEventListener('scroll', syncKeyboardInsetBottom);
       if (automationSyncRaf !== null) cancelAnimationFrame(automationSyncRaf);
       unlistenLocation();
       unlistenPageLoad();
@@ -1259,7 +1294,7 @@
       data-testid="toolbar"
       data-tauri-drag-region
       class="order-2 relative shrink-0 border-t border-surface-2 bg-surface-1 px-3 pt-2"
-      style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);"
+      style={`padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 12px + ${keyboardInsetBottom}px);`}
     >
       {#if showMobileMenu && !isAddressFocused}
         <div
@@ -1358,23 +1393,24 @@
               </button>
             {/if}
             <span data-tauri-drag-region="false" class="i-lucide-search text-sm text-muted shrink-0"></span>
-            <div class="relative min-w-0 flex-1">
+            <div data-tauri-drag-region="false" class="relative min-w-0 flex-1">
               {#if blurredOwnerSummary}
-                <div class="absolute inset-0 flex min-w-0 items-center gap-1.5 pr-2">
-                  <div class="shrink-0">
+                <div class="absolute inset-0 overflow-hidden">
+                  <div class="flex h-full min-w-0 max-w-full items-center gap-1.5 pr-2">
                     <AddressOwnerPill
                       host={blurredOwnerSummary.host}
                       openProfile={() => void openAddressOwnerProfile(blurredOwnerSummary.host)}
-                      maxWidthClass="max-w-24"
+                      maxWidthClass="max-w-full"
+                      allowShrink={true}
                       size="xs"
                       testId="address-owner-pill"
                     />
+                    {#if blurredOwnerSummary.treeName}
+                      <span data-testid="address-path" class="shrink-0 text-xs text-text-2">
+                        {blurredOwnerSummary.treeName}
+                      </span>
+                    {/if}
                   </div>
-                  {#if blurredOwnerSummary.treeName}
-                    <span data-testid="address-path" class="min-w-0 truncate text-xs text-text-2">
-                      {blurredOwnerSummary.treeName}
-                    </span>
-                  {/if}
                 </div>
               {/if}
               <input
@@ -1531,23 +1567,24 @@
             </button>
           {/if}
           <span data-tauri-drag-region="false" class="i-lucide-search text-sm text-muted shrink-0"></span>
-          <div class="relative min-w-0 flex-1">
+          <div data-tauri-drag-region="false" class="relative min-w-0 flex-1">
             {#if blurredOwnerSummary}
-              <div class="absolute inset-0 flex min-w-0 items-center gap-1.5 pr-2">
-                <div class="shrink-0">
+              <div class="absolute inset-0 overflow-hidden">
+                <div class="flex h-full min-w-0 max-w-full items-center gap-1.5 pr-2">
                   <AddressOwnerPill
                     host={blurredOwnerSummary.host}
                     openProfile={() => void openAddressOwnerProfile(blurredOwnerSummary.host)}
-                    maxWidthClass="max-w-24"
+                    maxWidthClass="max-w-full"
+                    allowShrink={true}
                     size="xs"
                     testId="address-owner-pill"
                   />
+                  {#if blurredOwnerSummary.treeName}
+                    <span data-testid="address-path" class="shrink-0 text-xs text-text-2">
+                      {blurredOwnerSummary.treeName}
+                    </span>
+                  {/if}
                 </div>
-                {#if blurredOwnerSummary.treeName}
-                  <span data-testid="address-path" class="min-w-0 truncate text-xs text-text-2">
-                    {blurredOwnerSummary.treeName}
-                  </span>
-                {/if}
               </div>
             {/if}
             <input

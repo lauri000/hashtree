@@ -23,7 +23,21 @@ use tauri_plugin_iris_mobile_bluetooth::{
 #[cfg(target_os = "android")]
 use tokio::sync::{mpsc, Mutex};
 #[cfg(target_os = "android")]
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
+
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+struct BluetoothHelloEnvelope {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+#[cfg(target_os = "android")]
+fn is_bluetooth_hello_text(text: &str) -> bool {
+    serde_json::from_str::<BluetoothHelloEnvelope>(text)
+        .map(|payload| payload.kind == "hello")
+        .unwrap_or(false)
+}
 
 #[cfg(target_os = "android")]
 struct LinkEntry<R: Runtime> {
@@ -144,7 +158,9 @@ where
             local_peer_id
         );
         if matches_prestarted_peer_id(&local_peer_id) {
-            info!("Android Bluetooth bridge already prestarted");
+            info!(
+                "Android Bluetooth bridge already prestarted; attaching to existing plugin instance"
+            );
         } else {
             self.state
                 .bluetooth
@@ -154,15 +170,25 @@ where
             info!("Android Bluetooth bridge start command accepted");
         }
 
-        for peer in self
+        let peers = self
             .state
             .bluetooth
             .list_peers()
-            .map_err(anyhow::Error::msg)?
-        {
-            if peer.ready {
-                emit_pending_link(self.state.clone(), &pending_tx, peer.address).await;
-            }
+            .map_err(anyhow::Error::msg)?;
+        let ready_peers = peers
+            .into_iter()
+            .filter(|peer| peer.ready)
+            .collect::<Vec<_>>();
+        info!(
+            "Android Bluetooth bridge seeded {} ready peer(s) from listPeers()",
+            ready_peers.len()
+        );
+        for peer in ready_peers {
+            // On cold start the Android BLE plugin may already have a subscribed
+            // device before the Rust bridge subscribes. Only seed peers that are
+            // already ready for notifications; connected-but-not-ready devices
+            // can otherwise consume the one pending-link attempt too early.
+            emit_pending_link(self.state.clone(), &pending_tx, peer.address).await;
         }
 
         Ok(pending_rx)
@@ -177,26 +203,31 @@ async fn handle_mobile_event<R: Runtime>(
 ) -> anyhow::Result<()> {
     match event {
         MobileBluetoothEvent::PeerConnected { address } => {
-            emit_pending_link(state.clone(), pending_tx, address.clone()).await;
-            debug!("Android BLE peer connected: {}", address);
+            state.ensure_link(&address).await;
+            info!("Android BLE peer connected: {}", address);
         }
         MobileBluetoothEvent::PeerReady { address } => {
+            info!("Android BLE peer ready: {}", address);
             emit_pending_link(state.clone(), pending_tx, address).await;
         }
         MobileBluetoothEvent::PeerDisconnected { address } => {
             if let Some(link) = state.remove_link(&address).await {
                 let _ = link.close().await;
             }
-            debug!("Android BLE peer disconnected: {}", address);
+            info!("Android BLE peer disconnected: {}", address);
         }
         MobileBluetoothEvent::Frame {
             address,
             kind,
             payload,
         } => {
+            let mut promote_on_frame = false;
             let frame = match kind.as_str() {
                 "text" => match String::from_utf8(payload) {
-                    Ok(text) => BluetoothFrame::Text(text),
+                    Ok(text) => {
+                        promote_on_frame = is_bluetooth_hello_text(&text);
+                        BluetoothFrame::Text(text)
+                    }
                     Err(error) => {
                         warn!(
                             "Discarding invalid UTF-8 BLE text frame from {}: {}",
@@ -215,6 +246,10 @@ async fn handle_mobile_event<R: Runtime>(
                 }
             };
             state.ensure_link(&address).await.enqueue(frame).await;
+            if promote_on_frame {
+                info!("Android BLE hello frame received from {}", address);
+                emit_pending_link(state.clone(), pending_tx, address).await;
+            }
         }
     }
     Ok(())

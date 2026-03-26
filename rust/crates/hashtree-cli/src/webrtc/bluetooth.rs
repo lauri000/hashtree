@@ -167,6 +167,15 @@ impl BluetoothPeerRegistrar {
         }
 
         let mut peers = self.state.peers.write().await;
+        let duplicate_keys = peers
+            .iter()
+            .filter(|(key, entry)| {
+                key.as_str() != peer_key
+                    && entry.transport == PeerTransport::Bluetooth
+                    && entry.peer_id.pubkey == peer_id.pubkey
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
         let was_connected = peers
             .get(&peer_key)
             .map(|entry| entry.state == ConnectionState::Connected)
@@ -186,16 +195,37 @@ impl BluetoothPeerRegistrar {
                 bytes_received: 0,
             },
         );
+        let removed_duplicates = duplicate_keys
+            .into_iter()
+            .filter_map(|key| peers.remove(&key))
+            .collect::<Vec<_>>();
         drop(peers);
 
         if let Some(previous) = replaced.and_then(|entry| entry.peer) {
             let _ = previous.close().await;
         }
+        for duplicate in &removed_duplicates {
+            if let Some(peer) = duplicate.peer.as_ref() {
+                let _ = peer.close().await;
+            }
+        }
 
-        if !was_connected {
-            self.state
-                .connected_count
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let removed_connected_duplicates = removed_duplicates
+            .iter()
+            .filter(|entry| entry.state == ConnectionState::Connected)
+            .count() as isize;
+        let connected_delta =
+            1isize - if was_connected { 1 } else { 0 } - removed_connected_duplicates;
+        if connected_delta > 0 {
+            self.state.connected_count.fetch_add(
+                connected_delta as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        } else if connected_delta < 0 {
+            self.state.connected_count.fetch_sub(
+                (-connected_delta) as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
         true
     }
@@ -283,6 +313,45 @@ mod tests {
         );
 
         assert!(first_ref.is_closed());
+    }
+
+    #[tokio::test]
+    async fn register_connected_peer_replaces_existing_bluetooth_session_for_same_pubkey() {
+        let state = Arc::new(WebRTCState::new());
+        let registrar = BluetoothPeerRegistrar::new(
+            state.clone(),
+            Arc::new(|_| PeerPool::Other),
+            PoolSettings::default(),
+            2,
+        );
+
+        let first_peer_id = PeerId::new("peer-pub".to_string(), Some("session-a".to_string()));
+        let second_peer_id = PeerId::new("peer-pub".to_string(), Some("session-b".to_string()));
+        let first = MeshPeer::mock_for_tests(TestMeshPeer::with_response(None));
+        let second = MeshPeer::mock_for_tests(TestMeshPeer::with_response(None));
+        let first_ref = first.mock_ref().expect("mock peer").clone();
+
+        assert!(
+            registrar
+                .register_connected_peer(first_peer_id.clone(), PeerDirection::Outbound, first)
+                .await
+        );
+        assert!(
+            registrar
+                .register_connected_peer(second_peer_id.clone(), PeerDirection::Outbound, second)
+                .await
+        );
+
+        assert!(first_ref.is_closed());
+        let peers = state.peers.read().await;
+        assert!(!peers.contains_key(&first_peer_id.to_string()));
+        assert!(peers.contains_key(&second_peer_id.to_string()));
+        assert_eq!(
+            state
+                .connected_count
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 
     #[tokio::test]

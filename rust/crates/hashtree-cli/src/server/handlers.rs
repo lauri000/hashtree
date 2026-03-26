@@ -285,6 +285,16 @@ async fn resolve_root_offline(
         });
     }
 
+    resolve_root_without_cache(state, pubkey, treename, link_key).await
+}
+
+async fn resolve_root_without_cache(
+    state: &AppState,
+    pubkey: &str,
+    treename: &str,
+    link_key: Option<[u8; 32]>,
+) -> Option<ResolvedRoot> {
+    let cache_key = tree_root_cache_key(pubkey, treename, link_key);
     if let Some(root) = resolve_root_from_local_relay(state, pubkey, treename).await {
         if let Some(mut cid) = peer_root_to_cid(&root) {
             if cid.key.is_none() {
@@ -2801,6 +2811,24 @@ pub async fn resolve_to_hash(
         }
     }
 
+    if let Some(resolved) = resolve_root_without_cache(&state, &pubkey, &treename, None).await {
+        let mut payload = json!({
+            "key": key,
+            "hash": to_hex(&resolved.cid.hash),
+            "cid": resolved.cid.to_string(),
+            "source": resolved.source,
+        });
+        if let Some(root) = resolved.root_event {
+            payload["peer"] = json!(root.peer_id);
+            payload["event_id"] = json!(root.event_id);
+            payload["created_at"] = json!(root.created_at);
+            payload["key_tag"] = json!(root.key);
+            payload["encryptedKey"] = json!(root.encrypted_key);
+            payload["selfEncryptedKey"] = json!(root.self_encrypted_key);
+        }
+        return Json(payload);
+    }
+
     let resolver = match NostrRootResolver::new(resolver_config(&state)).await {
         Ok(r) => r,
         Err(e) => {
@@ -4170,6 +4198,61 @@ mod tests {
         let refresh_json: serde_json::Value = serde_json::from_slice(&refresh_body).unwrap();
         assert!(refresh_json.get("error").is_some());
         assert_eq!(refresh_json["key"], "npub1example/video");
+    }
+
+    #[tokio::test]
+    async fn resolve_to_hash_refresh_uses_local_relay_before_relays() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());
+        let keys = Keys::generate();
+        let relay = test_nostr_relay(&temp_dir, keys.public_key().to_hex()).await;
+        let tree_name = "video";
+        let cached_hash = "11".repeat(32);
+        let refreshed_hash = "22".repeat(32);
+
+        let event = EventBuilder::new(
+            Kind::Custom(30078),
+            "",
+            [
+                Tag::identifier(tree_name.to_string()),
+                Tag::custom(
+                    TagKind::SingleLetter(SingleLetterTag::lowercase(Alphabet::L)),
+                    vec!["hashtree".to_string()],
+                ),
+                Tag::custom(TagKind::Custom("hash".into()), vec![refreshed_hash.clone()]),
+            ],
+        )
+        .to_event(&keys)
+        .unwrap();
+        relay.ingest_trusted_event(event.clone()).await.unwrap();
+
+        let state = AppState {
+            nostr_relay: Some(relay),
+            ..test_app_state(store, Vec::new())
+        };
+        put_cached_tree_root(
+            &state,
+            tree_root_cache_key(&keys.public_key().to_bech32().unwrap(), tree_name, None),
+            Cid::parse(&cached_hash).expect("valid cached cid"),
+            "cache",
+            None,
+        );
+
+        let refresh = resolve_to_hash(
+            State(state),
+            Path((
+                keys.public_key().to_bech32().unwrap(),
+                tree_name.to_string(),
+            )),
+            Query(HashMap::from([("refresh".to_string(), "1".to_string())])),
+        )
+        .await
+        .into_response();
+        let refresh_body = to_bytes(refresh.into_body(), usize::MAX).await.unwrap();
+        let refresh_json: serde_json::Value = serde_json::from_slice(&refresh_body).unwrap();
+        assert_eq!(refresh_json["hash"], refreshed_hash);
+        assert_eq!(refresh_json["source"], "local-relay");
+        assert_eq!(refresh_json["event_id"], event.id.to_hex());
     }
 
     #[tokio::test]
