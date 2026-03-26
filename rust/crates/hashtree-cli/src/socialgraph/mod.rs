@@ -19,7 +19,7 @@ use bytes::Bytes;
 use futures::executor::block_on;
 use hashtree_core::Cid;
 use hashtree_nostr::{ListEventsOptions, NostrEventStore, NostrEventStoreError, StoredNostrEvent};
-use nostr::{Event, Filter, JsonUtil, Kind};
+use nostr::{Event, Filter, JsonUtil, Kind, SingleLetterTag};
 use nostr_social_graph::{
     BinaryBudget, GraphStats, NostrEvent as GraphEvent, SocialGraph,
     SocialGraphBackend as NostrSocialGraphBackend,
@@ -488,25 +488,13 @@ impl SocialGraphStore {
                     break;
                 }
             }
-        } else if let Some(authors) = filter.authors.as_ref() {
-            for author in authors {
-                let mut author_matches = 0usize;
-                for event in self.load_events_for_author(root, author, filter)? {
-                    let id_bytes = event.id.to_bytes();
-                    if !seen.insert(id_bytes) {
-                        continue;
-                    }
-                    if filter.match_event(&event) {
-                        candidates.push(event);
-                        author_matches += 1;
-                    }
-                    if author_matches >= limit {
-                        break;
-                    }
-                }
-            }
         } else {
-            for event in self.load_recent_events(root)? {
+            let base_events = match self.best_indexed_candidates(root, filter, limit)? {
+                Some(events) => events,
+                None => self.load_recent_events(root)?,
+            };
+
+            for event in base_events {
                 let id_bytes = event.id.to_bytes();
                 if !seen.insert(id_bytes) {
                     continue;
@@ -609,6 +597,137 @@ impl SocialGraphStore {
             .map(nostr_event_from_stored)
             .collect::<Result<Vec<_>>>()
     }
+
+    fn best_indexed_candidates(
+        &self,
+        root: &Cid,
+        filter: &Filter,
+        limit: usize,
+    ) -> Result<Option<Vec<Event>>> {
+        let mut sources: Vec<Vec<Event>> = Vec::new();
+
+        if let Some(events) = self.load_direct_replaceable_candidates(root, filter)? {
+            sources.push(events);
+        }
+
+        if let Some(authors) = filter.authors.as_ref() {
+            let mut events = Vec::new();
+            for author in authors {
+                events.extend(self.load_events_for_author(root, author, filter)?);
+            }
+            sources.push(dedupe_events(events));
+        }
+
+        for (tag, values) in &filter.generic_tags {
+            let mut events = Vec::new();
+            let tag_name = tag.as_char().to_ascii_lowercase().to_string();
+            for value in values {
+                let stored = block_on(self.event_store.list_by_tag(
+                    Some(root),
+                    &tag_name,
+                    value,
+                    ListEventsOptions {
+                        limit: Some(limit.max(1)),
+                    },
+                ))
+                .map_err(map_event_store_error)?;
+                events.extend(
+                    stored
+                        .into_iter()
+                        .map(nostr_event_from_stored)
+                        .collect::<Result<Vec<_>>>()?,
+                );
+            }
+            sources.push(dedupe_events(events));
+        }
+
+        if sources.is_empty() {
+            return Ok(None);
+        }
+
+        if sources.iter().any(|events| events.is_empty()) {
+            return Ok(Some(Vec::new()));
+        }
+
+        Ok(sources.into_iter().min_by_key(|events| events.len()))
+    }
+
+    fn load_direct_replaceable_candidates(
+        &self,
+        root: &Cid,
+        filter: &Filter,
+    ) -> Result<Option<Vec<Event>>> {
+        let Some(authors) = filter.authors.as_ref() else {
+            return Ok(None);
+        };
+        let Some(kinds) = filter.kinds.as_ref() else {
+            return Ok(None);
+        };
+        if kinds.len() != 1 {
+            return Ok(None);
+        }
+
+        let kind = kinds.iter().next().expect("checked single kind").as_u16() as u32;
+
+        if (30_000..40_000).contains(&kind) {
+            let d_tag = SingleLetterTag::lowercase(nostr::Alphabet::D);
+            let Some(d_values) = filter.generic_tags.get(&d_tag) else {
+                return Ok(None);
+            };
+            let mut events = Vec::new();
+            for author in authors {
+                let author_hex = author.to_hex();
+                for d_value in d_values {
+                    if let Some(stored) = block_on(self.event_store.get_parameterized_replaceable(
+                        Some(root),
+                        &author_hex,
+                        kind,
+                        d_value,
+                    ))
+                    .map_err(map_event_store_error)?
+                    {
+                        events.push(nostr_event_from_stored(stored)?);
+                    }
+                }
+            }
+            return Ok(Some(dedupe_events(events)));
+        }
+
+        if kind == 0 || kind == 3 || (10_000..20_000).contains(&kind) {
+            let mut events = Vec::new();
+            for author in authors {
+                if let Some(stored) = block_on(self.event_store.get_replaceable(
+                    Some(root),
+                    &author.to_hex(),
+                    kind,
+                ))
+                .map_err(map_event_store_error)?
+                {
+                    events.push(nostr_event_from_stored(stored)?);
+                }
+            }
+            return Ok(Some(dedupe_events(events)));
+        }
+
+        Ok(None)
+    }
+}
+
+fn dedupe_events(events: Vec<Event>) -> Vec<Event> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    for event in events {
+        if seen.insert(event.id.to_bytes()) {
+            deduped.push(event);
+        }
+    }
+    deduped.sort_by(|a, b| {
+        b.created_at
+            .as_u64()
+            .cmp(&a.created_at.as_u64())
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    deduped
 }
 
 impl SocialGraphBackend for SocialGraphStore {
@@ -1086,6 +1205,107 @@ mod tests {
         assert_eq!(recent_events.len(), 2);
         assert_eq!(recent_events[0].content, "latest");
         assert_eq!(recent_events[1].content, "newer");
+    }
+
+    #[test]
+    fn test_query_events_parameterized_replaceable_by_d_tag() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let keys = Keys::generate();
+
+        let older = EventBuilder::new(
+            Kind::Custom(30078),
+            "",
+            vec![
+                Tag::identifier("video"),
+                Tag::parse(&["l", "hashtree"]).unwrap(),
+                Tag::parse(&["hash", &"11".repeat(32)]).unwrap(),
+            ],
+        )
+        .custom_created_at(Timestamp::from_secs(5))
+        .to_event(&keys)
+        .unwrap();
+        let newer = EventBuilder::new(
+            Kind::Custom(30078),
+            "",
+            vec![
+                Tag::identifier("video"),
+                Tag::parse(&["l", "hashtree"]).unwrap(),
+                Tag::parse(&["hash", &"22".repeat(32)]).unwrap(),
+            ],
+        )
+        .custom_created_at(Timestamp::from_secs(6))
+        .to_event(&keys)
+        .unwrap();
+        let other_tree = EventBuilder::new(
+            Kind::Custom(30078),
+            "",
+            vec![
+                Tag::identifier("files"),
+                Tag::parse(&["l", "hashtree"]).unwrap(),
+                Tag::parse(&["hash", &"33".repeat(32)]).unwrap(),
+            ],
+        )
+        .custom_created_at(Timestamp::from_secs(7))
+        .to_event(&keys)
+        .unwrap();
+
+        ingest_parsed_event(&graph_store, &older).unwrap();
+        ingest_parsed_event(&graph_store, &newer).unwrap();
+        ingest_parsed_event(&graph_store, &other_tree).unwrap();
+
+        let filter = Filter::new()
+            .author(keys.public_key())
+            .kind(Kind::Custom(30078))
+            .identifier("video");
+        let events = query_events(&graph_store, &filter, 10);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, newer.id);
+    }
+
+    #[test]
+    fn test_query_events_by_hashtag_uses_tag_index() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let keys = Keys::generate();
+        let other_keys = Keys::generate();
+
+        let first = EventBuilder::new(
+            Kind::TextNote,
+            "first",
+            vec![Tag::parse(&["t", "hashtree"]).unwrap()],
+        )
+        .custom_created_at(Timestamp::from_secs(5))
+        .to_event(&keys)
+        .unwrap();
+        let second = EventBuilder::new(
+            Kind::TextNote,
+            "second",
+            vec![Tag::parse(&["t", "hashtree"]).unwrap()],
+        )
+        .custom_created_at(Timestamp::from_secs(6))
+        .to_event(&other_keys)
+        .unwrap();
+        let unrelated = EventBuilder::new(
+            Kind::TextNote,
+            "third",
+            vec![Tag::parse(&["t", "other"]).unwrap()],
+        )
+        .custom_created_at(Timestamp::from_secs(7))
+        .to_event(&other_keys)
+        .unwrap();
+
+        ingest_parsed_event(&graph_store, &first).unwrap();
+        ingest_parsed_event(&graph_store, &second).unwrap();
+        ingest_parsed_event(&graph_store, &unrelated).unwrap();
+
+        let filter = Filter::new().hashtag("hashtree");
+        let events = query_events(&graph_store, &filter, 10);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].id, second.id);
+        assert_eq!(events[1].id, first.id);
     }
 
     #[test]

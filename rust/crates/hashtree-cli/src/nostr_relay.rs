@@ -44,6 +44,38 @@ mod imp {
     use crate::socialgraph::{SocialGraphAccessControl, SocialGraphBackend};
     use tracing::warn;
 
+    fn prefers_trusted_only(filter: &NostrFilter) -> bool {
+        let Some(kinds) = filter.kinds.as_ref() else {
+            return false;
+        };
+        if kinds.len() != 1 {
+            return false;
+        }
+
+        let kind = kinds.iter().next().expect("checked single kind").as_u16() as u32;
+        let has_authors = filter
+            .authors
+            .as_ref()
+            .is_some_and(|authors| !authors.is_empty());
+        if !has_authors {
+            return false;
+        }
+
+        if kind == 0 || kind == 3 || (10_000..20_000).contains(&kind) {
+            return true;
+        }
+
+        if (30_000..40_000).contains(&kind) {
+            let d_tag = nostr::SingleLetterTag::lowercase(nostr::Alphabet::D);
+            return filter
+                .generic_tags
+                .get(&d_tag)
+                .is_some_and(|values| !values.is_empty());
+        }
+
+        false
+    }
+
     struct NostrStore {
         store: Arc<dyn SocialGraphBackend>,
     }
@@ -272,15 +304,17 @@ mod imp {
             let mut seen: HashSet<EventId> = HashSet::new();
             let mut events = Vec::new();
 
-            let recent = {
-                let cache = self.recent_events.lock().await;
-                cache.matching(filter)
-            };
-            for event in recent {
-                if seen.insert(event.id) {
-                    events.push(event);
-                    if events.len() >= limit {
-                        return events;
+            if !prefers_trusted_only(filter) {
+                let recent = {
+                    let cache = self.recent_events.lock().await;
+                    cache.matching(filter)
+                };
+                for event in recent {
+                    if seen.insert(event.id) {
+                        events.push(event);
+                        if events.len() >= limit {
+                            return events;
+                        }
                     }
                 }
             }
@@ -473,17 +507,19 @@ mod imp {
                     continue;
                 }
 
-                let recent = {
-                    let cache = self.recent_events.lock().await;
-                    cache.matching(filter)
-                };
-                for event in recent {
-                    if seen.insert(event.id) {
-                        self.send_to_client(
-                            client_id,
-                            NostrRelayMessage::event(subscription_id.clone(), event),
-                        )
-                        .await;
+                if !prefers_trusted_only(filter) {
+                    let recent = {
+                        let cache = self.recent_events.lock().await;
+                        cache.matching(filter)
+                    };
+                    for event in recent {
+                        if seen.insert(event.id) {
+                            self.send_to_client(
+                                client_id,
+                                NostrRelayMessage::event(subscription_id.clone(), event),
+                            )
+                            .await;
+                        }
                     }
                 }
 
@@ -526,12 +562,14 @@ mod imp {
                 if limit == 0 {
                     continue;
                 }
-                let recent = {
-                    let cache = self.recent_events.lock().await;
-                    cache.matching(filter)
-                };
-                for event in recent {
-                    seen.insert(event.id);
+                if !prefers_trusted_only(filter) {
+                    let recent = {
+                        let cache = self.recent_events.lock().await;
+                        cache.matching(filter)
+                    };
+                    for event in recent {
+                        seen.insert(event.id);
+                    }
                 }
                 for event in self.trusted.query(filter, limit) {
                     seen.insert(event.id);
@@ -776,6 +814,100 @@ mod tests {
         match recv_relay_message(&mut rx).await? {
             RelayMessage::EndOfStoredEvents(id) => assert_eq!(id, sub_id),
             other => anyhow::bail!("expected EOSE only, got {:?}", other),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn relay_serves_parameterized_replaceable_queries() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let keys = Keys::generate();
+        let mut allowed = HashSet::new();
+        allowed.insert(keys.public_key().to_hex());
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            allowed,
+        ));
+
+        let relay = NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        relay.register_client(3, tx, None).await;
+
+        let older = EventBuilder::new(
+            Kind::Custom(30078),
+            "",
+            vec![
+                nostr::Tag::identifier("video"),
+                nostr::Tag::parse(&["l", "hashtree"])?,
+                nostr::Tag::parse(&["hash", &"11".repeat(32)])?,
+            ],
+        )
+        .custom_created_at(nostr::Timestamp::from_secs(5))
+        .to_event(&keys)?;
+        let newer = EventBuilder::new(
+            Kind::Custom(30078),
+            "",
+            vec![
+                nostr::Tag::identifier("video"),
+                nostr::Tag::parse(&["l", "hashtree"])?,
+                nostr::Tag::parse(&["hash", &"22".repeat(32)])?,
+            ],
+        )
+        .custom_created_at(nostr::Timestamp::from_secs(6))
+        .to_event(&keys)?;
+
+        relay
+            .handle_client_message(3, NostrClientMessage::event(older.clone()))
+            .await;
+        let _ = recv_relay_message(&mut rx).await?;
+        relay
+            .handle_client_message(3, NostrClientMessage::event(newer.clone()))
+            .await;
+        let _ = recv_relay_message(&mut rx).await?;
+
+        let sub_id = SubscriptionId::new("sub-d");
+        let filter = Filter::new()
+            .author(keys.public_key())
+            .kind(Kind::Custom(30078))
+            .identifier("video");
+        relay
+            .handle_client_message(3, NostrClientMessage::req(sub_id.clone(), vec![filter]))
+            .await;
+
+        match recv_relay_message(&mut rx).await? {
+            RelayMessage::Event {
+                subscription_id,
+                event,
+            } => {
+                assert_eq!(subscription_id, sub_id);
+                assert_eq!(event.id, newer.id);
+            }
+            other => anyhow::bail!("expected EVENT, got {:?}", other),
+        }
+
+        match recv_relay_message(&mut rx).await? {
+            RelayMessage::EndOfStoredEvents(id) => assert_eq!(id, sub_id),
+            other => anyhow::bail!("expected EOSE, got {:?}", other),
         }
 
         Ok(())
