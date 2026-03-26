@@ -40,4 +40,4 @@
   });
 </script>
 
-<svelte:component this={matchedRoute.component} {...matchedRoute.params} />
+<matchedRoute.component {...matchedRoute.params} />
