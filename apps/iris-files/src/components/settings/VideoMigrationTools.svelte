@@ -1,0 +1,296 @@
+<script lang="ts">
+  import { toHex } from '@hashtree/core';
+  import { loginWithExtension, nostrStore } from '../../nostr';
+  import {
+    publishVideoMigration,
+    scanVideoMigrations,
+    type VideoMigrationCandidate,
+    type VideoMigrationScanProgress,
+  } from '../../lib/videoMigration';
+
+  let open = $state(false);
+  let scanning = $state(false);
+  let batchPublishing = $state(false);
+  let activeTreeName = $state<string | null>(null);
+  let progress = $state<VideoMigrationScanProgress | null>(null);
+  let scanError = $state<string | null>(null);
+  let actionError = $state<string | null>(null);
+  let items = $state<VideoMigrationCandidate[]>([]);
+
+  let currentNpub = $derived($nostrStore.npub);
+  let isLoggedIn = $derived($nostrStore.isLoggedIn);
+
+  let readyItems = $derived(items.filter((item) => item.status === 'ready' && !item.publishBlockedReason));
+  let cleanCount = $derived(items.filter((item) => item.status === 'clean').length);
+  let blockedCount = $derived(items.filter((item) => item.status === 'unfixable').length);
+  let errorCount = $derived(items.filter((item) => item.status === 'error').length);
+
+  const issueLabels: Record<string, string> = {
+    'legacy-metadata': 'legacy metadata',
+    'missing-title': 'missing title',
+    'missing-description': 'missing description',
+    'missing-duration': 'missing duration',
+    'missing-thumbnail': 'missing thumbnail',
+    'playlist-metadata': 'playlist metadata',
+    'historical-root': 'historical root',
+    'historical-thumbnail': 'historical thumbnail',
+    'missing-playable-media': 'missing media',
+    'link-key-unavailable': 'missing link key',
+  };
+
+  function shortRoot(hashSource: { hash: Uint8Array } | null | undefined): string {
+    if (!hashSource?.hash) {
+      return 'unknown';
+    }
+    return toHex(hashSource.hash).slice(0, 12);
+  }
+
+  async function connectExtension() {
+    actionError = null;
+    const success = await loginWithExtension();
+    if (!success) {
+      actionError = 'NIP-7 login failed.';
+    }
+  }
+
+  async function runScan() {
+    if (!currentNpub) {
+      scanError = 'Log in with the account you want to repair before scanning.';
+      return;
+    }
+
+    scanning = true;
+    scanError = null;
+    actionError = null;
+    progress = { stage: 'list', current: 0, total: 0 };
+
+    try {
+      items = await scanVideoMigrations({
+        npub: currentNpub,
+        onProgress: (next) => {
+          progress = next;
+        },
+      });
+    } catch (error) {
+      scanError = error instanceof Error ? error.message : 'Failed to scan videos.';
+    } finally {
+      scanning = false;
+      progress = null;
+    }
+  }
+
+  function markPublished(treeName: string, nextRoot: { hash: Uint8Array }) {
+    items = items.map((item) => {
+      if (item.treeName !== treeName) {
+        return item;
+      }
+      return {
+        ...item,
+        currentRootCid: nextRoot,
+        publishBaseRootCid: nextRoot,
+        thumbnailSourceRootCid: nextRoot,
+        issueCodes: [],
+        unresolvedIssueCodes: [],
+        summary: ['Published migration. Re-scan to verify the current relay state.'],
+        plan: null,
+        currentRootWasReplaced: false,
+        publishBlockedReason: undefined,
+        status: 'clean',
+      } satisfies VideoMigrationCandidate;
+    });
+  }
+
+  async function publishOne(item: VideoMigrationCandidate) {
+    actionError = null;
+    activeTreeName = item.treeName;
+    try {
+      const result = await publishVideoMigration(item);
+      markPublished(item.treeName, result.cid);
+    } catch (error) {
+      actionError = error instanceof Error ? error.message : `Failed to publish ${item.displayName}.`;
+    } finally {
+      activeTreeName = null;
+    }
+  }
+
+  async function publishAll() {
+    batchPublishing = true;
+    actionError = null;
+    const failures: string[] = [];
+
+    for (const item of readyItems) {
+      activeTreeName = item.treeName;
+      try {
+        const result = await publishVideoMigration(item);
+        markPublished(item.treeName, result.cid);
+      } catch (error) {
+        failures.push(`${item.displayName}: ${error instanceof Error ? error.message : 'publish failed'}`);
+      }
+    }
+
+    activeTreeName = null;
+    batchPublishing = false;
+    if (failures.length > 0) {
+      actionError = failures.join(' | ');
+    }
+  }
+</script>
+
+<details bind:open={open} class="bg-surface-2 rounded p-3">
+  <summary class="cursor-pointer list-none flex items-center justify-between gap-3">
+    <span class="text-sm text-text-2">Advanced maintenance</span>
+    <span class="text-xs text-text-3">video root repair</span>
+  </summary>
+
+  <div class="mt-4 space-y-4">
+    <p class="text-sm text-text-2">
+      Scans the current account’s published <span class="font-mono">videos/*</span> trees,
+      repairs legacy metadata and recoverable thumbnails, and republishes fixed roots.
+    </p>
+
+    <div class="bg-surface-1 rounded p-3 text-sm">
+      {#if currentNpub}
+        <div class="flex flex-col gap-1">
+          <span class="text-text-3">Current account</span>
+          <span class="font-mono text-xs break-all text-text-1">{currentNpub}</span>
+        </div>
+      {:else}
+        <div class="text-text-2">No account connected.</div>
+      {/if}
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button onclick={runScan} class="btn-ghost" disabled={scanning || batchPublishing || !isLoggedIn}>
+          {#if scanning}
+            Scanning…
+          {:else}
+            Scan Published Videos
+          {/if}
+        </button>
+        <button onclick={connectExtension} class="btn-ghost" disabled={scanning || batchPublishing}>
+          Use NIP-7 Extension
+        </button>
+      </div>
+      <p class="mt-2 text-xs text-text-3">
+        Signing uses the currently connected account. Reconnect with the extension first if you want NIP-7 prompts.
+      </p>
+    </div>
+
+    {#if progress}
+      <div class="text-xs text-text-3">
+        {#if progress.stage === 'list'}
+          Loading current video trees…
+        {:else}
+          Inspecting {progress.current} / {progress.total}
+          {#if progress.treeName}
+            <span class="font-mono">({progress.treeName})</span>
+          {/if}
+        {/if}
+      </div>
+    {/if}
+
+    {#if scanError}
+      <div class="rounded bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        {scanError}
+      </div>
+    {/if}
+
+    {#if actionError}
+      <div class="rounded bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
+        {actionError}
+      </div>
+    {/if}
+
+    {#if items.length > 0}
+      <div class="flex flex-wrap items-center gap-3 text-xs text-text-3">
+        <span>{readyItems.length} ready</span>
+        <span>{cleanCount} clean</span>
+        <span>{blockedCount} blocked</span>
+        <span>{errorCount} errors</span>
+      </div>
+
+      {#if readyItems.length > 1}
+        <button onclick={publishAll} class="btn-ghost" disabled={batchPublishing || scanning}>
+          {#if batchPublishing}
+            Publishing fixes…
+          {:else}
+            Publish All Repairs
+          {/if}
+        </button>
+      {/if}
+
+      <div class="space-y-3">
+        {#each items as item (item.treeName)}
+          <div class="rounded bg-surface-1 p-3">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="text-sm font-medium text-text-1 break-words">{item.displayName}</div>
+                <div class="mt-1 flex flex-wrap gap-2 text-[11px] text-text-3">
+                  <span class="font-mono">{item.treeName}</span>
+                  <span>root {shortRoot(item.currentRootCid)}</span>
+                  {#if item.currentRootWasReplaced}
+                    <span>publish {shortRoot(item.publishBaseRootCid)}</span>
+                  {/if}
+                  {#if item.thumbnailSourceRootCid && shortRoot(item.thumbnailSourceRootCid) !== shortRoot(item.publishBaseRootCid)}
+                    <span>thumb {shortRoot(item.thumbnailSourceRootCid)}</span>
+                  {/if}
+                </div>
+              </div>
+
+              <div class="flex flex-wrap gap-2">
+                {#if item.status === 'ready'}
+                  <button
+                    onclick={() => publishOne(item)}
+                    class="btn-ghost"
+                    disabled={activeTreeName === item.treeName || batchPublishing || !!item.publishBlockedReason}
+                  >
+                    {#if activeTreeName === item.treeName}
+                      Publishing…
+                    {:else}
+                      Publish Fix
+                    {/if}
+                  </button>
+                {/if}
+                <a href={`#/${item.npub}/${encodeURIComponent(item.treeName)}`} class="btn-ghost no-underline">
+                  Open
+                </a>
+              </div>
+            </div>
+
+            {#if item.issueCodes.length > 0}
+              <div class="mt-3 flex flex-wrap gap-2">
+                {#each item.issueCodes as issue}
+                  <span class="rounded bg-surface-2 px-2 py-1 text-[11px] text-text-2">
+                    {issueLabels[issue] ?? issue}
+                  </span>
+                {/each}
+              </div>
+            {/if}
+
+            {#if item.summary.length > 0}
+              <div class="mt-3 space-y-1 text-sm text-text-2">
+                {#each item.summary as line}
+                  <div>{line}</div>
+                {/each}
+              </div>
+            {/if}
+
+            {#if item.publishBlockedReason}
+              <div class="mt-3 rounded bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+                {item.publishBlockedReason}
+              </div>
+            {/if}
+
+            {#if item.error}
+              <div class="mt-3 rounded bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                {item.error}
+              </div>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {:else if !scanning}
+      <div class="text-sm text-text-3">
+        Run a scan to see which published videos can be repaired.
+      </div>
+    {/if}
+  </div>
+</details>

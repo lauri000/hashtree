@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { getAppType } from '../../appType';
   import { shouldOpenSourceCodeLinkInNewTab } from '../../appType';
   import { getCanonicalGitRepositoryUrl } from '../../lib/shareUrls';
   import { getNsec } from '../../nostr';
+  import VideoMigrationTools from './VideoMigrationTools.svelte';
 
   const openSourceCodeInNewTab = shouldOpenSourceCodeLinkInNewTab();
   const sourceCodeLinkTarget = openSourceCodeInNewTab ? '_blank' : '_self';
@@ -11,6 +13,7 @@
   // Secret key
   let nsec = $derived(getNsec());
   let copiedNsec = $state(false);
+  const isVideoApp = getAppType() === 'video';
 
   async function copySecretKey() {
     const key = getNsec();
@@ -92,4 +95,13 @@
       </button>
     </div>
   </div>
+
+  {#if isVideoApp}
+    <div>
+      <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-3">
+        Maintenance
+      </h3>
+      <VideoMigrationTools />
+    </div>
+  {/if}
 </div>
