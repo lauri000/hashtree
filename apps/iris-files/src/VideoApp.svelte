@@ -63,7 +63,7 @@
 </script>
 
 <div class="h-full flex flex-col bg-surface-0">
-  <Header>
+  <Header sticky={true} scrollTint={true}>
     <div class="flex items-center shrink-0">
       <a href="#/" class="no-underline select-none" onclick={handleLogoClick}>
         <Logo app="video" />
