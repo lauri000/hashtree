@@ -155,6 +155,80 @@ test.describe('Git commit view', () => {
     await expect(page.locator('h1').filter({ hasText: /Initial commit|Added files/ })).toBeVisible({ timeout: 5000 });
   });
 
+  test('commit view can open the full file at that commit', { timeout: 90000 }, async ({ page }) => {
+    test.slow();
+    await navigateToPublicFolder(page);
+
+    await createRepositoryInCurrentDirectory(page, 'commit-file-view-test');
+
+    const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'commit-file-view-test' }).first();
+    await expect(folderLink).toBeVisible({ timeout: 15000 });
+    await folderLink.click();
+    await page.waitForURL(/commit-file-view-test/, { timeout: 10000 });
+
+    await page.evaluate(async () => {
+      const { getTree, LinkType } = await import('/src/store.ts');
+      const { autosaveIfOwn } = await import('/src/nostr.ts');
+      const { getCurrentRootCid } = await import('/src/actions/route.ts');
+      const { getRouteSync } = await import('/src/stores/index.ts');
+      const route = getRouteSync();
+
+      const tree = getTree();
+      let rootCid = getCurrentRootCid();
+      if (!rootCid) return;
+
+      const content = new TextEncoder().encode('# Commit File View Test\n\nThis file should open from a commit.');
+      const { cid, size } = await tree.putFile(content);
+      rootCid = await tree.setEntry(rootCid, route.path, 'README.md', cid, size, LinkType.Blob);
+      autosaveIfOwn(rootCid);
+    });
+
+    await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'README.md' })).toBeVisible({ timeout: 15000 });
+    await ensureGitRepoInitialized(page);
+
+    await page.evaluate(async () => {
+      const { getTree, LinkType } = await import('/src/store.ts');
+      const { autosaveIfOwn } = await import('/src/nostr.ts');
+      const { getCurrentRootCid } = await import('/src/actions/route.ts');
+      const { getRouteSync } = await import('/src/stores/index.ts');
+      const route = getRouteSync();
+
+      const tree = getTree();
+      let rootCid = getCurrentRootCid();
+      if (!rootCid) return;
+
+      const content = new TextEncoder().encode('# Commit File View Test\n\nThis file should open from a commit.\n\nUpdated line.');
+      const { cid, size } = await tree.putFile(content);
+      rootCid = await tree.setEntry(rootCid, route.path, 'README.md', cid, size, LinkType.Blob);
+      autosaveIfOwn(rootCid);
+    });
+
+    const uncommittedBtn = page.locator('button').filter({ hasText: /uncommitted/i });
+    await expect(uncommittedBtn).toBeVisible({ timeout: 30000 });
+    await uncommittedBtn.click();
+
+    const commitModal = page.locator('.fixed.inset-0').filter({ hasText: 'Commit Changes' });
+    await expect(commitModal).toBeVisible({ timeout: 5000 });
+    await commitModal.locator('textarea[placeholder*="Describe"]').fill('Update README for commit file view');
+    await commitModal.getByRole('button', { name: 'Commit' }).click();
+    await expect(commitModal).not.toBeVisible({ timeout: 30000 });
+
+    const currentUrl = page.url();
+    const commitViewUrl = currentUrl.includes('?')
+      ? currentUrl.replace(/\?.*/, '?commit=HEAD')
+      : currentUrl + '?commit=HEAD';
+
+    await page.goto(commitViewUrl);
+
+    const viewFileLink = page.locator('a').filter({ hasText: 'View file' }).first();
+    await expect(viewFileLink).toBeVisible({ timeout: 15000 });
+    await viewFileLink.click();
+
+    await page.waitForURL(/view=file/, { timeout: 10000 });
+    await expect(page.locator('[data-testid="commit-file-view"]')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('[data-testid="commit-file-view"]')).toContainText('Commit File View Test');
+  });
+
   test('tab navigation shows on commit view', { timeout: 90000 }, async ({ page }) => {
     test.slow();
     await navigateToPublicFolder(page);

@@ -5,7 +5,7 @@
 import type { CID } from '@hashtree/core';
 import { LinkType, toHex } from '@hashtree/core';
 import { decodeAsText, getTree } from '../store';
-import { buildUnifiedDiff } from './gitDiffText';
+import { buildUnifiedDiff, type UnifiedDiffRenderedFile } from './gitDiffText';
 import { LRUCache } from './lruCache';
 
 /**
@@ -281,6 +281,10 @@ export async function getCommitViewData(rootCid: CID, commitRef: string): Promis
   };
   diffText: string;
   stats: { additions: number; deletions: number; files: number };
+  files: Array<UnifiedDiffRenderedFile & {
+    canViewFile: boolean;
+    viewCommit: string | null;
+  }>;
 } | null> {
   const { getCommitInfo, getCommitDiffEntries, getFileAtCommit } = await import('./wasmGit');
 
@@ -309,7 +313,7 @@ export async function getCommitViewData(rootCid: CID, commitRef: string): Promis
     })
   );
 
-  const { text, stats } = buildUnifiedDiff(diffFiles);
+  const { text, stats, files } = buildUnifiedDiff(diffFiles);
 
   return {
     commit: {
@@ -322,6 +326,11 @@ export async function getCommitViewData(rootCid: CID, commitRef: string): Promis
     },
     diffText: text,
     stats,
+    files: files.map((file) => ({
+      ...file,
+      canViewFile: file.status !== 'deleted',
+      viewCommit: file.status === 'deleted' ? null : commit.oid,
+    })),
   };
 }
 

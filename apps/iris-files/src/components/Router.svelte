@@ -31,6 +31,7 @@
   import ReleasesView from './Git/ReleasesView.svelte';
   import ReleaseDetailView from './Git/ReleaseDetailView.svelte';
   import CommitView from './Git/CommitView.svelte';
+  import CommitFileView from './Git/CommitFileView.svelte';
   import BranchCompareView from './Git/BranchCompareView.svelte';
   import MergeView from './Git/MergeView.svelte';
 
@@ -68,10 +69,15 @@
   }
 
   // Check for ?commit=<hash> query param (commit view)
-  function parseCommitQuery(fullHash: string): string | null {
+  function parseCommitQuery(fullHash: string): { hash: string; view: 'commit' | 'file' } | null {
     if (!supportsGitFeatures()) return null;
     const params = getQueryParamsFromHash(fullHash);
-    return params.get('commit');
+    const hash = params.get('commit');
+    if (!hash) return null;
+    return {
+      hash,
+      view: params.get('view') === 'file' ? 'file' : 'commit',
+    };
   }
 
   // Check for ?compare=base...head query param (branch comparison view)
@@ -110,7 +116,7 @@
   let repoTabQuery = $derived(parseRepoTabQuery(fullHash));
 
   // Check for commit query param (?commit=<hash>)
-  let commitHash = $derived(parseCommitQuery(fullHash));
+  let commitQuery = $derived(parseCommitQuery(fullHash));
 
   // Check for branch comparison query param (?compare=base...head)
   let compareQuery = $derived(parseCompareQuery(fullHash));
@@ -163,8 +169,10 @@
     <MergeView npub={route.params.npub} repoName={repoPath || route.params.treeName} baseBranch={mergeQuery.base} headBranch={mergeQuery.head} prEventId={mergeQuery.prId} prAuthorPubkey={mergeQuery.prPubkey} />
   {:else if compareQuery && route.params.npub && route.params.treeName}
     <BranchCompareView npub={route.params.npub} repoName={repoPath || route.params.treeName} baseBranch={compareQuery.base} headBranch={compareQuery.head} />
-  {:else if commitHash && route.params.npub && route.params.treeName}
-    <CommitView npub={route.params.npub} repoName={repoPath || route.params.treeName} {commitHash} />
+  {:else if commitQuery?.view === 'file' && route.params.npub && route.params.treeName}
+    <CommitFileView npub={route.params.npub} commitHash={commitQuery.hash} />
+  {:else if commitQuery?.view === 'commit' && route.params.npub && route.params.treeName}
+    <CommitView npub={route.params.npub} repoName={repoPath || route.params.treeName} commitHash={commitQuery.hash} />
   {:else if repoTabQuery?.tab === 'pulls' && repoTabQuery.id && route.params.npub && route.params.treeName}
     <PullRequestDetailView npub={route.params.npub} repoName={repoPath} prId={repoTabQuery.id} />
   {:else if repoTabQuery?.tab === 'issues' && repoTabQuery.id && route.params.npub && route.params.treeName}

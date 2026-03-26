@@ -15,9 +15,20 @@ export interface UnifiedDiffStats {
   files: number;
 }
 
+export interface UnifiedDiffRenderedFile {
+  path: string;
+  status: UnifiedDiffFile['status'];
+  text: string;
+  patch: string;
+  additions: number;
+  deletions: number;
+  isBinary: boolean;
+}
+
 export interface UnifiedDiffResult {
   text: string;
   stats: UnifiedDiffStats;
+  files: UnifiedDiffRenderedFile[];
 }
 
 type DiffOp =
@@ -27,9 +38,11 @@ type DiffOp =
 
 const DEFAULT_FILE_MODE = '100644';
 const MAX_LCS_CELLS = 200_000;
+const DEFAULT_CONTEXT_LINES = 3;
 
 export function buildUnifiedDiff(files: UnifiedDiffFile[]): UnifiedDiffResult {
   const parts: string[] = [];
+  const renderedFiles: UnifiedDiffRenderedFile[] = [];
   const stats: UnifiedDiffStats = {
     additions: 0,
     deletions: 0,
@@ -37,16 +50,21 @@ export function buildUnifiedDiff(files: UnifiedDiffFile[]): UnifiedDiffResult {
   };
 
   for (const file of files) {
-    parts.push(renderFileDiff(file, stats));
+    const rendered = renderFileDiff(file);
+    renderedFiles.push(rendered);
+    parts.push(rendered.text);
+    stats.additions += rendered.additions;
+    stats.deletions += rendered.deletions;
   }
 
   return {
     text: parts.filter(Boolean).join('\n'),
     stats,
+    files: renderedFiles,
   };
 }
 
-function renderFileDiff(file: UnifiedDiffFile, stats: UnifiedDiffStats): string {
+function renderFileDiff(file: UnifiedDiffFile): UnifiedDiffRenderedFile {
   const oldMode = file.oldMode ?? DEFAULT_FILE_MODE;
   const newMode = file.newMode ?? DEFAULT_FILE_MODE;
 
@@ -55,14 +73,21 @@ function renderFileDiff(file: UnifiedDiffFile, stats: UnifiedDiffStats): string 
       return renderBinaryDiff(file.path, 'added');
     }
     const newLines = splitLines(file.newText);
-    stats.additions += newLines.length;
-    return [
-      `diff --git a/${file.path} b/${file.path}`,
+    const patch = [
       `new file mode ${newMode}`,
       '--- /dev/null',
       `+++ b/${file.path}`,
-      renderHunk([], newLines),
+      renderHunks([], newLines),
     ].join('\n');
+    return {
+      path: file.path,
+      status: file.status,
+      text: [`diff --git a/${file.path} b/${file.path}`, patch].join('\n'),
+      patch,
+      additions: newLines.length,
+      deletions: 0,
+      isBinary: false,
+    };
   }
 
   if (file.status === 'deleted') {
@@ -70,14 +95,21 @@ function renderFileDiff(file: UnifiedDiffFile, stats: UnifiedDiffStats): string 
       return renderBinaryDiff(file.path, 'deleted');
     }
     const oldLines = splitLines(file.oldText);
-    stats.deletions += oldLines.length;
-    return [
-      `diff --git a/${file.path} b/${file.path}`,
+    const patch = [
       `deleted file mode ${oldMode}`,
       `--- a/${file.path}`,
       '+++ /dev/null',
-      renderHunk(oldLines, []),
+      renderHunks(oldLines, []),
     ].join('\n');
+    return {
+      path: file.path,
+      status: file.status,
+      text: [`diff --git a/${file.path} b/${file.path}`, patch].join('\n'),
+      patch,
+      additions: 0,
+      deletions: oldLines.length,
+      isBinary: false,
+    };
   }
 
   if (file.oldText === undefined || file.newText === undefined) {
@@ -87,41 +119,144 @@ function renderFileDiff(file: UnifiedDiffFile, stats: UnifiedDiffStats): string 
   const oldLines = splitLines(file.oldText);
   const newLines = splitLines(file.newText);
   const operations = diffLines(oldLines, newLines);
+  let additions = 0;
+  let deletions = 0;
 
   for (const op of operations) {
-    if (op.type === 'add') stats.additions += 1;
-    if (op.type === 'remove') stats.deletions += 1;
+    if (op.type === 'add') additions += 1;
+    if (op.type === 'remove') deletions += 1;
   }
 
-  return [
-    `diff --git a/${file.path} b/${file.path}`,
+  const patch = [
     `--- a/${file.path}`,
     `+++ b/${file.path}`,
-    renderHunk(oldLines, newLines, operations),
+    renderHunks(oldLines, newLines, operations),
   ].join('\n');
+
+  return {
+    path: file.path,
+    status: file.status,
+    text: [`diff --git a/${file.path} b/${file.path}`, patch].join('\n'),
+    patch,
+    additions,
+    deletions,
+    isBinary: false,
+  };
 }
 
-function renderBinaryDiff(path: string, status: UnifiedDiffFile['status']): string {
-  const lines = [`diff --git a/${path} b/${path}`];
+function renderBinaryDiff(path: string, status: UnifiedDiffFile['status']): UnifiedDiffRenderedFile {
+  const patchLines: string[] = [];
   if (status === 'added') {
-    lines.push('Binary files /dev/null and b/' + path + ' differ');
+    patchLines.push('Binary files /dev/null and b/' + path + ' differ');
   } else if (status === 'deleted') {
-    lines.push('Binary files a/' + path + ' and /dev/null differ');
+    patchLines.push('Binary files a/' + path + ' and /dev/null differ');
   } else {
-    lines.push('Binary files a/' + path + ' and b/' + path + ' differ');
+    patchLines.push('Binary files a/' + path + ' and b/' + path + ' differ');
   }
-  return lines.join('\n');
+  const patch = patchLines.join('\n');
+  return {
+    path,
+    status,
+    text: [`diff --git a/${path} b/${path}`, patch].join('\n'),
+    patch,
+    additions: 0,
+    deletions: 0,
+    isBinary: true,
+  };
 }
 
-function renderHunk(oldLines: string[], newLines: string[], operations?: DiffOp[]): string {
-  const oldStart = oldLines.length === 0 ? 0 : 1;
-  const newStart = newLines.length === 0 ? 0 : 1;
-  const header = `@@ -${formatRange(oldStart, oldLines.length)} +${formatRange(newStart, newLines.length)} @@`;
-  const body = (operations ?? diffLines(oldLines, newLines)).map((op) => {
-    if (op.type === 'context') return ` ${op.line}`;
-    if (op.type === 'add') return `+${op.line}`;
-    return `-${op.line}`;
+function renderHunks(oldLines: string[], newLines: string[], operations?: DiffOp[]): string {
+  const effectiveOperations = operations ?? diffLines(oldLines, newLines);
+  if (effectiveOperations.length === 0) {
+    const oldStart = oldLines.length === 0 ? 0 : 1;
+    const newStart = newLines.length === 0 ? 0 : 1;
+    return `@@ -${formatRange(oldStart, oldLines.length)} +${formatRange(newStart, newLines.length)} @@`;
+  }
+
+  const positions = buildLinePositions(effectiveOperations);
+  const ranges = buildHunkRanges(effectiveOperations, DEFAULT_CONTEXT_LINES);
+  return ranges.map(([start, end]) => renderHunkRange(effectiveOperations, positions, start, end)).join('\n');
+}
+
+function buildHunkRanges(operations: DiffOp[], contextLines: number): Array<[number, number]> {
+  const changeIndices = operations.flatMap((op, index) => op.type === 'context' ? [] : [index]);
+  if (changeIndices.length === 0) {
+    return [[0, operations.length - 1]];
+  }
+
+  const ranges: Array<[number, number]> = [];
+  let rangeStart = Math.max(0, changeIndices[0] - contextLines);
+  let rangeEnd = Math.min(operations.length - 1, changeIndices[0] + contextLines);
+
+  for (let index = 1; index < changeIndices.length; index += 1) {
+    const changeIndex = changeIndices[index];
+    const nextStart = Math.max(0, changeIndex - contextLines);
+    const nextEnd = Math.min(operations.length - 1, changeIndex + contextLines);
+
+    if (nextStart <= rangeEnd + 1) {
+      rangeEnd = Math.max(rangeEnd, nextEnd);
+      continue;
+    }
+
+    ranges.push([rangeStart, rangeEnd]);
+    rangeStart = nextStart;
+    rangeEnd = nextEnd;
+  }
+
+  ranges.push([rangeStart, rangeEnd]);
+  return ranges;
+}
+
+function buildLinePositions(operations: DiffOp[]): Array<{ oldLine: number; newLine: number }> {
+  let oldLine = 1;
+  let newLine = 1;
+
+  return operations.map((op) => {
+    const position = { oldLine, newLine };
+    if (op.type !== 'add') {
+      oldLine += 1;
+    }
+    if (op.type !== 'remove') {
+      newLine += 1;
+    }
+    return position;
   });
+}
+
+function renderHunkRange(
+  operations: DiffOp[],
+  positions: Array<{ oldLine: number; newLine: number }>,
+  startIndex: number,
+  endIndex: number
+): string {
+  const body: string[] = [];
+  let oldCount = 0;
+  let newCount = 0;
+
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    const op = operations[index];
+    if (op.type === 'context') {
+      body.push(` ${op.line}`);
+      oldCount += 1;
+      newCount += 1;
+      continue;
+    }
+
+    if (op.type === 'add') {
+      body.push(`+${op.line}`);
+      newCount += 1;
+      continue;
+    }
+
+    body.push(`-${op.line}`);
+    oldCount += 1;
+  }
+
+  const startPosition = positions[startIndex] ?? { oldLine: 1, newLine: 1 };
+  const oldStart = oldCount === 0 ? 0 : startPosition.oldLine;
+  const newStart = newCount === 0 ? 0 : startPosition.newLine;
+  const header = `@@ -${formatRange(oldStart, oldCount)} +${formatRange(newStart, newCount)} @@`;
+
   return [header, ...body].join('\n');
 }
 
