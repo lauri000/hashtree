@@ -30,18 +30,20 @@
   }
 </script>
 
-<div class="flex items-center gap-1 px-4 b-b-1 b-b-solid b-b-surface-3">
-  {#each tabs as tab (tab.id)}
-    <a
-      href={getHref(tab)}
-      class="flex items-center gap-2 px-3 py-3 text-sm transition-colors b-b-2 b-b-solid -mb-px no-underline {
-        activeTab === tab.id
-          ? 'b-b-accent text-text-1 font-medium'
-          : 'b-b-transparent text-text-2 hover:text-text-1 hover:b-b-surface-3'
-      }"
-    >
-      <span class="{tab.icon}"></span>
-      {tab.label}
-    </a>
-  {/each}
+<div class="overflow-x-auto scrollbar-hide px-4 b-b-1 b-b-solid b-b-surface-3">
+  <div class="flex items-center gap-1 min-w-max">
+    {#each tabs as tab (tab.id)}
+      <a
+        href={getHref(tab)}
+        class="shrink-0 flex items-center gap-2 px-3 py-3 text-sm transition-colors b-b-2 b-b-solid -mb-px no-underline {
+          activeTab === tab.id
+            ? 'b-b-accent text-text-1 font-medium'
+            : 'b-b-transparent text-text-2 hover:text-text-1 hover:b-b-surface-3'
+        }"
+      >
+        <span class="{tab.icon}"></span>
+        {tab.label}
+      </a>
+    {/each}
+  </div>
 </div>

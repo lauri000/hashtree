@@ -11,8 +11,9 @@ import { waitForTreeRoot } from './treeRoot';
 import { onCacheUpdate } from '../treeRootCache';
 import { saveHashtree } from '../nostr';
 import { getErrorMessage } from '../utils/errorMessage';
+import { buildReleaseTreeName, isListedReleaseEntryName, sanitizeReleaseId } from './releaseHelpers';
 
-const RELEASES_PREFIX = 'releases';
+export { buildReleaseTreeName, sanitizeReleaseId } from './releaseHelpers';
 
 export interface ReleaseSummary {
   id: string;
@@ -72,26 +73,6 @@ export interface SaveReleaseOptions {
   publishedAt?: number;
   visibility?: TreeVisibility;
   linkKey?: string;
-}
-
-function normalizeRepoPath(repoPath: string): string {
-  return repoPath.replace(/^\/+/, '').replace(/\/+$/, '');
-}
-
-export function buildReleaseTreeName(repoPath: string): string {
-  const clean = normalizeRepoPath(repoPath);
-  return clean ? `${RELEASES_PREFIX}/${clean}` : RELEASES_PREFIX;
-}
-
-export function sanitizeReleaseId(input: string): string {
-  const trimmed = input.trim();
-  if (!trimmed) return '';
-  const cleaned = trimmed
-    .replace(/[\\/]/g, '-')
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^[-.]+|[-.]+$/g, '');
-  return cleaned.slice(0, 80);
 }
 
 function ensureUniqueReleaseId(base: string, existing: Set<string>): string {
@@ -199,6 +180,7 @@ async function listReleaseEntries(npub: string, repoPath: string): Promise<Relea
   const releases: ReleaseSummary[] = [];
 
   for (const entry of entries) {
+    if (!isListedReleaseEntryName(entry.name)) continue;
     if (entry.type !== LinkType.Dir || !entry.cid) continue;
     const metaSummary = parseReleaseMeta(entry.meta, entry.name);
     if (metaSummary) {
