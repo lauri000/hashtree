@@ -1,4 +1,4 @@
-import { test, expect, getInvocationsFor, setupPageErrorHandler, gotoHome } from './fixtures';
+import { test, expect, getInvocationsFor, setupPageErrorHandler, gotoHome, emitTauriEvent } from './fixtures';
 import { distributedOwner } from '../src/lib/apps';
 import { ownerProfileUrl } from '../src/lib/addressIdentity';
 
@@ -206,7 +206,7 @@ test.describe('Address Bar', () => {
     await expect(page.getByTestId('address-path')).toHaveText('video');
     await expect(input).toHaveValue(`${distributedOwner}/video/index.html`);
 
-    await page.getByTestId('address-path').click();
+    await page.getByTestId('address-bar').click();
     await expect(page.getByTestId('address-owner-pill')).toHaveCount(0);
     await expect(input).toHaveValue(url);
   });
@@ -238,13 +238,25 @@ test.describe('Address Bar', () => {
     expect(calls[1].args.fragment).toBe(`/${distributedOwner}/profile`);
   });
 
-  test('history dropdown shows owner label and htree path for npub routes', async ({ tauriPage: page }) => {
+  test('history dropdown shows owner label and page title for npub routes', async ({ tauriPage: page }) => {
     await openHome(page);
 
     const input = page.locator('input[placeholder="Search or enter address"]');
     await input.click();
     await input.fill(`htree://${distributedOwner}/video/index.html`);
     await input.press('Enter');
+    await emitTauriEvent(page, 'child-webview-diagnostic', {
+      label: 'content',
+      url: `htree://${distributedOwner}/video/index.html`,
+      source: 'load',
+      title: 'Iris Video',
+      bodyText: 'Recent videos',
+      mediaSummary: 'thumbs=3/4 visible=2 videos=1/1',
+      error: null,
+    });
+    await expect.poll(async () => {
+      return await page.evaluate(() => ((window as any).__historyStore ?? [])[0]?.label ?? '');
+    }).toBe('Iris Video');
     await page.getByTitle('Home').click();
     await expect.poll(async () => {
       return await page.evaluate(() => ((window as any).__historyStore ?? []).length);
@@ -254,7 +266,7 @@ test.describe('Address Bar', () => {
     const dropdown = page.locator('[role="listbox"]');
     await expect(dropdown).toBeVisible();
     await expect(dropdown.getByText(DISTRIBUTED_OWNER_PROFILE_NAME).first()).toBeVisible();
-    await expect(dropdown.getByText('video').first()).toBeVisible();
+    await expect(dropdown.getByText('Iris Video').first()).toBeVisible();
   });
 
   test('empty address bar submit does nothing', async ({ tauriPage: page }) => {

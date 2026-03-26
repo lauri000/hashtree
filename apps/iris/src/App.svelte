@@ -572,10 +572,9 @@
     if (isAddressFocused) return null;
     const htree = parseHtreeUrl(currentUrl);
     if (!htree?.npub) return null;
-    const historyEntry = buildHistoryEntry(currentUrl, childDocumentTitle);
     return {
       host: htree.npub,
-      displayLabel: historyEntry.label,
+      treeName: htree.treename ?? '',
     };
   });
 
@@ -1361,17 +1360,21 @@
             <span data-tauri-drag-region="false" class="i-lucide-search text-sm text-muted shrink-0"></span>
             <div class="relative min-w-0 flex-1">
               {#if blurredOwnerSummary}
-                <div class="absolute inset-0 flex items-center gap-1.5 pr-2">
+                <div class="absolute inset-0 flex min-w-0 items-center gap-1.5 pr-2">
                   <div class="shrink-0">
                     <AddressOwnerPill
                       host={blurredOwnerSummary.host}
                       openProfile={() => void openAddressOwnerProfile(blurredOwnerSummary.host)}
+                      maxWidthClass="max-w-24"
+                      size="xs"
                       testId="address-owner-pill"
                     />
                   </div>
-                  <span data-testid="address-path" class="min-w-0 truncate text-sm text-text-2">
-                    {blurredOwnerSummary.displayLabel}
-                  </span>
+                  {#if blurredOwnerSummary.treeName}
+                    <span data-testid="address-path" class="min-w-0 truncate text-xs text-text-2">
+                      {blurredOwnerSummary.treeName}
+                    </span>
+                  {/if}
                 </div>
               {/if}
               <input
@@ -1530,17 +1533,21 @@
           <span data-tauri-drag-region="false" class="i-lucide-search text-sm text-muted shrink-0"></span>
           <div class="relative min-w-0 flex-1">
             {#if blurredOwnerSummary}
-              <div class="absolute inset-0 flex items-center gap-1.5 pr-2">
+              <div class="absolute inset-0 flex min-w-0 items-center gap-1.5 pr-2">
                 <div class="shrink-0">
                   <AddressOwnerPill
                     host={blurredOwnerSummary.host}
                     openProfile={() => void openAddressOwnerProfile(blurredOwnerSummary.host)}
+                    maxWidthClass="max-w-24"
+                    size="xs"
                     testId="address-owner-pill"
                   />
                 </div>
-                <span data-testid="address-path" class="min-w-0 truncate text-sm text-text-2">
-                  {blurredOwnerSummary.displayLabel}
-                </span>
+                {#if blurredOwnerSummary.treeName}
+                  <span data-testid="address-path" class="min-w-0 truncate text-xs text-text-2">
+                    {blurredOwnerSummary.treeName}
+                  </span>
+                {/if}
               </div>
             {/if}
             <input
