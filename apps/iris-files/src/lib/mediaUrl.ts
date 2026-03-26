@@ -447,6 +447,7 @@ interface StableThumbnailUrlOptions {
   videoId?: string;
   hashPrefix?: string;
   allowAliasFallback?: boolean;
+  preferAliasFallback?: boolean;
 }
 
 function isAllowedExplicitThumbnailUrl(url: string): boolean {
@@ -494,9 +495,16 @@ export function getStableThumbnailCandidateUrls(options: StableThumbnailUrlOptio
   const immutableAliasUrl = options.rootCid
     ? getThumbnailUrlFromCid(options.rootCid, options.videoId)
     : null;
+  const canUseMutableAlias = options.allowAliasFallback !== false && options.npub && options.treeName;
+  const mutableAliasUrl = canUseMutableAlias
+    ? getThumbnailUrl(options.npub, options.treeName, options.videoId, options.hashPrefix)
+    : null;
 
   if (explicitThumbnailUrl && !explicitIsAlias) {
     urls.add(explicitThumbnailUrl);
+  }
+  if (options.preferAliasFallback && mutableAliasUrl) {
+    urls.add(mutableAliasUrl);
   }
   appendImmutableThumbnailFileCandidates(urls, explicitImmutableAliasRootCid, options.videoId);
   appendImmutableThumbnailFileCandidates(urls, options.rootCid, options.videoId);
@@ -506,9 +514,8 @@ export function getStableThumbnailCandidateUrls(options: StableThumbnailUrlOptio
   if (explicitThumbnailUrl && explicitIsAlias) {
     urls.add(explicitThumbnailUrl);
   }
-  const canUseMutableAlias = options.allowAliasFallback !== false && options.npub && options.treeName;
-  if (canUseMutableAlias) {
-    urls.add(getThumbnailUrl(options.npub, options.treeName, options.videoId, options.hashPrefix));
+  if (!options.preferAliasFallback && mutableAliasUrl) {
+    urls.add(mutableAliasUrl);
   }
   return Array.from(urls);
 }

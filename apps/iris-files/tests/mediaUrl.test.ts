@@ -235,6 +235,30 @@ describe('mediaUrl thumbnail helpers', () => {
     ]);
   });
 
+  it('can prefer the mutable alias before immutable guesses when no explicit thumbnail is known', () => {
+    installWindow();
+    const rootCid = {
+      hash: fromHex('7'.repeat(64)),
+    };
+
+    expect(
+      getStableThumbnailCandidateUrls({
+        rootCid,
+        npub: 'npub1example',
+        treeName: 'videos/Test Clip',
+        videoId: 'clips/demo reel',
+        preferAliasFallback: true,
+      }),
+    ).toEqual([
+      '/htree/npub1example/videos%2FTest%20Clip/clips/demo%20reel/thumbnail?htree_c=test-media-client',
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpg?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.webp?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.png?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail.jpeg?htree_c=test-media-client`,
+      `/htree/${nhashEncode(rootCid)}/clips/demo%20reel/thumbnail?htree_c=test-media-client`,
+    ]);
+  });
+
   it('ignores external http thumbnail urls and stays on htree candidates', () => {
     installWindow();
     const rootCid = {

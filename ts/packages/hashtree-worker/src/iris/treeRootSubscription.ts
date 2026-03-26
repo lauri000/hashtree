@@ -16,6 +16,10 @@ import { nip19 } from 'nostr-tools';
 // Active subscriptions by pubkey
 const activeSubscriptions = new Map<string, string>(); // pubkeyHex -> subId
 const inFlightRootResolutions = new Map<string, Promise<Uint8Array | null>>();
+const inFlightHistoricalRootLists = new Map<string, Promise<CID[]>>();
+const historicalRootListCache = new Map<string, { roots: CID[]; expiresAt: number }>();
+const MAX_HISTORICAL_TREE_ROOT_EVENTS = 20;
+const HISTORICAL_TREE_ROOT_CACHE_TTL_MS = 30_000;
 
 const DEFAULT_TREE_ROOT_RELAYS = [
   'wss://relay.damus.io',
@@ -190,13 +194,13 @@ export function parseTreeRootEvent(event: SignedEvent): ParsedTreeRootEvent | nu
   };
 }
 
-async function fetchTreeRootEventFromNdk(
+async function fetchTreeRootEventsFromNdk(
   pubkeyHex: string,
   treeName: string,
   timeoutMs: number
-): Promise<SignedEvent | null> {
+): Promise<SignedEvent[]> {
   const ndk = getNdk();
-  if (!ndk) return null;
+  if (!ndk) return [];
 
   try {
     const events = await withTimeout(
@@ -204,26 +208,25 @@ async function fetchTreeRootEventFromNdk(
         kinds: [30078],
         authors: [pubkeyHex],
         '#d': [treeName],
-        limit: 4,
+        limit: MAX_HISTORICAL_TREE_ROOT_EVENTS,
       }),
       timeoutMs,
     );
-    if (!events) return null;
-    const latest = uniqueEvents(Array.from(events).map((event) => toSignedEvent(event.rawEvent?.() ?? event)))
-      .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))[0];
-    return latest ?? null;
+    if (!events) return [];
+    return uniqueEvents(Array.from(events).map((event) => toSignedEvent(event.rawEvent?.() ?? event)))
+      .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
   } catch {
-    return null;
+    return [];
   }
 }
 
-async function fetchTreeRootEventFromRelays(
+async function fetchTreeRootEventsFromRelays(
   pubkeyHex: string,
   treeName: string,
   timeoutMs: number
-): Promise<SignedEvent | null> {
+): Promise<SignedEvent[]> {
   const relayUrls = getHistoryRelayUrls();
-  if (relayUrls.length === 0) return null;
+  if (relayUrls.length === 0) return [];
 
   const pool = new SimplePool();
   try {
@@ -232,18 +235,17 @@ async function fetchTreeRootEventFromRelays(
         kinds: [30078],
         authors: [pubkeyHex],
         '#d': [treeName],
-        limit: 4,
+        limit: MAX_HISTORICAL_TREE_ROOT_EVENTS,
       }, {
         maxWait: timeoutMs,
       }),
       timeoutMs + 500,
     );
-    if (!events) return null;
-    const latest = uniqueEvents(Array.from(events).map((event) => toSignedEvent(event)))
-      .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))[0];
-    return latest ?? null;
+    if (!events) return [];
+    return uniqueEvents(Array.from(events).map((event) => toSignedEvent(event)))
+      .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
   } catch {
-    return null;
+    return [];
   } finally {
     try {
       pool.close(relayUrls);
@@ -251,6 +253,93 @@ async function fetchTreeRootEventFromRelays(
     try {
       pool.destroy();
     } catch {}
+  }
+}
+
+function cidKey(cid: CID): string {
+  const hash = Array.from(cid.hash, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  const key = cid.key
+    ? Array.from(cid.key, (byte) => byte.toString(16).padStart(2, '0')).join('')
+    : '';
+  return `${hash}:${key}`;
+}
+
+function dedupeRoots(roots: CID[]): CID[] {
+  const seen = new Set<string>();
+  const result: CID[] = [];
+  for (const root of roots) {
+    const key = cidKey(root);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(root);
+  }
+  return result;
+}
+
+export async function getHistoricalTreeRoots(
+  npub: string,
+  treeName: string,
+  timeoutMs: number = 8000,
+): Promise<CID[]> {
+  const cacheKey = `${npub}/${treeName}`;
+  const cached = historicalRootListCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.roots;
+  }
+  if (cached) {
+    historicalRootListCache.delete(cacheKey);
+  }
+
+  const inFlight = inFlightHistoricalRootLists.get(cacheKey);
+  if (inFlight) {
+    return await inFlight;
+  }
+
+  const lookup = (async (): Promise<CID[]> => {
+    let pubkeyHex: string;
+    try {
+      const decoded = nip19.decode(npub);
+      if (decoded.type !== 'npub') return [];
+      pubkeyHex = decoded.data as string;
+    } catch {
+      return [];
+    }
+
+    const [ndkEvents, relayEvents] = await Promise.all([
+      fetchTreeRootEventsFromNdk(pubkeyHex, treeName, timeoutMs),
+      fetchTreeRootEventsFromRelays(pubkeyHex, treeName, timeoutMs),
+    ]);
+
+    const roots = dedupeRoots(
+      uniqueEvents([...ndkEvents, ...relayEvents])
+        .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
+        .map((event) => {
+          const parsed = parseTreeRootEvent(event);
+          if (!parsed) return null;
+          try {
+            return {
+              hash: hexToBytes(parsed.hash),
+              key: parsed.key ? hexToBytes(parsed.key) : undefined,
+            } as CID;
+          } catch {
+            return null;
+          }
+        })
+        .filter((root): root is CID => !!root),
+    );
+
+    historicalRootListCache.set(cacheKey, {
+      roots,
+      expiresAt: Date.now() + HISTORICAL_TREE_ROOT_CACHE_TTL_MS,
+    });
+    return roots;
+  })();
+
+  inFlightHistoricalRootLists.set(cacheKey, lookup);
+  try {
+    return await lookup;
+  } finally {
+    inFlightHistoricalRootLists.delete(cacheKey);
   }
 }
 
@@ -280,8 +369,11 @@ export async function resolveTreeRootNow(
       return null;
     }
 
-    const fetched = await fetchTreeRootEventFromNdk(pubkeyHex, treeName, timeoutMs)
-      ?? await fetchTreeRootEventFromRelays(pubkeyHex, treeName, timeoutMs);
+    const fetched = (
+      await fetchTreeRootEventsFromNdk(pubkeyHex, treeName, timeoutMs)
+    )[0] ?? (
+      await fetchTreeRootEventsFromRelays(pubkeyHex, treeName, timeoutMs)
+    )[0];
     if (!fetched) {
       return null;
     }
@@ -300,6 +392,7 @@ export async function resolveTreeRootNow(
       selfEncryptedKey: parsed.selfEncryptedKey,
       selfEncryptedLinkKey: parsed.selfEncryptedLinkKey,
     });
+    historicalRootListCache.delete(cacheKey);
 
     if (notifyCallback) {
       notifyCallback(npub, treeName, {
@@ -419,6 +512,7 @@ export async function handleTreeRootEvent(event: SignedEvent): Promise<void> {
     selfEncryptedKey: parsed.selfEncryptedKey,
     selfEncryptedLinkKey: parsed.selfEncryptedLinkKey,
   });
+  historicalRootListCache.delete(`${npub}/${treeName}`);
 
   // Notify main thread
   if (notifyCallback) {

@@ -112,6 +112,26 @@ describe('detectPlaylistForCard thumbnail urls', () => {
     );
   });
 
+  it('accepts generic jpeg artwork files for single-video thumbnails', async () => {
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (cid === ROOT) {
+        return [
+          { name: 'video.mp4', cid: VIDEO_DIR_A },
+          { name: 'cover.jpeg', cid: THUMB_A },
+        ];
+      }
+      return [];
+    });
+
+    const { detectPlaylistForCard } = await import('../src/stores/playlist');
+    const info = await detectPlaylistForCard(ROOT, 'npub1example', 'videos/Mine Bombers in-game music');
+
+    expect(info?.videoCount).toBe(0);
+    expect(info?.thumbnailUrl).toBe(
+      `/htree/${nhashEncode(THUMB_A)}/cover.jpeg?htree_c=test-media-client`,
+    );
+  });
+
   it('detects legacy audio uploads as single media items', async () => {
     listDirectory.mockImplementation(async (cid: CID) => {
       if (cid === ROOT) {

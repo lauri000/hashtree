@@ -237,6 +237,36 @@ async fn resolve_root_from_local_relay(
     root_event_from_peer(latest, "local-relay", treename)
 }
 
+async fn resolve_root_history_from_local_relay(
+    state: &AppState,
+    pubkey: &str,
+    treename: &str,
+) -> Vec<PeerRootEvent> {
+    let Some(relay) = state.nostr_relay.as_ref() else {
+        return Vec::new();
+    };
+    let Some(filter) = build_root_filter(pubkey, treename) else {
+        return Vec::new();
+    };
+
+    let mut roots: Vec<_> = relay
+        .query_events(&filter, 50)
+        .await
+        .iter()
+        .filter_map(|event| root_event_from_peer(event, "local-relay", treename))
+        .collect();
+    roots.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| b.event_id.cmp(&a.event_id))
+    });
+    let mut seen = HashSet::new();
+    roots
+        .into_iter()
+        .filter(|root| seen.insert((root.hash.clone(), root.key.clone())))
+        .collect()
+}
+
 async fn resolve_root_offline(
     state: &AppState,
     pubkey: &str,
@@ -1125,6 +1155,27 @@ fn is_metadata_filename(name: &str) -> bool {
     name.ends_with(".json") || name.ends_with(".txt")
 }
 
+fn is_image_filename(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    normalized.ends_with(".jpg")
+        || normalized.ends_with(".jpeg")
+        || normalized.ends_with(".png")
+        || normalized.ends_with(".webp")
+}
+
+fn find_thumbnail_entry_name(entries: &[TreeEntry]) -> Option<String> {
+    for pattern in THUMBNAIL_PATTERNS {
+        if entries.iter().any(|entry| entry.name == *pattern) {
+            return Some((*pattern).to_string());
+        }
+    }
+
+    entries
+        .iter()
+        .find(|entry| is_image_filename(&entry.name))
+        .map(|entry| entry.name.clone())
+}
+
 fn is_thumbnail_request(path: &str) -> bool {
     path == "thumbnail" || path.ends_with("/thumbnail")
 }
@@ -1167,20 +1218,18 @@ async fn resolve_thumbnail_path<S: Store>(
         return Ok(None);
     };
 
-    for pattern in THUMBNAIL_PATTERNS {
-        if entries.iter().any(|e| e.name == *pattern) {
-            let resolved = if dir_path.is_empty() {
-                (*pattern).to_string()
-            } else {
-                format!("{}/{}", dir_path, pattern)
-            };
-            put_cached_lookup(
-                &state.thumbnail_path_cache,
-                cache_key,
-                Some(resolved.clone()),
-            );
-            return Ok(Some(resolved));
-        }
+    if let Some(thumbnail_name) = find_thumbnail_entry_name(&entries) {
+        let resolved = if dir_path.is_empty() {
+            thumbnail_name
+        } else {
+            format!("{}/{}", dir_path, thumbnail_name)
+        };
+        put_cached_lookup(
+            &state.thumbnail_path_cache,
+            cache_key,
+            Some(resolved.clone()),
+        );
+        return Ok(Some(resolved));
     }
 
     let has_video_file = entries.iter().any(|e| is_video_filename(&e.name));
@@ -1202,26 +1251,85 @@ async fn resolve_thumbnail_path<S: Store>(
                 None => continue,
             };
 
-            for pattern in THUMBNAIL_PATTERNS {
-                if sub_entries.iter().any(|e| e.name == *pattern) {
-                    let prefix = if dir_path.is_empty() {
-                        entry.name.clone()
-                    } else {
-                        format!("{}/{}", dir_path, entry.name)
-                    };
-                    let resolved = format!("{}/{}", prefix, pattern);
-                    put_cached_lookup(
-                        &state.thumbnail_path_cache,
-                        cache_key,
-                        Some(resolved.clone()),
-                    );
-                    return Ok(Some(resolved));
-                }
+            if let Some(thumbnail_name) = find_thumbnail_entry_name(&sub_entries) {
+                let prefix = if dir_path.is_empty() {
+                    entry.name.clone()
+                } else {
+                    format!("{}/{}", dir_path, entry.name)
+                };
+                let resolved = format!("{}/{}", prefix, thumbnail_name);
+                put_cached_lookup(
+                    &state.thumbnail_path_cache,
+                    cache_key,
+                    Some(resolved.clone()),
+                );
+                return Ok(Some(resolved));
             }
         }
     }
 
     put_cached_lookup(&state.thumbnail_path_cache, cache_key, None);
+    Ok(None)
+}
+
+async fn resolve_historical_npub_path_response<S: Store>(
+    state: &AppState,
+    tree: &HashTree<S>,
+    npub: &str,
+    treename: &str,
+    current_root: &Cid,
+    requested_path: &str,
+    headers: &axum::http::HeaderMap,
+    is_localhost: bool,
+) -> Result<Option<Response<Body>>, String> {
+    for root in resolve_root_history_from_local_relay(state, npub, treename).await {
+        let Some(mut candidate_root) = peer_root_to_cid(&root) else {
+            continue;
+        };
+        if candidate_root.key.is_none() {
+            candidate_root.key = current_root.key;
+        }
+        if candidate_root == *current_root {
+            continue;
+        }
+
+        let mut candidate_path = requested_path.to_string();
+        if is_thumbnail_request(requested_path) {
+            match resolve_thumbnail_path(state, tree, &candidate_root, requested_path).await? {
+                Some(resolved_path) => {
+                    candidate_path = resolved_path;
+                }
+                None => continue,
+            }
+        }
+
+        let is_dir = root_is_directory_with_fetch(state, tree, &candidate_root).await?;
+        if !is_dir {
+            continue;
+        }
+
+        let Some(target) =
+            resolve_directory_target(state, tree, &candidate_root, Some(candidate_path.clone()))
+                .await?
+        else {
+            continue;
+        };
+
+        if let DirectoryTarget::File { cid, path } = target {
+            return Ok(Some(
+                serve_cid_with_range(
+                    state,
+                    &cid,
+                    headers.clone(),
+                    false,
+                    is_localhost,
+                    Some(&path),
+                )
+                .await,
+            ));
+        }
+    }
+
     Ok(None)
 }
 
@@ -1297,6 +1405,7 @@ async fn htree_npub_impl(
     let store = state.store.store_arc();
     let tree = HashTree::new(HashTreeConfig::new(store).public());
 
+    let requested_path = path.clone();
     let mut effective_path = path.filter(|p| !p.is_empty());
     if let Some(path) = effective_path.clone() {
         if path == "thumbnail" || path.ends_with("/thumbnail") {
@@ -1343,12 +1452,61 @@ async fn htree_npub_impl(
                 return list_directory_json(&state, &listing_cid, false, is_localhost).await;
             }
             Ok(None) => {
+                if let Some(requested_path) = requested_path.as_deref() {
+                    match resolve_historical_npub_path_response(
+                        &state,
+                        &tree,
+                        &npub,
+                        &treename,
+                        &cid,
+                        requested_path,
+                        &headers,
+                        is_localhost,
+                    )
+                    .await
+                    {
+                        Ok(Some(response)) => return response,
+                        Ok(None) => {}
+                        Err(e) => {
+                            return Response::builder()
+                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                                .body(Body::from(format!("Error: {}", e)))
+                                .unwrap();
+                        }
+                    }
+                }
                 return Response::builder()
                     .status(StatusCode::NOT_FOUND)
                     .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
                     .body(Body::from("File not found"))
                     .unwrap();
             }
+            Err(e) => {
+                return Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from(format!("Error: {}", e)))
+                    .unwrap();
+            }
+        }
+    }
+
+    if let Some(requested_path) = requested_path.as_deref() {
+        match resolve_historical_npub_path_response(
+            &state,
+            &tree,
+            &npub,
+            &treename,
+            &cid,
+            requested_path,
+            &headers,
+            is_localhost,
+        )
+        .await
+        {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
             Err(e) => {
                 return Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -2746,6 +2904,7 @@ mod tests {
     use http_body_util::BodyExt;
     use nostr::{
         nips::nip19::ToBech32, Alphabet, EventBuilder, Keys, Kind, SingleLetterTag, Tag, TagKind,
+        Timestamp,
     };
     use sha2::Digest;
     use std::{
@@ -3151,6 +3310,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resolved.as_deref(), Some("thumbnail.jpg"));
+    }
+
+    #[tokio::test]
+    async fn resolve_thumbnail_path_accepts_generic_image_names() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("store")).unwrap());
+        let tree = HashTree::new(HashTreeConfig::new(store.store_arc()));
+        let state = test_app_state(store.clone(), Vec::new());
+
+        let (thumb_cid, _size) = tree.put(b"thumb").await.unwrap();
+        let root_cid = tree
+            .put_directory(vec![
+                DirEntry::from_cid("cover.jpeg", &thumb_cid).with_link_type(LinkType::File)
+            ])
+            .await
+            .unwrap();
+
+        let resolved = resolve_thumbnail_path(&state, &tree, &root_cid, "thumbnail")
+            .await
+            .unwrap();
+        assert_eq!(resolved.as_deref(), Some("cover.jpeg"));
     }
 
     #[tokio::test]
@@ -3758,14 +3938,14 @@ mod tests {
         let (thumb_cid, _) = tree.put(&thumb_bytes).await.unwrap();
         let historical_root = tree
             .put_directory(vec![
-                DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File),
+                DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File)
             ])
             .await
             .unwrap();
         let (video_cid, _) = tree.put(b"video-data").await.unwrap();
         let current_root = tree
             .put_directory(vec![
-                DirEntry::from_cid("video.mp4", &video_cid).with_link_type(LinkType::File),
+                DirEntry::from_cid("video.mp4", &video_cid).with_link_type(LinkType::File)
             ])
             .await
             .unwrap();

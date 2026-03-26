@@ -221,6 +221,9 @@ impl BlossomConfig {
     pub fn all_read_servers(&self) -> Vec<String> {
         let mut servers = self.servers.clone();
         servers.extend(self.read_servers.clone());
+        if servers.is_empty() {
+            servers = default_read_servers();
+        }
         servers.sort();
         servers.dedup();
         servers
@@ -230,6 +233,9 @@ impl BlossomConfig {
     pub fn all_write_servers(&self) -> Vec<String> {
         let mut servers = self.servers.clone();
         servers.extend(self.write_servers.clone());
+        if servers.is_empty() {
+            servers = default_write_servers();
+        }
         servers.sort();
         servers.dedup();
         servers
@@ -658,6 +664,20 @@ write_servers = ["https://custom.server"]
         let write = config.all_write_servers();
         assert!(write.contains(&"https://legacy.server".to_string()));
         assert!(write.contains(&"https://upload.iris.to".to_string()));
+    }
+
+    #[test]
+    fn test_all_servers_fall_back_to_defaults_when_explicitly_empty() {
+        let config = BlossomConfig {
+            servers: vec![],
+            read_servers: vec![],
+            write_servers: vec![],
+            max_upload_mb: default_max_upload_mb(),
+            force_upload: false,
+        };
+
+        assert_eq!(config.all_read_servers(), default_read_servers());
+        assert_eq!(config.all_write_servers(), default_write_servers());
     }
 
     #[test]

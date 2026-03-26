@@ -5,6 +5,7 @@ const getCachedRoot = vi.fn();
 const onCachedRootUpdate = vi.fn();
 const subscribeToTreeRoots = vi.fn();
 const resolveTreeRootNow = vi.fn();
+const getHistoricalTreeRoots = vi.fn();
 
 vi.mock('../src/iris/treeRootCache', () => ({
   getCachedRoot,
@@ -14,6 +15,7 @@ vi.mock('../src/iris/treeRootCache', () => ({
 vi.mock('../src/iris/treeRootSubscription', () => ({
   subscribeToTreeRoots,
   resolveTreeRootNow,
+  getHistoricalTreeRoots,
 }));
 
 const ROOT: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 1) };
@@ -27,6 +29,8 @@ describe('mediaHandler root waiting', () => {
     onCachedRootUpdate.mockReset();
     subscribeToTreeRoots.mockReset();
     resolveTreeRootNow.mockReset();
+    getHistoricalTreeRoots.mockReset();
+    getHistoricalTreeRoots.mockResolvedValue([]);
   });
 
   it('actively resolves a missing cached root instead of only waiting for subscription updates', async () => {

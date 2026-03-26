@@ -51,6 +51,17 @@ describe('mediaHandler thumbnail aliases', () => {
     expect(resolvePath).not.toHaveBeenCalled();
   });
 
+  it('accepts generic image filenames for thumbnail aliases', async () => {
+    resolvePath.mockResolvedValue(null);
+    listDirectory.mockResolvedValue([{ name: 'cover.jpeg', cid: ROOT_THUMB, size: 123 }]);
+
+    await expect(
+      __test__.resolveCidWithinRoot(ROOT, 'thumbnail', { allowSingleSegmentRootFallback: true })
+    ).resolves.toBe(ROOT_THUMB);
+    await expect(__test__.normalizeAliasPath(ROOT, 'thumbnail')).resolves.toBe('cover.jpeg');
+    expect(resolvePath).not.toHaveBeenCalled();
+  });
+
   it('resolves nested thumbnail aliases before looking up the file cid', async () => {
     resolvePath.mockResolvedValue(null);
     listDirectory.mockImplementation(async (cid: CID) => {

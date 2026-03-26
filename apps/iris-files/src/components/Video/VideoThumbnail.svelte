@@ -75,25 +75,12 @@
   let capturedFrameObjectUrl: string | null = null;
   const loadingStrategy = shouldEagerLoadMediaInNativeChildRuntime() ? 'eager' : 'lazy';
 
-  function hashPosterSeed(value: string): number {
-    let hash = 2166136261;
-    for (let i = 0; i < value.length; i += 1) {
-      hash ^= value.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
-    }
-    return hash >>> 0;
-  }
-
-  function getPosterPalette(seed: string): { primary: string; secondary: string; accent: string; glow: string } {
-    const hash = hashPosterSeed(seed);
-    const hueA = hash % 360;
-    const hueB = (hueA + 45 + (hash % 90)) % 360;
-    const accentHue = (hueA + 180) % 360;
+  function getPosterPalette(_seed: string): { primary: string; secondary: string; accent: string; glow: string } {
     return {
-      primary: `hsl(${hueA} 72% 48%)`,
-      secondary: `hsl(${hueB} 58% 16%)`,
-      accent: `hsla(${accentHue} 95% 82% / 0.94)`,
-      glow: `hsla(${hueA} 90% 62% / 0.30)`,
+      primary: 'rgba(255, 255, 255, 0.06)',
+      secondary: '#1a1a1d',
+      accent: 'rgba(255, 255, 255, 0.88)',
+      glow: 'rgba(255, 255, 255, 0.06)',
     };
   }
 
@@ -150,6 +137,11 @@
       ? resolvedFallbackVideoUrls[videoCandidateIndex] ?? null
       : null
   );
+  const hasPendingMediaCandidate = $derived.by(() =>
+    (!!renderedSrc && !imageError)
+    || (!!activeFallbackVideoUrl && !videoFailed)
+  );
+  const showPosterFallback = $derived(showGeneratedPoster && !hasPendingMediaCandidate);
 
   // Reset state when the image or fallback candidates change.
   $effect.pre(() => {
@@ -421,7 +413,7 @@
 
   {#if (!renderedSrc || imageError || !imageLoaded) && !capturedVideoFrameUrl}
     <div class="absolute inset-0">
-      {#if showGeneratedPoster}
+      {#if showPosterFallback}
         <div
           class="generated-thumbnail-poster absolute inset-0 overflow-hidden"
           style={fallbackPosterStyle}
@@ -449,8 +441,12 @@
           </div>
         </div>
       {:else}
-        <div class="absolute inset-0 flex items-center justify-center">
-          <span class="i-lucide-video text-text-3 {iconSize}"></span>
+        <div class="absolute inset-0 bg-surface-2">
+          {#if !hasPendingMediaCandidate}
+            <div class="absolute inset-0 flex items-center justify-center">
+              <span class="i-lucide-video text-text-3 {iconSize}"></span>
+            </div>
+          {/if}
         </div>
       {/if}
     </div>
@@ -475,7 +471,7 @@
   .generated-thumbnail-poster {
     background:
       radial-gradient(circle at top left, var(--poster-primary) 0%, transparent 58%),
-      linear-gradient(145deg, var(--poster-secondary) 0%, #09090b 100%);
+      linear-gradient(180deg, #2b2b31 0%, var(--poster-secondary) 100%);
   }
 
   .generated-thumbnail-glow {
@@ -514,7 +510,7 @@
   }
 
   .generated-thumbnail-title {
-    color: white;
+    color: rgba(255, 255, 255, 0.92);
     font-size: 0.95rem;
     font-weight: 700;
     line-height: 1.1;
@@ -523,7 +519,7 @@
   }
 
   .generated-thumbnail-subtitle {
-    color: rgba(255, 255, 255, 0.72);
+    color: rgba(255, 255, 255, 0.60);
     font-size: 0.68rem;
     line-height: 1.1;
     text-shadow: 0 1px 8px rgba(0, 0, 0, 0.25);

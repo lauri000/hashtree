@@ -48,8 +48,6 @@
   import { resolveReadableThumbnailRoot, resolveReadableVideoRoot } from '../../lib/readableVideoRoot';
 
   const MIN_FOLLOWS_THRESHOLD = 5;
-  const FEED_PLAYLIST_DETECTION_CONCURRENCY = 8;
-  const RECENT_MEDIA_DETECTION_CONCURRENCY = 4;
   import VideoCard from './VideoCard.svelte';
   import PlaylistCard from './PlaylistCard.svelte';
   import type { VideoItem } from './types';
@@ -334,10 +332,7 @@
       }
     };
 
-    // Process in parallel batches
-    for (let i = 0; i < videos.length; i += FEED_PLAYLIST_DETECTION_CONCURRENCY) {
-      await Promise.all(videos.slice(i, i + FEED_PLAYLIST_DETECTION_CONCURRENCY).map(detectOne));
-    }
+    await Promise.allSettled(videos.map(detectOne));
   }
 
   function detectRecentMedia(videos: VideoItem[]) {
@@ -426,9 +421,7 @@
       }
     };
 
-    for (let i = 0; i < videos.length; i += RECENT_MEDIA_DETECTION_CONCURRENCY) {
-      await Promise.all(videos.slice(i, i + RECENT_MEDIA_DETECTION_CONCURRENCY).map(detectOne));
-    }
+    await Promise.allSettled(videos.map(detectOne));
   }
 
   $effect(() => {

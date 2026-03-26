@@ -6,7 +6,7 @@ const DIRECT_MEDIA_PROBE_BYTES = 64;
 export async function readDirectPlayableMediaFileName(
   tree: Pick<HashTree, 'readFileRange'>,
   rootCid: CID,
-  timeoutMs: number,
+  timeoutMs: number = 15000,
 ): Promise<string | null> {
   const bytes = await Promise.race([
     tree.readFileRange(rootCid, 0, DIRECT_MEDIA_PROBE_BYTES),

@@ -26,4 +26,8 @@ describe('video card thumbnail wiring', () => {
     expect(videoCardSource).toContain('let imageCandidateStallTimeoutMs = $derived(propThumbnailUrl ? 8000 : 2500);');
     expect(videoCardSource).toContain('{imageCandidateStallTimeoutMs}');
   });
+
+  it('prefers the mutable alias first when the card does not yet have an exact thumbnail url', () => {
+    expect(videoCardSource).toContain('preferAliasFallback: !propThumbnailUrl');
+  });
 });

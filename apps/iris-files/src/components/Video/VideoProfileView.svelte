@@ -148,11 +148,7 @@
       } catch { /* ignore */ }
     };
 
-    // Process trees in parallel (limit 4)
-    const CONCURRENCY = 4;
-    for (let i = 0; i < treesToCheck.length; i += CONCURRENCY) {
-      await Promise.all(treesToCheck.slice(i, i + CONCURRENCY).map(processTree));
-    }
+    await Promise.allSettled(treesToCheck.map(processTree));
   }
 
   // Get playlist tree names as a Set for efficient lookup

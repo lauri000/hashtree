@@ -48,16 +48,8 @@ export const MIN_VIDEOS_FOR_SIDEBAR = 2;
 /** Minimum videos to consider a playlist structure */
 export const MIN_VIDEOS_FOR_STRUCTURE = 1;
 
-/** Limit deep metadata reads on huge playlists */
-const MAX_PLAYLIST_SUBDIR_READS = 200;
-
 /** Limit total playlist metadata processing */
 const MAX_PLAYLIST_METADATA_ITEMS = 400;
-
-/** Time budget for resolving card metadata from tree contents */
-const PLAYLIST_ROOT_READ_TIMEOUT_MS = 8000;
-const PLAYLIST_SUBDIR_READ_TIMEOUT_MS = 2500;
-const PLAYLIST_METADATA_READ_TIMEOUT_MS = 2500;
 
 /** Video file extensions we recognize */
 export const VIDEO_EXTENSIONS = PLAYABLE_MEDIA_EXTENSIONS;
@@ -77,6 +69,7 @@ export function findThumbnailEntry(entries: { name: string }[]): { name: string 
   return entries.find(e =>
     e.name.startsWith('thumbnail.') ||
     e.name.endsWith('.jpg') ||
+    e.name.endsWith('.jpeg') ||
     e.name.endsWith('.webp') ||
     e.name.endsWith('.png')
   );
@@ -136,11 +129,7 @@ export async function findFirstVideoEntry(rootCid: CID): Promise<string | null> 
     let hadIndeterminateChild = false;
     for (const entry of sorted) {
       try {
-        const subEntries = await withTimeout(tree.listDirectory(entry.cid), 2000);
-        if (subEntries === null) {
-          hadIndeterminateChild = true;
-          continue;
-        }
+        const subEntries = await tree.listDirectory(entry.cid);
         if (subEntries && hasVideoFile(subEntries)) {
           return entry.name;
         }
@@ -183,17 +172,9 @@ function getRootCacheKey(rootCid: CID): string {
   return `${toHex(rootCid.hash)}:${rootCid.key ? toHex(rootCid.key) : ''}`;
 }
 
-/** Helper to add timeout to promises */
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
-  return Promise.race([
-    promise,
-    new Promise<null>(resolve => setTimeout(() => resolve(null), ms))
-  ]);
-}
-
 async function detectDirectRootMediaInfo(rootCid: CID, treeName?: string): Promise<PlaylistCardInfo | null> {
   const tree = getTree();
-  const videoPath = await readDirectPlayableMediaFileName(tree, rootCid, PLAYLIST_METADATA_READ_TIMEOUT_MS);
+  const videoPath = await readDirectPlayableMediaFileName(tree, rootCid);
   if (!videoPath) {
     return null;
   }
@@ -277,7 +258,7 @@ async function readPlaylistCardInfoAtRoot(
   const tree = getTree();
 
   try {
-    const entries = await withTimeout(tree.listDirectory(effectiveRootCid), PLAYLIST_ROOT_READ_TIMEOUT_MS);
+    const entries = await tree.listDirectory(effectiveRootCid);
     if (!entries || entries.length === 0) {
       const directRootInfo = await detectDirectRootMediaInfo(effectiveRootCid, treeName);
       if (directRootInfo) {
@@ -321,7 +302,7 @@ async function readPlaylistCardInfoAtRoot(
         const metadataEntry = entries.find(e => e.name === 'metadata.json');
         if (metadataEntry) {
           try {
-            const metadataData = await withTimeout(tree.readFile(metadataEntry.cid), PLAYLIST_METADATA_READ_TIMEOUT_MS);
+            const metadataData = await tree.readFile(metadataEntry.cid);
             if (metadataData) {
               const metadata = JSON.parse(new TextDecoder().decode(metadataData));
               if (!thumbnailUrl) {
@@ -346,7 +327,7 @@ async function readPlaylistCardInfoAtRoot(
         const infoEntry = entries.find(e => e.name === 'info.json');
         if (infoEntry) {
           try {
-            const infoData = await withTimeout(tree.readFile(infoEntry.cid), PLAYLIST_METADATA_READ_TIMEOUT_MS);
+            const infoData = await tree.readFile(infoEntry.cid);
             if (infoData) {
               const info = JSON.parse(new TextDecoder().decode(infoData));
               if (!thumbnailUrl) {
@@ -389,7 +370,7 @@ async function readPlaylistCardInfoAtRoot(
     const results = await Promise.all(
       sorted.slice(0, 5).map(async (entry) => {
         try {
-          const subEntries = await withTimeout(tree.listDirectory(entry.cid), PLAYLIST_SUBDIR_READ_TIMEOUT_MS);
+          const subEntries = await tree.listDirectory(entry.cid);
           if (subEntries) {
             const thumbEntry = findThumbnailEntry(subEntries);
             if (thumbEntry) {
@@ -414,7 +395,7 @@ async function readSingleVideoCardInfo(rootCid: CID): Promise<PlaylistCardInfo |
   const tree = getTree();
 
   try {
-    const entries = await withTimeout(tree.listDirectory(rootCid), PLAYLIST_ROOT_READ_TIMEOUT_MS);
+    const entries = await tree.listDirectory(rootCid);
     if (!entries || entries.length === 0) {
       return detectDirectRootMediaInfo(rootCid);
     }
@@ -449,7 +430,7 @@ async function readSingleVideoCardInfo(rootCid: CID): Promise<PlaylistCardInfo |
       const metadataEntry = entries.find(e => e.name === 'metadata.json');
       if (metadataEntry) {
         try {
-          const metadataData = await withTimeout(tree.readFile(metadataEntry.cid), PLAYLIST_METADATA_READ_TIMEOUT_MS);
+          const metadataData = await tree.readFile(metadataEntry.cid);
           if (metadataData) {
             const metadata = JSON.parse(new TextDecoder().decode(metadataData));
             if (!thumbnailUrl) {
@@ -473,7 +454,7 @@ async function readSingleVideoCardInfo(rootCid: CID): Promise<PlaylistCardInfo |
       const infoEntry = entries.find(e => e.name === 'info.json');
       if (infoEntry) {
         try {
-          const infoData = await withTimeout(tree.readFile(infoEntry.cid), PLAYLIST_METADATA_READ_TIMEOUT_MS);
+          const infoData = await tree.readFile(infoEntry.cid);
           if (infoData) {
             const info = JSON.parse(new TextDecoder().decode(infoData));
             if (!thumbnailUrl) {
@@ -528,7 +509,7 @@ export async function detectVideoCardInfo(
     return null;
   }
   try {
-    const videoDir = await withTimeout(tree.resolvePath(effectiveRootCid, videoId), PLAYLIST_SUBDIR_READ_TIMEOUT_MS);
+    const videoDir = await tree.resolvePath(effectiveRootCid, videoId);
     if (!videoDir) {
       return null;
     }
@@ -708,12 +689,6 @@ async function loadPlaylistMetadata(
     ? orderedEntries.slice(0, MAX_PLAYLIST_METADATA_ITEMS)
     : orderedEntries;
 
-  // Process entries with limited concurrency to avoid overwhelming the system
-  const CONCURRENCY = 3;
-  let inFlight = 0;
-  let entryIndex = 0;
-  let subdirReads = 0;
-
   const processEntry = async (entry: typeof entries[0]): Promise<void> => {
     try {
       let title = entry.name;
@@ -747,14 +722,8 @@ async function loadPlaylistMetadata(
         return;
       }
 
-      let subEntries: Array<{ name: string; cid: CID; size: number; type: LinkType; meta?: Record<string, unknown> }> | null = null;
-      if (subdirReads < MAX_PLAYLIST_SUBDIR_READS) {
-        subdirReads++;
-        subEntries = await Promise.race([
-          tree.listDirectory(entry.cid),
-          new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
-        ]);
-      }
+      const subEntries: Array<{ name: string; cid: CID; size: number; type: LinkType; meta?: Record<string, unknown> }> | null =
+        await tree.listDirectory(entry.cid);
       if (!subEntries) {
         if (title !== entry.name || duration || thumbnailUrl) {
           currentPlaylist.update(playlist => {
@@ -789,10 +758,7 @@ async function loadPlaylistMetadata(
         const metadataEntry = subEntries.find(e => e.name === 'metadata.json');
         if (metadataEntry) {
           try {
-            const metadataData = await Promise.race([
-              tree.readFile(metadataEntry.cid),
-              new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500))
-            ]);
+            const metadataData = await tree.readFile(metadataEntry.cid);
             if (metadataData) {
               const metadata = JSON.parse(new TextDecoder().decode(metadataData));
               title = metadata.title || title;
@@ -809,10 +775,7 @@ async function loadPlaylistMetadata(
         const infoEntry = subEntries.find(e => e.name === 'info.json');
         if (infoEntry) {
           try {
-            const infoData = await Promise.race([
-              tree.readFile(infoEntry.cid),
-              new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500))
-            ]);
+            const infoData = await tree.readFile(infoEntry.cid);
             if (infoData) {
               const info = JSON.parse(new TextDecoder().decode(infoData));
               if (title === entry.name) title = info.title || title;
@@ -827,10 +790,7 @@ async function loadPlaylistMetadata(
         const titleEntry = subEntries.find(e => e.name === 'title.txt');
         if (titleEntry) {
           try {
-            const titleData = await Promise.race([
-              tree.readFile(titleEntry.cid),
-              new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500))
-            ]);
+            const titleData = await tree.readFile(titleEntry.cid);
             if (titleData) {
               title = new TextDecoder().decode(titleData).trim();
             }
@@ -875,20 +835,7 @@ async function loadPlaylistMetadata(
     } catch {}
   };
 
-  // Process with limited concurrency
-  const processNext = async (): Promise<void> => {
-    while (entryIndex < entriesToProcess.length) {
-      if (inFlight >= CONCURRENCY) {
-        await new Promise(r => setTimeout(r, 50));
-        continue;
-      }
-      const entry = entriesToProcess[entryIndex++];
-      inFlight++;
-      processEntry(entry).finally(() => { inFlight--; });
-    }
-  };
-
-  await processNext();
+  await Promise.allSettled(entriesToProcess.map(processEntry));
 }
 
 /**

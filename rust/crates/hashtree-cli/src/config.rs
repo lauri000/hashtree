@@ -153,6 +153,9 @@ impl BlossomConfig {
     pub fn all_read_servers(&self) -> Vec<String> {
         let mut servers = self.servers.clone();
         servers.extend(self.read_servers.clone());
+        if servers.is_empty() {
+            servers = default_read_servers();
+        }
         servers.sort();
         servers.dedup();
         servers
@@ -161,6 +164,9 @@ impl BlossomConfig {
     pub fn all_write_servers(&self) -> Vec<String> {
         let mut servers = self.servers.clone();
         servers.extend(self.write_servers.clone());
+        if servers.is_empty() {
+            servers = default_write_servers();
+        }
         servers.sort();
         servers.dedup();
         servers
@@ -841,5 +847,21 @@ chunk_target_bytes = 65536
         let write = config.all_write_servers();
         assert!(write.contains(&"https://legacy.server".to_string()));
         assert!(write.contains(&"https://upload.iris.to".to_string()));
+    }
+
+    #[test]
+    fn test_blossom_servers_fall_back_to_defaults_when_explicitly_empty() {
+        let config = BlossomConfig {
+            servers: Vec::new(),
+            read_servers: Vec::new(),
+            write_servers: Vec::new(),
+            max_upload_mb: default_max_upload_mb(),
+        };
+
+        let read = config.all_read_servers();
+        assert_eq!(read, default_read_servers());
+
+        let write = config.all_write_servers();
+        assert_eq!(write, default_write_servers());
     }
 }

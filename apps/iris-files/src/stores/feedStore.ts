@@ -30,7 +30,6 @@ const RELAY_WAIT_TIMEOUT_MS = 10000;
 const RELAY_RETRY_TIMEOUT_MS = 30000;
 const EMPTY_FEED_RETRY_MS = 15000;
 const EMPTY_FEED_MAX_RETRIES = 3;
-const FEED_MEDIA_RESOLUTION_CONCURRENCY = 16;
 const FEED_MEDIA_RESOLUTION_MAX_RETRIES = 8;
 
 let retryOnRelayScheduled = false;
@@ -361,12 +360,9 @@ function queueFeedVideoMediaResolution(videos: FeedVideo[]): void {
 
   if (pending.length === 0) return;
 
-  void (async () => {
-    for (let i = 0; i < pending.length; i += FEED_MEDIA_RESOLUTION_CONCURRENCY) {
-      const batch = pending.slice(i, i + FEED_MEDIA_RESOLUTION_CONCURRENCY);
-      await Promise.all(batch.map((video) => resolveFeedVideoMedia(video)));
-    }
-  })();
+  for (const video of pending) {
+    void resolveFeedVideoMedia(video);
+  }
 }
 
 export function setFeedVideos(videos: FeedVideo[]): void {

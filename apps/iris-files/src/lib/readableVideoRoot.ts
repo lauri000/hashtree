@@ -15,7 +15,6 @@ const FALLBACK_CACHE_TTL_MS = 10000;
 const NO_FALLBACK_CACHE_TTL_MS = 10000;
 const ROOT_HISTORY_CACHE_TTL_MS = 30000;
 const MAX_PLAYLIST_CHILD_PROBES = 12;
-const READABLE_ROOT_HISTORY_CONCURRENCY = 4;
 const THUMBNAIL_PROBE_METADATA_TIMEOUT_MS = 2500;
 const DEFAULT_HISTORY_RELAYS = [
   'wss://relay.damus.io',
@@ -33,54 +32,10 @@ const inFlightRootHistoryEvents = new Map<string, Promise<NDKEvent[]>>();
 const readableRootCache = new Map<string, { cid: CID | null; expiresAt: number }>();
 const thumbnailRootCache = new Map<string, { cid: CID | null; expiresAt: number }>();
 const rootHistoryEventCache = new Map<string, { events: NDKEvent[]; expiresAt: number }>();
-const readableRootHistoryWaiters: Array<() => void> = [];
-let activeBackgroundReadableRootHistoryLookups = 0;
-let activeForegroundReadableRootHistoryLookups = 0;
 const TIMEOUT = Symbol('timeout');
 
 function isHexPubkey(value: string | null | undefined): value is string {
   return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
-}
-
-function wakeReadableRootHistoryWaiter(): void {
-  if (activeForegroundReadableRootHistoryLookups > 0) {
-    return;
-  }
-  if (activeBackgroundReadableRootHistoryLookups >= READABLE_ROOT_HISTORY_CONCURRENCY) {
-    return;
-  }
-  const next = readableRootHistoryWaiters.shift();
-  next?.();
-}
-
-async function withReadableRootHistorySlot<T>(
-  priority: 'foreground' | 'background',
-  work: () => Promise<T>,
-): Promise<T> {
-  if (priority === 'background' && (
-    activeForegroundReadableRootHistoryLookups > 0
-    || activeBackgroundReadableRootHistoryLookups >= READABLE_ROOT_HISTORY_CONCURRENCY
-  )) {
-    await new Promise<void>((resolve) => {
-      readableRootHistoryWaiters.push(resolve);
-    });
-  }
-
-  if (priority === 'foreground') {
-    activeForegroundReadableRootHistoryLookups += 1;
-  } else {
-    activeBackgroundReadableRootHistoryLookups += 1;
-  }
-  try {
-    return await work();
-  } finally {
-    if (priority === 'foreground') {
-      activeForegroundReadableRootHistoryLookups -= 1;
-    } else {
-      activeBackgroundReadableRootHistoryLookups -= 1;
-    }
-    wakeReadableRootHistoryWaiter();
-  }
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | typeof TIMEOUT> {
@@ -446,30 +401,29 @@ async function queryHistoricalRootCandidate(
     rootHash: toHex(rootCid.hash).slice(0, 8),
   });
 
-  return await withReadableRootHistorySlot(priority, async (): Promise<CID | null> => {
-    const events = await getHistoricalRootEvents(pubkey, treeName);
-    if (events.length > 0) {
-      logHtreeDebug(`video-root:${logSuffix}:probe-history:merged`, {
-        npub,
-        treeName,
-        videoId: videoId ?? null,
-        rootHash: toHex(rootCid.hash).slice(0, 8),
-        events: events.length,
-      });
-    }
+  const events = await getHistoricalRootEvents(pubkey, treeName);
+  if (events.length > 0) {
+    logHtreeDebug(`video-root:${logSuffix}:probe-history:merged`, {
+      npub,
+      treeName,
+      videoId: videoId ?? null,
+      rootHash: toHex(rootCid.hash).slice(0, 8),
+      events: events.length,
+      priority,
+    });
+  }
 
-    for (const event of events) {
-      const candidate = parseTreeRootCid(event);
-      if (!candidate || sameCid(candidate, rootCid)) {
-        continue;
-      }
-      if (await predicate(candidate)) {
-        return candidate;
-      }
+  for (const event of events) {
+    const candidate = parseTreeRootCid(event);
+    if (!candidate || sameCid(candidate, rootCid)) {
+      continue;
     }
+    if (await predicate(candidate)) {
+      return candidate;
+    }
+  }
 
-    return null;
-  });
+  return null;
 }
 
 export async function resolveReadableVideoRoot(options: {

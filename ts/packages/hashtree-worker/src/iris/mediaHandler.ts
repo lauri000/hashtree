@@ -9,7 +9,7 @@
 import type { HashTree, CID } from '@hashtree/core';
 import type { MediaRequestByCid, MediaRequestByPath, MediaResponse } from './protocol';
 import { getCachedRoot, onCachedRootUpdate } from './treeRootCache';
-import { resolveTreeRootNow, subscribeToTreeRoots } from './treeRootSubscription';
+import { getHistoricalTreeRoots, resolveTreeRootNow, subscribeToTreeRoots } from './treeRootSubscription';
 import { getErrorMessage } from './utils/errorMessage';
 import { nhashDecode, toHex } from '@hashtree/core';
 import { nip19 } from 'nostr-tools';
@@ -111,11 +111,12 @@ interface AsyncLookupCache<T> {
 // Timeout for considering a stream "done" (no updates)
 const LIVE_STREAM_TIMEOUT = 10000; // 10 seconds
 const ROOT_WAIT_TIMEOUT_MS = 15000;
-const NHASH_HINT_DIRECTORY_TIMEOUT_MS = 1000;
+const DIRECTORY_PROBE_TIMEOUT_MS = 1000;
 const IMMUTABLE_LOOKUP_CACHE_HIT_TTL_MS = 5 * 60 * 1000;
 const IMMUTABLE_LOOKUP_CACHE_MISS_TTL_MS = 1000;
 const DIRECTORY_CACHE_SIZE = 1024;
 const RESOLVED_ENTRY_CACHE_SIZE = 2048;
+const MUTABLE_RESOLVED_ENTRY_CACHE_SIZE = 2048;
 const FILE_SIZE_CACHE_SIZE = 1024;
 const THUMBNAIL_PATH_CACHE_SIZE = 1024;
 
@@ -135,6 +136,7 @@ const activeMediaStreams = new Map<string, ActiveStream>();
 const inflightRootWaits = new Map<string, Promise<CID | null>>();
 const directoryLookupCache = createAsyncLookupCache(DIRECTORY_CACHE_SIZE);
 const resolvedEntryLookupCache = createAsyncLookupCache(RESOLVED_ENTRY_CACHE_SIZE);
+const mutableResolvedEntryLookupCache = createAsyncLookupCache(MUTABLE_RESOLVED_ENTRY_CACHE_SIZE);
 const fileSizeLookupCache = createAsyncLookupCache(FILE_SIZE_CACHE_SIZE);
 const thumbnailPathLookupCache = createAsyncLookupCache(THUMBNAIL_PATH_CACHE_SIZE);
 
@@ -167,6 +169,7 @@ function clearMediaLookupCaches(): void {
   inflightRootWaits.clear();
   clearAsyncLookupCache(directoryLookupCache);
   clearAsyncLookupCache(resolvedEntryLookupCache);
+  clearAsyncLookupCache(mutableResolvedEntryLookupCache);
   clearAsyncLookupCache(fileSizeLookupCache);
   clearAsyncLookupCache(thumbnailPathLookupCache);
 }
@@ -216,6 +219,12 @@ async function loadCachedLookup<T>(
 
 function cidCacheKey(cid: CID): string {
   return cid.key ? `${toHex(cid.hash)}?k=${toHex(cid.key)}` : toHex(cid.hash);
+}
+
+function sameCid(a: CID | null | undefined, b: CID | null | undefined): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return cidCacheKey(a) === cidCacheKey(b);
 }
 
 /**
@@ -333,7 +342,10 @@ async function handleMediaRequestByPath(req: MediaRequestByPath): Promise<void> 
 
     // Navigate to file within tree if path specified
     if (filePath) {
-      const resolved = await resolvePathFromDirectoryListings(cid, filePath);
+      const resolved = await resolveMutableTreeEntry(npub, treeName, filePath, {
+        allowSingleSegmentRootFallback: false,
+        expectedMimeType: mimeType,
+      });
       if (!resolved) {
         mediaPort.postMessage({
           type: 'error',
@@ -528,13 +540,8 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
         return;
       }
     } else if (npub && treeName) {
-      // Npub-based request - resolve through cached root
-      const rootCid = await waitForCachedRoot(npub, treeName);
-      if (!rootCid) {
-        sendSwError(requestId, 404, 'Tree not found');
-        return;
-      }
-      resolvedEntry = await resolveEntryWithinRoot(rootCid, path || '', {
+      // Npub-based request - resolve through mutable root history when needed
+      resolvedEntry = await resolveMutableTreeEntry(npub, treeName, path || '', {
         allowSingleSegmentRootFallback: false,
         expectedMimeType: mimeType,
       });
@@ -634,6 +641,50 @@ async function waitForCachedRoot(npub: string, treeName: string): Promise<CID | 
   return pending;
 }
 
+async function resolveMutableTreeEntry(
+  npub: string,
+  treeName: string,
+  path: string,
+  options?: { allowSingleSegmentRootFallback?: boolean; expectedMimeType?: string },
+): Promise<ResolvedRootEntry | null> {
+  const currentRoot = await waitForCachedRoot(npub, treeName);
+  const cacheKey = [
+    npub,
+    treeName,
+    currentRoot ? cidCacheKey(currentRoot) : 'none',
+    options?.allowSingleSegmentRootFallback ? 'root-fallback' : 'strict',
+    options?.expectedMimeType ?? '',
+    path,
+  ].join('|');
+
+  return loadCachedLookup(
+    mutableResolvedEntryLookupCache,
+    cacheKey,
+    async () => {
+      if (currentRoot) {
+        const currentEntry = await resolveEntryWithinRoot(currentRoot, path, options);
+        if (currentEntry) {
+          return currentEntry;
+        }
+      }
+
+      const historicalRoots = await getHistoricalTreeRoots(npub, treeName, ROOT_WAIT_TIMEOUT_MS);
+      for (const candidateRoot of historicalRoots) {
+        if (sameCid(candidateRoot, currentRoot)) {
+          continue;
+        }
+        const entry = await resolveEntryWithinRoot(candidateRoot, path, options);
+        if (entry) {
+          return entry;
+        }
+      }
+
+      return null;
+    },
+    (value) => getLookupTtlMs(value),
+  );
+}
+
 function decodeNpubToPubkey(npub: string): string | null {
   if (!npub.startsWith('npub1')) return null;
   try {
@@ -692,6 +743,15 @@ async function resolveEntryWithinRoot(
         }
       }
 
+      if (
+        options?.allowSingleSegmentRootFallback &&
+        !path.includes('/') &&
+        isExactThumbnailFilenamePath(path) &&
+        !(await canListDirectory(rootCid))
+      ) {
+        return null;
+      }
+
       const entry = await resolvePathFromDirectoryListings(rootCid, path);
       if (entry) {
         return entry;
@@ -731,7 +791,7 @@ async function resolvePathFromDirectoryListings(
 
   let currentCid = rootCid;
   for (let i = 0; i < parts.length; i += 1) {
-    const entries = await listDirectoryWithTimeout(currentCid);
+    const entries = await loadDirectoryListing(currentCid);
     if (!entries) {
       return null;
     }
@@ -1091,7 +1151,7 @@ async function canListDirectory(rootCid: CID): Promise<boolean> {
     if ('isDirectory' in tree && typeof tree.isDirectory === 'function') {
       return await tree.isDirectory(rootCid);
     }
-    const entries = await listDirectoryWithTimeout(rootCid);
+    const entries = await listDirectoryWithProbeTimeout(rootCid);
     return Array.isArray(entries);
   } catch {
     return false;
@@ -1100,6 +1160,7 @@ async function canListDirectory(rootCid: CID): Promise<boolean> {
 
 export const __test__ = {
   resolveCidWithinRoot,
+  resolveMutableTreeEntry,
   normalizeAliasPath,
   canListDirectory,
   waitForCachedRoot,
@@ -1133,17 +1194,22 @@ async function resolvePlayableAliasEntry(
   return findPlayableLookupInDir(rootCid, dirPath);
 }
 
-async function listDirectoryWithTimeout(cid: CID): Promise<Awaited<ReturnType<HashTree['listDirectory']>> | null> {
+async function loadDirectoryListing(cid: CID): Promise<Awaited<ReturnType<HashTree['listDirectory']>> | null> {
   if (!tree) return null;
   return loadCachedLookup(
     directoryLookupCache,
     cidCacheKey(cid),
-    async () => Promise.race([
-      tree.listDirectory(cid),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), NHASH_HINT_DIRECTORY_TIMEOUT_MS)),
-    ]),
+    async () => tree.listDirectory(cid),
     (value) => getLookupTtlMs(value),
   );
+}
+
+async function listDirectoryWithProbeTimeout(cid: CID): Promise<Awaited<ReturnType<HashTree['listDirectory']>> | null> {
+  if (!tree) return null;
+  return Promise.race([
+    loadDirectoryListing(cid),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), DIRECTORY_PROBE_TIMEOUT_MS)),
+  ]);
 }
 
 /**
@@ -1206,7 +1272,7 @@ async function findThumbnailLookupInDir(
           : { cid: rootCid };
         if (!dirEntry) return null;
 
-        const entries = await listDirectoryWithTimeout(dirEntry.cid);
+        const entries = await listDirectoryWithProbeTimeout(dirEntry.cid);
         if (!entries) return null;
 
         const rootThumbnail = await findThumbnailLookupInEntries(entries, dirPath);
@@ -1223,7 +1289,7 @@ async function findThumbnailLookupInDir(
             }
 
             try {
-              const subEntries = await listDirectoryWithTimeout(entry.cid);
+              const subEntries = await listDirectoryWithProbeTimeout(entry.cid);
               if (!subEntries) {
                 continue;
               }
@@ -1264,7 +1330,7 @@ async function findPlayableLookupInDir(
           : { cid: rootCid, path: '' };
         if (!dirEntry) return null;
 
-        const entries = await listDirectoryWithTimeout(dirEntry.cid);
+        const entries = await listDirectoryWithProbeTimeout(dirEntry.cid);
         if (entries && entries.length > 0) {
           const directPlayable = findPlayableLookupInEntries(entries, dirPath);
           if (directPlayable) {
@@ -1278,7 +1344,7 @@ async function findPlayableLookupInDir(
             }
 
             const prefix = dirPath ? `${dirPath}/${entry.name}` : entry.name;
-            const subEntries = await listDirectoryWithTimeout(entry.cid);
+            const subEntries = await listDirectoryWithProbeTimeout(entry.cid);
             if (!subEntries || subEntries.length === 0) {
               const directPlayableChild = await detectDirectPlayableLookup(entry.cid, prefix);
               if (directPlayableChild) {

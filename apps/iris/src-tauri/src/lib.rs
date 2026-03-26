@@ -240,7 +240,7 @@ async fn start_daemon<R: tauri::Runtime + 'static>(
     let mut config =
         hashtree_cli::Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
     info!(
-        "Embedded daemon config loaded from {:?}: webrtc={} multicast={} (max {}) bluetooth={} (max {}) relays={}",
+        "Embedded daemon config loaded from {:?}: webrtc={} multicast={} (max {}) bluetooth={} (max {}) relays={} blossom_read_servers={}",
         config_path,
         config.server.enable_webrtc,
         config.server.enable_multicast,
@@ -248,6 +248,7 @@ async fn start_daemon<R: tauri::Runtime + 'static>(
         config.server.enable_bluetooth,
         config.server.max_bluetooth_peers,
         config.nostr.relays.len(),
+        config.blossom.all_read_servers().len(),
     );
     config.storage.data_dir = data_dir.to_string_lossy().to_string();
     config.server.bind_address = bind_address.clone();
