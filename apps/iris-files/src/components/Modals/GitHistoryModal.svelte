@@ -86,7 +86,7 @@
     const params = new SvelteURLSearchParams();
     params.set('commit', commitOid);
     if (route.params.get('k')) params.set('k', route.params.get('k')!);
-    if (gitRootPath !== null) params.set('g', gitRootPath);
+    params.set('g', gitRootPath ?? '');
 
     return `#/${route.npub}/${repoName}?${params.toString()}`;
   }

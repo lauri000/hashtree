@@ -11,6 +11,45 @@ const REPO_URL = `/git.html#/${REPO_OWNER_NPUB}/hashtree`;
  * This repo was pushed via git push htree://self/hashtree
  */
 test.describe('Native git operations', () => {
+  test('should open a nested file from a public commit and navigate back', async ({ page }) => {
+    test.setTimeout(120000);
+    page.setDefaultTimeout(60000);
+
+    setupPageErrorHandler(page);
+    await gotoGitApp(page);
+    await presetProductionRelaysInDB(page);
+    await page.reload();
+
+    const commitHash = '3e5e66cff6ef8457b50e5e532766a551f81a440d';
+    const filePath = 'apps/iris-files/src/components/Git/CommitFileView.svelte';
+
+    await page.goto(`${REPO_URL}?commit=${commitHash}`);
+    await disableOthersPool(page);
+
+    await expect(page.locator('h1').filter({ hasText: 'Trim commit diffs and add commit file view' })).toBeVisible({ timeout: 45000 });
+
+    const fileCard = page.locator('[data-testid="commit-changed-file"]').filter({
+      has: page.getByText(filePath, { exact: true }),
+    }).first();
+    await expect(fileCard).toBeVisible({ timeout: 15000 });
+
+    const viewFileLink = fileCard.getByRole('link', { name: 'View file' });
+    await expect(viewFileLink).toBeVisible({ timeout: 10000 });
+    await viewFileLink.click();
+
+    await page.waitForURL(/view=file/, { timeout: 15000 });
+    await expect(page).toHaveURL(/g=/);
+    await expect(page.locator('[data-testid="commit-file-view"]')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('[data-testid="commit-file-view"]')).toContainText('CommitFileView - Shows a single file as it existed in a specific commit.', { timeout: 15000 });
+
+    const backToCommit = page.getByRole('link', { name: 'Back to commit' });
+    await expect(backToCommit).toBeVisible({ timeout: 10000 });
+    await backToCommit.click();
+
+    await page.waitForURL(new RegExp(`\\?commit=${commitHash}`), { timeout: 15000 });
+    await expect(page.locator('h1').filter({ hasText: 'Trim commit diffs and add commit file view' })).toBeVisible({ timeout: 15000 });
+  });
+
   test('should load commit info for hashtree repo', async ({ page }) => {
     setupPageErrorHandler(page);
     await gotoGitApp(page);

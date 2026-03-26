@@ -7,6 +7,7 @@
   import { getFileAtCommit } from '../../utils/git';
   import { getErrorMessage } from '../../utils/errorMessage';
   import { routeStore, treeRootStore, createTreesStore } from '../../stores';
+  import { findNearestGitRootPath } from '../../utils/gitRoot';
   import ViewerHeader from '../Viewer/ViewerHeader.svelte';
   import RepoTabNav from './RepoTabNav.svelte';
   import CodeViewer from '../Viewer/CodeViewer.svelte';
@@ -36,11 +37,13 @@
   });
 
   let gitRootPath = $derived(route.params.get('g'));
+  let detectedGitRootPath = $state<string | null>(null);
+  let effectiveGitRootPath = $derived(gitRootPath ?? detectedGitRootPath);
   let repoRootParts = $derived.by(() => {
-    if (gitRootPath !== null) {
-      return gitRootPath === '' ? [] : gitRootPath.split('/');
+    if (effectiveGitRootPath !== null) {
+      return effectiveGitRootPath === '' ? [] : effectiveGitRootPath.split('/');
     }
-    return route.path.slice(0, -1);
+    return [];
   });
   let repoName = $derived.by(() => {
     if (!route.treeName) return '';
@@ -62,20 +65,43 @@
   $effect(() => {
     const explicitGitRoot = gitRootPath;
     const treeCid = rootCid;
-    const fallbackGitRoot = explicitGitRoot ?? repoRootParts.join('/');
+    const path = route.path.slice(0, -1);
+
+    if (explicitGitRoot !== null || !treeCid) {
+      detectedGitRootPath = null;
+      return;
+    }
+
+    let cancelled = false;
+    findNearestGitRootPath(treeCid, path).then((resolvedPath) => {
+      if (!cancelled) {
+        detectedGitRootPath = resolvedPath;
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        detectedGitRootPath = null;
+      }
+    });
+
+    return () => { cancelled = true; };
+  });
+
+  $effect(() => {
+    const explicitGitRoot = effectiveGitRootPath;
+    const treeCid = rootCid;
 
     if (!treeCid) {
       gitRootCid = null;
       return;
     }
 
-    if (fallbackGitRoot === '') {
+    if (explicitGitRoot === null || explicitGitRoot === '') {
       gitRootCid = treeCid;
       return;
     }
 
     let cancelled = false;
-    getTree().resolvePath(treeCid, fallbackGitRoot).then((resolved) => {
+    getTree().resolvePath(treeCid, explicitGitRoot).then((resolved) => {
       if (!cancelled) {
         gitRootCid = resolved?.cid ?? null;
       }
@@ -209,7 +235,7 @@
     const params = new SvelteURLSearchParams();
     params.set('commit', commitHash);
     if (route.params.get('k')) params.set('k', route.params.get('k')!);
-    if (gitRootPath !== null) params.set('g', gitRootPath);
+    params.set('g', effectiveGitRootPath ?? '');
     return `#/${npub}/${repoName}?${params.toString()}`;
   });
 

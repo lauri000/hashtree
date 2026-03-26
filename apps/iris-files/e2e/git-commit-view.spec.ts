@@ -229,6 +229,93 @@ test.describe('Git commit view', () => {
     await expect(page.locator('[data-testid="commit-file-view"]')).toContainText('Commit File View Test');
   });
 
+  test('commit view handles nested files and back navigation', { timeout: 120000 }, async ({ page }) => {
+    test.slow();
+    await navigateToPublicFolder(page);
+
+    await createRepositoryInCurrentDirectory(page, 'nested-commit-file-view-test');
+
+    const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'nested-commit-file-view-test' }).first();
+    await expect(folderLink).toBeVisible({ timeout: 15000 });
+    await folderLink.click();
+    await page.waitForURL(/nested-commit-file-view-test/, { timeout: 10000 });
+
+    await page.evaluate(async () => {
+      const { getTree, LinkType } = await import('/src/store.ts');
+      const { autosaveIfOwn } = await import('/src/nostr.ts');
+      const { getCurrentRootCid } = await import('/src/actions/route.ts');
+      const { getRouteSync } = await import('/src/stores/index.ts');
+      const route = getRouteSync();
+
+      const tree = getTree();
+      let rootCid = getCurrentRootCid();
+      if (!rootCid) return;
+
+      const { cid: srcCid } = await tree.putDirectory([]);
+      rootCid = await tree.setEntry(rootCid, route.path, 'src', srcCid, 0, LinkType.Dir);
+
+      const { cid: componentsCid } = await tree.putDirectory([]);
+      rootCid = await tree.setEntry(rootCid, [...route.path, 'src'], 'components', componentsCid, 0, LinkType.Dir);
+
+      const { cid: videoCid } = await tree.putDirectory([]);
+      rootCid = await tree.setEntry(rootCid, [...route.path, 'src', 'components'], 'Video', videoCid, 0, LinkType.Dir);
+
+      const content = new TextEncoder().encode('<script lang="ts">export let profile = "video";</script>\n');
+      const { cid, size } = await tree.putFile(content);
+      rootCid = await tree.setEntry(rootCid, [...route.path, 'src', 'components', 'Video'], 'VideoProfileView.svelte', cid, size, LinkType.Blob);
+      autosaveIfOwn(rootCid);
+    });
+
+    await ensureGitRepoInitialized(page);
+
+    await page.evaluate(async () => {
+      const { getTree, LinkType } = await import('/src/store.ts');
+      const { autosaveIfOwn } = await import('/src/nostr.ts');
+      const { getCurrentRootCid } = await import('/src/actions/route.ts');
+      const { getRouteSync } = await import('/src/stores/index.ts');
+      const route = getRouteSync();
+
+      const tree = getTree();
+      let rootCid = getCurrentRootCid();
+      if (!rootCid) return;
+
+      const content = new TextEncoder().encode('<script lang="ts">export let profile = "video-updated";</script>\n');
+      const { cid, size } = await tree.putFile(content);
+      rootCid = await tree.setEntry(rootCid, [...route.path, 'src', 'components', 'Video'], 'VideoProfileView.svelte', cid, size, LinkType.Blob);
+      autosaveIfOwn(rootCid);
+    });
+
+    const uncommittedBtn = page.locator('button').filter({ hasText: /uncommitted/i });
+    await expect(uncommittedBtn).toBeVisible({ timeout: 30000 });
+    await uncommittedBtn.click();
+
+    const commitModal = page.locator('.fixed.inset-0').filter({ hasText: 'Commit Changes' });
+    await expect(commitModal).toBeVisible({ timeout: 5000 });
+    await commitModal.locator('textarea[placeholder*="Describe"]').fill('Update nested video profile view');
+    await commitModal.getByRole('button', { name: 'Commit' }).click();
+    await expect(commitModal).not.toBeVisible({ timeout: 30000 });
+
+    const commitViewUrl = `${page.url().split('?')[0]}?commit=HEAD`;
+    await page.goto(commitViewUrl);
+
+    await expect(page.getByText('src/components/Video/VideoProfileView.svelte', { exact: true })).toBeVisible({ timeout: 15000 });
+
+    const viewFileLink = page.locator('a').filter({ hasText: 'View file' }).first();
+    await expect(viewFileLink).toBeVisible({ timeout: 15000 });
+    await viewFileLink.click();
+
+    await page.waitForURL(/view=file/, { timeout: 10000 });
+    await expect(page.locator('[data-testid="commit-file-view"]')).toContainText('video-updated', { timeout: 20000 });
+    await expect(page).toHaveURL(/g=/);
+
+    const backToCommit = page.locator('a').filter({ hasText: 'Back to commit' });
+    await expect(backToCommit).toBeVisible({ timeout: 10000 });
+    await backToCommit.click();
+
+    await page.waitForURL(/\?commit=/, { timeout: 10000 });
+    await expect(page.locator('h1').filter({ hasText: 'Update nested video profile view' })).toBeVisible({ timeout: 15000 });
+  });
+
   test('tab navigation shows on commit view', { timeout: 90000 }, async ({ page }) => {
     test.slow();
     await navigateToPublicFolder(page);

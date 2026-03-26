@@ -8,6 +8,7 @@
   import { getCommitViewData } from '../../utils/git';
   import { getErrorMessage } from '../../utils/errorMessage';
   import { routeStore, treeRootStore, createTreesStore, currentDirCidStore } from '../../stores';
+  import { findNearestGitRootPath } from '../../utils/gitRoot';
   import ViewerHeader from '../Viewer/ViewerHeader.svelte';
   import RepoTabNav from './RepoTabNav.svelte';
 
@@ -49,9 +50,11 @@
   let baseTreeName = $derived(repoName.split('/')[0]);
   let currentTree = $derived(trees.find(t => t.name === baseTreeName));
   let gitRootPath = $derived(route.params.get('g'));
+  let detectedGitRootPath = $state<string | null>(null);
+  let effectiveGitRootPath = $derived(gitRootPath ?? detectedGitRootPath);
   let repoRootParts = $derived.by(() => {
-    if (gitRootPath !== null) {
-      return gitRootPath === '' ? [] : gitRootPath.split('/');
+    if (effectiveGitRootPath !== null) {
+      return effectiveGitRootPath === '' ? [] : effectiveGitRootPath.split('/');
     }
     return route.path;
   });
@@ -75,6 +78,30 @@
 
   $effect(() => {
     const explicitGitRoot = gitRootPath;
+    const treeCid = rootCid;
+    const path = route.path;
+
+    if (explicitGitRoot !== null || !treeCid) {
+      detectedGitRootPath = null;
+      return;
+    }
+
+    let cancelled = false;
+    findNearestGitRootPath(treeCid, path).then((resolvedPath) => {
+      if (!cancelled) {
+        detectedGitRootPath = resolvedPath;
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        detectedGitRootPath = null;
+      }
+    });
+
+    return () => { cancelled = true; };
+  });
+
+  $effect(() => {
+    const explicitGitRoot = effectiveGitRootPath;
     const treeCid = rootCid;
     const currentDir = dirCid;
 
@@ -219,9 +246,7 @@
     params.set('commit', file.viewCommit ?? commitHash);
     params.set('view', 'file');
     if (route.params.get('k')) params.set('k', route.params.get('k')!);
-    if (gitRootPath !== null) {
-      params.set('g', gitRootPath);
-    }
+    params.set('g', effectiveGitRootPath ?? '');
 
     const parts = [
       npub,
@@ -307,7 +332,11 @@
       {#if commitData.files.length > 0}
         <div class="flex flex-col gap-4">
           {#each commitData.files as file (file.path)}
-            <div class="bg-surface-1 rounded-lg b-1 b-solid b-surface-3 overflow-hidden">
+            <div
+              class="bg-surface-1 rounded-lg b-1 b-solid b-surface-3 overflow-hidden"
+              data-testid="commit-changed-file"
+              data-file-path={file.path}
+            >
               <div class="px-4 py-2 b-b-1 b-b-solid b-b-surface-3 flex flex-wrap items-center justify-between gap-3">
                 <div class="flex min-w-0 items-center gap-2">
                   <span class="i-lucide-file-diff text-text-3 shrink-0"></span>
