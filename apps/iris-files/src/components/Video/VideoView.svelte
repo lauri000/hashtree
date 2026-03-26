@@ -779,6 +779,14 @@ async function syncTreeRootToWorker(
     routeRootOverrideKey = routeKey;
   });
 
+  $effect(() => {
+    const routeKey = getRouteRootKey(npub, treeName, currentVideoId);
+    const currentStoreRoot = rootCid;
+    if (!routeKey || !currentStoreRoot) return;
+    if (routeRootOverrideKey === routeKey && routeRootOverride) return;
+    setRouteRootOverride(routeKey, currentStoreRoot, 'store-first');
+  });
+
   let lastRootHash = $state<string | null>(null);
   let pendingFallbackRootVideoKey = $state<string | null>(null);
 
@@ -2057,7 +2065,6 @@ async function syncTreeRootToWorker(
 
   // Playlist active item background style
   let playlistActiveStyle = $derived(highlightRgba ? `background-color: ${highlightRgba};` : '');
-  let canRenderFeedSidebar = $derived(!loading && (!!videoSrc || !!error));
 
   // Track video container position for glow
   let videoContainer: HTMLDivElement | undefined = $state();
@@ -2255,9 +2262,7 @@ async function syncTreeRootToWorker(
       <PlaylistSidebar activeStyle={playlistActiveStyle} />
     </div>
   {/if}
-  {#if canRenderFeedSidebar}
-    <FeedSidebar currentHref={`#/${npub}/${treeName ? encodeURIComponent(treeName) : ''}`} />
-  {/if}
+  <FeedSidebar currentHref={`#/${npub}/${treeName ? encodeURIComponent(treeName) : ''}`} />
 {/snippet}
 
 <!--
@@ -2381,8 +2386,6 @@ async function syncTreeRootToWorker(
         <PlaylistSidebar activeStyle={playlistActiveStyle} />
       </div>
     {/if}
-    {#if canRenderFeedSidebar}
-      <FeedSidebar currentHref={`#/${npub}/${treeName ? encodeURIComponent(treeName) : ''}`} />
-    {/if}
+    <FeedSidebar currentHref={`#/${npub}/${treeName ? encodeURIComponent(treeName) : ''}`} />
   </div>
 </div>

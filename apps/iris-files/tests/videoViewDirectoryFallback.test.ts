@@ -45,6 +45,7 @@ describe('video view directory fallback', () => {
     expect(videoViewSource).toContain('let routeRootOverride = $state<CID | null>(null);');
     expect(videoViewSource).toContain('function setRouteRootOverride(');
     expect(videoViewSource).toContain('let effectiveRouteRootCid = $derived.by(() => {');
+    expect(videoViewSource).toContain("setRouteRootOverride(routeKey, currentStoreRoot, 'store-first');");
     expect(videoViewSource).toContain("setRouteRootOverride(routeRootKey, fallbackRoot, 'feed-fallback');");
     expect(videoViewSource).toContain("setRouteRootOverride(capturedRouteRootKey, effectiveRootCid, 'readable-fallback');");
     expect(videoViewSource).toContain("setRouteRootOverride(capturedRouteRootKey, refreshedRoot, `refresh:${reason}`);");
