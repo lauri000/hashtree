@@ -30,6 +30,13 @@ async function mockTauriIPC(page: Page) {
       historyIndex: -1,
       historyLength: 0,
     };
+    (window as any).__daemonTransportSettings = {
+      webrtc: true,
+      multicast: false,
+      bluetooth: false,
+      maxMulticastPeers: 0,
+      maxBluetoothPeers: 0,
+    };
     (window as any).__tauriInvokeErrors = {} as Record<string, string>;
     (window as any).__pendingDeepLinks = (window as any).__pendingDeepLinks ?? [];
     const callbackStore = new Map<number, (...args: any[]) => void>();
@@ -111,6 +118,14 @@ async function mockTauriIPC(page: Page) {
             return Promise.resolve((window as any).__automationState);
           case 'automation_shutdown':
             return Promise.resolve();
+          case 'get_daemon_transport_settings':
+            return Promise.resolve((window as any).__daemonTransportSettings);
+          case 'update_daemon_transport_settings':
+            (window as any).__daemonTransportSettings = {
+              ...((window as any).__daemonTransportSettings ?? {}),
+              ...(args?.settings ?? {}),
+            };
+            return Promise.resolve((window as any).__daemonTransportSettings);
           case 'deep_link_frontend_ready': {
             const pending = Array.isArray((window as any).__pendingDeepLinks)
               ? [...(window as any).__pendingDeepLinks]

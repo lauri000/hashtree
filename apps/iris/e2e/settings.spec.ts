@@ -29,6 +29,24 @@ test.describe('Settings Page', () => {
 
     await expect(page.getByRole('heading', { name: 'Daemon' })).toBeVisible();
     await expect(page.getByText('http://127.0.0.1:21417')).toBeVisible();
+    await expect(page.getByLabel('Toggle WebRTC transport')).toBeVisible();
+    await expect(page.getByLabel('Toggle LAN multicast transport')).toBeVisible();
+    await expect(page.getByLabel('Toggle Bluetooth transport')).toBeVisible();
+  });
+
+  test('network tab updates daemon transport settings without leaving settings', async ({ tauriPage: page }) => {
+    await openHome(page);
+    await page.getByTitle('Settings').click();
+    await page.getByRole('button', { name: 'Network' }).click();
+
+    await page.getByLabel('Toggle Bluetooth transport').click();
+
+    const calls = await getInvocationsFor(page, 'update_daemon_transport_settings');
+    expect(calls.length).toBe(1);
+    expect(calls[0].args.settings.bluetooth).toBe(true);
+    expect(calls[0].args.settings.webrtc).toBe(true);
+    expect(calls[0].args.settings.multicast).toBe(false);
+    await expect(page.getByRole('heading', { name: 'Daemon' })).toBeVisible();
   });
 
   test('network tab shows mesh traffic and bluetooth peers from daemon status', async ({ tauriPage: page }) => {

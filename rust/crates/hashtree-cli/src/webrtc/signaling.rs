@@ -260,6 +260,23 @@ impl WebRTCState {
         self.set_local_buses(buses).await;
     }
 
+    /// Drop all live peer sessions and clear topology-specific state while
+    /// keeping cumulative bandwidth counters intact.
+    pub async fn reset_runtime_state(&self) {
+        self.set_local_buses(Vec::new()).await;
+        let peers = {
+            let mut peers = self.peers.write().await;
+            std::mem::take(&mut *peers)
+        };
+        self.connected_count
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        for entry in peers.into_values() {
+            if let Some(peer) = entry.peer {
+                let _ = peer.close().await;
+            }
+        }
+    }
+
     /// Get current bandwidth stats (bytes sent/received)
     pub fn get_bandwidth(&self) -> (u64, u64) {
         (
@@ -989,6 +1006,13 @@ impl WebRTCManager {
         }
     }
 
+    /// Create a new WebRTC manager reusing an existing shared state object.
+    pub fn new_with_state(keys: Keys, config: WebRTCConfig, state: Arc<WebRTCState>) -> Self {
+        let mut manager = Self::new(keys, config);
+        manager.state = state;
+        manager
+    }
+
     /// Create a new WebRTC manager with a peer classifier
     pub fn new_with_classifier(
         keys: Keys,
@@ -1023,6 +1047,19 @@ impl WebRTCManager {
             None,
             None,
         )
+    }
+
+    pub fn new_with_state_and_store_and_classifier(
+        keys: Keys,
+        config: WebRTCConfig,
+        state: Arc<WebRTCState>,
+        store: Arc<dyn ContentStore>,
+        classifier: PeerClassifier,
+    ) -> Self {
+        let mut manager = Self::new_with_state(keys, config, state);
+        manager.store = Some(store);
+        manager.peer_classifier = classifier;
+        manager
     }
 
     pub fn new_with_store_and_classifier_and_cashu(
@@ -1072,6 +1109,11 @@ impl WebRTCManager {
     /// Get shared state for external access
     pub fn state(&self) -> Arc<WebRTCState> {
         self.state.clone()
+    }
+
+    /// Cloneable shutdown handle for external lifecycle control.
+    pub fn shutdown_signal(&self) -> Arc<tokio::sync::watch::Sender<bool>> {
+        self.shutdown.clone()
     }
 
     /// Signal shutdown

@@ -18,6 +18,24 @@ export async function deepLinkFrontendReady(): Promise<string[]> {
   return invoke<string[]>('deep_link_frontend_ready');
 }
 
+export interface DaemonTransportSettings {
+  webrtc: boolean;
+  multicast: boolean;
+  bluetooth: boolean;
+  maxMulticastPeers: number;
+  maxBluetoothPeers: number;
+}
+
+export async function getDaemonTransportSettings(): Promise<DaemonTransportSettings> {
+  return invoke<DaemonTransportSettings>('get_daemon_transport_settings');
+}
+
+export async function updateDaemonTransportSettings(
+  settings: DaemonTransportSettings,
+): Promise<DaemonTransportSettings> {
+  return invoke<DaemonTransportSettings>('update_daemon_transport_settings', { settings });
+}
+
 // ── Child webview management ──
 
 export async function createNip07Webview(

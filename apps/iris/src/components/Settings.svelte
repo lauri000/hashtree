@@ -5,7 +5,10 @@
     isAutostartEnabled,
     toggleAutostart,
     getHtreeServerUrl,
+    getDaemonTransportSettings,
+    updateDaemonTransportSettings,
     clearHistory,
+    type DaemonTransportSettings,
   } from '../lib/tauri';
   import { distributedOwner } from '../lib/apps';
   import {
@@ -62,6 +65,16 @@
   let meshDownloadBandwidth = $state(0);
   let networkStatusLoaded = $state(false);
   let networkStatusError = $state('');
+  let transportSettings = $state<DaemonTransportSettings>({
+    webrtc: true,
+    multicast: false,
+    bluetooth: false,
+    maxMulticastPeers: 0,
+    maxBluetoothPeers: 0,
+  });
+  let transportSettingsLoaded = $state(false);
+  let transportSettingsBusy = $state(false);
+  let transportSettingsError = $state('');
 
   const buildLabel = (() => {
     const buildTime = import.meta.env.VITE_BUILD_TIME;
@@ -78,6 +91,7 @@
 
     void (async () => {
       autostart = await isAutostartEnabled();
+      await refreshTransportSettings();
       try {
         daemonUrl = await getHtreeServerUrl();
         await refreshNetworkStatus();
@@ -112,6 +126,17 @@
 
   function openSource(url: string) {
     void onnavigate(url);
+  }
+
+  async function refreshTransportSettings() {
+    try {
+      transportSettings = await getDaemonTransportSettings();
+      transportSettingsError = '';
+    } catch (error) {
+      transportSettingsError = error instanceof Error ? error.message : 'Failed to load transport settings';
+    } finally {
+      transportSettingsLoaded = true;
+    }
   }
 
   async function refreshNetworkStatus() {
@@ -165,6 +190,33 @@
 
   function peerLabel(peer: MeshPeerInfo): string {
     return shortIdentifier(peer.pubkey || peer.peerId, 10, 6);
+  }
+
+  async function handleTransportToggle(
+    key: keyof Pick<DaemonTransportSettings, 'webrtc' | 'multicast' | 'bluetooth'>,
+  ) {
+    if (transportSettingsBusy) return;
+
+    const previous = transportSettings;
+    const nextSettings = {
+      ...transportSettings,
+      [key]: !transportSettings[key],
+    };
+
+    transportSettingsBusy = true;
+    transportSettings = nextSettings;
+
+    try {
+      transportSettings = await updateDaemonTransportSettings(nextSettings);
+      transportSettingsError = '';
+      await refreshNetworkStatus();
+    } catch (error) {
+      transportSettings = previous;
+      transportSettingsError = error instanceof Error ? error.message : 'Failed to apply transport settings';
+    } finally {
+      transportSettingsBusy = false;
+      transportSettingsLoaded = true;
+    }
   }
 </script>
 
@@ -256,6 +308,64 @@
               <div class="flex items-center justify-between gap-4">
                 <span class="text-sm text-text-3">Transport</span>
                 <span class="text-sm text-text-1">Embedded local daemon</span>
+              </div>
+              <div class="space-y-2 rounded bg-surface-1/70 p-2.5">
+                <div class="flex items-center justify-between gap-4">
+                  <div>
+                    <div class="text-sm font-medium text-text-1">Live transports</div>
+                    <div class="text-xs text-text-3">Apply nearby transport changes without restarting Iris</div>
+                  </div>
+                  {#if transportSettingsBusy}
+                    <span class="text-xs text-text-3">Applying…</span>
+                  {/if}
+                </div>
+                <div class="space-y-2">
+                  <label class="flex items-center justify-between gap-4 rounded bg-surface-2 px-2.5 py-2">
+                    <div>
+                      <div class="text-sm font-medium text-text-1">WebRTC</div>
+                      <div class="text-xs text-text-3">Internet or local relay signaling for direct peer links</div>
+                    </div>
+                    <button
+                      class="relative h-6 w-11 rounded-full transition-colors {transportSettings.webrtc ? 'bg-accent' : 'bg-surface-3'}"
+                      onclick={() => void handleTransportToggle('webrtc')}
+                      aria-label="Toggle WebRTC transport"
+                      disabled={!transportSettingsLoaded || transportSettingsBusy}
+                    >
+                      <span class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform {transportSettings.webrtc ? 'translate-x-5' : ''}"></span>
+                    </button>
+                  </label>
+                  <label class="flex items-center justify-between gap-4 rounded bg-surface-2 px-2.5 py-2">
+                    <div>
+                      <div class="text-sm font-medium text-text-1">LAN multicast</div>
+                      <div class="text-xs text-text-3">Offline discovery and root lookups on the local network</div>
+                    </div>
+                    <button
+                      class="relative h-6 w-11 rounded-full transition-colors {transportSettings.multicast ? 'bg-accent' : 'bg-surface-3'}"
+                      onclick={() => void handleTransportToggle('multicast')}
+                      aria-label="Toggle LAN multicast transport"
+                      disabled={!transportSettingsLoaded || transportSettingsBusy}
+                    >
+                      <span class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform {transportSettings.multicast ? 'translate-x-5' : ''}"></span>
+                    </button>
+                  </label>
+                  <label class="flex items-center justify-between gap-4 rounded bg-surface-2 px-2.5 py-2">
+                    <div>
+                      <div class="text-sm font-medium text-text-1">Bluetooth</div>
+                      <div class="text-xs text-text-3">Nearby peer links for offline exchange and local sync</div>
+                    </div>
+                    <button
+                      class="relative h-6 w-11 rounded-full transition-colors {transportSettings.bluetooth ? 'bg-accent' : 'bg-surface-3'}"
+                      onclick={() => void handleTransportToggle('bluetooth')}
+                      aria-label="Toggle Bluetooth transport"
+                      disabled={!transportSettingsLoaded || transportSettingsBusy}
+                    >
+                      <span class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform {transportSettings.bluetooth ? 'translate-x-5' : ''}"></span>
+                    </button>
+                  </label>
+                </div>
+                {#if transportSettingsError}
+                  <p class="text-xs text-text-3">{transportSettingsError}</p>
+                {/if}
               </div>
               <div class="flex items-center justify-between gap-4">
                 <span class="text-sm text-text-3">Status</span>

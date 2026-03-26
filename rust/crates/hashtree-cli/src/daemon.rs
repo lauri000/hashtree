@@ -1,10 +1,16 @@
 use anyhow::{Context, Result};
 use axum::Router;
 use nostr::nips::nip19::ToBech32;
+#[cfg(feature = "p2p")]
+use nostr::Keys;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+#[cfg(feature = "p2p")]
+use tokio::sync::Mutex;
+#[cfg(feature = "p2p")]
+use tokio::task::JoinHandle;
 use tower_http::cors::CorsLayer;
 
 use crate::config::{ensure_keys, parse_npub, pubkey_bytes, Config};
@@ -15,9 +21,91 @@ use crate::socialgraph;
 use crate::storage::HashtreeStore;
 
 #[cfg(feature = "p2p")]
-use crate::webrtc::{ContentStore, PeerRouter, WebRTCState};
+use crate::webrtc::{ContentStore, PeerClassifier, PeerRouter, WebRTCState};
 #[cfg(not(feature = "p2p"))]
 use crate::WebRTCState;
+
+#[cfg(feature = "p2p")]
+struct PeerRouterRuntime {
+    shutdown: Arc<tokio::sync::watch::Sender<bool>>,
+    join: JoinHandle<()>,
+}
+
+#[cfg(feature = "p2p")]
+pub struct EmbeddedPeerRouterController {
+    keys: Keys,
+    state: Arc<WebRTCState>,
+    store: Arc<dyn ContentStore>,
+    peer_classifier: PeerClassifier,
+    nostr_relay: Arc<NostrRelay>,
+    runtime: Mutex<Option<PeerRouterRuntime>>,
+}
+
+#[cfg(feature = "p2p")]
+impl EmbeddedPeerRouterController {
+    pub fn new(
+        keys: Keys,
+        state: Arc<WebRTCState>,
+        store: Arc<dyn ContentStore>,
+        peer_classifier: PeerClassifier,
+        nostr_relay: Arc<NostrRelay>,
+    ) -> Self {
+        Self {
+            keys,
+            state,
+            store,
+            peer_classifier,
+            nostr_relay,
+            runtime: Mutex::new(None),
+        }
+    }
+
+    pub fn state(&self) -> Arc<WebRTCState> {
+        self.state.clone()
+    }
+
+    pub async fn apply_config(&self, config: &Config) -> Result<bool> {
+        let mut runtime = self.runtime.lock().await;
+        if let Some(runtime_handle) = runtime.take() {
+            let _ = runtime_handle.shutdown.send(true);
+            let mut join = runtime_handle.join;
+            match tokio::time::timeout(std::time::Duration::from_secs(3), &mut join).await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    tracing::warn!("Peer router task ended with join error: {}", err);
+                }
+                Err(_) => {
+                    tracing::warn!("Timed out waiting for peer router shutdown");
+                    join.abort();
+                }
+            }
+        }
+
+        self.state.reset_runtime_state().await;
+
+        if !crate::p2p_common::peer_router_enabled(config) {
+            return Ok(false);
+        }
+
+        let webrtc_config = crate::p2p_common::default_webrtc_config(config);
+        let mut manager = PeerRouter::new_with_state_and_store_and_classifier(
+            self.keys.clone(),
+            webrtc_config,
+            self.state.clone(),
+            self.store.clone(),
+            self.peer_classifier.clone(),
+        );
+        manager.set_nostr_relay(self.nostr_relay.clone());
+        let shutdown = manager.shutdown_signal();
+        let join = tokio::spawn(async move {
+            if let Err(err) = manager.run().await {
+                tracing::error!("Peer router error: {}", err);
+            }
+        });
+        *runtime = Some(PeerRouterRuntime { shutdown, join });
+        Ok(true)
+    }
+}
 
 pub struct EmbeddedDaemonOptions {
     pub config: Config,
@@ -35,6 +123,9 @@ pub struct EmbeddedDaemonInfo {
     pub store: Arc<HashtreeStore>,
     #[allow(dead_code)]
     pub webrtc_state: Option<Arc<WebRTCState>>,
+    #[cfg(feature = "p2p")]
+    #[allow(dead_code)]
+    pub peer_router_controller: Option<Arc<EmbeddedPeerRouterController>>,
 }
 
 pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemonInfo> {
@@ -138,45 +229,42 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     );
 
     #[cfg(feature = "p2p")]
-    let peer_router_enabled = crate::p2p_common::peer_router_enabled(&config);
-
-    #[cfg(feature = "p2p")]
-    let webrtc_state: Option<Arc<WebRTCState>> = {
-        let (webrtc_state, webrtc_handle) = if peer_router_enabled {
-            let webrtc_config = crate::p2p_common::default_webrtc_config(&config);
-            let peer_classifier = crate::p2p_common::build_peer_classifier(
-                opts.data_dir.clone(),
-                Arc::clone(&social_graph_store),
-            );
-            let cashu_payment_client = if config.cashu.default_mint.is_some()
-                || !config.cashu.accepted_mints.is_empty()
-            {
+    let (webrtc_state, peer_router_controller): (
+        Option<Arc<WebRTCState>>,
+        Option<Arc<EmbeddedPeerRouterController>>,
+    ) = {
+        let router_config = crate::p2p_common::default_webrtc_config(&config);
+        let peer_classifier = crate::p2p_common::build_peer_classifier(
+            opts.data_dir.clone(),
+            Arc::clone(&social_graph_store),
+        );
+        let cashu_payment_client =
+            if config.cashu.default_mint.is_some() || !config.cashu.accepted_mints.is_empty() {
                 match crate::cashu_helper::CashuHelperClient::discover(opts.data_dir.clone()) {
                     Ok(client) => {
                         Some(Arc::new(client) as Arc<dyn crate::cashu_helper::CashuPaymentClient>)
                     }
                     Err(err) => {
                         tracing::warn!(
-                            "Cashu settlement helper unavailable; paid retrieval stays disabled: {}",
-                            err
-                        );
+                        "Cashu settlement helper unavailable; paid retrieval stays disabled: {}",
+                        err
+                    );
                         None
                     }
                 }
             } else {
                 None
             };
-            let cashu_mint_metadata = if config.cashu.default_mint.is_some()
-                || !config.cashu.accepted_mints.is_empty()
-            {
+        let cashu_mint_metadata =
+            if config.cashu.default_mint.is_some() || !config.cashu.accepted_mints.is_empty() {
                 let metadata_path = crate::webrtc::cashu_mint_metadata_path(&opts.data_dir);
                 match crate::webrtc::CashuMintMetadataStore::load(metadata_path) {
                     Ok(store) => Some(store),
                     Err(err) => {
                         tracing::warn!(
-                            "Failed to load Cashu mint metadata; falling back to in-memory state: {}",
-                            err
-                        );
+                        "Failed to load Cashu mint metadata; falling back to in-memory state: {}",
+                        err
+                    );
                         Some(crate::webrtc::CashuMintMetadataStore::in_memory())
                     }
                 }
@@ -184,33 +272,30 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
                 None
             };
 
-            let mut manager = PeerRouter::new_with_store_and_classifier_and_cashu(
-                keys.clone(),
-                webrtc_config,
-                Arc::clone(&store) as Arc<dyn ContentStore>,
-                peer_classifier,
-                crate::webrtc::CashuRoutingConfig::from(&config.cashu),
-                cashu_payment_client,
-                cashu_mint_metadata,
-            );
-            manager.set_nostr_relay(nostr_relay.clone());
-
-            let webrtc_state = manager.state();
-            let handle = tokio::spawn(async move {
-                if let Err(e) = manager.run().await {
-                    tracing::error!("Peer router error: {}", e);
-                }
-            });
-            (Some(webrtc_state), Some(handle))
-        } else {
-            (None, None)
-        };
-        let _ = webrtc_handle;
-        webrtc_state
+        let state = Arc::new(WebRTCState::new_with_routing_and_cashu(
+            router_config.request_selection_strategy,
+            router_config.request_fairness_enabled,
+            router_config.request_dispatch,
+            std::time::Duration::from_millis(router_config.message_timeout_ms),
+            crate::webrtc::CashuRoutingConfig::from(&config.cashu),
+            cashu_payment_client,
+            cashu_mint_metadata,
+        ));
+        let controller = Arc::new(EmbeddedPeerRouterController::new(
+            keys.clone(),
+            state.clone(),
+            Arc::clone(&store) as Arc<dyn ContentStore>,
+            peer_classifier,
+            nostr_relay.clone(),
+        ));
+        controller.apply_config(&config).await?;
+        (Some(state), Some(controller))
     };
 
     #[cfg(not(feature = "p2p"))]
     let webrtc_state: Option<Arc<crate::webrtc::WebRTCState>> = None;
+    #[cfg(not(feature = "p2p"))]
+    let peer_router_controller = None;
 
     let upstream_blossom = config.blossom.all_read_servers();
 
@@ -296,5 +381,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         npub,
         store,
         webrtc_state,
+        #[cfg(feature = "p2p")]
+        peer_router_controller,
     })
 }

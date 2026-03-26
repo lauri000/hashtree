@@ -24,7 +24,7 @@ use axum::Router;
 use hashtree_cli::daemon::{EmbeddedDaemonInfo, EmbeddedDaemonOptions};
 use hashtree_cli::server::AppState;
 use parking_lot::RwLock;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Once;
@@ -80,6 +80,65 @@ impl DeepLinkState {
         *self.frontend_ready.write() = true;
         std::mem::take(&mut *self.pending_urls.write())
     }
+}
+
+const DEFAULT_MULTICAST_TOGGLE_MAX_PEERS: usize = 12;
+const DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS: usize = 6;
+
+#[derive(Default)]
+struct DaemonRuntimeState {
+    peer_router_controller: RwLock<Option<Arc<hashtree_cli::daemon::EmbeddedPeerRouterController>>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct DaemonTransportSettings {
+    webrtc: bool,
+    multicast: bool,
+    bluetooth: bool,
+    max_multicast_peers: usize,
+    max_bluetooth_peers: usize,
+}
+
+impl DaemonTransportSettings {
+    fn from_config(config: &hashtree_cli::Config) -> Self {
+        Self {
+            webrtc: config.server.enable_webrtc,
+            multicast: config.server.enable_multicast && config.server.max_multicast_peers > 0,
+            bluetooth: config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0,
+            max_multicast_peers: config.server.max_multicast_peers,
+            max_bluetooth_peers: config.server.max_bluetooth_peers,
+        }
+    }
+}
+
+fn apply_transport_settings(
+    config: &mut hashtree_cli::Config,
+    settings: &DaemonTransportSettings,
+) -> DaemonTransportSettings {
+    config.server.enable_webrtc = settings.webrtc;
+    config.server.enable_multicast = settings.multicast;
+    config.server.max_multicast_peers = if settings.multicast {
+        if settings.max_multicast_peers > 0 {
+            settings.max_multicast_peers
+        } else {
+            DEFAULT_MULTICAST_TOGGLE_MAX_PEERS
+        }
+    } else {
+        0
+    };
+    config.server.enable_bluetooth = settings.bluetooth;
+    config.server.max_bluetooth_peers = if settings.bluetooth {
+        if settings.max_bluetooth_peers > 0 {
+            settings.max_bluetooth_peers
+        } else {
+            DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS
+        }
+    } else {
+        0
+    };
+
+    DaemonTransportSettings::from_config(config)
 }
 
 pub fn ensure_rustls_provider() {
@@ -566,6 +625,50 @@ fn deep_link_frontend_ready<R: tauri::Runtime>(
     Ok(pending_urls)
 }
 
+#[tauri::command]
+fn get_daemon_transport_settings() -> Result<DaemonTransportSettings, String> {
+    hashtree_cli::Config::load()
+        .map(|config| DaemonTransportSettings::from_config(&config))
+        .map_err(|error| format!("Failed to load daemon transport settings: {}", error))
+}
+
+#[tauri::command]
+async fn update_daemon_transport_settings<R: tauri::Runtime>(
+    _app: tauri::AppHandle<R>,
+    daemon_runtime: tauri::State<'_, Arc<DaemonRuntimeState>>,
+    settings: DaemonTransportSettings,
+) -> Result<DaemonTransportSettings, String> {
+    let mut config = hashtree_cli::Config::load()
+        .map_err(|error| format!("Failed to load daemon transport settings: {}", error))?;
+    let applied = apply_transport_settings(&mut config, &settings);
+    config
+        .save()
+        .map_err(|error| format!("Failed to save daemon transport settings: {}", error))?;
+
+    #[cfg(target_os = "android")]
+    if applied.bluetooth {
+        match ensure_mobile_peer_id()
+            .and_then(|peer_id| mobile_bluetooth::prestart_from_app(&_app, peer_id))
+        {
+            Ok(()) => info!("Prestarted Android Bluetooth plugin from live settings update"),
+            Err(error) => tracing::warn!(
+                "Failed to prestart Android Bluetooth plugin from settings update: {}",
+                error
+            ),
+        }
+    }
+
+    let controller = { daemon_runtime.peer_router_controller.read().clone() };
+    if let Some(controller) = controller {
+        controller
+            .apply_config(&config)
+            .await
+            .map_err(|error| format!("Failed to apply daemon transport settings: {}", error))?;
+    }
+
+    Ok(applied)
+}
+
 fn emit_tray_action<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     action: automation::AutomationAction,
@@ -828,6 +931,8 @@ pub fn run() {
             automation::automation_get_state,
             automation::automation_shutdown,
             deep_link_frontend_ready,
+            get_daemon_transport_settings,
+            update_daemon_transport_settings,
             htree_protocol::get_htree_server_url,
             htree_protocol::cache_tree_root,
             htree_protocol::clear_tree_root_cache,
@@ -952,6 +1057,9 @@ pub fn run() {
             }
             app.manage(deep_link_state);
 
+            let daemon_runtime_state = Arc::new(DaemonRuntimeState::default());
+            app.manage(daemon_runtime_state.clone());
+
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             if let Err(error) = app.deep_link().register_all() {
                 tracing::warn!("Failed to register deep-link schemes at runtime: {}", error);
@@ -976,6 +1084,8 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 match start_daemon(app_handle.clone(), daemon_data_dir).await {
                     Ok(info) => {
+                        *daemon_runtime_state.peer_router_controller.write() =
+                            info.peer_router_controller.clone();
                         htree_protocol::set_daemon_port(info.port);
                         htree_protocol::set_self_npub(info.npub.clone());
                         info!("Embedded daemon started on port {}", info.port);
@@ -1029,11 +1139,13 @@ mod tests {
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     use super::build_menu;
     use super::{
-        collect_supported_launch_deep_links, is_supported_launch_host, mobile_default_htree_paths,
-        normalize_automation_startup_url, normalize_supported_launch_deep_link, resolve_iris_paths,
+        apply_transport_settings, collect_supported_launch_deep_links, is_supported_launch_host,
+        mobile_default_htree_paths, normalize_automation_startup_url,
+        normalize_supported_launch_deep_link, resolve_iris_paths,
         tray_connection_status_from_peers, tray_menu_spec, tray_primary_click_action,
-        tray_status_text, DesktopPlatform, IrisPaths, TrayConnectionStatus, TrayMenuItemSpec,
-        TrayPeersResponse, TrayPrimaryClickAction,
+        tray_status_text, DaemonTransportSettings, DesktopPlatform, IrisPaths,
+        TrayConnectionStatus, TrayMenuItemSpec, TrayPeersResponse, TrayPrimaryClickAction,
+        DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS, DEFAULT_MULTICAST_TOGGLE_MAX_PEERS,
     };
     use std::path::{Path, PathBuf};
 
@@ -1285,6 +1397,65 @@ mod tests {
             normalize_automation_startup_url("https://files.iris.to"),
             None
         );
+    }
+
+    #[test]
+    fn apply_transport_settings_enables_zero_max_transports_with_defaults() {
+        let mut config = hashtree_cli::Config::default();
+        config.server.enable_webrtc = false;
+        config.server.enable_multicast = false;
+        config.server.max_multicast_peers = 0;
+        config.server.enable_bluetooth = false;
+        config.server.max_bluetooth_peers = 0;
+
+        let applied = apply_transport_settings(
+            &mut config,
+            &DaemonTransportSettings {
+                webrtc: true,
+                multicast: true,
+                bluetooth: true,
+                max_multicast_peers: 0,
+                max_bluetooth_peers: 0,
+            },
+        );
+
+        assert!(applied.webrtc);
+        assert!(applied.multicast);
+        assert!(applied.bluetooth);
+        assert_eq!(
+            applied.max_multicast_peers,
+            DEFAULT_MULTICAST_TOGGLE_MAX_PEERS
+        );
+        assert_eq!(
+            applied.max_bluetooth_peers,
+            DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS
+        );
+    }
+
+    #[test]
+    fn apply_transport_settings_disables_multicast_and_bluetooth_by_zeroing_limits() {
+        let mut config = hashtree_cli::Config::default();
+        config.server.enable_multicast = true;
+        config.server.max_multicast_peers = 9;
+        config.server.enable_bluetooth = true;
+        config.server.max_bluetooth_peers = 4;
+
+        let applied = apply_transport_settings(
+            &mut config,
+            &DaemonTransportSettings {
+                webrtc: false,
+                multicast: false,
+                bluetooth: false,
+                max_multicast_peers: 9,
+                max_bluetooth_peers: 4,
+            },
+        );
+
+        assert!(!applied.webrtc);
+        assert!(!applied.multicast);
+        assert!(!applied.bluetooth);
+        assert_eq!(config.server.max_multicast_peers, 0);
+        assert_eq!(config.server.max_bluetooth_peers, 0);
     }
 
     #[test]
