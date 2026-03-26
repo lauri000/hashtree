@@ -34,6 +34,8 @@ async function mockTauriIPC(page: Page) {
       webrtc: true,
       multicast: false,
       bluetooth: false,
+      nostrRelaysEnabled: true,
+      blossomEnabled: true,
       maxMulticastPeers: 0,
       maxBluetoothPeers: 0,
       multicastGroup: '239.255.42.98',

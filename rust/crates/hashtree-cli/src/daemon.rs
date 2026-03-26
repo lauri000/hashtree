@@ -134,6 +134,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     let mut config = opts.config;
     if let Some(relays) = opts.relays {
         config.nostr.relays = relays;
+        config.nostr.enabled = !config.nostr.relays.is_empty();
     }
 
     let max_size_bytes = config.storage.max_size_gb * 1024 * 1024 * 1024;
@@ -222,7 +223,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     let _crawler_tasks = socialgraph::crawler::spawn_social_graph_tasks(
         graph_store.clone(),
         keys.clone(),
-        config.nostr.relays.clone(),
+        config.nostr.active_relays(),
         config.nostr.crawl_depth,
         crawler_spambox_backend,
         opts.data_dir.clone(),
@@ -327,7 +328,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         let sync_config = crate::sync::SyncConfig {
             sync_own: config.sync.sync_own,
             sync_followed: config.sync.sync_followed,
-            relays: config.nostr.relays.clone(),
+            relays: config.nostr.active_relays(),
             max_concurrent: config.sync.max_concurrent,
             webrtc_timeout_ms: config.sync.webrtc_timeout_ms,
             blossom_timeout_ms: config.sync.blossom_timeout_ms,

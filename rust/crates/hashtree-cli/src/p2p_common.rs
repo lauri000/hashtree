@@ -21,14 +21,11 @@ pub fn should_start_stun_server(config: &Config) -> bool {
 
 /// Build default WebRTC config from daemon/app config.
 pub fn default_webrtc_config(config: &Config) -> WebRTCConfig {
-    let local_only_relays = !config.nostr.relays.is_empty()
-        && config
-            .nostr
-            .relays
-            .iter()
-            .all(|relay| relay_is_loopback(relay));
+    let active_relays = config.nostr.active_relays();
+    let local_only_relays =
+        !active_relays.is_empty() && active_relays.iter().all(|relay| relay_is_loopback(relay));
     let relays = if config.server.enable_webrtc {
-        config.nostr.relays.clone()
+        active_relays
     } else {
         Vec::new()
     };

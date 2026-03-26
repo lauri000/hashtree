@@ -18,7 +18,6 @@
     formatBandwidth,
     formatBytes,
     parseDaemonMeshStatus,
-    shortIdentifier,
     type DaemonMeshStatus,
     type MeshBandwidthHistoryPoint,
     type MeshHistoryCursor,
@@ -70,6 +69,8 @@
     webrtc: true,
     multicast: false,
     bluetooth: false,
+    nostrRelaysEnabled: true,
+    blossomEnabled: true,
     maxMulticastPeers: 0,
     maxBluetoothPeers: 0,
     multicastGroup: '239.255.42.98',
@@ -81,6 +82,8 @@
     webrtc: true,
     multicast: false,
     bluetooth: false,
+    nostrRelaysEnabled: true,
+    blossomEnabled: true,
     maxMulticastPeers: 0,
     maxBluetoothPeers: 0,
     multicastGroup: '239.255.42.98',
@@ -166,6 +169,16 @@
   let configuredBlossomReadServers = $derived(
     daemonNetworkSettings.blossomServers.filter((server) => server.read).length,
   );
+  let activeRelayCount = $derived(
+    daemonNetworkSettings.nostrRelaysEnabled ? daemonNetworkSettings.relayUrls.length : 0,
+  );
+  let activeBlossomReadServerCount = $derived(
+    daemonNetworkSettings.blossomEnabled ? configuredBlossomReadServers : 0,
+  );
+  let connectedMeshPeers = $derived(
+    meshStatus.peers.filter((peer) => peer.state === 'connected'),
+  );
+  let inactiveMeshPeerCount = $derived(meshStatus.peers.length - connectedMeshPeers.length);
 
   async function refreshDaemonNetworkSettings() {
     try {
@@ -221,16 +234,54 @@
     return state === 'connected' ? 'bg-success' : 'bg-surface-3';
   }
 
-  function poolLabel(pool: MeshPeerInfo['pool']): string {
-    return pool === 'follows' ? 'follow' : 'other';
+  function relationshipLabel(pool: MeshPeerInfo['pool']): string | null {
+    return pool === 'follows' ? 'contact' : null;
   }
 
   function transportLabel(transport: string): string {
-    return transport.toLowerCase();
+    return transport.toLowerCase() === 'bluetooth' ? 'Bluetooth' : 'WebRTC';
   }
 
-  function peerLabel(peer: MeshPeerInfo): string {
-    return shortIdentifier(peer.pubkey || peer.peerId, 10, 6);
+  function signalPathLabel(path: string): string {
+    switch (path.toLowerCase()) {
+      case 'bluetooth':
+        return 'Bluetooth';
+      case 'multicast':
+        return 'LAN multicast';
+      case 'relay':
+        return 'Relay signaling';
+      default:
+        return path;
+    }
+  }
+
+  function peerKindLabel(peer: MeshPeerInfo): string {
+    if (peer.pool === 'follows' && peer.transport.toLowerCase() === 'bluetooth') {
+      return 'Nearby contact';
+    }
+    if (peer.pool === 'follows') {
+      return 'Contact peer';
+    }
+    if (peer.transport.toLowerCase() === 'bluetooth') {
+      return 'Bluetooth peer';
+    }
+    if (peer.signalPaths.some((path) => path.toLowerCase() === 'multicast')) {
+      return 'LAN peer';
+    }
+    if (peer.signalPaths.some((path) => path.toLowerCase() === 'relay')) {
+      return 'Relay peer';
+    }
+    return 'Peer';
+  }
+
+  function peerLabel(peer: MeshPeerInfo, index: number): string {
+    return `${peerKindLabel(peer)} ${index + 1}`;
+  }
+
+  function peerSignalSummary(peer: MeshPeerInfo): string {
+    const labels = Array.from(new Set(peer.signalPaths.map((path) => signalPathLabel(path))));
+    if (labels.length > 0) return labels.join(' + ');
+    return transportLabel(peer.transport);
   }
 
   async function applyDaemonNetworkSettings(nextSettings: DaemonNetworkSettings) {
@@ -405,7 +456,7 @@
                 <div class="text-xs text-text-3">Open Iris automatically when you log in</div>
               </div>
               <button
-                class="relative h-6 w-11 rounded-full transition-colors {autostart ? 'bg-accent' : 'bg-surface-3'}"
+                class="relative h-6 w-11 shrink-0 overflow-hidden rounded-full transition-colors {autostart ? 'bg-accent' : 'bg-surface-3'}"
                 onclick={handleAutostartToggle}
                 aria-label="Toggle launch at startup"
               >
@@ -441,27 +492,34 @@
         <div class="space-y-6">
           <div>
             <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-1">
-              Daemon
+              Local Service
             </h3>
-            <p class="text-xs text-text-3 mb-3">Embedded htree server used by the shell</p>
+            <p class="text-xs text-text-3 mb-3">Runs on this device and handles storage, sync, and peer connections.</p>
             <div class="bg-surface-2 rounded p-3 space-y-3">
               <div class="flex items-center justify-between gap-4">
-                <span class="text-sm text-text-3">Server URL</span>
+                <span class="text-sm text-text-3">Address</span>
                 <span class="text-sm text-text-1 font-mono break-all text-right">
                   {daemonUrl || 'Unavailable'}
                 </span>
               </div>
               <div class="flex items-center justify-between gap-4">
-                <span class="text-sm text-text-3">Transport</span>
-                <span class="text-sm text-text-1">Embedded local daemon</span>
+                <span class="text-sm text-text-3">Status</span>
+                <span class="text-sm text-text-1">
+                  {#if networkStatusError}
+                    Degraded
+                  {:else if networkStatusLoaded}
+                    Running
+                  {:else}
+                    Loading
+                  {/if}
+                </span>
               </div>
+              {#if hasPendingDaemonNetworkChanges || daemonNetworkBusy || daemonNetworkSaved || daemonNetworkError}
               <div class="rounded bg-surface-1/70 p-2.5 space-y-2">
                 <div class="flex items-center justify-between gap-4">
                   <div>
-                    <div class="text-sm font-medium text-text-1">Daemon network config</div>
-                    <div class="text-xs text-text-3">
-                      Saved to the embedded daemon config and hot-applied to the live peer router where supported
-                    </div>
+                    <div class="text-sm font-medium text-text-1">Network changes</div>
+                    <div class="text-xs text-text-3">Save relay, Blossom, and transport changes.</div>
                   </div>
                   <div class="flex items-center gap-3">
                     {#if daemonNetworkBusy}
@@ -482,18 +540,7 @@
                   <p class="text-xs text-text-3">{daemonNetworkError}</p>
                 {/if}
               </div>
-              <div class="flex items-center justify-between gap-4">
-                <span class="text-sm text-text-3">Status</span>
-                <span class="text-sm text-text-1">
-                  {#if networkStatusError}
-                    Degraded
-                  {:else if networkStatusLoaded}
-                    Running
-                  {:else}
-                    Loading
-                  {/if}
-                </span>
-              </div>
+              {/if}
             </div>
             {#if networkStatusError}
               <p class="mt-2 text-xs text-text-3">{networkStatusError}</p>
@@ -503,12 +550,31 @@
           <div class="grid gap-3 lg:grid-cols-2">
             <div class="rounded bg-surface-2 p-3 space-y-3">
               <div>
-                <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-1">Nostr Relays</h3>
-                <p class="text-xs text-text-3">
-                  Used for signaling, graph sync, and relay-backed discovery.
-                </p>
+                <div class="flex items-center justify-between gap-4">
+                  <div class="min-w-0">
+                    <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-1">Nostr Relays</h3>
+                    <p class="text-xs text-text-3">
+                      Syncs Nostr events and follow graph data, and helps Iris find remote peers.
+                    </p>
+                  </div>
+                  <button
+                    class="relative h-6 w-11 shrink-0 overflow-hidden rounded-full transition-colors {daemonNetworkDraft.nostrRelaysEnabled ? 'bg-accent' : 'bg-surface-3'}"
+                    onclick={() => updateDaemonNetworkDraft({ nostrRelaysEnabled: !daemonNetworkDraft.nostrRelaysEnabled })}
+                    aria-label="Toggle Nostr relays"
+                    disabled={!daemonNetworkLoaded || daemonNetworkBusy}
+                  >
+                    <span class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform {daemonNetworkDraft.nostrRelaysEnabled ? 'translate-x-5' : ''}"></span>
+                  </button>
+                </div>
               </div>
-              <div class="space-y-2">
+              <div class="text-xs text-text-3">
+                {#if daemonNetworkDraft.nostrRelaysEnabled}
+                  {formatCount(daemonNetworkDraft.relayUrls.length, 'relay enabled', 'relays enabled')}
+                {:else}
+                  Relays disabled
+                {/if}
+              </div>
+              <div class={`space-y-2 ${daemonNetworkDraft.nostrRelaysEnabled ? '' : 'opacity-60'}`}>
                 {#if daemonNetworkDraft.relayUrls.length === 0}
                   <div class="rounded bg-surface-1/70 px-3 py-2 text-sm text-text-3">
                     No relays configured
@@ -539,11 +605,12 @@
                   value={newRelayUrl}
                   oninput={(event) => newRelayUrl = event.currentTarget.value}
                   aria-label="Add relay URL"
+                  disabled={!daemonNetworkLoaded || daemonNetworkBusy}
                 />
                 <button
                   class="rounded-lg bg-surface-1 px-3 py-2 text-sm text-text-1 hover:bg-surface-3 transition-colors disabled:opacity-50"
                   onclick={addRelay}
-                  disabled={!newRelayUrl.trim()}
+                  disabled={!newRelayUrl.trim() || !daemonNetworkLoaded || daemonNetworkBusy}
                 >
                   Add
                 </button>
@@ -552,10 +619,29 @@
 
             <div class="rounded bg-surface-2 p-3 space-y-3">
               <div>
-                <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-1">Blossom</h3>
-                <p class="text-xs text-text-3">
-                  Read and write fallback servers for blob fetches outside the local mesh.
-                </p>
+                <div class="flex items-center justify-between gap-4">
+                  <div class="min-w-0">
+                    <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-1">Blossom</h3>
+                    <p class="text-xs text-text-3">
+                      Downloads or uploads files from configured servers when they are not local or on a connected peer.
+                    </p>
+                  </div>
+                  <button
+                    class="relative h-6 w-11 shrink-0 overflow-hidden rounded-full transition-colors {daemonNetworkDraft.blossomEnabled ? 'bg-accent' : 'bg-surface-3'}"
+                    onclick={() => updateDaemonNetworkDraft({ blossomEnabled: !daemonNetworkDraft.blossomEnabled })}
+                    aria-label="Toggle Blossom fallback"
+                    disabled={!daemonNetworkLoaded || daemonNetworkBusy}
+                  >
+                    <span class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform {daemonNetworkDraft.blossomEnabled ? 'translate-x-5' : ''}"></span>
+                  </button>
+                </div>
+              </div>
+              <div class="text-xs text-text-3">
+                {#if daemonNetworkDraft.blossomEnabled}
+                  {formatCount(daemonNetworkDraft.blossomServers.filter((server) => server.read).length, 'read server enabled', 'read servers enabled')}
+                {:else}
+                  Blossom fallback disabled
+                {/if}
               </div>
               <div class="space-y-2">
                 {#if daemonNetworkDraft.blossomServers.length === 0}
@@ -606,11 +692,12 @@
                   value={newBlossomUrl}
                   oninput={(event) => newBlossomUrl = event.currentTarget.value}
                   aria-label="Add Blossom server URL"
+                  disabled={!daemonNetworkLoaded || daemonNetworkBusy}
                 />
                 <button
                   class="rounded-lg bg-surface-1 px-3 py-2 text-sm text-text-1 hover:bg-surface-3 transition-colors disabled:opacity-50"
                   onclick={addBlossomServer}
-                  disabled={!newBlossomUrl.trim()}
+                  disabled={!newBlossomUrl.trim() || !daemonNetworkLoaded || daemonNetworkBusy}
                 >
                   Add
                 </button>
@@ -623,17 +710,17 @@
               Peer Router
             </h3>
             <p class="text-xs text-text-3 mb-3">
-              Nearby transports and offline routing settings for the embedded daemon.
+              Controls nearby transports and offline peer routing.
             </p>
             <div class="rounded bg-surface-2 p-3 space-y-3">
               <div class="space-y-2">
                 <label class="flex items-center justify-between gap-4 rounded bg-surface-1/70 px-3 py-2">
-                  <div>
+                  <div class="min-w-0 flex-1">
                     <div class="text-sm font-medium text-text-1">WebRTC</div>
-                    <div class="text-xs text-text-3">Internet or relay-signaled direct peer links</div>
+                    <div class="text-xs text-text-3">Direct peer connections, usually negotiated through relays</div>
                   </div>
                   <button
-                    class="relative h-6 w-11 rounded-full transition-colors {daemonNetworkDraft.webrtc ? 'bg-accent' : 'bg-surface-3'}"
+                    class="relative h-6 w-11 shrink-0 overflow-hidden rounded-full transition-colors {daemonNetworkDraft.webrtc ? 'bg-accent' : 'bg-surface-3'}"
                     onclick={() => void handleTransportToggle('webrtc')}
                     aria-label="Toggle WebRTC transport"
                     disabled={!daemonNetworkLoaded || daemonNetworkBusy}
@@ -642,12 +729,12 @@
                   </button>
                 </label>
                 <label class="flex items-center justify-between gap-4 rounded bg-surface-1/70 px-3 py-2">
-                  <div>
+                  <div class="min-w-0 flex-1">
                     <div class="text-sm font-medium text-text-1">LAN multicast</div>
-                    <div class="text-xs text-text-3">Offline discovery, root updates, and local lookup replies</div>
+                    <div class="text-xs text-text-3">Discovery and root lookups on the local network</div>
                   </div>
                   <button
-                    class="relative h-6 w-11 rounded-full transition-colors {daemonNetworkDraft.multicast ? 'bg-accent' : 'bg-surface-3'}"
+                    class="relative h-6 w-11 shrink-0 overflow-hidden rounded-full transition-colors {daemonNetworkDraft.multicast ? 'bg-accent' : 'bg-surface-3'}"
                     onclick={() => void handleTransportToggle('multicast')}
                     aria-label="Toggle LAN multicast transport"
                     disabled={!daemonNetworkLoaded || daemonNetworkBusy}
@@ -656,12 +743,12 @@
                   </button>
                 </label>
                 <label class="flex items-center justify-between gap-4 rounded bg-surface-1/70 px-3 py-2">
-                  <div>
+                  <div class="min-w-0 flex-1">
                     <div class="text-sm font-medium text-text-1">Bluetooth</div>
-                    <div class="text-xs text-text-3">Nearby ad hoc peer sessions for offline exchange</div>
+                    <div class="text-xs text-text-3">Nearby peer connections over Bluetooth</div>
                   </div>
                   <button
-                    class="relative h-6 w-11 rounded-full transition-colors {daemonNetworkDraft.bluetooth ? 'bg-accent' : 'bg-surface-3'}"
+                    class="relative h-6 w-11 shrink-0 overflow-hidden rounded-full transition-colors {daemonNetworkDraft.bluetooth ? 'bg-accent' : 'bg-surface-3'}"
                     onclick={() => void handleTransportToggle('bluetooth')}
                     aria-label="Toggle Bluetooth transport"
                     disabled={!daemonNetworkLoaded || daemonNetworkBusy}
@@ -748,7 +835,7 @@
                   </span>
                 </div>
                 <div class="mt-2 text-xs text-text-3">
-                  {formatCount(configuredBlossomReadServers, 'blossom read server', 'blossom read servers')} · {formatCount(daemonNetworkSettings.relayUrls.length, 'relay', 'relays')}
+                  {formatCount(activeBlossomReadServerCount, 'blossom read server', 'blossom read servers')} · {formatCount(activeRelayCount, 'relay', 'relays')}
                 </div>
               </div>
             </div>
@@ -782,32 +869,36 @@
             <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-1">
               Active Peers
             </h3>
-            <p class="text-xs text-text-3 mb-3">Connected peers and transport byte counters</p>
-            {#if meshStatus.peers.length === 0}
+            <p class="text-xs text-text-3 mb-3">Connected peers only.</p>
+            {#if inactiveMeshPeerCount > 0}
+              <p class="mb-3 text-xs text-text-3">
+                {formatCount(inactiveMeshPeerCount, 'discovered peer not connected yet', 'discovered peers not connected yet')}
+              </p>
+            {/if}
+            {#if connectedMeshPeers.length === 0}
               <div class="rounded bg-surface-2 p-3 text-sm text-text-3">
                 No mesh peers connected
               </div>
             {:else}
               <div class="bg-surface-2 rounded divide-y divide-surface-3">
-                {#each meshStatus.peers as peer (peer.id)}
+                {#each connectedMeshPeers as peer, index (peer.id)}
                   <div class="p-3">
                     <div class="flex items-center gap-2 text-sm">
                       <span class={`h-2 w-2 shrink-0 rounded-full ${stateColor(peer.state)}`}></span>
                       <span class="min-w-0 flex-1 font-medium text-text-1 truncate">
-                        {peerLabel(peer)}
+                        {peerLabel(peer, index)}
                       </span>
                       <span class="rounded bg-surface-1 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-3">
                         {transportLabel(peer.transport)}
                       </span>
-                      <span class="rounded bg-surface-1 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-3">
-                        {poolLabel(peer.pool)}
-                      </span>
+                      {#if relationshipLabel(peer.pool)}
+                        <span class="rounded bg-surface-1 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-3">
+                          {relationshipLabel(peer.pool)}
+                        </span>
+                      {/if}
                     </div>
                     <div class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-3">
-                      {#if peer.signalPaths.length > 0}
-                        <span>{peer.signalPaths.join(' + ')}</span>
-                      {/if}
-                      <span class="font-mono">{shortIdentifier(peer.peerId, 8, 4)}</span>
+                      <span>{peerSignalSummary(peer)}</span>
                       <span class="text-success">
                         <span class="i-lucide-arrow-up inline-block align-middle mr-0.5"></span>{formatBytes(peer.bytesSent)}
                       </span>

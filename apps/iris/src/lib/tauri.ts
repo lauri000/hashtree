@@ -33,6 +33,8 @@ export interface DaemonBlossomServerSettings {
 }
 
 export interface DaemonNetworkSettings extends DaemonTransportSettings {
+  nostrRelaysEnabled: boolean;
+  blossomEnabled: boolean;
   multicastGroup: string;
   multicastPort: number;
   relayUrls: string[];

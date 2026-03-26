@@ -152,6 +152,8 @@ struct DaemonNetworkSettings {
     webrtc: bool,
     multicast: bool,
     bluetooth: bool,
+    nostr_relays_enabled: bool,
+    blossom_enabled: bool,
     max_multicast_peers: usize,
     max_bluetooth_peers: usize,
     multicast_group: String,
@@ -177,6 +179,8 @@ impl DaemonNetworkSettings {
             webrtc: config.server.enable_webrtc,
             multicast: config.server.enable_multicast && config.server.max_multicast_peers > 0,
             bluetooth: config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0,
+            nostr_relays_enabled: config.nostr.enabled,
+            blossom_enabled: config.blossom.enabled,
             max_multicast_peers: config.server.max_multicast_peers,
             max_bluetooth_peers: config.server.max_bluetooth_peers,
             multicast_group: config.server.multicast_group.clone(),
@@ -301,7 +305,9 @@ fn apply_network_settings(
         apply_transport_settings(config, &DaemonTransportSettings::from(settings));
     config.server.multicast_group = settings.multicast_group.trim().to_string();
     config.server.multicast_port = settings.multicast_port;
+    config.nostr.enabled = settings.nostr_relays_enabled;
     config.nostr.relays = normalized_relays;
+    config.blossom.enabled = settings.blossom_enabled;
     config.blossom.servers.clear();
     config.blossom.read_servers.clear();
     config.blossom.write_servers.clear();
@@ -431,7 +437,7 @@ async fn start_daemon<R: tauri::Runtime + 'static>(
         config.server.max_multicast_peers,
         config.server.enable_bluetooth,
         config.server.max_bluetooth_peers,
-        config.nostr.relays.len(),
+        config.nostr.active_relays().len(),
         config.blossom.all_read_servers().len(),
     );
     config.storage.data_dir = data_dir.to_string_lossy().to_string();
@@ -1709,6 +1715,8 @@ mod tests {
 
         let settings = DaemonNetworkSettings::from_config(&config);
 
+        assert!(settings.nostr_relays_enabled);
+        assert!(settings.blossom_enabled);
         assert_eq!(settings.relay_urls, config.nostr.relays);
         assert_eq!(
             settings.blossom_servers,
@@ -1742,6 +1750,8 @@ mod tests {
                 webrtc: true,
                 multicast: true,
                 bluetooth: true,
+                nostr_relays_enabled: false,
+                blossom_enabled: false,
                 max_multicast_peers: 0,
                 max_bluetooth_peers: 0,
                 multicast_group: "239.255.42.77".to_string(),
@@ -1779,8 +1789,11 @@ mod tests {
             applied.max_bluetooth_peers,
             DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS
         );
+        assert!(!applied.nostr_relays_enabled);
+        assert!(!applied.blossom_enabled);
         assert_eq!(applied.multicast_group, "239.255.42.77");
         assert_eq!(applied.multicast_port, 49_123);
+        assert!(!config.nostr.enabled);
         assert_eq!(
             config.nostr.relays,
             vec![
@@ -1796,6 +1809,7 @@ mod tests {
             config.blossom.read_servers,
             vec!["https://read-only.example".to_string()]
         );
+        assert!(!config.blossom.enabled);
         assert_eq!(
             config.blossom.write_servers,
             vec!["https://write-only.example".to_string()]

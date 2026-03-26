@@ -110,6 +110,8 @@ fn default_s3_region() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NostrConfig {
+    #[serde(default = "default_nostr_enabled")]
+    pub enabled: bool,
     #[serde(default = "default_relays")]
     pub relays: Vec<String>,
     /// List of npubs allowed to write (blossom uploads). If empty, uses public_writes setting.
@@ -135,6 +137,8 @@ pub struct NostrConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlossomConfig {
+    #[serde(default = "default_blossom_enabled")]
+    pub enabled: bool,
     /// File servers for push/pull (legacy, both read and write)
     #[serde(default)]
     pub servers: Vec<String>,
@@ -151,6 +155,9 @@ pub struct BlossomConfig {
 
 impl BlossomConfig {
     pub fn all_read_servers(&self) -> Vec<String> {
+        if !self.enabled {
+            return Vec::new();
+        }
         let mut servers = self.servers.clone();
         servers.extend(self.read_servers.clone());
         if servers.is_empty() {
@@ -162,6 +169,9 @@ impl BlossomConfig {
     }
 
     pub fn all_write_servers(&self) -> Vec<String> {
+        if !self.enabled {
+            return Vec::new();
+        }
         let mut servers = self.servers.clone();
         servers.extend(self.write_servers.clone());
         if servers.is_empty() {
@@ -170,6 +180,16 @@ impl BlossomConfig {
         servers.sort();
         servers.dedup();
         servers
+    }
+}
+
+impl NostrConfig {
+    pub fn active_relays(&self) -> Vec<String> {
+        if self.enabled {
+            self.relays.clone()
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -187,6 +207,14 @@ fn default_write_servers() -> Vec<String> {
 
 fn default_max_upload_mb() -> u64 {
     5
+}
+
+fn default_nostr_enabled() -> bool {
+    true
+}
+
+fn default_blossom_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -441,6 +469,7 @@ impl Default for StorageConfig {
 impl Default for NostrConfig {
     fn default() -> Self {
         Self {
+            enabled: default_nostr_enabled(),
             relays: default_relays(),
             allowed_npubs: Vec::new(),
             socialgraph_root: None,
@@ -455,6 +484,7 @@ impl Default for NostrConfig {
 impl Default for BlossomConfig {
     fn default() -> Self {
         Self {
+            enabled: default_blossom_enabled(),
             servers: Vec::new(),
             read_servers: default_read_servers(),
             write_servers: default_write_servers(),
@@ -693,10 +723,12 @@ mod tests {
         assert!(!config.server.enable_bluetooth);
         assert_eq!(config.server.max_bluetooth_peers, 0);
         assert_eq!(config.storage.max_size_gb, 10);
+        assert!(config.nostr.enabled);
         assert!(config
             .nostr
             .relays
             .contains(&"wss://upload.iris.to/nostr".to_string()));
+        assert!(config.blossom.enabled);
         assert_eq!(config.nostr.crawl_depth, 2);
         assert_eq!(config.nostr.max_write_distance, 3);
         assert_eq!(config.nostr.db_max_size_gb, 10);
@@ -724,6 +756,7 @@ mod tests {
 relays = ["wss://relay.damus.io"]
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.nostr.enabled);
         assert_eq!(config.nostr.relays, vec!["wss://relay.damus.io"]);
         assert_eq!(config.nostr.crawl_depth, 2);
         assert_eq!(config.nostr.max_write_distance, 3);
@@ -742,6 +775,7 @@ crawl_depth = 3
 max_write_distance = 5
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.nostr.enabled);
         assert_eq!(config.nostr.socialgraph_root, Some("npub1test".to_string()));
         assert_eq!(config.nostr.crawl_depth, 3);
         assert_eq!(config.nostr.max_write_distance, 5);
@@ -852,6 +886,7 @@ chunk_target_bytes = 65536
     #[test]
     fn test_blossom_servers_fall_back_to_defaults_when_explicitly_empty() {
         let config = BlossomConfig {
+            enabled: true,
             servers: Vec::new(),
             read_servers: Vec::new(),
             write_servers: Vec::new(),
@@ -863,5 +898,25 @@ chunk_target_bytes = 65536
 
         let write = config.all_write_servers();
         assert_eq!(write, default_write_servers());
+    }
+
+    #[test]
+    fn test_disabled_sources_preserve_lists_but_return_no_active_endpoints() {
+        let nostr = NostrConfig {
+            enabled: false,
+            relays: vec!["wss://relay.example".to_string()],
+            ..NostrConfig::default()
+        };
+        assert!(nostr.active_relays().is_empty());
+
+        let blossom = BlossomConfig {
+            enabled: false,
+            servers: vec!["https://legacy.server".to_string()],
+            read_servers: vec!["https://read.example".to_string()],
+            write_servers: vec!["https://write.example".to_string()],
+            max_upload_mb: default_max_upload_mb(),
+        };
+        assert!(blossom.all_read_servers().is_empty());
+        assert!(blossom.all_write_servers().is_empty());
     }
 }
