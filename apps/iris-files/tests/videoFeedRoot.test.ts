@@ -213,7 +213,7 @@ describe('resolveFeedVideoRootCid', () => {
     );
   });
 
-  it('avoids raw relay queries in native mode', async () => {
+  it('still falls back to raw relay queries in native mode when earlier resolution misses', async () => {
     vi.stubGlobal('window', {
       location: {
         protocol: 'htree:',
@@ -225,12 +225,23 @@ describe('resolveFeedVideoRootCid', () => {
     resolverResolve.mockResolvedValue(null);
     npubToPubkey.mockReturnValue('f'.repeat(64));
     ndkFetchEvent.mockResolvedValue(null);
+    querySync.mockResolvedValue(new Set([
+      {
+        created_at: 10,
+        tags: [
+          ['d', 'videos/Mine Bombers in-game music'],
+          ['hash', '44'.repeat(32)],
+        ],
+      },
+    ]));
 
     const { resolveFeedVideoRootCidAsync } = await import('../src/lib/videoFeedRoot');
     await expect(resolveFeedVideoRootCidAsync({
       ownerNpub: 'npub1example',
       treeName: 'videos/Mine Bombers in-game music',
-    }, 1)).resolves.toBeNull();
-    expect(querySync).not.toHaveBeenCalled();
+    }, 1)).resolves.toEqual(cid(
+      Uint8Array.from({ length: 32 }, () => 0x44),
+    ));
+    expect(querySync).toHaveBeenCalled();
   });
 });

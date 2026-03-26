@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readdir, stat } from 'node:fs/promises';
+import { access, readdir, stat } from 'node:fs/promises';
 import { runPortableSmoke } from './portable-smoke-lib.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16,6 +16,7 @@ const playlistRootHash = '#/npub1g53mukxnjkcmr94fhryzkqutdz2ukq4ks0gvy5af25rgmws
 const playlistRouteHash = '#/npub1g53mukxnjkcmr94fhryzkqutdz2ukq4ks0gvy5af25rgmwsl4ngq43drvk/videos%2FMusic/video_1767136152580';
 
 async function main() {
+  const entryHtml = await resolveEntryHtml();
   const assetNames = await readdir(path.join(distDir, 'assets'));
   const workerAssets = assetNames.filter((name) => /^hashtree\.worker-.*\.js$/.test(name));
   const workerAsset = workerAssets.length === 0
@@ -34,6 +35,7 @@ async function main() {
     distDir,
     title: 'Iris Video',
     appName: 'video',
+    entryHtml,
     screenshotPath,
     validatePage: async (page) => {
       async function waitStep(name, pageFunction, arg, options) {
@@ -173,7 +175,7 @@ async function main() {
       const appOrigin = new URL(page.url()).origin;
       await page.goto('about:blank', { waitUntil: 'load', timeout: 30000 });
 
-      const playlistRootUrl = `${appOrigin}/index.html${playlistRootHash}`;
+      const playlistRootUrl = `${appOrigin}/${entryHtml}${playlistRootHash}`;
       await page.goto(playlistRootUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
 
       await waitStep('playlist:root-redirect-playable', () => {
@@ -194,7 +196,7 @@ async function main() {
 
       await page.screenshot({ path: playlistRootScreenshotPath, fullPage: true });
 
-      const playlistUrl = `${appOrigin}/index.html${playlistRouteHash}`;
+      const playlistUrl = `${appOrigin}/${entryHtml}${playlistRouteHash}`;
       await page.goto(playlistUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
 
       await waitStep('playlist:child-sidebar-visible', () => {
@@ -234,6 +236,17 @@ async function main() {
       await page.screenshot({ path: playlistScreenshotPath, fullPage: true });
     },
   });
+}
+
+async function resolveEntryHtml() {
+  const candidates = ['index.html', 'video.html'];
+  for (const candidate of candidates) {
+    try {
+      await access(path.join(distDir, candidate));
+      return candidate;
+    } catch {}
+  }
+  throw new Error('Portable video build is missing an HTML entrypoint');
 }
 
 main().catch((error) => {

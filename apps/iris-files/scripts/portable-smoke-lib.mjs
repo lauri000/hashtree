@@ -33,20 +33,20 @@ function shouldIgnoreConsoleError(text) {
   return false;
 }
 
-function safeJoin(rootDir, requestPath) {
-  const normalized = requestPath === '/' ? '/index.html' : requestPath;
+function safeJoin(rootDir, requestPath, entryHtml) {
+  const normalized = requestPath === '/' ? `/${entryHtml}` : requestPath;
   const fullPath = path.resolve(rootDir, `.${normalized}`);
-  if (!fullPath.startsWith(rootDir + path.sep) && fullPath !== path.join(rootDir, 'index.html')) {
+  if (!fullPath.startsWith(rootDir + path.sep) && fullPath !== path.join(rootDir, entryHtml)) {
     throw new Error(`Refusing to serve path outside root: ${requestPath}`);
   }
   return fullPath;
 }
 
-async function startServer(rootDir) {
+async function startServer(rootDir, entryHtml = 'index.html') {
   const server = http.createServer(async (req, res) => {
     try {
       const requestUrl = new URL(req.url ?? '/', 'http://127.0.0.1');
-      const filePath = safeJoin(rootDir, decodeURIComponent(requestUrl.pathname));
+      const filePath = safeJoin(rootDir, decodeURIComponent(requestUrl.pathname), entryHtml);
       const body = await readFile(filePath);
       res.writeHead(200, {
         'content-type': contentTypeFor(filePath),
@@ -72,12 +72,12 @@ async function startServer(rootDir) {
 
   return {
     server,
-    url: `http://127.0.0.1:${address.port}/index.html#/`,
+    url: `http://127.0.0.1:${address.port}/${entryHtml}#/`,
   };
 }
 
-export async function runPortableSmoke({ distDir, title, appName, screenshotPath, validatePage }) {
-  const { server, url } = await startServer(distDir);
+export async function runPortableSmoke({ distDir, title, appName, screenshotPath, validatePage, entryHtml = 'index.html' }) {
+  const { server, url } = await startServer(distDir, entryHtml);
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   const documentResponses = [];

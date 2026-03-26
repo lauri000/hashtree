@@ -46,16 +46,12 @@ describe('video thumbnail fallback wiring', () => {
     expect(videoThumbnailSource).toContain('{#if (!renderedSrc || imageError || !imageLoaded) && !capturedVideoFrameUrl}');
   });
 
-  it('renders a deterministic local poster only after media candidates are exhausted', () => {
+  it('renders the classic gray placeholder instead of generated poster tiles', () => {
     expect(videoThumbnailSource).toContain('fallbackTitle?: string | null');
     expect(videoThumbnailSource).toContain('fallbackSubtitle?: string | null');
     expect(videoThumbnailSource).toContain('fallbackSeed?: string | null');
-    expect(videoThumbnailSource).toContain('getPosterPalette');
-    expect(videoThumbnailSource).toContain('const hasPendingMediaCandidate = $derived.by(() =>');
-    expect(videoThumbnailSource).toContain('const showPosterFallback = $derived(showGeneratedPoster && !hasPendingMediaCandidate);');
-    expect(videoThumbnailSource).toContain('{#if showPosterFallback}');
-    expect(videoThumbnailSource).toContain('generated-thumbnail-poster');
-    expect(videoThumbnailSource).toContain('data-testid="generated-thumbnail-poster"');
     expect(videoThumbnailSource).toContain('<div class="absolute inset-0 bg-surface-2">');
+    expect(videoThumbnailSource).toContain('<span class="i-lucide-video text-text-3 {iconSize}"></span>');
+    expect(videoThumbnailSource).not.toContain('generated-thumbnail-poster');
   });
 });

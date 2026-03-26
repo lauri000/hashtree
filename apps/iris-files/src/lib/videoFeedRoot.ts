@@ -1,6 +1,5 @@
 import { cid, fromHex, type CID } from '@hashtree/core';
 import { getLocalRootCache, getLocalRootKey } from '../treeRootCache';
-import { getInjectedHtreeServerUrl } from './nativeHtree';
 
 const DEFAULT_TREE_ROOT_RELAYS = [
   'wss://relay.damus.io',
@@ -146,13 +145,6 @@ export async function resolveFeedVideoRootCidAsync(
       }
     } catch {
       // Fall through to raw relay query.
-    }
-
-    if (getInjectedHtreeServerUrl()) {
-      if (!fallbackRootCid) {
-        await cacheResolvedFeedTreeRoot(video.ownerNpub!, video.treeName!, null);
-      }
-      return fallbackRootCid;
     }
 
     try {

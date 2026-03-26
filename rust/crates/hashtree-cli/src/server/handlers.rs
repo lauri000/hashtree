@@ -1031,10 +1031,29 @@ async fn htree_nhash_impl(
         }
     }
 
-    let effective_path = path.filter(|p| !p.is_empty());
+    let mut effective_path = path.filter(|p| !p.is_empty());
 
     let store = state.store.store_arc();
     let tree = HashTree::new(HashTreeConfig::new(store).public());
+
+    if let Some(requested_path) = effective_path.clone() {
+        if is_thumbnail_request(&requested_path) {
+            match resolve_thumbnail_path(&state, &tree, &cid, &requested_path).await {
+                Ok(Some(resolved_path)) => {
+                    effective_path = Some(resolved_path);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    return Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .body(Body::from(format!("Error: {}", e)))
+                        .unwrap();
+                }
+            }
+        }
+    }
+
     let is_dir = match root_is_directory_with_fetch(&state, &tree, &cid).await {
         Ok(value) => value,
         Err(e) => {
@@ -3568,6 +3587,39 @@ mod tests {
         );
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body.as_ref(), main_js.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn htree_nhash_path_resolves_thumbnail_alias() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());
+        let tree = HashTree::new(HashTreeConfig::new(store.store_arc()).public());
+
+        let thumb_bytes = vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46];
+        let (thumb_cid, _) = tree.put(&thumb_bytes).await.unwrap();
+        let root_cid = tree
+            .put_directory(vec![
+                DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File),
+            ])
+            .await
+            .unwrap();
+
+        let nhash = hashtree_core::nhash_encode(&root_cid.hash).expect("encode nhash");
+        let route_nhash = nhash.strip_prefix("nhash1").expect("nhash prefix");
+
+        let response = htree_nhash_path(
+            State(test_app_state(store, Vec::new())),
+            Path((route_nhash.to_string(), "thumbnail".to_string())),
+            Query(HashMap::new()),
+            axum::http::HeaderMap::new(),
+            axum::extract::ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 43123))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), thumb_bytes.as_slice());
     }
 
     #[test]

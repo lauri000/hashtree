@@ -25,11 +25,11 @@
     fallbackImageUrls?: string[] | null;
     /** Exact in-tree fallback video URLs to use when no image thumbnail is available */
     fallbackVideoUrls?: string[] | null;
-    /** Text used to render a deterministic poster when no media thumbnail is discoverable */
+    /** Legacy placeholder metadata kept for component prop compatibility */
     fallbackTitle?: string | null;
-    /** Secondary line for the generated poster */
+    /** Legacy placeholder metadata kept for component prop compatibility */
     fallbackSubtitle?: string | null;
-    /** Stable seed for poster colors */
+    /** Legacy placeholder metadata kept for component prop compatibility */
     fallbackSeed?: string | null;
     /** Milliseconds to wait before advancing from a stalled image candidate */
     imageCandidateStallTimeoutMs?: number;
@@ -75,22 +75,6 @@
   let capturedFrameObjectUrl: string | null = null;
   const loadingStrategy = shouldEagerLoadMediaInNativeChildRuntime() ? 'eager' : 'lazy';
 
-  function getPosterPalette(_seed: string): { primary: string; secondary: string; accent: string; glow: string } {
-    return {
-      primary: 'rgba(255, 255, 255, 0.06)',
-      secondary: '#1a1a1d',
-      accent: 'rgba(255, 255, 255, 0.88)',
-      glow: 'rgba(255, 255, 255, 0.06)',
-    };
-  }
-
-  function getPosterMonogram(value: string): string {
-    const words = value.trim().split(/\s+/).filter(Boolean);
-    if (words.length === 0) return 'V';
-    if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
-    return `${words[0][0] ?? 'V'}${words[1][0] ?? ''}`.toUpperCase();
-  }
-
   function canUseVideoFrameFallback(url: string): boolean {
     try {
       const parsed = new URL(url, window.location.href);
@@ -116,32 +100,11 @@
   const resolvedFallbackVideoUrls = $derived.by(() =>
     (fallbackVideoUrls ?? []).filter((url): url is string => !!url && canUseVideoFrameFallback(url))
   );
-  const normalizedFallbackTitle = $derived((fallbackTitle ?? '').trim());
-  const normalizedFallbackSubtitle = $derived((fallbackSubtitle ?? '').trim());
-  const fallbackPosterSeed = $derived.by(() =>
-    (fallbackSeed ?? '').trim()
-      || normalizedFallbackTitle
-      || normalizedFallbackSubtitle
-      || resolvedImageCandidateUrls[0]
-      || resolvedFallbackVideoUrls[0]
-      || 'video'
-  );
-  const fallbackPosterPalette = $derived(getPosterPalette(fallbackPosterSeed));
-  const fallbackPosterStyle = $derived(
-    `--poster-primary:${fallbackPosterPalette.primary};--poster-secondary:${fallbackPosterPalette.secondary};--poster-accent:${fallbackPosterPalette.accent};--poster-glow:${fallbackPosterPalette.glow};`
-  );
-  const fallbackPosterMonogram = $derived(getPosterMonogram(normalizedFallbackTitle || normalizedFallbackSubtitle || 'Video'));
-  const showGeneratedPoster = $derived(Boolean(normalizedFallbackTitle || normalizedFallbackSubtitle));
   const activeFallbackVideoUrl = $derived.by(() =>
     fallbackVisible && !capturedVideoFrameUrl
       ? resolvedFallbackVideoUrls[videoCandidateIndex] ?? null
       : null
   );
-  const hasPendingMediaCandidate = $derived.by(() =>
-    (!!renderedSrc && !imageError)
-    || (!!activeFallbackVideoUrl && !videoFailed)
-  );
-  const showPosterFallback = $derived(showGeneratedPoster && !hasPendingMediaCandidate);
 
   // Reset state when the image or fallback candidates change.
   $effect.pre(() => {
@@ -412,43 +375,10 @@
   {/if}
 
   {#if (!renderedSrc || imageError || !imageLoaded) && !capturedVideoFrameUrl}
-    <div class="absolute inset-0">
-      {#if showPosterFallback}
-        <div
-          class="generated-thumbnail-poster absolute inset-0 overflow-hidden"
-          style={fallbackPosterStyle}
-          data-testid="generated-thumbnail-poster"
-        >
-          <div class="generated-thumbnail-glow absolute -left-8 -top-8 h-28 w-28 rounded-full blur-2xl"></div>
-          <div class="generated-thumbnail-grid absolute inset-0 opacity-30"></div>
-          <div class="generated-thumbnail-shade absolute inset-0"></div>
-          <div class="relative flex h-full flex-col justify-between p-3">
-            <div class="generated-thumbnail-badge">
-              {fallbackPosterMonogram}
-            </div>
-            <div class="space-y-1">
-              {#if normalizedFallbackTitle}
-                <p class="generated-thumbnail-title line-clamp-2">
-                  {normalizedFallbackTitle}
-                </p>
-              {/if}
-              {#if normalizedFallbackSubtitle}
-                <p class="generated-thumbnail-subtitle line-clamp-1">
-                  {normalizedFallbackSubtitle}
-                </p>
-              {/if}
-            </div>
-          </div>
-        </div>
-      {:else}
-        <div class="absolute inset-0 bg-surface-2">
-          {#if !hasPendingMediaCandidate}
-            <div class="absolute inset-0 flex items-center justify-center">
-              <span class="i-lucide-video text-text-3 {iconSize}"></span>
-            </div>
-          {/if}
-        </div>
-      {/if}
+    <div class="absolute inset-0 bg-surface-2">
+      <div class="absolute inset-0 flex items-center justify-center">
+        <span class="i-lucide-video text-text-3 {iconSize}"></span>
+      </div>
     </div>
   {/if}
 
@@ -466,62 +396,3 @@
     </div>
   {/if}
 </div>
-
-<style>
-  .generated-thumbnail-poster {
-    background:
-      radial-gradient(circle at top left, var(--poster-primary) 0%, transparent 58%),
-      linear-gradient(180deg, #2b2b31 0%, var(--poster-secondary) 100%);
-  }
-
-  .generated-thumbnail-glow {
-    background: var(--poster-glow);
-  }
-
-  .generated-thumbnail-grid {
-    background-image:
-      linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px),
-      linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px);
-    background-size: 18px 18px;
-  }
-
-  .generated-thumbnail-shade {
-    background:
-      linear-gradient(180deg, rgba(0, 0, 0, 0.10) 0%, rgba(0, 0, 0, 0.32) 100%),
-      linear-gradient(0deg, rgba(0, 0, 0, 0.58) 0%, rgba(0, 0, 0, 0.06) 62%);
-  }
-
-  .generated-thumbnail-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 2.25rem;
-    height: 2.25rem;
-    padding: 0 0.65rem;
-    border-radius: 9999px;
-    background: rgba(0, 0, 0, 0.30);
-    color: var(--poster-accent);
-    font-size: 0.75rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
-    backdrop-filter: blur(10px);
-  }
-
-  .generated-thumbnail-title {
-    color: rgba(255, 255, 255, 0.92);
-    font-size: 0.95rem;
-    font-weight: 700;
-    line-height: 1.1;
-    text-wrap: balance;
-    text-shadow: 0 1px 12px rgba(0, 0, 0, 0.35);
-  }
-
-  .generated-thumbnail-subtitle {
-    color: rgba(255, 255, 255, 0.60);
-    font-size: 0.68rem;
-    line-height: 1.1;
-    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.25);
-  }
-</style>
