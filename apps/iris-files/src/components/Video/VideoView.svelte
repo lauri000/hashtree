@@ -2057,6 +2057,7 @@ async function syncTreeRootToWorker(
 
   // Playlist active item background style
   let playlistActiveStyle = $derived(highlightRgba ? `background-color: ${highlightRgba};` : '');
+  let canRenderFeedSidebar = $derived(!loading && (!!videoSrc || !!error));
 
   // Track video container position for glow
   let videoContainer: HTMLDivElement | undefined = $state();
@@ -2254,7 +2255,9 @@ async function syncTreeRootToWorker(
       <PlaylistSidebar activeStyle={playlistActiveStyle} />
     </div>
   {/if}
-  <FeedSidebar currentHref={`#/${npub}/${treeName ? encodeURIComponent(treeName) : ''}`} />
+  {#if canRenderFeedSidebar}
+    <FeedSidebar currentHref={`#/${npub}/${treeName ? encodeURIComponent(treeName) : ''}`} />
+  {/if}
 {/snippet}
 
 <!--
@@ -2378,6 +2381,8 @@ async function syncTreeRootToWorker(
         <PlaylistSidebar activeStyle={playlistActiveStyle} />
       </div>
     {/if}
-    <FeedSidebar currentHref={`#/${npub}/${treeName ? encodeURIComponent(treeName) : ''}`} />
+    {#if canRenderFeedSidebar}
+      <FeedSidebar currentHref={`#/${npub}/${treeName ? encodeURIComponent(treeName) : ''}`} />
+    {/if}
   </div>
 </div>
