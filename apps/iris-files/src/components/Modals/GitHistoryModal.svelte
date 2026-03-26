@@ -28,7 +28,7 @@
   import { createGitLogStore, type CommitInfo } from '../../stores/git';
   import { createCIStatusStore, loadCIConfig, type CIStatus, type CIConfig } from '../../stores/ci';
   import type { Readable } from 'svelte/store';
-  import { SvelteSet } from 'svelte/reactivity';
+  import { SvelteSet, SvelteURLSearchParams } from 'svelte/reactivity';
   import { routeStore } from '../../stores';
   import { nhashEncode } from '@hashtree/core';
   import { checkoutCommit, getBranches } from '../../utils/git';
@@ -79,6 +79,17 @@
     });
   });
   let hasMoreCommits = $derived(!noMoreCommits && !initialLogState.loading && uniqueCommits().length >= currentDepth);
+
+  function buildCommitHref(commitOid: string): string {
+    if (!route.npub || !repoName) return '#/';
+
+    const params = new SvelteURLSearchParams();
+    params.set('commit', commitOid);
+    if (route.params.get('k')) params.set('k', route.params.get('k')!);
+    if (gitRootPath) params.set('g', gitRootPath);
+
+    return `#/${route.npub}/${repoName}?${params.toString()}`;
+  }
 
   // Branch info for detached HEAD detection
   let branchInfo = $state<{ branches: string[]; currentBranch: string | null }>({ branches: [], currentBranch: null });
@@ -455,7 +466,7 @@
                       <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-text-3">
                         {#if route.npub && repoName}
                           <a
-                            href="#/{route.npub}/{repoName}?commit={commit.oid}"
+                            href={buildCommitHref(commit.oid)}
                             onclick={close}
                             class="font-mono bg-surface-2 px-1.5 py-0.5 rounded text-xs hover:bg-accent hover:text-white transition-colors"
                             title="View commit diff"

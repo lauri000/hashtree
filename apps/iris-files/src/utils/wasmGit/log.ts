@@ -151,6 +151,24 @@ export interface CommitInfo {
   parent: string[];
 }
 
+interface GitObject {
+  type: string;
+  content: Uint8Array;
+}
+
+interface ParsedCommit {
+  tree: string;
+  parents: string[];
+  author: string;
+  email: string;
+  timestamp: number;
+  message: string;
+}
+
+export interface CommitDetails extends CommitInfo {
+  tree: string;
+}
+
 /**
  * Get commit log using wasm-git
  */
@@ -185,9 +203,18 @@ function gitDirCacheKey(gitDirCid: CID): string {
   return gitDirCid.key ? `${toHex(gitDirCid.hash)}:${toHex(gitDirCid.key)}` : toHex(gitDirCid.hash);
 }
 
+interface PackIndexData {
+  shas: string[];
+  offsets: number[];
+  sortedOffsets: number[];
+  shaToOffset: Map<string, number>;
+}
+
 // Cache for pack indexes and pack data per git dir CID
-const packIndexCache = new Map<string, Map<string, { shas: string[]; offsets: number[]; shaToOffset: Map<string, number> }>>();
+const packIndexCache = new Map<string, Map<string, PackIndexData>>();
 const packDataCache = new Map<string, Map<string, Uint8Array>>();
+const gitObjectCache = new Map<string, Map<string, Promise<GitObject | null>>>();
+const parsedCommitCache = new Map<string, ParsedCommit | null>();
 
 /**
  * Load pack index file (.idx) and return the SHA -> offset mapping
@@ -196,13 +223,12 @@ async function loadPackIndex(
   tree: ReturnType<typeof getTree>,
   gitDirCid: CID,
   idxName: string
-): Promise<{ fanout: Uint32Array; shas: string[]; offsets: number[]; shaToOffset: Map<string, number> } | null> {
+): Promise<PackIndexData | null> {
   // Check cache first
   const cacheKey = gitDirCacheKey(gitDirCid);
   let dirCache = packIndexCache.get(cacheKey);
   if (dirCache?.has(idxName)) {
-    const cached = dirCache.get(idxName)!;
-    return { fanout: new Uint32Array(256), shas: cached.shas, offsets: cached.offsets, shaToOffset: cached.shaToOffset };
+    return dirCache.get(idxName)!;
   }
   try {
     const idxResult = await tree.resolvePath(gitDirCid, `objects/pack/${idxName}`);
@@ -227,13 +253,8 @@ async function loadPackIndex(
       return null;
     }
 
-    // Fanout table (256 entries, 4 bytes each) starts at offset 8
-    const fanout = new Uint32Array(256);
-    for (let i = 0; i < 256; i++) {
-      fanout[i] = view.getUint32(8 + i * 4);
-    }
-
-    const numObjects = fanout[255];
+    // Total object count is the last entry in the fanout table.
+    const numObjects = view.getUint32(8 + 255 * 4);
 
     // SHA table starts after fanout (offset 8 + 256*4 = 1032)
     const shaOffset = 8 + 256 * 4;
@@ -251,8 +272,32 @@ async function loadPackIndex(
     // Offset table starts after CRC
     const offsetOffset = crcOffset + numObjects * 4;
     const offsets: number[] = [];
+    const largeOffsetEntries: Array<{ index: number; largeIndex: number }> = [];
     for (let i = 0; i < numObjects; i++) {
-      offsets.push(view.getUint32(offsetOffset + i * 4));
+      const rawOffset = view.getUint32(offsetOffset + i * 4);
+      if (rawOffset & 0x80000000) {
+        offsets.push(0);
+        largeOffsetEntries.push({ index: i, largeIndex: rawOffset & 0x7fffffff });
+      } else {
+        offsets.push(rawOffset);
+      }
+    }
+
+    if (largeOffsetEntries.length > 0) {
+      const largeOffsetTableOffset = offsetOffset + numObjects * 4;
+      for (const { index, largeIndex } of largeOffsetEntries) {
+        const entryOffset = largeOffsetTableOffset + largeIndex * 8;
+        if (entryOffset + 8 > idxData.byteLength) {
+          return null;
+        }
+        const high = view.getUint32(entryOffset);
+        const low = view.getUint32(entryOffset + 4);
+        const fullOffset = (BigInt(high) << 32n) | BigInt(low);
+        if (fullOffset > BigInt(Number.MAX_SAFE_INTEGER)) {
+          return null;
+        }
+        offsets[index] = Number(fullOffset);
+      }
     }
 
     // Build SHA -> offset map for fast lookups
@@ -261,14 +306,16 @@ async function loadPackIndex(
       shaToOffset.set(shas[i], offsets[i]);
     }
 
+    const sortedOffsets = [...offsets].sort((a, b) => a - b);
+
     // Cache the result
     if (!dirCache) {
       dirCache = new Map();
       packIndexCache.set(cacheKey, dirCache);
     }
-    dirCache.set(idxName, { shas, offsets, shaToOffset });
+    dirCache.set(idxName, { shas, offsets, sortedOffsets, shaToOffset });
 
-    return { fanout, shas, offsets, shaToOffset };
+    return { shas, offsets, sortedOffsets, shaToOffset };
   } catch {
     return null;
   }
@@ -419,74 +466,106 @@ async function readFromPack(
   try {
     const packData = await loadPackData(tree, gitDirCid, packName);
     if (!packData) return null;
-
-    // Read object header at offset
-    let pos = offset;
-    let byte = packData[pos++];
-    const type = (byte >> 4) & 7;
-    let size = byte & 15;
-    let shift = 4;
-
-    while (byte & 0x80) {
-      byte = packData[pos++];
-      size |= (byte & 0x7f) << shift;
-      shift += 7;
-    }
-
-    // Type mapping: 1=commit, 2=tree, 3=blob, 4=tag, 6=ofs_delta, 7=ref_delta
-    const typeNames = ['', 'commit', 'tree', 'blob', 'tag', '', 'ofs_delta', 'ref_delta'];
-
-    if (type === 6) {
-      // OFS_DELTA: read negative offset to base object
-      let negOffset = 0;
-      byte = packData[pos++];
-      negOffset = byte & 0x7f;
-      while (byte & 0x80) {
-        byte = packData[pos++];
-        negOffset = ((negOffset + 1) << 7) | (byte & 0x7f);
-      }
-      const baseOffset = offset - negOffset;
-
-      // Decompress delta data
-      const compressedDelta = packData.slice(pos);
-      const deltaData = await decompressZlib(compressedDelta);
-
-      // Recursively read base object
-      const baseObj = await readFromPack(tree, gitDirCid, packName, baseOffset, depth + 1);
-      if (!baseObj) return null;
-
-      // Apply delta to base
-      const content = applyDelta(baseObj.content, deltaData.slice(0, size > deltaData.length ? deltaData.length : undefined));
-      return { type: baseObj.type, content };
-    }
-
-    if (type === 7) {
-      // REF_DELTA: read 20-byte SHA of base object
-      const baseShaBytes = packData.slice(pos, pos + 20);
-      pos += 20;
-      const baseSha = Array.from(baseShaBytes).map(b => b.toString(16).padStart(2, '0')).join('');
-
-      // Decompress delta data
-      const compressedDelta = packData.slice(pos);
-      const deltaData = await decompressZlib(compressedDelta);
-
-      // Find and read base object (could be in any pack or loose)
-      const baseObj = await readGitObjectInternal(tree, gitDirCid, baseSha, depth + 1);
-      if (!baseObj) return null;
-
-      // Apply delta to base
-      const content = applyDelta(baseObj.content, deltaData.slice(0, size > deltaData.length ? deltaData.length : undefined));
-      return { type: baseObj.type, content };
-    }
-
-    // Regular object - decompress
-    const compressedData = packData.slice(pos);
-    const decompressed = await decompressZlib(compressedData);
-
-    return { type: typeNames[type], content: decompressed.slice(0, size) };
+    const idx = await loadPackIndex(tree, gitDirCid, packName.replace('.pack', '.idx'));
+    if (!idx) return null;
+    return await readPackObjectAtOffset(packData, offset, idx, tree, gitDirCid, packName, depth);
   } catch {
     return null;
   }
+}
+
+function getPackObjectEnd(packData: Uint8Array, sortedOffsets: number[], offset: number): number {
+  const packTrailerLength = 20;
+  const packEnd = Math.max(12, packData.length - packTrailerLength);
+
+  let lo = 0;
+  let hi = sortedOffsets.length;
+
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sortedOffsets[mid] <= offset) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+
+  return lo < sortedOffsets.length ? Math.min(sortedOffsets[lo], packEnd) : packEnd;
+}
+
+async function readPackObjectAtOffset(
+  packData: Uint8Array,
+  offset: number,
+  idx: PackIndexData,
+  tree: ReturnType<typeof getTree>,
+  gitDirCid: CID,
+  packName: string,
+  depth = 0
+): Promise<{ type: string; content: Uint8Array } | null> {
+  if (depth > 50) return null;
+
+  let pos = offset;
+  let byte = packData[pos++];
+  const type = (byte >> 4) & 7;
+  let size = byte & 15;
+  let shift = 4;
+
+  while (byte & 0x80) {
+    byte = packData[pos++];
+    size |= (byte & 0x7f) << shift;
+    shift += 7;
+  }
+
+  const typeNames = ['', 'commit', 'tree', 'blob', 'tag', '', 'ofs_delta', 'ref_delta'];
+  const objectEnd = getPackObjectEnd(packData, idx.sortedOffsets, offset);
+
+  if (objectEnd <= pos) {
+    return null;
+  }
+
+  if (type === 6) {
+    let negOffset = 0;
+    byte = packData[pos++];
+    negOffset = byte & 0x7f;
+    while (byte & 0x80) {
+      byte = packData[pos++];
+      negOffset = ((negOffset + 1) << 7) | (byte & 0x7f);
+    }
+    const baseOffset = offset - negOffset;
+
+    const compressedDelta = packData.subarray(pos, objectEnd);
+    const deltaData = await decompressZlib(compressedDelta);
+    const baseObj = await readPackObjectAtOffset(packData, baseOffset, idx, tree, gitDirCid, packName, depth + 1);
+    if (!baseObj) return null;
+
+    const content = applyDelta(baseObj.content, deltaData);
+    return { type: baseObj.type, content };
+  }
+
+  if (type === 7) {
+    const baseShaBytes = packData.subarray(pos, pos + 20);
+    pos += 20;
+    const baseSha = Array.from(baseShaBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+
+    const compressedDelta = packData.subarray(pos, objectEnd);
+    const deltaData = await decompressZlib(compressedDelta);
+
+    const baseOffset = idx.shaToOffset.get(baseSha);
+    let baseObj: { type: string; content: Uint8Array } | null = null;
+    if (baseOffset !== undefined) {
+      baseObj = await readPackObjectAtOffset(packData, baseOffset, idx, tree, gitDirCid, packName, depth + 1);
+    } else {
+      baseObj = await readGitObject(tree, gitDirCid, baseSha);
+    }
+    if (!baseObj) return null;
+
+    const content = applyDelta(baseObj.content, deltaData);
+    return { type: baseObj.type, content };
+  }
+
+  const compressedData = packData.subarray(pos, objectEnd);
+  const decompressed = await decompressZlib(compressedData);
+  return { type: typeNames[type], content: decompressed.slice(0, size) };
 }
 
 /**
@@ -543,21 +622,28 @@ async function readGitObject(
   tree: ReturnType<typeof getTree>,
   gitDirCid: CID,
   sha: string
-): Promise<{ type: string; content: Uint8Array } | null> {
-  return readGitObjectInternal(tree, gitDirCid, sha, 0);
+): Promise<GitObject | null> {
+  const cacheKey = gitDirCacheKey(gitDirCid);
+  let dirCache = gitObjectCache.get(cacheKey);
+  if (!dirCache) {
+    dirCache = new Map();
+    gitObjectCache.set(cacheKey, dirCache);
+  }
+
+  const cached = dirCache.get(sha);
+  if (cached) {
+    return await cached;
+  }
+
+  const pending = readGitObjectInternal(tree, gitDirCid, sha, 0);
+  dirCache.set(sha, pending);
+  return await pending;
 }
 
 /**
  * Parse a git commit object
  */
-function parseCommit(content: Uint8Array): {
-  tree: string;
-  parents: string[];
-  author: string;
-  email: string;
-  timestamp: number;
-  message: string;
-} | null {
+function parseCommit(content: Uint8Array): ParsedCommit | null {
   const text = new TextDecoder().decode(content);
   const lines = text.split('\n');
 
@@ -596,142 +682,71 @@ function parseCommit(content: Uint8Array): {
   return { tree, parents, author, email, timestamp, message };
 }
 
-// Cache for preloaded commit objects (sha -> parsed commit)
-const commitCache = new Map<string, Map<string, { type: string; content: Uint8Array }>>();
-
-/**
- * Preload all commit objects from pack files in a single pass
- * Much faster than fetching commits one by one
- */
-async function preloadCommitsFromPacks(
-  tree: ReturnType<typeof getTree>,
-  gitDirCid: CID
-): Promise<Map<string, { type: string; content: Uint8Array }>> {
-  const cacheKey = gitDirCacheKey(gitDirCid);
-  if (commitCache.has(cacheKey)) {
-    return commitCache.get(cacheKey)!;
-  }
-
-  const objects = new Map<string, { type: string; content: Uint8Array }>();
-
-  try {
-    const packDirResult = await tree.resolvePath(gitDirCid, 'objects/pack');
-    if (!packDirResult || packDirResult.type !== LinkType.Dir) {
-      commitCache.set(cacheKey, objects);
-      return objects;
-    }
-
-    const entries = await tree.listDirectory(packDirResult.cid);
-    const idxFiles = entries.filter(e => e.name.endsWith('.idx'));
-
-    for (const idxFile of idxFiles) {
-      const packName = idxFile.name.replace('.idx', '.pack');
-
-      const idx = await loadPackIndex(tree, gitDirCid, idxFile.name);
-      if (!idx) continue;
-
-      const packData = await loadPackData(tree, gitDirCid, packName);
-      if (!packData) continue;
-
-      // Read all objects from pack (commits, trees, etc.)
-      for (let i = 0; i < idx.shas.length; i++) {
-        const sha = idx.shas[i];
-        const offset = idx.offsets[i];
-
-        try {
-          const obj = await readPackObjectFull(packData, offset, idx, tree, gitDirCid, packName);
-          if (obj) {
-            objects.set(sha, obj);
-          }
-        } catch {
-          // Skip objects that fail to parse
-        }
-      }
-    }
-  } catch (err) {
-    console.error('[git] preloadCommitsFromPacks error:', err);
-  }
-
-  commitCache.set(cacheKey, objects);
-  return objects;
-}
-
-/**
- * Read a full object from pack data (with delta resolution)
- */
-async function readPackObjectFull(
-  packData: Uint8Array,
-  offset: number,
-  idx: { shas: string[]; offsets: number[]; shaToOffset: Map<string, number> },
+async function getParsedCommitFromSha(
   tree: ReturnType<typeof getTree>,
   gitDirCid: CID,
-  packName: string,
-  depth = 0
-): Promise<{ type: string; content: Uint8Array } | null> {
-  if (depth > 50) return null;
-
-  let pos = offset;
-  let byte = packData[pos++];
-  const type = (byte >> 4) & 7;
-  let size = byte & 15;
-  let shift = 4;
-
-  while (byte & 0x80) {
-    byte = packData[pos++];
-    size |= (byte & 0x7f) << shift;
-    shift += 7;
+  sha: string
+): Promise<ParsedCommit | null> {
+  if (parsedCommitCache.has(sha)) {
+    return parsedCommitCache.get(sha) ?? null;
   }
 
-  const typeNames = ['', 'commit', 'tree', 'blob', 'tag', '', 'ofs_delta', 'ref_delta'];
-
-  if (type === 6) {
-    // OFS_DELTA
-    let negOffset = 0;
-    byte = packData[pos++];
-    negOffset = byte & 0x7f;
-    while (byte & 0x80) {
-      byte = packData[pos++];
-      negOffset = ((negOffset + 1) << 7) | (byte & 0x7f);
-    }
-    const baseOffset = offset - negOffset;
-
-    const compressedDelta = packData.slice(pos);
-    const deltaData = await decompressZlib(compressedDelta);
-    const baseObj = await readPackObjectFull(packData, baseOffset, idx, tree, gitDirCid, packName, depth + 1);
-    if (!baseObj) return null;
-
-    const content = applyDelta(baseObj.content, deltaData);
-    return { type: baseObj.type, content };
+  const obj = await readGitObject(tree, gitDirCid, sha);
+  if (!obj || obj.type !== 'commit') {
+    parsedCommitCache.set(sha, null);
+    return null;
   }
 
-  if (type === 7) {
-    // REF_DELTA
-    const baseShaBytes = packData.slice(pos, pos + 20);
-    pos += 20;
-    const baseSha = Array.from(baseShaBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+  const parsed = parseCommit(obj.content);
+  parsedCommitCache.set(sha, parsed);
+  return parsed;
+}
 
-    const compressedDelta = packData.slice(pos);
-    const deltaData = await decompressZlib(compressedDelta);
-
-    // Look for base in same pack first
-    const baseOffset = idx.shaToOffset.get(baseSha);
-    let baseObj: { type: string; content: Uint8Array } | null = null;
-    if (baseOffset !== undefined) {
-      baseObj = await readPackObjectFull(packData, baseOffset, idx, tree, gitDirCid, packName, depth + 1);
-    } else {
-      // Fall back to full object lookup
-      baseObj = await readGitObjectInternal(tree, gitDirCid, baseSha, depth + 1);
-    }
-    if (!baseObj) return null;
-
-    const content = applyDelta(baseObj.content, deltaData);
-    return { type: baseObj.type, content };
+async function resolveCommitSha(rootCid: CID, ref: string): Promise<string | null> {
+  if (ref === 'HEAD') {
+    return await getHead(rootCid);
   }
 
-  // Regular object
-  const compressedData = packData.slice(pos);
-  const decompressed = await decompressZlib(compressedData);
-  return { type: typeNames[type], content: decompressed.slice(0, size) };
+  if (/^[0-9a-f]{40}$/i.test(ref)) {
+    return ref.toLowerCase();
+  }
+
+  if (/^[0-9a-f]{4,39}$/i.test(ref)) {
+    const commits = await getLog(rootCid, { depth: 1000 });
+    const match = commits.find((commit) => commit.oid.startsWith(ref.toLowerCase()));
+    return match?.oid ?? null;
+  }
+
+  return null;
+}
+
+export async function getCommitInfo(rootCid: CID, ref: string): Promise<CommitDetails | null> {
+  const tree = getTree();
+
+  const gitDirResult = await tree.resolvePath(rootCid, '.git');
+  if (!gitDirResult || gitDirResult.type !== LinkType.Dir) {
+    return null;
+  }
+
+  const sha = await resolveCommitSha(rootCid, ref);
+  if (!sha) {
+    return null;
+  }
+
+  const parsed = await getParsedCommitFromSha(tree, gitDirResult.cid, sha);
+  if (!parsed) {
+    return null;
+  }
+
+  return {
+    oid: sha,
+    message: parsed.message,
+    author: parsed.author,
+    email: parsed.email,
+    timestamp: parsed.timestamp,
+    parent: parsed.parents,
+    tree: parsed.tree,
+  };
 }
 
 /**
@@ -743,6 +758,7 @@ export async function getLog(
   rootCid: CID,
   options?: { depth?: number }
 ): Promise<CommitInfo[]> {
+  const startTime = performance.now();
   const tree = getTree();
   const depth = options?.depth ?? 20;
 
@@ -759,52 +775,59 @@ export async function getLog(
       return [];
     }
 
-    // Preload all objects from pack files (single network fetch)
-    const preloadedObjects = await preloadCommitsFromPacks(tree, gitDirResult.cid);
-
     const commits: CommitInfo[] = [];
     const visited = new Set<string>();
     const queue = [headSha];
-
-    // Helper to get object from cache or fetch
-    const getObject = async (sha: string): Promise<{ type: string; content: Uint8Array } | null> => {
-      // Try preloaded cache first (fast path)
-      const cached = preloadedObjects.get(sha);
-      if (cached) return cached;
-      // Fall back to individual fetch (loose objects or missing from pack)
-      return readGitObject(tree, gitDirResult.cid, sha);
-    };
+    const batchSize = 16;
 
     while (queue.length > 0 && commits.length < depth) {
-      const sha = queue.shift()!;
-      if (visited.has(sha)) continue;
-      visited.add(sha);
+      const batch: string[] = [];
+      while (batch.length < batchSize && queue.length > 0 && commits.length + batch.length < depth) {
+        const sha = queue.shift()!;
+        if (!visited.has(sha)) {
+          visited.add(sha);
+          batch.push(sha);
+        }
+      }
 
-      const obj = await getObject(sha);
-      if (!obj || obj.type !== 'commit') continue;
+      if (batch.length === 0) {
+        break;
+      }
 
-      const parsed = parseCommit(obj.content);
-      if (!parsed) continue;
+      const parsedBatch = await Promise.all(
+        batch.map(async (sha) => {
+          const parsed = await getParsedCommitFromSha(tree, gitDirResult.cid, sha);
+          return parsed ? { sha, parsed } : null;
+        })
+      );
 
-      commits.push({
-        oid: sha,
-        message: parsed.message,
-        author: parsed.author,
-        email: parsed.email,
-        timestamp: parsed.timestamp,
-        parent: parsed.parents,
-      });
+      for (const item of parsedBatch) {
+        if (!item) continue;
 
-      // Add parents to queue
-      for (const parent of parsed.parents) {
-        if (!visited.has(parent)) {
-          queue.push(parent);
+        commits.push({
+          oid: item.sha,
+          message: item.parsed.message,
+          author: item.parsed.author,
+          email: item.parsed.email,
+          timestamp: item.parsed.timestamp,
+          parent: item.parsed.parents,
+        });
+
+        for (const parent of item.parsed.parents) {
+          if (!visited.has(parent)) {
+            queue.push(parent);
+          }
         }
       }
     }
 
     // Sort by timestamp (newest first)
     commits.sort((a, b) => b.timestamp - a.timestamp);
+
+    const elapsed = performance.now() - startTime;
+    if (elapsed >= 50) {
+      console.log(`[git perf] getLog completed in ${elapsed.toFixed(0)} ms (depth=${depth}, commits=${commits.length})`);
+    }
 
     return commits;
   } catch (err) {
@@ -1282,14 +1305,36 @@ function parseGitTree(content: Uint8Array): Array<{ mode: string; name: string; 
   return entries;
 }
 
-/**
- * Get tree entries for a git tree object
- */
-// Global cache for tree entries by sha (trees are immutable)
+// Tree objects are immutable, so cache parsed entry maps by tree SHA.
 const treeEntriesCache = new Map<string, Map<string, { hash: string; mode: string }>>();
 
 // Cache for individual path lookups in a tree
 const treePathCache = new Map<string, Map<string, { hash: string; mode: string } | 'dir' | null>>();
+
+async function getTreeEntriesMap(
+  tree: ReturnType<typeof getTree>,
+  gitDirCid: CID,
+  treeSha: string
+): Promise<Map<string, { hash: string; mode: string }>> {
+  const cached = treeEntriesCache.get(treeSha);
+  if (cached) {
+    return cached;
+  }
+
+  const obj = await readGitObject(tree, gitDirCid, treeSha);
+  if (!obj || obj.type !== 'tree') {
+    const empty = new Map<string, { hash: string; mode: string }>();
+    treeEntriesCache.set(treeSha, empty);
+    return empty;
+  }
+
+  const entries = new Map<string, { hash: string; mode: string }>();
+  for (const entry of parseGitTree(obj.content)) {
+    entries.set(entry.name, { hash: entry.hash, mode: entry.mode });
+  }
+  treeEntriesCache.set(treeSha, entries);
+  return entries;
+}
 
 /**
  * Get a specific entry from a git tree by path (much faster than walking entire tree)
@@ -1298,8 +1343,7 @@ async function getTreeEntryAtPath(
   tree: ReturnType<typeof getTree>,
   gitDirCid: CID,
   treeSha: string,
-  path: string,
-  preloadedObjects?: Map<string, { type: string; content: Uint8Array }>
+  path: string
 ): Promise<{ hash: string; mode: string } | 'dir' | null> {
   const pathCache = treePathCache.get(treeSha) || new Map();
 
@@ -1307,28 +1351,19 @@ async function getTreeEntryAtPath(
     return pathCache.get(path)!;
   }
 
-  const getObject = async (sha: string) => {
-    if (preloadedObjects) {
-      const obj = preloadedObjects.get(sha);
-      if (obj) return obj;
-    }
-    return readGitObject(tree, gitDirCid, sha);
-  };
-
   const parts = path.split('/');
   let currentSha = treeSha;
 
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
-    const obj = await getObject(currentSha);
-    if (!obj || obj.type !== 'tree') {
+    const entries = await getTreeEntriesMap(tree, gitDirCid, currentSha);
+    if (entries.size === 0) {
       pathCache.set(path, null);
       treePathCache.set(treeSha, pathCache);
       return null;
     }
 
-    const entries = parseGitTree(obj.content);
-    const entry = entries.find(e => e.name === part);
+    const entry = entries.get(part);
     if (!entry) {
       pathCache.set(path, null);
       treePathCache.set(treeSha, pathCache);
@@ -1364,77 +1399,21 @@ async function getSubtreeSha(
   tree: ReturnType<typeof getTree>,
   gitDirCid: CID,
   treeSha: string,
-  path: string,
-  preloadedObjects?: Map<string, { type: string; content: Uint8Array }>
+  path: string
 ): Promise<string | null> {
   if (!path) return treeSha;
-
-  const getObject = async (sha: string) => {
-    if (preloadedObjects) {
-      const obj = preloadedObjects.get(sha);
-      if (obj) return obj;
-    }
-    return readGitObject(tree, gitDirCid, sha);
-  };
 
   const parts = path.split('/');
   let currentSha = treeSha;
 
   for (const part of parts) {
-    const obj = await getObject(currentSha);
-    if (!obj || obj.type !== 'tree') return null;
-
-    const entries = parseGitTree(obj.content);
-    const entry = entries.find(e => e.name === part);
+    const entries = await getTreeEntriesMap(tree, gitDirCid, currentSha);
+    const entry = entries.get(part);
     if (!entry || entry.mode !== '40000') return null;
     currentSha = entry.hash;
   }
 
   return currentSha;
-}
-
-async function getGitTreeEntries(
-  tree: ReturnType<typeof getTree>,
-  gitDirCid: CID,
-  treeSha: string,
-  preloadedObjects?: Map<string, { type: string; content: Uint8Array }>
-): Promise<Map<string, { hash: string; mode: string }>> {
-  // Check cache first
-  const cached = treeEntriesCache.get(treeSha);
-  if (cached) return cached;
-
-  const result = new Map<string, { hash: string; mode: string }>();
-
-  const getObject = async (sha: string) => {
-    if (preloadedObjects) {
-      const obj = preloadedObjects.get(sha);
-      if (obj) return obj;
-    }
-    return readGitObject(tree, gitDirCid, sha);
-  };
-
-  const walkGitTree = async (sha: string, prefix: string): Promise<void> => {
-    const obj = await getObject(sha);
-    if (!obj || obj.type !== 'tree') return;
-
-    const entries = parseGitTree(obj.content);
-    for (const entry of entries) {
-      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
-
-      // Mode 40000 = directory, 100644/100755 = file, 120000 = symlink, 160000 = submodule
-      if (entry.mode === '40000') {
-        await walkGitTree(entry.hash, path);
-      } else {
-        result.set(path, { hash: entry.hash, mode: entry.mode });
-      }
-    }
-  };
-
-  await walkGitTree(treeSha, '');
-
-  // Cache the result
-  treeEntriesCache.set(treeSha, result);
-  return result;
 }
 
 /**
@@ -1462,9 +1441,6 @@ export async function getFileLastCommits(
   }
 
   try {
-    // Preload all objects from pack files (single network fetch)
-    const preloadedObjects = await preloadCommitsFromPacks(htree, gitDirResult.cid);
-
     // Build full paths to search for (files and directories)
     const targetNames = filenames.filter(f => f !== '.git');
     const targetPaths = new Map<string, string>(); // fullPath -> filename
@@ -1476,13 +1452,6 @@ export async function getFileLastCommits(
     // Get commit history
     const headSha = await getHead(rootCid);
     if (!headSha) return result;
-
-    // Helper to get object from cache or fetch
-    const getObject = async (sha: string) => {
-      const cached = preloadedObjects.get(sha);
-      if (cached) return cached;
-      return readGitObject(htree, gitDirResult.cid, sha);
-    };
 
     // Walk through commits, comparing each with its parent to find when files changed
     const visited = new Set<string>();
@@ -1498,7 +1467,7 @@ export async function getFileLastCommits(
       if (pathLookupCache.has(cacheKey)) {
         return pathLookupCache.get(cacheKey)!;
       }
-      const entry = await getTreeEntryAtPath(htree, gitDirResult.cid, treeSha, path, preloadedObjects);
+      const entry = await getTreeEntryAtPath(htree, gitDirResult.cid, treeSha, path);
       pathLookupCache.set(cacheKey, entry);
       return entry;
     };
@@ -1510,7 +1479,7 @@ export async function getFileLastCommits(
       if (subtreeShaCache.has(cacheKey)) {
         return subtreeShaCache.get(cacheKey)!;
       }
-      const sha = await getSubtreeSha(htree, gitDirResult.cid, treeSha, path, preloadedObjects);
+      const sha = await getSubtreeSha(htree, gitDirResult.cid, treeSha, path);
       subtreeShaCache.set(cacheKey, sha);
       return sha;
     };
@@ -1531,31 +1500,33 @@ export async function getFileLastCommits(
       if (batch.length === 0) break;
 
       // Load all commits in parallel
-      const commitObjs = await Promise.all(batch.map(sha => getObject(sha)));
-      const commits = batch.map((sha, i) => {
-        const obj = commitObjs[i];
-        if (!obj || obj.type !== 'commit') return null;
-        const parsed = parseCommit(obj.content);
-        if (!parsed) return null;
-        return { sha, commit: parsed };
-      }).filter((c): c is { sha: string; commit: ReturnType<typeof parseCommit> & {} } => c !== null);
+      const parsedCommits = await Promise.all(
+        batch.map(async (sha) => {
+          const parsed = await getParsedCommitFromSha(htree, gitDirResult.cid, sha);
+          return parsed ? { sha, commit: parsed } : null;
+        })
+      );
+      const resolvedCommits = parsedCommits.filter((c): c is { sha: string; commit: ParsedCommit } => c !== null);
 
       // Load parent commits to get their tree SHAs
-      const parentShas = commits.flatMap(c => c.commit.parents).filter(p => !visited.has(p));
-      const parentObjs = await Promise.all(parentShas.map(sha => getObject(sha)));
-      const parentCommitMap = new Map<string, ReturnType<typeof parseCommit>>();
-      parentShas.forEach((sha, i) => {
-        const obj = parentObjs[i];
-        if (obj && obj.type === 'commit') {
-          const parsed = parseCommit(obj.content);
-          if (parsed) {
-            parentCommitMap.set(sha, parsed);
-          }
+      const parentShas = resolvedCommits
+        .flatMap(c => c.commit.parents)
+        .filter((parent, index, arr) => !visited.has(parent) && arr.indexOf(parent) === index);
+      const parentCommits = await Promise.all(
+        parentShas.map(async (sha) => {
+          const parsed = await getParsedCommitFromSha(htree, gitDirResult.cid, sha);
+          return parsed ? [sha, parsed] as const : null;
+        })
+      );
+      const parentCommitMap = new Map<string, ParsedCommit>();
+      for (const entry of parentCommits) {
+        if (entry) {
+          parentCommitMap.set(entry[0], entry[1]);
         }
-      });
+      }
 
       // Now process each commit
-      for (const { sha, commit } of commits) {
+      for (const { sha, commit } of resolvedCommits) {
         if (foundEntries.size >= targetPaths.size) break;
 
         let parentTreeSha: string | null = null;
@@ -1606,15 +1577,16 @@ export async function getFileLastCommits(
               foundEntries.add(targetPath);
             }
           }
+
         }
 
-        // Add parents to queue
         for (const parent of commit.parents) {
           if (!visited.has(parent)) {
             queue.push(parent);
           }
         }
-      } // end for commit in commits
+      }
+      // end for commit in resolvedCommits
     } // end while queue
 
     console.log(`[git perf] getFileLastCommits completed in ${(performance.now() - startTime).toFixed(0)} ms`);
@@ -1632,6 +1604,133 @@ export interface DiffEntry {
   newHash?: string;
 }
 
+async function collectTreeFiles(
+  tree: ReturnType<typeof getTree>,
+  gitDirCid: CID,
+  treeSha: string,
+  prefix: string,
+  status: 'added' | 'deleted',
+  result: DiffEntry[]
+): Promise<void> {
+  const entries = await getTreeEntriesMap(tree, gitDirCid, treeSha);
+  const names = Array.from(entries.keys()).sort();
+
+  for (const name of names) {
+    const entry = entries.get(name)!;
+    const path = prefix ? `${prefix}/${name}` : name;
+
+    if (entry.mode === '40000') {
+      await collectTreeFiles(tree, gitDirCid, entry.hash, path, status, result);
+      continue;
+    }
+
+    if (status === 'added') {
+      result.push({ path, status, newHash: entry.hash });
+    } else {
+      result.push({ path, status, oldHash: entry.hash });
+    }
+  }
+}
+
+async function diffTreeObjects(
+  tree: ReturnType<typeof getTree>,
+  gitDirCid: CID,
+  fromTreeSha: string,
+  toTreeSha: string,
+  prefix: string,
+  result: DiffEntry[]
+): Promise<void> {
+  if (fromTreeSha === toTreeSha) {
+    return;
+  }
+
+  const [fromEntries, toEntries] = await Promise.all([
+    getTreeEntriesMap(tree, gitDirCid, fromTreeSha),
+    getTreeEntriesMap(tree, gitDirCid, toTreeSha),
+  ]);
+
+  const names = Array.from(new Set([...fromEntries.keys(), ...toEntries.keys()])).sort();
+
+  for (const name of names) {
+    const fromEntry = fromEntries.get(name);
+    const toEntry = toEntries.get(name);
+    const path = prefix ? `${prefix}/${name}` : name;
+
+    if (!fromEntry && toEntry) {
+      if (toEntry.mode === '40000') {
+        await collectTreeFiles(tree, gitDirCid, toEntry.hash, path, 'added', result);
+      } else {
+        result.push({ path, status: 'added', newHash: toEntry.hash });
+      }
+      continue;
+    }
+
+    if (fromEntry && !toEntry) {
+      if (fromEntry.mode === '40000') {
+        await collectTreeFiles(tree, gitDirCid, fromEntry.hash, path, 'deleted', result);
+      } else {
+        result.push({ path, status: 'deleted', oldHash: fromEntry.hash });
+      }
+      continue;
+    }
+
+    if (!fromEntry || !toEntry) {
+      continue;
+    }
+
+    if (fromEntry.hash === toEntry.hash && fromEntry.mode === toEntry.mode) {
+      continue;
+    }
+
+    if (fromEntry.mode === '40000' && toEntry.mode === '40000') {
+      await diffTreeObjects(tree, gitDirCid, fromEntry.hash, toEntry.hash, path, result);
+      continue;
+    }
+
+    if (fromEntry.mode === '40000') {
+      await collectTreeFiles(tree, gitDirCid, fromEntry.hash, path, 'deleted', result);
+      result.push({ path, status: 'added', newHash: toEntry.hash });
+      continue;
+    }
+
+    if (toEntry.mode === '40000') {
+      result.push({ path, status: 'deleted', oldHash: fromEntry.hash });
+      await collectTreeFiles(tree, gitDirCid, toEntry.hash, path, 'added', result);
+      continue;
+    }
+
+    result.push({
+      path,
+      status: 'modified',
+      oldHash: fromEntry.hash,
+      newHash: toEntry.hash,
+    });
+  }
+}
+
+export async function getCommitDiffEntries(rootCid: CID, ref: string): Promise<DiffEntry[]> {
+  const htree = getTree();
+  const result: DiffEntry[] = [];
+
+  const gitDirResult = await htree.resolvePath(rootCid, '.git');
+  if (!gitDirResult || gitDirResult.type !== LinkType.Dir) {
+    return result;
+  }
+
+  const commit = await getCommitInfo(rootCid, ref);
+  if (!commit) {
+    return result;
+  }
+
+  if (!commit.parent[0]) {
+    await collectTreeFiles(htree, gitDirResult.cid, commit.tree, '', 'added', result);
+    result.sort((a, b) => a.path.localeCompare(b.path));
+    return result;
+  }
+
+  return await getDiff(rootCid, commit.parent[0], commit.oid);
+}
+
 /**
  * Get diff between two commits
  * Native implementation - no wasm-git needed
@@ -1642,6 +1741,7 @@ export async function getDiff(
   toCommit: string
 ): Promise<DiffEntry[]> {
   const htree = getTree();
+  const startTime = performance.now();
   const result: DiffEntry[] = [];
 
   // Check for .git directory
@@ -1651,41 +1751,27 @@ export async function getDiff(
   }
 
   try {
-    // Get tree for "from" commit
-    const fromObj = await readGitObject(htree, gitDirResult.cid, fromCommit);
-    if (!fromObj || fromObj.type !== 'commit') return result;
-    const fromParsed = parseCommit(fromObj.content);
-    if (!fromParsed) return result;
+    const [fromSha, toSha] = await Promise.all([
+      resolveCommitSha(rootCid, fromCommit),
+      resolveCommitSha(rootCid, toCommit),
+    ]);
+    if (!fromSha || !toSha) return result;
 
-    // Get tree for "to" commit
-    const toObj = await readGitObject(htree, gitDirResult.cid, toCommit);
-    if (!toObj || toObj.type !== 'commit') return result;
-    const toParsed = parseCommit(toObj.content);
-    if (!toParsed) return result;
+    const [fromParsed, toParsed] = await Promise.all([
+      getParsedCommitFromSha(htree, gitDirResult.cid, fromSha),
+      getParsedCommitFromSha(htree, gitDirResult.cid, toSha),
+    ]);
+    if (!fromParsed || !toParsed) return result;
 
-    // Get all files in both trees
-    const fromTree = await getGitTreeEntries(htree, gitDirResult.cid, fromParsed.tree);
-    const toTree = await getGitTreeEntries(htree, gitDirResult.cid, toParsed.tree);
-
-    // Find deleted files (in from but not in to)
-    for (const [path, file] of fromTree) {
-      if (!toTree.has(path)) {
-        result.push({ path, status: 'deleted', oldHash: file.hash });
-      }
-    }
-
-    // Find added and modified files
-    for (const [path, file] of toTree) {
-      const fromFile = fromTree.get(path);
-      if (!fromFile) {
-        result.push({ path, status: 'added', newHash: file.hash });
-      } else if (fromFile.hash !== file.hash) {
-        result.push({ path, status: 'modified', oldHash: fromFile.hash, newHash: file.hash });
-      }
-    }
+    await diffTreeObjects(htree, gitDirResult.cid, fromParsed.tree, toParsed.tree, '', result);
 
     // Sort by path for consistent output
     result.sort((a, b) => a.path.localeCompare(b.path));
+
+    const elapsed = performance.now() - startTime;
+    if (elapsed >= 50) {
+      console.log(`[git perf] getDiff completed in ${elapsed.toFixed(0)} ms (files=${result.length})`);
+    }
 
     return result;
   } catch (err) {
@@ -1712,39 +1798,18 @@ export async function getFileAtCommit(
   }
 
   try {
-    // Get commit
-    const commitObj = await readGitObject(htree, gitDirResult.cid, commitSha);
-    if (!commitObj || commitObj.type !== 'commit') return null;
+    const resolvedSha = await resolveCommitSha(rootCid, commitSha);
+    if (!resolvedSha) return null;
 
-    const commit = parseCommit(commitObj.content);
+    const commit = await getParsedCommitFromSha(htree, gitDirResult.cid, resolvedSha);
     if (!commit) return null;
 
-    // Walk tree to find file
-    const parts = filePath.split('/').filter(p => p);
-    let currentTreeSha = commit.tree;
+    const entry = await getTreeEntryAtPath(htree, gitDirResult.cid, commit.tree, filePath);
+    if (!entry || entry === 'dir') return null;
 
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-      const treeObj = await readGitObject(htree, gitDirResult.cid, currentTreeSha);
-      if (!treeObj || treeObj.type !== 'tree') return null;
-
-      const entries = parseGitTree(treeObj.content);
-      const entry = entries.find(e => e.name === part);
-      if (!entry) return null;
-
-      if (i === parts.length - 1) {
-        // Last part - should be a blob
-        const blobObj = await readGitObject(htree, gitDirResult.cid, entry.hash);
-        if (!blobObj || blobObj.type !== 'blob') return null;
-        return blobObj.content;
-      } else {
-        // Not last part - should be a tree
-        if (entry.mode !== '40000') return null;
-        currentTreeSha = entry.hash;
-      }
-    }
-
-    return null;
+    const blobObj = await readGitObject(htree, gitDirResult.cid, entry.hash);
+    if (!blobObj || blobObj.type !== 'blob') return null;
+    return blobObj.content;
   } catch (err) {
     console.error('[git] getFileAtCommit failed:', err);
     return null;

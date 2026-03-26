@@ -117,4 +117,37 @@ test.describe('README Panel', () => {
     // Should navigate to the subdir README file
     await expect(page).toHaveURL(/#.*link-test.*subdir.*README\.md/);
   });
+
+  test('should wrap long inline markdown tokens without horizontal overflow', async ({ page }) => {
+    await createAndEnterTree(page, 'readme-wrap-test');
+    await createFile(
+      page,
+      'README.md',
+      `# Wrap Test
+
+> \`htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/${'iris-client-'.repeat(18)}\`
+`
+    );
+
+    await goToTreeList(page);
+    await page.locator('a:has-text("readme-wrap-test")').first().click();
+
+    await expect(page.locator('.i-lucide-book-open')).toBeVisible({ timeout: 30000 });
+    await expect(page.locator('text=Wrap Test')).toBeVisible();
+
+    const wrapState = await page.locator('.markdown-content').first().evaluate((node) => {
+      const container = node as HTMLElement;
+      const code = container.querySelector('blockquote code') as HTMLElement | null;
+      const containerRect = container.getBoundingClientRect();
+      const codeRect = code?.getBoundingClientRect();
+      return {
+        hasOverflow: container.scrollWidth > container.clientWidth + 1,
+        codeRight: codeRect?.right ?? 0,
+        containerRight: containerRect.right,
+      };
+    });
+
+    expect(wrapState.hasOverflow).toBe(false);
+    expect(wrapState.codeRight).toBeLessThanOrEqual(wrapState.containerRight + 1);
+  });
 });

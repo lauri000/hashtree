@@ -9,14 +9,16 @@
 export {
   getHead,
   getLog,
+  getCommitInfo,
   getLogWasm,
   getCommitCount,
   getCommitCountFast,
+  getCommitDiffEntries,
   getFileLastCommits,
   getDiff,
   getFileAtCommit,
 } from './log';
-export type { CommitInfo, DiffEntry } from './log';
+export type { CommitInfo, CommitDetails, DiffEntry } from './log';
 
 export { getBranches } from './branch';
 

@@ -2,10 +2,10 @@
   /**
    * CommitView - Shows details of a single git commit
    * Displays commit message, author, date, and diff
-   * Uses getLog to find commits (since git show is not supported by wasm-git)
+   * Uses native git readers to avoid wasm-git on the read-only commit path
    */
-  import { SvelteSet } from 'svelte/reactivity';
-  import { getLog, runGitCommand } from '../../utils/git';
+  import { getTree } from '../../store';
+  import { getCommitViewData } from '../../utils/git';
   import { getErrorMessage } from '../../utils/errorMessage';
   import { routeStore, treeRootStore, createTreesStore, currentDirCidStore } from '../../stores';
   import ViewerHeader from '../Viewer/ViewerHeader.svelte';
@@ -22,6 +22,7 @@
   let route = $derived($routeStore);
   let rootCid = $derived($treeRootStore);
   let dirCid = $derived($currentDirCidStore);
+  let gitRootCid = $state<typeof dirCid>(null);
 
   // Get tree visibility info
   let treesStore = $derived(createTreesStore(npub));
@@ -58,9 +59,39 @@
     stats: { additions: number; deletions: number; files: number };
   } | null>(null);
 
+  $effect(() => {
+    const explicitGitRoot = route.params.get('g');
+    const treeCid = rootCid;
+    const currentDir = dirCid;
+
+    if (explicitGitRoot === null || !treeCid) {
+      gitRootCid = currentDir;
+      return;
+    }
+
+    const path = explicitGitRoot === '' ? [] : explicitGitRoot.split('/');
+    if (path.length === 0) {
+      gitRootCid = treeCid;
+      return;
+    }
+
+    let cancelled = false;
+    getTree().resolvePath(treeCid, path.join('/')).then((resolved) => {
+      if (!cancelled) {
+        gitRootCid = resolved?.cid ?? null;
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        gitRootCid = null;
+      }
+    });
+
+    return () => { cancelled = true; };
+  });
+
   // Load commit data
   $effect(() => {
-    if (!dirCid || !commitHash) return;
+    if (!gitRootCid || !commitHash) return;
 
     loading = true;
     error = null;
@@ -70,93 +101,29 @@
 
     (async () => {
       try {
-        // Get all commits using getLog (git show not supported by wasm-git)
-        const commits = await getLog(dirCid, { depth: 1000 });
+        const data = await getCommitViewData(gitRootCid, commitHash);
 
         if (cancelled) return;
 
-        // Support HEAD as commitHash
-        const targetHash = commitHash === 'HEAD' && commits.length > 0
-          ? commits[0].oid
-          : commitHash;
-
-        // Find the commit by hash (support short or full hash)
-        const commit = commits.find(c =>
-          c.oid === targetHash || c.oid.startsWith(targetHash)
-        );
-
-        if (!commit) {
+        if (!data) {
           error = `Commit ${commitHash} not found`;
           loading = false;
           return;
         }
 
         // Format date from timestamp
-        const date = new Date(commit.timestamp * 1000).toISOString();
-
-        // Try to get diff using git diff command
-        let diff = '';
-        let stats = { additions: 0, deletions: 0, files: 0 };
-
-        // Find parent commit index
-        const commitIndex = commits.findIndex(c => c.oid === commit.oid);
-        const parentCommit = commitIndex >= 0 && commitIndex < commits.length - 1
-          ? commits[commitIndex + 1]
-          : null;
-
-        try {
-          // Try git diff between parent and this commit
-          if (parentCommit) {
-            const diffResult = await runGitCommand(dirCid, `diff ${parentCommit.oid} ${commit.oid}`);
-            if (!diffResult.error && diffResult.output) {
-              diff = diffResult.output;
-              // Parse stats from diff
-              const diffLines = diff.split('\n');
-              const filesSet = new SvelteSet<string>();
-              for (const line of diffLines) {
-                if (line.startsWith('diff --git')) {
-                  const match = line.match(/diff --git a\/(.*) b\/(.*)/);
-                  if (match) filesSet.add(match[2]);
-                } else if (line.startsWith('+') && !line.startsWith('+++')) {
-                  stats.additions++;
-                } else if (line.startsWith('-') && !line.startsWith('---')) {
-                  stats.deletions++;
-                }
-              }
-              stats.files = filesSet.size;
-            }
-          } else {
-            // First commit - show all files as added (use diff-tree for initial commit)
-            const diffResult = await runGitCommand(dirCid, `diff-tree --root -p ${commit.oid}`);
-            if (!diffResult.error && diffResult.output) {
-              diff = diffResult.output;
-              const diffLines = diff.split('\n');
-              const filesSet = new SvelteSet<string>();
-              for (const line of diffLines) {
-                if (line.startsWith('diff --git')) {
-                  const match = line.match(/diff --git a\/(.*) b\/(.*)/);
-                  if (match) filesSet.add(match[2]);
-                } else if (line.startsWith('+') && !line.startsWith('+++')) {
-                  stats.additions++;
-                }
-              }
-              stats.files = filesSet.size;
-            }
-          }
-        } catch {
-          // Diff not available - that's okay
-        }
+        const date = new Date(data.commit.timestamp * 1000).toISOString();
 
         if (cancelled) return;
 
         commitData = {
-          hash: commit.oid,
-          author: commit.author,
-          email: commit.email,
+          hash: data.commit.oid,
+          author: data.commit.author,
+          email: data.commit.email,
           date,
-          message: commit.message,
-          diff,
-          stats,
+          message: data.commit.message,
+          diff: data.diffText,
+          stats: data.stats,
         };
         loading = false;
       } catch (err) {

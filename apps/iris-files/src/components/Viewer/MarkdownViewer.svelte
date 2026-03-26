@@ -103,6 +103,11 @@
 </div>
 
 <style>
+  .markdown-content {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
   .markdown-content :global(h1),
   .markdown-content :global(h2),
   .markdown-content :global(h3),
@@ -132,5 +137,23 @@
   .markdown-content :global(h6:hover .heading-anchor),
   .markdown-content :global(.heading-anchor:focus) {
     opacity: 1;
+  }
+
+  .markdown-content :global(p),
+  .markdown-content :global(li),
+  .markdown-content :global(blockquote),
+  .markdown-content :global(a),
+  .markdown-content :global(code) {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .markdown-content :global(:not(pre) > code) {
+    white-space: break-spaces;
+  }
+
+  .markdown-content :global(pre) {
+    white-space: pre-wrap;
+    overflow-x: auto;
   }
 </style>

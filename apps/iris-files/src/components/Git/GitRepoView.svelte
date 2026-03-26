@@ -5,6 +5,7 @@
    */
   import { LinkType, type CID, type TreeEntry } from '@hashtree/core';
   import type { Readable } from 'svelte/store';
+  import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { getTree, decodeAsText } from '../../store';
   import { routeStore } from '../../stores';
   import { createGitLogStore, createGitStatusStore } from '../../stores/git';
@@ -265,11 +266,19 @@
 
   function buildCommitHref(commitOid: string): string {
     const parts: string[] = [];
+    const params = new SvelteURLSearchParams();
+
+    params.set('commit', commitOid);
+    if (route.params.get('k')) params.set('k', route.params.get('k')!);
+
+    const effectiveGitRoot = gitRootPath !== null ? gitRootPath : (currentPath.length > 0 ? currentPath.join('/') : '');
+    if (effectiveGitRoot) params.set('g', effectiveGitRoot);
+
     if (route.npub && route.treeName) {
       parts.push(route.npub, route.treeName, ...currentPath);
     }
     const basePath = '#/' + parts.map(encodeURIComponent).join('/');
-    return `${basePath}?commit=${commitOid}`;
+    return `${basePath}?${params.toString()}`;
   }
 
   function openHistory() {

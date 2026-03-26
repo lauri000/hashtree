@@ -1,9 +1,11 @@
 /**
- * Git utilities using wasm-git (libgit2 compiled to WebAssembly)
+ * Git utilities. Read-only history paths prefer native hashtree readers and
+ * fall back to wasm-git only when needed; write paths still use wasm-git.
  */
 import type { CID } from '@hashtree/core';
 import { LinkType, toHex } from '@hashtree/core';
-import { getTree } from '../store';
+import { decodeAsText, getTree } from '../store';
+import { buildUnifiedDiff } from './gitDiffText';
 import { LRUCache } from './lruCache';
 
 /**
@@ -81,7 +83,7 @@ export async function cloneRepo(_options: CloneOptions): Promise<CloneResult> {
 /**
  * Get commit log for a repository
  * Results are cached by git repo hash for fast navigation
- * Uses wasm-git (libgit2)
+ * Uses the native hashtree reader first, with a wasm-git fallback
  */
 export async function getLog(rootCid: CID, options?: { depth?: number }): Promise<CommitLog>;
 export async function getLog(rootCid: CID, options: { depth?: number; debug: true }): Promise<{ commits: CommitLog; debug: string[] }>;
@@ -100,7 +102,7 @@ export async function getLog(rootCid: CID, options?: { depth?: number; debug?: b
 
   try {
     const { getLog, getLogWasm, getHead } = await import('./wasmGit');
-    debugInfo.push('Using wasm-git');
+    debugInfo.push('Using native git reader');
     let commits = await getLog(rootCid, { depth });
     debugInfo.push(`Found ${commits.length} commits`);
 
@@ -136,7 +138,7 @@ export async function getLog(rootCid: CID, options?: { depth?: number; debug?: b
     return commits;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    debugInfo.push(`wasm-git failed: ${message}`);
+    debugInfo.push(`git reader failed: ${message}`);
     if (options?.debug) {
       return { commits: [], debug: debugInfo };
     }
@@ -266,6 +268,61 @@ export async function getDiff(rootCid: CID, fromCommit: string, toCommit: string
   const { getDiff } = await import('./wasmGit');
   const entries = await getDiff(rootCid, fromCommit, toCommit);
   return { entries };
+}
+
+export async function getCommitViewData(rootCid: CID, commitRef: string): Promise<{
+  commit: {
+    oid: string;
+    message: string;
+    author: string;
+    email: string;
+    timestamp: number;
+    parent: string[];
+  };
+  diffText: string;
+  stats: { additions: number; deletions: number; files: number };
+} | null> {
+  const { getCommitInfo, getCommitDiffEntries, getFileAtCommit } = await import('./wasmGit');
+
+  const commit = await getCommitInfo(rootCid, commitRef);
+  if (!commit) {
+    return null;
+  }
+
+  const parentSha = commit.parent[0] ?? null;
+  const diffEntries = await getCommitDiffEntries(rootCid, commit.oid);
+  const diffFiles = await Promise.all(
+    diffEntries.map(async (entry) => {
+      const [oldBytes, newBytes] = await Promise.all([
+        entry.status !== 'added' && parentSha ? getFileAtCommit(rootCid, parentSha, entry.path) : Promise.resolve(null),
+        entry.status !== 'deleted' ? getFileAtCommit(rootCid, commit.oid, entry.path) : Promise.resolve(null),
+      ]);
+
+      return {
+        path: entry.path,
+        status: entry.status,
+        oldBytes: oldBytes ?? undefined,
+        newBytes: newBytes ?? undefined,
+        oldText: oldBytes ? decodeAsText(oldBytes) ?? undefined : undefined,
+        newText: newBytes ? decodeAsText(newBytes) ?? undefined : undefined,
+      };
+    })
+  );
+
+  const { text, stats } = buildUnifiedDiff(diffFiles);
+
+  return {
+    commit: {
+      oid: commit.oid,
+      message: commit.message,
+      author: commit.author,
+      email: commit.email,
+      timestamp: commit.timestamp,
+      parent: commit.parent,
+    },
+    diffText: text,
+    stats,
+  };
 }
 
 /**

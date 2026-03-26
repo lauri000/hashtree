@@ -100,6 +100,12 @@ test.describe('Git history features', () => {
 
         // Collect all directory paths from both explicit dirs and parent dirs of files
         const dirPaths = new Set<string>(dirs);
+        for (const dir of dirs) {
+          const parts = dir.split('/');
+          for (let i = 1; i < parts.length; i++) {
+            dirPaths.add(parts.slice(0, i).join('/'));
+          }
+        }
         for (const file of files) {
           const parts = file.path.split('/');
           for (let i = 1; i < parts.length; i++) {
@@ -198,6 +204,151 @@ test.describe('Git history features', () => {
     }
   });
 
+  test('packed git repos should load history and commit view without wasm fallback', async ({ page }) => {
+    test.setTimeout(120000);
+    page.setDefaultTimeout(60000);
+
+    await ensureGitSession(page);
+
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const { execSync } = await import('child_process');
+    const os = await import('os');
+
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'git-packed-history-test-'));
+
+    try {
+      execSync('git init', { cwd: tmpDir });
+      execSync('git config user.email "test@example.com"', { cwd: tmpDir });
+      execSync('git config user.name "Test User"', { cwd: tmpDir });
+
+      await fs.writeFile(path.join(tmpDir, 'README.md'), '# Packed Repo\n');
+      execSync('git add .', { cwd: tmpDir });
+      execSync('git commit -m "Initial commit"', { cwd: tmpDir });
+
+      await fs.mkdir(path.join(tmpDir, 'src'));
+      await fs.writeFile(path.join(tmpDir, 'README.md'), '# Packed Repo\n\nupdated\n');
+      await fs.writeFile(path.join(tmpDir, 'src', 'index.ts'), 'export const version = 1;\n');
+      execSync('git add .', { cwd: tmpDir });
+      execSync('git commit -m "Add src and update README"', { cwd: tmpDir });
+
+      await fs.writeFile(path.join(tmpDir, 'src', 'index.ts'), 'export const version = 2;\n');
+      execSync('git add .', { cwd: tmpDir });
+      execSync('git commit -m "Update src/index.ts"', { cwd: tmpDir });
+
+      execSync('git gc --aggressive --prune=now', { cwd: tmpDir });
+
+      interface FileEntry { type: 'file'; path: string; content: number[]; }
+      interface DirEntry { type: 'dir'; path: string; }
+      type Entry = FileEntry | DirEntry;
+
+      const getAllEntries = async (dir: string, base = ''): Promise<Entry[]> => {
+        const entries = await fs.readdir(dir, { withFileTypes: true });
+        const result: Entry[] = [];
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          const relativePath = base ? `${base}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) {
+            result.push({ type: 'dir', path: relativePath });
+            result.push(...await getAllEntries(fullPath, relativePath));
+          } else {
+            const content = await fs.readFile(fullPath);
+            result.push({ type: 'file', path: relativePath, content: Array.from(content) });
+          }
+        }
+        return result;
+      };
+
+      const shouldIncludePath = (entryPath: string) => {
+        if (!entryPath.startsWith('.git/')) return true;
+        if (entryPath === '.git/HEAD' || entryPath === '.git/config' || entryPath === '.git/packed-refs') return true;
+        if (entryPath.startsWith('.git/objects/')) return true;
+        if (entryPath.startsWith('.git/refs/')) return true;
+        return false;
+      };
+
+      const allEntries = (await getAllEntries(tmpDir)).filter((entry) => shouldIncludePath(entry.path));
+      const allFiles = allEntries.filter((e): e is FileEntry => e.type === 'file');
+      const allDirs = allEntries.filter((e): e is DirEntry => e.type === 'dir').map(d => d.path);
+
+      const result = await page.evaluate(async ({ files, dirs }) => {
+        const { getTree, LinkType } = await import('/src/store.ts');
+        const { getHead, getLog, getCommitViewData } = await import('/src/utils/git.ts');
+
+        const tree = getTree();
+        let { cid: rootCid } = await tree.putDirectory([]);
+
+        const dirPaths = new Set<string>(dirs);
+        for (const dir of dirs) {
+          const parts = dir.split('/');
+          for (let i = 1; i < parts.length; i++) {
+            dirPaths.add(parts.slice(0, i).join('/'));
+          }
+        }
+        for (const file of files) {
+          const parts = file.path.split('/');
+          for (let i = 1; i < parts.length; i++) {
+            dirPaths.add(parts.slice(0, i).join('/'));
+          }
+        }
+        const sortedDirs = Array.from(dirPaths).sort((a, b) =>
+          a.split('/').length - b.split('/').length
+        );
+
+        for (const dir of sortedDirs) {
+          const parts = dir.split('/');
+          const name = parts.pop()!;
+          const { cid: emptyDir } = await tree.putDirectory([]);
+          rootCid = await tree.setEntry(rootCid, parts, name, emptyDir, 0, LinkType.Dir);
+        }
+
+        for (const file of files) {
+          const parts = file.path.split('/');
+          const name = parts.pop()!;
+          const data = new Uint8Array(file.content);
+          const { cid: fileCid, size } = await tree.putFile(data);
+          rootCid = await tree.setEntry(rootCid, parts, name, fileCid, size, LinkType.Blob);
+        }
+
+        const logResult = await getLog(rootCid, { depth: 10, debug: true }) as any;
+        const commits = Array.isArray(logResult) ? logResult : logResult.commits;
+        const debug = Array.isArray(logResult) ? [] : (logResult.debug || []);
+        const head = await getHead(rootCid);
+        const commitView = await getCommitViewData(rootCid, 'HEAD');
+
+        return {
+          commitCount: commits.length,
+          commitMessages: commits.map((commit: any) => commit.message?.trim() || ''),
+          debug,
+          head,
+          commitView: commitView ? {
+            oid: commitView.commit.oid,
+            message: commitView.commit.message.trim(),
+            stats: commitView.stats,
+            diffText: commitView.diffText,
+          } : null,
+        };
+      }, { files: allFiles, dirs: allDirs });
+
+      expect(result.debug).toContain('Using native git reader');
+      expect(result.debug).not.toContain('Fast log empty with HEAD present, falling back to wasm-git slow path');
+      expect(result.debug.some((line: string) => line.startsWith('Slow path found'))).toBe(false);
+      expect(result.head).toMatch(/^[a-f0-9]{40}$/);
+      expect(result.commitCount).toBe(3);
+      expect(result.commitMessages).toContain('Initial commit');
+      expect(result.commitMessages).toContain('Add src and update README');
+      expect(result.commitMessages).toContain('Update src/index.ts');
+      expect(result.commitView?.oid).toBe(result.head);
+      expect(result.commitView?.message).toBe('Update src/index.ts');
+      expect(result.commitView?.stats.files).toBe(1);
+      expect(result.commitView?.diffText).toContain('src/index.ts');
+      expect(result.commitView?.diffText).toContain('-export const version = 1;');
+      expect(result.commitView?.diffText).toContain('+export const version = 2;');
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('git history modal should handle repos without commits gracefully', async ({ page }) => {
     test.setTimeout(60000);
     page.setDefaultTimeout(60000);
@@ -216,7 +367,7 @@ test.describe('Git history features', () => {
       const { cid: emptyDir } = await tree.putDirectory([]);
 
       // Build .git/refs/heads (empty - no actual branch files)
-      let { cid: headsDir } = await tree.putDirectory([]);
+      const { cid: headsDir } = await tree.putDirectory([]);
 
       // Build .git/refs directory
       let { cid: refsDir } = await tree.putDirectory([]);
@@ -1004,7 +1155,6 @@ test.describe('Git history features', () => {
 
       // Wait for initial commits to load
       await page.waitForFunction(() => {
-        const commits = document.querySelectorAll('[data-testid="git-history-modal"] [class*="timeline"]');
         // Or count commit items by looking for commit hashes (7 char hex)
         const commitItems = document.querySelectorAll('[data-testid="git-history-modal"] .font-mono');
         return commitItems.length > 0;
