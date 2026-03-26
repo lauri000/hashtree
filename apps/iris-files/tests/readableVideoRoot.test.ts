@@ -40,6 +40,8 @@ const ROOT_B: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 10) };
 const ROOT_C: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 20) };
 const FALLBACK: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 50) };
 const VIDEO_DIR: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 100) };
+const THUMB_MISSING: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 150) };
+const THUMB_OK: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 180) };
 
 function sameHash(cid: CID, other: CID): boolean {
   return toHex(cid.hash) === toHex(other.hash);
@@ -168,6 +170,50 @@ describe('resolveReadableVideoRoot', () => {
       if (sameHash(cid, ROOT)) return [{ name: 'video.mp4' }];
       if (sameHash(cid, FALLBACK)) return [{ name: 'video.mp4' }, { name: 'thumbnail.jpg' }];
       return [];
+    });
+    ndkFetchEvents.mockResolvedValue(new Set([
+      {
+        created_at: 20,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(ROOT.hash).toString('hex')]],
+      },
+      {
+        created_at: 10,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(FALLBACK.hash).toString('hex')]],
+      },
+    ]));
+
+    const { resolveReadableThumbnailRoot } = await import('../src/lib/readableVideoRoot');
+    await expect(resolveReadableThumbnailRoot({
+      rootCid: ROOT,
+      npub: 'npub1example',
+      treeName: 'videos/Test',
+    })).resolves.toEqual(FALLBACK);
+  });
+
+  it('falls back when the current root advertises a thumbnail file whose blob is unreadable', async () => {
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid, ROOT)) {
+        return [
+          { name: 'video.mp4' },
+          { name: 'thumbnail.jpeg', cid: THUMB_MISSING },
+        ];
+      }
+      if (sameHash(cid, FALLBACK)) {
+        return [
+          { name: 'video.mp4' },
+          { name: 'thumbnail.jpg', cid: THUMB_OK },
+        ];
+      }
+      return [];
+    });
+    readFileRange.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid, THUMB_OK)) {
+        return new Uint8Array([0xff, 0xd8, 0xff]);
+      }
+      if (sameHash(cid, THUMB_MISSING)) {
+        return null;
+      }
+      return null;
     });
     ndkFetchEvents.mockResolvedValue(new Set([
       {

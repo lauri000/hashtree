@@ -199,21 +199,19 @@ export async function getFeedVideoResolvedMedia(video: FeedVideo): Promise<Parti
   let thumbnailInfo: Partial<FeedVideo> | null = null;
   let thumbnailUrl = playbackInfo?.thumbnailUrl;
 
-  if (!thumbnailUrl || isThumbnailAliasUrl(thumbnailUrl)) {
-    const thumbnailRootCid = await resolveReadableThumbnailRoot({
-      rootCid: playbackRootCid,
-      npub: video.ownerNpub,
-      treeName: video.treeName,
-      videoId: video.videoId ?? null,
-      priority: 'background',
-    }) ?? playbackRootCid;
+  const thumbnailRootCid = await resolveReadableThumbnailRoot({
+    rootCid: playbackRootCid,
+    npub: video.ownerNpub,
+    treeName: video.treeName,
+    videoId: video.videoId ?? null,
+    priority: 'background',
+  }) ?? playbackRootCid;
 
-    if (!sameCid(thumbnailRootCid, playbackRootCid)) {
-      thumbnailInfo = await detectPlaylistForCard(thumbnailRootCid, video.ownerNpub, video.treeName, {
-        cacheScope: 'root',
-      });
-      thumbnailUrl = thumbnailInfo?.thumbnailUrl;
-    }
+  if (!sameCid(thumbnailRootCid, playbackRootCid)) {
+    thumbnailInfo = await detectPlaylistForCard(thumbnailRootCid, video.ownerNpub, video.treeName, {
+      cacheScope: 'root',
+    });
+    thumbnailUrl = thumbnailInfo?.thumbnailUrl ?? thumbnailUrl;
   }
 
   const resolved: Partial<FeedVideo> = {};

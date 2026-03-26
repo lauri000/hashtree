@@ -182,6 +182,8 @@ pub struct AppState {
     pub socialgraph_snapshot_public: bool,
     /// Nostr relay state for /ws and WebRTC Nostr messages
     pub nostr_relay: Option<Arc<NostrRelay>>,
+    /// Active upstream Nostr relays for HTTP resolver operations.
+    pub nostr_relay_urls: Vec<String>,
     /// In-process cache for resolved mutable tree roots, keyed by npub/tree(+key)
     pub tree_root_cache: Arc<StdMutex<HashMap<String, CachedTreeRootEntry>>>,
     /// Shared in-flight blob fetches so concurrent misses only hit upstream once per hash

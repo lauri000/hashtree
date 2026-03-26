@@ -16,6 +16,7 @@ const NO_FALLBACK_CACHE_TTL_MS = 10000;
 const ROOT_HISTORY_CACHE_TTL_MS = 30000;
 const MAX_PLAYLIST_CHILD_PROBES = 12;
 const THUMBNAIL_PROBE_METADATA_TIMEOUT_MS = 2500;
+const THUMBNAIL_BLOB_PROBE_TIMEOUT_MS = 2500;
 const DEFAULT_HISTORY_RELAYS = [
   'wss://relay.damus.io',
   'wss://relay.primal.net',
@@ -267,21 +268,51 @@ function getThumbnailCacheKey(rootCid: CID, npub: string, treeName: string, vide
   return `thumbnail:${getCacheKey(rootCid, npub, treeName, videoId)}`;
 }
 
-function hasThumbnailEntry(entries: Array<{ name: string }>): boolean {
-  return entries.some((entry) => (
-    entry.name.startsWith('thumbnail.')
-    || entry.name.endsWith('.jpg')
+function findThumbnailEntry(
+  entries: Array<{ name: string; cid?: CID }>,
+): { name: string; cid?: CID } | null {
+  const preferred = ['thumbnail.jpg', 'thumbnail.webp', 'thumbnail.png', 'thumbnail.jpeg'];
+  for (const name of preferred) {
+    const match = entries.find((entry) => entry.name === name);
+    if (match) {
+      return match;
+    }
+  }
+  return entries.find((entry) => (
+    entry.name.endsWith('.jpg')
     || entry.name.endsWith('.jpeg')
     || entry.name.endsWith('.png')
     || entry.name.endsWith('.webp')
-  ));
+  )) ?? null;
+}
+
+async function thumbnailEntryIsReadable(entry: { cid?: CID } | null): Promise<boolean | typeof TIMEOUT> {
+  if (!entry?.cid) {
+    return true;
+  }
+  const tree = getTree();
+  const bytes = await withTimeout(
+    tree.readFileRange(entry.cid, 0, 64),
+    THUMBNAIL_BLOB_PROBE_TIMEOUT_MS,
+  );
+  if (bytes === TIMEOUT) {
+    return TIMEOUT;
+  }
+  return !!bytes && bytes.length > 0;
 }
 
 async function directoryHasThumbnailEvidence(
   entries: Array<{ name: string; cid?: CID; meta?: Record<string, unknown> }>,
 ): Promise<'thumbnail' | 'missing' | 'timeout'> {
-  if (hasThumbnailEntry(entries)) {
-    return 'thumbnail';
+  const thumbnailEntry = findThumbnailEntry(entries);
+  if (thumbnailEntry) {
+    const readable = await thumbnailEntryIsReadable(thumbnailEntry);
+    if (readable === TIMEOUT) {
+      return 'timeout';
+    }
+    if (readable) {
+      return 'thumbnail';
+    }
   }
 
   const videoEntry = findPlayableMediaEntry(entries);

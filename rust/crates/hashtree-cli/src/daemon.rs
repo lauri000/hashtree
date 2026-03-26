@@ -466,12 +466,14 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     background_services_controller.apply_config(&config).await?;
 
     let upstream_blossom = config.blossom.all_read_servers();
+    let active_nostr_relays = config.nostr.active_relays();
 
     let mut server = HashtreeServer::new(Arc::clone(&store), opts.bind_address.clone())
         .with_allowed_pubkeys(allowed_pubkeys.clone())
         .with_max_upload_bytes((config.blossom.max_upload_mb as usize) * 1024 * 1024)
         .with_public_writes(config.server.public_writes)
         .with_upstream_blossom(upstream_blossom)
+        .with_nostr_relay_urls(active_nostr_relays)
         .with_social_graph(social_graph)
         .with_socialgraph_snapshot(
             Arc::clone(&social_graph_store),

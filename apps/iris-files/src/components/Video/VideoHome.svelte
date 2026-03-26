@@ -306,19 +306,17 @@
       const info = await detectPlaylistForCard(rootCid, video.ownerNpub!, video.treeName);
       const playbackRootCid = info?.rootCid ?? rootCid;
       let thumbnailUrl = info?.thumbnailUrl;
-      if (!thumbnailUrl || isThumbnailAliasUrl(thumbnailUrl)) {
-        const thumbnailRootCid = await resolveReadableThumbnailRoot({
-          rootCid: playbackRootCid,
-          npub: video.ownerNpub!,
-          treeName: video.treeName,
-          priority: 'background',
-        }) ?? playbackRootCid;
-        if (!sameCid(thumbnailRootCid, playbackRootCid)) {
-          const thumbnailInfo = await detectPlaylistForCard(thumbnailRootCid, video.ownerNpub!, video.treeName, {
-            cacheScope: 'root',
-          });
-          thumbnailUrl = thumbnailInfo?.thumbnailUrl;
-        }
+      const thumbnailRootCid = await resolveReadableThumbnailRoot({
+        rootCid: playbackRootCid,
+        npub: video.ownerNpub!,
+        treeName: video.treeName,
+        priority: 'background',
+      }) ?? playbackRootCid;
+      if (!sameCid(thumbnailRootCid, playbackRootCid)) {
+        const thumbnailInfo = await detectPlaylistForCard(thumbnailRootCid, video.ownerNpub!, video.treeName, {
+          cacheScope: 'root',
+        });
+        thumbnailUrl = thumbnailInfo?.thumbnailUrl ?? thumbnailUrl;
       }
       const result = info
         ? { ...info, thumbnailUrl: thumbnailUrl ?? info.thumbnailUrl }
@@ -380,24 +378,22 @@
       const info = await detectVideoCardInfo(rootCid, video.ownerNpub, video.treeName, video.videoId);
       const mediaRootCid = info?.rootCid ?? rootCid;
       let thumbnailUrl = info?.thumbnailUrl;
-      if (!thumbnailUrl || isThumbnailAliasUrl(thumbnailUrl)) {
-        const thumbnailRootCid = await resolveReadableThumbnailRoot({
-          rootCid: mediaRootCid,
-          npub: video.ownerNpub,
-          treeName: video.treeName,
-          videoId: video.videoId || null,
-          priority: 'background',
-        }) ?? mediaRootCid;
-        if (!sameCid(thumbnailRootCid, mediaRootCid)) {
-          const thumbnailInfo = await detectVideoCardInfo(
-            thumbnailRootCid,
-            video.ownerNpub,
-            video.treeName,
-            video.videoId,
-            { exactRoot: true },
-          );
-          thumbnailUrl = thumbnailInfo?.thumbnailUrl;
-        }
+      const thumbnailRootCid = await resolveReadableThumbnailRoot({
+        rootCid: mediaRootCid,
+        npub: video.ownerNpub,
+        treeName: video.treeName,
+        videoId: video.videoId || null,
+        priority: 'background',
+      }) ?? mediaRootCid;
+      if (!sameCid(thumbnailRootCid, mediaRootCid)) {
+        const thumbnailInfo = await detectVideoCardInfo(
+          thumbnailRootCid,
+          video.ownerNpub,
+          video.treeName,
+          video.videoId,
+          { exactRoot: true },
+        );
+        thumbnailUrl = thumbnailInfo?.thumbnailUrl ?? thumbnailUrl;
       }
       const fallbackThumbnailUrl = getStableThumbnailUrl({
         rootCid: mediaRootCid,

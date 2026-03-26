@@ -15,9 +15,13 @@ import {
 } from './blossomBandwidthTracker.js';
 
 export const DEFAULT_BLOSSOM_SERVERS: BlossomServerConfig[] = [
-  { url: 'https://blossom.primal.net', read: true, write: true },
+  { url: 'https://cdn.iris.to', read: true, write: false },
+  { url: 'https://hashtree.iris.to', read: true, write: false },
+  { url: 'https://blossom.primal.net', read: true, write: false },
   { url: 'https://upload.iris.to', read: false, write: true },
 ];
+
+const READ_FETCH_TIMEOUT_MS = 10_000;
 
 export type {
   BlossomBandwidthServerStats,
@@ -130,25 +134,58 @@ export class BlossomTransport {
 
   async fetch(hashHex: string): Promise<Uint8Array | null> {
     const readServers = this.servers.filter(server => server.read !== false);
-    for (const server of readServers) {
-      const baseUrl = normalizeServerUrl(server.url);
-      const data = await this.fetchFromServer(baseUrl, hashHex);
-      if (data) return data;
+    if (readServers.length === 0) {
+      return null;
     }
-    return null;
+
+    const pendingFetches = readServers.map((server) =>
+      this.fetchFromServer(normalizeServerUrl(server.url), hashHex)
+    );
+
+    return await new Promise<Uint8Array | null>((resolve) => {
+      let settled = false;
+      let remaining = pendingFetches.length;
+
+      for (const fetchPromise of pendingFetches) {
+        fetchPromise
+          .then((result) => {
+            if (settled) return;
+            if (result) {
+              settled = true;
+              resolve(result);
+              return;
+            }
+            remaining -= 1;
+            if (remaining === 0) {
+              resolve(null);
+            }
+          })
+          .catch(() => {
+            if (settled) return;
+            remaining -= 1;
+            if (remaining === 0) {
+              resolve(null);
+            }
+          });
+      }
+    });
   }
 
   private async fetchFromServer(baseUrl: string, hashHex: string): Promise<Uint8Array | null> {
     const urls = [`${baseUrl}/${hashHex}`, `${baseUrl}/${hashHex}.bin`];
     for (const url of urls) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), READ_FETCH_TIMEOUT_MS);
       try {
-        const res = await fetch(url);
+        const res = await fetch(url, { signal: controller.signal });
         if (!res.ok) continue;
         const data = new Uint8Array(await res.arrayBuffer());
         const verified = toHex(await sha256(data)) === hashHex;
         if (verified) return data;
       } catch {
         continue;
+      } finally {
+        clearTimeout(timeout);
       }
     }
     return null;

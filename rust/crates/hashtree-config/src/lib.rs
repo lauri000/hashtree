@@ -8,7 +8,11 @@ use std::fs;
 use std::path::PathBuf;
 
 /// Default read-only file servers
-pub const DEFAULT_READ_SERVERS: &[&str] = &["https://cdn.iris.to", "https://hashtree.iris.to"];
+pub const DEFAULT_READ_SERVERS: &[&str] = &[
+    "https://cdn.iris.to",
+    "https://hashtree.iris.to",
+    "https://blossom.primal.net",
+];
 
 /// Default write-enabled file servers
 pub const DEFAULT_WRITE_SERVERS: &[&str] = &["https://upload.iris.to"];
@@ -202,7 +206,9 @@ impl Default for BlossomConfig {
 }
 
 fn default_read_servers() -> Vec<String> {
-    DEFAULT_READ_SERVERS.iter().map(|s| s.to_string()).collect()
+    let mut servers: Vec<String> = DEFAULT_READ_SERVERS.iter().map(|s| s.to_string()).collect();
+    servers.sort();
+    servers
 }
 
 fn default_write_servers() -> Vec<String> {
@@ -660,6 +666,7 @@ write_servers = ["https://custom.server"]
         let read = config.all_read_servers();
         assert!(read.contains(&"https://legacy.server".to_string()));
         assert!(read.contains(&"https://cdn.iris.to".to_string()));
+        assert!(read.contains(&"https://blossom.primal.net".to_string()));
 
         let write = config.all_write_servers();
         assert!(write.contains(&"https://legacy.server".to_string()));

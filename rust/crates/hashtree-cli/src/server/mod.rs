@@ -48,6 +48,7 @@ impl HashtreeServer {
                 social_graph_root: None,
                 socialgraph_snapshot_public: false,
                 nostr_relay: None,
+                nostr_relay_urls: Vec::new(),
                 tree_root_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
                 inflight_blob_fetches: Arc::new(tokio::sync::Mutex::new(
                     std::collections::HashMap::new(),
@@ -121,6 +122,12 @@ impl HashtreeServer {
     /// Set Nostr relay state (shared for /ws and WebRTC)
     pub fn with_nostr_relay(mut self, relay: Arc<NostrRelay>) -> Self {
         self.state.nostr_relay = Some(relay);
+        self
+    }
+
+    /// Set active upstream Nostr relays for HTTP resolver operations.
+    pub fn with_nostr_relay_urls(mut self, relays: Vec<String>) -> Self {
+        self.state.nostr_relay_urls = relays;
         self
     }
 

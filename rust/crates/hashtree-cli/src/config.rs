@@ -195,10 +195,13 @@ impl NostrConfig {
 
 // Keep in sync with hashtree-config/src/lib.rs
 fn default_read_servers() -> Vec<String> {
-    vec![
+    let mut servers = vec![
+        "https://blossom.primal.net".to_string(),
         "https://cdn.iris.to".to_string(),
         "https://hashtree.iris.to".to_string(),
-    ]
+    ];
+    servers.sort();
+    servers
 }
 
 fn default_write_servers() -> Vec<String> {
@@ -876,6 +879,7 @@ chunk_target_bytes = 65536
         let read = config.all_read_servers();
         assert!(read.contains(&"https://legacy.server".to_string()));
         assert!(read.contains(&"https://cdn.iris.to".to_string()));
+        assert!(read.contains(&"https://blossom.primal.net".to_string()));
         assert!(!read.contains(&"https://upload.iris.to".to_string()));
 
         let write = config.all_write_servers();

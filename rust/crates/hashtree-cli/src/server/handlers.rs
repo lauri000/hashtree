@@ -1368,7 +1368,7 @@ async fn htree_npub_impl(
         if let Some(resolved) = resolve_root_offline(&state, &npub, &treename, link_key).await {
             resolved.cid
         } else {
-            let resolver = match NostrRootResolver::new(resolver_config()).await {
+            let resolver = match NostrRootResolver::new(resolver_config(&state)).await {
                 Ok(r) => r,
                 Err(e) => {
                     return Response::builder()
@@ -2138,7 +2138,7 @@ pub async fn serve_npub(
             .into_response();
     }
 
-    let resolver = match NostrRootResolver::new(resolver_config()).await {
+    let resolver = match NostrRootResolver::new(resolver_config(&state)).await {
         Ok(r) => r,
         Err(e) => {
             return Response::builder()
@@ -2648,11 +2648,15 @@ const HTTP_RESOLVER_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_WEBRTC_FETCH_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// Create resolver config with HTTP timeout
-fn resolver_config() -> NostrResolverConfig {
-    NostrResolverConfig {
+fn resolver_config(state: &AppState) -> NostrResolverConfig {
+    let mut config = NostrResolverConfig {
         resolve_timeout: HTTP_RESOLVER_TIMEOUT,
         ..Default::default()
+    };
+    if !state.nostr_relay_urls.is_empty() {
+        config.relays = state.nostr_relay_urls.clone();
     }
+    config
 }
 
 /// Resolve npub/treename to hash and serve content
@@ -2669,7 +2673,7 @@ pub async fn resolve_and_serve(
         return serve_content_internal(&state, &resolved.cid.hash, headers, false, false).await;
     }
 
-    let resolver = match NostrRootResolver::new(resolver_config()).await {
+            let resolver = match NostrRootResolver::new(resolver_config(&state)).await {
         Ok(r) => r,
         Err(e) => {
             return Response::builder()
@@ -2757,7 +2761,7 @@ pub async fn resolve_to_hash(
         return Json(payload);
     }
 
-    let resolver = match NostrRootResolver::new(resolver_config()).await {
+    let resolver = match NostrRootResolver::new(resolver_config(&state)).await {
         Ok(r) => r,
         Err(e) => {
             return Json(json!({
@@ -2790,8 +2794,11 @@ pub async fn resolve_to_hash(
 }
 
 /// List all trees for a pubkey
-pub async fn list_trees(Path(pubkey): Path<String>) -> impl IntoResponse {
-    let resolver = match NostrRootResolver::new(resolver_config()).await {
+pub async fn list_trees(
+    State(state): State<AppState>,
+    Path(pubkey): Path<String>,
+) -> impl IntoResponse {
+    let resolver = match NostrRootResolver::new(resolver_config(&state)).await {
         Ok(r) => r,
         Err(e) => {
             return Json(json!({
@@ -2860,42 +2867,60 @@ async fn query_upstream_blossom(servers: &[String], hash_hex: &str) -> Option<(V
         .build()
         .ok()?;
 
+    let mut pending = FuturesUnordered::new();
     for server in servers {
-        let url = format!("{}/{}.bin", server.trim_end_matches('/'), hash_hex);
-        tracing::debug!("Trying upstream Blossom: {}", url);
+        let client = client.clone();
+        let server = server.clone();
+        let hash_hex = hash_hex.to_string();
+        pending.push(async move {
+            let url = format!("{}/{}.bin", server.trim_end_matches('/'), hash_hex);
+            tracing::debug!("Trying upstream Blossom: {}", url);
 
-        match client.get(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                if let Ok(bytes) = resp.bytes().await {
-                    // Verify hash matches
-                    let mut hasher = Sha256::new();
-                    hasher.update(&bytes);
-                    let computed = hex::encode(hasher.finalize());
+            match client.get(&url).send().await {
+                Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+                    Ok(bytes) => {
+                        let mut hasher = Sha256::new();
+                        hasher.update(&bytes);
+                        let computed = hex::encode(hasher.finalize());
 
-                    if computed == hash_hex {
-                        tracing::info!(
-                            "Got {} bytes from upstream {} for hash {}",
-                            bytes.len(),
-                            server,
-                            &hash_hex[..16.min(hash_hex.len())]
-                        );
-                        return Some((bytes.to_vec(), server.clone()));
-                    } else {
-                        tracing::warn!(
-                            "Hash mismatch from {}: expected {}, got {}",
-                            server,
-                            &hash_hex[..16.min(hash_hex.len())],
-                            &computed[..16.min(computed.len())]
-                        );
+                        if computed == hash_hex {
+                            tracing::info!(
+                                "Got {} bytes from upstream {} for hash {}",
+                                bytes.len(),
+                                server,
+                                &hash_hex[..16.min(hash_hex.len())]
+                            );
+                            Some((bytes.to_vec(), server))
+                        } else {
+                            tracing::warn!(
+                                "Hash mismatch from {}: expected {}, got {}",
+                                server,
+                                &hash_hex[..16.min(hash_hex.len())],
+                                &computed[..16.min(computed.len())]
+                            );
+                            None
+                        }
                     }
+                    Err(err) => {
+                        tracing::debug!("Upstream {} body read error: {}", server, err);
+                        None
+                    }
+                },
+                Ok(resp) => {
+                    tracing::debug!("Upstream {} returned {}", server, resp.status());
+                    None
+                }
+                Err(e) => {
+                    tracing::debug!("Upstream {} error: {}", server, e);
+                    None
                 }
             }
-            Ok(resp) => {
-                tracing::debug!("Upstream {} returned {}", server, resp.status());
-            }
-            Err(e) => {
-                tracing::debug!("Upstream {} error: {}", server, e);
-            }
+        });
+    }
+
+    while let Some(result) = pending.next().await {
+        if result.is_some() {
+            return result;
         }
     }
 
@@ -3012,6 +3037,7 @@ mod tests {
             social_graph_root: None,
             socialgraph_snapshot_public: false,
             nostr_relay: None,
+            nostr_relay_urls: Vec::new(),
             tree_root_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             inflight_blob_fetches: Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
@@ -3262,6 +3288,64 @@ mod tests {
         );
 
         upstream_server.abort();
+    }
+
+    #[tokio::test]
+    async fn query_upstream_blossom_uses_first_server_that_responds() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("store")).unwrap());
+        let requested_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let data = b"parallel blossom";
+        store.put_blob(data).unwrap();
+        let hash_hex = hex::encode(sha2::Sha256::digest(data));
+
+        let slow_router = Router::new().route(
+            "/:id",
+            get(|| async {
+                tokio::time::sleep(Duration::from_secs(11)).await;
+                StatusCode::GATEWAY_TIMEOUT
+            }),
+        );
+        let slow_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let slow_addr = slow_listener.local_addr().unwrap();
+        let slow_server =
+            tokio::spawn(async move { axum::serve(slow_listener, slow_router).await.unwrap() });
+
+        let fast_router = Router::new()
+            .route("/:id", get(serve_blob_with_request_log_for_test))
+            .with_state(UpstreamBlobTestState {
+                store: store.clone(),
+                requested_ids: requested_ids.clone(),
+            });
+        let fast_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fast_addr = fast_listener.local_addr().unwrap();
+        let fast_server =
+            tokio::spawn(async move { axum::serve(fast_listener, fast_router).await.unwrap() });
+
+        let result = timeout(
+            Duration::from_secs(3),
+            query_upstream_blossom(
+                &[
+                    format!("http://{}", slow_addr),
+                    format!("http://{}", fast_addr),
+                ],
+                &hash_hex,
+            ),
+        )
+        .await
+        .expect("parallel upstream query completed")
+        .expect("fetch blob");
+
+        assert_eq!(result.0, data);
+        assert_eq!(result.1, format!("http://{}", fast_addr));
+        assert_eq!(
+            requested_ids.lock().unwrap().as_slice(),
+            &[format!("{}.bin", hash_hex)]
+        );
+
+        slow_server.abort();
+        fast_server.abort();
     }
 
     #[tokio::test]
@@ -3599,7 +3683,7 @@ mod tests {
         let (thumb_cid, _) = tree.put(&thumb_bytes).await.unwrap();
         let root_cid = tree
             .put_directory(vec![
-                DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File),
+                DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File)
             ])
             .await
             .unwrap();
@@ -3976,6 +4060,22 @@ mod tests {
                 .map(|root| root.event_id.as_str()),
             Some(event.id.to_hex().as_str())
         );
+    }
+
+    #[test]
+    fn resolver_config_prefers_state_relay_urls() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());
+        let mut state = test_app_state(store, Vec::new());
+        state.nostr_relay_urls = vec![
+            "wss://temp.iris.to".to_string(),
+            "wss://upload.iris.to/nostr".to_string(),
+        ];
+
+        let config = resolver_config(&state);
+
+        assert_eq!(config.relays, state.nostr_relay_urls);
+        assert_eq!(config.resolve_timeout, HTTP_RESOLVER_TIMEOUT);
     }
 
     #[tokio::test]
