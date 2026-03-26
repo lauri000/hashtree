@@ -30,6 +30,7 @@
   import { ownerProfileUrl } from './lib/addressIdentity';
   import { appsStore } from './stores/apps';
   import AddressOwnerPill from './components/AddressOwnerPill.svelte';
+  import HistoryEntryIcon from './components/HistoryEntryIcon.svelte';
   import AppLauncher from './components/AppLauncher.svelte';
   import Settings from './components/Settings.svelte';
 
@@ -1412,8 +1413,8 @@
                   aria-selected={i === selectedIndex}
                   tabindex="-1"
                 >
-                  <span class="i-lucide-clock text-sm text-text-3 shrink-0"></span>
-                  <div class="flex-1 min-w-0">
+                  <HistoryEntryIcon entry={item} />
+                  <div class="flex-1 min-w-0 text-sm text-text-1">
                     {#if ownerSummary}
                       <div class="flex items-center gap-1.5 min-w-0">
                         <AddressOwnerPill
@@ -1423,12 +1424,11 @@
                           maxWidthClass="max-w-40"
                           size="xs"
                         />
-                        <span class="min-w-0 truncate text-xs text-text-2">{ownerSummary.pathLabel}</span>
+                        <span class="min-w-0 truncate">{ownerSummary.pathLabel}</span>
                       </div>
                     {:else}
-                      <div class="text-sm text-text-1 truncate">{item.label}</div>
+                      <div class="truncate">{item.label}</div>
                     {/if}
-                    <div class="text-xs text-text-3 truncate">{urlToDisplay(item.path)}</div>
                   </div>
                   <button
                     class="shrink-0 text-text-3 hover:text-danger p-1"
@@ -1580,8 +1580,8 @@
                 aria-selected={i === selectedIndex}
                 tabindex="-1"
               >
-                <span class="i-lucide-clock text-sm text-text-3 shrink-0"></span>
-                <div class="flex-1 min-w-0">
+                <HistoryEntryIcon entry={item} />
+                <div class="flex-1 min-w-0 text-sm text-text-1">
                   {#if ownerSummary}
                     <div class="flex items-center gap-1.5 min-w-0">
                       <AddressOwnerPill
@@ -1591,12 +1591,11 @@
                         maxWidthClass="max-w-48"
                         size="xs"
                       />
-                      <span class="min-w-0 truncate text-xs text-text-2">{ownerSummary.pathLabel}</span>
+                      <span class="min-w-0 truncate">{ownerSummary.pathLabel}</span>
                     </div>
                   {:else}
-                    <div class="text-sm text-text-1 truncate">{item.label}</div>
+                    <div class="truncate">{item.label}</div>
                   {/if}
-                  <div class="text-xs text-text-3 truncate">{urlToDisplay(item.path)}</div>
                 </div>
                 <button
                   class="shrink-0 text-text-3 hover:text-danger p-1"
