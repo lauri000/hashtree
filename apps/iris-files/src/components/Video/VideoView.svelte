@@ -721,6 +721,8 @@ async function syncTreeRootToWorker(
 
   // Get root CID from treeRootStore (handles linkKey decryption)
   let rootCid = $state<CID | null>(null);
+  let routeRootOverride = $state<CID | null>(null);
+  let routeRootOverrideKey = $state<string | null>(null);
   const rootCidUnsub = treeRootStore.subscribe((next) => {
     rootCid = next;
     logVideoDebug('root:store', {
@@ -731,11 +733,57 @@ async function syncTreeRootToWorker(
   onDestroy(() => {
     rootCidUnsub();
   });
+
+  function getRouteRootKey(
+    npubValue: string | null | undefined,
+    treeNameValue: string | null | undefined,
+    videoIdValue: string | null | undefined,
+  ): string | null {
+    if (!npubValue || !treeNameValue) return null;
+    return `${npubValue}/${treeNameValue}/${videoIdValue ?? ''}`;
+  }
+
+  function setRouteRootOverride(
+    routeKey: string | null,
+    nextRoot: CID | null,
+    source: string,
+  ): void {
+    if (!routeKey || !nextRoot) return;
+    routeRootOverrideKey = routeKey;
+    routeRootOverride = nextRoot;
+    logVideoDebug('root:override', {
+      routeKey,
+      source,
+      hash: toHex(nextRoot.hash).slice(0, 8),
+    });
+  }
+
+  let effectiveRouteRootCid = $derived.by(() => {
+    const routeKey = getRouteRootKey(npub, treeName, currentVideoId);
+    if (routeKey && routeRootOverrideKey === routeKey && routeRootOverride) {
+      return routeRootOverride;
+    }
+    return rootCid;
+  });
+
+  $effect(() => {
+    const routeKey = getRouteRootKey(npub, treeName, currentVideoId);
+    if (!routeKey) {
+      routeRootOverride = null;
+      routeRootOverrideKey = null;
+      return;
+    }
+    if (routeRootOverrideKey && routeRootOverrideKey !== routeKey) {
+      routeRootOverride = null;
+    }
+    routeRootOverrideKey = routeKey;
+  });
+
   let lastRootHash = $state<string | null>(null);
   let pendingFallbackRootVideoKey = $state<string | null>(null);
 
   $effect(() => {
-    const cid = rootCid;
+    const cid = effectiveRouteRootCid;
     const currentHash = cid ? toHex(cid.hash).slice(0, 16) : null;
     if (currentHash === lastRootHash) return;
     lastRootHash = currentHash;
@@ -795,7 +843,7 @@ async function syncTreeRootToWorker(
   // Load video when rootCid or videoPath changes
   // For playlist videos, rootCid is the same but videoPath changes
   $effect(() => {
-    const cid = rootCid;
+    const cid = effectiveRouteRootCid;
     const path = videoPath; // Subscribe to videoPath changes
     const isPlaylist = isPlaylistVideo; // Capture reactively
     const currentNpub = npub;
@@ -915,12 +963,14 @@ async function syncTreeRootToWorker(
       pendingFallbackRootVideoKey = videoKey;
       void (async () => {
         try {
+          const routeRootKey = getRouteRootKey(currentNpub, currentTreeName, currentVideoIdValue);
           const fallbackRoot = await resolveFeedVideoRootCidAsync({
             ownerNpub: currentNpub,
             treeName: currentTreeName,
           }, 4000);
           if (!fallbackRoot) return;
           if (!isActiveVideoLoad(loadedVideoKey, videoKey)) return;
+          setRouteRootOverride(routeRootKey, fallbackRoot, 'feed-fallback');
           updateSubscriptionCache(
             `${currentNpub}/${currentTreeName}`,
             fallbackRoot.hash,
@@ -968,7 +1018,7 @@ async function syncTreeRootToWorker(
 
   // Timeout for tree root resolution - show error if not resolved within 15 seconds
   $effect(() => {
-    const cid = rootCid;
+    const cid = effectiveRouteRootCid;
     const currentTreeName = treeName;
 
     // Clear any existing timeout
@@ -989,7 +1039,7 @@ async function syncTreeRootToWorker(
 
     // Start timeout for root resolution (e.g., Nostr event not found on relays)
     rootTimeoutTimer = setTimeout(() => {
-      if (!rootCid && loading && !error) {
+      if (!effectiveRouteRootCid && loading && !error) {
         error = 'Video not found. The video metadata may not be available from your relays.';
         loading = false;
         console.warn('[VideoView] Tree root resolution timeout for:', currentTreeName);
@@ -1014,6 +1064,7 @@ async function syncTreeRootToWorker(
     const capturedIsPlaylistVideo = isPlaylistVideo;
     const capturedVideoId = currentVideoId;
     const capturedVisibility = effectiveVisibility;
+    const capturedRouteRootKey = getRouteRootKey(capturedNpub, capturedTreeName, capturedVideoId);
 
     if (!capturedNpub || !capturedTreeName) return;
 
@@ -1096,6 +1147,8 @@ async function syncTreeRootToWorker(
       if (!refreshedRoot) {
         return false;
       }
+      setRouteRootOverride(capturedRouteRootKey, refreshedRoot, `refresh:${reason}`);
+      syncResolvedRootCache(refreshedRoot);
       logVideoDebug('load:refresh-root:resolved', {
         npub: capturedNpub,
         treeName: capturedTreeName,
@@ -1114,6 +1167,7 @@ async function syncTreeRootToWorker(
     });
     if (isStaleLoad('resolve-readable-root')) return;
     if (effectiveRootCid && rootCidParam && toHex(effectiveRootCid.hash) !== toHex(rootCidParam.hash)) {
+      setRouteRootOverride(capturedRouteRootKey, effectiveRootCid, 'readable-fallback');
       logVideoDebug('load:root-fallback', {
         npub: capturedNpub,
         treeName: capturedTreeName,

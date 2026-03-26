@@ -41,6 +41,15 @@ describe('video view directory fallback', () => {
     expect(videoViewSource).toContain("logVideoDebug('root:fallback-resolved'");
   });
 
+  it('pins recovered playable roots for the current route so stale resolver roots do not thrash playback', () => {
+    expect(videoViewSource).toContain('let routeRootOverride = $state<CID | null>(null);');
+    expect(videoViewSource).toContain('function setRouteRootOverride(');
+    expect(videoViewSource).toContain('let effectiveRouteRootCid = $derived.by(() => {');
+    expect(videoViewSource).toContain("setRouteRootOverride(routeRootKey, fallbackRoot, 'feed-fallback');");
+    expect(videoViewSource).toContain("setRouteRootOverride(capturedRouteRootKey, effectiveRootCid, 'readable-fallback');");
+    expect(videoViewSource).toContain("setRouteRootOverride(capturedRouteRootKey, refreshedRoot, `refresh:${reason}`);");
+  });
+
   it('renders audio roots through an audio element instead of forcing them into the video tag', () => {
     expect(videoViewSource).toContain('let isAudioOnly = $derived(');
     expect(videoViewSource).toContain('<audio');
