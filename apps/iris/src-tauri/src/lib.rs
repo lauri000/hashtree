@@ -112,6 +112,93 @@ impl DaemonTransportSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct DaemonBlossomServerSettings {
+    url: String,
+    read: bool,
+    write: bool,
+}
+
+impl DaemonBlossomServerSettings {
+    fn merge_into(
+        servers: &mut Vec<DaemonBlossomServerSettings>,
+        url: &str,
+        read: bool,
+        write: bool,
+    ) {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        if let Some(existing) = servers.iter_mut().find(|server| server.url == trimmed) {
+            existing.read |= read;
+            existing.write |= write;
+            return;
+        }
+
+        servers.push(Self {
+            url: trimmed.to_string(),
+            read,
+            write,
+        });
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct DaemonNetworkSettings {
+    webrtc: bool,
+    multicast: bool,
+    bluetooth: bool,
+    max_multicast_peers: usize,
+    max_bluetooth_peers: usize,
+    multicast_group: String,
+    multicast_port: u16,
+    relay_urls: Vec<String>,
+    blossom_servers: Vec<DaemonBlossomServerSettings>,
+}
+
+impl DaemonNetworkSettings {
+    fn from_config(config: &hashtree_cli::Config) -> Self {
+        let mut blossom_servers = Vec::new();
+        for url in &config.blossom.servers {
+            DaemonBlossomServerSettings::merge_into(&mut blossom_servers, url, true, true);
+        }
+        for url in &config.blossom.read_servers {
+            DaemonBlossomServerSettings::merge_into(&mut blossom_servers, url, true, false);
+        }
+        for url in &config.blossom.write_servers {
+            DaemonBlossomServerSettings::merge_into(&mut blossom_servers, url, false, true);
+        }
+
+        Self {
+            webrtc: config.server.enable_webrtc,
+            multicast: config.server.enable_multicast && config.server.max_multicast_peers > 0,
+            bluetooth: config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0,
+            max_multicast_peers: config.server.max_multicast_peers,
+            max_bluetooth_peers: config.server.max_bluetooth_peers,
+            multicast_group: config.server.multicast_group.clone(),
+            multicast_port: config.server.multicast_port,
+            relay_urls: config.nostr.relays.clone(),
+            blossom_servers,
+        }
+    }
+}
+
+impl From<&DaemonNetworkSettings> for DaemonTransportSettings {
+    fn from(settings: &DaemonNetworkSettings) -> Self {
+        Self {
+            webrtc: settings.webrtc,
+            multicast: settings.multicast,
+            bluetooth: settings.bluetooth,
+            max_multicast_peers: settings.max_multicast_peers,
+            max_bluetooth_peers: settings.max_bluetooth_peers,
+        }
+    }
+}
+
 fn apply_transport_settings(
     config: &mut hashtree_cli::Config,
     settings: &DaemonTransportSettings,
@@ -139,6 +226,103 @@ fn apply_transport_settings(
     };
 
     DaemonTransportSettings::from_config(config)
+}
+
+fn normalize_relay_urls(urls: &[String]) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::new();
+
+    for url in urls {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed =
+            tauri::Url::parse(trimmed).map_err(|_| format!("Invalid relay URL: {}", trimmed))?;
+        match parsed.scheme() {
+            "ws" | "wss" => {}
+            _ => return Err(format!("Relay URL must use ws:// or wss://: {}", trimmed)),
+        }
+        if !normalized.iter().any(|existing| existing == trimmed) {
+            normalized.push(trimmed.to_string());
+        }
+    }
+
+    Ok(normalized)
+}
+
+fn normalize_blossom_servers(
+    servers: &[DaemonBlossomServerSettings],
+) -> Result<Vec<DaemonBlossomServerSettings>, String> {
+    let mut normalized: Vec<DaemonBlossomServerSettings> = Vec::new();
+
+    for server in servers {
+        let trimmed = server.url.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed = tauri::Url::parse(trimmed)
+            .map_err(|_| format!("Invalid Blossom server URL: {}", trimmed))?;
+        match parsed.scheme() {
+            "http" | "https" => {}
+            _ => {
+                return Err(format!(
+                    "Blossom server URL must use http:// or https://: {}",
+                    trimmed
+                ))
+            }
+        }
+        if let Some(existing) = normalized
+            .iter_mut()
+            .find(|existing| existing.url == trimmed)
+        {
+            existing.read |= server.read;
+            existing.write |= server.write;
+            continue;
+        }
+        normalized.push(DaemonBlossomServerSettings {
+            url: trimmed.to_string(),
+            read: server.read,
+            write: server.write,
+        });
+    }
+
+    normalized.retain(|server| server.read || server.write);
+    Ok(normalized)
+}
+
+fn apply_network_settings(
+    config: &mut hashtree_cli::Config,
+    settings: &DaemonNetworkSettings,
+) -> Result<DaemonNetworkSettings, String> {
+    let normalized_relays = normalize_relay_urls(&settings.relay_urls)?;
+    let normalized_blossom = normalize_blossom_servers(&settings.blossom_servers)?;
+
+    let transport_settings =
+        apply_transport_settings(config, &DaemonTransportSettings::from(settings));
+    config.server.multicast_group = settings.multicast_group.trim().to_string();
+    config.server.multicast_port = settings.multicast_port;
+    config.nostr.relays = normalized_relays;
+    config.blossom.servers.clear();
+    config.blossom.read_servers.clear();
+    config.blossom.write_servers.clear();
+
+    for server in normalized_blossom {
+        if server.read && server.write {
+            config.blossom.servers.push(server.url);
+        } else if server.read {
+            config.blossom.read_servers.push(server.url);
+        } else if server.write {
+            config.blossom.write_servers.push(server.url);
+        }
+    }
+
+    let mut applied = DaemonNetworkSettings::from_config(config);
+    applied.webrtc = transport_settings.webrtc;
+    applied.multicast = transport_settings.multicast;
+    applied.bluetooth = transport_settings.bluetooth;
+    applied.max_multicast_peers = transport_settings.max_multicast_peers;
+    applied.max_bluetooth_peers = transport_settings.max_bluetooth_peers;
+    Ok(applied)
 }
 
 pub fn ensure_rustls_provider() {
@@ -634,6 +818,13 @@ fn get_daemon_transport_settings() -> Result<DaemonTransportSettings, String> {
 }
 
 #[tauri::command]
+fn get_daemon_network_settings() -> Result<DaemonNetworkSettings, String> {
+    hashtree_cli::Config::load()
+        .map(|config| DaemonNetworkSettings::from_config(&config))
+        .map_err(|error| format!("Failed to load daemon network settings: {}", error))
+}
+
+#[tauri::command]
 async fn update_daemon_transport_settings<R: tauri::Runtime>(
     _app: tauri::AppHandle<R>,
     daemon_runtime: tauri::State<'_, Arc<DaemonRuntimeState>>,
@@ -665,6 +856,43 @@ async fn update_daemon_transport_settings<R: tauri::Runtime>(
             .apply_config(&config)
             .await
             .map_err(|error| format!("Failed to apply daemon transport settings: {}", error))?;
+    }
+
+    Ok(applied)
+}
+
+#[tauri::command]
+async fn update_daemon_network_settings<R: tauri::Runtime>(
+    _app: tauri::AppHandle<R>,
+    daemon_runtime: tauri::State<'_, Arc<DaemonRuntimeState>>,
+    settings: DaemonNetworkSettings,
+) -> Result<DaemonNetworkSettings, String> {
+    let mut config = hashtree_cli::Config::load()
+        .map_err(|error| format!("Failed to load daemon network settings: {}", error))?;
+    let applied = apply_network_settings(&mut config, &settings)?;
+    config
+        .save()
+        .map_err(|error| format!("Failed to save daemon network settings: {}", error))?;
+
+    #[cfg(target_os = "android")]
+    if applied.bluetooth {
+        match ensure_mobile_peer_id()
+            .and_then(|peer_id| mobile_bluetooth::prestart_from_app(&_app, peer_id))
+        {
+            Ok(()) => info!("Prestarted Android Bluetooth plugin from live network update"),
+            Err(error) => tracing::warn!(
+                "Failed to prestart Android Bluetooth plugin from network settings update: {}",
+                error
+            ),
+        }
+    }
+
+    let controller = { daemon_runtime.peer_router_controller.read().clone() };
+    if let Some(controller) = controller {
+        controller
+            .apply_config(&config)
+            .await
+            .map_err(|error| format!("Failed to apply daemon network settings: {}", error))?;
     }
 
     Ok(applied)
@@ -933,7 +1161,9 @@ pub fn run() {
             automation::automation_shutdown,
             deep_link_frontend_ready,
             get_daemon_transport_settings,
+            get_daemon_network_settings,
             update_daemon_transport_settings,
+            update_daemon_network_settings,
             htree_protocol::get_htree_server_url,
             htree_protocol::cache_tree_root,
             htree_protocol::clear_tree_root_cache,
@@ -1140,12 +1370,13 @@ mod tests {
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     use super::build_menu;
     use super::{
-        apply_transport_settings, collect_supported_launch_deep_links, is_supported_launch_host,
-        mobile_default_htree_paths, normalize_automation_startup_url,
+        apply_network_settings, apply_transport_settings, collect_supported_launch_deep_links,
+        is_supported_launch_host, mobile_default_htree_paths, normalize_automation_startup_url,
         normalize_supported_launch_deep_link, resolve_iris_paths,
         tray_connection_status_from_peers, tray_menu_spec, tray_primary_click_action,
-        tray_status_text, DaemonTransportSettings, DesktopPlatform, IrisPaths,
-        TrayConnectionStatus, TrayMenuItemSpec, TrayPeersResponse, TrayPrimaryClickAction,
+        tray_status_text, DaemonBlossomServerSettings, DaemonNetworkSettings,
+        DaemonTransportSettings, DesktopPlatform, IrisPaths, TrayConnectionStatus,
+        TrayMenuItemSpec, TrayPeersResponse, TrayPrimaryClickAction,
         DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS, DEFAULT_MULTICAST_TOGGLE_MAX_PEERS,
     };
     use std::path::{Path, PathBuf};
@@ -1457,6 +1688,118 @@ mod tests {
         assert!(!applied.bluetooth);
         assert_eq!(config.server.max_multicast_peers, 0);
         assert_eq!(config.server.max_bluetooth_peers, 0);
+    }
+
+    #[test]
+    fn daemon_network_settings_from_config_merges_blossom_modes() {
+        let mut config = hashtree_cli::Config::default();
+        config.nostr.relays = vec![
+            "wss://relay.one".to_string(),
+            "ws://127.0.0.1:21417/ws".to_string(),
+        ];
+        config.blossom.servers = vec!["https://both.example".to_string()];
+        config.blossom.read_servers = vec![
+            "https://both.example".to_string(),
+            "https://read.example".to_string(),
+        ];
+        config.blossom.write_servers = vec![
+            "https://both.example".to_string(),
+            "https://write.example".to_string(),
+        ];
+
+        let settings = DaemonNetworkSettings::from_config(&config);
+
+        assert_eq!(settings.relay_urls, config.nostr.relays);
+        assert_eq!(
+            settings.blossom_servers,
+            vec![
+                DaemonBlossomServerSettings {
+                    url: "https://both.example".to_string(),
+                    read: true,
+                    write: true,
+                },
+                DaemonBlossomServerSettings {
+                    url: "https://read.example".to_string(),
+                    read: true,
+                    write: false,
+                },
+                DaemonBlossomServerSettings {
+                    url: "https://write.example".to_string(),
+                    read: false,
+                    write: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_network_settings_round_trips_relays_and_blossom_servers() {
+        let mut config = hashtree_cli::Config::default();
+
+        let applied = apply_network_settings(
+            &mut config,
+            &DaemonNetworkSettings {
+                webrtc: true,
+                multicast: true,
+                bluetooth: true,
+                max_multicast_peers: 0,
+                max_bluetooth_peers: 0,
+                multicast_group: "239.255.42.77".to_string(),
+                multicast_port: 49_123,
+                relay_urls: vec![
+                    "wss://relay.example".to_string(),
+                    "ws://127.0.0.1:21417/ws".to_string(),
+                ],
+                blossom_servers: vec![
+                    DaemonBlossomServerSettings {
+                        url: "https://read-write.example".to_string(),
+                        read: true,
+                        write: true,
+                    },
+                    DaemonBlossomServerSettings {
+                        url: "https://read-only.example".to_string(),
+                        read: true,
+                        write: false,
+                    },
+                    DaemonBlossomServerSettings {
+                        url: "https://write-only.example".to_string(),
+                        read: false,
+                        write: true,
+                    },
+                ],
+            },
+        )
+        .expect("apply daemon network settings");
+
+        assert_eq!(
+            applied.max_multicast_peers,
+            DEFAULT_MULTICAST_TOGGLE_MAX_PEERS
+        );
+        assert_eq!(
+            applied.max_bluetooth_peers,
+            DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS
+        );
+        assert_eq!(applied.multicast_group, "239.255.42.77");
+        assert_eq!(applied.multicast_port, 49_123);
+        assert_eq!(
+            config.nostr.relays,
+            vec![
+                "wss://relay.example".to_string(),
+                "ws://127.0.0.1:21417/ws".to_string(),
+            ]
+        );
+        assert_eq!(
+            config.blossom.servers,
+            vec!["https://read-write.example".to_string()]
+        );
+        assert_eq!(
+            config.blossom.read_servers,
+            vec!["https://read-only.example".to_string()]
+        );
+        assert_eq!(
+            config.blossom.write_servers,
+            vec!["https://write-only.example".to_string()]
+        );
     }
 
     #[test]

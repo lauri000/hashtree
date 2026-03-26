@@ -26,6 +26,19 @@ export interface DaemonTransportSettings {
   maxBluetoothPeers: number;
 }
 
+export interface DaemonBlossomServerSettings {
+  url: string;
+  read: boolean;
+  write: boolean;
+}
+
+export interface DaemonNetworkSettings extends DaemonTransportSettings {
+  multicastGroup: string;
+  multicastPort: number;
+  relayUrls: string[];
+  blossomServers: DaemonBlossomServerSettings[];
+}
+
 export async function getDaemonTransportSettings(): Promise<DaemonTransportSettings> {
   return invoke<DaemonTransportSettings>('get_daemon_transport_settings');
 }
@@ -34,6 +47,16 @@ export async function updateDaemonTransportSettings(
   settings: DaemonTransportSettings,
 ): Promise<DaemonTransportSettings> {
   return invoke<DaemonTransportSettings>('update_daemon_transport_settings', { settings });
+}
+
+export async function getDaemonNetworkSettings(): Promise<DaemonNetworkSettings> {
+  return invoke<DaemonNetworkSettings>('get_daemon_network_settings');
+}
+
+export async function updateDaemonNetworkSettings(
+  settings: DaemonNetworkSettings,
+): Promise<DaemonNetworkSettings> {
+  return invoke<DaemonNetworkSettings>('update_daemon_network_settings', { settings });
 }
 
 // ── Child webview management ──

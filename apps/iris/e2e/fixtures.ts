@@ -30,12 +30,19 @@ async function mockTauriIPC(page: Page) {
       historyIndex: -1,
       historyLength: 0,
     };
-    (window as any).__daemonTransportSettings = {
+    (window as any).__daemonNetworkSettings = {
       webrtc: true,
       multicast: false,
       bluetooth: false,
       maxMulticastPeers: 0,
       maxBluetoothPeers: 0,
+      multicastGroup: '239.255.42.98',
+      multicastPort: 48555,
+      relayUrls: ['wss://relay.damus.io', 'ws://127.0.0.1:21417/ws'],
+      blossomServers: [
+        { url: 'https://upload.iris.to', read: false, write: true },
+        { url: 'https://cdn.iris.to', read: true, write: false },
+      ],
     };
     (window as any).__tauriInvokeErrors = {} as Record<string, string>;
     (window as any).__pendingDeepLinks = (window as any).__pendingDeepLinks ?? [];
@@ -119,13 +126,21 @@ async function mockTauriIPC(page: Page) {
           case 'automation_shutdown':
             return Promise.resolve();
           case 'get_daemon_transport_settings':
-            return Promise.resolve((window as any).__daemonTransportSettings);
+            return Promise.resolve((window as any).__daemonNetworkSettings);
           case 'update_daemon_transport_settings':
-            (window as any).__daemonTransportSettings = {
-              ...((window as any).__daemonTransportSettings ?? {}),
+            (window as any).__daemonNetworkSettings = {
+              ...((window as any).__daemonNetworkSettings ?? {}),
               ...(args?.settings ?? {}),
             };
-            return Promise.resolve((window as any).__daemonTransportSettings);
+            return Promise.resolve((window as any).__daemonNetworkSettings);
+          case 'get_daemon_network_settings':
+            return Promise.resolve((window as any).__daemonNetworkSettings);
+          case 'update_daemon_network_settings':
+            (window as any).__daemonNetworkSettings = {
+              ...((window as any).__daemonNetworkSettings ?? {}),
+              ...(args?.settings ?? {}),
+            };
+            return Promise.resolve((window as any).__daemonNetworkSettings);
           case 'deep_link_frontend_ready': {
             const pending = Array.isArray((window as any).__pendingDeepLinks)
               ? [...(window as any).__pendingDeepLinks]
