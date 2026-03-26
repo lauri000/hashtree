@@ -65,8 +65,8 @@
   }
 </script>
 
-<div class="flex-1 p-8 md:p-12 overflow-auto">
-  <div class="max-w-3xl mx-auto">
+<div class="flex-1 overflow-auto p-8 md:p-12">
+  <div class="mx-auto max-w-4xl">
     <!-- Favourites -->
     <section class="mb-10">
       <h2 class="text-lg font-semibold text-text-1 mb-4">Favourites</h2>
@@ -125,31 +125,33 @@
       {#if visibleSuggestions.length === 0}
         <p class="text-text-3 text-sm">No suggestions right now.</p>
       {:else}
-        <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
           {#each visibleSuggestions as app (app.url)}
             <div
-              class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 p-3 bg-surface-1 hover:bg-surface-2 rounded-xl transition-colors"
+              class="group flex items-center gap-3 rounded-2xl bg-surface-1 px-3 py-3 transition-colors hover:bg-surface-2"
               data-testid={`suggestion-card-${slugifyName(app.name)}`}
             >
               <button
-                class="min-w-0 flex items-center gap-3 text-left"
+                class="flex min-w-0 flex-1 items-center gap-3 text-left"
                 data-testid={`suggestion-open-${slugifyName(app.name)}`}
                 onclick={() => openApp(app)}
               >
-                <div class="w-12 h-12 rounded-xl bg-surface-2 flex items-center justify-center shrink-0">
+                <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface-2">
                   {#if app.icon}
-                    <img src={app.icon} alt="" class="w-8 h-8 rounded-lg" />
+                    <img src={app.icon} alt="" class="h-7 w-7 rounded-lg" />
                   {:else}
                     <span class="text-lg font-semibold text-text-2">{getInitial(app.name)}</span>
                   {/if}
                 </div>
                 <div class="min-w-0 flex-1">
-                  <div class="text-sm font-medium text-text-1 truncate">{app.name}</div>
+                  <div class="truncate text-sm font-medium leading-tight text-text-1">
+                    {app.name}
+                  </div>
                 </div>
               </button>
-              <div class="flex shrink-0 items-center gap-1 self-stretch">
+              <div class="ml-auto flex shrink-0 items-center gap-1">
                 <button
-                  class="rounded p-1 hover:bg-surface-3"
+                  class="rounded-lg p-1.5 hover:bg-surface-3"
                   data-testid={`suggestion-add-${slugifyName(app.name)}`}
                   onclick={(e) => { e.stopPropagation(); addToFavorites(app); }}
                   title="Add to favourites"
@@ -157,7 +159,7 @@
                   <span class="i-lucide-plus text-text-3"></span>
                 </button>
                 <button
-                  class="rounded p-1 hover:bg-surface-3"
+                  class="rounded-lg p-1.5 hover:bg-surface-3"
                   data-testid={`suggestion-dismiss-${slugifyName(app.name)}`}
                   onclick={(e) => { e.stopPropagation(); dismissSuggestion(app.url); }}
                   title="Dismiss suggestion"
