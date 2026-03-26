@@ -577,6 +577,15 @@
     };
   });
 
+  function historyOwnerSummary(entry: HistoryEntry) {
+    const htree = parseHtreeUrl(entry.path);
+    if (!htree?.npub) return null;
+    return {
+      host: htree.npub,
+      pathLabel: htreePathLabel(htree),
+    };
+  }
+
   function isRecordableUrl(url: string): boolean {
     return url.startsWith('http://') || url.startsWith('https://') || url.startsWith('htree://');
   }
@@ -683,7 +692,7 @@
     }
 
     return {
-      top: toolbarHeight,
+      top: toolbarHeight + (dropdownHeight > 0 ? dropdownHeight + 8 : 0),
       bottom: 0,
     };
   }
@@ -1338,11 +1347,12 @@
             <span data-tauri-drag-region="false" class="i-lucide-search text-sm text-muted shrink-0"></span>
             <div class="relative min-w-0 flex-1">
               {#if blurredOwnerSummary}
-                <div class="absolute inset-0 flex items-center gap-2 pr-2">
+                <div class="absolute inset-0 flex items-center gap-1.5 pr-2">
                   <div class="shrink-0">
                     <AddressOwnerPill
                       host={blurredOwnerSummary.host}
                       openProfile={() => void openAddressOwnerProfile(blurredOwnerSummary.host)}
+                      testId="address-owner-pill"
                     />
                   </div>
                   <span data-testid="address-path" class="min-w-0 truncate text-sm text-text-2">
@@ -1367,7 +1377,7 @@
                 onkeyup={handleAddressKeyUp}
                 placeholder="Search or enter address"
                 spellcheck={false}
-                class={`w-full bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted min-w-0 text-left ${blurredOwnerSummary ? 'relative z-10 pointer-events-none text-transparent' : ''}`}
+                class={`w-full bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted min-w-0 text-left ${blurredOwnerSummary ? 'pointer-events-none opacity-0' : ''}`}
               />
             </div>
             {#if !isAddressFocused}
@@ -1394,6 +1404,7 @@
               role="listbox"
             >
               {#each dropdownItems as item, i}
+                {@const ownerSummary = historyOwnerSummary(item)}
                 <div
                   class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors cursor-pointer {i === selectedIndex ? 'bg-surface-2' : ''}"
                   onmousedown={() => handleDropdownSelect(item)}
@@ -1403,7 +1414,20 @@
                 >
                   <span class="i-lucide-clock text-sm text-text-3 shrink-0"></span>
                   <div class="flex-1 min-w-0">
-                    <div class="text-sm text-text-1 truncate">{item.label}</div>
+                    {#if ownerSummary}
+                      <div class="flex items-center gap-1.5 min-w-0">
+                        <AddressOwnerPill
+                          host={ownerSummary.host}
+                          interactive={false}
+                          showBackground={false}
+                          maxWidthClass="max-w-40"
+                          size="xs"
+                        />
+                        <span class="min-w-0 truncate text-xs text-text-2">{ownerSummary.pathLabel}</span>
+                      </div>
+                    {:else}
+                      <div class="text-sm text-text-1 truncate">{item.label}</div>
+                    {/if}
                     <div class="text-xs text-text-3 truncate">{urlToDisplay(item.path)}</div>
                   </div>
                   <button
@@ -1493,11 +1517,12 @@
           <span data-tauri-drag-region="false" class="i-lucide-search text-sm text-muted shrink-0"></span>
           <div class="relative min-w-0 flex-1">
             {#if blurredOwnerSummary}
-              <div class="absolute inset-0 flex items-center gap-2 pr-2">
+              <div class="absolute inset-0 flex items-center gap-1.5 pr-2">
                 <div class="shrink-0">
                   <AddressOwnerPill
                     host={blurredOwnerSummary.host}
                     openProfile={() => void openAddressOwnerProfile(blurredOwnerSummary.host)}
+                    testId="address-owner-pill"
                   />
                 </div>
                 <span data-testid="address-path" class="min-w-0 truncate text-sm text-text-2">
@@ -1522,7 +1547,7 @@
               onkeyup={handleAddressKeyUp}
               placeholder="Search or enter address"
               spellcheck={false}
-              class={`w-full bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted min-w-0 text-center ${blurredOwnerSummary ? 'relative z-10 pointer-events-none text-transparent text-left' : ''}`}
+              class={`w-full bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted min-w-0 text-center ${blurredOwnerSummary ? 'pointer-events-none opacity-0 text-left' : ''}`}
             />
           </div>
           <button
@@ -1547,6 +1572,7 @@
             role="listbox"
           >
             {#each dropdownItems as item, i}
+              {@const ownerSummary = historyOwnerSummary(item)}
               <div
                 class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors cursor-pointer {i === selectedIndex ? 'bg-surface-2' : ''}"
                 onmousedown={() => handleDropdownSelect(item)}
@@ -1556,7 +1582,20 @@
               >
                 <span class="i-lucide-clock text-sm text-text-3 shrink-0"></span>
                 <div class="flex-1 min-w-0">
-                  <div class="text-sm text-text-1 truncate">{item.label}</div>
+                  {#if ownerSummary}
+                    <div class="flex items-center gap-1.5 min-w-0">
+                      <AddressOwnerPill
+                        host={ownerSummary.host}
+                        interactive={false}
+                        showBackground={false}
+                        maxWidthClass="max-w-48"
+                        size="xs"
+                      />
+                      <span class="min-w-0 truncate text-xs text-text-2">{ownerSummary.pathLabel}</span>
+                    </div>
+                  {:else}
+                    <div class="text-sm text-text-1 truncate">{item.label}</div>
+                  {/if}
                   <div class="text-xs text-text-3 truncate">{urlToDisplay(item.path)}</div>
                 </div>
                 <button
@@ -1593,26 +1632,26 @@
       <Settings onnavigate={(url) => navigate(url)} />
     {:else if !childWebviewReady || childLastError}
       <section class="flex flex-1 items-center justify-center p-6">
-        <div
-          data-testid={childLastError ? 'webview-error' : 'webview-loading'}
-          class="w-full max-w-md rounded-3xl border border-surface-3 bg-surface-1 px-5 py-6 text-center shadow-lg"
-        >
-          <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-2 text-text-1">
-            <span class={childLastError ? 'i-lucide-triangle-alert text-xl text-warning' : 'i-lucide-loader-circle animate-spin text-xl'}></span>
+        {#if childLastError}
+          <div
+            data-testid="webview-error"
+            class="w-full max-w-md rounded-3xl border border-surface-3 bg-surface-1 px-5 py-6 text-center shadow-lg"
+          >
+            <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-2 text-text-1">
+              <span class="i-lucide-triangle-alert text-xl text-warning"></span>
+            </div>
+            <h2 class="text-lg font-semibold text-text-1">{webviewErrorHeadline(childLastError)}</h2>
+            <p class="mt-2 text-sm text-text-2">{webviewErrorDetail(childLastError)}</p>
+            {#if currentUrl}
+              <p class="mt-3 break-all text-xs text-text-3">{currentUrl}</p>
+            {/if}
+            {#if webviewErrorDetail(childLastError) !== childLastError}
+              <p class="mt-3 break-all text-xs text-text-3">{childLastError}</p>
+            {/if}
           </div>
-          <h2 class="text-lg font-semibold text-text-1">
-            {childLastError ? webviewErrorHeadline(childLastError) : 'Opening page'}
-          </h2>
-          <p class="mt-2 text-sm text-text-2">
-            {childLastError ? webviewErrorDetail(childLastError) : 'Waiting for the embedded page to start.'}
-          </p>
-          {#if currentUrl}
-            <p class="mt-3 break-all text-xs text-text-3">{currentUrl}</p>
-          {/if}
-          {#if childLastError && webviewErrorDetail(childLastError) !== childLastError}
-            <p class="mt-3 break-all text-xs text-text-3">{childLastError}</p>
-          {/if}
-        </div>
+        {:else}
+          <span data-testid="webview-loading-spinner" class="i-lucide-loader-circle animate-spin text-2xl text-text-2"></span>
+        {/if}
       </section>
     {/if}
     <!-- When currentView === 'webview', child webview overlays this area -->

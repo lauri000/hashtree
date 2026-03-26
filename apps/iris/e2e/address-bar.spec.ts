@@ -1,6 +1,8 @@
 import { test, expect, getInvocationsFor, setupPageErrorHandler, gotoHome } from './fixtures';
 import { distributedOwner } from '../src/lib/apps';
-import { ownerDisplayName, ownerProfileUrl } from '../src/lib/addressIdentity';
+import { ownerProfileUrl } from '../src/lib/addressIdentity';
+
+const DISTRIBUTED_OWNER_PROFILE_NAME = 'Sirius Business Ltd';
 
 async function openHome(page: import('@playwright/test').Page) {
   setupPageErrorHandler(page);
@@ -200,7 +202,7 @@ test.describe('Address Bar', () => {
     await page.locator('main').click({ position: { x: 20, y: 20 } });
 
     await expect(page.getByTestId('address-owner-pill')).toBeVisible();
-    await expect(page.getByTestId('address-owner-name')).toHaveText(ownerDisplayName(distributedOwner));
+    await expect(page.getByTestId('address-owner-name')).toHaveText(DISTRIBUTED_OWNER_PROFILE_NAME);
     await expect(page.getByTestId('address-path')).toHaveText('/video/index.html');
     await expect(input).toHaveValue(`${distributedOwner}/video/index.html`);
 
@@ -234,6 +236,25 @@ test.describe('Address Bar', () => {
     expect(calls[1].args.treename).toBe('files');
     expect(calls[1].args.path).toBe('/index.html');
     expect(calls[1].args.fragment).toBe(`/${distributedOwner}/profile`);
+  });
+
+  test('history dropdown shows owner label and htree path for npub routes', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill(`htree://${distributedOwner}/video/index.html`);
+    await input.press('Enter');
+    await page.getByTitle('Home').click();
+    await expect.poll(async () => {
+      return await page.evaluate(() => ((window as any).__historyStore ?? []).length);
+    }).toBe(1);
+
+    await input.click();
+    const dropdown = page.locator('[role="listbox"]');
+    await expect(dropdown).toBeVisible();
+    await expect(dropdown.getByText(DISTRIBUTED_OWNER_PROFILE_NAME).first()).toBeVisible();
+    await expect(dropdown.getByText('/video/index.html').first()).toBeVisible();
   });
 
   test('empty address bar submit does nothing', async ({ tauriPage: page }) => {
@@ -572,8 +593,8 @@ test.describe('Address Bar Autocomplete', () => {
     const dropdown = page.locator('[role="listbox"]');
     await expect(dropdown).toBeVisible();
 
-    await input.press('Escape');
-    await expect.poll(async () => await dropdown.count()).toBe(0);
+    await page.keyboard.press('Escape');
+    await expect(dropdown).toBeHidden();
   });
 
   test('clicking dropdown item navigates to that URL', async ({ tauriPage: page }) => {
@@ -619,7 +640,7 @@ test.describe('Address Bar Autocomplete', () => {
     expect(calls.length).toBe(1);
   });
 
-  test('opening dropdown keeps the page anchored below the toolbar', async ({ tauriPage: page }) => {
+  test('opening dropdown pushes the page below the toolbar overlay', async ({ tauriPage: page }) => {
     await openHome(page);
 
     const input = page.locator('input[placeholder="Search or enter address"]');
@@ -635,6 +656,6 @@ test.describe('Address Bar Autocomplete', () => {
     await page.waitForTimeout(250);
 
     const after = await getInvocationsFor(page, 'set_webview_bounds');
-    expect(after.at(-1)?.args.y).toBe(48);
+    expect(after.at(-1)?.args.y).toBeGreaterThan(48);
   });
 });

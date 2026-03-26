@@ -41,6 +41,12 @@ async function mockTauriIPC(page: Page) {
       historyIndex: -1,
       historyLength: 0,
     };
+    (window as any).__irisAddressOwnerProfiles = {
+      npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm: {
+        display_name: 'Sirius Business Ltd',
+        picture: 'https://blossom.primal.net/e0c717e8060b46a3f6c30017e4c8efef709a81fcd061f3231699b3d09f01434e.jpg',
+      },
+    };
     (window as any).__daemonNetworkSettings = {
       webrtc: true,
       multicast: false,
