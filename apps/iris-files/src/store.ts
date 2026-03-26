@@ -12,6 +12,7 @@ import { getWorkerStore } from './stores/workerStore';
 import { closeWorkerAdapter } from './workerAdapter';
 import { getWorkerAdapter } from './lib/workerInit';
 import { nostrStore } from './nostr';
+import { transportUsageStore, type RelayBandwidthState } from './stores/transportUsage';
 import {
   advanceMeshBandwidthHistory,
   calculateMeshTotals,
@@ -152,6 +153,7 @@ function createAppStore() {
       Date.now(),
     );
     meshHistoryCursor = sample.nextCursor;
+    transportUsageStore.syncPeers(peers);
 
     update(state => ({
       ...state,
@@ -461,15 +463,23 @@ export async function refreshWebRTCStats(): Promise<void> {
       .catch((): PeerInfo[] => [])
     : Promise.resolve<PeerInfo[]>([]);
   const daemonPromise = fetchDaemonMeshStats()
-    .then((stats) => stats?.peers ?? [])
-    .catch((): PeerInfo[] => []);
+    .catch(() => null);
 
-  const [workerPeers, daemonPeers] = await Promise.all([workerPromise, daemonPromise]);
+  const [workerPeers, daemonStats] = await Promise.all([workerPromise, daemonPromise]);
+  if (daemonStats) {
+    setRelayBandwidth({
+      totalBytesSent: daemonStats.relayBytesSent,
+      totalBytesReceived: daemonStats.relayBytesReceived,
+      updatedAt: Date.now(),
+      relays: [],
+    });
+  }
+  const daemonPeers = daemonStats?.peers ?? [];
   appStore.setPeerSources({ workerPeers, daemonPeers });
 }
 
 export function setBlossomBandwidth(stats: BlossomBandwidthState): void {
-  appStore.setBlossomBandwidth({
+  const nextState = {
     totalBytesSent: stats.totalBytesSent,
     totalBytesReceived: stats.totalBytesReceived,
     updatedAt: stats.updatedAt,
@@ -478,7 +488,13 @@ export function setBlossomBandwidth(stats: BlossomBandwidthState): void {
       bytesSent: server.bytesSent,
       bytesReceived: server.bytesReceived,
     })),
-  });
+  };
+  appStore.setBlossomBandwidth(nextState);
+  transportUsageStore.syncBlossomBandwidth(nextState);
+}
+
+export function setRelayBandwidth(stats: RelayBandwidthState): void {
+  transportUsageStore.syncRelayBandwidth(stats);
 }
 
 export function getBandwidthUsageTotals() {
@@ -500,7 +516,8 @@ export function getBandwidthUsageTotals() {
 }
 
 export function getLifetimeStats() {
-  const state = get(appStore);
-  const { totalBytesSent: bytesSent, totalBytesReceived: bytesReceived } = calculateMeshTotals(state.peers);
+  const usage = transportUsageStore.getState();
+  const bytesSent = usage.lifetime.webrtc.bytesSent + usage.lifetime.bluetooth.bytesSent;
+  const bytesReceived = usage.lifetime.webrtc.bytesReceived + usage.lifetime.bluetooth.bytesReceived;
   return { bytesSent, bytesReceived, bytesForwarded: 0 };
 }

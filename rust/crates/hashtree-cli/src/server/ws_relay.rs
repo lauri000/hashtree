@@ -288,6 +288,9 @@ async fn run_upstream_nostr_subscription(
     };
     let (mut write, mut read) = socket.split();
     let request = NostrClientMessage::req(subscription_id.clone(), filters).as_json();
+    state
+        .ws_relay
+        .note_upstream_relay_send(request.as_bytes().len());
     if write
         .send(TungsteniteMessage::Text(request.into()))
         .await
@@ -308,6 +311,9 @@ async fn run_upstream_nostr_subscription(
             _ = close_rx.changed() => {
                 if *close_rx.borrow() {
                     let close = NostrClientMessage::close(subscription_id.clone()).as_json();
+                    state
+                        .ws_relay
+                        .note_upstream_relay_send(close.as_bytes().len());
                     let _ = write.send(TungsteniteMessage::Text(close.into())).await;
                     let _ = write.close().await;
                     break;
@@ -316,6 +322,9 @@ async fn run_upstream_nostr_subscription(
             message = read.next() => {
                 match message {
                     Some(Ok(TungsteniteMessage::Text(text))) => {
+                        state
+                            .ws_relay
+                            .note_upstream_relay_receive(text.as_bytes().len());
                         if matches!(
                             NostrRelayMessage::from_json(text.as_str()),
                             Ok(NostrRelayMessage::EndOfStoredEvents(sid)) if sid == subscription_id

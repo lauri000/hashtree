@@ -39,6 +39,8 @@ export interface DaemonMeshStats {
   totalBytesSent: number;
   totalBytesReceived: number;
   transportCounts: Record<string, number>;
+  relayBytesSent: number;
+  relayBytesReceived: number;
 }
 
 type WorkerPeerLike = {
@@ -99,6 +101,8 @@ export function parseDaemonMeshSnapshot(payload: unknown): DaemonMeshStats {
       totalBytesSent: 0,
       totalBytesReceived: 0,
       transportCounts: { webrtc: 0, bluetooth: 0 },
+      relayBytesSent: 0,
+      relayBytesReceived: 0,
     };
   }
 
@@ -130,6 +134,7 @@ export function parseDaemonMeshSnapshot(payload: unknown): DaemonMeshStats {
     webrtc: readNumber(transportCountsRecord?.webrtc),
     bluetooth: readNumber(transportCountsRecord?.bluetooth),
   };
+  const relaySection = asRecord(root?.relay);
 
   return {
     enabled: true,
@@ -137,6 +142,8 @@ export function parseDaemonMeshSnapshot(payload: unknown): DaemonMeshStats {
     totalBytesSent: readNumber(section.bytes_sent) || calculateMeshTotals(peers).totalBytesSent,
     totalBytesReceived: readNumber(section.bytes_received) || calculateMeshTotals(peers).totalBytesReceived,
     transportCounts,
+    relayBytesSent: readNumber(relaySection?.bytes_sent),
+    relayBytesReceived: readNumber(relaySection?.bytes_received),
   };
 }
 

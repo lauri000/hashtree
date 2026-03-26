@@ -144,6 +144,8 @@ pub struct WsRelayState {
     pub upstream_pending_eose: Mutex<HashMap<(u64, String), usize>>,
     pub next_client_id: AtomicU64,
     pub next_request_id: AtomicU32,
+    pub upstream_relay_bytes_sent: AtomicU64,
+    pub upstream_relay_bytes_received: AtomicU64,
 }
 
 impl WsRelayState {
@@ -157,6 +159,8 @@ impl WsRelayState {
             upstream_pending_eose: Mutex::new(HashMap::new()),
             next_client_id: AtomicU64::new(1),
             next_request_id: AtomicU32::new(1),
+            upstream_relay_bytes_sent: AtomicU64::new(0),
+            upstream_relay_bytes_received: AtomicU64::new(0),
         }
     }
 
@@ -166,6 +170,23 @@ impl WsRelayState {
 
     pub fn next_request_id(&self) -> u32 {
         self.next_request_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    pub fn note_upstream_relay_send(&self, bytes: usize) {
+        self.upstream_relay_bytes_sent
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    pub fn note_upstream_relay_receive(&self, bytes: usize) {
+        self.upstream_relay_bytes_received
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    pub fn upstream_relay_bandwidth(&self) -> (u64, u64) {
+        (
+            self.upstream_relay_bytes_sent.load(Ordering::Relaxed),
+            self.upstream_relay_bytes_received.load(Ordering::Relaxed),
+        )
     }
 }
 

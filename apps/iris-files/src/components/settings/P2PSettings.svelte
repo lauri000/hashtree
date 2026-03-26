@@ -2,7 +2,8 @@
   import { nip19 } from 'nostr-tools';
   import { nostrStore } from '../../nostr';
   import { settingsStore } from '../../stores/settings';
-  import { appStore, formatBandwidth, formatBytes, refreshWebRTCStats, getLifetimeStats, blockPeer, unblockPeer, getWebRTCStore } from '../../store';
+  import { appStore, formatBandwidth, formatBytes, refreshWebRTCStats, blockPeer, unblockPeer, getWebRTCStore } from '../../store';
+  import { transportUsageStore } from '../../stores/transportUsage';
   import BandwidthHistoryChart from '../BandwidthHistoryChart.svelte';
   import { UserRow } from '../User';
 
@@ -51,9 +52,13 @@
   let uploadBandwidth = $derived(appState.meshUploadBandwidth);
   let downloadBandwidth = $derived(appState.meshDownloadBandwidth);
   let bandwidthHistory = $derived(appState.meshBandwidthHistory);
+  let transportUsage = $derived($transportUsageStore);
   let lifetimeStats = $derived.by(() => {
-    webrtcStats;
-    return getLifetimeStats();
+    return {
+      bytesSent: transportUsage.lifetime.webrtc.bytesSent + transportUsage.lifetime.bluetooth.bytesSent,
+      bytesReceived: transportUsage.lifetime.webrtc.bytesReceived + transportUsage.lifetime.bluetooth.bytesReceived,
+      bytesForwarded: 0,
+    };
   });
   let blockedPeers = $derived($settingsStore.blockedPeers ?? []);
 

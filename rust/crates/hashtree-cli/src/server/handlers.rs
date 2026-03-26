@@ -2515,11 +2515,18 @@ pub async fn daemon_status(
         "blossom_servers": state.upstream_blossom.len(),
         "nostr_relays": state.nostr_relay_urls.len(),
     });
+    let (relay_bytes_sent, relay_bytes_received) = state.ws_relay.upstream_relay_bandwidth();
+    let relay = json!({
+        "enabled": !state.nostr_relay_urls.is_empty(),
+        "bytes_sent": relay_bytes_sent,
+        "bytes_received": relay_bytes_received,
+    });
 
     Json(json!({
         "status": "running",
         "mesh": mesh.clone(),
         "webrtc": mesh,
+        "relay": relay,
         "upstream": upstream,
     }))
     .into_response()
@@ -3199,6 +3206,8 @@ mod tests {
             "wss://relay.damus.io".to_string(),
             "wss://nos.lol".to_string(),
         ];
+        state.ws_relay.note_upstream_relay_send(512);
+        state.ws_relay.note_upstream_relay_receive(1024);
 
         let response = daemon_status(
             AxumState(state),
@@ -3217,6 +3226,9 @@ mod tests {
         assert_eq!(json["mesh"]["bytes_received"], 32);
         assert_eq!(json["mesh"]["peers"][0]["transport"], "webrtc");
         assert_eq!(json["webrtc"], json["mesh"]);
+        assert_eq!(json["relay"]["enabled"], true);
+        assert_eq!(json["relay"]["bytes_sent"], 512);
+        assert_eq!(json["relay"]["bytes_received"], 1024);
         assert_eq!(json["upstream"]["nostr_relays"], 2);
     }
 

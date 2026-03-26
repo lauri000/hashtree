@@ -9,11 +9,108 @@
  */
 import NDK, { NDKEvent, NDKPrivateKeySigner, NDKNip07Signer, type NostrEvent } from 'ndk';
 import { getInjectedHtreeServerUrl } from '../lib/nativeHtree';
+import {
+  DEFAULT_RELAY_BANDWIDTH,
+  transportUsageStore,
+  type RelayBandwidthState,
+} from '../stores/transportUsage';
 
 // Minimal NDK instance for signing only - no relays, no cache
 export const ndk = new NDK({
   explicitRelayUrls: [],
 });
+
+const textEncoder = new TextEncoder();
+let relayBandwidthState: RelayBandwidthState = {
+  totalBytesSent: DEFAULT_RELAY_BANDWIDTH.totalBytesSent,
+  totalBytesReceived: DEFAULT_RELAY_BANDWIDTH.totalBytesReceived,
+  updatedAt: DEFAULT_RELAY_BANDWIDTH.updatedAt,
+  relays: [],
+};
+let relayBandwidthFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function publishRelayBandwidth(): void {
+  relayBandwidthFlushTimer = null;
+  relayBandwidthState = {
+    totalBytesSent: relayBandwidthState.relays.reduce((sum, relay) => sum + relay.bytesSent, 0),
+    totalBytesReceived: relayBandwidthState.relays.reduce((sum, relay) => sum + relay.bytesReceived, 0),
+    updatedAt: Date.now(),
+    relays: relayBandwidthState.relays.map((relay) => ({ ...relay })),
+  };
+  transportUsageStore.syncRelayBandwidth(relayBandwidthState);
+}
+
+function scheduleRelayBandwidthPublish(): void {
+  if (relayBandwidthFlushTimer) return;
+  relayBandwidthFlushTimer = setTimeout(() => {
+    publishRelayBandwidth();
+  }, 500);
+}
+
+function relayPayloadBytes(payload: unknown): number {
+  if (typeof payload === 'string') {
+    return textEncoder.encode(payload).length;
+  }
+  if (payload instanceof ArrayBuffer) {
+    return payload.byteLength;
+  }
+  if (ArrayBuffer.isView(payload)) {
+    return payload.byteLength;
+  }
+  if (payload instanceof Blob) {
+    return payload.size;
+  }
+  return 0;
+}
+
+function trackRelayTraffic(relayUrl: string, direction: 'send' | 'recv', payload: unknown): void {
+  const bytes = relayPayloadBytes(payload);
+  if (bytes <= 0) return;
+
+  const normalizedUrl = normalizeRelayUrl(relayUrl);
+  const relays = relayBandwidthState.relays.slice();
+  const index = relays.findIndex((relay) => relay.url === normalizedUrl);
+  const current = index >= 0
+    ? { ...relays[index] }
+    : { url: normalizedUrl, bytesSent: 0, bytesReceived: 0 };
+
+  if (direction === 'send') {
+    current.bytesSent += bytes;
+  } else {
+    current.bytesReceived += bytes;
+  }
+
+  if (index >= 0) {
+    relays[index] = current;
+  } else {
+    relays.push(current);
+  }
+
+  relayBandwidthState = {
+    ...relayBandwidthState,
+    relays,
+  };
+  scheduleRelayBandwidthPublish();
+}
+
+function attachRelayBandwidthHooks(): void {
+  if (getNativeDaemonRelayUrl()) return;
+
+  for (const relay of ndk.pool.relays.values()) {
+    const connectivity = relay.connectivity as typeof relay.connectivity & {
+      __irisRelayBandwidthHooked?: boolean;
+    };
+    if (connectivity.__irisRelayBandwidthHooked) continue;
+    const previousNetDebug = connectivity.netDebug;
+    connectivity.netDebug = (payload, relayRef, direction) => {
+      previousNetDebug?.(payload, relayRef, direction);
+      if (direction === 'send' || direction === 'recv') {
+        trackRelayTraffic(relayRef.url, direction, payload);
+      }
+    };
+    connectivity.__irisRelayBandwidthHooked = true;
+  }
+}
 
 function normalizeRelayUrl(url: string): string {
   return url.trim().replace(/\/+$/, '');
@@ -89,6 +186,7 @@ export async function configureNdkRelays(relays: string[], timeoutMs = 5000): Pr
   }
 
   ndk.explicitRelayUrls = normalized;
+  attachRelayBandwidthHooks();
 
   if (normalized.length === 0) {
     return;
@@ -102,6 +200,7 @@ export async function configureNdkRelays(relays: string[], timeoutMs = 5000): Pr
   await Promise.race([connectPromise, timeoutPromise]).catch(() => {
     // Native startup should continue even if relays are slow or unreachable.
   });
+  attachRelayBandwidthHooks();
 }
 
 export function disconnectNdkRelays(): void {

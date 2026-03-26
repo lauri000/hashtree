@@ -19,6 +19,7 @@ describe('shared settings layout', () => {
     expect(settingsLayoutSource).toContain("if (path.startsWith('/settings/storage')) return 'storage';");
     expect(settingsLayoutSource).toContain("if (path.startsWith('/settings/app')) return 'app';");
     expect(settingsLayoutSource).toContain("return 'network'; // default");
+    expect(networkSettingsSource).toContain('<TransportUsageSettings embedded={true} />');
     expect(networkSettingsSource).toContain('<ServersSettings embedded={true} />');
     expect(networkSettingsSource).toContain('<P2PSettings embedded={true} />');
   });

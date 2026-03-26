@@ -31,12 +31,18 @@ describe('mesh stats helpers', () => {
           },
         ],
       },
+      relay: {
+        bytes_sent: 2048,
+        bytes_received: 4096,
+      },
     });
 
     expect(stats.enabled).toBe(true);
     expect(stats.totalBytesSent).toBe(512);
     expect(stats.totalBytesReceived).toBe(1024);
     expect(stats.transportCounts.bluetooth).toBe(1);
+    expect(stats.relayBytesSent).toBe(2048);
+    expect(stats.relayBytesReceived).toBe(4096);
     expect(stats.peers).toEqual([
       {
         id: 'daemon:bluetooth:npub-peer:session-a',
