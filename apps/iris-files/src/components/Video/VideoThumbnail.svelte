@@ -39,7 +39,7 @@
     progress?: number;
     /** Additional classes for the container */
     class?: string;
-    /** Size of fallback icon (default: text-4xl) */
+    /** Legacy placeholder sizing prop kept for compatibility */
     iconSize?: string;
   }
 
@@ -50,8 +50,7 @@
     imageCandidateStallTimeoutMs = IMAGE_CANDIDATE_STALL_TIMEOUT_MS,
     duration,
     progress = 0,
-    class: className = '',
-    iconSize = 'text-4xl'
+    class: className = ''
   }: Props = $props();
 
   let imageError = $state(false);
@@ -372,11 +371,7 @@
   {/if}
 
   {#if (!renderedSrc || imageError || !imageLoaded) && !capturedVideoFrameUrl}
-    <div class="absolute inset-0 bg-media-placeholder">
-      <div class="absolute inset-0 flex items-center justify-center">
-        <span class="i-lucide-video text-media-placeholder-icon {iconSize}"></span>
-      </div>
-    </div>
+    <div data-testid="media-placeholder" class="absolute inset-0 bg-media-placeholder"></div>
   {/if}
 
   <!-- Duration label - positioned above progress bar -->
