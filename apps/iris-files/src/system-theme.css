@@ -8,7 +8,7 @@
   --text-2: 85 85 85;
   --text-3: 153 153 153;
   --media-placeholder: 221 221 221;
-  --media-placeholder-icon: 26 26 26 / 0.16;
+  --media-placeholder-icon: 112 112 112;
   --yt-desc-hover: 236 228 203;
 }
 
@@ -22,7 +22,7 @@
     --text-2: 170 170 170;
     --text-3: 96 96 96;
     --media-placeholder: 0 0 0;
-    --media-placeholder-icon: 255 255 255 / 0.18;
+    --media-placeholder-icon: 136 136 136;
     --yt-desc-hover: 57 43 7;
   }
 }
