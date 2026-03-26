@@ -23,6 +23,7 @@ import type { NDKUserParams, ProfilePointer } from "../user/index.js";
 import { NDKUser } from "../user/index.js";
 import { isValidNip05 } from "../utils/validation.js";
 import { normalizeRelayUrl } from "../utils/normalize-url.js";
+import type { NDKAggregatedCountResult, NDKCountOptions } from "../count/index.js";
 import type { CashuPayCb, LnPayCb, NDKPaymentConfirmation, NDKZapSplit } from "../zapper/index.js";
 import type { NDKLnUrlData } from "../zapper/ln.js";
 import { setActiveUser } from "./active-user.js";
@@ -373,8 +374,6 @@ export class NDK extends EventEmitter<{
 
     public publishingFailureHandled = false;
 
-    public pools: NDKPool[] = [];
-
     /**
      * Transport plugins for alternative event distribution (worker, WebRTC, etc).
      * Plugins with onPublish/onSubscribe hooks intercept calls.
@@ -384,6 +383,8 @@ export class NDK extends EventEmitter<{
         onPublish?: (event: NDKEvent) => void | Promise<void>;
         onSubscribe?: (subscription: NDKSubscription, filters: NDKFilter[]) => void;
     }> = [];
+
+    public pools: NDKPool[] = [];
 
     /**
      * Default relay-auth policy that will be used when a relay requests authentication,
@@ -915,7 +916,7 @@ export class NDK extends EventEmitter<{
         }
 
         // Track subscription creation for guardrails
-        this.aiGuardrails?.subscription?.created(filterArray, finalOpts);
+        this.aiGuardrails?.subscription?.created(Array.isArray(filters) ? filters : [filters], finalOpts);
 
         const pool = subscription.pool; // Use the pool determined by the subscription options
 
@@ -1144,6 +1145,54 @@ export class NDK extends EventEmitter<{
             //     onEvent(ndkEvent)
             // });
         });
+    }
+
+    /**
+     * Count events matching the given filters using NIP-45.
+     *
+     * This method queries multiple relays and aggregates their COUNT responses.
+     * When relays return HyperLogLog (HLL) data, it uses the HLL algorithm to
+     * provide accurate cardinality estimation without double-counting events
+     * that appear on multiple relays.
+     *
+     * @param filters - The filters to count events for
+     * @param opts - Optional count options (timeout, custom id)
+     * @param relaySet - Optional relay set to use for the count request
+     * @returns An aggregated count result with the best estimate and per-relay results
+     *
+     * @example Basic count
+     * ```typescript
+     * const result = await ndk.count([{ kinds: [1], authors: [pubkey] }]);
+     * console.log(`Found approximately ${result.count} events`);
+     * ```
+     *
+     * @example Count with specific relays
+     * ```typescript
+     * const relaySet = NDKRelaySet.fromRelayUrls(['wss://relay1.com', 'wss://relay2.com'], ndk);
+     * const result = await ndk.count([{ kinds: [7], "#e": [eventId] }], {}, relaySet);
+     * console.log(`Approximately ${result.count} reactions`);
+     * ```
+     *
+     * @example Using HLL data for further analysis
+     * ```typescript
+     * const result = await ndk.count([{ kinds: [3] }]);
+     * if (result.mergedHll) {
+     *   console.log('HLL data available for further merging');
+     * }
+     * ```
+     */
+    public async count(
+        filters: NDKFilter | NDKFilter[],
+        opts: NDKCountOptions = {},
+        relaySet?: NDKRelaySet,
+    ): Promise<NDKAggregatedCountResult> {
+        const effectiveRelaySet = relaySet ?? NDKRelaySet.fromRelayUrls(
+            Array.from(this.pool.relays.keys()),
+            this,
+            false,
+        );
+
+        return effectiveRelaySet.count(filters, opts);
     }
 
     /**
