@@ -6,13 +6,26 @@
  * Updates local cache and notifies main thread of changes.
  */
 
-import { subscribe as ndkSubscribe, unsubscribe as ndkUnsubscribe } from './ndk';
-import { setCachedRoot } from './treeRootCache';
+import type { CID } from '@hashtree/core';
+import { SimplePool, type Event as NostrEvent } from 'nostr-tools';
+import { getNdk, subscribe as ndkSubscribe, unsubscribe as ndkUnsubscribe } from './ndk';
+import { getCachedRoot, setCachedRoot } from './treeRootCache';
 import type { SignedEvent, TreeVisibility } from './protocol';
 import { nip19 } from 'nostr-tools';
 
 // Active subscriptions by pubkey
 const activeSubscriptions = new Map<string, string>(); // pubkeyHex -> subId
+const inFlightRootResolutions = new Map<string, Promise<Uint8Array | null>>();
+
+const DEFAULT_TREE_ROOT_RELAYS = [
+  'wss://relay.damus.io',
+  'wss://relay.primal.net',
+  'wss://nos.lol',
+  'wss://relay.nostr.band',
+  'wss://relay.snort.social',
+  'wss://temp.iris.to',
+  'wss://offchain.pub',
+];
 
 // Callback to notify main thread
 let notifyCallback: ((npub: string, treeName: string, record: TreeRootRecord) => void) | null = null;
@@ -48,6 +61,54 @@ export interface ParsedTreeRootEvent {
   keyId?: string;
   selfEncryptedKey?: string;
   selfEncryptedLinkKey?: string;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  return Promise.race([
+    promise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+  ]);
+}
+
+function getHistoryRelayUrls(): string[] {
+  const urls = new Set<string>(DEFAULT_TREE_ROOT_RELAYS);
+  const ndk = getNdk();
+  const connected = typeof ndk?.pool?.connectedRelays === 'function'
+    ? Array.from(ndk.pool.connectedRelays()).map((relay) => relay.url)
+    : [];
+  for (const url of connected) {
+    urls.add(url);
+  }
+  if (typeof ndk?.pool?.urls === 'function') {
+    for (const url of ndk.pool.urls()) {
+      urls.add(url);
+    }
+  }
+  return Array.from(urls);
+}
+
+function toSignedEvent(event: NostrEvent): SignedEvent {
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    kind: event.kind,
+    content: event.content,
+    tags: event.tags,
+    created_at: event.created_at,
+    sig: event.sig,
+  };
+}
+
+function uniqueEvents(events: SignedEvent[]): SignedEvent[] {
+  const seen = new Set<string>();
+  const result: SignedEvent[] = [];
+  for (const event of events) {
+    const eventKey = event.id || `${event.created_at}:${event.pubkey}:${event.tags.find((tag) => tag[0] === 'd')?.[1] ?? ''}`;
+    if (seen.has(eventKey)) continue;
+    seen.add(eventKey);
+    result.push(event);
+  }
+  return result;
 }
 
 function parseLabels(event: SignedEvent): string[] | undefined {
@@ -127,6 +188,142 @@ export function parseTreeRootEvent(event: SignedEvent): ParsedTreeRootEvent | nu
     selfEncryptedKey,
     selfEncryptedLinkKey,
   };
+}
+
+async function fetchTreeRootEventFromNdk(
+  pubkeyHex: string,
+  treeName: string,
+  timeoutMs: number
+): Promise<SignedEvent | null> {
+  const ndk = getNdk();
+  if (!ndk) return null;
+
+  try {
+    const events = await withTimeout(
+      ndk.fetchEvents({
+        kinds: [30078],
+        authors: [pubkeyHex],
+        '#d': [treeName],
+        limit: 4,
+      }),
+      timeoutMs,
+    );
+    if (!events) return null;
+    const latest = uniqueEvents(Array.from(events).map((event) => toSignedEvent(event.rawEvent?.() ?? event)))
+      .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))[0];
+    return latest ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchTreeRootEventFromRelays(
+  pubkeyHex: string,
+  treeName: string,
+  timeoutMs: number
+): Promise<SignedEvent | null> {
+  const relayUrls = getHistoryRelayUrls();
+  if (relayUrls.length === 0) return null;
+
+  const pool = new SimplePool();
+  try {
+    const events = await withTimeout(
+      pool.querySync(relayUrls, {
+        kinds: [30078],
+        authors: [pubkeyHex],
+        '#d': [treeName],
+        limit: 4,
+      }, {
+        maxWait: timeoutMs,
+      }),
+      timeoutMs + 500,
+    );
+    if (!events) return null;
+    const latest = uniqueEvents(Array.from(events).map((event) => toSignedEvent(event)))
+      .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))[0];
+    return latest ?? null;
+  } catch {
+    return null;
+  } finally {
+    try {
+      pool.close(relayUrls);
+    } catch {}
+    try {
+      pool.destroy();
+    } catch {}
+  }
+}
+
+export async function resolveTreeRootNow(
+  npub: string,
+  treeName: string,
+  timeoutMs: number = 8000,
+): Promise<CID | null> {
+  const cached = await getCachedRoot(npub, treeName);
+  if (cached) {
+    return cached;
+  }
+
+  const cacheKey = `${npub}/${treeName}`;
+  const inFlight = inFlightRootResolutions.get(cacheKey);
+  if (inFlight) {
+    return await inFlight;
+  }
+
+  const lookup = (async (): Promise<CID | null> => {
+    let pubkeyHex: string;
+    try {
+      const decoded = nip19.decode(npub);
+      if (decoded.type !== 'npub') return null;
+      pubkeyHex = decoded.data as string;
+    } catch {
+      return null;
+    }
+
+    const fetched = await fetchTreeRootEventFromNdk(pubkeyHex, treeName, timeoutMs)
+      ?? await fetchTreeRootEventFromRelays(pubkeyHex, treeName, timeoutMs);
+    if (!fetched) {
+      return null;
+    }
+
+    const parsed = parseTreeRootEvent(fetched);
+    if (!parsed) {
+      return null;
+    }
+
+    const hash = hexToBytes(parsed.hash);
+    const key = parsed.key ? hexToBytes(parsed.key) : undefined;
+    await setCachedRoot(npub, treeName, { hash, key }, parsed.visibility, {
+      labels: parsed.labels,
+      encryptedKey: parsed.encryptedKey,
+      keyId: parsed.keyId,
+      selfEncryptedKey: parsed.selfEncryptedKey,
+      selfEncryptedLinkKey: parsed.selfEncryptedLinkKey,
+    });
+
+    if (notifyCallback) {
+      notifyCallback(npub, treeName, {
+        hash,
+        key,
+        visibility: parsed.visibility,
+        labels: parsed.labels,
+        updatedAt: fetched.created_at,
+        encryptedKey: parsed.encryptedKey,
+        keyId: parsed.keyId,
+        selfEncryptedKey: parsed.selfEncryptedKey,
+        selfEncryptedLinkKey: parsed.selfEncryptedLinkKey,
+      });
+    }
+
+    return { hash, key };
+  })();
+
+  inFlightRootResolutions.set(cacheKey, lookup);
+  try {
+    return await lookup;
+  } finally {
+    inFlightRootResolutions.delete(cacheKey);
+  }
 }
 
 /**

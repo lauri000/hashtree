@@ -193,11 +193,12 @@ export async function getFeedVideoResolvedMedia(video: FeedVideo): Promise<Parti
   }) ?? latestRootCid;
 
   const cached = getCachedPlaylistInfo(video.ownerNpub, video.treeName);
-  const info = cached !== undefined && !shouldRefreshPlaylistCardInfo(cached)
+  const playbackInfo = cached !== undefined && !shouldRefreshPlaylistCardInfo(cached)
     ? cached
     : await detectPlaylistForCard(rootCid, video.ownerNpub, video.treeName);
-  const playbackRootCid = info?.rootCid ?? rootCid;
-  let thumbnailUrl = info?.thumbnailUrl;
+  const playbackRootCid = playbackInfo?.rootCid ?? rootCid;
+  let thumbnailInfo: Partial<FeedVideo> | null = null;
+  let thumbnailUrl = playbackInfo?.thumbnailUrl;
 
   if (!thumbnailUrl || isThumbnailAliasUrl(thumbnailUrl)) {
     const thumbnailRootCid = await resolveReadableThumbnailRoot({
@@ -209,7 +210,7 @@ export async function getFeedVideoResolvedMedia(video: FeedVideo): Promise<Parti
     }) ?? playbackRootCid;
 
     if (!sameCid(thumbnailRootCid, playbackRootCid)) {
-      const thumbnailInfo = await detectPlaylistForCard(thumbnailRootCid, video.ownerNpub, video.treeName, {
+      thumbnailInfo = await detectPlaylistForCard(thumbnailRootCid, video.ownerNpub, video.treeName, {
         cacheScope: 'root',
       });
       thumbnailUrl = thumbnailInfo?.thumbnailUrl;
@@ -220,7 +221,9 @@ export async function getFeedVideoResolvedMedia(video: FeedVideo): Promise<Parti
   if (!sameCid(rootCid, video.rootCid)) {
     resolved.rootCid = rootCid;
   }
-  if (!info) return Object.keys(resolved).length > 0 ? resolved : null;
+  if (!playbackInfo && !thumbnailInfo) {
+    return Object.keys(resolved).length > 0 ? resolved : null;
+  }
 
   const resolvedRootCid = playbackRootCid;
   if (!sameCid(resolvedRootCid, resolved.rootCid ?? video.rootCid)) {
@@ -229,14 +232,14 @@ export async function getFeedVideoResolvedMedia(video: FeedVideo): Promise<Parti
   if (thumbnailUrl) {
     resolved.thumbnailUrl = thumbnailUrl;
   }
-  if (info.videoPath) {
-    resolved.videoPath = info.videoPath;
+  if (playbackInfo?.videoPath) {
+    resolved.videoPath = playbackInfo.videoPath;
   }
-  if (typeof info.duration === 'number') {
-    resolved.duration = info.duration;
+  if (typeof playbackInfo?.duration === 'number') {
+    resolved.duration = playbackInfo.duration;
   }
-  if (typeof info.title === 'string' && info.title) {
-    resolved.title = info.title;
+  if (typeof playbackInfo?.title === 'string' && playbackInfo.title) {
+    resolved.title = playbackInfo.title;
   }
 
   return Object.keys(resolved).length > 0 ? resolved : null;

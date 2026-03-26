@@ -9,7 +9,7 @@
 import type { HashTree, CID } from '@hashtree/core';
 import type { MediaRequestByCid, MediaRequestByPath, MediaResponse } from './protocol';
 import { getCachedRoot, onCachedRootUpdate } from './treeRootCache';
-import { subscribeToTreeRoots } from './treeRootSubscription';
+import { resolveTreeRootNow, subscribeToTreeRoots } from './treeRootSubscription';
 import { getErrorMessage } from './utils/errorMessage';
 import { nhashDecode, toHex } from '@hashtree/core';
 import { nip19 } from 'nostr-tools';
@@ -35,6 +35,28 @@ const PLAYABLE_MEDIA_EXTENSION_SET = new Set([
   '.oga',
   '.opus',
 ]);
+
+const MIME_TYPES: Record<string, string> = {
+  mp4: 'video/mp4',
+  m4v: 'video/mp4',
+  webm: 'video/webm',
+  ogg: 'video/ogg',
+  ogv: 'video/ogg',
+  mov: 'video/quicktime',
+  avi: 'video/x-msvideo',
+  mkv: 'video/x-matroska',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  flac: 'audio/flac',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  oga: 'audio/ogg',
+  opus: 'audio/ogg',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+};
 
 /**
  * SW FileRequest format (from service worker)
@@ -69,6 +91,7 @@ interface SwFileResponse {
 interface ResolvedRootEntry {
   cid: CID;
   size?: number;
+  path?: string;
 }
 
 interface ResolvedThumbnailLookup extends ResolvedRootEntry {
@@ -533,14 +556,23 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
       return;
     }
 
+    const effectivePath = resolvedEntry.path ?? path;
+    const effectiveMimeType = (
+      mimeType === 'application/octet-stream'
+      || isThumbnailAliasPath(path)
+      || isVideoAliasPath(path)
+    )
+      ? guessMimeTypeFromPath(effectivePath)
+      : mimeType;
+
     // Stream the content
     await streamSwResponse(requestId, resolvedEntry.cid, totalSize, {
       npub,
-      path,
+      path: effectivePath,
       start,
       end,
       rangeHeader,
-      mimeType,
+      mimeType: effectiveMimeType,
       download,
     });
   } catch (err) {
@@ -589,6 +621,11 @@ async function waitForCachedRoot(npub: string, treeName: string): Promise<CID | 
         finish(current);
       }
     });
+    void resolveTreeRootNow(npub, treeName, ROOT_WAIT_TIMEOUT_MS).then((resolved) => {
+      if (resolved) {
+        finish(resolved);
+      }
+    }).catch(() => {});
   }).finally(() => {
     inflightRootWaits.delete(cacheKey);
   });
@@ -631,9 +668,17 @@ async function resolveEntryWithinRoot(
 
       const resolvedThumbnail = await resolveThumbnailAliasEntry(rootCid, path);
       if (resolvedThumbnail) {
-        return { cid: resolvedThumbnail.cid, size: resolvedThumbnail.size };
+        return resolvedThumbnail;
       }
       if (isThumbnailAliasPath(path)) {
+        return null;
+      }
+
+      const resolvedPlayable = await resolvePlayableAliasEntry(rootCid, path);
+      if (resolvedPlayable) {
+        return resolvedPlayable;
+      }
+      if (isVideoAliasPath(path)) {
         return null;
       }
 
@@ -697,7 +742,7 @@ async function resolvePathFromDirectoryListings(
     }
 
     if (i === parts.length - 1) {
-      return { cid: entry.cid, size: entry.size };
+      return { cid: entry.cid, size: entry.size, path: parts.slice(0, i + 1).join('/') };
     }
 
     currentCid = entry.cid;
@@ -750,6 +795,67 @@ function hasImageBlobSignature(blob: Uint8Array): boolean {
   return false;
 }
 
+function readAscii(blob: Uint8Array, start: number, end: number): string {
+  return String.fromCharCode(...blob.slice(start, end));
+}
+
+function sniffPlayableMediaExtension(blob: Uint8Array): string | null {
+  if (!blob.length) return null;
+
+  if (blob.length >= 12 && readAscii(blob, 4, 8) === 'ftyp') {
+    const brand = readAscii(blob, 8, 12).toLowerCase();
+    if (brand.startsWith('m4a')) return '.m4a';
+    if (brand.startsWith('qt')) return '.mov';
+    return '.mp4';
+  }
+
+  if (
+    blob.length >= 4
+    && blob[0] === 0x1a
+    && blob[1] === 0x45
+    && blob[2] === 0xdf
+    && blob[3] === 0xa3
+  ) {
+    const lowerHeader = readAscii(blob, 0, Math.min(blob.length, 64)).toLowerCase();
+    return lowerHeader.includes('webm') ? '.webm' : '.mkv';
+  }
+
+  if (blob.length >= 4 && readAscii(blob, 0, 4) === 'OggS') {
+    return '.ogg';
+  }
+
+  if (blob.length >= 4 && readAscii(blob, 0, 4) === 'fLaC') {
+    return '.flac';
+  }
+
+  if (
+    blob.length >= 12
+    && readAscii(blob, 0, 4) === 'RIFF'
+    && readAscii(blob, 8, 12) === 'WAVE'
+  ) {
+    return '.wav';
+  }
+
+  if (blob.length >= 3 && readAscii(blob, 0, 3) === 'ID3') {
+    return '.mp3';
+  }
+
+  if (blob.length >= 2 && blob[0] === 0xff && (blob[1] & 0xf6) === 0xf0) {
+    return '.aac';
+  }
+
+  if (blob.length >= 2 && blob[0] === 0xff && (blob[1] & 0xe0) === 0xe0) {
+    return '.mp3';
+  }
+
+  return null;
+}
+
+function guessMimeTypeFromPath(path: string | undefined): string {
+  const ext = path?.split('.').pop()?.toLowerCase() ?? '';
+  return MIME_TYPES[ext] || 'application/octet-stream';
+}
+
 async function canFallbackToRootBlob(
   rootCid: CID,
   resolvedPath: string,
@@ -786,9 +892,184 @@ function isThumbnailAliasPath(path: string): boolean {
   return path === 'thumbnail' || path.endsWith('/thumbnail');
 }
 
+function isVideoAliasPath(path: string): boolean {
+  return path === 'video' || path.endsWith('/video');
+}
+
 function isExactThumbnailFilenamePath(path: string): boolean {
   const fileName = path.split('/').filter(Boolean).at(-1)?.toLowerCase() ?? '';
   return fileName.startsWith('thumbnail.');
+}
+
+function isImageFileName(fileName: string): boolean {
+  const normalized = fileName.trim().toLowerCase();
+  return normalized.endsWith('.jpg')
+    || normalized.endsWith('.jpeg')
+    || normalized.endsWith('.png')
+    || normalized.endsWith('.webp');
+}
+
+function findThumbnailFileEntry(
+  entries: Array<{ name: string; cid?: CID; size?: number }>
+): { name: string; cid?: CID; size?: number } | null {
+  for (const pattern of THUMBNAIL_PATTERNS) {
+    const directMatch = entries.find((entry) => entry.name === pattern && entry.cid);
+    if (directMatch?.cid) {
+      return directMatch;
+    }
+  }
+
+  return entries.find((entry) => isImageFileName(entry.name) && entry.cid) ?? null;
+}
+
+function resolveEmbeddedThumbnailLookup(
+  value: unknown,
+  entries: Array<{ name: string; cid?: CID; size?: number }>,
+  dirPath: string,
+): ResolvedThumbnailLookup | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (trimmed.startsWith('nhash1')) {
+    try {
+      return {
+        path: dirPath ? `${dirPath}/thumbnail` : 'thumbnail',
+        cid: nhashDecode(trimmed),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  const normalized = trimmed
+    .split('?')[0]
+    ?.split('#')[0]
+    ?.split('/')
+    .filter(Boolean)
+    .at(-1);
+  if (!normalized) {
+    return null;
+  }
+
+  const entry = entries.find((candidate) => candidate.name === normalized && candidate.cid);
+  if (!entry?.cid) {
+    return null;
+  }
+
+  return {
+    path: dirPath ? `${dirPath}/${entry.name}` : entry.name,
+    cid: entry.cid,
+    size: entry.size,
+  };
+}
+
+async function resolveThumbnailLookupFromMetadata(
+  entries: Array<{ name: string; cid?: CID; size?: number; meta?: Record<string, unknown> }>,
+  dirPath: string,
+): Promise<ResolvedThumbnailLookup | null> {
+  if (!tree) {
+    return null;
+  }
+
+  const playableEntry = entries.find((entry) => isPlayableMediaFileName(entry.name));
+  const playableThumbnail = playableEntry?.meta && typeof playableEntry.meta.thumbnail === 'string'
+    ? playableEntry.meta.thumbnail
+    : null;
+  const embeddedPlayableThumbnail = resolveEmbeddedThumbnailLookup(playableThumbnail, entries, dirPath);
+  if (embeddedPlayableThumbnail) {
+    return embeddedPlayableThumbnail;
+  }
+
+  for (const metadataName of ['metadata.json', 'info.json']) {
+    const metadataEntry = entries.find((entry) => entry.name === metadataName && entry.cid);
+    if (!metadataEntry?.cid) {
+      continue;
+    }
+
+    try {
+      const metadataData = await tree.readFile(metadataEntry.cid);
+      if (!metadataData) {
+        continue;
+      }
+
+      const parsed = JSON.parse(new TextDecoder().decode(metadataData));
+      const embeddedThumbnail = resolveEmbeddedThumbnailLookup(parsed?.thumbnail, entries, dirPath);
+      if (embeddedThumbnail) {
+        return embeddedThumbnail;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+async function findThumbnailLookupInEntries(
+  entries: Array<{ name: string; cid?: CID; size?: number; meta?: Record<string, unknown> }>,
+  dirPath: string,
+): Promise<ResolvedThumbnailLookup | null> {
+  const directThumbnail = findThumbnailFileEntry(entries);
+  if (directThumbnail?.cid) {
+    return {
+      path: dirPath ? `${dirPath}/${directThumbnail.name}` : directThumbnail.name,
+      cid: directThumbnail.cid,
+      size: directThumbnail.size,
+    };
+  }
+
+  return await resolveThumbnailLookupFromMetadata(entries, dirPath);
+}
+
+async function detectDirectPlayableLookup(
+  cid: CID,
+  dirPath: string,
+): Promise<ResolvedRootEntry | null> {
+  if (!tree || typeof tree.readFileRange !== 'function') {
+    return null;
+  }
+
+  try {
+    const header = await tree.readFileRange(cid, 0, 64);
+    if (!(header instanceof Uint8Array) || header.length === 0) {
+      return null;
+    }
+
+    const extension = sniffPlayableMediaExtension(header);
+    if (!extension) {
+      return null;
+    }
+
+    const fileName = `video${extension}`;
+    return {
+      cid,
+      path: dirPath ? `${dirPath}/${fileName}` : fileName,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function findPlayableLookupInEntries(
+  entries: Array<{ name: string; cid?: CID; size?: number }>,
+  dirPath: string,
+): ResolvedRootEntry | null {
+  const playableEntry = entries.find((entry) => isPlayableMediaFileName(entry.name) && entry.cid);
+  if (!playableEntry?.cid) {
+    return null;
+  }
+
+  return {
+    cid: playableEntry.cid,
+    size: playableEntry.size,
+    path: dirPath ? `${dirPath}/${playableEntry.name}` : playableEntry.name,
+  };
 }
 
 async function normalizeAliasPath(rootCid: CID, path: string): Promise<string> {
@@ -796,6 +1077,10 @@ async function normalizeAliasPath(rootCid: CID, path: string): Promise<string> {
   const resolvedThumbnail = await resolveThumbnailAliasEntry(rootCid, path);
   if (resolvedThumbnail) {
     return resolvedThumbnail.path;
+  }
+  const resolvedPlayable = await resolvePlayableAliasEntry(rootCid, path);
+  if (resolvedPlayable?.path) {
+    return resolvedPlayable.path;
   }
   return path;
 }
@@ -817,6 +1102,7 @@ export const __test__ = {
   resolveCidWithinRoot,
   normalizeAliasPath,
   canListDirectory,
+  waitForCachedRoot,
 };
 
 async function resolveThumbnailAliasEntry(
@@ -831,6 +1117,20 @@ async function resolveThumbnailAliasEntry(
     ? path.slice(0, -'/thumbnail'.length)
     : '';
   return findThumbnailLookupInDir(rootCid, dirPath);
+}
+
+async function resolvePlayableAliasEntry(
+  rootCid: CID,
+  path: string
+): Promise<ResolvedRootEntry | null> {
+  if (!isVideoAliasPath(path)) {
+    return null;
+  }
+
+  const dirPath = path.endsWith('/video')
+    ? path.slice(0, -'/video'.length)
+    : '';
+  return findPlayableLookupInDir(rootCid, dirPath);
 }
 
 async function listDirectoryWithTimeout(cid: CID): Promise<Awaited<ReturnType<HashTree['listDirectory']>> | null> {
@@ -909,15 +1209,9 @@ async function findThumbnailLookupInDir(
         const entries = await listDirectoryWithTimeout(dirEntry.cid);
         if (!entries) return null;
 
-        for (const pattern of THUMBNAIL_PATTERNS) {
-          const directMatch = entries.find((entry) => entry.name === pattern && entry.cid);
-          if (directMatch?.cid) {
-            return {
-              path: dirPath ? `${dirPath}/${pattern}` : pattern,
-              cid: directMatch.cid,
-              size: directMatch.size,
-            };
-          }
+        const rootThumbnail = await findThumbnailLookupInEntries(entries, dirPath);
+        if (rootThumbnail) {
+          return rootThumbnail;
         }
 
         const hasPlayableMediaFile = entries.some((entry) => isPlayableMediaFileName(entry.name));
@@ -934,16 +1228,10 @@ async function findThumbnailLookupInDir(
                 continue;
               }
 
-              for (const pattern of THUMBNAIL_PATTERNS) {
-                const directMatch = subEntries.find((candidate) => candidate.name === pattern && candidate.cid);
-                if (directMatch?.cid) {
-                  const prefix = dirPath ? `${dirPath}/${entry.name}` : entry.name;
-                  return {
-                    path: `${prefix}/${pattern}`,
-                    cid: directMatch.cid,
-                    size: directMatch.size,
-                  };
-                }
+              const prefix = dirPath ? `${dirPath}/${entry.name}` : entry.name;
+              const nestedThumbnail = await findThumbnailLookupInEntries(subEntries, prefix);
+              if (nestedThumbnail) {
+                return nestedThumbnail;
               }
             } catch {
               continue;
@@ -952,6 +1240,61 @@ async function findThumbnailLookupInDir(
         }
 
         return null;
+      } catch {
+        return null;
+      }
+    },
+    (value) => getLookupTtlMs(value),
+  );
+}
+
+async function findPlayableLookupInDir(
+  rootCid: CID,
+  dirPath: string
+): Promise<ResolvedRootEntry | null> {
+  if (!tree) return null;
+
+  return loadCachedLookup(
+    resolvedEntryLookupCache,
+    `${cidCacheKey(rootCid)}|video|${dirPath}`,
+    async () => {
+      try {
+        const dirEntry = dirPath
+          ? await resolvePathFromDirectoryListings(rootCid, dirPath)
+          : { cid: rootCid, path: '' };
+        if (!dirEntry) return null;
+
+        const entries = await listDirectoryWithTimeout(dirEntry.cid);
+        if (entries && entries.length > 0) {
+          const directPlayable = findPlayableLookupInEntries(entries, dirPath);
+          if (directPlayable) {
+            return directPlayable;
+          }
+
+          const sortedEntries = [...entries].sort((a, b) => a.name.localeCompare(b.name));
+          for (const entry of sortedEntries.slice(0, 3)) {
+            if (entry.name.endsWith('.json') || entry.name.endsWith('.txt') || !entry.cid) {
+              continue;
+            }
+
+            const prefix = dirPath ? `${dirPath}/${entry.name}` : entry.name;
+            const subEntries = await listDirectoryWithTimeout(entry.cid);
+            if (!subEntries || subEntries.length === 0) {
+              const directPlayableChild = await detectDirectPlayableLookup(entry.cid, prefix);
+              if (directPlayableChild) {
+                return directPlayableChild;
+              }
+              continue;
+            }
+
+            const nestedPlayable = findPlayableLookupInEntries(subEntries, prefix);
+            if (nestedPlayable) {
+              return nestedPlayable;
+            }
+          }
+        }
+
+        return await detectDirectPlayableLookup(dirEntry.cid, dirPath);
       } catch {
         return null;
       }

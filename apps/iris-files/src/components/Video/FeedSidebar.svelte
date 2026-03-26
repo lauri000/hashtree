@@ -147,6 +147,8 @@
             src={thumbnailUrls[0] ?? null}
             fallbackImageUrls={thumbnailUrls.slice(1)}
             {fallbackVideoUrls}
+            fallbackTitle={video.title}
+            fallbackSeed={`${video.ownerNpub ?? ''}/${video.treeName ?? video.title}`}
             {imageCandidateStallTimeoutMs}
             {duration}
             {progress}

@@ -67,6 +67,13 @@ async function headOk(url) {
 }
 
 async function classifyTree(card) {
+  if (card.hasGeneratedPoster) {
+    return {
+      resolve: 'skipped_loaded',
+      source: 'dom_generated_poster',
+    };
+  }
+
   if (card.currentSrc && card.complete && (card.naturalWidth ?? 0) > 0) {
     const normalized = String(card.currentSrc);
     if (/\/htree\/nhash1[^/?]+\/thumbnail\.(jpg|jpeg|png|webp)(\?|$)/i.test(normalized)) {
@@ -217,6 +224,7 @@ try {
       const img = media?.querySelector('img') ?? null;
       const video = media?.querySelector('video') ?? null;
       const placeholder = !!media?.querySelector('.i-lucide-video');
+      const generatedPoster = !!media?.querySelector('[data-testid="generated-thumbnail-poster"]');
       const text = (anchor.textContent || '').trim().replace(/\s+/g, ' ');
       deduped.set(href, {
         href,
@@ -231,6 +239,7 @@ try {
         videoWidth: video?.videoWidth ?? null,
         videoHeight: video?.videoHeight ?? null,
         hasPlaceholder: placeholder,
+        hasGeneratedPoster: generatedPoster,
         hasMediaContainer: !!media,
       });
     }
@@ -244,6 +253,7 @@ try {
       ...card,
       ...(await classifyTree(card)),
       domStatus: (card.currentSrc && card.complete && (card.naturalWidth ?? 0) > 0)
+        || card.hasGeneratedPoster
         || (card.videoSrc && (card.videoReadyState ?? 0) >= 2 && (card.videoWidth ?? 0) > 0)
         ? 'loaded'
         : card.hasPlaceholder

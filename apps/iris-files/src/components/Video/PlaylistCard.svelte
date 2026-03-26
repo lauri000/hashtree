@@ -92,6 +92,9 @@
       <VideoThumbnail
         src={thumbnailUrls[0] ?? null}
         fallbackImageUrls={thumbnailUrls.slice(1)}
+        fallbackTitle={title}
+        fallbackSubtitle={`${videoCount} video${videoCount === 1 ? '' : 's'}`}
+        fallbackSeed={`${ownerNpub ?? ''}/${treeName ?? title}`}
         class="w-full h-full"
       />
 

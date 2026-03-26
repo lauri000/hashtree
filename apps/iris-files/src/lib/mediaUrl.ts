@@ -333,9 +333,11 @@ export function getStableVideoCandidateUrls(options: StableVideoCandidateUrlOpti
 
   if (options.videoPath) {
     addPath(options.videoPath);
+  } else {
+    addPath(options.videoId ? `${options.videoId}/video` : 'video');
   }
 
-  if (options.includeCommonFallbacks !== false) {
+  if (options.includeCommonFallbacks !== false && !options.videoPath) {
     const prefix = options.videoId ? `${options.videoId}/` : '';
     for (const fileName of COMMON_VIDEO_FILENAMES) {
       addPath(`${prefix}${fileName}`);
@@ -447,6 +449,21 @@ interface StableThumbnailUrlOptions {
   allowAliasFallback?: boolean;
 }
 
+function isAllowedExplicitThumbnailUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url, 'http://localhost');
+    if (parsed.protocol === 'data:' || parsed.protocol === 'blob:') {
+      return false;
+    }
+    if (parsed.protocol === 'htree:') {
+      return true;
+    }
+    return parsed.pathname.includes('/htree/');
+  } catch {
+    return url.includes('/htree/');
+  }
+}
+
 function appendImmutableThumbnailFileCandidates(
   urls: Set<string>,
   rootCid?: CID | null,
@@ -466,7 +483,10 @@ function appendImmutableThumbnailFileCandidates(
 
 export function getStableThumbnailCandidateUrls(options: StableThumbnailUrlOptions): string[] {
   const urls = new Set<string>();
-  const explicitThumbnailUrl = options.thumbnailUrl?.trim() || null;
+  const rawExplicitThumbnailUrl = options.thumbnailUrl?.trim() || null;
+  const explicitThumbnailUrl = rawExplicitThumbnailUrl && isAllowedExplicitThumbnailUrl(rawExplicitThumbnailUrl)
+    ? rawExplicitThumbnailUrl
+    : null;
   const explicitIsAlias = explicitThumbnailUrl ? isThumbnailAliasUrl(explicitThumbnailUrl) : false;
   const explicitImmutableAliasRootCid = explicitThumbnailUrl
     ? getImmutableThumbnailAliasRootCid(explicitThumbnailUrl)

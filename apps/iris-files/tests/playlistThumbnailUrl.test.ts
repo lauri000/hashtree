@@ -7,6 +7,7 @@ const readFileRange = vi.fn();
 const resolvePath = vi.fn();
 const ndkFetchEvents = vi.fn();
 const npubToPubkey = vi.fn();
+const resolveReadableVideoRoot = vi.fn();
 
 vi.mock('../src/store', () => ({
   getTree: () => ({
@@ -31,6 +32,14 @@ vi.mock('../src/nostr', () => ({
   },
   npubToPubkey,
 }));
+
+vi.mock('../src/lib/readableVideoRoot', async () => {
+  const actual = await vi.importActual<typeof import('../src/lib/readableVideoRoot')>('../src/lib/readableVideoRoot');
+  return {
+    ...actual,
+    resolveReadableVideoRoot,
+  };
+});
 
 function installWindow(): void {
   vi.stubGlobal('window', {
@@ -64,7 +73,7 @@ function sameHash(cid: CID, other: CID): boolean {
 }
 
 describe('detectPlaylistForCard thumbnail urls', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     listDirectory.mockReset();
     readFile.mockReset();
@@ -72,6 +81,9 @@ describe('detectPlaylistForCard thumbnail urls', () => {
     resolvePath.mockReset();
     ndkFetchEvents.mockReset();
     npubToPubkey.mockReset();
+    resolveReadableVideoRoot.mockReset();
+    const actual = await vi.importActual<typeof import('../src/lib/readableVideoRoot')>('../src/lib/readableVideoRoot');
+    resolveReadableVideoRoot.mockImplementation(actual.resolveReadableVideoRoot);
     npubToPubkey.mockReturnValue('f'.repeat(64));
     installWindow();
   });
@@ -301,6 +313,87 @@ describe('detectPlaylistForCard thumbnail urls', () => {
     expect(thumbnailInfo?.rootCid).toEqual(THUMBNAIL_ROOT);
     expect(thumbnailInfo?.thumbnailUrl).toBe(
       `/htree/${nhashEncode(THUMB_B)}/thumbnail.jpg?htree_c=test-media-client`,
+    );
+  });
+
+  it('keeps a caller-provided thumbnail root exact when cacheScope is root', async () => {
+    const THUMBNAIL_ROOT: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 41) };
+    resolveReadableVideoRoot.mockImplementation(async ({ rootCid }: { rootCid: CID }) => {
+      if (sameHash(rootCid, THUMBNAIL_ROOT)) {
+        return ROOT;
+      }
+      return rootCid;
+    });
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid, ROOT)) {
+        return [
+          { name: 'video.mp4', cid: VIDEO_DIR_A },
+        ];
+      }
+      if (sameHash(cid, THUMBNAIL_ROOT)) {
+        return [
+          { name: 'video.mp4', cid: VIDEO_DIR_A },
+          { name: 'thumbnail.jpg', cid: THUMB_B },
+        ];
+      }
+      return [];
+    });
+
+    const { detectPlaylistForCard } = await import('../src/stores/playlist');
+    const info = await detectPlaylistForCard(THUMBNAIL_ROOT, 'npub1example', 'videos/Remember this', {
+      cacheScope: 'root',
+    });
+
+    expect(info?.rootCid).toEqual(THUMBNAIL_ROOT);
+    expect(info?.thumbnailUrl).toBe(
+      `/htree/${nhashEncode(THUMB_B)}/thumbnail.jpg?htree_c=test-media-client`,
+    );
+  });
+
+  it('keeps a caller-provided thumbnail root exact for direct video card lookups', async () => {
+    const THUMBNAIL_ROOT: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 51) };
+    const THUMB_CHILD: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 61) };
+    resolveReadableVideoRoot.mockImplementation(async ({ rootCid }: { rootCid: CID }) => {
+      if (sameHash(rootCid, THUMBNAIL_ROOT)) {
+        return ROOT;
+      }
+      return rootCid;
+    });
+    resolvePath.mockImplementation(async (cid: CID, path: string) => {
+      if (sameHash(cid, THUMBNAIL_ROOT) && path === 'video_123') {
+        return { cid: THUMB_CHILD };
+      }
+      if (sameHash(cid, ROOT) && path === 'video_123') {
+        return { cid: VIDEO_DIR_A };
+      }
+      return null;
+    });
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid, THUMB_CHILD)) {
+        return [
+          { name: 'video.mp4', cid: VIDEO_DIR_A },
+          { name: 'thumbnail.webp', cid: THUMB_B },
+        ];
+      }
+      if (sameHash(cid, VIDEO_DIR_A)) {
+        return [
+          { name: 'video.mp4', cid: VIDEO_DIR_A },
+        ];
+      }
+      return [];
+    });
+
+    const { detectVideoCardInfo } = await import('../src/stores/playlist');
+    const info = await detectVideoCardInfo(
+      THUMBNAIL_ROOT,
+      'npub1example',
+      'videos/Music',
+      'video_123',
+      { exactRoot: true },
+    );
+
+    expect(info?.thumbnailUrl).toBe(
+      `/htree/${nhashEncode(THUMB_B)}/thumbnail.webp?htree_c=test-media-client`,
     );
   });
 

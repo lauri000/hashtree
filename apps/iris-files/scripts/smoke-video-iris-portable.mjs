@@ -87,6 +87,7 @@ async function main() {
         if (visible.length === 0) return false;
 
         return visible.every((thumb) => {
+          if (thumb.querySelector('[data-testid="generated-thumbnail-poster"]')) return true;
           if (thumb.querySelector('.i-lucide-video')) return true;
           const img = thumb.querySelector('img');
           return !!img && !!img.currentSrc && img.complete && img.naturalWidth > 0;

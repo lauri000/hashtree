@@ -221,6 +221,7 @@ export function getCachedPlaylistInfo(npub: string, treeName: string): PlaylistC
 
 export interface DetectPlaylistForCardOptions {
   cacheScope?: 'tree' | 'root';
+  exactRoot?: boolean;
 }
 
 /**
@@ -237,6 +238,7 @@ export async function detectPlaylistForCard(
   options: DetectPlaylistForCardOptions = {},
 ): Promise<PlaylistCardInfo | null> {
   const cacheScope = options.cacheScope ?? 'tree';
+  const exactRoot = options.exactRoot ?? cacheScope === 'root';
   const cacheKey = `${npub}/${treeName}`;
 
   if (cacheScope === 'tree') {
@@ -244,12 +246,14 @@ export async function detectPlaylistForCard(
     if (cached !== undefined) return cached;
   }
 
-  const effectiveRootCid = await resolveReadableVideoRoot({
-    rootCid,
-    npub,
-    treeName,
-    priority: 'background',
-  });
+  const effectiveRootCid = exactRoot
+    ? rootCid
+    : await resolveReadableVideoRoot({
+        rootCid,
+        npub,
+        treeName,
+        priority: 'background',
+      });
   if (!effectiveRootCid) {
     return null;
   }
@@ -501,20 +505,25 @@ export async function detectVideoCardInfo(
   rootCid: CID,
   npub: string,
   treeName: string,
-  videoId?: string
+  videoId?: string,
+  options: { exactRoot?: boolean } = {},
 ): Promise<PlaylistCardInfo | null> {
   if (!videoId) {
-    return detectPlaylistForCard(rootCid, npub, treeName);
+    return detectPlaylistForCard(rootCid, npub, treeName, {
+      exactRoot: options.exactRoot,
+    });
   }
 
   const tree = getTree();
-  const effectiveRootCid = await resolveReadableVideoRoot({
-    rootCid,
-    npub,
-    treeName,
-    videoId,
-    priority: 'background',
-  });
+  const effectiveRootCid = options.exactRoot
+    ? rootCid
+    : await resolveReadableVideoRoot({
+        rootCid,
+        npub,
+        treeName,
+        videoId,
+        priority: 'background',
+      });
   if (!effectiveRootCid) {
     return null;
   }

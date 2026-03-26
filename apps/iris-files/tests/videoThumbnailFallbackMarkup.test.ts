@@ -45,4 +45,13 @@ describe('video thumbnail fallback wiring', () => {
     expect(videoThumbnailSource).toContain('class:opacity-0={!imageLoaded}');
     expect(videoThumbnailSource).toContain('{#if (!renderedSrc || imageError || !imageLoaded) && !capturedVideoFrameUrl}');
   });
+
+  it('renders a deterministic local poster when no htree thumbnail or frame is available', () => {
+    expect(videoThumbnailSource).toContain('fallbackTitle?: string | null');
+    expect(videoThumbnailSource).toContain('fallbackSubtitle?: string | null');
+    expect(videoThumbnailSource).toContain('fallbackSeed?: string | null');
+    expect(videoThumbnailSource).toContain('getPosterPalette');
+    expect(videoThumbnailSource).toContain('generated-thumbnail-poster');
+    expect(videoThumbnailSource).toContain('data-testid="generated-thumbnail-poster"');
+  });
 });

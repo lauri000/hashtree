@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CID, HashTree } from '@hashtree/core';
+import { nhashEncode, type CID, type HashTree } from '@hashtree/core';
 import { __test__, initMediaHandler } from '../src/iris/mediaHandler';
 
 const ROOT: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i), key: undefined };
@@ -14,6 +14,7 @@ const KEYED_THUMB: CID = {
 const resolvePath = vi.fn();
 const listDirectory = vi.fn();
 const getBlob = vi.fn();
+const readFile = vi.fn();
 const readFileRange = vi.fn();
 
 function makeTree(): HashTree {
@@ -21,6 +22,7 @@ function makeTree(): HashTree {
     resolvePath,
     listDirectory,
     getBlob,
+    readFile,
     readFileRange,
   } as unknown as HashTree;
 }
@@ -30,6 +32,7 @@ describe('mediaHandler thumbnail aliases', () => {
     resolvePath.mockReset();
     listDirectory.mockReset();
     getBlob.mockReset();
+    readFile.mockReset();
     readFileRange.mockReset();
     initMediaHandler(makeTree());
   });
@@ -81,6 +84,36 @@ describe('mediaHandler thumbnail aliases', () => {
     await expect(
       __test__.resolveCidWithinRoot(ROOT, 'video_123/thumbnail.jpg', { allowSingleSegmentRootFallback: false })
     ).resolves.toBe(CHILD_THUMB);
+    expect(resolvePath).not.toHaveBeenCalled();
+  });
+
+  it('resolves a video alias to the root playable file from directory listings', async () => {
+    resolvePath.mockResolvedValue(null);
+    listDirectory.mockResolvedValue([{ name: 'clip.mkv', cid: ROOT_THUMB, size: 321 }]);
+
+    await expect(
+      __test__.resolveCidWithinRoot(ROOT, 'video', { allowSingleSegmentRootFallback: true })
+    ).resolves.toBe(ROOT_THUMB);
+    await expect(__test__.normalizeAliasPath(ROOT, 'video')).resolves.toBe('clip.mkv');
+    expect(resolvePath).not.toHaveBeenCalled();
+  });
+
+  it('resolves a nested video alias before looking up the file cid', async () => {
+    resolvePath.mockResolvedValue(null);
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (cid === ROOT) {
+        return [{ name: 'video_123', cid: CHILD_DIR, size: 0 }];
+      }
+      if (cid === CHILD_DIR) {
+        return [{ name: 'movie.mov', cid: CHILD_THUMB, size: 654 }];
+      }
+      return [];
+    });
+
+    await expect(
+      __test__.resolveCidWithinRoot(ROOT, 'video_123/video', { allowSingleSegmentRootFallback: false })
+    ).resolves.toBe(CHILD_THUMB);
+    await expect(__test__.normalizeAliasPath(ROOT, 'video_123/video')).resolves.toBe('video_123/movie.mov');
     expect(resolvePath).not.toHaveBeenCalled();
   });
 
@@ -165,6 +198,25 @@ describe('mediaHandler thumbnail aliases', () => {
     expect(resolvePath).not.toHaveBeenCalled();
   });
 
+  it('resolves a video alias to a direct playable root blob when the root is already the media file', async () => {
+    vi.useFakeTimers();
+    listDirectory.mockImplementation(() => new Promise(() => {}));
+    readFileRange.mockResolvedValue(Uint8Array.from([
+      0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d,
+    ]));
+
+    const result = __test__.resolveCidWithinRoot(ROOT, 'video', {
+      allowSingleSegmentRootFallback: true,
+      expectedMimeType: 'video/mp4',
+    });
+
+    await vi.advanceTimersByTimeAsync(1100);
+
+    await expect(result).resolves.toBe(ROOT);
+    await expect(__test__.normalizeAliasPath(ROOT, 'video')).resolves.toBe('video.mp4');
+    expect(resolvePath).not.toHaveBeenCalled();
+  });
+
   it('waits for a local directory listing long enough to resolve an immutable thumbnail alias', async () => {
     vi.useFakeTimers();
     listDirectory.mockImplementation(
@@ -208,6 +260,49 @@ describe('mediaHandler thumbnail aliases', () => {
 
     await expect(first).resolves.toBe(ROOT_THUMB);
     await expect(second).resolves.toBe(ROOT_THUMB);
+  });
+
+  it('resolves a thumbnail alias from a playable file metadata nhash', async () => {
+    listDirectory.mockResolvedValue([
+      {
+        name: 'video.mp4',
+        cid: CHILD_DIR,
+        size: 987,
+        meta: {
+          thumbnail: nhashEncode(ROOT_THUMB),
+        },
+      },
+    ]);
+
+    await expect(
+      __test__.resolveCidWithinRoot(ROOT, 'thumbnail', { allowSingleSegmentRootFallback: true })
+    ).resolves.toEqual(ROOT_THUMB);
+  });
+
+  it('resolves a thumbnail alias from metadata.json thumbnail references', async () => {
+    listDirectory.mockResolvedValue([
+      { name: 'metadata.json', cid: CHILD_DIR, size: 20 },
+      { name: 'video.mp4', cid: KEYED_THUMB, size: 987 },
+    ]);
+    readFile.mockResolvedValue(new TextEncoder().encode(JSON.stringify({
+      thumbnail: nhashEncode(ROOT_THUMB),
+    })));
+
+    await expect(
+      __test__.resolveCidWithinRoot(ROOT, 'thumbnail', { allowSingleSegmentRootFallback: true })
+    ).resolves.toEqual(ROOT_THUMB);
+    expect(readFile).toHaveBeenCalledWith(CHILD_DIR);
+  });
+
+  it('resolves a thumbnail alias from a non-thumbnail image file in the directory', async () => {
+    listDirectory.mockResolvedValue([
+      { name: 'poster.webp', cid: ROOT_THUMB, size: 123 },
+      { name: 'video.mp4', cid: KEYED_THUMB, size: 987 },
+    ]);
+
+    await expect(
+      __test__.resolveCidWithinRoot(ROOT, 'thumbnail', { allowSingleSegmentRootFallback: true })
+    ).resolves.toBe(ROOT_THUMB);
   });
 
   it('clears immutable lookup caches when initialized with a new tree', async () => {

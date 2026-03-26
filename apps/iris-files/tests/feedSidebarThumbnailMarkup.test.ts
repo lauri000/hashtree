@@ -19,6 +19,11 @@ describe('feed sidebar thumbnail wiring', () => {
     expect(feedSidebarSource).toContain('includeCommonFallbacks: false');
   });
 
+  it('passes deterministic poster fallback props for unresolved sidebar media', () => {
+    expect(feedSidebarSource).toContain('fallbackTitle={video.title}');
+    expect(feedSidebarSource).toContain('fallbackSeed={`${video.ownerNpub ?? \'\'}/${video.treeName ?? video.title}`}');
+  });
+
   it('uses the shorter guessed-thumbnail stall timeout for unresolved sidebar cards', () => {
     expect(feedSidebarSource).toContain('@const imageCandidateStallTimeoutMs = video.thumbnailUrl ? 8000 : 2500');
     expect(feedSidebarSource).toContain('{imageCandidateStallTimeoutMs}');

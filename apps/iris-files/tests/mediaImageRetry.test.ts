@@ -7,9 +7,11 @@ import {
 } from '../src/lib/mediaImageRetry';
 
 describe('mediaImageRetry', () => {
-  it('only retries hashtree-backed image urls', () => {
-    expect(isRetryableMediaImageUrl('/htree/nhash1abc/thumbnail.jpg')).toBe(true);
-    expect(isRetryableMediaImageUrl('https://video.iris.to/htree/nhash1abc/thumbnail.jpg')).toBe(true);
+  it('only retries hashtree thumbnail aliases, not exact immutable file guesses', () => {
+    expect(isRetryableMediaImageUrl('/htree/nhash1abc/thumbnail')).toBe(true);
+    expect(isRetryableMediaImageUrl('https://video.iris.to/htree/npub1abc/videos%2FTest/thumbnail')).toBe(true);
+    expect(isRetryableMediaImageUrl('/htree/nhash1abc/thumbnail.jpg')).toBe(false);
+    expect(isRetryableMediaImageUrl('https://video.iris.to/htree/nhash1abc/thumbnail.jpg')).toBe(false);
     expect(isRetryableMediaImageUrl('https://example.com/thumb.jpg')).toBe(false);
     expect(isRetryableMediaImageUrl(null)).toBe(false);
   });

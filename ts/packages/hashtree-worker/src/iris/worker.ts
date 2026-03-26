@@ -13,7 +13,7 @@
 import { HashTree, BlossomStore, FallbackStore } from '@hashtree/core';
 import { DexieStore } from '@hashtree/dexie';
 import type { WorkerRequest, WorkerResponse, WorkerConfig, SignedEvent, WebRTCCommand, BlossomUploadProgress, BlossomServerStatus } from './protocol';
-import { initTreeRootCache, getCachedRoot, getCachedRootInfo, setCachedRoot, mergeCachedRootKey, clearMemoryCache } from './treeRootCache';
+import { initTreeRootCache, getCachedRootInfo, setCachedRoot, mergeCachedRootKey, clearMemoryCache } from './treeRootCache';
 import { handleTreeRootEvent, isTreeRootEvent, setNotifyCallback as setTreeRootNotifyCallback, subscribeToTreeRoots, unsubscribeFromTreeRoots } from './treeRootSubscription';
 import {
   initNdk,
@@ -58,6 +58,7 @@ class SocialGraphDB extends Dexie {
 
 const socialGraphDB = new SocialGraphDB();
 import { initMediaHandler, registerMediaPort } from './mediaHandler';
+import { resolveRootPath } from './rootPathResolver';
 import {
   initWebRTCSignaling,
   sendWebRTCSignaling,
@@ -1246,31 +1247,8 @@ async function handleListDir(id: string, cidArg: import('../types').CID) {
 
 async function handleResolveRoot(id: string, npub: string, path?: string) {
   try {
-    // Parse path to get tree name (first segment)
-    const pathParts = path?.split('/').filter(Boolean) ?? [];
-    const treeName = pathParts[0] || 'public'; // Default to 'public' tree
-
-    // Look up in cache
-    const cachedCid = await getCachedRoot(npub, treeName);
-    if (!cachedCid) {
-      // Not in cache - main thread should request tree root subscription
-      respond({ type: 'cid', id, cid: undefined });
-      return;
-    }
-
-    const subPath = pathParts.slice(1);
-    if (subPath.length === 0) {
-      respond({ type: 'cid', id, cid: cachedCid });
-      return;
-    }
-
-    if (!tree) {
-      respond({ type: 'cid', id, error: 'Tree not initialized' });
-      return;
-    }
-
-    const resolved = await tree.resolvePath(cachedCid, subPath);
-    respond({ type: 'cid', id, cid: resolved?.cid });
+    const resolved = await resolveRootPath(tree, npub, path);
+    respond({ type: 'cid', id, cid: resolved ?? undefined });
   } catch (err) {
     respond({ type: 'cid', id, error: getErrorMessage(err) });
   }

@@ -4,7 +4,8 @@ export const MAX_MEDIA_IMAGE_RETRIES = 2;
 
 export function isRetryableMediaImageUrl(url: string | null | undefined): boolean {
   if (!url) return false;
-  return url.includes('/htree/');
+  if (!url.includes('/htree/')) return false;
+  return /\/thumbnail(?:[?#]|$)/.test(url) && !/\/thumbnail\.[^/?#]+(?:[?#]|$)/.test(url);
 }
 
 export function appendMediaImageRetryParam(url: string, attempt: number): string {

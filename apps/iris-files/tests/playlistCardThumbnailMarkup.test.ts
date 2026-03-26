@@ -16,4 +16,10 @@ describe('playlist card thumbnail wiring', () => {
     expect(playlistCardSource).toContain('<VideoThumbnail');
     expect(playlistCardSource).toContain('fallbackImageUrls={thumbnailUrls.slice(1)}');
   });
+
+  it('passes deterministic poster fallback props for playlists without discoverable art', () => {
+    expect(playlistCardSource).toContain('fallbackTitle={title}');
+    expect(playlistCardSource).toContain('fallbackSubtitle={`${videoCount} video${videoCount === 1 ? \'\' : \'s\'}`}');
+    expect(playlistCardSource).toContain('fallbackSeed={`${ownerNpub ?? \'\'}/${treeName ?? title}`}');
+  });
 });

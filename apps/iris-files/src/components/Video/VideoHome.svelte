@@ -394,7 +394,13 @@
           priority: 'background',
         }) ?? mediaRootCid;
         if (!sameCid(thumbnailRootCid, mediaRootCid)) {
-          const thumbnailInfo = await detectVideoCardInfo(thumbnailRootCid, video.ownerNpub, video.treeName, video.videoId);
+          const thumbnailInfo = await detectVideoCardInfo(
+            thumbnailRootCid,
+            video.ownerNpub,
+            video.treeName,
+            video.videoId,
+            { exactRoot: true },
+          );
           thumbnailUrl = thumbnailInfo?.thumbnailUrl;
         }
       }

@@ -200,6 +200,37 @@ describe('getFeedVideoResolvedMedia', () => {
     expect(detectPlaylistForCard).toHaveBeenCalledWith(ROOT, 'npub1example', 'videos/Local Root');
   });
 
+  it('prefers the latest local tree root over a stale feed root cid', async () => {
+    const STALE_ROOT: CID = { hash: Uint8Array.from({ length: 32 }, () => 0xaa) };
+    getLocalRootCache.mockReturnValue(ROOT.hash);
+    getLocalRootKey.mockReturnValue(undefined);
+    getCachedPlaylistInfo.mockReturnValue(undefined);
+    detectPlaylistForCard.mockResolvedValue({
+      videoCount: 0,
+      thumbnailUrl: '/htree/nhash1current/thumbnail.jpg',
+      duration: 91,
+      title: 'Current root title',
+    });
+
+    const { getFeedVideoResolvedMedia } = await import('../src/stores/feedStore');
+    const video: FeedVideo = {
+      href: '#/npub1example/videos%2FCurrent%20Root',
+      title: 'Current Root',
+      ownerPubkey: 'pubkey',
+      ownerNpub: 'npub1example',
+      treeName: 'videos/Current Root',
+      rootCid: STALE_ROOT,
+    };
+
+    await expect(getFeedVideoResolvedMedia(video)).resolves.toEqual({
+      rootCid: ROOT,
+      thumbnailUrl: '/htree/nhash1current/thumbnail.jpg',
+      duration: 91,
+      title: 'Current root title',
+    });
+    expect(detectPlaylistForCard).toHaveBeenCalledWith(ROOT, 'npub1example', 'videos/Current Root');
+  });
+
   it('retries transient htree misses until exact feed media resolves', async () => {
     vi.useFakeTimers();
     getCachedPlaylistInfo.mockReturnValue(undefined);
@@ -288,6 +319,41 @@ describe('getFeedVideoResolvedMedia', () => {
       rootCid: FALLBACK_ROOT,
     });
     expect(detectPlaylistForCard).toHaveBeenCalledWith(FALLBACK_ROOT, 'npub1example', 'videos/Remember this');
+  });
+
+  it('keeps a resolved thumbnail from a historical thumbnail root even when current card info is empty', async () => {
+    const THUMBNAIL_ROOT: CID = { hash: Uint8Array.from({ length: 32 }, () => 0x45) };
+    getCachedPlaylistInfo.mockReturnValue(undefined);
+    resolveReadableThumbnailRoot.mockResolvedValue(THUMBNAIL_ROOT);
+    detectPlaylistForCard
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        videoCount: 0,
+        rootCid: THUMBNAIL_ROOT,
+        thumbnailUrl: '/htree/nhash1historic/thumbnail.jpg',
+      });
+
+    const { getFeedVideoResolvedMedia } = await import('../src/stores/feedStore');
+    const video: FeedVideo = {
+      href: '#/npub1example/videos%2FRemember%20this',
+      title: 'Remember this',
+      ownerPubkey: 'pubkey',
+      ownerNpub: 'npub1example',
+      treeName: 'videos/Remember this',
+      rootCid: ROOT,
+    };
+
+    await expect(getFeedVideoResolvedMedia(video)).resolves.toEqual({
+      thumbnailUrl: '/htree/nhash1historic/thumbnail.jpg',
+    });
+    expect(detectPlaylistForCard).toHaveBeenNthCalledWith(1, ROOT, 'npub1example', 'videos/Remember this');
+    expect(detectPlaylistForCard).toHaveBeenNthCalledWith(
+      2,
+      THUMBNAIL_ROOT,
+      'npub1example',
+      'videos/Remember this',
+      { cacheScope: 'root' },
+    );
   });
 
   it('backfills feed thumbnails from a historical thumbnail-rich root without changing playback root', async () => {

@@ -11,10 +11,15 @@ describe('video card thumbnail wiring', () => {
     expect(videoCardSource).toContain('fallbackImageUrls={thumbnailUrls.slice(1)}');
   });
 
-  it('passes exact video fallback candidates to the thumbnail component', () => {
+  it('passes exact or alias-backed video fallback candidates without guessing common filenames in the feed grid', () => {
     expect(videoCardSource).toContain('getStableVideoCandidateUrls');
     expect(videoCardSource).toContain('includeCommonFallbacks: false');
     expect(videoCardSource).toContain('fallbackVideoUrls={thumbnailVideoUrls}');
+  });
+
+  it('passes a deterministic poster fallback so cards without media thumbnails still render a visual tile', () => {
+    expect(videoCardSource).toContain('fallbackTitle={title}');
+    expect(videoCardSource).toContain('fallbackSeed={`${ownerNpub ?? \'\'}/${treeName ?? title}`}');
   });
 
   it('uses a shorter stall timeout for guessed thumbnails than for explicit resolved thumbnails', () => {
