@@ -4,8 +4,15 @@ import { SimplePool } from 'nostr-tools';
 import { npubToPubkey, ndk } from '../nostr';
 import { getTree } from '../store';
 import { logHtreeDebug } from './htreeDebug';
-import { findPlayableMediaEntry } from './playableMedia';
+import {
+  buildSyntheticPlayableMediaFileName,
+  findPlayableMediaEntry,
+  isAudioMediaFileName,
+  isPlayableMediaFileName,
+  PREFERRED_PLAYABLE_MEDIA_FILENAMES,
+} from './playableMedia';
 import { readDirectPlayableMediaFileName } from './directPlayableRoot';
+import { getStablePathUrl } from './mediaUrl';
 
 const ROOT_READ_TIMEOUT_MS = 8000;
 const ROOT_HISTORY_FETCH_TIMEOUT_MS = 5000;
@@ -13,18 +20,23 @@ const MAX_ROOT_HISTORY_CANDIDATES = 20;
 const FALLBACK_CACHE_TTL_MS = 10000;
 const NO_FALLBACK_CACHE_TTL_MS = 10000;
 const ROOT_HISTORY_CACHE_TTL_MS = 30000;
+const EMPTY_ROOT_HISTORY_CACHE_TTL_MS = 1000;
+const PREFERRED_VIDEO_ROOT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_PLAYLIST_CHILD_PROBES = 12;
 const THUMBNAIL_PROBE_METADATA_TIMEOUT_MS = 2500;
 const THUMBNAIL_BLOB_PROBE_TIMEOUT_MS = 2500;
+const PREFERRED_VIDEO_ROOT_STORAGE_KEY = 'hashtree:preferredVideoRoots';
 const DEFAULT_HISTORY_RELAYS = [
   'wss://relay.damus.io',
+  'wss://offchain.pub',
   'wss://relay.primal.net',
   'wss://nos.lol',
   'wss://relay.nostr.band',
   'wss://relay.snort.social',
   'wss://temp.iris.to',
-  'wss://offchain.pub',
 ];
+const PRIORITY_HISTORY_RELAY_COUNT = 3;
+const MIN_DISTINCT_HISTORY_EVENTS = 2;
 
 const inFlightReadableRoots = new Map<string, Promise<CID | null>>();
 const inFlightThumbnailRoots = new Map<string, Promise<CID | null>>();
@@ -32,6 +44,8 @@ const inFlightRootHistoryEvents = new Map<string, Promise<NDKEvent[]>>();
 const readableRootCache = new Map<string, { cid: CID | null; expiresAt: number }>();
 const thumbnailRootCache = new Map<string, { cid: CID | null; expiresAt: number }>();
 const rootHistoryEventCache = new Map<string, { events: NDKEvent[]; expiresAt: number }>();
+const preferredVideoRootCache = new Map<string, { cid: CID; expiresAt: number }>();
+let preferredVideoRootCacheHydrated = false;
 const TIMEOUT = Symbol('timeout');
 
 function isHexPubkey(value: string | null | undefined): value is string {
@@ -58,6 +72,116 @@ function sameCid(a: CID | null | undefined, b: CID | null | undefined): boolean 
   if (!a || !b) return false;
   return toHex(a.hash) === toHex(b.hash)
     && ((a.key && b.key && toHex(a.key) === toHex(b.key)) || (!a.key && !b.key));
+}
+
+type VideoRootReadability = 'video' | 'audio' | 'unreadable' | 'timeout';
+
+interface VideoRootProfile {
+  kind: VideoRootReadability;
+  preference: number;
+  fileName?: string;
+  playableCount: number;
+}
+
+function readableKindFromFileName(fileName: string): VideoRootReadability {
+  return isAudioMediaFileName(fileName) ? 'audio' : 'video';
+}
+
+function isReadableVideoKind(kind: VideoRootReadability): boolean {
+  return kind === 'video' || kind === 'audio';
+}
+
+function getPlayableMediaPreference(fileName: string): number {
+  const normalized = fileName.trim().toLowerCase();
+  const preferredIndex = PREFERRED_PLAYABLE_MEDIA_FILENAMES.indexOf(
+    normalized as (typeof PREFERRED_PLAYABLE_MEDIA_FILENAMES)[number]
+  );
+  if (preferredIndex !== -1) {
+    return preferredIndex;
+  }
+  return PREFERRED_PLAYABLE_MEDIA_FILENAMES.length;
+}
+
+function createReadableProfile(fileName: string): VideoRootProfile {
+  return {
+    kind: readableKindFromFileName(fileName),
+    preference: getPlayableMediaPreference(fileName),
+    fileName,
+    playableCount: 1,
+  };
+}
+
+function createUnusableProfile(kind: 'unreadable' | 'timeout'): VideoRootProfile {
+  return {
+    kind,
+    preference: Number.POSITIVE_INFINITY,
+    playableCount: 0,
+  };
+}
+
+function isReadableVideoProfile(profile: VideoRootProfile): boolean {
+  return isReadableVideoKind(profile.kind);
+}
+
+function isBetterVideoProfile(candidate: VideoRootProfile, current: VideoRootProfile): boolean {
+  if (!isReadableVideoProfile(candidate)) {
+    return false;
+  }
+  if (!isReadableVideoProfile(current)) {
+    return true;
+  }
+  if (candidate.preference === current.preference && candidate.playableCount < current.playableCount) {
+    return true;
+  }
+  return candidate.preference < current.preference;
+}
+
+async function confirmFetchableVideoProfile(
+  rootCid: CID,
+  npub: string,
+  treeName: string,
+  profile: VideoRootProfile,
+  priority: 'foreground' | 'background',
+): Promise<VideoRootProfile> {
+  if (priority !== 'foreground' || !isReadableVideoProfile(profile) || !profile.fileName) {
+    return profile;
+  }
+  if (typeof window === 'undefined' || typeof fetch !== 'function') {
+    return profile;
+  }
+
+  const url = getStablePathUrl({
+    rootCid,
+    npub,
+    treeName,
+    path: profile.fileName,
+  });
+  if (!url) {
+    return profile;
+  }
+
+  try {
+    const response = await withTimeout(fetch(url, {
+      headers: { Range: 'bytes=0-1023' },
+      cache: 'no-store',
+    }), ROOT_HISTORY_FETCH_TIMEOUT_MS);
+    if (response === TIMEOUT) {
+      return createUnusableProfile('timeout');
+    }
+    if (!response.ok) {
+      return createUnusableProfile('unreadable');
+    }
+    const body = await withTimeout(response.arrayBuffer(), ROOT_HISTORY_FETCH_TIMEOUT_MS);
+    if (body === TIMEOUT) {
+      return createUnusableProfile('timeout');
+    }
+    if (!(body instanceof ArrayBuffer) || body.byteLength === 0) {
+      return createUnusableProfile('unreadable');
+    }
+    return profile;
+  } catch {
+    return createUnusableProfile('unreadable');
+  }
 }
 
 function parseTreeRootCid(event: NDKEvent): CID | null {
@@ -101,34 +225,135 @@ async function queryRawTreeRootEvents(pubkey: string, treeName: string): Promise
     return null;
   }
 
-  const pool = new SimplePool();
+  const fetchRelayEvents = async (relayUrl: string): Promise<NDKEvent[]> => {
+    const pool = new SimplePool();
+    try {
+      const relayEvents = await withTimeout(
+        pool.querySync([relayUrl], {
+          kinds: [30078],
+          authors: [pubkey],
+          '#d': [treeName],
+          limit: MAX_ROOT_HISTORY_CANDIDATES,
+        }, {
+          maxWait: ROOT_HISTORY_FETCH_TIMEOUT_MS,
+        }),
+        ROOT_HISTORY_FETCH_TIMEOUT_MS + 500,
+      );
+      return relayEvents === TIMEOUT ? [] : Array.from(relayEvents);
+    } catch {
+      return [];
+    } finally {
+      try {
+        pool.close([relayUrl]);
+      } catch {}
+      try {
+        pool.destroy();
+      } catch {}
+    }
+  };
+
   try {
-    const events = await withTimeout(
-      pool.querySync(relayUrls, {
-        kinds: [30078],
-        authors: [pubkey],
-        '#d': [treeName],
-        limit: MAX_ROOT_HISTORY_CANDIDATES,
-      }, {
-        maxWait: ROOT_HISTORY_FETCH_TIMEOUT_MS,
-      }),
-      ROOT_HISTORY_FETCH_TIMEOUT_MS + 500,
-    );
-    return events === TIMEOUT ? null : Array.from(events);
+    const prioritizedRelays = relayUrls.slice(0, PRIORITY_HISTORY_RELAY_COUNT);
+    const remainingRelays = relayUrls.slice(PRIORITY_HISTORY_RELAY_COUNT);
+    const mergedEvents: NDKEvent[] = [];
+
+    for (const relayUrl of prioritizedRelays) {
+      mergedEvents.push(...await fetchRelayEvents(relayUrl));
+      if (uniqueEvents(mergedEvents).length >= MIN_DISTINCT_HISTORY_EVENTS) {
+        return mergedEvents;
+      }
+    }
+
+    const results = await Promise.allSettled(remainingRelays.map(async (relayUrl) => {
+      try {
+        return await fetchRelayEvents(relayUrl);
+      } catch {
+        return [];
+      }
+    }));
+    mergedEvents.push(...results.flatMap((result) => (
+      result.status === 'fulfilled'
+        ? result.value
+        : []
+    )));
+    return mergedEvents;
   } catch {
     return null;
-  } finally {
-    try {
-      pool.close(relayUrls);
-    } catch {}
-    try {
-      pool.destroy();
-    } catch {}
   }
 }
 
 function getHistoryCacheKey(pubkey: string, treeName: string): string {
   return `${pubkey}/${treeName}`;
+}
+
+function getPreferredVideoRootKey(npub: string, treeName: string, videoId?: string): string {
+  return `${npub}/${treeName}/${videoId ?? ''}`;
+}
+
+function hydratePreferredVideoRootCache(): void {
+  if (preferredVideoRootCacheHydrated || typeof window === 'undefined') return;
+  preferredVideoRootCacheHydrated = true;
+  try {
+    const raw = window.localStorage.getItem(PREFERRED_VIDEO_ROOT_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Record<string, { hash: string; key?: string; expiresAt: number }>;
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!value?.hash || typeof value.expiresAt !== 'number' || value.expiresAt <= Date.now()) continue;
+      preferredVideoRootCache.set(key, {
+        cid: cid(fromHex(value.hash), value.key ? fromHex(value.key) : undefined),
+        expiresAt: value.expiresAt,
+      });
+    }
+  } catch {
+    preferredVideoRootCache.clear();
+  }
+}
+
+function persistPreferredVideoRootCache(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const data: Record<string, { hash: string; key?: string; expiresAt: number }> = {};
+    for (const [key, value] of preferredVideoRootCache.entries()) {
+      if (value.expiresAt <= Date.now()) continue;
+      data[key] = {
+        hash: toHex(value.cid.hash),
+        key: value.cid.key ? toHex(value.cid.key) : undefined,
+        expiresAt: value.expiresAt,
+      };
+    }
+    window.localStorage.setItem(PREFERRED_VIDEO_ROOT_STORAGE_KEY, JSON.stringify(data));
+  } catch {}
+}
+
+function getPreferredVideoRootFromCache(
+  npub: string,
+  treeName: string,
+  videoId?: string,
+): CID | null {
+  hydratePreferredVideoRootCache();
+  const cacheKey = getPreferredVideoRootKey(npub, treeName, videoId);
+  const cached = preferredVideoRootCache.get(cacheKey);
+  if (!cached) return null;
+  if (cached.expiresAt > Date.now()) {
+    return cached.cid;
+  }
+  preferredVideoRootCache.delete(cacheKey);
+  persistPreferredVideoRootCache();
+  return null;
+}
+
+function setPreferredVideoRootCache(
+  npub: string,
+  treeName: string,
+  videoId: string | undefined,
+  rootCid: CID,
+): void {
+  hydratePreferredVideoRootCache();
+  preferredVideoRootCache.set(getPreferredVideoRootKey(npub, treeName, videoId), {
+    cid: rootCid,
+    expiresAt: Date.now() + PREFERRED_VIDEO_ROOT_CACHE_TTL_MS,
+  });
+  persistPreferredVideoRootCache();
 }
 
 function normalizeHistoricalEvents(events: Iterable<NDKEvent> | null | undefined): NDKEvent[] {
@@ -180,7 +405,7 @@ async function getHistoricalRootEvents(pubkey: string, treeName: string): Promis
 
     rootHistoryEventCache.set(cacheKey, {
       events: merged,
-      expiresAt: Date.now() + ROOT_HISTORY_CACHE_TTL_MS,
+      expiresAt: Date.now() + (merged.length > 0 ? ROOT_HISTORY_CACHE_TTL_MS : EMPTY_ROOT_HISTORY_CACHE_TTL_MS),
     });
     return merged;
   })();
@@ -206,7 +431,74 @@ function uniqueEvents(events: NDKEvent[]): NDKEvent[] {
   return result;
 }
 
-async function isReadableVideoRoot(rootCid: CID, videoId?: string): Promise<'readable' | 'unreadable' | 'timeout'> {
+async function probePlayableEntryProfile(
+  tree: ReturnType<typeof getTree>,
+  entry: { name: string; cid?: CID },
+): Promise<VideoRootProfile> {
+  const fallbackProfile = createReadableProfile(entry.name);
+  if (!entry.cid) {
+    return fallbackProfile;
+  }
+
+  const bytes = await withTimeout(tree.readFileRange(entry.cid, 0, 64), ROOT_READ_TIMEOUT_MS);
+  if (bytes === TIMEOUT) {
+    return createUnusableProfile('timeout');
+  }
+  if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
+    return createUnusableProfile('unreadable');
+  }
+
+  const syntheticFileName = buildSyntheticPlayableMediaFileName(bytes);
+  return createReadableProfile(syntheticFileName ?? entry.name);
+}
+
+async function getDirectoryPlayableProfile(
+  tree: ReturnType<typeof getTree>,
+  entries: Array<{ name: string; cid?: CID }>,
+): Promise<VideoRootProfile> {
+  const playableEntries = entries
+    .filter((entry) => isPlayableMediaFileName(entry.name))
+    .sort((a, b) => getPlayableMediaPreference(a.name) - getPlayableMediaPreference(b.name));
+  if (playableEntries.length === 0) {
+    return createUnusableProfile('unreadable');
+  }
+
+  let sawTimeout = false;
+  for (const entry of playableEntries) {
+    const profile = await probePlayableEntryProfile(tree, entry);
+    if (profile.kind === 'timeout') {
+      sawTimeout = true;
+      continue;
+    }
+    if (isReadableVideoProfile(profile)) {
+      return {
+        ...profile,
+        playableCount: playableEntries.length,
+      };
+    }
+  }
+
+  return sawTimeout ? createUnusableProfile('timeout') : createUnusableProfile('unreadable');
+}
+
+function createDirectoryOnlyPlayableProfile(
+  entries: Array<{ name: string }>,
+): VideoRootProfile {
+  const playableEntries = entries
+    .filter((entry) => isPlayableMediaFileName(entry.name))
+    .sort((a, b) => getPlayableMediaPreference(a.name) - getPlayableMediaPreference(b.name));
+  if (playableEntries.length === 0) {
+    return createUnusableProfile('unreadable');
+  }
+  return {
+    kind: readableKindFromFileName(playableEntries[0].name),
+    preference: getPlayableMediaPreference(playableEntries[0].name),
+    fileName: playableEntries[0].name,
+    playableCount: playableEntries.length,
+  };
+}
+
+async function getReadableVideoRootProfile(rootCid: CID, videoId?: string): Promise<VideoRootProfile> {
   try {
     const tree = getTree();
     let targetCid = rootCid;
@@ -214,55 +506,124 @@ async function isReadableVideoRoot(rootCid: CID, videoId?: string): Promise<'rea
     if (videoId) {
       const resolved = await withTimeout(tree.resolvePath(rootCid, videoId), ROOT_READ_TIMEOUT_MS);
       if (resolved === TIMEOUT) {
-        return 'timeout';
+        return createUnusableProfile('timeout');
       }
       if (!resolved?.cid) {
-        return 'unreadable';
+        return createUnusableProfile('unreadable');
       }
       targetCid = resolved.cid;
     }
 
-    const entries = await withTimeout(tree.listDirectory(targetCid), ROOT_READ_TIMEOUT_MS);
-    const directFileName = await readDirectPlayableMediaFileName(tree, targetCid, ROOT_READ_TIMEOUT_MS);
+    const [entries, directFileName] = await Promise.all([
+      withTimeout(tree.listDirectory(targetCid), ROOT_READ_TIMEOUT_MS),
+      readDirectPlayableMediaFileName(tree, targetCid, ROOT_READ_TIMEOUT_MS),
+    ]);
     if (directFileName) {
-      return 'readable';
+      return createReadableProfile(directFileName);
     }
     if (entries === TIMEOUT) {
-      return 'timeout';
+      return createUnusableProfile('timeout');
     }
     if (!entries || entries.length === 0) {
-      return 'unreadable';
+      return createUnusableProfile('unreadable');
     }
 
-    if (findPlayableMediaEntry(entries)) {
-      return 'readable';
+    const playableProfile = await getDirectoryPlayableProfile(tree, entries);
+    if (isReadableVideoProfile(playableProfile)) {
+      return playableProfile;
     }
 
     // Valid playlist roots may not have media at the root, but they should still
     // contain at least one child directory with playable media.
     if (!videoId) {
+      let bestChildProfile = createUnusableProfile('unreadable');
+      let sawTimeout = false;
       const childCandidates = entries
         .filter((entry) => !!entry?.cid)
         .slice(0, MAX_PLAYLIST_CHILD_PROBES);
       for (const entry of childCandidates) {
-        const childEntries = await withTimeout(tree.listDirectory(entry.cid), ROOT_READ_TIMEOUT_MS);
-        if (childEntries === TIMEOUT) {
-          return 'timeout';
+        const [childEntries, childDirectFileName] = await Promise.all([
+          withTimeout(tree.listDirectory(entry.cid), ROOT_READ_TIMEOUT_MS),
+          readDirectPlayableMediaFileName(tree, entry.cid, ROOT_READ_TIMEOUT_MS),
+        ]);
+        let childProfile = createUnusableProfile('unreadable');
+        if (childDirectFileName) {
+          childProfile = createReadableProfile(childDirectFileName);
+        } else if (childEntries === TIMEOUT) {
+          sawTimeout = true;
+          childProfile = createUnusableProfile('timeout');
+        } else if (childEntries && childEntries.length > 0) {
+          childProfile = await getDirectoryPlayableProfile(tree, childEntries);
+          if (childProfile.kind === 'timeout') {
+            sawTimeout = true;
+          }
         }
-        if (childEntries && childEntries.length > 0 && findPlayableMediaEntry(childEntries)) {
-          return 'readable';
+        if (isBetterVideoProfile(childProfile, bestChildProfile)) {
+          bestChildProfile = childProfile;
+          if (bestChildProfile.preference === 0) {
+            return bestChildProfile;
+          }
         }
+      }
+      if (isReadableVideoProfile(bestChildProfile)) {
+        return bestChildProfile;
+      }
+      if (sawTimeout) {
+        return createUnusableProfile('timeout');
       }
     }
 
-    return 'unreadable';
+    return createUnusableProfile('unreadable');
   } catch {
-    return 'unreadable';
+    return createUnusableProfile('unreadable');
   }
 }
 
-function getCacheKey(rootCid: CID, npub: string, treeName: string, videoId?: string): string {
-  return `${npub}/${treeName}/${toHex(rootCid.hash)}:${rootCid.key ? toHex(rootCid.key) : ''}:${videoId ?? ''}`;
+async function getOptimisticReadableVideoRootProfile(rootCid: CID, videoId?: string): Promise<VideoRootProfile> {
+  try {
+    const tree = getTree();
+    let targetCid = rootCid;
+
+    if (videoId) {
+      const resolved = await withTimeout(tree.resolvePath(rootCid, videoId), ROOT_READ_TIMEOUT_MS);
+      if (resolved === TIMEOUT) {
+        return createUnusableProfile('timeout');
+      }
+      if (!resolved?.cid) {
+        return createUnusableProfile('unreadable');
+      }
+      targetCid = resolved.cid;
+    }
+
+    const [entries, directFileName] = await Promise.all([
+      withTimeout(tree.listDirectory(targetCid), ROOT_READ_TIMEOUT_MS),
+      readDirectPlayableMediaFileName(tree, targetCid, ROOT_READ_TIMEOUT_MS),
+    ]);
+    if (directFileName) {
+      return createReadableProfile(directFileName);
+    }
+    if (entries === TIMEOUT) {
+      return createUnusableProfile('timeout');
+    }
+    if (!entries || entries.length === 0) {
+      return createUnusableProfile('unreadable');
+    }
+    return createDirectoryOnlyPlayableProfile(entries);
+  } catch {
+    return createUnusableProfile('unreadable');
+  }
+}
+
+async function isReadableVideoRoot(rootCid: CID, videoId?: string): Promise<'readable' | 'unreadable' | 'timeout'> {
+  const profile = await getReadableVideoRootProfile(rootCid, videoId);
+  if (profile.kind === 'timeout') {
+    return 'timeout';
+  }
+  return isReadableVideoProfile(profile) ? 'readable' : 'unreadable';
+}
+
+function getCacheKey(rootCid: CID | null | undefined, npub: string, treeName: string, videoId?: string): string {
+  return `${npub}/${treeName}/${rootCid ? toHex(rootCid.hash) : 'no-root'}:${rootCid?.key ? toHex(rootCid.key) : ''}:${videoId ?? ''}`;
 }
 
 function getThumbnailCacheKey(rootCid: CID, npub: string, treeName: string, videoId?: string): string {
@@ -458,6 +819,66 @@ async function queryHistoricalRootCandidate(
   return null;
 }
 
+async function queryHistoricalPreferredVideoRoot(options: {
+  rootCid: CID | null | undefined;
+  npub: string;
+  treeName: string;
+  videoId?: string | null;
+  priority: 'foreground' | 'background';
+  currentProfile: VideoRootProfile;
+}): Promise<CID | null> {
+  const { rootCid, npub, treeName, videoId, priority, currentProfile } = options;
+  const pubkey = npubToPubkey(npub);
+  if (!isHexPubkey(pubkey)) {
+    return null;
+  }
+
+  logHtreeDebug('video-root:readable:probe-history', {
+    npub,
+    treeName,
+    videoId: videoId ?? null,
+    rootHash: rootCid ? toHex(rootCid.hash).slice(0, 8) : null,
+  });
+
+  const events = await getHistoricalRootEvents(pubkey, treeName);
+  if (events.length > 0) {
+    logHtreeDebug('video-root:readable:probe-history:merged', {
+      npub,
+      treeName,
+      videoId: videoId ?? null,
+      rootHash: rootCid ? toHex(rootCid.hash).slice(0, 8) : null,
+      events: events.length,
+      priority,
+    });
+  }
+
+  let bestCandidate: CID | null = null;
+  let bestProfile = currentProfile;
+  for (const event of events) {
+    const candidate = parseTreeRootCid(event);
+    if (!candidate || sameCid(candidate, rootCid)) {
+      continue;
+    }
+
+    const candidateProfile = await confirmFetchableVideoProfile(
+      candidate,
+      npub,
+      treeName,
+      await getReadableVideoRootProfile(candidate, videoId ?? undefined),
+      priority,
+    );
+    if (isBetterVideoProfile(candidateProfile, bestProfile)) {
+      bestCandidate = candidate;
+      bestProfile = candidateProfile;
+      if (bestProfile.preference === 0) {
+        break;
+      }
+    }
+  }
+
+  return bestCandidate;
+}
+
 export async function resolveReadableVideoRoot(options: {
   rootCid: CID | null | undefined;
   npub: string | null | undefined;
@@ -466,26 +887,75 @@ export async function resolveReadableVideoRoot(options: {
   priority?: 'foreground' | 'background';
 }): Promise<CID | null> {
   const { rootCid, npub, treeName, videoId, priority = 'background' } = options;
-  if (!rootCid || !npub || !treeName) {
+  if (!npub || !treeName) {
     return rootCid ?? null;
   }
 
-  const currentRootReadability = await isReadableVideoRoot(rootCid, videoId ?? undefined);
-  if (currentRootReadability === 'readable') {
+  const currentRootProfile = rootCid
+    ? await getReadableVideoRootProfile(rootCid, videoId ?? undefined)
+    : createUnusableProfile('unreadable');
+  const optimisticCurrentRootProfile = rootCid && currentRootProfile.kind === 'unreadable'
+    ? await getOptimisticReadableVideoRootProfile(rootCid, videoId ?? undefined)
+    : currentRootProfile;
+  if (
+    rootCid
+    && isReadableVideoProfile(optimisticCurrentRootProfile)
+    && optimisticCurrentRootProfile.preference === 0
+    && optimisticCurrentRootProfile.playableCount <= 1
+  ) {
     logHtreeDebug('video-root:current-readable', {
       npub,
       treeName,
       videoId: videoId ?? null,
       rootHash: toHex(rootCid.hash).slice(0, 8),
+      kind: optimisticCurrentRootProfile.kind,
+      preference: optimisticCurrentRootProfile.preference,
     });
+    setPreferredVideoRootCache(npub, treeName, videoId ?? undefined, rootCid);
     return rootCid;
   }
-  if (currentRootReadability === 'timeout') {
+  const confirmedCurrentRootProfile = rootCid
+    ? await confirmFetchableVideoProfile(
+        rootCid,
+        npub,
+        treeName,
+        optimisticCurrentRootProfile,
+        priority,
+      )
+    : currentRootProfile;
+  const preferredCachedRoot = getPreferredVideoRootFromCache(npub, treeName, videoId ?? undefined);
+  if (preferredCachedRoot && !sameCid(preferredCachedRoot, rootCid)) {
+    const preferredCachedProfile = await confirmFetchableVideoProfile(
+      preferredCachedRoot,
+      npub,
+      treeName,
+      await getReadableVideoRootProfile(preferredCachedRoot, videoId ?? undefined),
+      priority,
+    );
+    if (isBetterVideoProfile(preferredCachedProfile, confirmedCurrentRootProfile)) {
+      readableRootCache.set(getCacheKey(rootCid, npub, treeName, videoId ?? undefined), {
+        cid: preferredCachedRoot,
+        expiresAt: Date.now() + FALLBACK_CACHE_TTL_MS,
+      });
+      return preferredCachedRoot;
+    }
+  }
+  if (rootCid && confirmedCurrentRootProfile.kind === 'timeout') {
     logHtreeDebug('video-root:current-timeout', {
       npub,
       treeName,
       videoId: videoId ?? null,
       rootHash: toHex(rootCid.hash).slice(0, 8),
+    });
+  }
+  if (rootCid && isReadableVideoProfile(confirmedCurrentRootProfile)) {
+    logHtreeDebug('video-root:current-readable', {
+      npub,
+      treeName,
+      videoId: videoId ?? null,
+      rootHash: toHex(rootCid.hash).slice(0, 8),
+      kind: confirmedCurrentRootProfile.kind,
+      preference: confirmedCurrentRootProfile.preference,
     });
   }
 
@@ -503,23 +973,24 @@ export async function resolveReadableVideoRoot(options: {
     return (await existing) ?? rootCid;
   }
 
-  const lookup = queryHistoricalRootCandidate({
+  const lookup = queryHistoricalPreferredVideoRoot({
     rootCid,
     npub,
     treeName,
     videoId,
     priority,
-    logSuffix: 'readable',
-  }, async (candidate) => (await isReadableVideoRoot(candidate, videoId ?? undefined)) === 'readable')
+    currentProfile: confirmedCurrentRootProfile,
+  })
     .then((candidate) => {
       if (candidate) {
         logHtreeDebug('video-root:fallback', {
           npub,
           treeName,
           videoId: videoId ?? null,
-          fromHash: toHex(rootCid.hash).slice(0, 8),
+          fromHash: rootCid ? toHex(rootCid.hash).slice(0, 8) : null,
           toHash: toHex(candidate.hash).slice(0, 8),
         });
+        setPreferredVideoRootCache(npub, treeName, videoId ?? undefined, candidate);
         readableRootCache.set(cacheKey, {
           cid: candidate,
           expiresAt: Date.now() + FALLBACK_CACHE_TTL_MS,
@@ -542,7 +1013,11 @@ export async function resolveReadableVideoRoot(options: {
 
   inFlightReadableRoots.set(cacheKey, lookup);
   try {
-    return (await lookup) ?? rootCid;
+    const resolved = (await lookup) ?? rootCid;
+    if (resolved && sameCid(resolved, rootCid) && isReadableVideoProfile(confirmedCurrentRootProfile)) {
+      setPreferredVideoRootCache(npub, treeName, videoId ?? undefined, resolved);
+    }
+    return resolved;
   } finally {
     inFlightReadableRoots.delete(cacheKey);
   }

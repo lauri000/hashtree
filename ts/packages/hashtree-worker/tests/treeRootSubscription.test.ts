@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { MemoryStore, toHex } from '@hashtree/core';
+import { nip19 } from 'nostr-tools';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SignedEvent } from '../src/iris/protocol';
-import { parseTreeRootEvent } from '../src/iris/treeRootSubscription';
+import { clearMemoryCache, getCachedRootInfo, initTreeRootCache } from '../src/iris/treeRootCache';
+import { handleTreeRootEvent, parseTreeRootEvent, setNotifyCallback } from '../src/iris/treeRootSubscription';
 
 function buildEvent(overrides: Partial<SignedEvent>): SignedEvent {
   return {
@@ -14,6 +17,12 @@ function buildEvent(overrides: Partial<SignedEvent>): SignedEvent {
     ...overrides,
   };
 }
+
+beforeEach(() => {
+  clearMemoryCache();
+  initTreeRootCache(new MemoryStore());
+  setNotifyCallback(null as unknown as (npub: string, treeName: string, record: unknown) => void);
+});
 
 describe('parseTreeRootEvent', () => {
   it('parses hash and key from tags', () => {
@@ -90,5 +99,57 @@ describe('parseTreeRootEvent', () => {
 
     const parsed = parseTreeRootEvent(event);
     expect(parsed?.labels).toEqual(['hashtree', 'git']);
+  });
+});
+
+describe('handleTreeRootEvent', () => {
+  it('keeps the newer cached root when an older replaceable event arrives later', async () => {
+    const notify = vi.fn();
+    setNotifyCallback(notify);
+
+    const newerHash = '1'.repeat(64);
+    const olderHash = '2'.repeat(64);
+    const treeName = 'videos/Remember this';
+    const pubkey = 'a'.repeat(64);
+    const npub = nip19.npubEncode(pubkey);
+
+    await handleTreeRootEvent(buildEvent({
+      id: 'newer',
+      pubkey,
+      created_at: 200,
+      tags: [
+        ['d', treeName],
+        ['l', 'hashtree'],
+        ['hash', newerHash],
+      ],
+    }));
+
+    await handleTreeRootEvent(buildEvent({
+      id: 'older',
+      pubkey,
+      created_at: 100,
+      tags: [
+        ['d', treeName],
+        ['l', 'hashtree'],
+        ['hash', olderHash],
+      ],
+    }));
+
+    const cached = await getCachedRootInfo(
+      npub,
+      treeName,
+    );
+
+    expect(cached).toBeTruthy();
+    expect(toHex(cached!.hash)).toBe(newerHash);
+    expect(cached!.updatedAt).toBe(200);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenLastCalledWith(
+      npub,
+      treeName,
+      expect.objectContaining({
+        updatedAt: 200,
+      }),
+    );
   });
 });

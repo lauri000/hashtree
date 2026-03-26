@@ -29,6 +29,11 @@ interface CachedRoot {
   selfEncryptedLinkKey?: string; // For link-visible trees
 }
 
+export interface SetCachedRootResult {
+  applied: boolean;
+  record: CachedRoot;
+}
+
 // In-memory LRU cache for fast lookups (limited to 1000 entries to prevent memory leak)
 // Data is backed by persistent store so eviction is safe
 const memoryCache = new LRUCache<string, CachedRoot>(1000);
@@ -122,28 +127,37 @@ export async function setCachedRoot(
   cid: CID,
   visibility: TreeVisibility = 'public',
   options?: {
+    updatedAt?: number;
     labels?: string[];
     encryptedKey?: string;
     keyId?: string;
     selfEncryptedKey?: string;
     selfEncryptedLinkKey?: string;
   }
-): Promise<void> {
+): Promise<SetCachedRootResult> {
   const cacheKey = `${npub}/${treeName}`;
-  const now = Math.floor(Date.now() / 1000);
   const existing = await getCachedRootInfo(npub, treeName);
+  const updatedAt = options?.updatedAt ?? Math.floor(Date.now() / 1000);
+
+  if (existing && existing.updatedAt > updatedAt) {
+    return { applied: false, record: existing };
+  }
 
   const cached: CachedRoot = {
     hash: cid.hash,
     key: cid.key,
     visibility,
     labels: options?.labels ?? existing?.labels,
-    updatedAt: now,
+    updatedAt,
     encryptedKey: options?.encryptedKey,
     keyId: options?.keyId,
     selfEncryptedKey: options?.selfEncryptedKey,
     selfEncryptedLinkKey: options?.selfEncryptedLinkKey,
   };
+
+  if (existing && cachedRootEquals(existing, cached)) {
+    return { applied: false, record: existing };
+  }
 
   // Update memory cache
   memoryCache.set(cacheKey, cached);
@@ -155,6 +169,8 @@ export async function setCachedRoot(
     const data = encode(cached);
     await store.put(storageKey, new Uint8Array(data));
   }
+
+  return { applied: true, record: cached };
 }
 
 /**
@@ -271,4 +287,34 @@ function hashEquals(a: Uint8Array, b: Uint8Array): boolean {
     if (a[i] !== b[i]) return false;
   }
   return true;
+}
+
+function optionalHashEquals(a?: Uint8Array, b?: Uint8Array): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return hashEquals(a, b);
+}
+
+function labelsEqual(a?: string[], b?: string[]): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function cachedRootEquals(a: CachedRoot, b: CachedRoot): boolean {
+  return (
+    hashEquals(a.hash, b.hash) &&
+    optionalHashEquals(a.key, b.key) &&
+    a.visibility === b.visibility &&
+    labelsEqual(a.labels, b.labels) &&
+    a.updatedAt === b.updatedAt &&
+    a.encryptedKey === b.encryptedKey &&
+    a.keyId === b.keyId &&
+    a.selfEncryptedKey === b.selfEncryptedKey &&
+    a.selfEncryptedLinkKey === b.selfEncryptedLinkKey
+  );
 }

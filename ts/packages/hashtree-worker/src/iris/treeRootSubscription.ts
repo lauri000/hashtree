@@ -385,7 +385,8 @@ export async function resolveTreeRootNow(
 
     const hash = hexToBytes(parsed.hash);
     const key = parsed.key ? hexToBytes(parsed.key) : undefined;
-    await setCachedRoot(npub, treeName, { hash, key }, parsed.visibility, {
+    const { applied, record } = await setCachedRoot(npub, treeName, { hash, key }, parsed.visibility, {
+      updatedAt: fetched.created_at,
       labels: parsed.labels,
       encryptedKey: parsed.encryptedKey,
       keyId: parsed.keyId,
@@ -394,21 +395,21 @@ export async function resolveTreeRootNow(
     });
     historicalRootListCache.delete(cacheKey);
 
-    if (notifyCallback) {
+    if (notifyCallback && applied) {
       notifyCallback(npub, treeName, {
-        hash,
-        key,
-        visibility: parsed.visibility,
-        labels: parsed.labels,
-        updatedAt: fetched.created_at,
-        encryptedKey: parsed.encryptedKey,
-        keyId: parsed.keyId,
-        selfEncryptedKey: parsed.selfEncryptedKey,
-        selfEncryptedLinkKey: parsed.selfEncryptedLinkKey,
+        hash: record.hash,
+        key: record.key,
+        visibility: record.visibility,
+        labels: record.labels,
+        updatedAt: record.updatedAt,
+        encryptedKey: record.encryptedKey,
+        keyId: record.keyId,
+        selfEncryptedKey: record.selfEncryptedKey,
+        selfEncryptedLinkKey: record.selfEncryptedLinkKey,
       });
     }
 
-    return { hash, key };
+    return { hash: record.hash, key: record.key };
   })();
 
   inFlightRootResolutions.set(cacheKey, lookup);
@@ -491,27 +492,16 @@ export async function handleTreeRootEvent(event: SignedEvent): Promise<void> {
   const key = parsed.key ? hexToBytes(parsed.key) : undefined;
   const visibility: TreeVisibility = parsed.visibility || 'public';
 
-  // Build record
-  const record: TreeRootRecord = {
-    hash,
-    key,
-    visibility,
-    labels: parsed.labels,
-    updatedAt: event.created_at,
-    encryptedKey: parsed.encryptedKey,
-    keyId: parsed.keyId,
-    selfEncryptedKey: parsed.selfEncryptedKey,
-    selfEncryptedLinkKey: parsed.selfEncryptedLinkKey,
-  };
-
   // Update cache
-  await setCachedRoot(npub, treeName, { hash, key }, visibility, {
+  const { applied, record } = await setCachedRoot(npub, treeName, { hash, key }, visibility, {
+    updatedAt: event.created_at,
     labels: parsed.labels,
     encryptedKey: parsed.encryptedKey,
     keyId: parsed.keyId,
     selfEncryptedKey: parsed.selfEncryptedKey,
     selfEncryptedLinkKey: parsed.selfEncryptedLinkKey,
   });
+  if (!applied) return;
   historicalRootListCache.delete(`${npub}/${treeName}`);
 
   // Notify main thread

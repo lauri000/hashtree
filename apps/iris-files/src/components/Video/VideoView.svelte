@@ -972,23 +972,26 @@ async function syncTreeRootToWorker(
       void (async () => {
         try {
           const routeRootKey = getRouteRootKey(currentNpub, currentTreeName, currentVideoIdValue);
-          const fallbackRoot = await resolveFeedVideoRootCidAsync({
+          const fallbackSeedRoot = await resolveFeedVideoRootCidAsync({
             ownerNpub: currentNpub,
             treeName: currentTreeName,
-          }, 4000);
-          if (!fallbackRoot) return;
+          }, 12000);
+          if (!fallbackSeedRoot) return;
           if (!isActiveVideoLoad(loadedVideoKey, videoKey)) return;
-          setRouteRootOverride(routeRootKey, fallbackRoot, 'feed-fallback');
+          if (getRouteRootKey(npub, treeName, currentVideoId) !== routeRootKey || effectiveRouteRootCid) {
+            return;
+          }
+          setRouteRootOverride(routeRootKey, fallbackSeedRoot, 'feed-fallback-seed');
           updateSubscriptionCache(
             `${currentNpub}/${currentTreeName}`,
-            fallbackRoot.hash,
-            fallbackRoot.key,
+            fallbackSeedRoot.hash,
+            fallbackSeedRoot.key,
             { updatedAt: Math.floor(Date.now() / 1000) },
           );
           logVideoDebug('root:fallback-resolved', {
             npub: currentNpub,
             treeName: currentTreeName,
-            hash: toHex(fallbackRoot.hash).slice(0, 8),
+            hash: toHex(fallbackSeedRoot.hash).slice(0, 8),
           });
         } finally {
           if (pendingFallbackRootVideoKey === videoKey) {
@@ -1165,25 +1168,36 @@ async function syncTreeRootToWorker(
       return true;
     }
 
-    // For playlist videos, we need to first navigate to the video subdirectory
-    const effectiveRootCid = await resolveReadableVideoRoot({
-      rootCid: rootCidParam,
-      npub: capturedNpub,
-      treeName: capturedTreeName,
-      videoId: capturedIsPlaylistVideo ? capturedVideoId : undefined,
-      priority: 'foreground',
-    });
-    if (isStaleLoad('resolve-readable-root')) return;
-    if (effectiveRootCid && rootCidParam && toHex(effectiveRootCid.hash) !== toHex(rootCidParam.hash)) {
-      setRouteRootOverride(capturedRouteRootKey, effectiveRootCid, 'readable-fallback');
-      logVideoDebug('load:root-fallback', {
+    const readableRootPromise = capturedIsPlaylistVideo
+      ? null
+      : resolveReadableVideoRoot({
+          rootCid: rootCidParam,
+          npub: capturedNpub,
+          treeName: capturedTreeName,
+          videoId: capturedVideoId,
+          priority: 'foreground',
+        });
+    let effectiveRootCid = rootCidParam;
+    if (capturedIsPlaylistVideo) {
+      effectiveRootCid = await resolveReadableVideoRoot({
+        rootCid: rootCidParam,
         npub: capturedNpub,
         treeName: capturedTreeName,
         videoId: capturedVideoId,
-        fromHash: toHex(rootCidParam.hash).slice(0, 8),
-        toHash: toHex(effectiveRootCid.hash).slice(0, 8),
+        priority: 'foreground',
       });
-      syncResolvedRootCache(effectiveRootCid);
+      if (isStaleLoad('resolve-readable-root')) return;
+      if (effectiveRootCid && rootCidParam && toHex(effectiveRootCid.hash) !== toHex(rootCidParam.hash)) {
+        setRouteRootOverride(capturedRouteRootKey, effectiveRootCid, 'readable-fallback');
+        logVideoDebug('load:root-fallback', {
+          npub: capturedNpub,
+          treeName: capturedTreeName,
+          videoId: capturedVideoId,
+          fromHash: toHex(rootCidParam.hash).slice(0, 8),
+          toHash: toHex(effectiveRootCid.hash).slice(0, 8),
+        });
+        syncResolvedRootCache(effectiveRootCid);
+      }
     }
 
     let videoDirCid = effectiveRootCid ?? rootCidParam;
@@ -1304,58 +1318,84 @@ async function syncTreeRootToWorker(
       }
     }
 
-    if (isStaleLoad('set-video-folder')) return;
-    videoFolderCid = videoDirCid;
+    async function tryResolveCurrentVideoDir(): Promise<void> {
+      if (isStaleLoad('set-video-folder')) return;
+      videoFolderCid = videoDirCid;
 
-    // Prefer actual directory contents over guessed filenames to avoid slow sequential misses.
-    let videoDirEntries: Awaited<ReturnType<ReturnType<typeof getTree>['listDirectory']>> | null = null;
-    try {
-      const dir = await listDirectoryWithTimeout(tree, videoDirCid);
-      videoDirEntries = dir;
-      if (isStaleLoad('list-video-dir')) return;
-      logVideoDebug('list:result', {
-        treeName: capturedTreeName,
-        entryCount: dir?.length ?? 0,
-        entries: dir?.slice(0, 12).map((entry) => entry.name) ?? [],
-      });
-      const videoEntry = dir ? findPlayableMediaEntry(dir) : undefined;
-
-      if (videoEntry) {
-        await applyResolvedVideo(videoEntry.cid, videoEntry.name);
-      }
-    } catch {}
-
-    if (!resolvedVideo) {
-      const directMediaFileName = await readDirectPlayableMediaFileName(tree, videoDirCid, VIDEO_RESOLVE_TIMEOUT_MS);
-      if (isStaleLoad('probe-direct-root-media')) return;
-      if (directMediaFileName) {
-        logVideoDebug('resolve:direct-root-media', {
+      // Prefer actual directory contents over guessed filenames to avoid slow sequential misses.
+      let videoDirEntries: Awaited<ReturnType<ReturnType<typeof getTree>['listDirectory']>> | null = null;
+      try {
+        const dir = await listDirectoryWithTimeout(tree, videoDirCid);
+        videoDirEntries = dir;
+        if (isStaleLoad('list-video-dir')) return;
+        logVideoDebug('list:result', {
           treeName: capturedTreeName,
-          fileName: directMediaFileName,
+          entryCount: dir?.length ?? 0,
+          entries: dir?.slice(0, 12).map((entry) => entry.name) ?? [],
         });
-        await applyResolvedVideo(videoDirCid, directMediaFileName);
+        const videoEntry = dir ? findPlayableMediaEntry(dir) : undefined;
+
+        if (videoEntry) {
+          await applyResolvedVideo(videoEntry.cid, videoEntry.name);
+        }
+      } catch {}
+
+      if (!resolvedVideo) {
+        const directMediaFileName = await readDirectPlayableMediaFileName(tree, videoDirCid, VIDEO_RESOLVE_TIMEOUT_MS);
+        if (isStaleLoad('probe-direct-root-media')) return;
+        if (directMediaFileName) {
+          logVideoDebug('resolve:direct-root-media', {
+            treeName: capturedTreeName,
+            fileName: directMediaFileName,
+          });
+          await applyResolvedVideo(videoDirCid, directMediaFileName);
+        }
+      }
+
+      // If directory contents are incomplete or empty, probe canonical media filenames in parallel.
+      if (!resolvedVideo && (!videoDirEntries || videoDirEntries.length === 0 || !findPlayableMediaEntry(videoDirEntries))) {
+        const candidates = await Promise.all(
+          PREFERRED_PLAYABLE_MEDIA_FILENAMES.map(async (name) => ({
+            name,
+            result: await resolvePathWithTimeout(tree, videoDirCid, name),
+          }))
+        );
+        if (isStaleLoad('resolve-preferred-media')) return;
+        logVideoDebug('resolve:preferred-results', {
+          treeName: capturedTreeName,
+          results: candidates.map((candidate) => ({
+            name: candidate.name,
+            found: !!candidate.result,
+          })),
+        });
+        const match = candidates.find((candidate) => candidate.result);
+        if (match?.result) {
+          await applyResolvedVideo(match.result.cid, match.name);
+        }
       }
     }
 
-    // If directory contents are incomplete or empty, probe canonical media filenames in parallel.
-    if (!resolvedVideo && (!videoDirEntries || videoDirEntries.length === 0 || !findPlayableMediaEntry(videoDirEntries))) {
-      const candidates = await Promise.all(
-        PREFERRED_PLAYABLE_MEDIA_FILENAMES.map(async (name) => ({
-          name,
-          result: await resolvePathWithTimeout(tree, videoDirCid, name),
-        }))
-      );
-      if (isStaleLoad('resolve-preferred-media')) return;
-      logVideoDebug('resolve:preferred-results', {
-        treeName: capturedTreeName,
-        results: candidates.map((candidate) => ({
-          name: candidate.name,
-          found: !!candidate.result,
-        })),
-      });
-      const match = candidates.find((candidate) => candidate.result);
-      if (match?.result) {
-        await applyResolvedVideo(match.result.cid, match.name);
+    await tryResolveCurrentVideoDir();
+    if (isStaleLoad('initial-root-resolve')) return;
+
+    if (!resolvedVideo && !capturedIsPlaylistVideo && readableRootPromise) {
+      const readableRootCid = await readableRootPromise;
+      if (isStaleLoad('resolve-readable-root')) return;
+      if (readableRootCid && rootCidParam && toHex(readableRootCid.hash) !== toHex(rootCidParam.hash)) {
+        effectiveRootCid = readableRootCid;
+        videoDirCid = readableRootCid;
+        videoPathPrefix = '';
+        setRouteRootOverride(capturedRouteRootKey, readableRootCid, 'readable-fallback');
+        logVideoDebug('load:root-fallback', {
+          npub: capturedNpub,
+          treeName: capturedTreeName,
+          videoId: capturedVideoId,
+          fromHash: toHex(rootCidParam.hash).slice(0, 8),
+          toHash: toHex(readableRootCid.hash).slice(0, 8),
+        });
+        syncResolvedRootCache(readableRootCid);
+        await tryResolveCurrentVideoDir();
+        if (isStaleLoad('retry-readable-root')) return;
       }
     }
 

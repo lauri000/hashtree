@@ -165,6 +165,107 @@ describe('resolveReadableVideoRoot', () => {
     })).resolves.toEqual(FALLBACK);
   });
 
+  it('prefers a historical video root over a newer audio-only root', async () => {
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid, ROOT)) return [{ name: 'video.flac' }];
+      if (sameHash(cid, FALLBACK)) return [{ name: 'thumbnail.jpg' }, { name: 'video.mp4' }];
+      return [];
+    });
+    ndkFetchEvents.mockResolvedValue(new Set([
+      {
+        created_at: 20,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(ROOT.hash).toString('hex')]],
+      },
+      {
+        created_at: 10,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(FALLBACK.hash).toString('hex')]],
+      },
+    ]));
+
+    const { resolveReadableVideoRoot } = await import('../src/lib/readableVideoRoot');
+    await expect(resolveReadableVideoRoot({
+      rootCid: ROOT,
+      npub: 'npub1example',
+      treeName: 'videos/Test',
+    })).resolves.toEqual(FALLBACK);
+  });
+
+  it('prefers a historical mp4 root over a newer lower-priority video container', async () => {
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid, ROOT)) return [{ name: 'video.mkv' }];
+      if (sameHash(cid, FALLBACK)) return [{ name: 'thumbnail.jpg' }, { name: 'video.mp4' }];
+      return [];
+    });
+    ndkFetchEvents.mockResolvedValue(new Set([
+      {
+        created_at: 20,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(ROOT.hash).toString('hex')]],
+      },
+      {
+        created_at: 10,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(FALLBACK.hash).toString('hex')]],
+      },
+    ]));
+
+    const { resolveReadableVideoRoot } = await import('../src/lib/readableVideoRoot');
+    await expect(resolveReadableVideoRoot({
+      rootCid: ROOT,
+      npub: 'npub1example',
+      treeName: 'videos/Test',
+    })).resolves.toEqual(FALLBACK);
+  });
+
+  it('prefers a historical single-file mp4 root over a newer multi-format root with the same best filename', async () => {
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid, ROOT)) {
+        return [
+          { name: 'video.mp4' },
+          { name: 'video.mkv' },
+          { name: 'video.flac' },
+        ];
+      }
+      if (sameHash(cid, FALLBACK)) return [{ name: 'thumbnail.jpg' }, { name: 'video.mp4' }];
+      return [];
+    });
+    ndkFetchEvents.mockResolvedValue(new Set([
+      {
+        created_at: 20,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(ROOT.hash).toString('hex')]],
+      },
+      {
+        created_at: 10,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(FALLBACK.hash).toString('hex')]],
+      },
+    ]));
+
+    const { resolveReadableVideoRoot } = await import('../src/lib/readableVideoRoot');
+    await expect(resolveReadableVideoRoot({
+      rootCid: ROOT,
+      npub: 'npub1example',
+      treeName: 'videos/Test',
+    })).resolves.toEqual(FALLBACK);
+  });
+
+  it('can recover a historical readable root when no current root is available', async () => {
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid, FALLBACK)) return [{ name: 'thumbnail.jpg' }, { name: 'video.mp4' }];
+      return [];
+    });
+    ndkFetchEvents.mockResolvedValue(new Set([
+      {
+        created_at: 10,
+        tags: [['d', 'videos/Test'], ['hash', Buffer.from(FALLBACK.hash).toString('hex')]],
+      },
+    ]));
+
+    const { resolveReadableVideoRoot } = await import('../src/lib/readableVideoRoot');
+    await expect(resolveReadableVideoRoot({
+      rootCid: null,
+      npub: 'npub1example',
+      treeName: 'videos/Test',
+    })).resolves.toEqual(FALLBACK);
+  });
+
   it('falls back to the most recent readable prior root with thumbnail evidence when the current root is thumbnail-less', async () => {
     listDirectory.mockImplementation(async (cid: CID) => {
       if (sameHash(cid, ROOT)) return [{ name: 'video.mp4' }];
