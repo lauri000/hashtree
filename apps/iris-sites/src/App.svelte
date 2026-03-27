@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { resetShellFavicon, syncShellFaviconFromFrame } from './lib/faviconSync';
   import { parseLaunchInput } from './lib/launchInput';
+  import { classifyRuntimeUpdate } from './lib/runtimeUpdatePolicy';
   import { resolveHostedSite } from './lib/siteConfig';
   import { buildIsolatedSiteHref, buildLauncherHref, buildPermalinkHref, buildSourceHref, isPortalShellHost } from './lib/siteHost';
   import { getMediaClientKey, setupMediaStreaming } from './lib/mediaStreamingSetup';
@@ -67,11 +69,13 @@
   let updateAvailable = $state(false);
   let showBootStatus = $state(false);
   let iframeLoaded = $state(false);
+  let siteFrame = $state<HTMLIFrameElement | null>(null);
   let launchInput = $state('');
   let launchError = $state<string | null>(null);
   let launchPending = $state(false);
   let copyStatusTimeoutId = 0;
   let currentTreeRoot = $state<TreeRootInfo | null>(null);
+  let stopFaviconSync = () => {};
 
   function resolveCurrentSite() {
     if (typeof window === 'undefined') return null;
@@ -191,8 +195,16 @@
     window.location.reload();
   }
 
+  function stopFrameFaviconSync(): void {
+    stopFaviconSync();
+    stopFaviconSync = () => {};
+  }
+
   function handleFrameLoad(): void {
     iframeLoaded = true;
+    if (typeof document === 'undefined' || !siteFrame) return;
+    stopFrameFaviconSync();
+    stopFaviconSync = syncShellFaviconFromFrame(siteFrame, document);
   }
 
   async function launchFromInput(event: SubmitEvent): Promise<void> {
@@ -274,6 +286,10 @@
   });
 
   onMount(() => {
+    if (typeof document !== 'undefined') {
+      resetShellFavicon(document);
+    }
+
     const syncRoute = () => {
       const site = resolveCurrentSite();
       currentSite = site;
@@ -316,6 +332,10 @@
 
     return () => {
       window.removeEventListener('hashchange', syncRoute);
+      stopFrameFaviconSync();
+      if (typeof document !== 'undefined') {
+        resetShellFavicon(document);
+      }
     };
   });
 
@@ -335,15 +355,12 @@
       if (update.npub !== mutableSite.npub || update.treeName !== mutableSite.treeName) return;
 
       const nextSignature = treeRootSignature(update);
-      if (!currentSignature) {
-        currentSignature = nextSignature;
-        currentTreeRoot = update;
-        return;
-      }
-      if (nextSignature === currentSignature) return;
-
+      const action = classifyRuntimeUpdate(currentSignature, nextSignature, autoReloadEnabled);
       currentSignature = nextSignature;
-      if (autoReloadEnabled && typeof window !== 'undefined') {
+      currentTreeRoot = update;
+
+      if (action === 'bootstrap' || action === 'ignore') return;
+      if (action === 'reload' && typeof window !== 'undefined') {
         window.location.reload();
         return;
       }
@@ -378,6 +395,10 @@
   $effect(() => {
     void iframeSrc;
     iframeLoaded = false;
+    stopFrameFaviconSync();
+    if (typeof document !== 'undefined') {
+      resetShellFavicon(document);
+    }
   });
 
   $effect(() => {
@@ -486,6 +507,7 @@
   <main class="frame-screen">
     {#if iframeSrc}
       <iframe
+        bind:this={siteFrame}
         src={iframeSrc}
         class:site-frame-ready={iframeLoaded}
         class="site-frame"

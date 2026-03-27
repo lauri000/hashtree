@@ -31,8 +31,8 @@ describe('iris-sites build config', () => {
   it('declares the shared favicon in the launcher shell HTML', async () => {
     const html = await readFile(resolve(import.meta.dirname, '..', 'index.html'), 'utf8');
 
-    expect(html).toContain('<link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any" />');
-    expect(html).toContain('<link rel="shortcut icon" href="/favicon.svg" type="image/svg+xml" />');
+    expect(html).toContain('<link id="iris-sites-favicon" rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any" />');
+    expect(html).toContain('<link id="iris-sites-shortcut-icon" rel="shortcut icon" href="/favicon.svg" type="image/svg+xml" />');
     expect(html).toContain('<title>iris sites</title>');
     expect(html).toContain('background: #07070a;');
     expect(html).toContain('min-height: 100vh;');

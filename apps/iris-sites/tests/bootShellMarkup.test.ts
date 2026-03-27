@@ -30,8 +30,18 @@ describe('boot shell markup', () => {
 
   it('waits for the iframe to finish loading before revealing it', () => {
     expect(appSource).toContain('let iframeLoaded = $state(false);');
+    expect(appSource).toContain('let siteFrame = $state<HTMLIFrameElement | null>(null);');
+    expect(appSource).toContain('bind:this={siteFrame}');
     expect(appSource).toContain('onload={handleFrameLoad}');
     expect(appSource).toContain('class:site-frame-ready={iframeLoaded}');
     expect(appSource).toContain('opacity: 0;');
+  });
+
+  it('resets the shell favicon and only syncs it from the isolated iframe after load', () => {
+    expect(appSource).toContain("import { resetShellFavicon, syncShellFaviconFromFrame } from './lib/faviconSync';");
+    expect(appSource).toContain('let stopFaviconSync = () => {};');
+    expect(appSource).toContain('stopFrameFaviconSync();');
+    expect(appSource).toContain('stopFaviconSync = syncShellFaviconFromFrame(siteFrame, document);');
+    expect(appSource).toContain('resetShellFavicon(document);');
   });
 });
