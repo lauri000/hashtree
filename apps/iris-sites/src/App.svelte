@@ -391,7 +391,7 @@
 </script>
 
 <svelte:head>
-  <title>{currentSite ? `${currentSite.title} · Iris Sites` : 'Iris Sites'}</title>
+  <title>{currentSite ? `${currentSite.title} · iris sites` : 'iris sites'}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 </svelte:head>
 
@@ -547,7 +547,7 @@
       aria-expanded={runtimeMenuOpen}
       onclick={toggleRuntimeMenu}
     >
-      <span>Iris Sites</span>
+      <span>iris sites</span>
       {#if updateAvailable}
         <span class="runtime-menu-indicator"></span>
       {/if}

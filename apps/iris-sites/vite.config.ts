@@ -40,8 +40,8 @@ export default defineConfig({
         type: 'module',
       },
       manifest: {
-        name: 'Iris Sites',
-        short_name: 'Iris Sites',
+        name: 'iris sites',
+        short_name: 'iris sites',
         description: 'Isolated hashtree sites on the web',
         theme_color: '#0a0a0a',
         background_color: '#0a0a0a',

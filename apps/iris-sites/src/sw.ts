@@ -1,5 +1,5 @@
 /**
- * Iris Sites service worker
+ * iris sites service worker
  *
  * Handles /htree/{nhash}/{filename} requests by streaming bytes from the
  * shared hashtree worker via a registered MessagePort.
