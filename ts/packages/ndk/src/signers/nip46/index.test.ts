@@ -1,11 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { RelayMock, SignerGenerator, UserGenerator } from "../../../test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SignerGenerator, UserGenerator } from "../../../test";
 import type { NostrEvent } from "../../events/index";
 import type { NDK } from "../../ndk/index";
-import type { NDKSubscription } from "../../subscription/index";
 import { NDKUser } from "../../user/index";
 import type { NDKPrivateKeySigner } from "../private-key/index";
-import { NDKNip46Signer } from "./index";
+import { NDKNip46Signer, NDKNip46TimeoutError } from "./index";
 import type { NDKNostrRpc } from "./rpc";
 
 // Helper to create a mock NDK instance
@@ -16,6 +15,13 @@ function createMockNDK() {
         debug: debugMock,
         getUser: vi.fn((opts: { pubkey: string }) => new NDKUser({ pubkey: opts.pubkey })),
         pools: [],
+        // Mock subscribe: returns a subscription-like object and immediately triggers onEose
+        subscribe: vi.fn((_filter: any, opts: any) => {
+            const sub = { stop: vi.fn(), on: vi.fn(), off: vi.fn() };
+            // Trigger onEose asynchronously so the RPC subscribe promise resolves
+            if (opts?.onEose) queueMicrotask(() => opts.onEose());
+            return sub;
+        }),
     } as unknown as NDK;
 }
 
@@ -27,15 +33,8 @@ function createMockRpc() {
         on: vi.fn(),
         off: vi.fn(),
         emit: vi.fn(),
-        debug: { exntend: vi.fn() },
+        debug: { extend: vi.fn() },
     } as unknown as NDKNostrRpc;
-}
-
-// Helper to create a mock NDKSubscription
-function createMockSubscription() {
-    return {
-        stop: vi.fn(),
-    } as unknown as NDKSubscription;
 }
 
 describe("NDKNip46Signer", () => {
@@ -177,6 +176,17 @@ describe("NDKNip46Signer", () => {
             // Simulate startListening
             (signer as any).startListening = vi.fn();
 
+            // Mock sendRequest to handle get_public_key and switch_relays
+            (mockRpc.sendRequest as any).mockImplementation(
+                (_remotePubkey: string, method: string, _params: any[], _kind: number, cb: Function) => {
+                    if (method === "get_public_key") {
+                        cb({ result: alice.pubkey });
+                    } else if (method === "switch_relays") {
+                        cb({ result: "null" });
+                    }
+                },
+            );
+
             // Simulate on("response")
             let responseCb: any;
             (mockRpc.on as any).mockImplementation((event: string, cb: Function) => {
@@ -190,7 +200,7 @@ describe("NDKNip46Signer", () => {
                 event: { author: alice, pubkey: alice.pubkey },
             });
             const user = await promise;
-            expect(user).toBe(alice);
+            expect(user.pubkey).toBe(alice.pubkey);
             expect(signer.userPubkey).toBe(alice.pubkey);
             expect(signer.bunkerPubkey).toBe(alice.pubkey);
         });
@@ -246,6 +256,52 @@ describe("NDKNip46Signer", () => {
             expect(parsed.payload.bunkerPubkey).toBe("bunkerpubkey");
             expect(parsed.payload.localSignerPayload).toBeDefined();
         });
+
+        it("fromPayload initializes the RPC subscription (issue #332)", async () => {
+            // Create and serialize a signer
+            const token = `bunker://${bob.pubkey}?pubkey=${alice.pubkey}&relay=wss://relay.nsec.app`;
+            const signer = new NDKNip46Signer(ndk, token, localSigner);
+            const payload = signer.toPayload();
+
+            // Deserialize — fromPayload should call startListening()
+            const deserialized = await NDKNip46Signer.fromPayload(payload, ndk);
+
+            // The subscription should have been initialized
+            expect((deserialized as any).subscription).toBeDefined();
+        });
+
+        it("restored signer can sign events via RPC (issue #332)", async () => {
+            // Create and serialize a signer
+            const token = `bunker://${bob.pubkey}?pubkey=${alice.pubkey}&relay=wss://relay.nsec.app`;
+            const signer = new NDKNip46Signer(ndk, token, localSigner);
+            const payload = signer.toPayload();
+
+            // Deserialize
+            const deserialized = await NDKNip46Signer.fromPayload(payload, ndk);
+
+            // Replace the RPC with a mock that responds to sign requests
+            const mockRpc = createMockRpc();
+            (deserialized as any).rpc = mockRpc;
+
+            (mockRpc.sendRequest as any).mockImplementation(
+                (_bunkerPubkey: string, _method: string, _params: any[], _kind: number, cb: Function) => {
+                    cb({ result: JSON.stringify({ sig: "restored-sig" }) });
+                },
+            );
+
+            const event: NostrEvent = {
+                kind: 1,
+                pubkey: alice.pubkey,
+                created_at: Math.floor(Date.now() / 1000),
+                tags: [],
+                content: "test",
+                id: "eventid",
+                sig: "signature",
+            };
+
+            const sig = await deserialized.sign(event);
+            expect(sig).toBe("restored-sig");
+        });
     });
 
     describe("error handling", () => {
@@ -286,6 +342,219 @@ describe("NDKNip46Signer", () => {
 
             await expect(signer.encrypt(bob, "hello")).rejects.toThrow("encryption error");
             await expect(signer.decrypt(bob, "encrypted")).rejects.toThrow("encryption error");
+        });
+    });
+
+    describe("timeout", () => {
+        beforeEach(() => {
+            vi.useFakeTimers();
+        });
+
+        afterEach(() => {
+            vi.useRealTimers();
+        });
+
+        it("has no timeout by default", () => {
+            const token = "bunker://bunkerpubkey?pubkey=userpubkey&relay=wss://relay.example.com";
+            const signer = NDKNip46Signer.bunker(ndk, token, localSigner);
+            expect(signer.timeout).toBeUndefined();
+        });
+
+        it("sign rejects with NDKNip46TimeoutError when timeout expires", async () => {
+            const token = "bunker://bunkerpubkey?pubkey=userpubkey&relay=wss://relay.example.com";
+            const signer = NDKNip46Signer.bunker(ndk, token, localSigner);
+            signer.timeout = 5000;
+
+            const mockRpc = createMockRpc();
+            (signer as any).rpc = mockRpc as NDKNostrRpc;
+            (signer as any).bunkerPubkey = "bunkerpubkey";
+
+            // sendRequest never calls the callback — simulates unresponsive bunker
+            (mockRpc.sendRequest as any).mockImplementation(() => {});
+
+            const event: NostrEvent = makeEvent("userpubkey");
+            const promise = signer.sign(event);
+
+            // Set up rejection handler before advancing timers
+            const rejection = expect(promise).rejects.toThrow(NDKNip46TimeoutError);
+
+            // Advance past the timeout
+            await vi.advanceTimersByTimeAsync(5001);
+
+            await rejection;
+        });
+
+        it("encrypt rejects with NDKNip46TimeoutError when timeout expires", async () => {
+            const token = "bunker://bunkerpubkey?pubkey=userpubkey&relay=wss://relay.example.com";
+            const signer = NDKNip46Signer.bunker(ndk, token, localSigner);
+            signer.timeout = 3000;
+
+            const mockRpc = createMockRpc();
+            (signer as any).rpc = mockRpc as NDKNostrRpc;
+            (signer as any).bunkerPubkey = "bunkerpubkey";
+
+            (mockRpc.sendRequest as any).mockImplementation(() => {});
+
+            const promise = signer.encrypt(bob, "hello");
+            const rejection = expect(promise).rejects.toThrow(NDKNip46TimeoutError);
+            await vi.advanceTimersByTimeAsync(3001);
+
+            await rejection;
+        });
+
+        it("decrypt rejects with NDKNip46TimeoutError when timeout expires", async () => {
+            const token = "bunker://bunkerpubkey?pubkey=userpubkey&relay=wss://relay.example.com";
+            const signer = NDKNip46Signer.bunker(ndk, token, localSigner);
+            signer.timeout = 3000;
+
+            const mockRpc = createMockRpc();
+            (signer as any).rpc = mockRpc as NDKNostrRpc;
+            (signer as any).bunkerPubkey = "bunkerpubkey";
+
+            (mockRpc.sendRequest as any).mockImplementation(() => {});
+
+            const promise = signer.decrypt(bob, "encrypted");
+            const rejection = expect(promise).rejects.toThrow(NDKNip46TimeoutError);
+            await vi.advanceTimersByTimeAsync(3001);
+
+            await rejection;
+        });
+
+        it("blockUntilReady rejects with NDKNip46TimeoutError when timeout expires", async () => {
+            const token = "bunker://bunkerpubkey?pubkey=userpubkey&relay=wss://relay.example.com";
+            const signer = NDKNip46Signer.bunker(ndk, token, localSigner);
+            signer.timeout = 10000;
+
+            const mockRpc = createMockRpc();
+            (signer as any).rpc = mockRpc as NDKNostrRpc;
+            (signer as any).startListening = vi.fn();
+            (signer as any).bunkerPubkey = "bunkerpubkey";
+
+            // sendRequest never calls cb — bunker doesn't respond
+            (mockRpc.sendRequest as any).mockImplementation(() => {});
+
+            const promise = signer.blockUntilReady();
+            const rejection = expect(promise).rejects.toThrow(NDKNip46TimeoutError);
+            await vi.advanceTimersByTimeAsync(10001);
+
+            await rejection;
+        });
+
+        it("does not timeout when operation succeeds before deadline", async () => {
+            const token = "bunker://bunkerpubkey?pubkey=userpubkey&relay=wss://relay.example.com";
+            const signer = NDKNip46Signer.bunker(ndk, token, localSigner);
+            signer.timeout = 30000;
+
+            const mockRpc = createMockRpc();
+            (signer as any).rpc = mockRpc as NDKNostrRpc;
+            (signer as any).bunkerPubkey = "bunkerpubkey";
+
+            // sendRequest calls back immediately
+            (mockRpc.sendRequest as any).mockImplementation(
+                (_bunkerPubkey: string, _method: string, _params: any[], _kind: number, cb: Function) => {
+                    cb({ result: JSON.stringify({ sig: "signature" }) });
+                },
+            );
+
+            const event: NostrEvent = makeEvent("userpubkey");
+            const sig = await signer.sign(event);
+            expect(sig).toBe("signature");
+        });
+
+        it("timeout error contains operation name and duration", async () => {
+            const token = "bunker://bunkerpubkey?pubkey=userpubkey&relay=wss://relay.example.com";
+            const signer = NDKNip46Signer.bunker(ndk, token, localSigner);
+            signer.timeout = 7500;
+
+            const mockRpc = createMockRpc();
+            (signer as any).rpc = mockRpc as NDKNostrRpc;
+            (signer as any).bunkerPubkey = "bunkerpubkey";
+
+            (mockRpc.sendRequest as any).mockImplementation(() => {});
+
+            const event: NostrEvent = makeEvent("userpubkey");
+            const promise = signer.sign(event);
+
+            // Attach handler before advancing timers
+            const catchPromise = promise.catch((e) => e);
+            await vi.advanceTimersByTimeAsync(7501);
+
+            const error = await catchPromise;
+            expect(error).toBeInstanceOf(NDKNip46TimeoutError);
+            expect(error.operation).toBe("sign");
+            expect(error.timeoutMs).toBe(7500);
+            expect(error.name).toBe("NDKNip46TimeoutError");
+        });
+
+        it("getPublicKey rejects with NDKNip46TimeoutError when timeout expires", async () => {
+            const token = "bunker://bunkerpubkey?pubkey=userpubkey&relay=wss://relay.example.com";
+            const signer = NDKNip46Signer.bunker(ndk, token, localSigner);
+            signer.timeout = 4000;
+
+            const mockRpc = createMockRpc();
+            (signer as any).rpc = mockRpc as NDKNostrRpc;
+            (signer as any).bunkerPubkey = "bunkerpubkey";
+            // Clear userPubkey so getPublicKey actually sends an RPC request
+            (signer as any).userPubkey = undefined;
+
+            (mockRpc.sendRequest as any).mockImplementation(() => {});
+
+            const promise = signer.getPublicKey();
+            const rejection = expect(promise).rejects.toThrow(NDKNip46TimeoutError);
+            await vi.advanceTimersByTimeAsync(4001);
+
+            await rejection;
+        });
+
+        it("createAccount rejects with NDKNip46TimeoutError when timeout expires", async () => {
+            const token = "bunker://bunkerpubkey?pubkey=userpubkey&relay=wss://relay.example.com";
+            const signer = NDKNip46Signer.bunker(ndk, token, localSigner);
+            signer.timeout = 6000;
+
+            const mockRpc = createMockRpc();
+            (signer as any).rpc = mockRpc as NDKNostrRpc;
+            (signer as any).bunkerPubkey = "bunkerpubkey";
+            (signer as any).startListening = vi.fn();
+
+            (mockRpc.sendRequest as any).mockImplementation(() => {});
+
+            const promise = signer.createAccount("testuser", "example.com");
+            const rejection = expect(promise).rejects.toThrow(NDKNip46TimeoutError);
+            await vi.advanceTimersByTimeAsync(6001);
+
+            await rejection;
+        });
+
+        it("does not apply timeout when timeout is undefined", async () => {
+            const token = "bunker://bunkerpubkey?pubkey=userpubkey&relay=wss://relay.example.com";
+            const signer = NDKNip46Signer.bunker(ndk, token, localSigner);
+            // timeout is undefined by default
+
+            const mockRpc = createMockRpc();
+            (signer as any).rpc = mockRpc as NDKNostrRpc;
+            (signer as any).bunkerPubkey = "bunkerpubkey";
+
+            // Never calls callback
+            (mockRpc.sendRequest as any).mockImplementation(() => {});
+
+            const event: NostrEvent = makeEvent("userpubkey");
+            const promise = signer.sign(event);
+
+            // Attach a no-op catch so Node doesn't complain if it ever rejects
+            promise.catch(() => {});
+
+            // Advance time significantly — should NOT reject since there's no timeout
+            await vi.advanceTimersByTimeAsync(120000);
+
+            // The promise should still be pending (not rejected)
+            let resolved = false;
+            let rejected = false;
+            promise.then(() => { resolved = true; }, () => { rejected = true; });
+
+            // Flush microtasks
+            await vi.advanceTimersByTimeAsync(0);
+            expect(resolved).toBe(false);
+            expect(rejected).toBe(false);
         });
     });
 });

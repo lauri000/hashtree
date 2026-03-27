@@ -72,13 +72,7 @@ export async function verifySignatureAsync(event: NDKEvent, _persist: boolean, r
     } else {
         // Otherwise use the worker-based verification
         result = await new Promise<boolean>((resolve) => {
-            let serialized: string;
-            try {
-                serialized = event.serialize();
-            } catch {
-                resolve(false);
-                return;
-            }
+            const serialized = event.serialize();
             let enqueue = false;
             if (!processingQueue[event.id]) {
                 processingQueue[event.id] = { event, resolves: [], relay };

@@ -4,6 +4,7 @@ import { NDK } from "../ndk";
 import { NDKPrivateKeySigner } from "../signers/private-key";
 import type { NDKRelayAuthPolicy } from "./auth-policies";
 import { NDKRelay } from "./index";
+import { NDKRelayStatus } from "./index";
 
 describe("Auth-required publish retry", () => {
     let ndk: NDK;
@@ -19,6 +20,10 @@ describe("Auth-required publish retry", () => {
         vi.restoreAllMocks();
     });
 
+    function sentMessages(mockWs: { send: ReturnType<typeof vi.fn> }): any[] {
+        return (mockWs.send as any).mock.calls.map((call: any[]) => JSON.parse(call[0]));
+    }
+
     it("should retry publish after successful auth when relay returns auth-required", async () => {
         // Mock the WebSocket
         const mockWs = {
@@ -31,7 +36,7 @@ describe("Auth-required publish retry", () => {
 
         // Replace the websocket
         (relay.connectivity as any).ws = mockWs;
-        (relay.connectivity as any)._status = 2; // CONNECTED
+        (relay.connectivity as any)._status = NDKRelayStatus.CONNECTED;
 
         // Create an auth policy that approves auth
         const authPolicy: NDKRelayAuthPolicy = vi.fn().mockResolvedValue(true);
@@ -62,23 +67,21 @@ describe("Auth-required publish retry", () => {
         // Wait a bit for auth flow to start
         await new Promise((resolve) => setTimeout(resolve, 50));
 
+        const authRequest = sentMessages(mockWs).find((msg) => msg[0] === "AUTH");
+        expect(authRequest).toBeDefined();
+
         // Simulate successful AUTH response
         const authOkMessage = {
-            data: JSON.stringify(["OK", "auth-event-id", true, ""]),
+            data: JSON.stringify(["OK", authRequest[1].id, true, ""]),
         };
         (relay.connectivity as any).onMessage(authOkMessage);
 
         // Wait for auth to complete
         await new Promise((resolve) => setTimeout(resolve, 50));
 
-        // Verify the event was sent twice (once initially, once after auth)
-        expect(mockWs.send).toHaveBeenCalledTimes(2);
-
-        // The second send should be the retry
-        const calls = (mockWs.send as any).mock.calls;
-        const secondCall = calls[1][0];
-        expect(secondCall).toContain('"EVENT"');
-        expect(secondCall).toContain(event.id);
+        const eventSends = sentMessages(mockWs).filter((msg) => msg[0] === "EVENT");
+        expect(eventSends).toHaveLength(2);
+        expect(JSON.stringify(eventSends[1])).toContain(event.id);
 
         // Now simulate successful publish after auth
         const successMessage = {
@@ -101,7 +104,7 @@ describe("Auth-required publish retry", () => {
         };
 
         (relay.connectivity as any).ws = mockWs;
-        (relay.connectivity as any)._status = 2; // CONNECTED
+        (relay.connectivity as any)._status = NDKRelayStatus.CONNECTED;
 
         // Create an auth policy that approves auth but will fail
         const authPolicy: NDKRelayAuthPolicy = vi.fn().mockResolvedValue(true);
@@ -129,9 +132,12 @@ describe("Auth-required publish retry", () => {
 
         await new Promise((resolve) => setTimeout(resolve, 50));
 
+        const authRequest = sentMessages(mockWs).find((msg) => msg[0] === "AUTH");
+        expect(authRequest).toBeDefined();
+
         // Simulate AUTH failure
         const authOkMessage = {
-            data: JSON.stringify(["OK", "auth-event-id", false, "invalid signature"]),
+            data: JSON.stringify(["OK", authRequest[1].id, false, "invalid signature"]),
         };
         (relay.connectivity as any).onMessage(authOkMessage);
 
@@ -149,7 +155,7 @@ describe("Auth-required publish retry", () => {
         };
 
         (relay.connectivity as any).ws = mockWs;
-        (relay.connectivity as any)._status = 2; // CONNECTED
+        (relay.connectivity as any)._status = NDKRelayStatus.CONNECTED;
 
         const event = new NDKEvent(ndk);
         event.kind = 1;
@@ -179,7 +185,7 @@ describe("Auth-required publish retry", () => {
         };
 
         (relay.connectivity as any).ws = mockWs;
-        (relay.connectivity as any)._status = 2; // CONNECTED
+        (relay.connectivity as any)._status = NDKRelayStatus.CONNECTED;
 
         const authPolicy: NDKRelayAuthPolicy = vi.fn().mockResolvedValue(true);
         relay.authPolicy = authPolicy;
@@ -216,16 +222,18 @@ describe("Auth-required publish retry", () => {
 
         await new Promise((resolve) => setTimeout(resolve, 50));
 
+        const authRequest = sentMessages(mockWs).find((msg) => msg[0] === "AUTH");
+        expect(authRequest).toBeDefined();
+
         (relay.connectivity as any).onMessage({
-            data: JSON.stringify(["OK", "auth-event-id", true, ""]),
+            data: JSON.stringify(["OK", authRequest[1].id, true, ""]),
         });
 
         await new Promise((resolve) => setTimeout(resolve, 50));
 
         // Both events should be retried
-        const calls = (mockWs.send as any).mock.calls;
-        const eventSends = calls.filter((call: any[]) => call[0].includes('"EVENT"'));
-        expect(eventSends.length).toBeGreaterThanOrEqual(4); // 2 initial + 2 retries
+        const eventSends = sentMessages(mockWs).filter((msg) => msg[0] === "EVENT");
+        expect(eventSends).toHaveLength(4);
 
         // Both should eventually succeed
         (relay.connectivity as any).onMessage({

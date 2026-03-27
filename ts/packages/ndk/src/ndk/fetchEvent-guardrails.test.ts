@@ -24,7 +24,7 @@ describe("fetchEvent guardrails", () => {
         }
     });
 
-    it("should warn when fetchEvent is called with a single ID filter", async () => {
+    it("should reject invalid event ID filters before opening a subscription", async () => {
         const ndk = new NDK({
             explicitRelayUrls: ["wss://relay.primal.net"],
             aiGuardrails: true,
@@ -38,9 +38,8 @@ describe("fetchEvent guardrails", () => {
             await ndk.fetchEvent(idFilter);
             throw new Error("Should have thrown a guardrails error");
         } catch (error: any) {
-            expect(error.message).toContain("For fetching a single event");
-            expect(error.message).toContain("use fetchEvent() instead");
-            expect(error.message).toContain("fetchEvent(eventId)");
+            expect(error.message).toContain('not a valid 64-char hex string');
+            expect(error.message).toContain("Event IDs must be 64-character hexadecimal strings");
         }
     });
 

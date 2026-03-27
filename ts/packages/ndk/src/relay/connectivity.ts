@@ -9,11 +9,14 @@ import { NDKRelayStatus } from ".";
 import { NDKRelayKeepalive, probeRelayConnection } from "./keepalive";
 import type { NDKRelaySubscription } from "./subscription";
 
-const MAX_RECONNECT_ATTEMPTS = 5;
+// Removed MAX_RECONNECT_ATTEMPTS - we retry indefinitely with capped backoff
 const FLAPPING_THRESHOLD_MS = 1000;
 
+import type { NDKCountResult } from "../count/index.js";
+import { NDKCountHll } from "../count/index.js";
+
 export type CountResolver = {
-    resolve: (count: number) => void;
+    resolve: (result: NDKCountResult) => void;
     reject: (err: Error) => void;
 };
 
@@ -117,12 +120,29 @@ export class NDKRelayConnectivity {
     }
 
     /**
-     * Handles detection of a stale connection
+     * Handles detection of a stale connection by cleaning up and triggering reconnection.
      */
     private handleStaleConnection(): void {
-        this._status = NDKRelayStatus.DISCONNECTED;
         this.wasIdle = true; // Mark as idle to reset backoff
-        this.onDisconnect();
+
+        // Stop keepalive
+        this.keepalive?.stop();
+
+        // Clean up the dead WebSocket
+        if (this.ws) {
+            try {
+                this.ws.close();
+            } catch (e) {
+                // Ignore errors closing dead socket
+            }
+            this.ws = undefined;
+        }
+
+        this._status = NDKRelayStatus.DISCONNECTED;
+        this.ndkRelay.emit("disconnect");
+
+        // Trigger reconnection for stale connections
+        this.handleReconnection();
     }
 
     /**
@@ -346,46 +366,25 @@ export class NDKRelayConnectivity {
      *
      * @param event - The MessageEvent containing the received message data.
      */
-    /**
-     * Fast extraction of event ID from JSON string without parsing.
-     * Returns event ID if message is EVENT type, null otherwise.
-     * This optimization avoids expensive JSON.parse() for duplicate events.
-     */
-    private getEventIdFromMessage(msg: string): string | null {
-        // Fast check: msg[2] === 'E' && msg[3] === 'V' (EVENT message)
-        // Format: ["EVENT","subId",{...}]
-        if (msg.charCodeAt(2) !== 69 || msg.charCodeAt(3) !== 86) {
-            return null;
-        }
-        const idPos = msg.indexOf('"id":"');
-        if (idPos === -1) {
-            return null;
-        }
-        // Extract 64 chars after "id":"
-        // Event IDs are always 64 hex chars. If not valid, LRU lookup will fail
-        // and we'll parse normally - no harm done.
-        return msg.substring(idPos + 6, idPos + 70);
-    }
-
     private onMessage(event: MessageEvent): void {
         this.netDebug?.(event.data, this.ndkRelay, "recv");
 
         // Record any activity from relay
         this.keepalive?.recordActivity();
 
-        // Early exit for duplicate events before JSON.parse
-        // This optimization can save significant CPU on busy relays where
-        // the same events are broadcast to multiple subscriptions
-        const msg = event.data as string;
-        const eventId = this.getEventIdFromMessage(msg);
-        if (eventId && this.ndk) {
-            const seenRelays = this.ndk.subManager.seenEvents.get(eventId);
-            if (seenRelays && seenRelays.length > 0) {
-                // Already processed from any relay, just track this relay saw it
-                this.ndk.subManager.seenEvent(eventId, this.ndkRelay);
-                return;
-            }
-        }
+        // NOTE: We intentionally DON'T early-return for "already seen" events.
+        // The seenEvents optimization was causing a bug: if subscription A sees event X,
+        // then subscription B is created later and requests event X, the relay sends it
+        // but it was being skipped because it's "already seen" globally.
+        //
+        // Instead, we let dispatchEvent handle routing to ALL matching subscriptions.
+        // Each subscription's eventFirstSeen (checked in eventReceived) will skip
+        // re-validation for events it's already processed, maintaining the performance
+        // benefit while ensuring new subscriptions receive events they need.
+        //
+        // The seenEvents tracking in dispatchEvent() is still used for:
+        // - exclusiveRelay filtering (checking which relays have sent an event)
+        // - Tracking event provenance
 
         try {
             const data = JSON.parse(event.data);
@@ -410,10 +409,19 @@ export class NDKRelayConnectivity {
                     return;
                 }
                 case "COUNT": {
-                    const payload = data[2] as { count: number };
+                    const payload = data[2] as { count: number; hll?: string };
                     const cr = this.openCountRequests.get(id) as CountResolver;
                     if (cr) {
-                        cr.resolve(payload.count);
+                        const result: NDKCountResult = { count: payload.count };
+                        // Parse HLL if present (NIP-45 HyperLogLog support)
+                        if (payload.hll) {
+                            try {
+                                result.hll = NDKCountHll.fromHex(payload.hll);
+                            } catch (e) {
+                                this.debug("Failed to parse HLL from COUNT response:", e);
+                            }
+                        }
+                        cr.resolve(result);
                         this.openCountRequests.delete(id);
                     }
                     return;
@@ -689,15 +697,9 @@ export class NDKRelayConnectivity {
             this.reconnectTimeout = undefined;
             this._status = NDKRelayStatus.RECONNECTING;
 
-            this.connect().catch((_err) => {
-                if (attempt < MAX_RECONNECT_ATTEMPTS) {
-                    // Continue with next attempt
-                    this.handleReconnection(attempt + 1);
-                } else {
-                    this.debug("Max reconnect attempts reached");
-                    // Reset idle flag after max attempts
-                    this.wasIdle = false;
-                }
+            this.connect().catch(() => {
+                // Always keep retrying with backoff
+                this.handleReconnection(attempt + 1);
             });
         }, reconnectDelay);
 
@@ -851,13 +853,13 @@ export class NDKRelayConnectivity {
      *
      * @param filters - The filters to apply to the count request.
      * @param params - An optional object containing a custom id for the count request.
-     * @returns A promise that resolves with the number of matching events.
+     * @returns A promise that resolves with the count result including optional HLL data.
      * @throws {Error} If attempting to send the count request on a closed relay connection.
      */
-    async count(filters: NDKFilter[], params: { id?: string | null }): Promise<number> {
+    async count(filters: NDKFilter[], params: { id?: string | null }): Promise<NDKCountResult> {
         this.serial++;
         const id = params?.id || `count:${this.serial}`;
-        const ret = new Promise<number>((resolve, reject) => {
+        const ret = new Promise<NDKCountResult>((resolve, reject) => {
             this.openCountRequests.set(id, { resolve, reject });
         });
         this.send(`["COUNT","${id}",${JSON.stringify(filters).substring(1)}`);

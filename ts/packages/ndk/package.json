@@ -26,6 +26,9 @@
     "typescript-lru-cache": "^2.0.0"
   },
   "devDependencies": {
-    "@types/debug": "^4.1.12"
+    "@types/debug": "^4.1.12",
+    "@types/node": "^22.19.8",
+    "tsup": "^8.5.1",
+    "vitest": "^4.1.2"
   }
 }

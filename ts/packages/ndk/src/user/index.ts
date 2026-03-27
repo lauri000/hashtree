@@ -261,7 +261,7 @@ export class NDKUser {
             );
         }
 
-        if (!setMetadataEvent) return null;
+        if (!setMetadataEvent) return this.profile ?? null;
 
         // return the most recent profile
         this.profile = profileFromEvent(setMetadataEvent);

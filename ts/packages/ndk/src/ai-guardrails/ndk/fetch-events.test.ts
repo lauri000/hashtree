@@ -12,7 +12,9 @@ describe("fetchingEvents guardrail", () => {
     describe("single event lookups", () => {
         it("should suggest fetchEvent() for single ID filter", () => {
             const { warn, shouldWarnRatio, incrementCount } = createMocks();
-            const filters = { ids: ["abc123"] };
+            const filters = {
+                ids: ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
+            };
 
             fetchingEvents(filters, undefined, warn, shouldWarnRatio, incrementCount);
 
@@ -20,15 +22,17 @@ describe("fetchingEvents guardrail", () => {
             expect(warn).toHaveBeenCalled();
             expect(warn.mock.calls[0][0]).toBe("fetch-events-usage");
             const message = warn.mock.calls[0][1];
-            expect(message).toContain("For fetching a single event, use fetchEvent()");
-            expect(message).toContain("fetchEvent(eventId)");
-            expect(message).toContain("note1...");
-            expect(message).toContain("nevent1...");
+            const hint = warn.mock.calls[0][2];
+            expect(message).toContain("fetchEvents() is a BLOCKING operation");
+            expect(message).toContain("use subscribe() instead");
+            expect(hint).toContain("use fetchEvent() instead of fetchEvents()");
         });
 
         it("should suggest fetchEvent() for single ID filter in array", () => {
             const { warn, shouldWarnRatio, incrementCount } = createMocks();
-            const filters = [{ ids: ["abc123"] }];
+            const filters = [{
+                ids: ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
+            }];
 
             fetchingEvents(filters, undefined, warn, shouldWarnRatio, incrementCount);
 
@@ -36,7 +40,9 @@ describe("fetchingEvents guardrail", () => {
             expect(warn).toHaveBeenCalled();
             expect(warn.mock.calls[0][0]).toBe("fetch-events-usage");
             const message = warn.mock.calls[0][1];
-            expect(message).toContain("For fetching a single event, use fetchEvent()");
+            const hint = warn.mock.calls[0][2];
+            expect(message).toContain("fetchEvents() is a BLOCKING operation");
+            expect(hint).toContain("use fetchEvent() instead of fetchEvents()");
         });
 
         it("should suggest fetchEvent() for NIP-33 single event filter (decoded naddr)", () => {

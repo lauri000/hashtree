@@ -11,6 +11,7 @@ export { NDKPool };
 
 export * from "./app-settings/index.js";
 export * from "./cache/index.js";
+export * from "./count/index.js";
 export * from "./dvm/schedule.js";
 export * from "./events/content-tagger.js";
 export * from "./events/gift-wrapping.js";
@@ -25,6 +26,7 @@ export * from "./events/kinds/cashu/mint-recommendation.js";
 export * from "./events/kinds/cashu/token.js";
 export * from "./events/kinds/cashu/tx.js";
 export * from "./events/kinds/classified.js";
+export * from "./events/kinds/collaborative.js";
 export * from "./events/kinds/drafts.js";
 export * from "./events/kinds/dvm/index.js";
 export * from "./events/kinds/follow-pack.js";

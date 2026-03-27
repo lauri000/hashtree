@@ -3,6 +3,7 @@ import type { NostrEvent } from "nostr-tools";
 import { nip19 } from "nostr-tools";
 import { EventEmitter } from "tseep";
 import { AIGuardrails } from "../ai-guardrails/index.js";
+import { checkDeprecatedHandlers } from "../ai-guardrails/subscription/deprecated-handlers.js";
 import type { NDKCacheAdapter } from "../cache/index.js";
 import dedupEvent from "../events/dedup.js";
 import { NDKEvent } from "../events/index.js";
@@ -521,6 +522,20 @@ export class NDK extends EventEmitter<{
         } catch {}
     }
 
+    private runWithCurrentCallGuardrailOverrides<T>(fn: () => T): T {
+        const nextCallDisabled = this.aiGuardrails.captureAndClearNextCallDisabled();
+        if (!nextCallDisabled) {
+            return fn();
+        }
+
+        this.aiGuardrails["_nextCallDisabled"] = nextCallDisabled;
+        try {
+            return fn();
+        } finally {
+            this.aiGuardrails["_nextCallDisabled"] = null;
+        }
+    }
+
     set explicitRelayUrls(urls: WebSocket["url"][]) {
         this._explicitRelayUrls = urls.map(normalizeRelayUrl);
         this.pool.relayUrls = urls;
@@ -915,8 +930,15 @@ export class NDK extends EventEmitter<{
             }
         }
 
-        // Track subscription creation for guardrails
-        this.aiGuardrails?.subscription?.created(Array.isArray(filters) ? filters : [filters], finalOpts);
+        this.runWithCurrentCallGuardrailOverrides(() => {
+            checkDeprecatedHandlers(
+                filters,
+                opts,
+                autoStartOrRelaySet,
+                this.aiGuardrails.warn.bind(this.aiGuardrails),
+            );
+            this.aiGuardrails?.subscription?.created(Array.isArray(filters) ? filters : [filters], finalOpts);
+        });
 
         const pool = subscription.pool; // Use the pool determined by the subscription options
 
@@ -1028,7 +1050,9 @@ export class NDK extends EventEmitter<{
 
         // Run guardrails check on the filter when it's passed as an object (not a string)
         if (typeof idOrFilter !== "string") {
-            this.aiGuardrails?.ndk?.fetchingEvents(filters);
+            this.runWithCurrentCallGuardrailOverrides(() => {
+                this.aiGuardrails?.ndk?.fetchingEvents(filters);
+            });
         }
 
         if (filters.length === 0) {
@@ -1097,7 +1121,9 @@ export class NDK extends EventEmitter<{
         opts?: NDKSubscriptionOptions,
         relaySet?: NDKRelaySet,
     ): Promise<Set<NDKEvent>> {
-        this.aiGuardrails?.ndk?.fetchingEvents(filters, opts);
+        this.runWithCurrentCallGuardrailOverrides(() => {
+            this.aiGuardrails?.ndk?.fetchingEvents(filters, opts);
+        });
 
         return new Promise((resolve) => {
             const events: Map<string, NDKEvent> = new Map();
