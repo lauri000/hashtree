@@ -9,7 +9,7 @@
 import type { HashTree, CID } from '@hashtree/core';
 import type { MediaRequestByCid, MediaRequestByPath, MediaResponse } from './protocol';
 import { getCachedRoot, onCachedRootUpdate } from './treeRootCache';
-import { getHistoricalTreeRoots, resolveTreeRootNow, subscribeToTreeRoots } from './treeRootSubscription';
+import { resolveTreeRootNow, subscribeToTreeRoots } from './treeRootSubscription';
 import { getErrorMessage } from './utils/errorMessage';
 import { nhashDecode, toHex } from '@hashtree/core';
 import { nip19 } from 'nostr-tools';
@@ -665,17 +665,6 @@ async function resolveMutableTreeEntry(
         const currentEntry = await resolveEntryWithinRoot(currentRoot, path, options);
         if (currentEntry) {
           return currentEntry;
-        }
-      }
-
-      const historicalRoots = await getHistoricalTreeRoots(npub, treeName, ROOT_WAIT_TIMEOUT_MS);
-      for (const candidateRoot of historicalRoots) {
-        if (sameCid(candidateRoot, currentRoot)) {
-          continue;
-        }
-        const entry = await resolveEntryWithinRoot(candidateRoot, path, options);
-        if (entry) {
-          return entry;
         }
       }
 
