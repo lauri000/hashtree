@@ -45,6 +45,8 @@ const TRAY_OPEN_MENU_ID: &str = "tray_open_main";
 const TRAY_HOME_MENU_ID: &str = "tray_home";
 const TRAY_SETTINGS_MENU_ID: &str = "tray_settings";
 const TRAY_QUIT_MENU_ID: &str = "tray_quit";
+const CHILD_WEBVIEW_LABEL: &str = "content";
+const TOGGLE_CHILD_WEBVIEW_DEVTOOLS_MENU_ID: &str = "view_toggle_child_webview_devtools";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct IrisPaths {
@@ -1014,6 +1016,42 @@ fn build_edit_menu<R: tauri::Runtime>(
 }
 
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+#[cfg(target_os = "macos")]
+const fn developer_tools_accelerator() -> &'static str {
+    "Cmd+Alt+I"
+}
+
+#[cfg(any(target_os = "linux", windows))]
+const fn developer_tools_accelerator() -> &'static str {
+    "CmdOrCtrl+Shift+I"
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+fn build_view_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> tauri::Result<tauri::menu::Submenu<R>> {
+    let developer_tools =
+        MenuItemBuilder::with_id(TOGGLE_CHILD_WEBVIEW_DEVTOOLS_MENU_ID, "Developer Tools")
+            .accelerator(developer_tools_accelerator())
+            .build(app)?;
+
+    SubmenuBuilder::new(app, "View")
+        .item(&developer_tools)
+        .build()
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+fn toggle_child_webview_devtools<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(webview) = app.get_webview(CHILD_WEBVIEW_LABEL) {
+        if webview.is_devtools_open() {
+            webview.close_devtools();
+        } else {
+            webview.open_devtools();
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     let app_name = app.package_info().name.clone();
     let quit = MenuItemBuilder::with_id("app_quit", "Quit")
@@ -1034,10 +1072,12 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<tau
         .build()?;
 
     let edit = build_edit_menu(app)?;
+    let view = build_view_menu(app)?;
 
     MenuBuilder::new(app)
         .item(&app_menu)
         .item(&edit)
+        .item(&view)
         .item(&navigation)
         .build()
 }
@@ -1106,6 +1146,9 @@ pub fn run() {
                         "child-webview-navigate",
                         serde_json::json!({ "action": "forward" }),
                     );
+                }
+                TOGGLE_CHILD_WEBVIEW_DEVTOOLS_MENU_ID => {
+                    toggle_child_webview_devtools(app);
                 }
                 TRAY_OPEN_MENU_ID => {
                     let _ = show_main_window(app);
@@ -1319,8 +1362,6 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
-    use super::build_menu;
     use super::{
         apply_network_settings, apply_transport_settings, collect_supported_launch_deep_links,
         is_supported_launch_host, mobile_default_htree_paths, normalize_automation_startup_url,
@@ -1331,6 +1372,8 @@ mod tests {
         TrayMenuItemSpec, TrayPeersResponse, TrayPrimaryClickAction,
         DEFAULT_MULTICAST_TOGGLE_MAX_PEERS,
     };
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    use super::{build_menu, developer_tools_accelerator};
     use std::path::{Path, PathBuf};
 
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -1353,6 +1396,38 @@ mod tests {
         }
 
         assert!(has_quit, "expected app_quit menu item");
+    }
+
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires main thread for menu items")]
+    #[test]
+    fn app_menu_includes_child_webview_devtools_item() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle();
+        let menu = build_menu(&handle).expect("failed to build menu");
+        let mut has_devtools = false;
+
+        for item in menu.items().unwrap_or_default() {
+            if let tauri::menu::MenuItemKind::Submenu(submenu) = item {
+                for subitem in submenu.items().unwrap_or_default() {
+                    if subitem.id().as_ref() == "view_toggle_child_webview_devtools" {
+                        has_devtools = true;
+                    }
+                }
+            }
+        }
+
+        assert!(has_devtools, "expected child webview devtools menu item");
+    }
+
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    #[test]
+    fn child_webview_devtools_accelerator_matches_platform_conventions() {
+        #[cfg(target_os = "macos")]
+        assert_eq!(developer_tools_accelerator(), "Cmd+Alt+I");
+
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(developer_tools_accelerator(), "CmdOrCtrl+Shift+I");
     }
 
     #[test]

@@ -1467,14 +1467,11 @@
                 <div class="absolute inset-0 overflow-hidden">
                   <div class="flex h-full min-w-0 max-w-full items-center pr-2">
                     <span
-                      data-testid="address-title-pill"
-                      class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full bg-surface-2/85 px-2 py-0.5 text-text-1"
+                      data-testid="address-title-text"
+                      class="block min-w-0 max-w-full truncate text-sm text-text-1"
                       title={blurredNhashTitle}
                     >
-                      <span class="i-lucide-file-text shrink-0 text-[11px] text-text-3"></span>
-                      <span data-testid="address-title" class="min-w-0 truncate text-[11px] font-medium leading-none">
-                        {blurredNhashTitle}
-                      </span>
+                      {blurredNhashTitle}
                     </span>
                   </div>
                 </div>
@@ -1656,14 +1653,11 @@
               <div class="absolute inset-0 overflow-hidden">
                 <div class="flex h-full min-w-0 max-w-full items-center pr-2">
                   <span
-                    data-testid="address-title-pill"
-                    class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full bg-surface-2/85 px-2 py-0.5 text-text-1"
+                    data-testid="address-title-text"
+                    class="block min-w-0 max-w-full truncate text-sm text-text-1"
                     title={blurredNhashTitle}
                   >
-                    <span class="i-lucide-file-text shrink-0 text-[11px] text-text-3"></span>
-                    <span data-testid="address-title" class="min-w-0 truncate text-[11px] font-medium leading-none">
-                      {blurredNhashTitle}
-                    </span>
+                    {blurredNhashTitle}
                   </span>
                 </div>
               </div>

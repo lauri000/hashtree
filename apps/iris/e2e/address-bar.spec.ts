@@ -238,7 +238,7 @@ test.describe('Address Bar', () => {
     expect(calls[1].args.fragment).toBe(`/${distributedOwner}/profile`);
   });
 
-  test('blurred htree nhash routes render a page title label and restore the full URL on focus', async ({ tauriPage: page }) => {
+  test('blurred htree nhash routes render plain page title text and restore the full URL on focus', async ({ tauriPage: page }) => {
     await openHome(page);
 
     const url = 'htree://nhash1example/index.html';
@@ -260,12 +260,12 @@ test.describe('Address Bar', () => {
 
     await page.locator('main').click({ position: { x: 20, y: 20 } });
 
-    await expect(page.getByTestId('address-title-pill')).toBeVisible();
-    await expect(page.getByTestId('address-title-pill')).toContainText('Immutable demo');
+    await expect(page.getByTestId('address-title-text')).toBeVisible();
+    await expect(page.getByTestId('address-title-text')).toHaveText('Immutable demo');
     await expect(input).toHaveValue('nhash1example/index.html');
 
     await page.getByTestId('address-bar').click();
-    await expect(page.getByTestId('address-title-pill')).toHaveCount(0);
+    await expect(page.getByTestId('address-title-text')).toHaveCount(0);
     await expect(input).toHaveValue(url);
   });
 
