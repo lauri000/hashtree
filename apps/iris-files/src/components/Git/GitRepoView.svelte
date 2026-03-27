@@ -124,10 +124,32 @@
   let isFavorited = $derived(repoAddress ? favoriteRepos.some(repo => repo.address === repoAddress) : false);
   let canFavoriteRepo = $derived(!!route.npub && !route.params.get('k') && visibility !== 'private' && visibility !== 'link-visible');
   let favoriteLoading = $state(false);
+  let favoriteOptimisticState = $state<boolean | null>(null);
+  let favoriteOptimisticCount = $state<number | null>(null);
   let favoriteRepoStatsStore = $derived(
     route.npub && repoPath ? createFavoriteRepoStatsStore(route.npub, repoPath) : null,
   );
   let favoriteRepoCount = $state(0);
+  let displayedIsFavorited = $derived(favoriteOptimisticState ?? isFavorited);
+  let displayedFavoriteCount = $derived(favoriteOptimisticCount ?? favoriteRepoCount);
+
+  $effect(() => {
+    repoAddress;
+    favoriteOptimisticState = null;
+    favoriteOptimisticCount = null;
+  });
+
+  $effect(() => {
+    if (favoriteOptimisticState !== null && isFavorited === favoriteOptimisticState) {
+      favoriteOptimisticState = null;
+    }
+  });
+
+  $effect(() => {
+    if (favoriteOptimisticCount !== null && favoriteRepoCount === favoriteOptimisticCount) {
+      favoriteOptimisticCount = null;
+    }
+  });
 
   $effect(() => {
     if (!favoriteRepoStatsStore) {
@@ -390,10 +412,17 @@
       return;
     }
 
+    const nextFavorited = !displayedIsFavorited;
+    const nextFavoriteCount = Math.max(0, displayedFavoriteCount + (nextFavorited ? 1 : -1));
+
+    favoriteOptimisticState = nextFavorited;
+    favoriteOptimisticCount = nextFavoriteCount;
     favoriteLoading = true;
     try {
       await toggleFavoriteRepo(route.npub, repoPath);
     } catch (err) {
+      favoriteOptimisticState = null;
+      favoriteOptimisticCount = null;
       console.error('Failed to update repository like:', err);
     } finally {
       favoriteLoading = false;
@@ -701,13 +730,13 @@
       {#if canFavoriteRepo}
         <button
           onclick={handleFavoriteToggle}
-          class={`btn-ghost flex items-center gap-2 px-3 h-9 ${isFavorited ? 'text-accent border-accent/30 bg-accent/10 hover:bg-accent/15' : ''}`}
+          class={`btn-ghost flex items-center gap-2 px-3 h-9 ${displayedIsFavorited ? 'text-accent border-accent/30 bg-accent/10 hover:bg-accent/15' : ''}`}
           disabled={favoriteLoading}
-          title={isFavorited ? 'Remove your like from this repository' : 'Like this repository'}
+          title={displayedIsFavorited ? 'Remove your like from this repository' : 'Like this repository'}
         >
-          <span class={`i-lucide-heart ${isFavorited ? 'fill-current' : ''}`}></span>
-          <span>{favoriteLoading ? 'Saving...' : isFavorited ? 'Liked' : 'Like'}</span>
-          <span class="text-xs text-text-2">{favoriteRepoCount}</span>
+          <span class={`i-lucide-heart ${displayedIsFavorited ? 'fill-current' : ''}`}></span>
+          <span>{displayedIsFavorited ? 'Liked' : 'Like'}</span>
+          <span class="text-xs text-text-2">{displayedFavoriteCount}</span>
         </button>
       {/if}
       <CodeDropdown npub={route.npub} {repoPath} />
