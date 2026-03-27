@@ -70,6 +70,7 @@
   let launchInput = $state('');
   let launchError = $state<string | null>(null);
   let launchPending = $state(false);
+  let copyStatusTimeoutId = 0;
 
   function resolveCurrentSite() {
     if (typeof window === 'undefined') return null;
@@ -159,6 +160,11 @@
     const href = buildCurrentLauncherHref();
     if (!href || typeof window === 'undefined') return;
 
+    if (copyStatusTimeoutId) {
+      window.clearTimeout(copyStatusTimeoutId);
+      copyStatusTimeoutId = 0;
+    }
+
     try {
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(href);
@@ -171,13 +177,14 @@
       copyStatus = 'ready';
     }
 
-    window.setTimeout(() => {
+    copyStatusTimeoutId = window.setTimeout(() => {
       copyStatus = 'idle';
+      copyStatusTimeoutId = 0;
     }, 1800);
   }
 
-  function reloadCurrentSite(): void {
-    if (typeof window === 'undefined') return;
+  function applyPendingUpdate(): void {
+    if (typeof window === 'undefined' || !updateAvailable) return;
     updateAvailable = false;
     runtimeMenuOpen = false;
     window.location.reload();
@@ -482,14 +489,16 @@
         <div class="runtime-menu-header">
           <div class="runtime-menu-title">{currentSite?.title}</div>
         </div>
-        <button
-          class="runtime-menu-item"
-          class:runtime-menu-item-primary={updateAvailable}
-          type="button"
-          onclick={reloadCurrentSite}
-        >
-          {updateAvailable ? 'Update Now' : 'Reload'}
-        </button>
+
+        {#if updateAvailable}
+          <button
+            class="runtime-menu-item runtime-menu-item-primary"
+            type="button"
+            onclick={applyPendingUpdate}
+          >
+            Update Now
+          </button>
+        {/if}
 
         {#if currentSite?.kind === 'mutable'}
           <label class="runtime-menu-toggle">
@@ -510,20 +519,23 @@
         >
           <span class="runtime-menu-link-text">{launcherHref}</span>
           <span class="runtime-menu-link-affordance" data-state={copyStatus}>
-            <svg
-              class="runtime-menu-copy-icon"
-              viewBox="0 0 16 16"
-              aria-hidden="true"
-              focusable="false"
-            >
-              <path
-                d="M5.5 2.5h6a2 2 0 0 1 2 2v6h-1.5v-6a.5.5 0 0 0-.5-.5h-6zM3 5.5a2 2 0 0 1 2-2h4.5a2 2 0 0 1 2 2V10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zm2-.5a.5.5 0 0 0-.5.5V10a.5.5 0 0 0 .5.5h4.5A.5.5 0 0 0 10 10V5.5a.5.5 0 0 0-.5-.5z"
-                fill="currentColor"
-              ></path>
-            </svg>
-            <span class="runtime-menu-copy-label">
-              {copyStatus === 'copied' ? 'Copied' : copyStatus === 'ready' ? 'Ready' : 'Copy'}
-            </span>
+            {#if copyStatus === 'idle'}
+              <svg
+                class="runtime-menu-copy-icon"
+                viewBox="0 0 16 16"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path
+                  d="M5.5 2.5h6a2 2 0 0 1 2 2v6h-1.5v-6a.5.5 0 0 0-.5-.5h-6zM3 5.5a2 2 0 0 1 2-2h4.5a2 2 0 0 1 2 2V10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zm2-.5a.5.5 0 0 0-.5.5V10a.5.5 0 0 0 .5.5h4.5A.5.5 0 0 0 10 10V5.5a.5.5 0 0 0-.5-.5z"
+                  fill="currentColor"
+                ></path>
+              </svg>
+            {:else}
+              <span class="runtime-menu-copy-label">
+                {copyStatus === 'copied' ? 'Copied' : 'Ready'}
+              </span>
+            {/if}
           </span>
         </button>
       </section>
@@ -807,18 +819,12 @@
 
   .runtime-menu-link-affordance {
     flex: 0 0 auto;
-    display: grid;
-    place-items: center end;
-    min-width: 3.75rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    width: 3.9rem;
     height: 1.25rem;
     color: rgba(243, 243, 244, 0.88);
-    position: relative;
-  }
-
-  .runtime-menu-copy-icon,
-  .runtime-menu-copy-label {
-    grid-area: 1 / 1;
-    transition: opacity 160ms ease, transform 160ms ease;
   }
 
   .runtime-menu-copy-icon {
@@ -830,18 +836,6 @@
     font-size: 0.78rem;
     font-weight: 600;
     letter-spacing: 0.01em;
-    opacity: 0;
-    transform: translateY(2px);
-  }
-
-  .runtime-menu-link-affordance[data-state="idle"] .runtime-menu-copy-icon {
-    opacity: 1;
-  }
-
-  .runtime-menu-link-affordance[data-state="copied"] .runtime-menu-copy-label,
-  .runtime-menu-link-affordance[data-state="ready"] .runtime-menu-copy-label {
-    opacity: 1;
-    transform: translateY(0);
   }
 
   .runtime-menu-item:hover,
@@ -861,23 +855,22 @@
   }
 
   .runtime-menu-toggle {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
     gap: 14px;
   }
 
   .runtime-menu-toggle-label {
-    flex: 1;
     min-width: 0;
     line-height: 1.35;
   }
 
   .runtime-menu-toggle input {
-    flex: 0 0 auto;
+    justify-self: end;
     width: 18px;
     height: 18px;
-    margin-top: 1px;
+    margin: 0;
     accent-color: #6ee7b7;
   }
 
