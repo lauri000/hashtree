@@ -8,8 +8,8 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use hashtree_core::from_hex;
 use nostr::{
-    ClientMessage as NostrClientMessage, JsonUtil as NostrJsonUtil,
-    Filter as NostrFilter, RelayMessage as NostrRelayMessage, SubscriptionId,
+    ClientMessage as NostrClientMessage, Filter as NostrFilter, JsonUtil as NostrJsonUtil,
+    RelayMessage as NostrRelayMessage, SubscriptionId,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, time::Duration};
@@ -173,7 +173,12 @@ async fn close_upstream_nostr_subscription(
         .lock()
         .await
         .remove(&key);
-    state.ws_relay.upstream_seen_events.lock().await.remove(&key);
+    state
+        .ws_relay
+        .upstream_seen_events
+        .lock()
+        .await
+        .remove(&key);
 }
 
 async fn close_all_upstream_nostr_subscriptions(state: &AppState, client_id: u64) {
@@ -263,7 +268,12 @@ async fn mark_upstream_nostr_relay_complete(
     };
 
     if should_send_eose {
-        send_nostr(state, client_id, NostrRelayMessage::eose(subscription_id.clone())).await;
+        send_nostr(
+            state,
+            client_id,
+            NostrRelayMessage::eose(subscription_id.clone()),
+        )
+        .await;
     }
 }
 
@@ -497,17 +507,20 @@ async fn handle_message(client_id: u64, msg: Message, state: &AppState) {
                                     .await;
                                     if upstream_relays > 0 {
                                         let key = (client_id, subscription_id.to_string());
-                                        let mut seen_events = state.ws_relay.upstream_seen_events.lock().await;
-                                        seen_events
-                                            .entry(key)
-                                            .or_default()
-                                            .extend(local_events.iter().map(|event| event.id.to_hex()));
+                                        let mut seen_events =
+                                            state.ws_relay.upstream_seen_events.lock().await;
+                                        seen_events.entry(key).or_default().extend(
+                                            local_events.iter().map(|event| event.id.to_hex()),
+                                        );
                                     }
                                     for event in local_events {
                                         send_nostr(
                                             state,
                                             client_id,
-                                            NostrRelayMessage::event(subscription_id.clone(), event),
+                                            NostrRelayMessage::event(
+                                                subscription_id.clone(),
+                                                event,
+                                            ),
                                         )
                                         .await;
                                     }
@@ -527,11 +540,12 @@ async fn handle_message(client_id: u64, msg: Message, state: &AppState) {
                                         &subscription_id,
                                     )
                                     .await;
-                                    relay.handle_client_message(
-                                        client_id,
-                                        NostrClientMessage::Close(subscription_id.clone()),
-                                    )
-                                    .await;
+                                    relay
+                                        .handle_client_message(
+                                            client_id,
+                                            NostrClientMessage::Close(subscription_id.clone()),
+                                        )
+                                        .await;
                                 }
                                 other => {
                                     relay.handle_client_message(client_id, other).await;
@@ -1050,16 +1064,16 @@ async fn set_client_protocol(state: &AppState, client_id: u64, protocol: WsProto
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nostr_relay::{NostrRelay, NostrRelayConfig};
     use anyhow::Result;
     use futures::{SinkExt, StreamExt};
-    use crate::nostr_relay::{NostrRelay, NostrRelayConfig};
+    use nostr::secp256k1::schnorr::Signature;
+    use nostr::{EventBuilder, Filter, Keys, Kind, SubscriptionId};
     use std::collections::HashSet;
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::net::TcpListener;
     use tokio_tungstenite::{accept_async, tungstenite::Message as TungsteniteMessage};
-    use nostr::secp256k1::schnorr::Signature;
-    use nostr::{EventBuilder, Filter, Keys, Kind, SubscriptionId};
 
     #[test]
     fn parse_ws_text_message_detects_nostr_req() {
@@ -1196,10 +1210,18 @@ mod tests {
             nostr_relay: Some(relay),
             nostr_relay_urls: vec![relay_url],
             tree_root_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            inflight_blob_fetches: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-            directory_listing_cache: Arc::new(std::sync::Mutex::new(super::super::auth::new_lookup_cache())),
-            resolved_path_cache: Arc::new(std::sync::Mutex::new(super::super::auth::new_lookup_cache())),
-            thumbnail_path_cache: Arc::new(std::sync::Mutex::new(super::super::auth::new_lookup_cache())),
+            inflight_blob_fetches: Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+            directory_listing_cache: Arc::new(std::sync::Mutex::new(
+                super::super::auth::new_lookup_cache(),
+            )),
+            resolved_path_cache: Arc::new(std::sync::Mutex::new(
+                super::super::auth::new_lookup_cache(),
+            )),
+            thumbnail_path_cache: Arc::new(std::sync::Mutex::new(
+                super::super::auth::new_lookup_cache(),
+            )),
             cid_size_cache: Arc::new(std::sync::Mutex::new(super::super::auth::new_lookup_cache())),
         })
     }
@@ -1253,7 +1275,13 @@ mod tests {
         state.ws_relay.clients.lock().await.insert(client_id, tx);
         let subscription_id = SubscriptionId::new("sub-1");
 
-        start_upstream_nostr_subscription(&state, client_id, subscription_id.clone(), vec![filter.clone()]).await;
+        start_upstream_nostr_subscription(
+            &state,
+            client_id,
+            subscription_id.clone(),
+            vec![filter.clone()],
+        )
+        .await;
 
         let forwarded = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
             .await?
@@ -1262,7 +1290,10 @@ mod tests {
             panic!("expected text event");
         };
         match NostrRelayMessage::from_json(text.as_str())? {
-            NostrRelayMessage::Event { subscription_id: sid, event: forwarded_event } => {
+            NostrRelayMessage::Event {
+                subscription_id: sid,
+                event: forwarded_event,
+            } => {
                 assert_eq!(sid, subscription_id);
                 assert_eq!(forwarded_event.id, event.id);
             }
@@ -1287,7 +1318,12 @@ mod tests {
         assert_eq!(events[0].id, event.id);
 
         close_upstream_nostr_subscription(&state, client_id, &subscription_id).await;
-        assert!(state.ws_relay.upstream_nostr_subscriptions.lock().await.is_empty());
+        assert!(state
+            .ws_relay
+            .upstream_nostr_subscriptions
+            .lock()
+            .await
+            .is_empty());
         Ok(())
     }
 
@@ -1355,7 +1391,10 @@ mod tests {
             panic!("expected text event");
         };
         match NostrRelayMessage::from_json(first_text.as_str())? {
-            NostrRelayMessage::Event { event: forwarded_event, .. } => {
+            NostrRelayMessage::Event {
+                event: forwarded_event,
+                ..
+            } => {
                 assert_eq!(forwarded_event.id, event.id);
             }
             other => panic!("expected upstream EVENT before EOSE, got {:?}", other),

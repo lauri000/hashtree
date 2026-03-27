@@ -11,7 +11,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // Re-export sha256 for convenience
 pub use hashtree_core::hash::sha256 as compute_sha256;
 
+#[cfg(target_pointer_width = "64")]
 const DEFAULT_MAP_SIZE: usize = 10 * 1024 * 1024 * 1024;
+#[cfg(target_pointer_width = "32")]
+const DEFAULT_MAP_SIZE: usize = 1024 * 1024 * 1024;
 const DEFAULT_MAX_READERS: u32 = 1024;
 const DATABASE_COUNT: u32 = 4;
 const BLOB_META_BYTES: usize = 16;

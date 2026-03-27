@@ -237,36 +237,6 @@ async fn resolve_root_from_local_relay(
     root_event_from_peer(latest, "local-relay", treename)
 }
 
-async fn resolve_root_history_from_local_relay(
-    state: &AppState,
-    pubkey: &str,
-    treename: &str,
-) -> Vec<PeerRootEvent> {
-    let Some(relay) = state.nostr_relay.as_ref() else {
-        return Vec::new();
-    };
-    let Some(filter) = build_root_filter(pubkey, treename) else {
-        return Vec::new();
-    };
-
-    let mut roots: Vec<_> = relay
-        .query_events(&filter, 50)
-        .await
-        .iter()
-        .filter_map(|event| root_event_from_peer(event, "local-relay", treename))
-        .collect();
-    roots.sort_by(|a, b| {
-        b.created_at
-            .cmp(&a.created_at)
-            .then_with(|| b.event_id.cmp(&a.event_id))
-    });
-    let mut seen = HashSet::new();
-    roots
-        .into_iter()
-        .filter(|root| seen.insert((root.hash.clone(), root.key.clone())))
-        .collect()
-}
-
 async fn resolve_root_offline(
     state: &AppState,
     pubkey: &str,
@@ -1324,67 +1294,6 @@ async fn resolve_thumbnail_path<S: Store>(
     Ok(None)
 }
 
-async fn resolve_historical_npub_path_response<S: Store>(
-    state: &AppState,
-    tree: &HashTree<S>,
-    npub: &str,
-    treename: &str,
-    current_root: &Cid,
-    requested_path: &str,
-    headers: &axum::http::HeaderMap,
-    is_localhost: bool,
-) -> Result<Option<Response<Body>>, String> {
-    for root in resolve_root_history_from_local_relay(state, npub, treename).await {
-        let Some(mut candidate_root) = peer_root_to_cid(&root) else {
-            continue;
-        };
-        if candidate_root.key.is_none() {
-            candidate_root.key = current_root.key;
-        }
-        if candidate_root == *current_root {
-            continue;
-        }
-
-        let mut candidate_path = requested_path.to_string();
-        if is_thumbnail_request(requested_path) {
-            match resolve_thumbnail_path(state, tree, &candidate_root, requested_path).await? {
-                Some(resolved_path) => {
-                    candidate_path = resolved_path;
-                }
-                None => continue,
-            }
-        }
-
-        let is_dir = root_is_directory_with_fetch(state, tree, &candidate_root).await?;
-        if !is_dir {
-            continue;
-        }
-
-        let Some(target) =
-            resolve_directory_target(state, tree, &candidate_root, Some(candidate_path.clone()))
-                .await?
-        else {
-            continue;
-        };
-
-        if let DirectoryTarget::File { cid, path } = target {
-            return Ok(Some(
-                serve_cid_with_range(
-                    state,
-                    &cid,
-                    headers.clone(),
-                    false,
-                    is_localhost,
-                    Some(&path),
-                )
-                .await,
-            ));
-        }
-    }
-
-    Ok(None)
-}
-
 async fn htree_npub_impl(
     State(state): State<AppState>,
     npub: String,
@@ -1457,7 +1366,6 @@ async fn htree_npub_impl(
     let store = state.store.store_arc();
     let tree = HashTree::new(HashTreeConfig::new(store).public());
 
-    let requested_path = path.clone();
     let mut effective_path = path.filter(|p| !p.is_empty());
     if let Some(path) = effective_path.clone() {
         if path == "thumbnail" || path.ends_with("/thumbnail") {
@@ -1504,61 +1412,12 @@ async fn htree_npub_impl(
                 return list_directory_json(&state, &listing_cid, false, is_localhost).await;
             }
             Ok(None) => {
-                if let Some(requested_path) = requested_path.as_deref() {
-                    match resolve_historical_npub_path_response(
-                        &state,
-                        &tree,
-                        &npub,
-                        &treename,
-                        &cid,
-                        requested_path,
-                        &headers,
-                        is_localhost,
-                    )
-                    .await
-                    {
-                        Ok(Some(response)) => return response,
-                        Ok(None) => {}
-                        Err(e) => {
-                            return Response::builder()
-                                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                                .body(Body::from(format!("Error: {}", e)))
-                                .unwrap();
-                        }
-                    }
-                }
                 return Response::builder()
                     .status(StatusCode::NOT_FOUND)
                     .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
                     .body(Body::from("File not found"))
                     .unwrap();
             }
-            Err(e) => {
-                return Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                    .body(Body::from(format!("Error: {}", e)))
-                    .unwrap();
-            }
-        }
-    }
-
-    if let Some(requested_path) = requested_path.as_deref() {
-        match resolve_historical_npub_path_response(
-            &state,
-            &tree,
-            &npub,
-            &treename,
-            &cid,
-            requested_path,
-            &headers,
-            is_localhost,
-        )
-        .await
-        {
-            Ok(Some(response)) => return response,
-            Ok(None) => {}
             Err(e) => {
                 return Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -4250,7 +4109,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn htree_npub_path_thumbnail_falls_back_to_historical_root() {
+    async fn htree_npub_path_thumbnail_does_not_fall_back_to_historical_root() {
         let temp_dir = TempDir::new().unwrap();
         let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());
         let tree = HashTree::new(HashTreeConfig::new(store.store_arc()).public());
@@ -4341,9 +4200,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(body.as_ref(), thumb_bytes.as_slice());
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

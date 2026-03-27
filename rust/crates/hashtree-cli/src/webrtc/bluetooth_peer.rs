@@ -580,18 +580,16 @@ mod tests {
             None,
         );
 
-        let event =
-            EventBuilder::new(Kind::TextNote, "bluetooth nostr relay", []).to_event(&author_keys)?;
+        let event = EventBuilder::new(Kind::TextNote, "bluetooth nostr relay", [])
+            .to_event(&author_keys)?;
         relay.ingest_trusted_event(event.clone()).await?;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let events = requester
             .query_nostr_events(
-                vec![
-                    Filter::new()
-                        .authors(vec![event.pubkey])
-                        .kinds(vec![event.kind]),
-                ],
+                vec![Filter::new()
+                    .authors(vec![event.pubkey])
+                    .kinds(vec![event.kind])],
                 Duration::from_secs(1),
             )
             .await?;

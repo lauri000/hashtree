@@ -124,7 +124,9 @@ async fn embedded_daemon_accepts_ws_route_with_trailing_slash() {
     .expect("start embedded daemon");
 
     let url = format!("ws://127.0.0.1:{}/ws/", info.port);
-    let (mut socket, _) = connect_async(url).await.expect("connect ws route with trailing slash");
+    let (mut socket, _) = connect_async(url)
+        .await
+        .expect("connect ws route with trailing slash");
 
     socket
         .send(WsMessage::Text(
