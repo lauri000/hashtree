@@ -397,6 +397,19 @@ fn resolve_iris_paths(
     }
 }
 
+fn normalize_embedded_daemon_config(
+    config: &mut hashtree_cli::Config,
+    data_dir: &Path,
+    bind_address: &str,
+) {
+    config.storage.data_dir = data_dir.to_string_lossy().to_string();
+    config.server.bind_address = bind_address.to_string();
+    config.server.enable_auth = false;
+    config.server.stun_port = 0;
+    config.server.enable_bluetooth = false;
+    config.server.max_bluetooth_peers = 0;
+}
+
 /// Start the embedded htree daemon
 async fn start_daemon<R: tauri::Runtime + 'static>(
     app: AppHandle<R>,
@@ -419,10 +432,10 @@ async fn start_daemon<R: tauri::Runtime + 'static>(
         config.nostr.active_relays().len(),
         config.blossom.all_read_servers().len(),
     );
-    config.storage.data_dir = data_dir.to_string_lossy().to_string();
-    config.server.bind_address = bind_address.clone();
-    config.server.enable_auth = false;
-    config.server.stun_port = 0;
+    if config.server.enable_bluetooth || config.server.max_bluetooth_peers > 0 {
+        info!("Iris shell disables Bluetooth transport for the embedded daemon");
+    }
+    normalize_embedded_daemon_config(&mut config, &data_dir, &bind_address);
 
     // Add extra routes for relay proxy and NIP-07
     let app_for_webview_bridge = app.clone();
@@ -1370,7 +1383,7 @@ mod tests {
     use super::{
         apply_network_settings, apply_transport_settings, collect_supported_launch_deep_links,
         is_supported_launch_host, mobile_default_htree_paths, normalize_automation_startup_url,
-        normalize_supported_launch_deep_link, resolve_iris_paths,
+        normalize_embedded_daemon_config, normalize_supported_launch_deep_link, resolve_iris_paths,
         tray_connection_status_from_peers, tray_menu_spec, tray_primary_click_action,
         tray_status_text, DaemonBlossomServerSettings, DaemonNetworkSettings,
         DaemonTransportSettings, DesktopPlatform, IrisPaths, TrayConnectionStatus,
@@ -1838,6 +1851,31 @@ mod tests {
             config.blossom.write_servers,
             vec!["https://write-only.example".to_string()]
         );
+    }
+
+    #[test]
+    fn normalize_embedded_daemon_config_disables_bluetooth_for_iris_shell() {
+        let mut config = hashtree_cli::Config::default();
+        config.server.enable_webrtc = true;
+        config.server.enable_multicast = true;
+        config.server.max_multicast_peers = 5;
+        config.server.enable_bluetooth = true;
+        config.server.max_bluetooth_peers = 3;
+        config.server.enable_auth = true;
+        config.server.stun_port = 3478;
+
+        let data_dir = PathBuf::from("/tmp/iris-shell-data");
+        normalize_embedded_daemon_config(&mut config, &data_dir, "127.0.0.1:21417");
+
+        assert_eq!(config.storage.data_dir, data_dir.to_string_lossy());
+        assert_eq!(config.server.bind_address, "127.0.0.1:21417");
+        assert!(!config.server.enable_auth);
+        assert_eq!(config.server.stun_port, 0);
+        assert!(config.server.enable_webrtc);
+        assert!(config.server.enable_multicast);
+        assert_eq!(config.server.max_multicast_peers, 5);
+        assert!(!config.server.enable_bluetooth);
+        assert_eq!(config.server.max_bluetooth_peers, 0);
     }
 
     #[test]
