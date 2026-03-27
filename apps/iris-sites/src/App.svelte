@@ -4,6 +4,41 @@
   import { buildIsolatedSiteHref, isPortalShellHost } from './lib/siteHost';
   import { getMediaClientKey, setupMediaStreaming } from './lib/mediaStreamingSetup';
 
+  const IRIS_OWNER = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
+  const ENSHITTIFIER_NHASH = 'nhash1qqsxyn0g6yyac8ruej7r7j80y2gx6ev5z5flu6ry5h5t3ajju5utzjs9yz7t3p2syr9n5heajlv85uwej232dk5x4zqe8d7ft67y3m5umxr55qjku38';
+  const launcherSuggestions = [
+    {
+      name: 'MIDI Enshittifier',
+      href: `#/${IRIS_OWNER}/enshittifier/index.html`,
+      blurb: 'Mutable site route',
+    },
+    {
+      name: 'Iris Files',
+      href: `#/${IRIS_OWNER}/files/index.html`,
+      blurb: 'Files and trees',
+    },
+    {
+      name: 'Iris Git',
+      href: `#/${IRIS_OWNER}/git/index.html`,
+      blurb: 'Repos on hashtree',
+    },
+    {
+      name: 'Iris Boards',
+      href: `#/${IRIS_OWNER}/boards/index.html`,
+      blurb: 'Shared boards',
+    },
+    {
+      name: 'Iris Meet',
+      href: `#/${IRIS_OWNER}/meet/index.html`,
+      blurb: 'Video rooms',
+    },
+    {
+      name: 'Pinned MIDI',
+      href: `#/${ENSHITTIFIER_NHASH}/index.html`,
+      blurb: 'Immutable nhash route',
+    },
+  ] as const;
+
   let currentSite = $state(resolveCurrentSite());
   let runtimeReady = $state(false);
   let runtimeError = $state<string | null>(null);
@@ -104,9 +139,10 @@
   <main class="screen">
     <section class="card">
       <p class="eyebrow">Unknown Site</p>
-      <h1>This isolated host needs a valid hash route or mapped alias.</h1>
+      <h1>This host needs a valid `sites.iris.to` hash route.</h1>
       <p class="copy">
-        Open a launcher URL from <code>https://sites.iris.to</code> or use an allowlisted alias host.
+        Open a launcher URL from <code>https://sites.iris.to</code> with an immutable
+        <code>nhash</code> or mutable <code>npub/tree</code> route.
       </p>
     </section>
   </main>
@@ -114,12 +150,20 @@
   <main class="screen">
     <section class="card">
       <p class="eyebrow">Isolated Sites</p>
-      <h1>Open a hashtree site on its own web origin.</h1>
+      <h1>Open content-addressed sites with origin isolation.</h1>
       <p class="copy">
         Use a hash route like <code>https://sites.iris.to/#/nhash.../index.html</code> or
-        <code>https://sites.iris.to/#/npub1.../enshittifier/index.html</code> to launch it on an
-        isolated host with its own browser storage.
+        <code>https://sites.iris.to/#/npub1.../enshittifier/index.html</code> to launch it on a
+        separate browser origin with its own storage.
       </p>
+      <div class="suggestions">
+        {#each launcherSuggestions as suggestion}
+          <a class="suggestion" href={suggestion.href}>
+            <span class="suggestion-name">{suggestion.name}</span>
+            <span class="suggestion-blurb">{suggestion.blurb}</span>
+          </a>
+        {/each}
+      </div>
     </section>
   </main>
 {:else if inPortalShell}
@@ -214,6 +258,42 @@
     font-size: 1rem;
     line-height: 1.6;
     color: rgba(243, 243, 244, 0.78);
+  }
+
+  .suggestions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin-top: 22px;
+  }
+
+  .suggestion {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 16px;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.04);
+    color: inherit;
+    text-decoration: none;
+    transition: background 160ms ease, transform 160ms ease, border-color 160ms ease;
+  }
+
+  .suggestion:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(168, 209, 255, 0.28);
+    transform: translateY(-1px);
+  }
+
+  .suggestion-name {
+    font-size: 0.98rem;
+    font-weight: 600;
+  }
+
+  .suggestion-blurb {
+    font-size: 0.86rem;
+    color: rgba(243, 243, 244, 0.66);
   }
 
   code {
