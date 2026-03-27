@@ -129,7 +129,7 @@ pub(crate) async fn push_to_blossom(
 pub(crate) async fn background_blossom_push(
     data_dir: &PathBuf,
     cid_str: &str,
-    _servers: &[String],
+    servers: &[String],
 ) -> Result<()> {
     use hashtree_blossom::BlossomClient;
     use nostr::Keys;
@@ -147,10 +147,15 @@ pub(crate) async fn background_blossom_push(
         return Ok(());
     }
 
-    // Use BlossomClient (auto-loads servers from config)
-    let client = BlossomClient::new(keys);
+    let client = if servers.is_empty() {
+        BlossomClient::new(keys)
+    } else {
+        BlossomClient::new(keys).with_write_servers(servers.to_vec())
+    };
     let mut total_uploaded = 0;
     let mut total_skipped = 0;
+    let mut total_errors = 0;
+    let mut last_error = None;
 
     for data in &blocks_to_push {
         match client.upload_if_missing(data).await {
@@ -163,6 +168,8 @@ pub(crate) async fn background_blossom_push(
             }
             Err(e) => {
                 tracing::warn!("Blossom upload failed: {}", e);
+                total_errors += 1;
+                last_error = Some(e.to_string());
             }
         }
     }
@@ -171,6 +178,18 @@ pub(crate) async fn background_blossom_push(
         println!(
             "  file servers: {} uploaded, {} already exist",
             total_uploaded, total_skipped
+        );
+    }
+
+    if total_errors > 0 {
+        let detail = last_error
+            .as_deref()
+            .map(|err| format!(" (last error: {err})"))
+            .unwrap_or_default();
+        anyhow::bail!(
+            "failed to upload {} blob(s) to configured file servers{}",
+            total_errors,
+            detail
         );
     }
 
