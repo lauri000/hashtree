@@ -1,3 +1,11 @@
+import { nhashDecode, nhashEncode, toHex } from '@hashtree/core';
+import {
+  decodeImmutableHostLabel,
+  decodeTreeNameFromLabels,
+  encodePathSegments,
+  normalizeHost,
+} from './siteIdentity';
+
 interface HostedSiteBase {
   siteKey: string;
   title: string;
@@ -22,11 +30,18 @@ export interface SiteLocationLike {
   hash?: string;
 }
 
-function decodeHashPath(hash: string | undefined): string[] {
+const PROD_PORTAL_HOST = 'sites.iris.to';
+const LOCAL_PORTAL_HOST = 'sites.iris.localhost';
+
+function decodeHashRoute(hash: string | undefined): { parts: string[]; params: URLSearchParams } {
   const trimmed = (hash || '').trim();
-  if (!trimmed.startsWith('#/')) return [];
-  return trimmed
-    .slice(2)
+  if (!trimmed.startsWith('#/')) {
+    return { parts: [], params: new URLSearchParams() };
+  }
+
+  const route = trimmed.slice(2);
+  const [pathPart, queryPart = ''] = route.split('?', 2);
+  const parts = pathPart
     .split('/')
     .filter(Boolean)
     .map((part) => {
@@ -36,6 +51,11 @@ function decodeHashPath(hash: string | undefined): string[] {
         return part;
       }
     });
+
+  return {
+    parts,
+    params: new URLSearchParams(queryPart),
+  };
 }
 
 function isMaybeNhash(value: string): boolean {
@@ -67,12 +87,125 @@ function createGenericMutableSite(npub: string, treeName: string, entryPath: str
   };
 }
 
-function encodePathSegments(path: string): string {
-  return path
-    .split('/')
-    .filter(Boolean)
-    .map((segment) => encodeURIComponent(segment))
-    .join('/');
+function parseGenericHashSite(hash: string | undefined): HostedSite | null {
+  const { parts } = decodeHashRoute(hash);
+
+  if (parts[0] === 'nhash' && parts[1] && isMaybeNhash(parts[1])) {
+    return createGenericImmutableSite(parts[1], parts.slice(2).join('/') || 'index.html');
+  }
+
+  if (parts[0] && isMaybeNhash(parts[0])) {
+    return createGenericImmutableSite(parts[0], parts.slice(1).join('/') || 'index.html');
+  }
+
+  if (parts[0] === 'npub' && parts[1] && parts[2] && isMaybeNpub(parts[1])) {
+    return createGenericMutableSite(parts[1], parts[2], parts.slice(3).join('/') || 'index.html');
+  }
+
+  if (parts[0] && parts[1] && isMaybeNpub(parts[0])) {
+    return createGenericMutableSite(parts[0], parts[1], parts.slice(2).join('/') || 'index.html');
+  }
+
+  return null;
+}
+
+type RuntimeSiteHint =
+  | { kind: 'immutable'; hash: Uint8Array }
+  | { kind: 'mutable'; npub: string; treeName: string };
+
+function parseRuntimeSiteHint(host: string): RuntimeSiteHint | null {
+  const normalized = normalizeHost(host);
+  if (!normalized || normalized === PROD_PORTAL_HOST || normalized === LOCAL_PORTAL_HOST) {
+    return null;
+  }
+
+  let prefix = '';
+  if (normalized.endsWith('.hashtree.cc')) {
+    prefix = normalized.slice(0, -'.hashtree.cc'.length);
+  } else if (normalized.endsWith(`.${LOCAL_PORTAL_HOST}`)) {
+    prefix = normalized.slice(0, -(`.${LOCAL_PORTAL_HOST}`.length));
+  } else {
+    return null;
+  }
+
+  const labels = prefix.split('.').filter(Boolean);
+  if (!labels.length) return null;
+
+  if (labels.length === 1) {
+    const hash = decodeImmutableHostLabel(labels[0]);
+    if (hash) {
+      return { kind: 'immutable', hash };
+    }
+  }
+
+  if (!isMaybeNpub(labels[0]) || labels.length < 2) {
+    return null;
+  }
+
+  const treeName = decodeTreeNameFromLabels(labels.slice(1));
+  if (!treeName) return null;
+
+  return {
+    kind: 'mutable',
+    npub: labels[0],
+    treeName,
+  };
+}
+
+function resolveImmutableRuntimeSite(hint: { hash: Uint8Array }, hash: string | undefined): HostedSite | null {
+  const bareNhash = nhashEncode(hint.hash);
+  const generic = parseGenericHashSite(hash);
+  if (generic?.kind === 'immutable') {
+    try {
+      // Runtime hosts are the security boundary. A fragment must not be able to
+      // smuggle in a different immutable root under the same origin.
+      if (nhashEncode(nhashDecode(generic.nhash).hash) !== bareNhash) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+    return generic;
+  }
+
+  const { parts, params } = decodeHashRoute(hash);
+  const entryPath = parts.join('/') || 'index.html';
+  const decryptKey = params.get('k')?.trim();
+
+  if (!decryptKey) {
+    return createGenericImmutableSite(bareNhash, entryPath);
+  }
+
+  if (!/^[a-f0-9]{64}$/i.test(decryptKey)) {
+    return null;
+  }
+
+  try {
+    return createGenericImmutableSite(
+      nhashEncode({ hash: toHex(hint.hash), decryptKey: decryptKey.toLowerCase() }),
+      entryPath,
+    );
+  } catch {
+    return null;
+  }
+}
+
+function resolveMutableRuntimeSite(
+  hint: { npub: string; treeName: string },
+  hash: string | undefined,
+): HostedSite | null {
+  const generic = parseGenericHashSite(hash);
+  if (generic?.kind === 'mutable') {
+    // Refuse cross-site spoofing like real-site.hashtree.cc/#/attacker/tree:
+    // the hostname decides the mutable root, not the fragment.
+    if (generic.npub !== hint.npub || generic.treeName !== hint.treeName) {
+      return null;
+    }
+    return generic;
+  }
+
+  const { parts } = decodeHashRoute(hash);
+  return createGenericMutableSite(hint.npub, hint.treeName, parts.join('/') || 'index.html');
 }
 
 export function serializeHostedSiteHash(site: HostedSite): string {
@@ -84,23 +217,13 @@ export function serializeHostedSiteHash(site: HostedSite): string {
 }
 
 export function resolveHostedSite(location: SiteLocationLike): HostedSite | null {
-  const hashParts = decodeHashPath(location.hash);
-
-  if (hashParts[0] === 'nhash' && hashParts[1] && isMaybeNhash(hashParts[1])) {
-    return createGenericImmutableSite(hashParts[1], hashParts.slice(2).join('/') || 'index.html');
+  const runtimeHint = parseRuntimeSiteHint(location.host);
+  if (runtimeHint?.kind === 'immutable') {
+    return resolveImmutableRuntimeSite(runtimeHint, location.hash);
+  }
+  if (runtimeHint?.kind === 'mutable') {
+    return resolveMutableRuntimeSite(runtimeHint, location.hash);
   }
 
-  if (hashParts[0] && isMaybeNhash(hashParts[0])) {
-    return createGenericImmutableSite(hashParts[0], hashParts.slice(1).join('/') || 'index.html');
-  }
-
-  if (hashParts[0] === 'npub' && hashParts[1] && hashParts[2] && isMaybeNpub(hashParts[1])) {
-    return createGenericMutableSite(hashParts[1], hashParts[2], hashParts.slice(3).join('/') || 'index.html');
-  }
-
-  if (hashParts[0] && hashParts[1] && isMaybeNpub(hashParts[0])) {
-    return createGenericMutableSite(hashParts[0], hashParts[1], hashParts.slice(2).join('/') || 'index.html');
-  }
-
-  return null;
+  return parseGenericHashSite(location.hash);
 }

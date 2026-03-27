@@ -42,7 +42,6 @@
   let currentSite = $state(resolveCurrentSite());
   let runtimeReady = $state(false);
   let runtimeError = $state<string | null>(null);
-  let portalLaunchHref = $state('');
 
   function resolveCurrentSite() {
     if (typeof window === 'undefined') return null;
@@ -95,7 +94,6 @@
       if (typeof window !== 'undefined' && isPortalShellHost(window.location.host) && site) {
         void buildIsolatedSiteHref(site, window.location.host)
           .then((href) => {
-            portalLaunchHref = href;
             if (window.location.href !== href) {
               window.location.replace(href);
             }
@@ -103,8 +101,6 @@
           .catch((error) => {
             runtimeError = error instanceof Error ? error.message : String(error);
           });
-      } else {
-        portalLaunchHref = '';
       }
     };
 
@@ -149,8 +145,8 @@
 {:else if !currentSite}
   <main class="screen">
     <section class="card">
-      <p class="eyebrow">Isolated Sites</p>
-      <h1>Open content-addressed sites with origin isolation.</h1>
+      <p class="eyebrow">Decentralized CDN</p>
+      <h1>Content-addressed sites with origin isolation.</h1>
       <p class="copy">
         Use a hash route like <code>https://sites.iris.to/#/nhash.../index.html</code> or
         <code>https://sites.iris.to/#/npub1.../enshittifier/index.html</code> to launch it on a
@@ -172,9 +168,6 @@
       <p class="eyebrow">Launching</p>
       <h1>{currentSite.title}</h1>
       <p class="copy">{runtimeError ?? 'Opening the isolated origin…'}</p>
-      {#if portalLaunchHref}
-        <a class="link" href={portalLaunchHref}>Continue to isolated site</a>
-      {/if}
     </section>
   </main>
 {:else}

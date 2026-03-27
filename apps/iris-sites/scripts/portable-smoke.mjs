@@ -1,8 +1,8 @@
 import http from 'node:http';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { chromium } from '@playwright/test';
+import { nhashDecode, toHex } from '@hashtree/core';
 
 const appDir = path.resolve(import.meta.dirname, '..');
 const distDir = path.join(appDir, 'dist');
@@ -172,9 +172,57 @@ async function assertFrameShowsApp(page, timeoutMs) {
   }
 }
 
-function derivedRuntimeHost(siteKey, port) {
-  const digest = createHash('sha256').update(`htree-site:${siteKey}`).digest('hex').slice(0, 24);
-  return `http://${digest}.sites.iris.localhost:${port}`;
+function bytesToHex(bytes) {
+  return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function encodeBase32(bytes) {
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz234567';
+  let bits = 0;
+  let value = 0;
+  let output = '';
+
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      output += alphabet[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+
+  if (bits > 0) {
+    output += alphabet[(value << (5 - bits)) & 31];
+  }
+
+  return output;
+}
+
+function encodeTreeNameLabels(treeName) {
+  const safeLabels = treeName.split('/').filter(Boolean);
+  if (
+    safeLabels.length > 0 &&
+    safeLabels.every((label) => /^(?!x-)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))
+  ) {
+    return safeLabels;
+  }
+
+  const treeHex = bytesToHex(new TextEncoder().encode(treeName));
+  const chunks = treeHex.match(/.{1,60}/g);
+  return (chunks && chunks.length > 0 ? chunks : ['00']).map((chunk) => `x-${chunk}`);
+}
+
+function immutableRuntimeHost(nhash, port) {
+  const cid = nhashDecode(nhash);
+  return {
+    host: `http://${encodeBase32(cid.hash)}.sites.iris.localhost:${port}`,
+    keyHex: cid.key ? toHex(cid.key) : '',
+  };
+}
+
+function mutableRuntimeHost(npub, treeName, port) {
+  const labels = encodeTreeNameLabels(treeName);
+  return `http://${npub}.${labels.join('.')}.sites.iris.localhost:${port}`;
 }
 
 const { server, port } = await startServer(distDir);
@@ -194,11 +242,12 @@ try {
   if (!genericResponse || genericResponse.status() !== 200) {
     throw new Error(`Generic portal boot page returned ${genericResponse?.status() ?? 'no response'} for ${genericUrl}`);
   }
-  await genericPage.waitForURL(new RegExp(`^http://[a-f0-9]+\\.sites\\.iris\\.localhost:${port}/#/${ENSHITTIFIER_NHASH}/index\\.html$`), { timeout: 60000 });
+  const immutableRuntime = immutableRuntimeHost(ENSHITTIFIER_NHASH, port);
+  await genericPage.waitForURL(`${immutableRuntime.host}/#/index.html?k=${immutableRuntime.keyHex}`, { timeout: 60000 });
   await assertFrameShowsApp(genericPage, 60000);
   const genericHref = genericPage.url();
-  if (!genericHref.includes('.sites.iris.localhost:')) {
-    throw new Error(`Expected derived wildcard host, got ${genericHref}`);
+  if (!genericHref.startsWith(immutableRuntime.host)) {
+    throw new Error(`Expected keyless nhash runtime host, got ${genericHref}`);
   }
   if (genericHref.split('#')[0].includes(ENSHITTIFIER_NHASH)) {
     throw new Error(`Derived wildcard host leaked nhash outside hash fragment: ${genericHref}`);
@@ -211,12 +260,12 @@ try {
   if (!mutableResponse || mutableResponse.status() !== 200) {
     throw new Error(`Mutable portal boot page returned ${mutableResponse?.status() ?? 'no response'} for ${mutableUrl}`);
   }
-  await mutablePage.waitForURL(new RegExp(`^http://[a-f0-9]+\\.sites\\.iris\\.localhost:${port}/#/${ENSHITTIFIER_NPUB}/enshittifier/index\\.html$`), { timeout: 60000 });
+  await mutablePage.waitForURL(`${mutableRuntimeHost(ENSHITTIFIER_NPUB, 'enshittifier', port)}/#/index.html`, { timeout: 60000 });
   await assertFrameShowsApp(mutablePage, 60000);
 
   const directImmutablePage = await context.newPage();
   attachErrorCollection(directImmutablePage, pageErrors);
-  const directImmutableUrl = `${derivedRuntimeHost(`immutable:${ENSHITTIFIER_NHASH}`, port)}/#/${ENSHITTIFIER_NHASH}/index.html`;
+  const directImmutableUrl = `${immutableRuntime.host}/#/index.html?k=${immutableRuntime.keyHex}`;
   const directImmutableResponse = await directImmutablePage.goto(directImmutableUrl, { waitUntil: 'load', timeout: 60000 });
   if (!directImmutableResponse || directImmutableResponse.status() !== 200) {
     throw new Error(`Direct immutable runtime returned ${directImmutableResponse?.status() ?? 'no response'} for ${directImmutableUrl}`);

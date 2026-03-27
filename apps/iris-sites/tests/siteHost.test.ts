@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { nhashDecode, nhashEncode, toHex } from '@hashtree/core';
 import { buildIsolatedSiteHref, isPortalShellHost } from '../src/lib/siteHost';
+import { encodeImmutableHostLabel } from '../src/lib/siteIdentity';
 
 describe('site host routing', () => {
   it('treats the bare sites host as the launcher shell', () => {
@@ -8,31 +10,49 @@ describe('site host routing', () => {
     expect(isPortalShellHost('enshittifier.hashtree.cc')).toBe(false);
   });
 
-  it('keeps the immutable root inside the hash when deriving a wildcard isolated host', async () => {
+  it('derives immutable runtime hosts from the keyless nhash so the server never sees the decrypt key', async () => {
+    const nhash = 'nhash1qqsxyn0g6yyac8ruej7r7j80y2gx6ev5z5flu6ry5h5t3ajju5utzjs9yz7t3p2syr9n5heajlv85uwej232dk5x4zqe8d7ft67y3m5umxr55qjku38';
     const href = await buildIsolatedSiteHref({
       kind: 'immutable',
       siteKey: 'pilot',
       title: 'Isolated Site',
-      nhash: 'nhash1qqsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq',
+      nhash,
       entryPath: 'index.html',
     });
 
-    expect(href).toMatch(/^https:\/\/[a-f0-9]+\.hashtree\.cc\/#\/nhash1qqsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq\/index\.html$/);
-    expect(href.split('#')[0]).not.toContain('nhash1qqsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq');
+    const url = new URL(href);
+    const decoded = nhashDecode(nhash);
+    expect(url.hostname).toBe(`${encodeImmutableHostLabel(decoded.hash)}.hashtree.cc`);
+    expect(url.pathname).toBe('/');
+    expect(url.hash).toBe(`#/index.html?k=${toHex(decoded.key!)}`);
+    expect(url.href).not.toContain(nhashEncode(decoded.hash));
+    expect(url.href).not.toContain(nhash);
   });
 
-  it('keeps mutable site identities inside the hash when deriving a wildcard isolated host', async () => {
+  it('derives mutable runtime hosts from npub plus DNS-safe tree segments', async () => {
+    const npub = 'npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
     const href = await buildIsolatedSiteHref({
       kind: 'mutable',
       siteKey: 'pilot',
       title: 'apps/iris',
-      npub: 'npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq',
+      npub,
       treeName: 'apps/iris',
       entryPath: 'index.html',
     });
 
-    expect(href).toMatch(/^https:\/\/[a-f0-9]+\.hashtree\.cc\/#\/npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq\/apps%2Firis\/index\.html$/);
-    expect(href.split('#')[0]).not.toContain('npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq');
-    expect(href.split('#')[0]).not.toContain('apps/iris');
+    expect(href).toBe(`https://${npub}.apps.iris.hashtree.cc/#/index.html`);
+  });
+
+  it('encodes non-DNS-safe mutable tree names into reversible host labels', async () => {
+    const href = await buildIsolatedSiteHref({
+      kind: 'mutable',
+      siteKey: 'pilot',
+      title: 'unsafe',
+      npub: 'npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq',
+      treeName: 'apps/iris ui',
+      entryPath: 'index.html',
+    });
+
+    expect(href).toBe('https://npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq.x-617070732f69726973207569.hashtree.cc/#/index.html');
   });
 });

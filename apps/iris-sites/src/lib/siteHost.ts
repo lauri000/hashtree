@@ -1,12 +1,14 @@
+import { nhashDecode, toHex } from '@hashtree/core';
 import type { HostedSite } from './siteConfig';
-import { serializeHostedSiteHash } from './siteConfig';
+import {
+  encodeImmutableHostLabel,
+  encodePathSegments,
+  encodeTreeNameLabels,
+  normalizeHost,
+} from './siteIdentity';
 
 const PROD_PORTAL_HOST = 'sites.iris.to';
 const LOCAL_PORTAL_HOST = 'sites.iris.localhost';
-
-function normalizeHost(host: string): string {
-  return host.trim().toLowerCase().replace(/:\d+$/, '');
-}
 
 function resolveHostContext(currentHost?: string): {
   protocol: string;
@@ -44,12 +46,26 @@ function resolveHostContext(currentHost?: string): {
   };
 }
 
-async function sha256Hex(input: string): Promise<string> {
-  const data = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
+function serializeRuntimeHash(site: HostedSite): string {
+  const entryPath = encodePathSegments(site.entryPath || 'index.html');
+  if (site.kind === 'immutable') {
+    const cid = nhashDecode(site.nhash);
+    const params = new URLSearchParams();
+    if (cid.key) {
+      params.set('k', toHex(cid.key));
+    }
+    const query = params.toString();
+    return `#/${entryPath}${query ? `?${query}` : ''}`;
+  }
+  return `#/${entryPath}`;
+}
+
+function buildRuntimeHostPrefix(site: HostedSite): string {
+  if (site.kind === 'immutable') {
+    return encodeImmutableHostLabel(nhashDecode(site.nhash).hash);
+  }
+
+  return [site.npub, ...encodeTreeNameLabels(site.treeName)].join('.');
 }
 
 export function isPortalShellHost(host: string): boolean {
@@ -57,17 +73,8 @@ export function isPortalShellHost(host: string): boolean {
   return normalized === PROD_PORTAL_HOST || normalized === LOCAL_PORTAL_HOST;
 }
 
-function siteDigestKey(site: HostedSite): string {
-  if (site.kind === 'immutable') {
-    return `immutable:${site.nhash}`;
-  }
-  return `mutable:${site.npub}/${site.treeName}`;
-}
-
 export async function buildIsolatedSiteHref(site: HostedSite, currentHost?: string): Promise<string> {
   const hostContext = resolveHostContext(currentHost);
-
-  const digest = await sha256Hex(`htree-site:${siteDigestKey(site)}`);
-  const subdomain = digest.slice(0, 24);
-  return `${hostContext.protocol}//${subdomain}.${hostContext.runtimeSuffix}/${serializeHostedSiteHash(site)}`;
+  const runtimeHostPrefix = buildRuntimeHostPrefix(site);
+  return `${hostContext.protocol}//${runtimeHostPrefix}.${hostContext.runtimeSuffix}/${serializeRuntimeHash(site)}`;
 }
