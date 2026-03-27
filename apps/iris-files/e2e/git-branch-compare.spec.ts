@@ -245,7 +245,7 @@ test.describe('Git branch comparison and merge', () => {
 
   test('branch dropdown shows compare option', async ({ page }) => {
     test.setTimeout(90000);
-    await navigateToPublicFolder(page);
+    await navigateToPublicFolder(page, { timeoutMs: 60000, requireRelay: false });
 
     // Create a folder and init as git repo
     await createRepositoryInCurrentDirectory(page, 'compare-dropdown-test');
@@ -312,7 +312,7 @@ test.describe('Git branch comparison and merge', () => {
   });
 
   test('branch creation persists and shows in dropdown', { timeout: 90000 }, async ({ page }) => {
-    await navigateToPublicFolder(page);
+    await navigateToPublicFolder(page, { timeoutMs: 60000, requireRelay: false });
 
     // Create a folder and init as git repo
     await createAndEnterFolder(page, 'branch-persist-test');
@@ -381,7 +381,7 @@ test.describe('Git branch comparison and merge', () => {
       }
     });
 
-    await navigateToPublicFolder(page);
+    await navigateToPublicFolder(page, { timeoutMs: 60000, requireRelay: false });
 
     // Start from a plain folder so the initial commit captures main-file.txt in this test.
     await createPlainFolderInCurrentDirectory(page, 'merge-test');

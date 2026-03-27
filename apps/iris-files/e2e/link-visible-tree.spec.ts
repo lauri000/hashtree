@@ -81,6 +81,7 @@ async function createTreeWithVisibility(page: any, name: string, visibility: 'pu
   const input = page.locator('input[placeholder="Folder name..."]');
   await expect(input).toBeVisible({ timeout: 10000 });
   await input.fill(name);
+  const modal = page.locator('.fixed.inset-0').filter({ has: input }).last();
 
   if (visibility !== 'public') {
     const visibilityButton = page.getByRole('button', { name: new RegExp(visibility, 'i') });
@@ -88,7 +89,11 @@ async function createTreeWithVisibility(page: any, name: string, visibility: 'pu
     await expect(visibilityButton).toHaveClass(/ring-accent/);
   }
 
-  await page.getByRole('button', { name: 'Create' }).click();
+  const createButton = modal.getByRole('button', { name: 'Create' });
+  await expect(createButton).toBeVisible({ timeout: 10000 });
+  await createButton.click().catch(async () => {
+    await input.press('Enter');
+  });
   await expect(page).toHaveURL(new RegExp(`${name}`), { timeout: 30000 });
   await expect(page.getByRole('button', { name: 'New File' })).toBeVisible({ timeout: 30000 });
 
@@ -103,7 +108,12 @@ async function createFileWithContent(page: any, fileName: string, content: strin
   const nameInput = page.locator('input[placeholder="File name..."]');
   await expect(nameInput).toBeVisible({ timeout: 10000 });
   await nameInput.fill(fileName);
-  await page.getByRole('button', { name: 'Create' }).click();
+  const modal = page.locator('.fixed.inset-0').filter({ has: nameInput }).last();
+  const createButton = modal.getByRole('button', { name: 'Create' });
+  await expect(createButton).toBeVisible({ timeout: 10000 });
+  await createButton.click().catch(async () => {
+    await nameInput.press('Enter');
+  });
 
   const editor = page.locator('textarea');
   await expect(editor).toBeVisible({ timeout: 30000 });
@@ -320,6 +330,7 @@ test.describe('Link-visible Tree Visibility', () => {
   test('should create file in link-visible tree and read it back', async ({ page }) => {
     test.slow();
     await createTreeWithVisibility(page, 'linkvis-file', 'link-visible');
+    await waitForElapsed(page, 2000);
     await createFileWithContent(page, 'secret.txt', 'This is secret content!');
     await expect(page.locator('pre')).toContainText('This is secret content!', { timeout: 30000 });
   });

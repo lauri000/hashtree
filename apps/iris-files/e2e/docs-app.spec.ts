@@ -61,6 +61,46 @@ async function waitForDocsEditor(page: any, timeoutMs: number = 60000) {
   await expect(editor).toBeVisible({ timeout: 1000 });
 }
 
+async function waitForEditorContent(
+  page: any,
+  expectedTexts: string[],
+  timeoutMs: number = 90000
+) {
+  const editor = page.locator('.ProseMirror');
+  const start = Date.now();
+  let recovered = false;
+
+  while (Date.now() - start < timeoutMs) {
+    await page.evaluate(() => {
+      (window as any).__workerAdapter?.sendHello?.();
+      (window as any).__reloadYjsEditors?.();
+    }).catch(() => {});
+
+    const text = await editor.textContent().catch(() => null);
+    const normalized = text ?? '';
+    if (expectedTexts.every(expected => normalized.includes(expected))) {
+      return;
+    }
+
+    if (!recovered && Date.now() - start > timeoutMs / 2) {
+      await safeReload(page, { waitUntil: 'domcontentloaded', timeoutMs: Math.min(60000, timeoutMs) }).catch(() => {});
+      await waitForAppReady(page, Math.min(60000, timeoutMs)).catch(() => {});
+      await ensureLoggedIn(page, Math.min(30000, timeoutMs)).catch(() => {});
+      await disableOthersPool(page).catch(() => {});
+      await waitForYjsEntry(page, Math.min(60000, timeoutMs)).catch(() => {});
+      await waitForDocsEditor(page, Math.min(60000, timeoutMs)).catch(() => {});
+      recovered = true;
+    }
+
+    await page.waitForTimeout(2000);
+  }
+
+  const finalText = (await editor.textContent().catch(() => null)) ?? '';
+  for (const expected of expectedTexts) {
+    expect(finalText).toContain(expected);
+  }
+}
+
 test.describe('Iris Docs App', () => {
   test.setTimeout(120000);
   test.beforeEach(async ({ page }) => {
@@ -165,11 +205,7 @@ test.describe('Iris Docs App', () => {
     const editorAfterReload = page.locator('.ProseMirror');
     await expect(editorAfterReload).toBeVisible({ timeout: 60000 });
     await expect(page.locator('button[title="Bold (Ctrl+B)"]')).toBeVisible({ timeout: 60000 });
-    await expect.poll(async () => {
-      await page.evaluate(() => (window as any).__reloadYjsEditors?.());
-      const text = await editorAfterReload.textContent();
-      return text?.includes('Hello persistence test!') ?? false;
-    }, { timeout: 120000, intervals: [1000, 2000, 3000] }).toBe(true);
+    await waitForEditorContent(page, ['Hello persistence test!'], 120000);
 
     await page.evaluate(() => window.location.hash = '#/');
 
@@ -265,11 +301,7 @@ test.describe('Iris Docs App', () => {
     await waitForDocsEditor(page, 90000);
     await expect(page.locator('button[title="Bold (Ctrl+B)"]')).toBeVisible({ timeout: 30000 });
     await waitForYjsEntry(page, 90000);
-    await expect.poll(async () => {
-      await page.evaluate(() => (window as any).__reloadYjsEditors?.());
-      const text = await page.locator('.ProseMirror').textContent();
-      return text?.includes('Initial content.') ?? false;
-    }, { timeout: 90000, intervals: [1000, 2000, 3000] }).toBe(true);
+    await waitForEditorContent(page, ['Initial content.'], 90000);
 
     const editor2 = page.locator('.ProseMirror');
     const rootBeforeAppend = await page.evaluate(() => (window as any).__getTreeRoot?.() ?? null);
@@ -336,12 +368,7 @@ test.describe('Iris Docs App', () => {
     await waitForDocsEditor(page, 90000);
     await expect(page.locator('button[title="Bold (Ctrl+B)"]')).toBeVisible({ timeout: 30000 });
     await waitForYjsEntry(page, 90000);
-    await expect.poll(async () => {
-      await page.evaluate(() => (window as any).__reloadYjsEditors?.());
-      const text = await page.locator('.ProseMirror').textContent();
-      const normalized = text ?? '';
-      return normalized.includes('Initial content.') && normalized.includes('Added more content.');
-    }, { timeout: 120000, intervals: [1000, 2000, 3000] }).toBe(true);
+    await waitForEditorContent(page, ['Initial content.', 'Added more content.'], 120000);
   });
 
   test('another browser can view document via shared link', async ({ browser }) => {

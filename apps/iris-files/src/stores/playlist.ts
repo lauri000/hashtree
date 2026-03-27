@@ -17,7 +17,7 @@ import { getLocalRootCache, getLocalRootKey, onCacheUpdate } from '../treeRootCa
 import { LRUCache } from '../utils/lruCache';
 import { indexVideo } from './searchIndex';
 import { clearFeedPlaylistInfo } from './homeFeedCache';
-import { getEncodedNhashUrl, getHtreePrefix, getNhashFileUrl } from '../lib/mediaUrl';
+import { getEncodedNhashUrl, getHtreePrefix, getNhashFileUrl, getStablePathUrl } from '../lib/mediaUrl';
 import { getInitialPlaylistItemTitle } from '../lib/videoDisplayTitle';
 import { LinkType, toHex, type CID } from '@hashtree/core';
 import { findPlayableMediaEntry, isPlayableMediaFileName, PLAYABLE_MEDIA_EXTENSIONS } from '../lib/playableMedia';
@@ -170,6 +170,19 @@ function sameHash(a: CID | null | undefined, b: CID | null | undefined): boolean
 
 function getRootCacheKey(rootCid: CID): string {
   return `${toHex(rootCid.hash)}:${rootCid.key ? toHex(rootCid.key) : ''}`;
+}
+
+async function readTextViaStablePath(rootCid: CID, path: string): Promise<string | null> {
+  const url = getStablePathUrl({ rootCid, path });
+  if (!url) return null;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const text = (await response.text()).trim();
+    return text || null;
+  } catch {
+    return null;
+  }
 }
 
 async function detectDirectRootMediaInfo(rootCid: CID, treeName?: string): Promise<PlaylistCardInfo | null> {
@@ -722,9 +735,17 @@ async function loadPlaylistMetadata(
         return;
       }
 
-      const subEntries: Array<{ name: string; cid: CID; size: number; type: LinkType; meta?: Record<string, unknown> }> | null =
-        await tree.listDirectory(entry.cid);
+      let subEntries: Array<{ name: string; cid: CID; size: number; type: LinkType; meta?: Record<string, unknown> }> | null = null;
+      try {
+        subEntries = await tree.listDirectory(entry.cid);
+      } catch {}
       if (!subEntries) {
+        if (title === entry.name) {
+          const remoteTitle = await readTextViaStablePath(entry.cid, 'title.txt');
+          if (remoteTitle) {
+            title = remoteTitle;
+          }
+        }
         if (title !== entry.name || duration || thumbnailUrl) {
           currentPlaylist.update(playlist => {
             if (!playlist) return playlist;
@@ -795,6 +816,13 @@ async function loadPlaylistMetadata(
               title = new TextDecoder().decode(titleData).trim();
             }
           } catch {}
+        }
+      }
+
+      if (title === entry.name) {
+        const remoteTitle = await readTextViaStablePath(entry.cid, 'title.txt');
+        if (remoteTitle) {
+          title = remoteTitle;
         }
       }
 

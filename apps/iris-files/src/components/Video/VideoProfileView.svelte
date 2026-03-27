@@ -167,48 +167,44 @@
 
   // Combined list of videos and playlists (only show after detection completes)
   let videos = $derived(
-    detectionComplete
-      ? videoTrees
-          .filter(t => !playlistTreeNames.has(t.name)) // Exclude playlists
-          .map(t => ({
-            key: `/${npub}/${t.name}`,
-            title: videoMetadata[t.name]?.title || t.name.slice(7),
-            ownerPubkey: ownerPubkey,
-            ownerNpub: npub,
-            treeName: t.name,
-            rootCid: getRootCidForTree(t) ?? undefined,
-            thumbnailUrl: videoMetadata[t.name]?.thumbnailUrl,
-            videoPath: videoMetadata[t.name]?.videoPath,
-            visibility: t.visibility,
-            href: `#/${npub}/${encodeTreeNameForUrl(t.name)}${t.linkKey ? `?k=${t.linkKey}` : ''}`,
-            duration: videoMetadata[t.name]?.duration,
-            timestamp: videoMetadata[t.name]?.createdAt,
-            isPlaylist: false,
-          } as VideoItem))
-      : []
+    videoTrees
+      .filter(t => !playlistTreeNames.has(t.name)) // Exclude playlists
+      .map(t => ({
+        key: `/${npub}/${t.name}`,
+        title: videoMetadata[t.name]?.title || t.name.slice(7),
+        ownerPubkey: ownerPubkey,
+        ownerNpub: npub,
+        treeName: t.name,
+        rootCid: getRootCidForTree(t) ?? undefined,
+        thumbnailUrl: videoMetadata[t.name]?.thumbnailUrl,
+        videoPath: videoMetadata[t.name]?.videoPath,
+        visibility: t.visibility,
+        href: `#/${npub}/${encodeTreeNameForUrl(t.name)}${t.linkKey ? `?k=${t.linkKey}` : ''}`,
+        duration: videoMetadata[t.name]?.duration,
+        timestamp: videoMetadata[t.name]?.createdAt,
+        isPlaylist: false,
+      } as VideoItem))
   );
 
   let playlists = $derived(
-    detectionComplete
-      ? videoTrees
-          .filter(t => playlistTreeNames.has(t.name))
-          .map(t => {
-            const info = playlistInfo[t.name];
-            return {
-              key: `/${npub}/${t.name}`,
-              title: t.name.slice(7),
-              ownerPubkey: ownerPubkey,
-              ownerNpub: npub,
-              treeName: t.name,
-              rootCid: getRootCidForTree(t) ?? undefined,
-              visibility: t.visibility,
-              href: `#/${npub}/${encodeTreeNameForUrl(t.name)}`,
-              videoCount: info?.videoCount || 0,
-              thumbnailUrl: info?.thumbnailUrl,
-              isPlaylist: true,
-            } as PlaylistInfo;
-          })
-      : []
+    videoTrees
+      .filter(t => playlistTreeNames.has(t.name))
+      .map(t => {
+        const info = playlistInfo[t.name];
+        return {
+          key: `/${npub}/${t.name}`,
+          title: t.name.slice(7),
+          ownerPubkey: ownerPubkey,
+          ownerNpub: npub,
+          treeName: t.name,
+          rootCid: getRootCidForTree(t) ?? undefined,
+          visibility: t.visibility,
+          href: `#/${npub}/${encodeTreeNameForUrl(t.name)}`,
+          videoCount: info?.videoCount || 0,
+          thumbnailUrl: info?.thumbnailUrl,
+          isPlaylist: true,
+        } as PlaylistInfo;
+      })
   );
 
   // Follows store for the profile's following count
@@ -348,7 +344,7 @@
 
     <!-- Videos grid -->
     <div class="pb-8">
-      {#if !detectionComplete && videoTrees.length > 0}
+      {#if videos.length === 0 && playlists.length === 0 && !detectionComplete && videoTrees.length > 0}
         <div class="text-center py-12 text-text-3">
           <p>Loading videos...</p>
         </div>

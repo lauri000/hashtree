@@ -420,8 +420,8 @@ test.describe('Video Feed - Bootstrap Follows', () => {
     expect(result.followsCount).toBeGreaterThan(0);
   });
 
-  test('debug: trace follow list fetching', async ({ page }) => {
-    // Skip by default - this is for debugging specific issues
+  test.skip('debug: trace follow list fetching', async ({ page }) => {
+    // Debug-only trace harness. Keep out of the default suite.
     test.slow();
     // Add console logging to trace the issue
     const logs: string[] = [];

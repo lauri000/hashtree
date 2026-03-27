@@ -701,9 +701,16 @@ async function syncTreeRootToWorker(
     return null;
   });
 
+  let currentPlaylistItemTitle = $derived.by(() => {
+    if (!playlist || !currentVideoId || !npub || !treeName) return '';
+    if (playlist.npub !== npub || playlist.treeName !== treeName) return '';
+    return playlist.items.find((item) => item.id === currentVideoId)?.title?.trim() ?? '';
+  });
+
   // Keep synthetic playlist folder ids out of the UI while metadata is still loading.
   let title = $derived(getVideoDisplayTitle({
     videoTitle,
+    playlistItemTitle: currentPlaylistItemTitle,
     currentVideoId,
     videoPath,
     treeName,
@@ -1562,6 +1569,19 @@ async function syncTreeRootToWorker(
     const isStaleMetadataLoad = () =>
       expectedLoadKey ? !isActiveVideoLoad(loadedVideoKey, expectedLoadKey) : false;
 
+    const readTextViaStablePath = async (path: string): Promise<string | null> => {
+      const url = getStablePathUrl({ rootCid, path });
+      if (!url) return null;
+      try {
+        const response = await fetch(url);
+        if (!response.ok) return null;
+        const text = (await response.text()).trim();
+        return text || null;
+      } catch {
+        return null;
+      }
+    };
+
     // Try video file's link entry meta first (new format)
     try {
       const entries = await tree.listDirectory(rootCid);
@@ -1631,6 +1651,15 @@ async function syncTreeRootToWorker(
       } catch {}
     }
 
+    if (!videoTitle) {
+      const remoteTitle = await readTextViaStablePath('title.txt');
+      if (isStaleMetadataLoad()) return;
+      if (remoteTitle) {
+        videoTitle = remoteTitle;
+        if (recentPath) updateRecentLabel(recentPath, videoTitle);
+      }
+    }
+
     // Fall back to description.txt (legacy format)
     if (!videoDescription) {
       try {
@@ -1644,6 +1673,14 @@ async function syncTreeRootToWorker(
           }
         }
       } catch {}
+    }
+
+    if (!videoDescription) {
+      const remoteDescription = await readTextViaStablePath('description.txt');
+      if (isStaleMetadataLoad()) return;
+      if (remoteDescription) {
+        videoDescription = remoteDescription;
+      }
     }
   }
 

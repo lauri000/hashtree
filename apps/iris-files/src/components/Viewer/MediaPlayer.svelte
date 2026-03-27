@@ -47,6 +47,14 @@
   let duration = $state(0);
   let currentTime = $state(0);
   let paused = $state(true);
+  let hasBeenReady = $state(false);
+
+  function markReady() {
+    if (hasBeenReady) return;
+    hasBeenReady = true;
+    loading = false;
+    console.log('[MediaPlayer] Ready to play');
+  }
 
   // Check if live=1 is in URL hash params
   let hash = $derived($currentHash);
@@ -120,15 +128,28 @@
       }
     }, { once: true });
 
+    mediaRef.addEventListener('loadeddata', () => {
+      markReady();
+    }, { once: true });
+
     mediaRef.addEventListener('canplay', () => {
-      loading = false;
-      console.log('[MediaPlayer] Ready to play');
+      markReady();
+    }, { once: true });
+
+    mediaRef.addEventListener('playing', () => {
+      markReady();
     }, { once: true });
 
     mediaRef.addEventListener('error', (e) => {
       console.error('[MediaPlayer] Error:', e);
       // Get more specific error message from MediaError
       const mediaError = mediaRef?.error;
+      if (isLive && mediaError?.code === MediaError.MEDIA_ERR_NETWORK) {
+        console.warn('[MediaPlayer] Ignoring transient live stream network error');
+        loading = false;
+        error = null;
+        return;
+      }
       if (mediaError) {
         switch (mediaError.code) {
           case MediaError.MEDIA_ERR_ABORTED:
@@ -162,6 +183,9 @@
 
   function handleTimeUpdate() {
     if (mediaRef) {
+      if (!hasBeenReady && mediaRef.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        markReady();
+      }
       currentTime = mediaRef.currentTime;
     }
   }
@@ -169,6 +193,9 @@
   function handleDurationChange() {
     if (mediaRef && !isNaN(mediaRef.duration) && isFinite(mediaRef.duration)) {
       duration = mediaRef.duration;
+      if (!hasBeenReady && mediaRef.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        markReady();
+      }
     }
   }
 
@@ -256,7 +283,7 @@
           controls
           autoplay
           class="w-full"
-          class:invisible={loading || error}
+          class:invisible={!hasBeenReady && (loading || !!error)}
           preload="metadata"
           ontimeupdate={handleTimeUpdate}
           ondurationchange={handleDurationChange}
@@ -275,7 +302,7 @@
         autoplay
         playsinline
         class="max-w-full max-h-full object-contain"
-        class:invisible={loading || error}
+        class:invisible={!hasBeenReady && (loading || !!error)}
         preload="metadata"
         ontimeupdate={handleTimeUpdate}
         ondurationchange={handleDurationChange}

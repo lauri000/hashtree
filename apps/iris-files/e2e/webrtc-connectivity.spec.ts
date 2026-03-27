@@ -234,14 +234,12 @@ test.describe('WebRTC Connectivity', () => {
 
       await waitForPeers(page1, 1, 4000);
 
-      await page1.goto('http://localhost:5173/#/settings');
-      await page1.getByRole('button', { name: 'P2P' }).click();
-
-      await page1.waitForFunction(
-        () => document.body.innerText.includes('Peers'),
-        undefined,
-        { timeout: 30000 }
-      );
+      const settingsLink = page1.locator('a[href="#/settings"]').first();
+      await expect(settingsLink).toBeVisible({ timeout: 10000 });
+      await settingsLink.click();
+      await page1.waitForURL(/#\/settings/, { timeout: 10000 });
+      await expect(page1.getByRole('button', { name: 'Network' })).toBeVisible({ timeout: 10000 });
+      await expect(page1.locator('text=Mesh Peers').first()).toBeVisible({ timeout: 10000 });
 
       // Wait for Settings UI to show connected peers
       // Use waitForFunction that checks worker state, refreshes UI, and verifies
@@ -262,7 +260,7 @@ test.describe('WebRTC Connectivity', () => {
           await new Promise(r => setTimeout(r, 100));
 
           // Check if UI updated
-          const match = document.body.innerText.match(/Peers \((\d+)\)/);
+          const match = document.body.innerText.match(/Mesh Peers \((\d+)\)/);
           const count = match ? parseInt(match[1], 10) : 0;
           return count > 0;
         },

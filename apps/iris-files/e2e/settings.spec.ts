@@ -12,13 +12,13 @@ test.describe('Settings page', () => {
 
     await page.waitForURL(/#\/settings/, { timeout: 5000 });
 
-    await expect(page.getByRole('button', { name: 'Servers' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('button', { name: 'Network' })).toBeVisible({ timeout: 5000 });
   });
 
   test('can expand discovered relays section', async ({ page }) => {
     setupPageErrorHandler(page);
     await page.goto('/#/settings');
-    await expect(page.getByRole('button', { name: 'Servers' })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('button', { name: 'Network' })).toBeVisible({ timeout: 10000 });
 
     const seededCount = await page.evaluate(() => {
       const store = (window as any).__nostrStore;
@@ -123,7 +123,7 @@ test.describe('Settings page', () => {
     setupPageErrorHandler(page);
     await page.goto('/#/settings');
 
-    await expect(page.getByRole('button', { name: 'Servers' })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('button', { name: 'Network' })).toBeVisible({ timeout: 10000 });
 
     for (let i = 0; i < 5; i++) {
       const editBtn = page.locator('button', { hasText: /Edit|Done/ }).first();

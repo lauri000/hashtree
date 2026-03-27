@@ -7,7 +7,7 @@ test.describe('Settings Stats', () => {
   async function goToSettings(page: Page): Promise<void> {
     await page.goto('/#/settings');
     await disableOthersPool(page);
-    await expect(page.getByRole('button', { name: 'Servers' })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('button', { name: 'Network' })).toBeVisible({ timeout: 10000 });
   }
 
   test('displays storage stats section', async ({ page }) => {
@@ -30,9 +30,6 @@ test.describe('Settings Stats', () => {
     await page.goto('/#/settings');
     await disableOthersPool(page);
 
-    await expect(page.getByRole('button', { name: 'P2P' })).toBeVisible({ timeout: 10000 });
-    await page.getByRole('button', { name: 'P2P' }).click();
-
     await expect(page.locator('text=Connection Pools').first()).toBeVisible({ timeout: 10000 });
     await expect(page.locator('text=Follows')).toBeVisible({ timeout: 5000 });
   });
@@ -42,10 +39,7 @@ test.describe('Settings Stats', () => {
     await page.goto('/#/settings');
     await disableOthersPool(page);
 
-    await expect(page.getByRole('button', { name: 'P2P' })).toBeVisible({ timeout: 10000 });
-    await page.getByRole('button', { name: 'P2P' }).click();
-
-    await expect(page.locator('text=Peers').first()).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('text=Mesh Peers').first()).toBeVisible({ timeout: 5000 });
   });
 });
 
@@ -131,20 +125,24 @@ test.describe('Block Peer', () => {
       }
 
       await page1.goto('/#/settings');
-      await page1.getByRole('button', { name: 'P2P' }).click();
-      await expect(page1.locator('text=Peers').first()).toBeVisible({ timeout: 10000 });
+      await expect(page1.locator('text=Mesh Peers').first()).toBeVisible({ timeout: 10000 });
 
-      const peerSection = page1.locator('text=Connected Peers').first();
+      const peerSection = page1.locator('text=Mesh Peers').first();
 
       if (await peerSection.isVisible({ timeout: 5000 }).catch(() => false)) {
         const blockBtn = page1.locator('button[title*="Block"]').first();
 
         if (await blockBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-          const countBefore = await getConnectedPeerCount(page1);
+          page1.once('dialog', dialog => dialog.accept());
           await blockBtn.click();
-          await page1.waitForTimeout(2000);
-          const countAfter = await getConnectedPeerCount(page1);
-          expect(countAfter).toBeLessThan(countBefore);
+          await page1.waitForFunction(
+            (pubkey: string) => {
+              const settingsStore = (window as any).__settingsStore;
+              return settingsStore?.getState?.()?.blockedPeers?.includes(pubkey) ?? false;
+            },
+            pubkey2,
+            { timeout: 5000 }
+          );
         }
       }
 
@@ -166,8 +164,7 @@ test.describe('Block Peer', () => {
     await page.goto('/#/settings');
     await disableOthersPool(page);
 
-    await expect(page.getByRole('button', { name: 'P2P' })).toBeVisible({ timeout: 10000 });
-    await page.getByRole('button', { name: 'P2P' }).click();
+    await expect(page.locator('text=Connection Pools').first()).toBeVisible({ timeout: 10000 });
 
     const blockedPeersExists = await page.evaluate(() => {
       const settingsStore = (window as any).__settingsStore;
@@ -178,5 +175,6 @@ test.describe('Block Peer', () => {
     });
 
     console.log('Blocked peers array exists in store:', blockedPeersExists);
+    expect(blockedPeersExists).toBe(true);
   });
 });

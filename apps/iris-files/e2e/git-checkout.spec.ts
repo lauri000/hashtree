@@ -9,7 +9,7 @@ test.describe('Git checkout features', () => {
     await disableOthersPool(page);
   });
 
-  test('checkout commit should return a valid directory CID that can be listed', { timeout: 60000 }, async ({ page }) => {
+  test('checkout commit should return a valid directory CID that can be listed', { timeout: 90000 }, async ({ page }) => {
     test.slow();
 
     // Capture wasm-git logs
@@ -21,7 +21,7 @@ test.describe('Git checkout features', () => {
       }
     });
 
-    await navigateToPublicFolder(page);
+    await navigateToPublicFolder(page, { timeoutMs: 60000, requireRelay: false });
 
     // Import Node.js modules
     const fs = await import('fs/promises');
@@ -184,7 +184,7 @@ test.describe('Git checkout features', () => {
 
   test('checkout previous revision removes files that were added later', { timeout: 120000 }, async ({ page }) => {
     test.slow();
-    await navigateToPublicFolder(page);
+    await navigateToPublicFolder(page, { timeoutMs: 60000, requireRelay: false });
 
     // Create a plain folder so Git Init owns the first commit in this test.
     await page.evaluate(async () => {

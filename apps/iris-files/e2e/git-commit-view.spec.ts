@@ -2,6 +2,14 @@ import { test, expect } from './fixtures';
 import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, createRepositoryInCurrentDirectory, createPlainFolderInCurrentDirectory, ensureGitRepoInitialized, waitForCurrentDirectoryEntries } from './test-utils.js';
 // Tests use isolated page contexts with disableOthersPool - safe for parallel execution
 
+async function getCurrentCommitViewUrl(page: any): Promise<string> {
+  const headerCommitLink = page.locator('thead a').first();
+  await expect(headerCommitLink).toBeVisible({ timeout: 15000 });
+  const href = await headerCommitLink.evaluate((anchor: HTMLAnchorElement) => anchor.href);
+  expect(href).toContain('?commit=');
+  return href;
+}
+
 test.describe('Git commit view', () => {
   test.use({ viewport: { width: 1200, height: 800 } });
   // Disable "others pool" to prevent WebRTC cross-talk from parallel tests
@@ -137,12 +145,7 @@ test.describe('Git commit view', () => {
     await expect(page.getByRole('button', { name: /commits/i })).toBeVisible({ timeout: 20000 });
 
     // Navigate directly to commit view via URL
-    const currentUrl = page.url();
-    const commitViewUrl = currentUrl.includes('?')
-      ? currentUrl.replace(/\?.*/, '?commit=HEAD')
-      : currentUrl + '?commit=HEAD';
-
-    await page.goto(commitViewUrl);
+    await page.goto(await getCurrentCommitViewUrl(page));
 
     // Wait for commit view to load - check for commit hash code element
     const commitHashCode = page.locator('code').filter({ hasText: /[a-f0-9]{40}/ });
@@ -214,12 +217,7 @@ test.describe('Git commit view', () => {
     await commitModal.getByRole('button', { name: 'Commit' }).click();
     await expect(commitModal).not.toBeVisible({ timeout: 30000 });
 
-    const currentUrl = page.url();
-    const commitViewUrl = currentUrl.includes('?')
-      ? currentUrl.replace(/\?.*/, '?commit=HEAD')
-      : currentUrl + '?commit=HEAD';
-
-    await page.goto(commitViewUrl);
+    await page.goto(await getCurrentCommitViewUrl(page));
 
     const viewFileLink = page.locator('a').filter({ hasText: 'View file' }).first();
     await expect(viewFileLink).toBeVisible({ timeout: 15000 });
@@ -296,8 +294,7 @@ test.describe('Git commit view', () => {
     await commitModal.getByRole('button', { name: 'Commit' }).click();
     await expect(commitModal).not.toBeVisible({ timeout: 30000 });
 
-    const commitViewUrl = `${page.url().split('?')[0]}?commit=HEAD`;
-    await page.goto(commitViewUrl);
+    await page.goto(await getCurrentCommitViewUrl(page));
 
     await expect(page.getByText('src/components/Video/VideoProfileView.svelte', { exact: true })).toBeVisible({ timeout: 15000 });
 
@@ -353,12 +350,7 @@ test.describe('Git commit view', () => {
     await ensureGitRepoInitialized(page);
 
     // Navigate to commit view
-    const currentUrl = page.url();
-    const commitViewUrl = currentUrl.includes('?')
-      ? currentUrl.replace(/\?.*/, '?commit=HEAD')
-      : currentUrl + '?commit=HEAD';
-
-    await page.goto(commitViewUrl);
+    await page.goto(await getCurrentCommitViewUrl(page));
 
     // Tab navigation should be visible with Code, Pull Requests, Issues tabs
     const tabNav = page.locator('a').filter({ hasText: 'Code' });

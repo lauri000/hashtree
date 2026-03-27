@@ -374,10 +374,20 @@ export async function navigateToPublicFolder(
   // This can take a while for new users since default folders are created async
   // and published to Nostr fire-and-forget style
   const publicLink = page.getByRole('link', { name: 'public' }).first();
-  const npub = await evaluateWithRetry(page, () => {
-    const nostrStore = (window as any).__nostrStore;
-    return nostrStore?.getState?.().npub ?? null;
-  }, undefined);
+  const resolveLoggedInNpub = async () => {
+    const storeNpub = await evaluateWithRetry(page, () => {
+      const nostrStore = (window as any).__nostrStore;
+      return nostrStore?.getState?.().npub ?? null;
+    }, undefined).catch(() => null);
+    if (storeNpub) return storeNpub;
+
+    const publicHref = await publicLink.getAttribute('href').catch(() => null);
+    const publicNpub = publicHref?.match(/#\/(npub1[^/]+)/)?.[1] ?? null;
+    if (publicNpub) return publicNpub;
+
+    return page.url().match(/npub1[a-z0-9]+/)?.[0] ?? null;
+  };
+  let npub = await resolveLoggedInNpub();
 
   if (!await publicLink.isVisible().catch(() => false)) {
     const logoLink = page.locator('header a:has-text("Iris")').first();
@@ -406,11 +416,17 @@ export async function navigateToPublicFolder(
     await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
     await waitForAppReady(page, timeoutMs);
     await waitForRelay();
+    npub = npub ?? await resolveLoggedInNpub();
   }
 
   const publicHash = await publicLink.getAttribute('href').catch(() => null);
   const npubFromLink = publicHash?.match(/#\/(npub1[^/]+)/)?.[1] ?? null;
-  const resolvedNpub = npub ?? npubFromLink;
+  let resolvedNpub = npub ?? npubFromLink;
+
+  for (let attempt = 0; attempt < 5 && !resolvedNpub; attempt++) {
+    await page.waitForTimeout(500);
+    resolvedNpub = await resolveLoggedInNpub();
+  }
 
   if (!resolvedNpub) {
     throw new Error('Failed to resolve logged-in npub for public folder navigation');

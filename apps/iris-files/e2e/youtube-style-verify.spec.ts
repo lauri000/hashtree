@@ -124,7 +124,7 @@ test.describe('YouTube Style Verification', () => {
       await page.goto(`/video.html#/${seeded.npub}`);
     }
 
-    await expect(page.locator('text=videos').first()).toBeVisible({ timeout: 30000 });
+    await expect(page.locator('a[href*="videos"]').first()).toBeVisible({ timeout: 30000 });
     await page.screenshot({ path: 'e2e/screenshots/youtube-style-profile.png', fullPage: false });
   });
 });

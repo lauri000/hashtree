@@ -9,6 +9,7 @@ export function getInitialPlaylistItemTitle(itemId: string): string {
 
 export function getVideoDisplayTitle(options: {
   videoTitle?: string | null;
+  playlistItemTitle?: string | null;
   currentVideoId?: string | null;
   videoPath?: string | null;
   treeName?: string | null;
@@ -17,6 +18,11 @@ export function getVideoDisplayTitle(options: {
   if (explicitTitle) return explicitTitle;
 
   const currentVideoId = options.currentVideoId?.trim();
+  const playlistItemTitle = options.playlistItemTitle?.trim();
+  if (playlistItemTitle && (!currentVideoId || playlistItemTitle !== currentVideoId || isGeneratedPlaylistVideoId(currentVideoId))) {
+    return playlistItemTitle;
+  }
+
   if (currentVideoId && !isGeneratedPlaylistVideoId(currentVideoId)) {
     return currentVideoId;
   }

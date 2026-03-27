@@ -504,8 +504,9 @@ test.describe('Playlist Management', () => {
 
     // Verify the playlist page shows content (video title or player)
     // The source video should be visible in the playlist
-    const videoTitle = page.getByText('Source Video For Modal Playlist Test');
+    const videoTitle = page.getByTestId('video-title');
     await expect(videoTitle).toBeVisible({ timeout: 15000 });
+    await expect(videoTitle).toHaveText('Source Video For Modal Playlist Test', { timeout: 15000 });
   });
 
   test('another user can view a playlist published to Nostr', async ({ browser }) => {
@@ -686,6 +687,7 @@ test.describe('Playlist Management', () => {
       // It SHOULD be the actual video title from title.txt
       const titleLocator = pageB.getByRole('heading', { level: 1 });
       await expect(titleLocator).toBeVisible({ timeout: 30000 });
+      await expect(titleLocator).toContainText('Cross User Video Alpha', { timeout: 30000 });
 
       // Get the actual title text
       const actualTitle = await titleLocator.textContent();

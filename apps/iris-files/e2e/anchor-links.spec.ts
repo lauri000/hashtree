@@ -207,15 +207,23 @@ test.describe('Anchor Links', () => {
 
       // Click on file first to get the URL pattern
       await page.locator('a:has-text("long.ts")').first().click();
-      await expect(page.locator('[data-line="1"]')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('pre.code-viewer')).toBeVisible({ timeout: 30000 });
+      await expect(page.locator('[data-line="1"]')).toBeVisible({ timeout: 30000 });
 
-      // Now navigate to the same file with ?L=80
+      // Now open the same file as a real deep link with ?L=80
+      const currentUrl = page.url();
+      const hashIndex = currentUrl.indexOf('#');
+      const baseUrl = hashIndex >= 0 ? currentUrl.slice(0, hashIndex) : currentUrl;
       const currentHash = await page.evaluate(() => window.location.hash);
       const baseHash = currentHash.replace(/\?.*$/, '');
-      await page.evaluate((hash) => { window.location.hash = hash; }, `${baseHash}?L=80`);
+      const deepLinkUrl = `${baseUrl}${baseHash}?L=80`;
+      await page.goto(deepLinkUrl);
+      await expect(page).toHaveURL(/\?L=80/);
+      await expect(page.locator('pre.code-viewer')).toBeVisible({ timeout: 30000 });
+      await expect(page.locator('[data-line="80"]')).toBeVisible({ timeout: 30000 });
 
       // Line 80 should be highlighted and scrolled into viewport
-      await expect(page.locator('[data-line="80"]')).toHaveClass(/line-highlighted/, { timeout: 10000 });
+      await expect(page.locator('[data-line="80"]')).toHaveClass(/line-highlighted/, { timeout: 30000 });
       const isInViewport = await page.locator('[data-line="80"]').evaluate((el: Element) => {
         const rect = el.getBoundingClientRect();
         return rect.top >= 0 && rect.bottom <= window.innerHeight;

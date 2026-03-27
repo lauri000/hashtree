@@ -37,8 +37,10 @@ test.describe('Video Tree Subscription', () => {
     console.log('Navigating to non-encoded URL:', videoUrl);
     await page.goto(videoUrl);
 
-    // Wait for page to load
-    await page.waitForTimeout(500);
+    await page.waitForFunction((expectedTreeName: string) => {
+      const w = window as any;
+      return w.__viewerMediaPlayerTreeName === expectedTreeName;
+    }, `videos/${videoName}`, { timeout: 10000 });
 
     // Check what tree name Viewer.svelte ACTUALLY passes to MediaPlayer
     // The debug hook sets window.__viewerMediaPlayerTreeName
@@ -86,7 +88,10 @@ test.describe('Video Tree Subscription', () => {
     console.log('Navigating to encoded URL:', videoUrl);
     await page.goto(videoUrl);
 
-    await page.waitForTimeout(500);
+    await page.waitForFunction((expectedTreeName: string) => {
+      const w = window as any;
+      return w.__viewerMediaPlayerTreeName === expectedTreeName;
+    }, `videos/${videoName}`, { timeout: 10000 });
 
     // With encoded URL, route.treeName should already be correct
     const routeInfo = await page.evaluate(async () => {

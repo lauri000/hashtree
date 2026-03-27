@@ -11,8 +11,7 @@ import {
   waitForRelayConnected,
 } from './test-utils.js';
 
-const SOURCE_CODE_URL =
-  'htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/git/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree';
+const SOURCE_CODE_LINK_NAME = /hashtree.*source code/i;
 
 async function createTopLevelRepository(page: import('@playwright/test').Page, repoName: string) {
   await page.getByRole('button', { name: /New Repository/ }).first().click();
@@ -50,7 +49,7 @@ test.describe('App flavors', () => {
 
     const repoName = `git-home-${Date.now()}`;
 
-    await expect(page.getByRole('heading', { name: 'Repositories' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Repositories', exact: true })).toBeVisible();
     await expect(page.getByText('Add files to begin')).not.toBeVisible();
 
     await createTopLevelRepository(page, repoName);
@@ -86,7 +85,7 @@ test.describe('App flavors', () => {
 
     await page.goto(`/git.html#/${npub}`);
 
-    await expect(page.getByRole('heading', { name: 'Repositories' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Repositories', exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: new RegExp(repoName) })).toBeVisible({ timeout: 15000 });
     await expect(page.getByText('Repository', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('link', { name: new RegExp(plainTreeName) })).not.toBeVisible();
@@ -99,14 +98,16 @@ test.describe('App flavors', () => {
 
     await page.goto('/git.html#/settings/app');
     await expect(page.getByRole('button', { name: 'App', exact: true })).toBeVisible({ timeout: 10000 });
-    const gitSourceLink = page.locator(`a[href="${SOURCE_CODE_URL}"]`).first();
+    const gitSourceLink = page.getByRole('link', { name: SOURCE_CODE_LINK_NAME }).first();
     await expect(gitSourceLink).toBeVisible({ timeout: 10000 });
+    await expect(gitSourceLink).toHaveAttribute('href', /hashtree$/);
     await expect(gitSourceLink).not.toHaveAttribute('target', '_blank');
 
     await page.goto('/#/settings/app');
     await expect(page.getByRole('button', { name: 'App', exact: true })).toBeVisible({ timeout: 10000 });
-    const filesSourceLink = page.locator(`a[href="${SOURCE_CODE_URL}"]`).first();
+    const filesSourceLink = page.getByRole('link', { name: SOURCE_CODE_LINK_NAME }).first();
     await expect(filesSourceLink).toBeVisible({ timeout: 10000 });
+    await expect(filesSourceLink).toHaveAttribute('href', /hashtree$/);
     await expect(filesSourceLink).toHaveAttribute('target', '_blank');
   });
 });

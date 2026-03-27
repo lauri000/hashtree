@@ -619,19 +619,26 @@ test.describe('yt-dlp Batch Upload', () => {
     // Navigate to profile page
     await page.goto(`/video.html#/${result.npub}`);
 
-    // Wait for the profile to load and playlist detection to complete
-    await page.waitForTimeout(3000);
+    const playlistName = page.getByText('E2E Playlist Test');
+    await expect(playlistName).toBeVisible({ timeout: 20000 });
 
     // Take screenshot before assertions
     await page.screenshot({ path: 'e2e/screenshots/profile-playlist-test.png' });
 
     // Check if the playlist name is visible
-    const playlistName = page.getByText('E2E Playlist Test');
     const isPlaylistVisible = await playlistName.isVisible().catch(() => false);
     console.log('Playlist name visible:', isPlaylistVisible);
 
     // Check for Playlists section header
     const playlistsHeading = page.locator('h2:has-text("Playlists")');
+    await expect
+      .poll(
+        async () =>
+          await playlistsHeading.isVisible().catch(() => false)
+          || await page.locator('.bg-black\\/80:has-text("2")').isVisible().catch(() => false),
+        { timeout: 10000 }
+      )
+      .toBe(true);
     const isPlaylistsHeadingVisible = await playlistsHeading.isVisible().catch(() => false);
     console.log('Playlists heading visible:', isPlaylistsHeadingVisible);
 

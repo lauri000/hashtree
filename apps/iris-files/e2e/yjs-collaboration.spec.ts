@@ -360,9 +360,38 @@ async function openRemoteDocumentFast(
   const linkParam = linkKey ? `?k=${linkKey}` : '';
   const docHash = `#/${npub}/${treeName}/${docPath}${linkParam}`;
   const docUrl = toDocsUrl(docHash);
+  const treeHash = `#/${npub}/${treeName}${linkParam}`;
+  const treeUrl = toDocsUrl(treeHash);
   const shortTimeout = Math.min(timeoutMs, 15000);
   const initialEditorTimeout = Math.min(timeoutMs, 12000);
   const recoveryTimeout = Math.min(timeoutMs, 20000);
+  const primeEditor = async () => {
+    await page.evaluate(() => {
+      (window as any).__workerAdapter?.sendHello?.();
+      (window as any).__reloadYjsEditors?.();
+    });
+  };
+  const preloadedRoot = await getTreeRootHex(page, npub, treeName).catch(() => ({ hashHex: null, keyHex: null }));
+  const hydrateTargetRoot = async () => {
+    if (preloadedRoot.hashHex) {
+      await seedRemoteTreeRoot(page, npub, treeName, preloadedRoot);
+    }
+  };
+  const currentUserNpub = await page.evaluate(() => {
+    return (window as any).__nostrStore?.getState?.()?.npub ?? null;
+  }).catch(() => null);
+
+  if (currentUserNpub === npub) {
+    await navigateToOwnDocument(page, npub, treeName, docPath, linkKey);
+    await hydrateTargetRoot();
+    if (expectedHash) {
+      await waitForTreeRootHash(page, npub, treeName, expectedHash, shortTimeout).catch(() => {});
+    }
+    await waitForYjsData(page, npub, treeName, docPath, shortTimeout).catch(() => {});
+    await primeEditor();
+    if (await waitForEditorVisible(page, recoveryTimeout)) return;
+  }
+
   await safeGoto(page, docUrl, {
     waitUntil: 'domcontentloaded',
     timeoutMs: shortTimeout,
@@ -372,34 +401,78 @@ async function openRemoteDocumentFast(
 
   await waitForAppReady(page, shortTimeout).catch(() => {});
   await waitForRelayConnected(page, shortTimeout).catch(() => {});
+  await hydrateTargetRoot();
   if (expectedHash) {
     await waitForTreeRootHash(page, npub, treeName, expectedHash, shortTimeout).catch(() => {});
   }
   await waitForYjsData(page, npub, treeName, docPath, shortTimeout).catch(() => {});
-  await page.evaluate(() => {
-    (window as any).__workerAdapter?.sendHello?.();
-    (window as any).__reloadYjsEditors?.();
-  });
-  const editorReady = await waitForEditorVisible(page, initialEditorTimeout);
-  if (!editorReady) {
-    await safeReload(page, {
+  await primeEditor();
+  if (await waitForEditorVisible(page, initialEditorTimeout)) return;
+
+  await safeReload(page, {
+    waitUntil: 'domcontentloaded',
+    timeoutMs: shortTimeout,
+    retries: 2,
+    delayMs: 500,
+  }).catch(() => {});
+  await waitForAppReady(page, shortTimeout).catch(() => {});
+  await waitForRelayConnected(page, shortTimeout).catch(() => {});
+  await hydrateTargetRoot();
+  if (expectedHash) {
+    await waitForTreeRootHash(page, npub, treeName, expectedHash, shortTimeout).catch(() => {});
+  }
+  await waitForYjsData(page, npub, treeName, docPath, shortTimeout).catch(() => {});
+  await primeEditor();
+  if (await waitForEditorVisible(page, recoveryTimeout)) return;
+
+  await safeGoto(page, treeUrl, {
+    waitUntil: 'domcontentloaded',
+    timeoutMs: shortTimeout,
+    retries: 2,
+    delayMs: 500,
+  }).catch(() => {});
+  await waitForAppReady(page, shortTimeout).catch(() => {});
+  await waitForRelayConnected(page, shortTimeout).catch(() => {});
+  await hydrateTargetRoot();
+  if (expectedHash) {
+    await waitForTreeRootHash(page, npub, treeName, expectedHash, shortTimeout).catch(() => {});
+  }
+  await waitForTreeEntry(page, npub, treeName, docPath, recoveryTimeout).catch(() => {});
+
+  const docLink = page.getByRole('link', { name: docPath }).first();
+  let openMode: 'none' | 'link' | 'direct' = 'none';
+  await expect.poll(async () => {
+    if (await docLink.isVisible().catch(() => false)) {
+      openMode = 'link';
+      return openMode;
+    }
+    if (await hasYjsEntry(page, npub, treeName, docPath).catch(() => false)) {
+      openMode = 'direct';
+      return openMode;
+    }
+    openMode = 'none';
+    return openMode;
+  }, { timeout: recoveryTimeout, intervals: [1000, 2000, 3000] }).not.toBe('none');
+
+  if (openMode === 'link') {
+    await docLink.click().catch(() => {});
+  } else {
+    await safeGoto(page, docUrl, {
       waitUntil: 'domcontentloaded',
       timeoutMs: shortTimeout,
       retries: 2,
       delayMs: 500,
-    }).catch(() => {});
+    });
     await waitForAppReady(page, shortTimeout).catch(() => {});
     await waitForRelayConnected(page, shortTimeout).catch(() => {});
-    if (expectedHash) {
-      await waitForTreeRootHash(page, npub, treeName, expectedHash, shortTimeout).catch(() => {});
-    }
-    await waitForYjsData(page, npub, treeName, docPath, shortTimeout).catch(() => {});
-    await page.evaluate(() => {
-      (window as any).__workerAdapter?.sendHello?.();
-      (window as any).__reloadYjsEditors?.();
-    });
-    await waitForEditorVisible(page, recoveryTimeout);
+    await hydrateTargetRoot();
   }
+
+  await waitForYjsData(page, npub, treeName, docPath, recoveryTimeout).catch(() => {});
+  await primeEditor();
+  if (await waitForEditorVisible(page, recoveryTimeout)) return;
+
+  throw new Error(`Editor did not load for ${npub}/${treeName}/${docPath}`);
 }
 
 // Helper to wait for editor to contain specific text (for sync verification)

@@ -1,6 +1,17 @@
 import { test, expect } from './fixtures';
 import { setupPageErrorHandler, navigateToPublicFolder, goToTreeList, waitForAppReady } from './test-utils.js';
 
+async function waitForTreeOpen(page: any, name: string, timeout: number = 30000) {
+  const encodedName = encodeURIComponent(name);
+  await expect.poll(async () => {
+    const hash = await page.evaluate(() => window.location.hash).catch(() => '');
+    const inTree = hash.includes(`/${encodedName}`) || hash.includes(`/${name}`);
+    const fileButtonVisible = await page.getByRole('button', { name: /File/ }).first().isVisible().catch(() => false);
+    const emptyVisible = await page.getByText('Empty directory').isVisible().catch(() => false);
+    return inTree && (fileButtonVisible || emptyVisible);
+  }, { timeout, intervals: [500, 1000, 2000] }).toBe(true);
+}
+
 // Helper to create tree and navigate into it
 async function createAndEnterTree(page: any, name: string) {
   await goToTreeList(page);
@@ -8,7 +19,20 @@ async function createAndEnterTree(page: any, name: string) {
   await page.getByRole('button', { name: 'New Folder' }).click();
   await page.locator('input[placeholder="Folder name..."]').fill(name);
   await page.getByRole('button', { name: 'Create' }).click();
-  await expect(page.getByText('Empty directory')).toBeVisible({ timeout: 30000 });
+
+  const autoNavigated = await page.waitForFunction((folderName) => {
+    const hash = window.location.hash;
+    const encodedName = encodeURIComponent(folderName);
+    return hash.includes(`/${encodedName}`) || hash.includes(`/${folderName}`);
+  }, name, { timeout: 5000 }).then(() => true).catch(() => false);
+
+  if (!autoNavigated) {
+    const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: name }).first();
+    await expect(folderLink).toBeVisible({ timeout: 30000 });
+    await folderLink.click();
+  }
+
+  await waitForTreeOpen(page, name);
 }
 
 // Helper to create a file
@@ -110,7 +134,7 @@ test.describe('Recently Visited', () => {
 
     // Now revisit first tree
     await page.locator('a:has-text("order-test-1")').first().click();
-    await expect(page.getByText('Empty directory')).toBeVisible({ timeout: 5000 });
+    await waitForTreeOpen(page, 'order-test-1', 10000);
     await goToTreeList(page);
 
     // Check order - order-test-1 should now be at top
