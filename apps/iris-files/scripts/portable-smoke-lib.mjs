@@ -24,6 +24,9 @@ function shouldIgnoreConsoleError(text) {
   if (/^Failed to load resource: the server responded with a status of 404\b/.test(text)) {
     return true;
   }
+  if (/^Failed to load resource: the server responded with a status of 416\b/.test(text)) {
+    return true;
+  }
   if (/^WebSocket connection to 'wss?:\/\/[^']+' failed:/.test(text)) {
     return true;
   }

@@ -13,12 +13,22 @@ const DEFAULT_TREE_ROOT_RELAYS = [
 const FEED_ROOT_CACHE_TTL_MS = 30_000;
 const FEED_ROOT_MISS_CACHE_TTL_MS = 5_000;
 
-const feedRootResolutionCache = new Map<string, { cid: CID | null; expiresAt: number }>();
+const feedRootResolutionCache = new Map<string, {
+  cid: CID | null;
+  expiresAt: number;
+  authoritative: boolean;
+}>();
 const inFlightFeedRootResolutions = new Map<string, Promise<CID | null>>();
 
 interface ResolvedTreeRoot {
   cid: CID;
   updatedAt?: number;
+  authoritative?: boolean;
+}
+
+interface ResolveFeedVideoRootOptions {
+  requireAuthoritative?: boolean;
+  authoritativeGraceMs?: number;
 }
 
 type FeedVideoRootSource = {
@@ -84,18 +94,35 @@ async function cacheResolvedFeedTreeRoot(
   resolved: CID | null,
   updatedAt?: number,
 ): Promise<void> {
-  feedRootResolutionCache.set(getFeedRootCacheKey(npub, treeName), {
-    cid: resolved,
-    expiresAt: Date.now() + (resolved ? FEED_ROOT_CACHE_TTL_MS : FEED_ROOT_MISS_CACHE_TTL_MS),
-  });
+  const authoritative = typeof updatedAt === 'number' && Number.isFinite(updatedAt) && updatedAt > 0;
+  const cacheKey = getFeedRootCacheKey(npub, treeName);
+  if (!resolved || authoritative) {
+    feedRootResolutionCache.set(cacheKey, {
+      cid: resolved,
+      expiresAt: Date.now() + (resolved ? FEED_ROOT_CACHE_TTL_MS : FEED_ROOT_MISS_CACHE_TTL_MS),
+      authoritative,
+    });
+  } else {
+    // Speculative resolver answers should not stick around and outrank the
+    // authoritative replaceable-event path on subsequent loads.
+    feedRootResolutionCache.delete(cacheKey);
+  }
   if (!resolved) {
+    return;
+  }
+
+  // Feed-root lookups can return a speculative local/ref-resolver answer that does
+  // not carry event freshness. Keep that as a route-local seed, but do not
+  // promote it into the shared mutable-root caches with a synthetic "now"
+  // timestamp or it can outrank the actual latest tree root.
+  if (!authoritative) {
     return;
   }
 
   try {
     const { updateSubscriptionCache } = await import('../stores/treeRoot');
     updateSubscriptionCache(`${npub}/${treeName}`, resolved.hash, resolved.key, {
-      updatedAt: updatedAt ?? Math.floor(Date.now() / 1000),
+      updatedAt,
       visibility: 'public',
     });
   } catch {
@@ -124,16 +151,19 @@ export function resolveFeedVideoRootCid(video: FeedVideoRootSource): CID | null 
 export async function resolveFeedVideoRootCidAsync(
   video: FeedVideoRootSource,
   timeoutMs = 8000,
+  options: ResolveFeedVideoRootOptions = {},
 ): Promise<CID | null> {
-  const fallbackRootCid = video.rootCid ?? null;
+  const fallbackRootCid = resolveFeedVideoRootCid(video) ?? video.rootCid ?? null;
   const cached = resolveFeedVideoRootCid(video);
-  if (cached) return cached;
+  if (cached && !options.requireAuthoritative) return cached;
   if (!video.ownerNpub || !video.treeName) return fallbackRootCid;
 
   const cacheKey = getFeedRootCacheKey(video.ownerNpub, video.treeName);
   const cachedResult = feedRootResolutionCache.get(cacheKey);
   if (cachedResult && cachedResult.expiresAt > Date.now()) {
-    return cachedResult.cid;
+    if (!options.requireAuthoritative || cachedResult.authoritative) {
+      return cachedResult.cid;
+    }
   }
   if (cachedResult) {
     feedRootResolutionCache.delete(cacheKey);
@@ -153,89 +183,123 @@ export async function resolveFeedVideoRootCidAsync(
       resolvedOwnerPubkey = null;
     }
 
-    const lookupTasks: Array<Promise<ResolvedTreeRoot | null>> = [
-      (async (): Promise<ResolvedTreeRoot | null> => {
+    const resolverTask = (async (): Promise<ResolvedTreeRoot | null> => {
+      try {
+        const { getRefResolver } = await import('../refResolver');
+        const resolver = getRefResolver();
+        const resolved = await withTimeout(
+          resolver.resolve(`${video.ownerNpub}/${video.treeName}`),
+          timeoutMs,
+        );
+        return resolved ? { cid: resolved, authoritative: false } : null;
+      } catch {
+        return null;
+      }
+    })();
+
+    const lookupTasks: Array<Promise<ResolvedTreeRoot | null>> = [resolverTask];
+    const authoritativeTasks: Array<Promise<ResolvedTreeRoot | null>> = [];
+
+    if (isHexPubkey(resolvedOwnerPubkey)) {
+      const ndkTask = (async (): Promise<ResolvedTreeRoot | null> => {
         try {
-          const { getRefResolver } = await import('../refResolver');
-          const resolver = getRefResolver();
-          const resolved = await withTimeout(
-            resolver.resolve(`${video.ownerNpub}/${video.treeName}`),
-            timeoutMs,
-          );
-          return resolved ? { cid: resolved } : null;
+          const { ndk } = await import('../nostr');
+          const event = await withTimeout(ndk.fetchEvent({
+            kinds: [30078],
+            authors: [resolvedOwnerPubkey],
+            '#d': [video.treeName],
+          }, { closeOnEose: true }), timeoutMs);
+          const hashHex = event?.tags.find((tag) => tag[0] === 'hash')?.[1];
+          if (!hashHex) {
+            return null;
+          }
+          const keyHex = event.tags.find((tag) => tag[0] === 'key')?.[1];
+          return {
+            cid: cid(fromHex(hashHex), keyHex ? fromHex(keyHex) : undefined),
+            updatedAt: event.created_at,
+            authoritative: true,
+          };
         } catch {
           return null;
         }
-      })(),
-    ];
-
-    if (isHexPubkey(resolvedOwnerPubkey)) {
-      lookupTasks.push(
-        (async (): Promise<ResolvedTreeRoot | null> => {
+      })();
+      const relayTask = (async (): Promise<ResolvedTreeRoot | null> => {
+        try {
+          const { SimplePool } = await import('nostr-tools');
+          const pool = new SimplePool();
           try {
-            const { ndk } = await import('../nostr');
-            const event = await withTimeout(ndk.fetchEvent({
-              kinds: [30078],
-              authors: [resolvedOwnerPubkey],
-              '#d': [video.treeName],
-            }, { closeOnEose: true }), timeoutMs);
-            const hashHex = event?.tags.find((tag) => tag[0] === 'hash')?.[1];
+            const events = await withTimeout(
+              pool.querySync(
+                DEFAULT_TREE_ROOT_RELAYS,
+                {
+                  kinds: [30078],
+                  authors: [resolvedOwnerPubkey],
+                  '#d': [video.treeName],
+                  limit: 4,
+                },
+                { maxWait: timeoutMs },
+              ),
+              timeoutMs + 500,
+            );
+            const sortedEvents = events
+              ? Array.from(events).sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
+              : [];
+            const latestEvent = sortedEvents[0];
+            const hashHex = latestEvent?.tags.find((tag) => tag[0] === 'hash')?.[1];
             if (!hashHex) {
               return null;
             }
-            const keyHex = event.tags.find((tag) => tag[0] === 'key')?.[1];
+            const keyHex = latestEvent.tags.find((tag) => tag[0] === 'key')?.[1];
             return {
               cid: cid(fromHex(hashHex), keyHex ? fromHex(keyHex) : undefined),
-              updatedAt: event.created_at,
+              updatedAt: latestEvent.created_at,
+              authoritative: true,
             };
-          } catch {
-            return null;
-          }
-        })(),
-        (async (): Promise<ResolvedTreeRoot | null> => {
-          try {
-            const { SimplePool } = await import('nostr-tools');
-            const pool = new SimplePool();
+          } finally {
             try {
-              const events = await withTimeout(
-                pool.querySync(
-                  DEFAULT_TREE_ROOT_RELAYS,
-                  {
-                    kinds: [30078],
-                    authors: [resolvedOwnerPubkey],
-                    '#d': [video.treeName],
-                    limit: 4,
-                  },
-                  { maxWait: timeoutMs },
-                ),
-                timeoutMs + 500,
-              );
-              const sortedEvents = events
-                ? Array.from(events).sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
-                : [];
-              const latestEvent = sortedEvents[0];
-              const hashHex = latestEvent?.tags.find((tag) => tag[0] === 'hash')?.[1];
-              if (!hashHex) {
-                return null;
-              }
-              const keyHex = latestEvent.tags.find((tag) => tag[0] === 'key')?.[1];
-              return {
-                cid: cid(fromHex(hashHex), keyHex ? fromHex(keyHex) : undefined),
-                updatedAt: latestEvent.created_at,
-              };
-            } finally {
-              try {
-                pool.close(DEFAULT_TREE_ROOT_RELAYS);
-              } catch {}
-              try {
-                pool.destroy();
-              } catch {}
-            }
-          } catch {
-            return null;
+              pool.close(DEFAULT_TREE_ROOT_RELAYS);
+            } catch {}
+            try {
+              pool.destroy();
+            } catch {}
           }
-        })(),
-      );
+        } catch {
+          return null;
+        }
+      })();
+      lookupTasks.push(ndkTask, relayTask);
+      authoritativeTasks.push(ndkTask, relayTask);
+    }
+
+    if (options.requireAuthoritative && authoritativeTasks.length > 0) {
+      const authoritativeGraceMs = Math.min(timeoutMs, Math.max(250, options.authoritativeGraceMs ?? 1500));
+      const earlyAuthoritative = (await Promise.all(
+        authoritativeTasks.map((task) => withTimeout(task, authoritativeGraceMs)),
+      )).filter((result): result is ResolvedTreeRoot => !!result);
+
+      const freshestAuthoritative = earlyAuthoritative
+        .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0];
+      if (freshestAuthoritative) {
+        await cacheResolvedFeedTreeRoot(
+          video.ownerNpub!,
+          video.treeName!,
+          freshestAuthoritative.cid,
+          freshestAuthoritative.updatedAt,
+        );
+        return freshestAuthoritative.cid;
+      }
+
+      const remainingMs = Math.max(0, timeoutMs - authoritativeGraceMs);
+      const speculativeResolved = await withTimeout(resolverTask, remainingMs);
+      if (speculativeResolved) {
+        await cacheResolvedFeedTreeRoot(
+          video.ownerNpub!,
+          video.treeName!,
+          speculativeResolved.cid,
+          speculativeResolved.updatedAt,
+        );
+        return speculativeResolved.cid;
+      }
     }
 
     try {

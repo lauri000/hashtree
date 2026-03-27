@@ -11,7 +11,7 @@
   import { nip19 } from 'nostr-tools';
   import { getTree } from '../../store';
   import { ndk, nostrStore, npubToPubkey } from '../../nostr';
-  import { treeRootStore, createTreesStore, routeStore, invalidateTreeRoot, updateSubscriptionCache, waitForTreeRoot } from '../../stores';
+  import { treeRootStore, createTreesStore, routeStore, invalidateTreeRoot, waitForTreeRoot } from '../../stores';
   import ShareButton from '../ShareButton.svelte';
   import { open as openBlossomPushModal } from '../Modals/BlossomPushModal.svelte';
   import { open as openAddToPlaylistModal } from '../Modals/AddToPlaylistModal.svelte';
@@ -975,19 +975,13 @@ async function syncTreeRootToWorker(
           const fallbackSeedRoot = await resolveFeedVideoRootCidAsync({
             ownerNpub: currentNpub,
             treeName: currentTreeName,
-          }, 12000);
+          }, 12000, { requireAuthoritative: true });
           if (!fallbackSeedRoot) return;
           if (!isActiveVideoLoad(loadedVideoKey, videoKey)) return;
           if (getRouteRootKey(npub, treeName, currentVideoId) !== routeRootKey || effectiveRouteRootCid) {
             return;
           }
           setRouteRootOverride(routeRootKey, fallbackSeedRoot, 'feed-fallback-seed');
-          updateSubscriptionCache(
-            `${currentNpub}/${currentTreeName}`,
-            fallbackSeedRoot.hash,
-            fallbackSeedRoot.key,
-            { updatedAt: Math.floor(Date.now() / 1000) },
-          );
           logVideoDebug('root:fallback-resolved', {
             npub: currentNpub,
             treeName: currentTreeName,
@@ -1120,24 +1114,13 @@ async function syncTreeRootToWorker(
     if (isStaleLoad('sync-root')) return;
 
     const tree = getTree();
-    const subscriptionKey = `${capturedNpub}/${capturedTreeName}`;
 
     function syncResolvedRootCache(nextRoot: CID): void {
-      updateSubscriptionCache(
-        subscriptionKey,
-        nextRoot.hash,
-        nextRoot.key,
-        {
-          updatedAt: Math.floor(Date.now() / 1000),
-          visibility: capturedVisibility ?? 'public',
-        },
-      );
-      updateLocalRootCacheHex(
+      void syncTreeRootToWorker(
         capturedNpub,
         capturedTreeName,
-        toHex(nextRoot.hash),
-        nextRoot.key ? toHex(nextRoot.key) : undefined,
-        capturedVisibility ?? 'public',
+        nextRoot,
+        capturedVisibility ?? 'public'
       );
     }
 
@@ -2340,7 +2323,7 @@ async function syncTreeRootToWorker(
           data-htree-prefix={htreePrefix}
           data-video-load-runs={loadEffectRuns}
           data-video-key={loadedVideoKey ?? ''}
-          data-video-root-hash={rootCid ? toHex(rootCid.hash).slice(0, 16) : ''}
+          data-video-root-hash={effectiveRouteRootCid ? toHex(effectiveRouteRootCid.hash).slice(0, 16) : ''}
           data-video-npub={npub ?? ''}
           data-video-tree-name={treeName ?? ''}
         >

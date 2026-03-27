@@ -45,6 +45,7 @@ vi.mock('nostr-tools', () => ({
 
 const ROOT: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 1) };
 const ROOT_KEY = Uint8Array.from({ length: 32 }, (_, i) => i + 33);
+const LATEST_ROOT: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => 200 - i) };
 
 describe('resolveFeedVideoRootCid', () => {
   beforeEach(() => {
@@ -102,6 +103,7 @@ describe('resolveFeedVideoRootCid', () => {
     resolverResolve.mockResolvedValue(null);
     npubToPubkey.mockReturnValue('f'.repeat(64));
     ndkFetchEvent.mockResolvedValue({
+      created_at: 42,
       tags: [
         ['d', 'videos/Donkey Kong Country Soundtrack Full OST'],
         ['hash', '11'.repeat(32)],
@@ -126,7 +128,7 @@ describe('resolveFeedVideoRootCid', () => {
       'npub1example/videos/Donkey Kong Country Soundtrack Full OST',
       Uint8Array.from({ length: 32 }, () => 0x11),
       Uint8Array.from({ length: 32 }, () => 0x22),
-      { updatedAt: expect.any(Number), visibility: 'public' },
+      { updatedAt: 42, visibility: 'public' },
     );
   });
 
@@ -158,7 +160,7 @@ describe('resolveFeedVideoRootCid', () => {
       'npub1example/videos/Mine Bombers in-game music',
       Uint8Array.from({ length: 32 }, () => 0x33),
       undefined,
-      { updatedAt: expect.any(Number), visibility: 'public' },
+      { updatedAt: 10, visibility: 'public' },
     );
   });
 
@@ -194,6 +196,32 @@ describe('resolveFeedVideoRootCid', () => {
     ));
   });
 
+  it('prefers an authoritative tree event over a speculative resolver root when requested', async () => {
+    resolverResolve.mockResolvedValue(ROOT);
+    npubToPubkey.mockReturnValue('f'.repeat(64));
+    ndkFetchEvent.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return {
+        created_at: 99,
+        tags: [
+          ['d', 'videos/Remember this'],
+          ['hash', '66'.repeat(32)],
+        ],
+      };
+    });
+
+    const { resolveFeedVideoRootCidAsync } = await import('../src/lib/videoFeedRoot');
+    await expect(resolveFeedVideoRootCidAsync({
+      ownerNpub: 'npub1example',
+      treeName: 'videos/Remember this',
+    }, 1000, {
+      requireAuthoritative: true,
+      authoritativeGraceMs: 50,
+    })).resolves.toEqual(cid(
+      Uint8Array.from({ length: 32 }, () => 0x66),
+    ));
+  });
+
   it('coalesces concurrent async root resolution for the same feed tree', async () => {
     let resolveRoot: ((value: CID | null) => void) | null = null;
     resolverResolve.mockImplementation(() => new Promise((resolve) => {
@@ -218,12 +246,22 @@ describe('resolveFeedVideoRootCid', () => {
 
     await expect(first).resolves.toEqual(ROOT);
     await expect(second).resolves.toEqual(ROOT);
-    expect(updateSubscriptionCache).toHaveBeenCalledWith(
-      'npub1example/videos/Remember this',
-      ROOT.hash,
-      ROOT.key,
-      { updatedAt: expect.any(Number), visibility: 'public' },
-    );
+    expect(updateSubscriptionCache).not.toHaveBeenCalled();
+  });
+
+  it('does not cache speculative resolver roots across lookups', async () => {
+    resolverResolve.mockResolvedValueOnce(ROOT).mockResolvedValueOnce(LATEST_ROOT);
+
+    const { resolveFeedVideoRootCidAsync } = await import('../src/lib/videoFeedRoot');
+    await expect(resolveFeedVideoRootCidAsync({
+      ownerNpub: 'npub1example',
+      treeName: 'videos/Remember this',
+    }, 1000)).resolves.toEqual(ROOT);
+    await expect(resolveFeedVideoRootCidAsync({
+      ownerNpub: 'npub1example',
+      treeName: 'videos/Remember this',
+    }, 1000)).resolves.toEqual(LATEST_ROOT);
+    expect(resolverResolve).toHaveBeenCalledTimes(2);
   });
 
   it('falls back to the explicit feed root when mutable resolution misses', async () => {
