@@ -494,6 +494,13 @@ pub fn generate_nip07_script(
   const ACTUAL_URL_ROOT = {};
   const WEBVIEW_ENDPOINT = `${{SERVER_URL}}/__iris_webview`;
   const NIP07_ENDPOINT = `${{SERVER_URL}}/__iris_nip07`;
+  const IS_TOP_LEVEL_DOCUMENT = (() => {{
+    try {{
+      return window.top === window.self;
+    }} catch (_error) {{
+      return true;
+    }}
+  }})();
   console.log('[NIP-07] Initializing with server:', SERVER_URL);
   window.__HTREE_SERVER_URL__ = SERVER_URL;
   window.__HTREE_CANONICAL_URL__ = null;
@@ -652,6 +659,7 @@ pub fn generate_nip07_script(
 
   let lastLocation = null;
   function notifyLocation(source) {{
+    if (!IS_TOP_LEVEL_DOCUMENT) return;
     const url = updateCanonicalLocation();
     if (url === lastLocation) return;
     lastLocation = url;
@@ -773,6 +781,7 @@ pub fn generate_nip07_script(
   }}
 
   function notifyDiagnostic(phase, errorMessage) {{
+    if (!IS_TOP_LEVEL_DOCUMENT) return;
     const debugSummary = getDebugSummary();
     postWebviewEvent({{
       kind: 'diagnostic',
@@ -2603,6 +2612,28 @@ mod tests {
             "htree://npub1example/video",
         );
         assert_eq!(url, "htree://npub1example/video/index.html?smoke=1");
+    }
+
+    #[test]
+    fn generated_bridge_script_only_reports_top_level_location_and_diagnostics() {
+        let script = generate_nip07_script(
+            "http://127.0.0.1:21417",
+            "session-token",
+            "content",
+            None,
+            None,
+            None,
+        );
+
+        assert!(
+            script.contains("const IS_TOP_LEVEL_DOCUMENT = (() => {"),
+            "expected top-level frame detection in bridge script"
+        );
+        assert_eq!(
+            script.matches("if (!IS_TOP_LEVEL_DOCUMENT) return;").count(),
+            2,
+            "expected subframe guard for both location and diagnostic reporting"
+        );
     }
 
     #[test]

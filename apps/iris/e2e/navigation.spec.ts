@@ -452,6 +452,12 @@ test.describe('Navigation', () => {
       source: 'navigation',
     });
 
+    await emitTauriEvent(page, 'child-webview-page-load', {
+      label: 'content',
+      url: 'https://second.example.com/',
+      event: 'started',
+    });
+
     await expect.poll(async () => (await getInvocationsFor(page, 'create_nip07_webview')).length).toBe(2);
 
     const closeCalls = await getInvocationsFor(page, 'close_webview');
@@ -459,5 +465,35 @@ test.describe('Navigation', () => {
 
     const createCalls = await getInvocationsFor(page, 'create_nip07_webview');
     expect(createCalls[1]?.args?.url).toBe('https://second.example.com/');
+  });
+
+  test('waits for page load before recreating after a cross-scope navigation signal', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill('https://yle.fi');
+    await input.press('Enter');
+
+    await emitTauriEvent(page, 'child-webview-location', {
+      label: 'content',
+      url: 'https://tag.userreport.com/server.html#instanceId=242704&origin=https%3A%2F%2Fyle.fi',
+      source: 'navigation',
+    });
+
+    await expect.poll(async () => (await getInvocationsFor(page, 'create_nip07_webview')).length).toBe(1);
+
+    await emitTauriEvent(page, 'child-webview-page-load', {
+      label: 'content',
+      url: 'https://tag.userreport.com/server.html#instanceId=242704&origin=https%3A%2F%2Fyle.fi',
+      event: 'started',
+    });
+
+    await expect.poll(async () => (await getInvocationsFor(page, 'create_nip07_webview')).length).toBe(2);
+
+    const createCalls = await getInvocationsFor(page, 'create_nip07_webview');
+    expect(createCalls[1]?.args?.url).toBe(
+      'https://tag.userreport.com/server.html#instanceId=242704&origin=https%3A%2F%2Fyle.fi',
+    );
   });
 });

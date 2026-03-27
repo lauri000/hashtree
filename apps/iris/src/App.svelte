@@ -484,6 +484,19 @@
   function handleLocationChange(event: WebviewLocationEvent) {
     if (event.label !== CHILD_LABEL) return;
     const previousUrl = currentUrl;
+    const requiresRecreation = (
+      currentView === 'webview' &&
+      !!previousUrl &&
+      shouldRecreateBrowserForUrl(event.url, previousUrl)
+    );
+
+    // Native navigation callbacks can arrive before the runtime confirms a
+    // top-level load. Ignore cross-scope signals here and let page-load events
+    // confirm them so subframes do not hijack the shell URL.
+    if (event.source === 'navigation' && requiresRecreation) {
+      return;
+    }
+
     currentUrl = event.url;
     if (!isAddressFocused) {
       addressValue = urlToDisplay(event.url);
@@ -495,7 +508,7 @@
     if (event.url === previousUrl) {
       return;
     }
-    if (currentView === 'webview' && previousUrl && shouldRecreateBrowserForUrl(event.url, previousUrl)) {
+    if (requiresRecreation) {
       currentUrl = previousUrl;
       void navigate(event.url, { pushHistory: false });
       return;
@@ -938,6 +951,27 @@
 
   function handlePageLoadEvent(event: WebviewPageLoadEvent) {
     if (event.label !== CHILD_LABEL) return;
+    const previousUrl = currentUrl;
+    const requiresRecreation = (
+      event.event === 'started' &&
+      currentView === 'webview' &&
+      !!previousUrl &&
+      event.url !== previousUrl &&
+      shouldRecreateBrowserForUrl(event.url, previousUrl)
+    );
+
+    if (requiresRecreation) {
+      void navigate(event.url, { pushHistory: false });
+      return;
+    }
+
+    if (currentView === 'webview' && event.url && event.url !== currentUrl) {
+      currentUrl = event.url;
+      if (!isAddressFocused) {
+        addressValue = urlToDisplay(event.url);
+      }
+    }
+
     childPageLoadState = event.event;
     childPageLoadUrl = event.url;
     if (event.event === 'started') {
