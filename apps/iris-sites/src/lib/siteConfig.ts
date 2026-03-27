@@ -2,6 +2,7 @@ import { nhashDecode, nhashEncode, toHex } from '@hashtree/core';
 import {
   decodeImmutableHostLabel,
   decodeMutableHostLabel,
+  encodeMutableHostLabel,
   encodePathSegments,
   getMutableTreeHint,
   normalizeHost,
@@ -112,7 +113,7 @@ function parseGenericHashSite(hash: string | undefined): HostedSite | null {
 
 type RuntimeSiteHint =
   | { kind: 'immutable'; hash: Uint8Array }
-  | { kind: 'mutable'; npub: string; treeHint: string };
+  | { kind: 'mutable'; label: string; ownerHint: string; treeHint: string; verifier: string };
 
 function parseRuntimeSiteHint(host: string): RuntimeSiteHint | null {
   const normalized = normalizeHost(host);
@@ -141,8 +142,10 @@ function parseRuntimeSiteHint(host: string): RuntimeSiteHint | null {
     if (mutable) {
       return {
         kind: 'mutable',
-        npub: mutable.npub,
+        label: labels[0],
+        ownerHint: mutable.ownerHint,
         treeHint: mutable.treeHint,
+        verifier: mutable.verifier,
       };
     }
   }
@@ -189,14 +192,19 @@ function resolveImmutableRuntimeSite(hint: { hash: Uint8Array }, hash: string | 
 }
 
 function resolveMutableRuntimeSite(
-  hint: { npub: string; treeHint: string },
+  hint: { label: string; ownerHint: string; treeHint: string; verifier: string },
   hash: string | undefined,
 ): HostedSite | null {
   const generic = parseGenericHashSite(hash);
   if (generic?.kind === 'mutable') {
     // Refuse cross-site spoofing like real-site.hashtree.cc/#/attacker/tree:
-    // the hostname decides the mutable root, not the fragment.
-    if (generic.npub !== hint.npub || getMutableTreeHint(generic.treeName) !== hint.treeHint) {
+    // the fragment must reproduce the exact hostname label, including the
+    // verifier derived from the full npub/tree route.
+    if (
+      encodeMutableHostLabel(generic.npub, generic.treeName) !== hint.label ||
+      !generic.npub.toLowerCase().startsWith(hint.ownerHint) ||
+      getMutableTreeHint(generic.treeName) !== hint.treeHint
+    ) {
       return null;
     }
     return generic;

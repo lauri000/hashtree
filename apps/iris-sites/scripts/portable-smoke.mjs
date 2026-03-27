@@ -2,14 +2,15 @@ import http from 'node:http';
 import path from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
 import { chromium } from '@playwright/test';
+import { sha256 } from '@noble/hashes/sha2.js';
 import { nhashDecode, toHex } from '@hashtree/core';
-import { nip19 } from 'nostr-tools';
 
 const appDir = path.resolve(import.meta.dirname, '..');
 const distDir = path.join(appDir, 'dist');
 const screenshotPath = path.join(appDir, 'test-results', 'iris-sites-portable-smoke.png');
 const ENSHITTIFIER_NHASH = 'nhash1qqsxyn0g6yyac8ruej7r7j80y2gx6ev5z5flu6ry5h5t3ajju5utzjs9yz7t3p2syr9n5heajlv85uwej232dk5x4zqe8d7ft67y3m5umxr55qjku38';
 const ENSHITTIFIER_NPUB = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
+const textEncoder = new TextEncoder();
 
 const MIME_TYPES = new Map([
   ['.css', 'text/css; charset=utf-8'],
@@ -173,10 +174,6 @@ async function assertFrameShowsApp(page, timeoutMs) {
   }
 }
 
-function bytesToHex(bytes) {
-  return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
 function encodeBase32(bytes) {
   const alphabet = 'abcdefghijklmnopqrstuvwxyz234567';
   let bits = 0;
@@ -199,42 +196,28 @@ function encodeBase32(bytes) {
   return output;
 }
 
-function encodeTreeNameLabels(treeName) {
+function getMutableTreeHint(treeName) {
   const slug = treeName
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
-  const hint = (slug || 'site').slice(0, 12).replace(/-+$/g, '');
+  const hint = (slug || 'site').slice(0, 25).replace(/-+$/g, '');
   return hint || 'site';
 }
 
-function encodeBase36(bytes) {
-  const alphabet = '0123456789abcdefghijklmnopqrstuvwxyz';
-  let value = 0n;
-  for (const byte of bytes) {
-    value = (value << 8n) | BigInt(byte);
-  }
-  if (value === 0n) return '0';
+function getMutableOwnerHint(npub) {
+  const hint = npub.trim().toLowerCase().slice(0, 16);
+  return /^[a-z0-9]+$/.test(hint) ? hint : 'npub';
+}
 
-  let output = '';
-  while (value > 0n) {
-    const remainder = Number(value % 36n);
-    output = alphabet[remainder] + output;
-    value /= 36n;
-  }
-  return output;
+function getMutableVerifier(npub, treeName) {
+  const digest = sha256(textEncoder.encode(`mutable-host-v1\0${npub}\0${treeName}`));
+  return encodeBase32(digest).slice(0, 20);
 }
 
 function encodeMutableHostLabel(npub, treeName) {
-  const decoded = nip19.decode(npub);
-  if (decoded.type !== 'npub' || typeof decoded.data !== 'string') {
-    throw new Error(`Expected npub, got ${decoded.type}`);
-  }
-
-  const ownerHex = decoded.data;
-  const ownerBytes = new Uint8Array(ownerHex.match(/.{1,2}/g).map((pair) => Number.parseInt(pair, 16)));
-  return `${encodeBase36(ownerBytes).padStart(50, '0')}-${encodeTreeNameLabels(treeName)}`;
+  return `${getMutableOwnerHint(npub)}-${getMutableTreeHint(treeName)}-${getMutableVerifier(npub, treeName)}`;
 }
 
 function immutableRuntimeHost(nhash, port) {

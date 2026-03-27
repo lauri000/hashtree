@@ -17,9 +17,9 @@ importers:
       '@hashtree/worker':
         specifier: workspace:*
         version: link:../../ts/packages/hashtree-worker
-      nostr-tools:
-        specifier: ^2.23.3
-        version: 2.23.3(typescript@5.9.3)
+      '@noble/hashes':
+        specifier: ^2.0.1
+        version: 2.0.1
       svelte:
         specifier: ^5.16.0
         version: 5.55.0

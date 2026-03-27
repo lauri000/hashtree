@@ -12,6 +12,12 @@ describe('site host routing', () => {
     expect(isPortalShellHost('enshittifier.hashtree.cc')).toBe(false);
   });
 
+  it('keeps mutable runtime hosts readable with an npub prefix and exact tree hint', () => {
+    expect(encodeMutableHostLabel(VALID_NPUB, 'enshittifier')).toBe(
+      'npub1xdhnr9mrv47-enshittifier-63dvmlmvh6sxd65q7aba',
+    );
+  });
+
   it('derives immutable runtime hosts from the keyless nhash so the server never sees the decrypt key', async () => {
     const nhash = 'nhash1qqsxyn0g6yyac8ruej7r7j80y2gx6ev5z5flu6ry5h5t3ajju5utzjs9yz7t3p2syr9n5heajlv85uwej232dk5x4zqe8d7ft67y3m5umxr55qjku38';
     const href = await buildIsolatedSiteHref({
