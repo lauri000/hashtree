@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
 async function loadConfig() {
   const configModule = await import('../vite.config');
@@ -24,5 +26,12 @@ describe('iris-sites build config', () => {
     expect(sanitized).not.toContain('crossorigin');
     expect(sanitized).toContain('<script type="module" src="./assets/main.js"></script>');
     expect(sanitized).toContain('<link rel="stylesheet" href="./assets/main.css">');
+  });
+
+  it('declares the shared favicon in the launcher shell HTML', async () => {
+    const html = await readFile(resolve(import.meta.dirname, '..', 'index.html'), 'utf8');
+
+    expect(html).toContain('<link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any" />');
+    expect(html).toContain('<link rel="shortcut icon" href="/favicon.svg" type="image/svg+xml" />');
   });
 });
