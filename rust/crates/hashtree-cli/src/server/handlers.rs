@@ -2248,17 +2248,33 @@ pub async fn health_check() -> impl IntoResponse {
         .unwrap()
 }
 
+fn bluetooth_transport_enabled() -> bool {
+    crate::config::Config::load()
+        .map(|config| config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0)
+        .unwrap_or(true)
+}
+
+fn peer_transport_visible(
+    entry: &crate::webrtc::PeerEntry,
+    bluetooth_enabled: bool,
+) -> bool {
+    bluetooth_enabled || entry.transport != crate::webrtc::PeerTransport::Bluetooth
+}
+
 fn peer_transport_counts(
     peers: &std::collections::HashMap<String, crate::webrtc::PeerEntry>,
+    bluetooth_enabled: bool,
 ) -> serde_json::Value {
     use crate::webrtc::PeerTransport;
 
     let webrtc = peers
         .values()
+        .filter(|entry| peer_transport_visible(entry, bluetooth_enabled))
         .filter(|entry| entry.transport == PeerTransport::WebRtc)
         .count();
     let bluetooth = peers
         .values()
+        .filter(|entry| peer_transport_visible(entry, bluetooth_enabled))
         .filter(|entry| entry.transport == PeerTransport::Bluetooth)
         .count();
     json!({
@@ -2308,18 +2324,20 @@ pub async fn webrtc_peers(State(state): State<AppState>) -> impl IntoResponse {
     };
 
     let peers = webrtc_state.peers.read().await;
+    let bluetooth_enabled = bluetooth_transport_enabled();
     let (mesh_received, mesh_forwarded, mesh_dropped_duplicate) = webrtc_state.get_mesh_stats();
     let peer_list: Vec<_> = peers
         .iter()
+        .filter(|(_, entry)| peer_transport_visible(entry, bluetooth_enabled))
         .map(|(id, entry)| peer_entry_json(id, entry))
         .collect();
 
     Json(json!({
         "enabled": true,
-        "total": peers.len(),
+        "total": peer_list.len(),
         "connected": peer_list.iter().filter(|p| p["connected"].as_bool().unwrap_or(false)).count(),
         "with_data_channel": peer_list.iter().filter(|p| p["has_data_channel"].as_bool().unwrap_or(false)).count(),
-        "transport_counts": peer_transport_counts(&peers),
+        "transport_counts": peer_transport_counts(&peers, bluetooth_enabled),
         "mesh_received": mesh_received,
         "mesh_forwarded": mesh_forwarded,
         "mesh_dropped_duplicate": mesh_dropped_duplicate,
@@ -2345,12 +2363,15 @@ pub async fn daemon_status(
     // Mesh peers
     let mesh = if let Some(ref webrtc_state) = state.webrtc_peers {
         let peers = webrtc_state.peers.read().await;
+        let bluetooth_enabled = bluetooth_transport_enabled();
         let connected = peers
             .values()
+            .filter(|entry| peer_transport_visible(entry, bluetooth_enabled))
             .filter(|e| e.state == ConnectionState::Connected)
             .count();
         let with_data_channel = peers
             .values()
+            .filter(|entry| peer_transport_visible(entry, bluetooth_enabled))
             .filter(|e| {
                 e.state == ConnectionState::Connected
                     && e.peer.as_ref().map(|p| p.is_ready()).unwrap_or(false)
@@ -2361,14 +2382,15 @@ pub async fn daemon_status(
         // Per-peer stats
         let peer_stats: Vec<_> = peers
             .iter()
+            .filter(|(_, entry)| peer_transport_visible(entry, bluetooth_enabled))
             .map(|(id, entry)| peer_entry_json(id, entry))
             .collect();
         json!({
             "enabled": true,
-            "total_peers": peers.len(),
+            "total_peers": peer_stats.len(),
             "connected": connected,
             "with_data_channel": with_data_channel,
-            "transport_counts": peer_transport_counts(&peers),
+            "transport_counts": peer_transport_counts(&peers, bluetooth_enabled),
             "bytes_sent": bytes_sent,
             "bytes_received": bytes_received,
             "mesh_received": mesh_received,
