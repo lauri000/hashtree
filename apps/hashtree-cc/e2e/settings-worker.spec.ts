@@ -38,6 +38,20 @@ test('settings page persists storage/server settings and allows relay updates', 
   await expect(page.getByTestId('settings-relay-item').filter({ hasText: 'relay.example.test' })).toBeVisible();
 });
 
+test('bandwidth indicator can be enabled without triggering a render loop', async ({ page }) => {
+  await page.goto('/#/settings');
+
+  const toggle = page.getByTestId('settings-show-bandwidth-toggle');
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+
+  await expect(toggle).toBeChecked();
+  await expect(page.getByTestId('bandwidth-indicator')).toBeVisible();
+
+  await page.goto('/');
+  await expect(page.getByTestId('bandwidth-indicator')).toBeVisible();
+});
+
 test('uploaded file stays viewable after reload without blossom GET fallback', async ({ page }) => {
   const fileContent = 'worker cache persistence';
   const expectedHash = createHash('sha256').update(fileContent).digest('hex');
