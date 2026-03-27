@@ -1,10 +1,10 @@
 //! Filesystem-based content-addressed blob storage.
 //!
 //! Stores blobs in a directory structure similar to git:
-//! `{base_path}/{first 2 chars of hash}/{remaining hash chars}`
+//! `{base_path}/{first 2 chars of hash}/{next 2 chars}/{remaining hash chars}`
 //!
 //! For example, a blob with hash `abcdef123...` would be stored at:
-//! `~/.hashtree/blobs/ab/cdef123...`
+//! `~/.hashtree/blobs/ab/cd/ef123...`
 
 use async_trait::async_trait;
 use hashtree_core::store::{Store, StoreError, StoreStats};
@@ -18,8 +18,9 @@ use std::time::SystemTime;
 
 /// Filesystem-backed blob store implementing hashtree's Store trait.
 ///
-/// Stores blobs in a 256-way sharded directory structure using
-/// the first 2 hex characters of the hash as the directory prefix.
+/// Stores blobs in a two-level sharded directory structure using
+/// the first 4 hex characters of the hash as directory prefixes.
+/// Legacy single-level shard paths remain readable.
 /// Supports storage limits with mtime-based FIFO eviction and pinning.
 pub struct FsBlobStore {
     base_path: PathBuf,
@@ -74,13 +75,92 @@ impl FsBlobStore {
         Ok(())
     }
 
-    /// Get the file path for a given hash.
-    ///
-    /// Format: `{base_path}/{first 2 hex chars}/{remaining 62 hex chars}`
-    fn blob_path(&self, hash: &Hash) -> PathBuf {
+    fn blob_path_from_hex(&self, hash_hex: &str) -> PathBuf {
+        let (prefix, rest) = hash_hex.split_at(2);
+        let (subdir, filename) = rest.split_at(2);
+        self.base_path.join(prefix).join(subdir).join(filename)
+    }
+
+    fn legacy_blob_path(&self, hash: &Hash) -> PathBuf {
         let hex = hex::encode(hash);
         let (prefix, rest) = hex.split_at(2);
         self.base_path.join(prefix).join(rest)
+    }
+
+    /// Get the file path for a given hash.
+    ///
+    /// Format: `{base_path}/{first 2 hex chars}/{next 2 hex chars}/{remaining 60 hex chars}`
+    fn blob_path(&self, hash: &Hash) -> PathBuf {
+        self.blob_path_from_hex(&hex::encode(hash))
+    }
+
+    fn existing_blob_path(&self, hash: &Hash) -> Option<PathBuf> {
+        let primary = self.blob_path(hash);
+        if primary.exists() {
+            return Some(primary);
+        }
+
+        let legacy = self.legacy_blob_path(hash);
+        if legacy.exists() {
+            return Some(legacy);
+        }
+
+        None
+    }
+
+    fn hash_hex_for_blob_path(&self, path: &Path) -> Option<String> {
+        let relative = path.strip_prefix(&self.base_path).ok()?;
+        let mut hex = String::new();
+
+        for component in relative.iter() {
+            let part = component.to_str()?;
+            hex.push_str(part);
+        }
+
+        if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+
+        Some(hex.to_ascii_lowercase())
+    }
+
+    fn collect_blob_metadata_recursive(
+        &self,
+        dir: &Path,
+        blobs: &mut Vec<(PathBuf, String, fs::Metadata)>,
+    ) -> Result<(), StoreError> {
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+
+        for entry in entries {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let path = entry.path();
+
+            if file_type.is_dir() {
+                self.collect_blob_metadata_recursive(&path, blobs)?;
+                continue;
+            }
+
+            if !file_type.is_file() {
+                continue;
+            }
+
+            if let Some(hex) = self.hash_hex_for_blob_path(&path) {
+                blobs.push((path, hex, entry.metadata()?));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn collect_blob_metadata(&self) -> Result<Vec<(PathBuf, String, fs::Metadata)>, StoreError> {
+        let mut blobs = Vec::new();
+        self.collect_blob_metadata_recursive(&self.base_path, &mut blobs)?;
+        Ok(blobs)
     }
 
     /// Sync put operation.
@@ -88,7 +168,7 @@ impl FsBlobStore {
         let path = self.blob_path(&hash);
 
         // Check if already exists
-        if path.exists() {
+        if self.existing_blob_path(&hash).is_some() {
             return Ok(false);
         }
 
@@ -107,8 +187,7 @@ impl FsBlobStore {
 
     /// Sync get operation.
     pub fn get_sync(&self, hash: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
-        let path = self.blob_path(hash);
-        if path.exists() {
+        if let Some(path) = self.existing_blob_path(hash) {
             Ok(Some(fs::read(&path)?))
         } else {
             Ok(None)
@@ -117,60 +196,35 @@ impl FsBlobStore {
 
     /// Check if a hash exists.
     pub fn exists(&self, hash: &Hash) -> bool {
-        self.blob_path(hash).exists()
+        self.existing_blob_path(hash).is_some()
     }
 
     /// Sync delete operation.
     pub fn delete_sync(&self, hash: &Hash) -> Result<bool, StoreError> {
-        let path = self.blob_path(hash);
-        if path.exists() {
-            fs::remove_file(&path)?;
-            Ok(true)
-        } else {
-            Ok(false)
+        let primary = self.blob_path(hash);
+        let legacy = self.legacy_blob_path(hash);
+        let mut deleted = false;
+
+        for path in [primary, legacy] {
+            if path.exists() {
+                fs::remove_file(path)?;
+                deleted = true;
+            }
         }
+
+        Ok(deleted)
     }
 
     /// List all hashes in the store.
     pub fn list(&self) -> Result<Vec<Hash>, StoreError> {
         let mut hashes = Vec::new();
 
-        // Iterate over prefix directories (00-ff)
-        let entries = match fs::read_dir(&self.base_path) {
-            Ok(e) => e,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(hashes),
-            Err(e) => return Err(e.into()),
-        };
-
-        for prefix_entry in entries {
-            let prefix_entry = prefix_entry?;
-            let prefix_path = prefix_entry.path();
-
-            if !prefix_path.is_dir() {
-                continue;
-            }
-
-            let prefix = match prefix_path.file_name().and_then(|n| n.to_str()) {
-                Some(p) if p.len() == 2 => p.to_string(),
-                _ => continue,
-            };
-
-            // Iterate over blobs in this prefix directory
-            for blob_entry in fs::read_dir(&prefix_path)? {
-                let blob_entry = blob_entry?;
-                let rest = match blob_entry.file_name().to_str() {
-                    Some(r) if r.len() == 62 => r.to_string(),
-                    _ => continue,
-                };
-
-                // Reconstruct full hash hex
-                let full_hex = format!("{}{}", prefix, rest);
-                if let Ok(bytes) = hex::decode(&full_hex) {
-                    if bytes.len() == 32 {
-                        let mut hash = [0u8; 32];
-                        hash.copy_from_slice(&bytes);
-                        hashes.push(hash);
-                    }
+        for (_, full_hex, _) in self.collect_blob_metadata()? {
+            if let Ok(bytes) = hex::decode(&full_hex) {
+                if bytes.len() == 32 {
+                    let mut hash = [0u8; 32];
+                    hash.copy_from_slice(&bytes);
+                    hashes.push(hash);
                 }
             }
         }
@@ -186,48 +240,14 @@ impl FsBlobStore {
         let mut pinned_count = 0usize;
         let mut pinned_bytes = 0u64;
 
-        let entries = match fs::read_dir(&self.base_path) {
-            Ok(e) => e,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(FsStats {
-                    count,
-                    total_bytes,
-                    pinned_count,
-                    pinned_bytes,
-                })
-            }
-            Err(e) => return Err(e.into()),
-        };
+        for (_, hex, metadata) in self.collect_blob_metadata()? {
+            let size = metadata.len();
+            count += 1;
+            total_bytes += size;
 
-        for prefix_entry in entries {
-            let prefix_entry = prefix_entry?;
-            let prefix_path = prefix_entry.path();
-
-            if !prefix_path.is_dir() {
-                continue;
-            }
-
-            let prefix = match prefix_path.file_name().and_then(|n| n.to_str()) {
-                Some(p) if p.len() == 2 => p,
-                _ => continue,
-            };
-
-            for blob_entry in fs::read_dir(&prefix_path)? {
-                let blob_entry = blob_entry?;
-                if blob_entry.path().is_file() {
-                    let size = blob_entry.metadata()?.len();
-                    count += 1;
-                    total_bytes += size;
-
-                    // Check if pinned
-                    if let Some(rest) = blob_entry.file_name().to_str() {
-                        let hex = format!("{}{}", prefix, rest);
-                        if pins.get(&hex).copied().unwrap_or(0) > 0 {
-                            pinned_count += 1;
-                            pinned_bytes += size;
-                        }
-                    }
-                }
+            if pins.get(&hex).copied().unwrap_or(0) > 0 {
+                pinned_count += 1;
+                pinned_bytes += size;
             }
         }
 
@@ -241,45 +261,18 @@ impl FsBlobStore {
 
     /// Collect all blobs with their mtime and size for eviction
     fn collect_blobs_for_eviction(&self) -> Vec<(PathBuf, String, SystemTime, u64)> {
-        let mut blobs = Vec::new();
-
-        let entries = match fs::read_dir(&self.base_path) {
-            Ok(e) => e,
-            Err(_) => return blobs,
-        };
-
-        for prefix_entry in entries.flatten() {
-            let prefix_path = prefix_entry.path();
-            if !prefix_path.is_dir() {
-                continue;
-            }
-
-            let prefix = match prefix_path.file_name().and_then(|n| n.to_str()) {
-                Some(p) if p.len() == 2 => p.to_string(),
-                _ => continue,
-            };
-
-            if let Ok(blob_entries) = fs::read_dir(&prefix_path) {
-                for blob_entry in blob_entries.flatten() {
-                    let path = blob_entry.path();
-                    if !path.is_file() {
-                        continue;
-                    }
-
-                    if let Ok(metadata) = blob_entry.metadata() {
+        self.collect_blob_metadata()
+            .map(|blobs| {
+                blobs
+                    .into_iter()
+                    .map(|(path, hex, metadata)| {
                         let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                         let size = metadata.len();
-
-                        if let Some(rest) = blob_entry.file_name().to_str() {
-                            let hex = format!("{}{}", prefix, rest);
-                            blobs.push((path, hex, mtime, size));
-                        }
-                    }
-                }
-            }
-        }
-
-        blobs
+                        (path, hex, mtime, size)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Evict unpinned blobs until storage is under target_bytes
@@ -555,8 +548,9 @@ mod tests {
 
         // Verify the file exists at the correct path
         let prefix = &hex[..2];
-        let rest = &hex[2..];
-        let expected_path = blobs_path.join(prefix).join(rest);
+        let subdir = &hex[2..4];
+        let rest = &hex[4..];
+        let expected_path = blobs_path.join(prefix).join(subdir).join(rest);
 
         assert!(
             expected_path.exists(),
@@ -586,8 +580,42 @@ mod tests {
             "Path should contain /00/ directory: {}",
             path_str
         );
-        // File name should be remaining 62 chars
-        assert!(path.file_name().unwrap().len() == 62);
+        // Should also include a second shard level based on the next byte.
+        assert!(
+            path_str.contains("/11/"),
+            "Path should contain /11/ directory: {}",
+            path_str
+        );
+        // File name should be remaining 60 chars
+        assert!(path.file_name().unwrap().len() == 60);
+    }
+
+    #[tokio::test]
+    async fn test_legacy_single_level_layout_remains_readable() {
+        let temp = TempDir::new().unwrap();
+        let blobs_path = temp.path().join("blobs");
+        let store = FsBlobStore::new(&blobs_path).unwrap();
+
+        let data = b"legacy blob";
+        let hash = sha256(data);
+        let hex = hex::encode(hash);
+        let legacy_path = blobs_path.join(&hex[..2]).join(&hex[2..]);
+        fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        fs::write(&legacy_path, data).unwrap();
+
+        assert!(store.has(&hash).await.unwrap());
+        assert_eq!(store.get(&hash).await.unwrap(), Some(data.to_vec()));
+
+        let listed = store.list().unwrap();
+        assert_eq!(listed, vec![hash]);
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.count, 1);
+        assert_eq!(stats.total_bytes, data.len() as u64);
+
+        assert!(!store.put(hash, data.to_vec()).await.unwrap());
+        assert!(store.delete(&hash).await.unwrap());
+        assert!(!legacy_path.exists());
     }
 
     #[tokio::test]

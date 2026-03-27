@@ -25,9 +25,11 @@ Blobs are stored in a directory structure based on hash prefix:
 ```
 data/
   ab/
-    abcd1234...
+    cd/
+      ef1234...
   cd/
-    cdef5678...
+    ef/
+      5678...
 ```
 
 Part of [hashtree-rs](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree).

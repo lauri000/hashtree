@@ -84,7 +84,7 @@ pub enum StorageBackend {
     /// LMDB storage - requires lmdb feature
     #[default]
     Lmdb,
-    /// Filesystem storage - stores in ~/.hashtree/blobs/{prefix}/{hash}
+    /// Filesystem storage - stores in ~/.hashtree/blobs/{prefix}/{subdir}/{hash}
     Fs,
 }
 
