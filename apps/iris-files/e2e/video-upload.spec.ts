@@ -1,6 +1,13 @@
 import { test, expect, type Page } from './fixtures';
 import fs from 'fs';
 import path from 'path';
+import {
+  configureBlossomServers,
+  disableOthersPool,
+  ensureLoggedIn,
+  waitForAppReady,
+  waitForRelayConnected,
+} from './test-utils';
 
 const TEST_VIDEO_PATH = path.resolve(process.cwd(), 'e2e/fixtures/Big_Buck_Bunny_360_10s_1MB.mp4');
 
@@ -150,6 +157,60 @@ async function waitForVideoPlayback(page: Page, timeoutMs = 120000) {
     }
     return video.currentTime > 0.2 && video.readyState >= 2 && !video.error;
   }, undefined, { timeout: timeoutMs });
+}
+
+async function uploadVideoWithVisibility(
+  page: Page,
+  visibility: 'public' | 'link-visible' | 'private',
+  title: string,
+): Promise<string> {
+  await page.goto('/video.html#/create');
+
+  const fileInput = page.locator('input[type="file"]');
+  await fileInput.setInputFiles(TEST_VIDEO_PATH);
+
+  const titleInput = page.getByPlaceholder(/title/i);
+  await titleInput.waitFor({ state: 'visible', timeout: 10000 });
+  await titleInput.fill(title);
+
+  const visibilityButton = page.getByRole('button', { name: new RegExp(visibility, 'i') }).first();
+  await visibilityButton.click();
+
+  const uploadButton = page.getByRole('button', { name: 'Upload Video' });
+  await uploadButton.click();
+
+  await expect(page).toHaveURL(/videos(%2F|\/)/i, { timeout: 90000 });
+  return page.url();
+}
+
+async function getCurrentPubkey(page: Page): Promise<string> {
+  const pubkey = await page.evaluate(() => (window as { __nostrStore?: { getState?: () => { pubkey?: string | null } } }).__nostrStore?.getState?.().pubkey ?? null);
+  if (!pubkey) {
+    throw new Error('Could not resolve current pubkey');
+  }
+  return pubkey;
+}
+
+async function prepareNonOwnerViewer(page: Page, ownerPubkey: string): Promise<void> {
+  await page.goto('/video.html#/');
+  await waitForAppReady(page, 60000);
+  await disableOthersPool(page);
+  await configureBlossomServers(page);
+  await ensureLoggedIn(page, 30000);
+  await waitForRelayConnected(page, 30000);
+
+  const initialPubkey = await getCurrentPubkey(page);
+  if (initialPubkey !== ownerPubkey) return;
+
+  await page.evaluate(async () => {
+    const { generateNewKey } = await import('/src/nostr');
+    await generateNewKey();
+  });
+  await page.waitForFunction((owner) => {
+    const pubkey = (window as { __nostrStore?: { getState?: () => { pubkey?: string | null } } }).__nostrStore?.getState?.().pubkey;
+    return !!pubkey && pubkey !== owner;
+  }, ownerPubkey, { timeout: 15000 });
+  await waitForRelayConnected(page, 30000);
 }
 
 test.describe('Video Upload with Visibility', () => {
@@ -447,6 +508,63 @@ test.describe('Video Upload with Visibility', () => {
     await expect(videoElement).toBeVisible({ timeout: 15000 });
     await waitForVideoData(page, 120000);
     await waitForVideoPlayback(page, 120000);
+  });
+
+  test('shows link-required state instead of player failure for non-owners without the link key', async ({ page, browser }) => {
+    await page.goto('/video.html');
+    await loginAsTestUser(page);
+
+    const ownerPubkey = await getCurrentPubkey(page);
+    const title = `Protected Link Video ${Date.now()}`;
+    const videoUrl = await uploadVideoWithVisibility(page, 'link-visible', title);
+    const [, protectedHash] = videoUrl.split('?');
+    expect(protectedHash).toContain('k=');
+
+    const protectedUrl = videoUrl.replace(/[?&]k=[a-f0-9]+/i, '');
+    const context = await browser.newContext();
+    const page2 = await context.newPage();
+
+    try {
+      await prepareNonOwnerViewer(page2, ownerPubkey);
+      await page2.goto(protectedUrl);
+      await waitForAppReady(page2, 60000);
+      await waitForRelayConnected(page2, 30000);
+
+      const protectedNotice = page2.getByTestId('video-protected');
+      await expect(protectedNotice).toBeVisible({ timeout: 30000 });
+      await expect(protectedNotice.getByText('Link Required')).toBeVisible({ timeout: 30000 });
+      await expect(protectedNotice.getByText('This video requires a special link to access. Ask the owner for the link with the access key.')).toBeVisible({ timeout: 30000 });
+      await expect(page2.getByText('Video failed to load')).not.toBeVisible();
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('shows private-video state instead of player failure for non-owners', async ({ page, browser }) => {
+    await page.goto('/video.html');
+    await loginAsTestUser(page);
+
+    const ownerPubkey = await getCurrentPubkey(page);
+    const title = `Protected Private Video ${Date.now()}`;
+    const videoUrl = await uploadVideoWithVisibility(page, 'private', title);
+
+    const context = await browser.newContext();
+    const page2 = await context.newPage();
+
+    try {
+      await prepareNonOwnerViewer(page2, ownerPubkey);
+      await page2.goto(videoUrl);
+      await waitForAppReady(page2, 60000);
+      await waitForRelayConnected(page2, 30000);
+
+      const protectedNotice = page2.getByTestId('video-protected');
+      await expect(protectedNotice).toBeVisible({ timeout: 30000 });
+      await expect(protectedNotice.getByText('Private Video')).toBeVisible({ timeout: 30000 });
+      await expect(protectedNotice.getByText('This video is private and can only be accessed by its owner.')).toBeVisible({ timeout: 30000 });
+      await expect(page2.getByText('Video failed to load')).not.toBeVisible();
+    } finally {
+      await context.close();
+    }
   });
 
   test('should upload public video and NOT show visibility icon', async ({ page }) => {

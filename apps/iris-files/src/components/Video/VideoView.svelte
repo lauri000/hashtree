@@ -11,7 +11,7 @@
   import { nip19 } from 'nostr-tools';
   import { getTree } from '../../store';
   import { ndk, nostrStore, npubToPubkey } from '../../nostr';
-  import { treeRootStore, createTreesStore, routeStore, invalidateTreeRoot, waitForTreeRoot } from '../../stores';
+  import { treeRootStore, createTreesStore, routeStore, invalidateTreeRoot, waitForTreeRoot, type TreeEntry } from '../../stores';
   import ShareButton from '../ShareButton.svelte';
   import { open as openBlossomPushModal } from '../Modals/BlossomPushModal.svelte';
   import { open as openAddToPlaylistModal } from '../Modals/AddToPlaylistModal.svelte';
@@ -48,6 +48,7 @@
   import { formatTimeAgo } from '../../utils/format';
   import { settingsStore } from '../../stores/settings';
   import { buildPlaylistRedirectHash, consumePendingPlaylistRedirect, isActiveVideoLoad, rememberPendingPlaylistRedirect } from './videoLoadGuard';
+  import { resolveProtectedVideoState } from './videoAccess';
   import { buildVideoLoadKey } from './videoLoadKey';
   import { findPlayableMediaEntry, isAudioMediaFileName, PREFERRED_PLAYABLE_MEDIA_FILENAMES } from '../../lib/playableMedia';
   import { resolveReadableVideoRoot } from '../../lib/readableVideoRoot';
@@ -138,6 +139,7 @@
   let videoCid = $state<CID | null>(null);  // CID of the video FILE (video.mp4)
   let videoFolderCid = $state<CID | null>(null);  // CID of the video FOLDER (contains video.mp4, title.txt, etc.)
   let videoVisibility = $state<TreeVisibility>('public');
+  let treeEntries = $state<TreeEntry[]>([]);
   let videoRef: HTMLMediaElement | undefined = $state();
   let isAudioOnly = $derived(videoFileName ? isAudioMediaFileName(videoFileName) : false);
   let videoElementKey = $derived.by(() =>
@@ -818,6 +820,7 @@ async function syncTreeRootToWorker(
 
     const store = createTreesStore(currentNpub);
     const unsub = store.subscribe(trees => {
+      treeEntries = trees;
       const tree = trees.find(t => t.name === currentTreeName);
       if (tree?.visibility) {
         untrack(() => {
@@ -842,6 +845,44 @@ async function syncTreeRootToWorker(
     return videoVisibility;
   });
 
+  let currentTreeEntry = $derived.by(() => {
+    if (!treeName) return null;
+    return treeEntries.find((tree) => tree.name === treeName) ?? null;
+  });
+
+  let routeLinkKey = $derived($routeStore.params.get('k'));
+  let resolvedTreeVisibility = $derived.by(() =>
+    currentTreeEntry?.visibility ?? (isOwner && videoVisibility !== 'public' ? videoVisibility : undefined)
+  );
+  let protectedVideoState = $derived(resolveProtectedVideoState({
+    isOwner,
+    visibility: resolvedTreeVisibility,
+    hasDecryptionKey: !!effectiveRouteRootCid?.key,
+    hasLinkKey: !!routeLinkKey,
+  }));
+
+  $effect(() => {
+    const protectedState = protectedVideoState;
+    const path = videoPath;
+    if (!protectedState || !path) return;
+
+    videoSrc = '';
+    videoFileName = '';
+    videoCid = null;
+    videoFolderCid = null;
+    videoThumbnailUrl = null;
+    videoTitle = '';
+    videoDescription = '';
+    videoCreatedAt = null;
+    videoFallbackQueue = [];
+    loadedVideoKey = null;
+    displayedRouteKey = path;
+    pendingFallbackRootVideoKey = null;
+    error = null;
+    loading = false;
+    positionRestored = false;
+  });
+
   // Track what we've loaded to avoid unnecessary reloads
   let loadedVideoKey = $state<string | null>(null);
   let lastPrefixVersion = $state(0);
@@ -855,6 +896,7 @@ async function syncTreeRootToWorker(
     const cid = effectiveRouteRootCid;
     const path = videoPath; // Subscribe to videoPath changes
     const isPlaylist = isPlaylistVideo; // Capture reactively
+    const protectedState = protectedVideoState;
     const currentNpub = npub;
     const currentTreeName = treeName;
     const currentVideoIdValue = currentVideoId;
@@ -881,6 +923,16 @@ async function syncTreeRootToWorker(
       return;
     }
     missingPropsLogged = false;
+
+    if (protectedState) {
+      logVideoDebug('load:skip-protected', {
+        npub: currentNpub,
+        treeName: currentTreeName,
+        visibility: protectedState.visibility,
+        hasLinkKey: protectedState.hasLinkKey,
+      });
+      return;
+    }
 
     const routeKey = path;
 
@@ -978,6 +1030,7 @@ async function syncTreeRootToWorker(
             treeName: currentTreeName,
           }, 12000, { requireAuthoritative: true });
           if (!fallbackSeedRoot) return;
+          if (untrack(() => !!protectedVideoState)) return;
           if (!isActiveVideoLoad(loadedVideoKey, videoKey)) return;
           if (getRouteRootKey(npub, treeName, currentVideoId) !== routeRootKey || effectiveRouteRootCid) {
             return;
@@ -1026,6 +1079,7 @@ async function syncTreeRootToWorker(
   $effect(() => {
     const cid = effectiveRouteRootCid;
     const currentTreeName = treeName;
+    const protectedState = protectedVideoState;
 
     // Clear any existing timeout
     if (rootTimeoutTimer) {
@@ -1040,6 +1094,10 @@ async function syncTreeRootToWorker(
 
     if (!currentTreeName) {
       // No tree name - nothing to resolve
+      return;
+    }
+
+    if (protectedState) {
       return;
     }
 
@@ -2216,7 +2274,7 @@ async function syncTreeRootToWorker(
               onclick={handleSaveToPlaylist}
               class="btn-ghost p-2"
               title="Add to playlist"
-              disabled={!rootCid}
+              disabled={!rootCid || !!protectedVideoState}
             >
               <span class="i-lucide-bookmark text-lg"></span>
             </button>
@@ -2328,7 +2386,28 @@ async function syncTreeRootToWorker(
           data-video-npub={npub ?? ''}
           data-video-tree-name={treeName ?? ''}
         >
-          {#if error}
+          {#if protectedVideoState}
+            <div class="w-full h-full flex items-center justify-center p-8" data-testid="video-protected">
+              <div class="text-center">
+                <div class="inline-flex items-center justify-center mb-4">
+                  {#if protectedVideoState.visibility === 'link-visible'}
+                    {#if protectedVideoState.hasLinkKey}
+                      <span class="i-lucide-key-round text-3xl text-danger"></span>
+                    {:else}
+                      <span class="relative inline-block shrink-0 text-3xl text-text-3">
+                        <span class="i-lucide-link"></span>
+                        <span class="i-lucide-lock absolute -bottom-0.5 -right-1.5 text-[0.6em]"></span>
+                      </span>
+                    {/if}
+                  {:else}
+                    <span class="i-lucide-lock text-3xl text-text-3"></span>
+                  {/if}
+                </div>
+                <div class="text-text-2 font-medium mb-2">{protectedVideoState.title}</div>
+                <div class="text-text-3 text-sm max-w-xs mx-auto">{protectedVideoState.description}</div>
+              </div>
+            </div>
+          {:else if error}
             <div class="w-full h-full flex items-center justify-center text-red-400">
               <span class="i-lucide-alert-circle mr-2"></span>
               {error}
