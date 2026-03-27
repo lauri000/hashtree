@@ -122,7 +122,7 @@
       {/if}
     </section>
 
-    {#if isLoggedIn}
+    {#if isLoggedIn && visibleFavoriteRepos.length > 0}
       <section class="mt-10">
         <div class="mb-4">
           <div class="inline-flex items-center gap-2 rounded-full border border-surface-3 bg-surface-1 px-3 py-1 text-xs uppercase tracking-[0.22em] text-text-3">
@@ -135,23 +135,17 @@
           </p>
         </div>
 
-        {#if visibleFavoriteRepos.length > 0}
-          <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {#each visibleFavoriteRepos as repo (repo.address)}
-              <RepoCard
-                href={repo.href}
-                name={repo.repoName}
-                ownerPubkey={repo.ownerPubkey}
-                metaLabel="Liked repository"
-                accentIcon="heart"
-              />
-            {/each}
-          </div>
-        {:else}
-          <div class="rounded-2xl border border-surface-3 bg-surface-1/40 p-6 text-sm text-text-2">
-            Like a public repository and it will appear here.
-          </div>
-        {/if}
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {#each visibleFavoriteRepos as repo (repo.address)}
+            <RepoCard
+              href={repo.href}
+              name={repo.repoName}
+              ownerPubkey={repo.ownerPubkey}
+              metaLabel="Liked repository"
+              accentIcon="heart"
+            />
+          {/each}
+        </div>
       </section>
     {/if}
   </div>
