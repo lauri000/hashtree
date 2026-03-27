@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import { createHash } from 'crypto';
 
 const SAVE_WITH_ENTER = process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter';

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import { createHash } from 'crypto';
 
 test('settings page persists storage/server settings and allows relay updates', async ({ page }) => {

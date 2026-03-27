@@ -1,4 +1,6 @@
-import { test, expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import type { Browser, BrowserContext, Page } from '@playwright/test';
+import { test, expect } from './fixtures';
+import { attachRenderLoopGuardToContext } from './renderLoopGuard';
 
 const SETTINGS_KEY = 'hashtree-cc-settings-v1';
 const GB = 1024 * 1024 * 1024;
@@ -22,10 +24,12 @@ function buildSettings(relayUrl: string, blossomServers = [
 
 async function newContextWithRelay(
   browser: Browser,
+  failures: Set<string>,
   relayUrl: string,
   blossomServers = [{ url: 'https://blossom.primal.net', read: true, write: true }]
 ): Promise<BrowserContext> {
   const context = await browser.newContext();
+  attachRenderLoopGuardToContext(context, failures);
   const settings = buildSettings(relayUrl, blossomServers);
   await context.addInitScript(({ key, value }) => {
     window.localStorage.setItem(key, JSON.stringify(value));
@@ -40,12 +44,12 @@ async function getPeerCount(page: Page): Promise<number> {
   });
 }
 
-test('two isolated sessions connect to each other over p2p', async ({ browser }) => {
+test('two isolated sessions connect to each other over p2p', async ({ browser, renderLoopFailures }) => {
   const relayNamespace = `p2p-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const relayUrl = `ws://localhost:4736/${relayNamespace}`;
 
-  const contextA = await newContextWithRelay(browser, relayUrl);
-  const contextB = await newContextWithRelay(browser, relayUrl);
+  const contextA = await newContextWithRelay(browser, renderLoopFailures, relayUrl);
+  const contextB = await newContextWithRelay(browser, renderLoopFailures, relayUrl);
 
   const pageA = await contextA.newPage();
   const pageB = await contextB.newPage();
@@ -85,12 +89,12 @@ test('two isolated sessions connect to each other over p2p', async ({ browser })
   }
 });
 
-test('viewer fetch falls back to WebRTC when blossom read servers are disabled', async ({ browser }) => {
+test('viewer fetch falls back to WebRTC when blossom read servers are disabled', async ({ browser, renderLoopFailures }) => {
   const relayNamespace = `p2p-fallback-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const relayUrl = `ws://localhost:4736/${relayNamespace}`;
 
-  const contextA = await newContextWithRelay(browser, relayUrl, []);
-  const contextB = await newContextWithRelay(browser, relayUrl, []);
+  const contextA = await newContextWithRelay(browser, renderLoopFailures, relayUrl, []);
+  const contextB = await newContextWithRelay(browser, renderLoopFailures, relayUrl, []);
   const pageA = await contextA.newPage();
   const pageB = await contextB.newPage();
 

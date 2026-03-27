@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import { createHash } from 'crypto';
 
 function mockBlossom(page: import('@playwright/test').Page, expectedHash: string, content: string | Buffer) {
