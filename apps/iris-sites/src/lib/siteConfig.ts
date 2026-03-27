@@ -1,10 +1,8 @@
 import { nhashDecode, nhashEncode, toHex } from '@hashtree/core';
 import {
   decodeImmutableHostLabel,
-  decodeMutableHostLabel,
   encodeMutableHostLabel,
   encodePathSegments,
-  getMutableTreeHint,
   normalizeHost,
 } from './siteIdentity';
 
@@ -111,9 +109,10 @@ function parseGenericHashSite(hash: string | undefined): HostedSite | null {
   return null;
 }
 
-type RuntimeSiteHint =
-  | { kind: 'immutable'; hash: Uint8Array }
-  | { kind: 'mutable'; label: string; ownerHint: string; treeHint: string; verifier: string };
+interface RuntimeSiteHint {
+  label: string;
+  hash: Uint8Array;
+}
 
 function parseRuntimeSiteHint(host: string): RuntimeSiteHint | null {
   const normalized = normalizeHost(host);
@@ -136,16 +135,9 @@ function parseRuntimeSiteHint(host: string): RuntimeSiteHint | null {
   if (labels.length === 1) {
     const hash = decodeImmutableHostLabel(labels[0]);
     if (hash) {
-      return { kind: 'immutable', hash };
-    }
-    const mutable = decodeMutableHostLabel(labels[0]);
-    if (mutable) {
       return {
-        kind: 'mutable',
         label: labels[0],
-        ownerHint: mutable.ownerHint,
-        treeHint: mutable.treeHint,
-        verifier: mutable.verifier,
+        hash,
       };
     }
   }
@@ -153,7 +145,7 @@ function parseRuntimeSiteHint(host: string): RuntimeSiteHint | null {
   return null;
 }
 
-function resolveImmutableRuntimeSite(hint: { hash: Uint8Array }, hash: string | undefined): HostedSite | null {
+function resolveImmutableRuntimeSite(hint: RuntimeSiteHint, hash: string | undefined): HostedSite | null {
   const bareNhash = nhashEncode(hint.hash);
   const generic = parseGenericHashSite(hash);
   if (generic?.kind === 'immutable') {
@@ -191,20 +183,13 @@ function resolveImmutableRuntimeSite(hint: { hash: Uint8Array }, hash: string | 
   }
 }
 
-function resolveMutableRuntimeSite(
-  hint: { label: string; ownerHint: string; treeHint: string; verifier: string },
-  hash: string | undefined,
-): HostedSite | null {
+function resolveMutableRuntimeSite(hint: RuntimeSiteHint, hash: string | undefined): HostedSite | null {
   const generic = parseGenericHashSite(hash);
   if (generic?.kind === 'mutable') {
     // Refuse cross-site spoofing like real-site.hashtree.cc/#/attacker/tree:
-    // the fragment must reproduce the exact hostname label, including the
-    // verifier derived from the full npub/tree route.
-    if (
-      encodeMutableHostLabel(generic.npub, generic.treeName) !== hint.label ||
-      !generic.npub.toLowerCase().startsWith(hint.ownerHint) ||
-      getMutableTreeHint(generic.treeName) !== hint.treeHint
-    ) {
+    // the fragment must reproduce the exact opaque hostname label derived
+    // from the full mutable route.
+    if (encodeMutableHostLabel(generic.npub, generic.treeName) !== hint.label) {
       return null;
     }
     return generic;
@@ -222,13 +207,19 @@ export function serializeHostedSiteHash(site: HostedSite): string {
 }
 
 export function resolveHostedSite(location: SiteLocationLike): HostedSite | null {
+  const normalizedHost = normalizeHost(location.host);
   const runtimeHint = parseRuntimeSiteHint(location.host);
-  if (runtimeHint?.kind === 'immutable') {
+  if (runtimeHint) {
+    const generic = parseGenericHashSite(location.hash);
+    if (generic?.kind === 'mutable') {
+      return resolveMutableRuntimeSite(runtimeHint, location.hash);
+    }
     return resolveImmutableRuntimeSite(runtimeHint, location.hash);
   }
-  if (runtimeHint?.kind === 'mutable') {
-    return resolveMutableRuntimeSite(runtimeHint, location.hash);
+
+  if (normalizedHost === PROD_PORTAL_HOST || normalizedHost === LOCAL_PORTAL_HOST) {
+    return parseGenericHashSite(location.hash);
   }
 
-  return parseGenericHashSite(location.hash);
+  return null;
 }

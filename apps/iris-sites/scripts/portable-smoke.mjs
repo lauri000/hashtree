@@ -196,28 +196,8 @@ function encodeBase32(bytes) {
   return output;
 }
 
-function getMutableTreeHint(treeName) {
-  const slug = treeName
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  const hint = (slug || 'site').slice(0, 25).replace(/-+$/g, '');
-  return hint || 'site';
-}
-
-function getMutableOwnerHint(npub) {
-  const hint = npub.trim().toLowerCase().slice(0, 16);
-  return /^[a-z0-9]+$/.test(hint) ? hint : 'npub';
-}
-
-function getMutableVerifier(npub, treeName) {
-  const digest = sha256(textEncoder.encode(`mutable-host-v1\0${npub}\0${treeName}`));
-  return encodeBase32(digest).slice(0, 20);
-}
-
 function encodeMutableHostLabel(npub, treeName) {
-  return `${getMutableOwnerHint(npub)}-${getMutableTreeHint(treeName)}-${getMutableVerifier(npub, treeName)}`;
+  return encodeBase32(sha256(textEncoder.encode(`mutable-host-v1\0${npub}\0${treeName}`)));
 }
 
 function immutableRuntimeHost(nhash, port) {
@@ -268,6 +248,13 @@ try {
     throw new Error(`Mutable portal boot page returned ${mutableResponse?.status() ?? 'no response'} for ${mutableUrl}`);
   }
   await mutablePage.waitForURL(`${mutableRuntimeHost(ENSHITTIFIER_NPUB, 'enshittifier', port)}/#/${ENSHITTIFIER_NPUB}/enshittifier/index.html`, { timeout: 60000 });
+  const mutableHref = mutablePage.url();
+  if (!mutableHref.startsWith(`${mutableRuntimeHost(ENSHITTIFIER_NPUB, 'enshittifier', port)}/#/${ENSHITTIFIER_NPUB}/enshittifier/index.html`)) {
+    throw new Error(`Expected hashed mutable runtime host, got ${mutableHref}`);
+  }
+  if (mutableHref.includes('npub1') && mutableHref.split('#')[0].includes('npub1')) {
+    throw new Error(`Mutable runtime host leaked npub outside hash fragment: ${mutableHref}`);
+  }
   await assertFrameShowsApp(mutablePage, 60000);
 
   const directImmutablePage = await context.newPage();

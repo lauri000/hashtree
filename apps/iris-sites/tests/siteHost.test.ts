@@ -12,10 +12,12 @@ describe('site host routing', () => {
     expect(isPortalShellHost('enshittifier.hashtree.cc')).toBe(false);
   });
 
-  it('keeps mutable runtime hosts readable with an npub prefix and exact tree hint', () => {
-    expect(encodeMutableHostLabel(VALID_NPUB, 'enshittifier')).toBe(
-      'npub1xdhnr9mrv47-enshittifier-63dvmlmvh6sxd65q7aba',
-    );
+  it('derives mutable runtime hosts from an opaque hash label', () => {
+    const label = encodeMutableHostLabel(VALID_NPUB, 'enshittifier');
+
+    expect(label).toMatch(/^[a-z2-7]{52}$/);
+    expect(label).not.toContain('npub1');
+    expect(label).not.toContain('enshittifier');
   });
 
   it('derives immutable runtime hosts from the keyless nhash so the server never sees the decrypt key', async () => {

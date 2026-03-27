@@ -119,7 +119,7 @@ describe('site config resolution', () => {
     expect(site).toBeNull();
   });
 
-  it('accepts mutable runtime hosts for tree names that need slug hints', () => {
+  it('accepts mutable runtime hosts for tree names that are only present in the fragment', () => {
     const site = resolveHostedSite({
       host: `${encodeMutableHostLabel(VALID_NPUB, 'apps/iris ui')}.hashtree.cc`,
       hash: `#/${VALID_NPUB}/apps%2Firis%20ui/index.html`,
@@ -133,5 +133,14 @@ describe('site config resolution', () => {
       treeName: 'apps/iris ui',
       entryPath: 'index.html',
     });
+  });
+
+  it('does not treat old readable mutable hosts as valid runtimes', () => {
+    const site = resolveHostedSite({
+      host: 'npub1xdhnr9mrv47-enshittifier-63dvmlmvh6sxd65q7aba.hashtree.cc',
+      hash: `#/${VALID_NPUB}/enshittifier/index.html`,
+    });
+
+    expect(site).toBeNull();
   });
 });
