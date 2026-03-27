@@ -22,6 +22,7 @@ import {
   setP2PFetchHandler,
 } from './workerClient';
 import { settingsStore } from './settings';
+import { getEffectiveRelayUrls } from './irisRuntimeNetwork';
 
 const STATS_INTERVAL_MS = 1000;
 
@@ -133,13 +134,7 @@ function normalizeRelay(relay: string): string {
 
 function normalizeRelays(relays: string[] | undefined): string[] {
   const source = relays && relays.length > 0 ? relays : DEFAULT_RELAYS;
-  const unique = new Set<string>();
-  for (const relay of source) {
-    const normalized = normalizeRelay(relay);
-    if (!normalized) continue;
-    unique.add(normalized);
-  }
-  return Array.from(unique);
+  return getEffectiveRelayUrls(source.map(normalizeRelay).filter(Boolean));
 }
 
 function getRelayStates(): P2PRelayState[] {

@@ -133,3 +133,28 @@ test('p2p module is initialized in hashtree-cc', async ({ page }) => {
   expect(p2pState.blossomBytesSent).toBeGreaterThanOrEqual(0);
   expect(p2pState.blossomBytesReceived).toBeGreaterThanOrEqual(0);
 });
+
+test('iris runtime uses the embedded daemon relay and blossom fallback alongside upstream servers', async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as Window & { __HTREE_SERVER_URL__?: string }).__HTREE_SERVER_URL__ = 'http://127.0.0.1:21417';
+  });
+
+  await page.goto('/#/settings');
+
+  await expect(page.getByTestId('settings-local-daemon-relay-item')).toContainText('127.0.0.1');
+  await expect(page.getByTestId('settings-local-daemon-server-item')).toContainText('127.0.0.1:21417');
+  await expect(page.getByTestId('settings-relay-item').filter({ hasText: 'relay.primal.net' })).toBeVisible();
+  await expect(page.getByTestId('settings-server-item').filter({ hasText: 'upload.iris.to' })).toBeVisible();
+
+  await expect.poll(async () => page.evaluate(() => {
+    const state = (window as unknown as {
+      __hashtreeCcP2P?: {
+        relays?: Array<{ url: string }>;
+      };
+    }).__hashtreeCcP2P;
+    return state?.relays?.map((relay) => relay.url) ?? [];
+  })).toEqual(expect.arrayContaining([
+    'ws://127.0.0.1:21417/ws',
+    'wss://relay.primal.net',
+  ]));
+});

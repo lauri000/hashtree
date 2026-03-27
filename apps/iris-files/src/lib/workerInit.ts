@@ -22,6 +22,7 @@ import { initRelayTracking } from '../nostr/relays';
 import { getAppType } from '../appType';
 import { logHtreeDebug } from './htreeDebug';
 import { getInjectedHtreeServerUrl } from './nativeHtree';
+import { getEffectiveBlossomServers } from './runtimeNetwork';
 import { treeRootRegistry } from '../TreeRootRegistry';
 import { initializePublishFn } from '../treeRootCache';
 import { setupMediaStreaming } from './mediaStreamingSetup';
@@ -92,7 +93,7 @@ function syncBlossomServers(): void {
   if (!adapter) return;
 
   const settings = get(settingsStore);
-  const blossomServers = settings.network.blossomServers;
+  const blossomServers = getEffectiveBlossomServers(settings.network.blossomServers);
 
   // Hash to avoid duplicate updates
   const serversHash = JSON.stringify(blossomServers);
@@ -363,11 +364,12 @@ export async function initHashtreeBackend(identity: WorkerInitIdentity): Promise
       await Promise.all([serviceWorkerPromise, settingsPromise]);
 
       const settings = get(settingsStore);
+      const blossomServers = getEffectiveBlossomServers(settings.network.blossomServers);
 
       const config = {
         storeName: 'hashtree-worker',
         relays: settings.network.relays,
-        blossomServers: settings.network.blossomServers,
+        blossomServers,
         pubkey: identity.pubkey,
         nsec: identity.nsec,
       };

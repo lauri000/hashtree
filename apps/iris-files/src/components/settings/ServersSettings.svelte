@@ -4,6 +4,10 @@
   import { blossomLogStore } from '../../stores/blossomLog';
   import { appStore, formatBytes } from '../../store';
   import { getNativeDaemonRelayUrl } from '../../nostr/ndk';
+  import {
+    getEmbeddedDaemonBlossomServer,
+    normalizeRuntimeServerUrl,
+  } from '../../lib/runtimeNetwork';
 
   interface Props {
     embedded?: boolean;
@@ -32,6 +36,17 @@
   let appState = $derived($appStore);
   let blossomBandwidth = $derived(appState.blossomBandwidth);
   let blossomUsageByUrl = $derived(new Map(blossomBandwidth.servers.map(server => [server.url, server])));
+  const embeddedBlossomServer = getEmbeddedDaemonBlossomServer();
+  let configuredBlossomServers = $derived(
+    embeddedBlossomServer
+      ? networkSettings.blossomServers.filter(server => normalizeRuntimeServerUrl(server.url) !== embeddedBlossomServer.url)
+      : networkSettings.blossomServers
+  );
+  let displayedBlossomServers = $derived(
+    embeddedBlossomServer
+      ? [embeddedBlossomServer, ...configuredBlossomServers]
+      : configuredBlossomServers
+  );
 
   function getStatusColor(status: RelayStatus): string {
     switch (status) {
@@ -250,7 +265,7 @@
   <div>
     <div class="flex items-center justify-between mb-1">
       <h3 class="text-xs font-medium text-muted uppercase tracking-wide">
-        File Servers ({networkSettings.blossomServers.length})
+        File Servers ({displayedBlossomServers.length})
       </h3>
       <button onclick={() => editingBlossom = !editingBlossom} class="btn-ghost text-xs">
         {editingBlossom ? 'Done' : 'Edit'}
@@ -260,7 +275,18 @@
       <a href="https://github.com/hzrd149/blossom" target="_blank" rel="noopener" class="text-accent hover:underline">Blossom</a> servers for file storage fallback
     </p>
     <div class="bg-surface-2 rounded divide-y divide-surface-3">
-      {#each networkSettings.blossomServers as server (server.url)}
+      {#if embeddedBlossomServer}
+        {@const usage = blossomUsageByUrl.get(embeddedBlossomServer.url)}
+        <div class="flex items-center gap-2 p-3 text-sm">
+          <span class="i-lucide-server text-text-3 shrink-0"></span>
+          <div class="min-w-0 flex-1">
+            <div class="truncate text-text-1">{formatServerLabel(embeddedBlossomServer.url)}</div>
+            <div class="text-xs text-text-3">Embedded daemon fallback server</div>
+          </div>
+          <span class="text-xs text-text-3">↑ {formatBytes(usage?.bytesSent ?? 0)} · ↓ {formatBytes(usage?.bytesReceived ?? 0)}</span>
+        </div>
+      {/if}
+      {#each configuredBlossomServers as server (server.url)}
         <div class="flex items-center gap-2 p-3 text-sm">
           <span class="i-lucide-server text-text-3 shrink-0"></span>
           <span class="text-text-1 truncate flex-1">{formatServerLabel(server.url)}</span>
@@ -296,9 +322,9 @@
         </div>
       </div>
 
-      {#if networkSettings.blossomServers.length > 0}
+      {#if displayedBlossomServers.length > 0}
         <div class="mt-3 pt-3 border-t border-surface-3 space-y-1 text-xs font-mono">
-          {#each networkSettings.blossomServers as server (server.url)}
+          {#each displayedBlossomServers as server (server.url)}
             {@const usage = blossomUsageByUrl.get(server.url)}
             <div class="flex items-center justify-between gap-2 text-text-2">
               <span class="truncate">{formatServerLabel(server.url)}</span>

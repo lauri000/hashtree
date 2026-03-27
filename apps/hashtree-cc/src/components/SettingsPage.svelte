@@ -4,12 +4,24 @@
   import { p2pStore, type P2PRelayStatus } from '../lib/p2p';
   import { minidenticon } from 'minidenticons';
   import { animalName } from '../lib/animalName';
+  import {
+    getIrisRuntimeDaemonRelayUrl,
+    getIrisRuntimeServerUrl,
+    normalizeRuntimeUrl,
+  } from '../lib/irisRuntimeNetwork';
 
   const MB = 1024 * 1024;
 
   let settings = $derived($settingsStore);
   let p2p = $derived($p2pStore);
   let connectedPeers = $derived(p2p.peers.filter((peer) => peer.connected));
+  const embeddedDaemonRelayUrl = getIrisRuntimeDaemonRelayUrl();
+  const embeddedDaemonServerUrl = getIrisRuntimeServerUrl();
+  let configuredBlossomServers = $derived(
+    embeddedDaemonServerUrl
+      ? settings.network.blossomServers.filter((server) => normalizeRuntimeUrl(server.url) !== embeddedDaemonServerUrl)
+      : settings.network.blossomServers
+  );
   let newServerUrl = $state('');
   let newRelayUrl = $state('');
   let storageStats = $state({ items: 0, bytes: 0, maxBytes: settingsStore.getState().storage.maxBytes });
@@ -83,6 +95,10 @@
 
   function serverLabel(url: string): string {
     return url.replace(/^https?:\/\//, '');
+  }
+
+  function relayStatus(url: string): P2PRelayStatus {
+    return p2p.relays.find((entry) => entry.url === url)?.status ?? 'disconnected';
   }
 
   function peerAnimalName(pubkey: string): string {
@@ -196,11 +212,35 @@
     <div class="flex items-center justify-between">
       <h2 class="text-text-1 text-lg font-semibold">P2P Relays</h2>
     </div>
-    <p class="text-text-3 text-sm">Nostr relays used to find and connect to WebRTC peers</p>
+    <p class="text-text-3 text-sm">
+      {#if embeddedDaemonRelayUrl}
+        Connected through the embedded Iris daemon relay, with configured upstream relays kept alongside it.
+      {:else}
+        Nostr relays used to find and connect to WebRTC peers.
+      {/if}
+    </p>
 
     <div class="space-y-2">
+      {#if embeddedDaemonRelayUrl}
+        {@const daemonRelayState = relayStatus(embeddedDaemonRelayUrl)}
+        <div
+          class="bg-surface-0 border border-surface-3 rounded-lg p-3 flex items-center gap-3"
+          data-testid="settings-local-daemon-relay-item"
+          title={relayStatusLabel(daemonRelayState)}
+        >
+          <span
+            class="w-2 h-2 rounded-full shrink-0"
+            style={"background:" + relayStatusColor(daemonRelayState)}
+            title={relayStatusLabel(daemonRelayState)}
+          ></span>
+          <div class="min-w-0 flex-1">
+            <div class="text-text-1 text-sm truncate">{relayHost(embeddedDaemonRelayUrl)}</div>
+            <div class="text-text-3 text-xs">Embedded Iris daemon relay</div>
+          </div>
+        </div>
+      {/if}
       {#each settings.network.relays as relay (relay)}
-        {@const relayState = p2p.relays.find(entry => entry.url === relay)?.status ?? 'disconnected'}
+        {@const relayState = relayStatus(relay)}
         <div
           class="bg-surface-0 border border-surface-3 rounded-lg p-3 flex items-center gap-3"
           data-testid="settings-relay-item"
@@ -257,6 +297,22 @@
       </a>
     </p>
 
+    {#if embeddedDaemonServerUrl}
+      {@const usage = p2p.blossomBandwidth.servers.find(entry => entry.url === embeddedDaemonServerUrl)}
+      <div
+        class="bg-surface-0 border border-surface-3 rounded-lg p-3 flex items-center gap-3"
+        data-testid="settings-local-daemon-server-item"
+      >
+        <div class="min-w-0 flex-1">
+          <div class="text-text-1 text-sm truncate" title={embeddedDaemonServerUrl}>{serverLabel(embeddedDaemonServerUrl)}</div>
+          <div class="text-text-3 text-xs">Embedded Iris daemon Blossom endpoint</div>
+        </div>
+        <div class="text-text-3 text-xs">
+          ↑ {formatBytes(usage?.bytesSent ?? 0)} · ↓ {formatBytes(usage?.bytesReceived ?? 0)}
+        </div>
+      </div>
+    {/if}
+
     <div class="grid grid-cols-2 gap-3 text-sm">
       <div class="bg-surface-0 rounded-lg p-3" data-testid="settings-blossom-upload-total">
         <div class="text-text-3 text-xs mb-1">Blossom Upload</div>
@@ -269,7 +325,7 @@
     </div>
 
     <div class="space-y-2">
-      {#each settings.network.blossomServers as server (server.url)}
+      {#each configuredBlossomServers as server (server.url)}
         {@const usage = p2p.blossomBandwidth.servers.find(entry => entry.url === server.url)}
         <div class="bg-surface-0 border border-surface-3 rounded-lg p-3 flex items-center gap-3" data-testid="settings-server-item">
           <div class="min-w-0 flex-1">

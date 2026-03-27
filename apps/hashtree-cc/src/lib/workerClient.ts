@@ -6,6 +6,7 @@ import type { P2PFetchHandler } from '@hashtree/worker';
 import { writable } from 'svelte/store';
 import HashtreeWorker from '@hashtree/worker/entry?worker';
 import { settingsStore } from './settings';
+import { getEffectiveBlossomServers } from './irisRuntimeNetwork';
 
 const DEFAULT_CONNECTIVITY: ConnectivityState = {
   online: typeof navigator === 'undefined' ? true : navigator.onLine,
@@ -51,7 +52,7 @@ async function probeConnectivity(clientInstance: HashtreeWorkerClient): Promise<
 function syncSettingsToWorker(clientInstance: HashtreeWorkerClient): void {
   if (settingsUnsubscribe) return;
   settingsUnsubscribe = settingsStore.subscribe((settings) => {
-    void clientInstance.setBlossomServers(settings.network.blossomServers).catch(() => {});
+    void clientInstance.setBlossomServers(getEffectiveBlossomServers(settings.network.blossomServers)).catch(() => {});
     void clientInstance.setStorageMaxBytes(settings.storage.maxBytes).catch(() => {});
   });
 }
@@ -106,7 +107,7 @@ async function ensureClient(): Promise<HashtreeWorkerClient> {
     const settings = settingsStore.getState();
     const created = new HashtreeWorkerClient(HashtreeWorker, {
       storeName: 'hashtree-cc-worker',
-      blossomServers: settings.network.blossomServers,
+      blossomServers: getEffectiveBlossomServers(settings.network.blossomServers),
       storageMaxBytes: settings.storage.maxBytes,
       connectivityProbeIntervalMs: CONNECTIVITY_POLL_INTERVAL_MS,
     });
