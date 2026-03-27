@@ -269,6 +269,8 @@ pub struct WebRTCConfig {
     pub debug: bool,
     /// Optional LAN multicast transport for offline discovery + root lookup.
     pub multicast: super::multicast::MulticastConfig,
+    /// Optional Android Wi-Fi Aware nearby discovery/signaling bus.
+    pub wifi_aware: super::wifi_aware::WifiAwareConfig,
     /// Optional native Bluetooth peer transport.
     pub bluetooth: super::bluetooth::BluetoothConfig,
     /// Pool settings for follows and other peers
@@ -303,6 +305,7 @@ impl Default for WebRTCConfig {
             ],
             debug: false,
             multicast: super::multicast::MulticastConfig::default(),
+            wifi_aware: super::wifi_aware::WifiAwareConfig::default(),
             bluetooth: super::bluetooth::BluetoothConfig::default(),
             pools: PoolSettings::default(),
             request_selection_strategy: SelectionStrategy::TitForTat,

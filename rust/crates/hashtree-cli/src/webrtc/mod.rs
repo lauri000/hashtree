@@ -15,6 +15,7 @@ mod root_events;
 mod session;
 mod signaling;
 pub mod types;
+mod wifi_aware;
 
 #[cfg(test)]
 mod tests;
@@ -39,4 +40,8 @@ pub use types::{
     encode_request, DataMessage, DataRequest, PeerDirection, PeerId, PeerPool, PeerRouterConfig,
     PoolConfig, PoolSettings, RequestDispatchConfig, SelectionStrategy, SignalingMessage,
     WebRTCConfig, MAX_HTL,
+};
+pub use wifi_aware::{
+    install_mobile_wifi_aware_bridge, MobileWifiAwareBridge, WifiAwareConfig, WifiAwareEvent,
+    WifiAwareNostrBus,
 };

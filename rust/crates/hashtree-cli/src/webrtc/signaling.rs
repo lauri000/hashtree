@@ -42,6 +42,7 @@ use super::types::{
     SignalingMessage, TimedSeenSet, WebRTCConfig, HELLO_TAG, MESH_DEFAULT_HTL, MESH_EVENT_POLICY,
     WEBRTC_KIND,
 };
+use super::wifi_aware::{mobile_wifi_aware_bridge, WifiAwareNostrBus, WIFI_AWARE_SOURCE};
 use crate::cashu_helper::CashuPaymentClient;
 use crate::nostr_relay::NostrRelay;
 
@@ -75,6 +76,7 @@ impl std::fmt::Display for PeerTransport {
 pub enum PeerSignalPath {
     Relay,
     Multicast,
+    WifiAware,
     Bluetooth,
 }
 
@@ -83,6 +85,7 @@ impl PeerSignalPath {
         match self {
             PeerSignalPath::Relay => "relay",
             PeerSignalPath::Multicast => "multicast",
+            PeerSignalPath::WifiAware => WIFI_AWARE_SOURCE,
             PeerSignalPath::Bluetooth => "bluetooth",
         }
     }
@@ -90,6 +93,7 @@ impl PeerSignalPath {
     pub fn from_source_name(source: &str) -> Self {
         match source {
             "multicast" => PeerSignalPath::Multicast,
+            WIFI_AWARE_SOURCE => PeerSignalPath::WifiAware,
             "bluetooth" => PeerSignalPath::Bluetooth,
             _ => PeerSignalPath::Relay,
         }
@@ -1229,29 +1233,37 @@ impl WebRTCManager {
         self.my_peer_id.uuid.as_str() < their_uuid
     }
 
-    fn can_track_multicast_peer(
+    fn local_bus_max_peers(&self, source: &str) -> Option<usize> {
+        match source {
+            "multicast" => Some(self.config.multicast.max_peers),
+            WIFI_AWARE_SOURCE => Some(self.config.wifi_aware.max_peers),
+            _ => None,
+        }
+    }
+
+    fn can_track_local_bus_peer(
         &self,
         source: &str,
         peer_key: &str,
         peers: &HashMap<String, PeerEntry>,
     ) -> bool {
-        if source != "multicast" {
+        let Some(max_peers) = self.local_bus_max_peers(source) else {
             return true;
-        }
+        };
         if peers.contains_key(peer_key) {
             return true;
         }
-        if self.config.multicast.max_peers == 0 {
+        if max_peers == 0 {
             return false;
         }
+        let signal_path = PeerSignalPath::from_source_name(source);
         peers
             .values()
             .filter(|entry| {
-                entry.signal_paths.contains(&PeerSignalPath::Multicast)
-                    && entry.state != ConnectionState::Failed
+                entry.signal_paths.contains(&signal_path) && entry.state != ConnectionState::Failed
             })
             .count()
-            < self.config.multicast.max_peers
+            < max_peers
     }
 
     /// Start the native peer router - connects transports and handles signaling.
@@ -1343,6 +1355,34 @@ impl WebRTCManager {
                 }
             } else {
                 warn!("Multicast enabled but Nostr relay is unavailable");
+            }
+        }
+
+        if self.config.wifi_aware.is_enabled() {
+            if let Some(relay) = self.nostr_relay.clone() {
+                if let Some(bridge) = mobile_wifi_aware_bridge() {
+                    let bus = WifiAwareNostrBus::new(
+                        self.config.wifi_aware.clone(),
+                        self.keys.clone(),
+                        relay,
+                        bridge,
+                    );
+                    let local_bus: SharedLocalNostrBus = bus.clone();
+                    self.state.add_local_bus(local_bus.clone()).await;
+                    self.local_buses.push(local_bus);
+                    let shutdown_rx = self.shutdown_rx.clone();
+                    let signaling_tx = event_tx.clone();
+                    let local_peer_id = self.my_peer_id.to_string();
+                    tokio::spawn(async move {
+                        if let Err(err) = bus.run(local_peer_id, shutdown_rx, signaling_tx).await {
+                            error!("Wi-Fi Aware bus error: {}", err);
+                        }
+                    });
+                } else {
+                    warn!("Wi-Fi Aware enabled but no mobile bridge is installed");
+                }
+            } else {
+                warn!("Wi-Fi Aware enabled but Nostr relay is unavailable");
             }
         }
 
@@ -1981,11 +2021,11 @@ impl WebRTCManager {
         // Check if we already have this peer
         {
             let peers = self.state.peers.read().await;
-            if !self.can_track_multicast_peer(source, &peer_key, &peers) {
+            if !self.can_track_local_bus_peer(source, &peer_key, &peers) {
                 debug!(
-                    "Ignoring hello from {} via multicast - max_multicast_peers={} reached",
+                    "Ignoring hello from {} via {} - local bus peer limit reached",
                     full_peer_id.short(),
-                    self.config.multicast.max_peers
+                    source
                 );
                 return Ok(());
             }
@@ -2174,11 +2214,11 @@ impl WebRTCManager {
         // Check if we already have this peer with an actual connection
         {
             let peers = self.state.peers.read().await;
-            if !self.can_track_multicast_peer(source, &peer_key, &peers) {
+            if !self.can_track_local_bus_peer(source, &peer_key, &peers) {
                 warn!(
-                    "Rejecting offer from {} via multicast - max_multicast_peers={} reached",
+                    "Rejecting offer from {} via {} - local bus peer limit reached",
                     full_peer_id.short(),
-                    self.config.multicast.max_peers
+                    source
                 );
                 return Ok(());
             }
@@ -2694,6 +2734,37 @@ mod tests {
         assert_eq!(resolved.0, "mock-bus");
         assert_eq!(resolved.1.hash, root.hash);
         assert_eq!(resolved.1.peer_id, root.peer_id);
+    }
+
+    #[tokio::test]
+    async fn can_track_local_bus_peer_enforces_wifi_aware_limit() {
+        let keys = Keys::generate();
+        let mut config = WebRTCConfig::default();
+        config.wifi_aware.enabled = true;
+        config.wifi_aware.max_peers = 1;
+        let manager = WebRTCManager::new(keys, config);
+        let existing_peer = PeerId::new("peer-a".to_string(), Some("sess-a".to_string()));
+        let existing_key = existing_peer.to_string();
+        let mut peers = HashMap::new();
+        peers.insert(
+            existing_key.clone(),
+            PeerEntry {
+                peer_id: existing_peer,
+                direction: PeerDirection::Outbound,
+                state: ConnectionState::Discovered,
+                last_seen: Instant::now(),
+                peer: None,
+                pool: PeerPool::Other,
+                transport: PeerTransport::WebRtc,
+                signal_paths: BTreeSet::from([PeerSignalPath::WifiAware]),
+                bytes_sent: 0,
+                bytes_received: 0,
+            },
+        );
+
+        assert!(manager.can_track_local_bus_peer(WIFI_AWARE_SOURCE, &existing_key, &peers,));
+        assert!(!manager.can_track_local_bus_peer(WIFI_AWARE_SOURCE, "peer-b:sess-b", &peers,));
+        assert!(manager.can_track_local_bus_peer("relay", "peer-c:sess-c", &peers));
     }
 
     #[tokio::test]

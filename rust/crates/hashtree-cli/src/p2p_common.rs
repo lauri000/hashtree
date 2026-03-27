@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::socialgraph;
-use crate::webrtc::{BluetoothConfig, MulticastConfig, PeerClassifier, PeerPool, WebRTCConfig};
+use crate::webrtc::{
+    BluetoothConfig, MulticastConfig, PeerClassifier, PeerPool, WebRTCConfig, WifiAwareConfig,
+};
 
 fn relay_is_loopback(relay: &str) -> bool {
     relay.contains("://127.0.0.1") || relay.contains("://localhost") || relay.contains("://[::1]")
@@ -12,6 +14,7 @@ fn relay_is_loopback(relay: &str) -> bool {
 pub fn peer_router_enabled(config: &Config) -> bool {
     config.server.enable_webrtc
         || (config.server.enable_multicast && config.server.max_multicast_peers > 0)
+        || (config.server.enable_wifi_aware && config.server.max_wifi_aware_peers > 0)
         || (config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0)
 }
 
@@ -45,6 +48,11 @@ pub fn default_webrtc_config(config: &Config) -> WebRTCConfig {
             group: config.server.multicast_group.clone(),
             port: config.server.multicast_port,
             max_peers: config.server.max_multicast_peers,
+            ..Default::default()
+        },
+        wifi_aware: WifiAwareConfig {
+            enabled: config.server.enable_wifi_aware,
+            max_peers: config.server.max_wifi_aware_peers,
             ..Default::default()
         },
         bluetooth: BluetoothConfig {
@@ -124,6 +132,18 @@ mod tests {
     }
 
     #[test]
+    fn default_webrtc_config_maps_wifi_aware_limits() {
+        let mut config = Config::default();
+        config.server.enable_wifi_aware = true;
+        config.server.max_wifi_aware_peers = 4;
+
+        let webrtc = default_webrtc_config(&config);
+        assert!(webrtc.signaling_enabled);
+        assert!(webrtc.wifi_aware.enabled);
+        assert_eq!(webrtc.wifi_aware.max_peers, 4);
+    }
+
+    #[test]
     fn default_webrtc_config_strips_relays_and_stun_when_webrtc_disabled() {
         let mut config = Config::default();
         config.server.enable_webrtc = false;
@@ -147,5 +167,18 @@ mod tests {
 
         config.server.enable_webrtc = false;
         assert!(!should_start_stun_server(&config));
+    }
+
+    #[test]
+    fn peer_router_enabled_for_wifi_aware_only() {
+        let mut config = Config::default();
+        config.server.enable_webrtc = false;
+        config.server.enable_wifi_aware = true;
+        config.server.max_wifi_aware_peers = 2;
+
+        assert!(peer_router_enabled(&config));
+
+        config.server.max_wifi_aware_peers = 0;
+        assert!(!peer_router_enabled(&config));
     }
 }

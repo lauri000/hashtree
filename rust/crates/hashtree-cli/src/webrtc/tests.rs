@@ -56,6 +56,8 @@ fn test_webrtc_config_default() {
     assert!(!config.stun_servers.is_empty());
     assert!(!config.multicast.enabled);
     assert_eq!(config.multicast.max_peers, 0);
+    assert!(!config.wifi_aware.enabled);
+    assert_eq!(config.wifi_aware.max_peers, 0);
     assert!(!config.bluetooth.enabled);
     assert_eq!(config.bluetooth.max_peers, 0);
     assert_eq!(
@@ -86,6 +88,15 @@ fn test_generate_uuid() {
 fn test_peer_direction_display() {
     assert_eq!(PeerDirection::Inbound.to_string(), "inbound");
     assert_eq!(PeerDirection::Outbound.to_string(), "outbound");
+}
+
+#[test]
+fn test_peer_signal_path_wifi_aware_round_trip() {
+    assert_eq!(
+        super::PeerSignalPath::from_source_name("wifi-aware"),
+        super::PeerSignalPath::WifiAware
+    );
+    assert_eq!(super::PeerSignalPath::WifiAware.to_string(), "wifi-aware");
 }
 
 // Wire format tests for hashtree-ts interop

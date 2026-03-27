@@ -45,6 +45,13 @@ pub struct ServerConfig {
     /// Set to 0 to disable multicast even when enable_multicast is true.
     #[serde(default = "default_max_multicast_peers")]
     pub max_multicast_peers: usize,
+    /// Enable Android Wi-Fi Aware nearby discovery/signaling for native peers.
+    #[serde(default = "default_enable_wifi_aware")]
+    pub enable_wifi_aware: bool,
+    /// Maximum peers admitted from Wi-Fi Aware discovery.
+    /// Set to 0 to disable Wi-Fi Aware even when enable_wifi_aware is true.
+    #[serde(default = "default_max_wifi_aware_peers")]
+    pub max_wifi_aware_peers: usize,
     /// Enable native Bluetooth discovery/transport for nearby peers.
     #[serde(default = "default_enable_bluetooth")]
     pub enable_bluetooth: bool,
@@ -421,6 +428,14 @@ fn default_max_multicast_peers() -> usize {
     0
 }
 
+fn default_enable_wifi_aware() -> bool {
+    false
+}
+
+fn default_max_wifi_aware_peers() -> usize {
+    0
+}
+
 fn default_enable_bluetooth() -> bool {
     false
 }
@@ -451,6 +466,8 @@ impl Default for ServerConfig {
             multicast_group: default_multicast_group(),
             multicast_port: default_multicast_port(),
             max_multicast_peers: default_max_multicast_peers(),
+            enable_wifi_aware: default_enable_wifi_aware(),
+            max_wifi_aware_peers: default_max_wifi_aware_peers(),
             enable_bluetooth: default_enable_bluetooth(),
             max_bluetooth_peers: default_max_bluetooth_peers(),
             public_writes: default_public_writes(),
@@ -723,6 +740,8 @@ mod tests {
         assert_eq!(config.server.multicast_group, "239.255.42.98");
         assert_eq!(config.server.multicast_port, 48555);
         assert_eq!(config.server.max_multicast_peers, 0);
+        assert!(!config.server.enable_wifi_aware);
+        assert_eq!(config.server.max_wifi_aware_peers, 0);
         assert!(!config.server.enable_bluetooth);
         assert_eq!(config.server.max_bluetooth_peers, 0);
         assert_eq!(config.storage.max_size_gb, 10);
@@ -794,6 +813,8 @@ enable_multicast = true
 multicast_group = "239.255.42.99"
 multicast_port = 49001
 max_multicast_peers = 12
+enable_wifi_aware = true
+max_wifi_aware_peers = 5
 enable_bluetooth = true
 max_bluetooth_peers = 6
 "#;
@@ -802,6 +823,8 @@ max_bluetooth_peers = 6
         assert_eq!(config.server.multicast_group, "239.255.42.99");
         assert_eq!(config.server.multicast_port, 49_001);
         assert_eq!(config.server.max_multicast_peers, 12);
+        assert!(config.server.enable_wifi_aware);
+        assert_eq!(config.server.max_wifi_aware_peers, 5);
         assert!(config.server.enable_bluetooth);
         assert_eq!(config.server.max_bluetooth_peers, 6);
     }
