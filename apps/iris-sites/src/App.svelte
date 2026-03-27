@@ -410,11 +410,10 @@
   <main class="screen">
     <section class="card">
       <p class="eyebrow">Decentralized CDN</p>
-      <h1>Content-addressed sites with origin isolation.</h1>
+      <h1>Open hashtree sites on their own origin.</h1>
       <p class="copy">
-        Use a hash route like <code>https://sites.iris.to/#/nhash.../index.html</code> or
-        <code>https://sites.iris.to/#/npub1.../enshittifier/index.html</code> to launch it on a
-        separate browser origin with its own storage.
+        Paste an <code>nhash</code>, <code>npub/tree</code>, or share URL below.
+        <code>iris sites</code> launches each site on its own browser origin.
       </p>
       <form class="launcher-form" onsubmit={launchFromInput}>
         <label class="launcher-label" for="site-route">Launch a site</label>
@@ -488,6 +487,7 @@
       <section class="runtime-menu-panel">
         <div class="runtime-menu-header">
           <div class="runtime-menu-title">{currentSite?.title}</div>
+          <a class="runtime-menu-home-link" href="https://sites.iris.to/">iris sites</a>
         </div>
 
         {#if updateAvailable}
@@ -772,11 +772,27 @@
   .runtime-menu-header {
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    gap: 12px;
   }
 
   .runtime-menu-title {
+    min-width: 0;
     font-size: 0.95rem;
     font-weight: 600;
+  }
+
+  .runtime-menu-home-link {
+    flex: 0 0 auto;
+    color: rgba(168, 209, 255, 0.9);
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .runtime-menu-home-link:hover {
+    color: #c6e0ff;
   }
 
   .runtime-menu-item,

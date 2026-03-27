@@ -29,4 +29,10 @@ describe('runtime menu markup', () => {
     expect(appSource).toContain('{#if updateAvailable}');
     expect(appSource).toContain('Update Now');
   });
+
+  it('includes a direct link back to the iris sites launcher in the runtime menu header', () => {
+    expect(appSource).toContain('class="runtime-menu-home-link"');
+    expect(appSource).toContain('href="https://sites.iris.to/"');
+    expect(appSource).toContain('>iris sites</a>');
+  });
 });

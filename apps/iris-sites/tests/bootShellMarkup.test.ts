@@ -12,6 +12,12 @@ describe('boot shell markup', () => {
     expect(appSource).toContain('This site is taking longer than usual to start.');
   });
 
+  it('uses concise launcher copy instead of long example URLs in the hero text', () => {
+    expect(appSource).toContain('<h1>Open hashtree sites on their own origin.</h1>');
+    expect(appSource).toContain('Paste an <code>nhash</code>, <code>npub/tree</code>, or share URL below.');
+    expect(appSource).not.toContain('Use a hash route like <code>https://sites.iris.to/#/nhash.../index.html</code>');
+  });
+
   it('waits for the iframe to finish loading before revealing it', () => {
     expect(appSource).toContain('let iframeLoaded = $state(false);');
     expect(appSource).toContain('onload={handleFrameLoad}');
