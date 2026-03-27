@@ -1465,10 +1465,10 @@
                 </div>
               {:else if blurredNhashTitle}
                 <div class="absolute inset-0 overflow-hidden">
-                  <div class="flex h-full min-w-0 max-w-full items-center pr-2">
+                  <div class="flex h-full w-full min-w-0 max-w-full items-center justify-center px-2">
                     <span
                       data-testid="address-title-text"
-                      class="block min-w-0 max-w-full truncate text-sm text-text-1"
+                      class="block min-w-0 max-w-full truncate text-center text-sm text-text-1"
                       title={blurredNhashTitle}
                     >
                       {blurredNhashTitle}
@@ -1651,10 +1651,10 @@
               </div>
             {:else if blurredNhashTitle}
               <div class="absolute inset-0 overflow-hidden">
-                <div class="flex h-full min-w-0 max-w-full items-center pr-2">
+                <div class="flex h-full w-full min-w-0 max-w-full items-center justify-center px-2">
                   <span
                     data-testid="address-title-text"
-                    class="block min-w-0 max-w-full truncate text-sm text-text-1"
+                    class="block min-w-0 max-w-full truncate text-center text-sm text-text-1"
                     title={blurredNhashTitle}
                   >
                     {blurredNhashTitle}
