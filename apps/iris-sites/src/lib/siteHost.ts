@@ -9,6 +9,8 @@ import {
 
 const PROD_PORTAL_HOST = 'sites.iris.to';
 const LOCAL_PORTAL_HOST = 'sites.iris.localhost';
+const PROD_FILES_HOST = 'files.iris.to';
+const LOCAL_FILES_HOST = 'localhost:5173';
 
 interface CurrentVersionLike {
   hash: Uint8Array;
@@ -18,6 +20,7 @@ interface CurrentVersionLike {
 function resolveHostContext(currentHost?: string): {
   protocol: string;
   portalHost: string;
+  filesHost: string;
   runtimeSuffix: string;
 } {
   if (currentHost) {
@@ -27,6 +30,7 @@ function resolveHostContext(currentHost?: string): {
       return {
         protocol: 'http:',
         portalHost: trimmedHost,
+        filesHost: LOCAL_FILES_HOST,
         runtimeSuffix: trimmedHost,
       };
     }
@@ -36,6 +40,7 @@ function resolveHostContext(currentHost?: string): {
       return {
         protocol: 'http:',
         portalHost: localSuffix,
+        filesHost: LOCAL_FILES_HOST,
         runtimeSuffix: localSuffix,
       };
     }
@@ -48,6 +53,7 @@ function resolveHostContext(currentHost?: string): {
       return {
         protocol: window.location.protocol || 'http:',
         portalHost: current,
+        filesHost: LOCAL_FILES_HOST,
         runtimeSuffix: current,
       };
     }
@@ -57,6 +63,7 @@ function resolveHostContext(currentHost?: string): {
       return {
         protocol: window.location.protocol || 'http:',
         portalHost: localSuffix,
+        filesHost: LOCAL_FILES_HOST,
         runtimeSuffix: localSuffix,
       };
     }
@@ -65,6 +72,7 @@ function resolveHostContext(currentHost?: string): {
   return {
     protocol: 'https:',
     portalHost: PROD_PORTAL_HOST,
+    filesHost: PROD_FILES_HOST,
     runtimeSuffix: 'hashtree.cc',
   };
 }
@@ -105,6 +113,11 @@ export async function buildIsolatedSiteHref(site: HostedSite, currentHost?: stri
 export function buildLauncherHref(site: HostedSite, currentHost?: string): string {
   const hostContext = resolveHostContext(currentHost);
   return `${hostContext.protocol}//${hostContext.portalHost}/${serializeHostedSiteHash(site)}`;
+}
+
+export function buildSourceHref(site: HostedSite, currentHost?: string): string {
+  const hostContext = resolveHostContext(currentHost);
+  return `${hostContext.protocol}//${hostContext.filesHost}/${serializeHostedSiteHash(site)}`;
 }
 
 export function buildPermalinkHref(

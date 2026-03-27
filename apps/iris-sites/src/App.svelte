@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { parseLaunchInput } from './lib/launchInput';
   import { resolveHostedSite } from './lib/siteConfig';
-  import { buildIsolatedSiteHref, buildLauncherHref, buildPermalinkHref, isPortalShellHost } from './lib/siteHost';
+  import { buildIsolatedSiteHref, buildLauncherHref, buildPermalinkHref, buildSourceHref, isPortalShellHost } from './lib/siteHost';
   import { getMediaClientKey, setupMediaStreaming } from './lib/mediaStreamingSetup';
   import {
     getTreeRootInfo,
@@ -243,6 +243,14 @@
 
   const missingRuntimeTarget = $derived.by(() => !currentSite && !inPortalShell);
   const launcherHref = $derived.by(() => buildCurrentLauncherHref());
+  const sourceHref = $derived.by(() =>
+    currentSite
+      ? buildSourceHref(
+          currentSite,
+          typeof window !== 'undefined' ? window.location.host : undefined,
+        )
+      : ''
+  );
   const permalinkHref = $derived.by(() =>
     currentSite
       ? buildPermalinkHref(
@@ -506,7 +514,7 @@
       <section class="runtime-menu-panel">
         <div class="runtime-menu-header">
           <div class="runtime-menu-title">{currentSite?.title}</div>
-          <a class="runtime-menu-home-link" href="https://sites.iris.to/">iris sites</a>
+          <a class="runtime-menu-home-link" href={sourceHref}>source</a>
         </div>
 
         {#if updateAvailable}

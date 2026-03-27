@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { nhashDecode, nhashEncode, toHex } from '@hashtree/core';
-import { buildIsolatedSiteHref, buildLauncherHref, buildPermalinkHref, isPortalShellHost } from '../src/lib/siteHost';
+import { buildIsolatedSiteHref, buildLauncherHref, buildPermalinkHref, buildSourceHref, isPortalShellHost } from '../src/lib/siteHost';
 import { encodeImmutableHostLabel, encodeMutableHostLabel } from '../src/lib/siteIdentity';
 
 const VALID_NPUB = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
@@ -50,6 +50,17 @@ describe('site host routing', () => {
     })).toBe(`https://sites.iris.to/#/${VALID_NPUB}/enshittifier/index.html`);
   });
 
+  it('builds source URLs on files.iris.to for the same hosted route', () => {
+    expect(buildSourceHref({
+      kind: 'mutable',
+      siteKey: 'pilot',
+      title: 'Midi',
+      npub: VALID_NPUB,
+      treeName: 'enshittifier',
+      entryPath: 'index.html',
+    })).toBe(`https://files.iris.to/#/${VALID_NPUB}/enshittifier/index.html`);
+  });
+
   it('derives mutable permalinks from the currently resolved tree root nhash', () => {
     const currentVersion = nhashDecode('nhash1qqsxyn0g6yyac8ruej7r7j80y2gx6ev5z5flu6ry5h5t3ajju5utzjs9yz7t3p2syr9n5heajlv85uwej232dk5x4zqe8d7ft67y3m5umxr55qjku38');
 
@@ -88,6 +99,18 @@ describe('site host routing', () => {
       entryPath: 'index.html',
     }, '63dvmlmvh6sxd65q7abane2j23fl4e7hmub4lwdjvl6vwmzlobda.sites.iris.localhost:5178')).toBe(
       'http://sites.iris.localhost:5178/#/nhash1qqsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq/index.html',
+    );
+  });
+
+  it('builds local source URLs against the local iris-files app', () => {
+    expect(buildSourceHref({
+      kind: 'immutable',
+      siteKey: 'pilot',
+      title: 'Pinned',
+      nhash: 'nhash1qqsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq',
+      entryPath: 'index.html',
+    }, '63dvmlmvh6sxd65q7abane2j23fl4e7hmub4lwdjvl6vwmzlobda.sites.iris.localhost:5178')).toBe(
+      'http://localhost:5173/#/nhash1qqsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq/index.html',
     );
   });
 

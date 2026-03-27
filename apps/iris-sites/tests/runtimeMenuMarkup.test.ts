@@ -38,9 +38,10 @@ describe('runtime menu markup', () => {
     expect(appSource).toContain('>Permalink</a>');
   });
 
-  it('includes a direct link back to the iris sites launcher in the runtime menu header', () => {
+  it('includes a direct link to the matching files viewer route in the runtime menu header', () => {
     expect(appSource).toContain('class="runtime-menu-home-link"');
-    expect(appSource).toContain('href="https://sites.iris.to/"');
-    expect(appSource).toContain('>iris sites</a>');
+    expect(appSource).toContain('const sourceHref = $derived.by(() =>');
+    expect(appSource).toContain('href={sourceHref}');
+    expect(appSource).toContain('>source</a>');
   });
 });
