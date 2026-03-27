@@ -13,7 +13,7 @@ const TEST_VIDEO_PATH = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s
  * Ensures thumbnails load properly for new users, including:
  * - Single video thumbnails at root level
  * - Playlist thumbnails (first video's thumbnail)
- * - Error recovery showing placeholder icon
+ * - Error recovery showing the fallback placeholder
  */
 
 test.describe('Thumbnail Loading', () => {
@@ -97,9 +97,9 @@ test.describe('Thumbnail Loading', () => {
         total++;
 
         const img = thumbnailArea.querySelector('img') as HTMLImageElement | null;
-        const icon = thumbnailArea.querySelector('.i-lucide-video');
+        const placeholder = thumbnailArea.querySelector('[data-testid="media-placeholder"]');
 
-        if (img && !icon) {
+        if (img && !placeholder) {
           if (img.complete && img.naturalWidth > 0) {
             loaded++;
           } else if (!img.complete) {
@@ -107,9 +107,9 @@ test.describe('Thumbnail Loading', () => {
           } else {
             error++;
           }
-        } else if (icon && !img) {
+        } else if (placeholder && !img) {
           placeholder++;
-        } else if (!icon && !img) {
+        } else if (!placeholder && !img) {
           error++;
         } else {
           error++;
@@ -173,8 +173,8 @@ test.describe('Thumbnail Loading', () => {
         if (!isVisible) return;
 
         const img = thumbnailArea.querySelector('img') as HTMLImageElement | null;
-        const icon = thumbnailArea.querySelector('.i-lucide-video');
-        if (img && !icon && img.complete && img.naturalWidth > 0) loaded++;
+        const placeholder = thumbnailArea.querySelector('[data-testid="media-placeholder"]');
+        if (img && !placeholder && img.complete && img.naturalWidth > 0) loaded++;
       });
       return loaded;
     });
@@ -195,8 +195,8 @@ test.describe('Thumbnail Loading', () => {
         if (!isVisible) return;
 
         const img = thumbnailArea.querySelector('img') as HTMLImageElement | null;
-        const icon = thumbnailArea.querySelector('.i-lucide-video');
-        if (img && !icon && img.complete && img.naturalWidth > 0) loaded++;
+        const placeholder = thumbnailArea.querySelector('[data-testid="media-placeholder"]');
+        if (img && !placeholder && img.complete && img.naturalWidth > 0) loaded++;
       });
 
       const state = (window as any).__thumbStableState;

@@ -9,6 +9,7 @@
   import { getErrorMessage } from '../../utils/errorMessage';
   import { routeStore, treeRootStore, createTreesStore, currentDirCidStore } from '../../stores';
   import { findNearestGitRootPath } from '../../utils/gitRoot';
+  import { hasAmbiguousEmptyGitRootHint } from '../../utils/gitViewContext';
   import ViewerHeader from '../Viewer/ViewerHeader.svelte';
   import RepoTabNav from './RepoTabNav.svelte';
 
@@ -51,7 +52,9 @@
   let currentTree = $derived(trees.find(t => t.name === baseTreeName));
   let gitRootPath = $derived(route.params.get('g'));
   let detectedGitRootPath = $state<string | null>(null);
-  let effectiveGitRootPath = $derived(gitRootPath ?? detectedGitRootPath);
+  let hasAmbiguousGitRootHint = $derived(hasAmbiguousEmptyGitRootHint(gitRootPath, route.path));
+  let routeGitRootHint = $derived(hasAmbiguousGitRootHint ? null : gitRootPath);
+  let effectiveGitRootPath = $derived(routeGitRootHint ?? detectedGitRootPath);
   let repoRootParts = $derived.by(() => {
     if (effectiveGitRootPath !== null) {
       return effectiveGitRootPath === '' ? [] : effectiveGitRootPath.split('/');
@@ -77,7 +80,7 @@
   let error = $state<string | null>(null);
 
   $effect(() => {
-    const explicitGitRoot = gitRootPath;
+    const explicitGitRoot = routeGitRootHint;
     const treeCid = rootCid;
     const path = route.path;
 

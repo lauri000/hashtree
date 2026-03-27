@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, ensureGitRepoInitialized } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, ensureGitRepoInitialized, waitForCurrentDirectoryEntries, commitCurrentDirectoryChanges, safeReload, waitForAppReady } from './test-utils.js';
 
 test.describe('Git checkout features', () => {
   // Disable "others pool" to prevent WebRTC cross-talk from parallel tests
@@ -220,6 +220,7 @@ test.describe('Git checkout features', () => {
 
     const fileList = page.locator('[data-testid="file-list"]').first();
 
+    await waitForCurrentDirectoryEntries(page, ['initial.txt']);
     // Wait for file to appear
     await expect(fileList.getByRole('link', { name: 'initial.txt', exact: true })).toBeVisible({ timeout: 15000 });
 
@@ -253,23 +254,15 @@ test.describe('Git checkout features', () => {
       autosaveIfOwn(rootCid);
     });
 
+    await waitForCurrentDirectoryEntries(page, ['.git', 'initial.txt', 'added-later.txt']);
     // Wait for the new file to appear
     await expect(fileList.getByRole('link', { name: 'added-later.txt', exact: true })).toBeVisible({ timeout: 15000 });
 
-    // Wait for uncommitted changes indicator and commit
+    // Wait for uncommitted changes indicator, then create the second commit deterministically.
     const uncommittedBtn = page.locator('button').filter({ hasText: /uncommitted/i });
     await expect(cleanIndicator).not.toBeVisible({ timeout: 30000 });
     await expect(uncommittedBtn).toBeVisible({ timeout: 30000 });
-
-    await uncommittedBtn.click();
-    const commitModal = page.locator('.fixed.inset-0').filter({ hasText: 'Commit Changes' });
-    await expect(commitModal).toBeVisible({ timeout: 5000 });
-
-    const commitMessageInput = commitModal.locator('textarea[placeholder*="Describe"]');
-    await commitMessageInput.fill('Add added-later.txt');
-    const commitBtn = commitModal.getByRole('button', { name: /Commit/ });
-    await commitBtn.click();
-    await expect(commitModal).not.toBeVisible({ timeout: 30000 });
+    await commitCurrentDirectoryChanges(page, 'Add added-later.txt');
 
     // Verify we now have 2 commits and both files visible
     await expect(commitsBtn).toContainText(/2/, { timeout: 20000 });
@@ -291,6 +284,25 @@ test.describe('Git checkout features', () => {
 
     // Wait for history modal to close
     await expect(historyModal).not.toBeVisible({ timeout: 30000 });
+
+    await page.waitForFunction(
+      async () => {
+        const { useCurrentDirCid } = await import('/src/stores/index.ts');
+        const { getTree } = await import('/src/store.ts');
+        const dirCid = useCurrentDirCid();
+        if (!dirCid) return false;
+        const entries = await getTree().listDirectory(dirCid);
+        const names = new Set(entries.map((entry: { name: string }) => entry.name));
+        return names.has('initial.txt') && !names.has('added-later.txt');
+      },
+      undefined,
+      { timeout: 15000 }
+    );
+
+    await safeReload(page, { waitUntil: 'domcontentloaded', timeoutMs: 60000 });
+    await waitForAppReady(page, 60000);
+    await disableOthersPool(page);
+    await page.waitForURL(/checkout-test/, { timeout: 10000 });
 
     // After checkout to initial commit:
     // - initial.txt should still be visible (was in first commit)

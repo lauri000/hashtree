@@ -18,6 +18,10 @@ export function splitGitRootPath(gitRootPath: string | null): string[] | null {
   return gitRootPath.split('/').filter(Boolean);
 }
 
+export function hasAmbiguousEmptyGitRootHint(gitRootPath: string | null, currentPath: string[]): boolean {
+  return gitRootPath === '' && currentPath.length > 0;
+}
+
 export function resolveGitRootPathParam(gitRootPath: string | null, currentPath: string[]): string {
   return gitRootPath ?? currentPath.join('/');
 }

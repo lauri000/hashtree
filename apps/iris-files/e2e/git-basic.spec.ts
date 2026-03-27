@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, waitForCurrentDirectoryEntries } from './test-utils.js';
 
 async function createAndOpenPlainFolder(page: import('@playwright/test').Page, folderName: string) {
   await page.evaluate(async (name) => {
@@ -23,7 +23,7 @@ async function createAndOpenPlainFolder(page: import('@playwright/test').Page, f
   const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: folderName }).first();
   await expect(folderLink).toBeVisible({ timeout: 15000 });
   await folderLink.click();
-  await expect(page).toHaveURL(new RegExp(`/${folderName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`), { timeout: 10000 });
+  await expect(page).toHaveURL(new RegExp(`/${folderName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\?g=.*)?$`), { timeout: 10000 });
 }
 
 test.describe('Git basic features', () => {
@@ -57,6 +57,8 @@ test.describe('Git basic features', () => {
       rootCid = await tree.setEntry(rootCid, route.path, '.git', emptyDir, 0, LinkType.Dir);
       autosaveIfOwn(rootCid);
     });
+
+    await waitForCurrentDirectoryEntries(page, ['.git']);
 
     // Wait for .git to appear in the file list and click it
     // The entry is a Link (<a>) with a child span containing the folder name

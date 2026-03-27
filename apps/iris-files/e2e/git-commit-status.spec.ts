@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay, gotoGitApp, createPlainFolderInCurrentDirectory, ensureGitRepoInitialized, flushPendingPublishes } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay, gotoGitApp, createPlainFolderInCurrentDirectory, ensureGitRepoInitialized, flushPendingPublishes, waitForCurrentDirectoryEntries, commitCurrentDirectoryChanges, safeReload, waitForAppReady } from './test-utils.js';
 
 test.describe('Git commit status indicator', () => {
   test.beforeEach(async ({ page }) => {
@@ -40,6 +40,7 @@ test.describe('Git commit status indicator', () => {
       autosaveIfOwn(rootCid);
     });
 
+    await waitForCurrentDirectoryEntries(page, ['README.md']);
     // Wait for file to appear
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'README.md' })).toBeVisible({ timeout: 15000 });
 
@@ -70,23 +71,19 @@ test.describe('Git commit status indicator', () => {
     });
     await flushPendingPublishes(page);
 
+    await waitForCurrentDirectoryEntries(page, ['.git', 'README.md', 'version.js']);
     // Should show "uncommitted" indicator
     const uncommittedBtn = page.locator('button').filter({ hasText: /uncommitted/i });
     await expect(uncommittedBtn).toBeVisible({ timeout: 30000 });
 
-    // Make a commit
-    await uncommittedBtn.click();
-    const commitModal = page.locator('.fixed.inset-0').filter({ hasText: 'Commit Changes' });
-    await expect(commitModal).toBeVisible({ timeout: 5000 });
+    // Create the second commit. Commit-modal behavior is covered in git-commit.spec.ts.
+    await commitCurrentDirectoryChanges(page, 'Add version.js', ['version.js']);
 
-    // Enter commit message and commit
-    const commitMessageInput = commitModal.locator('textarea[placeholder*="Describe"]');
-    await commitMessageInput.fill('Add version.js');
-    const commitBtn = commitModal.getByRole('button', { name: 'Commit' });
-    await commitBtn.click();
-
-    // Modal should close
-    await expect(commitModal).not.toBeVisible({ timeout: 30000 });
+    await safeReload(page, { waitUntil: 'domcontentloaded', timeoutMs: 60000 });
+    await waitForAppReady(page, 60000);
+    await disableOthersPool(page);
+    await useLocalRelay(page);
+    await page.waitForURL(/status-indicator-test/, { timeout: 10000 });
 
     // Should show "clean" again after commit
     await expect(cleanIndicator).toBeVisible({ timeout: 30000 });
@@ -124,6 +121,7 @@ test.describe('Git commit status indicator', () => {
       autosaveIfOwn(rootCid);
     });
 
+    await waitForCurrentDirectoryEntries(page, ['README.md']);
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'README.md' })).toBeVisible({ timeout: 15000 });
 
     // Git Init

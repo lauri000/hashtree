@@ -38,7 +38,6 @@ describe('video view directory fallback', () => {
   it('tries feed-style root resolution when the tree root store is still empty', () => {
     expect(videoViewSource).toContain('resolveFeedVideoRootCidAsync({');
     expect(videoViewSource).toContain('if (getRouteRootKey(npub, treeName, currentVideoId) !== routeRootKey || effectiveRouteRootCid) {');
-    expect(videoViewSource).toContain('updateSubscriptionCache(');
     expect(videoViewSource).toContain("logVideoDebug('root:fallback-resolved'");
   });
 
@@ -51,6 +50,7 @@ describe('video view directory fallback', () => {
     expect(videoViewSource).toContain("setRouteRootOverride(capturedRouteRootKey, effectiveRootCid, 'readable-fallback');");
     expect(videoViewSource).toContain("setRouteRootOverride(capturedRouteRootKey, readableRootCid, 'readable-fallback');");
     expect(videoViewSource).toContain("setRouteRootOverride(capturedRouteRootKey, refreshedRoot, `refresh:${reason}`);");
+    expect(videoViewSource).not.toContain('updateSubscriptionCache(');
   });
 
   it('renders audio roots through an audio element instead of forcing them into the video tag', () => {

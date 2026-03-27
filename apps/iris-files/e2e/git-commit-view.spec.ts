@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, createRepositoryInCurrentDirectory, createPlainFolderInCurrentDirectory, ensureGitRepoInitialized, waitForCurrentDirectoryEntries } from './test-utils.js';
 // Tests use isolated page contexts with disableOthersPool - safe for parallel execution
 
 test.describe('Git commit view', () => {
@@ -15,8 +15,8 @@ test.describe('Git commit view', () => {
     test.slow();
     await navigateToPublicFolder(page);
 
-    // Create a folder for our test repo
-    await createRepositoryInCurrentDirectory(page, 'commit-view-test');
+    // Start from a plain folder so the initial commit captures the files created below.
+    await createPlainFolderInCurrentDirectory(page, 'commit-view-test');
 
     // Navigate into the folder
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'commit-view-test' }).first();
@@ -49,6 +49,7 @@ test.describe('Git commit view', () => {
       autosaveIfOwn(rootCid);
     });
 
+    await waitForCurrentDirectoryEntries(page, ['README.md', 'index.js']);
     // Wait for files to appear
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'README.md' })).toBeVisible({ timeout: 15000 });
 

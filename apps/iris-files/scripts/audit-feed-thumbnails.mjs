@@ -223,7 +223,7 @@ try {
       const media = anchor.querySelector('.video-thumb, .playlist-thumb');
       const img = media?.querySelector('img') ?? null;
       const video = media?.querySelector('video') ?? null;
-      const placeholder = !!media?.querySelector('.i-lucide-video');
+      const placeholder = !!media?.querySelector('[data-testid="media-placeholder"]');
       const generatedPoster = !!media?.querySelector('[data-testid="generated-thumbnail-poster"]');
       const text = (anchor.textContent || '').trim().replace(/\s+/g, ' ');
       deduped.set(href, {

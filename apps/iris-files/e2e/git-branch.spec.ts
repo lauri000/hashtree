@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp, createRepositoryInCurrentDirectory, createPlainFolderInCurrentDirectory, ensureGitRepoInitialized, waitForCurrentDirectoryEntries, commitCurrentDirectoryChanges } from './test-utils.js';
 
 test.describe('Git branch features', () => {
   // Disable "others pool" to prevent WebRTC cross-talk from parallel tests
@@ -13,8 +13,8 @@ test.describe('Git branch features', () => {
     test.slow(); // Git operations involve wasm-git which can be slow under load
     await navigateToPublicFolder(page);
 
-    // Create a folder and init as git repo with 2 commits
-    await createRepositoryInCurrentDirectory(page, 'detached-head-test');
+    // Start from a plain folder so the initial commit captures file1.txt in this test.
+    await createPlainFolderInCurrentDirectory(page, 'detached-head-test');
 
     const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'detached-head-test' }).first();
     await expect(folderLink).toBeVisible({ timeout: 15000 });
@@ -37,6 +37,7 @@ test.describe('Git branch features', () => {
       autosaveIfOwn(rootCid);
     });
 
+    await waitForCurrentDirectoryEntries(page, ['file1.txt']);
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'file1.txt' })).toBeVisible({ timeout: 15000 });
 
     // Git init
@@ -62,18 +63,11 @@ test.describe('Git branch features', () => {
       autosaveIfOwn(rootCid);
     });
 
+    await waitForCurrentDirectoryEntries(page, ['.git', 'file1.txt', 'file2.txt']);
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'file2.txt' })).toBeVisible({ timeout: 15000 });
 
-    // Commit the second file
-    const uncommittedBtn = page.locator('button').filter({ hasText: /uncommitted/i });
-    await expect(uncommittedBtn).toBeVisible({ timeout: 30000 });
-    await uncommittedBtn.click();
-
-    const commitModal = page.locator('.fixed.inset-0').filter({ hasText: 'Commit Changes' });
-    await expect(commitModal).toBeVisible({ timeout: 5000 });
-    await commitModal.locator('textarea').fill('Add file2');
-    await commitModal.getByRole('button', { name: /Commit/ }).click();
-    await expect(commitModal).not.toBeVisible({ timeout: 30000 });
+    // Create the second commit. Commit-modal behavior is covered elsewhere; this test is about branch/checkout flow.
+    await commitCurrentDirectoryChanges(page, 'Add file2');
 
     // Now have 2 commits - checkout the first one
     const commitsBtn = page.getByRole('button', { name: /commits/i });

@@ -51,8 +51,9 @@ describe('video thumbnail fallback wiring', () => {
     expect(videoThumbnailSource).toContain('fallbackSubtitle?: string | null');
     expect(videoThumbnailSource).toContain('fallbackSeed?: string | null');
     expect(videoThumbnailSource).toContain('<div bind:this={containerEl} class="relative bg-media-placeholder overflow-hidden {className}">');
-    expect(videoThumbnailSource).toContain('<div class="absolute inset-0 bg-media-placeholder">');
-    expect(videoThumbnailSource).toContain('<span class="i-lucide-video text-media-placeholder-icon {iconSize}"></span>');
+    expect(videoThumbnailSource).toContain('data-testid="media-placeholder" class="absolute inset-0 bg-media-placeholder"');
+    expect(videoThumbnailSource).not.toContain('bg-gradient-to-br');
+    expect(videoThumbnailSource).not.toContain('bg-current/80');
     expect(videoThumbnailSource).not.toContain('generated-thumbnail-poster');
   });
 });

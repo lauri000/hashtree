@@ -33,7 +33,7 @@ async function getVisibleThumbnailStats(page) {
       if (!visible) continue;
 
       const img = media.querySelector('img');
-      const placeholder = !!media.querySelector('.i-lucide-video');
+      const placeholder = !!media.querySelector('[data-testid="media-placeholder"]');
       const opacityZero = !!img && getComputedStyle(img).opacity === '0';
       const loaded = !!img && img.complete && img.naturalWidth > 0 && !opacityZero;
       const broken = !!img && img.complete && img.naturalWidth === 0 && !opacityZero;

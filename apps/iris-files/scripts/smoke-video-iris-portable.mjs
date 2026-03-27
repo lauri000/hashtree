@@ -90,7 +90,7 @@ async function main() {
 
         return visible.every((thumb) => {
           if (thumb.querySelector('[data-testid="generated-thumbnail-poster"]')) return true;
-          if (thumb.querySelector('.i-lucide-video')) return true;
+          if (thumb.querySelector('[data-testid="media-placeholder"]')) return true;
           const img = thumb.querySelector('img');
           return !!img && !!img.currentSrc && img.complete && img.naturalWidth > 0;
         });
@@ -221,7 +221,7 @@ async function main() {
         const buttons = sidebar ? Array.from(sidebar.querySelectorAll('button')) : [];
         const itemButtons = buttons.filter((button) => {
           const text = button.textContent?.trim() ?? '';
-          return !!button.querySelector('img, .i-lucide-video') && text.length > 0;
+          return !!button.querySelector('img, [data-testid="media-placeholder"]') && text.length > 0;
         });
         return {
           itemCount: itemButtons.length,

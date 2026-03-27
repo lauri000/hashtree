@@ -27,7 +27,7 @@
   import FileGitBar from '../Git/FileGitBar.svelte';
   import { supportsDocumentFeatures, supportsGitFeatures } from '../../appType';
   import { findNearestGitRootPath } from '../../utils/gitRoot';
-  import { resolveGitViewContext } from '../../utils/gitViewContext';
+  import { hasAmbiguousEmptyGitRootHint, resolveGitViewContext } from '../../utils/gitViewContext';
 
   let route = $derived($routeStore);
   let rootCid = $derived($treeRootStore);
@@ -56,21 +56,24 @@
   let resolvingPath = $derived($resolvingPathStore);
   let hasFile = $derived(isViewingFile && lastSegment);
   let urlFileName = $derived(hasFile ? lastSegment : null);
+  let gitContextPath = $derived(hasFile ? urlPath.slice(0, -1) : urlPath);
 
   // Git repo detection - check if we're viewing a file in a git repo
   // Check for .git in parent directory entries or git root from URL param
   let hasGitDir = $derived(entries.some(e => e.name === '.git' && e.type === LinkType.Dir));
   let gitRootFromUrl = $derived(route.params.get('g'));
+  let hasAmbiguousGitRootHint = $derived(hasAmbiguousEmptyGitRootHint(gitRootFromUrl, gitContextPath));
+  let routeGitRootHint = $derived(hasAmbiguousGitRootHint ? null : gitRootFromUrl);
   let detectedGitRootPath = $state<string | null>(null);
-  let effectiveGitRootPath = $derived(gitRootFromUrl ?? detectedGitRootPath);
-  let isInGitRepo = $derived(supportsGitFeatures() && (hasGitDir || effectiveGitRootPath !== null));
+  let effectiveGitRootPath = $derived(routeGitRootHint ?? detectedGitRootPath);
+  let isInGitRepo = $derived(supportsGitFeatures() && (hasGitDir || gitRootFromUrl !== null || effectiveGitRootPath !== null));
 
   $effect(() => {
     const enabled = supportsGitFeatures();
     const treeCid = rootCid;
     const currentDir = currentDirCid;
     const path = urlPath.slice(0, -1);
-    const explicitGitRoot = gitRootFromUrl;
+    const explicitGitRoot = routeGitRootHint;
     const currentHasGitDir = hasGitDir;
     const viewingFile = hasFile;
 

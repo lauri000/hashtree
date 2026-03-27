@@ -13,6 +13,7 @@
   import { LinkType, type TreeEntry as HashTreeEntry } from '@hashtree/core';
   import { shouldAssumeGitRepoDuringDetection, supportsGitFeatures } from '../../appType';
   import { findNearestGitRootPath } from '../../utils/gitRoot';
+  import { hasAmbiguousEmptyGitRootHint } from '../../utils/gitViewContext';
   import ViewerHeader from './ViewerHeader.svelte';
 
   let route = $derived($routeStore);
@@ -51,19 +52,21 @@
 
   // Check if we're inside a git repo subdirectory (gitRoot propagated via URL)
   let gitRootFromUrl = $derived(route.params.get('g'));
+  let hasAmbiguousGitRootHint = $derived(hasAmbiguousEmptyGitRootHint(gitRootFromUrl, currentPath));
+  let routeGitRootHint = $derived(hasAmbiguousGitRootHint ? null : gitRootFromUrl);
   let detectedGitRootPath = $state<string | null>(null);
   let gitRepoDetectionResolved = $state(false);
   const assumeGitRepoDuringDetection = shouldAssumeGitRepoDuringDetection();
-  let effectiveGitRootPath = $derived(gitRootFromUrl ?? detectedGitRootPath);
+  let effectiveGitRootPath = $derived(routeGitRootHint ?? detectedGitRootPath);
   let isInGitRepo = $derived(
     supportsGitFeatures() &&
-    (assumeGitRepoDuringDetection || hasGitDir || effectiveGitRootPath !== null)
+    (assumeGitRepoDuringDetection || hasGitDir || gitRootFromUrl !== null || effectiveGitRootPath !== null)
   );
   let gitMetadataReady = $derived(
     !supportsGitFeatures() ||
     !assumeGitRepoDuringDetection ||
     hasGitDir ||
-    gitRootFromUrl !== null ||
+    (gitRootFromUrl !== null && !hasAmbiguousGitRootHint) ||
     gitRepoDetectionResolved
   );
 
@@ -72,7 +75,7 @@
     const treeCid = rootCid;
     const currentDir = currentDirCid;
     const path = currentPath;
-    const explicitGitRoot = gitRootFromUrl;
+    const explicitGitRoot = routeGitRootHint;
     const currentHasGitDir = hasGitDir;
 
     if (!enabled) {

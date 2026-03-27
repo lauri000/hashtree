@@ -103,7 +103,7 @@ async function captureRecentsState(page) {
       cards: cards.map((card) => {
         const thumb = card.querySelector('.aspect-video');
         const img = thumb?.querySelector('img') ?? null;
-        const placeholder = !!thumb?.querySelector('.i-lucide-video');
+        const placeholder = !!thumb?.querySelector('[data-testid="media-placeholder"]');
         return {
           text: card.textContent?.trim().replace(/\s+/g, ' ').slice(0, 120) ?? '',
           imgSrc: img?.currentSrc ?? null,

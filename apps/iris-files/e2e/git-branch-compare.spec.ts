@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, safeReload, waitForAppReady, gotoGitApp, createRepositoryInCurrentDirectory, ensureGitRepoInitialized } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, safeReload, waitForAppReady, gotoGitApp, createRepositoryInCurrentDirectory, createPlainFolderInCurrentDirectory, ensureGitRepoInitialized, waitForCurrentDirectoryEntries, commitCurrentDirectoryChanges } from './test-utils.js';
 
 async function createAndEnterFolder(page: any, name: string) {
   await createRepositoryInCurrentDirectory(page, name);
@@ -160,6 +160,7 @@ test.describe('Git branch comparison and merge', () => {
       autosaveIfOwn(rootCid);
     });
 
+    await waitForCurrentDirectoryEntries(page, ['main-file.txt']);
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'main-file.txt' })).toBeVisible({ timeout: 15000 });
 
     // Git init
@@ -220,16 +221,10 @@ test.describe('Git branch comparison and merge', () => {
     // Screenshot before looking for uncommitted button
     await page.screenshot({ path: 'e2e/screenshots/compare-test-before-commit.png' });
 
-    // Commit the feature file
+    // Create the feature-branch commit deterministically. Commit-modal coverage lives in git-commit.spec.ts.
     const uncommittedBtn = page.locator('button').filter({ hasText: /uncommitted/i });
     await expect(uncommittedBtn).toBeVisible({ timeout: 60000 });
-    await uncommittedBtn.click();
-
-    const commitModal = page.locator('.fixed.inset-0').filter({ hasText: 'Commit Changes' });
-    await expect(commitModal).toBeVisible({ timeout: 5000 });
-    await commitModal.locator('textarea').fill('Add feature file');
-    await commitModal.getByRole('button', { name: /Commit/ }).click();
-    await expect(commitModal).not.toBeVisible({ timeout: 30000 });
+    await commitCurrentDirectoryChanges(page, 'Add feature file');
 
     // Navigate to compare URL
     const currentUrl = page.url();
@@ -388,8 +383,12 @@ test.describe('Git branch comparison and merge', () => {
 
     await navigateToPublicFolder(page);
 
-    // Create a folder and init as git repo
-    await createAndEnterFolder(page, 'merge-test');
+    // Start from a plain folder so the initial commit captures main-file.txt in this test.
+    await createPlainFolderInCurrentDirectory(page, 'merge-test');
+    const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'merge-test' }).first();
+    await expect(folderLink).toBeVisible({ timeout: 15000 });
+    await folderLink.click();
+    await page.waitForURL(/merge-test/, { timeout: 10000 });
 
     // Create initial file
     await page.evaluate(async () => {
@@ -462,6 +461,7 @@ test.describe('Git branch comparison and merge', () => {
       autosaveIfOwn(rootCid);
     });
 
+    await waitForCurrentDirectoryEntries(page, ['.git', 'main-file.txt', 'feature-file.txt']);
     await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'feature-file.txt' })).toBeVisible({ timeout: 15000 });
 
     // Commit the feature file

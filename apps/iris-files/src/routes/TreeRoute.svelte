@@ -13,6 +13,7 @@
   import { shouldShowGenericFileBrowser, supportsDocumentFeatures, supportsGitFeatures } from '../appType';
   import { treeRootRegistry } from '../TreeRootRegistry';
   import { findNearestGitRootPath } from '../utils/gitRoot';
+  import { hasAmbiguousEmptyGitRootHint } from '../utils/gitViewContext';
 
   interface Props {
     npub?: string;
@@ -51,6 +52,8 @@
   let dirEntries = $derived($directoryEntriesStore);
   let isGitRepo = $derived(supportsGitFeatures() && dirEntries.entries.some(e => e.name === '.git' && e.type === LinkType.Dir));
   let gitRootFromUrl = $derived(route.params.get('g'));
+  let hasAmbiguousGitRootHint = $derived(hasAmbiguousEmptyGitRootHint(gitRootFromUrl, routeContentPath));
+  let routeGitRootHint = $derived(hasAmbiguousGitRootHint ? null : gitRootFromUrl);
   let detectedGitRootPath = $state<string | null>(null);
   let isInGitRepo = $derived(
     supportsGitFeatures() && (isGitRepo || gitRootFromUrl !== null || detectedGitRootPath !== null)
@@ -74,7 +77,7 @@
     const treeCid = rootCid;
     const currentDir = currentDirCid;
     const path = routeContentPath;
-    const explicitGitRoot = gitRootFromUrl;
+    const explicitGitRoot = routeGitRootHint;
     const currentHasGitDir = isGitRepo;
 
     if (!enabled || !treeCid || !currentDir || explicitGitRoot !== null || currentHasGitDir) {

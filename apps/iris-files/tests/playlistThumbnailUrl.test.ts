@@ -8,6 +8,9 @@ const resolvePath = vi.fn();
 const ndkFetchEvents = vi.fn();
 const npubToPubkey = vi.fn();
 const resolveReadableVideoRoot = vi.fn();
+const querySync = vi.fn();
+const closePool = vi.fn();
+const destroyPool = vi.fn();
 
 vi.mock('../src/store', () => ({
   getTree: () => ({
@@ -31,6 +34,16 @@ vi.mock('../src/nostr', () => ({
     fetchEvents: ndkFetchEvents,
   },
   npubToPubkey,
+}));
+
+vi.mock('nostr-tools', () => ({
+  SimplePool: vi.fn(function MockSimplePool() {
+    return {
+      querySync,
+      close: closePool,
+      destroy: destroyPool,
+    };
+  }),
 }));
 
 vi.mock('../src/lib/readableVideoRoot', async () => {
@@ -82,9 +95,13 @@ describe('detectPlaylistForCard thumbnail urls', () => {
     ndkFetchEvents.mockReset();
     npubToPubkey.mockReset();
     resolveReadableVideoRoot.mockReset();
+    querySync.mockReset();
+    closePool.mockReset();
+    destroyPool.mockReset();
     const actual = await vi.importActual<typeof import('../src/lib/readableVideoRoot')>('../src/lib/readableVideoRoot');
     resolveReadableVideoRoot.mockImplementation(actual.resolveReadableVideoRoot);
     npubToPubkey.mockReturnValue('f'.repeat(64));
+    querySync.mockResolvedValue([]);
     installWindow();
   });
 
@@ -272,6 +289,7 @@ describe('detectPlaylistForCard thumbnail urls', () => {
 
   it('falls back to a prior readable root when the latest root is empty', async () => {
     const FALLBACK_ROOT: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 33) };
+    resolveReadableVideoRoot.mockResolvedValue(FALLBACK_ROOT);
     listDirectory.mockImplementation(async (cid: CID) => {
       if (sameHash(cid, ROOT)) {
         return [];
@@ -298,6 +316,12 @@ describe('detectPlaylistForCard thumbnail urls', () => {
     const { detectPlaylistForCard } = await import('../src/stores/playlist');
     const info = await detectPlaylistForCard(ROOT, 'npub1example', 'videos/Broken');
 
+    expect(resolveReadableVideoRoot).toHaveBeenCalledWith({
+      rootCid: ROOT,
+      npub: 'npub1example',
+      treeName: 'videos/Broken',
+      priority: 'background',
+    });
     expect(info?.rootCid).toEqual(FALLBACK_ROOT);
     expect(info?.videoCount).toBe(0);
     expect(info?.thumbnailUrl).toBe(

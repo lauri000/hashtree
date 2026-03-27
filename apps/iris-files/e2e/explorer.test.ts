@@ -554,17 +554,22 @@ test.describe('Hashtree Explorer', () => {
 
     expect(page.url()).toContain('/settings');
 
-    await expect(page.getByRole('button', { name: 'Servers' })).toBeVisible({ timeout: 5000 });
-    await expect(page.getByText(/Relays \(\d+\)/)).toBeVisible({ timeout: 5000 });
-    await expect(page.getByText(/localhost|relay\.damus\.io/)).toBeVisible({ timeout: 5000 });
-
-    await page.getByRole('button', { name: 'P2P' }).click();
-    await expect(page.locator('text=Peers').first()).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('button', { name: 'Network' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('button', { name: 'Storage' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('button', { name: 'App' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Relays' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: /File Servers/ })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Connection Pools' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('localhost').first()).toBeVisible({ timeout: 5000 });
 
     await page.getByRole('button', { name: 'Storage' }).click();
     await expect(page.getByText('Local Storage')).toBeVisible({ timeout: 5000 });
     await expect(page.getByText('Items')).toBeVisible({ timeout: 5000 });
     await expect(page.getByText('Size')).toBeVisible({ timeout: 5000 });
+
+    await page.getByRole('button', { name: 'App' }).click();
+    await expect(page.getByText('About')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('button', { name: 'Refresh App' })).toBeVisible({ timeout: 5000 });
   });
 
   test('should navigate to wallet page', async ({ page }) => {

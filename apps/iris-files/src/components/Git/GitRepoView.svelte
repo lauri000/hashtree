@@ -318,7 +318,13 @@
 
   function openHistory() {
     if (!gitCid) return;
-    openGitHistoryModal({ dirCid: gitCid, canEdit, onCheckout: canEdit ? handleCheckout : undefined });
+    openGitHistoryModal({
+      dirCid: gitCid,
+      canEdit,
+      onCheckout: canEdit ? handleCheckout : undefined,
+      repoPath,
+      gitRootPath: gitRootPathParam,
+    });
   }
 
   function openCommit() {

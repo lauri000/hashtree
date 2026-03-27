@@ -8,6 +8,8 @@
     dirCid: CID;
     canEdit: boolean;
     onCheckout?: (commitSha: string) => Promise<void>;
+    repoPath?: string;
+    gitRootPath?: string;
   }
 
   let show = $state(false);
@@ -39,16 +41,9 @@
 
   // Get route info for building commit view URLs
   let route = $derived($routeStore);
-  let repoName = $derived(route.treeName ? route.treeName + (route.path.length > 0 ? '/' + route.path.join('/') : '') : null);
-  let gitRootPath = $derived(route.params.get('g'));
-  let repoPath = $derived.by(() => {
-    if (!route.treeName) return '';
-    const gitPath = gitRootPath !== null
-      ? (gitRootPath === '' ? [] : gitRootPath.split('/'))
-      : route.path;
-    if (gitPath.length === 0) return route.treeName;
-    return `${route.treeName}/${gitPath.join('/')}`;
-  });
+  let fallbackRepoPath = $derived(route.treeName ? route.treeName + (route.path.length > 0 ? '/' + route.path.join('/') : '') : '');
+  let repoPath = $derived(target?.repoPath ?? fallbackRepoPath);
+  let gitRootPath = $derived(target?.gitRootPath ?? route.params.get('g'));
 
   // Commit loading state - use a fixed initial depth store, manage "load more" separately
   const INITIAL_DEPTH = 50;
@@ -81,14 +76,14 @@
   let hasMoreCommits = $derived(!noMoreCommits && !initialLogState.loading && uniqueCommits().length >= currentDepth);
 
   function buildCommitHref(commitOid: string): string {
-    if (!route.npub || !repoName) return '#/';
+    if (!route.npub || !repoPath) return '#/';
 
     const params = new SvelteURLSearchParams();
     params.set('commit', commitOid);
     if (route.params.get('k')) params.set('k', route.params.get('k')!);
     params.set('g', gitRootPath ?? '');
 
-    return `#/${route.npub}/${repoName}?${params.toString()}`;
+    return `#/${route.npub}/${repoPath}?${params.toString()}`;
   }
 
   // Branch info for detached HEAD detection
@@ -464,7 +459,7 @@
                         {/if}
                       </div>
                       <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-text-3">
-                        {#if route.npub && repoName}
+                        {#if route.npub && repoPath}
                           <a
                             href={buildCommitHref(commit.oid)}
                             onclick={close}
