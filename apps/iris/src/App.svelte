@@ -608,6 +608,16 @@
     return label;
   }
 
+  function preferredBlurredNhashTitle(url: string, nhash: string): string | null {
+    const title = childDocumentTitle.trim();
+    if (!title) return null;
+    const displayUrl = urlToDisplay(url);
+    if (title === url || title === displayUrl || title === nhash) {
+      return null;
+    }
+    return title;
+  }
+
   let blurredOwnerSummary = $derived.by(() => {
     if (isAddressFocused) return null;
     const htree = parseHtreeUrl(currentUrl);
@@ -616,6 +626,13 @@
       host: htree.npub,
       treeName: htree.treename ?? '',
     };
+  });
+
+  let blurredNhashTitle = $derived.by(() => {
+    if (isAddressFocused) return '';
+    const htree = parseHtreeUrl(currentUrl);
+    if (!htree?.nhash) return '';
+    return preferredBlurredNhashTitle(currentUrl, htree.nhash) ?? '';
   });
 
   function historyOwnerSummary(entry: HistoryEntry) {
@@ -1446,6 +1463,21 @@
                     {/if}
                   </div>
                 </div>
+              {:else if blurredNhashTitle}
+                <div class="absolute inset-0 overflow-hidden">
+                  <div class="flex h-full min-w-0 max-w-full items-center pr-2">
+                    <span
+                      data-testid="address-title-pill"
+                      class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full bg-surface-2/85 px-2 py-0.5 text-text-1"
+                      title={blurredNhashTitle}
+                    >
+                      <span class="i-lucide-file-text shrink-0 text-[11px] text-text-3"></span>
+                      <span data-testid="address-title" class="min-w-0 truncate text-[11px] font-medium leading-none">
+                        {blurredNhashTitle}
+                      </span>
+                    </span>
+                  </div>
+                </div>
               {/if}
               <input
                 type="text"
@@ -1464,7 +1496,7 @@
                 onkeyup={handleAddressKeyUp}
                 placeholder="Search or enter address"
                 spellcheck={false}
-                class={`w-full bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted min-w-0 text-left ${blurredOwnerSummary ? 'pointer-events-none opacity-0' : ''}`}
+                class={`w-full bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted min-w-0 text-left ${(blurredOwnerSummary || blurredNhashTitle) ? 'pointer-events-none opacity-0' : ''}`}
               />
             </div>
             {#if !isAddressFocused}
@@ -1620,6 +1652,21 @@
                   {/if}
                 </div>
               </div>
+            {:else if blurredNhashTitle}
+              <div class="absolute inset-0 overflow-hidden">
+                <div class="flex h-full min-w-0 max-w-full items-center pr-2">
+                  <span
+                    data-testid="address-title-pill"
+                    class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full bg-surface-2/85 px-2 py-0.5 text-text-1"
+                    title={blurredNhashTitle}
+                  >
+                    <span class="i-lucide-file-text shrink-0 text-[11px] text-text-3"></span>
+                    <span data-testid="address-title" class="min-w-0 truncate text-[11px] font-medium leading-none">
+                      {blurredNhashTitle}
+                    </span>
+                  </span>
+                </div>
+              </div>
             {/if}
             <input
               type="text"
@@ -1638,7 +1685,7 @@
               onkeyup={handleAddressKeyUp}
               placeholder="Search or enter address"
               spellcheck={false}
-              class={`w-full bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted min-w-0 text-center ${blurredOwnerSummary ? 'pointer-events-none opacity-0 text-left' : ''}`}
+              class={`w-full bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted min-w-0 text-center ${(blurredOwnerSummary || blurredNhashTitle) ? 'pointer-events-none opacity-0 text-left' : ''}`}
             />
           </div>
           <button

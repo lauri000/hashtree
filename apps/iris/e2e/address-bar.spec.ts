@@ -238,6 +238,37 @@ test.describe('Address Bar', () => {
     expect(calls[1].args.fragment).toBe(`/${distributedOwner}/profile`);
   });
 
+  test('blurred htree nhash routes render a page title label and restore the full URL on focus', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const url = 'htree://nhash1example/index.html';
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill(url);
+    await input.press('Enter');
+    await expect.poll(async () => (await getInvocationsFor(page, 'create_htree_webview')).length).toBe(1);
+
+    await emitTauriEvent(page, 'child-webview-diagnostic', {
+      label: 'content',
+      url,
+      source: 'load',
+      title: 'Immutable demo',
+      bodyText: 'Loaded from hashtree',
+      mediaSummary: null,
+      error: null,
+    });
+
+    await page.locator('main').click({ position: { x: 20, y: 20 } });
+
+    await expect(page.getByTestId('address-title-pill')).toBeVisible();
+    await expect(page.getByTestId('address-title-pill')).toContainText('Immutable demo');
+    await expect(input).toHaveValue('nhash1example/index.html');
+
+    await page.getByTestId('address-bar').click();
+    await expect(page.getByTestId('address-title-pill')).toHaveCount(0);
+    await expect(input).toHaveValue(url);
+  });
+
   test('history dropdown shows owner label and page title for npub routes', async ({ tauriPage: page }) => {
     await openHome(page);
 
