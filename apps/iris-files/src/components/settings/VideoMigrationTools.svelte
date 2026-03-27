@@ -1,6 +1,7 @@
 <script lang="ts">
   import { toHex } from '@hashtree/core';
   import { loginWithExtension, nostrStore } from '../../nostr';
+  import { getWorkerAdapter, waitForWorkerAdapter } from '../../lib/workerInit';
   import { logVideoMigrationEvent } from '../../lib/videoMigrationLog';
   import {
     publishVideoMigration,
@@ -13,6 +14,15 @@
   let scanning = $state(false);
   let batchPublishing = $state(false);
   let activeTreeName = $state<string | null>(null);
+  let publishProgress = $state<{
+    treeName: string;
+    stage: 'preparing' | 'uploading' | 'nostr';
+    current: number;
+    total: number;
+    pushed?: number;
+    skipped?: number;
+    failed?: number;
+  } | null>(null);
   let progress = $state<VideoMigrationScanProgress | null>(null);
   let scanError = $state<string | null>(null);
   let actionError = $state<string | null>(null);
@@ -147,9 +157,119 @@
     });
   }
 
+  function publishButtonLabel(treeName: string): string {
+    if (activeTreeName !== treeName) {
+      return 'Publish Fix';
+    }
+    if (!publishProgress || publishProgress.treeName !== treeName) {
+      return 'Publishing…';
+    }
+    if (publishProgress.stage === 'uploading') {
+      return publishProgress.total > 0
+        ? `Uploading ${publishProgress.current}/${publishProgress.total}…`
+        : 'Uploading…';
+    }
+    if (publishProgress.stage === 'nostr') {
+      return 'Publishing root…';
+    }
+    return 'Preparing…';
+  }
+
+  function publishStatusText(treeName: string): string | null {
+    if (activeTreeName !== treeName) {
+      return null;
+    }
+    if (!publishProgress || publishProgress.treeName !== treeName || publishProgress.stage === 'preparing') {
+      return 'Preparing repaired root…';
+    }
+    if (publishProgress.stage === 'uploading') {
+      return publishProgress.total > 0
+        ? `Uploading to Blossom ${publishProgress.current} / ${publishProgress.total}…`
+        : 'Uploading to Blossom…';
+    }
+
+    const pushed = publishProgress.pushed ?? 0;
+    const skipped = publishProgress.skipped ?? 0;
+    const failed = publishProgress.failed ?? 0;
+    const uploadSummary = failed > 0
+      ? `${pushed} pushed, ${skipped} skipped, ${failed} failed`
+      : `${pushed} pushed, ${skipped} skipped`;
+    return `Upload complete (${uploadSummary}). Publishing root event…`;
+  }
+
+  async function attachPublishProgress(treeName: string): Promise<() => void> {
+    const adapter = getWorkerAdapter() ?? await waitForWorkerAdapter(10000);
+    if (!adapter) {
+      return () => {
+        if (publishProgress?.treeName === treeName) {
+          publishProgress = null;
+        }
+      };
+    }
+
+    let lastLoggedAt = 0;
+    let lastLoggedCurrent = -1;
+
+    adapter.onBlossomPushProgress((progressTreeName, current, total) => {
+      if (progressTreeName !== treeName) {
+        return;
+      }
+      publishProgress = { treeName, stage: 'uploading', current, total };
+
+      const now = Date.now();
+      const boundaryStep = current <= 1 || (total > 0 && current === total);
+      const progressStep = total > 0 && current - lastLoggedCurrent >= Math.max(1, Math.ceil(total / 10));
+      if (boundaryStep || progressStep || now - lastLoggedAt >= 5000) {
+        lastLoggedAt = now;
+        lastLoggedCurrent = current;
+        logVideoMigrationEvent('publish:blossom-progress', {
+          treeName,
+          current,
+          total,
+        });
+      }
+    });
+
+    adapter.onBlossomPushComplete((completeTreeName, pushed, skipped, failed) => {
+      if (completeTreeName !== treeName) {
+        return;
+      }
+      publishProgress = {
+        treeName,
+        stage: 'nostr',
+        current: 0,
+        total: 0,
+        pushed,
+        skipped,
+        failed,
+      };
+      logVideoMigrationEvent('publish:blossom-complete', {
+        treeName,
+        pushed,
+        skipped,
+        failed,
+      });
+    });
+
+    return () => {
+      adapter.onBlossomPushProgress(() => {});
+      adapter.onBlossomPushComplete(() => {});
+      if (publishProgress?.treeName === treeName) {
+        publishProgress = null;
+      }
+    };
+  }
+
   async function publishOne(item: VideoMigrationCandidate) {
     actionError = null;
     activeTreeName = item.treeName;
+    publishProgress = {
+      treeName: item.treeName,
+      stage: 'preparing',
+      current: 0,
+      total: 0,
+    };
+    const resetPublishProgress = await attachPublishProgress(item.treeName);
     logVideoMigrationEvent('publish:start', {
       treeName: item.treeName,
       visibility: item.visibility,
@@ -173,6 +293,7 @@
         error,
       });
     } finally {
+      resetPublishProgress();
       activeTreeName = null;
     }
   }
@@ -180,14 +301,22 @@
   async function publishAll() {
     batchPublishing = true;
     actionError = null;
+    const targets = [...readyItems];
     const failures: string[] = [];
     logVideoMigrationEvent('publish-all:start', {
-      count: readyItems.length,
-      treeNames: readyItems.map((item) => item.treeName),
+      count: targets.length,
+      treeNames: targets.map((item) => item.treeName),
     });
 
-    for (const item of readyItems) {
+    for (const item of targets) {
       activeTreeName = item.treeName;
+      publishProgress = {
+        treeName: item.treeName,
+        stage: 'preparing',
+        current: 0,
+        total: 0,
+      };
+      const resetPublishProgress = await attachPublishProgress(item.treeName);
       try {
         const result = await publishVideoMigration(item);
         markPublished(item.treeName, result.cid);
@@ -202,16 +331,19 @@
           treeName: item.treeName,
           error,
         });
+      } finally {
+        resetPublishProgress();
       }
     }
 
     activeTreeName = null;
+    publishProgress = null;
     batchPublishing = false;
     if (failures.length > 0) {
       actionError = failures.join(' | ');
     }
     logVideoMigrationEvent('publish-all:complete', {
-      attempted: readyItems.length,
+      attempted: targets.length,
       failures,
     });
   }
@@ -323,11 +455,7 @@
                     class="btn-ghost"
                     disabled={activeTreeName === item.treeName || batchPublishing || !!item.publishBlockedReason}
                   >
-                    {#if activeTreeName === item.treeName}
-                      Publishing…
-                    {:else}
-                      Publish Fix
-                    {/if}
+                    {publishButtonLabel(item.treeName)}
                   </button>
                 {/if}
                 <a href={`#/${item.npub}/${encodeURIComponent(item.treeName)}`} class="btn-ghost no-underline">
@@ -351,6 +479,12 @@
                 {#each item.summary as line}
                   <div>{line}</div>
                 {/each}
+              </div>
+            {/if}
+
+            {#if publishStatusText(item.treeName)}
+              <div class="mt-3 rounded bg-surface-2 px-3 py-2 text-xs text-text-2">
+                {publishStatusText(item.treeName)}
               </div>
             {/if}
 

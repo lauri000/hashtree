@@ -41,6 +41,8 @@ type EoseCallback = () => void;
 type WorkerConstructor = URL | string | (new () => Worker);
 
 export class WorkerAdapter {
+  private static readonly DEFAULT_REQUEST_TIMEOUT_MS = 120000;
+  private static readonly BLOSSOM_PUSH_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
   private worker: Worker | null = null;
   private workerFactory: WorkerConstructor;
   private config: WorkerConfig;
@@ -407,17 +409,18 @@ export class WorkerAdapter {
     }
   }
 
-  private request<T>(msg: WorkerRequest, transfer?: Transferable[]): Promise<T> {
+  private request<T>(msg: WorkerRequest, transfer?: Transferable[], timeoutMs = WorkerAdapter.DEFAULT_REQUEST_TIMEOUT_MS): Promise<T> {
     return new Promise((resolve, reject) => {
       const id = (msg as { id: string }).id;
 
-      // Timeout after 120 seconds (increased for large tree operations)
+      // Most worker requests are short-lived, but Blossom pushes for large
+      // playlists can take several minutes before the final response arrives.
       const timeoutId = setTimeout(() => {
         if (this.pendingRequests.has(id)) {
           this.pendingRequests.delete(id);
           reject(new Error('Request timeout'));
         }
-      }, 120000);
+      }, timeoutMs);
 
       this.pendingRequests.set(id, {
         resolve: resolve as (value: unknown) => void,
@@ -645,7 +648,7 @@ export class WorkerAdapter {
       cidHash,
       cidKey,
       treeName,
-    } as WorkerRequest);
+    } as WorkerRequest, undefined, WorkerAdapter.BLOSSOM_PUSH_REQUEST_TIMEOUT_MS);
     if (response.error) throw new Error(response.error);
     return { pushed: response.pushed, skipped: response.skipped, failed: response.failed, errors: response.errors };
   }
