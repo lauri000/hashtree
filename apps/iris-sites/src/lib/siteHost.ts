@@ -1,4 +1,4 @@
-import { nhashDecode, toHex } from '@hashtree/core';
+import { nhashDecode, nhashEncode, toHex } from '@hashtree/core';
 import { serializeHostedSiteHash, type HostedSite } from './siteConfig';
 import {
   encodeImmutableHostLabel,
@@ -9,6 +9,11 @@ import {
 
 const PROD_PORTAL_HOST = 'sites.iris.to';
 const LOCAL_PORTAL_HOST = 'sites.iris.localhost';
+
+interface CurrentVersionLike {
+  hash: Uint8Array;
+  key?: Uint8Array;
+}
 
 function resolveHostContext(currentHost?: string): {
   protocol: string;
@@ -100,4 +105,31 @@ export async function buildIsolatedSiteHref(site: HostedSite, currentHost?: stri
 export function buildLauncherHref(site: HostedSite, currentHost?: string): string {
   const hostContext = resolveHostContext(currentHost);
   return `${hostContext.protocol}//${hostContext.portalHost}/${serializeHostedSiteHash(site)}`;
+}
+
+export function buildPermalinkHref(
+  site: HostedSite,
+  currentVersion?: CurrentVersionLike,
+  currentHost?: string,
+): string | null {
+  if (site.kind === 'immutable') {
+    return buildLauncherHref(site, currentHost);
+  }
+
+  if (!currentVersion) {
+    return null;
+  }
+
+  const immutableSite: HostedSite = {
+    kind: 'immutable',
+    siteKey: site.siteKey,
+    title: site.title,
+    entryPath: site.entryPath,
+    nhash: nhashEncode({
+      hash: toHex(currentVersion.hash),
+      decryptKey: currentVersion.key ? toHex(currentVersion.key) : undefined,
+    }),
+  };
+
+  return buildLauncherHref(immutableSite, currentHost);
 }

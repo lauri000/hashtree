@@ -30,6 +30,13 @@ describe('runtime menu markup', () => {
     expect(appSource).toContain('Update Now');
   });
 
+  it('shows a permalink action for mutable sites once the current version is known', () => {
+    expect(appSource).toContain("const permalinkHref = $derived.by(() =>");
+    expect(appSource).toContain("buildPermalinkHref(");
+    expect(appSource).toContain('{#if currentSite?.kind === \'mutable\' && permalinkHref}');
+    expect(appSource).toContain('>Permalink</a>');
+  });
+
   it('includes a direct link back to the iris sites launcher in the runtime menu header', () => {
     expect(appSource).toContain('class="runtime-menu-home-link"');
     expect(appSource).toContain('href="https://sites.iris.to/"');

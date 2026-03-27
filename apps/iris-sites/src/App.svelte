@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { parseLaunchInput } from './lib/launchInput';
   import { resolveHostedSite } from './lib/siteConfig';
-  import { buildIsolatedSiteHref, buildLauncherHref, isPortalShellHost } from './lib/siteHost';
+  import { buildIsolatedSiteHref, buildLauncherHref, buildPermalinkHref, isPortalShellHost } from './lib/siteHost';
   import { getMediaClientKey, setupMediaStreaming } from './lib/mediaStreamingSetup';
   import {
     getTreeRootInfo,
@@ -71,6 +71,7 @@
   let launchError = $state<string | null>(null);
   let launchPending = $state(false);
   let copyStatusTimeoutId = 0;
+  let currentTreeRoot = $state<TreeRootInfo | null>(null);
 
   function resolveCurrentSite() {
     if (typeof window === 'undefined') return null;
@@ -242,6 +243,15 @@
 
   const missingRuntimeTarget = $derived.by(() => !currentSite && !inPortalShell);
   const launcherHref = $derived.by(() => buildCurrentLauncherHref());
+  const permalinkHref = $derived.by(() =>
+    currentSite
+      ? buildPermalinkHref(
+          currentSite,
+          currentSite.kind === 'mutable' ? currentTreeRoot ?? undefined : undefined,
+          typeof window !== 'undefined' ? window.location.host : undefined,
+        ) || ''
+      : ''
+  );
   const showRuntimeMenu = $derived.by(() => Boolean(currentSite && !inPortalShell && !menuHidden));
   const showRuntimeFallback = $derived.by(() => Boolean(runtimeError || showBootStatus));
   const showFrameOverlay = $derived.by(() => Boolean(runtimeError || (!iframeLoaded && showBootStatus)));
@@ -264,6 +274,7 @@
       runtimeMenuOpen = false;
       menuHidden = isMenuHidden(routeHash);
       updateAvailable = false;
+      currentTreeRoot = null;
       autoReloadEnabled = site ? readAutoReloadPreference() : false;
       if (typeof window !== 'undefined' && isPortalShellHost(window.location.host) && site) {
         void buildIsolatedSiteHref(site, window.location.host)
@@ -318,6 +329,7 @@
       const nextSignature = treeRootSignature(update);
       if (!currentSignature) {
         currentSignature = nextSignature;
+        currentTreeRoot = update;
         return;
       }
       if (nextSignature === currentSignature) return;
@@ -338,6 +350,7 @@
         const initial = await getTreeRootInfo(mutableSite.npub, mutableSite.treeName);
         if (!disposed && initial) {
           currentSignature = treeRootSignature(initial);
+          currentTreeRoot = initial;
         }
       } catch (error) {
         if (!disposed) {
@@ -501,6 +514,10 @@
         {/if}
 
         {#if currentSite?.kind === 'mutable'}
+          {#if currentSite?.kind === 'mutable' && permalinkHref}
+            <a class="runtime-menu-item" href={permalinkHref}>Permalink</a>
+          {/if}
+
           <label class="runtime-menu-toggle">
             <span class="runtime-menu-toggle-label">Auto-reload on updates</span>
             <input type="checkbox" checked={autoReloadEnabled} onchange={handleAutoReloadChange} />

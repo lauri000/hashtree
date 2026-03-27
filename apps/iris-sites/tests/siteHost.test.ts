@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { nhashDecode, nhashEncode, toHex } from '@hashtree/core';
-import { buildIsolatedSiteHref, buildLauncherHref, isPortalShellHost } from '../src/lib/siteHost';
+import { buildIsolatedSiteHref, buildLauncherHref, buildPermalinkHref, isPortalShellHost } from '../src/lib/siteHost';
 import { encodeImmutableHostLabel, encodeMutableHostLabel } from '../src/lib/siteIdentity';
 
 const VALID_NPUB = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
@@ -48,6 +48,35 @@ describe('site host routing', () => {
       treeName: 'enshittifier',
       entryPath: 'index.html',
     })).toBe(`https://sites.iris.to/#/${VALID_NPUB}/enshittifier/index.html`);
+  });
+
+  it('derives mutable permalinks from the currently resolved tree root nhash', () => {
+    const currentVersion = nhashDecode('nhash1qqsxyn0g6yyac8ruej7r7j80y2gx6ev5z5flu6ry5h5t3ajju5utzjs9yz7t3p2syr9n5heajlv85uwej232dk5x4zqe8d7ft67y3m5umxr55qjku38');
+
+    expect(buildPermalinkHref({
+      kind: 'mutable',
+      siteKey: 'pilot',
+      title: 'Midi',
+      npub: VALID_NPUB,
+      treeName: 'enshittifier',
+      entryPath: 'index.html',
+    }, {
+      hash: currentVersion.hash,
+      key: currentVersion.key,
+    })).toBe(
+      'https://sites.iris.to/#/nhash1qqsxyn0g6yyac8ruej7r7j80y2gx6ev5z5flu6ry5h5t3ajju5utzjs9yz7t3p2syr9n5heajlv85uwej232dk5x4zqe8d7ft67y3m5umxr55qjku38/index.html',
+    );
+  });
+
+  it('does not invent mutable permalinks before the current tree root is known', () => {
+    expect(buildPermalinkHref({
+      kind: 'mutable',
+      siteKey: 'pilot',
+      title: 'Midi',
+      npub: VALID_NPUB,
+      treeName: 'enshittifier',
+      entryPath: 'index.html',
+    })).toBeNull();
   });
 
   it('builds local launcher URLs from local runtime hosts', () => {
