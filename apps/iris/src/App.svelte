@@ -8,6 +8,7 @@
     deepLinkFrontendReady,
     closeWebview,
     getHtreeServerUrl,
+    installSitePwa,
     navigateWebview,
     onAutomationCommand,
     webviewHistory,
@@ -26,7 +27,7 @@
     type WebviewPageLoadEvent,
     type HistoryEntry,
   } from './lib/tauri';
-  import { bookmarkSavedName, isBuiltInIrisApp } from './lib/apps';
+  import { bookmarkSavedName, isBuiltInIrisApp, matchesPwaIdentity } from './lib/apps';
   import { ownerProfileUrl } from './lib/addressIdentity';
   import { appsStore } from './stores/apps';
   import AddressOwnerPill from './components/AddressOwnerPill.svelte';
@@ -42,6 +43,13 @@
   type ResolvedTreeRoot = {
     hash?: string | null;
     cid?: string | null;
+  };
+  type DetectedPwa = {
+    sourceAppId?: string;
+    sourceUrl: string;
+    manifestUrl: string;
+    name?: string;
+    iconUrl?: string;
   };
 
   const CHILD_LABEL = 'content';
@@ -106,6 +114,8 @@
   let childBodyText = $state('');
   let childMediaSummary = $state('');
   let childLastError = $state('');
+  let detectedPwa: DetectedPwa | null = $state(null);
+  let isInstallingPwa = $state(false);
   let childWebviewReady = $state(!!g.__irisChildReady);
   let childUsesPlainLoopbackTransport = $state(false);
   const plainLoopbackFallbackScopes = new Set<string>();
@@ -124,6 +134,17 @@
     !!currentUrl &&
     childPageLoadState !== 'finished' &&
     !childLastError
+  );
+  let currentPwaBookmark = $derived(
+    detectedPwa
+      ? $appsStore.find((app) => matchesPwaIdentity(app, detectedPwa)) ?? null
+      : null,
+  );
+  let canInstallCurrentPwa = $derived(
+    currentView === 'webview' &&
+    !!currentUrl &&
+    currentUrl.startsWith('https://') &&
+    !!detectedPwa?.manifestUrl,
   );
 
   function urlToDisplay(url: string): string {
@@ -484,10 +505,11 @@
   function handleLocationChange(event: WebviewLocationEvent) {
     if (event.label !== CHILD_LABEL) return;
     const previousUrl = currentUrl;
+    const nextUrl = normalizeChildReportedUrl(event.url, previousUrl);
     const requiresRecreation = (
       currentView === 'webview' &&
       !!previousUrl &&
-      shouldRecreateBrowserForUrl(event.url, previousUrl)
+      shouldRecreateBrowserForUrl(nextUrl, previousUrl)
     );
 
     // Native navigation callbacks can arrive before the runtime confirms a
@@ -497,24 +519,24 @@
       return;
     }
 
-    currentUrl = event.url;
+    currentUrl = nextUrl;
     if (!isAddressFocused) {
-      addressValue = urlToDisplay(event.url);
+      addressValue = urlToDisplay(nextUrl);
     }
     if (ignoreLocationEvents > 0) {
       ignoreLocationEvents--;
       return;
     }
-    if (event.url === previousUrl) {
+    if (nextUrl === previousUrl) {
       return;
     }
     if (requiresRecreation) {
       currentUrl = previousUrl;
-      void navigate(event.url, { pushHistory: false });
+      void navigate(nextUrl, { pushHistory: false });
       return;
     }
-    if (isRecordableUrl(event.url)) {
-      recordHistoryVisit(buildHistoryEntry(event.url))
+    if (isRecordableUrl(nextUrl)) {
+      recordHistoryVisit(buildHistoryEntry(nextUrl))
         .catch((e) => console.warn('[Iris] record history failed:', e));
     }
     // User navigated within webview (clicked a link, etc.)
@@ -606,6 +628,23 @@
       label += `#${htree.fragment}`;
     }
     return label;
+  }
+
+  function normalizeChildReportedUrl(nextUrl: string, previousUrl: string): string {
+    if (!previousUrl) return nextUrl;
+    const next = parseHtreeUrl(nextUrl);
+    const previous = parseHtreeUrl(previousUrl);
+    if (!next || !previous) return nextUrl;
+    if (next.host !== previous.host) return nextUrl;
+    if (next.nhash !== previous.nhash) return nextUrl;
+    if (next.npub !== previous.npub) return nextUrl;
+    if (next.treename !== previous.treename) return nextUrl;
+    if ((next.query ?? '') !== (previous.query ?? '')) return nextUrl;
+    if ((next.fragment ?? '') !== (previous.fragment ?? '')) return nextUrl;
+    if (next.path === '/' && previous.path === '/index.html') {
+      return previousUrl;
+    }
+    return nextUrl;
   }
 
   function preferredBlurredNhashTitle(url: string, nhash: string): string | null {
@@ -720,6 +759,24 @@
     }, HTREE_LOAD_STALL_RECOVERY_DELAY_MS);
   }
 
+  function detectPwaFromDiagnostic(event: WebviewDiagnosticEvent): DetectedPwa | null {
+    const sourceAppId = event.manifestAppId?.trim();
+    const manifestUrl = event.manifestUrl?.trim();
+    const sourceUrl = event.url?.trim() || currentUrl;
+    if (!manifestUrl || !sourceUrl.startsWith('https://')) {
+      return null;
+    }
+    const name = event.manifestName?.trim() || event.title?.trim() || childDocumentTitle.trim();
+    const iconUrl = event.manifestIconUrl?.trim();
+    return {
+      sourceAppId: sourceAppId || undefined,
+      sourceUrl,
+      manifestUrl,
+      name: name || undefined,
+      iconUrl: iconUrl || undefined,
+    };
+  }
+
   function resetChildDiagnostics(loadState: string = 'idle', loadUrl: string = '') {
     clearBlankSuggestedTreeRecoveryTimer();
     clearChildLoadStallRecoveryTimer();
@@ -729,6 +786,8 @@
     childBodyText = '';
     childMediaSummary = '';
     childLastError = '';
+    detectedPwa = null;
+    isInstallingPwa = false;
   }
 
   async function destroyChildWebview() {
@@ -908,6 +967,28 @@
     }
   }
 
+  async function installCurrentPwa() {
+    showMobileMenu = false;
+    if (!canInstallCurrentPwa || !detectedPwa || isInstallingPwa) return;
+    isInstallingPwa = true;
+    try {
+      const installed = await installSitePwa(detectedPwa.sourceUrl);
+      appsStore.add({
+        url: installed.launchUrl,
+        name: installed.name || detectedPwa.name || bookmarkSavedName(detectedPwa.sourceUrl, childDocumentTitle),
+        icon: installed.iconUrl ?? detectedPwa.iconUrl,
+        sourceAppId: installed.sourceAppId ?? detectedPwa.sourceAppId,
+        sourceUrl: installed.sourceUrl,
+        sourceManifestUrl: installed.sourceManifestUrl,
+        addedAt: Date.now(),
+      });
+    } catch (error) {
+      console.warn('[Iris] failed to install PWA:', error);
+    } finally {
+      isInstallingPwa = false;
+    }
+  }
+
   async function refresh() {
     showMobileMenu = false;
     if (currentView === 'webview' && currentUrl && !childWebviewReady) {
@@ -969,29 +1050,32 @@
   function handlePageLoadEvent(event: WebviewPageLoadEvent) {
     if (event.label !== CHILD_LABEL) return;
     const previousUrl = currentUrl;
+    const nextUrl = normalizeChildReportedUrl(event.url, previousUrl);
     const requiresRecreation = (
       event.event === 'started' &&
       currentView === 'webview' &&
       !!previousUrl &&
-      event.url !== previousUrl &&
-      shouldRecreateBrowserForUrl(event.url, previousUrl)
+      nextUrl !== previousUrl &&
+      shouldRecreateBrowserForUrl(nextUrl, previousUrl)
     );
 
     if (requiresRecreation) {
-      void navigate(event.url, { pushHistory: false });
+      void navigate(nextUrl, { pushHistory: false });
       return;
     }
 
-    if (currentView === 'webview' && event.url && event.url !== currentUrl) {
-      currentUrl = event.url;
+    if (currentView === 'webview' && nextUrl && nextUrl !== currentUrl) {
+      currentUrl = nextUrl;
       if (!isAddressFocused) {
-        addressValue = urlToDisplay(event.url);
+        addressValue = urlToDisplay(nextUrl);
       }
     }
 
     childPageLoadState = event.event;
-    childPageLoadUrl = event.url;
+    childPageLoadUrl = nextUrl;
     if (event.event === 'started') {
+      detectedPwa = null;
+      isInstallingPwa = false;
       clearBlankSuggestedTreeRecoveryTimer();
       return;
     }
@@ -1061,6 +1145,8 @@
   function handleDiagnosticEvent(event: WebviewDiagnosticEvent) {
     if (event.label !== CHILD_LABEL) return;
     if (event.title) childDocumentTitle = event.title;
+    const detected = detectPwaFromDiagnostic(event);
+    if (detected) detectedPwa = detected;
     if (event.title && currentUrl && isRecordableUrl(currentUrl)) {
       recordHistoryVisit(buildHistoryEntry(currentUrl, event.title))
         .catch((error) => console.warn('[Iris] record history failed:', error));
@@ -1497,6 +1583,24 @@
               />
             </div>
             {#if !isAddressFocused}
+              {#if canInstallCurrentPwa}
+                <button
+                  data-testid="install-pwa-button"
+                  data-tauri-drag-region="false"
+                  class="shrink-0 text-text-3 hover:text-text-1 disabled:opacity-30"
+                  onclick={installCurrentPwa}
+                  disabled={isInstallingPwa}
+                  title={currentPwaBookmark ? 'Update in Iris home screen' : 'Add to Iris home screen'}
+                >
+                  {#if isInstallingPwa}
+                    <span class="i-lucide-loader-2 text-sm animate-spin"></span>
+                  {:else if currentPwaBookmark}
+                    <span class="i-lucide-refresh-cw"></span>
+                  {:else}
+                    <span class="i-lucide-download"></span>
+                  {/if}
+                </button>
+              {/if}
               <button
                 data-tauri-drag-region="false"
                 class="shrink-0 text-text-3 hover:text-text-1 disabled:opacity-30"
@@ -1682,6 +1786,24 @@
               class={`w-full bg-transparent border-none outline-none text-sm text-text-1 placeholder:text-muted min-w-0 text-center ${(blurredOwnerSummary || blurredNhashTitle) ? 'pointer-events-none opacity-0 text-left' : ''}`}
             />
           </div>
+          {#if canInstallCurrentPwa}
+            <button
+              data-testid="install-pwa-button"
+              data-tauri-drag-region="false"
+              class="shrink-0 text-text-3 hover:text-text-1 disabled:opacity-30"
+              onclick={installCurrentPwa}
+              disabled={isInstallingPwa}
+              title={currentPwaBookmark ? 'Update in Iris home screen' : 'Add to Iris home screen'}
+            >
+              {#if isInstallingPwa}
+                <span class="i-lucide-loader-2 text-sm animate-spin"></span>
+              {:else if currentPwaBookmark}
+                <span class="i-lucide-refresh-cw"></span>
+              {:else}
+                <span class="i-lucide-download"></span>
+              {/if}
+            </button>
+          {/if}
           <button
             data-tauri-drag-region="false"
             class="shrink-0 text-text-3 hover:text-text-1 disabled:opacity-30"

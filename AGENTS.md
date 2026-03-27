@@ -3,7 +3,7 @@
 We are building a decentralized system independent of DNS, SSL certificates, web servers, CDNs, etc., so avoid DNS-based identity like NIP-05.
 
 ## Shared Rules
-- TDD when practical: start with a failing test, then implement.
+- TDD when practical and non-trivial: start with a failing test, then implement.
 - Keep tests deterministic; avoid flaky tests.
 - Verify changes with unit or e2e tests. Don't ask the user to test. Don't assume code works - everything must be verified with tests.
 - Fix all errors you encounter, whether related to your changes or not.
@@ -12,4 +12,5 @@ We are building a decentralized system independent of DNS, SSL certificates, web
 - Commit after relevant tests (and build/lint if applicable) pass, then push to htree remote (`htree://self/hashtree`).
 - For frontend or TypeScript changes, verify unreleased work in the local dev app (`pnpm tauri dev` / localhost) or in an immutable released shell (`htree://nhash.../index.html`). Do not debug against the mutable `htree://npub.../<app>` shell until that app has actually been published, because it may still point to an older build.
 - When verifying `iris-files` apps inside the native Iris/Tauri shell, do not point native smoke or manual testing at an old mutable app shell by accident. First publish the freshly built app to hashtree (`htree add dist-<app> --publish <app>` or at least `htree add dist-<app>` and use the returned immutable `htree://nhash.../index.html` URL), then run the native verification against that exact URL.
+- On macOS, native Iris/Tauri screenshot or install-flow verification should usually run through the Linux Docker `tauri-driver` harness instead of local `tauri-driver`, because local `tauri-driver` support is not available there. Prefer `apps/iris/scripts/test-native-linux-docker.sh` or the matching `pnpm` wrapper script when you need native screenshots and real child-webview interaction.
 - For app testing, use native system or Docker, whichever is easier; Docker is often easier to control.

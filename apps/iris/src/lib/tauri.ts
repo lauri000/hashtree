@@ -205,6 +205,19 @@ export async function webviewCurrentUrl(label: string): Promise<string> {
   return invoke<string>('webview_current_url', { label });
 }
 
+export interface InstalledSitePwa {
+  name: string;
+  launchUrl: string;
+  iconUrl?: string | null;
+  sourceAppId?: string | null;
+  sourceUrl: string;
+  sourceManifestUrl: string;
+}
+
+export async function installSitePwa(url: string): Promise<InstalledSitePwa> {
+  return invoke<InstalledSitePwa>('install_site_pwa', { url });
+}
+
 // ── History ──
 
 export interface HistoryEntry {
@@ -497,6 +510,10 @@ export interface WebviewDiagnosticEvent {
   readyState?: string | null;
   bodyText?: string | null;
   mediaSummary?: string | null;
+  manifestAppId?: string | null;
+  manifestUrl?: string | null;
+  manifestName?: string | null;
+  manifestIconUrl?: string | null;
   error?: string | null;
 }
 

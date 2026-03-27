@@ -780,9 +780,47 @@ pub fn generate_nip07_script(
     }}
   }}
 
+  function getPwaMetadata() {{
+    try {{
+      const manifestLink = Array.from(document.querySelectorAll('link[rel][href]'))
+        .find((link) => (link.rel || '')
+          .split(/\s+/)
+          .some((part) => part.toLowerCase() === 'manifest'));
+      const manifestUrl = manifestLink?.href || '';
+      if (!manifestUrl) {{
+        return {{
+          manifestUrl: '',
+          manifestName: '',
+          manifestIconUrl: '',
+        }};
+      }}
+      const applicationName = document
+        .querySelector('meta[name="application-name"]')
+        ?.getAttribute('content')
+        ?.trim() || '';
+      const touchIcon = Array.from(document.querySelectorAll('link[rel][href]'))
+        .find((link) => (link.rel || '')
+          .split(/\s+/)
+          .some((part) => part.toLowerCase() === 'apple-touch-icon'))
+        ?.href || '';
+      return {{
+        manifestUrl,
+        manifestName: applicationName,
+        manifestIconUrl: touchIcon,
+      }};
+    }} catch (_error) {{
+      return {{
+        manifestUrl: '',
+        manifestName: '',
+        manifestIconUrl: '',
+      }};
+    }}
+  }}
+
   function notifyDiagnostic(phase, errorMessage) {{
     if (!IS_TOP_LEVEL_DOCUMENT) return;
     const debugSummary = getDebugSummary();
+    const pwa = getPwaMetadata();
     postWebviewEvent({{
       kind: 'diagnostic',
       label: WEBVIEW_LABEL,
@@ -793,6 +831,9 @@ pub fn generate_nip07_script(
       readyState: document.readyState || '',
       bodyText: getBodyTextPreview(),
       mediaSummary: getMediaSummary(),
+      manifestUrl: pwa.manifestUrl || null,
+      manifestName: pwa.manifestName || null,
+      manifestIconUrl: pwa.manifestIconUrl || null,
       error: errorMessage || debugSummary || null
     }});
   }}
@@ -1029,6 +1070,47 @@ function getMediaSummary() {
 "#
 }
 
+fn pwa_metadata_js() -> &'static str {
+    r#"
+function getPwaMetadata() {
+  try {
+    const manifestLink = Array.from(document.querySelectorAll('link[rel][href]'))
+      .find((link) => (link.rel || '')
+        .split(/\s+/)
+        .some((part) => part.toLowerCase() === 'manifest'));
+    const manifestUrl = manifestLink?.href || '';
+    if (!manifestUrl) {
+      return {
+        manifestUrl: '',
+        manifestName: '',
+        manifestIconUrl: '',
+      };
+    }
+    const applicationName = document
+      .querySelector('meta[name="application-name"]')
+      ?.getAttribute('content')
+      ?.trim() || '';
+    const touchIcon = Array.from(document.querySelectorAll('link[rel][href]'))
+      .find((link) => (link.rel || '')
+        .split(/\s+/)
+        .some((part) => part.toLowerCase() === 'apple-touch-icon'))
+      ?.href || '';
+    return {
+      manifestUrl,
+      manifestName: applicationName,
+      manifestIconUrl: touchIcon,
+    };
+  } catch (_error) {
+    return {
+      manifestUrl: '',
+      manifestName: '',
+      manifestIconUrl: '',
+    };
+  }
+}
+"#
+}
+
 pub fn generate_webview_diagnostic_probe_script(
     server_url: &str,
     session_token: &str,
@@ -1128,7 +1210,9 @@ pub fn generate_webview_diagnostic_probe_script(
     }}
   }}
   {media_summary}
+  {pwa_metadata}
 
+  const pwa = getPwaMetadata();
   const payload = {{
     kind: 'diagnostic',
     label: LABEL,
@@ -1139,6 +1223,9 @@ pub fn generate_webview_diagnostic_probe_script(
     readyState: document.readyState || '',
     bodyText: getBodyTextPreview(),
     mediaSummary: getMediaSummary(),
+    manifestUrl: pwa.manifestUrl || null,
+    manifestName: pwa.manifestName || null,
+    manifestIconUrl: pwa.manifestIconUrl || null,
     error: getDebugSummary() || null
   }};
 
@@ -1152,7 +1239,8 @@ pub fn generate_webview_diagnostic_probe_script(
 }})();
 "#,
         body_text_preview = body_text_preview_js(),
-        media_summary = media_summary_js()
+        media_summary = media_summary_js(),
+        pwa_metadata = pwa_metadata_js()
     )
 }
 
@@ -2278,6 +2366,9 @@ pub struct WebviewEventRequest {
     ready_state: Option<String>,
     body_text: Option<String>,
     media_summary: Option<String>,
+    manifest_url: Option<String>,
+    manifest_name: Option<String>,
+    manifest_icon_url: Option<String>,
     error: Option<String>,
 }
 
@@ -2361,6 +2452,9 @@ pub fn webview_event<R: Runtime>(
                     "readyState": payload.ready_state,
                     "bodyText": payload.body_text,
                     "mediaSummary": payload.media_summary,
+                    "manifestUrl": payload.manifest_url,
+                    "manifestName": payload.manifest_name,
+                    "manifestIconUrl": payload.manifest_icon_url,
                     "error": payload.error
                 }),
             );
@@ -2630,7 +2724,9 @@ mod tests {
             "expected top-level frame detection in bridge script"
         );
         assert_eq!(
-            script.matches("if (!IS_TOP_LEVEL_DOCUMENT) return;").count(),
+            script
+                .matches("if (!IS_TOP_LEVEL_DOCUMENT) return;")
+                .count(),
             2,
             "expected subframe guard for both location and diagnostic reporting"
         );

@@ -2,7 +2,57 @@ export interface AppBookmark {
   url: string;
   name: string;
   icon?: string;
+  sourceAppId?: string;
+  sourceUrl?: string;
+  sourceManifestUrl?: string;
   addedAt: number;
+}
+
+type PwaIdentityLike = {
+  sourceAppId?: string | null;
+  sourceUrl?: string | null;
+  sourceManifestUrl?: string | null;
+};
+
+function normalizePwaIdentityField(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      parsed.hash = '';
+      parsed.search = '';
+      parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+      return parsed.toString();
+    }
+  } catch {
+    // Fall back to a stable string comparison for non-URL values.
+  }
+
+  return trimmed;
+}
+
+export function matchesPwaIdentity(left: PwaIdentityLike, right: PwaIdentityLike): boolean {
+  const leftAppId = normalizePwaIdentityField(left.sourceAppId);
+  const rightAppId = normalizePwaIdentityField(right.sourceAppId);
+  if (leftAppId && rightAppId && leftAppId === rightAppId) {
+    return true;
+  }
+
+  const leftManifestUrl = normalizePwaIdentityField(left.sourceManifestUrl);
+  const rightManifestUrl = normalizePwaIdentityField(right.sourceManifestUrl);
+  if (leftManifestUrl && rightManifestUrl && leftManifestUrl === rightManifestUrl) {
+    return true;
+  }
+
+  const leftSourceUrl = normalizePwaIdentityField(left.sourceUrl);
+  const rightSourceUrl = normalizePwaIdentityField(right.sourceUrl);
+  if (leftSourceUrl && rightSourceUrl && leftSourceUrl === rightSourceUrl) {
+    return true;
+  }
+
+  return false;
 }
 
 export const distributedOwner = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';

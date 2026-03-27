@@ -10,6 +10,7 @@ export default defineConfig({
     'i-lucide-loader-2',
     'i-lucide-refresh-cw',
     'i-lucide-star',
+    'i-lucide-download',
     'i-lucide-clock',
     'i-lucide-x',
     'i-lucide-ellipsis',

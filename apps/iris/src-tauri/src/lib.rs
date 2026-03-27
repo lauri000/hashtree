@@ -14,6 +14,7 @@ pub mod history;
 pub mod htree_protocol;
 pub mod nip07;
 pub mod permissions;
+pub mod pwa;
 pub mod relay_proxy;
 
 use axum::body::Bytes;
@@ -1194,6 +1195,7 @@ pub fn run() {
             nip07::webview_current_url,
             nip07::nip07_request,
             nip07::webview_event,
+            pwa::install_site_pwa,
             history::record_history_visit,
             history::search_history,
             history::get_recent_history,
@@ -1283,6 +1285,8 @@ pub fn run() {
 
             let daemon_runtime_state = Arc::new(DaemonRuntimeState::default());
             app.manage(daemon_runtime_state.clone());
+            let pwa_install_state = Arc::new(pwa::PwaInstallState::default());
+            app.manage(pwa_install_state.clone());
 
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             if let Err(error) = app.deep_link().register_all() {
@@ -1312,6 +1316,7 @@ pub fn run() {
                             info.peer_router_controller.clone();
                         *daemon_runtime_state.background_services_controller.write() =
                             info.background_services_controller.clone();
+                        *pwa_install_state.store.write() = Some(info.store.clone());
                         htree_protocol::set_daemon_port(info.port);
                         htree_protocol::set_self_npub(info.npub.clone());
                         info!("Embedded daemon started on port {}", info.port);

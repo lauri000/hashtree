@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import { cloneBookmarks, defaultFavoriteApps, type AppBookmark } from '../lib/apps';
+import { cloneBookmarks, defaultFavoriteApps, matchesPwaIdentity, type AppBookmark } from '../lib/apps';
 
 const STORAGE_KEY = 'iris:apps';
 
@@ -31,7 +31,19 @@ function createAppsStore() {
 
     add(app: AppBookmark) {
       update((apps) => {
-        if (apps.some((a) => a.url === app.url)) return apps;
+        const existingIndex = apps.findIndex((existing) =>
+          existing.url === app.url || matchesPwaIdentity(existing, app),
+        );
+        if (existingIndex >= 0) {
+          const newApps = [...apps];
+          newApps[existingIndex] = {
+            ...newApps[existingIndex],
+            ...app,
+            addedAt: newApps[existingIndex].addedAt,
+          };
+          saveApps(newApps);
+          return newApps;
+        }
         const newApps = [...apps, app];
         saveApps(newApps);
         return newApps;
