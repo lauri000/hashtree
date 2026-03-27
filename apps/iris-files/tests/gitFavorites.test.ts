@@ -1,25 +1,45 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildFavoriteRepoHref,
-  extractFavoriteRepoRefs,
+  countFavoriteRepoLikes,
+  extractFavoriteRepoAddressFromReaction,
+  extractFavoriteRepoRefsFromReactions,
   filterOwnedFavoriteRepos,
+  isPositiveFavoriteReaction,
   parseFavoriteRepoAddress,
 } from '../src/lib/gitFavorites';
 
 describe('git favorites helpers', () => {
-  it('extracts repo references from bookmark tags and preserves list order', () => {
-    const refs = extractFavoriteRepoRefs([
-      ['title', 'Bookmarks'],
-      ['a', '30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:alpha'],
-      ['e', 'note-id'],
-      ['a', '30023:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:article'],
-      ['a', '30617:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:beta/tools'],
-      ['a', '30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:alpha'],
+  it('extracts liked repositories from repo reaction events using latest state per repo', () => {
+    const refs = extractFavoriteRepoRefsFromReactions([
+      {
+        pubkey: 'f'.repeat(64),
+        created_at: 10,
+        content: '+',
+        tags: [['k', 'git-repo'], ['i', '30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:alpha']],
+      },
+      {
+        pubkey: 'f'.repeat(64),
+        created_at: 11,
+        content: '+',
+        tags: [['k', 'git-repo'], ['i', '30617:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:beta/tools']],
+      },
+      {
+        pubkey: 'f'.repeat(64),
+        created_at: 12,
+        content: '-',
+        tags: [['k', 'git-repo'], ['i', '30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:alpha']],
+      },
+      {
+        pubkey: 'f'.repeat(64),
+        created_at: 13,
+        content: '+',
+        tags: [['k', 'video'], ['i', 'npub1owner/videos/demo']],
+      },
     ]);
 
     expect(refs.map(ref => ref.address)).toEqual([
-      '30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:alpha',
-      '30617:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:beta/tools',
+      '30617:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:beta/tools',
     ]);
   });
 
@@ -37,14 +57,72 @@ describe('git favorites helpers', () => {
     expect(repo?.href).toContain('/alpha');
   });
 
-  it('filters favorites that duplicate the viewed user’s own repositories', () => {
-    const favorites = extractFavoriteRepoRefs([
-      ['a', '30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:alpha'],
-      ['a', '30617:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:beta'],
+  it('detects positive repo reactions and extracts repo identifiers', () => {
+    expect(isPositiveFavoriteReaction('+')).toBe(true);
+    expect(isPositiveFavoriteReaction('')).toBe(true);
+    expect(isPositiveFavoriteReaction('-')).toBe(false);
+
+    expect(extractFavoriteRepoAddressFromReaction([
+      ['k', 'git-repo'],
+      ['i', '30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:alpha'],
+    ])).toBe('30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:alpha');
+
+    expect(extractFavoriteRepoAddressFromReaction([
+      ['k', 'video'],
+      ['i', '30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:alpha'],
+    ])).toBeNull();
+  });
+
+  it('counts current likes by latest reaction per author', () => {
+    const count = countFavoriteRepoLikes([
+      {
+        pubkey: 'a'.repeat(64),
+        created_at: 5,
+        content: '+',
+        tags: [['k', 'git-repo'], ['i', '30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:alpha']],
+      },
+      {
+        pubkey: 'b'.repeat(64),
+        created_at: 6,
+        content: '+',
+        tags: [['k', 'git-repo'], ['i', '30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:alpha']],
+      },
+      {
+        pubkey: 'a'.repeat(64),
+        created_at: 7,
+        content: '-',
+        tags: [['k', 'git-repo'], ['i', '30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:alpha']],
+      },
+      {
+        pubkey: 'c'.repeat(64),
+        created_at: 8,
+        content: '+',
+        tags: [['k', 'video'], ['i', 'npub1owner/videos/demo']],
+      },
     ]);
 
+    expect(count).toBe(1);
+  });
+
+  it('filters favorites that duplicate the viewed user’s own repositories', () => {
+    const favorites = extractFavoriteRepoRefsFromReactions([
+      {
+        pubkey: 'f'.repeat(64),
+        created_at: 5,
+        content: '+',
+        tags: [['k', 'git-repo'], ['i', '30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:alpha']],
+      },
+      {
+        pubkey: 'f'.repeat(64),
+        created_at: 6,
+        content: '+',
+        tags: [['k', 'git-repo'], ['i', '30617:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:beta']],
+      },
+    ]);
+    const owner = parseFavoriteRepoAddress('30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:alpha');
+
     const filtered = filterOwnedFavoriteRepos(
-      favorites[0].ownerNpub,
+      owner!.ownerNpub,
       ['alpha'],
       favorites,
     );

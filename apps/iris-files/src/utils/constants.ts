@@ -24,6 +24,7 @@ export const KIND_REPOST = 6
 
 // NIP-25: Reactions
 export const KIND_REACTION = 7
+export const KIND_EXTERNAL_CONTENT_REACTION = 17
 
 // NIP-16: Event Treatment
 export const KIND_EPHEMERAL = 20000 // Ephemeral events

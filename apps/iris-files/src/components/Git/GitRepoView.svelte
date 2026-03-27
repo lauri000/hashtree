@@ -11,7 +11,7 @@
   import { npubToPubkey, nostrStore } from '../../nostr';
   import { createGitLogStore, createGitStatusStore } from '../../stores/git';
   import { createCIStatusStore, loadCIConfig, type CIStatus, type CIConfig } from '../../stores/ci';
-  import { createFavoriteReposStore, toggleFavoriteRepo } from '../../stores';
+  import { createFavoriteRepoStatsStore, createFavoriteReposStore, toggleFavoriteRepo } from '../../stores';
   import { open as openGitHistoryModal } from '../Modals/GitHistoryModal.svelte';
     import { open as openGitCommitModal } from '../Modals/GitCommitModal.svelte';
   import { getFileLastCommits } from '../../utils/git';
@@ -124,6 +124,26 @@
   let isFavorited = $derived(repoAddress ? favoriteRepos.some(repo => repo.address === repoAddress) : false);
   let canFavoriteRepo = $derived(!!route.npub && !route.params.get('k') && visibility !== 'private' && visibility !== 'link-visible');
   let favoriteLoading = $state(false);
+  let favoriteRepoStatsStore = $derived(
+    route.npub && repoPath ? createFavoriteRepoStatsStore(route.npub, repoPath) : null,
+  );
+  let favoriteRepoCount = $state(0);
+
+  $effect(() => {
+    if (!favoriteRepoStatsStore) {
+      favoriteRepoCount = 0;
+      return;
+    }
+
+    const unsub = favoriteRepoStatsStore.subscribe(value => {
+      favoriteRepoCount = value?.count || 0;
+    });
+
+    return () => {
+      unsub();
+      favoriteRepoStatsStore?.destroy();
+    };
+  });
 
   // Create git log store - use gitCid (git root) for log, keyed by repoPath
   let gitLogStore = $derived(createGitLogStore(gitCid, 50, repoPath));
@@ -366,7 +386,7 @@
   async function handleFavoriteToggle() {
     if (!route.npub) return;
     if (!userNpub) {
-      alert('Please sign in to favorite public repositories');
+      alert('Please sign in to like public repositories');
       return;
     }
 
@@ -374,7 +394,7 @@
     try {
       await toggleFavoriteRepo(route.npub, repoPath);
     } catch (err) {
-      console.error('Failed to update repository favorite:', err);
+      console.error('Failed to update repository like:', err);
     } finally {
       favoriteLoading = false;
     }
@@ -683,10 +703,11 @@
           onclick={handleFavoriteToggle}
           class={`btn-ghost flex items-center gap-2 px-3 h-9 ${isFavorited ? 'text-accent border-accent/30 bg-accent/10 hover:bg-accent/15' : ''}`}
           disabled={favoriteLoading}
-          title={isFavorited ? 'Remove from favorite repositories' : 'Save to favorite repositories'}
+          title={isFavorited ? 'Remove your like from this repository' : 'Like this repository'}
         >
-          <span class="i-lucide-bookmark"></span>
-          <span>{favoriteLoading ? 'Saving...' : isFavorited ? 'Favorited' : 'Favorite'}</span>
+          <span class={`i-lucide-heart ${isFavorited ? 'fill-current' : ''}`}></span>
+          <span>{favoriteLoading ? 'Saving...' : isFavorited ? 'Liked' : 'Like'}</span>
+          <span class="text-xs text-text-2">{favoriteRepoCount}</span>
         </button>
       {/if}
       <CodeDropdown npub={route.npub} {repoPath} />

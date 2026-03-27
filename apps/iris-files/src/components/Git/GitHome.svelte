@@ -64,7 +64,7 @@
       </div>
       <h1 class="mt-4 mb-2 text-3xl font-semibold text-text-1">Repositories</h1>
       <p class="m-0 max-w-2xl text-sm text-text-2">
-        Published repositories tagged with <code>git</code> appear here. Public repositories you favorite are listed below.
+        Published repositories tagged with <code>git</code> appear here. Public repositories you like are listed below.
       </p>
     </div>
 
@@ -126,12 +126,12 @@
       <section class="mt-10">
         <div class="mb-4">
           <div class="inline-flex items-center gap-2 rounded-full border border-surface-3 bg-surface-1 px-3 py-1 text-xs uppercase tracking-[0.22em] text-text-3">
-            <span class="i-lucide-bookmark text-sm"></span>
-            Favorites
+            <span class="i-lucide-heart text-sm"></span>
+            Likes
           </div>
-          <h2 class="mt-4 mb-2 text-xl font-semibold text-text-1">Favorite Repositories</h2>
+          <h2 class="mt-4 mb-2 text-xl font-semibold text-text-1">Liked Repositories</h2>
           <p class="m-0 max-w-2xl text-sm text-text-2">
-            Public repositories saved from the git app appear here.
+            Public repositories you like from the git app appear here.
           </p>
         </div>
 
@@ -142,14 +142,14 @@
                 href={repo.href}
                 name={repo.repoName}
                 ownerPubkey={repo.ownerPubkey}
-                metaLabel="Favorite repository"
-                saved={true}
+                metaLabel="Liked repository"
+                accentIcon="heart"
               />
             {/each}
           </div>
         {:else}
           <div class="rounded-2xl border border-surface-3 bg-surface-1/40 p-6 text-sm text-text-2">
-            Favorite a public repository and it will appear here.
+            Like a public repository and it will appear here.
           </div>
         {/if}
       </section>

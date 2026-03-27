@@ -9,7 +9,7 @@ import {
 } from './test-utils.js';
 
 test.describe('Git favorites', () => {
-  test('favorited repositories appear on home and profile', async ({ page, browser }) => {
+  test('liked repositories appear on home and profile', async ({ page, browser }) => {
     setupPageErrorHandler(page);
 
     await gotoGitApp(page);
@@ -21,7 +21,7 @@ test.describe('Git favorites', () => {
     }));
     expect(owner.npub).toBeTruthy();
 
-    const repoName = `favorite-repo-${Date.now()}`;
+    const repoName = `liked-repo-${Date.now()}`;
     await createRepositoryInCurrentDirectory(page, repoName);
     await flushPendingPublishes(page);
 
@@ -41,24 +41,25 @@ test.describe('Git favorites', () => {
 
     await viewerPage.goto(`/git.html#/${owner.npub}/${repoName}`);
 
-    const favoriteButton = viewerPage.getByRole('button', { name: /Favorite/ }).first();
+    const favoriteButton = viewerPage.getByRole('button', { name: /Like|Liked/ }).first();
     await expect(favoriteButton).toBeVisible({ timeout: 15000 });
 
-    if (!(await favoriteButton.innerText()).includes('Favorited')) {
+    if (!(await favoriteButton.innerText()).includes('Liked')) {
       await favoriteButton.click();
     }
 
-    await expect(favoriteButton).toContainText('Favorited', { timeout: 15000 });
+    await expect(favoriteButton).toContainText('Liked', { timeout: 15000 });
+    await expect(favoriteButton).toContainText('1', { timeout: 15000 });
 
     await gotoGitApp(viewerPage);
 
-    const homeFavoritesHeading = viewerPage.getByRole('heading', { name: 'Favorite Repositories' }).first();
+    const homeFavoritesHeading = viewerPage.getByRole('heading', { name: 'Liked Repositories' }).first();
     await expect(homeFavoritesHeading).toBeVisible({ timeout: 15000 });
     await expect(viewerPage.getByRole('link', { name: new RegExp(repoName) }).first()).toBeVisible({ timeout: 15000 });
 
     await viewerPage.goto(`/git.html#/${viewer.npub}`);
 
-    const profileFavoritesHeading = viewerPage.getByRole('heading', { name: 'Favorite Repositories' }).first();
+    const profileFavoritesHeading = viewerPage.getByRole('heading', { name: 'Liked Repositories' }).first();
     await expect(profileFavoritesHeading).toBeVisible({ timeout: 15000 });
     await expect(viewerPage.getByRole('link', { name: new RegExp(repoName) }).first()).toBeVisible({ timeout: 15000 });
 

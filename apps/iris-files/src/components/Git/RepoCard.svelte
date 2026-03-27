@@ -10,7 +10,7 @@
     createdAt?: number;
     metaLabel?: string;
     ownerPubkey?: string;
-    saved?: boolean;
+    accentIcon?: 'bookmark' | 'heart';
   }
 
   let {
@@ -20,7 +20,7 @@
     createdAt,
     metaLabel,
     ownerPubkey,
-    saved = false,
+    accentIcon,
   }: Props = $props();
 
   let secondaryLabel = $derived(metaLabel ?? (createdAt ? formatTimeAgo(createdAt) : 'No recent activity'));
@@ -36,8 +36,10 @@
         <span class="i-lucide-git-branch-plus text-xl"></span>
       </div>
       <div class="flex items-center gap-2 text-text-3">
-        {#if saved}
-          <span class="i-lucide-bookmark text-accent" title="Favorite repository"></span>
+        {#if accentIcon === 'bookmark'}
+          <span class="i-lucide-bookmark text-accent" title="Saved repository"></span>
+        {:else if accentIcon === 'heart'}
+          <span class="i-lucide-heart fill-current text-accent" title="Liked repository"></span>
         {/if}
         {#if visibility}
           <VisibilityIcon {visibility} class="text-text-3" />

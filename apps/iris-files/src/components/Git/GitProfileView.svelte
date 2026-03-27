@@ -341,12 +341,12 @@
     <div class="mt-10 flex items-center justify-between gap-3">
       <div>
         <div class="inline-flex items-center gap-2 rounded-full border border-surface-3 bg-surface-1 px-3 py-1 text-xs uppercase tracking-[0.22em] text-text-3">
-          <span class="i-lucide-bookmark text-sm"></span>
-          Favorites
+          <span class="i-lucide-heart text-sm"></span>
+          Likes
         </div>
-        <h2 class="mt-4 mb-2 text-3xl font-semibold text-text-1">Favorite Repositories</h2>
+        <h2 class="mt-4 mb-2 text-3xl font-semibold text-text-1">Liked Repositories</h2>
         <p class="m-0 max-w-2xl text-sm text-text-2">
-          Public repositories this profile has saved from the git app.
+          Public repositories this profile has liked from the git app.
         </p>
       </div>
     </div>
@@ -358,17 +358,17 @@
             href={repo.href}
             name={repo.repoName}
             ownerPubkey={repo.ownerPubkey}
-            metaLabel="Favorite repository"
-            saved={true}
+            metaLabel="Liked repository"
+            accentIcon="heart"
           />
         {/each}
       </div>
     {:else}
       <div class="mt-8 rounded-2xl border border-surface-3 bg-surface-1/40 p-6 text-sm text-text-2">
         {#if isOwnProfile}
-          Favorite a public repository and it will appear here.
+          Like a public repository and it will appear here.
         {:else}
-          No favorite repositories yet.
+          No liked repositories yet.
         {/if}
       </div>
     {/if}
