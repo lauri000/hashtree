@@ -557,12 +557,12 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
     }
 
     // Get file size
-    const totalSize = resolvedEntry.size ?? await getFileSize(resolvedEntry.cid);
-    if (totalSize === null) {
-      sendSwError(requestId, 404, 'File data not found');
-      return;
-    }
-
+    // Directory listings may report 0 for non-empty files when the actual byte size
+    // is not embedded in the tree node metadata. Treat that as unknown and resolve
+    // the real size from the file itself before building HTTP headers.
+    const knownSize = typeof resolvedEntry.size === 'number' && resolvedEntry.size > 0
+      ? resolvedEntry.size
+      : null;
     const effectivePath = resolvedEntry.path ?? path;
     const effectiveMimeType = (
       mimeType === 'application/octet-stream'
@@ -571,6 +571,27 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
     )
       ? guessMimeTypeFromPath(effectivePath)
       : mimeType;
+
+    const totalSize = knownSize ?? await getFileSize(resolvedEntry.cid);
+    if (totalSize === null) {
+      const canBufferWholeFile = !rangeHeader && start === 0 && end === undefined;
+      if (!canBufferWholeFile || typeof tree.readFile !== 'function') {
+        sendSwError(requestId, 404, 'File data not found');
+        return;
+      }
+      const fullData = await tree.readFile(resolvedEntry.cid);
+      if (!fullData) {
+        sendSwError(requestId, 404, 'File data not found');
+        return;
+      }
+      sendBufferedSwResponse(requestId, fullData, {
+        npub,
+        path: effectivePath,
+        mimeType: effectiveMimeType,
+        download,
+      });
+      return;
+    }
 
     // Stream the content
     await streamSwResponse(requestId, resolvedEntry.cid, totalSize, {
@@ -1459,6 +1480,55 @@ async function streamSwResponse(
   }
 
   // Signal done
+  mediaPort.postMessage({ type: 'done', requestId } as SwFileResponse);
+}
+
+function sendBufferedSwResponse(
+  requestId: string,
+  data: Uint8Array,
+  options: {
+    npub?: string;
+    path?: string;
+    mimeType?: string;
+    download?: boolean;
+  },
+): void {
+  if (!mediaPort) return;
+
+  const { npub, path, mimeType = 'application/octet-stream', download } = options;
+  const isNpubRequest = !!npub;
+  const isImage = mimeType.startsWith('image/');
+  let cacheControl: string;
+  if (!isNpubRequest) {
+    cacheControl = 'public, max-age=31536000, immutable';
+  } else if (isImage) {
+    cacheControl = 'public, max-age=60, stale-while-revalidate=86400';
+  } else {
+    cacheControl = 'no-cache, no-store, must-revalidate';
+  }
+
+  const headers: Record<string, string> = {
+    'Content-Type': mimeType,
+    'Content-Length': String(data.length),
+    'Cache-Control': cacheControl,
+  };
+
+  if (download) {
+    headers['Content-Disposition'] = `attachment; filename="${path || 'file'}"`;
+  }
+
+  mediaPort.postMessage({
+    type: 'headers',
+    requestId,
+    status: 200,
+    headers,
+    totalSize: data.length,
+  } as SwFileResponse);
+
+  mediaPort.postMessage(
+    { type: 'chunk', requestId, data } as SwFileResponse,
+    [data.buffer]
+  );
   mediaPort.postMessage({ type: 'done', requestId } as SwFileResponse);
 }
 

@@ -127,7 +127,7 @@ h1 {
     }
   });
 
-  test('should render HTML with JavaScript from same directory', async ({ page }) => {
+  test('should keep JavaScript disabled in secure preview and offer isolated-site handoff', async ({ page }) => {
     setupPageErrorHandler(page);
     await page.goto('/');
     await navigateToPublicFolder(page);
@@ -197,12 +197,11 @@ window.onload = function() {
       // Wait for iframe to appear and load
       await page.waitForSelector('iframe', { timeout: 10000 });
 
-      // Check that JavaScript executed
+      // Check that JavaScript did not execute inside the secure preview
       const iframe = page.frameLocator('iframe');
       const target = iframe.locator('#js-target');
-
-      // JS should have changed the text - give more time
-      await expect(target).toContainText('JavaScript loaded successfully!', { timeout: 15000 });
+      await expect(target).toContainText('Waiting for JavaScript...', { timeout: 15000 });
+      await expect(page.getByRole('link', { name: 'Open Isolated Site' })).toBeVisible({ timeout: 10000 });
     } finally {
       // Cleanup temp files
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -300,7 +299,7 @@ h1 { color: rgb(0, 255, 255); }
     }
   });
 
-  test('should load root-relative assets from uploaded app build', async ({ page }) => {
+  test('should keep app-style builds preview-safe and surface isolated-site handoff', async ({ page }) => {
     setupPageErrorHandler(page);
     await page.goto('/');
     await disableOthersPool(page);
@@ -373,7 +372,9 @@ window.addEventListener('load', () => {
     await page.waitForURL(new RegExp(`${appDir}.*index\\.html`), { timeout: 15000 });
 
     const iframe = page.frameLocator('iframe');
-    await expect(iframe.locator('#status')).toHaveText('App loaded', { timeout: 15000 });
+    await expect(page.getByRole('link', { name: 'Open Isolated Site' })).toBeVisible({ timeout: 10000 });
+    await expect(iframe.locator('h1')).toContainText('Absolute Assets App', { timeout: 15000 });
+    await expect(iframe.locator('#status')).toHaveText('Loading...', { timeout: 15000 });
 
     const background = await iframe.locator('body').evaluate((el) => getComputedStyle(el).backgroundColor);
     expect(background).toBe('rgb(12, 34, 56)');
@@ -388,6 +389,6 @@ window.addEventListener('load', () => {
     expect(logoInfo.naturalWidth).toBeGreaterThan(0);
   });
 
-  // Note: fetch() API doesn't work in sandboxed iframe without allow-same-origin
-  // For security, we only use allow-scripts, so dynamic data loading via fetch is not supported
+  // Preview mode is intentionally document-like:
+  // CSS/images can load, but scripts and persistence are disabled.
 });

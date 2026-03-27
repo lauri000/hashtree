@@ -1,0 +1,41 @@
+{
+  "name": "iris-sites",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "description": "Isolated hashtree site runtime for the web",
+  "repository": "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree",
+  "homepage": "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree/apps/iris-sites",
+  "bugs": {
+    "url": "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree?tab=issues"
+  },
+  "type": "module",
+  "scripts": {
+    "build:deps": "pnpm --dir ../../ts --filter @hashtree/core build && pnpm --dir ../../ts --filter @hashtree/dexie build && pnpm --dir ../../ts --filter @hashtree/nostr build && pnpm --dir ../../ts --filter nostr-social-graph build && pnpm --dir ../../ts --filter @hashtree/worker build",
+    "dev": "pnpm run build:deps && vite",
+    "build": "pnpm run build:deps && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "smoke:portable": "node ./scripts/portable-smoke.mjs",
+    "test:portable": "pnpm run build && pnpm exec vitest run tests/siteConfig.test.ts tests/siteHost.test.ts tests/portableBuildConfig.test.ts tests/releaseSite.test.ts && pnpm exec svelte-check --tsconfig ./tsconfig.json && node ./scripts/portable-smoke.mjs",
+    "release:site": "node ./scripts/release-site.mjs"
+  },
+  "dependencies": {
+    "@hashtree/core": "workspace:*",
+    "@hashtree/nostr": "workspace:*",
+    "@hashtree/worker": "workspace:*",
+    "svelte": "^5.16.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.1",
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "@tsconfig/svelte": "^5.0.4",
+    "svelte-check": "^4.1.4",
+    "typescript": "^5.3.0",
+    "vite": "^6.0.0",
+    "vite-plugin-pwa": "^1.2.0",
+    "vitest": "^4.0.17",
+    "workbox-precaching": "^7.4.0",
+    "workbox-window": "^7.4.0"
+  }
+}

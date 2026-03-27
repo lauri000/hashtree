@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { nhashEncode, type CID, type HashTree } from '@hashtree/core';
-import { __test__, initMediaHandler } from '../src/iris/mediaHandler';
+import { __test__, initMediaHandler, registerMediaPort } from '../src/iris/mediaHandler';
 
 const ROOT: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i), key: undefined };
 const CHILD_DIR: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 1), key: undefined };
@@ -14,14 +14,21 @@ const KEYED_THUMB: CID = {
 const resolvePath = vi.fn();
 const listDirectory = vi.fn();
 const getBlob = vi.fn();
+const getTreeNode = vi.fn();
 const readFile = vi.fn();
 const readFileRange = vi.fn();
+
+function sameHash(a: Uint8Array | undefined, b: Uint8Array | undefined): boolean {
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((value, index) => value === b[index]);
+}
 
 function makeTree(): HashTree {
   return {
     resolvePath,
     listDirectory,
     getBlob,
+    getTreeNode,
     readFile,
     readFileRange,
   } as unknown as HashTree;
@@ -32,6 +39,7 @@ describe('mediaHandler thumbnail aliases', () => {
     resolvePath.mockReset();
     listDirectory.mockReset();
     getBlob.mockReset();
+    getTreeNode.mockReset();
     readFile.mockReset();
     readFileRange.mockReset();
     initMediaHandler(makeTree());
@@ -336,5 +344,121 @@ describe('mediaHandler thumbnail aliases', () => {
       __test__.resolveCidWithinRoot(ROOT, 'thumbnail', { allowSingleSegmentRootFallback: true })
     ).resolves.toBe(CHILD_THUMB);
     expect(nextListDirectory).toHaveBeenCalledTimes(1);
+  });
+
+  it('streams the actual file size when directory listings report zero-byte entry sizes', async () => {
+    const rootNhash = nhashEncode(ROOT);
+    const html = new TextEncoder().encode('<!doctype html><html><body>ok</body></html>');
+    const postMessage = vi.fn();
+    const port = {
+      onmessage: null,
+      postMessage,
+      start: vi.fn(),
+    } as unknown as MessagePort;
+
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid.hash, ROOT.hash)) {
+        return [{ name: 'index.html', cid: ROOT_THUMB, size: 0 }];
+      }
+      return null;
+    });
+    getBlob.mockImplementation(async (hash: Uint8Array) => {
+      if (sameHash(hash, ROOT_THUMB.hash)) {
+        return html;
+      }
+      return null;
+    });
+    getTreeNode.mockResolvedValue(null);
+    readFileRange.mockImplementation(async (cid: CID, start: number, end?: number) => {
+      if (cid !== ROOT_THUMB) return null;
+      return html.slice(start, end ?? html.length);
+    });
+
+    registerMediaPort(port);
+
+    await port.onmessage?.({
+      data: {
+        type: 'hashtree-file',
+        requestId: 'req_1',
+        nhash: rootNhash,
+        path: 'index.html',
+        start: 0,
+        mimeType: 'text/html',
+      },
+    } as MessageEvent);
+
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'headers',
+      requestId: 'req_1',
+      status: 200,
+      headers: expect.objectContaining({
+        'Content-Length': String(html.length),
+        'Content-Type': 'text/html',
+      }),
+    }));
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'chunk',
+      requestId: 'req_1',
+      data: html,
+    }), [html.buffer]);
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'done',
+      requestId: 'req_1',
+    }));
+  });
+
+  it('falls back to reading the full file when immutable file size metadata is unavailable', async () => {
+    const rootNhash = nhashEncode(ROOT);
+    const html = new TextEncoder().encode('<!doctype html><html><body>remote ok</body></html>');
+    const postMessage = vi.fn();
+    const port = {
+      onmessage: null,
+      postMessage,
+      start: vi.fn(),
+    } as unknown as MessagePort;
+
+    listDirectory.mockImplementation(async (cid: CID) => {
+      if (sameHash(cid.hash, ROOT.hash)) {
+        return [{ name: 'index.html', cid: ROOT_THUMB, size: 0 }];
+      }
+      return null;
+    });
+    getTreeNode.mockResolvedValue(null);
+    getBlob.mockResolvedValue(null);
+    readFile.mockResolvedValue(html);
+    readFileRange.mockImplementation(async () => null);
+
+    registerMediaPort(port);
+
+    await port.onmessage?.({
+      data: {
+        type: 'hashtree-file',
+        requestId: 'req_2',
+        nhash: rootNhash,
+        path: 'index.html',
+        start: 0,
+        mimeType: 'text/html',
+      },
+    } as MessageEvent);
+
+    expect(readFile).toHaveBeenCalledWith(ROOT_THUMB);
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'headers',
+      requestId: 'req_2',
+      status: 200,
+      headers: expect.objectContaining({
+        'Content-Length': String(html.length),
+        'Content-Type': 'text/html',
+      }),
+    }));
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'chunk',
+      requestId: 'req_2',
+      data: html,
+    }), [html.buffer]);
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'done',
+      requestId: 'req_2',
+    }));
   });
 });
