@@ -5,7 +5,7 @@ import type { CID } from '@hashtree/core';
 import { LinkType } from '@hashtree/core';
 import { getTree } from '../../store';
 import { withWasmGitLock, loadWasmGit, copyToWasmFS, runSilent, rmRf, createRepoPath } from './core';
-import { getHead } from './log';
+import { getCommitTreeEntries, getHead } from './log';
 
 /**
  * Checkout a specific commit using wasm-git
@@ -73,37 +73,15 @@ export async function checkoutWasm(
         throw new Error(`Failed to checkout ${commitSha}: ${err}`);
       }
 
-      // Read all files from the working directory (excluding .git)
-      const files: Array<{ name: string; data: Uint8Array; isDir: boolean }> = [];
-
-      function readDir(path: string, prefix: string, skipGit: boolean): void {
-        const entries = module.FS.readdir(path);
-        for (const entry of entries) {
-          if (entry === '.' || entry === '..') continue;
-          if (skipGit && entry === '.git') continue;
-
-          const fullPath = path === '.' ? entry : `${path}/${entry}`;
-          const relativePath = prefix ? `${prefix}/${entry}` : entry;
-
-          try {
-            const stat = module.FS.stat(fullPath);
-            // Emscripten's stat returns mode as number, check S_IFDIR (0o40000)
-            const isDir = (stat.mode & 0o170000) === 0o040000;
-            if (isDir) {
-              files.push({ name: relativePath, data: new Uint8Array(0), isDir: true });
-              readDir(fullPath, relativePath, skipGit);
-            } else {
-              if (onProgress) onProgress(relativePath);
-              const data = module.FS.readFile(fullPath) as Uint8Array;
-              files.push({ name: relativePath, data, isDir: false });
-            }
-          } catch {
-            // Skip files we can't read
-          }
+      // Materialize the target commit/tree directly from git objects.
+      // wasm-git can leave stale working-tree files behind for repos created by our
+      // own write path; the commit graph is the authoritative source of checkout contents.
+      const files = await getCommitTreeEntries(rootCid, commitSha);
+      if (onProgress) {
+        for (const file of files) {
+          if (!file.isDir) onProgress(file.name);
         }
       }
-
-      readDir('.', '', true);
 
       // Also read the updated .git directory
       const gitFiles: Array<{ name: string; data: Uint8Array; isDir: boolean }> = [];

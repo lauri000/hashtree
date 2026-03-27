@@ -131,6 +131,67 @@ export async function createPlainFolderInCurrentDirectory(
   await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: folderName }).first()).toBeVisible({ timeout: timeoutMs });
 }
 
+export async function waitForCurrentDirectoryEntries(
+  page: any,
+  expectedNames: string[],
+  timeoutMs: number = 15000
+) {
+  await waitForTestHelpers(page, timeoutMs);
+  await page.waitForFunction(
+    async (names: string[]) => {
+      const { useCurrentDirCid } = await import('/src/stores/index.ts');
+      const { getTree } = await import('/src/store.ts');
+      const dirCid = useCurrentDirCid();
+      if (!dirCid) return false;
+      const entries = await getTree().listDirectory(dirCid);
+      const entryNames = new Set(entries.map((entry: { name: string }) => entry.name));
+      return names.every((name) => entryNames.has(name));
+    },
+    expectedNames,
+    { timeout: timeoutMs }
+  );
+}
+
+export async function commitCurrentDirectoryChanges(
+  page: any,
+  message: string,
+  filesToStage?: string[]
+) {
+  await waitForTestHelpers(page);
+  await waitForWorkerAdapter(page).catch(() => {});
+  await evaluateWithRetry(page, async ({ commitMessage, stageFiles }) => {
+    const { getTree, LinkType } = await import('/src/store.ts');
+    const { autosaveIfOwn, nostrStore } = await import('/src/nostr.ts');
+    const { commit, applyGitChanges } = await import('/src/utils/git.ts');
+    const { getCurrentRootCid } = await import('/src/actions/route.ts');
+    const { useCurrentDirCid, getRouteSync } = await import('/src/stores/index.ts');
+
+    const route = getRouteSync();
+    const dirCid = useCurrentDirCid();
+    const treeRootCid = getCurrentRootCid();
+    const nostrState = nostrStore.getState();
+    if (!dirCid || !treeRootCid) throw new Error('Missing directory or tree root for git commit');
+
+    const authorName = nostrState.profile?.display_name || nostrState.profile?.name || 'Anonymous';
+    const authorEmail = nostrState.npub ? `${nostrState.npub}@nostr` : 'anonymous@hashtree';
+    const result = await commit(dirCid, commitMessage, authorName, authorEmail, stageFiles);
+    if (!result.success || !result.gitFiles) {
+      throw new Error(result.error || 'Failed to commit');
+    }
+
+    const newDirCid = await applyGitChanges(dirCid, result.gitFiles);
+    let newRootCid = newDirCid;
+    if (route.path.length > 0) {
+      const tree = getTree();
+      const parentPath = route.path.slice(0, -1);
+      const dirName = route.path[route.path.length - 1];
+      newRootCid = await tree.setEntry(treeRootCid, parentPath, dirName, newDirCid, 0, LinkType.Dir);
+    }
+
+    autosaveIfOwn(newRootCid);
+  }, { commitMessage: message, stageFiles: filesToStage });
+}
+
 export async function ensureGitRepoInitialized(page: any, timeoutMs: number = 30000) {
   await waitForTestHelpers(page);
   await waitForWorkerAdapter(page).catch(() => {});
@@ -161,15 +222,41 @@ export async function ensureGitRepoInitialized(page: any, timeoutMs: number = 30
   const previousDirHash = await getCurrentDirHash();
   const gitInitBtn = page.getByRole('button', { name: 'Git Init' });
   if (await gitInitBtn.isVisible().catch(() => false)) {
-    await gitInitBtn.click();
-    await page.getByRole('button', { name: 'Initializing...' }).waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    await evaluateWithRetry(page, async () => {
+      const { getTree, LinkType } = await import('/src/store.ts');
+      const { autosaveIfOwn } = await import('/src/nostr.ts');
+      const { initializeDirectoryAsGitRepo } = await import('/src/actions/tree.ts');
+      const { getCurrentRootCid } = await import('/src/actions/route.ts');
+      const { useCurrentDirCid, getRouteSync } = await import('/src/stores/index.ts');
+
+      const route = getRouteSync();
+      const dirCid = useCurrentDirCid();
+      const treeRootCid = getCurrentRootCid();
+      if (!dirCid || !treeRootCid) throw new Error('Missing directory or tree root for git init');
+
+      const updatedDirCid = await initializeDirectoryAsGitRepo(dirCid);
+      let newRootCid = updatedDirCid;
+      if (route.path.length > 0) {
+        const tree = getTree();
+        const parentPath = route.path.slice(0, -1);
+        const dirName = route.path[route.path.length - 1];
+        newRootCid = await tree.setEntry(treeRootCid, parentPath, dirName, updatedDirCid, 0, LinkType.Dir);
+      }
+
+      autosaveIfOwn(newRootCid);
+    }, undefined);
     await waitForGitDirInCurrentDirectory(previousDirHash, true);
+    await safeReload(page, { waitUntil: 'domcontentloaded', timeoutMs });
+    await waitForAppReady(page, timeoutMs);
+    await disableOthersPool(page);
+    await waitForGitDirInCurrentDirectory(null, false);
     await expect(gitInitBtn).not.toBeVisible({ timeout: timeoutMs });
   } else {
     await waitForGitDirInCurrentDirectory(previousDirHash, false);
   }
 
-  await expect(page.getByRole('button', { name: /commits/i })).toBeVisible({ timeout: timeoutMs });
+  const branchButton = page.locator('button').filter({ has: page.locator('.i-lucide-git-branch') }).first();
+  await expect(branchButton).toBeVisible({ timeout: timeoutMs });
 }
 
 export async function safeReload(

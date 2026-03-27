@@ -169,6 +169,12 @@ export interface CommitDetails extends CommitInfo {
   tree: string;
 }
 
+export interface CommitTreeEntry {
+  name: string;
+  data: Uint8Array;
+  isDir: boolean;
+}
+
 /**
  * Get commit log using wasm-git
  */
@@ -1814,4 +1820,52 @@ export async function getFileAtCommit(
     console.error('[git] getFileAtCommit failed:', err);
     return null;
   }
+}
+
+function isTreeMode(mode: string): boolean {
+  return mode === '40000' || mode === '040000';
+}
+
+async function collectCommitTreeEntries(
+  htree: ReturnType<typeof getTree>,
+  gitDirCid: CID,
+  treeSha: string,
+  prefix: string,
+  entries: CommitTreeEntry[]
+): Promise<void> {
+  const treeObj = await readGitObject(htree, gitDirCid, treeSha);
+  if (!treeObj || treeObj.type !== 'tree') return;
+
+  for (const entry of parseGitTree(treeObj.content)) {
+    const entryPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+
+    if (isTreeMode(entry.mode)) {
+      entries.push({ name: entryPath, data: new Uint8Array(0), isDir: true });
+      await collectCommitTreeEntries(htree, gitDirCid, entry.hash, entryPath, entries);
+      continue;
+    }
+
+    const blobObj = await readGitObject(htree, gitDirCid, entry.hash);
+    if (!blobObj || blobObj.type !== 'blob') continue;
+    entries.push({ name: entryPath, data: blobObj.content, isDir: false });
+  }
+}
+
+export async function getCommitTreeEntries(rootCid: CID, ref: string): Promise<CommitTreeEntry[]> {
+  const htree = getTree();
+
+  const gitDirResult = await htree.resolvePath(rootCid, '.git');
+  if (!gitDirResult || gitDirResult.type !== LinkType.Dir) {
+    return [];
+  }
+
+  const resolvedSha = await resolveCommitSha(rootCid, ref);
+  if (!resolvedSha) return [];
+
+  const commit = await getParsedCommitFromSha(htree, gitDirResult.cid, resolvedSha);
+  if (!commit) return [];
+
+  const entries: CommitTreeEntry[] = [];
+  await collectCommitTreeEntries(htree, gitDirResult.cid, commit.tree, '', entries);
+  return entries;
 }
