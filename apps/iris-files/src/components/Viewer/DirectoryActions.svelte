@@ -15,6 +15,7 @@
   import { findNearestGitRootPath } from '../../utils/gitRoot';
   import { hasAmbiguousEmptyGitRootHint } from '../../utils/gitViewContext';
   import ViewerHeader from './ViewerHeader.svelte';
+  import { buildSitesHref, findDirectorySiteEntry } from '../../lib/siteHref';
 
   let route = $derived($routeStore);
   let rootCid = $derived($treeRootStore);
@@ -270,6 +271,18 @@
     return currentTreeName || '';
   });
 
+  let siteEntryName = $derived(findDirectorySiteEntry(entries.filter((entry) => entry.type !== LinkType.Dir)));
+  let openSiteHref = $derived.by(() => {
+    if (!siteEntryName || !currentDirCid) return '';
+    return buildSitesHref({
+      route,
+      siteRootCid: currentDirCid,
+      siteRootPath: currentPath,
+      entryPath: siteEntryName,
+      autoReloadMutable: true,
+    });
+  });
+
 </script>
 
 <!-- If this is a git repo or inside one (via gitRoot URL param), show GitHub-style directory listing -->
@@ -311,7 +324,21 @@
       visibility={currentTree?.visibility}
       icon="i-lucide-folder-open text-warning"
       name={currentDirName}
-    />
+    >
+      {#snippet actions()}
+        {#if openSiteHref}
+          <a
+            href={openSiteHref}
+            target="_blank"
+            rel="noreferrer"
+            class="btn-ghost no-underline"
+            data-testid="directory-open-site"
+          >
+            Open Site
+          </a>
+        {/if}
+      {/snippet}
+    </ViewerHeader>
     <!-- Action buttons - hide when viewing locked link-visible/private directory -->
     {#if hasTreeContext && !hideActions}
       <div class="p-3 shrink-0">

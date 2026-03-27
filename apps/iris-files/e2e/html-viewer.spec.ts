@@ -190,6 +190,7 @@ window.onload = function() {
 
       await ensureFolderView(page);
       await expect(page.locator('[data-testid="file-list"] a:has-text("index.html")')).toBeVisible({ timeout: 10000 });
+      await expect(page.getByRole('link', { name: 'Open Site' })).toBeVisible({ timeout: 10000 });
 
       // Click on the HTML file
       await page.locator('[data-testid="file-list"] a:has-text("index.html")').click();
@@ -201,7 +202,7 @@ window.onload = function() {
       const iframe = page.frameLocator('iframe');
       const target = iframe.locator('#js-target');
       await expect(target).toContainText('Waiting for JavaScript...', { timeout: 15000 });
-      await expect(page.getByRole('link', { name: 'Open Isolated Site' })).toBeVisible({ timeout: 10000 });
+      await expect(page.getByRole('link', { name: 'Open Site' })).toBeVisible({ timeout: 10000 });
     } finally {
       // Cleanup temp files
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -372,7 +373,7 @@ window.addEventListener('load', () => {
     await page.waitForURL(new RegExp(`${appDir}.*index\\.html`), { timeout: 15000 });
 
     const iframe = page.frameLocator('iframe');
-    await expect(page.getByRole('link', { name: 'Open Isolated Site' })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('link', { name: 'Open Site' })).toBeVisible({ timeout: 10000 });
     await expect(iframe.locator('h1')).toContainText('Absolute Assets App', { timeout: 15000 });
     await expect(iframe.locator('#status')).toHaveText('Loading...', { timeout: 15000 });
 

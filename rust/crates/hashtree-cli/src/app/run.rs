@@ -12,7 +12,7 @@ use hashtree_cli::{
 };
 use hashtree_core::{Cid, HashTree, HashTreeConfig, NHashData};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,6 +34,9 @@ use super::socialgraph::{
     run_socialgraph_filter, run_socialgraph_snapshot, run_socialgraph_stats, run_socialgraph_warm,
 };
 use super::util::chrono_humanize_timestamp;
+
+const IRIS_FILES_WEB_BASE_URL: &str = "https://files.iris.to";
+const IRIS_SITES_WEB_BASE_URL: &str = "https://sites.iris.to";
 
 pub(crate) async fn run() -> Result<()> {
     // Install rustls crypto provider (required for TLS connections)
@@ -547,76 +550,83 @@ pub(crate) async fn run() -> Result<()> {
                 };
 
                 let store = HashtreeStore::new(&data_dir)?;
+                let site_entry = detect_site_entry_for_path(&path, is_dir);
 
                 // Store and capture cid/hash/key for potential publishing
-                let (cid_for_push, hash_hex, key_hex): (String, String, Option<String>) =
-                    if unencrypted {
-                        let hash_hex = if is_dir {
-                            store
-                                .upload_dir_with_options(&path, !no_ignore)
-                                .context("Failed to add directory")?
-                        } else {
-                            store.upload_file(&path).context("Failed to add file")?
-                        };
-                        let hash = from_hex(&hash_hex).context("Invalid hash")?;
-                        let nhash = nhash_encode(&hash)
-                            .map_err(|e| anyhow::anyhow!("Failed to encode nhash: {}", e))?;
-                        println!("added {}", path.display());
-                        if is_dir {
-                            println!("  url:   {}", nhash);
-                        } else {
-                            let filename = path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_default();
-                            println!("  url:   {}/{}", nhash, filename);
-                        }
-                        println!("  hash:  {}", hash_hex);
-                        (hash_hex.clone(), hash_hex, None)
+                let (cid_for_push, hash_hex, key_hex, display_root): (
+                    String,
+                    String,
+                    Option<String>,
+                    String,
+                ) = if unencrypted {
+                    let hash_hex = if is_dir {
+                        store
+                            .upload_dir_with_options(&path, !no_ignore)
+                            .context("Failed to add directory")?
                     } else {
-                        let cid_str = if is_dir {
-                            store
-                                .upload_dir_encrypted_with_options(&path, !no_ignore)
-                                .context("Failed to add directory")?
-                        } else {
-                            store
-                                .upload_file_encrypted(&path)
-                                .context("Failed to add file")?
-                        };
-                        // Parse cid_str which may be "hash" or "hash:key"
-                        let (hash_hex, key_hex) = if let Some((h, k)) = cid_str.split_once(':') {
-                            (h.to_string(), Some(k.to_string()))
-                        } else {
-                            (cid_str.clone(), None)
-                        };
-                        let hash = from_hex(&hash_hex).context("Invalid hash")?;
-                        let key = key_hex
-                            .as_ref()
-                            .map(|k| key_from_hex(k))
-                            .transpose()
-                            .map_err(|e| anyhow::anyhow!("Invalid key: {}", e))?;
-                        let nhash_data = NHashData {
-                            hash,
-                            decrypt_key: key,
-                        };
-                        let nhash = nhash_encode_full(&nhash_data)
-                            .map_err(|e| anyhow::anyhow!("Failed to encode nhash: {}", e))?;
-                        println!("added {}", path.display());
-                        if is_dir {
-                            println!("  url:   {}", nhash);
-                        } else {
-                            let filename = path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_default();
-                            println!("  url:   {}/{}", nhash, filename);
-                        }
-                        println!("  hash:  {}", hash_hex);
-                        if let Some(ref k) = key_hex {
-                            println!("  key:   {}", k);
-                        }
-                        (cid_str, hash_hex, key_hex)
+                        store.upload_file(&path).context("Failed to add file")?
                     };
+                    let hash = from_hex(&hash_hex).context("Invalid hash")?;
+                    let nhash = nhash_encode(&hash)
+                        .map_err(|e| anyhow::anyhow!("Failed to encode nhash: {}", e))?;
+                    (hash_hex.clone(), hash_hex, None, nhash)
+                } else {
+                    let cid_str = if is_dir {
+                        store
+                            .upload_dir_encrypted_with_options(&path, !no_ignore)
+                            .context("Failed to add directory")?
+                    } else {
+                        store
+                            .upload_file_encrypted(&path)
+                            .context("Failed to add file")?
+                    };
+                    // Parse cid_str which may be "hash" or "hash:key"
+                    let (hash_hex, key_hex) = if let Some((h, k)) = cid_str.split_once(':') {
+                        (h.to_string(), Some(k.to_string()))
+                    } else {
+                        (cid_str.clone(), None)
+                    };
+                    let hash = from_hex(&hash_hex).context("Invalid hash")?;
+                    let key = key_hex
+                        .as_ref()
+                        .map(|k| key_from_hex(k))
+                        .transpose()
+                        .map_err(|e| anyhow::anyhow!("Invalid key: {}", e))?;
+                    let nhash_data = NHashData {
+                        hash,
+                        decrypt_key: key,
+                    };
+                    let nhash = nhash_encode_full(&nhash_data)
+                        .map_err(|e| anyhow::anyhow!("Failed to encode nhash: {}", e))?;
+                    (cid_str, hash_hex, key_hex, nhash)
+                };
+
+                println!("added {}", path.display());
+                let display_route = if is_dir {
+                    display_root.clone()
+                } else {
+                    let filename = path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    format!("{display_root}/{filename}")
+                };
+                println!("  url:   {}", display_route);
+                println!(
+                    "  files: {}",
+                    build_files_iris_to_url_for_add_route(&display_route)
+                );
+                if let Some(entry_path) = site_entry.as_deref() {
+                    let site_route = format!("{display_root}/{entry_path}");
+                    println!(
+                        "  site:  {}",
+                        build_sites_iris_to_url_for_add_route(&site_route)
+                    );
+                }
+                println!("  hash:  {}", hash_hex);
+                if let Some(ref k) = key_hex {
+                    println!("  key:   {}", k);
+                }
 
                 // Index tree for eviction tracking (own content = highest priority)
                 // Get user's npub as owner
@@ -694,6 +704,23 @@ pub(crate) async fn run() -> Result<()> {
                     match resolver.publish(&nostr_key, &cid).await {
                         Ok(_) => {
                             println!("  published: {}", nostr_key);
+                            println!(
+                                "  files: {}",
+                                build_files_iris_to_url_for_published_ref(&npub, ref_name)
+                            );
+                            if let Some(entry_path) = site_entry.as_deref() {
+                                println!(
+                                    "  site:  {}",
+                                    build_sites_iris_to_url_for_published_ref(
+                                        &npub, ref_name, entry_path
+                                    )
+                                );
+                                let immutable_site_route = format!("{display_root}/{entry_path}");
+                                println!(
+                                    "  permalink: {}",
+                                    build_sites_iris_to_url_for_add_route(&immutable_site_route)
+                                );
+                            }
                         }
                         Err(e) => {
                             eprintln!("  publish failed: {}", e);
@@ -1397,6 +1424,111 @@ pub(crate) fn format_cid_for_display(cid: &Cid) -> String {
         decrypt_key: cid.key,
     })
     .unwrap_or_else(|_| cid.to_string())
+}
+
+fn encode_hash_route_segment(segment: &str) -> String {
+    let mut encoded = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                encoded.push('%');
+                encoded.push_str(&format!("{byte:02X}"));
+            }
+        }
+    }
+    encoded
+}
+
+pub(crate) fn build_files_iris_to_url_for_add_route(route: &str) -> String {
+    let segments = route
+        .trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(encode_hash_route_segment)
+        .collect::<Vec<_>>();
+
+    if segments.is_empty() {
+        IRIS_FILES_WEB_BASE_URL.to_string()
+    } else {
+        format!("{IRIS_FILES_WEB_BASE_URL}/#/{}", segments.join("/"))
+    }
+}
+
+pub(crate) fn build_files_iris_to_url_for_published_ref(
+    owner_npub: &str,
+    ref_name: &str,
+) -> String {
+    let owner = encode_hash_route_segment(owner_npub.trim());
+    let reference = encode_hash_route_segment(ref_name.trim_matches('/'));
+    format!("{IRIS_FILES_WEB_BASE_URL}/#/{owner}/{reference}")
+}
+
+pub(crate) fn build_sites_iris_to_url_for_add_route(route: &str) -> String {
+    let segments = route
+        .trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(encode_hash_route_segment)
+        .collect::<Vec<_>>();
+
+    if segments.is_empty() {
+        IRIS_SITES_WEB_BASE_URL.to_string()
+    } else {
+        format!("{IRIS_SITES_WEB_BASE_URL}/#/{}", segments.join("/"))
+    }
+}
+
+pub(crate) fn build_sites_iris_to_url_for_published_ref(
+    owner_npub: &str,
+    ref_name: &str,
+    entry_path: &str,
+) -> String {
+    let owner = encode_hash_route_segment(owner_npub.trim());
+    let reference = encode_hash_route_segment(ref_name.trim_matches('/'));
+    let entry = entry_path
+        .trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(encode_hash_route_segment)
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("{IRIS_SITES_WEB_BASE_URL}/#/{owner}/{reference}/{entry}?reload=1")
+}
+
+pub(crate) fn detect_site_entry_for_path(path: &Path, is_dir: bool) -> Option<String> {
+    if is_dir {
+        let mut index_htm: Option<String> = None;
+        let entries = std::fs::read_dir(path).ok()?;
+        for entry in entries.flatten() {
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
+            if metadata.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            match name.to_ascii_lowercase().as_str() {
+                "index.html" => return Some(name),
+                "index.htm" => {
+                    if index_htm.is_none() {
+                        index_htm = Some(name);
+                    }
+                }
+                _ => {}
+            }
+        }
+        return index_htm;
+    }
+
+    let name = path.file_name()?.to_string_lossy().to_string();
+    match name.to_ascii_lowercase().rsplit_once('.') {
+        Some((_, "html" | "htm")) => Some(name),
+        _ => None,
+    }
 }
 
 async fn resolve_info_target(

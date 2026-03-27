@@ -28,6 +28,7 @@
   import { supportsDocumentFeatures, supportsGitFeatures } from '../../appType';
   import { findNearestGitRootPath } from '../../utils/gitRoot';
   import { hasAmbiguousEmptyGitRootHint, resolveGitViewContext } from '../../utils/gitViewContext';
+  import { buildSitesHref, isHtmlFilename } from '../../lib/siteHref';
 
   let route = $derived($routeStore);
   let rootCid = $derived($treeRootStore);
@@ -576,12 +577,7 @@
   let isTextFile = $derived(urlFileName ? isLikelyTextFile(urlFileName) : false);
 
   // Check if file is HTML (should be rendered in iframe)
-  function isHtmlFile(filename: string): boolean {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-    return ext === 'html' || ext === 'htm';
-  }
-
-  let isHtml = $derived(urlFileName ? isHtmlFile(urlFileName) : false);
+  let isHtml = $derived(urlFileName ? isHtmlFilename(urlFileName) : false);
 
   // Check if file is a video
   function isVideoFile(filename: string): boolean {
@@ -679,6 +675,17 @@
     }
     const linkKeySuffix = route.params.get('k') ? `?k=${route.params.get('k')}` : '';
     return '#/' + parts.map(encodeURIComponent).join('/') + linkKeySuffix;
+  });
+
+  let openSiteHref = $derived.by(() => {
+    if (!urlFileName || !isHtml) return '';
+    return buildSitesHref({
+      route,
+      siteRootCid: currentDirCid ?? (route.isPermalink ? rootCid : null),
+      siteRootPath: route.path.slice(0, -1),
+      entryPath: urlFileName,
+      autoReloadMutable: true,
+    });
   });
 
   let constrainGitFileLayout = $derived(isInGitRepo && !isFullscreen);
@@ -824,6 +831,17 @@
           {#if permalinkUrl}
             <a href={permalinkUrl} class="btn-ghost no-underline" title={entryFromStore?.cid?.hash ? toHex(entryFromStore.cid.hash) : ''} data-testid="viewer-permalink">
               Permalink
+            </a>
+          {/if}
+          {#if openSiteHref}
+            <a
+              href={openSiteHref}
+              target="_blank"
+              rel="noreferrer"
+              class="btn-ghost no-underline"
+              data-testid="viewer-open-site"
+            >
+              Open Site
             </a>
           {/if}
           <button onclick={toggleFullscreen} class="btn-ghost" title={isFullscreen ? "Exit fullscreen" : "Fullscreen"} data-testid="viewer-fullscreen">

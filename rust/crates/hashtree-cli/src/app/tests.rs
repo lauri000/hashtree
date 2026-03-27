@@ -4,7 +4,11 @@ use super::lists::{
     update_mute_list_file_with_status, MuteEntry, MuteUpdate,
 };
 use super::resolve::resolve_cid_input;
-use super::run::format_cid_for_display;
+use super::run::{
+    build_files_iris_to_url_for_add_route, build_files_iris_to_url_for_published_ref,
+    build_sites_iris_to_url_for_add_route, build_sites_iris_to_url_for_published_ref,
+    detect_site_entry_for_path, format_cid_for_display,
+};
 use crate::app::args::{CashuCommands, CashuMintCommands, ReleaseCommands, SocialGraphCommands};
 use crate::app::args::{Cli, Commands};
 use clap::Parser;
@@ -185,6 +189,72 @@ fn test_format_cid_for_display_preserves_decrypt_key() {
 
     assert_eq!(decoded.hash, cid.hash);
     assert_eq!(decoded.decrypt_key, cid.key);
+}
+
+#[test]
+fn test_build_files_iris_to_url_for_add_route_encodes_path_segments() {
+    assert_eq!(
+        build_files_iris_to_url_for_add_route("nhash1example/My notes/index.html"),
+        "https://files.iris.to/#/nhash1example/My%20notes/index.html"
+    );
+}
+
+#[test]
+fn test_build_files_iris_to_url_for_published_ref_encodes_tree_name_as_single_segment() {
+    assert_eq!(
+        build_files_iris_to_url_for_published_ref("npub1owner", "apps/iris ui",),
+        "https://files.iris.to/#/npub1owner/apps%2Firis%20ui"
+    );
+}
+
+#[test]
+fn test_build_sites_iris_to_url_for_add_route_encodes_path_segments() {
+    assert_eq!(
+        build_sites_iris_to_url_for_add_route("nhash1example/My notes/index.html"),
+        "https://sites.iris.to/#/nhash1example/My%20notes/index.html"
+    );
+}
+
+#[test]
+fn test_build_sites_iris_to_url_for_published_ref_enables_auto_reload() {
+    assert_eq!(
+        build_sites_iris_to_url_for_published_ref("npub1owner", "apps/iris ui", "index.html"),
+        "https://sites.iris.to/#/npub1owner/apps%2Firis%20ui/index.html?reload=1"
+    );
+}
+
+#[test]
+fn test_detect_site_entry_for_path_finds_html_file() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let html_path = temp_dir.path().join("Landing.HTM");
+    std::fs::write(&html_path, "<!doctype html>").unwrap();
+
+    assert_eq!(
+        detect_site_entry_for_path(&html_path, false),
+        Some("Landing.HTM".to_string())
+    );
+}
+
+#[test]
+fn test_detect_site_entry_for_path_finds_directory_index_file() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join("INDEX.HTML"), "<!doctype html>").unwrap();
+    std::fs::write(temp_dir.path().join("notes.txt"), "not a site").unwrap();
+
+    assert_eq!(
+        detect_site_entry_for_path(temp_dir.path(), true),
+        Some("INDEX.HTML".to_string())
+    );
+}
+
+#[test]
+fn test_detect_site_entry_for_path_skips_non_site_targets() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let text_path = temp_dir.path().join("notes.txt");
+    std::fs::write(&text_path, "hello").unwrap();
+
+    assert_eq!(detect_site_entry_for_path(&text_path, false), None);
+    assert_eq!(detect_site_entry_for_path(temp_dir.path(), true), None);
 }
 
 #[test]

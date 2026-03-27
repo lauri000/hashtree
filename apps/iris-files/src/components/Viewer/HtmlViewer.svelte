@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { nhashEncode } from '@hashtree/core';
   import { routeStore, currentDirCidStore } from '../../stores';
   import { getHtreePrefix } from '../../lib/mediaUrl';
   import { getTree } from '../../store';
@@ -16,14 +15,6 @@
   let route = $derived($routeStore);
   let currentDirCid = $derived($currentDirCidStore);
   let iframeSrc = $state('');
-
-  function encodePathForHash(path: string): string {
-    return path
-      .split('/')
-      .filter(Boolean)
-      .map((segment) => encodeURIComponent(segment))
-      .join('/');
-  }
 
   let baseUrl = $derived.by(() => {
     if (!route.npub || !route.treeName) return '';
@@ -48,11 +39,6 @@
       }
     }
     return base;
-  });
-
-  let isolatedSiteHref = $derived.by(() => {
-    if (!currentDirCid) return '';
-    return `https://sites.iris.to/#/${nhashEncode(currentDirCid)}/${encodePathForHash(fileName || 'index.html')}`;
   });
 
   function rewriteRootRelativeUrl(value: string | null): string | null {
@@ -386,18 +372,8 @@
 </script>
 
 <div class="flex-1 flex flex-col min-h-0" data-testid="html-viewer" data-htree-base={baseUrl}>
-  <div class="flex items-center justify-between gap-3 px-3 py-2 text-xs text-text-2 border-b border-base-300 bg-base-100/80">
-    <span>Secure preview only. Scripts, forms, workers, and persistence are disabled here.</span>
-    {#if isolatedSiteHref}
-      <a
-        href={isolatedSiteHref}
-        target="_blank"
-        rel="noreferrer"
-        class="shrink-0 font-medium text-accent hover:underline"
-      >
-        Open Isolated Site
-      </a>
-    {/if}
+  <div class="px-3 py-2 text-xs text-text-2 border-b border-base-300 bg-base-100/80">
+    Secure preview only. Scripts, forms, workers, and persistence are disabled here.
   </div>
 
   {#if iframeSrc}

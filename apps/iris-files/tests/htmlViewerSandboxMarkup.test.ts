@@ -16,8 +16,8 @@ describe('html viewer sandbox markup', () => {
     expect(htmlViewerSource).toContain("script-src 'none'");
   });
 
-  it('offers an isolated-site handoff instead of making the preview itself feature-rich', () => {
-    expect(htmlViewerSource).toContain('Open Isolated Site');
-    expect(htmlViewerSource).toContain('https://sites.iris.to/#/');
+  it('keeps the preview copy focused on the sandbox instead of acting like the site launcher', () => {
+    expect(htmlViewerSource).toContain('Secure preview only.');
+    expect(htmlViewerSource).not.toContain('Open Isolated Site');
   });
 });
