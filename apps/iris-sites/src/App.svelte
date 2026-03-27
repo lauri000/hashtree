@@ -253,8 +253,8 @@
       : ''
   );
   const showRuntimeMenu = $derived.by(() => Boolean(currentSite && !inPortalShell && !menuHidden));
-  const showRuntimeFallback = $derived.by(() => Boolean(runtimeError || showBootStatus));
-  const showFrameOverlay = $derived.by(() => Boolean(runtimeError || (!iframeLoaded && showBootStatus)));
+  const showRuntimeFallback = $derived.by(() => Boolean(!runtimeError && showBootStatus));
+  const showFrameOverlay = $derived.by(() => Boolean(!runtimeError && !iframeLoaded && showBootStatus));
 
   const inspectorLink = $derived.by(() => {
     if (!currentSite) return '';
@@ -463,11 +463,15 @@
   </main>
 {:else if inPortalShell}
   <main class="screen">
-    {#if showRuntimeFallback}
+    {#if runtimeError}
       <section class="overlay">
-        <p class="eyebrow">{runtimeError ? 'Runtime Error' : 'Launching'}</p>
-        <p class="copy">{runtimeError ?? 'Opening the isolated origin…'}</p>
+        <p class="eyebrow">Runtime Error</p>
+        <p class="copy">{runtimeError}</p>
       </section>
+    {:else if showRuntimeFallback}
+      <div class="loading-spinner-shell" aria-label="Loading site">
+        <div class="loading-spinner"></div>
+      </div>
     {/if}
   </main>
 {:else}
@@ -482,14 +486,16 @@
       ></iframe>
     {/if}
 
-    {#if !iframeSrc || showFrameOverlay}
+    {#if runtimeError}
       <section class="overlay">
-        <p class="eyebrow">{runtimeError ? 'Runtime Error' : 'Still Loading'}</p>
-        <p class="copy">{runtimeError ?? 'This site is taking longer than usual to start.'}</p>
-        {#if runtimeError}
-          <a class="link" href={inspectorLink}>{inspectorLink}</a>
-        {/if}
+        <p class="eyebrow">Runtime Error</p>
+        <p class="copy">{runtimeError}</p>
+        <a class="link" href={inspectorLink}>{inspectorLink}</a>
       </section>
+    {:else if showFrameOverlay}
+      <div class="loading-spinner-shell" aria-label="Loading site">
+        <div class="loading-spinner"></div>
+      </div>
     {/if}
   </main>
 {/if}
@@ -519,7 +525,7 @@
           {/if}
 
           <label class="runtime-menu-toggle">
-            <span class="runtime-menu-toggle-label">Auto-reload on updates</span>
+            <span class="runtime-menu-toggle-label">Auto-reload</span>
             <input type="checkbox" checked={autoReloadEnabled} onchange={handleAutoReloadChange} />
           </label>
         {/if}
@@ -613,6 +619,24 @@
 
   .overlay {
     margin: 24px;
+  }
+
+  .loading-spinner-shell {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+  }
+
+  .loading-spinner {
+    width: 34px;
+    height: 34px;
+    border: 3px solid rgba(255, 255, 255, 0.16);
+    border-top-color: #8de1c0;
+    border-radius: 999px;
+    animation: spin 720ms linear infinite;
   }
 
   .eyebrow {
@@ -815,6 +839,7 @@
   .runtime-menu-item,
   .runtime-menu-link-button,
   .runtime-menu-toggle {
+    box-sizing: border-box;
     border-radius: 12px;
     border: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(255, 255, 255, 0.04);
@@ -897,6 +922,7 @@
   .runtime-menu-toggle-label {
     min-width: 0;
     line-height: 1.35;
+    overflow-wrap: anywhere;
   }
 
   .runtime-menu-toggle input {
@@ -932,6 +958,12 @@
     border-radius: 999px;
     background: #6ee7b7;
     box-shadow: 0 0 0 3px rgba(110, 231, 183, 0.18);
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   @media (max-width: 640px) {

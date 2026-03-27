@@ -16,10 +16,11 @@ describe('runtime menu markup', () => {
   });
 
   it('lets the auto-reload label wrap without forcing the checkbox out of the panel', () => {
-    expect(appSource).toContain('class="runtime-menu-toggle-label">Auto-reload on updates</span>');
+    expect(appSource).toContain('class="runtime-menu-toggle-label">Auto-reload</span>');
     expect(appSource).toContain('grid-template-columns: minmax(0, 1fr) auto;');
     expect(appSource).toContain('justify-self: end;');
     expect(appSource).toContain('margin: 0;');
+    expect(appSource).toContain('box-sizing: border-box;');
   });
 
   it('only shows a menu action when an update is actually available', () => {
