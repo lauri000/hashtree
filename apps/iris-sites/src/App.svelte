@@ -62,7 +62,7 @@
   let runtimeError = $state<string | null>(null);
   let runtimeMenuOpen = $state(false);
   let menuHidden = $state(false);
-  let copyStatus = $state('Copy Share URL');
+  let copyStatus = $state<'idle' | 'copied' | 'ready'>('idle');
   let autoReloadEnabled = $state(false);
   let updateAvailable = $state(false);
   let showBootStatus = $state(false);
@@ -165,21 +165,15 @@
       } else {
         throw new Error('Clipboard API unavailable');
       }
-      copyStatus = 'Copied Share URL';
+      copyStatus = 'copied';
     } catch {
       window.prompt('Copy share URL', href);
-      copyStatus = 'Share URL Ready';
+      copyStatus = 'ready';
     }
 
     window.setTimeout(() => {
-      copyStatus = 'Copy Share URL';
+      copyStatus = 'idle';
     }, 1800);
-  }
-
-  function openLauncher(): void {
-    const href = buildCurrentLauncherHref();
-    if (!href || typeof window === 'undefined') return;
-    window.location.href = href;
   }
 
   function reloadCurrentSite(): void {
@@ -487,20 +481,19 @@
       <section class="runtime-menu-panel">
         <div class="runtime-menu-header">
           <div class="runtime-menu-title">{currentSite?.title}</div>
-          {#if updateAvailable}
-            <div class="runtime-menu-badge">Update available</div>
-          {/if}
         </div>
-
-        <button class="runtime-menu-item" type="button" onclick={copyShareUrl}>{copyStatus}</button>
-        <button class="runtime-menu-item" type="button" onclick={openLauncher}>Open on Sites</button>
-        <button class="runtime-menu-item" type="button" onclick={reloadCurrentSite}>
-          {updateAvailable ? 'Load Latest Update' : 'Reload'}
+        <button
+          class="runtime-menu-item"
+          class:runtime-menu-item-primary={updateAvailable}
+          type="button"
+          onclick={reloadCurrentSite}
+        >
+          {updateAvailable ? 'Update Now' : 'Reload'}
         </button>
 
         {#if currentSite?.kind === 'mutable'}
           <label class="runtime-menu-toggle">
-            <span>Auto-reload on updates</span>
+            <span class="runtime-menu-toggle-label">Auto-reload on updates</span>
             <input type="checkbox" checked={autoReloadEnabled} onchange={handleAutoReloadChange} />
           </label>
         {/if}
@@ -509,7 +502,30 @@
           Hide Menu For This URL
         </button>
 
-        <a class="runtime-menu-link" href={launcherHref}>{launcherHref}</a>
+        <button
+          class="runtime-menu-link-button"
+          type="button"
+          onclick={copyShareUrl}
+          aria-label="Copy sites launcher URL"
+        >
+          <span class="runtime-menu-link-text">{launcherHref}</span>
+          <span class="runtime-menu-link-affordance" data-state={copyStatus}>
+            <svg
+              class="runtime-menu-copy-icon"
+              viewBox="0 0 16 16"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path
+                d="M5.5 2.5h6a2 2 0 0 1 2 2v6h-1.5v-6a.5.5 0 0 0-.5-.5h-6zM3 5.5a2 2 0 0 1 2-2h4.5a2 2 0 0 1 2 2V10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zm2-.5a.5.5 0 0 0-.5.5V10a.5.5 0 0 0 .5.5h4.5A.5.5 0 0 0 10 10V5.5a.5.5 0 0 0-.5-.5z"
+                fill="currentColor"
+              ></path>
+            </svg>
+            <span class="runtime-menu-copy-label">
+              {copyStatus === 'copied' ? 'Copied' : copyStatus === 'ready' ? 'Ready' : 'Copy'}
+            </span>
+          </span>
+        </button>
       </section>
     {/if}
 
@@ -744,8 +760,6 @@
   .runtime-menu-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 12px;
   }
 
   .runtime-menu-title {
@@ -753,18 +767,8 @@
     font-weight: 600;
   }
 
-  .runtime-menu-badge {
-    border-radius: 999px;
-    padding: 4px 8px;
-    background: rgba(110, 231, 183, 0.14);
-    color: #8de1c0;
-    font-size: 0.72rem;
-    letter-spacing: 0.03em;
-    text-transform: uppercase;
-  }
-
   .runtime-menu-item,
-  .runtime-menu-link,
+  .runtime-menu-link-button,
   .runtime-menu-toggle {
     border-radius: 12px;
     border: 1px solid rgba(255, 255, 255, 0.08);
@@ -782,17 +786,66 @@
     cursor: pointer;
   }
 
-  .runtime-menu-link {
-    display: block;
+  .runtime-menu-link-button {
+    width: 100%;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
     padding: 10px 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .runtime-menu-link-text {
+    flex: 1;
+    min-width: 0;
     font-size: 0.79rem;
     line-height: 1.4;
     color: rgba(168, 209, 255, 0.9);
     word-break: break-all;
   }
 
+  .runtime-menu-link-affordance {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center end;
+    min-width: 3.75rem;
+    height: 1.25rem;
+    color: rgba(243, 243, 244, 0.88);
+    position: relative;
+  }
+
+  .runtime-menu-copy-icon,
+  .runtime-menu-copy-label {
+    grid-area: 1 / 1;
+    transition: opacity 160ms ease, transform 160ms ease;
+  }
+
+  .runtime-menu-copy-icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  .runtime-menu-copy-label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    opacity: 0;
+    transform: translateY(2px);
+  }
+
+  .runtime-menu-link-affordance[data-state="idle"] .runtime-menu-copy-icon {
+    opacity: 1;
+  }
+
+  .runtime-menu-link-affordance[data-state="copied"] .runtime-menu-copy-label,
+  .runtime-menu-link-affordance[data-state="ready"] .runtime-menu-copy-label {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
   .runtime-menu-item:hover,
-  .runtime-menu-link:hover,
+  .runtime-menu-link-button:hover,
   .runtime-menu-toggle:hover {
     background: rgba(255, 255, 255, 0.08);
   }
@@ -801,16 +854,30 @@
     color: rgba(243, 243, 244, 0.72);
   }
 
+  .runtime-menu-item-primary {
+    background: rgba(110, 231, 183, 0.12);
+    border-color: rgba(110, 231, 183, 0.2);
+    color: #b9f5df;
+  }
+
   .runtime-menu-toggle {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 14px;
   }
 
+  .runtime-menu-toggle-label {
+    flex: 1;
+    min-width: 0;
+    line-height: 1.35;
+  }
+
   .runtime-menu-toggle input {
+    flex: 0 0 auto;
     width: 18px;
     height: 18px;
+    margin-top: 1px;
     accent-color: #6ee7b7;
   }
 
