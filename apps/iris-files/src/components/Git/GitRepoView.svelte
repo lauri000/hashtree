@@ -8,9 +8,10 @@
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { getTree, decodeAsText } from '../../store';
   import { routeStore } from '../../stores';
-  import { npubToPubkey } from '../../nostr';
+  import { npubToPubkey, nostrStore } from '../../nostr';
   import { createGitLogStore, createGitStatusStore } from '../../stores/git';
   import { createCIStatusStore, loadCIConfig, type CIStatus, type CIConfig } from '../../stores/ci';
+  import { createFavoriteReposStore, toggleFavoriteRepo } from '../../stores';
   import { open as openGitHistoryModal } from '../Modals/GitHistoryModal.svelte';
     import { open as openGitCommitModal } from '../Modals/GitCommitModal.svelte';
   import { getFileLastCommits } from '../../utils/git';
@@ -24,6 +25,8 @@
   import type { GitStatusResult } from '../../utils/wasmGit';
   import type { CommitInfo } from '../../stores/git';
   import CodeDropdown from './CodeDropdown.svelte';
+  import { buildRepoAddress } from '../../nip34';
+  import type { FavoriteRepoRef } from '../../lib/gitFavorites';
   import { resolveGitRootPathParam, resolveGitViewContext, splitGitRootPath } from '../../utils/gitViewContext';
 
   interface Props {
@@ -69,6 +72,7 @@
   let gitRootPathParam = $derived(resolveGitRootPathParam(gitRootPath, currentPath));
   let gitRootParts = $derived(splitGitRootPath(gitRootPathParam) ?? []);
   let ownerPubkey = $derived(npubToPubkey(npub || '') || '');
+  let userNpub = $derived($nostrStore.npub);
   let gitViewContext = $derived.by(() => resolveGitViewContext({
     treeName: route.treeName,
     gitRootPath,
@@ -93,6 +97,33 @@
     if (gitPath.length === 0) return route.treeName;
     return `${route.treeName}/${gitPath.join('/')}`;
   });
+
+  let favoriteReposStore = $derived(userNpub ? createFavoriteReposStore(userNpub) : null);
+  let favoriteRepos = $state<FavoriteRepoRef[]>([]);
+
+  $effect(() => {
+    if (!favoriteReposStore) {
+      favoriteRepos = [];
+      return;
+    }
+
+    const unsub = favoriteReposStore.subscribe(value => {
+      favoriteRepos = value?.repos || [];
+    });
+
+    return () => {
+      unsub();
+      favoriteReposStore?.destroy();
+    };
+  });
+
+  let repoAddress = $derived.by(() => {
+    if (!route.npub || !repoPath) return null;
+    return buildRepoAddress(route.npub, repoPath);
+  });
+  let isFavorited = $derived(repoAddress ? favoriteRepos.some(repo => repo.address === repoAddress) : false);
+  let canFavoriteRepo = $derived(!!route.npub && !route.params.get('k') && visibility !== 'private' && visibility !== 'link-visible');
+  let favoriteLoading = $state(false);
 
   // Create git log store - use gitCid (git root) for log, keyed by repoPath
   let gitLogStore = $derived(createGitLogStore(gitCid, 50, repoPath));
@@ -330,6 +361,23 @@
   function openCommit() {
     if (!gitCid) return;
     openGitCommitModal({ dirCid: gitCid, onCommit: handleCommit });
+  }
+
+  async function handleFavoriteToggle() {
+    if (!route.npub) return;
+    if (!userNpub) {
+      alert('Please sign in to favorite public repositories');
+      return;
+    }
+
+    favoriteLoading = true;
+    try {
+      await toggleFavoriteRepo(route.npub, repoPath);
+    } catch (err) {
+      console.error('Failed to update repository favorite:', err);
+    } finally {
+      favoriteLoading = false;
+    }
   }
 
   // Build parent directory href (for ".." navigation)
@@ -630,6 +678,17 @@
 
     <!-- Code dropdown (clone instructions) - rightmost -->
     {#if route.npub}
+      {#if canFavoriteRepo}
+        <button
+          onclick={handleFavoriteToggle}
+          class={`btn-ghost flex items-center gap-2 px-3 h-9 ${isFavorited ? 'text-accent border-accent/30 bg-accent/10 hover:bg-accent/15' : ''}`}
+          disabled={favoriteLoading}
+          title={isFavorited ? 'Remove from favorite repositories' : 'Save to favorite repositories'}
+        >
+          <span class="i-lucide-bookmark"></span>
+          <span>{favoriteLoading ? 'Saving...' : isFavorited ? 'Favorited' : 'Favorite'}</span>
+        </button>
+      {/if}
       <CodeDropdown npub={route.npub} {repoPath} />
     {/if}
   </div>

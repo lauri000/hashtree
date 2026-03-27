@@ -40,6 +40,7 @@ export const KIND_ZAP_RECEIPT = 9735
 
 // NIP-51: Lists
 export const KIND_MUTE_LIST = 10000 // Mute list (deprecated, use 30000)
+export const KIND_BOOKMARK_LIST = 10003 // Bookmarks list
 export const KIND_FLAG_LIST = 16463 // Flagged/reported users list
 
 // NIP-78: App-specific data

@@ -4,6 +4,7 @@
   import { createProfileStore } from '../../stores/profile';
   import { createFollowsStore, followPubkey, unfollowPubkey } from '../../stores/follows';
   import { createTreesStore, type TreeEntry } from '../../stores';
+  import { createFavoriteReposStore } from '../../stores';
   import { open as openCreateModal } from '../Modals/CreateModal.svelte';
   import { Avatar, Name, Badge, FollowedBy } from '../User';
   import CopyText from '../CopyText.svelte';
@@ -11,6 +12,7 @@
   import ShareButton from '../ShareButton.svelte';
   import RepoCard from './RepoCard.svelte';
   import { buildGitHomeRepos } from './homeModel';
+  import { filterOwnedFavoriteRepos, type FavoriteRepoRef } from '../../lib/gitFavorites';
   import { getFollowsMe, getFollowers, fetchUserFollows, fetchUserFollowers, socialGraphStore } from '../../utils/socialGraph';
 
   interface Props {
@@ -123,6 +125,29 @@
   });
 
   let repos = $derived(buildGitHomeRepos(trees));
+
+  let favoriteReposStore = $derived(pubkeyHex ? createFavoriteReposStore(pubkeyHex) : null);
+  let favoriteRepos = $state<FavoriteRepoRef[]>([]);
+
+  $effect(() => {
+    if (!favoriteReposStore) {
+      favoriteRepos = [];
+      return;
+    }
+
+    const unsub = favoriteReposStore.subscribe(value => {
+      favoriteRepos = value?.repos || [];
+    });
+
+    return () => {
+      unsub();
+      favoriteReposStore?.destroy();
+    };
+  });
+
+  let visibleFavoriteRepos = $derived(
+    npub ? filterOwnedFavoriteRepos(npub, repos.map(repo => repo.name), favoriteRepos) : [],
+  );
 
   let bannerError = $state(false);
   let followLoading = $state(false);
@@ -309,6 +334,41 @@
           No repositories yet. Create one here or push an existing repo with <code>git-remote-htree</code> so it gets a <code>git</code> label.
         {:else}
           No published repositories yet.
+        {/if}
+      </div>
+    {/if}
+
+    <div class="mt-10 flex items-center justify-between gap-3">
+      <div>
+        <div class="inline-flex items-center gap-2 rounded-full border border-surface-3 bg-surface-1 px-3 py-1 text-xs uppercase tracking-[0.22em] text-text-3">
+          <span class="i-lucide-bookmark text-sm"></span>
+          Favorites
+        </div>
+        <h2 class="mt-4 mb-2 text-3xl font-semibold text-text-1">Favorite Repositories</h2>
+        <p class="m-0 max-w-2xl text-sm text-text-2">
+          Public repositories this profile has saved from the git app.
+        </p>
+      </div>
+    </div>
+
+    {#if visibleFavoriteRepos.length > 0}
+      <div class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {#each visibleFavoriteRepos as repo (repo.address)}
+          <RepoCard
+            href={repo.href}
+            name={repo.repoName}
+            ownerPubkey={repo.ownerPubkey}
+            metaLabel="Favorite repository"
+            saved={true}
+          />
+        {/each}
+      </div>
+    {:else}
+      <div class="mt-8 rounded-2xl border border-surface-3 bg-surface-1/40 p-6 text-sm text-text-2">
+        {#if isOwnProfile}
+          Favorite a public repository and it will appear here.
+        {:else}
+          No favorite repositories yet.
         {/if}
       </div>
     {/if}

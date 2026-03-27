@@ -10,3 +10,4 @@ export { createGitInfoStore, createGitLogStore, createGitStatusStore, type GitIn
 export { recentsStore, addRecent, updateRecentVisibility, removeRecentByTreeName, clearRecents, clearRecentsByPrefix, getRecentsSync, type RecentItem } from './recents';
 export { createFollowsStore, getFollowsSync, followPubkey, unfollowPubkey, invalidateFollows, type Follows } from './follows';
 export { createPullRequestsStore, createIssuesStore, filterByStatus, countByStatus, type PullRequestsState, type IssuesState } from './nip34';
+export { createFavoriteReposStore, getFavoriteReposSync, toggleFavoriteRepo, invalidateFavoriteRepos, type FavoriteRepos } from './gitFavorites';
