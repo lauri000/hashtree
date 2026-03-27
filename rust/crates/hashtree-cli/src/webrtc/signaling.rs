@@ -173,7 +173,7 @@ type ConnectedPeer = (
     PendingRequestsMap,
     Arc<webrtc::data_channel::RTCDataChannel>,
 );
-type ConnectedSession = (String, MeshPeer);
+type ConnectedSession = (String, MeshPeer, PeerTransport);
 
 impl WebRTCState {
     pub fn new() -> Self {
@@ -351,14 +351,18 @@ impl WebRTCState {
         let peer_refs: Vec<_> = peers
             .values()
             .filter(|p| p.state == ConnectionState::Connected && p.peer.is_some())
-            .filter_map(|p| p.peer.clone().map(|peer| (p.peer_id.to_string(), peer)))
+            .filter_map(|p| {
+                p.peer
+                    .clone()
+                    .map(|peer| (p.peer_id.to_string(), peer, p.transport))
+            })
             .collect();
 
         drop(peers); // Release the read lock
 
         let mut connected_peers: Vec<ConnectedPeer> = Vec::new();
         let mut connected_sessions: Vec<ConnectedSession> = Vec::new();
-        for (peer_id, peer) in peer_refs {
+        for (peer_id, peer, transport) in peer_refs {
             if !peer.is_ready() {
                 continue;
             }
@@ -372,7 +376,7 @@ impl WebRTCState {
                     ));
                 }
             }
-            connected_sessions.push((peer_id, peer));
+            connected_sessions.push((peer_id, peer, transport));
         }
 
         if connected_sessions.is_empty() {
@@ -402,7 +406,7 @@ impl WebRTCState {
 
         let connected_peer_ids: Vec<String> = connected_sessions
             .iter()
-            .map(|(peer_id, _)| peer_id.clone())
+            .map(|(peer_id, _, _)| peer_id.clone())
             .collect();
         sync_selector_peers(self.peer_selector.as_ref(), &connected_peer_ids).await;
 
@@ -428,19 +432,19 @@ impl WebRTCState {
             ordered_quote_peers.push((peer_id, pending, dc));
         }
 
-        let mut by_peer: HashMap<String, MeshPeer> = connected_sessions
+        let mut by_peer: HashMap<String, (MeshPeer, PeerTransport)> = connected_sessions
             .into_iter()
-            .map(|(peer_id, peer)| (peer_id, peer))
+            .map(|(peer_id, peer, transport)| (peer_id, (peer, transport)))
             .collect();
 
         let mut ordered_peers: Vec<ConnectedSession> = Vec::new();
         for peer_id in ordered_peer_ids {
-            if let Some(peer) = by_peer.remove(&peer_id) {
-                ordered_peers.push((peer_id, peer));
+            if let Some((peer, transport)) = by_peer.remove(&peer_id) {
+                ordered_peers.push((peer_id, peer, transport));
             }
         }
-        for (peer_id, peer) in by_peer {
-            ordered_peers.push((peer_id, peer));
+        for (peer_id, (peer, transport)) in by_peer {
+            ordered_peers.push((peer_id, peer, transport));
         }
 
         let dispatch = normalize_dispatch_config(self.request_dispatch, ordered_peers.len());
@@ -501,8 +505,6 @@ impl WebRTCState {
         };
         let wire_len = wire.len() as u64;
         let hedge_wait_window = Duration::from_millis(dispatch.hedge_interval_ms.max(1));
-        let per_request_timeout = self.request_timeout;
-
         let mut next_peer_idx = 0usize;
         for wave_size in wave_plan {
             let from = next_peer_idx;
@@ -516,8 +518,8 @@ impl WebRTCState {
             let (result_tx, mut result_rx) =
                 mpsc::channel::<(String, Instant, Result<Option<Vec<u8>>>)>(to - from);
 
-            for (peer_id, peer) in &ordered_peers[from..to] {
-                if peer.transport() != PeerTransport::Bluetooth {
+            for (peer_id, peer, transport) in &ordered_peers[from..to] {
+                if *transport != PeerTransport::Bluetooth {
                     self.record_sent(peer_id, wire_len).await;
                 }
                 self.peer_selector
@@ -529,7 +531,7 @@ impl WebRTCState {
                 let peer = peer.clone();
                 let hash_hex = hash_hex.to_string();
                 let result_tx = result_tx.clone();
-                let per_request_timeout = per_request_timeout;
+                let per_request_timeout = self.request_timeout;
                 tokio::spawn(async move {
                     let started = Instant::now();
                     let result = peer.request(&hash_hex, per_request_timeout).await;
@@ -541,7 +543,7 @@ impl WebRTCState {
             let is_last_wave = next_peer_idx >= ordered_peers.len();
             let deadline = Instant::now()
                 + if is_last_wave {
-                    per_request_timeout
+                    self.request_timeout
                 } else {
                     hedge_wait_window
                 };
@@ -838,9 +840,7 @@ impl WebRTCState {
         for (peer_short, peer) in peer_refs {
             debug!(
                 "Querying peer {} for root event {}/{}",
-                peer_short,
-                owner_pubkey,
-                tree_name
+                peer_short, owner_pubkey, tree_name
             );
             let events = match peer
                 .query_nostr_events(vec![filter.clone()], per_peer_timeout)
@@ -850,10 +850,7 @@ impl WebRTCState {
                 Err(e) => {
                     debug!(
                         "Peer {} Nostr query failed for {}/{}: {}",
-                        peer_short,
-                        owner_pubkey,
-                        tree_name,
-                        e
+                        peer_short, owner_pubkey, tree_name, e
                     );
                     continue;
                 }
@@ -2310,7 +2307,10 @@ impl WebRTCManager {
                     );
                     return None;
                 }
-                entry.peer.as_ref().and_then(|peer| peer.as_webrtc().cloned())
+                entry
+                    .peer
+                    .as_ref()
+                    .and_then(|peer| peer.as_webrtc().cloned())
             })
         };
 
@@ -2361,8 +2361,12 @@ impl WebRTCManager {
 
         let maybe_peer = {
             let peers = self.state.peers.read().await;
-            peers.get(&peer_key)
-                .and_then(|entry| entry.peer.as_ref().and_then(|peer| peer.as_webrtc().cloned()))
+            peers.get(&peer_key).and_then(|entry| {
+                entry
+                    .peer
+                    .as_ref()
+                    .and_then(|peer| peer.as_webrtc().cloned())
+            })
         };
         if let Some(peer) = maybe_peer {
             peer.handle_candidate(candidate).await?;
@@ -2389,8 +2393,12 @@ impl WebRTCManager {
 
         let maybe_peer = {
             let peers = self.state.peers.read().await;
-            peers.get(&peer_key)
-                .and_then(|entry| entry.peer.as_ref().and_then(|peer| peer.as_webrtc().cloned()))
+            peers.get(&peer_key).and_then(|entry| {
+                entry
+                    .peer
+                    .as_ref()
+                    .and_then(|peer| peer.as_webrtc().cloned())
+            })
         };
         if let Some(peer) = maybe_peer {
             for candidate in candidates {

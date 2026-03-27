@@ -582,7 +582,7 @@ async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool {
 
     if let Some(ref webrtc_state) = state.webrtc_peers {
         tracing::info!(
-            "[htree-fetch] Querying WebRTC peers for {}",
+            "[htree-fetch] Querying mesh peers for {}",
             &hash_hex[..16.min(hash_hex.len())]
         );
         let webrtc_state = webrtc_state.clone();
@@ -1011,6 +1011,7 @@ async fn root_is_directory_with_fetch<S: Store>(
     }
 }
 
+#[cfg(test)]
 async fn await_webrtc_peer_response<F>(
     future: F,
     hash_hex: &str,
@@ -1023,7 +1024,7 @@ where
         Ok(result) => result,
         Err(_) => {
             tracing::warn!(
-                "[htree-fetch] WebRTC peer query timed out for {}",
+                "[htree-fetch] Mesh peer query timed out for {}",
                 &hash_hex[..16.min(hash_hex.len())]
             );
             None
@@ -2108,7 +2109,7 @@ pub async fn serve_content_or_blob(
                 &hash_hex[..16.min(hash_hex.len())]
             );
 
-            // Query connected WebRTC peers
+            // Query connected mesh peers
             if let Some((data, peer_id)) = query_webrtc_peers(webrtc_state, &hash_hex).await {
                 // Cache locally for future requests
                 if let Err(e) = state.store.put_blob(&data) {
@@ -2688,7 +2689,6 @@ pub async fn follow_distance(
 
 /// Timeout for HTTP resolver requests
 const HTTP_RESOLVER_TIMEOUT: Duration = Duration::from_secs(10);
-const HTTP_WEBRTC_FETCH_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// Create resolver config with HTTP timeout
 fn resolver_config(state: &AppState) -> NostrResolverConfig {
@@ -2899,19 +2899,13 @@ pub async fn list_trees(
     result
 }
 
-/// Query connected WebRTC peers for content by hash
+/// Query connected mesh peers for content by hash
 /// Returns the first successful response with peer_id, or None if no peer has it
 async fn query_webrtc_peers(
     webrtc_state: &Arc<WebRTCState>,
     hash_hex: &str,
 ) -> Option<(Vec<u8>, String)> {
-    if let Some((data, peer_id)) = await_webrtc_peer_response(
-        webrtc_state.request_from_peers_with_source(hash_hex),
-        hash_hex,
-        HTTP_WEBRTC_FETCH_TIMEOUT,
-    )
-    .await
-    {
+    if let Some((data, peer_id)) = webrtc_state.request_from_peers_with_source(hash_hex).await {
         tracing::info!(
             "Got {} bytes from peer {} for hash {}",
             data.len(),
@@ -2922,7 +2916,7 @@ async fn query_webrtc_peers(
     }
 
     tracing::debug!(
-        "No connected WebRTC peer returned hash {}",
+        "No connected mesh peer returned hash {}",
         &hash_hex[..16.min(hash_hex.len())]
     );
     None

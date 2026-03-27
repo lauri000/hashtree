@@ -12,7 +12,6 @@ pub mod automation;
 pub mod backend_routes;
 pub mod history;
 pub mod htree_protocol;
-pub mod mobile_bluetooth;
 pub mod nip07;
 pub mod permissions;
 pub mod relay_proxy;
@@ -83,7 +82,6 @@ impl DeepLinkState {
 }
 
 const DEFAULT_MULTICAST_TOGGLE_MAX_PEERS: usize = 12;
-const DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS: usize = 6;
 
 #[derive(Default)]
 struct DaemonRuntimeState {
@@ -107,9 +105,9 @@ impl DaemonTransportSettings {
         Self {
             webrtc: config.server.enable_webrtc,
             multicast: config.server.enable_multicast && config.server.max_multicast_peers > 0,
-            bluetooth: config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0,
+            bluetooth: false,
             max_multicast_peers: config.server.max_multicast_peers,
-            max_bluetooth_peers: config.server.max_bluetooth_peers,
+            max_bluetooth_peers: 0,
         }
     }
 }
@@ -180,11 +178,11 @@ impl DaemonNetworkSettings {
         Self {
             webrtc: config.server.enable_webrtc,
             multicast: config.server.enable_multicast && config.server.max_multicast_peers > 0,
-            bluetooth: config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0,
+            bluetooth: false,
             nostr_relays_enabled: config.nostr.enabled,
             blossom_enabled: config.blossom.enabled,
             max_multicast_peers: config.server.max_multicast_peers,
-            max_bluetooth_peers: config.server.max_bluetooth_peers,
+            max_bluetooth_peers: 0,
             multicast_group: config.server.multicast_group.clone(),
             multicast_port: config.server.multicast_port,
             relay_urls: config.nostr.relays.clone(),
@@ -198,9 +196,9 @@ impl From<&DaemonNetworkSettings> for DaemonTransportSettings {
         Self {
             webrtc: settings.webrtc,
             multicast: settings.multicast,
-            bluetooth: settings.bluetooth,
+            bluetooth: false,
             max_multicast_peers: settings.max_multicast_peers,
-            max_bluetooth_peers: settings.max_bluetooth_peers,
+            max_bluetooth_peers: 0,
         }
     }
 }
@@ -220,16 +218,8 @@ fn apply_transport_settings(
     } else {
         0
     };
-    config.server.enable_bluetooth = settings.bluetooth;
-    config.server.max_bluetooth_peers = if settings.bluetooth {
-        if settings.max_bluetooth_peers > 0 {
-            settings.max_bluetooth_peers
-        } else {
-            DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS
-        }
-    } else {
-        0
-    };
+    config.server.enable_bluetooth = false;
+    config.server.max_bluetooth_peers = 0;
 
     DaemonTransportSettings::from_config(config)
 }
@@ -402,22 +392,6 @@ fn resolve_iris_paths(
         htree_config_dir: env_config_dir.unwrap_or(shared_config_dir),
         htree_data_dir: env_data_dir.unwrap_or(shared_data_dir),
     }
-}
-
-#[cfg(target_os = "android")]
-fn ensure_mobile_peer_id() -> Result<String, String> {
-    let (keys, _) = hashtree_cli::config::ensure_keys()
-        .map_err(|error| format!("Failed to load keys for Android Bluetooth: {}", error))?;
-    let peer_uuid = std::env::var("HTREE_PEER_UUID")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| {
-            let value = hashtree_cli::webrtc::types::generate_uuid();
-            std::env::set_var("HTREE_PEER_UUID", &value);
-            value
-        });
-    Ok(format!("{}:{}", keys.public_key().to_hex(), peer_uuid))
 }
 
 /// Start the embedded htree daemon
@@ -845,19 +819,6 @@ async fn update_daemon_transport_settings<R: tauri::Runtime>(
         .save()
         .map_err(|error| format!("Failed to save daemon transport settings: {}", error))?;
 
-    #[cfg(target_os = "android")]
-    if applied.bluetooth {
-        match ensure_mobile_peer_id()
-            .and_then(|peer_id| mobile_bluetooth::prestart_from_app(&_app, peer_id))
-        {
-            Ok(()) => info!("Prestarted Android Bluetooth plugin from live settings update"),
-            Err(error) => tracing::warn!(
-                "Failed to prestart Android Bluetooth plugin from settings update: {}",
-                error
-            ),
-        }
-    }
-
     let peer_router_controller = { daemon_runtime.peer_router_controller.read().clone() };
     if let Some(controller) = peer_router_controller {
         controller
@@ -892,19 +853,6 @@ async fn update_daemon_network_settings<R: tauri::Runtime>(
     config
         .save()
         .map_err(|error| format!("Failed to save daemon network settings: {}", error))?;
-
-    #[cfg(target_os = "android")]
-    if applied.bluetooth {
-        match ensure_mobile_peer_id()
-            .and_then(|peer_id| mobile_bluetooth::prestart_from_app(&_app, peer_id))
-        {
-            Ok(()) => info!("Prestarted Android Bluetooth plugin from live network update"),
-            Err(error) => tracing::warn!(
-                "Failed to prestart Android Bluetooth plugin from network settings update: {}",
-                error
-            ),
-        }
-    }
 
     let peer_router_controller = { daemon_runtime.peer_router_controller.read().clone() };
     if let Some(controller) = peer_router_controller {
@@ -1125,11 +1073,6 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_iris_mobile_browser::init());
     }
 
-    #[cfg(target_os = "android")]
-    {
-        builder = builder.plugin(tauri_plugin_iris_mobile_bluetooth::init());
-    }
-
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
         builder = builder
@@ -1267,29 +1210,6 @@ pub fn run() {
             std::env::set_var("HTREE_CONFIG_DIR", &paths.htree_config_dir);
             std::env::set_var("HTREE_DATA_DIR", &paths.htree_data_dir);
 
-            #[cfg(target_os = "android")]
-            if let Err(error) = mobile_bluetooth::install_from_app(&app.handle()) {
-                tracing::warn!("Failed to install Android Bluetooth bridge: {}", error);
-            }
-            #[cfg(target_os = "android")]
-            match hashtree_cli::Config::load() {
-                Ok(config)
-                    if config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0 =>
-                {
-                    match ensure_mobile_peer_id()
-                        .and_then(|peer_id| mobile_bluetooth::prestart_from_app(&app.handle(), peer_id))
-                    {
-                        Ok(()) => info!("Prestarted Android Bluetooth plugin from app setup"),
-                        Err(error) => {
-                            tracing::warn!("Failed to prestart Android Bluetooth plugin: {}", error)
-                        }
-                    }
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!("Failed to load config for Android Bluetooth prestart: {}", error)
-                }
-            }
             // Initialize NIP-07 permission state
             let permission_store = Arc::new(permissions::PermissionStore::new(None));
             let nip07_state = Arc::new(nip07::Nip07State::new(permission_store));
@@ -1409,7 +1329,7 @@ mod tests {
         tray_status_text, DaemonBlossomServerSettings, DaemonNetworkSettings,
         DaemonTransportSettings, DesktopPlatform, IrisPaths, TrayConnectionStatus,
         TrayMenuItemSpec, TrayPeersResponse, TrayPrimaryClickAction,
-        DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS, DEFAULT_MULTICAST_TOGGLE_MAX_PEERS,
+        DEFAULT_MULTICAST_TOGGLE_MAX_PEERS,
     };
     use std::path::{Path, PathBuf};
 
@@ -1685,15 +1605,12 @@ mod tests {
 
         assert!(applied.webrtc);
         assert!(applied.multicast);
-        assert!(applied.bluetooth);
+        assert!(!applied.bluetooth);
         assert_eq!(
             applied.max_multicast_peers,
             DEFAULT_MULTICAST_TOGGLE_MAX_PEERS
         );
-        assert_eq!(
-            applied.max_bluetooth_peers,
-            DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS
-        );
+        assert_eq!(applied.max_bluetooth_peers, 0);
     }
 
     #[test]
@@ -1718,6 +1635,7 @@ mod tests {
         assert!(!applied.webrtc);
         assert!(!applied.multicast);
         assert!(!applied.bluetooth);
+        assert!(!config.server.enable_bluetooth);
         assert_eq!(config.server.max_multicast_peers, 0);
         assert_eq!(config.server.max_bluetooth_peers, 0);
     }
@@ -1811,15 +1729,15 @@ mod tests {
             applied.max_multicast_peers,
             DEFAULT_MULTICAST_TOGGLE_MAX_PEERS
         );
-        assert_eq!(
-            applied.max_bluetooth_peers,
-            DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS
-        );
+        assert!(!applied.bluetooth);
+        assert_eq!(applied.max_bluetooth_peers, 0);
         assert!(!applied.nostr_relays_enabled);
         assert!(!applied.blossom_enabled);
         assert_eq!(applied.multicast_group, "239.255.42.77");
         assert_eq!(applied.multicast_port, 49_123);
         assert!(!config.nostr.enabled);
+        assert!(!config.server.enable_bluetooth);
+        assert_eq!(config.server.max_bluetooth_peers, 0);
         assert_eq!(
             config.nostr.relays,
             vec![
@@ -1931,39 +1849,56 @@ mod tests {
     }
 
     #[test]
-    fn macos_info_plist_declares_bluetooth_usage_descriptions() {
+    fn macos_info_plist_registers_htree_url_scheme() {
         let plist_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Info.plist");
         let plist = std::fs::read_to_string(&plist_path).expect("failed to read macOS Info.plist");
 
         assert!(
-            plist.contains("<key>NSBluetoothAlwaysUsageDescription</key>"),
-            "expected NSBluetoothAlwaysUsageDescription in {:?}",
+            plist.contains("<key>CFBundleURLTypes</key>"),
+            "expected CFBundleURLTypes in {:?}",
             plist_path
         );
         assert!(
-            plist.contains("<key>NSBluetoothPeripheralUsageDescription</key>"),
-            "expected NSBluetoothPeripheralUsageDescription in {:?}",
+            plist.contains("<string>htree</string>"),
+            "expected htree URL scheme in {:?}",
             plist_path
         );
     }
 
     #[test]
-    fn android_mobile_bluetooth_plugin_declares_background_service_support() {
+    fn macos_info_plist_omits_bluetooth_usage_descriptions() {
+        let plist_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Info.plist");
+        let plist = std::fs::read_to_string(&plist_path).expect("failed to read macOS Info.plist");
+
+        assert!(
+            !plist.contains("<key>NSBluetoothAlwaysUsageDescription</key>"),
+            "did not expect NSBluetoothAlwaysUsageDescription in {:?}",
+            plist_path
+        );
+        assert!(
+            !plist.contains("<key>NSBluetoothPeripheralUsageDescription</key>"),
+            "did not expect NSBluetoothPeripheralUsageDescription in {:?}",
+            plist_path
+        );
+    }
+
+    #[test]
+    fn android_manifest_omits_bluetooth_permissions() {
         let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("plugins/mobile-bluetooth/android/src/main/AndroidManifest.xml");
+            .join("gen/android/app/src/main/AndroidManifest.xml");
         let manifest =
             std::fs::read_to_string(&manifest_path).expect("failed to read Android manifest");
 
-        for required in [
-            "android.permission.FOREGROUND_SERVICE",
-            "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE",
-            "android.permission.POST_NOTIFICATIONS",
-            "MobileBluetoothForegroundService",
-            "android:foregroundServiceType=\"connectedDevice\"",
+        for denied in [
+            "android.permission.BLUETOOTH",
+            "android.permission.BLUETOOTH_ADMIN",
+            "android.permission.BLUETOOTH_CONNECT",
+            "android.permission.BLUETOOTH_ADVERTISE",
+            "android.hardware.bluetooth_le",
         ] {
             assert!(
-                manifest.contains(required),
-                "expected {required:?} in {:?}",
+                !manifest.contains(denied),
+                "did not expect {denied:?} in {:?}",
                 manifest_path
             );
         }

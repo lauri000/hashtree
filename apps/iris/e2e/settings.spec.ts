@@ -36,7 +36,6 @@ test.describe('Settings Page', () => {
     await expect(page.getByLabel('Toggle Blossom fallback')).toBeVisible();
     await expect(page.getByLabel('Toggle WebRTC transport')).toBeVisible();
     await expect(page.getByLabel('Toggle LAN multicast transport')).toBeVisible();
-    await expect(page.getByLabel('Toggle Bluetooth transport')).toBeVisible();
     await expect(page.getByLabel('Add relay URL')).toBeVisible();
     await expect(page.getByLabel('Add Blossom server URL')).toBeVisible();
     await expect(page.getByLabel('Multicast group')).toBeVisible();
@@ -55,13 +54,13 @@ test.describe('Settings Page', () => {
     await page.getByTitle('Settings').click();
     await page.getByRole('button', { name: 'Network' }).click();
 
-    await page.getByLabel('Toggle Bluetooth transport').click();
+    await page.getByLabel('Toggle LAN multicast transport').click();
 
     const calls = await getInvocationsFor(page, 'update_daemon_network_settings');
     expect(calls.length).toBe(1);
-    expect(calls[0].args.settings.bluetooth).toBe(true);
+    expect(calls[0].args.settings.bluetooth).toBe(false);
     expect(calls[0].args.settings.webrtc).toBe(true);
-    expect(calls[0].args.settings.multicast).toBe(false);
+    expect(calls[0].args.settings.multicast).toBe(true);
     await expect(page.getByRole('heading', { name: 'Local Service' })).toBeVisible();
   });
 
@@ -109,19 +108,26 @@ test.describe('Settings Page', () => {
     await page.getByTitle('Settings').click();
     await page.getByRole('button', { name: 'Network' }).click();
 
-    await page.getByLabel('Add relay URL').fill('wss://relay.example');
-    await page.getByRole('button', { name: 'Add' }).first().click();
-    await page.getByLabel('Add Blossom server URL').fill('https://blossom.example');
-    await page.getByRole('button', { name: 'Add' }).nth(1).click();
+    const relayInput = page.getByLabel('Add relay URL');
+    await relayInput.fill('wss://relay.example');
+    await relayInput.locator('xpath=..').getByRole('button', { name: 'Add' }).click();
+    await expect(page.getByText('relay.example').first()).toBeVisible();
+
+    const blossomInput = page.getByLabel('Add Blossom server URL');
+    await blossomInput.fill('https://blossom.example');
+    await blossomInput.locator('xpath=..').getByRole('button', { name: 'Add' }).click();
+    await expect(page.getByText('blossom.example').first()).toBeVisible();
+
     await page.getByLabel('Multicast port').fill('49001');
 
     await page.getByRole('button', { name: 'Apply' }).click();
 
     const calls = await getInvocationsFor(page, 'update_daemon_network_settings');
-    expect(calls.length).toBe(1);
-    expect(calls[0].args.settings.relayUrls).toContain('wss://relay.example');
-    expect(calls[0].args.settings.multicastPort).toBe(49001);
-    expect(calls[0].args.settings.blossomServers).toEqual(
+    const latest = calls.at(-1);
+    expect(latest).toBeTruthy();
+    expect(latest?.args.settings.relayUrls).toContain('wss://relay.example');
+    expect(latest?.args.settings.multicastPort).toBe(49001);
+    expect(latest?.args.settings.blossomServers).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           url: 'https://blossom.example',
@@ -130,8 +136,8 @@ test.describe('Settings Page', () => {
         }),
       ]),
     );
-    expect(calls[0].args.settings.nostrRelaysEnabled).toBe(true);
-    expect(calls[0].args.settings.blossomEnabled).toBe(true);
+    expect(latest?.args.settings.nostrRelaysEnabled).toBe(true);
+    expect(latest?.args.settings.blossomEnabled).toBe(true);
   });
 
   test('network tab can disable relays and blossom without clearing the configured lists', async ({ tauriPage: page }) => {
@@ -151,7 +157,7 @@ test.describe('Settings Page', () => {
     expect(latest?.args.settings.blossomServers.length).toBeGreaterThan(0);
   });
 
-  test('network tab shows mesh traffic and bluetooth peers from daemon status', async ({ tauriPage: page }) => {
+  test('network tab shows mesh traffic and active peers from daemon status', async ({ tauriPage: page }) => {
     await page.route('http://127.0.0.1:21417/api/status', async (route) => {
       await route.fulfill({
         status: 200,
@@ -166,8 +172,8 @@ test.describe('Settings Page', () => {
             bytes_sent: 15360,
             bytes_received: 28672,
             transport_counts: {
-              webrtc: 1,
-              bluetooth: 1,
+              webrtc: 2,
+              bluetooth: 0,
             },
             peers: [
               {
@@ -176,8 +182,8 @@ test.describe('Settings Page', () => {
                 pubkey: 'f'.repeat(64),
                 state: 'Connected',
                 pool: 'Follows',
-                transport: 'bluetooth',
-                signal_paths: ['bluetooth'],
+                transport: 'webrtc',
+                signal_paths: ['multicast'],
                 connected: true,
                 has_data_channel: true,
                 bytes_sent: 4096,
@@ -227,15 +233,15 @@ test.describe('Settings Page', () => {
 
     await expect(page.getByRole('heading', { name: 'Mesh' })).toBeVisible();
     await expect(page.getByText('2 connected')).toBeVisible();
-    await expect(page.getByRole('group', { name: 'Bluetooth 1 peer' })).toBeVisible();
-    await expect(page.getByRole('group', { name: 'WebRTC 1 peer' })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'WebRTC 2 peers' })).toBeVisible();
     await expect(page.getByText('Upload', { exact: true })).toBeVisible();
     await expect(page.getByText('Download', { exact: true })).toBeVisible();
     await expect(page.getByText('Recent Throughput')).toBeVisible();
     await expect(page.getByText('Active Peers')).toBeVisible();
-    await expect(page.getByText('Nearby contact 1')).toBeVisible();
+    await expect(page.getByText('Contact peer 1')).toBeVisible();
     await expect(page.getByText('Relay peer 2')).toBeVisible();
     await expect(page.getByText('1 discovered peer not connected yet')).toBeVisible();
+    await expect(page.getByText('LAN multicast').first()).toBeVisible();
     await expect(page.getByText('Relay signaling')).toBeVisible();
     await expect(page.getByText('1 blossom read server · 2 relays')).toBeVisible();
   });
@@ -249,6 +255,7 @@ test.describe('Settings Page', () => {
 
     await page.getByRole('button', { name: 'Open hashtree repository' }).click();
 
+    await expect.poll(async () => (await getInvocationsFor(page, 'create_htree_webview')).length).toBe(1);
     const calls = await getInvocationsFor(page, 'create_htree_webview');
     expect(calls.length).toBe(1);
     expect(calls[0].args.npub).toBe(DISTRIBUTED_OWNER);

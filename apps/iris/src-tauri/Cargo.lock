@@ -3172,7 +3172,6 @@ dependencies = [
  "tauri-plugin-autostart",
  "tauri-plugin-deep-link",
  "tauri-plugin-dialog",
- "tauri-plugin-iris-mobile-bluetooth",
  "tauri-plugin-iris-mobile-browser",
  "tauri-plugin-notification",
  "tauri-plugin-opener",
@@ -6304,18 +6303,6 @@ dependencies = [
  "thiserror 2.0.18",
  "toml 0.9.11+spec-1.1.0",
  "url",
-]
-
-[[package]]
-name = "tauri-plugin-iris-mobile-bluetooth"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "serde",
- "serde_json",
- "tauri",
- "tauri-plugin",
- "tokio",
 ]
 
 [[package]]

@@ -2,7 +2,6 @@
   import { onMount } from 'svelte';
   import { minidenticon } from 'minidenticons';
   import BandwidthHistoryChart from './BandwidthHistoryChart.svelte';
-  import { animalName } from '../lib/animalName';
   import {
     isAutostartEnabled,
     toggleAutostart,
@@ -261,13 +260,16 @@
   }
 
   function transportLabel(transport: string): string {
-    return transport.toLowerCase() === 'bluetooth' ? 'Bluetooth' : 'WebRTC';
+    switch (transport.toLowerCase()) {
+      case 'webrtc':
+        return 'WebRTC';
+      default:
+        return transport;
+    }
   }
 
   function signalPathLabel(path: string): string {
     switch (path.toLowerCase()) {
-      case 'bluetooth':
-        return 'Bluetooth';
       case 'multicast':
         return 'LAN multicast';
       case 'relay':
@@ -278,14 +280,8 @@
   }
 
   function peerKindLabel(peer: MeshPeerInfo): string {
-    if (peer.pool === 'follows' && peer.transport.toLowerCase() === 'bluetooth') {
-      return 'Nearby contact';
-    }
     if (peer.pool === 'follows') {
       return 'Contact peer';
-    }
-    if (peer.transport.toLowerCase() === 'bluetooth') {
-      return 'Bluetooth peer';
     }
     if (peer.signalPaths.some((path) => path.toLowerCase() === 'multicast')) {
       return 'LAN peer';
@@ -305,20 +301,10 @@
   }
 
   function peerIdentityLabel(peer: MeshPeerInfo, index: number): string {
-    if (peer.transport.toLowerCase() === 'bluetooth') {
-      try {
-        return animalName(peerIdentitySeed(peer));
-      } catch {
-        // Fall back to the generic label below.
-      }
-    }
     return peerLabel(peer, index);
   }
 
   function peerIdentitySubtitle(peer: MeshPeerInfo): string {
-    if (peer.transport.toLowerCase() === 'bluetooth') {
-      return peerKindLabel(peer);
-    }
     return peerSignalSummary(peer);
   }
 
@@ -353,7 +339,7 @@
   }
 
   async function handleTransportToggle(
-    key: keyof Pick<DaemonNetworkSettings, 'webrtc' | 'multicast' | 'bluetooth'>,
+    key: keyof Pick<DaemonNetworkSettings, 'webrtc' | 'multicast'>,
   ) {
     if (daemonNetworkBusy) return;
 
@@ -440,7 +426,7 @@
   }
 
   function updateNumericSetting(
-    key: keyof Pick<DaemonNetworkSettings, 'maxMulticastPeers' | 'maxBluetoothPeers' | 'multicastPort'>,
+    key: keyof Pick<DaemonNetworkSettings, 'maxMulticastPeers' | 'multicastPort'>,
     value: string,
   ) {
     const parsed = Number.parseInt(value, 10);
@@ -758,7 +744,7 @@
               Peer Router
             </h3>
             <p class="text-xs text-text-3 mb-3">
-              Controls nearby transports and offline peer routing.
+              Controls direct mesh transport and local-network discovery.
             </p>
             <div class="rounded bg-surface-2 p-3 space-y-3">
               <div class="space-y-2">
@@ -788,20 +774,6 @@
                     disabled={!daemonNetworkLoaded || daemonNetworkBusy}
                   >
                     <span class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform {daemonNetworkDraft.multicast ? 'translate-x-5' : ''}"></span>
-                  </button>
-                </label>
-                <label class="flex items-center justify-between gap-4 rounded bg-surface-1/70 px-3 py-2">
-                  <div class="min-w-0 flex-1">
-                    <div class="text-sm font-medium text-text-1">Bluetooth</div>
-                    <div class="text-xs text-text-3">Nearby peer connections over Bluetooth</div>
-                  </div>
-                  <button
-                    class="relative h-6 w-11 shrink-0 overflow-hidden rounded-full transition-colors {daemonNetworkDraft.bluetooth ? 'bg-accent' : 'bg-surface-3'}"
-                    onclick={() => void handleTransportToggle('bluetooth')}
-                    aria-label="Toggle Bluetooth transport"
-                    disabled={!daemonNetworkLoaded || daemonNetworkBusy}
-                  >
-                    <span class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform {daemonNetworkDraft.bluetooth ? 'translate-x-5' : ''}"></span>
                   </button>
                 </label>
               </div>
@@ -839,17 +811,6 @@
                     aria-label="Maximum multicast peers"
                   />
                 </label>
-                <label class="space-y-1">
-                  <span class="text-xs uppercase tracking-wide text-text-3">Max Bluetooth Peers</span>
-                  <input
-                    class="w-full rounded-lg bg-surface-1 px-3 py-2 text-sm text-text-1 outline-none ring-0"
-                    type="number"
-                    min="0"
-                    value={daemonNetworkDraft.maxBluetoothPeers}
-                    oninput={(event) => updateNumericSetting('maxBluetoothPeers', event.currentTarget.value)}
-                    aria-label="Maximum bluetooth peers"
-                  />
-                </label>
               </div>
             </div>
           </div>
@@ -859,7 +820,7 @@
               Mesh
             </h3>
             <p class="text-xs text-text-3 mb-3">
-              Nearby Bluetooth and WebRTC transport activity from the embedded daemon
+              Embedded daemon mesh activity on this device
             </p>
 
             <div class="grid gap-3 sm:grid-cols-2">
@@ -874,17 +835,7 @@
 
               <div class="rounded bg-surface-2 p-3">
                 <div class="text-xs uppercase tracking-wide text-text-3">Transports</div>
-                <div class="mt-2 grid gap-2 sm:grid-cols-2">
-                  <div
-                    role="group"
-                    aria-label={`Bluetooth ${formatCount(meshStatus.transportCounts.bluetooth ?? 0, 'peer', 'peers')}`}
-                    class="flex items-center justify-between rounded bg-surface-1 px-3 py-2 text-sm"
-                  >
-                    <span class="text-text-3">Bluetooth</span>
-                    <span class="font-medium text-text-1">
-                      {formatCount(meshStatus.transportCounts.bluetooth ?? 0, 'peer', 'peers')}
-                    </span>
-                  </div>
+                <div class="mt-2 grid gap-2">
                   <div
                     role="group"
                     aria-label={`WebRTC ${formatCount(meshStatus.transportCounts.webrtc ?? 0, 'peer', 'peers')}`}
@@ -972,9 +923,6 @@
                       </div>
                     </div>
                     <div class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-3">
-                      {#if peer.transport.toLowerCase() === 'bluetooth'}
-                        <span>{peerSignalSummary(peer)}</span>
-                      {/if}
                       <span class="text-success">
                         <span class="i-lucide-arrow-up inline-block align-middle mr-0.5"></span>{formatBytes(peer.bytesSent)}
                       </span>

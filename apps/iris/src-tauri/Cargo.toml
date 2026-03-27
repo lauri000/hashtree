@@ -29,7 +29,6 @@ tauri-plugin-dialog = "2.4"
 tauri-plugin-notification = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-iris-mobile-browser = { path = "plugins/mobile-browser" }
-tauri-plugin-iris-mobile-bluetooth = { path = "plugins/mobile-bluetooth" }
 
 # Hashtree dependencies - daemon startup + content serving
 hashtree-core = { path = "../../../rust/crates/hashtree-core" }
