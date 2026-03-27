@@ -33,5 +33,7 @@ describe('iris-sites build config', () => {
 
     expect(html).toContain('<link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any" />');
     expect(html).toContain('<link rel="shortcut icon" href="/favicon.svg" type="image/svg+xml" />');
+    expect(html).toContain('background: #07070a;');
+    expect(html).toContain('min-height: 100vh;');
   });
 });

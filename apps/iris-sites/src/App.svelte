@@ -22,6 +22,7 @@
 
   const IRIS_OWNER = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
   const ENSHITTIFIER_NHASH = 'nhash1qqsxyn0g6yyac8ruej7r7j80y2gx6ev5z5flu6ry5h5t3ajju5utzjs9yz7t3p2syr9n5heajlv85uwej232dk5x4zqe8d7ft67y3m5umxr55qjku38';
+  const BOOT_STATUS_DELAY_MS = 2500;
   const launcherSuggestions = [
     {
       name: 'MIDI Enshittifier',
@@ -64,6 +65,8 @@
   let copyStatus = $state('Copy Share URL');
   let autoReloadEnabled = $state(false);
   let updateAvailable = $state(false);
+  let showBootStatus = $state(false);
+  let iframeLoaded = $state(false);
   let launchInput = $state('');
   let launchError = $state<string | null>(null);
   let launchPending = $state(false);
@@ -186,6 +189,10 @@
     window.location.reload();
   }
 
+  function handleFrameLoad(): void {
+    iframeLoaded = true;
+  }
+
   async function launchFromInput(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     if (typeof window === 'undefined') return;
@@ -235,6 +242,8 @@
   const missingRuntimeTarget = $derived.by(() => !currentSite && !inPortalShell);
   const launcherHref = $derived.by(() => buildCurrentLauncherHref());
   const showRuntimeMenu = $derived.by(() => Boolean(currentSite && !inPortalShell && !menuHidden));
+  const showRuntimeFallback = $derived.by(() => Boolean(runtimeError || showBootStatus));
+  const showFrameOverlay = $derived.by(() => Boolean(runtimeError || (!iframeLoaded && showBootStatus)));
 
   const inspectorLink = $derived.by(() => {
     if (!currentSite) return '';
@@ -343,6 +352,41 @@
       void unsubscribeTreeRoots(mutableSite.npub).catch(() => {});
     };
   });
+
+  $effect(() => {
+    void iframeSrc;
+    iframeLoaded = false;
+  });
+
+  $effect(() => {
+    if (typeof window === 'undefined') {
+      showBootStatus = false;
+      return;
+    }
+
+    if (runtimeError) {
+      showBootStatus = true;
+      return;
+    }
+
+    if (inPortalShell && currentSite) {
+      showBootStatus = false;
+      const timeoutId = window.setTimeout(() => {
+        showBootStatus = true;
+      }, BOOT_STATUS_DELAY_MS);
+      return () => window.clearTimeout(timeoutId);
+    }
+
+    if (currentSite && !inPortalShell && !iframeLoaded) {
+      showBootStatus = false;
+      const timeoutId = window.setTimeout(() => {
+        showBootStatus = true;
+      }, BOOT_STATUS_DELAY_MS);
+      return () => window.clearTimeout(timeoutId);
+    }
+
+    showBootStatus = false;
+  });
 </script>
 
 <svelte:head>
@@ -406,26 +450,32 @@
   </main>
 {:else if inPortalShell}
   <main class="screen">
-    <section class="overlay">
-      <p class="eyebrow">Launching</p>
-      <h1>{currentSite.title}</h1>
-      <p class="copy">{runtimeError ?? 'Opening the isolated origin…'}</p>
-    </section>
+    {#if showRuntimeFallback}
+      <section class="overlay">
+        <p class="eyebrow">{runtimeError ? 'Runtime Error' : 'Launching'}</p>
+        <p class="copy">{runtimeError ?? 'Opening the isolated origin…'}</p>
+      </section>
+    {/if}
   </main>
 {:else}
   <main class="frame-screen">
     {#if iframeSrc}
       <iframe
         src={iframeSrc}
+        class:site-frame-ready={iframeLoaded}
         class="site-frame"
         title={currentSite.title}
+        onload={handleFrameLoad}
       ></iframe>
-    {:else}
+    {/if}
+
+    {#if !iframeSrc || showFrameOverlay}
       <section class="overlay">
-        <p class="eyebrow">Starting</p>
-        <h1>{currentSite.title}</h1>
-        <p class="copy">{runtimeError ?? 'Preparing isolated runtime…'}</p>
-        <a class="link" href={inspectorLink}>{inspectorLink}</a>
+        <p class="eyebrow">{runtimeError ? 'Runtime Error' : 'Still Loading'}</p>
+        <p class="copy">{runtimeError ?? 'This site is taking longer than usual to start.'}</p>
+        {#if runtimeError}
+          <a class="link" href={inspectorLink}>{inspectorLink}</a>
+        {/if}
       </section>
     {/if}
   </main>
@@ -658,7 +708,13 @@
     width: 100%;
     height: 100vh;
     border: 0;
-    background: white;
+    background: #07070a;
+    opacity: 0;
+    transition: opacity 180ms ease;
+  }
+
+  .site-frame-ready {
+    opacity: 1;
   }
 
   .runtime-menu-shell {
