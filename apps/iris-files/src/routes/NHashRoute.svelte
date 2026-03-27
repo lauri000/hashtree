@@ -17,7 +17,7 @@
   let hash = $derived($currentHash);
   let isViewingFile = $derived($isViewingFileStore);
   let isValid = $state(true);
-  const showGenericFileBrowser = shouldShowGenericFileBrowser();
+  let showGenericFileBrowser = $derived(shouldShowGenericFileBrowser());
 
   // Check if current directory is a git repo
   let currentDirCid = $derived($currentDirCidStore);

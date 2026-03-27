@@ -1,54 +1,36 @@
 import { describe, expect, it } from 'vitest';
-import { resolveGitViewContext } from '../src/utils/gitViewContext';
+import { resolveGitRootPathParam, resolveGitViewContext } from '../src/utils/gitViewContext';
 
-describe('resolveGitViewContext', () => {
-  it('uses the git root path when navigating inside a nested repo', () => {
-    expect(resolveGitViewContext({
-      treeName: 'public',
-      gitRootPath: 'repo-name',
-      currentPath: ['repo-name', 'src', 'components', 'App.svelte'],
-    })).toEqual({
-      repoName: 'repo-name',
-      relativePathParts: ['src', 'components', 'App.svelte'],
-      label: 'repo-name / src / components / App.svelte',
-    });
-  });
-
-  it('falls back to the current directory when the repo root is the viewed directory', () => {
-    expect(resolveGitViewContext({
-      treeName: 'public',
-      gitRootPath: null,
-      fallbackGitRootParts: ['repo-name'],
-      currentPath: ['repo-name', 'README.md'],
-    })).toEqual({
-      repoName: 'repo-name',
-      relativePathParts: ['README.md'],
-      label: 'repo-name / README.md',
-    });
-  });
-
-  it('uses the tree name for top-level repos at the tree root', () => {
+describe('gitViewContext', () => {
+  it('keeps empty g param at tree-root repos while browsing subdirectories', () => {
+    expect(resolveGitRootPathParam('', ['apps'])).toBe('');
     expect(resolveGitViewContext({
       treeName: 'hashtree',
       gitRootPath: '',
-      currentPath: ['src'],
+      currentPath: ['apps', 'iris-files'],
     })).toEqual({
+      rootParts: [],
       repoName: 'hashtree',
-      relativePathParts: ['src'],
-      label: 'hashtree / src',
+      relativePathParts: ['apps', 'iris-files'],
+      label: 'hashtree / apps / iris-files',
     });
   });
 
-  it('keeps the repo name visible at the repo root', () => {
+  it('uses the current path as the repo root only when no g param exists yet', () => {
+    expect(resolveGitRootPathParam(null, ['projects', 'demo-repo'])).toBe('projects/demo-repo');
+    expect(resolveGitRootPathParam('projects/demo-repo', ['projects', 'demo-repo', 'src'])).toBe('projects/demo-repo');
+  });
+
+  it('does not use hidden non-visible g values as the displayed repo name', () => {
     expect(resolveGitViewContext({
       treeName: 'hashtree',
-      gitRootPath: null,
-      fallbackGitRootParts: [],
-      currentPath: [],
+      gitRootPath: '.hashtree',
+      currentPath: ['apps', 'iris', 'scripts'],
     })).toEqual({
+      rootParts: [],
       repoName: 'hashtree',
-      relativePathParts: [],
-      label: 'hashtree',
+      relativePathParts: ['apps', 'iris', 'scripts'],
+      label: 'hashtree / apps / iris / scripts',
     });
   });
 });

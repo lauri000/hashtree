@@ -38,7 +38,13 @@
 
   let gitRootPath = $derived(route.params.get('g'));
   let detectedGitRootPath = $state<string | null>(null);
-  let effectiveGitRootPath = $derived(gitRootPath ?? detectedGitRootPath);
+  let routeGitRootHint = $derived.by(() => {
+    if (gitRootPath === '' && route.path.length > 0) {
+      return null;
+    }
+    return gitRootPath;
+  });
+  let effectiveGitRootPath = $derived(routeGitRootHint ?? detectedGitRootPath);
   let repoRootParts = $derived.by(() => {
     if (effectiveGitRootPath !== null) {
       return effectiveGitRootPath === '' ? [] : effectiveGitRootPath.split('/');
@@ -285,7 +291,9 @@
       </div>
     {:else if isVideo && objectUrl}
       <div class="p-4">
-        <video class="max-w-full rounded-lg" controls src={objectUrl}></video>
+        <video class="max-w-full rounded-lg" controls src={objectUrl}>
+          <track kind="captions" label="Captions unavailable" srclang="en" />
+        </video>
       </div>
     {:else if isAudio && objectUrl}
       <div class="p-4">

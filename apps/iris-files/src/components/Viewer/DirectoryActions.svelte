@@ -9,12 +9,11 @@
   import FolderActions from '../FolderActions.svelte';
   import GitRepoView from '../Git/GitRepoView.svelte';
   import ReadmePanel from './ReadmePanel.svelte';
-  import ViewerHeader from './ViewerHeader.svelte';
   import { uploadFiles } from '../../stores/upload';
   import { LinkType, type TreeEntry as HashTreeEntry } from '@hashtree/core';
   import { shouldAssumeGitRepoDuringDetection, supportsGitFeatures } from '../../appType';
   import { findNearestGitRootPath } from '../../utils/gitRoot';
-  import { resolveGitViewContext } from '../../utils/gitViewContext';
+  import ViewerHeader from './ViewerHeader.svelte';
 
   let route = $derived($routeStore);
   let rootCid = $derived($treeRootStore);
@@ -268,33 +267,11 @@
     return currentTreeName || '';
   });
 
-  let gitContextLabel = $derived.by(() => {
-    if (!isInGitRepo) return null;
-    const label = resolveGitViewContext({
-      treeName: currentTreeName,
-      gitRootPath: effectiveGitRootPath,
-      fallbackGitRootParts: hasGitDir ? currentPath : [],
-      currentPath,
-    }).label;
-    return label && label !== currentDirName ? label : null;
-  });
 </script>
 
 <!-- If this is a git repo or inside one (via gitRoot URL param), show GitHub-style directory listing -->
 {#if isInGitRepo && currentDirCid}
   <div class="flex flex-col h-full">
-    <!-- Header with back button, avatar, visibility, folder name -->
-    <ViewerHeader
-      {backUrl}
-      npub={viewedNpub}
-      isPermalink={route.isPermalink}
-      {rootCid}
-      visibility={currentTree?.visibility}
-      icon="i-lucide-folder-open text-warning"
-      name={currentDirName}
-      contextLabel={gitContextLabel}
-      constrained={true}
-    />
     <div class="flex-1 overflow-auto">
       <GitRepoView
         dirCid={currentDirCid}
@@ -305,6 +282,11 @@
         {canEdit}
         currentBranch={gitInfo.currentBranch}
         branches={gitInfo.branches}
+        {backUrl}
+        npub={viewedNpub}
+        isPermalink={route.isPermalink}
+        {rootCid}
+        visibility={currentTree?.visibility}
       />
     </div>
   </div>

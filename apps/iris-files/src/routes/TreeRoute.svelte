@@ -21,7 +21,7 @@
   }
 
   let { npub, treeName }: Props = $props();
-  const showGenericFileBrowser = shouldShowGenericFileBrowser();
+  let showGenericFileBrowser = $derived(shouldShowGenericFileBrowser());
 
   // Use derived from routeStore for reactivity
   let route = $derived($routeStore);

@@ -3,11 +3,12 @@
    * GitRepoView - GitHub-style directory listing with README below
    * Shows branch info, file list table, then README.md in its own panel
    */
-  import { LinkType, type CID, type TreeEntry } from '@hashtree/core';
+  import { LinkType, type CID, type TreeEntry, type TreeVisibility } from '@hashtree/core';
   import type { Readable } from 'svelte/store';
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { getTree, decodeAsText } from '../../store';
   import { routeStore } from '../../stores';
+  import { npubToPubkey } from '../../nostr';
   import { createGitLogStore, createGitStatusStore } from '../../stores/git';
   import { createCIStatusStore, loadCIConfig, type CIStatus, type CIConfig } from '../../stores/ci';
   import { open as openGitHistoryModal } from '../Modals/GitHistoryModal.svelte';
@@ -15,12 +16,15 @@
   import { getFileLastCommits } from '../../utils/git';
   import FolderActions from '../FolderActions.svelte';
   import ReadmePanel from '../Viewer/ReadmePanel.svelte';
+  import VisibilityIcon from '../VisibilityIcon.svelte';
+  import { Avatar, Name } from '../User';
   import RepoTabNav from './RepoTabNav.svelte';
   import BranchDropdown from './BranchDropdown.svelte';
   import FileTable from './FileTable.svelte';
   import type { GitStatusResult } from '../../utils/wasmGit';
   import type { CommitInfo } from '../../stores/git';
   import CodeDropdown from './CodeDropdown.svelte';
+  import { resolveGitRootPathParam, resolveGitViewContext, splitGitRootPath } from '../../utils/gitViewContext';
 
   interface Props {
     dirCid: CID;
@@ -34,22 +38,57 @@
     canEdit: boolean;
     currentBranch: string | null;
     branches: string[];
+    backUrl: string;
+    npub?: string | null;
+    isPermalink?: boolean;
+    rootCid?: CID | null;
+    visibility?: TreeVisibility;
   }
 
-  let { dirCid, gitRootCid, gitRootPath, loadGitMetadata = true, entries, canEdit, currentBranch, branches }: Props = $props();
+  let {
+    dirCid,
+    gitRootCid,
+    gitRootPath,
+    loadGitMetadata = true,
+    entries,
+    canEdit,
+    currentBranch,
+    branches,
+    backUrl,
+    npub = null,
+    isPermalink = false,
+    rootCid = null,
+    visibility,
+  }: Props = $props();
 
   // Use gitRootCid for git operations once root detection is ready.
   let gitCid = $derived(loadGitMetadata ? (gitRootCid ?? dirCid) : null);
 
   let route = $derived($routeStore);
   let currentPath = $derived(route.path);
+  let gitRootPathParam = $derived(resolveGitRootPathParam(gitRootPath, currentPath));
+  let gitRootParts = $derived(splitGitRootPath(gitRootPathParam) ?? []);
+  let ownerPubkey = $derived(npubToPubkey(npub || '') || '');
+  let gitViewContext = $derived.by(() => resolveGitViewContext({
+    treeName: route.treeName,
+    gitRootPath,
+    fallbackGitRootParts: gitRootPath === null ? currentPath : [],
+    currentPath,
+  }));
+  let repoHeaderName = $derived(gitViewContext.repoName || route.treeName || '');
+  let repoRootHref = $derived.by(() => {
+    if (!route.npub || !route.treeName) return backUrl;
+    const parts = [route.npub, route.treeName, ...gitViewContext.rootParts];
+    const params = new SvelteURLSearchParams();
+    if (route.params.get('k')) params.set('k', route.params.get('k')!);
+    const query = params.toString();
+    return `#/${parts.map(encodeURIComponent).join('/')}${query ? `?${query}` : ''}`;
+  });
 
   // Full repo path for URLs (treeName + path to git root)
   // e.g., if treeName is "link" and git root is at "link/my-repo", repoPath is "link/my-repo"
   let repoPath = $derived.by(() => {
-    const gitPath = gitRootPath !== null
-      ? (gitRootPath === '' ? [] : gitRootPath.split('/'))
-      : currentPath;
+    const gitPath = gitViewContext.rootParts;
     if (!route.treeName) return '';
     if (gitPath.length === 0) return route.treeName;
     return `${route.treeName}/${gitPath.join('/')}`;
@@ -146,7 +185,7 @@
   // We need to compute the subpath within the git repo (e.g., "src")
   let gitSubpath = $derived.by(() => {
     // Get the git root path as an array
-    const gitRootParts = gitRootPath !== null
+    const resolvedGitRootParts = gitRootPath !== null
       ? (gitRootPath === '' ? [] : gitRootPath.split('/'))
       : currentPath; // If gitRootPath is null, we're at git root, so use currentPath as git root
 
@@ -157,11 +196,11 @@
 
     // currentPath should start with gitRootParts
     // The subpath is everything after gitRootParts
-    if (currentPath.length <= gitRootParts.length) {
+    if (currentPath.length <= resolvedGitRootParts.length) {
       return ''; // At git root
     }
 
-    return currentPath.slice(gitRootParts.length).join('/');
+    return currentPath.slice(resolvedGitRootParts.length).join('/');
   });
 
   // Load file last commit info when entries or gitCid change
@@ -244,10 +283,7 @@
   function buildQueryString(): string {
     const params: string[] = [];
     if (route.params.get('k')) params.push(`k=${route.params.get('k')}`);
-    // Propagate gitRoot - if we're at git root (gitRootPath is null), use current path
-    // If we're in subdirectory (gitRootPath is set), keep using it
-    const effectiveGitRoot = gitRootPath !== null ? gitRootPath : (currentPath.length > 0 ? currentPath.join('/') : '');
-    params.push(`g=${encodeURIComponent(effectiveGitRoot)}`);
+    params.push(`g=${encodeURIComponent(gitRootPathParam)}`);
     return params.length > 0 ? '?' + params.join('&') : '';
   }
 
@@ -271,8 +307,7 @@
     params.set('commit', commitOid);
     if (route.params.get('k')) params.set('k', route.params.get('k')!);
 
-    const effectiveGitRoot = gitRootPath !== null ? gitRootPath : (currentPath.length > 0 ? currentPath.join('/') : '');
-    params.set('g', effectiveGitRoot);
+    params.set('g', gitRootPathParam);
 
     if (route.npub && route.treeName) {
       parts.push(route.npub, route.treeName, ...currentPath);
@@ -362,9 +397,7 @@
       const newDirCid = await checkoutCommit(gitCid, branch);
 
       // Determine the path to the git root (use gitRootPath if in subdirectory, otherwise currentPath)
-      const gitPath = gitRootPath !== null
-        ? (gitRootPath === '' ? [] : gitRootPath.split('/'))
-        : currentPath;
+      const gitPath = gitRootParts;
 
       let newRootCid;
       if (gitPath.length === 0) {
@@ -395,10 +428,7 @@
 
   // Helper to get git path (either from URL param or current path if at git root)
   function getGitPath(): string[] {
-    if (gitRootPath !== null) {
-      return gitRootPath === '' ? [] : gitRootPath.split('/');
-    }
-    return currentPath;
+    return gitRootParts;
   }
 
   // Handle commit callback - replaces the git repo at its path
@@ -482,8 +512,45 @@
 {/if}
 
 <div class="mx-auto flex w-full max-w-7xl flex-col gap-4 p-3" data-testid="repo-main-column">
-  <!-- Folder actions -->
-  <FolderActions {dirCid} {canEdit} />
+  <div class="flex flex-wrap items-center justify-between gap-3" data-testid="repo-header-row">
+    <div class="flex min-w-0 flex-1 flex-col justify-center gap-1">
+      <div class="flex min-w-0 items-center gap-2">
+        <a href={backUrl} class="btn-ghost p-1 no-underline inline-flex items-center justify-center shrink-0" title="Back">
+          <span class="i-lucide-chevron-left text-lg"></span>
+        </a>
+        {#if npub && ownerPubkey}
+          <a
+            href="#/{npub}/profile"
+            class="inline-flex min-w-0 items-center gap-1.5 text-sm leading-none text-text-2 hover:opacity-80"
+            aria-label="View repo owner profile"
+          >
+            <Avatar pubkey={ownerPubkey} size={20} showBadge={true} />
+            <Name pubkey={ownerPubkey} class="min-w-0 truncate text-sm leading-none text-text-2 hover:text-accent hover:underline" />
+          </a>
+          <span class="shrink-0 text-text-3">/</span>
+        {:else if isPermalink}
+          {#if rootCid?.key}
+            <span class="relative inline-flex items-center shrink-0 text-text-2" title="Encrypted permalink">
+              <span class="i-lucide-link"></span>
+              <span class="i-lucide-lock absolute -bottom-0.5 -right-1.5 text-[0.6em]"></span>
+            </span>
+          {:else}
+            <span class="i-lucide-globe text-text-2 shrink-0" title="Public permalink"></span>
+          {/if}
+        {/if}
+        {#if visibility}
+          <VisibilityIcon {visibility} class="text-text-2 shrink-0" />
+        {/if}
+        <a href={repoRootHref} class="min-w-0 shrink-0 truncate no-underline text-sm font-medium text-text-1 leading-none hover:text-accent hover:underline">
+          {repoHeaderName}
+        </a>
+      </div>
+    </div>
+
+    <div class="flex max-w-full min-w-0 items-center justify-end max-sm:w-full max-sm:justify-start">
+      <FolderActions {dirCid} {canEdit} />
+    </div>
+  </div>
 
   <!-- Branch selector row (above table, like GitHub) -->
   <div class="flex flex-wrap items-center gap-3 text-sm">

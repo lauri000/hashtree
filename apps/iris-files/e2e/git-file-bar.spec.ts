@@ -121,7 +121,7 @@ test.describe('Git file bar', () => {
     await disableOthersPool(page);
   });
 
-  test('repo pages keep git path context visible and constrain the main column', async ({ page }) => {
+  test('repo pages constrain the main column and keep file-view git path context', async ({ page }) => {
     test.slow();
 
     await page.setViewportSize({ width: 1600, height: 900 });
@@ -145,8 +145,6 @@ test.describe('Git file bar', () => {
       SUBDIR_NAME,
       { timeout: 15000 }
     );
-
-    await expect(page.getByTestId('viewer-context')).toHaveText(`${repoName} / ${SUBDIR_NAME}`);
 
     const fileCell = repoFileList.locator('tbody tr td:nth-child(2)').filter({ hasText: SUBFILE_NAME }).first();
     await expect(fileCell).toBeVisible({ timeout: 30000 });

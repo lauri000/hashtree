@@ -1,4 +1,5 @@
 import type { AppType } from '../appType';
+import { canUseSameOriginHtreeProtocolStreaming, getInjectedHtreeServerUrl } from './nativeHtree';
 
 export type ShareUrlOptionId = 'web' | 'htree';
 
@@ -42,15 +43,22 @@ export function getDefaultHtreeAppUrl(appType: AppType): string {
   return `htree://${DISTRIBUTED_APP_OWNER}/${appType}`;
 }
 
+function shouldUseHtreeRepositoryUrl(): boolean {
+  return canUseSameOriginHtreeProtocolStreaming() || !!getInjectedHtreeServerUrl();
+}
+
 export function getCanonicalGitRepositoryUrl(repoPath = 'hashtree'): string {
   const normalizedPath = repoPath
     .split('/')
     .map((segment) => segment.trim())
     .filter(Boolean)
     .join('/');
+  const baseUrl = shouldUseHtreeRepositoryUrl()
+    ? `${getDefaultHtreeAppUrl('git')}/#/${DISTRIBUTED_APP_OWNER}`
+    : `${getDefaultWebAppUrl('git')}/#/${DISTRIBUTED_APP_OWNER}`;
   return normalizedPath
-    ? `${getDefaultHtreeAppUrl('git')}/#/${DISTRIBUTED_APP_OWNER}/${normalizedPath}`
-    : `${getDefaultHtreeAppUrl('git')}/#/${DISTRIBUTED_APP_OWNER}`;
+    ? `${baseUrl}/${normalizedPath}`
+    : baseUrl;
 }
 
 export function createShareUrlOptions(appType: AppType, rawUrl: string): ShareUrlOption[] {

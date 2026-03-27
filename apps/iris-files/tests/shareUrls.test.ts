@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createShareUrlOptions, getCanonicalGitRepositoryUrl } from '../src/lib/shareUrls';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('shareUrls', () => {
   it('maps hosted files routes to web and htree app URLs', () => {
@@ -67,10 +71,37 @@ describe('shareUrls', () => {
     ]);
   });
 
-  it('builds canonical iris-git repository URLs', () => {
+  it('builds canonical iris-git repository URLs for web contexts by default', () => {
+    expect(getCanonicalGitRepositoryUrl()).toBe(
+      'https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree',
+    );
+    expect(getCanonicalGitRepositoryUrl('hashtree/apps/iris-files')).toBe(
+      'https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree/apps/iris-files',
+    );
+  });
+
+  it('uses htree repository URLs when running inside Iris native or an htree page', () => {
+    vi.stubGlobal('window', {
+      __HTREE_SERVER_URL__: 'http://127.0.0.1:21417',
+      location: {
+        protocol: 'https:',
+        hostname: 'video.iris.to',
+        search: '',
+      },
+    });
+
     expect(getCanonicalGitRepositoryUrl()).toBe(
       'htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/git/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree',
     );
+
+    vi.stubGlobal('window', {
+      location: {
+        protocol: 'htree:',
+        hostname: 'self',
+        search: '',
+      },
+    });
+
     expect(getCanonicalGitRepositoryUrl('hashtree/apps/iris-files')).toBe(
       'htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/git/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree/apps/iris-files',
     );
