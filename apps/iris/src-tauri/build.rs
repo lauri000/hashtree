@@ -9,6 +9,7 @@ fn main() {
         .expect("failed to wire local mobile plugins into generated projects");
     ensure_android_htree_deep_link()
         .expect("failed to wire htree deep link into generated Android project");
+    ensure_macos_url_scheme().expect("failed to wire htree URL scheme into macOS Info.plist");
     ensure_ios_url_scheme().expect("failed to wire htree URL scheme into generated iOS project");
 }
 
@@ -55,6 +56,50 @@ fn ensure_ios_url_scheme() -> io::Result<()> {
     let insertion_point = contents
         .rfind("</dict>")
         .expect("expected closing dict tag in generated iOS Info.plist");
+    let mut updated = String::with_capacity(contents.len() + insertion.len());
+    updated.push_str(&contents[..insertion_point]);
+    updated.push_str(insertion);
+    updated.push_str(&contents[insertion_point..]);
+    fs::write(info_plist_path, updated)
+}
+
+fn ensure_macos_url_scheme() -> io::Result<()> {
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("missing CARGO_MANIFEST_DIR"));
+    let info_plist_path = manifest_dir.join("Info.plist");
+    if !info_plist_path.exists() {
+        return Ok(());
+    }
+
+    let contents = fs::read_to_string(&info_plist_path)?;
+    if contents.contains("<key>CFBundleURLTypes</key>")
+        && contents.contains("<string>htree</string>")
+    {
+        return Ok(());
+    }
+
+    let insertion = r#"  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>CFBundleURLName</key>
+      <string>htree</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>htree</string>
+      </array>
+    </dict>
+  </array>
+"#;
+
+    let insertion_point = contents
+        .rfind("<key>NSBluetoothAlwaysUsageDescription</key>")
+        .unwrap_or_else(|| {
+            contents
+                .rfind("</dict>")
+                .expect("expected closing dict tag in macOS Info.plist")
+        });
     let mut updated = String::with_capacity(contents.len() + insertion.len());
     updated.push_str(&contents[..insertion_point]);
     updated.push_str(insertion);

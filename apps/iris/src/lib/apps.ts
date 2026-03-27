@@ -11,7 +11,17 @@ function builtInAppUrl(treeName: string): string {
   return `htree://${distributedOwner}/${treeName}/index.html`;
 }
 
-const builtInIrisTreeNames = new Set(['files', 'video', 'docs', 'git', 'maps', 'boards']);
+const builtInIrisTreeNames = new Set([
+  'files',
+  'video',
+  'docs',
+  'git',
+  'maps',
+  'boards',
+  'iris-client',
+  'iris-chat',
+  'meet',
+]);
 
 export function isBuiltInIrisApp(host?: string, treename?: string): boolean {
   return host === distributedOwner && !!treename && builtInIrisTreeNames.has(treename);
@@ -24,6 +34,9 @@ export const suggestedIrisApps: readonly AppBookmark[] = [
   { url: builtInAppUrl('git'), name: 'Iris Git', icon: '/iris-logo.png', addedAt: 0 },
   { url: builtInAppUrl('maps'), name: 'Iris Maps', icon: '/iris-logo.png', addedAt: 0 },
   { url: builtInAppUrl('boards'), name: 'Iris Boards', icon: '/iris-logo.png', addedAt: 0 },
+  { url: builtInAppUrl('iris-client'), name: 'Iris Social', icon: '/iris-logo.png', addedAt: 0 },
+  { url: builtInAppUrl('iris-chat'), name: 'Iris Chat', icon: '/iris-logo.png', addedAt: 0 },
+  { url: builtInAppUrl('meet'), name: 'Iris Meet', icon: '/iris-logo.png', addedAt: 0 },
 ];
 
 export const defaultFavoriteApps: readonly AppBookmark[] = [];
@@ -31,7 +44,6 @@ export const defaultFavoriteApps: readonly AppBookmark[] = [];
 export const suggestedApps: readonly AppBookmark[] = [
   ...suggestedIrisApps,
   { url: `htree://${distributedOwner}/hashtree-cc`, name: 'hashtree.cc', icon: '/hashtree-cc-favicon.svg', addedAt: 0 },
-  { url: 'https://iris.to', name: 'Iris Social', icon: '/iris-logo.png', addedAt: 0 },
 ];
 
 export function cloneBookmarks(bookmarks: readonly AppBookmark[]): AppBookmark[] {

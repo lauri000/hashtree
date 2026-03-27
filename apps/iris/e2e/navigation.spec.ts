@@ -251,12 +251,12 @@ test.describe('Navigation', () => {
       const input = document.querySelector<HTMLInputElement>('input[placeholder="Search or enter address"]');
       const backButton = document.querySelector<HTMLButtonElement>('button[title="Back"]');
       const settingsButton = document.querySelector<HTMLButtonElement>('button[title="Settings"]');
+      const addressBar = document.querySelector<HTMLElement>('[data-testid="address-bar"]');
 
-      if (!input || !backButton || !settingsButton) {
+      if (!input || !backButton || !settingsButton || !addressBar) {
         throw new Error('toolbar controls not found');
       }
 
-      const addressBar = input.parentElement;
       const centerRegion = addressBar?.parentElement;
       const navRegion = backButton.parentElement;
       const toolbar = navRegion?.parentElement;

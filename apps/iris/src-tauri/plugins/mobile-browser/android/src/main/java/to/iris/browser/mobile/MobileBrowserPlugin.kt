@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.net.http.SslError
 import android.net.Uri
 import android.util.Log
+import android.util.TypedValue
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -15,6 +16,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import androidx.core.content.ContextCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import app.tauri.annotation.Command
@@ -101,6 +103,7 @@ class MobileBrowserPlugin(private val activity: Activity) : Plugin(activity) {
             browsers[args.label] = BrowserEntry(args, webView)
 
             val root = contentRoot()
+            root.setBackgroundColor(resolveThemeBackgroundColor())
             root.addView(webView, layoutParams(args))
             root.bringChildToFront(webView)
             webView.bringToFront()
@@ -228,7 +231,7 @@ class MobileBrowserPlugin(private val activity: Activity) : Plugin(activity) {
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         }
 
-        webView.setBackgroundColor(Color.argb(255, 15, 15, 15))
+        webView.setBackgroundColor(resolveThemeBackgroundColor())
         webView.webChromeClient = WebChromeClient()
 
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
@@ -406,6 +409,19 @@ class MobileBrowserPlugin(private val activity: Activity) : Plugin(activity) {
             if (port >= 0) "$scheme://$host:$port" else "$scheme://$host"
         } catch (_: Exception) {
             null
+        }
+    }
+
+    private fun resolveThemeBackgroundColor(): Int {
+        val typedValue = TypedValue()
+        val resolved = activity.theme.resolveAttribute(android.R.attr.colorBackground, typedValue, true)
+        if (!resolved) {
+            return Color.WHITE
+        }
+        return if (typedValue.resourceId != 0) {
+            ContextCompat.getColor(activity, typedValue.resourceId)
+        } else {
+            typedValue.data
         }
     }
 }

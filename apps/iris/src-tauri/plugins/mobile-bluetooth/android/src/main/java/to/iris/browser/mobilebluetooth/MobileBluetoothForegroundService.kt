@@ -40,10 +40,12 @@ internal class MobileBluetoothForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Log.i("MobileBluetoothFG", "foreground service created")
         createChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i("MobileBluetoothFG", "foreground service start command action=${intent?.action}")
         if (intent?.action == ACTION_STOP) {
             stopForegroundCompat()
             stopSelf()
@@ -57,6 +59,7 @@ internal class MobileBluetoothForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        Log.i("MobileBluetoothFG", "foreground service destroyed")
         stopForegroundCompat()
         super.onDestroy()
     }
@@ -124,6 +127,7 @@ internal class MobileBluetoothForegroundService : Service() {
                     notification,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
                 )
+                Log.i("MobileBluetoothFG", "foreground notification started with connectedDevice type")
                 return
             } catch (error: SecurityException) {
                 Log.w(
@@ -134,6 +138,7 @@ internal class MobileBluetoothForegroundService : Service() {
             }
         }
         startForeground(NOTIFICATION_ID, notification)
+        Log.i("MobileBluetoothFG", "foreground notification started")
     }
 
     private fun stopForegroundCompat() {

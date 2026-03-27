@@ -652,7 +652,7 @@ test.describe('Address Bar Autocomplete', () => {
     expect(calls.length).toBe(1);
   });
 
-  test('opening dropdown pushes the page below the toolbar overlay', async ({ tauriPage: page }) => {
+  test('opening dropdown does not move the page viewport', async ({ tauriPage: page }) => {
     await openHome(page);
 
     const input = page.locator('input[placeholder="Search or enter address"]');
@@ -668,6 +668,6 @@ test.describe('Address Bar Autocomplete', () => {
     await page.waitForTimeout(250);
 
     const after = await getInvocationsFor(page, 'set_webview_bounds');
-    expect(after.at(-1)?.args.y).toBeGreaterThan(48);
+    expect(after.at(-1)?.args.y).toBe(48);
   });
 });

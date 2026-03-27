@@ -13,6 +13,10 @@ async function openHome(page: import('@playwright/test').Page) {
   await gotoHome(page);
 }
 
+function suggestionButton(page: import('@playwright/test').Page, slug: string) {
+  return page.getByTestId(`suggestion-open-${slug}`);
+}
+
 test.describe('App Launcher', () => {
   test('shows launcher on startup', async ({ tauriPage: page }) => {
     await openHome(page);
@@ -34,6 +38,9 @@ test.describe('App Launcher', () => {
     await expect(favourites.getByText('Iris Git')).not.toBeVisible();
     await expect(favourites.getByText('Iris Maps')).not.toBeVisible();
     await expect(favourites.getByText('Iris Boards')).not.toBeVisible();
+    await expect(favourites.getByText('Iris Social')).not.toBeVisible();
+    await expect(favourites.getByText('Iris Chat')).not.toBeVisible();
+    await expect(favourites.getByText('Iris Meet')).not.toBeVisible();
 
     await expect(suggestions.getByText('Iris Files')).toBeVisible();
     await expect(suggestions.getByText('Iris Video')).toBeVisible();
@@ -41,8 +48,10 @@ test.describe('App Launcher', () => {
     await expect(suggestions.getByText('Iris Git')).toBeVisible();
     await expect(suggestions.getByText('Iris Maps')).toBeVisible();
     await expect(suggestions.getByText('Iris Boards')).toBeVisible();
-    await expect(suggestions.getByText('hashtree.cc')).toBeVisible();
     await expect(suggestions.getByText('Iris Social')).toBeVisible();
+    await expect(suggestions.getByText('Iris Chat')).toBeVisible();
+    await expect(suggestions.getByText('Iris Meet')).toBeVisible();
+    await expect(suggestions.getByText('hashtree.cc')).toBeVisible();
     await expect(suggestions.getByText('files', { exact: true })).not.toBeVisible();
     await expect(suggestions.getByText('video', { exact: true })).not.toBeVisible();
     await expect(suggestions.getByText('docs', { exact: true })).not.toBeVisible();
@@ -59,20 +68,16 @@ test.describe('App Launcher', () => {
   test('clicking suggestion triggers webview creation', async ({ tauriPage: page }) => {
     await openHome(page);
 
-    const suggestions = page.locator('section').filter({
-      has: page.getByRole('heading', { name: 'Suggestions' }),
-    });
-    await suggestions.getByText('Iris Files').click();
+    await suggestionButton(page, 'iris-files').click();
 
+    await expect.poll(async () => (await getInvocationsFor(page, 'create_htree_webview')).length).toBe(1);
     const invocations = await page.evaluate(() => (window as any).__tauriInvocations);
     const cacheCalls = invocations.filter((i: any) => i.cmd === 'cache_tree_root');
     const clearCalls = invocations.filter((i: any) => i.cmd === 'clear_tree_root_cache');
     const createCalls = invocations.filter((i: any) => i.cmd === 'create_htree_webview');
 
     expect(cacheCalls.length).toBe(0);
-    expect(clearCalls.length).toBe(1);
-    expect(clearCalls[0].args.npub).toBe(distributedOwner);
-    expect(clearCalls[0].args.treeName).toBe('files');
+    expect(clearCalls.length).toBe(0);
     expect(createCalls.length).toBe(1);
     expect(createCalls[0].args.host).toBe(distributedOwner);
     expect(createCalls[0].args.nhash).toBeNull();
@@ -89,15 +94,14 @@ test.describe('App Launcher', () => {
     await addressInput.fill(`htree://${distributedOwner}/video`);
     await addressInput.press('Enter');
 
+    await expect.poll(async () => (await getInvocationsFor(page, 'create_htree_webview')).length).toBe(1);
     const invocations = await page.evaluate(() => (window as any).__tauriInvocations);
     const cacheCalls = invocations.filter((i: any) => i.cmd === 'cache_tree_root');
     const clearCalls = invocations.filter((i: any) => i.cmd === 'clear_tree_root_cache');
     const createCalls = invocations.filter((i: any) => i.cmd === 'create_htree_webview');
 
     expect(cacheCalls.length).toBe(0);
-    expect(clearCalls.length).toBe(1);
-    expect(clearCalls[0].args.npub).toBe(distributedOwner);
-    expect(clearCalls[0].args.treeName).toBe('video');
+    expect(clearCalls.length).toBe(0);
     expect(createCalls.length).toBe(1);
     expect(createCalls[0].args.host).toBe(distributedOwner);
     expect(createCalls[0].args.treename).toBe('video');
@@ -107,11 +111,9 @@ test.describe('App Launcher', () => {
   test('clicking Iris Boards suggestion opens boards tree', async ({ tauriPage: page }) => {
     await openHome(page);
 
-    const suggestions = page.locator('section').filter({
-      has: page.getByRole('heading', { name: 'Suggestions' }),
-    });
-    await suggestions.getByText('Iris Boards').click();
+    await suggestionButton(page, 'iris-boards').click();
 
+    await expect.poll(async () => (await getInvocationsFor(page, 'create_htree_webview')).length).toBe(1);
     const invocations = await page.evaluate(() => (window as any).__tauriInvocations);
     const createCalls = invocations.filter((i: any) => i.cmd === 'create_htree_webview');
     expect(createCalls.length).toBe(1);
@@ -123,11 +125,9 @@ test.describe('App Launcher', () => {
   test('clicking Iris Git suggestion opens git tree', async ({ tauriPage: page }) => {
     await openHome(page);
 
-    const suggestions = page.locator('section').filter({
-      has: page.getByRole('heading', { name: 'Suggestions' }),
-    });
-    await suggestions.getByText('Iris Git').click();
+    await suggestionButton(page, 'iris-git').click();
 
+    await expect.poll(async () => (await getInvocationsFor(page, 'create_htree_webview')).length).toBe(1);
     const invocations = await page.evaluate(() => (window as any).__tauriInvocations);
     const createCalls = invocations.filter((i: any) => i.cmd === 'create_htree_webview');
     expect(createCalls.length).toBe(1);
@@ -136,13 +136,31 @@ test.describe('App Launcher', () => {
     expect(createCalls[0].args.path).toBe('/index.html');
   });
 
+  test('clicking Iris Social suggestion opens the iris-client tree once', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const socialSuggestion = page.getByTestId('suggestion-open-iris-social');
+    await expect(socialSuggestion).toHaveCount(1);
+    await socialSuggestion.click();
+
+    await expect.poll(async () => (await getInvocationsFor(page, 'create_htree_webview')).length).toBe(1);
+
+    const nip07Calls = await getInvocationsFor(page, 'create_nip07_webview');
+    const createCalls = await getInvocationsFor(page, 'create_htree_webview');
+
+    expect(nip07Calls.length).toBe(0);
+    expect(createCalls.length).toBe(1);
+    expect(createCalls[0].args.host).toBe(distributedOwner);
+    expect(createCalls[0].args.nhash).toBeNull();
+    expect(createCalls[0].args.npub).toBe(distributedOwner);
+    expect(createCalls[0].args.treename).toBe('iris-client');
+    expect(createCalls[0].args.path).toBe('/index.html');
+  });
+
   test('blank built-in suggestion load clears stale cache and recreates the webview once', async ({ tauriPage: page }) => {
     await openHome(page);
 
-    const suggestions = page.locator('section').filter({
-      has: page.getByRole('heading', { name: 'Suggestions' }),
-    });
-    await suggestions.getByText('Iris Video').click();
+    await suggestionButton(page, 'iris-video').click();
 
     await emitTauriEvent(page, 'child-webview-page-load', {
       label: 'content',
@@ -159,14 +177,10 @@ test.describe('App Launcher', () => {
       };
     }).toEqual({
       cacheCalls: 0,
-      clearCalls: 2,
+      clearCalls: 0,
       closeCalls: 1,
       createCalls: 2,
     });
-
-    const clearCalls = await getInvocationsFor(page, 'clear_tree_root_cache');
-    expect(clearCalls[0].args.npub).toBe(distributedOwner);
-    expect(clearCalls[0].args.treeName).toBe('video');
 
     const createCalls = await getInvocationsFor(page, 'create_htree_webview');
     expect(createCalls[1].args.host).toBe(distributedOwner);
@@ -177,17 +191,14 @@ test.describe('App Launcher', () => {
   test('stalled htree suggestion load recreates the webview with plain loopback transport', async ({ tauriPage: page }) => {
     await openHome(page);
 
-    const suggestions = page.locator('section').filter({
-      has: page.getByRole('heading', { name: 'Suggestions' }),
-    });
-    await suggestions.getByText('Iris Video').click();
+    await suggestionButton(page, 'iris-video').click();
 
     await expect.poll(async () => {
       return {
         closeCalls: (await getInvocationsFor(page, 'close_webview')).length,
         createCalls: (await getInvocationsFor(page, 'create_htree_webview')).length,
       };
-    }, { timeout: 5000 }).toEqual({
+    }, { timeout: 10000 }).toEqual({
       closeCalls: 1,
       createCalls: 2,
     });

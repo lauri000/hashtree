@@ -9,6 +9,7 @@
     interactive?: boolean;
     showBackground?: boolean;
     maxWidthClass?: string;
+    allowShrink?: boolean;
     size?: OwnerLabelSize;
     testId?: string;
   }
@@ -19,6 +20,7 @@
     interactive = true,
     showBackground = true,
     maxWidthClass = 'max-w-28',
+    allowShrink = false,
     size = 'sm',
     testId,
   }: Props = $props();
@@ -30,7 +32,7 @@
 
   let sizeConfig = $derived(size === 'xs'
     ? {
-        root: 'gap-1 px-0 py-0',
+        root: 'gap-1 pl-0 pr-1.5 py-0',
         avatar: 'h-4 w-4',
         avatarSize: 16,
         badge: 'h-3 w-3',
@@ -49,7 +51,8 @@
   let rootClass = $derived.by(() => {
     const backgroundClass = showBackground ? 'rounded-full bg-surface-2/85 hover:bg-surface-3' : '';
     const interactiveClass = canOpenProfile ? 'transition-colors' : '';
-    return `inline-flex shrink-0 items-center ${sizeConfig.root} ${maxWidthClass} ${backgroundClass} ${interactiveClass}`.trim();
+    const sizingClass = allowShrink ? 'min-w-0' : 'shrink-0';
+    return `inline-flex ${sizingClass} items-center ${sizeConfig.root} ${maxWidthClass} ${backgroundClass} ${interactiveClass}`.trim();
   });
 
   $effect(() => {

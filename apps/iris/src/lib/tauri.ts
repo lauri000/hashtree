@@ -92,6 +92,7 @@ export async function createHtreeWebview(
     path: string;
     query?: string;
     fragment?: string;
+    cacheBust?: string;
   },
   x: number,
   y: number,
@@ -108,6 +109,7 @@ export async function createHtreeWebview(
     path: opts.path,
     query: opts.query ?? null,
     fragment: opts.fragment ?? null,
+    cacheBust: opts.cacheBust ?? null,
     x,
     y,
     width,

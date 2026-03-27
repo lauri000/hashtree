@@ -167,7 +167,11 @@ fn strip_internal_htree_query_params(url: &str) -> String {
 
     let retained_query: Vec<(String, String)> = parsed
         .query_pairs()
-        .filter(|(key, _)| key != "iris_htree_server" && key != "iris_htree_canonical")
+        .filter(|(key, _)| {
+            key != "iris_htree_server"
+                && key != "iris_htree_canonical"
+                && key != "iris_htree_root"
+        })
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect();
 

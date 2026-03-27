@@ -34,6 +34,65 @@ test.describe('Automation Bridge', () => {
     expect(createCalls[0].args.query).toBe('autoplay=1');
   });
 
+  test('startup deep links can reach a loaded htree page state', async ({ tauriPage: page }) => {
+    const url = 'htree://self/video/index.html?autoplay=1';
+    await page.addInitScript((deepLinkUrl) => {
+      (window as any).__pendingDeepLinks = [deepLinkUrl];
+    }, url);
+
+    await openHome(page);
+
+    await expect.poll(async () => {
+      const state = await getAutomationState(page);
+      return state.currentUrl;
+    }).toBe(url);
+
+    const createCalls = await getInvocationsFor(page, 'create_htree_webview');
+    expect(createCalls).toHaveLength(1);
+    expect(createCalls[0].args.host).toBe('self');
+    expect(createCalls[0].args.treename).toBe('video');
+    expect(createCalls[0].args.path).toBe('/index.html');
+
+    await emitTauriEvent(page, 'child-webview-page-load', {
+      label: 'content',
+      url,
+      event: 'started',
+    });
+    await emitTauriEvent(page, 'child-webview-diagnostic', {
+      label: 'content',
+      url,
+      source: 'load',
+      title: 'Iris Video',
+      bodyText: 'Video feed loaded',
+      mediaSummary: 'thumbs=4/4 visible=3 videos=1/1',
+      error: null,
+    });
+    await emitTauriEvent(page, 'child-webview-page-load', {
+      label: 'content',
+      url,
+      event: 'finished',
+    });
+
+    await expect.poll(async () => {
+      const state = await getAutomationState(page);
+      return {
+        currentUrl: state.currentUrl,
+        childPageLoadState: state.childPageLoadState,
+        childPageLoadUrl: state.childPageLoadUrl,
+        childDocumentTitle: state.childDocumentTitle,
+        childBodyText: state.childBodyText,
+        childMediaSummary: state.childMediaSummary,
+      };
+    }).toEqual({
+      currentUrl: url,
+      childPageLoadState: 'finished',
+      childPageLoadUrl: url,
+      childDocumentTitle: 'Iris Video',
+      childBodyText: 'Video feed loaded',
+      childMediaSummary: 'thumbs=4/4 visible=3 videos=1/1',
+    });
+  });
+
   test('publishes shell state snapshots', async ({ tauriPage: page }) => {
     await openHome(page);
 

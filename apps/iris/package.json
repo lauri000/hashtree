@@ -25,6 +25,7 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:native:linux:files": "node ./scripts/tauri-driver-linux-smoke.mjs",
+    "test:native:linux:social": "node ./scripts/tauri-driver-linux-social-smoke.mjs",
     "test:native:linux:video": "node ./scripts/tauri-driver-linux-video-smoke.mjs",
     "test:native:linux": "pnpm run test:native:linux:files && pnpm run test:native:linux:video",
     "test:native:docker": "bash ./scripts/test-native-linux-docker.sh"

@@ -7,53 +7,20 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const appDir = path.resolve(__dirname, '..');
 const launcherPath = path.join(appDir, 'scripts', 'launch-linux-debug-iris.sh');
-const artifactsDir = process.env.IRIS_NATIVE_ARTIFACT_DIR ?? path.join(appDir, 'test-results', 'native-video');
+const artifactsDir = process.env.IRIS_NATIVE_ARTIFACT_DIR ?? path.join(appDir, 'test-results', 'native-social');
 const webdriverPort = Number(process.env.TAURI_DRIVER_PORT ?? 4444);
 const automationPort = Number(process.env.IRIS_AUTOMATION_PORT ?? 21977);
 const webdriverBase = `http://127.0.0.1:${webdriverPort}`;
 const automationBase = `http://127.0.0.1:${automationPort}/automation`;
 const elementRefKey = 'element-6066-11e4-a52e-4f735466cecf';
 const distributedOwner = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
-const smokeUrl = process.env.IRIS_VIDEO_SMOKE_URL ?? `htree://${distributedOwner}/video/index.html?smoke=1&htree_debug=1`;
-const smokeMode = process.env.IRIS_VIDEO_SMOKE_MODE ?? 'open_url';
-const genericVideoUrl = process.env.IRIS_VIDEO_GENERIC_URL ?? `htree://${distributedOwner}/video/`;
+const socialUrl = `htree://${distributedOwner}/iris-client`;
+
 let driverProcess = null;
 let sessionId = null;
 
 function fail(message) {
   throw new Error(message);
-}
-
-function hasSmokeMediaSummary(summary) {
-  if (typeof summary !== 'string') {
-    return false;
-  }
-  return /app=\d+/.test(summary) && summary.includes('smoke=1');
-}
-
-function parseMediaSummary(summary) {
-  const match = String(summary ?? '').match(/thumbs=(\d+)\/(\d+) visible=(\d+) videos=(\d+)\/(\d+)/);
-  if (!match) {
-    return null;
-  }
-  return {
-    loadedThumbs: Number(match[1]),
-    totalThumbs: Number(match[2]),
-    visibleThumbs: Number(match[3]),
-    readyVideos: Number(match[4]),
-    totalVideos: Number(match[5]),
-  };
-}
-
-function hasVisibleVideoFeed(state) {
-  const media = parseMediaSummary(state.childMediaSummary);
-  return state.childPageLoadState === 'finished' &&
-    state.childDocumentTitle === 'Iris Video' &&
-    typeof state.childBodyText === 'string' &&
-    state.childBodyText.trim().length > 80 &&
-    !!media &&
-    media.loadedThumbs > 0 &&
-    media.visibleThumbs > 0;
 }
 
 function which(binary) {
@@ -127,18 +94,6 @@ async function waitForAutomationState(predicate, description, timeoutMs = 30000)
   }, description, timeoutMs);
 }
 
-async function postAutomationCommand(command) {
-  const response = await fetch(`${automationBase}/command`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(command),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    fail(`automation command failed: ${response.status} ${body}`);
-  }
-}
-
 async function createSession() {
   const payload = await request('POST', '/session', {
     capabilities: {
@@ -156,6 +111,17 @@ async function createSession() {
   }
 }
 
+async function deleteSession() {
+  if (!sessionId) {
+    return;
+  }
+  try {
+    await request('DELETE', `/session/${sessionId}`);
+  } finally {
+    sessionId = null;
+  }
+}
+
 async function findElement(using, value) {
   const payload = await request('POST', `/session/${sessionId}/element`, { using, value });
   const element = payload.value;
@@ -170,18 +136,8 @@ async function clickElement(elementId) {
   await request('POST', `/session/${sessionId}/element/${elementId}/click`, {});
 }
 
-async function deleteSession() {
-  if (!sessionId) {
-    return;
-  }
-  try {
-    await request('DELETE', `/session/${sessionId}`);
-  } finally {
-    sessionId = null;
-  }
-}
-
 async function takeScreenshot(filename) {
+  await mkdir(artifactsDir, { recursive: true });
   const importBinary = getFramebufferCaptureBinary();
   if (importBinary) {
     const captured = captureFramebufferToFile(importBinary, filename);
@@ -194,7 +150,6 @@ async function takeScreenshot(filename) {
   if (!encoded) {
     fail('WebDriver screenshot response did not contain image data');
   }
-  await mkdir(artifactsDir, { recursive: true });
   await writeFile(path.join(artifactsDir, filename), Buffer.from(encoded, 'base64'));
 }
 
@@ -217,15 +172,6 @@ function captureFramebufferToFile(importBinary, filename) {
   }
   console.warn(`Framebuffer capture failed: ${result.stderr || result.stdout || result.status}`);
   return false;
-}
-
-async function takeFramebufferCapture(filename) {
-  const importBinary = getFramebufferCaptureBinary();
-  if (!importBinary) {
-    return;
-  }
-  await mkdir(artifactsDir, { recursive: true });
-  captureFramebufferToFile(importBinary, filename);
 }
 
 function maybeReexecUnderXvfb() {
@@ -253,17 +199,13 @@ function maybeReexecUnderXvfb() {
 }
 
 function startTauriDriver(nativeDriverPath) {
-  const driverEnv = { ...process.env };
-  if (smokeMode === 'startup_deep_link') {
-    driverEnv.IRIS_AUTOMATION_OPEN_URL = smokeUrl;
-  }
   driverProcess = spawn(
     'tauri-driver',
     ['--port', String(webdriverPort), '--native-driver', nativeDriverPath],
     {
       cwd: appDir,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: driverEnv,
+      env: process.env,
     },
   );
 
@@ -289,23 +231,26 @@ async function waitForWebDriver() {
   }, 'tauri-driver to be ready');
 }
 
-function currentUrlMatchesVideo(state) {
+function currentUrlMatchesSocial(state) {
+  const currentUrl = typeof state.currentUrl === 'string' ? state.currentUrl : '';
   return state.currentView === 'webview' &&
     (
-      state.currentUrl === smokeUrl ||
-      state.currentUrl === smokeUrl.replace('/index.html', '') ||
-      state.currentUrl === `${smokeUrl.replace('/index.html', '')}/` ||
-      state.currentUrl === `htree://${distributedOwner}/video` ||
-      state.currentUrl === `htree://${distributedOwner}/video/` ||
-      state.currentUrl === `htree://${distributedOwner}/video/index.html` ||
-      state.currentUrl.startsWith('htree://nhash1') ||
-      state.currentUrl.includes('/video/') ||
-      state.currentUrl.includes('/video/index.html')
+      currentUrl === socialUrl ||
+      currentUrl === `${socialUrl}/` ||
+      currentUrl === `${socialUrl}/index.html` ||
+      currentUrl.startsWith('htree://nhash1') ||
+      currentUrl.includes('/iris-client/') ||
+      currentUrl.includes('/iris-client/index.html')
     );
 }
 
-async function sleep(ms) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
+function socialContentLoaded(state) {
+  return state.childPageLoadState === 'finished' &&
+    !state.childLastError &&
+    typeof state.childDocumentTitle === 'string' &&
+    state.childDocumentTitle.trim().length > 0 &&
+    typeof state.childBodyText === 'string' &&
+    state.childBodyText.trim().length > 20;
 }
 
 async function main() {
@@ -336,84 +281,34 @@ async function main() {
       'Iris launcher to be ready',
       60000,
     );
-    await takeScreenshot('video-smoke-launcher.png');
+    await takeScreenshot('social-launcher.png');
 
-    if (smokeMode === 'suggestion_click') {
-      const videoCard = await findElement(
-        'xpath',
-        "//*[@role='button'][.//*[normalize-space(text())='Iris Video']]",
-      );
-      await clickElement(videoCard);
-    } else if (smokeMode === 'startup_deep_link') {
-      // Launch URL arrives from IRIS_AUTOMATION_OPEN_URL at process start.
-    } else if (smokeMode === 'open_root') {
-      await postAutomationCommand({ action: 'open_url', url: genericVideoUrl });
-    } else {
-      await postAutomationCommand({ action: 'open_url', url: smokeUrl });
-    }
-
-    await waitForAutomationState(
-      currentUrlMatchesVideo,
-      smokeMode === 'suggestion_click'
-        ? 'Iris Video suggestion to open through htree'
-        : smokeMode === 'startup_deep_link'
-          ? `Iris to open startup deep link ${smokeUrl}`
-        : smokeMode === 'open_root'
-          ? `Iris to open ${genericVideoUrl}`
-          : `Iris to open ${smokeUrl}`,
+    const socialCard = await waitFor(
+      () => findElement('css selector', "[data-testid='suggestion-open-iris-social']"),
+      'Iris Social launcher suggestion to render',
       60000,
     );
-    await takeScreenshot('video-smoke-opened.png');
+    await clickElement(socialCard);
 
-    let loadedState;
-    try {
-      if (smokeMode === 'suggestion_click' || smokeMode === 'open_root') {
-        loadedState = await waitForAutomationState(
-          (state) => hasVisibleVideoFeed(state),
-          smokeMode === 'suggestion_click'
-            ? 'Iris Video suggestion content and thumbnails to load through htree'
-            : 'Iris Video root URL content and thumbnails to load through htree',
-          120000,
-        );
-      } else {
-        loadedState = await waitForAutomationState(
-          (state) => {
-            const media = parseMediaSummary(state.childMediaSummary);
-            return state.childPageLoadState === 'finished' &&
-              state.childDocumentTitle === 'Iris Video' &&
-              state.childBodyText.includes('Smoke image ready') &&
-              state.childBodyText.includes('Smoke video ready') &&
-              !!media &&
-              media.loadedThumbs > 0 &&
-              media.visibleThumbs > 0 &&
-              hasSmokeMediaSummary(state.childMediaSummary) &&
-              (media.readyVideos > 0 || state.childBodyText.includes('Smoke video ready'));
-          },
-          'video smoke assets to load through the htree backend',
-          120000,
-        );
-      }
-    } catch (error) {
-      const failedState = await getAutomationState().catch(() => null);
-      await takeScreenshot('video-smoke-failed.png').catch(() => {});
-      if (failedState) {
-        console.error('Video smoke failed state:', JSON.stringify(failedState));
-      }
-      throw error;
-    }
+    const openedState = await waitForAutomationState(
+      currentUrlMatchesSocial,
+      'Iris Social suggestion to open through htree',
+      60000,
+    );
+    await takeScreenshot('social-opened.png');
 
-    await takeScreenshot('video-smoke-loaded.png');
-    await takeFramebufferCapture('framebuffer.png');
-    if (smokeMode === 'suggestion_click' || smokeMode === 'open_root') {
-      await sleep(5000);
-      await takeScreenshot('video-smoke-loaded-late.png');
-      await takeFramebufferCapture('framebuffer-late.png');
-    }
-    console.log('Video smoke URL:', smokeUrl);
-    console.log('Video smoke body text:', loadedState.childBodyText);
-    console.log('Video smoke media summary:', loadedState.childMediaSummary);
-    console.log('Video smoke page load URL:', loadedState.childPageLoadUrl);
-    console.log(`Native video smoke passed. Screenshots written to ${artifactsDir}`);
+    const loadedState = await waitForAutomationState(
+      socialContentLoaded,
+      'Iris Social content to finish loading through htree',
+      120000,
+    );
+    await takeScreenshot('social-loaded.png');
+
+    console.log('Social smoke current URL:', openedState.currentUrl);
+    console.log('Social smoke title:', loadedState.childDocumentTitle);
+    console.log('Social smoke page load URL:', loadedState.childPageLoadUrl);
+    console.log('Social smoke body preview:', String(loadedState.childBodyText ?? '').slice(0, 400));
+    console.log(`Native social smoke passed. Screenshots written to ${artifactsDir}`);
   } finally {
     await deleteSession().catch(() => {});
     if (driverProcess) {
