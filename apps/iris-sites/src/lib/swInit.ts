@@ -22,8 +22,13 @@ export async function initServiceWorker(): Promise<void> {
     }
   }
 
-  registerSW({
+  const updateSW = registerSW({
     immediate: true,
+    onNeedRefresh() {
+      if (!isTestMode) {
+        updateSW(true);
+      }
+    },
   });
 
   if (!navigator.serviceWorker.controller) {
@@ -43,4 +48,14 @@ export async function initServiceWorker(): Promise<void> {
       }
     }
   }
+
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    const reloadKey = 'iris-sites-sw-reload';
+    if (!sessionStorage.getItem(reloadKey)) {
+      sessionStorage.setItem(reloadKey, '1');
+      if (!isTestMode) {
+        window.location.reload();
+      }
+    }
+  }, { once: true });
 }

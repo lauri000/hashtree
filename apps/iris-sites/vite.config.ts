@@ -31,7 +31,7 @@ export default defineConfig({
     portableHtmlPlugin(),
     svelte(),
     VitePWA({
-      registerType: 'prompt',
+      registerType: 'autoUpdate',
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'sw.ts',
