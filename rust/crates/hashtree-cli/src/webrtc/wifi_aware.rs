@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use nostr::{ClientMessage, Event, Filter, JsonUtil, Keys, RelayMessage};
+use nostr::{nips::nip19::FromBech32, Event, Filter, JsonUtil, Keys, PublicKey};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -8,13 +8,20 @@ use tokio::sync::{mpsc, watch, Mutex};
 use tracing::{debug, warn};
 
 use super::root_events::{
-    build_root_filter, is_hashtree_labeled_event, pick_latest_event, root_event_from_peer,
-    PeerRootEvent, HASHTREE_KIND,
+    build_root_filter, is_hashtree_labeled_event, root_event_from_peer, PeerRootEvent,
+    HASHTREE_KIND,
 };
 use super::LocalNostrBus;
 use crate::nostr_relay::NostrRelay;
 
 pub const WIFI_AWARE_SOURCE: &str = "wifi-aware";
+const FRAME_VERSION: u8 = 1;
+const FRAME_KIND_QUERY_ROOT: u8 = 1;
+const FRAME_KIND_ROOT_RESPONSE: u8 = 2;
+const FRAME_KIND_QUERY_DONE: u8 = 3;
+const ROOT_FLAG_KEY: u8 = 1 << 0;
+const ROOT_FLAG_ENCRYPTED_KEY: u8 = 1 << 1;
+const ROOT_FLAG_SELF_ENCRYPTED_KEY: u8 = 1 << 2;
 
 #[derive(Debug, Clone)]
 pub struct WifiAwareConfig {
@@ -43,14 +50,14 @@ impl Default for WifiAwareConfig {
 pub enum WifiAwareEvent {
     PeerDiscovered { peer_id: String },
     PeerLost { peer_id: String },
-    TextMessage { peer_id: String, payload: String },
+    Message { peer_id: String, payload: Vec<u8> },
 }
 
 #[async_trait]
 pub trait MobileWifiAwareBridge: Send + Sync {
     async fn start(&self, local_peer_id: String) -> Result<mpsc::Receiver<WifiAwareEvent>>;
 
-    async fn broadcast_text(&self, payload: String) -> Result<()>;
+    async fn broadcast_message(&self, payload: Vec<u8>) -> Result<()>;
 }
 
 static MOBILE_WIFI_AWARE_BRIDGE: OnceLock<Arc<dyn MobileWifiAwareBridge>> = OnceLock::new();
@@ -70,8 +77,28 @@ pub struct WifiAwareNostrBus {
     keys: Keys,
     relay: Arc<NostrRelay>,
     bridge: Arc<dyn MobileWifiAwareBridge>,
-    pending_queries: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<RelayMessage>>>>,
+    pending_queries: Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<PendingQueryMessage>>>>,
     announced_event_ids: Arc<Mutex<HashSet<String>>>,
+}
+
+enum PendingQueryMessage {
+    Root(PeerRootEvent),
+    Done,
+}
+
+enum WifiAwareFrame {
+    QueryRoot {
+        request_id: u64,
+        owner_pubkey_hex: String,
+        tree_name: String,
+    },
+    RootResponse {
+        request_id: u64,
+        root: PeerRootEvent,
+    },
+    QueryDone {
+        request_id: u64,
+    },
 }
 
 #[async_trait]
@@ -136,8 +163,8 @@ impl WifiAwareNostrBus {
                 }
                 maybe_event = events.recv() => {
                     match maybe_event {
-                        Some(WifiAwareEvent::TextMessage { peer_id, payload }) => {
-                            self.handle_text_message(&peer_id, &payload, &signaling_tx).await;
+                        Some(WifiAwareEvent::Message { peer_id, payload }) => {
+                            self.handle_message(&peer_id, &payload, &signaling_tx).await;
                         }
                         Some(WifiAwareEvent::PeerDiscovered { peer_id }) => {
                             debug!("wifi aware peer discovered: {}", peer_id);
@@ -155,7 +182,11 @@ impl WifiAwareNostrBus {
     }
 
     pub async fn broadcast_event(&self, event: &Event) -> Result<()> {
-        self.bridge.broadcast_text(event.as_json()).await
+        // Keep raw event fallback for generic signaling until local bus semantics
+        // are narrowed further. Compact frames are used for root query/response.
+        self.bridge
+            .broadcast_message(event.as_json().into_bytes())
+            .await
     }
 
     pub async fn query_root(
@@ -164,24 +195,18 @@ impl WifiAwareNostrBus {
         tree_name: &str,
         timeout: Duration,
     ) -> Option<PeerRootEvent> {
-        let filter = build_root_filter(owner_pubkey, tree_name)?;
-        let subscription_id = format!("wifi-aware-root-{}", rand::random::<u64>());
-        let request = ClientMessage::req(
-            nostr::SubscriptionId::new(subscription_id.clone()),
-            vec![filter],
-        );
+        let request_id = rand::random::<u64>();
+        let owner_bytes = owner_pubkey_bytes(owner_pubkey)?;
+        let request = encode_query_root(request_id, owner_bytes, tree_name)?;
         let (tx, mut rx) = mpsc::unbounded_channel();
-        self.pending_queries
-            .lock()
-            .await
-            .insert(subscription_id.clone(), tx);
+        self.pending_queries.lock().await.insert(request_id, tx);
 
-        if self.bridge.broadcast_text(request.as_json()).await.is_err() {
-            self.pending_queries.lock().await.remove(&subscription_id);
+        if self.bridge.broadcast_message(request).await.is_err() {
+            self.pending_queries.lock().await.remove(&request_id);
             return None;
         }
 
-        let mut events = Vec::new();
+        let mut roots = Vec::new();
         let deadline = tokio::time::sleep(timeout);
         tokio::pin!(deadline);
 
@@ -193,32 +218,58 @@ impl WifiAwareNostrBus {
                         break;
                     };
                     match msg {
-                        RelayMessage::Event { subscription_id: sid, event }
-                            if sid.to_string() == subscription_id =>
-                        {
-                            events.push(*event);
-                        }
-                        RelayMessage::EndOfStoredEvents(sid) if sid.to_string() == subscription_id => {
-                            break;
-                        }
-                        _ => {}
+                        PendingQueryMessage::Root(root) => roots.push(root),
+                        PendingQueryMessage::Done => break,
                     }
                 }
             }
         }
 
-        self.pending_queries.lock().await.remove(&subscription_id);
-
-        let latest = pick_latest_event(events.iter())?;
-        root_event_from_peer(latest, self.source_name(), tree_name)
+        self.pending_queries.lock().await.remove(&request_id);
+        pick_latest_root_event(&roots)
     }
 
-    async fn handle_text_message(
+    async fn handle_message(
         &self,
         peer_id: &str,
-        text: &str,
+        payload: &[u8],
         signaling_tx: &mpsc::Sender<(String, Event)>,
     ) {
+        if let Some(frame) = decode_frame(payload) {
+            match frame {
+                WifiAwareFrame::QueryRoot {
+                    request_id,
+                    owner_pubkey_hex,
+                    tree_name,
+                } => {
+                    self.respond_to_root_query(request_id, &owner_pubkey_hex, &tree_name)
+                        .await;
+                }
+                WifiAwareFrame::RootResponse { request_id, root } => {
+                    let tx = self.pending_queries.lock().await.get(&request_id).cloned();
+                    if let Some(tx) = tx {
+                        let _ = tx.send(PendingQueryMessage::Root(root));
+                    }
+                }
+                WifiAwareFrame::QueryDone { request_id } => {
+                    let tx = self.pending_queries.lock().await.get(&request_id).cloned();
+                    if let Some(tx) = tx {
+                        let _ = tx.send(PendingQueryMessage::Done);
+                    }
+                }
+            }
+            return;
+        }
+
+        let Ok(text) = std::str::from_utf8(payload) else {
+            debug!(
+                "ignoring non-utf8 wifi aware payload from {} ({} bytes)",
+                peer_id,
+                payload.len()
+            );
+            return;
+        };
+
         if let Ok(event) = Event::from_json(text) {
             if event.pubkey == self.keys.public_key() {
                 return;
@@ -240,68 +291,41 @@ impl WifiAwareNostrBus {
             return;
         }
 
-        if let Ok(msg) = ClientMessage::from_json(text) {
-            if let ClientMessage::Req {
-                subscription_id,
-                filters,
-            } = msg
-            {
-                for filter in filters {
-                    let limit = filter.limit.unwrap_or(50).min(50);
-                    for event in self.relay.query_events(&filter, limit).await {
-                        let relay_msg = RelayMessage::event(subscription_id.clone(), event);
-                        if let Err(err) = self.bridge.broadcast_text(relay_msg.as_json()).await {
-                            warn!("wifi aware root response broadcast failed: {}", err);
-                        }
-                    }
-                }
-                let eose = RelayMessage::eose(subscription_id);
-                if let Err(err) = self.bridge.broadcast_text(eose.as_json()).await {
-                    warn!("wifi aware eose broadcast failed: {}", err);
-                }
-            }
+        debug!("ignoring wifi aware payload from {}: {}", peer_id, text);
+    }
+
+    async fn respond_to_root_query(&self, request_id: u64, owner_pubkey: &str, tree_name: &str) {
+        let Some(filter) = build_root_filter(owner_pubkey, tree_name) else {
+            let _ = self
+                .bridge
+                .broadcast_message(encode_query_done(request_id))
+                .await;
             return;
+        };
+
+        for event in self.relay.query_events(&filter, 50).await {
+            let Some(root) = root_event_from_peer(&event, self.source_name(), tree_name) else {
+                continue;
+            };
+            let Some(encoded) = encode_root_response(request_id, &root) else {
+                warn!(
+                    "Skipping wifi aware root response for {} due to unsupported root fields",
+                    tree_name
+                );
+                continue;
+            };
+            if let Err(err) = self.bridge.broadcast_message(encoded).await {
+                warn!("wifi aware root response broadcast failed: {}", err);
+            }
         }
 
-        if let Ok(msg) = RelayMessage::from_json(text) {
-            match &msg {
-                RelayMessage::Event {
-                    subscription_id,
-                    event,
-                } => {
-                    if event.kind == nostr::Kind::Custom(HASHTREE_KIND)
-                        && is_hashtree_labeled_event(event)
-                        && event.verify().is_ok()
-                    {
-                        let _ = self.relay.ingest_trusted_event((**event).clone()).await;
-                    }
-                    let tx = self
-                        .pending_queries
-                        .lock()
-                        .await
-                        .get(&subscription_id.to_string())
-                        .cloned();
-                    if let Some(tx) = tx {
-                        let _ = tx.send(msg);
-                    }
-                }
-                RelayMessage::EndOfStoredEvents(subscription_id) => {
-                    let tx = self
-                        .pending_queries
-                        .lock()
-                        .await
-                        .get(&subscription_id.to_string())
-                        .cloned();
-                    if let Some(tx) = tx {
-                        let _ = tx.send(msg);
-                    }
-                }
-                _ => {}
-            }
-            return;
+        if let Err(err) = self
+            .bridge
+            .broadcast_message(encode_query_done(request_id))
+            .await
+        {
+            warn!("wifi aware query-done broadcast failed: {}", err);
         }
-
-        debug!("ignoring wifi aware text frame from {}: {}", peer_id, text);
     }
 
     async fn broadcast_known_root_updates(&self) -> Result<()> {
@@ -325,6 +349,213 @@ impl WifiAwareNostrBus {
     }
 }
 
+fn owner_pubkey_bytes(owner_pubkey: &str) -> Option<[u8; 32]> {
+    let pubkey = PublicKey::from_hex(owner_pubkey)
+        .or_else(|_| PublicKey::from_bech32(owner_pubkey))
+        .ok()?;
+    Some(pubkey.to_bytes())
+}
+
+fn hex_bytes_32(value: &str) -> Option<[u8; 32]> {
+    let decoded = hex::decode(value).ok()?;
+    decoded.try_into().ok()
+}
+
+fn push_u16(buf: &mut Vec<u8>, value: usize) -> Option<()> {
+    let value: u16 = value.try_into().ok()?;
+    buf.extend_from_slice(&value.to_be_bytes());
+    Some(())
+}
+
+fn read_u16(payload: &[u8], cursor: &mut usize) -> Option<usize> {
+    if payload.len() < *cursor + 2 {
+        return None;
+    }
+    let value = u16::from_be_bytes([payload[*cursor], payload[*cursor + 1]]) as usize;
+    *cursor += 2;
+    Some(value)
+}
+
+fn read_u64(payload: &[u8], cursor: &mut usize) -> Option<u64> {
+    if payload.len() < *cursor + 8 {
+        return None;
+    }
+    let bytes: [u8; 8] = payload[*cursor..*cursor + 8].try_into().ok()?;
+    *cursor += 8;
+    Some(u64::from_be_bytes(bytes))
+}
+
+fn read_exact<const N: usize>(payload: &[u8], cursor: &mut usize) -> Option<[u8; N]> {
+    if payload.len() < *cursor + N {
+        return None;
+    }
+    let bytes: [u8; N] = payload[*cursor..*cursor + N].try_into().ok()?;
+    *cursor += N;
+    Some(bytes)
+}
+
+fn read_tree_name(payload: &[u8], cursor: &mut usize) -> Option<String> {
+    let len = read_u16(payload, cursor)?;
+    if payload.len() < *cursor + len {
+        return None;
+    }
+    let value = std::str::from_utf8(&payload[*cursor..*cursor + len])
+        .ok()?
+        .to_string();
+    *cursor += len;
+    Some(value)
+}
+
+fn encode_query_root(request_id: u64, owner_pubkey: [u8; 32], tree_name: &str) -> Option<Vec<u8>> {
+    let tree_bytes = tree_name.as_bytes();
+    let mut payload = Vec::with_capacity(2 + 8 + 32 + 2 + tree_bytes.len());
+    payload.push(FRAME_VERSION);
+    payload.push(FRAME_KIND_QUERY_ROOT);
+    payload.extend_from_slice(&request_id.to_be_bytes());
+    payload.extend_from_slice(&owner_pubkey);
+    push_u16(&mut payload, tree_bytes.len())?;
+    payload.extend_from_slice(tree_bytes);
+    Some(payload)
+}
+
+fn encode_query_done(request_id: u64) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(10);
+    payload.push(FRAME_VERSION);
+    payload.push(FRAME_KIND_QUERY_DONE);
+    payload.extend_from_slice(&request_id.to_be_bytes());
+    payload
+}
+
+fn encode_root_response(request_id: u64, root: &PeerRootEvent) -> Option<Vec<u8>> {
+    let event_id = hex_bytes_32(&root.event_id)?;
+    let hash = hex_bytes_32(&root.hash)?;
+    let key = match root.key.as_deref() {
+        Some(value) => Some(hex_bytes_32(value)?),
+        None => None,
+    };
+    let encrypted_key = match root.encrypted_key.as_deref() {
+        Some(value) => Some(hex_bytes_32(value)?),
+        None => None,
+    };
+    let self_encrypted_key = match root.self_encrypted_key.as_deref() {
+        Some(value) => Some(hex_bytes_32(value)?),
+        None => None,
+    };
+
+    let mut flags = 0u8;
+    if key.is_some() {
+        flags |= ROOT_FLAG_KEY;
+    }
+    if encrypted_key.is_some() {
+        flags |= ROOT_FLAG_ENCRYPTED_KEY;
+    }
+    if self_encrypted_key.is_some() {
+        flags |= ROOT_FLAG_SELF_ENCRYPTED_KEY;
+    }
+
+    let mut payload = Vec::with_capacity(2 + 8 + 8 + 32 + 32 + 1 + 96);
+    payload.push(FRAME_VERSION);
+    payload.push(FRAME_KIND_ROOT_RESPONSE);
+    payload.extend_from_slice(&request_id.to_be_bytes());
+    payload.extend_from_slice(&root.created_at.to_be_bytes());
+    payload.extend_from_slice(&event_id);
+    payload.extend_from_slice(&hash);
+    payload.push(flags);
+    if let Some(value) = key {
+        payload.extend_from_slice(&value);
+    }
+    if let Some(value) = encrypted_key {
+        payload.extend_from_slice(&value);
+    }
+    if let Some(value) = self_encrypted_key {
+        payload.extend_from_slice(&value);
+    }
+    Some(payload)
+}
+
+fn decode_frame(payload: &[u8]) -> Option<WifiAwareFrame> {
+    if payload.len() < 2 || payload[0] != FRAME_VERSION {
+        return None;
+    }
+
+    let mut cursor = 2;
+    match payload[1] {
+        FRAME_KIND_QUERY_ROOT => {
+            let request_id = read_u64(payload, &mut cursor)?;
+            let owner_pubkey = read_exact::<32>(payload, &mut cursor)?;
+            let tree_name = read_tree_name(payload, &mut cursor)?;
+            if cursor != payload.len() {
+                return None;
+            }
+            Some(WifiAwareFrame::QueryRoot {
+                request_id,
+                owner_pubkey_hex: hex::encode(owner_pubkey),
+                tree_name,
+            })
+        }
+        FRAME_KIND_ROOT_RESPONSE => {
+            let request_id = read_u64(payload, &mut cursor)?;
+            let created_at = read_u64(payload, &mut cursor)?;
+            let event_id = hex::encode(read_exact::<32>(payload, &mut cursor)?);
+            let hash = hex::encode(read_exact::<32>(payload, &mut cursor)?);
+            let flags = *payload.get(cursor)?;
+            cursor += 1;
+            let key = if flags & ROOT_FLAG_KEY != 0 {
+                Some(hex::encode(read_exact::<32>(payload, &mut cursor)?))
+            } else {
+                None
+            };
+            let encrypted_key = if flags & ROOT_FLAG_ENCRYPTED_KEY != 0 {
+                Some(hex::encode(read_exact::<32>(payload, &mut cursor)?))
+            } else {
+                None
+            };
+            let self_encrypted_key = if flags & ROOT_FLAG_SELF_ENCRYPTED_KEY != 0 {
+                Some(hex::encode(read_exact::<32>(payload, &mut cursor)?))
+            } else {
+                None
+            };
+            if cursor != payload.len() {
+                return None;
+            }
+            Some(WifiAwareFrame::RootResponse {
+                request_id,
+                root: PeerRootEvent {
+                    hash,
+                    key,
+                    encrypted_key,
+                    self_encrypted_key,
+                    event_id,
+                    created_at,
+                    peer_id: WIFI_AWARE_SOURCE.to_string(),
+                },
+            })
+        }
+        FRAME_KIND_QUERY_DONE => {
+            let request_id = read_u64(payload, &mut cursor)?;
+            if cursor != payload.len() {
+                return None;
+            }
+            Some(WifiAwareFrame::QueryDone { request_id })
+        }
+        _ => None,
+    }
+}
+
+fn pick_latest_root_event(events: &[PeerRootEvent]) -> Option<PeerRootEvent> {
+    events
+        .iter()
+        .max_by(|a, b| {
+            let ordering = a.created_at.cmp(&b.created_at);
+            if ordering == std::cmp::Ordering::Equal {
+                a.event_id.cmp(&b.event_id)
+            } else {
+                ordering
+            }
+        })
+        .cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,7 +567,7 @@ mod tests {
     use tokio::sync::Mutex as AsyncMutex;
 
     struct MockWifiAwareBridge {
-        sent_payloads: AsyncMutex<Vec<String>>,
+        sent_payloads: AsyncMutex<Vec<Vec<u8>>>,
         response_events: AsyncMutex<Vec<Event>>,
         event_tx: AsyncMutex<Option<mpsc::Sender<WifiAwareEvent>>>,
     }
@@ -354,7 +585,7 @@ mod tests {
             self.response_events.lock().await.push(event);
         }
 
-        async fn sent_payloads(&self) -> Vec<String> {
+        async fn sent_payloads(&self) -> Vec<Vec<u8>> {
             self.sent_payloads.lock().await.clone()
         }
 
@@ -377,38 +608,42 @@ mod tests {
             Ok(rx)
         }
 
-        async fn broadcast_text(&self, payload: String) -> Result<()> {
+        async fn broadcast_message(&self, payload: Vec<u8>) -> Result<()> {
             self.sent_payloads.lock().await.push(payload.clone());
             let Some(tx) = self.event_tx.lock().await.clone() else {
                 return Ok(());
             };
 
-            if let Ok(ClientMessage::Req {
-                subscription_id,
-                filters,
-            }) = ClientMessage::from_json(&payload)
+            if let Some(WifiAwareFrame::QueryRoot {
+                request_id,
+                owner_pubkey_hex,
+                tree_name,
+            }) = decode_frame(&payload)
             {
                 let response_events = self.response_events.lock().await.clone();
-                for filter in filters {
-                    for event in response_events
-                        .iter()
-                        .filter(|event| filter.match_event(event))
-                    {
-                        tx.send(WifiAwareEvent::TextMessage {
-                            peer_id: "peer-b".to_string(),
-                            payload: RelayMessage::event(subscription_id.clone(), event.clone())
-                                .as_json(),
-                        })
-                        .await
-                        .map_err(|err| anyhow!("mock wifi aware event send failed: {}", err))?;
-                    }
+                for event in response_events
+                    .iter()
+                    .filter(|event| event.pubkey.to_hex() == owner_pubkey_hex)
+                {
+                    let Some(root) = root_event_from_peer(event, WIFI_AWARE_SOURCE, &tree_name)
+                    else {
+                        continue;
+                    };
+                    let encoded = encode_root_response(request_id, &root)
+                        .expect("expected compact root response encoding");
+                    tx.send(WifiAwareEvent::Message {
+                        peer_id: "peer-b".to_string(),
+                        payload: encoded,
+                    })
+                    .await
+                    .map_err(|err| anyhow!("mock wifi aware event send failed: {}", err))?;
                 }
-                tx.send(WifiAwareEvent::TextMessage {
+                tx.send(WifiAwareEvent::Message {
                     peer_id: "peer-b".to_string(),
-                    payload: RelayMessage::eose(subscription_id).as_json(),
+                    payload: encode_query_done(request_id),
                 })
                 .await
-                .map_err(|err| anyhow!("mock wifi aware eose send failed: {}", err))?;
+                .map_err(|err| anyhow!("mock wifi aware query-done send failed: {}", err))?;
             }
             Ok(())
         }
@@ -436,8 +671,29 @@ mod tests {
         )?))
     }
 
+    #[test]
+    fn compact_query_root_frame_round_trips() {
+        let owner =
+            owner_pubkey_bytes("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+                .expect("owner pubkey");
+        let frame = encode_query_root(42, owner, "video").expect("query frame");
+
+        match decode_frame(&frame).expect("decoded frame") {
+            WifiAwareFrame::QueryRoot {
+                request_id,
+                owner_pubkey_hex,
+                tree_name,
+            } => {
+                assert_eq!(request_id, 42);
+                assert_eq!(owner_pubkey_hex, hex::encode(owner));
+                assert_eq!(tree_name, "video");
+            }
+            _ => panic!("expected query-root frame"),
+        }
+    }
+
     #[tokio::test]
-    async fn wifi_aware_bus_broadcast_event_forwards_json() -> Result<()> {
+    async fn wifi_aware_bus_broadcast_event_forwards_json_bytes() -> Result<()> {
         let bridge = MockWifiAwareBridge::new();
         let bus_keys = Keys::generate();
         let tmp = TempDir::new()?;
@@ -454,12 +710,13 @@ mod tests {
         bus.broadcast_event(&event).await?;
 
         let sent = bridge.sent_payloads().await;
-        assert_eq!(sent, vec![event.as_json()]);
+        assert_eq!(sent, vec![event.as_json().into_bytes()]);
         Ok(())
     }
 
     #[tokio::test]
-    async fn wifi_aware_bus_query_root_returns_matching_event() -> Result<()> {
+    async fn wifi_aware_bus_query_root_returns_matching_event_and_sends_compact_query() -> Result<()>
+    {
         let bridge = MockWifiAwareBridge::new();
         let bus_keys = Keys::generate();
         let author_keys = Keys::generate();
@@ -512,6 +769,20 @@ mod tests {
 
         assert_eq!(resolved.hash, "ab".repeat(32));
         assert_eq!(resolved.peer_id, WIFI_AWARE_SOURCE);
+
+        let sent = bridge.sent_payloads().await;
+        let query_frame = sent.first().expect("expected compact query");
+        match decode_frame(query_frame).expect("expected decoded query") {
+            WifiAwareFrame::QueryRoot {
+                owner_pubkey_hex,
+                tree_name,
+                ..
+            } => {
+                assert_eq!(owner_pubkey_hex, author_keys.public_key().to_hex());
+                assert_eq!(tree_name, "video");
+            }
+            _ => panic!("expected first payload to be a query-root frame"),
+        }
 
         shutdown_tx.send(true)?;
         bus_task.await??;
