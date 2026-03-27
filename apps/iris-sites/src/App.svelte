@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { parseLaunchInput } from './lib/launchInput';
   import { resolveHostedSite } from './lib/siteConfig';
   import { buildIsolatedSiteHref, buildLauncherHref, isPortalShellHost } from './lib/siteHost';
   import { getMediaClientKey, setupMediaStreaming } from './lib/mediaStreamingSetup';
@@ -63,6 +64,9 @@
   let copyStatus = $state('Copy Share URL');
   let autoReloadEnabled = $state(false);
   let updateAvailable = $state(false);
+  let launchInput = $state('');
+  let launchError = $state<string | null>(null);
+  let launchPending = $state(false);
 
   function resolveCurrentSite() {
     if (typeof window === 'undefined') return null;
@@ -180,6 +184,28 @@
     updateAvailable = false;
     runtimeMenuOpen = false;
     window.location.reload();
+  }
+
+  async function launchFromInput(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (typeof window === 'undefined') return;
+
+    const parsed = parseLaunchInput(launchInput);
+    if (!parsed) {
+      launchError = 'Enter an nhash or npub/tree route.';
+      return;
+    }
+
+    launchError = null;
+    launchPending = true;
+
+    try {
+      const href = await buildIsolatedSiteHref(parsed, window.location.host);
+      window.location.href = href;
+    } catch (error) {
+      launchError = error instanceof Error ? error.message : String(error);
+      launchPending = false;
+    }
   }
 
   function handleAutoReloadChange(event: Event): void {
@@ -345,6 +371,29 @@
         <code>https://sites.iris.to/#/npub1.../enshittifier/index.html</code> to launch it on a
         separate browser origin with its own storage.
       </p>
+      <form class="launcher-form" onsubmit={launchFromInput}>
+        <label class="launcher-label" for="site-route">Launch a site</label>
+        <div class="launcher-row">
+          <input
+            id="site-route"
+            name="site-route"
+            class="launcher-input"
+            type="text"
+            bind:value={launchInput}
+            placeholder="nhash1... or npub1.../enshittifier"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+          />
+          <button class="launcher-button" type="submit" disabled={launchPending}>
+            {launchPending ? 'Launching…' : 'Launch'}
+          </button>
+        </div>
+        <p class="launcher-help">Paste an <code>nhash</code>, <code>npub/tree</code>, or share URL.</p>
+        {#if launchError}
+          <p class="launcher-error">{launchError}</p>
+        {/if}
+      </form>
       <div class="suggestions">
         {#each launcherSuggestions as suggestion}
           <a class="suggestion" href={suggestion.href}>
@@ -490,6 +539,70 @@
     font-size: 1rem;
     line-height: 1.6;
     color: rgba(243, 243, 244, 0.78);
+  }
+
+  .launcher-form {
+    margin-top: 24px;
+  }
+
+  .launcher-label {
+    display: block;
+    margin-bottom: 10px;
+    font-size: 0.94rem;
+    font-weight: 600;
+  }
+
+  .launcher-row {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .launcher-input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.05);
+    color: inherit;
+    font: inherit;
+    padding: 14px 16px;
+    outline: none;
+  }
+
+  .launcher-input:focus {
+    border-color: rgba(141, 225, 192, 0.58);
+    box-shadow: 0 0 0 3px rgba(141, 225, 192, 0.15);
+  }
+
+  .launcher-button {
+    border: 0;
+    border-radius: 14px;
+    background: linear-gradient(135deg, #8de1c0 0%, #8fb7ff 100%);
+    color: #081018;
+    font: inherit;
+    font-weight: 700;
+    padding: 0 18px;
+    cursor: pointer;
+  }
+
+  .launcher-button:disabled {
+    cursor: wait;
+    opacity: 0.75;
+  }
+
+  .launcher-help,
+  .launcher-error {
+    margin: 10px 0 0;
+    font-size: 0.88rem;
+  }
+
+  .launcher-help {
+    color: rgba(243, 243, 244, 0.62);
+  }
+
+  .launcher-error {
+    color: #f7a8a8;
   }
 
   .suggestions {
@@ -673,6 +786,10 @@
   }
 
   @media (max-width: 640px) {
+    .launcher-row {
+      flex-direction: column;
+    }
+
     .runtime-menu-shell {
       right: 12px;
       bottom: 12px;

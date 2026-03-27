@@ -222,6 +222,18 @@ await installFakeWebSocket(context);
 try {
   await mkdir(path.dirname(screenshotPath), { recursive: true });
 
+  const launcherPage = await context.newPage();
+  attachErrorCollection(launcherPage, pageErrors);
+  const launcherUrl = `http://sites.iris.localhost:${port}/`;
+  const launcherResponse = await launcherPage.goto(launcherUrl, { waitUntil: 'load', timeout: 60000 });
+  if (!launcherResponse || launcherResponse.status() !== 200) {
+    throw new Error(`Launcher page returned ${launcherResponse?.status() ?? 'no response'} for ${launcherUrl}`);
+  }
+  await launcherPage.locator('input[name="site-route"]').fill(`${ENSHITTIFIER_NPUB}/enshittifier`);
+  await launcherPage.getByRole('button', { name: 'Launch' }).click();
+  await launcherPage.waitForURL(`${mutableRuntimeHost(ENSHITTIFIER_NPUB, 'enshittifier', port)}/#/${ENSHITTIFIER_NPUB}/enshittifier/index.html`, { timeout: 60000 });
+  await assertFrameShowsApp(launcherPage, 60000);
+
   const genericPage = await context.newPage();
   attachErrorCollection(genericPage, pageErrors);
   const genericUrl = `http://sites.iris.localhost:${port}/#/${ENSHITTIFIER_NHASH}/index.html`;
