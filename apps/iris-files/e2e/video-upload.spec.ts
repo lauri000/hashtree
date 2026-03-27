@@ -123,6 +123,35 @@ async function waitForVideoData(page: Page, timeoutMs = 180000) {
   throw new Error(`Video data unavailable after ${timeoutMs}ms: ${JSON.stringify(lastStatus)}`);
 }
 
+async function waitForVideoPlayback(page: Page, timeoutMs = 120000) {
+  const videoElement = page.locator('video');
+  await expect(videoElement).toBeVisible({ timeout: timeoutMs });
+
+  await page.waitForFunction(() => {
+    const video = document.querySelector('video') as HTMLVideoElement | null;
+    return !!(video && video.readyState >= 2 && !video.error && (video.currentSrc || video.src));
+  }, undefined, { timeout: timeoutMs });
+
+  await page.evaluate(() => {
+    const video = document.querySelector('video') as HTMLVideoElement | null;
+    if (!video) return;
+    video.muted = true;
+    if (video.readyState === 0) {
+      video.load();
+    }
+    void video.play().catch(() => {});
+  });
+
+  await page.waitForFunction(() => {
+    const video = document.querySelector('video') as HTMLVideoElement | null;
+    if (!video) return false;
+    if (video.paused) {
+      void video.play().catch(() => {});
+    }
+    return video.currentTime > 0.2 && video.readyState >= 2 && !video.error;
+  }, undefined, { timeout: timeoutMs });
+}
+
 test.describe('Video Upload with Visibility', () => {
   test.beforeAll(async () => {
     await ensureTestVideo();
@@ -331,6 +360,7 @@ test.describe('Video Upload with Visibility', () => {
     });
     console.log('Debug after reload:', debugAfterReload);
     await waitForVideoData(page, 180000);
+    await waitForVideoPlayback(page, 120000);
 
     // CRITICAL: Verify video loads after refresh
     await expect(videoElement).toBeVisible({ timeout: 60000 });
@@ -415,6 +445,8 @@ test.describe('Video Upload with Visibility', () => {
     // Verify the video element loads
     const videoElement = page.locator('video');
     await expect(videoElement).toBeVisible({ timeout: 15000 });
+    await waitForVideoData(page, 120000);
+    await waitForVideoPlayback(page, 120000);
   });
 
   test('should upload public video and NOT show visibility icon', async ({ page }) => {

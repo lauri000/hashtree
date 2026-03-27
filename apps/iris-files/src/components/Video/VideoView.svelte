@@ -48,6 +48,7 @@
   import { formatTimeAgo } from '../../utils/format';
   import { settingsStore } from '../../stores/settings';
   import { buildPlaylistRedirectHash, consumePendingPlaylistRedirect, isActiveVideoLoad, rememberPendingPlaylistRedirect } from './videoLoadGuard';
+  import { buildVideoLoadKey } from './videoLoadKey';
   import { findPlayableMediaEntry, isAudioMediaFileName, PREFERRED_PLAYABLE_MEDIA_FILENAMES } from '../../lib/playableMedia';
   import { resolveReadableVideoRoot } from '../../lib/readableVideoRoot';
   import { readDirectPlayableMediaFileName } from '../../lib/directPlayableRoot';
@@ -884,7 +885,7 @@ async function syncTreeRootToWorker(
     const routeKey = path;
 
     // Build a key to identify this specific video source
-    const videoKey = `${cid ? toHex(cid.hash) : 'no-root'}:${path}`;
+    const videoKey = buildVideoLoadKey(cid, path);
 
     if (routeKey === displayedRouteKey && !!videoSrc && !cid) {
       error = null;
