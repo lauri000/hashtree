@@ -229,10 +229,8 @@ export function createTreesStore(npub: string | null): Readable<TreeEntry[]> {
   let lastConnectedRelays = get(nostrStore).connectedRelays;
   const relayUnsubscribe = nostrStore.subscribe((state) => {
     if (state.connectedRelays > 0 && lastConnectedRelays === 0) {
-      if (!lastEntries || lastEntries.length === 0) {
-        unsubscribe?.();
-        unsubscribe = resolver.list!(npub, handleEntries);
-      }
+      unsubscribe?.();
+      unsubscribe = resolver.list!(npub, handleEntries);
     }
     lastConnectedRelays = state.connectedRelays;
   });

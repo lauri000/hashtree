@@ -12,6 +12,7 @@ import { getNdk, subscribe as ndkSubscribe, unsubscribe as ndkUnsubscribe } from
 import { getCachedRoot, setCachedRoot } from './treeRootCache';
 import type { SignedEvent, TreeVisibility } from './protocol';
 import { nip19 } from 'nostr-tools';
+import { NDKSubscriptionCacheUsage } from 'ndk';
 
 // Active subscriptions by pubkey
 const activeSubscriptions = new Map<string, string>(); // pubkeyHex -> subId
@@ -209,6 +210,8 @@ async function fetchTreeRootEventsFromNdk(
         authors: [pubkeyHex],
         '#d': [treeName],
         limit: MAX_HISTORICAL_TREE_ROOT_EVENTS,
+      }, {
+        cacheUsage: NDKSubscriptionCacheUsage.ONLY_RELAY,
       }),
       timeoutMs,
     );
@@ -444,7 +447,9 @@ export function subscribeToTreeRoots(pubkeyHex: string): () => void {
   ndkSubscribe(subId, [{
     kinds: [30078],
     authors: [pubkeyHex],
-  }]);
+  }], {
+    cacheUsage: NDKSubscriptionCacheUsage.ONLY_RELAY,
+  });
 
   return () => unsubscribeFromTreeRoots(pubkeyHex);
 }

@@ -10,7 +10,13 @@
  * Main thread communicates via WorkerAdapter postMessage.
  */
 
-import NDK, { NDKEvent, NDKPrivateKeySigner, type NDKFilter } from 'ndk';
+import NDK, {
+  NDKEvent,
+  NDKPrivateKeySigner,
+  NDKSubscriptionCacheUsage,
+  type NDKFilter,
+  type NDKSubscriptionOptions,
+} from 'ndk';
 import NDKCacheAdapterDexie from 'ndk-cache';
 import { verifyEvent, matchFilter } from 'nostr-tools';
 import { NostrWasm } from './nostr-wasm';
@@ -180,7 +186,7 @@ export function setOnEose(callback: (subId: string) => void): void {
 /**
  * Subscribe to events
  */
-export function subscribe(subId: string, filters: NostrFilter[]): void {
+export function subscribe(subId: string, filters: NostrFilter[], opts?: NDKSubscriptionOptions): void {
   if (!ndk) {
     console.error('[Worker NDK] Not initialized');
     return;
@@ -211,7 +217,11 @@ export function subscribe(subId: string, filters: NostrFilter[]): void {
   });
 
   // skipValidation: nostr-wasm verifyEvent handles structure validation
-  const sub = ndk.subscribe(ndkFilters, { closeOnEose: false, skipValidation: true });
+  const sub = ndk.subscribe(ndkFilters, {
+    closeOnEose: false,
+    skipValidation: true,
+    cacheUsage: opts?.cacheUsage ?? NDKSubscriptionCacheUsage.CACHE_FIRST,
+  });
 
   sub.on('event', (event: NDKEvent) => {
     const signedEvent: SignedEvent = {
