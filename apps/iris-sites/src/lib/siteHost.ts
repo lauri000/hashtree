@@ -1,5 +1,5 @@
 import { nhashDecode, toHex } from '@hashtree/core';
-import type { HostedSite } from './siteConfig';
+import { serializeHostedSiteHash, type HostedSite } from './siteConfig';
 import {
   encodeImmutableHostLabel,
   encodeMutableHostLabel,
@@ -25,6 +25,15 @@ function resolveHostContext(currentHost?: string): {
         runtimeSuffix: trimmedHost,
       };
     }
+    if (normalized.endsWith(`.${LOCAL_PORTAL_HOST}`)) {
+      const dotIndex = trimmedHost.indexOf('.');
+      const localSuffix = dotIndex >= 0 ? trimmedHost.slice(dotIndex + 1) : LOCAL_PORTAL_HOST;
+      return {
+        protocol: 'http:',
+        portalHost: localSuffix,
+        runtimeSuffix: localSuffix,
+      };
+    }
   }
 
   if (typeof window !== 'undefined') {
@@ -35,6 +44,15 @@ function resolveHostContext(currentHost?: string): {
         protocol: window.location.protocol || 'http:',
         portalHost: current,
         runtimeSuffix: current,
+      };
+    }
+    if (normalized.endsWith(`.${LOCAL_PORTAL_HOST}`)) {
+      const dotIndex = current.indexOf('.');
+      const localSuffix = dotIndex >= 0 ? current.slice(dotIndex + 1) : LOCAL_PORTAL_HOST;
+      return {
+        protocol: window.location.protocol || 'http:',
+        portalHost: localSuffix,
+        runtimeSuffix: localSuffix,
       };
     }
   }
@@ -77,4 +95,9 @@ export async function buildIsolatedSiteHref(site: HostedSite, currentHost?: stri
   const hostContext = resolveHostContext(currentHost);
   const runtimeHostPrefix = buildRuntimeHostPrefix(site);
   return `${hostContext.protocol}//${runtimeHostPrefix}.${hostContext.runtimeSuffix}/${serializeRuntimeHash(site)}`;
+}
+
+export function buildLauncherHref(site: HostedSite, currentHost?: string): string {
+  const hostContext = resolveHostContext(currentHost);
+  return `${hostContext.protocol}//${hostContext.portalHost}/${serializeHostedSiteHash(site)}`;
 }

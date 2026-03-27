@@ -24,7 +24,7 @@ export const releaseProfile = {
   pagesProjectEnv: 'CF_PAGES_PROJECT_SITES',
   buildCommand: ['pnpm', 'run', 'build'],
   testCommands: [
-    ['pnpm', 'exec', 'vitest', 'run', 'tests/siteConfig.test.ts', 'tests/siteHost.test.ts', 'tests/portableBuildConfig.test.ts', 'tests/releaseSite.test.ts'],
+    ['pnpm', 'exec', 'vitest', 'run', 'tests/siteConfig.test.ts', 'tests/siteHost.test.ts', 'tests/runtimeUi.test.ts', 'tests/portableBuildConfig.test.ts', 'tests/releaseSite.test.ts'],
     ['pnpm', 'exec', 'svelte-check', '--tsconfig', './tsconfig.json'],
     ['node', './scripts/portable-smoke.mjs'],
   ],

@@ -242,20 +242,24 @@ try {
 
   const mutablePage = await context.newPage();
   attachErrorCollection(mutablePage, pageErrors);
-  const mutableUrl = `http://sites.iris.localhost:${port}/#/${ENSHITTIFIER_NPUB}/enshittifier/index.html`;
+  const mutableRouteSuffix = '?menu=0&reload=1';
+  const mutableUrl = `http://sites.iris.localhost:${port}/#/${ENSHITTIFIER_NPUB}/enshittifier/index.html${mutableRouteSuffix}`;
   const mutableResponse = await mutablePage.goto(mutableUrl, { waitUntil: 'load', timeout: 60000 });
   if (!mutableResponse || mutableResponse.status() !== 200) {
     throw new Error(`Mutable portal boot page returned ${mutableResponse?.status() ?? 'no response'} for ${mutableUrl}`);
   }
-  await mutablePage.waitForURL(`${mutableRuntimeHost(ENSHITTIFIER_NPUB, 'enshittifier', port)}/#/${ENSHITTIFIER_NPUB}/enshittifier/index.html`, { timeout: 60000 });
+  await mutablePage.waitForURL(`${mutableRuntimeHost(ENSHITTIFIER_NPUB, 'enshittifier', port)}/#/${ENSHITTIFIER_NPUB}/enshittifier/index.html${mutableRouteSuffix}`, { timeout: 60000 });
   const mutableHref = mutablePage.url();
-  if (!mutableHref.startsWith(`${mutableRuntimeHost(ENSHITTIFIER_NPUB, 'enshittifier', port)}/#/${ENSHITTIFIER_NPUB}/enshittifier/index.html`)) {
+  if (!mutableHref.startsWith(`${mutableRuntimeHost(ENSHITTIFIER_NPUB, 'enshittifier', port)}/#/${ENSHITTIFIER_NPUB}/enshittifier/index.html${mutableRouteSuffix}`)) {
     throw new Error(`Expected hashed mutable runtime host, got ${mutableHref}`);
   }
   if (mutableHref.includes('npub1') && mutableHref.split('#')[0].includes('npub1')) {
     throw new Error(`Mutable runtime host leaked npub outside hash fragment: ${mutableHref}`);
   }
   await assertFrameShowsApp(mutablePage, 60000);
+  if (await mutablePage.locator('.runtime-menu-button').count()) {
+    throw new Error(`Expected menu=0 launcher override to hide the runtime menu, got ${mutableHref}`);
+  }
 
   const directImmutablePage = await context.newPage();
   attachErrorCollection(directImmutablePage, pageErrors);
@@ -265,6 +269,7 @@ try {
     throw new Error(`Direct immutable runtime returned ${directImmutableResponse?.status() ?? 'no response'} for ${directImmutableUrl}`);
   }
   await assertFrameShowsApp(directImmutablePage, 60000);
+  await directImmutablePage.locator('.runtime-menu-button').waitFor({ state: 'visible', timeout: 60000 });
   await genericPage.screenshot({ path: screenshotPath, fullPage: true });
 
   if (pageErrors.length > 0) {

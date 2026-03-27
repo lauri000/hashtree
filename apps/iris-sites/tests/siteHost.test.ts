@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { nhashDecode, nhashEncode, toHex } from '@hashtree/core';
-import { buildIsolatedSiteHref, isPortalShellHost } from '../src/lib/siteHost';
+import { buildIsolatedSiteHref, buildLauncherHref, isPortalShellHost } from '../src/lib/siteHost';
 import { encodeImmutableHostLabel, encodeMutableHostLabel } from '../src/lib/siteIdentity';
 
 const VALID_NPUB = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
@@ -37,6 +37,29 @@ describe('site host routing', () => {
     expect(url.hash).toBe(`#/index.html?k=${toHex(decoded.key!)}`);
     expect(url.href).not.toContain(nhashEncode(decoded.hash));
     expect(url.href).not.toContain(nhash);
+  });
+
+  it('builds launcher URLs on sites.iris.to from runtime hosts', () => {
+    expect(buildLauncherHref({
+      kind: 'mutable',
+      siteKey: 'pilot',
+      title: 'Midi',
+      npub: VALID_NPUB,
+      treeName: 'enshittifier',
+      entryPath: 'index.html',
+    })).toBe(`https://sites.iris.to/#/${VALID_NPUB}/enshittifier/index.html`);
+  });
+
+  it('builds local launcher URLs from local runtime hosts', () => {
+    expect(buildLauncherHref({
+      kind: 'immutable',
+      siteKey: 'pilot',
+      title: 'Pinned',
+      nhash: 'nhash1qqsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq',
+      entryPath: 'index.html',
+    }, '63dvmlmvh6sxd65q7abane2j23fl4e7hmub4lwdjvl6vwmzlobda.sites.iris.localhost:5178')).toBe(
+      'http://sites.iris.localhost:5178/#/nhash1qqsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq/index.html',
+    );
   });
 
   it('derives mutable runtime hosts into a single owner-tree label', async () => {

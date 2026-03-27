@@ -1,8 +1,23 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { resolveHostedSite } from './lib/siteConfig';
-  import { buildIsolatedSiteHref, isPortalShellHost } from './lib/siteHost';
+  import { buildIsolatedSiteHref, buildLauncherHref, isPortalShellHost } from './lib/siteHost';
   import { getMediaClientKey, setupMediaStreaming } from './lib/mediaStreamingSetup';
+  import {
+    getTreeRootInfo,
+    onTreeRootUpdate,
+    subscribeTreeRoots,
+    unsubscribeTreeRoots,
+    type TreeRootInfo,
+    type TreeRootUpdate,
+  } from './lib/workerClient';
+  import {
+    getAutoReloadStorageKey,
+    isMenuHidden,
+    readHashBooleanParam,
+    setAutoReload as setAutoReloadParam,
+    setMenuHidden,
+  } from './lib/runtimeUi';
 
   const IRIS_OWNER = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
   const ENSHITTIFIER_NHASH = 'nhash1qqsxyn0g6yyac8ruej7r7j80y2gx6ev5z5flu6ry5h5t3ajju5utzjs9yz7t3p2syr9n5heajlv85uwej232dk5x4zqe8d7ft67y3m5umxr55qjku38';
@@ -40,8 +55,14 @@
   ] as const;
 
   let currentSite = $state(resolveCurrentSite());
+  let routeHash = $state(typeof window === 'undefined' ? '' : window.location.hash);
   let runtimeReady = $state(false);
   let runtimeError = $state<string | null>(null);
+  let runtimeMenuOpen = $state(false);
+  let menuHidden = $state(false);
+  let copyStatus = $state('Copy Share URL');
+  let autoReloadEnabled = $state(false);
+  let updateAvailable = $state(false);
 
   function resolveCurrentSite() {
     if (typeof window === 'undefined') return null;
@@ -57,6 +78,116 @@
       .filter(Boolean)
       .map((segment) => encodeURIComponent(segment))
       .join('/');
+  }
+
+  function bytesToHex(bytes: Uint8Array | undefined): string {
+    return bytes ? Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('') : '';
+  }
+
+  function treeRootSignature(record: Pick<TreeRootInfo, 'hash' | 'key'> | Pick<TreeRootUpdate, 'hash' | 'key'>): string {
+    return `${bytesToHex(record.hash)}:${bytesToHex(record.key)}`;
+  }
+
+  function readAutoReloadPreference(): boolean {
+    if (typeof window === 'undefined' || !currentSite) return false;
+    const routeOverride = readHashBooleanParam(routeHash, 'reload');
+    if (routeOverride !== null) {
+      return routeOverride;
+    }
+    try {
+      return window.localStorage.getItem(getAutoReloadStorageKey(currentSite)) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  function writeAutoReloadPreference(enabled: boolean): void {
+    if (typeof window === 'undefined' || !currentSite) return;
+    try {
+      const key = getAutoReloadStorageKey(currentSite);
+      if (enabled) {
+        window.localStorage.setItem(key, '1');
+      } else {
+        window.localStorage.removeItem(key);
+      }
+    } catch {
+      // Ignore storage failures.
+    }
+  }
+
+  function replaceHash(nextHash: string): void {
+    if (typeof window === 'undefined') return;
+    const nextUrl = `${window.location.pathname}${window.location.search}${nextHash}`;
+    window.history.replaceState({}, '', nextUrl);
+    routeHash = nextHash;
+  }
+
+  function hideRuntimeMenuForCurrentUrl(): void {
+    if (typeof window === 'undefined') return;
+    replaceHash(setMenuHidden(routeHash, true));
+    menuHidden = true;
+    runtimeMenuOpen = false;
+  }
+
+  function toggleRuntimeMenu(): void {
+    runtimeMenuOpen = !runtimeMenuOpen;
+  }
+
+  function buildCurrentLauncherHref(): string {
+    if (!currentSite) return '';
+    const baseHref = buildLauncherHref(currentSite, typeof window !== 'undefined' ? window.location.host : undefined);
+    return applyUiRouteParams(baseHref, routeHash);
+  }
+
+  function applyUiRouteParams(href: string, sourceHash: string): string {
+    if (!href) return href;
+    const url = new URL(href, typeof window !== 'undefined' ? window.location.href : 'https://sites.iris.to/');
+    let nextHash = setMenuHidden(url.hash, isMenuHidden(sourceHash));
+    nextHash = setAutoReloadParam(nextHash, readHashBooleanParam(sourceHash, 'reload'));
+    url.hash = nextHash;
+    return url.toString();
+  }
+
+  async function copyShareUrl(): Promise<void> {
+    const href = buildCurrentLauncherHref();
+    if (!href || typeof window === 'undefined') return;
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(href);
+      } else {
+        throw new Error('Clipboard API unavailable');
+      }
+      copyStatus = 'Copied Share URL';
+    } catch {
+      window.prompt('Copy share URL', href);
+      copyStatus = 'Share URL Ready';
+    }
+
+    window.setTimeout(() => {
+      copyStatus = 'Copy Share URL';
+    }, 1800);
+  }
+
+  function openLauncher(): void {
+    const href = buildCurrentLauncherHref();
+    if (!href || typeof window === 'undefined') return;
+    window.location.href = href;
+  }
+
+  function reloadCurrentSite(): void {
+    if (typeof window === 'undefined') return;
+    updateAvailable = false;
+    runtimeMenuOpen = false;
+    window.location.reload();
+  }
+
+  function handleAutoReloadChange(event: Event): void {
+    const target = event.currentTarget as HTMLInputElement | null;
+    const checked = !!target?.checked;
+    autoReloadEnabled = checked;
+    writeAutoReloadPreference(checked);
+    replaceHash(setAutoReloadParam(routeHash, checked));
   }
 
   const iframeSrc = $derived.by(() => {
@@ -76,6 +207,8 @@
   });
 
   const missingRuntimeTarget = $derived.by(() => !currentSite && !inPortalShell);
+  const launcherHref = $derived.by(() => buildCurrentLauncherHref());
+  const showRuntimeMenu = $derived.by(() => Boolean(currentSite && !inPortalShell && !menuHidden));
 
   const inspectorLink = $derived.by(() => {
     if (!currentSite) return '';
@@ -90,12 +223,18 @@
     const syncRoute = () => {
       const site = resolveCurrentSite();
       currentSite = site;
+      routeHash = typeof window !== 'undefined' ? window.location.hash : '';
       runtimeError = null;
+      runtimeMenuOpen = false;
+      menuHidden = isMenuHidden(routeHash);
+      updateAvailable = false;
+      autoReloadEnabled = site ? readAutoReloadPreference() : false;
       if (typeof window !== 'undefined' && isPortalShellHost(window.location.host) && site) {
         void buildIsolatedSiteHref(site, window.location.host)
           .then((href) => {
-            if (window.location.href !== href) {
-              window.location.replace(href);
+            const nextHref = applyUiRouteParams(href, routeHash);
+            if (window.location.href !== nextHref) {
+              window.location.replace(nextHref);
             }
           })
           .catch((error) => {
@@ -122,6 +261,60 @@
 
     return () => {
       window.removeEventListener('hashchange', syncRoute);
+    };
+  });
+
+  $effect(() => {
+    if (!currentSite || currentSite.kind !== 'mutable' || inPortalShell || !runtimeReady) {
+      updateAvailable = false;
+      return;
+    }
+
+    const mutableSite = currentSite;
+
+    let disposed = false;
+    let currentSignature = '';
+
+    const handleUpdate = (update: TreeRootUpdate) => {
+      if (disposed) return;
+      if (update.npub !== mutableSite.npub || update.treeName !== mutableSite.treeName) return;
+
+      const nextSignature = treeRootSignature(update);
+      if (!currentSignature) {
+        currentSignature = nextSignature;
+        return;
+      }
+      if (nextSignature === currentSignature) return;
+
+      currentSignature = nextSignature;
+      if (autoReloadEnabled && typeof window !== 'undefined') {
+        window.location.reload();
+        return;
+      }
+      updateAvailable = true;
+    };
+
+    const detach = onTreeRootUpdate(handleUpdate);
+
+    void (async () => {
+      try {
+        await subscribeTreeRoots(mutableSite.npub);
+        const initial = await getTreeRootInfo(mutableSite.npub, mutableSite.treeName);
+        if (!disposed && initial) {
+          currentSignature = treeRootSignature(initial);
+        }
+      } catch (error) {
+        if (!disposed) {
+          console.warn('[iris-sites] Failed to subscribe to tree root updates', error);
+        }
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      detach();
+      updateAvailable = false;
+      void unsubscribeTreeRoots(mutableSite.npub).catch(() => {});
     };
   });
 </script>
@@ -187,6 +380,52 @@
       </section>
     {/if}
   </main>
+{/if}
+
+{#if showRuntimeMenu}
+  <div class="runtime-menu-shell">
+    {#if runtimeMenuOpen}
+      <section class="runtime-menu-panel">
+        <div class="runtime-menu-header">
+          <div class="runtime-menu-title">{currentSite?.title}</div>
+          {#if updateAvailable}
+            <div class="runtime-menu-badge">Update available</div>
+          {/if}
+        </div>
+
+        <button class="runtime-menu-item" type="button" onclick={copyShareUrl}>{copyStatus}</button>
+        <button class="runtime-menu-item" type="button" onclick={openLauncher}>Open on Sites</button>
+        <button class="runtime-menu-item" type="button" onclick={reloadCurrentSite}>
+          {updateAvailable ? 'Load Latest Update' : 'Reload'}
+        </button>
+
+        {#if currentSite?.kind === 'mutable'}
+          <label class="runtime-menu-toggle">
+            <span>Auto-reload on updates</span>
+            <input type="checkbox" checked={autoReloadEnabled} onchange={handleAutoReloadChange} />
+          </label>
+        {/if}
+
+        <button class="runtime-menu-item runtime-menu-item-muted" type="button" onclick={hideRuntimeMenuForCurrentUrl}>
+          Hide Menu For This URL
+        </button>
+
+        <a class="runtime-menu-link" href={launcherHref}>{launcherHref}</a>
+      </section>
+    {/if}
+
+    <button
+      class="runtime-menu-button"
+      type="button"
+      aria-expanded={runtimeMenuOpen}
+      onclick={toggleRuntimeMenu}
+    >
+      <span>Iris Sites</span>
+      {#if updateAvailable}
+        <span class="runtime-menu-indicator"></span>
+      {/if}
+    </button>
+  </div>
 {/if}
 
 <style>
@@ -307,5 +546,136 @@
     height: 100vh;
     border: 0;
     background: white;
+  }
+
+  .runtime-menu-shell {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 12px;
+  }
+
+  .runtime-menu-panel {
+    width: min(320px, calc(100vw - 32px));
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(6, 9, 17, 0.92);
+    box-shadow: 0 16px 50px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(24px);
+  }
+
+  .runtime-menu-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .runtime-menu-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+  }
+
+  .runtime-menu-badge {
+    border-radius: 999px;
+    padding: 4px 8px;
+    background: rgba(110, 231, 183, 0.14);
+    color: #8de1c0;
+    font-size: 0.72rem;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  .runtime-menu-item,
+  .runtime-menu-link,
+  .runtime-menu-toggle {
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.04);
+    color: inherit;
+    text-decoration: none;
+    font: inherit;
+  }
+
+  .runtime-menu-item,
+  .runtime-menu-toggle {
+    width: 100%;
+    padding: 11px 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .runtime-menu-link {
+    display: block;
+    padding: 10px 12px;
+    font-size: 0.79rem;
+    line-height: 1.4;
+    color: rgba(168, 209, 255, 0.9);
+    word-break: break-all;
+  }
+
+  .runtime-menu-item:hover,
+  .runtime-menu-link:hover,
+  .runtime-menu-toggle:hover {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .runtime-menu-item-muted {
+    color: rgba(243, 243, 244, 0.72);
+  }
+
+  .runtime-menu-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+  }
+
+  .runtime-menu-toggle input {
+    width: 18px;
+    height: 18px;
+    accent-color: #6ee7b7;
+  }
+
+  .runtime-menu-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    border: 0;
+    border-radius: 999px;
+    padding: 11px 15px;
+    background: rgba(6, 9, 17, 0.92);
+    color: #f3f3f4;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.32);
+  }
+
+  .runtime-menu-button:hover {
+    background: rgba(12, 16, 28, 0.96);
+  }
+
+  .runtime-menu-indicator {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    background: #6ee7b7;
+    box-shadow: 0 0 0 3px rgba(110, 231, 183, 0.18);
+  }
+
+  @media (max-width: 640px) {
+    .runtime-menu-shell {
+      right: 12px;
+      bottom: 12px;
+    }
   }
 </style>

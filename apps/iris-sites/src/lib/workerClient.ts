@@ -25,6 +25,23 @@ type PendingRequest = {
   timeoutId: ReturnType<typeof setTimeout>;
 };
 
+export interface TreeRootInfo {
+  hash: Uint8Array;
+  key?: Uint8Array;
+  visibility: 'public' | 'link-visible' | 'private';
+  labels?: string[];
+  updatedAt: number;
+  encryptedKey?: string;
+  keyId?: string;
+  selfEncryptedKey?: string;
+  selfEncryptedLinkKey?: string;
+}
+
+export interface TreeRootUpdate extends TreeRootInfo {
+  npub: string;
+  treeName: string;
+}
+
 let worker: Worker | null = null;
 let initPromise: Promise<void> | null = null;
 let initPending:
@@ -36,6 +53,7 @@ let initPending:
     }
   | null = null;
 const pendingRequests = new Map<string, PendingRequest>();
+const treeRootListeners = new Set<(update: TreeRootUpdate) => void>();
 
 function nextRequestId(prefix: string): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -76,6 +94,14 @@ function ensureWorker(): Worker {
         clearTimeout(initPending.timeoutId);
         initPending.resolve();
         initPending = null;
+      }
+      return;
+    }
+
+    if (message?.type === 'treeRootUpdate') {
+      const update = message as unknown as TreeRootUpdate;
+      for (const listener of treeRootListeners) {
+        listener(update);
       }
       return;
     }
@@ -161,4 +187,79 @@ export async function registerMediaPort(port: MessagePort): Promise<void> {
     id: nextRequestId('media_port'),
     port,
   }, [port]);
+}
+
+async function requestWorker(message: Record<string, unknown>, prefix: string): Promise<unknown> {
+  await ensureReady();
+  const targetWorker = ensureWorker();
+  const id = nextRequestId(prefix);
+
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      pendingRequests.delete(id);
+      reject(new Error(`${prefix} timed out`));
+    }, REQUEST_TIMEOUT_MS);
+
+    pendingRequests.set(id, {
+      resolve,
+      reject,
+      timeoutId,
+    });
+
+    targetWorker.postMessage({
+      ...message,
+      id,
+    });
+  });
+}
+
+export async function getTreeRootInfo(npub: string, treeName: string): Promise<TreeRootInfo | null> {
+  const response = await requestWorker({
+    type: 'getTreeRootInfo',
+    npub,
+    treeName,
+  }, 'tree_root_info') as { type?: string; record?: TreeRootInfo; error?: string };
+
+  if (response.type !== 'treeRootInfo') {
+    throw new Error('Unexpected tree root response');
+  }
+  if (response.error) {
+    throw new Error(response.error);
+  }
+  return response.record ?? null;
+}
+
+export async function subscribeTreeRoots(pubkey: string): Promise<void> {
+  const response = await requestWorker({
+    type: 'subscribeTreeRoots',
+    pubkey,
+  }, 'tree_root_subscribe') as { type?: string; error?: string };
+
+  if (response.type !== 'void') {
+    throw new Error('Unexpected tree root subscribe response');
+  }
+  if (response.error) {
+    throw new Error(response.error);
+  }
+}
+
+export async function unsubscribeTreeRoots(pubkey: string): Promise<void> {
+  const response = await requestWorker({
+    type: 'unsubscribeTreeRoots',
+    pubkey,
+  }, 'tree_root_unsubscribe') as { type?: string; error?: string };
+
+  if (response.type !== 'void') {
+    throw new Error('Unexpected tree root unsubscribe response');
+  }
+  if (response.error) {
+    throw new Error(response.error);
+  }
+}
+
+export function onTreeRootUpdate(listener: (update: TreeRootUpdate) => void): () => void {
+  treeRootListeners.add(listener);
+  return () => {
+    treeRootListeners.delete(listener);
+  };
 }
