@@ -12,7 +12,6 @@ use hashtree_cli::{
 };
 use hashtree_core::{Cid, HashTree, HashTreeConfig, NHashData};
 use std::collections::HashSet;
-use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,20 +34,6 @@ use super::socialgraph::{
     run_socialgraph_filter, run_socialgraph_snapshot, run_socialgraph_stats, run_socialgraph_warm,
 };
 use super::util::chrono_humanize_timestamp;
-
-async fn push_before_publish<Push, PushFuture, Publish, PublishFuture>(
-    push: Push,
-    publish: Publish,
-) -> Result<()>
-where
-    Push: FnOnce() -> PushFuture,
-    PushFuture: Future<Output = Result<()>>,
-    Publish: FnOnce() -> PublishFuture,
-    PublishFuture: Future<Output = Result<()>>,
-{
-    push().await?;
-    publish().await
-}
 
 pub(crate) async fn run() -> Result<()> {
     // Install rustls crypto provider (required for TLS connections)
@@ -673,65 +658,58 @@ pub(crate) async fn run() -> Result<()> {
 
                 // Publish to Nostr if --publish was specified.
                 if let Some(ref_name) = publish.as_deref() {
-                    let publish_root = || async {
-                        let config = Config::load()?;
+                    let config = Config::load()?;
 
-                        // Ensure nsec exists (generate if needed)
-                        let (nsec_str, was_generated) = ensure_keys_string()?;
+                    // Ensure nsec exists (generate if needed)
+                    let (nsec_str, was_generated) = ensure_keys_string()?;
 
-                        // Create Keys using nostr-sdk's version (via NostrKeys re-export)
-                        let keys = NostrKeys::parse(&nsec_str).context("Failed to parse nsec")?;
-                        let npub = NostrToBech32::to_bech32(&keys.public_key())
-                            .context("Failed to encode npub")?;
+                    // Create Keys using nostr-sdk's version (via NostrKeys re-export)
+                    let keys = NostrKeys::parse(&nsec_str).context("Failed to parse nsec")?;
+                    let npub = NostrToBech32::to_bech32(&keys.public_key())
+                        .context("Failed to encode npub")?;
 
-                        if was_generated {
-                            println!("  identity: {} (new)", npub);
-                        }
+                    if was_generated {
+                        println!("  identity: {} (new)", npub);
+                    }
 
-                        let resolver_config = NostrResolverConfig {
-                            relays: config.nostr.relays.clone(),
-                            resolve_timeout: Duration::from_secs(5),
-                            secret_key: Some(keys),
-                        };
-
-                        let resolver = NostrRootResolver::new(resolver_config)
-                            .await
-                            .context("Failed to create Nostr resolver")?;
-
-                        let hash = from_hex(&hash_hex).context("Invalid hash")?;
-                        let key = key_hex
-                            .as_ref()
-                            .map(|k| key_from_hex(k))
-                            .transpose()
-                            .map_err(|e| anyhow::anyhow!("Invalid key: {}", e))?;
-                        let cid = Cid { hash, key };
-                        let nostr_key = format!("{}/{}", npub, ref_name);
-
-                        match resolver.publish(&nostr_key, &cid).await {
-                            Ok(_) => {
-                                println!("  published: {}", nostr_key);
-                            }
-                            Err(e) => {
-                                eprintln!("  publish failed: {}", e);
-                            }
-                        }
-
-                        let _ = resolver.stop().await;
-                        Ok(())
+                    let resolver_config = NostrResolverConfig {
+                        relays: config.nostr.relays.clone(),
+                        resolve_timeout: Duration::from_secs(5),
+                        secret_key: Some(keys),
                     };
 
+                    let resolver = NostrRootResolver::new(resolver_config)
+                        .await
+                        .context("Failed to create Nostr resolver")?;
+
+                    let hash = from_hex(&hash_hex).context("Invalid hash")?;
+                    let key = key_hex
+                        .as_ref()
+                        .map(|k| key_from_hex(k))
+                        .transpose()
+                        .map_err(|e| anyhow::anyhow!("Invalid key: {}", e))?;
+                    let cid = Cid { hash, key };
+                    let nostr_key = format!("{}/{}", npub, ref_name);
+
+                    match resolver.publish(&nostr_key, &cid).await {
+                        Ok(_) => {
+                            println!("  published: {}", nostr_key);
+                        }
+                        Err(e) => {
+                            eprintln!("  publish failed: {}", e);
+                        }
+                    }
+
+                    let _ = resolver.stop().await;
+
                     if !local && !write_servers.is_empty() {
-                        push_before_publish(
-                            || async {
-                                background_blossom_push(&data_dir, &cid_for_push, &write_servers)
-                                    .await
-                                    .context("Failed to push content to file servers")
-                            },
-                            publish_root,
-                        )
-                        .await?;
-                    } else {
-                        publish_root().await?;
+                        if let Err(err) =
+                            background_blossom_push(&data_dir, &cid_for_push, &write_servers)
+                                .await
+                                .context("Failed to push content to file servers")
+                        {
+                            eprintln!("  file server push failed: {}", err);
+                        }
                     }
                 }
             }
@@ -1411,66 +1389,6 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::push_before_publish;
-    use anyhow::anyhow;
-    use std::sync::{Arc, Mutex};
-
-    #[tokio::test]
-    async fn push_before_publish_runs_push_first() {
-        let steps = Arc::new(Mutex::new(Vec::new()));
-
-        push_before_publish(
-            {
-                let steps = Arc::clone(&steps);
-                move || async move {
-                    steps.lock().unwrap().push("push");
-                    Ok(())
-                }
-            },
-            {
-                let steps = Arc::clone(&steps);
-                move || async move {
-                    steps.lock().unwrap().push("publish");
-                    Ok(())
-                }
-            },
-        )
-        .await
-        .expect("flow should succeed");
-
-        assert_eq!(steps.lock().unwrap().as_slice(), ["push", "publish"]);
-    }
-
-    #[tokio::test]
-    async fn push_before_publish_stops_when_push_fails() {
-        let steps = Arc::new(Mutex::new(Vec::new()));
-
-        let err = push_before_publish(
-            {
-                let steps = Arc::clone(&steps);
-                move || async move {
-                    steps.lock().unwrap().push("push");
-                    Err(anyhow!("push failed"))
-                }
-            },
-            {
-                let steps = Arc::clone(&steps);
-                move || async move {
-                    steps.lock().unwrap().push("publish");
-                    Ok(())
-                }
-            },
-        )
-        .await
-        .expect_err("push failure should abort publish");
-
-        assert_eq!(err.to_string(), "push failed");
-        assert_eq!(steps.lock().unwrap().as_slice(), ["push"]);
-    }
 }
 
 pub(crate) fn format_cid_for_display(cid: &Cid) -> String {
