@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { nhashDecode, nhashEncode, toHex } from '@hashtree/core';
 import { resolveHostedSite } from '../src/lib/siteConfig';
-import { encodeImmutableHostLabel } from '../src/lib/siteIdentity';
+import { encodeImmutableHostLabel, encodeMutableHostLabel } from '../src/lib/siteIdentity';
+
+const VALID_NPUB = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
 
 describe('site config resolution', () => {
   it('does not special-case a pretty pilot alias host', () => {
@@ -31,14 +33,14 @@ describe('site config resolution', () => {
   it('supports mutable sites through the launcher hash fragment without exposing npub or tree name to the server', () => {
     const site = resolveHostedSite({
       host: 'sites.iris.to',
-      hash: '#/npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq/apps%2Firis/index.html',
+      hash: `#/${VALID_NPUB}/apps%2Firis/index.html`,
     });
 
     expect(site).toEqual({
       kind: 'mutable',
       siteKey: 'pilot',
       title: 'apps/iris',
-      npub: 'npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq',
+      npub: VALID_NPUB,
       treeName: 'apps/iris',
       entryPath: 'index.html',
     });
@@ -92,17 +94,17 @@ describe('site config resolution', () => {
     expect(site).toBeNull();
   });
 
-  it('derives mutable runtime sites from readable npub and tree labels', () => {
+  it('derives mutable runtime sites from a single-label owner-tree host plus the full fragment route', () => {
     const site = resolveHostedSite({
-      host: 'npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq.apps.iris.hashtree.cc',
-      hash: '#/index.html',
+      host: `${encodeMutableHostLabel(VALID_NPUB, 'apps/iris')}.hashtree.cc`,
+      hash: `#/${VALID_NPUB}/apps%2Firis/index.html`,
     });
 
     expect(site).toEqual({
       kind: 'mutable',
       siteKey: 'pilot',
       title: 'apps/iris',
-      npub: 'npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq',
+      npub: VALID_NPUB,
       treeName: 'apps/iris',
       entryPath: 'index.html',
     });
@@ -110,24 +112,24 @@ describe('site config resolution', () => {
 
   it('rejects mutable runtime fragments whose npub or tree do not match the hostname', () => {
     const site = resolveHostedSite({
-      host: 'npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq.apps.iris.hashtree.cc',
-      hash: '#/npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq/other/index.html',
+      host: `${encodeMutableHostLabel(VALID_NPUB, 'apps/iris')}.hashtree.cc`,
+      hash: `#/${VALID_NPUB}/other/index.html`,
     });
 
     expect(site).toBeNull();
   });
 
-  it('derives mutable runtime sites from encoded tree labels when needed', () => {
+  it('accepts mutable runtime hosts for tree names that need slug hints', () => {
     const site = resolveHostedSite({
-      host: 'npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq.x-617070732f69726973207569.hashtree.cc',
-      hash: '#/index.html',
+      host: `${encodeMutableHostLabel(VALID_NPUB, 'apps/iris ui')}.hashtree.cc`,
+      hash: `#/${VALID_NPUB}/apps%2Firis%20ui/index.html`,
     });
 
     expect(site).toEqual({
       kind: 'mutable',
       siteKey: 'pilot',
       title: 'apps/iris ui',
-      npub: 'npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq',
+      npub: VALID_NPUB,
       treeName: 'apps/iris ui',
       entryPath: 'index.html',
     });

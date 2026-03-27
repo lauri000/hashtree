@@ -1,5 +1,9 @@
+import { nip19 } from 'nostr-tools';
+
 const BASE32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
-export const SAFE_TREE_LABEL_RE = /^(?!x-)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const BASE36_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz';
+const MUTABLE_OWNER_LABEL_LENGTH = 50;
+const MUTABLE_TREE_HINT_LENGTH = 12;
 
 export function normalizeHost(host: string): string {
   return host.trim().toLowerCase().replace(/:\d+$/, '');
@@ -66,6 +70,75 @@ function decodeBase32(value: string): Uint8Array | null {
   return new Uint8Array(bytes);
 }
 
+function bytesToBigInt(bytes: Uint8Array): bigint {
+  let value = 0n;
+  for (const byte of bytes) {
+    value = (value << 8n) | BigInt(byte);
+  }
+  return value;
+}
+
+function bigIntToBytes(value: bigint, byteLength: number): Uint8Array | null {
+  if (value < 0n) return null;
+  const bytes = new Uint8Array(byteLength);
+  let remaining = value;
+  for (let index = byteLength - 1; index >= 0; index -= 1) {
+    bytes[index] = Number(remaining & 0xffn);
+    remaining >>= 8n;
+  }
+  return remaining === 0n ? bytes : null;
+}
+
+function encodeBase36(bytes: Uint8Array): string {
+  let value = bytesToBigInt(bytes);
+  if (value === 0n) return '0';
+
+  let output = '';
+  while (value > 0n) {
+    const remainder = Number(value % 36n);
+    output = BASE36_ALPHABET[remainder] + output;
+    value /= 36n;
+  }
+  return output;
+}
+
+function decodeBase36(value: string, byteLength: number): Uint8Array | null {
+  let decoded = 0n;
+  for (const char of value.trim().toLowerCase()) {
+    const index = BASE36_ALPHABET.indexOf(char);
+    if (index < 0) return null;
+    decoded = decoded * 36n + BigInt(index);
+  }
+  return bigIntToBytes(decoded, byteLength);
+}
+
+function getMutableOwnerBytes(npub: string): Uint8Array {
+  const decoded = nip19.decode(npub);
+  if (decoded.type !== 'npub' || typeof decoded.data !== 'string') {
+    throw new Error(`Expected npub, got ${decoded.type}`);
+  }
+
+  const ownerBytes = hexToBytes(decoded.data);
+  if (!ownerBytes || ownerBytes.length !== 32) {
+    throw new Error('Invalid npub payload');
+  }
+  return ownerBytes;
+}
+
+function normalizeTreeHintPart(treeName: string): string {
+  const slug = treeName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const hint = (slug || 'site').slice(0, MUTABLE_TREE_HINT_LENGTH).replace(/-+$/g, '');
+  return hint || 'site';
+}
+
+export function getMutableTreeHint(treeName: string): string {
+  return normalizeTreeHintPart(treeName);
+}
+
 export function encodeImmutableHostLabel(hash: Uint8Array): string {
   return encodeBase32(hash);
 }
@@ -76,38 +149,20 @@ export function decodeImmutableHostLabel(label: string): Uint8Array | null {
   return decoded;
 }
 
-export function encodeTreeNameLabels(treeName: string): string[] {
-  const safeLabels = treeName.split('/').filter(Boolean);
-  if (safeLabels.length && safeLabels.every((label) => SAFE_TREE_LABEL_RE.test(label))) {
-    return safeLabels;
-  }
-
-  const treeHex = bytesToHex(new TextEncoder().encode(treeName));
-  const chunks = treeHex.match(/.{1,60}/g);
-  if (!chunks || chunks.length === 0) {
-    return ['x-00'];
-  }
-  return chunks.map((chunk) => `x-${chunk}`);
+export function encodeMutableHostLabel(npub: string, treeName: string): string {
+  const ownerLabel = encodeBase36(getMutableOwnerBytes(npub)).padStart(MUTABLE_OWNER_LABEL_LENGTH, '0');
+  return `${ownerLabel}-${getMutableTreeHint(treeName)}`;
 }
 
-export function decodeTreeNameFromLabels(labels: string[]): string | null {
-  if (!labels.length) return null;
+export function decodeMutableHostLabel(label: string): { npub: string; treeHint: string } | null {
+  const match = /^([0-9a-z]{50})-([a-z0-9-]{1,12})$/.exec(label);
+  if (!match) return null;
 
-  if (labels.every((label) => SAFE_TREE_LABEL_RE.test(label))) {
-    return labels.join('/');
-  }
+  const ownerBytes = decodeBase36(match[1], 32);
+  if (!ownerBytes) return null;
 
-  if (!labels.every((label) => /^x-[a-f0-9]+$/.test(label))) {
-    return null;
-  }
-
-  const hex = labels.map((label) => label.slice(2)).join('');
-  const bytes = hexToBytes(hex);
-  if (!bytes) return null;
-
-  try {
-    return new TextDecoder().decode(bytes);
-  } catch {
-    return null;
-  }
+  return {
+    npub: nip19.npubEncode(bytesToHex(ownerBytes)),
+    treeHint: match[2],
+  };
 }

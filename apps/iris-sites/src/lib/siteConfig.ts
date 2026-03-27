@@ -1,8 +1,9 @@
 import { nhashDecode, nhashEncode, toHex } from '@hashtree/core';
 import {
   decodeImmutableHostLabel,
-  decodeTreeNameFromLabels,
+  decodeMutableHostLabel,
   encodePathSegments,
+  getMutableTreeHint,
   normalizeHost,
 } from './siteIdentity';
 
@@ -111,7 +112,7 @@ function parseGenericHashSite(hash: string | undefined): HostedSite | null {
 
 type RuntimeSiteHint =
   | { kind: 'immutable'; hash: Uint8Array }
-  | { kind: 'mutable'; npub: string; treeName: string };
+  | { kind: 'mutable'; npub: string; treeHint: string };
 
 function parseRuntimeSiteHint(host: string): RuntimeSiteHint | null {
   const normalized = normalizeHost(host);
@@ -136,20 +137,17 @@ function parseRuntimeSiteHint(host: string): RuntimeSiteHint | null {
     if (hash) {
       return { kind: 'immutable', hash };
     }
+    const mutable = decodeMutableHostLabel(labels[0]);
+    if (mutable) {
+      return {
+        kind: 'mutable',
+        npub: mutable.npub,
+        treeHint: mutable.treeHint,
+      };
+    }
   }
 
-  if (!isMaybeNpub(labels[0]) || labels.length < 2) {
-    return null;
-  }
-
-  const treeName = decodeTreeNameFromLabels(labels.slice(1));
-  if (!treeName) return null;
-
-  return {
-    kind: 'mutable',
-    npub: labels[0],
-    treeName,
-  };
+  return null;
 }
 
 function resolveImmutableRuntimeSite(hint: { hash: Uint8Array }, hash: string | undefined): HostedSite | null {
@@ -191,21 +189,20 @@ function resolveImmutableRuntimeSite(hint: { hash: Uint8Array }, hash: string | 
 }
 
 function resolveMutableRuntimeSite(
-  hint: { npub: string; treeName: string },
+  hint: { npub: string; treeHint: string },
   hash: string | undefined,
 ): HostedSite | null {
   const generic = parseGenericHashSite(hash);
   if (generic?.kind === 'mutable') {
     // Refuse cross-site spoofing like real-site.hashtree.cc/#/attacker/tree:
     // the hostname decides the mutable root, not the fragment.
-    if (generic.npub !== hint.npub || generic.treeName !== hint.treeName) {
+    if (generic.npub !== hint.npub || getMutableTreeHint(generic.treeName) !== hint.treeHint) {
       return null;
     }
     return generic;
   }
 
-  const { parts } = decodeHashRoute(hash);
-  return createGenericMutableSite(hint.npub, hint.treeName, parts.join('/') || 'index.html');
+  return null;
 }
 
 export function serializeHostedSiteHash(site: HostedSite): string {

@@ -2,8 +2,8 @@ import { nhashDecode, toHex } from '@hashtree/core';
 import type { HostedSite } from './siteConfig';
 import {
   encodeImmutableHostLabel,
+  encodeMutableHostLabel,
   encodePathSegments,
-  encodeTreeNameLabels,
   normalizeHost,
 } from './siteIdentity';
 
@@ -57,7 +57,7 @@ function serializeRuntimeHash(site: HostedSite): string {
     const query = params.toString();
     return `#/${entryPath}${query ? `?${query}` : ''}`;
   }
-  return `#/${entryPath}`;
+  return `#/${site.npub}/${encodeURIComponent(site.treeName)}/${entryPath}`;
 }
 
 function buildRuntimeHostPrefix(site: HostedSite): string {
@@ -65,7 +65,7 @@ function buildRuntimeHostPrefix(site: HostedSite): string {
     return encodeImmutableHostLabel(nhashDecode(site.nhash).hash);
   }
 
-  return [site.npub, ...encodeTreeNameLabels(site.treeName)].join('.');
+  return encodeMutableHostLabel(site.npub, site.treeName);
 }
 
 export function isPortalShellHost(host: string): boolean {

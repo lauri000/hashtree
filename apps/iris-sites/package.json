@@ -24,6 +24,7 @@
     "@hashtree/core": "workspace:*",
     "@hashtree/nostr": "workspace:*",
     "@hashtree/worker": "workspace:*",
+    "nostr-tools": "^2.23.3",
     "svelte": "^5.16.0"
   },
   "devDependencies": {

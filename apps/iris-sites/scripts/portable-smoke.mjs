@@ -3,6 +3,7 @@ import path from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
 import { chromium } from '@playwright/test';
 import { nhashDecode, toHex } from '@hashtree/core';
+import { nip19 } from 'nostr-tools';
 
 const appDir = path.resolve(import.meta.dirname, '..');
 const distDir = path.join(appDir, 'dist');
@@ -199,17 +200,41 @@ function encodeBase32(bytes) {
 }
 
 function encodeTreeNameLabels(treeName) {
-  const safeLabels = treeName.split('/').filter(Boolean);
-  if (
-    safeLabels.length > 0 &&
-    safeLabels.every((label) => /^(?!x-)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))
-  ) {
-    return safeLabels;
+  const slug = treeName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const hint = (slug || 'site').slice(0, 12).replace(/-+$/g, '');
+  return hint || 'site';
+}
+
+function encodeBase36(bytes) {
+  const alphabet = '0123456789abcdefghijklmnopqrstuvwxyz';
+  let value = 0n;
+  for (const byte of bytes) {
+    value = (value << 8n) | BigInt(byte);
+  }
+  if (value === 0n) return '0';
+
+  let output = '';
+  while (value > 0n) {
+    const remainder = Number(value % 36n);
+    output = alphabet[remainder] + output;
+    value /= 36n;
+  }
+  return output;
+}
+
+function encodeMutableHostLabel(npub, treeName) {
+  const decoded = nip19.decode(npub);
+  if (decoded.type !== 'npub' || typeof decoded.data !== 'string') {
+    throw new Error(`Expected npub, got ${decoded.type}`);
   }
 
-  const treeHex = bytesToHex(new TextEncoder().encode(treeName));
-  const chunks = treeHex.match(/.{1,60}/g);
-  return (chunks && chunks.length > 0 ? chunks : ['00']).map((chunk) => `x-${chunk}`);
+  const ownerHex = decoded.data;
+  const ownerBytes = new Uint8Array(ownerHex.match(/.{1,2}/g).map((pair) => Number.parseInt(pair, 16)));
+  return `${encodeBase36(ownerBytes).padStart(50, '0')}-${encodeTreeNameLabels(treeName)}`;
 }
 
 function immutableRuntimeHost(nhash, port) {
@@ -221,8 +246,7 @@ function immutableRuntimeHost(nhash, port) {
 }
 
 function mutableRuntimeHost(npub, treeName, port) {
-  const labels = encodeTreeNameLabels(treeName);
-  return `http://${npub}.${labels.join('.')}.sites.iris.localhost:${port}`;
+  return `http://${encodeMutableHostLabel(npub, treeName)}.sites.iris.localhost:${port}`;
 }
 
 const { server, port } = await startServer(distDir);
@@ -260,7 +284,7 @@ try {
   if (!mutableResponse || mutableResponse.status() !== 200) {
     throw new Error(`Mutable portal boot page returned ${mutableResponse?.status() ?? 'no response'} for ${mutableUrl}`);
   }
-  await mutablePage.waitForURL(`${mutableRuntimeHost(ENSHITTIFIER_NPUB, 'enshittifier', port)}/#/index.html`, { timeout: 60000 });
+  await mutablePage.waitForURL(`${mutableRuntimeHost(ENSHITTIFIER_NPUB, 'enshittifier', port)}/#/${ENSHITTIFIER_NPUB}/enshittifier/index.html`, { timeout: 60000 });
   await assertFrameShowsApp(mutablePage, 60000);
 
   const directImmutablePage = await context.newPage();

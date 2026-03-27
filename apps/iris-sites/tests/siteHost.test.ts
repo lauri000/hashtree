@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { nhashDecode, nhashEncode, toHex } from '@hashtree/core';
 import { buildIsolatedSiteHref, isPortalShellHost } from '../src/lib/siteHost';
-import { encodeImmutableHostLabel } from '../src/lib/siteIdentity';
+import { encodeImmutableHostLabel, encodeMutableHostLabel } from '../src/lib/siteIdentity';
+
+const VALID_NPUB = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
 
 describe('site host routing', () => {
   it('treats the bare sites host as the launcher shell', () => {
@@ -29,30 +31,29 @@ describe('site host routing', () => {
     expect(url.href).not.toContain(nhash);
   });
 
-  it('derives mutable runtime hosts from npub plus DNS-safe tree segments', async () => {
-    const npub = 'npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
+  it('derives mutable runtime hosts into a single owner-tree label', async () => {
     const href = await buildIsolatedSiteHref({
       kind: 'mutable',
       siteKey: 'pilot',
       title: 'apps/iris',
-      npub,
+      npub: VALID_NPUB,
       treeName: 'apps/iris',
       entryPath: 'index.html',
     });
 
-    expect(href).toBe(`https://${npub}.apps.iris.hashtree.cc/#/index.html`);
+    expect(href).toBe(`https://${encodeMutableHostLabel(VALID_NPUB, 'apps/iris')}.hashtree.cc/#/${VALID_NPUB}/apps%2Firis/index.html`);
   });
 
-  it('encodes non-DNS-safe mutable tree names into reversible host labels', async () => {
+  it('keeps non-DNS-safe mutable tree names in the fragment while the host stays single-label', async () => {
     const href = await buildIsolatedSiteHref({
       kind: 'mutable',
       siteKey: 'pilot',
       title: 'unsafe',
-      npub: 'npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq',
+      npub: VALID_NPUB,
       treeName: 'apps/iris ui',
       entryPath: 'index.html',
     });
 
-    expect(href).toBe('https://npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq.x-617070732f69726973207569.hashtree.cc/#/index.html');
+    expect(href).toBe(`https://${encodeMutableHostLabel(VALID_NPUB, 'apps/iris ui')}.hashtree.cc/#/${VALID_NPUB}/apps%2Firis%20ui/index.html`);
   });
 });
