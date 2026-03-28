@@ -158,8 +158,17 @@ async function readReleaseNotes(
 
 async function listReleaseAssets(tree: ReturnType<typeof getTree>, releaseCid: CID): Promise<ReleaseAsset[]> {
   const assetsEntry = await tree.resolvePath(releaseCid, 'assets');
-  if (!assetsEntry?.cid || assetsEntry.type !== LinkType.Dir) return [];
-  const entries = await tree.listDirectory(assetsEntry.cid);
+  if (!assetsEntry?.cid) return [];
+
+  let entries: TreeEntry[];
+  try {
+    entries = await tree.listDirectory(assetsEntry.cid);
+  } catch {
+    // Some imported trees misreport directory links as files even though the target CID is a
+    // directory. Treat listing failure as "no assets" instead of hiding otherwise valid releases.
+    return [];
+  }
+
   return entries
     .filter(entry => entry.type !== LinkType.Dir)
     .map(entry => ({
@@ -221,7 +230,11 @@ export async function fetchReleaseDetail(
 
   const notesFile = record?.notes_file || 'notes.md';
   const notes = await readReleaseNotes(tree, entry.cid, notesFile);
-  const assets = await listReleaseAssets(tree, entry.cid);
+  const assets = record?.assets?.map(asset => ({
+    name: asset.name,
+    path: asset.path,
+    size: asset.size,
+  })) ?? await listReleaseAssets(tree, entry.cid);
 
   return {
     ...summary,

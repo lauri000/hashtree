@@ -49,6 +49,12 @@ function concatBytes(...arrays: Uint8Array[]): Uint8Array {
   return result;
 }
 
+function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy.buffer;
+}
+
 // Sign the path using HMAC-SHA256 with Web Crypto API
 async function signUrl(path: string, key: string, salt: string): Promise<string> {
   const te = new TextEncoder();
@@ -59,13 +65,13 @@ async function signUrl(path: string, key: string, salt: string): Promise<string>
 
   const cryptoKey = await crypto.subtle.importKey(
     'raw',
-    keyBytes,
+    bytesToArrayBuffer(keyBytes),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign']
   );
 
-  const signature = await crypto.subtle.sign('HMAC', cryptoKey, data);
+  const signature = await crypto.subtle.sign('HMAC', cryptoKey, bytesToArrayBuffer(data));
   return urlSafeBase64(new Uint8Array(signature));
 }
 
