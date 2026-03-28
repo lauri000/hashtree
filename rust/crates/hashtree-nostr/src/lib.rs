@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 const EVENT_ENVELOPE_VERSION: u8 = 1;
 const MANIFEST_BY_ID: &str = "by-id";
+const MANIFEST_EVENTS_BY_ID: &str = "events_by_id";
 const MANIFEST_BY_AUTHOR_TIME: &str = "by-author-time";
 const MANIFEST_BY_AUTHOR_KIND_TIME: &str = "by-author-kind-time";
 const MANIFEST_BY_TIME: &str = "by-time";
@@ -367,7 +368,8 @@ impl<S: Store> NostrEventStore<S> {
 
         let entries = self.tree.list_directory(root).await?;
         Ok(NostrEventManifest {
-            by_id: find_manifest_cid(&entries, MANIFEST_BY_ID),
+            by_id: find_manifest_cid(&entries, MANIFEST_EVENTS_BY_ID)
+                .or_else(|| find_manifest_cid(&entries, MANIFEST_BY_ID)),
             by_author_time: find_manifest_cid(&entries, MANIFEST_BY_AUTHOR_TIME),
             by_author_kind_time: find_manifest_cid(&entries, MANIFEST_BY_AUTHOR_KIND_TIME),
             by_time: find_manifest_cid(&entries, MANIFEST_BY_TIME),
@@ -441,6 +443,8 @@ impl<S: Store> NostrEventStore<S> {
         let mut entries = Vec::new();
         if let Some(cid) = manifest.by_id.as_ref() {
             entries.push(DirEntry::from_cid(MANIFEST_BY_ID, cid).with_link_type(LinkType::Dir));
+            entries
+                .push(DirEntry::from_cid(MANIFEST_EVENTS_BY_ID, cid).with_link_type(LinkType::Dir));
         }
         if let Some(cid) = manifest.by_author_time.as_ref() {
             entries.push(

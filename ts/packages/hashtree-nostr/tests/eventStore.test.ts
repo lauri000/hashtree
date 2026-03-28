@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MemoryStore, sha256, toHex } from '@hashtree/core';
+import { HashTree, MemoryStore, sha256, toHex } from '@hashtree/core';
 import { NostrEventStore, type StoredNostrEvent } from '../src/events.js';
 
 async function makeEvent(
@@ -54,6 +54,20 @@ describe('NostrEventStore', () => {
 
     await expect(store.getById(root, event.id)).resolves.toEqual(event);
     await expect(store.getById(root, 'f'.repeat(64))).resolves.toBeNull();
+  });
+
+  it('exposes an events_by_id manifest alias', async () => {
+    const backing = new MemoryStore();
+    const store = new NostrEventStore(backing);
+    const tree = new HashTree({ store: backing });
+    const event = await makeEvent();
+
+    const root = await store.add(null, event);
+    const entries = await tree.listDirectory(root);
+    const names = entries.map(entry => entry.name);
+
+    expect(names).toContain('by-id');
+    expect(names).toContain('events_by_id');
   });
 
   it('lists author feeds newest first', async () => {

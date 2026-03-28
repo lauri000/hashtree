@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use futures::executor::block_on;
-use hashtree_core::{sha256, Cid, MemoryStore};
+use hashtree_core::{sha256, Cid, HashTree, HashTreeConfig, MemoryStore};
 use hashtree_nostr::{ListEventsOptions, NostrEventStore, StoredNostrEvent};
 
 fn event(
@@ -151,6 +151,31 @@ fn stores_events_by_id_author_and_replaceable_views() {
 }
 
 #[test]
+fn manifest_exposes_events_by_id_alias() {
+    block_on(async {
+        let backing = Arc::new(MemoryStore::new());
+        let tree = HashTree::new(HashTreeConfig::new(backing.clone()));
+        let store = NostrEventStore::new(backing);
+        let author = "a".repeat(64);
+        let event = event(
+            "1195275911eb877e6687b4f8a3495de1e0719280e7fc1fb229a9de37b2d87bea",
+            &author,
+            10,
+            1,
+            "older",
+            &"2".repeat(128),
+        );
+
+        let root = store.add(None, event).await.unwrap();
+        let entries = tree.list_directory(&root).await.unwrap();
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+
+        assert!(names.contains(&"by-id"));
+        assert!(names.contains(&"events_by_id"));
+    });
+}
+
+#[test]
 fn manifest_root_matches_typescript_fixture() {
     block_on(async {
         let store = NostrEventStore::new(Arc::new(MemoryStore::new()));
@@ -187,9 +212,9 @@ fn manifest_root_matches_typescript_fixture() {
         assert_eq!(
             cid_to_pair(&root),
             (
-                "2f6b430b22710649b7bd245127b36840f1481e39deda66fefa6ea27e7536b1ba".to_string(),
+                "273f6e6c8bc475c45803766131c7938b812fe382e52bc6b5904d3e3778e77777".to_string(),
                 Some(
-                    "bf3d82ed21e2a126c6cc50962be77e6ebf5d7ec1dc0ba92cc76dea55c5327863".to_string()
+                    "c2ee24ab4666ff62ca96fb29cb7051870e1908b00de7966b1d1817d41be50c6e".to_string()
                 )
             )
         );

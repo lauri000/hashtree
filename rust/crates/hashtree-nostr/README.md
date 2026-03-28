@@ -11,6 +11,7 @@ and maintains thin B-tree indexes for lookups like:
 - replaceable and parameterized-replaceable event winners
 
 The layout is kept interoperable with the TypeScript `@hashtree/nostr`
-implementation.
+implementation. The manifest exposes the event-id index under both the legacy
+`by-id` name and the more explicit `events_by_id` alias.
 
 Part of [hashtree](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree).
