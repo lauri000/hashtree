@@ -57,6 +57,15 @@ export function matchesPwaIdentity(left: PwaIdentityLike, right: PwaIdentityLike
 
 export const distributedOwner = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
 
+const irisLauncherIcons = {
+  files: '/iris-files-icon.svg',
+  video: '/iris-video-icon.svg',
+  docs: '/iris-docs-icon.svg',
+  git: '/iris-git-icon.svg',
+  maps: '/iris-maps-icon.svg',
+  boards: '/iris-boards-icon.svg',
+} as const;
+
 function builtInAppUrl(treeName: string): string {
   return `htree://${distributedOwner}/${treeName}/index.html`;
 }
@@ -78,12 +87,12 @@ export function isBuiltInIrisApp(host?: string, treename?: string): boolean {
 }
 
 export const suggestedIrisApps: readonly AppBookmark[] = [
-  { url: builtInAppUrl('files'), name: 'Iris Files', icon: '/iris-logo.png', addedAt: 0 },
-  { url: builtInAppUrl('video'), name: 'Iris Video', icon: '/iris-logo.png', addedAt: 0 },
-  { url: builtInAppUrl('docs'), name: 'Iris Docs', icon: '/iris-logo.png', addedAt: 0 },
-  { url: builtInAppUrl('git'), name: 'Iris Git', icon: '/iris-logo.png', addedAt: 0 },
-  { url: builtInAppUrl('maps'), name: 'Iris Maps', icon: '/iris-logo.png', addedAt: 0 },
-  { url: builtInAppUrl('boards'), name: 'Iris Boards', icon: '/iris-logo.png', addedAt: 0 },
+  { url: builtInAppUrl('files'), name: 'Iris Files', icon: irisLauncherIcons.files, addedAt: 0 },
+  { url: builtInAppUrl('video'), name: 'Iris Video', icon: irisLauncherIcons.video, addedAt: 0 },
+  { url: builtInAppUrl('docs'), name: 'Iris Docs', icon: irisLauncherIcons.docs, addedAt: 0 },
+  { url: builtInAppUrl('git'), name: 'Iris Git', icon: irisLauncherIcons.git, addedAt: 0 },
+  { url: builtInAppUrl('maps'), name: 'Iris Maps', icon: irisLauncherIcons.maps, addedAt: 0 },
+  { url: builtInAppUrl('boards'), name: 'Iris Boards', icon: irisLauncherIcons.boards, addedAt: 0 },
   { url: builtInAppUrl('iris-client'), name: 'Iris Social', icon: '/iris-logo.png', addedAt: 0 },
   { url: builtInAppUrl('iris-chat'), name: 'Iris Chat', icon: '/iris-logo.png', addedAt: 0 },
   { url: builtInAppUrl('meet'), name: 'Iris Meet', icon: '/iris-logo.png', addedAt: 0 },

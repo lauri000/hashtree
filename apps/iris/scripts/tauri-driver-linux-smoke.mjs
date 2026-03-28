@@ -10,6 +10,7 @@ const launcherPath = path.join(appDir, 'scripts', 'launch-linux-debug-iris.sh');
 const artifactsDir = process.env.IRIS_NATIVE_ARTIFACT_DIR ?? path.join(appDir, 'test-results', 'native');
 const webdriverPort = Number(process.env.TAURI_DRIVER_PORT ?? 4444);
 const automationPort = Number(process.env.IRIS_AUTOMATION_PORT ?? 21977);
+const launcherSmokeMode = process.env.IRIS_LAUNCHER_SMOKE_MODE ?? 'files';
 const webdriverBase = `http://127.0.0.1:${webdriverPort}`;
 const automationBase = `http://127.0.0.1:${automationPort}/automation`;
 const elementRefKey = 'element-6066-11e4-a52e-4f735466cecf';
@@ -130,6 +131,10 @@ async function findElement(using, value) {
 
 async function clickElement(elementId) {
   await request('POST', `/session/${sessionId}/element/${elementId}/click`, {});
+}
+
+async function waitForElement(using, value, description, timeoutMs = 30000) {
+  return waitFor(() => findElement(using, value), description, timeoutMs);
 }
 
 function webdriverElement(elementId) {
@@ -321,7 +326,25 @@ async function main() {
       (state) => state.shellReady === true && state.currentView === 'launcher',
       'Iris launcher to be ready',
     );
-    await takeScreenshot('launcher.png');
+    await takeScreenshot(launcherSmokeMode === 'icons' ? 'launcher-icons.png' : 'launcher.png');
+
+    if (launcherSmokeMode === 'icons') {
+      const addFavoriteButton = await waitForElement(
+        'css selector',
+        "[data-testid='suggestion-add-iris-files']",
+        'Iris Files launcher add-to-favourites button',
+      );
+      await clickElement(addFavoriteButton);
+
+      await waitForElement(
+        'css selector',
+        "[data-testid='favorite-icon-iris-files'] img[src='/iris-files-icon.svg']",
+        'Iris Files favourite icon to use the distinct launcher svg',
+      );
+      await takeScreenshot('launcher-icons-favorite.png');
+      console.log(`Launcher icon smoke passed. Screenshots written to ${artifactsDir}`);
+      return;
+    }
 
     const toolbar = await findElement('css selector', "div[style='padding-left: 88px;']");
     const windowBeforeFocusClick = await getWindowRect();
