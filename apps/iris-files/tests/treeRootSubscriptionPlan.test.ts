@@ -25,6 +25,17 @@ describe('getTreeRootSubscriptionPlan', () => {
     });
   });
 
+  it('keeps the exact resolver subscription for link-key routes even after worker hydration', () => {
+    expect(getTreeRootSubscriptionPlan({
+      workerSubscribed: true,
+      workerHydrated: true,
+      hasRouteLinkKey: true,
+    })).toEqual({
+      attachWorkerSubscription: true,
+      useResolverSubscription: true,
+    });
+  });
+
   it('falls back to the exact resolver subscription when worker support is unavailable', () => {
     expect(getTreeRootSubscriptionPlan({
       workerSubscribed: false,

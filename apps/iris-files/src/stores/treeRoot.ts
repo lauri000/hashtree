@@ -391,6 +391,9 @@ async function startResolverSubscription(
   if (slashIndex <= 0 || slashIndex >= key.length - 1) return;
   const npub = key.slice(0, slashIndex);
   const treeName = key.slice(slashIndex + 1);
+  const currentRoute = get(routeStore);
+  const hasRouteLinkKey = getResolverKey(currentRoute.npub ?? undefined, currentRoute.treeName ?? undefined) === key
+    && !!currentRoute.params.get('k');
 
   const subscribed = await ensureWorkerTreeRootSubscription(npub);
   const hydrated = options?.skipWorkerHydrate
@@ -399,6 +402,7 @@ async function startResolverSubscription(
   const subscriptionPlan = getTreeRootSubscriptionPlan({
     workerSubscribed: subscribed,
     workerHydrated: hydrated,
+    hasRouteLinkKey,
   });
 
   if (subscriptionPlan.attachWorkerSubscription) {
@@ -452,6 +456,7 @@ async function startResolverSubscription(
     const retryPlan = getTreeRootSubscriptionPlan({
       workerSubscribed: subscribed,
       workerHydrated: hydrated,
+      hasRouteLinkKey,
     });
     if (retryPlan.attachWorkerSubscription) {
       active.unsubscribeWorker = () => {

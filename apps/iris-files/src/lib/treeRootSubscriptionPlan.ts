@@ -15,10 +15,11 @@ export function shouldStartTreeRootSubscription(options: {
 export function getTreeRootSubscriptionPlan(options: {
   workerSubscribed: boolean;
   workerHydrated: boolean;
+  hasRouteLinkKey?: boolean;
 }): TreeRootSubscriptionPlan {
-  const { workerSubscribed, workerHydrated } = options;
+  const { workerSubscribed, workerHydrated, hasRouteLinkKey = false } = options;
   return {
     attachWorkerSubscription: workerSubscribed,
-    useResolverSubscription: !workerHydrated,
+    useResolverSubscription: !workerHydrated || hasRouteLinkKey,
   };
 }
