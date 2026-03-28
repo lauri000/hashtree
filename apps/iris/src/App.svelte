@@ -33,6 +33,7 @@
   import AddressOwnerPill from './components/AddressOwnerPill.svelte';
   import HistoryEntryIcon from './components/HistoryEntryIcon.svelte';
   import AppLauncher from './components/AppLauncher.svelte';
+  import LoadingSpinner from './components/LoadingSpinner.svelte';
   import Settings from './components/Settings.svelte';
 
   type View = 'launcher' | 'settings' | 'webview';
@@ -1523,7 +1524,7 @@
                 title={isChildLoading ? 'Loading' : 'Refresh'}
               >
                 {#if isChildLoading}
-                  <span class="i-lucide-loader-2 text-sm animate-spin"></span>
+                  <LoadingSpinner class="h-4 w-4" testId="address-loading-spinner" />
                 {:else}
                   <span class="i-lucide-refresh-cw text-sm"></span>
                 {/if}
@@ -1593,7 +1594,7 @@
                   title={currentPwaBookmark ? 'Update in Iris home screen' : 'Add to Iris home screen'}
                 >
                   {#if isInstallingPwa}
-                    <span class="i-lucide-loader-2 text-sm animate-spin"></span>
+                    <LoadingSpinner class="h-4 w-4" />
                   {:else if currentPwaBookmark}
                     <span class="i-lucide-refresh-cw"></span>
                   {:else}
@@ -1727,7 +1728,7 @@
               title={isChildLoading ? 'Loading' : 'Refresh'}
             >
               {#if isChildLoading}
-                <span class="i-lucide-loader-2 text-sm animate-spin"></span>
+                <LoadingSpinner class="h-4 w-4" testId="address-loading-spinner" />
               {:else}
                 <span class="i-lucide-refresh-cw text-sm"></span>
               {/if}
@@ -1796,7 +1797,7 @@
               title={currentPwaBookmark ? 'Update in Iris home screen' : 'Add to Iris home screen'}
             >
               {#if isInstallingPwa}
-                <span class="i-lucide-loader-2 text-sm animate-spin"></span>
+                <LoadingSpinner class="h-4 w-4" />
               {:else if currentPwaBookmark}
                 <span class="i-lucide-refresh-cw"></span>
               {:else}
@@ -1903,7 +1904,7 @@
             {/if}
           </div>
         {:else}
-          <span data-testid="webview-loading-spinner" class="i-lucide-loader-2 animate-spin text-2xl text-text-2"></span>
+          <LoadingSpinner testId="webview-loading-spinner" class="h-8 w-8 text-text-2" />
         {/if}
       </section>
     {/if}

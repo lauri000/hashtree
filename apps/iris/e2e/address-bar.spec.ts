@@ -269,6 +269,21 @@ test.describe('Address Bar', () => {
     await expect(input).toHaveValue(url);
   });
 
+  test('address bar loading state uses a centered svg spinner', async ({ tauriPage: page }) => {
+    await openHome(page);
+
+    const input = page.locator('input[placeholder="Search or enter address"]');
+    await input.click();
+    await input.fill('https://example.com');
+    await input.press('Enter');
+
+    const spinner = page.locator('svg[data-testid="address-loading-spinner"]');
+    await expect(spinner).toBeVisible();
+    await expect(spinner).toHaveAttribute('viewBox', '0 0 16 16');
+    await expect(spinner.locator('circle')).toHaveAttribute('cx', '8');
+    await expect(spinner.locator('circle')).toHaveAttribute('cy', '8');
+  });
+
   test('history dropdown shows owner label and page title for npub routes', async ({ tauriPage: page }) => {
     await openHome(page);
 
