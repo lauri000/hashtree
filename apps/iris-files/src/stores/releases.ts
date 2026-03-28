@@ -56,6 +56,12 @@ export interface ReleasesState {
   error: string | null;
 }
 
+export interface ReleaseDetailState {
+  item: ReleaseDetail | null;
+  loading: boolean;
+  error: string | null;
+}
+
 export interface SaveReleaseOptions {
   npub: string;
   repoPath: string;
@@ -282,6 +288,56 @@ export function createReleasesStore(
     onCacheUpdate((owner, treeName) => {
       if (owner === npub && treeName === releaseTreeName) {
         refresh();
+      }
+    });
+  }
+
+  return { subscribe, refresh };
+}
+
+export function createReleaseDetailStore(
+  npub: string | null,
+  repoPath: string | null,
+  releaseId: string | null
+): Readable<ReleaseDetailState> & { refresh: () => Promise<void> } {
+  const { subscribe, set, update } = writable<ReleaseDetailState>({
+    item: null,
+    loading: true,
+    error: null,
+  });
+
+  const releaseTreeName: string | null = repoPath ? buildReleaseTreeName(repoPath) : null;
+
+  async function refresh(): Promise<void> {
+    if (!npub || !repoPath || !releaseId) {
+      set({ item: null, loading: false, error: null });
+      return;
+    }
+
+    update(state => ({ ...state, loading: true, error: null }));
+
+    try {
+      const item = await fetchReleaseDetail(npub, repoPath, releaseId);
+      if (!item) {
+        set({ item: null, loading: false, error: 'Release not found' });
+        return;
+      }
+      set({ item, loading: false, error: null });
+    } catch (err) {
+      set({ item: null, loading: false, error: getErrorMessage(err) });
+    }
+  }
+
+  if (npub && repoPath && releaseId) {
+    void refresh();
+  } else {
+    set({ item: null, loading: false, error: null });
+  }
+
+  if (npub && releaseTreeName) {
+    onCacheUpdate((owner, treeName) => {
+      if (owner === npub && treeName === releaseTreeName) {
+        void refresh();
       }
     });
   }

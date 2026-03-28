@@ -9,10 +9,9 @@
   import { nostrStore } from '../../nostr';
   import { getNpubFileUrl } from '../../lib/mediaUrl';
   import {
-    fetchReleaseDetail,
+    createReleaseDetailStore,
     deleteRelease,
     buildReleaseTreeName,
-    type ReleaseDetail,
   } from '../../stores/releases';
   import { formatBytes } from '../../store';
   import { open as openReleaseModal } from './ReleaseModal.svelte';
@@ -47,40 +46,20 @@
   let releaseVisibility = $derived(releaseTree?.visibility ?? currentTree?.visibility ?? 'public');
   let releaseLinkKey = $derived(releaseTree?.linkKey ?? currentTree?.linkKey ?? route.params.get('k') ?? undefined);
 
-  let release = $state<ReleaseDetail | null>(null);
-  let loading = $state(true);
-  let error = $state<string | null>(null);
   let isOwner = $derived($nostrStore.npub === npub);
-
-  $effect(() => {
-    if (npub && repoName && releaseId) {
-      loadRelease();
-    }
-  });
-
-  async function loadRelease() {
-    loading = true;
-    error = null;
-
-    try {
-      const result = await fetchReleaseDetail(npub, repoName, releaseId);
-      if (!result) {
-        error = 'Release not found';
-        release = null;
-        return;
-      }
-      if (result.draft && !isOwner) {
-        error = 'Release not found';
-        release = null;
-        return;
-      }
-      release = result;
-    } catch (err) {
-      error = err instanceof Error ? err.message : 'Failed to load release';
-    } finally {
-      loading = false;
-    }
-  }
+  let releaseDetailStore = $derived(createReleaseDetailStore(npub, repoName, releaseId));
+  let releaseState = $derived($releaseDetailStore);
+  let loading = $derived(releaseState.loading);
+  let release = $derived(
+    releaseState.item && (!releaseState.item.draft || isOwner)
+      ? releaseState.item
+      : null
+  );
+  let error = $derived(
+    releaseState.item?.draft && !isOwner
+      ? 'Release not found'
+      : releaseState.error
+  );
 
   let notesHtml = $derived(
     release?.notes
@@ -136,7 +115,7 @@
       visibility: releaseVisibility as 'public' | 'link-visible' | 'private',
       linkKey: releaseLinkKey ?? undefined,
       release,
-      onSave: () => loadRelease(),
+      onSave: () => releaseDetailStore.refresh(),
     });
   }
 </script>
@@ -157,6 +136,9 @@
       <div class="flex flex-col items-center justify-center py-12 text-danger">
         <span class="i-lucide-alert-circle text-2xl mb-2"></span>
         <span>{error}</span>
+        <button onclick={() => releaseDetailStore.refresh()} class="btn-ghost mt-4">
+          Try again
+        </button>
         <a href={getBackHref()} class="btn-ghost mt-4">
           <span class="i-lucide-arrow-left mr-2"></span>
           Back to releases
