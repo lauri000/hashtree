@@ -4,6 +4,8 @@ export interface BoardRouteIdentity {
   path?: string[];
 }
 
+export type HydratedBoardResult = 'ready' | 'retry' | 'missing';
+
 export function getBoardRouteKey(route: BoardRouteIdentity): string {
   return `${route.npub ?? ''}/${route.treeName ?? ''}/${(route.path ?? []).join('/')}`;
 }
@@ -26,4 +28,12 @@ export function shouldApplyHydratedBoardState(
   if (previousRouteKey !== nextRouteKey) return true;
   if (!currentUpdatedAt || !hydratedUpdatedAt) return true;
   return hydratedUpdatedAt >= currentUpdatedAt;
+}
+
+export function resolveHydratedBoardResult(options: {
+  hasBoardSnapshot: boolean;
+  hasIncompleteData: boolean;
+}): HydratedBoardResult {
+  if (options.hasBoardSnapshot) return 'ready';
+  return options.hasIncompleteData ? 'retry' : 'missing';
 }

@@ -6,7 +6,12 @@
   import { nip19 } from 'nostr-tools';
   import { getNhashFileUrl } from '../../lib/mediaUrl';
   import { treeRootRegistry } from '../../TreeRootRegistry';
-  import { getBoardRouteKey, shouldApplyHydratedBoardState, shouldShowBoardLoading } from '../../lib/boards/viewState';
+  import {
+    getBoardRouteKey,
+    resolveHydratedBoardResult,
+    shouldApplyHydratedBoardState,
+    shouldShowBoardLoading,
+  } from '../../lib/boards/viewState';
   import { syncSelectedTreeForOwnRoute } from '../../lib/selectedTree';
   import { getTree } from '../../store';
   import { setUploadProgress } from '../../stores/upload';
@@ -40,7 +45,6 @@
     cloneBoardState,
     createBoardId,
     createInitialBoardPermissions,
-    createInitialBoardState,
     createInitialBoardTombstones,
     buildBoardVisibilityQueryString,
     isProtectedBoardWithoutAccess as computeProtectedBoardWithoutAccess,
@@ -953,11 +957,29 @@
       });
 
       const resolvedPermissions = mergedSnapshot.permissions || localPermissions;
-      const resolvedBoard = mergedSnapshot.board || createInitialBoardState(
-        resolvedPermissions.boardId || createBoardId(),
-        resolvedPermissions.title || boardName,
-        ownerNpub
-      );
+      const boardResult = resolveHydratedBoardResult({
+        hasBoardSnapshot: !!mergedSnapshot.board,
+        hasIncompleteData,
+      });
+      if (boardResult === 'retry') {
+        scheduleHydrateRetry(generation, root, routeKey);
+        return;
+      }
+      if (boardResult === 'missing') {
+        if (generation !== loadGeneration) return;
+        permissions = resolvedPermissions;
+        error = 'Board data missing.';
+        loading = false;
+        return;
+      }
+
+      const resolvedBoard = mergedSnapshot.board;
+      if (!resolvedBoard) {
+        if (generation !== loadGeneration) return;
+        error = 'Board data missing.';
+        loading = false;
+        return;
+      }
       const resolvedTombstones = mergedSnapshot.tombstones;
       const shouldApplyBoard = shouldApplyHydratedBoardState(
         hydratedRouteKey,

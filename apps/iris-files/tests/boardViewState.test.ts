@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { getBoardRouteKey, shouldApplyHydratedBoardState, shouldShowBoardLoading } from '../src/lib/boards/viewState';
+import {
+  getBoardRouteKey,
+  resolveHydratedBoardResult,
+  shouldApplyHydratedBoardState,
+  shouldShowBoardLoading,
+} from '../src/lib/boards/viewState';
 
 describe('board view loading state', () => {
   it('does not re-enter loading for root-only updates on the same board route', () => {
@@ -62,5 +67,26 @@ describe('board view loading state', () => {
     });
 
     expect(shouldApplyHydratedBoardState(previousKey, nextKey, 500, 100)).toBe(true);
+  });
+
+  it('keeps retrying when permissions load before the board snapshot', () => {
+    expect(resolveHydratedBoardResult({
+      hasBoardSnapshot: false,
+      hasIncompleteData: true,
+    })).toBe('retry');
+  });
+
+  it('treats permissions-only hydration without missing reads as an error', () => {
+    expect(resolveHydratedBoardResult({
+      hasBoardSnapshot: false,
+      hasIncompleteData: false,
+    })).toBe('missing');
+  });
+
+  it('uses the hydrated board when a snapshot exists', () => {
+    expect(resolveHydratedBoardResult({
+      hasBoardSnapshot: true,
+      hasIncompleteData: true,
+    })).toBe('ready');
   });
 });

@@ -11,4 +11,8 @@ describe('boards hydration effect markup', () => {
     expect(boardViewSource).toContain('untrack(() => !!board)');
     expect(boardViewSource).not.toContain('shouldShowBoardLoading(hydratedRouteKey, routeKey, !!board)');
   });
+
+  it('does not synthesize a new board when hydration is missing the board snapshot', () => {
+    expect(boardViewSource).not.toContain('const resolvedBoard = mergedSnapshot.board || createInitialBoardState(');
+  });
 });
