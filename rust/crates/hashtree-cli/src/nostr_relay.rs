@@ -242,6 +242,83 @@ mod imp {
     }
 
     impl NostrRelay {
+        async fn collect_filter_events(
+            &self,
+            filter: &NostrFilter,
+            limit: usize,
+            seen: &mut HashSet<EventId>,
+            events: &mut Vec<Event>,
+        ) {
+            if limit == 0 {
+                return;
+            }
+
+            let mut added = 0usize;
+
+            if !prefers_trusted_only(filter) {
+                let recent = {
+                    let cache = self.recent_events.lock().await;
+                    cache.matching(filter)
+                };
+                for event in recent {
+                    if seen.insert(event.id) {
+                        events.push(event);
+                        added += 1;
+                        if added >= limit {
+                            return;
+                        }
+                    }
+                }
+            }
+
+            for event in self.trusted.query(filter, limit) {
+                if seen.insert(event.id) {
+                    events.push(event);
+                    added += 1;
+                    if added >= limit {
+                        return;
+                    }
+                }
+            }
+        }
+
+        async fn collect_filter_count(
+            &self,
+            filter: &NostrFilter,
+            limit: usize,
+            seen: &mut HashSet<EventId>,
+        ) {
+            if limit == 0 {
+                return;
+            }
+
+            let mut added = 0usize;
+
+            if !prefers_trusted_only(filter) {
+                let recent = {
+                    let cache = self.recent_events.lock().await;
+                    cache.matching(filter)
+                };
+                for event in recent {
+                    if seen.insert(event.id) {
+                        added += 1;
+                        if added >= limit {
+                            return;
+                        }
+                    }
+                }
+            }
+
+            for event in self.trusted.query(filter, limit) {
+                if seen.insert(event.id) {
+                    added += 1;
+                    if added >= limit {
+                        return;
+                    }
+                }
+            }
+        }
+
         pub fn new(
             trusted_store: Arc<dyn SocialGraphBackend>,
             data_dir: PathBuf,
@@ -450,27 +527,8 @@ mod imp {
                     .limit
                     .unwrap_or(self.config.max_query_limit)
                     .min(self.config.max_query_limit);
-                if limit == 0 {
-                    continue;
-                }
-
-                if !prefers_trusted_only(filter) {
-                    let recent = {
-                        let cache = self.recent_events.lock().await;
-                        cache.matching(filter)
-                    };
-                    for event in recent {
-                        if seen.insert(event.id) {
-                            events.push(event);
-                        }
-                    }
-                }
-
-                for event in self.trusted.query(filter, limit) {
-                    if seen.insert(event.id) {
-                        events.push(event);
-                    }
-                }
+                self.collect_filter_events(filter, limit, &mut seen, &mut events)
+                    .await;
             }
 
             Ok(events)
@@ -603,21 +661,7 @@ mod imp {
                     .limit
                     .unwrap_or(self.config.max_query_limit)
                     .min(self.config.max_query_limit);
-                if limit == 0 {
-                    continue;
-                }
-                if !prefers_trusted_only(filter) {
-                    let recent = {
-                        let cache = self.recent_events.lock().await;
-                        cache.matching(filter)
-                    };
-                    for event in recent {
-                        seen.insert(event.id);
-                    }
-                }
-                for event in self.trusted.query(filter, limit) {
-                    seen.insert(event.id);
-                }
+                self.collect_filter_count(filter, limit, &mut seen).await;
             }
 
             self.send_to_client(
@@ -1021,6 +1065,293 @@ mod tests {
             RelayMessage::EndOfStoredEvents(id) => assert_eq!(id, sub_id),
             other => anyhow::bail!("expected EOSE, got {:?}", other),
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn relay_serves_replaceable_queries() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let keys = Keys::generate();
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::from([keys.public_key().to_hex()]),
+        ));
+
+        let relay = NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([keys.public_key().to_hex()]),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        relay.register_client(4, tx, None).await;
+
+        let older = EventBuilder::new(Kind::Metadata, r#"{"name":"older"}"#, [])
+            .custom_created_at(nostr::Timestamp::from_secs(5))
+            .to_event(&keys)?;
+        let newer = EventBuilder::new(Kind::Metadata, r#"{"name":"newer"}"#, [])
+            .custom_created_at(nostr::Timestamp::from_secs(6))
+            .to_event(&keys)?;
+
+        relay
+            .handle_client_message(4, NostrClientMessage::event(older.clone()))
+            .await;
+        let _ = recv_relay_message(&mut rx).await?;
+        relay
+            .handle_client_message(4, NostrClientMessage::event(newer.clone()))
+            .await;
+        let _ = recv_relay_message(&mut rx).await?;
+
+        let sub_id = SubscriptionId::new("sub-profile");
+        let filter = Filter::new().author(keys.public_key()).kind(Kind::Metadata);
+        relay
+            .handle_client_message(4, NostrClientMessage::req(sub_id.clone(), vec![filter]))
+            .await;
+
+        match recv_relay_message(&mut rx).await? {
+            RelayMessage::Event {
+                subscription_id,
+                event,
+            } => {
+                assert_eq!(subscription_id, sub_id);
+                assert_eq!(event.id, newer.id);
+            }
+            other => anyhow::bail!("expected EVENT, got {:?}", other),
+        }
+
+        match recv_relay_message(&mut rx).await? {
+            RelayMessage::EndOfStoredEvents(id) => assert_eq!(id, sub_id),
+            other => anyhow::bail!("expected EOSE, got {:?}", other),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn relay_count_dedupes_across_filters_and_honors_filter_limits() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let keys = Keys::generate();
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::from([keys.public_key().to_hex()]),
+        ));
+
+        let relay = NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([keys.public_key().to_hex()]),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        relay.register_client(5, tx, None).await;
+
+        let older = EventBuilder::new(Kind::TextNote, "older", [])
+            .custom_created_at(nostr::Timestamp::from_secs(5))
+            .to_event(&keys)?;
+        let newer = EventBuilder::new(Kind::TextNote, "newer", [])
+            .custom_created_at(nostr::Timestamp::from_secs(6))
+            .to_event(&keys)?;
+
+        relay
+            .handle_client_message(5, NostrClientMessage::event(older.clone()))
+            .await;
+        let _ = recv_relay_message(&mut rx).await?;
+        relay
+            .handle_client_message(5, NostrClientMessage::event(newer.clone()))
+            .await;
+        let _ = recv_relay_message(&mut rx).await?;
+
+        let sub_id = SubscriptionId::new("sub-count");
+        let filters = vec![
+            Filter::new()
+                .author(keys.public_key())
+                .kind(Kind::TextNote)
+                .limit(1),
+            Filter::new().id(newer.id),
+        ];
+        relay
+            .handle_client_message(5, NostrClientMessage::count(sub_id.clone(), filters))
+            .await;
+
+        match recv_relay_message(&mut rx).await? {
+            RelayMessage::Count {
+                subscription_id,
+                count,
+            } => {
+                assert_eq!(subscription_id, sub_id);
+                assert_eq!(count, 2);
+            }
+            other => anyhow::bail!("expected COUNT, got {:?}", other),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn relay_count_caps_filter_limit_to_config_max() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let keys = Keys::generate();
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::from([keys.public_key().to_hex()]),
+        ));
+
+        let relay = NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([keys.public_key().to_hex()]),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                max_query_limit: 1,
+                ..Default::default()
+            },
+        )?;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        relay.register_client(7, tx, None).await;
+
+        let older = EventBuilder::new(Kind::TextNote, "older", [])
+            .custom_created_at(nostr::Timestamp::from_secs(5))
+            .to_event(&keys)?;
+        let newer = EventBuilder::new(Kind::TextNote, "newer", [])
+            .custom_created_at(nostr::Timestamp::from_secs(6))
+            .to_event(&keys)?;
+
+        relay
+            .handle_client_message(7, NostrClientMessage::event(older))
+            .await;
+        let _ = recv_relay_message(&mut rx).await?;
+        relay
+            .handle_client_message(7, NostrClientMessage::event(newer))
+            .await;
+        let _ = recv_relay_message(&mut rx).await?;
+
+        relay
+            .handle_client_message(
+                7,
+                NostrClientMessage::count(
+                    SubscriptionId::new("sub-count-cap"),
+                    vec![Filter::new()
+                        .author(keys.public_key())
+                        .kind(Kind::TextNote)
+                        .limit(10)],
+                ),
+            )
+            .await;
+
+        match recv_relay_message(&mut rx).await? {
+            RelayMessage::Count { count, .. } => assert_eq!(count, 1),
+            other => anyhow::bail!("expected COUNT, got {:?}", other),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn relay_register_subscription_query_caps_filter_limit_to_config_max() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let keys = Keys::generate();
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::from([keys.public_key().to_hex()]),
+        ));
+
+        let relay = NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([keys.public_key().to_hex()]),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                max_query_limit: 1,
+                ..Default::default()
+            },
+        )?;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        relay.register_client(6, tx, None).await;
+
+        let older = EventBuilder::new(Kind::TextNote, "older", [])
+            .custom_created_at(nostr::Timestamp::from_secs(5))
+            .to_event(&keys)?;
+        let newer = EventBuilder::new(Kind::TextNote, "newer", [])
+            .custom_created_at(nostr::Timestamp::from_secs(6))
+            .to_event(&keys)?;
+
+        relay
+            .handle_client_message(6, NostrClientMessage::event(older))
+            .await;
+        let _ = recv_relay_message(&mut rx).await?;
+        relay
+            .handle_client_message(6, NostrClientMessage::event(newer))
+            .await;
+        let _ = recv_relay_message(&mut rx).await?;
+
+        let events = relay
+            .register_subscription_query(
+                6,
+                SubscriptionId::new("sub-limit"),
+                vec![Filter::new()
+                    .author(keys.public_key())
+                    .kind(Kind::TextNote)
+                    .limit(10)],
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+
+        assert_eq!(events.len(), 1);
 
         Ok(())
     }

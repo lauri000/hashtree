@@ -1348,6 +1348,122 @@ mod tests {
     }
 
     #[test]
+    fn test_query_events_by_id() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let keys = Keys::generate();
+
+        let first = EventBuilder::new(Kind::TextNote, "first", [])
+            .custom_created_at(Timestamp::from_secs(5))
+            .to_event(&keys)
+            .unwrap();
+        let target = EventBuilder::new(Kind::TextNote, "target", [])
+            .custom_created_at(Timestamp::from_secs(6))
+            .to_event(&keys)
+            .unwrap();
+
+        ingest_parsed_event(&graph_store, &first).unwrap();
+        ingest_parsed_event(&graph_store, &target).unwrap();
+
+        let filter = Filter::new().id(target.id).kind(Kind::TextNote);
+        let events = query_events(&graph_store, &filter, 10);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, target.id);
+    }
+
+    #[test]
+    fn test_query_events_search_is_case_insensitive() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let keys = Keys::generate();
+        let other_keys = Keys::generate();
+
+        let matching = EventBuilder::new(Kind::TextNote, "Hello Nostr Search", [])
+            .custom_created_at(Timestamp::from_secs(5))
+            .to_event(&keys)
+            .unwrap();
+        let other = EventBuilder::new(Kind::TextNote, "goodbye world", [])
+            .custom_created_at(Timestamp::from_secs(6))
+            .to_event(&other_keys)
+            .unwrap();
+
+        ingest_parsed_event(&graph_store, &matching).unwrap();
+        ingest_parsed_event(&graph_store, &other).unwrap();
+
+        let filter = Filter::new().kind(Kind::TextNote).search("nostr search");
+        let events = query_events(&graph_store, &filter, 10);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, matching.id);
+    }
+
+    #[test]
+    fn test_query_events_since_until_are_inclusive() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let keys = Keys::generate();
+
+        let before = EventBuilder::new(Kind::TextNote, "before", [])
+            .custom_created_at(Timestamp::from_secs(5))
+            .to_event(&keys)
+            .unwrap();
+        let start = EventBuilder::new(Kind::TextNote, "start", [])
+            .custom_created_at(Timestamp::from_secs(6))
+            .to_event(&keys)
+            .unwrap();
+        let end = EventBuilder::new(Kind::TextNote, "end", [])
+            .custom_created_at(Timestamp::from_secs(10))
+            .to_event(&keys)
+            .unwrap();
+        let after = EventBuilder::new(Kind::TextNote, "after", [])
+            .custom_created_at(Timestamp::from_secs(11))
+            .to_event(&keys)
+            .unwrap();
+
+        ingest_parsed_event(&graph_store, &before).unwrap();
+        ingest_parsed_event(&graph_store, &start).unwrap();
+        ingest_parsed_event(&graph_store, &end).unwrap();
+        ingest_parsed_event(&graph_store, &after).unwrap();
+
+        let filter = Filter::new()
+            .kind(Kind::TextNote)
+            .since(Timestamp::from_secs(6))
+            .until(Timestamp::from_secs(10));
+        let events = query_events(&graph_store, &filter, 10);
+        let ids = events.into_iter().map(|event| event.id).collect::<Vec<_>>();
+        assert_eq!(ids, vec![end.id, start.id]);
+    }
+
+    #[test]
+    fn test_query_events_replaceable_kind_returns_latest_winner() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let keys = Keys::generate();
+
+        let older = EventBuilder::new(Kind::Custom(10_000), "older mute list", [])
+            .custom_created_at(Timestamp::from_secs(5))
+            .to_event(&keys)
+            .unwrap();
+        let newer = EventBuilder::new(Kind::Custom(10_000), "newer mute list", [])
+            .custom_created_at(Timestamp::from_secs(6))
+            .to_event(&keys)
+            .unwrap();
+
+        ingest_parsed_event(&graph_store, &older).unwrap();
+        ingest_parsed_event(&graph_store, &newer).unwrap();
+
+        let filter = Filter::new()
+            .author(keys.public_key())
+            .kind(Kind::Custom(10_000));
+        let events = query_events(&graph_store, &filter, 10);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, newer.id);
+    }
+
+    #[test]
     fn test_public_and_ambient_indexes_stay_separate() {
         let _guard = test_lock();
         let tmp = TempDir::new().unwrap();
@@ -1573,6 +1689,40 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].id, second.id);
         assert_eq!(events[1].id, first.id);
+    }
+
+    #[test]
+    fn test_query_events_combines_indexes_then_applies_search_filter() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let keys = Keys::generate();
+        let other_keys = Keys::generate();
+
+        let matching = EventBuilder::new(
+            Kind::TextNote,
+            "hashtree video release",
+            vec![Tag::parse(&["t", "hashtree"]).unwrap()],
+        )
+        .custom_created_at(Timestamp::from_secs(5))
+        .to_event(&keys)
+        .unwrap();
+        let non_matching = EventBuilder::new(
+            Kind::TextNote,
+            "plain text note",
+            vec![Tag::parse(&["t", "hashtree"]).unwrap()],
+        )
+        .custom_created_at(Timestamp::from_secs(6))
+        .to_event(&other_keys)
+        .unwrap();
+
+        ingest_parsed_event(&graph_store, &matching).unwrap();
+        ingest_parsed_event(&graph_store, &non_matching).unwrap();
+
+        let filter = Filter::new().hashtag("hashtree").search("video");
+        let events = query_events(&graph_store, &filter, 10);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, matching.id);
     }
 
     #[test]

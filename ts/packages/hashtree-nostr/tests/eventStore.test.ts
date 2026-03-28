@@ -56,7 +56,7 @@ describe('NostrEventStore', () => {
     await expect(store.getById(root, 'f'.repeat(64))).resolves.toBeNull();
   });
 
-  it('exposes an events_by_id manifest alias', async () => {
+  it('exposes only the events_by_id manifest key', async () => {
     const backing = new MemoryStore();
     const store = new NostrEventStore(backing);
     const tree = new HashTree({ store: backing });
@@ -66,8 +66,8 @@ describe('NostrEventStore', () => {
     const entries = await tree.listDirectory(root);
     const names = entries.map(entry => entry.name);
 
-    expect(names).toContain('by-id');
     expect(names).toContain('events_by_id');
+    expect(names).not.toContain('by-id');
   });
 
   it('lists author feeds newest first', async () => {

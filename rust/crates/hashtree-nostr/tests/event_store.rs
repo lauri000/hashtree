@@ -151,7 +151,7 @@ fn stores_events_by_id_author_and_replaceable_views() {
 }
 
 #[test]
-fn manifest_exposes_events_by_id_alias() {
+fn manifest_exposes_events_by_id_key_only() {
     block_on(async {
         let backing = Arc::new(MemoryStore::new());
         let tree = HashTree::new(HashTreeConfig::new(backing.clone()));
@@ -170,8 +170,8 @@ fn manifest_exposes_events_by_id_alias() {
         let entries = tree.list_directory(&root).await.unwrap();
         let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
 
-        assert!(names.contains(&"by-id"));
         assert!(names.contains(&"events_by_id"));
+        assert!(!names.contains(&"by-id"));
     });
 }
 
@@ -212,9 +212,9 @@ fn manifest_root_matches_typescript_fixture() {
         assert_eq!(
             cid_to_pair(&root),
             (
-                "273f6e6c8bc475c45803766131c7938b812fe382e52bc6b5904d3e3778e77777".to_string(),
+                "e0d2470ee636bd50140b694d8d06b41f5612e84a0835d0675dd0c3a73fd350c8".to_string(),
                 Some(
-                    "c2ee24ab4666ff62ca96fb29cb7051870e1908b00de7966b1d1817d41be50c6e".to_string()
+                    "170b0165a03d74f13c8face7904861deb4d0ce23fcd9d6a743e34cf906ea0daa".to_string()
                 )
             )
         );

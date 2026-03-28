@@ -6,7 +6,6 @@ const EVENT_ENVELOPE_VERSION = 1;
 const MAX_U64 = (1n << 64n) - 1n;
 const HEX_64 = /^[0-9a-f]{64}$/;
 const HEX_128 = /^[0-9a-f]{128}$/;
-const MANIFEST_BY_ID = 'by-id';
 const MANIFEST_EVENTS_BY_ID = 'events_by_id';
 const MANIFEST_BY_AUTHOR_TIME = 'by-author-time';
 const MANIFEST_BY_AUTHOR_KIND_TIME = 'by-author-kind-time';
@@ -355,7 +354,7 @@ export class NostrEventStore {
     const getCid = (name: string): CID | null => entries.find(entry => entry.name === name)?.cid ?? null;
 
     return {
-      byId: getCid(MANIFEST_EVENTS_BY_ID) ?? getCid(MANIFEST_BY_ID),
+      byId: getCid(MANIFEST_EVENTS_BY_ID),
       byAuthorTime: getCid(MANIFEST_BY_AUTHOR_TIME),
       byAuthorKindTime: getCid(MANIFEST_BY_AUTHOR_KIND_TIME),
       byTime: getCid(MANIFEST_BY_TIME),
@@ -413,7 +412,6 @@ export class NostrEventStore {
     const entries = [];
 
     if (manifest.byId) {
-      entries.push({ name: MANIFEST_BY_ID, cid: manifest.byId, size: 0, type: LinkType.Dir });
       entries.push({ name: MANIFEST_EVENTS_BY_ID, cid: manifest.byId, size: 0, type: LinkType.Dir });
     }
     if (manifest.byAuthorTime) {
