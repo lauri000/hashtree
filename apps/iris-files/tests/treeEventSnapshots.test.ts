@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { cid, fromHex, toHex } from '@hashtree/core';
 import {
+  buildTreeRouteHref,
   buildTreeEventPermalink,
+  isNewerTreeEventSnapshot,
   resolveSnapshotRootCid,
   type TreeEventSnapshotInfo,
 } from '../src/lib/treeEventSnapshots';
@@ -45,6 +47,11 @@ describe('tree event snapshots', () => {
     expect(href).toBe('#/nhash1snapshot/nested%20folder/video.mp4?snapshot=1&k=' + 'a'.repeat(64));
   });
 
+  it('builds mutable user-tree hrefs as a fallback', () => {
+    expect(buildTreeRouteHref('npub1example', 'videos/demo', ['nested folder', 'video.mp4'], 'a'.repeat(64)))
+      .toBe('#/npub1example/videos%2Fdemo/nested%20folder/video.mp4?k=' + 'a'.repeat(64));
+  });
+
   it('derives the public root CID directly from the snapshot', async () => {
     const resolved = await resolveSnapshotRootCid(makeSnapshot());
 
@@ -64,5 +71,25 @@ describe('tree event snapshots', () => {
     const resolved = await resolveSnapshotRootCid(snapshot, toHex(linkKey));
 
     expect(resolved).toEqual(cid(fromHex('1'.repeat(64)), contentKey));
+  });
+
+  it('compares snapshot recency using created_at then event id', () => {
+    const older = makeSnapshot({
+      event: {
+        ...makeSnapshot().event,
+        created_at: 1_700_000_000,
+        id: '1'.repeat(64),
+      },
+    });
+    const newer = makeSnapshot({
+      event: {
+        ...makeSnapshot().event,
+        created_at: 1_700_000_001,
+        id: '2'.repeat(64),
+      },
+    });
+
+    expect(isNewerTreeEventSnapshot(newer, older)).toBe(true);
+    expect(isNewerTreeEventSnapshot(older, newer)).toBe(false);
   });
 });

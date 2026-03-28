@@ -6,6 +6,7 @@
 
 import { searchVideos, type VideoIndexEntry } from '../../stores/searchIndex';
 import type { SearchProvider, SearchResult } from './types';
+import { nip19 } from 'nostr-tools';
 
 /** Video search provider */
 export const videoProvider: SearchProvider = {
@@ -22,7 +23,7 @@ export const videoProvider: SearchProvider = {
       const videos = await searchVideos(query, limit);
 
       return videos.map((video: VideoIndexEntry) => ({
-        id: `video:${video.nhash || video.pubkey + ':' + video.treeName}`,
+        id: `video:${video.href || video.nhash || `${video.pubkey}:${video.treeName || ''}:${video.videoId || ''}`}`,
         type: 'video' as const,
         label: video.title,
         sublabel: video.duration ? formatDuration(video.duration) : undefined,
@@ -41,18 +42,21 @@ export const videoProvider: SearchProvider = {
 
 /** Build navigation path for a video */
 function buildVideoPath(video: VideoIndexEntry): string {
+  if (video.href) {
+    return video.href.startsWith('#') ? video.href.slice(1) : video.href;
+  }
+  if (video.treeName && video.videoId) {
+    const npub = nip19.npubEncode(video.pubkey);
+    return `/${npub}/${encodeURIComponent(video.treeName)}/${encodeURIComponent(video.videoId)}`;
+  }
+  if (video.treeName) {
+    const npub = nip19.npubEncode(video.pubkey);
+    return `/${npub}/${encodeURIComponent(video.treeName)}`;
+  }
   if (video.nhash) {
     return `/${video.nhash}`;
   }
-  // Build path from pubkey/treeName/videoId
-  const { nip19 } = require('nostr-tools');
   const npub = nip19.npubEncode(video.pubkey);
-  if (video.treeName && video.videoId) {
-    return `/${npub}/${video.treeName}/${video.videoId}`;
-  }
-  if (video.treeName) {
-    return `/${npub}/${video.treeName}`;
-  }
   return `/${npub}`;
 }
 

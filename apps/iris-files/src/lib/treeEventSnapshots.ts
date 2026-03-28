@@ -47,6 +47,14 @@ function compareEvents(a: StoredNostrEvent, b: StoredNostrEvent): number {
   return a.id.localeCompare(b.id);
 }
 
+export function compareTreeEventSnapshots(a: TreeEventSnapshotInfo, b: TreeEventSnapshotInfo): number {
+  return compareEvents(a.event, b.event);
+}
+
+export function isNewerTreeEventSnapshot(candidate: TreeEventSnapshotInfo, current: TreeEventSnapshotInfo): boolean {
+  return compareTreeEventSnapshots(candidate, current) > 0;
+}
+
 function normalizeRawEvent(event: Pick<StoredNostrEvent, 'id' | 'pubkey' | 'created_at' | 'kind' | 'tags' | 'content' | 'sig'>): StoredNostrEvent {
   return {
     id: event.id,
@@ -264,6 +272,38 @@ export function buildTreeEventPermalink(
   }
   const suffix = query.toString();
   return `#/${snapshot.snapshotNhash}${encodedPath ? `/${encodedPath}` : ''}${suffix ? `?${suffix}` : ''}`;
+}
+
+export function buildTreeRouteHref(
+  npub: string,
+  treeName: string,
+  path: string[] = [],
+  linkKey?: string | null,
+): string {
+  const encodedParts = [npub, treeName, ...path].map(encodeURIComponent).join('/');
+  const query = new URLSearchParams();
+  if (linkKey) {
+    query.set('k', linkKey);
+  }
+  const suffix = query.toString();
+  return `#/${encodedParts}${suffix ? `?${suffix}` : ''}`;
+}
+
+export async function buildPreferredTreeEventHref(
+  npub: string,
+  treeName: string,
+  path: string[] = [],
+  linkKey?: string | null,
+): Promise<string> {
+  const cached = getCachedTreeEventSnapshot(npub, treeName);
+  if (cached) {
+    return buildTreeEventPermalink(cached, path, linkKey);
+  }
+  const latest = await ensureLatestTreeEventSnapshot(npub, treeName);
+  if (latest) {
+    return buildTreeEventPermalink(latest, path, linkKey);
+  }
+  return buildTreeRouteHref(npub, treeName, path, linkKey);
 }
 
 export async function resolveSnapshotRootCid(

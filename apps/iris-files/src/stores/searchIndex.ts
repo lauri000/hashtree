@@ -17,7 +17,8 @@ const CURRENT_INDEX_VERSION = 2; // Increment when format changes
 
 export interface VideoIndexEntry {
   title: string;
-  nhash: string;
+  href?: string;
+  nhash?: string;
   pubkey: string;
   timestamp: number;
   treeName?: string;
@@ -75,7 +76,10 @@ function saveIndexRoot(root: CID | null): void {
   saveTimeout = setTimeout(() => {
     try {
       if (root) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ hash: toHex(root.hash), key: toHex(root.key) }));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({
+          hash: toHex(root.hash),
+          key: root.key ? toHex(root.key) : null,
+        }));
       } else {
         localStorage.removeItem(STORAGE_KEY);
       }
@@ -205,6 +209,15 @@ export function parseKeywords(text: string): string[] {
 const pendingVideoOps: VideoIndexEntry[] = [];
 let videoFlushTimeout: ReturnType<typeof setTimeout> | null = null;
 
+function getVideoIndexKey(entry: VideoIndexEntry): string {
+  if (entry.treeName) {
+    return entry.videoId
+      ? `${entry.pubkey}:${entry.treeName}:${entry.videoId}`
+      : `${entry.pubkey}:${entry.treeName}`;
+  }
+  return entry.href || entry.nhash || `${entry.pubkey}:${entry.videoId || ''}`;
+}
+
 /**
  * Index a video for search
  */
@@ -236,11 +249,8 @@ async function flushPendingVideoOps(): Promise<void> {
   for (const entry of ops) {
     const keywords = searchIndex.parseKeywords(entry.title);
     const value = JSON.stringify(entry);
-    // Use pubkey:treeName as dedup key so re-indexing overwrites old entries
-    // This ensures old nhashes are replaced when videos are re-indexed
-    const id = entry.treeName
-      ? `${entry.pubkey}:${entry.treeName}`
-      : entry.nhash || `${entry.pubkey}:${entry.videoId || ''}`;
+    // Re-index using a stable logical key so newer snapshot hrefs replace older links.
+    const id = getVideoIndexKey(entry);
 
     try {
       root = await searchIndex.index(root, 'v:', keywords, id, value);
@@ -268,9 +278,7 @@ export async function searchVideos(query: string, limit = 20): Promise<VideoInde
   for (const r of results) {
     const entry = JSON.parse(r.value) as VideoIndexEntry;
     // Dedup key matches indexing key format
-    const key = entry.treeName
-      ? `${entry.pubkey}:${entry.treeName}`
-      : entry.nhash || `${entry.pubkey}:${entry.videoId || ''}`;
+    const key = getVideoIndexKey(entry);
     if (!seen.has(key)) {
       seen.add(key);
       entries.push({ entry, score: r.score });

@@ -12,6 +12,7 @@ export interface PlaylistInfo {
   videoCount: number;
   thumbnailUrl?: string;
   videoPath?: string;
+  rootCid?: CID | null;
   duration?: number;
   createdAt?: number;
   title?: string;

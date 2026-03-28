@@ -6,6 +6,7 @@
   import { onMount, untrack } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { nip19 } from 'nostr-tools';
+  import type { NDKEvent } from 'ndk';
   import { ndk, nostrStore } from '../../nostr';
   import { getWorkerAdapter, waitForWorkerAdapter } from '../../lib/workerInit';
   import type { CID } from '@hashtree/core';
@@ -46,6 +47,12 @@
   import { getStableThumbnailUrl, isThumbnailAliasUrl } from '../../lib/mediaUrl';
   import { onCacheUpdate } from '../../treeRootCache';
   import { resolveReadableThumbnailRoot, resolveReadableVideoRoot } from '../../lib/readableVideoRoot';
+  import {
+    buildPreferredTreeEventHref,
+    buildTreeEventPermalink,
+    buildTreeRouteHref,
+    cacheTreeEventSnapshotFromNdkEvent,
+  } from '../../lib/treeEventSnapshots';
 
   const MIN_FOLLOWS_THRESHOLD = 5;
   import VideoCard from './VideoCard.svelte';
@@ -75,11 +82,30 @@
     return encodeURIComponent(treeName);
   }
 
+  async function buildIndexedVideoHref(
+    ownerNpub: string,
+    treeName: string,
+    options: { path?: string[]; snapshotEvent?: NDKEvent } = {},
+  ): Promise<string> {
+    const fallbackHref = buildTreeRouteHref(ownerNpub, treeName, options.path);
+    if (options.snapshotEvent) {
+      const snapshot = await cacheTreeEventSnapshotFromNdkEvent(options.snapshotEvent).catch(() => null);
+      if (snapshot) {
+        return buildTreeEventPermalink(snapshot, options.path);
+      }
+    }
+    return buildPreferredTreeEventHref(ownerNpub, treeName, options.path).catch(() => fallbackHref);
+  }
+
   function sameCid(a: CID | null | undefined, b: CID | null | undefined): boolean {
     if (!a && !b) return true;
     if (!a || !b) return false;
     return toHex(a.hash) === toHex(b.hash)
       && ((a.key && b.key && toHex(a.key) === toHex(b.key)) || (!a.key && !b.key));
+  }
+
+  function getRootHashHex(rootCid: CID | null | undefined): string | null {
+    return rootCid?.hash ? toHex(rootCid.hash) : null;
   }
 
   function shouldSkipFeedEvent(existing: VideoItem | undefined, eventTimestamp: number): boolean {
@@ -318,7 +344,7 @@
         });
         thumbnailUrl = thumbnailInfo?.thumbnailUrl ?? thumbnailUrl;
       }
-      const result = info
+      const result: PlaylistInfo = info
         ? { ...info, thumbnailUrl: thumbnailUrl ?? info.thumbnailUrl }
         : { videoCount: 0, ...(thumbnailUrl ? { thumbnailUrl } : {}) };
       setFeedPlaylistInfo(video.key, result);
@@ -659,13 +685,24 @@
         timestamp: eventTimestamp,
       });
 
-      // Index for search - use CID with key so nhash includes encryption key
-      indexVideo({
-        title,
-        pubkey: ownerPubkey,
-        treeName: dTag,
-        nhash: nhashEncode({ hash, key: encKey }),
-        timestamp: event.created_at || Date.now(),
+      void buildIndexedVideoHref(ownerNpub, dTag, { snapshotEvent: event }).then((href) =>
+        indexVideo({
+          title,
+          pubkey: ownerPubkey,
+          treeName: dTag,
+          href,
+          nhash: nhashEncode({ hash, key: encKey }),
+          timestamp: event.created_at || Date.now(),
+        })
+      ).catch(() => {
+        void indexVideo({
+          title,
+          pubkey: ownerPubkey,
+          treeName: dTag,
+          href: buildTreeRouteHref(ownerNpub, dTag),
+          nhash: nhashEncode({ hash, key: encKey }),
+          timestamp: event.created_at || Date.now(),
+        });
       });
 
       scheduleUpdate();
@@ -785,13 +822,26 @@
       if (!video) return;
 
       // Index for search (discovered via public reaction data)
-      if (video.ownerPubkey && video.treeName) {
-        indexVideo({
-          title: video.title,
-          pubkey: video.ownerPubkey,
-          treeName: video.treeName,
-          nhash: '',
-          timestamp: video.timestamp || Date.now(),
+      const ownerPubkey = video.ownerPubkey;
+      const ownerNpub = video.ownerNpub;
+      const treeName = video.treeName;
+      if (ownerPubkey && ownerNpub && treeName) {
+        void buildIndexedVideoHref(ownerNpub, treeName).then((href) =>
+          indexVideo({
+            title: video.title,
+            pubkey: ownerPubkey,
+            treeName,
+            href,
+            timestamp: video.timestamp || Date.now(),
+          })
+        ).catch(() => {
+          void indexVideo({
+            title: video.title,
+            pubkey: ownerPubkey,
+            treeName,
+            href: buildTreeRouteHref(ownerNpub, treeName),
+            timestamp: video.timestamp || Date.now(),
+          });
         });
       }
 
@@ -822,13 +872,26 @@
       if (!video) return;
 
       // Index for search (discovered via public comment data)
-      if (video.ownerPubkey && video.treeName) {
-        indexVideo({
-          title: video.title,
-          pubkey: video.ownerPubkey,
-          treeName: video.treeName,
-          nhash: '',
-          timestamp: video.timestamp || Date.now(),
+      const ownerPubkey = video.ownerPubkey;
+      const ownerNpub = video.ownerNpub;
+      const treeName = video.treeName;
+      if (ownerPubkey && ownerNpub && treeName) {
+        void buildIndexedVideoHref(ownerNpub, treeName).then((href) =>
+          indexVideo({
+            title: video.title,
+            pubkey: ownerPubkey,
+            treeName,
+            href,
+            timestamp: video.timestamp || Date.now(),
+          })
+        ).catch(() => {
+          void indexVideo({
+            title: video.title,
+            pubkey: ownerPubkey,
+            treeName,
+            href: buildTreeRouteHref(ownerNpub, treeName),
+            timestamp: video.timestamp || Date.now(),
+          });
         });
       }
 
@@ -1061,9 +1124,7 @@
                   ownerNpub={resolvedVideo?.ownerNpub ?? video.ownerNpub}
                   treeName={resolvedVideo?.treeName ?? video.treeName}
                   rootCid={playlistInfo.rootCid ?? resolvedVideo?.rootCid ?? video.rootCid ?? null}
-                  rootHashHex={(playlistInfo.rootCid ?? resolvedVideo?.rootCid ?? video.rootCid)?.hash
-                    ? toHex((playlistInfo.rootCid ?? resolvedVideo?.rootCid ?? video.rootCid).hash)
-                    : null}
+                  rootHashHex={getRootHashHex(playlistInfo.rootCid ?? resolvedVideo?.rootCid ?? video.rootCid)}
                   ownerPubkey={video.ownerPubkey}
                   visibility={video.visibility}
                 />
@@ -1080,7 +1141,7 @@
                   videoId={resolvedVideo?.videoId ?? video.videoId}
                   visibility={resolvedVideo?.visibility ?? video.visibility}
                   rootCid={resolvedVideo?.rootCid ?? video.rootCid ?? null}
-                  rootHashHex={(resolvedVideo?.rootCid ?? video.rootCid)?.hash ? toHex((resolvedVideo?.rootCid ?? video.rootCid).hash) : null}
+                  rootHashHex={getRootHashHex(resolvedVideo?.rootCid ?? video.rootCid)}
                   timestamp={resolvedVideo?.timestamp ?? video.timestamp}
                 />
               {/if}

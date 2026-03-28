@@ -29,7 +29,12 @@
   import { findNearestGitRootPath } from '../../utils/gitRoot';
   import { hasAmbiguousEmptyGitRootHint, resolveGitViewContext } from '../../utils/gitViewContext';
   import { buildSitesHref, isHtmlFilename } from '../../lib/siteHref';
-  import { buildTreeEventPermalink, ensureLatestTreeEventSnapshot, getCachedTreeEventSnapshot } from '../../lib/treeEventSnapshots';
+  import {
+    buildTreeEventPermalink,
+    ensureLatestTreeEventSnapshot,
+    getCachedTreeEventSnapshot,
+    isNewerTreeEventSnapshot,
+  } from '../../lib/treeEventSnapshots';
 
   let route = $derived($routeStore);
   let rootCid = $derived($treeRootStore);
@@ -658,6 +663,7 @@
 
   // Build permalink URL for the current file
   let permalinkUrl = $state<string | null>(null);
+  let latestVersionUrl = $state<string | null>(null);
 
   $effect(() => {
     const entry = entryFromStore;
@@ -699,6 +705,33 @@
     ensureLatestTreeEventSnapshot(npub, treeName).then((resolved) => {
       if (!cancelled && resolved) {
         permalinkUrl = buildTreeEventPermalink(resolved, path, linkKey);
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  });
+
+  $effect(() => {
+    const snapshot = permalinkSnapshot.snapshot;
+    const path = [...route.path];
+    const linkKey = route.params.get('k');
+    const isSnapshotRoute = route.params.get('snapshot') === '1';
+
+    if (!isSnapshotRoute || !snapshot) {
+      latestVersionUrl = null;
+      return;
+    }
+
+    const cached = getCachedTreeEventSnapshot(snapshot.npub, snapshot.treeName);
+    if (cached && isNewerTreeEventSnapshot(cached, snapshot)) {
+      latestVersionUrl = buildTreeEventPermalink(cached, path, linkKey);
+      return;
+    }
+
+    latestVersionUrl = null;
+    let cancelled = false;
+    ensureLatestTreeEventSnapshot(snapshot.npub, snapshot.treeName).then((latest) => {
+      if (!cancelled && latest && isNewerTreeEventSnapshot(latest, snapshot)) {
+        latestVersionUrl = buildTreeEventPermalink(latest, path, linkKey);
       }
     }).catch(() => {});
     return () => { cancelled = true; };
@@ -879,6 +912,11 @@
           {#if permalinkUrl}
             <a href={permalinkUrl} class="btn-ghost no-underline" title={entryFromStore?.cid?.hash ? toHex(entryFromStore.cid.hash) : ''} data-testid="viewer-permalink">
               Permalink
+            </a>
+          {/if}
+          {#if latestVersionUrl}
+            <a href={latestVersionUrl} class="btn-ghost no-underline" data-testid="viewer-latest-version">
+              See latest version
             </a>
           {/if}
           {#if openSiteHref}

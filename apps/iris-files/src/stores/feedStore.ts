@@ -4,7 +4,7 @@
  */
 import { writable, get } from 'svelte/store';
 import type { CID } from '@hashtree/core';
-import { ndk, pubkeyToNpub, nostrStore } from '../nostr';
+import { ndk, pubkeyToNpub, nostrStore, type NostrState } from '../nostr';
 import { createFollowsStore, getFollowsSync } from './follows';
 import { getFollows as getSocialGraphFollows } from '../utils/socialGraph';
 import { getWorkerAdapter, waitForWorkerAdapter } from '../lib/workerInit';
@@ -40,6 +40,10 @@ const cachedFeedMediaByKey = new Map<string, Partial<FeedVideo>>();
 const inFlightFeedMediaKeys = new Set<string>();
 const feedMediaRetryCounts = new Map<string, number>();
 const feedMediaRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function getNostrState(): NostrState {
+  return get(nostrStore) as NostrState;
+}
 
 function clearEmptyFeedRetry(): void {
   if (emptyFeedRetryTimer) {
@@ -78,8 +82,9 @@ export interface FeedVideo {
   duration?: number;
   thumbnailUrl?: string;
   videoPath?: string;
+  visibility?: string;
   timestamp?: number;
-  rootCid?: CID;
+  rootCid?: CID | null;
 }
 
 export const feedStore = writable<FeedVideo[]>([]);
@@ -377,7 +382,7 @@ let hasInitialFetch = false;
 let fallbackFollowsCache: string[] | null = null;
 
 let lastPubkey: string | null = null;
-nostrStore.subscribe((state) => {
+nostrStore.subscribe((state: NostrState) => {
   if (state.pubkey === lastPubkey) return;
   lastPubkey = state.pubkey;
   resetFeedFetchState();
@@ -387,12 +392,12 @@ nostrStore.subscribe((state) => {
 });
 
 async function waitForRelayConnection(timeoutMs: number): Promise<number> {
-  const initial = get(nostrStore).connectedRelays;
+  const initial = getNostrState().connectedRelays;
   if (initial > 0) return initial;
 
   return new Promise<number>((resolve) => {
     let done = false;
-    const unsub = nostrStore.subscribe((state) => {
+    const unsub = nostrStore.subscribe((state: NostrState) => {
       if (done) return;
       if (state.connectedRelays > 0) {
         done = true;
@@ -415,7 +420,7 @@ function scheduleRelayRetry(): void {
   retryOnRelayScheduled = true;
   log('retry:relay:wait');
 
-  const unsub = nostrStore.subscribe((state) => {
+  const unsub = nostrStore.subscribe((state: NostrState) => {
     if (state.connectedRelays > 0) {
       unsub();
       retryOnRelayScheduled = false;
@@ -586,7 +591,7 @@ export async function fetchFeedVideos(): Promise<void> {
       }
     }
 
-    const statePubkey = get(nostrStore).pubkey;
+    const statePubkey = getNostrState().pubkey;
     const usingBootstrap = !statePubkey;
     const userPubkey = statePubkey ?? DEFAULT_BOOTSTRAP_PUBKEY;
     if (usingBootstrap) {

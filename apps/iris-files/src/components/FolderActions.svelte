@@ -18,10 +18,15 @@
   import { createZipFromDirectory, downloadBlob } from '../utils/compression';
   import { setUploadProgress } from '../stores/upload';
   import { readFilesFromWebkitDirectory, supportsDirectoryUpload } from '../utils/directory';
-  import { routeStore, createTreesStore, getPermalinkSnapshotSync } from '../stores';
+  import { routeStore, createTreesStore, permalinkSnapshotStore } from '../stores';
   import { isGitRepo } from '../utils/git';
   import { getFolderCreationBehavior, supportsDocumentFeatures, supportsGitFeatures } from '../appType';
-  import { buildTreeEventPermalink, ensureLatestTreeEventSnapshot, getCachedTreeEventSnapshot } from '../lib/treeEventSnapshots';
+  import {
+    buildTreeEventPermalink,
+    ensureLatestTreeEventSnapshot,
+    getCachedTreeEventSnapshot,
+    isNewerTreeEventSnapshot,
+  } from '../lib/treeEventSnapshots';
 
   interface Props {
     dirCid?: CID | null;
@@ -37,6 +42,7 @@
 
   let hasDirectorySupport = supportsDirectoryUpload();
   let route = $derived($routeStore);
+  let permalinkSnapshot = $derived($permalinkSnapshotStore);
   let userNpub = $derived($nostrStore.npub);
   let folderCreationBehavior = $derived(getFolderCreationBehavior());
 
@@ -54,6 +60,7 @@
 
   let ownTreeNames = $derived(ownTrees.map(t => t.name));
   let permalinkHref = $state<string | null>(null);
+  let latestVersionHref = $state<string | null>(null);
 
   $effect(() => {
     const directoryCid = dirCid;
@@ -62,6 +69,7 @@
     const path = [...route.path];
     const linkKey = route.params.get('k');
     const isSnapshotRoute = route.params.get('snapshot') === '1';
+    const snapshot = permalinkSnapshot.snapshot;
 
     if (!directoryCid?.hash) {
       permalinkHref = null;
@@ -74,9 +82,8 @@
     })}`;
 
     if (isSnapshotRoute) {
-      const snapshotState = getPermalinkSnapshotSync();
-      permalinkHref = snapshotState.snapshot
-        ? buildTreeEventPermalink(snapshotState.snapshot, path, linkKey)
+      permalinkHref = snapshot
+        ? buildTreeEventPermalink(snapshot, path, linkKey)
         : fallbackHref;
       return;
     }
@@ -97,6 +104,33 @@
     ensureLatestTreeEventSnapshot(npub, treeName).then((snapshot) => {
       if (!cancelled && snapshot) {
         permalinkHref = buildTreeEventPermalink(snapshot, path, linkKey);
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  });
+
+  $effect(() => {
+    const snapshot = permalinkSnapshot.snapshot;
+    const isSnapshotRoute = route.params.get('snapshot') === '1';
+    const path = [...route.path];
+    const linkKey = route.params.get('k');
+
+    if (!isSnapshotRoute || !snapshot) {
+      latestVersionHref = null;
+      return;
+    }
+
+    const cached = getCachedTreeEventSnapshot(snapshot.npub, snapshot.treeName);
+    if (cached && isNewerTreeEventSnapshot(cached, snapshot)) {
+      latestVersionHref = buildTreeEventPermalink(cached, path, linkKey);
+      return;
+    }
+
+    latestVersionHref = null;
+    let cancelled = false;
+    ensureLatestTreeEventSnapshot(snapshot.npub, snapshot.treeName).then((latest) => {
+      if (!cancelled && latest && isNewerTreeEventSnapshot(latest, snapshot)) {
+        latestVersionHref = buildTreeEventPermalink(latest, path, linkKey);
       }
     }).catch(() => {});
     return () => { cancelled = true; };
@@ -253,6 +287,12 @@
         >
           <span class={dirCid.key ? "i-lucide-lock text-base" : "i-lucide-link text-base"}></span>
           Permalink
+        </a>
+      {/if}
+      {#if latestVersionHref}
+        <a href={latestVersionHref} class="btn-ghost no-underline {btnClass}">
+          <span class="i-lucide-history text-base"></span>
+          See latest version
         </a>
       {/if}
     {/if}

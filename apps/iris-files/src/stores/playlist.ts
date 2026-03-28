@@ -23,6 +23,7 @@ import { LinkType, toHex, type CID } from '@hashtree/core';
 import { findPlayableMediaEntry, isPlayableMediaFileName, PLAYABLE_MEDIA_EXTENSIONS } from '../lib/playableMedia';
 import { resolveReadableVideoRoot } from '../lib/readableVideoRoot';
 import { readDirectPlayableMediaFileName } from '../lib/directPlayableRoot';
+import { buildPreferredTreeEventHref, buildTreeRouteHref } from '../lib/treeEventSnapshots';
 
 // Cache playlist detection results to avoid layout shift on revisit
 // Key: "npub/treeName", Value: PlaylistCardInfo or null (for single videos)
@@ -65,7 +66,7 @@ export function isPlaylistStructure(entries: { name: string }[]): boolean {
 }
 
 /** Find thumbnail entry in a directory */
-export function findThumbnailEntry(entries: { name: string }[]): { name: string } | undefined {
+export function findThumbnailEntry<T extends { name: string }>(entries: T[]): T | undefined {
   return entries.find(e =>
     e.name.startsWith('thumbnail.') ||
     e.name.endsWith('.jpg') ||
@@ -148,7 +149,7 @@ export interface PlaylistCardInfo {
   videoCount: number;
   thumbnailUrl?: string;
   videoPath?: string;
-  rootCid?: CID;
+  rootCid?: CID | null;
   /** Duration in seconds (for single videos) */
   duration?: number;
   /** Created timestamp in seconds (for single videos) */
@@ -686,7 +687,7 @@ export async function loadPlaylist(
 async function loadPlaylistMetadata(
   npub: string,
   treeName: string,
-  entries: Array<{ name: string; cid: CID }>,
+  entries: Array<{ name: string; cid: CID; meta?: Record<string, unknown> }>,
   currentIndex: number
 ): Promise<void> {
   const tree = getTree();
@@ -849,12 +850,15 @@ async function loadPlaylistMetadata(
       if (title !== entry.name) {
         try {
           const pubkey = nip19.decode(npub).data as string;
-          indexVideo({
+          const href = await buildPreferredTreeEventHref(npub, treeName, [entry.name]).catch(() =>
+            buildTreeRouteHref(npub, treeName, [entry.name])
+          );
+          await indexVideo({
             title,
             pubkey,
             treeName,
             videoId: entry.name,
-            nhash: '', // Not available here, search by path instead
+            href,
             timestamp: Date.now(),
             duration,
           });
@@ -964,7 +968,7 @@ export async function loadPlaylistFromVideo(
     // If not in local cache, try resolver
     if (!parentRoot) {
       const resolver = getRefResolver();
-      parentRoot = await resolver.resolve(npub, parentTreeName);
+      parentRoot = await resolver.resolve(`${npub}/${parentTreeName}`);
     }
 
     if (!parentRoot) {

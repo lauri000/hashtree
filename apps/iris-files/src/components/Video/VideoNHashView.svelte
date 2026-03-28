@@ -15,6 +15,7 @@
   import {
     buildTreeEventPermalink,
     ensureLatestTreeEventSnapshot,
+    isNewerTreeEventSnapshot,
     readTreeEventSnapshot,
     resolveSnapshotRootCid,
     type TreeEventSnapshotInfo,
@@ -163,13 +164,6 @@
     }
   }
 
-  function isNewerSnapshot(candidate: TreeEventSnapshotInfo, current: TreeEventSnapshotInfo): boolean {
-    if (candidate.event.created_at !== current.event.created_at) {
-      return candidate.event.created_at > current.event.created_at;
-    }
-    return candidate.event.id > current.event.id;
-  }
-
   async function loadSnapshotPermalink(snapshotCid: CID, path: string[], linkKey: string | null) {
     try {
       const snapshot = await readTreeEventSnapshot(snapshotCid);
@@ -204,7 +198,7 @@
       }
 
       const latest = await ensureLatestTreeEventSnapshot(snapshot.npub, snapshot.treeName);
-      if (latest && isNewerSnapshot(latest, snapshot)) {
+      if (latest && isNewerTreeEventSnapshot(latest, snapshot)) {
         newerSnapshot = latest;
       }
     } catch (e) {
@@ -259,7 +253,7 @@
       <span class="text-xs text-text-3">Verified from signed tree snapshot</span>
       {#if latestSnapshotHref}
         <a href={latestSnapshotHref} class="btn-ghost no-underline h-7 px-2 text-xs">
-          Newer version
+          See latest version
         </a>
       {/if}
     </div>
