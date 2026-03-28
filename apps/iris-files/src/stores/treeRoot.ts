@@ -1103,11 +1103,17 @@ export function createTreeRootStore(): Readable<CID | null> {
         return;
       }
 
-      if (effectiveKey && (encryptionKey || visibilityInfo?.encryptedKey)) {
-        treeRootRegistry.setFromResolver(npub, treeName, hash, updatedAt, {
+      const slashIndex = resolverKey.indexOf('/');
+      const resolverNpub = slashIndex > 0 ? resolverKey.slice(0, slashIndex) : null;
+      const resolverTreeName = slashIndex > 0 && slashIndex < resolverKey.length - 1
+        ? resolverKey.slice(slashIndex + 1)
+        : null;
+
+      if (effectiveKey && resolverNpub && resolverTreeName && (encryptionKey || visibilityInfo?.encryptedKey)) {
+        treeRootRegistry.setFromResolver(resolverNpub, resolverTreeName, hash, updatedAt, {
           key: effectiveKey,
-          visibility: visibilityInfo?.visibility ?? treeRootRegistry.getVisibility(npub, treeName) ?? 'public',
-          labels: treeRootRegistry.getLabels(npub, treeName),
+          visibility: visibilityInfo?.visibility ?? treeRootRegistry.getVisibility(resolverNpub, resolverTreeName) ?? 'public',
+          labels: treeRootRegistry.getLabels(resolverNpub, resolverTreeName),
           encryptedKey: visibilityInfo?.encryptedKey,
           keyId: visibilityInfo?.keyId,
           selfEncryptedKey: visibilityInfo?.selfEncryptedKey,
@@ -1124,16 +1130,13 @@ export function createTreeRootStore(): Readable<CID | null> {
       });
 
       // Then merge key to registry and worker in the background (don't block UI)
-      const slashIndex = resolverKey.indexOf('/');
-      if (slashIndex > 0 && slashIndex < resolverKey.length - 1) {
-        const npub = resolverKey.slice(0, slashIndex);
-        const treeName = resolverKey.slice(slashIndex + 1);
+      if (resolverNpub && resolverTreeName) {
         if (effectiveKey) {
-          treeRootRegistry.mergeKey(npub, treeName, hash, effectiveKey);
+          treeRootRegistry.mergeKey(resolverNpub, resolverTreeName, hash, effectiveKey);
           const signature = `${toHex(hash)}:${toHex(effectiveKey)}`;
           if (workerKeyMergeCache.get(resolverKey) !== signature) {
             // Fire and forget - don't await, let it run in background
-            void mergeTreeRootKeyToWorker(npub, treeName, hash, effectiveKey).then((merged) => {
+            void mergeTreeRootKeyToWorker(resolverNpub, resolverTreeName, hash, effectiveKey).then((merged) => {
               if (merged) {
                 workerKeyMergeCache.set(resolverKey, signature);
               }
