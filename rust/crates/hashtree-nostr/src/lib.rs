@@ -1,5 +1,6 @@
 //! Hashtree-native Nostr event indexes.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use hashtree_core::{
@@ -81,16 +82,7 @@ impl<S: Store> NostrEventStore<S> {
 
     pub fn encode_event(&self, event: &StoredNostrEvent) -> Result<Vec<u8>, NostrEventStoreError> {
         let normalized = self.validate_event_shape(event.clone())?;
-        Ok(rmp_serde::to_vec(&(
-            EVENT_ENVELOPE_VERSION,
-            normalized.id,
-            normalized.pubkey,
-            normalized.created_at,
-            normalized.kind,
-            normalized.tags,
-            normalized.content,
-            normalized.sig,
-        ))?)
+        self.encode_validated_event(&normalized)
     }
 
     pub fn decode_event(&self, data: &[u8]) -> Result<StoredNostrEvent, NostrEventStoreError> {
@@ -159,14 +151,18 @@ impl<S: Store> NostrEventStore<S> {
 
         let buffered_store = Arc::new(BufferedStore::new(Arc::clone(&self.store)));
         let buffered_writer = NostrEventStore::new(Arc::clone(&buffered_store));
-        let mut manifest = buffered_writer.get_manifest(root).await?;
-        for event in events {
-            let normalized = buffered_writer.validate_event(event).await?;
-            buffered_writer
-                .insert_into_manifest(&mut manifest, normalized)
-                .await?;
-        }
-        let next_root = buffered_writer.write_manifest(&manifest).await?;
+        let next_root = if root.is_none() {
+            buffered_writer.build_manifest_from_events(events).await?
+        } else {
+            let mut manifest = buffered_writer.get_manifest(root).await?;
+            for event in events {
+                let normalized = buffered_writer.validate_event(event).await?;
+                buffered_writer
+                    .insert_into_manifest(&mut manifest, normalized)
+                    .await?;
+            }
+            buffered_writer.write_manifest(&manifest).await?
+        };
         buffered_store
             .flush()
             .await
@@ -384,7 +380,7 @@ impl<S: Store> NostrEventStore<S> {
         manifest: &mut NostrEventManifest,
         normalized: StoredNostrEvent,
     ) -> Result<(), NostrEventStoreError> {
-        let event_bytes = self.encode_event(&normalized)?;
+        let event_bytes = self.encode_validated_event(&normalized)?;
         let (event_cid, _size) = self.tree.put_file(&event_bytes).await?;
 
         manifest.by_id = Some(
@@ -464,6 +460,83 @@ impl<S: Store> NostrEventStore<S> {
         }
 
         Ok(())
+    }
+
+    async fn build_manifest_from_events(
+        &self,
+        events: Vec<StoredNostrEvent>,
+    ) -> Result<Option<Cid>, NostrEventStoreError> {
+        let mut by_id = Vec::with_capacity(events.len());
+        let mut by_author_time = Vec::with_capacity(events.len());
+        let mut by_author_kind_time = Vec::with_capacity(events.len());
+        let mut by_kind_time = Vec::with_capacity(events.len());
+        let mut by_time = Vec::with_capacity(events.len());
+        let mut by_tag = Vec::new();
+        let mut replaceable = BTreeMap::<String, (StoredNostrEvent, Cid)>::new();
+        let mut parameterized_replaceable = BTreeMap::<String, (StoredNostrEvent, Cid)>::new();
+
+        for event in events {
+            let normalized = self.validate_event(event).await?;
+            let event_bytes = self.encode_validated_event(&normalized)?;
+            let (event_cid, _size) = self.tree.put_file(&event_bytes).await?;
+
+            by_id.push((normalized.id.clone(), event_cid.clone()));
+            by_author_time.push((author_time_key(&normalized), event_cid.clone()));
+            by_author_kind_time.push((author_kind_time_key(&normalized), event_cid.clone()));
+            by_kind_time.push((kind_time_key(&normalized), event_cid.clone()));
+            by_time.push((time_key(&normalized), event_cid.clone()));
+
+            for tag_key in tag_keys(&normalized) {
+                by_tag.push((tag_key, event_cid.clone()));
+            }
+
+            if is_replaceable_kind(normalized.kind) {
+                update_bulk_winner(
+                    &mut replaceable,
+                    replaceable_key(&normalized.pubkey, normalized.kind),
+                    &normalized,
+                    &event_cid,
+                );
+            }
+
+            if is_parameterized_replaceable_kind(normalized.kind) {
+                if let Some(d_tag) = get_d_tag(&normalized) {
+                    update_bulk_winner(
+                        &mut parameterized_replaceable,
+                        parameterized_replaceable_key(&normalized.pubkey, normalized.kind, &d_tag),
+                        &normalized,
+                        &event_cid,
+                    );
+                }
+            }
+        }
+
+        let manifest = NostrEventManifest {
+            by_id: self.index.build_links(by_id).await?,
+            by_author_time: self.index.build_links(by_author_time).await?,
+            by_author_kind_time: self.index.build_links(by_author_kind_time).await?,
+            by_kind_time: self.index.build_links(by_kind_time).await?,
+            by_time: self.index.build_links(by_time).await?,
+            by_tag: self.index.build_links(by_tag).await?,
+            replaceable: self
+                .index
+                .build_links(
+                    replaceable
+                        .into_iter()
+                        .map(|(key, (_event, cid))| (key, cid)),
+                )
+                .await?,
+            parameterized_replaceable: self
+                .index
+                .build_links(
+                    parameterized_replaceable
+                        .into_iter()
+                        .map(|(key, (_event, cid))| (key, cid)),
+                )
+                .await?,
+        };
+
+        self.write_manifest(&manifest).await
     }
 
     async fn upsert_winner(
@@ -556,6 +629,22 @@ impl<S: Store> NostrEventStore<S> {
             ));
         }
         Ok(normalized)
+    }
+
+    fn encode_validated_event(
+        &self,
+        event: &StoredNostrEvent,
+    ) -> Result<Vec<u8>, NostrEventStoreError> {
+        Ok(rmp_serde::to_vec(&(
+            EVENT_ENVELOPE_VERSION,
+            event.id.clone(),
+            event.pubkey.clone(),
+            event.created_at,
+            event.kind,
+            event.tags.clone(),
+            event.content.clone(),
+            event.sig.clone(),
+        ))?)
     }
 
     fn validate_event_shape(
@@ -724,6 +813,25 @@ fn compare_events(left: &StoredNostrEvent, right: &StoredNostrEvent) -> i8 {
             std::cmp::Ordering::Greater => 1,
             std::cmp::Ordering::Equal => 0,
         },
+    }
+}
+
+fn update_bulk_winner(
+    winners: &mut BTreeMap<String, (StoredNostrEvent, Cid)>,
+    key: String,
+    event: &StoredNostrEvent,
+    cid: &Cid,
+) {
+    match winners.get_mut(&key) {
+        Some((current, current_cid)) => {
+            if compare_events(event, current) > 0 {
+                *current = event.clone();
+                *current_cid = cid.clone();
+            }
+        }
+        None => {
+            winners.insert(key, (event.clone(), cid.clone()));
+        }
     }
 }
 

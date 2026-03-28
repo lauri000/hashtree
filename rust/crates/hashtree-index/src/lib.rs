@@ -45,6 +45,12 @@ pub struct BTree<S: Store> {
     max_keys: usize,
 }
 
+#[derive(Debug, Clone)]
+struct BuiltNode {
+    first_key: String,
+    cid: Cid,
+}
+
 impl<S: Store> BTree<S> {
     pub fn new(store: Arc<S>, options: BTreeOptions) -> Self {
         let order = options.order.unwrap_or(DEFAULT_ORDER).max(2);
@@ -247,6 +253,52 @@ impl<S: Store> BTree<S> {
         }
 
         Ok(Some(result))
+    }
+
+    pub async fn build_links<I>(&self, items: I) -> Result<Option<Cid>, BTreeError>
+    where
+        I: IntoIterator<Item = (String, Cid)>,
+    {
+        let mut sorted: Vec<(String, Cid)> = items.into_iter().collect();
+        if sorted.is_empty() {
+            return Ok(None);
+        }
+
+        sorted.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let mut deduped = Vec::with_capacity(sorted.len());
+        for (key, cid) in sorted {
+            if let Some((last_key, last_cid)) = deduped.last_mut() {
+                if *last_key == key {
+                    *last_cid = cid;
+                    continue;
+                }
+            }
+            deduped.push((key, cid));
+        }
+
+        let mut level = Vec::with_capacity(deduped.len().div_ceil(self.max_keys));
+        for chunk in deduped.chunks(self.max_keys) {
+            let cid = self.create_leaf_with_links(chunk).await?;
+            level.push(BuiltNode {
+                first_key: chunk[0].0.clone(),
+                cid,
+            });
+        }
+
+        while level.len() > 1 {
+            let mut next_level = Vec::with_capacity(level.len().div_ceil(self.max_keys));
+            for chunk in level.chunks(self.max_keys) {
+                let cid = self.create_internal_node(chunk).await?;
+                next_level.push(BuiltNode {
+                    first_key: chunk[0].first_key.clone(),
+                    cid,
+                });
+            }
+            level = next_level;
+        }
+
+        Ok(level.pop().map(|node| node.cid))
     }
 
     async fn finish_insert(&self, result: InsertResult) -> Result<Cid, BTreeError> {
@@ -469,6 +521,17 @@ impl<S: Store> BTree<S> {
             .iter()
             .map(|(key, cid)| {
                 DirEntry::from_cid(escape_key(key), cid).with_link_type(LinkType::File)
+            })
+            .collect();
+        Ok(self.tree.put_directory(entries).await?)
+    }
+
+    async fn create_internal_node(&self, children: &[BuiltNode]) -> Result<Cid, BTreeError> {
+        let entries: Vec<DirEntry> = children
+            .iter()
+            .map(|child| {
+                DirEntry::from_cid(escape_key(&child.first_key), &child.cid)
+                    .with_link_type(LinkType::Dir)
             })
             .collect();
         Ok(self.tree.put_directory(entries).await?)

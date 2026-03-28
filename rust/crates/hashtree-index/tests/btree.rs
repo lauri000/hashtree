@@ -102,6 +102,78 @@ fn link_btree_matches_typescript_fixture_root() {
 }
 
 #[test]
+fn bulk_link_build_matches_incremental_entries() {
+    block_on(async {
+        let store = Arc::new(MemoryStore::new());
+        let btree = BTree::new(Arc::clone(&store), BTreeOptions { order: Some(4) });
+
+        let fixtures = [
+            (
+                "author3:fffffffffffffff2:event-f",
+                cid_from_hex("101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"),
+            ),
+            (
+                "author1:fffffffffffffff5:event-a",
+                cid_from_hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
+            ),
+            (
+                "author1:fffffffffffffff4:event-b",
+                cid_from_hex("fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0"),
+            ),
+            (
+                "author2:fffffffffffffff6:event-c",
+                cid_from_hex("00070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9"),
+            ),
+            (
+                "author1:00000001:fffffffffffffff3:event-d",
+                cid_from_hex("000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693"),
+            ),
+            (
+                "author2:fffffffffffffff1:event-e",
+                cid_from_hex("303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f"),
+            ),
+            (
+                "author2:fffffffffffffff0:event-g",
+                cid_from_hex("505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f"),
+            ),
+        ];
+
+        let mut incremental_root = None;
+        for (key, cid) in fixtures.iter() {
+            incremental_root = Some(
+                btree
+                    .insert_link_unchecked(incremental_root.as_ref(), key, cid)
+                    .await
+                    .unwrap(),
+            );
+        }
+
+        let bulk_root = btree
+            .build_links(
+                fixtures
+                    .iter()
+                    .map(|(key, cid)| ((*key).to_string(), cid.clone())),
+            )
+            .await
+            .unwrap()
+            .expect("bulk root");
+        let incremental_root = incremental_root.expect("incremental root");
+
+        assert_eq!(
+            btree.links_entries(Some(&bulk_root)).await.unwrap(),
+            btree.links_entries(Some(&incremental_root)).await.unwrap()
+        );
+        assert_eq!(
+            btree.prefix_links(&bulk_root, "author1:").await.unwrap(),
+            btree
+                .prefix_links(&incremental_root, "author1:")
+                .await
+                .unwrap()
+        );
+    });
+}
+
+#[test]
 fn escaping_matches_typescript() {
     assert_eq!(escape_key("a/b%c\0"), "a%2Fb%25c%00");
 }
