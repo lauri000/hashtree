@@ -115,6 +115,27 @@ impl<S: Store> BTree<S> {
             .await
     }
 
+    pub async fn insert_link_unchecked(
+        &self,
+        root: Option<&Cid>,
+        key: &str,
+        target_cid: &Cid,
+    ) -> Result<Cid, BTreeError> {
+        if let Some(root) = root {
+            let result = self
+                .insert_recursive(
+                    root.clone(),
+                    key.to_string(),
+                    InsertValue::Link(target_cid.clone()),
+                )
+                .await?;
+            return self.finish_insert(result).await;
+        }
+
+        self.create_leaf_with_links(&[(key.to_string(), target_cid.clone())])
+            .await
+    }
+
     pub async fn get_link(&self, root: Option<&Cid>, key: &str) -> Result<Option<Cid>, BTreeError> {
         let Some(root) = root else {
             return Ok(None);

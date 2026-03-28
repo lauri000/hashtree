@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use hashtree_core::{
-    sha256, Cid, DirEntry, HashTree, HashTreeConfig, HashTreeError, LinkType, Store,
+    sha256, BufferedStore, Cid, DirEntry, HashTree, HashTreeConfig, HashTreeError, LinkType, Store,
 };
 use hashtree_index::{BTree, BTreeError, BTreeOptions};
 use serde::{Deserialize, Serialize};
@@ -65,6 +65,7 @@ pub enum NostrEventStoreError {
 }
 
 pub struct NostrEventStore<S: Store> {
+    store: Arc<S>,
     tree: HashTree<S>,
     index: BTree<S>,
 }
@@ -72,6 +73,7 @@ pub struct NostrEventStore<S: Store> {
 impl<S: Store> NostrEventStore<S> {
     pub fn new(store: Arc<S>) -> Self {
         Self {
+            store: Arc::clone(&store),
             tree: HashTree::new(HashTreeConfig::new(Arc::clone(&store))),
             index: BTree::new(store, BTreeOptions::default()),
         }
@@ -126,92 +128,10 @@ impl<S: Store> NostrEventStore<S> {
         event: StoredNostrEvent,
     ) -> Result<Cid, NostrEventStoreError> {
         let normalized = self.validate_event(event).await?;
-        let manifest = self.get_manifest(root).await?;
-        let event_bytes = self.encode_event(&normalized)?;
-        let (event_cid, _size) = self.tree.put_file(&event_bytes).await?;
+        let mut manifest = self.get_manifest(root).await?;
+        self.insert_into_manifest(&mut manifest, normalized).await?;
 
-        let mut next_manifest = NostrEventManifest {
-            by_id: Some(
-                self.index
-                    .insert_link(manifest.by_id.as_ref(), &normalized.id, &event_cid)
-                    .await?,
-            ),
-            by_author_time: Some(
-                self.index
-                    .insert_link(
-                        manifest.by_author_time.as_ref(),
-                        &author_time_key(&normalized),
-                        &event_cid,
-                    )
-                    .await?,
-            ),
-            by_author_kind_time: Some(
-                self.index
-                    .insert_link(
-                        manifest.by_author_kind_time.as_ref(),
-                        &author_kind_time_key(&normalized),
-                        &event_cid,
-                    )
-                    .await?,
-            ),
-            by_kind_time: Some(
-                self.index
-                    .insert_link(
-                        manifest.by_kind_time.as_ref(),
-                        &kind_time_key(&normalized),
-                        &event_cid,
-                    )
-                    .await?,
-            ),
-            by_time: Some(
-                self.index
-                    .insert_link(
-                        manifest.by_time.as_ref(),
-                        &time_key(&normalized),
-                        &event_cid,
-                    )
-                    .await?,
-            ),
-            by_tag: manifest.by_tag.clone(),
-            replaceable: manifest.replaceable.clone(),
-            parameterized_replaceable: manifest.parameterized_replaceable.clone(),
-        };
-
-        for tag_key in tag_keys(&normalized) {
-            next_manifest.by_tag = Some(
-                self.index
-                    .insert_link(next_manifest.by_tag.as_ref(), &tag_key, &event_cid)
-                    .await?,
-            );
-        }
-
-        if is_replaceable_kind(normalized.kind) {
-            next_manifest.replaceable = Some(
-                self.upsert_winner(
-                    manifest.replaceable.as_ref(),
-                    &replaceable_key(&normalized.pubkey, normalized.kind),
-                    &normalized,
-                    &event_cid,
-                )
-                .await?,
-            );
-        }
-
-        if is_parameterized_replaceable_kind(normalized.kind) {
-            if let Some(d_tag) = get_d_tag(&normalized) {
-                next_manifest.parameterized_replaceable = Some(
-                    self.upsert_winner(
-                        manifest.parameterized_replaceable.as_ref(),
-                        &parameterized_replaceable_key(&normalized.pubkey, normalized.kind, &d_tag),
-                        &normalized,
-                        &event_cid,
-                    )
-                    .await?,
-                );
-            }
-        }
-
-        let Some(root) = self.write_manifest(&next_manifest).await? else {
+        let Some(root) = self.write_manifest(&manifest).await? else {
             return Err(NostrEventStoreError::Validation(
                 "failed to write event manifest".to_string(),
             ));
@@ -228,17 +148,30 @@ impl<S: Store> NostrEventStore<S> {
         I: IntoIterator<Item = StoredNostrEvent>,
     {
         let mut events: Vec<StoredNostrEvent> = events.into_iter().collect();
+        if events.is_empty() {
+            return Ok(root.cloned());
+        }
         events.sort_by(|left, right| match compare_events(left, right) {
             x if x < 0 => std::cmp::Ordering::Less,
             x if x > 0 => std::cmp::Ordering::Greater,
             _ => std::cmp::Ordering::Equal,
         });
 
-        let mut current = root.cloned();
+        let buffered_store = Arc::new(BufferedStore::new(Arc::clone(&self.store)));
+        let buffered_writer = NostrEventStore::new(Arc::clone(&buffered_store));
+        let mut manifest = buffered_writer.get_manifest(root).await?;
         for event in events {
-            current = Some(self.add(current.as_ref(), event).await?);
+            let normalized = buffered_writer.validate_event(event).await?;
+            buffered_writer
+                .insert_into_manifest(&mut manifest, normalized)
+                .await?;
         }
-        Ok(current)
+        let next_root = buffered_writer.write_manifest(&manifest).await?;
+        buffered_store
+            .flush()
+            .await
+            .map_err(|err| NostrEventStoreError::HashTree(HashTreeError::Store(err.to_string())))?;
+        Ok(next_root)
     }
 
     pub async fn get_by_id(
@@ -444,6 +377,93 @@ impl<S: Store> NostrEventStore<S> {
             ));
         };
         self.decode_event(&data)
+    }
+
+    async fn insert_into_manifest(
+        &self,
+        manifest: &mut NostrEventManifest,
+        normalized: StoredNostrEvent,
+    ) -> Result<(), NostrEventStoreError> {
+        let event_bytes = self.encode_event(&normalized)?;
+        let (event_cid, _size) = self.tree.put_file(&event_bytes).await?;
+
+        manifest.by_id = Some(
+            self.index
+                .insert_link_unchecked(manifest.by_id.as_ref(), &normalized.id, &event_cid)
+                .await?,
+        );
+        manifest.by_author_time = Some(
+            self.index
+                .insert_link_unchecked(
+                    manifest.by_author_time.as_ref(),
+                    &author_time_key(&normalized),
+                    &event_cid,
+                )
+                .await?,
+        );
+        manifest.by_author_kind_time = Some(
+            self.index
+                .insert_link_unchecked(
+                    manifest.by_author_kind_time.as_ref(),
+                    &author_kind_time_key(&normalized),
+                    &event_cid,
+                )
+                .await?,
+        );
+        manifest.by_kind_time = Some(
+            self.index
+                .insert_link_unchecked(
+                    manifest.by_kind_time.as_ref(),
+                    &kind_time_key(&normalized),
+                    &event_cid,
+                )
+                .await?,
+        );
+        manifest.by_time = Some(
+            self.index
+                .insert_link_unchecked(
+                    manifest.by_time.as_ref(),
+                    &time_key(&normalized),
+                    &event_cid,
+                )
+                .await?,
+        );
+
+        for tag_key in tag_keys(&normalized) {
+            manifest.by_tag = Some(
+                self.index
+                    .insert_link_unchecked(manifest.by_tag.as_ref(), &tag_key, &event_cid)
+                    .await?,
+            );
+        }
+
+        if is_replaceable_kind(normalized.kind) {
+            manifest.replaceable = Some(
+                self.upsert_winner(
+                    manifest.replaceable.as_ref(),
+                    &replaceable_key(&normalized.pubkey, normalized.kind),
+                    &normalized,
+                    &event_cid,
+                )
+                .await?,
+            );
+        }
+
+        if is_parameterized_replaceable_kind(normalized.kind) {
+            if let Some(d_tag) = get_d_tag(&normalized) {
+                manifest.parameterized_replaceable = Some(
+                    self.upsert_winner(
+                        manifest.parameterized_replaceable.as_ref(),
+                        &parameterized_replaceable_key(&normalized.pubkey, normalized.kind, &d_tag),
+                        &normalized,
+                        &event_cid,
+                    )
+                    .await?,
+                );
+            }
+        }
+
+        Ok(())
     }
 
     async fn upsert_winner(

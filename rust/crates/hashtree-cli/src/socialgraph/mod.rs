@@ -459,9 +459,26 @@ impl SocialGraphStore {
     }
 
     fn ingest_events(&self, events: &[Event]) -> Result<()> {
-        for event in events {
-            self.ingest_event(event)?;
+        if events.is_empty() {
+            return Ok(());
         }
+
+        let mut public = Vec::new();
+        let mut ambient = Vec::new();
+        for event in events {
+            match self.default_storage_class_for(event)? {
+                EventStorageClass::Public => public.push(event.clone()),
+                EventStorageClass::Ambient => ambient.push(event.clone()),
+            }
+        }
+
+        if !public.is_empty() {
+            self.ingest_events_with_storage_class(&public, EventStorageClass::Public)?;
+        }
+        if !ambient.is_empty() {
+            self.ingest_events_with_storage_class(&ambient, EventStorageClass::Ambient)?;
+        }
+
         Ok(())
     }
 
@@ -548,12 +565,18 @@ impl SocialGraphStore {
         }
 
         let bucket = self.bucket(storage_class);
-        let mut current_root = bucket.events_root()?;
-        for event in events {
-            let next_root = bucket.store_event(current_root.as_ref(), event)?;
-            current_root = Some(next_root);
-        }
-        bucket.write_events_root(current_root.as_ref())?;
+        let current_root = bucket.events_root()?;
+        let stored_events = events
+            .iter()
+            .map(stored_event_from_nostr)
+            .collect::<Vec<_>>();
+        let next_root = block_on(
+            bucket
+                .event_store
+                .build(current_root.as_ref(), stored_events),
+        )
+        .map_err(map_event_store_error)?;
+        bucket.write_events_root(next_root.as_ref())?;
 
         let graph_events = events
             .iter()
@@ -1356,8 +1379,16 @@ fn page_size_bytes() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::{self, File};
+    use std::io::{BufRead, BufReader};
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
+
     use nostr::{EventBuilder, JsonUtil, Keys, Tag, Timestamp};
     use tempfile::TempDir;
+
+    const WELLORDER_FIXTURE_URL: &str =
+        "https://wellorder.xyz/nostr/nostr-wellorder-early-500k-v1.jsonl.bz2";
 
     #[test]
     fn test_open_social_graph_store() {
@@ -1858,32 +1889,91 @@ mod tests {
         assert_eq!(events[0].id, matching.id);
     }
 
-    #[test]
-    #[ignore = "benchmark"]
-    fn benchmark_query_events_large_dataset() {
-        let _guard = test_lock();
-        let tmp = TempDir::new().unwrap();
-        let graph_store =
-            open_social_graph_store_with_mapsize(tmp.path(), Some(512 * 1024 * 1024)).unwrap();
+    fn benchmark_dataset_path() -> Option<PathBuf> {
+        std::env::var_os("HASHTREE_BENCH_DATASET_PATH").map(PathBuf::from)
+    }
 
-        let author_count = 64usize;
-        let event_count = std::env::var("HASHTREE_BENCH_EVENTS")
+    fn benchmark_dataset_url() -> String {
+        std::env::var("HASHTREE_BENCH_DATASET_URL")
             .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(500usize);
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| WELLORDER_FIXTURE_URL.to_string())
+    }
+
+    fn ensure_benchmark_dataset(path: &Path, url: &str) -> Result<()> {
+        if path.exists() {
+            return Ok(());
+        }
+
+        let parent = path
+            .parent()
+            .context("benchmark dataset path has no parent directory")?;
+        fs::create_dir_all(parent).context("create benchmark dataset directory")?;
+
+        let tmp = path.with_extension("tmp");
+        let mut response = reqwest::blocking::get(url)
+            .context("download benchmark dataset")?
+            .error_for_status()
+            .context("benchmark dataset request failed")?;
+        let mut file = File::create(&tmp).context("create temporary benchmark dataset file")?;
+        std::io::copy(&mut response, &mut file).context("write benchmark dataset")?;
+        fs::rename(&tmp, path).context("move benchmark dataset into place")?;
+
+        Ok(())
+    }
+
+    fn load_benchmark_dataset(path: &Path, max_events: usize) -> Result<Vec<Event>> {
+        if max_events == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut child = Command::new("bzip2")
+            .args(["-dc", &path.to_string_lossy()])
+            .stdout(Stdio::piped())
+            .spawn()
+            .context("spawn bzip2 for benchmark dataset")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("benchmark dataset stdout missing")?;
+        let mut events = Vec::with_capacity(max_events);
+
+        {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                if events.len() >= max_events {
+                    break;
+                }
+                let line = line.context("read benchmark dataset line")?;
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(event) = Event::from_json(trimmed.to_string()) {
+                    events.push(event);
+                }
+            }
+        }
+
+        if events.len() < max_events {
+            let status = child.wait().context("wait for benchmark dataset reader")?;
+            anyhow::ensure!(
+                status.success(),
+                "benchmark dataset reader exited with status {status}"
+            );
+        } else {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+
+        Ok(events)
+    }
+
+    fn build_synthetic_benchmark_events(event_count: usize, author_count: usize) -> Vec<Event> {
         let authors = (0..author_count)
             .map(|_| Keys::generate())
             .collect::<Vec<_>>();
-
-        println!(
-            "starting large dataset benchmark with {} events across {} authors",
-            event_count, author_count
-        );
-        let ingest_start = Instant::now();
-        let mut text_note_total = 0usize;
-        let mut author_text_note_total = 0usize;
-        let mut hashtag_total = 0usize;
-        let mut search_total = 0usize;
+        let mut events = Vec::with_capacity(event_count);
         for i in 0..event_count {
             let kind = if i % 8 < 5 {
                 Kind::TextNote
@@ -1899,64 +1989,152 @@ mod tests {
             } else {
                 format!("benchmark event {i}")
             };
-            if kind == Kind::TextNote {
-                text_note_total += 1;
-                if i % author_count == 0 {
-                    author_text_note_total += 1;
-                }
-                if i % 16 == 0 {
-                    hashtag_total += 1;
-                }
-                if i % 32 == 0 {
-                    search_total += 1;
-                }
-            }
             let event = EventBuilder::new(kind, content, tags)
                 .custom_created_at(Timestamp::from_secs(1_700_000_000 + i as u64))
                 .to_event(&authors[i % author_count])
                 .unwrap();
-            ingest_parsed_event(&graph_store, &event).unwrap();
+            events.push(event);
         }
+        events
+    }
+
+    fn load_benchmark_events(
+        event_count: usize,
+        author_count: usize,
+    ) -> Result<(String, Vec<Event>)> {
+        if let Some(path) = benchmark_dataset_path() {
+            let url = benchmark_dataset_url();
+            ensure_benchmark_dataset(&path, &url)?;
+            let events = load_benchmark_dataset(&path, event_count)?;
+            return Ok((format!("dataset:{}", path.display()), events));
+        }
+
+        Ok((
+            format!("synthetic:{author_count}-authors"),
+            build_synthetic_benchmark_events(event_count, author_count),
+        ))
+    }
+
+    fn first_tag_filter(event: &Event) -> Option<Filter> {
+        event.tags.iter().find_map(|tag| match tag.as_slice() {
+            [name, value, ..]
+                if name.len() == 1
+                    && !value.is_empty()
+                    && name.as_bytes()[0].is_ascii_lowercase() =>
+            {
+                let letter = SingleLetterTag::from_char(name.chars().next()?).ok()?;
+                Some(Filter::new().custom_tag(letter, [value.to_string()]))
+            }
+            _ => None,
+        })
+    }
+
+    fn first_search_term(event: &Event) -> Option<String> {
+        event
+            .content
+            .split(|ch: char| !ch.is_alphanumeric())
+            .find(|token| token.len() >= 4)
+            .map(|token| token.to_ascii_lowercase())
+    }
+
+    fn benchmark_match_count(events: &[Event], filter: &Filter, limit: usize) -> usize {
+        events
+            .iter()
+            .filter(|event| filter.match_event(event))
+            .count()
+            .min(limit)
+    }
+
+    #[test]
+    #[ignore = "benchmark"]
+    fn benchmark_query_events_large_dataset() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store =
+            open_social_graph_store_with_mapsize(tmp.path(), Some(512 * 1024 * 1024)).unwrap();
+
+        let author_count = 64usize;
+        let event_count = std::env::var("HASHTREE_BENCH_EVENTS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(500usize);
+        let (source, events) = load_benchmark_events(event_count, author_count).unwrap();
+        let loaded_event_count = events.len();
+
+        println!(
+            "starting large dataset benchmark with {} events from {}",
+            loaded_event_count, source
+        );
+        let ingest_start = Instant::now();
+        ingest_parsed_events(&graph_store, &events).unwrap();
         let ingest_duration = ingest_start.elapsed();
         println!("benchmark ingest complete in {:?}", ingest_duration);
 
-        let kind_filter = Filter::new().kind(Kind::TextNote);
+        let kind = events
+            .iter()
+            .find(|event| event.kind == Kind::TextNote)
+            .map(|event| event.kind)
+            .or_else(|| events.first().map(|event| event.kind))
+            .expect("benchmark requires at least one event");
+        let kind_filter = Filter::new().kind(kind);
         let kind_start = Instant::now();
         let kind_events = query_events(&graph_store, &kind_filter, 200);
         let kind_duration = kind_start.elapsed();
-        assert_eq!(kind_events.len(), text_note_total.min(200));
+        assert_eq!(
+            kind_events.len(),
+            benchmark_match_count(&events, &kind_filter, 200)
+        );
         assert!(kind_events
             .windows(2)
             .all(|window| window[0].created_at >= window[1].created_at));
 
-        let author_filter = Filter::new()
-            .author(authors[0].public_key())
-            .kind(Kind::TextNote);
+        let author_pubkey = events
+            .iter()
+            .find(|event| event.kind == kind)
+            .map(|event| event.pubkey)
+            .expect("benchmark requires an author for the selected kind");
+        let author_filter = Filter::new().author(author_pubkey).kind(kind);
         let author_start = Instant::now();
         let author_events = query_events(&graph_store, &author_filter, 50);
         let author_duration = author_start.elapsed();
-        assert_eq!(author_events.len(), author_text_note_total.min(50));
+        assert_eq!(
+            author_events.len(),
+            benchmark_match_count(&events, &author_filter, 50)
+        );
 
-        let hashtag_filter = Filter::new().hashtag("hashtree");
-        let hashtag_start = Instant::now();
-        let hashtag_events = query_events(&graph_store, &hashtag_filter, 100);
-        let hashtag_duration = hashtag_start.elapsed();
-        assert_eq!(hashtag_events.len(), hashtag_total.min(100));
+        let tag_filter = events
+            .iter()
+            .find_map(first_tag_filter)
+            .expect("benchmark requires at least one tagged event");
+        let tag_start = Instant::now();
+        let tag_events = query_events(&graph_store, &tag_filter, 100);
+        let tag_duration = tag_start.elapsed();
+        assert_eq!(
+            tag_events.len(),
+            benchmark_match_count(&events, &tag_filter, 100)
+        );
 
-        let search_filter = Filter::new().kind(Kind::TextNote).search("target");
+        let search_source = events
+            .iter()
+            .find_map(|event| first_search_term(event).map(|term| (event.kind, term)))
+            .expect("benchmark requires at least one searchable event");
+        let search_filter = Filter::new().kind(search_source.0).search(search_source.1);
         let search_start = Instant::now();
         let search_events = query_events(&graph_store, &search_filter, 100);
         let search_duration = search_start.elapsed();
-        assert_eq!(search_events.len(), search_total.min(100));
+        assert_eq!(
+            search_events.len(),
+            benchmark_match_count(&events, &search_filter, 100)
+        );
 
         println!(
-            "large dataset benchmark: events={} authors={} ingest={:?} kind={:?} author={:?} hashtag={:?} search={:?}",
-            event_count,
-            author_count,
+            "large dataset benchmark: source={} events={} ingest={:?} kind={:?} author={:?} tag={:?} search={:?}",
+            source,
+            loaded_event_count,
             ingest_duration,
             kind_duration,
             author_duration,
-            hashtag_duration,
+            tag_duration,
             search_duration
         );
     }

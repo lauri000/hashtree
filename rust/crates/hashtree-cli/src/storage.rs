@@ -115,6 +115,23 @@ impl LocalStore {
         }
     }
 
+    /// Sync batch put operation.
+    pub fn put_many_sync(&self, items: &[(Hash, Vec<u8>)]) -> Result<usize, StoreError> {
+        match self {
+            LocalStore::Fs(store) => {
+                let mut inserted = 0usize;
+                for (hash, data) in items {
+                    if store.put_sync(*hash, data.as_slice())? {
+                        inserted += 1;
+                    }
+                }
+                Ok(inserted)
+            }
+            #[cfg(feature = "lmdb")]
+            LocalStore::Lmdb(store) => store.put_many_sync(items),
+        }
+    }
+
     /// Sync get operation
     pub fn get_sync(&self, hash: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
         match self {
@@ -177,6 +194,10 @@ impl LocalStore {
 impl Store for LocalStore {
     async fn put(&self, hash: Hash, data: Vec<u8>) -> Result<bool, StoreError> {
         self.put_sync(hash, &data)
+    }
+
+    async fn put_many(&self, items: Vec<(Hash, Vec<u8>)>) -> Result<usize, StoreError> {
+        self.put_many_sync(&items)
     }
 
     async fn get(&self, hash: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
@@ -367,6 +388,25 @@ impl StorageRouter {
         Ok(is_new)
     }
 
+    /// Store multiple blobs with a single local batch write when supported.
+    pub fn put_many_sync(&self, items: &[(Hash, Vec<u8>)]) -> Result<usize, StoreError> {
+        let inserted = self.local.put_many_sync(items)?;
+
+        #[cfg(feature = "s3")]
+        if let Some(ref tx) = self.sync_tx {
+            for (hash, data) in items {
+                if let Err(e) = tx.send(S3SyncMessage::Upload {
+                    hash: *hash,
+                    data: data.clone(),
+                }) {
+                    tracing::error!("Failed to queue S3 upload: {}", e);
+                }
+            }
+        }
+
+        Ok(inserted)
+    }
+
     /// Get data - tries LMDB first, falls back to S3
     pub fn get_sync(&self, hash: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
         // Try local first
@@ -470,6 +510,10 @@ impl StorageRouter {
 impl Store for StorageRouter {
     async fn put(&self, hash: Hash, data: Vec<u8>) -> Result<bool, StoreError> {
         self.put_sync(hash, &data)
+    }
+
+    async fn put_many(&self, items: Vec<(Hash, Vec<u8>)>) -> Result<usize, StoreError> {
+        self.put_many_sync(&items)
     }
 
     async fn get(&self, hash: &Hash) -> Result<Option<Vec<u8>>, StoreError> {

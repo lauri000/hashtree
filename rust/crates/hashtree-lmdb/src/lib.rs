@@ -227,6 +227,53 @@ impl LmdbBlobStore {
         Ok(!existed)
     }
 
+    /// Sync batch put operation (for use in sync contexts).
+    pub fn put_many_sync(&self, items: &[(Hash, Vec<u8>)]) -> Result<usize, StoreError> {
+        if items.is_empty() {
+            return Ok(0);
+        }
+
+        let mut wtxn = self
+            .env
+            .write_txn()
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        let mut inserted = 0usize;
+
+        for (hash, data) in items {
+            let existed = self
+                .blobs
+                .get(&wtxn, hash)
+                .map_err(|e| StoreError::Other(e.to_string()))?
+                .is_some();
+
+            if existed {
+                continue;
+            }
+
+            let order = self.next_order.fetch_add(1, Ordering::Relaxed);
+            let meta = Self::encode_blob_meta(BlobMeta {
+                order,
+                size: data.len() as u64,
+            });
+            let order_key = Self::encode_order_key(order, hash);
+            self.blobs
+                .put(&mut wtxn, hash, data.as_slice())
+                .map_err(|e| StoreError::Other(e.to_string()))?;
+            self.metadata
+                .put(&mut wtxn, hash, &meta)
+                .map_err(|e| StoreError::Other(e.to_string()))?;
+            self.eviction_order
+                .put(&mut wtxn, &order_key, &())
+                .map_err(|e| StoreError::Other(e.to_string()))?;
+            inserted += 1;
+        }
+
+        wtxn.commit()
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+
+        Ok(inserted)
+    }
+
     /// Sync get operation (for use in sync contexts).
     pub fn get_sync(&self, hash: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
         let rtxn = self
@@ -482,6 +529,10 @@ pub struct LmdbStats {
 impl Store for LmdbBlobStore {
     async fn put(&self, hash: Hash, data: Vec<u8>) -> Result<bool, StoreError> {
         self.put_sync(hash, &data)
+    }
+
+    async fn put_many(&self, items: Vec<(Hash, Vec<u8>)>) -> Result<usize, StoreError> {
+        self.put_many_sync(&items)
     }
 
     async fn get(&self, hash: &Hash) -> Result<Option<Vec<u8>>, StoreError> {

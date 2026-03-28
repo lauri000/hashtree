@@ -77,7 +77,7 @@ pub use nhash::{
     decode as nhash_decode_any, is_nhash, nhash_decode, nhash_encode, nhash_encode_full,
     DecodeResult, NHashData, NHashError,
 };
-pub use store::{MemoryStore, Store, StoreError};
+pub use store::{BufferedStore, MemoryStore, Store, StoreError};
 pub use types::{
     from_hex, hash_equals, to_hex, Cid, CidParseError, DirEntry, Hash, Link, LinkType, PutResult,
     TreeNode,

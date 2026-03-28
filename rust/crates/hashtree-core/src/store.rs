@@ -26,6 +26,18 @@ pub trait Store: Send + Sync {
     /// Returns true if newly stored, false if already existed
     async fn put(&self, hash: Hash, data: Vec<u8>) -> Result<bool, StoreError>;
 
+    /// Store multiple blobs.
+    /// Returns the number of newly stored items.
+    async fn put_many(&self, items: Vec<(Hash, Vec<u8>)>) -> Result<usize, StoreError> {
+        let mut inserted = 0usize;
+        for (hash, data) in items {
+            if self.put(hash, data).await? {
+                inserted += 1;
+            }
+        }
+        Ok(inserted)
+    }
+
     /// Retrieve data by hash
     /// Returns data or None if not found
     async fn get(&self, hash: &Hash) -> Result<Option<Vec<u8>>, StoreError>;
@@ -92,6 +104,144 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
     #[error("Store error: {0}")]
     Other(String),
+}
+
+#[derive(Debug, Default)]
+struct BufferedStoreInner {
+    pending: HashMap<Hash, Vec<u8>>,
+    order: Vec<Hash>,
+}
+
+/// Buffered overlay store that keeps writes in memory until flushed.
+#[derive(Debug, Clone)]
+pub struct BufferedStore<S: Store> {
+    base: Arc<S>,
+    inner: Arc<RwLock<BufferedStoreInner>>,
+}
+
+impl<S: Store> BufferedStore<S> {
+    pub fn new(base: Arc<S>) -> Self {
+        Self {
+            base,
+            inner: Arc::new(RwLock::new(BufferedStoreInner::default())),
+        }
+    }
+
+    pub async fn flush(&self) -> Result<usize, StoreError> {
+        let items = {
+            let mut inner = self.inner.write().unwrap();
+            if inner.order.is_empty() {
+                return Ok(0);
+            }
+
+            let order = std::mem::take(&mut inner.order);
+            let mut items = Vec::with_capacity(order.len());
+            for hash in order {
+                if let Some(data) = inner.pending.remove(&hash) {
+                    items.push((hash, data));
+                }
+            }
+            items
+        };
+
+        self.base.put_many(items).await
+    }
+}
+
+#[async_trait]
+impl<S: Store> Store for BufferedStore<S> {
+    async fn put(&self, hash: Hash, data: Vec<u8>) -> Result<bool, StoreError> {
+        {
+            let inner = self.inner.read().unwrap();
+            if inner.pending.contains_key(&hash) {
+                return Ok(false);
+            }
+        }
+
+        if self.base.has(&hash).await? {
+            return Ok(false);
+        }
+
+        let mut inner = self.inner.write().unwrap();
+        if inner.pending.contains_key(&hash) {
+            return Ok(false);
+        }
+        inner.order.push(hash);
+        inner.pending.insert(hash, data);
+        Ok(true)
+    }
+
+    async fn put_many(&self, items: Vec<(Hash, Vec<u8>)>) -> Result<usize, StoreError> {
+        let mut inserted = 0usize;
+        for (hash, data) in items {
+            if self.put(hash, data).await? {
+                inserted += 1;
+            }
+        }
+        Ok(inserted)
+    }
+
+    async fn get(&self, hash: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
+        if let Some(data) = self.inner.read().unwrap().pending.get(hash).cloned() {
+            return Ok(Some(data));
+        }
+        self.base.get(hash).await
+    }
+
+    async fn has(&self, hash: &Hash) -> Result<bool, StoreError> {
+        if self.inner.read().unwrap().pending.contains_key(hash) {
+            return Ok(true);
+        }
+        self.base.has(hash).await
+    }
+
+    async fn delete(&self, hash: &Hash) -> Result<bool, StoreError> {
+        let removed = {
+            let mut inner = self.inner.write().unwrap();
+            let removed = inner.pending.remove(hash).is_some();
+            if removed {
+                inner.order.retain(|queued| queued != hash);
+            }
+            removed
+        };
+
+        if removed {
+            return Ok(true);
+        }
+
+        self.base.delete(hash).await
+    }
+
+    async fn stats(&self) -> StoreStats {
+        let mut stats = self.base.stats().await;
+        let pending_bytes = self
+            .inner
+            .read()
+            .unwrap()
+            .pending
+            .values()
+            .map(|data| data.len() as u64)
+            .sum::<u64>();
+        stats.count += self.inner.read().unwrap().pending.len() as u64;
+        stats.bytes += pending_bytes;
+        stats
+    }
+
+    async fn evict_if_needed(&self) -> Result<u64, StoreError> {
+        self.base.evict_if_needed().await
+    }
+
+    async fn pin(&self, hash: &Hash) -> Result<(), StoreError> {
+        self.base.pin(hash).await
+    }
+
+    async fn unpin(&self, hash: &Hash) -> Result<(), StoreError> {
+        self.base.unpin(hash).await
+    }
+
+    fn pin_count(&self, hash: &Hash) -> u32 {
+        self.base.pin_count(hash)
+    }
 }
 
 /// Entry in the memory store with metadata for LRU
@@ -220,6 +370,22 @@ impl Store for MemoryStore {
         inner.next_order += 1;
         inner.data.insert(key, MemoryEntry { data, order });
         Ok(true)
+    }
+
+    async fn put_many(&self, items: Vec<(Hash, Vec<u8>)>) -> Result<usize, StoreError> {
+        let mut inserted = 0usize;
+        let mut inner = self.inner.write().unwrap();
+        for (hash, data) in items {
+            let key = to_hex(&hash);
+            if inner.data.contains_key(&key) {
+                continue;
+            }
+            let order = inner.next_order;
+            inner.next_order += 1;
+            inner.data.insert(key, MemoryEntry { data, order });
+            inserted += 1;
+        }
+        Ok(inserted)
     }
 
     async fn get(&self, hash: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
@@ -354,6 +520,41 @@ mod tests {
         store.put(hash, data.clone()).await.unwrap();
         let result = store.put(hash, data).await.unwrap();
         assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_put_many_counts_only_new_items() {
+        let store = MemoryStore::new();
+        let data1 = vec![1u8, 2, 3];
+        let data2 = vec![4u8, 5, 6];
+        let hash1 = sha256(&data1);
+        let hash2 = sha256(&data2);
+
+        store.put(hash1, data1.clone()).await.unwrap();
+        let inserted = store
+            .put_many(vec![(hash1, data1), (hash2, data2.clone())])
+            .await
+            .unwrap();
+
+        assert_eq!(inserted, 1);
+        assert_eq!(store.get(&hash2).await.unwrap(), Some(data2));
+    }
+
+    #[tokio::test]
+    async fn test_buffered_store_flushes_pending_writes() {
+        let base = std::sync::Arc::new(MemoryStore::new());
+        let buffered = BufferedStore::new(std::sync::Arc::clone(&base));
+        let data = vec![9u8, 8, 7];
+        let hash = sha256(&data);
+
+        assert!(buffered.put(hash, data.clone()).await.unwrap());
+        assert_eq!(buffered.get(&hash).await.unwrap(), Some(data.clone()));
+        assert_eq!(base.get(&hash).await.unwrap(), None);
+
+        let flushed = buffered.flush().await.unwrap();
+
+        assert_eq!(flushed, 1);
+        assert_eq!(base.get(&hash).await.unwrap(), Some(data));
     }
 
     #[tokio::test]
