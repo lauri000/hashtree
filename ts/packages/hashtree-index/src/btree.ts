@@ -3,17 +3,21 @@ import { HashTree, LinkType, type CID, type Store, type TreeEntry } from '@hasht
 export interface BTreeOptions {
   /** Max entries per node before splitting. Default: 32 */
   order?: number;
+  /** Store tree nodes and leaf values without CHK encryption. */
+  public?: boolean;
 }
 
 export class BTree {
   private tree: HashTree;
   private order: number;
   private maxKeys: number;
+  private public: boolean;
 
   constructor(store: Store, options: BTreeOptions = {}) {
     this.tree = new HashTree({ store });
     this.order = options.order ?? 32;
     this.maxKeys = this.order - 1;
+    this.public = options.public ?? false;
   }
 
   // ============ String Value Methods (existing) ============
@@ -32,7 +36,7 @@ export class BTree {
     const result = await this.insertRecursive(root, key, value);
 
     if (result.split) {
-      let newRoot = (await this.tree.putDirectory([])).cid;
+      let newRoot = await this.createEmptyDirectory();
       newRoot = await this.tree.setEntry(newRoot, [], escapeKey(result.split.leftFirstKey), result.split.left, 0, LinkType.Dir);
       newRoot = await this.tree.setEntry(newRoot, [], escapeKey(result.split.rightFirstKey), result.split.right, 0, LinkType.Dir);
       return newRoot;
@@ -82,7 +86,7 @@ export class BTree {
     const result = await this.insertLinkRecursive(root, key, targetCid);
 
     if (result.split) {
-      let newRoot = (await this.tree.putDirectory([])).cid;
+      let newRoot = await this.createEmptyDirectory();
       newRoot = await this.tree.setEntry(newRoot, [], escapeKey(result.split.leftFirstKey), result.split.left, 0, LinkType.Dir);
       newRoot = await this.tree.setEntry(newRoot, [], escapeKey(result.split.rightFirstKey), result.split.right, 0, LinkType.Dir);
       return newRoot;
@@ -163,7 +167,7 @@ export class BTree {
   }
 
   private async createLeafWithLink(items: Array<[string, CID]>): Promise<CID> {
-    let node = (await this.tree.putDirectory([])).cid;
+    let node = await this.createEmptyDirectory();
 
     for (const [key, targetCid] of items) {
       node = await this.tree.setEntry(node, [], escapeKey(key), targetCid, 0, LinkType.File);
@@ -235,12 +239,12 @@ export class BTree {
     const leftEntries = sorted.slice(0, mid);
     const rightEntries = sorted.slice(mid);
 
-    let left = (await this.tree.putDirectory([])).cid;
+    let left = await this.createEmptyDirectory();
     for (const entry of leftEntries) {
       left = await this.tree.setEntry(left, [], entry.name, entry.cid, entry.size, entry.type);
     }
 
-    let right = (await this.tree.putDirectory([])).cid;
+    let right = await this.createEmptyDirectory();
     for (const entry of rightEntries) {
       right = await this.tree.setEntry(right, [], entry.name, entry.cid, entry.size, entry.type);
     }
@@ -326,7 +330,7 @@ export class BTree {
     value: string
   ): Promise<{ cid: CID; split?: SplitResult }> {
     const escapedKey = escapeKey(key);
-    const { cid: valueCid, size } = await this.tree.putFile(new TextEncoder().encode(value));
+    const { cid: valueCid, size } = await this.putValue(value);
     const newNode = await this.tree.setEntry(node, [], escapedKey, valueCid, size, LinkType.Blob);
 
     const newEntries = await this.tree.listDirectory(newNode);
@@ -368,12 +372,12 @@ export class BTree {
     const leftEntries = sorted.slice(0, mid);
     const rightEntries = sorted.slice(mid);
 
-    let left = (await this.tree.putDirectory([])).cid;
+    let left = await this.createEmptyDirectory();
     for (const entry of leftEntries) {
       left = await this.tree.setEntry(left, [], entry.name, entry.cid, entry.size, LinkType.Blob);
     }
 
-    let right = (await this.tree.putDirectory([])).cid;
+    let right = await this.createEmptyDirectory();
     for (const entry of rightEntries) {
       right = await this.tree.setEntry(right, [], entry.name, entry.cid, entry.size, LinkType.Blob);
     }
@@ -392,12 +396,12 @@ export class BTree {
     const leftEntries = sorted.slice(0, mid);
     const rightEntries = sorted.slice(mid);
 
-    let left = (await this.tree.putDirectory([])).cid;
+    let left = await this.createEmptyDirectory();
     for (const entry of leftEntries) {
       left = await this.tree.setEntry(left, [], entry.name, entry.cid, 0, LinkType.Dir);
     }
 
-    let right = (await this.tree.putDirectory([])).cid;
+    let right = await this.createEmptyDirectory();
     for (const entry of rightEntries) {
       right = await this.tree.setEntry(right, [], entry.name, entry.cid, 0, LinkType.Dir);
     }
@@ -435,14 +439,22 @@ export class BTree {
   }
 
   private async createLeaf(items: Array<[string, string]>): Promise<CID> {
-    let node = (await this.tree.putDirectory([])).cid;
+    let node = await this.createEmptyDirectory();
 
     for (const [key, value] of items) {
-      const { cid: valueCid, size } = await this.tree.putFile(new TextEncoder().encode(value));
+      const { cid: valueCid, size } = await this.putValue(value);
       node = await this.tree.setEntry(node, [], escapeKey(key), valueCid, size, LinkType.Blob);
     }
 
     return node;
+  }
+
+  private async createEmptyDirectory(): Promise<CID> {
+    return (await this.tree.putDirectory([], { unencrypted: this.public })).cid;
+  }
+
+  private async putValue(value: string): Promise<{ cid: CID; size: number }> {
+    return this.tree.putFile(new TextEncoder().encode(value), { unencrypted: this.public });
   }
 
   async delete(root: CID, key: string): Promise<CID | null> {

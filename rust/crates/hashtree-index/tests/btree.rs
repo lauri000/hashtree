@@ -14,7 +14,13 @@ fn cid_from_hex(hex: &str) -> Cid {
 fn string_values_support_get_and_range() {
     block_on(async {
         let store = Arc::new(MemoryStore::new());
-        let btree = BTree::new(store, BTreeOptions { order: Some(4) });
+        let btree = BTree::new(
+            store,
+            BTreeOptions {
+                order: Some(4),
+                ..BTreeOptions::default()
+            },
+        );
 
         let mut root = None;
         for key in ["user:002", "user:001", "other:001", "user:003"] {
@@ -40,7 +46,13 @@ fn string_values_support_get_and_range() {
 fn link_btree_matches_typescript_fixture_root() {
     block_on(async {
         let store = Arc::new(MemoryStore::new());
-        let btree = BTree::new(Arc::clone(&store), BTreeOptions { order: Some(4) });
+        let btree = BTree::new(
+            Arc::clone(&store),
+            BTreeOptions {
+                order: Some(4),
+                ..BTreeOptions::default()
+            },
+        );
         let _tree = HashTree::new(HashTreeConfig::new(store));
 
         let mut root = None;
@@ -105,7 +117,13 @@ fn link_btree_matches_typescript_fixture_root() {
 fn bulk_link_build_matches_incremental_entries() {
     block_on(async {
         let store = Arc::new(MemoryStore::new());
-        let btree = BTree::new(Arc::clone(&store), BTreeOptions { order: Some(4) });
+        let btree = BTree::new(
+            Arc::clone(&store),
+            BTreeOptions {
+                order: Some(4),
+                ..BTreeOptions::default()
+            },
+        );
 
         let fixtures = [
             (

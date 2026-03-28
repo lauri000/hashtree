@@ -214,6 +214,35 @@ fn manifest_exposes_by_id_key_only() {
 }
 
 #[test]
+fn nostr_event_roots_and_blobs_are_public() {
+    block_on(async {
+        let backing = Arc::new(MemoryStore::new());
+        let tree = HashTree::new(HashTreeConfig::new(backing.clone()));
+        let store = NostrEventStore::new(backing);
+        let author = "a".repeat(64);
+        let event = event(
+            "1195275911eb877e6687b4f8a3495de1e0719280e7fc1fb229a9de37b2d87bea",
+            &author,
+            10,
+            1,
+            "older",
+            &"2".repeat(128),
+        );
+
+        let root = store.add(None, event).await.unwrap();
+        assert!(root.key.is_none());
+
+        let manifest = store.get_manifest(Some(&root)).await.unwrap();
+        let by_id = manifest.by_id.expect("by-id root");
+        assert!(by_id.key.is_none());
+
+        let entries = tree.list_directory(&by_id).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].key.is_none());
+    });
+}
+
+#[test]
 fn manifest_root_matches_typescript_fixture() {
     block_on(async {
         let store = NostrEventStore::new(Arc::new(MemoryStore::new()));
@@ -251,47 +280,37 @@ fn manifest_root_matches_typescript_fixture() {
         assert_eq!(
             cid_to_pair(&root),
             (
-                "46d23c598097d7e13cef3c4aa4aea878596f9f5018ce5969d915e149311058e2".to_string(),
-                Some(
-                    "1589629f9c1c73084a91bdef7d032bb690d431e07483b3c5bfea39aa7ebf1ba0".to_string()
-                )
+                "3be7ef3cd8535a609273fc114bbc0137f0eb1b5af2d0f52a89a4d718af5a9ec8".to_string(),
+                None,
             )
         );
 
         assert_eq!(
             cid_to_pair(manifest.by_id.as_ref().unwrap()),
             (
-                "cfef6382cd6e8f76eeac020241e0bf2cf06f1d4aa04f22386563f51cd6b82255".to_string(),
-                Some(
-                    "b6574a09ef40e5e058bdefb41da932984754a29dd41286b1edb2a0d76e949df3".to_string()
-                )
+                "4beaf15a71ae8a4a7067d07cafdc2d5f6b81963ae44e316963392592d82352c4".to_string(),
+                None,
             )
         );
         assert_eq!(
             cid_to_pair(manifest.by_author_time.as_ref().unwrap()),
             (
-                "59c18768cfd9635b0fcd9aa4364428176eaf81b198cf01dd15d5d7fbd64f8b58".to_string(),
-                Some(
-                    "a9a6b38d6fc3ae3ec08ce09a5d9ffe1c1a3ee7b1019713abf691ce9635c9ef0c".to_string()
-                )
+                "271361def97236a7dcf2e57d585b7a5136affe84312f705cefe61886e8c9222e".to_string(),
+                None,
             )
         );
         assert_eq!(
             cid_to_pair(manifest.by_kind_time.as_ref().unwrap()),
             (
-                "66679b40e811a34aa6f769a1463b0c3d99ad902ce25765ee7f11e4e6a2c9504d".to_string(),
-                Some(
-                    "b6c798064906e42b709e44271942d9a489f8304ac6f6e99d49ce7f88fe11e6f7".to_string()
-                )
+                "ae8faea98db4e5d99e705f8de2d6c93c6e7926d19d76633245fae9ff4d4aff70".to_string(),
+                None,
             )
         );
         assert_eq!(
             cid_to_pair(manifest.by_time.as_ref().unwrap()),
             (
-                "3a06b344cc4f726e9000f00d6ddea99f28466fc08a33a84c01def4b682fbb2f0".to_string(),
-                Some(
-                    "4d6e07652d9fd5d148d826e2acb06195a416efff0df27fdd0c11a52cd7ee3a34".to_string()
-                )
+                "2b2d08fe7cef3a470faf83f3b7f344ab01fe4c16e7baebb1cf1cd61e01fc9969".to_string(),
+                None,
             )
         );
     });

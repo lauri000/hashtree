@@ -1,7 +1,11 @@
 //! Hashtree-native Nostr event indexes.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use std::cell::RefCell;
 
 use hashtree_core::{
     sha256, BufferedStore, Cid, DirEntry, HashTree, HashTreeConfig, HashTreeError, LinkType, Store,
@@ -49,6 +53,79 @@ pub struct ListEventsOptions {
     pub until: Option<u64>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ProfileStat {
+    pub label: &'static str,
+    pub count: u64,
+    pub total: Duration,
+    pub max: Duration,
+}
+
+#[derive(Debug, Default)]
+struct ProfileAccumulator {
+    count: u64,
+    total: Duration,
+    max: Duration,
+}
+
+static PROFILE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    static PROFILE_STATE: RefCell<BTreeMap<&'static str, ProfileAccumulator>> =
+        const { RefCell::new(BTreeMap::new()) };
+}
+
+pub fn set_profile_enabled(enabled: bool) {
+    PROFILE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn reset_profile() {
+    PROFILE_STATE.with(|state| state.borrow_mut().clear());
+}
+
+pub fn take_profile() -> Vec<ProfileStat> {
+    PROFILE_STATE.with(|state| {
+        state
+            .borrow()
+            .iter()
+            .map(|(&label, acc)| ProfileStat {
+                label,
+                count: acc.count,
+                total: acc.total,
+                max: acc.max,
+            })
+            .collect()
+    })
+}
+
+pub struct ProfileGuard {
+    label: &'static str,
+    started: Option<Instant>,
+}
+
+impl ProfileGuard {
+    pub fn new(label: &'static str) -> Self {
+        let started = PROFILE_ENABLED.load(Ordering::Relaxed).then(Instant::now);
+        Self { label, started }
+    }
+}
+
+impl Drop for ProfileGuard {
+    fn drop(&mut self) {
+        let Some(started) = self.started else {
+            return;
+        };
+        let elapsed = started.elapsed();
+        PROFILE_STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            let entry = state.entry(self.label).or_default();
+            entry.count += 1;
+            entry.total += elapsed;
+            entry.max = entry.max.max(elapsed);
+        });
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum NostrEventStoreError {
     #[error("hash tree error: {0}")]
@@ -75,8 +152,14 @@ impl<S: Store> NostrEventStore<S> {
     pub fn new(store: Arc<S>) -> Self {
         Self {
             store: Arc::clone(&store),
-            tree: HashTree::new(HashTreeConfig::new(Arc::clone(&store))),
-            index: BTree::new(store, BTreeOptions::default()),
+            tree: HashTree::new(HashTreeConfig::new(Arc::clone(&store)).public()),
+            index: BTree::new(
+                store,
+                BTreeOptions {
+                    public: true,
+                    ..BTreeOptions::default()
+                },
+            ),
         }
     }
 
@@ -119,15 +202,34 @@ impl<S: Store> NostrEventStore<S> {
         root: Option<&Cid>,
         event: StoredNostrEvent,
     ) -> Result<Cid, NostrEventStoreError> {
-        let normalized = self.validate_event(event).await?;
-        let mut manifest = self.get_manifest(root).await?;
-        self.insert_into_manifest(&mut manifest, normalized).await?;
+        let buffered_store = Arc::new(BufferedStore::new_optimistic(Arc::clone(&self.store)));
+        let buffered_writer = NostrEventStore::new(Arc::clone(&buffered_store));
+        let normalized = {
+            let _profile = ProfileGuard::new("nostr.add.validate_event");
+            buffered_writer.validate_event(event).await?
+        };
+        let mut manifest = {
+            let _profile = ProfileGuard::new("nostr.add.get_manifest");
+            buffered_writer.get_manifest(root).await?
+        };
+        buffered_writer
+            .insert_into_manifest(&mut manifest, normalized)
+            .await?;
 
-        let Some(root) = self.write_manifest(&manifest).await? else {
+        let Some(root) = ({
+            let _profile = ProfileGuard::new("nostr.add.write_manifest");
+            buffered_writer.write_manifest(&manifest).await?
+        }) else {
             return Err(NostrEventStoreError::Validation(
                 "failed to write event manifest".to_string(),
             ));
         };
+        {
+            let _profile = ProfileGuard::new("nostr.add.flush");
+            buffered_store.flush().await.map_err(|err| {
+                NostrEventStoreError::HashTree(HashTreeError::Store(err.to_string()))
+            })?;
+        }
         Ok(root)
     }
 
@@ -149,7 +251,7 @@ impl<S: Store> NostrEventStore<S> {
             _ => std::cmp::Ordering::Equal,
         });
 
-        let buffered_store = Arc::new(BufferedStore::new(Arc::clone(&self.store)));
+        let buffered_store = Arc::new(BufferedStore::new_optimistic(Arc::clone(&self.store)));
         let buffered_writer = NostrEventStore::new(Arc::clone(&buffered_store));
         let next_root = if root.is_none() {
             buffered_writer.build_manifest_from_events(events).await?
@@ -380,82 +482,96 @@ impl<S: Store> NostrEventStore<S> {
         manifest: &mut NostrEventManifest,
         normalized: StoredNostrEvent,
     ) -> Result<(), NostrEventStoreError> {
-        let event_bytes = self.encode_validated_event(&normalized)?;
-        let (event_cid, _size) = self.tree.put_file(&event_bytes).await?;
+        let event_bytes = {
+            let _profile = ProfileGuard::new("nostr.add.encode_event");
+            self.encode_validated_event(&normalized)?
+        };
+        let (event_cid, _size) = {
+            let _profile = ProfileGuard::new("nostr.add.put_file");
+            self.tree.put_file(&event_bytes).await?
+        };
 
-        manifest.by_id = Some(
+        manifest.by_id = Some({
+            let _profile = ProfileGuard::new("nostr.add.index.by_id");
             self.index
                 .insert_link_unchecked(manifest.by_id.as_ref(), &normalized.id, &event_cid)
-                .await?,
-        );
-        manifest.by_author_time = Some(
+                .await?
+        });
+        manifest.by_author_time = Some({
+            let _profile = ProfileGuard::new("nostr.add.index.by_author_time");
             self.index
                 .insert_link_unchecked(
                     manifest.by_author_time.as_ref(),
                     &author_time_key(&normalized),
                     &event_cid,
                 )
-                .await?,
-        );
-        manifest.by_author_kind_time = Some(
+                .await?
+        });
+        manifest.by_author_kind_time = Some({
+            let _profile = ProfileGuard::new("nostr.add.index.by_author_kind_time");
             self.index
                 .insert_link_unchecked(
                     manifest.by_author_kind_time.as_ref(),
                     &author_kind_time_key(&normalized),
                     &event_cid,
                 )
-                .await?,
-        );
-        manifest.by_kind_time = Some(
+                .await?
+        });
+        manifest.by_kind_time = Some({
+            let _profile = ProfileGuard::new("nostr.add.index.by_kind_time");
             self.index
                 .insert_link_unchecked(
                     manifest.by_kind_time.as_ref(),
                     &kind_time_key(&normalized),
                     &event_cid,
                 )
-                .await?,
-        );
-        manifest.by_time = Some(
+                .await?
+        });
+        manifest.by_time = Some({
+            let _profile = ProfileGuard::new("nostr.add.index.by_time");
             self.index
                 .insert_link_unchecked(
                     manifest.by_time.as_ref(),
                     &time_key(&normalized),
                     &event_cid,
                 )
-                .await?,
-        );
+                .await?
+        });
 
         for tag_key in tag_keys(&normalized) {
-            manifest.by_tag = Some(
+            manifest.by_tag = Some({
+                let _profile = ProfileGuard::new("nostr.add.index.by_tag");
                 self.index
                     .insert_link_unchecked(manifest.by_tag.as_ref(), &tag_key, &event_cid)
-                    .await?,
-            );
+                    .await?
+            });
         }
 
         if is_replaceable_kind(normalized.kind) {
-            manifest.replaceable = Some(
+            manifest.replaceable = Some({
+                let _profile = ProfileGuard::new("nostr.add.index.replaceable");
                 self.upsert_winner(
                     manifest.replaceable.as_ref(),
                     &replaceable_key(&normalized.pubkey, normalized.kind),
                     &normalized,
                     &event_cid,
                 )
-                .await?,
-            );
+                .await?
+            });
         }
 
         if is_parameterized_replaceable_kind(normalized.kind) {
             if let Some(d_tag) = get_d_tag(&normalized) {
-                manifest.parameterized_replaceable = Some(
+                manifest.parameterized_replaceable = Some({
+                    let _profile = ProfileGuard::new("nostr.add.index.parameterized_replaceable");
                     self.upsert_winner(
                         manifest.parameterized_replaceable.as_ref(),
                         &parameterized_replaceable_key(&normalized.pubkey, normalized.kind, &d_tag),
                         &normalized,
                         &event_cid,
                     )
-                    .await?,
-                );
+                    .await?
+                });
             }
         }
 

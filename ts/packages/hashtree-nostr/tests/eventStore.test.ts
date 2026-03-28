@@ -71,6 +71,23 @@ describe('NostrEventStore', () => {
     expect(names).not.toContain('events_by_id');
   });
 
+  it('stores Nostr roots and event blobs publicly', async () => {
+    const backing = new MemoryStore();
+    const store = new NostrEventStore(backing);
+    const tree = new HashTree({ store: backing });
+    const event = await makeEvent();
+
+    const root = await store.add(null, event);
+    expect(root.key).toBeUndefined();
+
+    const manifest = await store.getManifest(root);
+    expect(manifest.byId?.key).toBeUndefined();
+
+    const entries = await tree.listDirectory(manifest.byId!);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].cid.key).toBeUndefined();
+  });
+
   it('lists author feeds newest first', async () => {
     const store = new NostrEventStore(new MemoryStore());
     const author = 'a'.repeat(64);

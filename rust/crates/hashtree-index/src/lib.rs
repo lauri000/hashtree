@@ -14,6 +14,7 @@ const DEFAULT_ORDER: usize = 32;
 #[derive(Debug, Clone, Default)]
 pub struct BTreeOptions {
     pub order: Option<usize>,
+    pub public: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -54,8 +55,13 @@ struct BuiltNode {
 impl<S: Store> BTree<S> {
     pub fn new(store: Arc<S>, options: BTreeOptions) -> Self {
         let order = options.order.unwrap_or(DEFAULT_ORDER).max(2);
+        let tree_config = if options.public {
+            HashTreeConfig::new(store).public()
+        } else {
+            HashTreeConfig::new(store)
+        };
         Self {
-            tree: HashTree::new(HashTreeConfig::new(store)),
+            tree: HashTree::new(tree_config),
             max_keys: order - 1,
         }
     }

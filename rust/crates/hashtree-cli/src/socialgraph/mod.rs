@@ -18,7 +18,15 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures::executor::block_on;
 use hashtree_core::Cid;
-use hashtree_nostr::{ListEventsOptions, NostrEventStore, NostrEventStoreError, StoredNostrEvent};
+#[cfg(test)]
+use hashtree_nostr::{
+    reset_profile as reset_nostr_profile, set_profile_enabled as set_nostr_profile_enabled,
+    take_profile as take_nostr_profile,
+};
+use hashtree_nostr::{
+    ListEventsOptions, NostrEventStore, NostrEventStoreError, ProfileGuard as NostrProfileGuard,
+    StoredNostrEvent,
+};
 use nostr::{Event, Filter, JsonUtil, Kind, SingleLetterTag};
 use nostr_social_graph::{
     BinaryBudget, GraphStats, NostrEvent as GraphEvent, SocialGraph,
@@ -636,6 +644,7 @@ impl SocialGraphStore {
 
 impl EventIndexBucket {
     fn events_root(&self) -> Result<Option<Cid>> {
+        let _profile = NostrProfileGuard::new("socialgraph.events_root.read");
         let Ok(bytes) = std::fs::read(&self.root_path) else {
             return Ok(None);
         };
@@ -643,6 +652,7 @@ impl EventIndexBucket {
     }
 
     fn write_events_root(&self, root: Option<&Cid>) -> Result<()> {
+        let _profile = NostrProfileGuard::new("socialgraph.events_root.write");
         let Some(root) = root else {
             if self.root_path.exists() {
                 std::fs::remove_file(&self.root_path)?;
@@ -659,6 +669,7 @@ impl EventIndexBucket {
 
     fn store_event(&self, root: Option<&Cid>, event: &Event) -> Result<Cid> {
         let stored = stored_event_from_nostr(event);
+        let _profile = NostrProfileGuard::new("socialgraph.event_store.add");
         block_on(self.event_store.add(root, stored)).map_err(map_event_store_error)
     }
 
@@ -1900,6 +1911,13 @@ mod tests {
             .unwrap_or_else(|| WELLORDER_FIXTURE_URL.to_string())
     }
 
+    fn benchmark_stream_warmup_events(measured_events: usize) -> usize {
+        std::env::var("HASHTREE_BENCH_WARMUP_EVENTS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or_else(|| measured_events.clamp(1, 200))
+    }
+
     fn ensure_benchmark_dataset(path: &Path, url: &str) -> Result<()> {
         if path.exists() {
             return Ok(());
@@ -2045,6 +2063,18 @@ mod tests {
             .min(limit)
     }
 
+    fn duration_percentile(
+        sorted: &[std::time::Duration],
+        numerator: usize,
+        denominator: usize,
+    ) -> std::time::Duration {
+        if sorted.is_empty() {
+            return std::time::Duration::ZERO;
+        }
+        let index = ((sorted.len() - 1) * numerator) / denominator;
+        sorted[index]
+    }
+
     #[test]
     #[ignore = "benchmark"]
     fn benchmark_query_events_large_dataset() {
@@ -2052,23 +2082,86 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let graph_store =
             open_social_graph_store_with_mapsize(tmp.path(), Some(512 * 1024 * 1024)).unwrap();
+        set_nostr_profile_enabled(true);
+        reset_nostr_profile();
 
         let author_count = 64usize;
-        let event_count = std::env::var("HASHTREE_BENCH_EVENTS")
+        let measured_event_count = std::env::var("HASHTREE_BENCH_EVENTS")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(500usize);
-        let (source, events) = load_benchmark_events(event_count, author_count).unwrap();
+            .unwrap_or(600usize);
+        let warmup_event_count = benchmark_stream_warmup_events(measured_event_count);
+        let total_event_count = warmup_event_count + measured_event_count;
+        let (source, events) = load_benchmark_events(total_event_count, author_count).unwrap();
         let loaded_event_count = events.len();
+        let warmup_event_count = warmup_event_count.min(loaded_event_count.saturating_sub(1));
+        let (warmup_events, measured_events) = events.split_at(warmup_event_count);
 
         println!(
-            "starting large dataset benchmark with {} events from {}",
-            loaded_event_count, source
+            "starting steady-state dataset benchmark with {} warmup events and {} measured stream events from {}",
+            warmup_events.len(),
+            measured_events.len(),
+            source
         );
-        let ingest_start = Instant::now();
-        ingest_parsed_events(&graph_store, &events).unwrap();
-        let ingest_duration = ingest_start.elapsed();
-        println!("benchmark ingest complete in {:?}", ingest_duration);
+        if !warmup_events.is_empty() {
+            ingest_parsed_events(&graph_store, warmup_events).unwrap();
+        }
+
+        let stream_start = Instant::now();
+        let mut per_event_latencies = Vec::with_capacity(measured_events.len());
+        for event in measured_events {
+            let event_start = Instant::now();
+            ingest_parsed_event(&graph_store, event).unwrap();
+            per_event_latencies.push(event_start.elapsed());
+        }
+        let ingest_duration = stream_start.elapsed();
+
+        let mut sorted_latencies = per_event_latencies.clone();
+        sorted_latencies.sort_unstable();
+        let average_latency = if per_event_latencies.is_empty() {
+            std::time::Duration::ZERO
+        } else {
+            std::time::Duration::from_secs_f64(
+                per_event_latencies
+                    .iter()
+                    .map(std::time::Duration::as_secs_f64)
+                    .sum::<f64>()
+                    / per_event_latencies.len() as f64,
+            )
+        };
+        let ingest_capacity_eps = if ingest_duration.is_zero() {
+            f64::INFINITY
+        } else {
+            measured_events.len() as f64 / ingest_duration.as_secs_f64()
+        };
+        println!(
+            "benchmark steady-state ingest complete in {:?} (avg={:?} p50={:?} p95={:?} p99={:?} capacity={:.2} events/s)",
+            ingest_duration,
+            average_latency,
+            duration_percentile(&sorted_latencies, 50, 100),
+            duration_percentile(&sorted_latencies, 95, 100),
+            duration_percentile(&sorted_latencies, 99, 100),
+            ingest_capacity_eps
+        );
+        let mut profile = take_nostr_profile();
+        profile.sort_by(|left, right| right.total.cmp(&left.total));
+        for stat in profile {
+            let pct = if ingest_duration.is_zero() {
+                0.0
+            } else {
+                (stat.total.as_secs_f64() / ingest_duration.as_secs_f64()) * 100.0
+            };
+            let average = if stat.count == 0 {
+                std::time::Duration::ZERO
+            } else {
+                std::time::Duration::from_secs_f64(stat.total.as_secs_f64() / stat.count as f64)
+            };
+            println!(
+                "ingest profile: label={} total={:?} pct={:.1}% count={} avg={:?} max={:?}",
+                stat.label, stat.total, pct, stat.count, average, stat.max
+            );
+        }
+        set_nostr_profile_enabled(false);
 
         let kind = events
             .iter()
@@ -2128,10 +2221,16 @@ mod tests {
         );
 
         println!(
-            "large dataset benchmark: source={} events={} ingest={:?} kind={:?} author={:?} tag={:?} search={:?}",
+            "steady-state benchmark: source={} warmup_events={} stream_events={} ingest={:?} avg={:?} p50={:?} p95={:?} p99={:?} capacity_eps={:.2} kind={:?} author={:?} tag={:?} search={:?}",
             source,
-            loaded_event_count,
+            warmup_events.len(),
+            measured_events.len(),
             ingest_duration,
+            average_latency,
+            duration_percentile(&sorted_latencies, 50, 100),
+            duration_percentile(&sorted_latencies, 95, 100),
+            duration_percentile(&sorted_latencies, 99, 100),
+            ingest_capacity_eps,
             kind_duration,
             author_duration,
             tag_duration,

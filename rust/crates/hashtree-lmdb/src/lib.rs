@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use hashtree_core::store::{Store, StoreError, StoreStats};
 use hashtree_core::types::Hash;
 use heed::types::*;
-use heed::{Database, EnvOpenOptions};
+use heed::{Database, EnvOpenOptions, Error as HeedError, MdbError, PutFlags};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -196,23 +196,23 @@ impl LmdbBlobStore {
             .env
             .write_txn()
             .map_err(|e| StoreError::Other(e.to_string()))?;
+        let inserted =
+            match self
+                .blobs
+                .put_with_flags(&mut wtxn, PutFlags::NO_OVERWRITE, &hash, data)
+            {
+                Ok(()) => true,
+                Err(HeedError::Mdb(MdbError::KeyExist)) => false,
+                Err(err) => return Err(StoreError::Other(err.to_string())),
+            };
 
-        let existed = self
-            .blobs
-            .get(&wtxn, &hash)
-            .map_err(|e| StoreError::Other(e.to_string()))?
-            .is_some();
-
-        if !existed {
+        if inserted {
             let order = self.next_order.fetch_add(1, Ordering::Relaxed);
             let meta = Self::encode_blob_meta(BlobMeta {
                 order,
                 size: data.len() as u64,
             });
             let order_key = Self::encode_order_key(order, &hash);
-            self.blobs
-                .put(&mut wtxn, &hash, data)
-                .map_err(|e| StoreError::Other(e.to_string()))?;
             self.metadata
                 .put(&mut wtxn, &hash, &meta)
                 .map_err(|e| StoreError::Other(e.to_string()))?;
@@ -224,7 +224,7 @@ impl LmdbBlobStore {
         wtxn.commit()
             .map_err(|e| StoreError::Other(e.to_string()))?;
 
-        Ok(!existed)
+        Ok(inserted)
     }
 
     /// Sync batch put operation (for use in sync contexts).
@@ -240,13 +240,18 @@ impl LmdbBlobStore {
         let mut inserted = 0usize;
 
         for (hash, data) in items {
-            let existed = self
-                .blobs
-                .get(&wtxn, hash)
-                .map_err(|e| StoreError::Other(e.to_string()))?
-                .is_some();
+            let inserted_blob = match self.blobs.put_with_flags(
+                &mut wtxn,
+                PutFlags::NO_OVERWRITE,
+                hash,
+                data.as_slice(),
+            ) {
+                Ok(()) => true,
+                Err(HeedError::Mdb(MdbError::KeyExist)) => false,
+                Err(err) => return Err(StoreError::Other(err.to_string())),
+            };
 
-            if existed {
+            if !inserted_blob {
                 continue;
             }
 

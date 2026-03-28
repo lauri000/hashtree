@@ -112,18 +112,46 @@ struct BufferedStoreInner {
     order: Vec<Hash>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BufferedStoreOptions {
+    check_base_on_put: bool,
+}
+
+impl Default for BufferedStoreOptions {
+    fn default() -> Self {
+        Self {
+            check_base_on_put: true,
+        }
+    }
+}
+
 /// Buffered overlay store that keeps writes in memory until flushed.
 #[derive(Debug, Clone)]
 pub struct BufferedStore<S: Store> {
     base: Arc<S>,
     inner: Arc<RwLock<BufferedStoreInner>>,
+    options: BufferedStoreOptions,
 }
 
 impl<S: Store> BufferedStore<S> {
     pub fn new(base: Arc<S>) -> Self {
+        Self::with_options(base, BufferedStoreOptions::default())
+    }
+
+    pub fn new_optimistic(base: Arc<S>) -> Self {
+        Self::with_options(
+            base,
+            BufferedStoreOptions {
+                check_base_on_put: false,
+            },
+        )
+    }
+
+    fn with_options(base: Arc<S>, options: BufferedStoreOptions) -> Self {
         Self {
             base,
             inner: Arc::new(RwLock::new(BufferedStoreInner::default())),
+            options,
         }
     }
 
@@ -158,7 +186,7 @@ impl<S: Store> Store for BufferedStore<S> {
             }
         }
 
-        if self.base.has(&hash).await? {
+        if self.options.check_base_on_put && self.base.has(&hash).await? {
             return Ok(false);
         }
 
@@ -554,6 +582,24 @@ mod tests {
         let flushed = buffered.flush().await.unwrap();
 
         assert_eq!(flushed, 1);
+        assert_eq!(base.get(&hash).await.unwrap(), Some(data));
+    }
+
+    #[tokio::test]
+    async fn test_optimistic_buffered_store_avoids_base_probe_but_preserves_contents() {
+        let base = std::sync::Arc::new(MemoryStore::new());
+        let buffered = BufferedStore::new_optimistic(std::sync::Arc::clone(&base));
+        let data = vec![4u8, 5, 6];
+        let hash = sha256(&data);
+
+        base.put(hash, data.clone()).await.unwrap();
+
+        assert!(buffered.put(hash, data.clone()).await.unwrap());
+        assert_eq!(buffered.get(&hash).await.unwrap(), Some(data.clone()));
+
+        let flushed = buffered.flush().await.unwrap();
+
+        assert_eq!(flushed, 0);
         assert_eq!(base.get(&hash).await.unwrap(), Some(data));
     }
 
