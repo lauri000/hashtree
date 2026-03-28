@@ -103,7 +103,7 @@ export class NostrEventStore {
 
   constructor(store: Store) {
     this.tree = new HashTree({ store });
-    this.index = new BTree(store, { public: true });
+    this.index = new BTree(store);
   }
 
   encodeEvent(event: StoredNostrEvent): Uint8Array {
@@ -167,7 +167,7 @@ export class NostrEventStore {
     const normalized = await this.validateEvent(event);
     const manifest = await this.getManifest(root);
     const eventBytes = this.encodeEvent(normalized);
-    const { cid: eventCid } = await this.tree.putFile(eventBytes, { unencrypted: true });
+    const { cid: eventCid } = await this.tree.putFile(eventBytes);
 
     const nextManifest: NostrEventManifest = {
       byId: await this.index.insertLink(manifest.byId, normalized.id, eventCid),
@@ -484,7 +484,7 @@ export class NostrEventStore {
       return null;
     }
 
-    const { cid } = await this.tree.putDirectory(entries, { unencrypted: true });
+    const { cid } = await this.tree.putDirectory(entries);
     return cid;
   }
 
