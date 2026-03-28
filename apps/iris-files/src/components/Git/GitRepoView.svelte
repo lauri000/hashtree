@@ -614,7 +614,7 @@
   <RepoTabNav npub={route.npub} repoName={repoPath} activeTab="code" />
 {/if}
 
-<div class="mx-auto flex w-full max-w-7xl flex-col gap-4 p-3" data-testid="repo-main-column">
+<div class="mx-auto flex w-full max-w-6xl flex-col gap-4 p-3" data-testid="repo-main-column">
   <div class="flex flex-wrap items-center justify-between gap-3" data-testid="repo-header-row">
     <div class="flex min-w-0 flex-1 flex-col justify-center gap-1">
       <div class="flex min-w-0 items-center gap-2">
