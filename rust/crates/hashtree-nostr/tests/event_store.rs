@@ -111,10 +111,42 @@ fn stores_events_by_id_author_and_replaceable_views() {
         );
         assert_eq!(
             store
-                .list_recent(Some(&root), ListEventsOptions { limit: Some(3) })
+                .list_by_kind(Some(&root), 1, ListEventsOptions::default())
                 .await
                 .unwrap(),
-            vec![hashtagged.clone(), other, profile.clone()]
+            vec![
+                hashtagged.clone(),
+                other.clone(),
+                event2.clone(),
+                event1.clone()
+            ]
+        );
+        assert_eq!(
+            store
+                .list_recent(
+                    Some(&root),
+                    ListEventsOptions {
+                        limit: Some(3),
+                        ..Default::default()
+                    }
+                )
+                .await
+                .unwrap(),
+            vec![hashtagged.clone(), other.clone(), profile.clone()]
+        );
+        assert_eq!(
+            store
+                .list_recent(
+                    Some(&root),
+                    ListEventsOptions {
+                        since: Some(20),
+                        until: Some(40),
+                        ..Default::default()
+                    }
+                )
+                .await
+                .unwrap(),
+            vec![other.clone(), profile.clone(), event2.clone()]
         );
         assert_eq!(
             store
@@ -129,7 +161,10 @@ fn stores_events_by_id_author_and_replaceable_views() {
                     Some(&root),
                     "t",
                     "nostr",
-                    ListEventsOptions { limit: Some(10) }
+                    ListEventsOptions {
+                        limit: Some(10),
+                        ..Default::default()
+                    }
                 )
                 .await
                 .unwrap(),
@@ -141,7 +176,10 @@ fn stores_events_by_id_author_and_replaceable_views() {
                     Some(&root),
                     "t",
                     "hashtree",
-                    ListEventsOptions { limit: Some(10) }
+                    ListEventsOptions {
+                        limit: Some(10),
+                        ..Default::default()
+                    }
                 )
                 .await
                 .unwrap(),
@@ -151,7 +189,7 @@ fn stores_events_by_id_author_and_replaceable_views() {
 }
 
 #[test]
-fn manifest_exposes_events_by_id_key_only() {
+fn manifest_exposes_by_id_key_only() {
     block_on(async {
         let backing = Arc::new(MemoryStore::new());
         let tree = HashTree::new(HashTreeConfig::new(backing.clone()));
@@ -170,8 +208,8 @@ fn manifest_exposes_events_by_id_key_only() {
         let entries = tree.list_directory(&root).await.unwrap();
         let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
 
-        assert!(names.contains(&"events_by_id"));
-        assert!(!names.contains(&"by-id"));
+        assert!(names.contains(&"by-id"));
+        assert!(!names.contains(&"events_by_id"));
     });
 }
 
@@ -208,18 +246,18 @@ fn manifest_root_matches_typescript_fixture() {
         let mut root = store.add(None, event1).await.unwrap();
         root = store.add(Some(&root), event2).await.unwrap();
         root = store.add(Some(&root), profile).await.unwrap();
+        let manifest = store.get_manifest(Some(&root)).await.unwrap();
 
         assert_eq!(
             cid_to_pair(&root),
             (
-                "e0d2470ee636bd50140b694d8d06b41f5612e84a0835d0675dd0c3a73fd350c8".to_string(),
+                "46d23c598097d7e13cef3c4aa4aea878596f9f5018ce5969d915e149311058e2".to_string(),
                 Some(
-                    "170b0165a03d74f13c8face7904861deb4d0ce23fcd9d6a743e34cf906ea0daa".to_string()
+                    "1589629f9c1c73084a91bdef7d032bb690d431e07483b3c5bfea39aa7ebf1ba0".to_string()
                 )
             )
         );
 
-        let manifest = store.get_manifest(Some(&root)).await.unwrap();
         assert_eq!(
             cid_to_pair(manifest.by_id.as_ref().unwrap()),
             (
@@ -235,6 +273,15 @@ fn manifest_root_matches_typescript_fixture() {
                 "59c18768cfd9635b0fcd9aa4364428176eaf81b198cf01dd15d5d7fbd64f8b58".to_string(),
                 Some(
                     "a9a6b38d6fc3ae3ec08ce09a5d9ffe1c1a3ee7b1019713abf691ce9635c9ef0c".to_string()
+                )
+            )
+        );
+        assert_eq!(
+            cid_to_pair(manifest.by_kind_time.as_ref().unwrap()),
+            (
+                "66679b40e811a34aa6f769a1463b0c3d99ad902ce25765ee7f11e4e6a2c9504d".to_string(),
+                Some(
+                    "b6c798064906e42b709e44271942d9a489f8304ac6f6e99d49ce7f88fe11e6f7".to_string()
                 )
             )
         );

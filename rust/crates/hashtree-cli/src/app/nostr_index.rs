@@ -930,7 +930,10 @@ mod tests {
                 Some(&root),
                 "t",
                 "nostr",
-                ListEventsOptions { limit: Some(10) },
+                ListEventsOptions {
+                    limit: Some(10),
+                    ..Default::default()
+                },
             )
             .await
             .expect("query hashtag");

@@ -51,12 +51,13 @@ describe('NostrEventStore', () => {
     expect(manifest.byId).not.toBeNull();
     expect(manifest.byAuthorTime).not.toBeNull();
     expect(manifest.byAuthorKindTime).not.toBeNull();
+    expect(manifest.byKindTime).not.toBeNull();
 
     await expect(store.getById(root, event.id)).resolves.toEqual(event);
     await expect(store.getById(root, 'f'.repeat(64))).resolves.toBeNull();
   });
 
-  it('exposes only the events_by_id manifest key', async () => {
+  it('exposes only the by-id manifest key', async () => {
     const backing = new MemoryStore();
     const store = new NostrEventStore(backing);
     const tree = new HashTree({ store: backing });
@@ -66,8 +67,8 @@ describe('NostrEventStore', () => {
     const entries = await tree.listDirectory(root);
     const names = entries.map(entry => entry.name);
 
-    expect(names).toContain('events_by_id');
-    expect(names).not.toContain('by-id');
+    expect(names).toContain('by-id');
+    expect(names).not.toContain('events_by_id');
   });
 
   it('lists author feeds newest first', async () => {
@@ -86,7 +87,13 @@ describe('NostrEventStore', () => {
 
     await expect(store.listByAuthor(root, author)).resolves.toEqual([newest, middle, older]);
     await expect(store.listByAuthorAndKind(root, author, 1)).resolves.toEqual([newest, older]);
+    await expect(store.listByKind(root, 1)).resolves.toEqual([other, newest, older]);
     await expect(store.listRecent(root, { limit: 3 })).resolves.toEqual([other, newest, middle]);
+    await expect(store.listRecent(root, { since: 20, until: 40 })).resolves.toEqual([
+      other,
+      newest,
+      middle,
+    ]);
   });
 
   it('indexes hashtag tags case-insensitively for search', async () => {

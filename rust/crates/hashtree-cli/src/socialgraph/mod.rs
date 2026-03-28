@@ -30,6 +30,8 @@ use crate::storage::{LocalStore, StorageRouter};
 
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard, OnceLock};
+#[cfg(test)]
+use std::time::Instant;
 
 pub type UserSet = BTreeSet<[u8; 32]>;
 
@@ -648,6 +650,8 @@ impl EventIndexBucket {
         root: &Cid,
         author: &nostr::PublicKey,
         filter: &Filter,
+        limit: usize,
+        exact: bool,
     ) -> Result<Vec<Event>> {
         let kind_filter = filter.kinds.as_ref().and_then(|kinds| {
             if kinds.len() == 1 {
@@ -657,19 +661,19 @@ impl EventIndexBucket {
             }
         });
         let author_hex = author.to_hex();
+        let options = filter_list_options(filter, limit, exact);
         let stored = match kind_filter {
             Some(kind) => block_on(self.event_store.list_by_author_and_kind(
                 Some(root),
                 &author_hex,
                 kind,
-                ListEventsOptions::default(),
+                options.clone(),
             ))
             .map_err(map_event_store_error)?,
-            None => block_on(self.event_store.list_by_author(
-                Some(root),
-                &author_hex,
-                ListEventsOptions::default(),
-            ))
+            None => block_on(
+                self.event_store
+                    .list_by_author(Some(root), &author_hex, options),
+            )
             .map_err(map_event_store_error)?,
         };
         stored
@@ -678,10 +682,36 @@ impl EventIndexBucket {
             .collect::<Result<Vec<_>>>()
     }
 
-    fn load_recent_events(&self, root: &Cid) -> Result<Vec<Event>> {
+    fn load_events_for_kind(
+        &self,
+        root: &Cid,
+        kind: Kind,
+        filter: &Filter,
+        limit: usize,
+        exact: bool,
+    ) -> Result<Vec<Event>> {
+        let stored = block_on(self.event_store.list_by_kind(
+            Some(root),
+            kind.as_u16() as u32,
+            filter_list_options(filter, limit, exact),
+        ))
+        .map_err(map_event_store_error)?;
+        stored
+            .into_iter()
+            .map(nostr_event_from_stored)
+            .collect::<Result<Vec<_>>>()
+    }
+
+    fn load_recent_events(
+        &self,
+        root: &Cid,
+        filter: &Filter,
+        limit: usize,
+        exact: bool,
+    ) -> Result<Vec<Event>> {
         let stored = block_on(
             self.event_store
-                .list_recent(Some(root), ListEventsOptions::default()),
+                .list_recent(Some(root), filter_list_options(filter, limit, exact)),
         )
         .map_err(map_event_store_error)?;
         stored
@@ -690,58 +720,113 @@ impl EventIndexBucket {
             .collect::<Result<Vec<_>>>()
     }
 
-    fn best_indexed_candidates(
+    fn load_events_for_tag(
+        &self,
+        root: &Cid,
+        tag_name: &str,
+        values: &[String],
+        filter: &Filter,
+        limit: usize,
+        exact: bool,
+    ) -> Result<Vec<Event>> {
+        let mut events = Vec::new();
+        let options = filter_list_options(filter, limit, exact);
+        for value in values {
+            let stored = block_on(self.event_store.list_by_tag(
+                Some(root),
+                tag_name,
+                value,
+                options.clone(),
+            ))
+            .map_err(map_event_store_error)?;
+            events.extend(
+                stored
+                    .into_iter()
+                    .map(nostr_event_from_stored)
+                    .collect::<Result<Vec<_>>>()?,
+            );
+        }
+        Ok(dedupe_events(events))
+    }
+
+    fn choose_tag_source(&self, filter: &Filter) -> Option<(String, Vec<String>)> {
+        filter
+            .generic_tags
+            .iter()
+            .min_by_key(|(_, values)| values.len())
+            .map(|(tag, values)| {
+                (
+                    tag.as_char().to_ascii_lowercase().to_string(),
+                    values.iter().cloned().collect(),
+                )
+            })
+    }
+
+    fn load_major_index_candidates(
         &self,
         root: &Cid,
         filter: &Filter,
         limit: usize,
     ) -> Result<Option<Vec<Event>>> {
-        let mut sources: Vec<Vec<Event>> = Vec::new();
-
         if let Some(events) = self.load_direct_replaceable_candidates(root, filter)? {
-            sources.push(events);
+            return Ok(Some(events));
+        }
+
+        if let Some((tag_name, values)) = self.choose_tag_source(filter) {
+            let exact = filter.authors.is_none()
+                && filter.kinds.is_none()
+                && filter.search.is_none()
+                && filter.generic_tags.len() == 1;
+            return Ok(Some(self.load_events_for_tag(
+                root, &tag_name, &values, filter, limit, exact,
+            )?));
+        }
+
+        if let (Some(authors), Some(kinds)) = (filter.authors.as_ref(), filter.kinds.as_ref()) {
+            if authors.len() == 1 && kinds.len() == 1 {
+                let author = authors.iter().next().expect("checked single author");
+                let exact = filter.generic_tags.is_empty() && filter.search.is_none();
+                return Ok(Some(
+                    self.load_events_for_author(root, author, filter, limit, exact)?,
+                ));
+            }
+
+            if kinds.len() < authors.len() {
+                let mut events = Vec::new();
+                for kind in kinds {
+                    events.extend(self.load_events_for_kind(root, *kind, filter, limit, false)?);
+                }
+                return Ok(Some(dedupe_events(events)));
+            }
+
+            let mut events = Vec::new();
+            for author in authors {
+                events.extend(self.load_events_for_author(root, author, filter, limit, false)?);
+            }
+            return Ok(Some(dedupe_events(events)));
         }
 
         if let Some(authors) = filter.authors.as_ref() {
             let mut events = Vec::new();
+            let exact = filter.generic_tags.is_empty() && filter.search.is_none();
             for author in authors {
-                events.extend(self.load_events_for_author(root, author, filter)?);
+                events.extend(self.load_events_for_author(root, author, filter, limit, exact)?);
             }
-            sources.push(dedupe_events(events));
+            return Ok(Some(dedupe_events(events)));
         }
 
-        for (tag, values) in &filter.generic_tags {
+        if let Some(kinds) = filter.kinds.as_ref() {
             let mut events = Vec::new();
-            let tag_name = tag.as_char().to_ascii_lowercase().to_string();
-            for value in values {
-                let stored = block_on(self.event_store.list_by_tag(
-                    Some(root),
-                    &tag_name,
-                    value,
-                    ListEventsOptions {
-                        limit: Some(limit.max(1)),
-                    },
-                ))
-                .map_err(map_event_store_error)?;
-                events.extend(
-                    stored
-                        .into_iter()
-                        .map(nostr_event_from_stored)
-                        .collect::<Result<Vec<_>>>()?,
-                );
+            let exact = filter.authors.is_none()
+                && filter.generic_tags.is_empty()
+                && filter.search.is_none();
+            for kind in kinds {
+                events.extend(self.load_events_for_kind(root, *kind, filter, limit, exact)?);
             }
-            sources.push(dedupe_events(events));
+            return Ok(Some(dedupe_events(events)));
         }
 
-        if sources.is_empty() {
-            return Ok(None);
-        }
-
-        if sources.iter().any(|events| events.is_empty()) {
-            return Ok(Some(Vec::new()));
-        }
-
-        Ok(sources.into_iter().min_by_key(|events| events.len()))
+        Ok(None)
     }
 
     fn load_direct_replaceable_candidates(
@@ -832,9 +917,17 @@ impl EventIndexBucket {
                 }
             }
         } else {
-            let base_events = match self.best_indexed_candidates(root, filter, limit)? {
+            let base_events = match self.load_major_index_candidates(root, filter, limit)? {
                 Some(events) => events,
-                None => self.load_recent_events(root)?,
+                None => self.load_recent_events(
+                    root,
+                    filter,
+                    limit,
+                    filter.authors.is_none()
+                        && filter.kinds.is_none()
+                        && filter.generic_tags.is_empty()
+                        && filter.search.is_none(),
+                )?,
             };
 
             for event in base_events {
@@ -859,6 +952,14 @@ impl EventIndexBucket {
         });
         candidates.truncate(limit);
         Ok(candidates)
+    }
+}
+
+fn filter_list_options(filter: &Filter, limit: usize, exact: bool) -> ListEventsOptions {
+    ListEventsOptions {
+        limit: exact.then_some(limit.max(1)),
+        since: filter.since.map(|timestamp| timestamp.as_u64()),
+        until: filter.until.map(|timestamp| timestamp.as_u64()),
     }
 }
 
@@ -1348,6 +1449,38 @@ mod tests {
     }
 
     #[test]
+    fn test_query_events_by_kind() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let first_keys = Keys::generate();
+        let second_keys = Keys::generate();
+
+        let older = EventBuilder::new(Kind::TextNote, "older", [])
+            .custom_created_at(Timestamp::from_secs(5))
+            .to_event(&first_keys)
+            .unwrap();
+        let newer = EventBuilder::new(Kind::TextNote, "newer", [])
+            .custom_created_at(Timestamp::from_secs(6))
+            .to_event(&second_keys)
+            .unwrap();
+        let other_kind = EventBuilder::new(Kind::Metadata, "profile", [])
+            .custom_created_at(Timestamp::from_secs(7))
+            .to_event(&second_keys)
+            .unwrap();
+
+        ingest_parsed_event(&graph_store, &older).unwrap();
+        ingest_parsed_event(&graph_store, &newer).unwrap();
+        ingest_parsed_event(&graph_store, &other_kind).unwrap();
+
+        let filter = Filter::new().kind(Kind::TextNote);
+        let events = query_events(&graph_store, &filter, 10);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].id, newer.id);
+        assert_eq!(events[1].id, older.id);
+    }
+
+    #[test]
     fn test_query_events_by_id() {
         let _guard = test_lock();
         let tmp = TempDir::new().unwrap();
@@ -1723,6 +1856,109 @@ mod tests {
         let events = query_events(&graph_store, &filter, 10);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].id, matching.id);
+    }
+
+    #[test]
+    #[ignore = "benchmark"]
+    fn benchmark_query_events_large_dataset() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store =
+            open_social_graph_store_with_mapsize(tmp.path(), Some(512 * 1024 * 1024)).unwrap();
+
+        let author_count = 64usize;
+        let event_count = std::env::var("HASHTREE_BENCH_EVENTS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(500usize);
+        let authors = (0..author_count)
+            .map(|_| Keys::generate())
+            .collect::<Vec<_>>();
+
+        println!(
+            "starting large dataset benchmark with {} events across {} authors",
+            event_count, author_count
+        );
+        let ingest_start = Instant::now();
+        let mut text_note_total = 0usize;
+        let mut author_text_note_total = 0usize;
+        let mut hashtag_total = 0usize;
+        let mut search_total = 0usize;
+        for i in 0..event_count {
+            let kind = if i % 8 < 5 {
+                Kind::TextNote
+            } else {
+                Kind::Custom(30_023)
+            };
+            let mut tags = Vec::new();
+            if kind == Kind::TextNote && i % 16 == 0 {
+                tags.push(Tag::parse(&["t", "hashtree"]).unwrap());
+            }
+            let content = if kind == Kind::TextNote && i % 32 == 0 {
+                format!("benchmark target event {i}")
+            } else {
+                format!("benchmark event {i}")
+            };
+            if kind == Kind::TextNote {
+                text_note_total += 1;
+                if i % author_count == 0 {
+                    author_text_note_total += 1;
+                }
+                if i % 16 == 0 {
+                    hashtag_total += 1;
+                }
+                if i % 32 == 0 {
+                    search_total += 1;
+                }
+            }
+            let event = EventBuilder::new(kind, content, tags)
+                .custom_created_at(Timestamp::from_secs(1_700_000_000 + i as u64))
+                .to_event(&authors[i % author_count])
+                .unwrap();
+            ingest_parsed_event(&graph_store, &event).unwrap();
+        }
+        let ingest_duration = ingest_start.elapsed();
+        println!("benchmark ingest complete in {:?}", ingest_duration);
+
+        let kind_filter = Filter::new().kind(Kind::TextNote);
+        let kind_start = Instant::now();
+        let kind_events = query_events(&graph_store, &kind_filter, 200);
+        let kind_duration = kind_start.elapsed();
+        assert_eq!(kind_events.len(), text_note_total.min(200));
+        assert!(kind_events
+            .windows(2)
+            .all(|window| window[0].created_at >= window[1].created_at));
+
+        let author_filter = Filter::new()
+            .author(authors[0].public_key())
+            .kind(Kind::TextNote);
+        let author_start = Instant::now();
+        let author_events = query_events(&graph_store, &author_filter, 50);
+        let author_duration = author_start.elapsed();
+        assert_eq!(author_events.len(), author_text_note_total.min(50));
+
+        let hashtag_filter = Filter::new().hashtag("hashtree");
+        let hashtag_start = Instant::now();
+        let hashtag_events = query_events(&graph_store, &hashtag_filter, 100);
+        let hashtag_duration = hashtag_start.elapsed();
+        assert_eq!(hashtag_events.len(), hashtag_total.min(100));
+
+        let search_filter = Filter::new().kind(Kind::TextNote).search("target");
+        let search_start = Instant::now();
+        let search_events = query_events(&graph_store, &search_filter, 100);
+        let search_duration = search_start.elapsed();
+        assert_eq!(search_events.len(), search_total.min(100));
+
+        println!(
+            "large dataset benchmark: events={} authors={} ingest={:?} kind={:?} author={:?} hashtag={:?} search={:?}",
+            event_count,
+            author_count,
+            ingest_duration,
+            kind_duration,
+            author_duration,
+            hashtag_duration,
+            search_duration
+        );
     }
 
     #[test]

@@ -1176,10 +1176,10 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         relay.register_client(5, tx, None).await;
 
-        let older = EventBuilder::new(Kind::TextNote, "older", [])
+        let older = EventBuilder::new(Kind::Metadata, r#"{"name":"older"}"#, [])
             .custom_created_at(nostr::Timestamp::from_secs(5))
             .to_event(&keys)?;
-        let newer = EventBuilder::new(Kind::TextNote, "newer", [])
+        let newer = EventBuilder::new(Kind::Metadata, r#"{"name":"newer"}"#, [])
             .custom_created_at(nostr::Timestamp::from_secs(6))
             .to_event(&keys)?;
 
@@ -1196,9 +1196,9 @@ mod tests {
         let filters = vec![
             Filter::new()
                 .author(keys.public_key())
-                .kind(Kind::TextNote)
+                .kind(Kind::Metadata)
                 .limit(1),
-            Filter::new().id(newer.id),
+            Filter::new().id(older.id),
         ];
         relay
             .handle_client_message(5, NostrClientMessage::count(sub_id.clone(), filters))

@@ -6,9 +6,10 @@ const EVENT_ENVELOPE_VERSION = 1;
 const MAX_U64 = (1n << 64n) - 1n;
 const HEX_64 = /^[0-9a-f]{64}$/;
 const HEX_128 = /^[0-9a-f]{128}$/;
-const MANIFEST_EVENTS_BY_ID = 'events_by_id';
+const MANIFEST_BY_ID = 'by-id';
 const MANIFEST_BY_AUTHOR_TIME = 'by-author-time';
 const MANIFEST_BY_AUTHOR_KIND_TIME = 'by-author-kind-time';
+const MANIFEST_BY_KIND_TIME = 'by-kind-time';
 const MANIFEST_BY_TIME = 'by-time';
 const MANIFEST_BY_TAG = 'by-tag';
 const MANIFEST_REPLACEABLE = 'replaceable';
@@ -28,6 +29,7 @@ export interface NostrEventManifest {
   byId: CID | null;
   byAuthorTime: CID | null;
   byAuthorKindTime: CID | null;
+  byKindTime: CID | null;
   byTime: CID | null;
   byTag: CID | null;
   replaceable: CID | null;
@@ -36,6 +38,8 @@ export interface NostrEventManifest {
 
 export interface ListEventsOptions {
   limit?: number;
+  since?: number;
+  until?: number;
 }
 
 function canonicalEventIdPayload(event: Omit<StoredNostrEvent, 'id' | 'sig'>): string {
@@ -177,6 +181,11 @@ export class NostrEventStore {
         this.authorKindTimeKey(normalized),
         eventCid
       ),
+      byKindTime: await this.index.insertLink(
+        manifest.byKindTime,
+        this.kindTimeKey(normalized),
+        eventCid
+      ),
       byTime: await this.index.insertLink(manifest.byTime, this.timeKey(normalized), eventCid),
       byTag: manifest.byTag,
       replaceable: manifest.replaceable,
@@ -252,7 +261,7 @@ export class NostrEventStore {
       return [];
     }
 
-    return this.collectEvents(manifest.byAuthorTime, `${this.validateHex64(pubkey, 'pubkey')}:`, options.limit);
+    return this.collectEvents(manifest.byAuthorTime, `${this.validateHex64(pubkey, 'pubkey')}:`, options);
   }
 
   async listByAuthorAndKind(
@@ -269,7 +278,7 @@ export class NostrEventStore {
     return this.collectEvents(
       manifest.byAuthorKindTime,
       `${this.validateHex64(pubkey, 'pubkey')}:${padKind(this.validateKind(kind))}:`,
-      options.limit
+      options
     );
   }
 
@@ -293,7 +302,7 @@ export class NostrEventStore {
       return [];
     }
 
-    return this.collectEvents(manifest.byTime, '', options.limit);
+    return this.collectEvents(manifest.byTime, '', options);
   }
 
   async listByTag(
@@ -307,7 +316,7 @@ export class NostrEventStore {
       return [];
     }
 
-    return this.collectEvents(manifest.byTag, this.tagPrefix(tagName, tagValue), options.limit);
+    return this.collectEvents(manifest.byTag, this.tagPrefix(tagName, tagValue), options);
   }
 
   async getParameterizedReplaceable(
@@ -343,6 +352,7 @@ export class NostrEventStore {
         byId: null,
         byAuthorTime: null,
         byAuthorKindTime: null,
+        byKindTime: null,
         byTime: null,
         byTag: null,
         replaceable: null,
@@ -354,9 +364,10 @@ export class NostrEventStore {
     const getCid = (name: string): CID | null => entries.find(entry => entry.name === name)?.cid ?? null;
 
     return {
-      byId: getCid(MANIFEST_EVENTS_BY_ID),
+      byId: getCid(MANIFEST_BY_ID),
       byAuthorTime: getCid(MANIFEST_BY_AUTHOR_TIME),
       byAuthorKindTime: getCid(MANIFEST_BY_AUTHOR_KIND_TIME),
+      byKindTime: getCid(MANIFEST_BY_KIND_TIME),
       byTime: getCid(MANIFEST_BY_TIME),
       byTag: getCid(MANIFEST_BY_TAG),
       replaceable: getCid(MANIFEST_REPLACEABLE),
@@ -364,15 +375,43 @@ export class NostrEventStore {
     };
   }
 
-  private async collectEvents(root: CID, prefix: string, limit?: number): Promise<StoredNostrEvent[]> {
+  async listByKind(
+    root: CID | null,
+    kind: number,
+    options: ListEventsOptions = {}
+  ): Promise<StoredNostrEvent[]> {
+    const manifest = await this.getManifest(root);
+    if (!manifest.byKindTime) {
+      return [];
+    }
+
+    return this.collectEvents(
+      manifest.byKindTime,
+      `${padKind(this.validateKind(kind))}:`,
+      options
+    );
+  }
+
+  private async collectEvents(
+    root: CID,
+    prefix: string,
+    options: ListEventsOptions = {}
+  ): Promise<StoredNostrEvent[]> {
     const events: StoredNostrEvent[] = [];
     const entries = prefix.length === 0
       ? this.index.linksEntries(root)
       : this.index.prefixLinks(root, prefix);
 
-    for await (const [, eventCid] of entries) {
+    for await (const [key, eventCid] of entries) {
+      const createdAt = this.createdAtFromIndexKey(key);
+      if (options.until !== undefined && createdAt > options.until) {
+        continue;
+      }
+      if (options.since !== undefined && createdAt < options.since) {
+        break;
+      }
       events.push(await this.readStoredEvent(eventCid));
-      if (limit !== undefined && events.length >= limit) {
+      if (options.limit !== undefined && events.length >= options.limit) {
         break;
       }
     }
@@ -412,13 +451,16 @@ export class NostrEventStore {
     const entries = [];
 
     if (manifest.byId) {
-      entries.push({ name: MANIFEST_EVENTS_BY_ID, cid: manifest.byId, size: 0, type: LinkType.Dir });
+      entries.push({ name: MANIFEST_BY_ID, cid: manifest.byId, size: 0, type: LinkType.Dir });
     }
     if (manifest.byAuthorTime) {
       entries.push({ name: MANIFEST_BY_AUTHOR_TIME, cid: manifest.byAuthorTime, size: 0, type: LinkType.Dir });
     }
     if (manifest.byAuthorKindTime) {
       entries.push({ name: MANIFEST_BY_AUTHOR_KIND_TIME, cid: manifest.byAuthorKindTime, size: 0, type: LinkType.Dir });
+    }
+    if (manifest.byKindTime) {
+      entries.push({ name: MANIFEST_BY_KIND_TIME, cid: manifest.byKindTime, size: 0, type: LinkType.Dir });
     }
     if (manifest.byTime) {
       entries.push({ name: MANIFEST_BY_TIME, cid: manifest.byTime, size: 0, type: LinkType.Dir });
@@ -454,8 +496,28 @@ export class NostrEventStore {
     return `${event.pubkey}:${padKind(event.kind)}:${reverseTimestamp(event.created_at)}:${event.id}`;
   }
 
+  private kindTimeKey(event: StoredNostrEvent): string {
+    return `${padKind(event.kind)}:${reverseTimestamp(event.created_at)}:${event.id}`;
+  }
+
   private timeKey(event: StoredNostrEvent): string {
     return `${reverseTimestamp(event.created_at)}:${event.id}`;
+  }
+
+  private createdAtFromIndexKey(key: string): number {
+    const parts = key.split(':');
+    if (parts.length < 2) {
+      throw new Error(`Invalid Nostr index key: ${key}`);
+    }
+
+    const reversed = parts[parts.length - 2];
+    const reversedTimestamp = BigInt(`0x${reversed}`);
+    const createdAt = MAX_U64 - reversedTimestamp;
+    if (createdAt > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(`Created_at exceeds safe integer range in Nostr index key: ${key}`);
+    }
+
+    return Number(createdAt);
   }
 
   private tagKeys(event: StoredNostrEvent): string[] {

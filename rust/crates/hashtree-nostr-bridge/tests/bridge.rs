@@ -482,7 +482,10 @@ async fn crawls_followed_authors_and_applies_per_author_priority_limit() -> io::
             Some(&root),
             "t",
             "nostr",
-            ListEventsOptions { limit: Some(10) },
+            ListEventsOptions {
+                limit: Some(10),
+                ..Default::default()
+            },
         )
         .await
         .expect("query hashtag");
@@ -583,7 +586,10 @@ async fn enforces_global_live_byte_cap_after_priority_selection() -> io::Result<
             Some(&root),
             "t",
             "nostr",
-            ListEventsOptions { limit: Some(10) },
+            ListEventsOptions {
+                limit: Some(10),
+                ..Default::default()
+            },
         )
         .await
         .expect("query hashtag");
@@ -683,7 +689,10 @@ async fn enforces_per_author_live_byte_cap_after_priority_selection() -> io::Res
             Some(&root),
             "t",
             "nostr",
-            ListEventsOptions { limit: Some(10) },
+            ListEventsOptions {
+                limit: Some(10),
+                ..Default::default()
+            },
         )
         .await
         .expect("query hashtag");
@@ -864,7 +873,13 @@ async fn require_negentropy_skips_relays_that_cannot_reconcile() -> io::Result<(
     let report = bridge.crawl(&graph, None).await.expect("crawl report");
     let root = report.root.expect("index root");
     let retained = NostrEventStore::new(store)
-        .list_recent(Some(&root), ListEventsOptions { limit: Some(10) })
+        .list_recent(
+            Some(&root),
+            ListEventsOptions {
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
         .await
         .expect("list retained");
 
@@ -940,7 +955,13 @@ async fn relay_disconnect_during_missing_id_fetch_does_not_abort_crawl() -> io::
     let report = bridge.crawl(&graph, None).await.expect("crawl report");
     let root = report.root.expect("index root");
     let retained = NostrEventStore::new(store)
-        .list_recent(Some(&root), ListEventsOptions { limit: Some(10) })
+        .list_recent(
+            Some(&root),
+            ListEventsOptions {
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
         .await
         .expect("list retained");
 
@@ -1001,7 +1022,13 @@ async fn relay_event_max_size_allows_moderately_large_events() -> io::Result<()>
     let report = bridge.crawl(&graph, None).await.expect("crawl report");
     let root = report.root.expect("index root");
     let retained = NostrEventStore::new(store)
-        .list_recent(Some(&root), ListEventsOptions { limit: Some(10) })
+        .list_recent(
+            Some(&root),
+            ListEventsOptions {
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
         .await
         .expect("list retained");
 
@@ -1079,7 +1106,13 @@ async fn global_recent_scan_filters_locally_by_social_graph() -> io::Result<()> 
     let root = report.root.expect("index root");
     let event_store = NostrEventStore::new(store);
     let retained = event_store
-        .list_recent(Some(&root), ListEventsOptions { limit: Some(10) })
+        .list_recent(
+            Some(&root),
+            ListEventsOptions {
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
         .await
         .expect("list retained");
 
@@ -1507,7 +1540,13 @@ async fn limits_authors_considered_by_bfs_order() -> io::Result<()> {
     let root = report.root.expect("index root");
     let event_store = NostrEventStore::new(store);
     let recent = event_store
-        .list_recent(Some(&root), ListEventsOptions { limit: Some(10) })
+        .list_recent(
+            Some(&root),
+            ListEventsOptions {
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
         .await
         .expect("list recent");
 
@@ -1672,7 +1711,13 @@ async fn ignores_missing_local_event_blobs_from_existing_root_in_global_scan() -
         .expect("crawl report");
     let root = report.root.expect("new root");
     let recent = event_store
-        .list_recent(Some(&root), ListEventsOptions { limit: Some(10) })
+        .list_recent(
+            Some(&root),
+            ListEventsOptions {
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
         .await
         .expect("list recent");
 
@@ -1738,7 +1783,13 @@ async fn global_recent_scan_reuses_existing_root_events_before_fetching() -> io:
     assert_eq!(report.root, Some(existing_root.clone()));
 
     let recent = event_store
-        .list_recent(Some(&existing_root), ListEventsOptions { limit: Some(10) })
+        .list_recent(
+            Some(&existing_root),
+            ListEventsOptions {
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
         .await
         .expect("list recent");
     assert_eq!(recent.len(), 1);
