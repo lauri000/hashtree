@@ -64,6 +64,7 @@ const irisLauncherIcons = {
   git: '/iris-git-icon.svg',
   maps: '/iris-maps-icon.svg',
   boards: '/iris-boards-icon.svg',
+  meet: '/iris-meet-icon.svg',
 } as const;
 
 function builtInAppUrl(treeName: string): string {
@@ -95,7 +96,7 @@ export const suggestedIrisApps: readonly AppBookmark[] = [
   { url: builtInAppUrl('boards'), name: 'Iris Boards', icon: irisLauncherIcons.boards, addedAt: 0 },
   { url: builtInAppUrl('iris-client'), name: 'Iris Social', icon: '/iris-logo.png', addedAt: 0 },
   { url: builtInAppUrl('iris-chat'), name: 'Iris Chat', icon: '/iris-logo.png', addedAt: 0 },
-  { url: builtInAppUrl('meet'), name: 'Iris Meet', icon: '/iris-logo.png', addedAt: 0 },
+  { url: builtInAppUrl('meet'), name: 'Iris Meet', icon: irisLauncherIcons.meet, addedAt: 0 },
 ];
 
 export const defaultFavoriteApps: readonly AppBookmark[] = [];

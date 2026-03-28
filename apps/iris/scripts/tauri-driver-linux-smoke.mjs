@@ -16,6 +16,8 @@ const automationBase = `http://127.0.0.1:${automationPort}/automation`;
 const elementRefKey = 'element-6066-11e4-a52e-4f735466cecf';
 const distributedOwner = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
 const defaultFilesUrl = `htree://${distributedOwner}/files`;
+const launcherIconsFavoriteSlug = process.env.IRIS_LAUNCHER_ICONS_FAVORITE_SLUG ?? 'iris-files';
+const launcherIconsFavoriteSrc = process.env.IRIS_LAUNCHER_ICONS_FAVORITE_SRC ?? '/iris-files-icon.svg';
 
 let driverProcess = null;
 let sessionId = null;
@@ -331,15 +333,15 @@ async function main() {
     if (launcherSmokeMode === 'icons') {
       const addFavoriteButton = await waitForElement(
         'css selector',
-        "[data-testid='suggestion-add-iris-files']",
-        'Iris Files launcher add-to-favourites button',
+        `[data-testid='suggestion-add-${launcherIconsFavoriteSlug}']`,
+        `${launcherIconsFavoriteSlug} launcher add-to-favourites button`,
       );
       await clickElement(addFavoriteButton);
 
       await waitForElement(
         'css selector',
-        "[data-testid='favorite-icon-iris-files'] img[src='/iris-files-icon.svg']",
-        'Iris Files favourite icon to use the distinct launcher svg',
+        `[data-testid='favorite-icon-${launcherIconsFavoriteSlug}'] img[src='${launcherIconsFavoriteSrc}']`,
+        `${launcherIconsFavoriteSlug} favourite icon to use the distinct launcher svg`,
       );
       await takeScreenshot('launcher-icons-favorite.png');
       console.log(`Launcher icon smoke passed. Screenshots written to ${artifactsDir}`);

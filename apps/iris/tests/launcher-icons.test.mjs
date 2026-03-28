@@ -14,6 +14,7 @@ const builtInLauncherApps = [
   ['Iris Git', '/iris-git-icon.svg'],
   ['Iris Maps', '/iris-maps-icon.svg'],
   ['Iris Boards', '/iris-boards-icon.svg'],
+  ['Iris Meet', '/iris-meet-icon.svg'],
 ];
 
 test('iris launcher uses distinct icons for iris-files app suggestions', () => {
@@ -28,5 +29,5 @@ test('iris launcher uses distinct icons for iris-files app suggestions', () => {
 
   assert.match(appsSource, /name: 'Iris Social', icon: '\/iris-logo\.png'/);
   assert.match(appsSource, /name: 'Iris Chat', icon: '\/iris-logo\.png'/);
-  assert.match(appsSource, /name: 'Iris Meet', icon: '\/iris-logo\.png'/);
+  assert.match(appsSource, /name: 'Iris Meet', icon: irisLauncherIcons\.meet/);
 });
