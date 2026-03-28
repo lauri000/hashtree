@@ -10,6 +10,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const TEST_VIDEO_PATH = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s.webm');
 
 // Run tests serially to avoid resource conflicts
 test.describe.configure({ mode: 'serial' });
@@ -63,9 +64,8 @@ test.describe('Video Source Loading', () => {
     await openUploadModal(page);
 
     // Upload test video
-    const testVideoPath = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
     const fileInput = page.locator('input[type="file"][accept="video/*"]');
-    await fileInput.setInputFiles(testVideoPath);
+    await fileInput.setInputFiles(TEST_VIDEO_PATH);
 
     // Set unique title
     const videoTitle = `Source Test ${Date.now()}`;
@@ -173,8 +173,7 @@ test.describe('Video Source Loading', () => {
     await page.waitForTimeout(200);
     await openUploadModal(page);
 
-    const testVideoPath = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
-    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(testVideoPath);
+    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(TEST_VIDEO_PATH);
 
     const videoTitle = `Feed Video ${Date.now()}`;
     await page.locator('input[placeholder="Video title"]').fill(videoTitle);
@@ -344,8 +343,7 @@ test.describe('Video Source Loading', () => {
     await page.waitForTimeout(200);
     await openUploadModal(page);
 
-    const testVideoPath = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
-    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(testVideoPath);
+    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(TEST_VIDEO_PATH);
 
     const videoTitle = `URL Test ${Date.now()}`;
     await page.locator('input[placeholder="Video title"]').fill(videoTitle);

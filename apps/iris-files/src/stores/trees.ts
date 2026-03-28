@@ -9,6 +9,7 @@ import { getRefResolver } from '../refResolver';
 import { toHex, type Hash, type TreeVisibility } from '@hashtree/core';
 import { nostrStore } from '../nostr';
 import Dexie from 'dexie';
+import { getAllLocalRoots, onCacheUpdate } from '../treeRootCache';
 
 // Dexie database for link keys
 class LinkKeysDB extends Dexie {
@@ -164,8 +165,50 @@ export function createTreesStore(npub: string | null): Readable<TreeEntry[]> {
   const decryptedLinkKeys: Record<string, string> = {};
   const pendingDecryptions = new Set<string>();
 
+  const mergeWithLocalRoots = (entries: any[] | null) => {
+    const merged = new Map<string, any>();
+
+    for (const entry of entries ?? []) {
+      merged.set(entry.key, entry);
+    }
+
+    if (isOwnTrees) {
+      for (const [key, localRoot] of getAllLocalRoots().entries()) {
+        if (!key.startsWith(`${npub}/`)) continue;
+        const existing = merged.get(key);
+        if (existing) {
+          merged.set(key, {
+            ...existing,
+            cid: {
+              ...existing.cid,
+              hash: localRoot.hash,
+              key: localRoot.key,
+            },
+            visibility: localRoot.visibility ?? existing.visibility,
+            labels: localRoot.labels ?? existing.labels,
+          });
+          continue;
+        }
+
+        merged.set(key, {
+          key,
+          cid: { hash: localRoot.hash, key: localRoot.key },
+          visibility: localRoot.visibility,
+          labels: localRoot.labels,
+          encryptedKey: undefined,
+          keyId: undefined,
+          selfEncryptedKey: undefined,
+          selfEncryptedLinkKey: undefined,
+          createdAt: undefined,
+        });
+      }
+    }
+
+    return Array.from(merged.values());
+  };
+
   // Helper to update store with current decrypted keys
-  const updateStore = (entries: typeof lastEntries) => {
+  const updateStore = (entries: any[] | null) => {
     if (!entries) return;
     const mapped = entries.map(e => {
       const slashIdx = e.key.indexOf('/');
@@ -193,16 +236,15 @@ export function createTreesStore(npub: string | null): Readable<TreeEntry[]> {
   };
 
   // Keep reference to last entries for re-rendering after decryption
-  let lastEntries: Parameters<typeof updateStore>[0] = null;
+  let lastEntries: any[] | null = null;
 
-  const handleEntries = (entries: typeof lastEntries) => {
-    if (!entries) return;
-    lastEntries = entries;
-    updateStore(entries);
+  const handleEntries = (entries: any[] | null) => {
+    lastEntries = mergeWithLocalRoots(entries);
+    updateStore(lastEntries);
 
     // Decrypt link keys for own link-visible trees in background
     if (isOwnTrees) {
-      for (const e of entries) {
+      for (const e of lastEntries) {
         if (e.visibility === 'link-visible' && e.selfEncryptedLinkKey) {
           const slashIdx = e.key.indexOf('/');
           const name = slashIdx >= 0 ? e.key.slice(slashIdx + 1) : '';
@@ -224,6 +266,10 @@ export function createTreesStore(npub: string | null): Readable<TreeEntry[]> {
     }
   };
 
+  if (isOwnTrees) {
+    handleEntries([]);
+  }
+
   // Subscribe to resolver list
   let unsubscribe = resolver.list!(npub, handleEntries);
   let lastConnectedRelays = get(nostrStore).connectedRelays;
@@ -234,6 +280,13 @@ export function createTreesStore(npub: string | null): Readable<TreeEntry[]> {
     }
     lastConnectedRelays = state.connectedRelays;
   });
+  const cacheUnsubscribe = isOwnTrees
+    ? onCacheUpdate((ownerNpub) => {
+        if (ownerNpub === npub) {
+          handleEntries(lastEntries);
+        }
+      })
+    : null;
 
   return {
     subscribe: (fn: (value: TreeEntry[]) => void) => {
@@ -242,6 +295,7 @@ export function createTreesStore(npub: string | null): Readable<TreeEntry[]> {
         unsub();
         unsubscribe?.();
         relayUnsubscribe?.();
+        cacheUnsubscribe?.();
       };
     }
   };

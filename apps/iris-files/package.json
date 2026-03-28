@@ -55,6 +55,7 @@
     "preview:maps": "vite preview --config vite.maps.config.ts",
     "preview:boards": "vite preview --config vite.boards.config.ts",
     "test:e2e": "playwright test",
+    "test:e2e:docker": "bash ./scripts/test-e2e-docker.sh",
     "test:e2e:fast": "E2E_FAST=1 playwright test",
     "test:e2e:slow": "playwright test e2e/yjs-collaboration.spec.ts e2e/livestream-viewer.spec.ts",
     "test:e2e:ui": "playwright test --ui",

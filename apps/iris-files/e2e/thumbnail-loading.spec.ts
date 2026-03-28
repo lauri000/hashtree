@@ -5,7 +5,8 @@ import { fileURLToPath } from 'url';
 // Tests use isolated page contexts with disableOthersPool - safe for parallel execution
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const TEST_VIDEO_PATH = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
+const TEST_VIDEO_NAME = 'Big_Buck_Bunny_360_10s.webm';
+const TEST_VIDEO_PATH = path.join(__dirname, 'fixtures', TEST_VIDEO_NAME);
 
 /**
  * Thumbnail loading tests for video feed
@@ -97,9 +98,9 @@ test.describe('Thumbnail Loading', () => {
         total++;
 
         const img = thumbnailArea.querySelector('img') as HTMLImageElement | null;
-        const placeholder = thumbnailArea.querySelector('[data-testid="media-placeholder"]');
+        const placeholderEl = thumbnailArea.querySelector('[data-testid="media-placeholder"]');
 
-        if (img && !placeholder) {
+        if (img && !placeholderEl) {
           if (img.complete && img.naturalWidth > 0) {
             loaded++;
           } else if (!img.complete) {
@@ -107,9 +108,9 @@ test.describe('Thumbnail Loading', () => {
           } else {
             error++;
           }
-        } else if (placeholder && !img) {
+        } else if (placeholderEl && !img) {
           placeholder++;
-        } else if (!placeholder && !img) {
+        } else if (!placeholderEl && !img) {
           error++;
         } else {
           error++;
@@ -173,8 +174,8 @@ test.describe('Thumbnail Loading', () => {
         if (!isVisible) return;
 
         const img = thumbnailArea.querySelector('img') as HTMLImageElement | null;
-        const placeholder = thumbnailArea.querySelector('[data-testid="media-placeholder"]');
-        if (img && !placeholder && img.complete && img.naturalWidth > 0) loaded++;
+        const placeholderEl = thumbnailArea.querySelector('[data-testid="media-placeholder"]');
+        if (img && !placeholderEl && img.complete && img.naturalWidth > 0) loaded++;
       });
       return loaded;
     });
@@ -195,8 +196,8 @@ test.describe('Thumbnail Loading', () => {
         if (!isVisible) return;
 
         const img = thumbnailArea.querySelector('img') as HTMLImageElement | null;
-        const placeholder = thumbnailArea.querySelector('[data-testid="media-placeholder"]');
-        if (img && !placeholder && img.complete && img.naturalWidth > 0) loaded++;
+        const placeholderEl = thumbnailArea.querySelector('[data-testid="media-placeholder"]');
+        if (img && !placeholderEl && img.complete && img.naturalWidth > 0) loaded++;
       });
 
       const state = (window as any).__thumbStableState;

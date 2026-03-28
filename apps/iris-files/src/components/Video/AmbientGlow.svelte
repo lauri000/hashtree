@@ -92,6 +92,7 @@
   // Start/stop loop based on video state
   $effect(() => {
     if (!videoRef) return;
+    const node = videoRef;
 
     function handlePlay() {
       if (!animationFrame) {
@@ -110,23 +111,23 @@
       extractDominantColor();
     }
 
-    videoRef.addEventListener('play', handlePlay);
-    videoRef.addEventListener('pause', handlePause);
-    videoRef.addEventListener('ended', handlePause);
-    videoRef.addEventListener('seeked', handleSeeked);
-    videoRef.addEventListener('loadeddata', handleSeeked);
+    node.addEventListener('play', handlePlay);
+    node.addEventListener('pause', handlePause);
+    node.addEventListener('ended', handlePause);
+    node.addEventListener('seeked', handleSeeked);
+    node.addEventListener('loadeddata', handleSeeked);
 
     // Start if already playing
-    if (!videoRef.paused) {
+    if (!node.paused) {
       handlePlay();
     }
 
     return () => {
-      videoRef.removeEventListener('play', handlePlay);
-      videoRef.removeEventListener('pause', handlePause);
-      videoRef.removeEventListener('ended', handlePause);
-      videoRef.removeEventListener('seeked', handleSeeked);
-      videoRef.removeEventListener('loadeddata', handleSeeked);
+      node.removeEventListener('play', handlePlay);
+      node.removeEventListener('pause', handlePause);
+      node.removeEventListener('ended', handlePause);
+      node.removeEventListener('seeked', handleSeeked);
+      node.removeEventListener('loadeddata', handleSeeked);
 
       if (animationFrame) {
         cancelAnimationFrame(animationFrame);

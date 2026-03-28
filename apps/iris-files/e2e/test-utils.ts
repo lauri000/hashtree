@@ -111,12 +111,40 @@ export async function createRepositoryInCurrentDirectory(
   repositoryName: string,
   timeoutMs: number = 15000
 ) {
-  await page.getByRole('button', { name: 'New Repository' }).click();
-  const input = page.locator('input[placeholder="Repository name..."]');
-  await input.waitFor({ timeout: 5000 });
-  await input.fill(repositoryName);
-  await page.click('button:has-text("Create")');
-  await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: timeoutMs });
+  await waitForTestHelpers(page, timeoutMs);
+  const routeContext = await evaluateWithRetry(page, async () => {
+    const { getRouteSync } = await import('/src/stores/index.ts');
+    const route = getRouteSync();
+    return {
+      inTree: Boolean(route.npub && route.treeName),
+    };
+  }, undefined);
+
+  if (routeContext.inTree) {
+    await evaluateWithRetry(page, async (name: string) => {
+      const { createGitRepository } = await import('/src/actions/tree.ts');
+      await createGitRepository(name);
+    }, repositoryName);
+    await waitForCurrentDirectoryEntries(page, [repositoryName], timeoutMs);
+
+    const repoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: repositoryName }).first();
+    const repoVisible = await repoLink.isVisible().catch(() => false);
+    if (!repoVisible) {
+      await safeReload(page, { waitUntil: 'domcontentloaded', timeoutMs });
+      await waitForAppReady(page, timeoutMs);
+    }
+    await expect(repoLink).toBeVisible({ timeout: timeoutMs });
+    return;
+  }
+
+  await evaluateWithRetry(page, async (name: string) => {
+    const { createGitRepositoryTree } = await import('/src/actions/tree.ts');
+    const result = await createGitRepositoryTree(name, 'public');
+    if (!result.success) {
+      throw new Error(`Failed to create top-level git repository: ${name}`);
+    }
+  }, repositoryName);
+  await page.waitForURL(new RegExp(encodeURIComponent(repositoryName)), { timeout: timeoutMs });
 }
 
 export async function createPlainFolderInCurrentDirectory(

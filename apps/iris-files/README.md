@@ -29,6 +29,22 @@ npm run build
 npm run preview
 ```
 
+## Testing
+
+```bash
+# Browser E2E on the host
+pnpm run test:e2e
+
+# Browser E2E in an isolated Linux container
+pnpm run test:e2e:docker
+```
+
+The Docker wrapper builds `scripts/Dockerfile.e2e-linux`, mounts the repo into `/workspace`, and keeps Linux-only `node_modules`, the pnpm store, and Rust build caches in Docker volumes. Pass a custom command to the wrapper when you want a narrower run, for example:
+
+```bash
+pnpm run test:e2e:docker -- pnpm exec playwright test e2e/anchor-links.spec.ts --workers=1
+```
+
 Portable hashtree publish:
 
 ```bash

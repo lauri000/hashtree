@@ -21,7 +21,7 @@ test.describe('YouTube Style Verification', () => {
   test.describe.configure({ mode: 'serial' });
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const TEST_VIDEO = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
+  const TEST_VIDEO = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s.webm');
   const USE_PRODUCTION = process.env.PLAYWRIGHT_PRODUCTION === 'true';
 
   const useProductionRelays = async (page: any) => {

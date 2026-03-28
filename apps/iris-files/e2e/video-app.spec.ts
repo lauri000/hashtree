@@ -7,6 +7,9 @@ import { nip19 } from 'nostr-tools';
 test.describe.configure({ mode: 'serial' });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const TEST_VIDEO_NAME = 'Big_Buck_Bunny_360_10s.webm';
+const TEST_VIDEO_TITLE = 'Big_Buck_Bunny_360_10s';
+const TEST_VIDEO_PATH = path.join(__dirname, 'fixtures', TEST_VIDEO_NAME);
 
 /**
  * Helper to ensure user is logged in
@@ -86,13 +89,12 @@ test.describe('Iris Video App', () => {
     await openUploadModal(page);
 
     // Upload the test video file
-    const testVideoPath = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
     const fileInput = page.locator('input[type="file"][accept="video/*"]');
-    await fileInput.setInputFiles(testVideoPath);
+    await fileInput.setInputFiles(TEST_VIDEO_PATH);
 
     // Title should be pre-filled from filename
     const titleInput = page.locator('input[placeholder="Video title"]');
-    await expect(titleInput).toHaveValue('Big_Buck_Bunny_360_10s_1MB', { timeout: 5000 });
+    await expect(titleInput).toHaveValue(TEST_VIDEO_TITLE, { timeout: 5000 });
 
     // Change title to something unique
     const videoTitle = `Feed Test Video ${Date.now()}`;
@@ -147,16 +149,15 @@ test.describe('Iris Video App', () => {
     await openUploadModal(page);
 
     // Upload the test video file
-    const testVideoPath = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
     const fileInput = page.locator('input[type="file"][accept="video/*"]');
-    await fileInput.setInputFiles(testVideoPath);
+    await fileInput.setInputFiles(TEST_VIDEO_PATH);
 
     // Should show file info and title field
-    await expect(page.locator('text=Big_Buck_Bunny_360_10s_1MB.mp4')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(`text=${TEST_VIDEO_NAME}`)).toBeVisible({ timeout: 10000 });
 
     // Title should be pre-filled from filename
     const titleInput = page.locator('input[placeholder="Video title"]');
-    await expect(titleInput).toHaveValue('Big_Buck_Bunny_360_10s_1MB', { timeout: 5000 });
+    await expect(titleInput).toHaveValue(TEST_VIDEO_TITLE, { timeout: 5000 });
 
     // Take screenshot of upload modal with file selected
     await page.screenshot({ path: 'e2e/screenshots/video-upload-file-selected.png' });
@@ -231,9 +232,8 @@ test.describe('Iris Video App', () => {
     await dismissVideoOverlays(page);
     await openUploadModal(page);
 
-    const testVideoPath = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
     const fileInput = page.locator('input[type="file"][accept="video/*"]');
-    await fileInput.setInputFiles(testVideoPath);
+    await fileInput.setInputFiles(TEST_VIDEO_PATH);
 
     const videoTitle = `Delete Test ${Date.now()}`;
     const titleInput = page.locator('input[placeholder="Video title"]');
@@ -296,8 +296,7 @@ test.describe('Iris Video App', () => {
     await dismissVideoOverlays(page);
     await openUploadModal(page);
 
-    const testVideoPath = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
-    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(testVideoPath);
+    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(TEST_VIDEO_PATH);
 
     const videoTitle = `Profile Test ${Date.now()}`;
     await page.locator('input[placeholder="Video title"]').fill(videoTitle);
@@ -336,8 +335,7 @@ test.describe('Iris Video App', () => {
     await dismissVideoOverlays(page);
     await openUploadModal(page);
 
-    const testVideoPath = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
-    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(testVideoPath);
+    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(TEST_VIDEO_PATH);
 
     const videoTitle = `Comment Test ${Date.now()}`;
     await page.locator('input[placeholder="Video title"]').fill(videoTitle);
@@ -381,8 +379,7 @@ test.describe('Iris Video App', () => {
     await dismissVideoOverlays(page);
     await openUploadModal(page);
 
-    const testVideoPath = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
-    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(testVideoPath);
+    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(TEST_VIDEO_PATH);
 
     const videoTitle = `Like Test ${Date.now()}`;
     await page.locator('input[placeholder="Video title"]').fill(videoTitle);
@@ -426,8 +423,7 @@ test.describe('Iris Video App', () => {
     await dismissVideoOverlays(page);
     await openUploadModal(page);
 
-    const testVideoPath = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
-    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(testVideoPath);
+    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(TEST_VIDEO_PATH);
 
     const videoTitle = `Permalink Test ${Date.now()}`;
     await page.locator('input[placeholder="Video title"]').fill(videoTitle);
@@ -525,8 +521,7 @@ test.describe('Iris Video App', () => {
     await dismissVideoOverlays(page1);
     await openUploadModal(page1);
 
-    const testVideoPath = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
-    await page1.locator('input[type="file"][accept="video/*"]').setInputFiles(testVideoPath);
+    await page1.locator('input[type="file"][accept="video/*"]').setInputFiles(TEST_VIDEO_PATH);
 
     const videoTitle = `Social Feed Test ${Date.now()}`;
     await page1.locator('input[placeholder="Video title"]').fill(videoTitle);

@@ -9,7 +9,8 @@ import {
   waitForRelayConnected,
 } from './test-utils';
 
-const TEST_VIDEO_PATH = path.resolve(process.cwd(), 'e2e/fixtures/Big_Buck_Bunny_360_10s_1MB.mp4');
+const TEST_VIDEO_NAME = 'Big_Buck_Bunny_360_10s.webm';
+const TEST_VIDEO_PATH = path.resolve(process.cwd(), `e2e/fixtures/${TEST_VIDEO_NAME}`);
 
 type WorkerAdapterLike = {
   sendHello?: () => Promise<void> | void;
@@ -77,7 +78,7 @@ async function waitForVideoData(page: Page, timeoutMs = 180000) {
 
         await adapter.sendHello?.();
         const tree = getTree();
-        const candidates = ['video.mp4', 'video.webm', 'video.mov', 'video.mkv'];
+        const candidates = ['video.webm', 'video.mp4', 'video.mov', 'video.mkv'];
 
         for (const name of candidates) {
           let entry: { cid?: unknown } | null = null;
@@ -401,8 +402,8 @@ test.describe('Video Upload with Visibility', () => {
         try {
           const { getTree } = await import('/src/store');
           const tree = getTree();
-          const entry = await tree.resolvePath(root, 'video.mp4').catch(() => null)
-            ?? await tree.resolvePath(root, 'video.webm').catch(() => null);
+          const entry = await tree.resolvePath(root, 'video.webm').catch(() => null)
+            ?? await tree.resolvePath(root, 'video.mp4').catch(() => null);
           resolveVideo = entry ? { hasEntry: true, hasCidKey: !!entry.cid?.key } : { hasEntry: false };
         } catch (err) {
           resolveVideo = { error: String(err) };

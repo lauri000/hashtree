@@ -408,15 +408,8 @@ test.describe('Playlist Management', () => {
     // Take screenshot of profile page
     await page.screenshot({ path: 'e2e/screenshots/add-to-playlist-profile-page.png' });
 
-    // Check if playlist section exists and contains our playlist
-    const playlistSection = page.getByText('Playlists');
-
     // Look for the playlist name on the page
     const playlistCard = page.getByText(playlistName.replace('videos/', ''));
-
-    // Debug: log page content
-    console.log('Looking for playlist:', playlistName);
-    console.log('Page has Playlists section:', await playlistSection.isVisible().catch(() => false));
 
     // The playlist should be visible on the profile page
     await expect(playlistCard).toBeVisible({ timeout: 10000 });

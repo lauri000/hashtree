@@ -14,7 +14,8 @@ test.describe.configure({ mode: 'serial' });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const TEST_VIDEO = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
+const TEST_VIDEO_NAME = 'Big_Buck_Bunny_360_10s.webm';
+const TEST_VIDEO = path.join(__dirname, 'fixtures', TEST_VIDEO_NAME);
 
 async function getTreeRootHash(page: any, npub: string, treeName: string): Promise<string | null> {
   return page.evaluate(async ({ targetNpub, targetTree }) => {
@@ -231,7 +232,7 @@ test.describe('Video Direct Navigation', () => {
     await fileInput.setInputFiles(TEST_VIDEO);
 
     // Wait for file to appear in list
-    const videoFileName = 'Big_Buck_Bunny_360_10s_1MB.mp4';
+    const videoFileName = TEST_VIDEO_NAME;
     const videoLink = page1.locator('[data-testid="file-list"] a').filter({ hasText: videoFileName }).first();
     await expect(videoLink).toBeVisible({ timeout: 60000 });
     console.log('Video uploaded and visible in list');
@@ -246,8 +247,6 @@ test.describe('Video Direct Navigation', () => {
     if (!rootInfo?.hashHex) {
       throw new Error('Missing tree root after upload');
     }
-    const rootHashAfterUpload = rootInfo.hashHex;
-
     // Ensure data is available via Blossom before viewer navigation
     const pushResult = await page1.evaluate(async ({ targetNpub, targetTree }) => {
       const { getTreeRootSync } = await import('/src/stores');
@@ -493,7 +492,7 @@ test.describe('Video Direct Navigation', () => {
     await fileInput.setInputFiles(TEST_VIDEO);
 
     // Wait for file to appear in list
-    const videoFileName = 'Big_Buck_Bunny_360_10s_1MB.mp4';
+    const videoFileName = TEST_VIDEO_NAME;
     const videoLink = page1.locator('[data-testid="file-list"] a').filter({ hasText: videoFileName }).first();
     await expect(videoLink).toBeVisible({ timeout: 60000 });
     console.log('Video uploaded and visible in list');

@@ -4,6 +4,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const TEST_VIDEO_NAME = 'Big_Buck_Bunny_360_10s.webm';
+const TEST_VIDEO_PATH = path.join(__dirname, 'fixtures', TEST_VIDEO_NAME);
 
 test.describe('Search Result Navigation', () => {
   test.beforeEach(async ({ page }) => {
@@ -43,8 +45,7 @@ test.describe('Search Result Navigation', () => {
     await uploadOption.click();
     await expect(page.getByRole('heading', { name: 'Upload Video' })).toBeVisible({ timeout: 10000 });
 
-    const testVideoPath = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
-    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(testVideoPath);
+    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(TEST_VIDEO_PATH);
     await page.locator('input[placeholder="Video title"]').fill(videoTitle);
     await page.locator('.fixed button:has-text("Upload")').click();
 
@@ -74,7 +75,6 @@ test.describe('Search Result Navigation', () => {
 
     // Step 4: Search for the video
     // On mobile, search input is hidden behind a button. On desktop, input is visible.
-    const desktopSearchInput = page.locator('header input[placeholder*="Search"]');
     const mobileSearchBtn = page.getByRole('button', { name: 'Search' });
 
     // If mobile, click search button first to open search overlay
@@ -182,8 +182,7 @@ test.describe('Search Result Navigation', () => {
     await expect(uploadOption).toBeVisible({ timeout: 5000 });
     await uploadOption.click();
 
-    const testVideoPath = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
-    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(testVideoPath);
+    await page.locator('input[type="file"][accept="video/*"]').setInputFiles(TEST_VIDEO_PATH);
     await page.locator('input[placeholder="Video title"]').fill(`Direct URL Test ${Date.now()}`);
     await page.locator('.fixed button:has-text("Upload")').click();
 

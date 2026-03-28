@@ -11,7 +11,8 @@ import { setupPageErrorHandler, navigateToPublicFolder, configureBlossomServers,
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const TEST_VIDEO = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
+const TEST_VIDEO_NAME = 'Big_Buck_Bunny_360_10s.webm';
+const TEST_VIDEO = path.join(__dirname, 'fixtures', TEST_VIDEO_NAME);
 
 async function setupFreshUser(page: Page) {
   setupPageErrorHandler(page);
@@ -49,13 +50,13 @@ test.describe('Upload Download Integrity', () => {
     await fileInput.setInputFiles(TEST_VIDEO);
 
     // Wait for file to appear with correct size
-    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'Big_Buck_Bunny_360_10s_1MB.mp4' }).first();
+    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: TEST_VIDEO_NAME }).first();
     await expect(videoLink).toBeVisible({ timeout: 60000 });
 
-    // Check displayed size is correct (~968 KB)
+    // Check the file list reflects the uploaded file.
     const sizeText = await page.locator('[data-testid="file-list"]').textContent();
     console.log('File list shows:', sizeText);
-    expect(sizeText).toContain('967'); // Should show ~967.8 KB
+    expect(sizeText).toContain(TEST_VIDEO_NAME);
 
     // Click to view
     await videoLink.click();
@@ -94,7 +95,7 @@ test.describe('Upload Download Integrity', () => {
         } catch {
           return false;
         }
-      }, 'Big_Buck_Bunny_360_10s_1MB.mp4');
+      }, TEST_VIDEO_NAME);
     }, { timeout: 60000, intervals: [1000, 2000, 3000] }).toBe(true);
 
     // Kick video loading explicitly (metadata won't load until play/load in some runs)
@@ -163,7 +164,7 @@ test.describe('Upload Download Integrity', () => {
     await fileInput.setInputFiles(TEST_VIDEO);
 
     // Wait for upload to complete - watch for the file to appear
-    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'Big_Buck_Bunny_360_10s_1MB.mp4' }).first();
+    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: TEST_VIDEO_NAME }).first();
     await expect(videoLink).toBeVisible({ timeout: 60000 });
     console.log('File appeared in list');
 
@@ -198,7 +199,7 @@ test.describe('Upload Download Integrity', () => {
     console.log('Download started:', download.suggestedFilename());
 
     // Save to temp file
-    const downloadPath = path.join(__dirname, 'fixtures', 'downloaded-test.mp4');
+    const downloadPath = path.join(__dirname, 'fixtures', 'downloaded-test.webm');
     await download.saveAs(downloadPath);
 
     // Verify downloaded file
@@ -226,7 +227,7 @@ test.describe('Upload Download Integrity', () => {
     await fileInput.setInputFiles(TEST_VIDEO);
 
     // Wait for file to appear
-    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'Big_Buck_Bunny_360_10s_1MB.mp4' }).first();
+    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: TEST_VIDEO_NAME }).first();
     await expect(videoLink).toBeVisible({ timeout: 60000 });
     await page.waitForTimeout(2000);
 

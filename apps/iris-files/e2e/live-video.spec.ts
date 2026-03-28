@@ -14,7 +14,8 @@ test.describe.configure({ mode: 'serial' });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const TEST_VIDEO = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
+const TEST_VIDEO_NAME = 'Big_Buck_Bunny_360_10s.webm';
+const TEST_VIDEO = path.join(__dirname, 'fixtures', TEST_VIDEO_NAME);
 
 // Helper to set up a fresh user session and navigate to public folder
 async function setupFreshUser(page: Page) {
@@ -50,7 +51,7 @@ test.describe('Video Viewer', () => {
     await fileInput.setInputFiles(TEST_VIDEO);
 
     // Wait for upload to complete - look for the video in the file list
-    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'Big_Buck_Bunny_360_10s_1MB.mp4' }).first();
+    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: TEST_VIDEO_NAME }).first();
     await expect(videoLink).toBeVisible({ timeout: 30000 });
 
     // Click on the video to view it
@@ -115,7 +116,7 @@ test.describe('Video Viewer', () => {
     await fileInput.setInputFiles(TEST_VIDEO);
 
     // Click on video
-    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'Big_Buck_Bunny_360_10s_1MB.mp4' }).first();
+    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: TEST_VIDEO_NAME }).first();
     await expect(videoLink).toBeVisible({ timeout: 30000 });
     await videoLink.click();
 
@@ -162,7 +163,7 @@ test.describe('Video Viewer', () => {
     await fileInput.setInputFiles(TEST_VIDEO);
 
     // Click on video immediately after upload (while it's still "recently changed")
-    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'Big_Buck_Bunny_360_10s_1MB.mp4' }).first();
+    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: TEST_VIDEO_NAME }).first();
     await expect(videoLink).toBeVisible({ timeout: 30000 });
     await videoLink.click();
 
@@ -223,7 +224,7 @@ test.describe('Video Viewer', () => {
     await fileInput.setInputFiles(TEST_VIDEO);
 
     // Get the video URL
-    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'Big_Buck_Bunny_360_10s_1MB.mp4' }).first();
+    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: TEST_VIDEO_NAME }).first();
     await expect(videoLink).toBeVisible({ timeout: 30000 });
 
     // Navigate to the video with ?live=1 hash param
@@ -283,7 +284,7 @@ test.describe('Video Viewer', () => {
     await fileInput.setInputFiles(TEST_VIDEO);
 
     // Get the video URL and navigate with ?live=1
-    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'Big_Buck_Bunny_360_10s_1MB.mp4' }).first();
+    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: TEST_VIDEO_NAME }).first();
     await expect(videoLink).toBeVisible({ timeout: 30000 });
     const href = await videoLink.getAttribute('href');
     expect(href).toBeTruthy();
@@ -343,7 +344,7 @@ test.describe('Video Viewer', () => {
     await fileInput.setInputFiles(TEST_VIDEO);
 
     // Get the video URL
-    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'Big_Buck_Bunny_360_10s_1MB.mp4' }).first();
+    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: TEST_VIDEO_NAME }).first();
     await expect(videoLink).toBeVisible({ timeout: 30000 });
     await flushPendingPublishes(page);
     const href = await videoLink.getAttribute('href');
@@ -370,7 +371,7 @@ test.describe('Video Viewer', () => {
 
     // Viewer header should show the filename
     const viewerHeader = page.getByTestId('viewer-header');
-    await expect(viewerHeader).toContainText('Big_Buck_Bunny_360_10s_1MB.mp4');
+    await expect(viewerHeader).toContainText(TEST_VIDEO_NAME);
 
     // Video should have loaded metadata
     await page.waitForFunction(() => {
@@ -404,7 +405,7 @@ test.describe('Video Viewer', () => {
     await fileInput.setInputFiles(TEST_VIDEO);
 
     // Get the video URL
-    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'Big_Buck_Bunny_360_10s_1MB.mp4' }).first();
+    const videoLink = page.locator('[data-testid="file-list"] a').filter({ hasText: TEST_VIDEO_NAME }).first();
     await expect(videoLink).toBeVisible({ timeout: 30000 });
     await flushPendingPublishes(page);
     const href = await videoLink.getAttribute('href');

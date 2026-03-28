@@ -12,9 +12,22 @@ async function createAndEnterTree(page: any, name: string) {
 
   await page.getByRole('button', { name: 'New Folder' }).click();
   await page.locator('input[placeholder="Folder name..."]').fill(name);
-  await page.getByRole('button', { name: 'Create' }).click();
+  await Promise.all([
+    page.waitForURL(new RegExp(encodeURIComponent(name)), { timeout: 10000 }),
+    page.getByRole('button', { name: 'Create' }).click({ noWaitAfter: true }),
+  ]);
   // After local createTree, navigates directly into empty tree
   await expect(page.getByText('Empty directory')).toBeVisible({ timeout: 10000 });
+}
+
+async function createAndOpenFile(page: any, name: string) {
+  await page.getByRole('button', { name: /File/ }).first().click();
+  await page.locator('input[placeholder="File name..."]').fill(name);
+  await Promise.all([
+    page.waitForURL(new RegExp(encodeURIComponent(name)), { timeout: 10000 }),
+    page.getByRole('button', { name: 'Create' }).click({ noWaitAfter: true }),
+  ]);
+  await expect(page.locator('textarea')).toBeVisible({ timeout: 10000 });
 }
 
 test.describe('Hashtree Explorer', () => {
@@ -63,12 +76,9 @@ test.describe('Hashtree Explorer', () => {
     await createAndEnterTree(page, 'test-tree');
 
     // Create a file using File button
-    await page.getByRole('button', { name: /File/ }).first().click();
-    await page.locator('input[placeholder="File name..."]').fill('hello.txt');
-    await page.getByRole('button', { name: 'Create' }).click();
+    await createAndOpenFile(page, 'hello.txt');
 
     // File opens in edit mode - add content
-    await expect(page.locator('textarea')).toBeVisible({ timeout: 5000 });
     await page.locator('textarea').fill('Hello, World!');
     await page.getByRole('button', { name: 'Save' }).click();
 
@@ -94,9 +104,7 @@ test.describe('Hashtree Explorer', () => {
     await createAndEnterTree(page, 'file-btn-test');
 
     // Create file using File button - this auto-opens in edit mode
-    await page.getByRole('button', { name: /File/ }).first().click();
-    await page.locator('input[placeholder="File name..."]').fill('test-file.txt');
-    await page.getByRole('button', { name: 'Create' }).click();
+    await createAndOpenFile(page, 'test-file.txt');
 
     // File opens in edit mode - exit edit mode first
     await expect(page.getByRole('button', { name: 'Done' })).toBeVisible({ timeout: 5000 });
@@ -114,12 +122,7 @@ test.describe('Hashtree Explorer', () => {
     await createAndEnterTree(page, 'edit-test');
 
     // Create new file using File button - this auto-navigates to edit mode
-    await page.getByRole('button', { name: /File/ }).first().click();
-    await page.locator('input[placeholder="File name..."]').fill('editable.txt');
-    await page.getByRole('button', { name: 'Create' }).click();
-
-    // Wait for textarea to be visible (file creation navigates to edit mode)
-    await expect(page.locator('textarea')).toBeVisible({ timeout: 10000 });
+    await createAndOpenFile(page, 'editable.txt');
 
     // Type content and save
     await page.locator('textarea').fill('Hello, Hashtree!');
@@ -143,12 +146,7 @@ test.describe('Hashtree Explorer', () => {
     await createAndEnterTree(page, 'persist-test');
 
     // Create a file with initial content using File button
-    await page.getByRole('button', { name: /File/ }).first().click();
-    await page.locator('input[placeholder="File name..."]').fill('persist.txt');
-    await page.getByRole('button', { name: 'Create' }).click();
-
-    // Wait for textarea (edit mode)
-    await expect(page.locator('textarea')).toBeVisible({ timeout: 10000 });
+    await createAndOpenFile(page, 'persist.txt');
 
     // Type initial content and save
     await page.locator('textarea').fill('Initial content');
@@ -209,12 +207,9 @@ test.describe('Hashtree Explorer', () => {
     await createAndEnterTree(page, 'rename-test');
 
     // Create file using File button
-    await page.getByRole('button', { name: /File/ }).first().click();
-    await page.locator('input[placeholder="File name..."]').fill('old-name.txt');
-    await page.getByRole('button', { name: 'Create' }).click();
+    await createAndOpenFile(page, 'old-name.txt');
 
     // File opens in edit mode - add content
-    await expect(page.locator('textarea')).toBeVisible({ timeout: 5000 });
     await page.locator('textarea').fill('rename me');
     await page.getByRole('button', { name: 'Save' }).click();
 
@@ -251,10 +246,7 @@ test.describe('Hashtree Explorer', () => {
     await createAndEnterTree(page, 'delete-file-test');
 
     // Create two files so we can verify specific file is deleted
-    await page.getByRole('button', { name: /File/ }).first().click();
-    await page.locator('input[placeholder="File name..."]').fill('keep-me.txt');
-    await page.getByRole('button', { name: 'Create' }).click();
-    await expect(page.locator('textarea')).toBeVisible({ timeout: 5000 });
+    await createAndOpenFile(page, 'keep-me.txt');
     await page.locator('textarea').fill('keep this');
     await page.getByRole('button', { name: 'Save' }).click();
     await page.getByRole('button', { name: 'Done' }).click();
@@ -265,10 +257,7 @@ test.describe('Hashtree Explorer', () => {
     await backBtn.click();
 
     // Create file to delete
-    await page.getByRole('button', { name: /File/ }).first().click();
-    await page.locator('input[placeholder="File name..."]').fill('to-delete.txt');
-    await page.getByRole('button', { name: 'Create' }).click();
-    await expect(page.locator('textarea')).toBeVisible({ timeout: 5000 });
+    await createAndOpenFile(page, 'to-delete.txt');
     await page.locator('textarea').fill('delete me');
     await page.getByRole('button', { name: 'Save' }).click();
     await page.getByRole('button', { name: 'Done' }).click();
@@ -368,10 +357,7 @@ test.describe('Hashtree Explorer', () => {
     await createAndEnterTree(page, 'videos/test-folder');
 
     // Create a file
-    await page.getByRole('button', { name: /File/ }).first().click();
-    await page.locator('input[placeholder="File name..."]').fill('test.txt');
-    await page.getByRole('button', { name: 'Create' }).click();
-    await expect(page.locator('textarea')).toBeVisible({ timeout: 5000 });
+    await createAndOpenFile(page, 'test.txt');
     await page.locator('textarea').fill('content in slashed tree');
     await page.getByRole('button', { name: 'Save' }).click();
     await page.getByRole('button', { name: 'Done' }).click();
@@ -442,12 +428,9 @@ test.describe('Hashtree Explorer', () => {
     await createAndEnterTree(page, 'empty-file-test');
 
     // Create a file using File button
-    await page.getByRole('button', { name: /File/ }).first().click();
-    await page.locator('input[placeholder="File name..."]').fill('empty.txt');
-    await page.getByRole('button', { name: 'Create' }).click();
+    await createAndOpenFile(page, 'empty.txt');
 
     // File opens in edit mode - exit without adding content (empty file)
-    await expect(page.locator('textarea')).toBeVisible({ timeout: 5000 });
     await page.getByRole('button', { name: 'Done' }).click();
     await page.waitForTimeout(300);
 
@@ -475,12 +458,9 @@ test.describe('Hashtree Explorer', () => {
     await createAndEnterTree(page, 'cancel-test');
 
     // Create file using File button
-    await page.getByRole('button', { name: /File/ }).first().click();
-    await page.locator('input[placeholder="File name..."]').fill('cancel-test.txt');
-    await page.getByRole('button', { name: 'Create' }).click();
+    await createAndOpenFile(page, 'cancel-test.txt');
 
     // File opens in edit mode - add content
-    await expect(page.locator('textarea')).toBeVisible({ timeout: 5000 });
     await page.locator('textarea').fill('original');
     await page.getByRole('button', { name: 'Save' }).click();
     await page.waitForTimeout(500);
@@ -674,12 +654,9 @@ test.describe('Hashtree Explorer', () => {
     await createAndEnterTree(page, 'direct-nav-test');
 
     // Create text file using File button
-    await page.getByRole('button', { name: /File/ }).first().click();
-    await page.locator('input[placeholder="File name..."]').fill('readme.txt');
-    await page.getByRole('button', { name: 'Create' }).click();
+    await createAndOpenFile(page, 'readme.txt');
 
     // File opens in edit mode - add content
-    await expect(page.locator('textarea')).toBeVisible({ timeout: 5000 });
     await page.locator('textarea').fill('Hello Direct Nav');
     await page.getByRole('button', { name: 'Save' }).click();
     await page.waitForTimeout(300);
@@ -713,12 +690,9 @@ test.describe('Hashtree Explorer', () => {
     await createAndEnterTree(page, 'mobile-file-test');
 
     // Create text file using File button
-    await page.getByRole('button', { name: /File/ }).first().click();
-    await page.locator('input[placeholder="File name..."]').fill('mobile-readme.txt');
-    await page.getByRole('button', { name: 'Create' }).click();
+    await createAndOpenFile(page, 'mobile-readme.txt');
 
     // File opens in edit mode - add content
-    await expect(page.locator('textarea')).toBeVisible({ timeout: 5000 });
     await page.locator('textarea').fill('Hello Mobile View');
     await page.getByRole('button', { name: 'Save' }).click();
     await page.waitForTimeout(300);

@@ -22,7 +22,7 @@ import { fileURLToPath } from 'url';
 const BASE_URL = 'http://localhost:5173';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const TEST_VIDEO = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s_1MB.mp4');
+const TEST_VIDEO = path.join(__dirname, 'fixtures', 'Big_Buck_Bunny_360_10s.webm');
 
 async function prepareLocalVideoSession(page: Page, url: string = '/video.html#/') {
   setupPageErrorHandler(page);
@@ -105,12 +105,12 @@ async function createTestPlaylist(page: Page, playlistName: string) {
     for (const video of videos) {
       const videoEntries: Array<{ name: string; cid: any; size: number }> = [];
 
-      const videoData = new Uint8Array([0x00, 0x00, 0x00, 0x1C, 0x66, 0x74, 0x79, 0x70]);
+      const videoData = new Uint8Array([0x1A, 0x45, 0xDF, 0xA3, 0x9F, 0x42, 0x86, 0x81]);
       const streamWriter = tree.createStream({ chunker: videoChunker() });
       await streamWriter.append(videoData);
       const videoResult = await streamWriter.finalize();
       videoEntries.push({
-        name: 'video.mp4',
+        name: 'video.webm',
         cid: cid(videoResult.hash, videoResult.key),
         size: videoResult.size,
       });
