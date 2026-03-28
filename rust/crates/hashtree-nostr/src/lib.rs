@@ -9,6 +9,7 @@ use std::cell::RefCell;
 
 use hashtree_core::{
     sha256, BufferedStore, Cid, DirEntry, HashTree, HashTreeConfig, HashTreeError, LinkType, Store,
+    TreeVisibility,
 };
 use hashtree_index::{BTree, BTreeError, BTreeOptions};
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,7 @@ const MANIFEST_BY_TIME: &str = "by-time";
 const MANIFEST_BY_TAG: &str = "by-tag";
 const MANIFEST_REPLACEABLE: &str = "replaceable";
 const MANIFEST_PARAMETERIZED_REPLACEABLE: &str = "parameterized-replaceable";
+const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredNostrEvent {
@@ -32,6 +34,19 @@ pub struct StoredNostrEvent {
     pub tags: Vec<Vec<String>>,
     pub content: String,
     pub sig: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedHashtreeRootEvent {
+    pub event: StoredNostrEvent,
+    pub tree_name: String,
+    pub root_cid: Cid,
+    pub visibility: TreeVisibility,
+    pub labels: Vec<String>,
+    pub encrypted_key: Option<String>,
+    pub key_id: Option<String>,
+    pub self_encrypted_key: Option<String>,
+    pub self_encrypted_link_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -146,20 +161,175 @@ pub struct NostrEventStore<S: Store> {
     store: Arc<S>,
     tree: HashTree<S>,
     index: BTree<S>,
+    options: NostrEventStoreOptions,
+}
+
+pub fn encode_signed_event_json(event: &StoredNostrEvent) -> Result<Vec<u8>, NostrEventStoreError> {
+    let normalized = normalize_signed_event(event.clone())?;
+    Ok(serde_json::to_vec(&normalized)?)
+}
+
+pub fn decode_signed_event_json(data: &[u8]) -> Result<StoredNostrEvent, NostrEventStoreError> {
+    let decoded: StoredNostrEvent = serde_json::from_slice(data)?;
+    normalize_signed_event(decoded)
+}
+
+pub async fn store_signed_event_snapshot<S: Store>(
+    store: Arc<S>,
+    event: &StoredNostrEvent,
+) -> Result<Cid, NostrEventStoreError> {
+    let bytes = encode_signed_event_json(event)?;
+    let tree = HashTree::new(HashTreeConfig::new(store).public());
+    let (cid, _) = tree.put(&bytes).await?;
+    Ok(cid)
+}
+
+pub async fn read_signed_event_snapshot<S: Store>(
+    store: Arc<S>,
+    snapshot_cid: &Cid,
+    max_bytes: Option<usize>,
+) -> Result<StoredNostrEvent, NostrEventStoreError> {
+    let max_bytes = max_bytes.unwrap_or(MAX_SNAPSHOT_BYTES);
+    let tree = HashTree::new(HashTreeConfig::new(store).public());
+    let data = tree
+        .get(snapshot_cid, Some((max_bytes + 1) as u64))
+        .await?
+        .ok_or_else(|| {
+            NostrEventStoreError::Validation("signed Nostr event snapshot is missing".to_string())
+        })?;
+    if data.len() > max_bytes {
+        return Err(NostrEventStoreError::Validation(format!(
+            "signed Nostr event snapshot exceeds {max_bytes} bytes"
+        )));
+    }
+    decode_signed_event_json(&data)
+}
+
+pub fn parse_hashtree_root_event(
+    event: &StoredNostrEvent,
+) -> Result<Option<ParsedHashtreeRootEvent>, NostrEventStoreError> {
+    let normalized = normalize_signed_event(event.clone())?;
+    if normalized.kind != 30078 {
+        return Ok(None);
+    }
+
+    let tree_name = normalized
+        .tags
+        .iter()
+        .find(|tag| tag.first().map(String::as_str) == Some("d"))
+        .and_then(|tag| tag.get(1))
+        .cloned();
+    let hash_hex = normalized
+        .tags
+        .iter()
+        .find(|tag| tag.first().map(String::as_str) == Some("hash"))
+        .and_then(|tag| tag.get(1))
+        .cloned();
+    let (Some(tree_name), Some(hash_hex)) = (tree_name, hash_hex) else {
+        return Ok(None);
+    };
+
+    if has_any_label(&normalized) && !has_label(&normalized, "hashtree") {
+        return Ok(None);
+    }
+
+    let labels = unique_labels(
+        normalized
+            .tags
+            .iter()
+            .filter(|tag| tag.first().map(String::as_str) == Some("l"))
+            .filter_map(|tag| tag.get(1).cloned())
+            .collect(),
+    );
+    let key_hex = normalized
+        .tags
+        .iter()
+        .find(|tag| tag.first().map(String::as_str) == Some("key"))
+        .and_then(|tag| tag.get(1))
+        .cloned();
+    let encrypted_key = normalized
+        .tags
+        .iter()
+        .find(|tag| tag.first().map(String::as_str) == Some("encryptedKey"))
+        .and_then(|tag| tag.get(1))
+        .cloned();
+    let key_id = normalized
+        .tags
+        .iter()
+        .find(|tag| tag.first().map(String::as_str) == Some("keyId"))
+        .and_then(|tag| tag.get(1))
+        .cloned();
+    let self_encrypted_key = normalized
+        .tags
+        .iter()
+        .find(|tag| tag.first().map(String::as_str) == Some("selfEncryptedKey"))
+        .and_then(|tag| tag.get(1))
+        .cloned();
+    let self_encrypted_link_key = normalized
+        .tags
+        .iter()
+        .find(|tag| tag.first().map(String::as_str) == Some("selfEncryptedLinkKey"))
+        .and_then(|tag| tag.get(1))
+        .cloned();
+
+    let visibility = if encrypted_key.is_some() {
+        TreeVisibility::LinkVisible
+    } else if self_encrypted_key.is_some() {
+        TreeVisibility::Private
+    } else {
+        TreeVisibility::Public
+    };
+
+    let hash = hashtree_core::from_hex(&hash_hex).map_err(|_| {
+        NostrEventStoreError::Validation(
+            "root hash must be a lowercase 64-character hex string".to_string(),
+        )
+    })?;
+    let key = match (visibility, key_hex) {
+        (TreeVisibility::Public, Some(key_hex)) => {
+            Some(hashtree_core::from_hex(&key_hex).map_err(|_| {
+                NostrEventStoreError::Validation(
+                    "root key must be a lowercase 64-character hex string".to_string(),
+                )
+            })?)
+        }
+        _ => None,
+    };
+
+    Ok(Some(ParsedHashtreeRootEvent {
+        event: normalized,
+        tree_name,
+        root_cid: Cid { hash, key },
+        visibility,
+        labels,
+        encrypted_key,
+        key_id,
+        self_encrypted_key,
+        self_encrypted_link_key,
+    }))
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NostrEventStoreOptions {
+    pub btree_order: Option<usize>,
 }
 
 impl<S: Store> NostrEventStore<S> {
     pub fn new(store: Arc<S>) -> Self {
+        Self::with_options(store, NostrEventStoreOptions::default())
+    }
+
+    pub fn with_options(store: Arc<S>, options: NostrEventStoreOptions) -> Self {
         Self {
             store: Arc::clone(&store),
-            tree: HashTree::new(HashTreeConfig::new(Arc::clone(&store)).public()),
+            tree: HashTree::new(HashTreeConfig::new(Arc::clone(&store))),
             index: BTree::new(
                 store,
                 BTreeOptions {
-                    public: true,
-                    ..BTreeOptions::default()
+                    order: options.btree_order,
                 },
             ),
+            options,
         }
     }
 
@@ -203,7 +373,8 @@ impl<S: Store> NostrEventStore<S> {
         event: StoredNostrEvent,
     ) -> Result<Cid, NostrEventStoreError> {
         let buffered_store = Arc::new(BufferedStore::new_optimistic(Arc::clone(&self.store)));
-        let buffered_writer = NostrEventStore::new(Arc::clone(&buffered_store));
+        let buffered_writer =
+            NostrEventStore::with_options(Arc::clone(&buffered_store), self.options.clone());
         let normalized = {
             let _profile = ProfileGuard::new("nostr.add.validate_event");
             buffered_writer.validate_event(event).await?
@@ -252,7 +423,8 @@ impl<S: Store> NostrEventStore<S> {
         });
 
         let buffered_store = Arc::new(BufferedStore::new_optimistic(Arc::clone(&self.store)));
-        let buffered_writer = NostrEventStore::new(Arc::clone(&buffered_store));
+        let buffered_writer =
+            NostrEventStore::with_options(Arc::clone(&buffered_store), self.options.clone());
         let next_root = if root.is_none() {
             buffered_writer.build_manifest_from_events(events).await?
         } else {
@@ -767,16 +939,48 @@ impl<S: Store> NostrEventStore<S> {
         &self,
         event: StoredNostrEvent,
     ) -> Result<StoredNostrEvent, NostrEventStoreError> {
-        Ok(StoredNostrEvent {
-            id: validate_lower_hex(&event.id, 64, "event id")?,
-            pubkey: validate_lower_hex(&event.pubkey, 64, "pubkey")?,
-            created_at: event.created_at,
-            kind: event.kind,
-            tags: event.tags,
-            content: event.content,
-            sig: validate_lower_hex(&event.sig, 128, "signature")?,
-        })
+        normalize_signed_event(event)
     }
+}
+
+fn normalize_signed_event(
+    event: StoredNostrEvent,
+) -> Result<StoredNostrEvent, NostrEventStoreError> {
+    Ok(StoredNostrEvent {
+        id: validate_lower_hex(&event.id, 64, "event id")?,
+        pubkey: validate_lower_hex(&event.pubkey, 64, "pubkey")?,
+        created_at: event.created_at,
+        kind: event.kind,
+        tags: event.tags,
+        content: event.content,
+        sig: validate_lower_hex(&event.sig, 128, "signature")?,
+    })
+}
+
+fn has_label(event: &StoredNostrEvent, label: &str) -> bool {
+    event.tags.iter().any(|tag| {
+        tag.first().map(String::as_str) == Some("l")
+            && tag.get(1).map(String::as_str) == Some(label)
+    })
+}
+
+fn has_any_label(event: &StoredNostrEvent) -> bool {
+    event
+        .tags
+        .iter()
+        .any(|tag| tag.first().map(String::as_str) == Some("l"))
+}
+
+fn unique_labels(labels: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut result = Vec::new();
+    for label in labels {
+        if label.is_empty() || !seen.insert(label.clone()) {
+            continue;
+        }
+        result.push(label);
+    }
+    result
 }
 
 fn validate_lower_hex(

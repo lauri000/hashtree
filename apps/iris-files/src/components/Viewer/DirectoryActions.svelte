@@ -5,19 +5,21 @@
    */
   import { getTree, decodeAsText } from '../../store';
   import { nostrStore } from '../../nostr';
-  import { routeStore, currentDirCidStore, treeRootStore, createTreesStore, directoryEntriesStore, createGitInfoStore } from '../../stores';
+  import { routeStore, currentDirCidStore, treeRootStore, createTreesStore, directoryEntriesStore, createGitInfoStore, permalinkSnapshotStore } from '../../stores';
   import FolderActions from '../FolderActions.svelte';
   import GitRepoView from '../Git/GitRepoView.svelte';
   import ReadmePanel from './ReadmePanel.svelte';
   import { uploadFiles } from '../../stores/upload';
-  import { LinkType, type TreeEntry as HashTreeEntry } from '@hashtree/core';
+  import { LinkType, type TreeEntry as HashTreeEntry, type TreeVisibility } from '@hashtree/core';
   import { shouldAssumeGitRepoDuringDetection, supportsGitFeatures } from '../../appType';
   import { findNearestGitRootPath } from '../../utils/gitRoot';
   import { hasAmbiguousEmptyGitRootHint } from '../../utils/gitViewContext';
   import ViewerHeader from './ViewerHeader.svelte';
   import { buildSitesHref, findDirectorySiteEntry } from '../../lib/siteHref';
+  import { buildTreeEventPermalink } from '../../lib/treeEventSnapshots';
 
   let route = $derived($routeStore);
+  let permalinkSnapshot = $derived($permalinkSnapshotStore);
   let rootCid = $derived($treeRootStore);
   let rootHash = $derived(rootCid?.hash ?? null);
   let currentDirCid = $derived($currentDirCidStore);
@@ -25,15 +27,15 @@
   let dirEntries = $derived($directoryEntriesStore);
   let entries = $derived(dirEntries.entries);
 
-  let viewedNpub = $derived(route.npub);
-  let currentTreeName = $derived(route.treeName);
+  let viewedNpub = $derived(route.npub ?? permalinkSnapshot.snapshot?.npub ?? null);
+  let currentTreeName = $derived(route.treeName ?? permalinkSnapshot.snapshot?.treeName ?? null);
   let userNpub = $derived($nostrStore.npub);
   let isLoggedIn = $derived($nostrStore.isLoggedIn);
 
   // Get current tree for visibility info
   let targetNpub = $derived(viewedNpub || userNpub);
   let treesStore = $derived(createTreesStore(targetNpub));
-  let trees = $state<Array<{ name: string; visibility?: string }>>([]);
+  let trees = $state<Array<{ name: string; visibility?: TreeVisibility }>>([]);
 
   $effect(() => {
     const store = treesStore;
@@ -248,6 +250,12 @@
 
   // Build back URL (parent directory or tree list)
   let backUrl = $derived.by(() => {
+    if (route.isPermalink && route.params.get('snapshot') === '1' && permalinkSnapshot.snapshot) {
+      if (currentPath.length > 0) {
+        return buildTreeEventPermalink(permalinkSnapshot.snapshot, currentPath.slice(0, -1), route.params.get('k'));
+      }
+      return viewedNpub ? `#/${encodeURIComponent(viewedNpub)}` : '#/';
+    }
     const parts: string[] = [];
     if (route.npub && route.treeName) {
       // In a tree - go to parent dir or tree list

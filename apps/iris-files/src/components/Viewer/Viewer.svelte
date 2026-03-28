@@ -5,7 +5,7 @@
    */
   import { toHex, nhashEncode, LinkType } from '@hashtree/core';
   import { SvelteURLSearchParams } from 'svelte/reactivity';
-  import { routeStore, treeRootStore, currentDirCidStore, directoryEntriesStore, currentHash, createTreesStore, addRecent, isViewingFileStore, resolvingPathStore, recentlyChangedFiles } from '../../stores';
+  import { routeStore, treeRootStore, currentDirCidStore, directoryEntriesStore, currentHash, createTreesStore, addRecent, isViewingFileStore, resolvingPathStore, recentlyChangedFiles, permalinkSnapshotStore } from '../../stores';
   import { getTree, decodeAsText, formatBytes } from '../../store';
   import { nostrStore, npubToPubkey } from '../../nostr';
   import { deleteEntry } from '../../actions';
@@ -29,6 +29,7 @@
   import { findNearestGitRootPath } from '../../utils/gitRoot';
   import { hasAmbiguousEmptyGitRootHint, resolveGitViewContext } from '../../utils/gitViewContext';
   import { buildSitesHref, isHtmlFilename } from '../../lib/siteHref';
+  import { buildTreeEventPermalink, ensureLatestTreeEventSnapshot, getCachedTreeEventSnapshot } from '../../lib/treeEventSnapshots';
 
   let route = $derived($routeStore);
   let rootCid = $derived($treeRootStore);
@@ -36,18 +37,19 @@
   let dirEntries = $derived($directoryEntriesStore);
   let entries = $derived(dirEntries.entries);
   let hash = $derived($currentHash);
+  let permalinkSnapshot = $derived($permalinkSnapshotStore);
 
   // Check if user can edit (owns the tree or is not viewing another user's tree)
   let userNpub = $derived($nostrStore.npub);
   let isLoggedIn = $derived($nostrStore.isLoggedIn);
-  let viewedNpub = $derived(route.npub);
+  let viewedNpub = $derived(route.npub ?? permalinkSnapshot.snapshot?.npub ?? null);
   let canEdit = $derived(!viewedNpub || viewedNpub === userNpub || !isLoggedIn);
 
   // Get current tree for visibility info
   let targetNpub = $derived(viewedNpub || userNpub);
   let treesStore = $derived(createTreesStore(targetNpub));
   let trees = $derived($treesStore);
-  let currentTreeName = $derived(route.treeName);
+  let currentTreeName = $derived(route.treeName ?? permalinkSnapshot.snapshot?.treeName ?? null);
   let currentTree = $derived(currentTreeName ? trees.find(t => t.name === currentTreeName) : null);
 
   // Get filename from URL path - uses actual isDirectory check from hashtree
@@ -210,7 +212,7 @@
 
     // For direct file permalinks (no directory listing), the rootCid IS the file's CID
     // Create a synthetic entry since there's no directory listing
-    if (route.isPermalink && rootCid && entries.length === 0) {
+    if (route.isPermalink && route.params.get('snapshot') !== '1' && rootCid && entries.length === 0) {
       return {
         name: urlFileName,
         cid: rootCid,
@@ -655,12 +657,51 @@
   });
 
   // Build permalink URL for the current file
-  let permalinkUrl = $derived.by(() => {
-    if (!entryFromStore?.cid?.hash) return null;
-    const hashHex = toHex(entryFromStore.cid.hash);
-    const keyHex = entryFromStore.cid.key ? toHex(entryFromStore.cid.key) : undefined;
-    const nhash = nhashEncode({ hash: hashHex, decryptKey: keyHex });
-    return `#/${nhash}/${encodeURIComponent(entryFromStore.name)}`;
+  let permalinkUrl = $state<string | null>(null);
+
+  $effect(() => {
+    const entry = entryFromStore;
+    const npub = viewedNpub;
+    const treeName = currentTreeName;
+    const path = [...route.path];
+    const linkKey = route.params.get('k');
+    const snapshot = permalinkSnapshot.snapshot;
+    const isSnapshotRoute = route.params.get('snapshot') === '1';
+
+    if (!entry?.cid?.hash) {
+      permalinkUrl = null;
+      return;
+    }
+
+    const fallbackHashHex = toHex(entry.cid.hash);
+    const fallbackKeyHex = entry.cid.key ? toHex(entry.cid.key) : undefined;
+    const fallbackNhash = nhashEncode({ hash: fallbackHashHex, decryptKey: fallbackKeyHex });
+    const fallbackUrl = `#/${fallbackNhash}/${encodeURIComponent(entry.name)}`;
+
+    if (isSnapshotRoute && snapshot) {
+      permalinkUrl = buildTreeEventPermalink(snapshot, path, linkKey);
+      return;
+    }
+
+    if (!npub || !treeName) {
+      permalinkUrl = fallbackUrl;
+      return;
+    }
+
+    const cached = getCachedTreeEventSnapshot(npub, treeName);
+    if (cached) {
+      permalinkUrl = buildTreeEventPermalink(cached, path, linkKey);
+      return;
+    }
+
+    permalinkUrl = fallbackUrl;
+    let cancelled = false;
+    ensureLatestTreeEventSnapshot(npub, treeName).then((resolved) => {
+      if (!cancelled && resolved) {
+        permalinkUrl = buildTreeEventPermalink(resolved, path, linkKey);
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
   });
 
   // Stable key based on CID - prevents re-render when dir updates but file hasn't changed
@@ -668,6 +709,13 @@
 
   // Build back URL (directory without file)
   let backUrl = $derived.by(() => {
+    if (route.isPermalink && route.params.get('snapshot') === '1' && permalinkSnapshot.snapshot) {
+      const parentPath = route.path.slice(0, -1);
+      if (parentPath.length > 0) {
+        return buildTreeEventPermalink(permalinkSnapshot.snapshot, parentPath, route.params.get('k'));
+      }
+      return viewedNpub ? `#/${encodeURIComponent(viewedNpub)}` : '#/';
+    }
     const dirPath = route.path.slice(0, -1);
     const parts: string[] = [];
     if (route.npub && route.treeName) {
@@ -693,7 +741,7 @@
   // Get file icon based on extension
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   function _getFileIcon(_filename: string): string {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    const ext = _filename.split('.').pop()?.toLowerCase() || '';
     const iconMap: Record<string, string> = {
       // Images
       png: 'i-lucide-image',
@@ -752,7 +800,7 @@
 
         // Stream from hashtree directly to file
         for await (const chunk of tree.readFileStream(entryFromStore.cid, { prefetch: 5 })) {
-          await writable.write(chunk);
+          await writable.write(chunk as BufferSource);
         }
         await writable.close();
         return;
@@ -852,7 +900,7 @@
           </button>
           {#if entryFromStore?.cid}
             <button
-              onclick={() => openBlossomPushModal(entryFromStore.cid, entryFromStore.name, false, route.npub ? npubToPubkey(route.npub) : undefined, route.treeName)}
+              onclick={() => openBlossomPushModal(entryFromStore.cid, entryFromStore.name, false, route.npub ? (npubToPubkey(route.npub) ?? undefined) : undefined, route.treeName ?? undefined)}
               class="btn-ghost"
               title="Push to file servers"
               data-testid="viewer-push"
@@ -918,8 +966,8 @@
           cid={entryFromStore.cid}
           fileName={urlFileName}
           type="video"
-          npub={targetNpub}
-          treeName={effectiveVideoTree.treeName}
+          npub={targetNpub ?? undefined}
+          treeName={effectiveVideoTree.treeName ?? undefined}
           path={effectiveVideoTree.path}
         />
       {/key}
@@ -964,8 +1012,8 @@
           cid={entryFromStore.cid}
           fileName={urlFileName}
           type="audio"
-          npub={targetNpub}
-          treeName={effectiveVideoTree.treeName}
+          npub={targetNpub ?? undefined}
+          treeName={effectiveVideoTree.treeName ?? undefined}
           path={effectiveVideoTree.path}
         />
       {/key}

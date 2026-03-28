@@ -6,6 +6,7 @@ export { routeStore, currentHash, parseRouteFromHash, getRouteSync, currentPathS
 export { createTreesStore, trees, storeLinkKey, getLinkKey, type TreeEntry } from './trees';
 export { createDirectoryEntriesStore, directoryEntries, directoryEntriesStore, type DirectoryEntriesState } from './directoryEntries';
 export { currentDirCidStore, currentDirHashStore, useCurrentDirCid, currentDirHash, isViewingFileStore, resolvingPathStore } from './currentDirHash';
+export { permalinkSnapshotStore, getPermalinkSnapshotSync, isSnapshotPermalinkSync, type PermalinkSnapshotState } from './permalinkSnapshot';
 export { createGitInfoStore, createGitLogStore, createGitStatusStore, type GitInfo, type CommitInfo } from './git';
 export { recentsStore, addRecent, updateRecentVisibility, removeRecentByTreeName, clearRecents, clearRecentsByPrefix, getRecentsSync, type RecentItem } from './recents';
 export { createFollowsStore, getFollowsSync, followPubkey, unfollowPubkey, invalidateFollows, type Follows } from './follows';

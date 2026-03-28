@@ -82,3 +82,12 @@ export {
   type NostrEventManifest,
   type ListEventsOptions,
 } from './events.js';
+
+export {
+  encodeSignedNostrEventJson,
+  decodeSignedNostrEventJson,
+  storeSignedNostrEventSnapshot,
+  readSignedNostrEventSnapshot,
+  parseHashtreeRootEvent,
+  type ParsedHashtreeRootEvent,
+} from './snapshot.js';

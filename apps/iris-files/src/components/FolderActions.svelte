@@ -18,9 +18,10 @@
   import { createZipFromDirectory, downloadBlob } from '../utils/compression';
   import { setUploadProgress } from '../stores/upload';
   import { readFilesFromWebkitDirectory, supportsDirectoryUpload } from '../utils/directory';
-  import { routeStore, createTreesStore } from '../stores';
+  import { routeStore, createTreesStore, getPermalinkSnapshotSync } from '../stores';
   import { isGitRepo } from '../utils/git';
   import { getFolderCreationBehavior, supportsDocumentFeatures, supportsGitFeatures } from '../appType';
+  import { buildTreeEventPermalink, ensureLatestTreeEventSnapshot, getCachedTreeEventSnapshot } from '../lib/treeEventSnapshots';
 
   interface Props {
     dirCid?: CID | null;
@@ -52,6 +53,54 @@
   });
 
   let ownTreeNames = $derived(ownTrees.map(t => t.name));
+  let permalinkHref = $state<string | null>(null);
+
+  $effect(() => {
+    const directoryCid = dirCid;
+    const npub = route.npub;
+    const treeName = route.treeName;
+    const path = [...route.path];
+    const linkKey = route.params.get('k');
+    const isSnapshotRoute = route.params.get('snapshot') === '1';
+
+    if (!directoryCid?.hash) {
+      permalinkHref = null;
+      return;
+    }
+
+    const fallbackHref = `#/${nhashEncode({
+      hash: toHex(directoryCid.hash),
+      decryptKey: directoryCid.key ? toHex(directoryCid.key) : undefined,
+    })}`;
+
+    if (isSnapshotRoute) {
+      const snapshotState = getPermalinkSnapshotSync();
+      permalinkHref = snapshotState.snapshot
+        ? buildTreeEventPermalink(snapshotState.snapshot, path, linkKey)
+        : fallbackHref;
+      return;
+    }
+
+    if (!npub || !treeName) {
+      permalinkHref = fallbackHref;
+      return;
+    }
+
+    const cached = getCachedTreeEventSnapshot(npub, treeName);
+    if (cached) {
+      permalinkHref = buildTreeEventPermalink(cached, path, linkKey);
+      return;
+    }
+
+    permalinkHref = fallbackHref;
+    let cancelled = false;
+    ensureLatestTreeEventSnapshot(npub, treeName).then((snapshot) => {
+      if (!cancelled && snapshot) {
+        permalinkHref = buildTreeEventPermalink(snapshot, path, linkKey);
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  });
 
   // Check if directory is already a git repo
   $effect(() => {
@@ -191,17 +240,21 @@
   <div class="flex flex-row flex-wrap items-center gap-1">
     <!-- Share and permalink first -->
     {#if dirCid?.hash}
-      {@const shareUrl = window.location.origin + window.location.pathname + '#' + buildRouteUrl(route.npub, route.treeName, route.path, undefined, route.params.get('k'))}
+      {@const shareUrl = route.isPermalink
+        ? window.location.href
+        : window.location.origin + window.location.pathname + '#' + buildRouteUrl(route.npub, route.treeName, route.path, undefined, route.params.get('k'))}
       <ShareButton url={shareUrl} />
-      <a
-        href="#/{nhashEncode({ hash: toHex(dirCid.hash), decryptKey: dirCid.key ? toHex(dirCid.key) : undefined })}"
-        class="btn-ghost no-underline {btnClass}"
-        title={toHex(dirCid.hash)}
-        data-testid="permalink-link"
-      >
-        <span class={dirCid.key ? "i-lucide-lock text-base" : "i-lucide-link text-base"}></span>
-        Permalink
-      </a>
+      {#if permalinkHref}
+        <a
+          href={permalinkHref}
+          class="btn-ghost no-underline {btnClass}"
+          title={toHex(dirCid.hash)}
+          data-testid="permalink-link"
+        >
+          <span class={dirCid.key ? "i-lucide-lock text-base" : "i-lucide-link text-base"}></span>
+          Permalink
+        </a>
+      {/if}
     {/if}
 
     <!-- Edit actions -->
@@ -317,7 +370,7 @@
         Fork
       </button>
       <button
-        onclick={() => openBlossomPushModal(dirCid!, forkBaseName, true, route.npub ? npubToPubkey(route.npub) : undefined, route.treeName || undefined)}
+        onclick={() => openBlossomPushModal(dirCid!, forkBaseName, true, route.npub ? (npubToPubkey(route.npub) ?? undefined) : undefined, route.treeName ?? undefined)}
         class="btn-ghost {btnClass}"
         title="Push to file servers"
         data-testid="blossom-push-btn"

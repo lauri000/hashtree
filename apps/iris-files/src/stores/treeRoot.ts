@@ -23,7 +23,7 @@ import type {
 } from '@hashtree/core';
 import { routeStore, parseRouteFromHash } from './route';
 import { getRefResolver, getResolverKey } from '../refResolver';
-import { nostrStore, decrypt } from '../nostr';
+import { nostrStore, decrypt, type NostrState } from '../nostr';
 import { npubToPubkey } from '../nostr/trees';
 import { logHtreeDebug } from '../lib/htreeDebug';
 import { syncNativeTreeRootCache } from '../lib/nativeTreeRootCache';
@@ -34,6 +34,7 @@ import {
 import { shouldWaitForLinkVisibleMetadata } from '../lib/treeRootRoutePolicy';
 import { treeRootRegistry } from '../TreeRootRegistry';
 import type { TreeRootRecord } from '../TreeRootRegistry';
+import { permalinkSnapshotStore, getPermalinkSnapshotSync, isSnapshotPermalinkSync } from './permalinkSnapshot';
 
 // Wait for worker to be ready before creating subscriptions
 // This ensures the NDK transport plugin is registered
@@ -85,6 +86,17 @@ const subscriptionState = new Map<string, {
   unsubscribeWorker: (() => void) | null;
   workerHydrateRetryTimer: ReturnType<typeof setTimeout> | null;
 }>();
+
+type ResolverListVisibilityEntry = {
+  visibility?: string;
+  selfEncryptedLinkKey?: string;
+  encryptedKey?: string;
+  selfEncryptedKey?: string;
+};
+
+function getNostrState(): NostrState {
+  return get(nostrStore) as NostrState;
+}
 
 /**
  * Build SubscribeVisibilityInfo from registry record
@@ -327,6 +339,7 @@ export function updateSubscriptionCache(
       listeners: new Set(),
       unsubscribeResolver: null,
       unsubscribeWorker: null,
+      workerHydrateRetryTimer: null,
     };
     subscriptionState.set(key, state);
   }
@@ -620,7 +633,7 @@ async function decryptEncryptionKey(
   // Decrypt linkKey, then derive contentKey from encryptedKey
   if (visibilityInfo.visibility === 'link-visible' && visibilityInfo.encryptedKey && visibilityInfo.selfEncryptedLinkKey) {
     try {
-      const state = get(nostrStore);
+      const state = getNostrState();
       if (state.pubkey) {
         const decryptedLinkKey = await decrypt(state.pubkey, visibilityInfo.selfEncryptedLinkKey);
         if (decryptedLinkKey && decryptedLinkKey.length === 64) {
@@ -638,7 +651,7 @@ async function decryptEncryptionKey(
   // Private tree - try selfEncryptedKey (owner access)
   if (visibilityInfo.selfEncryptedKey) {
     try {
-      const state = get(nostrStore);
+      const state = getNostrState();
       if (state.pubkey) {
         // Use centralized decrypt (works with both nsec and extension login)
         const decrypted = await decrypt(state.pubkey, visibilityInfo.selfEncryptedKey);
@@ -675,7 +688,7 @@ async function recoverLinkKeyForUrl(resolverKey: string): Promise<void> {
   const resolver = getRefResolver();
 
   // Use list to get fresh visibility data
-  const entries = await new Promise<{ visibility?: string; selfEncryptedLinkKey?: string }[] | null>((resolve) => {
+  const entries = await new Promise<ResolverListVisibilityEntry[] | null>((resolve) => {
     let resolved = false;
 
     const unsub = resolver.list?.(npubStr, (list) => {
@@ -689,7 +702,7 @@ async function recoverLinkKeyForUrl(resolverKey: string): Promise<void> {
         const entryTreeName = keyParts?.slice(1).join('/');
         return entryTreeName === treeName;
       });
-      resolve(entry ? [entry as { visibility?: string; selfEncryptedLinkKey?: string }] : null);
+      resolve(entry ? [entry as ResolverListVisibilityEntry] : null);
     });
 
     // Timeout after 2 seconds
@@ -708,7 +721,7 @@ async function recoverLinkKeyForUrl(resolverKey: string): Promise<void> {
   if (visibility !== 'link-visible' || !selfEncryptedLinkKey) return;
 
   try {
-    const state = get(nostrStore);
+    const state = getNostrState();
     const { nip19: nip19Mod } = await import('nostr-tools');
     const decoded = nip19Mod.decode(npubStr);
     const treePubkey = decoded.type === 'npub' ? decoded.data as string : null;
@@ -747,7 +760,7 @@ function resetResolverRetry(): void {
 
 function scheduleResolverRetry(resolverKey: string): void {
   if (resolverRetryTimer) return;
-  if (get(nostrStore).connectedRelays === 0) return;
+  if (getNostrState().connectedRelays === 0) return;
 
   resolverRetryTimer = setTimeout(() => {
     resolverRetryTimer = null;
@@ -784,8 +797,13 @@ export function createTreeRootStore(): Readable<CID | null> {
     });
     // For permalinks, use CID from route (already Uint8Array from nhashDecode)
     if (route.isPermalink && route.cid) {
-      treeRootStore.set(route.cid);
-      logHtreeDebug('treeRoot:set', { source: 'permalink' });
+      if (isSnapshotPermalinkSync(route)) {
+        treeRootStore.set(getPermalinkSnapshotSync().rootCid);
+        logHtreeDebug('treeRoot:set', { source: 'snapshot-permalink' });
+      } else {
+        treeRootStore.set(route.cid);
+        logHtreeDebug('treeRoot:set', { source: 'permalink' });
+      }
 
       // Cleanup any active subscription
       if (activeUnsubscribe) {
@@ -909,6 +927,7 @@ export function createTreeRootStore(): Readable<CID | null> {
         // Try to get visibility info - check visibilityInfo first, then fall back to resolver list
         let selfEncryptedLinkKey = visibilityInfo?.selfEncryptedLinkKey;
         let visibility = visibilityInfo?.visibility;
+        let listEntries: ResolverListVisibilityEntry[] | null = null;
 
         // If we don't have selfEncryptedLinkKey from the callback, try to get it from resolver list
         if (!selfEncryptedLinkKey) {
@@ -917,7 +936,7 @@ export function createTreeRootStore(): Readable<CID | null> {
           const resolver = getRefResolver();
 
           // Use list to get fresh visibility data
-          const entries = await new Promise<{ visibility?: string; selfEncryptedLinkKey?: string }[] | null>((resolve) => {
+          listEntries = await new Promise<ResolverListVisibilityEntry[] | null>((resolve) => {
             let resolved = false;
 
             const unsub = resolver.list?.(npubStr, (list) => {
@@ -931,7 +950,7 @@ export function createTreeRootStore(): Readable<CID | null> {
                 const entryTreeName = keyParts?.slice(1).join('/');
                 return entryTreeName === treeName;
               });
-              resolve(entry ? [entry as { visibility?: string; selfEncryptedLinkKey?: string }] : null);
+              resolve(entry ? [entry as ResolverListVisibilityEntry] : null);
             });
 
             // Timeout after 2 seconds
@@ -944,14 +963,14 @@ export function createTreeRootStore(): Readable<CID | null> {
             }, 2000);
           });
 
-          if (entries && entries[0]) {
-            selfEncryptedLinkKey = entries[0].selfEncryptedLinkKey;
-            visibility = entries[0].visibility as typeof visibility;
+          if (listEntries && listEntries[0]) {
+            selfEncryptedLinkKey = listEntries[0].selfEncryptedLinkKey;
+            visibility = listEntries[0].visibility as typeof visibility;
           }
         }
 
         if (visibility === 'link-visible') {
-          const state = get(nostrStore);
+          const state = getNostrState();
           const npubStr = resolverKey.split('/')[0];
           const { nip19: nip19Mod } = await import('nostr-tools');
           const decoded = nip19Mod.decode(npubStr);
@@ -982,14 +1001,14 @@ export function createTreeRootStore(): Readable<CID | null> {
 
               // Get encryptedKey from visibilityInfo or list
               let encryptedKeyHex = visibilityInfo?.encryptedKey;
-              if (!encryptedKeyHex && entries?.[0]) {
-                encryptedKeyHex = (entries[0] as { encryptedKey?: string }).encryptedKey;
+              if (!encryptedKeyHex && listEntries?.[0]) {
+                encryptedKeyHex = listEntries[0].encryptedKey;
               }
 
               // Get selfEncryptedKey for decrypting contentKey
               let selfEncryptedKey = visibilityInfo?.selfEncryptedKey;
-              if (!selfEncryptedKey && entries?.[0]) {
-                selfEncryptedKey = (entries[0] as { selfEncryptedKey?: string }).selfEncryptedKey;
+              if (!selfEncryptedKey && listEntries?.[0]) {
+                selfEncryptedKey = listEntries[0].selfEncryptedKey;
               }
 
               logHtreeDebug('treeRoot:migration-check', {
@@ -1024,9 +1043,11 @@ export function createTreeRootStore(): Readable<CID | null> {
                     try {
                       const resolver = getRefResolver();
                       const { fromHex } = await import('@hashtree/core');
-                      await resolver.publish(treeName, hash, {
+                      if (!resolver.publish) {
+                        throw new Error('Resolver does not support publish');
+                      }
+                      await resolver.publish(treeName, cid(hash, fromHex(contentKeyHex)), {
                         visibility: 'link-visible',
-                        key: fromHex(contentKeyHex),
                         linkKey: fromHex(linkKeyHex),
                       });
                     } catch (e) {
@@ -1068,9 +1089,11 @@ export function createTreeRootStore(): Readable<CID | null> {
 
                     // Republish with new linkKey and selfEncryptedLinkKey (fire and forget)
                     const resolver = getRefResolver();
-                    resolver.publish(treeName, hash, {
+                    if (!resolver.publish) {
+                      throw new Error('Resolver does not support publish');
+                    }
+                    resolver.publish(treeName, cid(hash, contentKey), {
                       visibility: 'link-visible',
-                      key: contentKey,
                     }).catch(e => console.debug('[treeRoot] Migration republish failed:', e));
                   } catch (e) {
                     console.debug('[treeRoot] Could not derive linkKey from contentKey:', e);
@@ -1149,8 +1172,8 @@ export function createTreeRootStore(): Readable<CID | null> {
     scheduleResolverRetry(resolverKey);
   });
 
-  let lastConnectedRelays = get(nostrStore).connectedRelays;
-  nostrStore.subscribe((state) => {
+  let lastConnectedRelays = getNostrState().connectedRelays;
+  nostrStore.subscribe((state: NostrState) => {
     const connected = state.connectedRelays;
     if (connected > 0 && lastConnectedRelays === 0 && activeResolverKey) {
       const record = treeRootRegistry.getByKey(activeResolverKey);
@@ -1259,7 +1282,7 @@ function initializePermalink(): void {
   if (typeof window === 'undefined') return;
 
   const route = parseRouteFromHash(window.location.hash);
-  if (route.isPermalink && route.cid) {
+  if (route.isPermalink && route.cid && !isSnapshotPermalinkSync(route)) {
     // route.cid is already a CID with Uint8Array fields from nhashDecode
     treeRootStore.set(route.cid);
   }
@@ -1267,6 +1290,14 @@ function initializePermalink(): void {
 
 // Initialize permalink synchronously (before currentDirHash subscribes)
 initializePermalink();
+
+permalinkSnapshotStore.subscribe((state) => {
+  const route = get(routeStore);
+  if (!isSnapshotPermalinkSync(route)) {
+    return;
+  }
+  treeRootStore.set(state.rootCid);
+});
 
 // Initialize the store once - guard against HMR re-initialization
 // Store the flag on a global to persist across HMR module reloads

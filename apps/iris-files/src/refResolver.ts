@@ -8,8 +8,9 @@ import { nip19 } from 'nostr-tools';
 import { NDKEvent, type NDKFilter, type NDKSubscriptionOptions, NDKSubscriptionCacheUsage } from 'ndk';
 import { fromHex, toHex, type RefResolver } from '@hashtree/core';
 import { createNostrRefResolver, type NostrFilter, type NostrEvent, type VisibilityCallbacks } from '@hashtree/nostr';
-import { ndk, useNostrStore, encrypt, decrypt } from './nostr';
+import { ndk, useNostrStore, encrypt, decrypt, type NostrState } from './nostr';
 import { parseRoute } from './utils/route';
+import { cacheTreeEventSnapshot } from './lib/treeEventSnapshots';
 
 // Use window to store the resolver to ensure it's truly a singleton
 // even if the module is reloaded by HMR or there are multiple bundle instances
@@ -97,7 +98,7 @@ export function getRefResolver(): RefResolver {
         // Subscribe immediately - worker NDK handles relay connections
         let sub = attachSub();
         let lastConnectedRelays = useNostrStore.getState().connectedRelays;
-        const relayUnsub = useNostrStore.subscribe((state) => {
+        const relayUnsub = useNostrStore.subscribe((state: NostrState) => {
           if (state.connectedRelays > 0 && lastConnectedRelays === 0) {
             try {
               sub.stop();
@@ -124,7 +125,20 @@ export function getRefResolver(): RefResolver {
           if (event.created_at) {
             ndkEvent.created_at = event.created_at;
           }
+          await ndkEvent.sign();
+          const rawEvent = ndkEvent.rawEvent() as NostrEvent & { sig?: string };
           await ndkEvent.publish();
+          if (rawEvent.sig) {
+            await cacheTreeEventSnapshot({
+              id: rawEvent.id ?? '',
+              pubkey: rawEvent.pubkey,
+              created_at: rawEvent.created_at ?? 0,
+              kind: rawEvent.kind,
+              tags: rawEvent.tags,
+              content: rawEvent.content,
+              sig: rawEvent.sig,
+            }).catch(() => {});
+          }
           return true;
         } catch {
           return false;

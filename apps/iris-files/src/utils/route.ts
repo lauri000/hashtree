@@ -3,13 +3,10 @@
  * Parses URL hash to extract route info without needing React Router context
  */
 import { getQueryParamsFromHash } from '../lib/router.svelte';
-import { nhashDecode } from '@hashtree/core';
+import { nhashDecode, type CID } from '@hashtree/core';
 
-/** CID in hex format for routing (hash + optional key) */
-export interface RouteCid {
-  hash: string;
-  key?: string;
-}
+/** Decoded CID for permalink routing */
+export type RouteCid = CID;
 
 export interface RouteInfo {
   npub: string | null;

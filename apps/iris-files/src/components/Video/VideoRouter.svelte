@@ -49,28 +49,61 @@
     currentPath: string;
   }
 
+  type GenericVideoRouteMatch = {
+    kind: 'generic';
+    component:
+      | typeof VideoHome
+      | typeof VideoCreate
+      | typeof SettingsLayout
+      | typeof WalletPage
+      | typeof UsersPage
+      | typeof EditProfilePage
+      | typeof VideoProfileView
+      | typeof FollowsPage
+      | typeof FollowersPage
+      | typeof VideoView;
+    params: Record<string, string>;
+  };
+
+  type SnapshotVideoRouteMatch = {
+    kind: 'nhash';
+    params: {
+      nhash: string;
+      wild: string;
+    };
+  };
+
   let { currentPath }: Props = $props();
 
   // Match route
-  let matchedRoute = $derived.by(() => {
+  let matchedRoute = $derived.by<GenericVideoRouteMatch | SnapshotVideoRouteMatch>(() => {
     // Check for nhash first (content-addressed permalink)
     const parts = currentPath.split('/').filter(Boolean);
     if (parts[0] && isNHash(parts[0])) {
-      return { component: VideoNHashView, params: { nhash: parts[0] } };
+      return {
+        kind: 'nhash',
+        params: {
+          nhash: parts[0],
+          wild: parts.slice(1).join('/'),
+        },
+      };
     }
 
     for (const route of routePatterns) {
       const match = matchRoute(route.pattern, currentPath);
       if (match.matched) {
-        return { component: route.component, params: match.params };
+        return { kind: 'generic', component: route.component, params: match.params };
       }
     }
-    return { component: VideoHome, params: {} };
+    return { kind: 'generic', component: VideoHome, params: {} };
   });
 
-  let MatchedRouteComponent = $derived(matchedRoute.component);
 </script>
 
 {#key currentPath}
-  <MatchedRouteComponent {...matchedRoute.params} />
+  {#if matchedRoute.kind === 'nhash'}
+    <VideoNHashView {...matchedRoute.params} />
+  {:else}
+    <matchedRoute.component {...(matchedRoute.params as any)} />
+  {/if}
 {/key}

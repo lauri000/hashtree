@@ -56,6 +56,7 @@
   import { resolveFeedVideoRootCidAsync } from '../../lib/videoFeedRoot';
   import { getVideoDisplayTitle } from '../../lib/videoDisplayTitle';
   import { setRecentVideoCardInfo } from '../../stores/homeFeedCache';
+  import { buildTreeEventPermalink, ensureLatestTreeEventSnapshot, getCachedTreeEventSnapshot } from '../../lib/treeEventSnapshots';
 
   let deleting = $state(false);
   let editing = $state(false);
@@ -817,6 +818,35 @@ async function syncTreeRootToWorker(
   let videoNhash = $derived.by(() => {
     if (!videoCid) return undefined;
     return nhashEncode(videoCid);
+  });
+  let snapshotPermalinkHref = $state<string | null>(null);
+
+  $effect(() => {
+    const currentNpub = npub;
+    const currentTreeName = treeName;
+    const currentVideoIdValue = currentVideoId;
+    const linkKey = $routeStore.params.get('k');
+
+    if (!currentNpub || !currentTreeName) {
+      snapshotPermalinkHref = videoNhash ? `#/${videoNhash}` : null;
+      return;
+    }
+
+    const permalinkPath = currentVideoIdValue ? [currentVideoIdValue] : [];
+    const cached = getCachedTreeEventSnapshot(currentNpub, currentTreeName);
+    if (cached) {
+      snapshotPermalinkHref = buildTreeEventPermalink(cached, permalinkPath, linkKey);
+      return;
+    }
+
+    snapshotPermalinkHref = videoNhash ? `#/${videoNhash}` : null;
+    let cancelled = false;
+    ensureLatestTreeEventSnapshot(currentNpub, currentTreeName).then((snapshot) => {
+      if (!cancelled && snapshot) {
+        snapshotPermalinkHref = buildTreeEventPermalink(snapshot, permalinkPath, linkKey);
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
   });
 
   // Subscribe to trees store to get visibility and createdAt from Nostr event
@@ -1685,8 +1715,11 @@ async function syncTreeRootToWorker(
   }
 
   function handlePermalink() {
+    if (snapshotPermalinkHref) {
+      window.location.hash = snapshotPermalinkHref.slice(1);
+      return;
+    }
     if (!videoNhash) return;
-    // Navigate to the nhash permalink (video file CID)
     window.location.hash = `#/${videoNhash}`;
   }
 
@@ -2317,7 +2350,7 @@ async function syncTreeRootToWorker(
             </button>
           {/if}
           <ShareButton url={window.location.href} />
-          <button onclick={handlePermalink} class="btn-ghost p-2" title="Permalink (content-addressed)" disabled={!videoNhash}>
+          <button onclick={handlePermalink} class="btn-ghost p-2" title="Permalink" disabled={!snapshotPermalinkHref && !videoNhash}>
             <span class="i-lucide-link text-lg"></span>
           </button>
           <button onclick={handleDownload} class="btn-ghost p-2" title="Download" disabled={!videoCid}>

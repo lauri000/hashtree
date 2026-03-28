@@ -4,28 +4,56 @@
    * The nhash points to the video file content; directory metadata is optional.
    */
   import { untrack } from 'svelte';
-  import { nhashDecode, type CID } from '@hashtree/core';
+  import { LinkType, nhashDecode, type CID } from '@hashtree/core';
   import { getTree } from '../../store';
   import ShareButton from '../ShareButton.svelte';
   import { getNhashFileUrl } from '../../lib/mediaUrl';
   import VideoComments from './VideoComments.svelte';
   import VideoDescription from './VideoDescription.svelte';
   import VideoLayout from './VideoLayout.svelte';
+  import { routeStore } from '../../stores';
+  import {
+    buildTreeEventPermalink,
+    ensureLatestTreeEventSnapshot,
+    readTreeEventSnapshot,
+    resolveSnapshotRootCid,
+    type TreeEventSnapshotInfo,
+  } from '../../lib/treeEventSnapshots';
+  import { Avatar, Name } from '../User';
 
   interface Props {
     nhash: string;
+    wild?: string;
   }
 
-  let { nhash }: Props = $props();
+  let { nhash, wild = '' }: Props = $props();
 
   let videoFileName = $state<string>('video.mp4');
   let error = $state<string | null>(null);
   let videoCid = $state<CID | null>(null);
   let videoRef: HTMLVideoElement | undefined = $state();
+  let snapshotInfo = $state<TreeEventSnapshotInfo | null>(null);
+  let newerSnapshot = $state<TreeEventSnapshotInfo | null>(null);
 
   // Metadata
   let videoTitle = $state<string>('');
   let videoDescription = $state<string>('');
+  let route = $derived($routeStore);
+  let isSnapshotPermalink = $derived(route.params.get('snapshot') === '1');
+  let snapshotPath = $derived(wild ? wild.split('/').filter(Boolean).map((segment) => decodeURIComponent(segment)) : []);
+  let ownerNpub = $derived(snapshotInfo?.npub ?? null);
+  let ownerPubkey = $derived(snapshotInfo?.event.pubkey ?? null);
+  let latestSnapshotHref = $derived.by(() =>
+    newerSnapshot
+      ? buildTreeEventPermalink(newerSnapshot, snapshotPath, route.params.get('k'))
+      : null
+  );
+  let currentHref = $derived.by(() => {
+    if (snapshotInfo) {
+      return buildTreeEventPermalink(snapshotInfo, snapshotPath, route.params.get('k'));
+    }
+    return `#/${nhash}`;
+  });
 
   let normalizedNhash = $derived.by(() => {
     if (typeof nhash !== 'string') return '';
@@ -65,11 +93,17 @@
     videoTitle = '';
     videoDescription = '';
     videoFileName = 'video.mp4';
+    snapshotInfo = null;
+    newerSnapshot = null;
 
     const cid = decodedCid;
     if (cid) {
       videoCid = cid;
-      untrack(() => loadVideoDirectory(cid));
+      if (isSnapshotPermalink) {
+        untrack(() => loadSnapshotPermalink(cid, snapshotPath, route.params.get('k')));
+      } else {
+        untrack(() => loadVideoDirectory(cid));
+      }
     } else {
       videoCid = null;
     }
@@ -129,6 +163,56 @@
     }
   }
 
+  function isNewerSnapshot(candidate: TreeEventSnapshotInfo, current: TreeEventSnapshotInfo): boolean {
+    if (candidate.event.created_at !== current.event.created_at) {
+      return candidate.event.created_at > current.event.created_at;
+    }
+    return candidate.event.id > current.event.id;
+  }
+
+  async function loadSnapshotPermalink(snapshotCid: CID, path: string[], linkKey: string | null) {
+    try {
+      const snapshot = await readTreeEventSnapshot(snapshotCid);
+      if (!snapshot) {
+        error = 'Invalid tree snapshot permalink';
+        return;
+      }
+
+      snapshotInfo = snapshot;
+      const rootCid = await resolveSnapshotRootCid(snapshot, linkKey);
+      if (!rootCid) {
+        error = 'Missing decryption key for tree snapshot';
+        return;
+      }
+
+      if (path.length === 0) {
+        await loadVideoDirectory(rootCid);
+      } else {
+        const tree = getTree();
+        const resolved = await tree.resolvePath(rootCid, path.join('/'));
+        if (!resolved) {
+          error = 'Video path not found in tree snapshot';
+          return;
+        }
+
+        if (resolved.type === LinkType.Dir) {
+          await loadVideoDirectory(resolved.cid);
+        } else {
+          videoCid = resolved.cid;
+          videoFileName = path[path.length - 1] || 'video.mp4';
+        }
+      }
+
+      const latest = await ensureLatestTreeEventSnapshot(snapshot.npub, snapshot.treeName);
+      if (latest && isNewerSnapshot(latest, snapshot)) {
+        newerSnapshot = latest;
+      }
+    } catch (e) {
+      console.error('[VideoNHashView] Failed to load tree snapshot:', e);
+      error = 'Failed to load tree snapshot';
+    }
+  }
+
   function handleDownload() {
     if (!activeVideoCid) return;
     const baseUrl = getNhashFileUrl(activeVideoCid, videoFileName || 'video.mp4');
@@ -166,6 +250,21 @@
     <h1 class="text-xl font-semibold text-text-1 mb-4" data-testid="video-title">{videoTitle}</h1>
   {/if}
 
+  {#if ownerNpub && ownerPubkey}
+    <div class="flex items-center gap-2 flex-wrap mb-4">
+      <a href={`#/${ownerNpub}/profile`} class="inline-flex items-center gap-2 hover:opacity-80">
+        <Avatar pubkey={ownerPubkey} size={24} showBadge={true} />
+        <Name pubkey={ownerPubkey} class="text-sm text-text-2" />
+      </a>
+      <span class="text-xs text-text-3">Verified from signed tree snapshot</span>
+      {#if latestSnapshotHref}
+        <a href={latestSnapshotHref} class="btn-ghost no-underline h-7 px-2 text-xs">
+          Newer version
+        </a>
+      {/if}
+    </div>
+  {/if}
+
   <div class="flex items-center gap-2 flex-wrap mb-4">
     <ShareButton url={window.location.href} />
     <button onclick={handleDownload} class="btn-ghost" disabled={!videoCid} title="Download">
@@ -175,14 +274,18 @@
   </div>
 
   {#if videoDescription}
-    <VideoDescription description={videoDescription} />
+    <VideoDescription text={videoDescription} />
   {/if}
 
   <div class="bg-surface-1 rounded-lg p-3 text-sm text-text-3 my-4">
-    <p>This is a content-addressed permalink. The video is identified by its content hash, not by any user or channel.</p>
+    {#if snapshotInfo}
+      <p>This permalink is anchored to a signed tree snapshot stored on hashtree, so the author and version are verifiable.</p>
+    {:else}
+      <p>This is a content-addressed permalink. The video is identified by its content hash, not by any user or channel.</p>
+    {/if}
   </div>
 
   <VideoComments {nhash} filename={videoFileName || 'video.mp4'} />
 {/snippet}
 
-<VideoLayout {videoPlayer} {videoContent} currentHref={`#/${nhash}`} />
+<VideoLayout {videoPlayer} {videoContent} {currentHref} />
