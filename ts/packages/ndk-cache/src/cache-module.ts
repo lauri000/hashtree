@@ -163,6 +163,8 @@ export class DexieCacheModuleManager {
         // Reopen the database
         await this.moduleDb.open();
 
+        const moduleDb = this.moduleDb;
+
         // Run migrations
         for (let version = currentVersion + 1; version <= module.version; version++) {
             if (module.migrations[version]) {
@@ -173,7 +175,7 @@ export class DexieCacheModuleManager {
                     toVersion: version,
 
                     async getCollection(name: string): Promise<CacheModuleCollection<any>> {
-                        return new DexieModuleCollection(this.moduleDb, `${module.namespace}_${name}`);
+                        return new DexieModuleCollection(moduleDb, `${module.namespace}_${name}`);
                     },
 
                     async createCollection(name: string, definition: any): Promise<void> {

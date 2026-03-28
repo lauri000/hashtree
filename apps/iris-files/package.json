@@ -44,7 +44,6 @@
     "release:iris": "node ./scripts/release-site.mjs",
     "release:git:iris": "node ./scripts/release-site.mjs git",
     "release:all:iris": "node ./scripts/release-site.mjs all",
-    "build:iris": "pnpm run build:deps && vite build --config vite.iris.config.ts",
     "build:maps": "pnpm run build:deps && vite build --config vite.maps.config.ts",
     "build:boards": "pnpm run build:deps && vite build --config vite.boards.config.ts",
     "build:analyze": "vite build && echo '\nBundle stats: dist/stats.html\nBundle list: dist/stats-list.txt'",

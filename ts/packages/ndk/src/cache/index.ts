@@ -1,4 +1,4 @@
-import type NDK from "src/index.js";
+import type { NDK } from "../ndk/index.js";
 import type { NDKEvent, NDKEventId } from "../events/index.js";
 import type { NDKRelay } from "../relay/index.js";
 import type { NDKRelayInformation } from "../relay/nip11.js";

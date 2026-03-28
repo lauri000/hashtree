@@ -9,15 +9,16 @@
         "forceConsistentCasingInFileNames": true,
         "inlineSources": false,
         "isolatedModules": true,
-        "moduleResolution": "node",
+        "moduleResolution": "bundler",
         "noUnusedLocals": false,
         "noUnusedParameters": false,
         "preserveWatchOutput": true,
         "skipLibCheck": true,
         "strict": true,
+        "types": ["node"],
         "allowJs": true,
         "checkJs": true
     },
     "include": ["src/**/*.d.ts", "src/**/*.js", "src/**/*.ts"],
-    "exclude": ["dist", "build", "node_modules"]
+    "exclude": ["dist", "build", "node_modules", "src/**/*.test.ts"]
 }
