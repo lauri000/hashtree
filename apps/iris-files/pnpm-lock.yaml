@@ -110,12 +110,6 @@ importers:
       ndk:
         specifier: workspace:*
         version: link:../../ts/packages/ndk
-      ndk-cache:
-        specifier: workspace:*
-        version: link:../../ts/packages/ndk-cache
-      nostr-social-graph:
-        specifier: workspace:*
-        version: link:../../ts/packages/nostr-social-graph
       nostr-tools:
         specifier: ^2.18.2
         version: 2.23.1(typescript@5.9.3)
@@ -450,6 +444,21 @@ importers:
       '@types/debug':
         specifier: ^4.1.12
         version: 4.1.12
+      '@types/node':
+        specifier: ^22.19.8
+        version: 22.19.11
+      fake-indexeddb:
+        specifier: ^6.2.4
+        version: 6.2.5
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.6.1)(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.2)
+      typescript:
+        specifier: ^5.3.0
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.2
+        version: 4.1.2(@types/node@22.19.11)(happy-dom@15.11.7)(vite@6.4.1(@types/node@22.19.11)(jiti@2.6.1)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2))
 
   ../../ts/packages/nostr-social-graph:
     dependencies:
