@@ -25,12 +25,16 @@ export interface BoardCard {
   assigneeNpubs: string[];
   attachments: BoardCardAttachment[];
   comments: BoardCardComment[];
+  updatedAt?: number;
+  updatedBy?: string;
 }
 
 export interface BoardColumn {
   id: string;
   title: string;
   cards: BoardCard[];
+  updatedAt?: number;
+  updatedBy?: string;
 }
 
 export interface BoardState {
@@ -40,12 +44,16 @@ export interface BoardState {
   columns: BoardColumn[];
   updatedAt: number;
   updatedBy: string;
+  orderUpdatedAt?: number;
+  orderUpdatedBy?: string;
 }
 
 export interface BoardOrder {
   version: 1;
   columns: string[];
   cardsByColumn: Record<string, string[]>;
+  updatedAt: number;
+  updatedBy: string;
 }
 
 export interface BoardMeta {
@@ -54,6 +62,24 @@ export interface BoardMeta {
   title: string;
   updatedAt: number;
   updatedBy: string;
+}
+
+export interface BoardColumnMeta {
+  id: string;
+  title: string;
+  updatedAt: number;
+  updatedBy: string;
+}
+
+export interface BoardPathTombstone {
+  path: string;
+  updatedAt: number;
+  updatedBy: string;
+}
+
+export interface BoardTombstones {
+  version: 1;
+  entries: BoardPathTombstone[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -174,7 +200,12 @@ function normalizeComment(raw: unknown, fallbackCommentId: string): BoardCardCom
   };
 }
 
-function normalizeCard(raw: unknown, fallbackCardId: string): BoardCard | null {
+function normalizeCard(
+  raw: unknown,
+  fallbackCardId: string,
+  fallbackUpdatedAt: number = 0,
+  fallbackUpdatedBy: string = ''
+): BoardCard | null {
   if (!isRecord(raw)) return null;
   const attachments: BoardCardAttachment[] = [];
   const rawAttachments = Array.isArray(raw.attachments) ? raw.attachments : [];
@@ -197,10 +228,17 @@ function normalizeCard(raw: unknown, fallbackCardId: string): BoardCard | null {
     assigneeNpubs: normalizeStringList(raw.assigneeNpubs),
     attachments,
     comments,
+    updatedAt: normalizeTimestamp(raw.updatedAt, fallbackUpdatedAt),
+    updatedBy: normalizeString(raw.updatedBy, fallbackUpdatedBy),
   };
 }
 
-function normalizeColumn(raw: unknown, fallbackColumnId: string): BoardColumn | null {
+function normalizeColumn(
+  raw: unknown,
+  fallbackColumnId: string,
+  fallbackUpdatedAt: number = 0,
+  fallbackUpdatedBy: string = ''
+): BoardColumn | null {
   if (!isRecord(raw)) return null;
 
   const id = normalizeString(raw.id, fallbackColumnId);
@@ -209,11 +247,17 @@ function normalizeColumn(raw: unknown, fallbackColumnId: string): BoardColumn | 
   const cards: BoardCard[] = [];
   const rawCards = Array.isArray(raw.cards) ? raw.cards : [];
   for (let index = 0; index < rawCards.length; index += 1) {
-    const card = normalizeCard(rawCards[index], `${id}-card-${index + 1}`);
+    const card = normalizeCard(rawCards[index], `${id}-card-${index + 1}`, fallbackUpdatedAt, fallbackUpdatedBy);
     if (card) cards.push(card);
   }
 
-  return { id, title, cards };
+  return {
+    id,
+    title,
+    cards,
+    updatedAt: normalizeTimestamp(raw.updatedAt, fallbackUpdatedAt),
+    updatedBy: normalizeString(raw.updatedBy, fallbackUpdatedBy),
+  };
 }
 
 function randomId(): string {
@@ -238,12 +282,14 @@ export function createInitialBoardState(
     boardId,
     title,
     columns: [
-      { id: randomId(), title: 'Todo', cards: [] },
-      { id: randomId(), title: 'Doing', cards: [] },
-      { id: randomId(), title: 'Done', cards: [] },
+      { id: randomId(), title: 'Todo', cards: [], updatedAt, updatedBy: userNpub },
+      { id: randomId(), title: 'Doing', cards: [], updatedAt, updatedBy: userNpub },
+      { id: randomId(), title: 'Done', cards: [], updatedAt, updatedBy: userNpub },
     ],
     updatedAt,
     updatedBy: userNpub,
+    orderUpdatedAt: updatedAt,
+    orderUpdatedBy: userNpub,
   };
 }
 
@@ -260,10 +306,15 @@ export function parseBoardState(
   const parsed = parseJsonRecord(raw);
   if (!parsed) return null;
 
+  const boardUpdatedAt = normalizeTimestamp(parsed.updatedAt, 0);
+  const boardUpdatedBy = normalizeString(parsed.updatedBy, fallbackUpdatedBy);
+  const orderUpdatedAt = normalizeTimestamp(parsed.orderUpdatedAt, boardUpdatedAt);
+  const orderUpdatedBy = normalizeString(parsed.orderUpdatedBy, boardUpdatedBy);
+
   const columns: BoardColumn[] = [];
   const rawColumns = Array.isArray(parsed.columns) ? parsed.columns : [];
   for (let index = 0; index < rawColumns.length; index += 1) {
-    const column = normalizeColumn(rawColumns[index], `column-${index + 1}`);
+    const column = normalizeColumn(rawColumns[index], `column-${index + 1}`, boardUpdatedAt, boardUpdatedBy);
     if (column) columns.push(column);
   }
 
@@ -272,8 +323,10 @@ export function parseBoardState(
     boardId: normalizeString(parsed.boardId, fallbackBoardId),
     title: normalizeString(parsed.title, fallbackTitle),
     columns,
-    updatedAt: normalizeTimestamp(parsed.updatedAt, Date.now()),
-    updatedBy: normalizeString(parsed.updatedBy, fallbackUpdatedBy),
+    updatedAt: boardUpdatedAt || Date.now(),
+    updatedBy: boardUpdatedBy,
+    orderUpdatedAt,
+    orderUpdatedBy,
   };
 }
 
@@ -313,14 +366,26 @@ export function serializeBoardOrder(board: BoardState): string {
     cardsByColumn: Object.fromEntries(
       board.columns.map(column => [column.id, column.cards.map(card => card.id)])
     ),
+    updatedAt: board.orderUpdatedAt ?? board.updatedAt,
+    updatedBy: board.orderUpdatedBy ?? board.updatedBy,
   };
   return JSON.stringify(order, null, 2) + '\n';
 }
 
-export function parseBoardOrder(raw: unknown): BoardOrder {
+export function parseBoardOrder(
+  raw: unknown,
+  fallbackUpdatedAt: number = 0,
+  fallbackUpdatedBy: string = ''
+): BoardOrder {
   const parsed = parseJsonRecord(raw);
   if (!parsed) {
-    return { version: 1, columns: [], cardsByColumn: {} };
+    return {
+      version: 1,
+      columns: [],
+      cardsByColumn: {},
+      updatedAt: fallbackUpdatedAt,
+      updatedBy: fallbackUpdatedBy,
+    };
   }
 
   const columns = Array.isArray(parsed.columns)
@@ -346,20 +411,34 @@ export function parseBoardOrder(raw: unknown): BoardOrder {
     version: 1,
     columns,
     cardsByColumn,
+    updatedAt: normalizeTimestamp(parsed.updatedAt, fallbackUpdatedAt),
+    updatedBy: normalizeString(parsed.updatedBy, fallbackUpdatedBy),
   };
 }
 
 export function serializeColumnMeta(column: BoardColumn): string {
-  return JSON.stringify({ id: column.id, title: column.title }, null, 2) + '\n';
+  return JSON.stringify({
+    id: column.id,
+    title: column.title,
+    updatedAt: column.updatedAt ?? 0,
+    updatedBy: column.updatedBy ?? '',
+  }, null, 2) + '\n';
 }
 
-export function parseColumnMeta(raw: unknown, fallbackColumnId: string): { id: string; title: string } | null {
+export function parseColumnMeta(
+  raw: unknown,
+  fallbackColumnId: string,
+  fallbackUpdatedAt: number = 0,
+  fallbackUpdatedBy: string = ''
+): BoardColumnMeta | null {
   const parsed = parseJsonRecord(raw);
   if (!parsed) return null;
 
   return {
     id: normalizeString(parsed.id, fallbackColumnId),
     title: normalizeString(parsed.title, 'Untitled Column'),
+    updatedAt: normalizeTimestamp(parsed.updatedAt, fallbackUpdatedAt),
+    updatedBy: normalizeString(parsed.updatedBy, fallbackUpdatedBy),
   };
 }
 
@@ -371,18 +450,67 @@ export function serializeCardData(card: BoardCard): string {
     assigneeNpubs: card.assigneeNpubs,
     attachments: card.attachments,
     comments: card.comments,
+    updatedAt: card.updatedAt ?? 0,
+    updatedBy: card.updatedBy ?? '',
   }, null, 2) + '\n';
 }
 
-export function parseCardData(raw: unknown, fallbackCardId: string): BoardCard | null {
+export function parseCardData(
+  raw: unknown,
+  fallbackCardId: string,
+  fallbackUpdatedAt: number = 0,
+  fallbackUpdatedBy: string = ''
+): BoardCard | null {
   const parsed = parseJsonRecord(raw);
   if (!parsed) return null;
-  return normalizeCard(parsed, fallbackCardId);
+  return normalizeCard(parsed, fallbackCardId, fallbackUpdatedAt, fallbackUpdatedBy);
 }
 
 // Backward-compatible aliases while moving storage format utilities.
 export const serializeCardMarkdown = serializeCardData;
 export const parseCardMarkdown = parseCardData;
+
+export function createInitialBoardTombstones(): BoardTombstones {
+  return {
+    version: 1,
+    entries: [],
+  };
+}
+
+export function serializeBoardTombstones(tombstones: BoardTombstones): string {
+  return JSON.stringify({
+    version: 1,
+    entries: tombstones.entries.map(entry => ({
+      path: entry.path,
+      updatedAt: entry.updatedAt,
+      updatedBy: entry.updatedBy,
+    })),
+  }, null, 2) + '\n';
+}
+
+export function parseBoardTombstones(raw: unknown, fallbackUpdatedBy: string = ''): BoardTombstones {
+  const parsed = parseJsonRecord(raw);
+  if (!parsed || !Array.isArray(parsed.entries)) {
+    return createInitialBoardTombstones();
+  }
+
+  const entries: BoardPathTombstone[] = [];
+  for (const rawEntry of parsed.entries) {
+    if (!isRecord(rawEntry)) continue;
+    const path = normalizeString(rawEntry.path, '');
+    if (!path) continue;
+    entries.push({
+      path,
+      updatedAt: normalizeTimestamp(rawEntry.updatedAt, 0),
+      updatedBy: normalizeString(rawEntry.updatedBy, fallbackUpdatedBy),
+    });
+  }
+
+  return {
+    version: 1,
+    entries,
+  };
+}
 
 export function cloneBoardState(state: BoardState): BoardState {
   return {
@@ -399,5 +527,12 @@ export function cloneBoardState(state: BoardState): BoardState {
         })),
       })),
     })),
+  };
+}
+
+export function cloneBoardTombstones(tombstones: BoardTombstones): BoardTombstones {
+  return {
+    version: 1,
+    entries: tombstones.entries.map(entry => ({ ...entry })),
   };
 }

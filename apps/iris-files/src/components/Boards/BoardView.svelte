@@ -30,38 +30,54 @@
     BOARD_META_FILE,
     BOARD_ORDER_FILE,
     BOARD_PERMISSIONS_FILE,
+    BOARD_TOMBSTONES_FILE,
     addBoardPermission,
+    addBoardCard as addBoardCardToState,
+    addBoardColumn as addBoardColumnToState,
+    cloneBoardTombstones,
     canManageBoard,
     canWriteBoard,
     cloneBoardState,
     createBoardId,
     createInitialBoardPermissions,
     createInitialBoardState,
+    createInitialBoardTombstones,
     buildBoardVisibilityQueryString,
     isProtectedBoardWithoutAccess as computeProtectedBoardWithoutAccess,
     isValidNpub,
+    mergeBoardSnapshots,
+    moveBoardCard as moveBoardCardInState,
+    moveBoardColumn as moveBoardColumnInState,
+    mutateBoardCard as mutateBoardCardInState,
     parseBoardMeta,
     parseBoardOrder,
+    parseBoardTombstones,
     parseCardData,
     parseColumnMeta,
     parseBoardPermissions,
     parseBoardState,
+    removeBoardCard as removeBoardCardFromState,
+    removeBoardColumn as removeBoardColumnFromState,
     resolveBoardPublishLabels,
     removeBoardPermission,
     resolveBoardVisibility,
     resolveBoardVisibilityLinkKey,
     serializeBoardMeta,
     serializeBoardOrder,
+    serializeBoardTombstones,
     serializeCardData,
     serializeColumnMeta,
     serializeBoardPermissions,
+    updateBoardColumnTitle as updateBoardColumnTitleInState,
     type BoardCardAttachment,
     type BoardCardComment,
     type BoardCard,
     type BoardColumn,
+    type BoardMergeSource,
     type BoardPermissions,
     type BoardRole,
     type BoardState,
+    type BoardTombstones,
   } from '../../lib/boards';
 
   let route = $derived($routeStore);
@@ -106,6 +122,7 @@
   let error = $state<string | null>(null);
   let board = $state<BoardState | null>(null);
   let permissions = $state<BoardPermissions | null>(null);
+  let tombstones = $state<BoardTombstones>(createInitialBoardTombstones());
 
   let showPermissionsModal = $state(false);
   let permissionRole = $state<BoardRole>('writer');
@@ -609,6 +626,14 @@
     return ordered;
   }
 
+  function latestTombstoneUpdatedAt(snapshot: BoardTombstones | null | undefined): number {
+    let latest = 0;
+    for (const entry of snapshot?.entries ?? []) {
+      if (entry.updatedAt > latest) latest = entry.updatedAt;
+    }
+    return latest;
+  }
+
   async function resolveBoardDirectory(root: CID, boardPath: string[]): Promise<CID | null> {
     const tree = getTree();
     if (boardPath.length === 0) return root;
@@ -625,7 +650,7 @@
     fallbackBoardId: string,
     fallbackTitle: string,
     fallbackUpdatedBy: string
-  ): Promise<{ board: BoardState | null; permissions: BoardPermissions | null; incomplete: boolean }> {
+  ): Promise<{ board: BoardState | null; permissions: BoardPermissions | null; tombstones: BoardTombstones; incomplete: boolean }> {
     const tree = getTree();
     const entries = await tree.listDirectory(dirCid);
     let incomplete = false;
@@ -633,6 +658,7 @@
     const boardMetaEntry = findBlobEntry(entries, BOARD_META_FILE);
     const boardOrderEntry = findBlobEntry(entries, BOARD_ORDER_FILE);
     const permissionsEntry = findBlobEntry(entries, BOARD_PERMISSIONS_FILE);
+    const tombstonesEntry = findBlobEntry(entries, BOARD_TOMBSTONES_FILE);
     const columnsDirEntry = findDirEntry(entries, BOARD_COLUMNS_DIR);
 
     const boardMetaData = boardMetaEntry ? await tree.readFile(boardMetaEntry.cid) : null;
@@ -650,9 +676,25 @@
       ? parseBoardPermissions(permissionsData, ownerNpub)
       : null;
 
+    const tombstonesData = tombstonesEntry ? await tree.readFile(tombstonesEntry.cid) : null;
+    if (tombstonesEntry && tombstonesData === null) incomplete = true;
+    const parsedTombstones = tombstonesData
+      ? parseBoardTombstones(tombstonesData, fallbackUpdatedBy)
+      : createInitialBoardTombstones();
+
     const boardOrderData = boardOrderEntry ? await tree.readFile(boardOrderEntry.cid) : null;
     if (boardOrderEntry && boardOrderData === null) incomplete = true;
-    const boardOrder = boardOrderData ? parseBoardOrder(boardOrderData) : parseBoardOrder(null);
+    const boardOrder = boardOrderData
+      ? parseBoardOrder(
+        boardOrderData,
+        boardMeta?.updatedAt ?? legacyBoardState?.orderUpdatedAt ?? legacyBoardState?.updatedAt ?? 0,
+        boardMeta?.updatedBy ?? legacyBoardState?.orderUpdatedBy ?? legacyBoardState?.updatedBy ?? fallbackUpdatedBy,
+      )
+      : parseBoardOrder(
+        null,
+        boardMeta?.updatedAt ?? legacyBoardState?.orderUpdatedAt ?? legacyBoardState?.updatedAt ?? 0,
+        boardMeta?.updatedBy ?? legacyBoardState?.orderUpdatedBy ?? legacyBoardState?.updatedBy ?? fallbackUpdatedBy,
+      );
 
     const parsedColumns: BoardColumn[] = [];
     if (columnsDirEntry) {
@@ -666,8 +708,18 @@
         const columnMetaData = columnMetaEntry ? await tree.readFile(columnMetaEntry.cid) : null;
         if (columnMetaEntry && columnMetaData === null) incomplete = true;
         const columnMeta = columnMetaData
-          ? parseColumnMeta(columnMetaData, columnEntry.name)
-          : { id: columnEntry.name, title: 'Untitled Column' };
+          ? parseColumnMeta(
+            columnMetaData,
+            columnEntry.name,
+            boardMeta?.updatedAt ?? legacyBoardState?.updatedAt ?? 0,
+            boardMeta?.updatedBy ?? legacyBoardState?.updatedBy ?? fallbackUpdatedBy,
+          )
+          : {
+            id: columnEntry.name,
+            title: 'Untitled Column',
+            updatedAt: boardMeta?.updatedAt ?? legacyBoardState?.updatedAt ?? 0,
+            updatedBy: boardMeta?.updatedBy ?? legacyBoardState?.updatedBy ?? fallbackUpdatedBy,
+          };
         if (!columnMeta) continue;
 
         const cards: BoardCard[] = [];
@@ -689,7 +741,12 @@
               continue;
             }
             const fallbackCardId = cardIdFromFilename(cardEntry.name);
-            const card = parseCardData(cardData, fallbackCardId);
+            const card = parseCardData(
+              cardData,
+              fallbackCardId,
+              columnMeta.updatedAt,
+              columnMeta.updatedBy,
+            );
             if (!card) continue;
 
             const attachmentDir = attachmentDirs[card.id] || attachmentDirs[fallbackCardId];
@@ -725,6 +782,8 @@
           id: columnMeta.id,
           title: columnMeta.title,
           cards,
+          updatedAt: columnMeta.updatedAt,
+          updatedBy: columnMeta.updatedBy,
         });
       }
     }
@@ -745,6 +804,8 @@
         columns: orderedColumns,
         updatedAt: boardMeta?.updatedAt || parsedPermissions?.updatedAt || Date.now(),
         updatedBy: boardMeta?.updatedBy || parsedPermissions?.updatedBy || fallbackUpdatedBy,
+        orderUpdatedAt: boardOrder.updatedAt || boardMeta?.updatedAt || parsedPermissions?.updatedAt || Date.now(),
+        orderUpdatedBy: boardOrder.updatedBy || boardMeta?.updatedBy || parsedPermissions?.updatedBy || fallbackUpdatedBy,
       };
 
       if (parsedBoard.columns.length === 0 && legacyBoardState?.columns.length) {
@@ -754,14 +815,19 @@
       parsedBoard = legacyBoardState;
     }
 
-    return { board: parsedBoard, permissions: parsedPermissions, incomplete };
+    return {
+      board: parsedBoard,
+      permissions: parsedPermissions,
+      tombstones: parsedTombstones,
+      incomplete,
+    };
   }
 
   async function loadParticipantData(
     participantNpub: string,
     treeName: string,
     boardPath: string[]
-  ): Promise<{ board: BoardState | null; permissions: BoardPermissions | null; incomplete: boolean } | null> {
+  ): Promise<{ board: BoardState | null; permissions: BoardPermissions | null; tombstones: BoardTombstones; incomplete: boolean } | null> {
     let participantRoot: CID | null = null;
 
     if (participantNpub === viewedNpub) {
@@ -854,10 +920,13 @@
         ownerNpub
       );
 
-      const permissionCandidates: BoardPermissions[] = [localPermissions];
-      const boardCandidates: BoardState[] = [];
+      const mergeSources: BoardMergeSource[] = [{
+        source: viewedNpub || ownerNpub,
+        board: localData.board,
+        permissions: localPermissions,
+        tombstones: localData.tombstones,
+      }];
       let hasIncompleteData = localData.incomplete;
-      if (localData.board) boardCandidates.push(localData.board);
 
       const participants = new Set<string>([
         ownerNpub,
@@ -870,23 +939,26 @@
         const participantData = await loadParticipantData(participant, route.treeName, route.path);
         if (!participantData) continue;
         if (participantData.incomplete) hasIncompleteData = true;
-        if (participantData.permissions) permissionCandidates.push(participantData.permissions);
-        if (participantData.board) boardCandidates.push(participantData.board);
+        mergeSources.push({
+          source: participant,
+          board: participantData.board,
+          tombstones: participantData.tombstones,
+        });
       }
 
-      permissionCandidates.sort((a, b) => b.updatedAt - a.updatedAt);
-      const resolvedPermissions = permissionCandidates[0] || localPermissions;
+      const mergedSnapshot = mergeBoardSnapshots(mergeSources, {
+        ownerNpub,
+        fallbackBoardId: localData.board?.boardId || localPermissions.boardId || createBoardId(),
+        fallbackTitle: localData.board?.title || localPermissions.title || boardName,
+      });
 
-      if (boardCandidates.length === 0) {
-        boardCandidates.push(createInitialBoardState(
-          resolvedPermissions.boardId || createBoardId(),
-          resolvedPermissions.title || boardName,
-          ownerNpub
-        ));
-      }
-
-      boardCandidates.sort((a, b) => b.updatedAt - a.updatedAt);
-      const resolvedBoard = boardCandidates[0];
+      const resolvedPermissions = mergedSnapshot.permissions || localPermissions;
+      const resolvedBoard = mergedSnapshot.board || createInitialBoardState(
+        resolvedPermissions.boardId || createBoardId(),
+        resolvedPermissions.title || boardName,
+        ownerNpub
+      );
+      const resolvedTombstones = mergedSnapshot.tombstones;
       const shouldApplyBoard = shouldApplyHydratedBoardState(
         hydratedRouteKey,
         routeKey,
@@ -899,6 +971,12 @@
         permissions?.updatedAt,
         resolvedPermissions?.updatedAt
       );
+      const shouldApplyTombstones = shouldApplyHydratedBoardState(
+        hydratedRouteKey,
+        routeKey,
+        latestTombstoneUpdatedAt(tombstones),
+        latestTombstoneUpdatedAt(resolvedTombstones),
+      );
 
       if (generation !== loadGeneration) return;
       if (shouldApplyPermissions) {
@@ -906,6 +984,9 @@
       }
       if (shouldApplyBoard) {
         board = resolvedBoard;
+      }
+      if (shouldApplyBoard || shouldApplyTombstones) {
+        tombstones = resolvedTombstones;
       }
       hydratedRouteKey = routeKey;
       error = null;
@@ -941,6 +1022,7 @@
     if (!treeName) {
       hydratedRouteKey = null;
       resetHydrateRetry();
+      tombstones = createInitialBoardTombstones();
       loading = true;
       return;
     }
@@ -956,6 +1038,7 @@
       resetHydrateRetry();
       board = null;
       permissions = null;
+      tombstones = createInitialBoardTombstones();
       loading = false;
       error = null;
       return;
@@ -1036,7 +1119,11 @@
     }
   }
 
-  async function buildBoardDirectoryCid(nextBoard: BoardState, nextPermissions: BoardPermissions): Promise<CID> {
+  async function buildBoardDirectoryCid(
+    nextBoard: BoardState,
+    nextPermissions: BoardPermissions,
+    nextTombstones: BoardTombstones,
+  ): Promise<CID> {
     const tree = getTree();
     const columnEntries: TreeEntry[] = [];
 
@@ -1094,24 +1181,30 @@
     const { cid: boardMetaCid, size: boardMetaSize } = await putTextFile(serializeBoardMeta(nextBoard));
     const { cid: boardOrderCid, size: boardOrderSize } = await putTextFile(serializeBoardOrder(nextBoard));
     const { cid: permissionsCid, size: permissionsSize } = await putTextFile(serializeBoardPermissions(nextPermissions));
+    const { cid: tombstonesCid, size: tombstonesSize } = await putTextFile(serializeBoardTombstones(nextTombstones));
 
     const { cid: boardDirCid } = await tree.putDirectory([
       { name: BOARD_META_FILE, cid: boardMetaCid, size: boardMetaSize, type: LinkType.Blob },
       { name: BOARD_ORDER_FILE, cid: boardOrderCid, size: boardOrderSize, type: LinkType.Blob },
       { name: BOARD_PERMISSIONS_FILE, cid: permissionsCid, size: permissionsSize, type: LinkType.Blob },
+      { name: BOARD_TOMBSTONES_FILE, cid: tombstonesCid, size: tombstonesSize, type: LinkType.Blob },
       { name: BOARD_COLUMNS_DIR, cid: columnsCid, size: 0, type: LinkType.Dir },
     ]);
 
     return boardDirCid;
   }
 
-  async function buildUpdatedBoardRootCid(nextBoard: BoardState, nextPermissions: BoardPermissions): Promise<CID | null> {
+  async function buildUpdatedBoardRootCid(
+    nextBoard: BoardState,
+    nextPermissions: BoardPermissions,
+    nextTombstones: BoardTombstones,
+  ): Promise<CID | null> {
     if (!userNpub || !route.treeName) return null;
     const tree = getTree();
     const rootCid = await ensureOwnRootCid();
     if (!rootCid) return null;
 
-    const boardDirCid = await buildBoardDirectoryCid(nextBoard, nextPermissions);
+    const boardDirCid = await buildBoardDirectoryCid(nextBoard, nextPermissions, nextTombstones);
     const boardPath = route.path;
     return boardPath.length === 0
       ? boardDirCid
@@ -1125,14 +1218,18 @@
       );
   }
 
-  async function persistBoardDirectory(nextBoard: BoardState, nextPermissions: BoardPermissions): Promise<boolean> {
-    const newRootCid = await buildUpdatedBoardRootCid(nextBoard, nextPermissions);
+  async function persistBoardDirectory(
+    nextBoard: BoardState,
+    nextPermissions: BoardPermissions,
+    nextTombstones: BoardTombstones,
+  ): Promise<boolean> {
+    const newRootCid = await buildUpdatedBoardRootCid(nextBoard, nextPermissions, nextTombstones);
     if (!newRootCid) return false;
     publishUpdatedRoot(newRootCid);
     return true;
   }
 
-  async function persistBoard(nextBoard: BoardState) {
+  async function persistBoard(nextBoard: BoardState, nextTombstones: BoardTombstones) {
     if (!canWrite || !userNpub) return;
     savingBoard = true;
     try {
@@ -1144,7 +1241,7 @@
         }
         : createInitialBoardPermissions(nextBoard.boardId, nextBoard.title, userNpub, nextBoard.updatedAt);
 
-      const success = await persistBoardDirectory(nextBoard, nextPermissions);
+      const success = await persistBoardDirectory(nextBoard, nextPermissions, nextTombstones);
       if (success && !permissions) {
         permissions = nextPermissions;
       }
@@ -1163,7 +1260,11 @@
         boardId: boardSnapshot.boardId,
         title: boardSnapshot.title,
       };
-      const success = await persistBoardDirectory(boardSnapshot, syncedPermissions);
+      const success = await persistBoardDirectory(
+        boardSnapshot,
+        syncedPermissions,
+        cloneBoardTombstones(tombstones),
+      );
       if (success) permissions = syncedPermissions;
     } finally {
       savingPermissions = false;
@@ -1198,7 +1299,7 @@
         saveTimer = null;
       }
 
-      const nextRootCid = await buildUpdatedBoardRootCid(board, permissions);
+      const nextRootCid = await buildUpdatedBoardRootCid(board, permissions, tombstones);
       if (!nextRootCid) {
         visibilityError = 'Could not prepare the board for publishing.';
         return;
@@ -1244,15 +1345,14 @@
     saveTimer = setTimeout(() => {
       saveTimer = null;
       if (!board) return;
-      void persistBoard(cloneBoardState(board));
+      void persistBoard(cloneBoardState(board), cloneBoardTombstones(tombstones));
     }, 700);
   }
 
-  function mutateBoard(mutator: (next: BoardState) => void) {
-    if (!board || !userNpub || !canWrite) return;
-    mutator(board);
-    board.updatedAt = Date.now();
-    board.updatedBy = userNpub;
+  function applyBoardEdit(next: { board: BoardState; tombstones: BoardTombstones; changed: boolean }) {
+    if (!next.changed) return;
+    board = next.board;
+    tombstones = next.tombstones;
     queueBoardSave();
   }
 
@@ -1262,28 +1362,41 @@
   }
 
   function addColumn(title: string) {
-    mutateBoard(next => {
-      next.columns.push({
-        id: createBoardId(),
-        title: normalizeTitle(title, 'Untitled Column'),
-        cards: [],
-      });
-    });
+    if (!board || !userNpub || !canWrite) return;
+    applyBoardEdit(addBoardColumnToState(board, tombstones, {
+      actor: userNpub,
+      columnId: createBoardId(),
+      title: normalizeTitle(title, 'Untitled Column'),
+    }));
   }
 
   function updateColumnTitle(columnId: string, title: string) {
-    mutateBoard(next => {
-      const column = next.columns.find(item => item.id === columnId);
-      if (!column) return;
-      column.title = normalizeTitle(title, 'Untitled Column');
-    });
+    if (!board || !userNpub || !canWrite) return;
+    applyBoardEdit(updateBoardColumnTitleInState(board, tombstones, {
+      actor: userNpub,
+      columnId,
+      title: normalizeTitle(title, 'Untitled Column'),
+    }));
   }
 
   function removeColumn(columnId: string) {
-    mutateBoard(next => {
-      const index = next.columns.findIndex(column => column.id === columnId);
-      if (index !== -1) next.columns.splice(index, 1);
-    });
+    if (!board || !userNpub || !canWrite) return;
+    const removedColumn = board.columns.find(column => column.id === columnId);
+    if (!removedColumn) return;
+    for (const card of removedColumn.cards) {
+      for (const attachment of card.attachments) {
+        releaseLocalAttachmentPreview(attachment.id);
+      }
+      for (const comment of card.comments) {
+        for (const attachment of comment.attachments) {
+          releaseLocalAttachmentPreview(attachment.id);
+        }
+      }
+    }
+    applyBoardEdit(removeBoardColumnFromState(board, tombstones, {
+      actor: userNpub,
+      columnId,
+    }));
   }
 
   function addCard(
@@ -1293,18 +1406,19 @@
     assigneeNpubs: string[],
     attachments: BoardCardAttachment[]
   ) {
-    mutateBoard(next => {
-      const column = next.columns.find(item => item.id === columnId);
-      if (!column) return;
-      column.cards.push({
+    if (!board || !userNpub || !canWrite) return;
+    applyBoardEdit(addBoardCardToState(board, tombstones, {
+      actor: userNpub,
+      columnId,
+      card: {
         id: createBoardId(),
         title: normalizeTitle(title, 'Untitled'),
         description: description.trim(),
         assigneeNpubs: sanitizeAssigneeNpubs(assigneeNpubs),
         attachments: attachments.map(attachment => ({ ...attachment })),
         comments: [],
-      });
-    });
+      },
+    }));
   }
 
   function updateCard(
@@ -1315,34 +1429,38 @@
     assigneeNpubs: string[],
     attachments: BoardCardAttachment[]
   ) {
-    mutateBoard(next => {
-      const column = next.columns.find(item => item.id === columnId);
-      const card = column?.cards.find(item => item.id === cardId);
-      if (!card) return;
-      card.title = normalizeTitle(title, 'Untitled');
-      card.description = description.trim();
-      card.assigneeNpubs = sanitizeAssigneeNpubs(assigneeNpubs);
-      card.attachments = attachments.map(attachment => ({ ...attachment }));
-    });
+    if (!board || !userNpub || !canWrite) return;
+    applyBoardEdit(mutateBoardCardInState(board, tombstones, {
+      actor: userNpub,
+      columnId,
+      cardId,
+      mutate(card) {
+        card.title = normalizeTitle(title, 'Untitled');
+        card.description = description.trim();
+        card.assigneeNpubs = sanitizeAssigneeNpubs(assigneeNpubs);
+        card.attachments = attachments.map(attachment => ({ ...attachment }));
+      },
+    }));
   }
 
   function removeCard(columnId: string, cardId: string) {
-    mutateBoard(next => {
-      const column = next.columns.find(item => item.id === columnId);
-      if (!column) return;
-      const index = column.cards.findIndex(card => card.id === cardId);
-      if (index !== -1) {
-        const [removed] = column.cards.splice(index, 1);
-        for (const attachment of removed.attachments) {
-          releaseLocalAttachmentPreview(attachment.id);
-        }
-        for (const comment of removed.comments) {
-          for (const attachment of comment.attachments) {
-            releaseLocalAttachmentPreview(attachment.id);
-          }
-        }
+    if (!board || !userNpub || !canWrite) return;
+    const column = board.columns.find(item => item.id === columnId);
+    const card = column?.cards.find(item => item.id === cardId);
+    if (!card) return;
+    for (const attachment of card.attachments) {
+      releaseLocalAttachmentPreview(attachment.id);
+    }
+    for (const comment of card.comments) {
+      for (const attachment of comment.attachments) {
+        releaseLocalAttachmentPreview(attachment.id);
       }
-    });
+    }
+    applyBoardEdit(removeBoardCardFromState(board, tombstones, {
+      actor: userNpub,
+      columnId,
+      cardId,
+    }));
   }
 
   function triggerAttachmentPicker(columnId: string, cardId: string) {
@@ -1418,12 +1536,16 @@
       }
 
       if (uploaded.length > 0) {
-        mutateBoard(next => {
-          const column = next.columns.find(item => item.id === target.columnId);
-          const card = column?.cards.find(item => item.id === target.cardId);
-          if (!card) return;
-          card.attachments = [...card.attachments, ...uploaded];
-        });
+        if (board) {
+          applyBoardEdit(mutateBoardCardInState(board, tombstones, {
+            actor: userNpub,
+            columnId: target.columnId,
+            cardId: target.cardId,
+            mutate(card) {
+              card.attachments = [...card.attachments, ...uploaded];
+            },
+          }));
+        }
         if (Object.keys(previewUrlByAttachmentId).length > 0) {
           localAttachmentPreviewUrls = {
             ...localAttachmentPreviewUrls,
@@ -1443,13 +1565,16 @@
   }
 
   function removeAttachment(columnId: string, cardId: string, attachmentId: string) {
+    if (!board || !userNpub || !canWrite) return;
     releaseLocalAttachmentPreview(attachmentId);
-    mutateBoard(next => {
-      const column = next.columns.find(item => item.id === columnId);
-      const card = column?.cards.find(item => item.id === cardId);
-      if (!card) return;
-      card.attachments = card.attachments.filter(attachment => attachment.id !== attachmentId);
-    });
+    applyBoardEdit(mutateBoardCardInState(board, tombstones, {
+      actor: userNpub,
+      columnId,
+      cardId,
+      mutate(card) {
+        card.attachments = card.attachments.filter(attachment => attachment.id !== attachmentId);
+      },
+    }));
   }
 
   function openCreateColumnModal() {
@@ -1797,12 +1922,17 @@
         attachments: uploaded,
       };
 
-      mutateBoard(next => {
-        const column = next.columns.find(item => item.id === targetColumnId);
-        const card = column?.cards.find(item => item.id === targetCardId);
-        if (!card) return;
-        card.comments = [...card.comments, nextComment];
-      });
+      if (board) {
+        applyBoardEdit(mutateBoardCardInState(board, tombstones, {
+          actor: userNpub,
+          updatedAt: now,
+          columnId: targetColumnId,
+          cardId: targetCardId,
+          mutate(card) {
+            card.comments = [...card.comments, nextComment];
+          },
+        }));
+      }
 
       if (Object.keys(previewUrlByAttachmentId).length > 0) {
         localAttachmentPreviewUrls = {
@@ -1866,28 +1996,15 @@
     beforeCardId: string | null,
     position: 'before' | 'after' | 'end'
   ) {
-    mutateBoard(next => {
-      const sourceColumn = next.columns.find(column => column.id === fromColumnId);
-      const targetColumn = next.columns.find(column => column.id === toColumnId);
-      if (!sourceColumn || !targetColumn) return;
-
-      const cardIndex = sourceColumn.cards.findIndex(card => card.id === cardId);
-      if (cardIndex === -1) return;
-
-      const [card] = sourceColumn.cards.splice(cardIndex, 1);
-
-      let insertIndex = targetColumn.cards.length;
-      if (beforeCardId) {
-        const anchorIndex = targetColumn.cards.findIndex(existingCard => existingCard.id === beforeCardId);
-        if (anchorIndex !== -1) {
-          insertIndex = position === 'after' ? anchorIndex + 1 : anchorIndex;
-        }
-      }
-
-      if (insertIndex < 0) insertIndex = 0;
-      if (insertIndex > targetColumn.cards.length) insertIndex = targetColumn.cards.length;
-      targetColumn.cards.splice(insertIndex, 0, card);
-    });
+    if (!board || !userNpub || !canWrite) return;
+    applyBoardEdit(moveBoardCardInState(board, tombstones, {
+      actor: userNpub,
+      fromColumnId,
+      cardId,
+      toColumnId,
+      beforeCardId,
+      position,
+    }));
   }
 
   function handleCardDragStart(event: DragEvent, columnId: string, cardId: string) {
@@ -2040,17 +2157,13 @@
   }
 
   function moveColumn(fromColumnId: string, toColumnId: string, position: 'before' | 'after') {
-    if (fromColumnId === toColumnId) return;
-    mutateBoard(next => {
-      const fromIndex = next.columns.findIndex(col => col.id === fromColumnId);
-      const toIndex = next.columns.findIndex(col => col.id === toColumnId);
-      if (fromIndex === -1 || toIndex === -1) return;
-      const [column] = next.columns.splice(fromIndex, 1);
-      // Recalculate target index after removal
-      const newToIndex = next.columns.findIndex(col => col.id === toColumnId);
-      const insertIndex = position === 'after' ? newToIndex + 1 : newToIndex;
-      next.columns.splice(insertIndex, 0, column);
-    });
+    if (!board || !userNpub || !canWrite || fromColumnId === toColumnId) return;
+    applyBoardEdit(moveBoardColumnInState(board, tombstones, {
+      actor: userNpub,
+      fromColumnId,
+      toColumnId,
+      position,
+    }));
   }
 
   function columnDropTargetClass(columnId: string): string {
