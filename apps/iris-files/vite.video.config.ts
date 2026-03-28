@@ -4,8 +4,10 @@ import UnoCSS from 'unocss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { resolve } from 'path';
 import { readFile, rename, unlink, writeFile } from 'fs/promises';
+import { getAppBrand, getAppPwaIcons } from './src/lib/appBrand';
 
 const outDir = 'dist-video';
+const brand = getAppBrand('video');
 
 export function sanitizeVideoHtml(html: string): string {
   return html
@@ -56,7 +58,7 @@ export default defineConfig({
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'sw.ts',
-      includeAssets: ['iris-favicon.png', 'apple-touch-icon.png'],
+      includeAssets: [brand.iconSvg, brand.appleTouchPng],
       devOptions: {
         enabled: true,
         type: 'module',
@@ -68,24 +70,7 @@ export default defineConfig({
         theme_color: '#1a1a2e',
         background_color: '#1a1a2e',
         display: 'standalone',
-        icons: [
-          {
-            src: 'iris-logo.png',
-            sizes: '192x192',
-            type: 'image/png',
-          },
-          {
-            src: 'iris-logo.png',
-            sizes: '512x512',
-            type: 'image/png',
-          },
-          {
-            src: 'iris-logo.png',
-            sizes: '512x512',
-            type: 'image/png',
-            purpose: 'any maskable',
-          },
-        ],
+        icons: getAppPwaIcons('video'),
       },
       injectManifest: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,wasm}'],

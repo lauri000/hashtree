@@ -1,16 +1,19 @@
 <script lang="ts">
   import { appsStore, type AppBookmark } from '../stores/apps';
+  import { getAppBrandAssetUrl } from '../lib/appBrand';
   import { navigate } from '../lib/router.svelte';
 
   const baseUrl = import.meta.env.BASE_URL;
-  const irisLogoUrl = `${baseUrl}iris-logo.png`;
+  const filesIconUrl = getAppBrandAssetUrl('files', 'iconSvg', baseUrl);
+  const videoIconUrl = getAppBrandAssetUrl('video', 'iconSvg', baseUrl);
+  const socialIconUrl = `${baseUrl}iris-logo.png`;
   const distributedOwner = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
 
   // Default suggested apps
   const suggestions: AppBookmark[] = [
-    { url: `htree://${distributedOwner}/files`, name: 'Iris Files', icon: irisLogoUrl, addedAt: 0 },
-    { url: `htree://${distributedOwner}/video`, name: 'Iris Video', icon: irisLogoUrl, addedAt: 0 },
-    { url: 'https://iris.to', name: 'Iris Social', icon: irisLogoUrl, addedAt: 0 },
+    { url: `htree://${distributedOwner}/files`, name: 'Iris Files', icon: filesIconUrl, addedAt: 0 },
+    { url: `htree://${distributedOwner}/video`, name: 'Iris Video', icon: videoIconUrl, addedAt: 0 },
+    { url: 'https://iris.to', name: 'Iris Social', icon: socialIconUrl, addedAt: 0 },
   ];
 
   let favorites = $derived($appsStore);
