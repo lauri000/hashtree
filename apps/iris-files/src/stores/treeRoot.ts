@@ -31,6 +31,7 @@ import {
   getTreeRootSubscriptionPlan,
   shouldStartTreeRootSubscription,
 } from '../lib/treeRootSubscriptionPlan';
+import { shouldWaitForLinkVisibleMetadata } from '../lib/treeRootRoutePolicy';
 import { treeRootRegistry } from '../TreeRootRegistry';
 import type { TreeRootRecord } from '../TreeRootRegistry';
 
@@ -269,6 +270,14 @@ async function syncActiveTreeRootFromRecord(
   if (!effectiveKey && record.visibility === 'link-visible') {
     const visibilityInfo = getVisibilityInfoFromRegistry(key);
     const linkKeyFromUrl = currentRoute.params.get('k');
+    if (shouldWaitForLinkVisibleMetadata({
+      visibility: record.visibility,
+      hasRouteLinkKey: !!linkKeyFromUrl,
+      hasEncryptedKey: !!visibilityInfo?.encryptedKey,
+      hasSessionDecryptedKey: !!state?.decryptedKey,
+    })) {
+      return;
+    }
     const decryptedKey = await decryptEncryptionKey(visibilityInfo, undefined, linkKeyFromUrl);
     if (decryptedKey && state) {
       state.decryptedKey = decryptedKey;
@@ -513,7 +522,19 @@ function subscribeToResolver(
   const record = treeRootRegistry.getByKey(key);
   if (record) {
     const visibilityInfo = getVisibilityInfoFromRegistry(key);
-    queueMicrotask(() => callback(record.hash, record.key, visibilityInfo, { updatedAt: record.updatedAt }));
+    const currentRoute = get(routeStore);
+    const hasRouteLinkKey = getResolverKey(currentRoute.npub ?? undefined, currentRoute.treeName ?? undefined) === key
+      && !!currentRoute.params.get('k');
+    const state = subscriptionState.get(key);
+
+    if (!shouldWaitForLinkVisibleMetadata({
+      visibility: record.visibility,
+      hasRouteLinkKey,
+      hasEncryptedKey: !!visibilityInfo?.encryptedKey,
+      hasSessionDecryptedKey: !!state?.decryptedKey,
+    })) {
+      queueMicrotask(() => callback(record.hash, record.key, visibilityInfo, { updatedAt: record.updatedAt }));
+    }
   }
 
   return () => {
@@ -795,7 +816,15 @@ export function createTreeRootStore(): Readable<CID | null> {
     // store from the registry snapshot if a same-tree navigation cleared it.
     if (resolverKey === activeResolverKey) {
       const cachedRoot = getTreeRootSync(route.npub, route.treeName);
-      if (cachedRoot && !get(treeRootStore)) {
+      const cachedRecord = treeRootRegistry.getByKey(resolverKey);
+      const cachedState = subscriptionState.get(resolverKey);
+      const shouldUseCachedRoot = !!cachedRoot && !shouldWaitForLinkVisibleMetadata({
+        visibility: cachedRecord?.visibility,
+        hasRouteLinkKey: !!route.params.get('k'),
+        hasEncryptedKey: !!cachedRecord?.encryptedKey,
+        hasSessionDecryptedKey: !!cachedState?.decryptedKey,
+      });
+      if (shouldUseCachedRoot && !get(treeRootStore)) {
         treeRootStore.set(cachedRoot);
         logHtreeDebug('treeRoot:set', { source: 'registry-reuse', resolverKey });
       }
@@ -822,7 +851,15 @@ export function createTreeRootStore(): Readable<CID | null> {
 
     // Use cached registry value immediately if available (offline-first / test stability)
     const cachedRoot = getTreeRootSync(route.npub, route.treeName);
-    if (cachedRoot) {
+    const cachedRecord = treeRootRegistry.getByKey(resolverKey);
+    const cachedState = subscriptionState.get(resolverKey);
+    const shouldUseCachedRoot = !!cachedRoot && !shouldWaitForLinkVisibleMetadata({
+      visibility: cachedRecord?.visibility,
+      hasRouteLinkKey: !!route.params.get('k'),
+      hasEncryptedKey: !!cachedRecord?.encryptedKey,
+      hasSessionDecryptedKey: !!cachedState?.decryptedKey,
+    });
+    if (shouldUseCachedRoot) {
       treeRootStore.set(cachedRoot);
       logHtreeDebug('treeRoot:set', { source: 'registry' });
     }
@@ -1064,6 +1101,18 @@ export function createTreeRootStore(): Readable<CID | null> {
         logHtreeDebug('treeRoot:wait-decrypted-key', { resolverKey });
         // Don't set the store - wait for next callback with key
         return;
+      }
+
+      if (effectiveKey && (encryptionKey || visibilityInfo?.encryptedKey)) {
+        treeRootRegistry.setFromResolver(npub, treeName, hash, updatedAt, {
+          key: effectiveKey,
+          visibility: visibilityInfo?.visibility ?? treeRootRegistry.getVisibility(npub, treeName) ?? 'public',
+          labels: treeRootRegistry.getLabels(npub, treeName),
+          encryptedKey: visibilityInfo?.encryptedKey,
+          keyId: visibilityInfo?.keyId,
+          selfEncryptedKey: visibilityInfo?.selfEncryptedKey,
+          selfEncryptedLinkKey: visibilityInfo?.selfEncryptedLinkKey,
+        });
       }
 
       // Set the store FIRST so UI updates immediately

@@ -5,6 +5,7 @@ import { treeRootRegistry } from '../src/index';
 const HASH_A = fromHex('11'.repeat(32));
 const HASH_B = fromHex('33'.repeat(32));
 const KEY_A = fromHex('22'.repeat(32));
+const KEY_B = fromHex('44'.repeat(32));
 
 describe('tree root registry same-hash merges', () => {
   it('merges key and visibility metadata from older worker updates when hash is unchanged', () => {
@@ -78,5 +79,29 @@ describe('tree root registry same-hash merges', () => {
     expect(record).not.toBeNull();
     expect(record?.hash && toHex(record.hash)).toBe(toHex(HASH_B));
     expect(record?.labels).toEqual(['hashtree', 'git']);
+  });
+
+  it('replaces a stale same-hash key when the resolver later provides the trusted key', () => {
+    const npub = 'npub-test-correct-key';
+    const treeName = 'boards/test-correct-key';
+
+    treeRootRegistry.delete(npub, treeName);
+    treeRootRegistry.setFromExternal(npub, treeName, HASH_A, 'prefetch', {
+      updatedAt: 200,
+      visibility: 'link-visible',
+      key: KEY_A,
+      encryptedKey: 'aa'.repeat(32),
+    });
+
+    const updated = treeRootRegistry.setFromResolver(npub, treeName, HASH_A, 200, {
+      key: KEY_B,
+      visibility: 'link-visible',
+      encryptedKey: 'aa'.repeat(32),
+    });
+
+    expect(updated).toBe(true);
+    const record = treeRootRegistry.get(npub, treeName);
+    expect(record).not.toBeNull();
+    expect(record?.key && toHex(record.key)).toBe(toHex(KEY_B));
   });
 });
