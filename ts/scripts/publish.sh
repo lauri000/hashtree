@@ -31,6 +31,7 @@ done
 
 PACKAGES=(
     "@hashtree/core"
+    "@hashtree/merge"
     "@hashtree/dexie"
     "@hashtree/git"
     "@hashtree/index"

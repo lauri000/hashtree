@@ -83,6 +83,7 @@ Wire format: `{t: LinkType, l: [{h: hash, s: size, n?: name, t: linkType, ...}]}
 The `Store` trait is just `get(hash) → bytes` and `put(hash, bytes)`. The core is transport-agnostic—works with any backend that can store/fetch by hash.
 
 - `hashtree-core` - Core merkle tree library
+- `hashtree-merge` - Deterministic path-based overlay merge primitives
 - `hashtree-fs` - Filesystem helpers and tree traversal
 - `hashtree-resolver` - Nostr-based tree resolution
 - `hashtree-blossom` - Blossom client/server helpers

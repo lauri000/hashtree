@@ -11,17 +11,63 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUST_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 DRY_RUN=""
+PLAN_ONLY=0
 ALLOW_DIRTY="--allow-dirty"
 
-if [[ "$1" == "--dry-run" ]]; then
-    DRY_RUN="--dry-run"
-    echo "=== DRY RUN MODE ==="
-fi
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run)
+            DRY_RUN="--dry-run"
+            ;;
+        --plan)
+            PLAN_ONLY=1
+            ;;
+        *)
+            echo "Unknown argument: $arg" >&2
+            exit 1
+            ;;
+    esac
+done
 
 # Wait time between publishes for crates.io indexing (seconds)
 WAIT_TIME=30
 
 FAILED_CRATES=()
+
+TIER_1_CRATES=(
+    "hashtree-core"
+    "hashtree-config"
+    "hashtree-merge"
+)
+
+TIER_2_CRATES=(
+    "hashtree-index"
+    "hashtree-lmdb"
+    "hashtree-fs"
+    "hashtree-fuse"
+    "hashtree-s3"
+    "hashtree-blossom"
+    "hashtree-resolver"
+)
+
+TIER_3_CRATES=(
+    "hashtree-nostr"
+    "hashtree-webrtc"
+)
+
+TIER_4_CRATES=(
+    "git-remote-htree"
+    "hashtree-nostr-bridge"
+    "hashtree-cli"
+    "hashtree-cashu-cli"
+)
+
+ALL_CRATES=(
+    "${TIER_1_CRATES[@]}"
+    "${TIER_2_CRATES[@]}"
+    "${TIER_3_CRATES[@]}"
+    "${TIER_4_CRATES[@]}"
+)
 
 publish_crate() {
     local crate=$1
@@ -50,6 +96,15 @@ publish_crate() {
     fi
 }
 
+if [[ "$PLAN_ONLY" -eq 1 ]]; then
+    printf '%s\n' "${ALL_CRATES[@]}"
+    exit 0
+fi
+
+if [[ -n "$DRY_RUN" ]]; then
+    echo "=== DRY RUN MODE ==="
+fi
+
 echo "Publishing hashtree crates to crates.io"
 echo ""
 
@@ -65,29 +120,26 @@ if [[ -z "$DRY_RUN" ]]; then
 fi
 
 # Tier 1: No internal dependencies
-publish_crate "hashtree-core"
-publish_crate "hashtree-config"
+for crate in "${TIER_1_CRATES[@]}"; do
+    publish_crate "$crate"
+done
 # hashtree-bep52 excluded - internal testing only
 
 # Tier 2: Depends on hashtree-core only
-publish_crate "hashtree-index"
-publish_crate "hashtree-lmdb"
-publish_crate "hashtree-fs"
-publish_crate "hashtree-fuse"
-publish_crate "hashtree-s3"
-publish_crate "hashtree-blossom"  # optional deps on core, config
-publish_crate "hashtree-resolver"
+for crate in "${TIER_2_CRATES[@]}"; do
+    publish_crate "$crate"
+done
 # hashtree-sim excluded - internal testing only
 
 # Tier 3: Depends on published core/index crates
-publish_crate "hashtree-nostr"
-publish_crate "hashtree-webrtc"
+for crate in "${TIER_3_CRATES[@]}"; do
+    publish_crate "$crate"
+done
 
 # Tier 4: Depends on multiple crates
-publish_crate "git-remote-htree"
-publish_crate "hashtree-nostr-bridge"
-publish_crate "hashtree-cli"  # depends on git-remote-htree
-publish_crate "hashtree-cashu-cli"  # depends on hashtree-cli
+for crate in "${TIER_4_CRATES[@]}"; do
+    publish_crate "$crate"
+done
 
 echo ""
 echo "=========================================="
