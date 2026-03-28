@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Tab navigation for repository views (Code, Pull Requests, Issues, Releases)
+   * Tab navigation for repository views (Code, Pull Requests, Issues, optional Releases)
    * Uses query params (?tab=pulls, ?tab=issues, ?tab=releases) to avoid conflicts with directory names
    */
   import { routeStore } from '../../stores';
@@ -8,19 +8,21 @@
     npub: string;
     repoName: string;
     activeTab: 'code' | 'pulls' | 'issues' | 'releases';
+    showReleasesTab?: boolean;
   }
 
-  let { npub, repoName, activeTab }: Props = $props();
+  let { npub, repoName, activeTab, showReleasesTab = true }: Props = $props();
   let route = $derived($routeStore);
 
-  const tabs = [
+  const allTabs = [
     { id: 'code', label: 'Code', icon: 'i-lucide-code', query: '' },
     { id: 'pulls', label: 'Pull Requests', icon: 'i-lucide-git-pull-request', query: '?tab=pulls' },
     { id: 'issues', label: 'Issues', icon: 'i-lucide-circle-dot', query: '?tab=issues' },
     { id: 'releases', label: 'Releases', icon: 'i-lucide-tag', query: '?tab=releases' },
   ] as const;
+  let tabs = $derived(showReleasesTab ? allTabs : allTabs.filter(tab => tab.id !== 'releases'));
 
-  function getHref(tab: typeof tabs[number]): string {
+  function getHref(tab: typeof allTabs[number]): string {
     const linkKey = route.params.get('k');
     if (!linkKey) {
       return `#/${npub}/${repoName}${tab.query}`;
@@ -30,7 +32,7 @@
   }
 </script>
 
-<div class="overflow-x-auto scrollbar-hide px-4 b-b-1 b-b-solid b-b-surface-3">
+<div class="overflow-x-auto scrollbar-hide px-4 b-b-1 b-b-solid b-b-surface-3" data-testid="repo-tab-nav">
   <div class="flex items-center gap-1 min-w-max">
     {#each tabs as tab (tab.id)}
       <a

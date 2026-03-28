@@ -18,8 +18,18 @@ async function createTempGitRepo(): Promise<string> {
   execSync('git config user.name "Test User"', { cwd: tmpDir });
 
   await fs.mkdir(path.join(tmpDir, SUBDIR_NAME), { recursive: true });
+  await fs.mkdir(path.join(tmpDir, '.hashtree'), { recursive: true });
   await fs.writeFile(path.join(tmpDir, README_NAME), '# Git File Bar\n');
   await fs.writeFile(path.join(tmpDir, SUBDIR_NAME, SUBFILE_NAME), 'hello from subdir\n');
+  await fs.writeFile(
+    path.join(tmpDir, '.hashtree', 'project.toml'),
+    [
+      '[project]',
+      'about = "Temporary repository for git view tests."',
+      'homepage = "https://example.com/git-file-bar"',
+      '',
+    ].join('\n'),
+  );
 
   execSync('git add .', { cwd: tmpDir });
   execSync('git commit -m "Initial commit"', { cwd: tmpDir });
@@ -135,6 +145,10 @@ test.describe('Git file bar', () => {
     await expect(repoColumn).toBeVisible({ timeout: 30000 });
     const repoColumnBox = await repoColumn.boundingBox();
     expect(repoColumnBox?.width ?? 0).toBeLessThanOrEqual(1290);
+
+    const repoProjectSidebar = page.getByTestId('repo-project-sidebar');
+    await expect(repoProjectSidebar).toContainText('Temporary repository for git view tests.');
+    await expect(repoProjectSidebar.getByRole('link', { name: 'example.com/git-file-bar' })).toBeVisible({ timeout: 30000 });
 
     const repoFileList = page.locator('[data-testid="file-list"]').last();
     const dirCell = repoFileList.locator('tbody tr td:nth-child(2)').filter({ hasText: SUBDIR_NAME }).first();

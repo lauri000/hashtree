@@ -20,6 +20,7 @@
   import VisibilityIcon from '../VisibilityIcon.svelte';
   import { Avatar, Name } from '../User';
   import RepoTabNav from './RepoTabNav.svelte';
+  import RepoSidebar from './RepoSidebar.svelte';
   import BranchDropdown from './BranchDropdown.svelte';
   import FileTable from './FileTable.svelte';
   import type { GitStatusResult } from '../../utils/wasmGit';
@@ -610,147 +611,152 @@
 
 <!-- Tab navigation for Code/PRs/Issues - show for any git repo (not just tree root) -->
 {#if route.npub && route.treeName}
-  {@const repoPath = currentPath.length > 0 ? `${route.treeName}/${currentPath.join('/')}` : route.treeName}
-  <RepoTabNav npub={route.npub} repoName={repoPath} activeTab="code" />
+  <RepoTabNav npub={route.npub} repoName={repoPath} activeTab="code" showReleasesTab={false} />
 {/if}
 
-<div class="mx-auto flex w-full max-w-6xl flex-col gap-4 p-3" data-testid="repo-main-column">
-  <div class="flex flex-wrap items-center justify-between gap-3" data-testid="repo-header-row">
-    <div class="flex min-w-0 flex-1 flex-col justify-center gap-1">
-      <div class="flex min-w-0 items-center gap-2">
-        <a href={backUrl} class="btn-ghost p-1 no-underline inline-flex items-center justify-center shrink-0" title="Back">
-          <span class="i-lucide-chevron-left text-lg"></span>
-        </a>
-        {#if npub && ownerPubkey}
-          <a
-            href="#/{npub}/profile"
-            class="inline-flex min-w-0 items-center gap-1.5 text-sm leading-none text-text-2 hover:opacity-80"
-            aria-label="View repo owner profile"
-          >
-            <Avatar pubkey={ownerPubkey} size={20} showBadge={true} />
-            <Name pubkey={ownerPubkey} class="min-w-0 truncate text-sm leading-none text-text-2 hover:text-accent hover:underline" />
+<div class="mx-auto flex w-full max-w-6xl flex-col gap-4 p-3 lg:flex-row lg:items-start">
+  <div class="min-w-0 flex-1 flex flex-col gap-4" data-testid="repo-main-column">
+    <div class="flex flex-wrap items-center justify-between gap-3" data-testid="repo-header-row">
+      <div class="flex min-w-0 flex-1 flex-col justify-center gap-1">
+        <div class="flex min-w-0 items-center gap-2">
+          <a href={backUrl} class="btn-ghost p-1 no-underline inline-flex items-center justify-center shrink-0" title="Back">
+            <span class="i-lucide-chevron-left text-lg"></span>
           </a>
-          <span class="shrink-0 text-text-3">/</span>
-        {:else if isPermalink}
-          {#if rootCid?.key}
-            <span class="relative inline-flex items-center shrink-0 text-text-2" title="Encrypted permalink">
-              <span class="i-lucide-link"></span>
-              <span class="i-lucide-lock absolute -bottom-0.5 -right-1.5 text-[0.6em]"></span>
-            </span>
-          {:else}
-            <span class="i-lucide-globe text-text-2 shrink-0" title="Public permalink"></span>
+          {#if npub && ownerPubkey}
+            <a
+              href="#/{npub}/profile"
+              class="inline-flex min-w-0 items-center gap-1.5 text-sm leading-none text-text-2 hover:opacity-80"
+              aria-label="View repo owner profile"
+            >
+              <Avatar pubkey={ownerPubkey} size={20} showBadge={true} />
+              <Name pubkey={ownerPubkey} class="min-w-0 truncate text-sm leading-none text-text-2 hover:text-accent hover:underline" />
+            </a>
+            <span class="shrink-0 text-text-3">/</span>
+          {:else if isPermalink}
+            {#if rootCid?.key}
+              <span class="relative inline-flex items-center shrink-0 text-text-2" title="Encrypted permalink">
+                <span class="i-lucide-link"></span>
+                <span class="i-lucide-lock absolute -bottom-0.5 -right-1.5 text-[0.6em]"></span>
+              </span>
+            {:else}
+              <span class="i-lucide-globe text-text-2 shrink-0" title="Public permalink"></span>
+            {/if}
           {/if}
-        {/if}
-        {#if visibility}
-          <VisibilityIcon {visibility} class="text-text-2 shrink-0" />
-        {/if}
-        <a href={repoRootHref} class="min-w-0 shrink-0 truncate no-underline text-sm font-medium text-text-1 leading-none hover:text-accent hover:underline">
-          {repoHeaderName}
-        </a>
+          {#if visibility}
+            <VisibilityIcon {visibility} class="text-text-2 shrink-0" />
+          {/if}
+          <a href={repoRootHref} class="min-w-0 shrink-0 truncate no-underline text-sm font-medium text-text-1 leading-none hover:text-accent hover:underline">
+            {repoHeaderName}
+          </a>
+        </div>
+      </div>
+
+      <div class="flex max-w-full min-w-0 items-center justify-end max-sm:w-full max-sm:justify-start">
+        <FolderActions {dirCid} {canEdit} />
       </div>
     </div>
 
-    <div class="flex max-w-full min-w-0 items-center justify-end max-sm:w-full max-sm:justify-start">
-      <FolderActions {dirCid} {canEdit} />
-    </div>
-  </div>
-
-  <!-- Branch selector row (above table, like GitHub) -->
-  <div class="flex flex-wrap items-center gap-3 text-sm">
-    {#if gitCid}
-      <!-- Branch dropdown - use gitCid for git operations -->
-      <BranchDropdown
-        {branches}
-        {currentBranch}
-        {branchDisplay}
-        {canEdit}
-        dirCid={gitCid}
-        npub={route.npub}
-        {repoPath}
-        onBranchSelect={handleBranchSelect}
-        loading={!!switchingToBranch}
-      />
-    {:else}
-      <button class="btn-ghost flex items-center gap-1 px-3 h-9 text-sm" disabled>
-        <span class="i-lucide-loader-2 animate-spin"></span>
-        <span>Loading repo</span>
-      </button>
-    {/if}
-
-    <!-- Branch count -->
-    <span class="flex items-center gap-1.5 text-sm text-text-2">
-      <span class="i-lucide-git-branch text-text-3"></span>
-      <span>{gitCid ? `${branches.length} branch${branches.length !== 1 ? 'es' : ''}` : 'Detecting branches...'}</span>
-    </span>
-
-    <!-- Git status indicator and commit button -->
-    {#if canEdit}
-      {#if !gitCid || statusLoading}
-        <span class="text-text-3 text-xs flex items-center gap-1">
+    <!-- Branch selector row (above table, like GitHub) -->
+    <div class="flex flex-wrap items-center gap-3 text-sm">
+      {#if gitCid}
+        <!-- Branch dropdown - use gitCid for git operations -->
+        <BranchDropdown
+          {branches}
+          {currentBranch}
+          {branchDisplay}
+          {canEdit}
+          dirCid={gitCid}
+          npub={route.npub}
+          {repoPath}
+          onBranchSelect={handleBranchSelect}
+          loading={!!switchingToBranch}
+        />
+      {:else}
+        <button class="btn-ghost flex items-center gap-1 px-3 h-9 text-sm" disabled>
           <span class="i-lucide-loader-2 animate-spin"></span>
-        </span>
-      {:else if totalChanges > 0}
-        <button
-          onclick={openCommit}
-          class="btn-ghost flex items-center gap-1 px-2 h-8 text-sm"
-          title="{totalChanges} uncommitted change{totalChanges !== 1 ? 's' : ''}"
-        >
-          <span class="i-lucide-git-commit text-warning"></span>
-          <span class="text-warning">{totalChanges}</span>
-          <span class="hidden sm:inline">uncommitted</span>
-        </button>
-      {:else}
-        <span class="text-text-3 text-xs flex items-center gap-1" title="No uncommitted changes">
-          <span class="i-lucide-check-circle text-success"></span>
-          <span class="hidden sm:inline">clean</span>
-        </span>
-      {/if}
-    {/if}
-
-    <!-- Spacer -->
-    <div class="flex-1"></div>
-
-    <!-- Commits count (clickable) -->
-    <button
-      onclick={openHistory}
-      class="flex items-center gap-1.5 text-sm text-text-2 hover:text-accent bg-transparent b-0 cursor-pointer"
-      disabled={!gitCid}
-    >
-      {#if gitCid && totalCommitCount !== null}
-        <span class="i-lucide-history text-text-3"></span>
-        <span>{totalCommitCount} commits</span>
-      {:else}
-        <span class="i-lucide-loader-2 animate-spin text-text-3"></span>
-      {/if}
-    </button>
-
-
-    <!-- Code dropdown (clone instructions) - rightmost -->
-    {#if route.npub}
-      {#if canFavoriteRepo}
-        <button
-          onclick={handleFavoriteToggle}
-          class={`btn-ghost flex items-center gap-2 px-3 h-9 ${displayedIsFavorited ? 'text-accent border-accent/30 bg-accent/10 hover:bg-accent/15' : ''}`}
-          disabled={favoriteLoading}
-          title={displayedIsFavorited ? 'Remove your like from this repository' : 'Like this repository'}
-        >
-          <span class={`i-lucide-heart ${displayedIsFavorited ? 'fill-current' : ''}`}></span>
-          <span>{displayedIsFavorited ? 'Liked' : 'Like'}</span>
-          <span class="text-xs text-text-2">{displayedFavoriteCount}</span>
+          <span>Loading repo</span>
         </button>
       {/if}
-      <CodeDropdown npub={route.npub} {repoPath} />
+
+      <!-- Branch count -->
+      <span class="flex items-center gap-1.5 text-sm text-text-2">
+        <span class="i-lucide-git-branch text-text-3"></span>
+        <span>{gitCid ? `${branches.length} branch${branches.length !== 1 ? 'es' : ''}` : 'Detecting branches...'}</span>
+      </span>
+
+      <!-- Git status indicator and commit button -->
+      {#if canEdit}
+        {#if !gitCid || statusLoading}
+          <span class="text-text-3 text-xs flex items-center gap-1">
+            <span class="i-lucide-loader-2 animate-spin"></span>
+          </span>
+        {:else if totalChanges > 0}
+          <button
+            onclick={openCommit}
+            class="btn-ghost flex items-center gap-1 px-2 h-8 text-sm"
+            title="{totalChanges} uncommitted change{totalChanges !== 1 ? 's' : ''}"
+          >
+            <span class="i-lucide-git-commit text-warning"></span>
+            <span class="text-warning">{totalChanges}</span>
+            <span class="hidden sm:inline">uncommitted</span>
+          </button>
+        {:else}
+          <span class="text-text-3 text-xs flex items-center gap-1" title="No uncommitted changes">
+            <span class="i-lucide-check-circle text-success"></span>
+            <span class="hidden sm:inline">clean</span>
+          </span>
+        {/if}
+      {/if}
+
+      <!-- Spacer -->
+      <div class="flex-1"></div>
+
+      <!-- Commits count (clickable) -->
+      <button
+        onclick={openHistory}
+        class="flex items-center gap-1.5 text-sm text-text-2 hover:text-accent bg-transparent b-0 cursor-pointer"
+        disabled={!gitCid}
+      >
+        {#if gitCid && totalCommitCount !== null}
+          <span class="i-lucide-history text-text-3"></span>
+          <span>{totalCommitCount} commits</span>
+        {:else}
+          <span class="i-lucide-loader-2 animate-spin text-text-3"></span>
+        {/if}
+      </button>
+
+
+      <!-- Code dropdown (clone instructions) - rightmost -->
+      {#if route.npub}
+        {#if canFavoriteRepo}
+          <button
+            onclick={handleFavoriteToggle}
+            class={`btn-ghost flex items-center gap-2 px-3 h-9 ${displayedIsFavorited ? 'text-accent border-accent/30 bg-accent/10 hover:bg-accent/15' : ''}`}
+            disabled={favoriteLoading}
+            title={displayedIsFavorited ? 'Remove your like from this repository' : 'Like this repository'}
+          >
+            <span class={`i-lucide-heart ${displayedIsFavorited ? 'fill-current' : ''}`}></span>
+            <span>{displayedIsFavorited ? 'Liked' : 'Like'}</span>
+            <span class="text-xs text-text-2">{displayedFavoriteCount}</span>
+          </button>
+        {/if}
+        <CodeDropdown npub={route.npub} {repoPath} />
+      {/if}
+    </div>
+
+    <!-- Directory listing table - GitHub style -->
+    <div class="b-1 b-surface-3 b-solid rounded-lg overflow-hidden bg-surface-0" data-testid="file-list">
+      <!-- File table with commit info header -->
+      <FileTable {entries} {fileCommits} {buildEntryHref} {buildCommitHref} {latestCommit} commitsLoading={!loadGitMetadata || commitsLoading} {parentHref} {ciStatus} {ciStatusStore} {repoPath} {ciConfig} />
+    </div>
+
+    <!-- README.md panel -->
+    {#if readmeContent}
+      <ReadmePanel content={readmeContent} {entries} {canEdit} />
     {/if}
   </div>
 
-  <!-- Directory listing table - GitHub style -->
-  <div class="b-1 b-surface-3 b-solid rounded-lg overflow-hidden bg-surface-0" data-testid="file-list">
-    <!-- File table with commit info header -->
-    <FileTable {entries} {fileCommits} {buildEntryHref} {buildCommitHref} {latestCommit} commitsLoading={!loadGitMetadata || commitsLoading} {parentHref} {ciStatus} {ciStatusStore} {repoPath} {ciConfig} />
-  </div>
-
-  <!-- README.md panel -->
-  {#if readmeContent}
-    <ReadmePanel content={readmeContent} {entries} {canEdit} />
+  {#if route.npub && repoPath}
+    <RepoSidebar npub={route.npub} repoName={repoPath} repoCid={gitCid} {readmeContent} />
   {/if}
 </div>

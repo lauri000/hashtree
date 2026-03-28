@@ -62,4 +62,49 @@ test.describe('Releases', () => {
     await page.waitForURL(/tab=releases/, { timeout: 20000 });
     await expect(page.locator('text=No releases yet')).toBeVisible({ timeout: 20000 });
   });
+
+  test('shows release summary in the repo sidebar', async ({ page }) => {
+    await navigateToPublicFolder(page, { timeoutMs: 60000 });
+
+    const route = await page.evaluate(() => {
+      const hash = window.location.hash.slice(1);
+      const qIdx = hash.indexOf('?');
+      const path = qIdx !== -1 ? hash.slice(0, qIdx) : hash;
+      const parts = path.split('/').filter(Boolean);
+      return { npub: parts[0], treeName: parts[1] };
+    });
+
+    const releaseTitle = `Sidebar Release ${Date.now()}`;
+    const releaseTag = `v${Date.now()}`;
+
+    await page.goto(`/git.html#/${route.npub}/${route.treeName}?tab=releases`);
+    await expect(page.locator('text=Loading releases...')).not.toBeVisible({ timeout: 20000 });
+
+    await page.getByRole('button', { name: 'New Release' }).click();
+    await page.locator('#release-title').fill(releaseTitle);
+    await page.locator('#release-tag').fill(releaseTag);
+    await page.locator('#release-notes').fill('Sidebar release smoke note');
+    await page.getByRole('button', { name: 'Create Release' }).click();
+    await expect(page.locator(`a:has-text("${releaseTitle}")`)).toBeVisible({ timeout: 20000 });
+
+    await page.goto(`/git.html#/${route.npub}/${route.treeName}`);
+
+    const releasesSidebar = page.getByTestId('repo-releases-sidebar');
+    await expect(releasesSidebar).toBeVisible({ timeout: 20000 });
+    await expect(releasesSidebar).toContainText('release');
+    await expect(releasesSidebar.getByTestId('repo-latest-release-link')).toHaveText(releaseTitle);
+    await expect(releasesSidebar).toContainText(releaseTag);
+
+    const repoTabNav = page.getByTestId('repo-tab-nav');
+    await expect(repoTabNav.getByRole('link', { name: 'Releases' })).toHaveCount(0);
+
+    await releasesSidebar.getByTestId('repo-releases-link').click();
+    await page.waitForURL(/tab=releases/, { timeout: 20000 });
+    await page.locator(`a:has-text("${releaseTitle}")`).click();
+
+    page.once('dialog', dialog => dialog.accept());
+    await page.getByRole('button', { name: 'Delete' }).click();
+
+    await page.waitForURL(/tab=releases/, { timeout: 20000 });
+  });
 });
