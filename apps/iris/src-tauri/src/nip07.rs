@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl};
+use tauri::{AppHandle, Emitter, Manager, Runtime, Theme, WebviewUrl};
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 use tauri::{LogicalPosition, LogicalSize, Rect, WebviewBuilder};
 #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -46,6 +46,15 @@ pub fn htree_origin_from_tree_host(host: &str, treename: &str) -> String {
 
 fn decode_url_component(value: &str) -> String {
     percent_decode_str(value).decode_utf8_lossy().into_owned()
+}
+
+fn child_webview_placeholder_background_color(theme: Theme) -> tauri::utils::config::Color {
+    match theme {
+        Theme::Dark => tauri::utils::config::Color(24, 24, 24, 255),
+        Theme::Light => tauri::utils::config::Color(235, 235, 235, 255),
+        #[allow(unreachable_patterns)]
+        _ => tauri::utils::config::Color(235, 235, 235, 255),
+    }
 }
 
 fn decode_path_segments(path: &str) -> Vec<String> {
@@ -1518,6 +1527,8 @@ pub async fn create_nip07_webview<R: Runtime>(
     );
 
     let window = app.get_window("main").ok_or("Main window not found")?;
+    let child_background_color =
+        child_webview_placeholder_background_color(window.theme().unwrap_or(Theme::Light));
 
     let mut navigate_after_create: Option<tauri::Url> = None;
     let webview_url = if url.starts_with("tauri://localhost/") {
@@ -1543,7 +1554,7 @@ pub async fn create_nip07_webview<R: Runtime>(
     let webview_builder = WebviewBuilder::new(&label, webview_url)
         .initialization_script(&init_script)
         .auto_resize()
-        .background_color(tauri::utils::config::Color(15, 15, 15, 255))
+        .background_color(child_background_color)
         .on_navigation(move |nav_url| {
             let url_str = nav_url.to_string();
             debug!("[NIP-07] Child webview navigating to: {}", url_str);
@@ -1852,6 +1863,8 @@ pub async fn create_htree_webview<R: Runtime>(
 
     let window = app.get_window("main").ok_or("Main window not found")?;
     let parsed_url = tauri::Url::parse(&actual_url).map_err(|e| format!("Invalid URL: {}", e))?;
+    let child_background_color =
+        child_webview_placeholder_background_color(window.theme().unwrap_or(Theme::Light));
 
     let app_for_nav = app.clone();
     let label_for_nav = label.clone();
@@ -1868,7 +1881,7 @@ pub async fn create_htree_webview<R: Runtime>(
     let webview_builder = WebviewBuilder::new(&label, webview_url_for_parsed_url(&parsed_url))
         .initialization_script(&init_script)
         .auto_resize()
-        .background_color(tauri::utils::config::Color(15, 15, 15, 255))
+        .background_color(child_background_color)
         .on_navigation(move |nav_url| {
             let url_str = canonicalize_child_webview_url(
                 &nav_url.to_string(),
@@ -2484,6 +2497,18 @@ mod tests {
         assert_eq!(
             htree_origin_from_tree_host("npub1example", "video"),
             "htree://npub1example/video"
+        );
+    }
+
+    #[test]
+    fn child_webview_placeholder_background_matches_shell_header_theme() {
+        assert_eq!(
+            child_webview_placeholder_background_color(Theme::Light),
+            tauri::utils::config::Color(235, 235, 235, 255)
+        );
+        assert_eq!(
+            child_webview_placeholder_background_color(Theme::Dark),
+            tauri::utils::config::Color(24, 24, 24, 255)
         );
     }
 
