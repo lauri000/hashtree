@@ -454,6 +454,15 @@ importers:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@24.10.1)(happy-dom@15.11.7)(jsdom@26.1.0)(terser@5.44.1)
 
+  packages/hashtree-merge:
+    devDependencies:
+      typescript:
+        specifier: ^5.3.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@24.10.1)(happy-dom@15.11.7)(jsdom@26.1.0)(terser@5.44.1)
+
   packages/hashtree-nostr:
     dependencies:
       '@hashtree/core':

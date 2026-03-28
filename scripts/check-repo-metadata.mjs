@@ -13,6 +13,7 @@ const expectedJsonMetadata = new Map([
   ['ts/packages/hashtree-dexie/package.json', { repository: REPO_URL, homepage: `${REPO_URL}/ts/packages/hashtree-dexie`, bugs: BUGS_URL }],
   ['ts/packages/hashtree-git/package.json', { repository: REPO_URL, homepage: `${REPO_URL}/ts/packages/hashtree-git`, bugs: BUGS_URL }],
   ['ts/packages/hashtree-index/package.json', { repository: REPO_URL, homepage: `${REPO_URL}/ts/packages/hashtree-index`, bugs: BUGS_URL }],
+  ['ts/packages/hashtree-merge/package.json', { repository: REPO_URL, homepage: `${REPO_URL}/ts/packages/hashtree-merge`, bugs: BUGS_URL }],
   ['ts/packages/hashtree-nostr/package.json', { repository: REPO_URL, homepage: `${REPO_URL}/ts/packages/hashtree-nostr`, bugs: BUGS_URL }],
   ['ts/packages/hashtree-tree-root/package.json', { repository: REPO_URL, homepage: `${REPO_URL}/ts/packages/hashtree-tree-root`, bugs: BUGS_URL }],
   ['ts/packages/hashtree-worker/package.json', { repository: REPO_URL, homepage: `${REPO_URL}/ts/packages/hashtree-worker`, bugs: BUGS_URL }],
