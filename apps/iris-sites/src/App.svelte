@@ -1,6 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { resetShellFavicon, syncShellFaviconFromFrame } from './lib/faviconSync';
+  import {
+    HASHTREE_INSTALL_DOCS_HREF,
+    PUBLISH_IMMUTABLE_COMMAND,
+    PUBLISH_MUTABLE_COMMAND,
+    launcherSuggestions,
+  } from './lib/launcherContent';
   import { parseLaunchInput } from './lib/launchInput';
   import { classifyRuntimeUpdate } from './lib/runtimeUpdatePolicy';
   import { resolveHostedSite } from './lib/siteConfig';
@@ -22,41 +28,7 @@
     setMenuHidden,
   } from './lib/runtimeUi';
 
-  const IRIS_OWNER = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
-  const ENSHITTIFIER_NHASH = 'nhash1qqsxyn0g6yyac8ruej7r7j80y2gx6ev5z5flu6ry5h5t3ajju5utzjs9yz7t3p2syr9n5heajlv85uwej232dk5x4zqe8d7ft67y3m5umxr55qjku38';
   const BOOT_STATUS_DELAY_MS = 2500;
-  const launcherSuggestions = [
-    {
-      name: 'MIDI Enshittifier',
-      href: `#/${IRIS_OWNER}/enshittifier/index.html`,
-      blurb: 'Mutable site route',
-    },
-    {
-      name: 'Iris Files',
-      href: `#/${IRIS_OWNER}/files/index.html`,
-      blurb: 'Files and trees',
-    },
-    {
-      name: 'Iris Git',
-      href: `#/${IRIS_OWNER}/git/index.html`,
-      blurb: 'Repos on hashtree',
-    },
-    {
-      name: 'Iris Boards',
-      href: `#/${IRIS_OWNER}/boards/index.html`,
-      blurb: 'Shared boards',
-    },
-    {
-      name: 'Iris Meet',
-      href: `#/${IRIS_OWNER}/meet/index.html`,
-      blurb: 'Video rooms',
-    },
-    {
-      name: 'Pinned MIDI',
-      href: `#/${ENSHITTIFIER_NHASH}/index.html`,
-      blurb: 'Immutable nhash route',
-    },
-  ] as const;
 
   let currentSite = $state(resolveCurrentSite());
   let routeHash = $state(typeof window === 'undefined' ? '' : window.location.hash);
@@ -480,6 +452,36 @@
           <p class="launcher-error">{launchError}</p>
         {/if}
       </form>
+      <section class="publish-card">
+        <p class="eyebrow">Publish</p>
+        <h2 class="publish-title">Publish your own site</h2>
+        <p class="copy publish-copy">
+          If your directory contains <code>index.html</code>, the CLI prints a
+          <code>sites.iris.to</code> launcher URL after publish.
+        </p>
+        <ol class="publish-steps">
+          <li>
+            <a class="launcher-doc-link" href={HASHTREE_INSTALL_DOCS_HREF} target="_blank" rel="noopener noreferrer">
+              Install hashtree
+            </a>
+            {' '}from the hashtree repo docs.
+          </li>
+          <li>
+            <code>{PUBLISH_IMMUTABLE_COMMAND}</code> for an immutable site, or
+            {' '}<code>{PUBLISH_MUTABLE_COMMAND}</code> for a mutable site route.
+          </li>
+          <li>
+            If the directory contains <code>index.html</code>, the CLI prints a
+            {' '}<code>sites.iris.to</code> link you can share.
+          </li>
+        </ol>
+      </section>
+      <div class="suggestions-header">
+        <p class="eyebrow">Suggestions</p>
+        <p class="suggestions-copy">
+          Static showcase sites stay here until published sites carry a dedicated discovery tag.
+        </p>
+      </div>
       <div class="suggestions">
         {#each launcherSuggestions as suggestion}
           <a class="suggestion" href={suggestion.href}>
@@ -536,7 +538,10 @@
       <section class="runtime-menu-panel">
         <div class="runtime-menu-header">
           <div class="runtime-menu-title">{currentSite?.title}</div>
-          <a class="runtime-menu-home-link" href={sourceHref}>source</a>
+          <div class="runtime-menu-links">
+            <a class="runtime-menu-home-link" href={launcherHref}>sites.iris.to</a>
+            <a class="runtime-menu-home-link" href={sourceHref}>source</a>
+          </div>
         </div>
 
         {#if updateAvailable}
@@ -754,6 +759,61 @@
     color: #f7a8a8;
   }
 
+  .publish-card {
+    margin-top: 24px;
+    padding: 20px;
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .publish-title {
+    margin: 0;
+    font-size: 1.15rem;
+    line-height: 1.2;
+  }
+
+  .publish-copy {
+    margin-top: 12px;
+  }
+
+  .publish-steps {
+    margin: 16px 0 0;
+    padding-left: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    color: rgba(243, 243, 244, 0.78);
+  }
+
+  .publish-steps li {
+    line-height: 1.55;
+  }
+
+  .launcher-doc-link {
+    color: #a8d1ff;
+    text-decoration: none;
+    font-weight: 600;
+  }
+
+  .launcher-doc-link:hover {
+    text-decoration: underline;
+  }
+
+  .suggestions-header {
+    margin-top: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .suggestions-copy {
+    margin: 0;
+    font-size: 0.92rem;
+    line-height: 1.5;
+    color: rgba(243, 243, 244, 0.66);
+  }
+
   .suggestions {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -864,6 +924,12 @@
 
   .runtime-menu-home-link:hover {
     color: #c6e0ff;
+  }
+
+  .runtime-menu-links {
+    display: flex;
+    align-items: center;
+    gap: 12px;
   }
 
   .runtime-menu-item,
