@@ -53,6 +53,9 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: 0.1.0
         CFBundleVersion: "0.1.0"
+        NSBluetoothAlwaysUsageDescription: Iris uses Bluetooth for nearby peer discovery and connections when an app requests Bluetooth features.
+        UIBackgroundModes:
+          - bluetooth-peripheral
     entitlements:
       path: iris_iOS/iris_iOS.entitlements
     scheme:

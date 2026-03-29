@@ -407,10 +407,10 @@ fn resolve_iris_paths(
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn ensure_mobile_peer_id() -> Result<String, String> {
     let (keys, _) = hashtree_cli::config::ensure_keys()
-        .map_err(|error| format!("Failed to load keys for Android Bluetooth: {}", error))?;
+        .map_err(|error| format!("Failed to load keys for mobile Bluetooth: {}", error))?;
     let peer_uuid = std::env::var("HTREE_PEER_UUID")
         .ok()
         .map(|value| value.trim().to_string())
@@ -850,14 +850,14 @@ async fn update_daemon_transport_settings<R: tauri::Runtime>(
         .save()
         .map_err(|error| format!("Failed to save daemon transport settings: {}", error))?;
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     if applied.bluetooth {
         match ensure_mobile_peer_id()
             .and_then(|peer_id| mobile_bluetooth::prestart_from_app(&_app, peer_id))
         {
-            Ok(()) => info!("Prestarted Android Bluetooth plugin from live settings update"),
+            Ok(()) => info!("Prestarted mobile Bluetooth plugin from live settings update"),
             Err(error) => tracing::warn!(
-                "Failed to prestart Android Bluetooth plugin from settings update: {}",
+                "Failed to prestart mobile Bluetooth plugin from settings update: {}",
                 error
             ),
         }
@@ -898,14 +898,14 @@ async fn update_daemon_network_settings<R: tauri::Runtime>(
         .save()
         .map_err(|error| format!("Failed to save daemon network settings: {}", error))?;
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     if applied.bluetooth {
         match ensure_mobile_peer_id()
             .and_then(|peer_id| mobile_bluetooth::prestart_from_app(&_app, peer_id))
         {
-            Ok(()) => info!("Prestarted Android Bluetooth plugin from live network update"),
+            Ok(()) => info!("Prestarted mobile Bluetooth plugin from live network update"),
             Err(error) => tracing::warn!(
-                "Failed to prestart Android Bluetooth plugin from network settings update: {}",
+                "Failed to prestart mobile Bluetooth plugin from network settings update: {}",
                 error
             ),
         }
@@ -1173,7 +1173,7 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_iris_mobile_browser::init());
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     {
         builder = builder.plugin(tauri_plugin_iris_mobile_bluetooth::init());
     }
@@ -1331,11 +1331,11 @@ pub fn run() {
             std::env::set_var("HTREE_DATA_DIR", &paths.htree_data_dir);
             std::env::set_var("HTREE_BLUETOOTH_NOSTR_ONLY", "1");
 
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_os = "ios"))]
             if let Err(error) = mobile_bluetooth::install_from_app(&app.handle()) {
-                tracing::warn!("Failed to install Android Bluetooth bridge: {}", error);
+                tracing::warn!("Failed to install mobile Bluetooth bridge: {}", error);
             }
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_os = "ios"))]
             match hashtree_cli::Config::load() {
                 Ok(config)
                     if config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0 =>
@@ -1343,15 +1343,15 @@ pub fn run() {
                     match ensure_mobile_peer_id()
                         .and_then(|peer_id| mobile_bluetooth::prestart_from_app(&app.handle(), peer_id))
                     {
-                        Ok(()) => info!("Prestarted Android Bluetooth plugin from app setup"),
+                        Ok(()) => info!("Prestarted mobile Bluetooth plugin from app setup"),
                         Err(error) => {
-                            tracing::warn!("Failed to prestart Android Bluetooth plugin: {}", error)
+                            tracing::warn!("Failed to prestart mobile Bluetooth plugin: {}", error)
                         }
                     }
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    tracing::warn!("Failed to load config for Android Bluetooth prestart: {}", error)
+                    tracing::warn!("Failed to load config for mobile Bluetooth prestart: {}", error)
                 }
             }
 
@@ -2082,6 +2082,28 @@ mod tests {
         assert!(
             plist.contains("<key>NSBluetoothAlwaysUsageDescription</key>"),
             "expected NSBluetoothAlwaysUsageDescription in {:?}",
+            plist_path
+        );
+    }
+
+    #[test]
+    fn ios_info_plist_declares_bluetooth_usage_description() {
+        let plist_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("gen/apple/iris_iOS/Info.plist");
+        if !plist_path.exists() {
+            return;
+        }
+
+        let plist = std::fs::read_to_string(&plist_path).expect("failed to read iOS Info.plist");
+
+        assert!(
+            plist.contains("<key>NSBluetoothAlwaysUsageDescription</key>"),
+            "expected NSBluetoothAlwaysUsageDescription in {:?}",
+            plist_path
+        );
+        assert!(
+            plist.contains("<string>bluetooth-peripheral</string>"),
+            "expected bluetooth-peripheral background mode in {:?}",
             plist_path
         );
     }

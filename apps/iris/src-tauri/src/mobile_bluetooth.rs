@@ -1,66 +1,66 @@
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use async_trait::async_trait;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use hashtree_cli::webrtc::{
     install_mobile_bluetooth_bridge, BluetoothFrame, BluetoothLink, MobileBluetoothBridge,
     PeerDirection, PendingBluetoothLink,
 };
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use std::collections::HashMap;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use std::sync::Arc;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use std::sync::Mutex as StdMutex;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use std::sync::OnceLock;
 use tauri::{AppHandle, Runtime};
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use tauri_plugin_iris_mobile_bluetooth::{
     MobileBluetooth, MobileBluetoothEvent, MobileBluetoothExt,
 };
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use tokio::sync::{mpsc, Mutex};
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use tracing::{info, warn};
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[derive(serde::Deserialize)]
 struct BluetoothHelloEnvelope {
     #[serde(rename = "type")]
     kind: String,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn is_bluetooth_hello_text(text: &str) -> bool {
     serde_json::from_str::<BluetoothHelloEnvelope>(text)
         .map(|payload| payload.kind == "hello")
         .unwrap_or(false)
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 struct LinkEntry<R: Runtime> {
     link: Arc<PluginBluetoothLink<R>>,
     pending_emitted: bool,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 static PRESTARTED_PEER_ID: OnceLock<StdMutex<Option<String>>> = OnceLock::new();
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn prestarted_peer_id() -> &'static StdMutex<Option<String>> {
     PRESTARTED_PEER_ID.get_or_init(|| StdMutex::new(None))
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn remember_prestarted_peer_id(peer_id: String) {
     if let Ok(mut slot) = prestarted_peer_id().lock() {
         *slot = Some(peer_id);
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn matches_prestarted_peer_id(peer_id: &str) -> bool {
     prestarted_peer_id()
         .lock()
@@ -70,13 +70,13 @@ fn matches_prestarted_peer_id(peer_id: &str) -> bool {
         == Some(peer_id)
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 struct BridgeState<R: Runtime> {
     bluetooth: MobileBluetooth<R>,
     links: Mutex<HashMap<String, LinkEntry<R>>>,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 impl<R: Runtime> BridgeState<R> {
     fn new(bluetooth: MobileBluetooth<R>) -> Self {
         Self {
@@ -106,14 +106,14 @@ impl<R: Runtime> BridgeState<R> {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[derive(Clone)]
-struct AndroidMobileBluetoothBridge<R: Runtime> {
+struct NativeMobileBluetoothBridge<R: Runtime> {
     state: Arc<BridgeState<R>>,
 }
 
-#[cfg(target_os = "android")]
-impl<R: Runtime> AndroidMobileBluetoothBridge<R> {
+#[cfg(any(target_os = "android", target_os = "ios"))]
+impl<R: Runtime> NativeMobileBluetoothBridge<R> {
     fn new(bluetooth: MobileBluetooth<R>) -> Self {
         Self {
             state: Arc::new(BridgeState::new(bluetooth)),
@@ -121,9 +121,9 @@ impl<R: Runtime> AndroidMobileBluetoothBridge<R> {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[async_trait]
-impl<R> MobileBluetoothBridge for AndroidMobileBluetoothBridge<R>
+impl<R> MobileBluetoothBridge for NativeMobileBluetoothBridge<R>
 where
     R: Runtime + 'static,
 {
@@ -142,11 +142,11 @@ where
                         if let Err(error) =
                             handle_mobile_event(state.clone(), &pending_tx_for_events, event).await
                         {
-                            warn!("Android Bluetooth bridge event failed: {}", error);
+                            warn!("Mobile Bluetooth bridge event failed: {}", error);
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        warn!("Android Bluetooth bridge lagged by {} events", skipped);
+                        warn!("Mobile Bluetooth bridge lagged by {} events", skipped);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -154,12 +154,12 @@ where
         });
 
         info!(
-            "Starting Android Bluetooth bridge for peer {}",
+            "Starting mobile Bluetooth bridge for peer {}",
             local_peer_id
         );
         if matches_prestarted_peer_id(&local_peer_id) {
             info!(
-                "Android Bluetooth bridge already prestarted; attaching to existing plugin instance"
+                "Mobile Bluetooth bridge already prestarted; attaching to existing plugin instance"
             );
         } else {
             self.state
@@ -167,7 +167,7 @@ where
                 .start(local_peer_id.clone())
                 .map_err(anyhow::Error::msg)?;
             remember_prestarted_peer_id(local_peer_id.clone());
-            info!("Android Bluetooth bridge start command accepted");
+            info!("Mobile Bluetooth bridge start command accepted");
         }
 
         let peers = self
@@ -180,11 +180,11 @@ where
             .filter(|peer| peer.ready)
             .collect::<Vec<_>>();
         info!(
-            "Android Bluetooth bridge seeded {} ready peer(s) from listPeers()",
+            "Mobile Bluetooth bridge seeded {} ready peer(s) from listPeers()",
             ready_peers.len()
         );
         for peer in ready_peers {
-            // On cold start the Android BLE plugin may already have a subscribed
+            // On cold start the mobile BLE plugin may already have a subscribed
             // device before the Rust bridge subscribes. Only seed peers that are
             // already ready for notifications; connected-but-not-ready devices
             // can otherwise consume the one pending-link attempt too early.
@@ -195,7 +195,7 @@ where
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 async fn handle_mobile_event<R: Runtime>(
     state: Arc<BridgeState<R>>,
     pending_tx: &mpsc::Sender<PendingBluetoothLink>,
@@ -204,17 +204,17 @@ async fn handle_mobile_event<R: Runtime>(
     match event {
         MobileBluetoothEvent::PeerConnected { address } => {
             state.ensure_link(&address).await;
-            info!("Android BLE peer connected: {}", address);
+            info!("Mobile BLE peer connected: {}", address);
         }
         MobileBluetoothEvent::PeerReady { address } => {
-            info!("Android BLE peer ready: {}", address);
+            info!("Mobile BLE peer ready: {}", address);
             emit_pending_link(state.clone(), pending_tx, address).await;
         }
         MobileBluetoothEvent::PeerDisconnected { address } => {
             if let Some(link) = state.remove_link(&address).await {
                 let _ = link.close().await;
             }
-            info!("Android BLE peer disconnected: {}", address);
+            info!("Mobile BLE peer disconnected: {}", address);
         }
         MobileBluetoothEvent::Frame {
             address,
@@ -247,7 +247,7 @@ async fn handle_mobile_event<R: Runtime>(
             };
             state.ensure_link(&address).await.enqueue(frame).await;
             if promote_on_frame {
-                info!("Android BLE hello frame received from {}", address);
+                info!("Mobile BLE hello frame received from {}", address);
                 emit_pending_link(state.clone(), pending_tx, address).await;
             }
         }
@@ -255,7 +255,7 @@ async fn handle_mobile_event<R: Runtime>(
     Ok(())
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 async fn emit_pending_link<R: Runtime>(
     state: Arc<BridgeState<R>>,
     pending_tx: &mpsc::Sender<PendingBluetoothLink>,
@@ -273,7 +273,7 @@ async fn emit_pending_link<R: Runtime>(
     let pending = PendingBluetoothLink {
         link: entry.link.clone() as Arc<dyn BluetoothLink>,
         direction: PeerDirection::Inbound,
-        // Android exposes hello through the readable TX characteristic immediately on connect.
+        // The mobile plugin exposes hello through the readable TX characteristic immediately on connect.
         local_hello_sent: true,
         peer_hint: Some(address),
     };
@@ -281,7 +281,7 @@ async fn emit_pending_link<R: Runtime>(
     let _ = pending_tx.send(pending).await;
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 struct PluginBluetoothLink<R: Runtime> {
     address: String,
     bluetooth: MobileBluetooth<R>,
@@ -290,7 +290,7 @@ struct PluginBluetoothLink<R: Runtime> {
     open: AtomicBool,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 impl<R: Runtime> PluginBluetoothLink<R> {
     fn new(address: String, bluetooth: MobileBluetooth<R>) -> Arc<Self> {
         let (inbound_tx, inbound_rx) = mpsc::channel(64);
@@ -311,7 +311,7 @@ impl<R: Runtime> PluginBluetoothLink<R> {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[async_trait]
 impl<R> BluetoothLink for PluginBluetoothLink<R>
 where
@@ -345,17 +345,17 @@ where
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 pub fn install_from_app<R>(app: &AppHandle<R>) -> Result<(), String>
 where
     R: Runtime + 'static,
 {
     let bluetooth = app.mobile_bluetooth().clone();
-    install_mobile_bluetooth_bridge(Arc::new(AndroidMobileBluetoothBridge::new(bluetooth)))
+    install_mobile_bluetooth_bridge(Arc::new(NativeMobileBluetoothBridge::new(bluetooth)))
         .map_err(|error| error.to_string())
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 pub fn prestart_from_app<R>(app: &AppHandle<R>, local_peer_id: String) -> Result<(), String>
 where
     R: Runtime + 'static,
@@ -367,7 +367,7 @@ where
     Ok(())
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn install_from_app<R>(_app: &AppHandle<R>) -> Result<(), String>
 where
     R: Runtime,
@@ -375,7 +375,7 @@ where
     Ok(())
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn prestart_from_app<R>(_app: &AppHandle<R>, _local_peer_id: String) -> Result<(), String>
 where
     R: Runtime,

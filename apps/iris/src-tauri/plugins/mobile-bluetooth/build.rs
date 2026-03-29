@@ -1,8 +1,16 @@
 const COMMANDS: &[&str] = &[];
 
 fn main() {
-    tauri_plugin::Builder::new(COMMANDS)
+    let result = tauri_plugin::Builder::new(COMMANDS)
         .android_path("android")
-        .try_build()
-        .unwrap();
+        .ios_path("ios")
+        .try_build();
+
+    if !(cfg!(docsrs)
+        && std::env::var("TARGET")
+            .unwrap_or_default()
+            .contains("android"))
+    {
+        result.unwrap();
+    }
 }

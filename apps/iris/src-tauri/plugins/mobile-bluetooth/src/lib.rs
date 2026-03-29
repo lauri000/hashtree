@@ -1,23 +1,23 @@
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use base64::Engine;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use serde::{Deserialize, Serialize};
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use tauri::ipc::Channel;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use tauri::ipc::InvokeResponseBody;
 use tauri::{
     plugin::{Builder, TauriPlugin},
     Runtime,
 };
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use tauri::{AppHandle, Manager};
 use tokio::sync::broadcast;
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 mod mobile;
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 pub use mobile::init as mobile_init;
 
 #[derive(Debug, Clone)]
@@ -52,14 +52,14 @@ impl<R: Runtime> Clone for MobileBluetooth<R> {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StartArgs {
     local_peer_id: String,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SendArgs {
@@ -68,7 +68,7 @@ struct SendArgs {
     payload_base64: String,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RegisterListenerRequest {
@@ -76,14 +76,14 @@ struct RegisterListenerRequest {
     handler: Channel,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AddressPayload {
     address: String,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FramePayload {
@@ -92,7 +92,7 @@ struct FramePayload {
     payload_base64: String,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PeerSnapshot {
@@ -100,14 +100,14 @@ pub struct PeerSnapshot {
     pub ready: bool,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PeerSnapshotResponse {
     peers: Vec<PeerSnapshot>,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn decode_channel_payload<T: for<'de> Deserialize<'de>>(
     body: InvokeResponseBody,
 ) -> tauri::Result<T> {
@@ -121,7 +121,7 @@ fn decode_channel_payload<T: for<'de> Deserialize<'de>>(
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn register_native_listeners<R: Runtime>(
     app: &AppHandle<R>,
     bluetooth: &MobileBluetooth<R>,
@@ -175,38 +175,44 @@ fn register_native_listeners<R: Runtime>(
                     Ok(())
                 }),
             },
-        )?;
+        )
+        .map_err(|error| {
+            tauri::Error::PluginInitialization(
+                "iris-mobile-bluetooth".to_string(),
+                format!("register native listener {event_name}: {error}"),
+            )
+        })?;
     }
     let _ = app;
     Ok(())
 }
 
 impl<R: Runtime> MobileBluetooth<R> {
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     pub fn start(&self, local_peer_id: String) -> Result<(), String> {
         self.handle
             .run_mobile_plugin::<()>("start", StartArgs { local_peer_id })
             .map_err(|error| error.to_string())
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub fn start(&self, _local_peer_id: String) -> Result<(), String> {
-        Err("mobile bluetooth is only available on Android".to_string())
+        Err("mobile bluetooth is only available on Android and iOS".to_string())
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     pub fn stop(&self) -> Result<(), String> {
         self.handle
             .run_mobile_plugin::<()>("stop", serde_json::json!({}))
             .map_err(|error| error.to_string())
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub fn stop(&self) -> Result<(), String> {
         Ok(())
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     pub fn send_frame(
         &self,
         address: String,
@@ -225,17 +231,17 @@ impl<R: Runtime> MobileBluetooth<R> {
             .map_err(|error| error.to_string())
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub fn send_frame(
         &self,
         _address: String,
         _kind: String,
         _payload: Vec<u8>,
     ) -> Result<(), String> {
-        Err("mobile bluetooth is only available on Android".to_string())
+        Err("mobile bluetooth is only available on Android and iOS".to_string())
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     pub fn list_peers(&self) -> Result<Vec<PeerSnapshot>, String> {
         let response = self
             .handle
@@ -244,7 +250,7 @@ impl<R: Runtime> MobileBluetooth<R> {
         Ok(response.peers)
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub fn list_peers(&self) -> Result<Vec<()>, String> {
         Ok(Vec::new())
     }
@@ -254,12 +260,12 @@ impl<R: Runtime> MobileBluetooth<R> {
     }
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("iris-mobile-bluetooth").build()
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("iris-mobile-bluetooth")
         .setup(|app, api| {
@@ -271,12 +277,12 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         .build()
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 pub trait MobileBluetoothExt<R: Runtime> {
     fn mobile_bluetooth(&self) -> &MobileBluetooth<R>;
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 impl<R: Runtime, T: Manager<R>> MobileBluetoothExt<R> for T {
     fn mobile_bluetooth(&self) -> &MobileBluetooth<R> {
         self.state::<MobileBluetooth<R>>().inner()
