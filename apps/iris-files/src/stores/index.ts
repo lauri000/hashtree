@@ -21,3 +21,4 @@ export {
   type FavoriteRepos,
   type FavoriteRepoStats,
 } from './gitFavorites';
+export { createRepoForkStatsStore, type RepoForkStats } from './repoForks';

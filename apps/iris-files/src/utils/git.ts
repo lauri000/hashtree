@@ -210,6 +210,19 @@ export async function getHead(rootCid: CID): Promise<string | null> {
 }
 
 /**
+ * Get the first-parent root commit SHA for a repository.
+ * This is used as the NIP-34 earliest-unique-commit tag for app-created forks.
+ */
+export async function getRootCommit(rootCid: CID): Promise<string | null> {
+  try {
+    const { getRootCommit } = await import('./wasmGit');
+    return await getRootCommit(rootCid);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Get git status (staged, unstaged, untracked files)
  * Results are cached by git repo hash
  * Uses wasm-git (libgit2)

@@ -829,6 +829,37 @@ export async function getCommitInfo(rootCid: CID, ref: string): Promise<CommitDe
   };
 }
 
+export async function getRootCommit(rootCid: CID): Promise<string | null> {
+  const tree = getTree();
+  const gitDirResult = await tree.resolvePath(rootCid, '.git');
+  if (!gitDirResult || gitDirResult.type !== LinkType.Dir) {
+    return null;
+  }
+
+  let currentSha = await getHead(rootCid);
+  if (!currentSha) {
+    return null;
+  }
+
+  const visited = new Set<string>();
+  while (currentSha && !visited.has(currentSha)) {
+    visited.add(currentSha);
+
+    const parsed = await getParsedCommitFromSha(tree, gitDirResult.cid, currentSha);
+    if (!parsed) {
+      return null;
+    }
+
+    if (parsed.parents.length === 0) {
+      return currentSha;
+    }
+
+    currentSha = parsed.parents[0] || null;
+  }
+
+  return null;
+}
+
 /**
  * Get commit log by reading git objects directly from hashtree
  * No wasm-git needed - much faster for large repos

@@ -11,7 +11,9 @@ import { localStore, getTree } from '../store';
 import { autosaveIfOwn } from '../nostr';
 import { getCurrentRootCid, getCurrentPathFromUrl } from './route';
 import { updateLocalRootCache } from '../treeRootCache';
-import { initGitRepo } from '../utils/git';
+import { getRootCommit, initGitRepo, isGitRepo } from '../utils/git';
+import { buildHtreeUrl, publishRepoAnnouncement } from '../nip34';
+import { setProjectForkOrigin } from '../stores/projectMeta';
 import {
   BOARD_CARD_FILE_SUFFIX,
   BOARD_CARDS_DIR,
@@ -242,6 +244,18 @@ export async function createGitRepositoryTree(
   }
 
   if (result.success) {
+    try {
+      const earliestUniqueCommit = await getRootCommit(repoRootCid) ?? undefined;
+      const published = await publishRepoAnnouncement(name, { earliestUniqueCommit });
+      if (!published) {
+        console.warn('[Git] Failed to publish repo announcement', { name });
+      }
+    } catch (error) {
+      console.warn('[Git] Failed to publish repo announcement', error);
+    }
+  }
+
+  if (result.success) {
     const linkKeyParam = result.linkKey ? `?k=${result.linkKey}` : '';
     navigate(`/${nostrState.npub}/${encodeURIComponent(name)}${linkKeyParam}`);
   }
@@ -341,6 +355,31 @@ export async function forkTree(dirCid: CID, name: string, visibility: import('@h
 
   if (!nostrState.npub || !nostrState.pubkey) return { success: false };
 
+  let forkOriginUrl: string | null = null;
+  let forkAnnouncementEuc: string | undefined;
+
+  try {
+    const route = parseRoute();
+    const sourceOwnerNpub = route.npub;
+    const sourceTreeName = route.treeName;
+    const sourceRepoName = sourceTreeName
+      ? [sourceTreeName, ...route.path].filter(Boolean).join('/')
+      : null;
+
+    if (
+      sourceOwnerNpub &&
+      sourceRepoName &&
+      sourceOwnerNpub !== nostrState.npub &&
+      await isGitRepo(finalCid)
+    ) {
+      forkOriginUrl = buildHtreeUrl(sourceOwnerNpub, sourceRepoName);
+      finalCid = await setProjectForkOrigin(finalCid, forkOriginUrl);
+      forkAnnouncementEuc = await getRootCommit(finalCid) ?? undefined;
+    }
+  } catch (error) {
+    console.warn('[Fork] Failed to annotate fork origin metadata', error);
+  }
+
   useNostrStore.setSelectedTree({
     id: '',
     name,
@@ -362,6 +401,20 @@ export async function forkTree(dirCid: CID, name: string, visibility: import('@h
   if (result.success) {
     const linkKeyParam = result.linkKey ? `?k=${result.linkKey}` : '';
     navigate(`/${encodeURIComponent(nostrState.npub)}/${encodeURIComponent(name)}${linkKeyParam}`);
+  }
+
+  if (result.success && forkOriginUrl) {
+    try {
+      const published = await publishRepoAnnouncement(name, {
+        personalFork: true,
+        earliestUniqueCommit: forkAnnouncementEuc,
+      });
+      if (!published) {
+        console.warn('[Fork] Failed to publish personal fork announcement', { name });
+      }
+    } catch (error) {
+      console.warn('[Fork] Failed to publish personal fork announcement', error);
+    }
   }
   return result;
 }

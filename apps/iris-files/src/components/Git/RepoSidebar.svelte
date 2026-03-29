@@ -5,6 +5,7 @@
   import { nostrStore } from '../../nostr';
   import { createReleasesStore, type ReleaseSummary } from '../../stores/releases';
   import { loadProjectMeta, type ProjectMeta } from '../../stores/projectMeta';
+  import { parseForkOriginLink } from '../../lib/gitRepoAnnouncements';
 
   interface Props {
     npub: string;
@@ -87,7 +88,8 @@
 
   let aboutText = $derived(projectMeta?.about ?? extractReadmeLead(readmeContent));
   let homepage = $derived(projectMeta?.homepage ?? null);
-  let hasAboutSection = $derived(projectMetaLoading || !!aboutText || !!homepage);
+  let forkOrigin = $derived(projectMeta?.forkedFrom ? parseForkOriginLink(projectMeta.forkedFrom) : null);
+  let hasAboutSection = $derived(projectMetaLoading || !!aboutText || !!homepage || !!forkOrigin);
 
   function normalizeHref(href: string): string {
     return /^[a-z][a-z0-9+.-]*:/i.test(href) ? href : `https://${href}`;
@@ -165,6 +167,16 @@
               class="inline-flex items-center gap-2 break-all text-sm text-accent no-underline hover:text-accent/80"
             >
               <span>{formatHomepageLabel(homepage)}</span>
+            </a>
+          {/if}
+
+          {#if forkOrigin}
+            <a
+              href={forkOrigin.href}
+              class="inline-flex items-center gap-2 break-all text-sm text-text-2 no-underline hover:text-accent"
+            >
+              <span class="i-lucide-git-fork shrink-0"></span>
+              <span>Forked from {forkOrigin.label}</span>
             </a>
           {/if}
         </div>

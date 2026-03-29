@@ -10,6 +10,7 @@ export {
   getHead,
   getLog,
   getCommitInfo,
+  getRootCommit,
   getLogWasm,
   getCommitCount,
   getCommitCountFast,

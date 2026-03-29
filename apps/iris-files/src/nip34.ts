@@ -8,6 +8,11 @@ import { ndk, nostrStore, pubkeyToNpub, npubToPubkey } from './nostr';
 import { NDKEvent, type NDKFilter } from 'ndk';
 import { nip19 } from 'nostr-tools';
 import {
+  isNewerGitRepoAnnouncement,
+  parseGitRepoAnnouncement,
+  type GitRepoAnnouncement,
+} from './lib/gitRepoAnnouncements';
+import {
   KIND_REPO_ANNOUNCEMENT,
   KIND_PULL_REQUEST,
   KIND_ISSUE,
@@ -522,6 +527,8 @@ export async function publishRepoAnnouncement(
     description?: string;
     webUrl?: string;
     maintainers?: string[]; // npubs of additional maintainers
+    earliestUniqueCommit?: string;
+    personalFork?: boolean;
   } = {}
 ): Promise<boolean> {
   const state = nostrStore.getState();
@@ -531,23 +538,34 @@ export async function publishRepoAnnouncement(
 
   const event = new NDKEvent(ndk);
   event.kind = KIND_REPO_ANNOUNCEMENT;
-  event.content = options.description || '';
+  event.content = '';
   event.tags = [
     ['d', repoName],
     ['name', repoName],
     ['clone', htreeUrl],
   ];
 
+  if (options.description) {
+    event.tags.push(['description', options.description]);
+  }
+
   if (options.webUrl) {
     event.tags.push(['web', options.webUrl]);
   }
 
-  // Add maintainers
-  for (const maintainerNpub of options.maintainers || []) {
-    const maintainerPubkey = npubToPubkey(maintainerNpub);
-    if (maintainerPubkey) {
-      event.tags.push(['p', maintainerPubkey, '', 'maintainer']);
-    }
+  if (options.earliestUniqueCommit) {
+    event.tags.push(['r', options.earliestUniqueCommit, 'euc']);
+  }
+
+  if (options.personalFork) {
+    event.tags.push(['t', 'personal-fork']);
+  }
+
+  const maintainerPubkeys = (options.maintainers || [])
+    .map(maintainerNpub => npubToPubkey(maintainerNpub))
+    .filter((maintainerPubkey): maintainerPubkey is string => !!maintainerPubkey);
+  if (maintainerPubkeys.length > 0) {
+    event.tags.push(['maintainers', ...maintainerPubkeys]);
   }
 
   try {
@@ -557,6 +575,30 @@ export async function publishRepoAnnouncement(
     console.error('Failed to publish repo announcement:', e);
     return false;
   }
+}
+
+export async function fetchRepoAnnouncement(npub: string, repoName: string): Promise<GitRepoAnnouncement | null> {
+  const pubkey = npubToPubkey(npub);
+  if (!pubkey) {
+    return null;
+  }
+
+  const events = await fetchEventsViaSubscribe({
+    kinds: [KIND_REPO_ANNOUNCEMENT],
+    authors: [pubkey],
+    '#d': [repoName],
+    limit: 20,
+  }, 3000);
+
+  let latest: GitRepoAnnouncement | null = null;
+  for (const event of events) {
+    const parsed = parseGitRepoAnnouncement(event);
+    if (parsed && isNewerGitRepoAnnouncement(parsed, latest)) {
+      latest = parsed;
+    }
+  }
+
+  return latest;
 }
 
 /**

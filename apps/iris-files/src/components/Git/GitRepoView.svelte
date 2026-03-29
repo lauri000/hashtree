@@ -11,7 +11,7 @@
   import { nostrStore } from '../../nostr';
   import { createGitLogStore, createGitStatusStore } from '../../stores/git';
   import { createCIStatusStore, loadCIConfig, type CIStatus, type CIConfig } from '../../stores/ci';
-  import { createFavoriteRepoStatsStore, createFavoriteReposStore, toggleFavoriteRepo } from '../../stores';
+  import { createFavoriteRepoStatsStore, createFavoriteReposStore, createRepoForkStatsStore, toggleFavoriteRepo } from '../../stores';
   import { open as openGitHistoryModal } from '../Modals/GitHistoryModal.svelte';
     import { open as openGitCommitModal } from '../Modals/GitCommitModal.svelte';
   import { getFileLastCommits } from '../../utils/git';
@@ -126,6 +126,11 @@
   let favoriteRepoCount = $state(0);
   let displayedIsFavorited = $derived(favoriteOptimisticState ?? isFavorited);
   let displayedFavoriteCount = $derived(favoriteOptimisticCount ?? favoriteRepoCount);
+  let showRepoForkStats = $derived(!!route.npub && !route.params.get('k') && visibility !== 'private' && visibility !== 'link-visible');
+  let repoForkStatsStore = $derived(
+    showRepoForkStats && route.npub && repoPath ? createRepoForkStatsStore(route.npub, repoPath) : null,
+  );
+  let repoForkCount = $state(0);
 
   $effect(() => {
     repoAddress;
@@ -158,6 +163,22 @@
     return () => {
       unsub();
       favoriteRepoStatsStore?.destroy();
+    };
+  });
+
+  $effect(() => {
+    if (!repoForkStatsStore) {
+      repoForkCount = 0;
+      return;
+    }
+
+    const unsub = repoForkStatsStore.subscribe(value => {
+      repoForkCount = value?.count || 0;
+    });
+
+    return () => {
+      unsub();
+      repoForkStatsStore?.destroy();
     };
   });
 
@@ -723,6 +744,16 @@
             <span>{displayedIsFavorited ? 'Liked' : 'Like'}</span>
             <span class="text-xs text-text-2">{displayedFavoriteCount}</span>
           </button>
+        {/if}
+        {#if showRepoForkStats}
+          <div
+            class="flex items-center gap-2 px-3 h-9 rounded-lg border border-surface-3 bg-surface-1 text-sm text-text-2"
+            title="Personal forks announced via NIP-34"
+          >
+            <span class="i-lucide-git-fork"></span>
+            <span>Forks</span>
+            <span class="text-xs text-text-2">{repoForkCount}</span>
+          </div>
         {/if}
         <CodeDropdown npub={route.npub} {repoPath} />
       {/if}
