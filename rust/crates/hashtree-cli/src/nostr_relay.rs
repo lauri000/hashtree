@@ -853,6 +853,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relay_serves_all_events_for_since_zero_catch_all_filter() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let keys = Keys::generate();
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::from([keys.public_key().to_hex()]),
+        ));
+
+        let relay = NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([keys.public_key().to_hex()]),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                max_query_limit: 10,
+                ..Default::default()
+            },
+        )?;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        relay.register_client(8, tx, None).await;
+
+        let first = EventBuilder::new(Kind::TextNote, "first", [])
+            .custom_created_at(nostr::Timestamp::from_secs(5))
+            .to_event(&keys)?;
+        let second = EventBuilder::new(Kind::TextNote, "second", [])
+            .custom_created_at(nostr::Timestamp::from_secs(6))
+            .to_event(&keys)?;
+        let third = EventBuilder::new(Kind::TextNote, "third", [])
+            .custom_created_at(nostr::Timestamp::from_secs(7))
+            .to_event(&keys)?;
+
+        for event in [&first, &second, &third] {
+            relay
+                .handle_client_message(8, NostrClientMessage::event(event.clone()))
+                .await;
+            match recv_relay_message(&mut rx).await? {
+                RelayMessage::Ok { status, .. } => assert!(status),
+                other => anyhow::bail!("expected OK, got {:?}", other),
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        relay
+            .handle_client_message(
+                8,
+                NostrClientMessage::from_json(r#"["REQ","sub-all",{"since":0}]"#)?,
+            )
+            .await;
+
+        let mut received = HashSet::new();
+        loop {
+            match recv_relay_message(&mut rx).await? {
+                RelayMessage::Event {
+                    subscription_id,
+                    event,
+                } => {
+                    assert_eq!(subscription_id, SubscriptionId::new("sub-all"));
+                    received.insert(event.id);
+                }
+                RelayMessage::EndOfStoredEvents(id) => {
+                    assert_eq!(id, SubscriptionId::new("sub-all"));
+                    break;
+                }
+                other => anyhow::bail!("expected EVENT/EOSE, got {:?}", other),
+            }
+        }
+
+        assert_eq!(received.len(), 3);
+        assert_eq!(received, HashSet::from([first.id, second.id, third.id]));
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn relay_spambox_does_not_serve_untrusted_events() -> Result<()> {
         let tmp = TempDir::new()?;
         let graph_store = {
