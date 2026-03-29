@@ -9,7 +9,7 @@
   import ShareButton from '../ShareButton.svelte';
   import { getNhashFileUrl } from '../../lib/mediaUrl';
   import VideoComments from './VideoComments.svelte';
-  import VideoDescription from './VideoDescription.svelte';
+  import VideoDetails from './VideoDetails.svelte';
   import VideoLayout from './VideoLayout.svelte';
   import { routeStore } from '../../stores';
   import {
@@ -20,8 +20,8 @@
     resolveSnapshotRootCid,
     type TreeEventSnapshotInfo,
   } from '../../lib/treeEventSnapshots';
-  import VisibilityIcon from '../VisibilityIcon.svelte';
-  import { Avatar, FollowButton, Name } from '../User';
+  import { readVideoDirectoryMetadata } from '../../lib/videoMetadata';
+  import { FollowButton } from '../User';
 
   interface Props {
     nhash: string;
@@ -115,52 +115,14 @@
   async function loadVideoDirectory(cidParam: CID) {
     try {
       const tree = getTree();
-      const entries = await tree.listDirectory(cidParam);
-
-      if (!entries || entries.length === 0) {
-        return;
-      }
-
-      const videoEntry = entries.find(e =>
-        e.name.startsWith('video.') ||
-        e.name.endsWith('.webm') ||
-        e.name.endsWith('.mp4') ||
-        e.name.endsWith('.mov') ||
-        e.name.endsWith('.mkv')
-      );
-
-      if (!videoEntry) {
-        return;
-      }
+      const metadata = await readVideoDirectoryMetadata(tree, cidParam);
+      const { videoEntry } = metadata;
+      if (!videoEntry) return;
 
       videoCid = videoEntry.cid;
       videoFileName = videoEntry.name;
-
-      if (videoEntry.meta) {
-        if (typeof videoEntry.meta.title === 'string') videoTitle = videoEntry.meta.title;
-        if (typeof videoEntry.meta.description === 'string') videoDescription = videoEntry.meta.description;
-      }
-
-      if (!videoTitle) {
-        try {
-          const titleResult = await tree.resolvePath(cidParam, 'title.txt');
-          if (titleResult) {
-            const titleData = await tree.readFile(titleResult.cid);
-            if (titleData) videoTitle = new TextDecoder().decode(titleData).trim();
-          }
-        } catch {}
-      }
-
-      if (!videoDescription) {
-        try {
-          const descResult = await tree.resolvePath(cidParam, 'description.txt');
-          if (descResult) {
-            const descData = await tree.readFile(descResult.cid);
-            if (descData) videoDescription = new TextDecoder().decode(descData).trim();
-          }
-        } catch {}
-      }
-
+      videoTitle = metadata.title;
+      videoDescription = metadata.description;
     } catch (e) {
       console.error('[VideoNHashView] Failed to load directory:', e);
     }
@@ -217,6 +179,23 @@
   }
 </script>
 
+{#snippet ownerActions()}
+  <FollowButton pubkey={ownerPubkey} />
+{/snippet}
+
+{#snippet pageActions()}
+  <ShareButton url={window.location.href} />
+  {#if latestSnapshotHref}
+    <a href={latestSnapshotHref} class="btn-ghost no-underline">
+      See latest version
+    </a>
+  {/if}
+  <button onclick={handleDownload} class="btn-ghost" disabled={!videoCid} title="Download">
+    <span class="i-lucide-download text-base"></span>
+    <span class="hidden sm:inline ml-1">Download</span>
+  </button>
+{/snippet}
+
 {#snippet videoPlayer()}
   {#if loading}
     <div class="w-full h-full flex items-center justify-center bg-black text-white" data-testid="video-loading">
@@ -242,51 +221,16 @@
 {/snippet}
 
 {#snippet videoContent()}
-  {#if videoTitle}
-    <div class="mb-3 flex items-center gap-2">
-      {#if snapshotVisibility && snapshotVisibility !== 'public'}
-        <VisibilityIcon visibility={snapshotVisibility} class="mr-1 text-base text-text-3" />
-      {/if}
-      <h1 class="min-w-0 break-words text-xl font-semibold text-text-1" data-testid="video-title">{videoTitle}</h1>
-    </div>
-  {/if}
-
-  <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-    <div class="flex min-w-0 items-center gap-3">
-      {#if ownerNpub && ownerPubkey}
-        <a href={`#/${ownerNpub}`} class="shrink-0">
-          <Avatar pubkey={ownerPubkey} size={40} />
-        </a>
-        <div class="min-w-0">
-          <a href={`#/${ownerNpub}`} class="font-medium text-text-1 no-underline">
-            <Name pubkey={ownerPubkey} />
-          </a>
-        </div>
-        <FollowButton pubkey={ownerPubkey} />
-      {/if}
-    </div>
-
-    <div class="flex shrink-0 items-center gap-1 flex-wrap">
-      <ShareButton url={window.location.href} />
-      {#if latestSnapshotHref}
-        <a href={latestSnapshotHref} class="btn-ghost no-underline">
-          See latest version
-        </a>
-      {/if}
-      <button onclick={handleDownload} class="btn-ghost" disabled={!videoCid} title="Download">
-        <span class="i-lucide-download text-base"></span>
-        <span class="hidden sm:inline ml-1">Download</span>
-      </button>
-    </div>
-  </div>
-
-  {#if videoDescription}
-    <VideoDescription
-      text={videoDescription}
-      class="bg-surface-1 text-sm text-text-1"
-    />
-  {/if}
-
+  <VideoDetails
+    title={videoTitle}
+    visibility={snapshotVisibility}
+    ownerHref={ownerNpub ? `#/${ownerNpub}` : null}
+    ownerPubkey={ownerPubkey}
+    {ownerActions}
+    {pageActions}
+    description={videoDescription}
+    descriptionClass="bg-surface-1 text-sm text-text-1"
+  />
   <VideoComments {nhash} filename={videoFileName || 'video.mp4'} />
 {/snippet}
 

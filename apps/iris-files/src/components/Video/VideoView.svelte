@@ -29,8 +29,7 @@
   } from '../../stores/recents';
   import { recordDeletedVideo } from '../../stores/videoDeletes';
   import { Avatar, Name, FollowButton } from '../User';
-  import VisibilityIcon from '../VisibilityIcon.svelte';
-  import VideoDescription from './VideoDescription.svelte';
+  import VideoDetails from './VideoDetails.svelte';
   import VideoComments from './VideoComments.svelte';
   import PlaylistSidebar from './PlaylistSidebar.svelte';
   import FeedSidebar from './FeedSidebar.svelte';
@@ -55,6 +54,7 @@
   import { readDirectPlayableMediaFileName } from '../../lib/directPlayableRoot';
   import { resolveFeedVideoRootCidAsync } from '../../lib/videoFeedRoot';
   import { getVideoDisplayTitle } from '../../lib/videoDisplayTitle';
+  import { readVideoDirectoryMetadata } from '../../lib/videoMetadata';
   import { setRecentVideoCardInfo } from '../../stores/homeFeedCache';
   import {
     buildTreeEventPermalink,
@@ -1629,74 +1629,23 @@ async function syncTreeRootToWorker(
       }
     };
 
-    // Try video file's link entry meta first (new format)
     try {
-      const entries = await tree.listDirectory(rootCid);
+      const metadata = await readVideoDirectoryMetadata(tree, rootCid);
       if (isStaleMetadataLoad()) return;
-      const thumbEntry = entries?.find((entry) =>
-        entry.name.startsWith('thumbnail.') ||
-        entry.name.endsWith('.jpg') ||
-        entry.name.endsWith('.webp') ||
-        entry.name.endsWith('.png')
-      );
-      if (thumbEntry) {
-        videoThumbnailUrl = getNhashFileUrl(thumbEntry.cid, thumbEntry.name);
+      if (metadata.thumbnailEntry) {
+        videoThumbnailUrl = getNhashFileUrl(metadata.thumbnailEntry.cid, metadata.thumbnailEntry.name);
       }
-      const videoEntry = entries ? findPlayableMediaEntry(entries) : undefined;
-      if (videoEntry?.meta) {
-        const meta = videoEntry.meta as Record<string, unknown>;
-        if (meta.title && typeof meta.title === 'string') {
-          videoTitle = meta.title;
-          if (recentPath) updateRecentLabel(recentPath, videoTitle);
-        }
-        if (meta.description && typeof meta.description === 'string') {
-          videoDescription = meta.description;
-        }
-        if (meta.createdAt && typeof meta.createdAt === 'number') {
-          videoCreatedAt = meta.createdAt;
-        }
-        if (videoTitle && videoDescription) return; // Found both in link meta, done
+      if (metadata.title) {
+        videoTitle = metadata.title;
+        if (recentPath) updateRecentLabel(recentPath, videoTitle);
+      }
+      if (metadata.description) {
+        videoDescription = metadata.description;
+      }
+      if (!videoCreatedAt && metadata.createdAt) {
+        videoCreatedAt = metadata.createdAt;
       }
     } catch {}
-
-    // Fall back to metadata.json (legacy format - will be migrated on login)
-    try {
-      const metadataResult = await tree.resolvePath(rootCid, 'metadata.json');
-      if (metadataResult) {
-        if (isStaleMetadataLoad()) return;
-        const metadataData = await tree.readFile(metadataResult.cid);
-        if (metadataData) {
-          if (isStaleMetadataLoad()) return;
-          const metadata = JSON.parse(new TextDecoder().decode(metadataData));
-          if (metadata.title && typeof metadata.title === 'string') {
-            videoTitle = metadata.title;
-            if (recentPath) updateRecentLabel(recentPath, videoTitle);
-          }
-          if (metadata.description && typeof metadata.description === 'string') {
-            videoDescription = metadata.description;
-          }
-          if (!videoCreatedAt && metadata.createdAt && typeof metadata.createdAt === 'number') {
-            videoCreatedAt = metadata.createdAt;
-          }
-        }
-      }
-    } catch {}
-
-    // Fall back to title.txt (legacy format)
-    if (!videoTitle) {
-      try {
-        const titleResult = await tree.resolvePath(rootCid, 'title.txt');
-        if (titleResult) {
-          if (isStaleMetadataLoad()) return;
-          const titleData = await tree.readFile(titleResult.cid);
-          if (titleData) {
-            if (isStaleMetadataLoad()) return;
-            videoTitle = new TextDecoder().decode(titleData).trim();
-            if (recentPath) updateRecentLabel(recentPath, videoTitle);
-          }
-        }
-      } catch {}
-    }
 
     if (!videoTitle) {
       const remoteTitle = await readTextViaStablePath('title.txt');
@@ -1705,21 +1654,6 @@ async function syncTreeRootToWorker(
         videoTitle = remoteTitle;
         if (recentPath) updateRecentLabel(recentPath, videoTitle);
       }
-    }
-
-    // Fall back to description.txt (legacy format)
-    if (!videoDescription) {
-      try {
-        const descResult = await tree.resolvePath(rootCid, 'description.txt');
-        if (descResult) {
-          if (isStaleMetadataLoad()) return;
-          const descData = await tree.readFile(descResult.cid);
-          if (descData) {
-            if (isStaleMetadataLoad()) return;
-            videoDescription = new TextDecoder().decode(descData).trim();
-          }
-        }
-      } catch {}
     }
 
     if (!videoDescription) {
@@ -2264,6 +2198,72 @@ async function syncTreeRootToWorker(
   });
 </script>
 
+{#snippet ownerMeta()}
+  <div class="text-sm text-text-3">
+    {knownFollowers.size} known follower{knownFollowers.size !== 1 ? 's' : ''}
+  </div>
+{/snippet}
+
+{#snippet ownerActions()}
+  <FollowButton pubkey={ownerPubkey} />
+  {#if videoIdentifier}
+    <VideoZapButton {videoIdentifier} {ownerPubkey} />
+  {/if}
+{/snippet}
+
+{#snippet pageActions()}
+  <button onclick={toggleTheaterMode} class="btn-ghost p-2 {theaterMode ? '' : 'hidden lg:block'}" title={theaterMode ? 'Exit theater mode' : 'Theater mode'}>
+    <span class={theaterMode ? 'i-lucide-columns-2' : 'i-lucide-rectangle-horizontal'} class:text-lg={true}></span>
+  </button>
+  {#if videoIdentifier}
+    <button
+      onclick={toggleLike}
+      class="btn-ghost p-2 flex items-center gap-1"
+      class:text-accent={userLiked}
+      title={userLiked ? 'Liked' : 'Like'}
+      disabled={!isLoggedIn || liking}
+    >
+      <span class={userLiked ? 'i-lucide-heart text-lg' : 'i-lucide-heart text-lg'} class:fill-current={userLiked}></span>
+      {#if likes.size > 0}
+        <span class="text-sm">{likes.size}</span>
+      {/if}
+    </button>
+  {/if}
+  {#if isLoggedIn}
+    <button
+      onclick={handleSaveToPlaylist}
+      class="btn-ghost p-2"
+      title="Add to playlist"
+      disabled={!rootCid || !!protectedVideoState}
+    >
+      <span class="i-lucide-bookmark text-lg"></span>
+    </button>
+  {/if}
+  <ShareButton url={window.location.href} />
+  <button onclick={handlePermalink} class="btn-ghost p-2" title="Permalink" disabled={!snapshotPermalinkHref && !videoNhash}>
+    <span class="i-lucide-link text-lg"></span>
+  </button>
+  <button onclick={handleDownload} class="btn-ghost p-2" title="Download" disabled={!videoCid}>
+    <span class="i-lucide-download text-lg"></span>
+  </button>
+  {#if isOwner}
+    <button onclick={handleBlossomPush} class="btn-ghost p-2" title="Push to file servers">
+      <span class="i-lucide-upload-cloud text-lg"></span>
+    </button>
+    <button onclick={startEdit} class="btn-ghost p-2" title="Edit">
+      <span class="i-lucide-pencil text-lg"></span>
+    </button>
+    <button
+      onclick={handleDelete}
+      class="btn-ghost p-2 text-red-400 hover:text-red-300"
+      title="Delete video"
+      disabled={deleting}
+    >
+      <span class={deleting ? 'i-lucide-loader-2 animate-spin' : 'i-lucide-trash-2'} class:text-lg={true}></span>
+    </button>
+  {/if}
+{/snippet}
+
 <AmbientGlow {videoRef} />
 
 {#snippet videoContent()}
@@ -2304,105 +2304,21 @@ async function syncTreeRootToWorker(
         </div>
       </div>
     {:else}
-      <!-- Title row -->
-      <div class="flex items-center gap-2 mb-3">
-        {#if effectiveVisibility !== 'public'}
-          <VisibilityIcon visibility={effectiveVisibility} class="text-base text-text-3 mr-1" />
-        {/if}
-        <h1 class="text-xl font-semibold text-text-1 break-words min-w-0" data-testid="video-title">{title}</h1>
-      </div>
-
-      <!-- Owner info + action buttons row -->
-      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <!-- Owner info -->
-        <div class="flex items-center gap-3 min-w-0">
-          {#if ownerPubkey}
-            <a href={`#/${npub}`} class="shrink-0">
-              <Avatar pubkey={ownerPubkey} size={40} />
-            </a>
-            <div class="min-w-0">
-              <a href={`#/${npub}`} class="text-text-1 font-medium no-underline">
-                <Name pubkey={ownerPubkey} />
-              </a>
-              <div class="text-sm text-text-3">
-                {knownFollowers.size} known follower{knownFollowers.size !== 1 ? 's' : ''}
-              </div>
-            </div>
-            <FollowButton pubkey={ownerPubkey} />
-            {#if videoIdentifier}
-              <VideoZapButton {videoIdentifier} {ownerPubkey} />
-            {/if}
-          {/if}
-        </div>
-
-        <!-- Action buttons -->
-        <div class="flex items-center gap-1 shrink-0 flex-wrap">
-          <button onclick={toggleTheaterMode} class="btn-ghost p-2 {theaterMode ? '' : 'hidden lg:block'}" title={theaterMode ? 'Exit theater mode' : 'Theater mode'}>
-            <span class={theaterMode ? 'i-lucide-columns-2' : 'i-lucide-rectangle-horizontal'} class:text-lg={true}></span>
-          </button>
-          <!-- Like button -->
-          {#if videoIdentifier}
-            <button
-              onclick={toggleLike}
-              class="btn-ghost p-2 flex items-center gap-1"
-              class:text-accent={userLiked}
-              title={userLiked ? 'Liked' : 'Like'}
-              disabled={!isLoggedIn || liking}
-            >
-              <span class={userLiked ? 'i-lucide-heart text-lg' : 'i-lucide-heart text-lg'} class:fill-current={userLiked}></span>
-              {#if likes.size > 0}
-                <span class="text-sm">{likes.size}</span>
-              {/if}
-            </button>
-          {/if}
-          <!-- Save to playlist button -->
-          {#if isLoggedIn}
-            <button
-              onclick={handleSaveToPlaylist}
-              class="btn-ghost p-2"
-              title="Add to playlist"
-              disabled={!rootCid || !!protectedVideoState}
-            >
-              <span class="i-lucide-bookmark text-lg"></span>
-            </button>
-          {/if}
-          <ShareButton url={window.location.href} />
-          <button onclick={handlePermalink} class="btn-ghost p-2" title="Permalink" disabled={!snapshotPermalinkHref && !videoNhash}>
-            <span class="i-lucide-link text-lg"></span>
-          </button>
-          <button onclick={handleDownload} class="btn-ghost p-2" title="Download" disabled={!videoCid}>
-            <span class="i-lucide-download text-lg"></span>
-          </button>
-          {#if isOwner}
-            <button onclick={handleBlossomPush} class="btn-ghost p-2" title="Push to file servers">
-              <span class="i-lucide-upload-cloud text-lg"></span>
-            </button>
-            <button onclick={startEdit} class="btn-ghost p-2" title="Edit">
-              <span class="i-lucide-pencil text-lg"></span>
-            </button>
-            <button
-              onclick={handleDelete}
-              class="btn-ghost p-2 text-red-400 hover:text-red-300"
-              title="Delete video"
-              disabled={deleting}
-            >
-              <span class={deleting ? 'i-lucide-loader-2 animate-spin' : 'i-lucide-trash-2'} class:text-lg={true}></span>
-            </button>
-          {/if}
-        </div>
-      </div>
-
-      <!-- Description with timestamp -->
-      {#if videoDescription || videoCreatedAt}
-        <VideoDescription
-          text={videoDescription || ''}
-          maxLines={4}
-          maxChars={400}
-          class="bg-surface-1 text-text-1 text-sm"
-          style={descriptionHoverStyle}
-          timestamp={videoCreatedAt ? formatTimeAgo(videoCreatedAt) : undefined}
-        />
-      {/if}
+      <VideoDetails
+        title={title}
+        visibility={effectiveVisibility}
+        ownerHref={npub ? `#/${npub}` : null}
+        ownerPubkey={ownerPubkey}
+        {ownerMeta}
+        {ownerActions}
+        {pageActions}
+        description={videoDescription || ''}
+        descriptionMaxLines={4}
+        descriptionMaxChars={400}
+        descriptionClass="bg-surface-1 text-text-1 text-sm"
+        descriptionStyle={descriptionHoverStyle}
+        descriptionTimestamp={videoCreatedAt ? formatTimeAgo(videoCreatedAt) : undefined}
+      />
     {/if}
   </div>
 
