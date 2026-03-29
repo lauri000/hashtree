@@ -561,25 +561,49 @@ export async function createBoardTree(
   });
 
   // Local-first: board creation succeeds immediately after local tree is created.
-  // Relay publish is best-effort in the background and must not fail creation.
+  // Try to confirm the initial publish before returning a shareable board URL.
+  // If relay publication is slow or fails, fall back to the historical
+  // local-first behavior and let the background publish continue.
   if (linkKey) {
     storeLinkKey(nostrState.npub, treeName, linkKey);
   }
 
-  void saveHashtree(treeName, rootCid, { visibility, labels: ['boards'], linkKey })
-    .then((result) => {
-      if (!result.success) {
-        console.warn('[Boards] Board created locally; relay publish not confirmed yet');
-      }
-      if (result.linkKey) {
-        storeLinkKey(nostrState.npub!, treeName, result.linkKey);
-      }
-    })
-    .catch((err) => {
-      console.warn('[Boards] Background publish failed; board remains local-first', err);
-    });
+  const publishPromise = saveHashtree(treeName, rootCid, { visibility, labels: ['boards'], linkKey });
+  const publishTimeoutMs = import.meta.env.VITE_TEST_MODE ? 15000 : 5000;
+  const publishTimeout = new Promise<null>((resolve) => {
+    setTimeout(() => resolve(null), publishTimeoutMs);
+  });
 
-  return { success: true, npub: nostrState.npub, treeName, linkKey };
+  let publishResult: Awaited<typeof publishPromise> | null = null;
+  try {
+    publishResult = await Promise.race([publishPromise, publishTimeout]);
+  } catch (err) {
+    console.warn('[Boards] Initial publish failed; board remains local-first', err);
+  }
+
+  if (!publishResult) {
+    void publishPromise
+      .then((result) => {
+        if (!result.success) {
+          console.warn('[Boards] Board created locally; relay publish not confirmed yet');
+        }
+        if (result.linkKey) {
+          storeLinkKey(nostrState.npub!, treeName, result.linkKey);
+        }
+      })
+      .catch((err) => {
+        console.warn('[Boards] Background publish failed; board remains local-first', err);
+      });
+  } else if (publishResult.linkKey) {
+    storeLinkKey(nostrState.npub, treeName, publishResult.linkKey);
+  }
+
+  return {
+    success: true,
+    npub: nostrState.npub,
+    treeName,
+    linkKey: publishResult?.linkKey ?? linkKey,
+  };
 }
 
 // Verify tree

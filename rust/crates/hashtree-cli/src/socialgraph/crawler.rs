@@ -17,6 +17,7 @@ const DEFAULT_AUTHOR_BATCH_SIZE: usize = 500;
 const DEFAULT_CONCURRENT_BATCHES: usize = 4;
 const GRAPH_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const SOCIALGRAPH_RELAY_EVENT_MAX_SIZE: u32 = 512 * 1024;
 #[cfg(not(test))]
 const CRAWLER_STARTUP_DELAY: Duration = Duration::from_secs(5);
 #[cfg(test)]
@@ -262,7 +263,12 @@ impl SocialGraphCrawler {
             return None;
         };
 
-        let client = nostr_sdk::Client::new(&sdk_keys);
+        let mut relay_limits = nostr_sdk::pool::RelayLimits::default();
+        relay_limits.events.max_size = Some(SOCIALGRAPH_RELAY_EVENT_MAX_SIZE);
+        let client = nostr_sdk::Client::with_opts(
+            sdk_keys,
+            nostr_sdk::Options::new().relay_limits(relay_limits),
+        );
         for relay in &self.relays {
             if let Err(err) = client.add_relay(relay).await {
                 tracing::warn!("Failed to add relay {}: {}", relay, err);
@@ -1096,6 +1102,56 @@ mod tests {
         assert!(
             crate::socialgraph::get_follows(&graph_store, &alice_pk).contains(&bob_pk),
             "expected warm_once to ingest distance-1 follow list"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_crawler_warm_once_accepts_large_contact_list_events() {
+        let _guard = crate::socialgraph::test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = crate::socialgraph::open_social_graph_store(tmp.path()).unwrap();
+
+        let root_keys = nostr::Keys::generate();
+        let root_pk = root_keys.public_key().to_bytes();
+        crate::socialgraph::set_social_graph_root(&graph_store, &root_pk);
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+
+        let followed_keys = (0..1_600)
+            .map(|_| nostr::Keys::generate())
+            .collect::<Vec<_>>();
+        let tags = followed_keys
+            .iter()
+            .map(|keys| Tag::public_key(keys.public_key()))
+            .collect::<Vec<_>>();
+        let root_event = EventBuilder::new(Kind::ContactList, "", tags)
+            .custom_created_at(nostr::Timestamp::from(10))
+            .to_event(&root_keys)
+            .unwrap();
+        assert!(
+            root_event.as_json().len() > 70_000,
+            "test event should exceed nostr-sdk default size limit"
+        );
+
+        let relay = TestRelay::new(vec![root_event]);
+        let crawler = SocialGraphCrawler::new(backend, root_keys.clone(), vec![relay.url()], 1)
+            .with_author_batch_size(1);
+
+        crawler.warm_once().await;
+
+        let follows = crate::socialgraph::get_follows(&graph_store, &root_pk);
+        let first_pk = followed_keys
+            .first()
+            .expect("first followed key")
+            .public_key()
+            .to_bytes();
+        let last_pk = followed_keys
+            .last()
+            .expect("last followed key")
+            .public_key()
+            .to_bytes();
+        assert!(
+            follows.contains(&first_pk) && follows.contains(&last_pk),
+            "expected warm_once to ingest oversized contact list event"
         );
     }
 

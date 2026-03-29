@@ -3,7 +3,6 @@
    * CodeDropdown - GitHub-style green "<> Code" button with clone instructions
    */
   import CopyInput from '../CopyInput.svelte';
-  import { getCanonicalGitRepositoryUrl } from '../../lib/shareUrls';
 
   interface Props {
     npub: string;
@@ -18,7 +17,6 @@
 
   // Build the git clone command
   let cloneCommand = $derived(`git clone htree://${npub}/${repoPath}`);
-  const hashtreeInstallUrl = `${getCanonicalGitRepositoryUrl()}?anchor=installation`;
   const rustCommand = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh";
   const cargoCommand = "cargo install git-remote-htree";
 
@@ -79,7 +77,7 @@
   <button
     bind:this={buttonEl}
     onclick={() => isOpen = !isOpen}
-    class="flex items-center gap-1.5 px-3 h-8 rounded-md text-sm font-medium text-white bg-success hover:brightness-110 transition-all"
+    class="btn-success flex items-center gap-1.5 px-3 h-9 text-sm"
   >
     <span class="i-lucide-code text-base"></span>
     <span>Code</span>
@@ -100,11 +98,12 @@
         <!-- Requirements -->
         <div class="space-y-2">
           <p class="text-xs text-text-3">
-            Requires <a href="https://rustup.rs" target="_blank" rel="noopener" class="text-accent hover:underline">Rust</a>,
-            <code>git-remote-htree</code>, and <code>htree</code>.
-            <a href={hashtreeInstallUrl} target="_blank" rel="noopener" class="text-accent hover:underline">Install it from the hashtree README</a>.
+            Requires <a href="https://rustup.rs" target="_blank" rel="noopener" class="text-accent hover:underline">Rust</a> and <code>git-remote-htree</code>.
           </p>
           <CopyInput text={rustCommand} />
+          <p class="text-xs text-text-3">
+            Or install the git helper via cargo:
+          </p>
           <CopyInput text={cargoCommand} />
         </div>
       </div>

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use hashtree_cli::Config;
+use hashtree_core::{nhash_encode_full, NHashData};
+use hashtree_cli::{Config, HashtreeStore};
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -53,6 +54,49 @@ fn init_socialgraph(
         Some(nostr_db_max_bytes),
     )
     .context("Failed to initialize social graph store")?;
+    hashtree_cli::socialgraph::set_social_graph_root(&graph_store, &social_graph_root_bytes);
+
+    Ok((graph_store, social_graph_root_bytes))
+}
+
+fn init_socialgraph_with_shared_storage(
+    data_dir: &Path,
+    config: &Config,
+) -> Result<(Arc<hashtree_cli::socialgraph::SocialGraphStore>, [u8; 32])> {
+    use hashtree_cli::config::{ensure_keys, parse_npub, pubkey_bytes};
+
+    let nostr_db_max_bytes = config
+        .nostr
+        .db_max_size_gb
+        .saturating_mul(1024 * 1024 * 1024);
+    let max_size_bytes = config.storage.max_size_gb * 1024 * 1024 * 1024;
+
+    let (keys, _was_generated) = ensure_keys()?;
+    let pk_bytes = pubkey_bytes(&keys);
+
+    let social_graph_root_bytes = if let Some(ref root_npub) = config.nostr.socialgraph_root {
+        match parse_npub(root_npub) {
+            Ok(pk) => pk,
+            Err(_) => {
+                tracing::warn!("Invalid npub in socialgraph_root: {}", root_npub);
+                pk_bytes
+            }
+        }
+    } else {
+        pk_bytes
+    };
+
+    let store = Arc::new(HashtreeStore::with_options(
+        data_dir,
+        config.storage.s3.as_ref(),
+        max_size_bytes,
+    )?);
+    let graph_store = hashtree_cli::socialgraph::open_social_graph_store_with_storage(
+        data_dir,
+        store.store_arc(),
+        Some(nostr_db_max_bytes),
+    )
+    .context("Failed to initialize shared social graph store")?;
     hashtree_cli::socialgraph::set_social_graph_root(&graph_store, &social_graph_root_bytes);
 
     Ok((graph_store, social_graph_root_bytes))
@@ -239,6 +283,37 @@ pub(crate) fn run_socialgraph_stats(data_dir: PathBuf) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn run_socialgraph_rebuild_profile_index(data_dir: PathBuf) -> Result<()> {
+    let config = Config::load()?;
+    let (graph_store, _social_graph_root_bytes) =
+        init_socialgraph_with_shared_storage(&data_dir, &config)?;
+    let rebuilt = graph_store
+        .rebuild_profile_index_from_stored_events()
+        .context("rebuild profile search index from stored metadata events")?;
+    let root = graph_store.profile_search_root()?;
+
+    println!("Rebuilt profile search index from {} latest profiles", rebuilt);
+    match root {
+        Some(root) => {
+            let nhash = nhash_encode_full(&NHashData {
+                hash: root.hash,
+                decrypt_key: root.key,
+            })
+            .context("encode profile search root nhash")?;
+            println!("  hash:  {}", hex::encode(root.hash));
+            if let Some(key) = root.key {
+                println!("  key:   {}", hex::encode(key));
+            }
+            println!("  nhash: {}", nhash);
+        }
+        None => {
+            println!("  root:  none");
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn run_socialgraph_warm(
     data_dir: PathBuf,
     secs: u64,
@@ -255,7 +330,7 @@ pub(crate) async fn run_socialgraph_warm(
     let before = graph_store
         .stats()
         .context("read social graph stats before warm")?;
-    let effective_crawl_depth = crawl_depth.unwrap_or(config.nostr.crawl_depth);
+    let effective_crawl_depth = crawl_depth.unwrap_or(config.nostr.social_graph_crawl_depth);
     let effective_relays = if relays.is_empty() {
         config.nostr.relays.clone()
     } else {

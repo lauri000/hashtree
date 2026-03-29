@@ -42,6 +42,7 @@ mod imp {
     use anyhow::Result;
 
     use crate::socialgraph::{EventStorageClass, SocialGraphAccessControl, SocialGraphBackend};
+    use hashtree_nostr::{is_parameterized_replaceable_kind, is_replaceable_kind};
     use tracing::warn;
 
     fn prefers_trusted_only(filter: &NostrFilter) -> bool {
@@ -61,11 +62,11 @@ mod imp {
             return false;
         }
 
-        if kind == 0 || kind == 3 || (10_000..20_000).contains(&kind) {
+        if is_replaceable_kind(kind) {
             return true;
         }
 
-        if (30_000..40_000).contains(&kind) {
+        if is_parameterized_replaceable_kind(kind) {
             let d_tag = nostr::SingleLetterTag::lowercase(nostr::Alphabet::D);
             return filter
                 .generic_tags

@@ -1,3 +1,4 @@
+use crate::nip07;
 use axum::{
     http::StatusCode,
     routing::{get, post},
@@ -28,6 +29,16 @@ pub struct AutomationUiState {
     pub child_last_error: String,
     pub history_index: i32,
     pub history_length: usize,
+    pub window_inner_height: i32,
+    pub window_outer_height: i32,
+    pub toolbar_height: i32,
+    pub child_bounds_top: i32,
+    pub child_bounds_height: i32,
+    pub child_viewport_width: i32,
+    pub child_viewport_height: i32,
+    pub pending_nip07_prompt_request_id: String,
+    pub pending_nip07_prompt_origin: String,
+    pub pending_nip07_prompt_method: String,
 }
 
 impl Default for AutomationUiState {
@@ -49,6 +60,16 @@ impl Default for AutomationUiState {
             child_last_error: String::new(),
             history_index: -1,
             history_length: 0,
+            window_inner_height: 0,
+            window_outer_height: 0,
+            toolbar_height: 0,
+            child_bounds_top: 0,
+            child_bounds_height: 0,
+            child_viewport_width: 0,
+            child_viewport_height: 0,
+            pending_nip07_prompt_request_id: String::new(),
+            pending_nip07_prompt_origin: String::new(),
+            pending_nip07_prompt_method: String::new(),
         }
     }
 }
@@ -71,6 +92,7 @@ pub enum AutomationAction {
     Reload,
     Home,
     Settings,
+    RespondNip07Prompt,
     Shutdown,
 }
 
@@ -80,6 +102,30 @@ pub struct AutomationCommand {
     pub action: AutomationAction,
     #[serde(default)]
     pub url: Option<String>,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub decision: Option<nip07::Nip07PermissionDecisionAction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationNip07ProbeRequest {
+    #[serde(default = "default_child_webview_label")]
+    pub label: String,
+    #[serde(default)]
+    pub scenario: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationNip07PermissionResponse {
+    pub request_id: String,
+    pub decision: nip07::Nip07PermissionDecisionAction,
+}
+
+fn default_child_webview_label() -> String {
+    "content".to_string()
 }
 
 pub struct AutomationState {
@@ -155,6 +201,9 @@ pub fn maybe_start_server<R: Runtime + 'static>(
     let app_for_routes = app.clone();
     let automation_for_health = automation.clone();
     let automation_for_state = automation.clone();
+    let app_for_nip07_probe = app.clone();
+    let app_for_nip07_prompt = app.clone();
+    let app_for_nip07_response = app.clone();
 
     tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
@@ -207,6 +256,61 @@ pub fn maybe_start_server<R: Runtime + 'static>(
                         Ok::<StatusCode, (StatusCode, String)>(StatusCode::ACCEPTED)
                     }
                 }),
+            )
+            .route(
+                "/automation/nip07-probe",
+                post(move |Json(request): Json<AutomationNip07ProbeRequest>| {
+                    let app = app_for_nip07_probe.clone();
+                    async move {
+                        nip07::run_webview_nip07_probe(
+                            app,
+                            request.label,
+                            request.scenario.unwrap_or_else(|| "probe".to_string()),
+                        )
+                        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+                        Ok::<StatusCode, (StatusCode, String)>(StatusCode::ACCEPTED)
+                    }
+                }),
+            )
+            .route(
+                "/automation/nip07-prompts",
+                get(move || {
+                    let app = app_for_nip07_prompt.clone();
+                    async move {
+                        let state = app.try_state::<Arc<nip07::Nip07State>>().ok_or_else(|| {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "NIP-07 state not initialized".to_string(),
+                            )
+                        })?;
+                        let prompts = state.pending_permission_prompts().await;
+                        Ok::<Json<Vec<nip07::Nip07PermissionPrompt>>, (StatusCode, String)>(Json(
+                            prompts,
+                        ))
+                    }
+                }),
+            )
+            .route(
+                "/automation/nip07-prompts/respond",
+                post(
+                    move |Json(request): Json<AutomationNip07PermissionResponse>| {
+                        let app = app_for_nip07_response.clone();
+                        async move {
+                            let state =
+                                app.try_state::<Arc<nip07::Nip07State>>().ok_or_else(|| {
+                                    (
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        "NIP-07 state not initialized".to_string(),
+                                    )
+                                })?;
+                            state
+                                .resolve_permission_prompt(&request.request_id, request.decision)
+                                .await
+                                .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+                            Ok::<StatusCode, (StatusCode, String)>(StatusCode::ACCEPTED)
+                        }
+                    },
+                ),
             );
 
         if let Err(error) = axum::serve(listener, router).await {
@@ -335,6 +439,16 @@ mod tests {
             child_last_error: String::new(),
             history_index: 0,
             history_length: 1,
+            window_inner_height: 720,
+            window_outer_height: 800,
+            toolbar_height: 48,
+            child_bounds_top: 48,
+            child_bounds_height: 672,
+            child_viewport_width: 1280,
+            child_viewport_height: 672,
+            pending_nip07_prompt_request_id: String::new(),
+            pending_nip07_prompt_origin: String::new(),
+            pending_nip07_prompt_method: String::new(),
         });
 
         let snapshot = automation.snapshot();
@@ -349,5 +463,8 @@ mod tests {
         assert_eq!(snapshot.ui.child_page_load_state, "finished");
         assert_eq!(snapshot.ui.child_document_title, "Files");
         assert_eq!(snapshot.ui.child_media_summary, "thumbs=4/5 visible=3");
+        assert_eq!(snapshot.ui.window_inner_height, 720);
+        assert_eq!(snapshot.ui.child_bounds_height, 672);
+        assert_eq!(snapshot.ui.child_viewport_height, 672);
     }
 }

@@ -32,6 +32,7 @@
   let isFullscreen = $derived.by(() => {
     return getQueryParamsFromHash(hash).get('fullscreen') === '1';
   });
+  let showGitFileSidebar = $derived(isViewingFile && !showGenericFileBrowser && !isFullscreen);
 
   onMount(() => {
     nostrStore.setSelectedTree(null);
@@ -46,11 +47,13 @@
 </script>
 
 {#if isValid}
-  <!-- File browser - disabled entirely in git app, hidden in single-column when viewing file/git repo -->
-  {#if showGenericFileBrowser && !isFullscreen}
-    <div class={showViewer
-      ? 'hidden lg:flex lg:w-80 shrink-0 flex-col min-h-0'
-      : 'flex flex-1 lg:flex-none lg:w-80 shrink-0 flex-col min-h-0'}>
+  <!-- Desktop file sidebar for git file views, otherwise the generic file browser -->
+  {#if (showGitFileSidebar || showGenericFileBrowser) && !isFullscreen}
+    <div class={showGitFileSidebar
+      ? 'hidden lg:flex lg:w-80 shrink-0 flex-col min-h-0 border-r border-surface-2 bg-surface-0'
+      : showViewer
+        ? 'hidden lg:flex lg:w-80 shrink-0 flex-col min-h-0'
+        : 'flex flex-1 lg:flex-none lg:w-80 shrink-0 flex-col min-h-0'}>
       <FileBrowser />
     </div>
   {/if}

@@ -25,6 +25,12 @@ describe('shared settings layout', () => {
     expect(settingsLayoutSource).toContain('<NetworkSettings />');
   });
 
+  it('keeps colored icon pills for the top-level settings navigation', () => {
+    expect(settingsLayoutSource).toContain('bg-accent/12 text-accent ring-1 ring-accent/20');
+    expect(settingsLayoutSource).toContain('bg-amber-500/12 text-amber-500 ring-1 ring-amber-500/20');
+    expect(settingsLayoutSource).toContain('bg-sky-500/12 text-sky-500 ring-1 ring-sky-500/20');
+  });
+
   it('keeps the old servers and p2p routes on the network tab fallback path', () => {
     expect(settingsLayoutSource).toContain("if (path.startsWith('/settings/storage')) return 'storage';");
     expect(settingsLayoutSource).toContain("if (path.startsWith('/settings/network')) return 'network';");

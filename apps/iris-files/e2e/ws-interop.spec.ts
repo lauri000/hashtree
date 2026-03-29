@@ -15,6 +15,7 @@ import WebSocket from 'ws';
 import { createHash } from 'crypto';
 import { encode as msgpackEncode, decode as msgpackDecode } from '@msgpack/msgpack';
 import { acquireRustLock, releaseRustLock } from './rust-lock.js';
+import { rustTargetPath, withRustTargetEnv } from './rust-target.js';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
@@ -356,7 +357,7 @@ test.describe('rust WebSocket Integration', () => {
     test.setTimeout(300000);
     // Check if rust binary exists (skip tests if not built)
     const rustWorkspaceDir = path.resolve(__dirname, '../../../rust');
-    const rustBinaryPath = path.join(rustWorkspaceDir, 'target', 'release', 'htree');
+    const rustBinaryPath = rustTargetPath('release', 'htree');
     try {
       execSync(`cargo metadata --manifest-path ${path.resolve(rustWorkspaceDir, 'Cargo.toml')}`, { stdio: 'ignore' });
     } catch {
@@ -390,7 +391,7 @@ test.describe('rust WebSocket Integration', () => {
     console.log('Building rust server binary...');
     execSync('cargo build -p hashtree-cli --release --bin htree', {
       cwd: rustWorkspaceDir,
-      env: { ...process.env, CARGO_TERM_COLOR: 'never' },
+      env: withRustTargetEnv({ ...process.env, CARGO_TERM_COLOR: 'never' }),
       stdio: 'ignore',
     });
 

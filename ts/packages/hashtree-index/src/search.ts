@@ -63,16 +63,48 @@ export class SearchIndex {
   parseKeywords(text: string): string[] {
     if (!text) return [];
 
-    const words = text
-      .toLowerCase()
-      .split(/[^a-z0-9\u00C0-\u024F\u1E00-\u1EFF]+/i)
-      .filter(word =>
-        word.length >= this.minKeywordLength &&
-        !this.stopWords.has(word) &&
-        !this.isPureNumber(word)
-      );
+    const keywords: string[] = [];
+    const seen = new Set<string>();
 
-    return [...new Set(words)];
+    for (const rawWord of text.split(/[^\p{L}\p{N}]+/u)) {
+      if (!rawWord) continue;
+      for (const word of this.expandKeywordVariants(rawWord)) {
+        if (
+          word.length >= this.minKeywordLength &&
+          !this.stopWords.has(word) &&
+          !this.isPureNumber(word) &&
+          !seen.has(word)
+        ) {
+          seen.add(word);
+          keywords.push(word);
+        }
+      }
+    }
+
+    return keywords;
+  }
+
+  private expandKeywordVariants(rawWord: string): string[] {
+    const variants = new Set<string>();
+    const normalized = rawWord.toLowerCase();
+    if (normalized) {
+      variants.add(normalized);
+    }
+
+    const splitWord = rawWord
+      .replace(/([\p{Lu}]+)([\p{Lu}][\p{Ll}])/gu, '$1 $2')
+      .replace(/([\p{Ll}\p{N}])([\p{Lu}])/gu, '$1 $2')
+      .replace(/([\p{L}])(\p{N})/gu, '$1 $2')
+      .replace(/(\p{N})([\p{L}])/gu, '$1 $2');
+
+    for (const part of splitWord.split(/\s+/)) {
+      const normalizedPart = part.toLowerCase();
+      if (normalizedPart) {
+        variants.add(normalizedPart);
+      }
+    }
+
+    return [...variants];
   }
 
   /**
@@ -142,7 +174,10 @@ export class SearchIndex {
       return [];
     }
 
-    const results = new Map<string, { value: string; score: number }>();
+    const results = new Map<
+      string,
+      { value: string; score: number; exactMatches: number; prefixDistance: number }
+    >();
 
     for (const keyword of keywords) {
       try {
@@ -156,13 +191,23 @@ export class SearchIndex {
           const afterPrefix = key.slice(prefix.length);
           const colonIndex = afterPrefix.indexOf(':');
           if (colonIndex === -1) continue;
+          const term = afterPrefix.slice(0, colonIndex);
           const id = afterPrefix.slice(colonIndex + 1);
+          const exactMatch = term === keyword ? 1 : 0;
+          const prefixDistance = Math.max(0, term.length - keyword.length);
 
           const existing = results.get(id);
           if (existing) {
             existing.score += 1;
+            existing.exactMatches += exactMatch;
+            existing.prefixDistance += prefixDistance;
           } else {
-            results.set(id, { value, score: 1 });
+            results.set(id, {
+              value,
+              score: 1,
+              exactMatches: exactMatch,
+              prefixDistance,
+            });
           }
         }
       } catch (e) {
@@ -170,10 +215,16 @@ export class SearchIndex {
       }
     }
 
-    // Sort by score desc, then by id for stability
+    // Sort by score desc, then exact token matches, then shorter prefix distance, then id.
     const sorted = [...results.entries()]
       .sort((a, b) => {
         if (b[1].score !== a[1].score) return b[1].score - a[1].score;
+        if (b[1].exactMatches !== a[1].exactMatches) {
+          return b[1].exactMatches - a[1].exactMatches;
+        }
+        if (a[1].prefixDistance !== b[1].prefixDistance) {
+          return a[1].prefixDistance - b[1].prefixDistance;
+        }
         return a[0].localeCompare(b[0]);
       })
       .slice(0, limit);
@@ -269,7 +320,10 @@ export class SearchIndex {
     const keywords = this.parseKeywords(query);
     if (keywords.length === 0) return [];
 
-    const results = new Map<string, { cid: CID; score: number }>();
+    const results = new Map<
+      string,
+      { cid: CID; score: number; exactMatches: number; prefixDistance: number }
+    >();
 
     for (const keyword of keywords) {
       try {
@@ -283,13 +337,23 @@ export class SearchIndex {
           const afterPrefix = key.slice(prefix.length);
           const colonIndex = afterPrefix.indexOf(':');
           if (colonIndex === -1) continue;
+          const term = afterPrefix.slice(0, colonIndex);
           const id = afterPrefix.slice(colonIndex + 1);
+          const exactMatch = term === keyword ? 1 : 0;
+          const prefixDistance = Math.max(0, term.length - keyword.length);
 
           const existing = results.get(id);
           if (existing) {
             existing.score += 1;
+            existing.exactMatches += exactMatch;
+            existing.prefixDistance += prefixDistance;
           } else {
-            results.set(id, { cid, score: 1 });
+            results.set(id, {
+              cid,
+              score: 1,
+              exactMatches: exactMatch,
+              prefixDistance,
+            });
           }
         }
       } catch (e) {
@@ -297,10 +361,16 @@ export class SearchIndex {
       }
     }
 
-    // Sort by score desc, then by id for stability
+    // Sort by score desc, then exact token matches, then shorter prefix distance, then id.
     const sorted = [...results.entries()]
       .sort((a, b) => {
         if (b[1].score !== a[1].score) return b[1].score - a[1].score;
+        if (b[1].exactMatches !== a[1].exactMatches) {
+          return b[1].exactMatches - a[1].exactMatches;
+        }
+        if (a[1].prefixDistance !== b[1].prefixDistance) {
+          return a[1].prefixDistance - b[1].prefixDistance;
+        }
         return a[0].localeCompare(b[0]);
       })
       .slice(0, limit);

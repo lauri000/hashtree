@@ -11,6 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import { enableOthersPool, ensureLoggedIn, setupPageErrorHandler, useLocalRelay, waitForAppReady, waitForRelayConnected, getTestRelayUrl, getCrosslangPort } from './test-utils.js';
 import { acquireRustLock, releaseRustLock } from './rust-lock.js';
+import { rustTargetPath, withRustTargetEnv } from './rust-target.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -28,15 +29,19 @@ const hashtreeRsAvailable = (() => {
 })();
 
 function ensureHtreeBinary(): void {
-  const debugBin = path.join(HASHTREE_RS_DIR, 'target/debug/htree');
-  const releaseBin = path.join(HASHTREE_RS_DIR, 'target/release/htree');
+  const debugBin = rustTargetPath('debug', 'htree');
+  const releaseBin = rustTargetPath('release', 'htree');
 
   if (fs.existsSync(debugBin) || fs.existsSync(releaseBin)) {
     return;
   }
 
   console.log('Building htree binary for rust tests...');
-  execSync('cargo build --bin htree --features p2p', { cwd: HASHTREE_RS_DIR, stdio: 'inherit' });
+  execSync('cargo build --bin htree --features p2p', {
+    cwd: HASHTREE_RS_DIR,
+    env: withRustTargetEnv(),
+    stdio: 'inherit',
+  });
 
   if (!fs.existsSync(debugBin) && !fs.existsSync(releaseBin)) {
     throw new Error('htree binary build completed, but binary not found');
@@ -69,7 +74,6 @@ test.describe('hashtreeRs WebRTC Connection', () => {
   test.setTimeout(420000);
 
   test('ts and hashtreeRs establish WebRTC connection', async ({ page }, testInfo) => {
-    ensureHtreeBinary();
     const localRelay = getTestRelayUrl();
     const crosslangPort = getCrosslangPort(testInfo.workerIndex);
     await killProcessesOnPort(crosslangPort);
@@ -100,6 +104,7 @@ test.describe('hashtreeRs WebRTC Connection', () => {
 
     try {
       lockFd = await acquireRustLock(240000);
+      ensureHtreeBinary();
       const followResult = await page.evaluate(async (rustPubkey) => {
         const getWorkerAdapter = (window as any).__getWorkerAdapter;
         if (!getWorkerAdapter) return { ok: false, reason: 'no __getWorkerAdapter' };
@@ -139,14 +144,14 @@ test.describe('hashtreeRs WebRTC Connection', () => {
         ],
         {
           cwd: HASHTREE_RS_DIR,
-          env: {
+          env: withRustTargetEnv({
             ...process.env,
             RUST_LOG: 'warn,hashtree_cli::webrtc=info',
             CROSSLANG_SECRET_KEY: rustSecretHex,
             CROSSLANG_FOLLOW_PUBKEY: tsPubkey,
             LOCAL_RELAY: localRelay,
             CROSSLANG_PORT: String(crosslangPort),
-          },
+          }),
           stdio: ['ignore', 'pipe', 'pipe'],
         }
       );

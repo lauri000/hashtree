@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use hashtree_core::{nhash_decode, nhash_encode_full, Cid, NHashData};
 use hashtree_nostr::{ListEventsOptions, NostrEventStore, StoredNostrEvent};
 use hashtree_nostr_bridge::{CrawlConfig, CrawlReport, NostrBridge, RelayFetchMode};
-use nostr::Keys;
+use nostr::{Event, JsonUtil, Keys};
 use reqwest::header::ACCEPT;
 use serde::Deserialize;
 use tokio::sync::watch;
@@ -36,6 +36,7 @@ pub(crate) struct SocialGraphIndexOptions {
     pub(crate) graph_crawl_depth: u32,
     pub(crate) full_graph_recrawl: bool,
     pub(crate) relays: Option<Vec<String>>,
+    pub(crate) author_allowlist_url: Option<String>,
     pub(crate) max_events_seen: Option<usize>,
     pub(crate) max_authors: usize,
     pub(crate) max_follow_distance: Option<u32>,
@@ -71,6 +72,7 @@ pub(crate) struct RecentIndexedEvent {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub(crate) struct IndexedNostrReport {
     pub(crate) root: Option<String>,
+    pub(crate) profile_search_root: Option<String>,
     pub(crate) authors_considered: usize,
     pub(crate) authors_processed: usize,
     pub(crate) events_seen: usize,
@@ -172,11 +174,14 @@ pub(crate) async fn run_socialgraph_index(
     }
 
     let existing_root = load_existing_root(&data_dir)?;
+    let author_allowlist =
+        load_author_allowlist(options.author_allowlist_url.as_deref(), options.max_authors).await?;
 
     let bridge = NostrBridge::new(
         store.store_arc(),
         CrawlConfig {
             relays: relays.clone(),
+            author_allowlist,
             max_live_bytes: Some(options.max_live_bytes),
             max_events_seen: options.max_events_seen,
             max_authors: Some(options.max_authors),
@@ -207,17 +212,63 @@ pub(crate) async fn run_socialgraph_index(
             }
         })
         .await?;
-    let index_report = build_report(
-        &NostrEventStore::new(store.store_arc()),
-        &relays,
-        &options,
-        report,
+    let event_store = NostrEventStore::new(store.store_arc());
+    sync_socialgraph_profile_index_from_root(
+        graph_store.as_ref(),
+        &event_store,
+        report.root.as_ref(),
     )
     .await?;
+    let mut index_report = build_report(&event_store, &relays, &options, report).await?;
+    index_report.profile_search_root = graph_store
+        .profile_search_root()?
+        .as_ref()
+        .map(cid_to_nhash)
+        .transpose()?;
     persist_report(&data_dir, &index_report)?;
     clear_checkpoint(&data_dir)?;
     print_report(&index_report, &data_dir);
     Ok(index_report)
+}
+
+async fn sync_socialgraph_profile_index_from_root(
+    graph_store: &socialgraph::SocialGraphStore,
+    event_store: &NostrEventStore<hashtree_cli::storage::StorageRouter>,
+    root: Option<&Cid>,
+) -> Result<()> {
+    let Some(root) = root else {
+        return Ok(());
+    };
+
+    let events = event_store
+        .list_recent(Some(root), ListEventsOptions::default())
+        .await
+        .context("list crawled events for social graph sync")?;
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    let parsed = events
+        .into_iter()
+        .map(stored_event_to_nostr_event)
+        .collect::<Result<Vec<_>>>()?;
+    graph_store
+        .sync_profile_index_for_events(&parsed)
+        .context("sync crawled profile search index")?;
+    Ok(())
+}
+
+fn stored_event_to_nostr_event(event: StoredNostrEvent) -> Result<Event> {
+    let value = serde_json::json!({
+        "id": event.id,
+        "pubkey": event.pubkey,
+        "created_at": event.created_at,
+        "kind": event.kind,
+        "tags": event.tags,
+        "content": event.content,
+        "sig": event.sig,
+    });
+    Event::from_json(value.to_string()).context("decode stored nostr event")
 }
 
 async fn warm_social_graph(
@@ -287,6 +338,7 @@ async fn build_report(
 
     Ok(IndexedNostrReport {
         root,
+        profile_search_root: None,
         authors_considered: crawl_report.authors_considered,
         authors_processed: crawl_report.authors_processed,
         events_seen: crawl_report.events_seen,
@@ -335,6 +387,78 @@ fn ranked_counts(counts: BTreeMap<String, usize>) -> Vec<RankedCount> {
     });
     out.truncate(TOP_ITEMS_LIMIT);
     out
+}
+
+async fn load_author_allowlist(
+    url: Option<&str>,
+    max_authors: usize,
+) -> Result<Option<Vec<String>>> {
+    let Some(url) = url else {
+        return Ok(None);
+    };
+
+    let body = fetch_author_allowlist_text(&reqwest::Client::new(), url).await?;
+    let authors = parse_author_allowlist(&body, max_authors);
+    if authors.is_empty() {
+        anyhow::bail!("author allowlist from {url} did not contain any valid pubkeys");
+    }
+    Ok(Some(authors))
+}
+
+async fn fetch_author_allowlist_text(client: &reqwest::Client, url: &str) -> Result<String> {
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match client.get(url).send().await {
+            Ok(response) => match response.error_for_status() {
+                Ok(response) => {
+                    return response
+                        .text()
+                        .await
+                        .with_context(|| format!("decode author allowlist from {url}"));
+                }
+                Err(err) => {
+                    last_error = Some(
+                        anyhow::Error::new(err)
+                            .context(format!("author allowlist request failed for {url}")),
+                    );
+                }
+            },
+            Err(err) => {
+                last_error = Some(
+                    anyhow::Error::new(err).context(format!("fetch author allowlist from {url}")),
+                );
+            }
+        }
+
+        if attempt < 2 {
+            tokio::time::sleep(Duration::from_secs(attempt as u64 + 1)).await;
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("fetch author allowlist from {url} failed")))
+}
+
+fn parse_author_allowlist(body: &str, max_authors: usize) -> Vec<String> {
+    let mut authors = Vec::new();
+    let mut seen = HashSet::new();
+    for line in body.lines().map(str::trim) {
+        if line.len() != 64 {
+            continue;
+        }
+        if !line
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            continue;
+        }
+        if seen.insert(line) {
+            authors.push(line.to_owned());
+            if authors.len() >= max_authors {
+                break;
+            }
+        }
+    }
+    authors
 }
 
 fn hashtags(event: &StoredNostrEvent) -> Vec<String> {
@@ -511,6 +635,9 @@ fn print_report(report: &IndexedNostrReport, data_dir: &Path) {
         println!("Root: {}", root);
     } else {
         println!("Root: <empty>");
+    }
+    if let Some(profile_search_root) = &report.profile_search_root {
+        println!("Profile search root: {}", profile_search_root);
     }
 
     println!(
@@ -731,6 +858,73 @@ mod tests {
         }
     }
 
+    struct TestTextServer {
+        port: u16,
+        shutdown: broadcast::Sender<()>,
+    }
+
+    impl TestTextServer {
+        fn new(body: String) -> Self {
+            let (shutdown, _) = broadcast::channel(1);
+
+            let std_listener = TcpListener::bind("127.0.0.1:0").expect("bind text listener");
+            let port = std_listener.local_addr().expect("text local addr").port();
+            std_listener
+                .set_nonblocking(true)
+                .expect("set text server nonblocking");
+
+            let shutdown_for_thread = shutdown.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime");
+
+                rt.block_on(async move {
+                    let listener =
+                        tokio::net::TcpListener::from_std(std_listener).expect("tokio listener");
+                    let mut shutdown_rx = shutdown_for_thread.subscribe();
+
+                    loop {
+                        tokio::select! {
+                            _ = shutdown_rx.recv() => break,
+                            accept = listener.accept() => {
+                                if let Ok((mut stream, _)) = accept {
+                                    let body = body.clone();
+                                    tokio::spawn(async move {
+                                        let mut buf = [0u8; 1024];
+                                        let _ = stream.read(&mut buf).await;
+                                        let response = format!(
+                                            "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                                            body.len()
+                                        );
+                                        let _ = stream.write_all(response.as_bytes()).await;
+                                        let _ = stream.shutdown().await;
+                                    });
+                                }
+                            }
+                        }
+                    }
+                });
+            });
+
+            std::thread::sleep(Duration::from_millis(50));
+            Self { port, shutdown }
+        }
+
+        fn url(&self) -> String {
+            format!("http://127.0.0.1:{}", self.port)
+        }
+    }
+
+    impl Drop for TestTextServer {
+        fn drop(&mut self) {
+            let _ = self.shutdown.send(());
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
     fn event_matches_filter(event: &Value, filter: &Value) -> bool {
         let Some(filter_obj) = filter.as_object() else {
             return true;
@@ -854,11 +1048,24 @@ mod tests {
         .to_event(&alice_keys)
         .expect("alice note");
 
+        let alice_profile = EventBuilder::new(
+            Kind::Metadata,
+            serde_json::json!({
+                "display_name": "Alice Relay",
+                "nip05": "alice@example.com",
+            })
+            .to_string(),
+            [],
+        )
+        .custom_created_at(Timestamp::from_secs(30))
+        .to_event(&alice_keys)
+        .expect("alice profile");
+
         let publisher = Client::new(Keys::generate());
         publisher.add_relay(&relay_url).await.expect("add relay");
         publisher.connect().await;
         tokio::time::sleep(Duration::from_millis(250)).await;
-        for event in [&contact_list, &alice_note] {
+        for event in [&contact_list, &alice_note, &alice_profile] {
             publisher
                 .send_event(event.clone())
                 .await
@@ -867,7 +1074,7 @@ mod tests {
 
         let mut config = Config::default();
         config.nostr.relays = vec![relay_url];
-        config.nostr.crawl_depth = 1;
+        config.nostr.social_graph_crawl_depth = 1;
         config.storage.max_size_gb = 1;
 
         let report = run_socialgraph_index(
@@ -879,6 +1086,7 @@ mod tests {
                 graph_crawl_depth: 1,
                 full_graph_recrawl: false,
                 relays: None,
+                author_allowlist_url: None,
                 max_events_seen: None,
                 max_authors: 8,
                 max_follow_distance: Some(1),
@@ -901,7 +1109,8 @@ mod tests {
 
         assert_eq!(report.authors_considered, 2);
         assert_eq!(report.authors_processed, 2);
-        assert!(report.events_selected >= 2);
+        assert!(report.events_selected >= 3);
+        assert!(report.profile_search_root.is_some());
         assert_eq!(
             report.top_hashtags.first(),
             Some(&RankedCount {
@@ -919,6 +1128,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&report_path).expect("read report"))
                 .expect("parse report");
         assert_eq!(saved_report.root, report.root);
+        assert_eq!(saved_report.profile_search_root, report.profile_search_root);
 
         let store = HashtreeStore::with_options(tmp.path(), None, 1024 * 1024 * 1024)
             .expect("reopen store");
@@ -942,6 +1152,123 @@ mod tests {
         assert_eq!(hashtagged[0].id, alice_note.id.to_hex());
 
         Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn global_profile_index_can_use_external_author_allowlist() -> io::Result<()> {
+        let relay = TestRelay::new();
+        let relay_url = relay.url();
+
+        let tmp = TempDir::new().expect("tempdir");
+        let root_keys = Keys::generate();
+        let alice_keys = Keys::generate();
+        let alice_pubkey = alice_keys.public_key().to_hex();
+        let allowlist = TestTextServer::new(format!("{alice_pubkey}\nnot-a-pubkey\n"));
+
+        let alice_profile = EventBuilder::new(
+            Kind::Metadata,
+            serde_json::json!({
+                "display_name": "Alice Allowlist",
+                "name": "alice",
+            })
+            .to_string(),
+            [],
+        )
+        .custom_created_at(Timestamp::from_secs(30))
+        .to_event(&alice_keys)
+        .expect("alice profile");
+
+        let publisher = Client::new(Keys::generate());
+        publisher.add_relay(&relay_url).await.expect("add relay");
+        publisher.connect().await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        publisher
+            .send_event(alice_profile.clone())
+            .await
+            .expect("publish test event");
+
+        let mut config = Config::default();
+        config.nostr.relays = vec![relay_url];
+        config.nostr.social_graph_crawl_depth = 1;
+        config.storage.max_size_gb = 1;
+
+        let report = run_socialgraph_index(
+            tmp.path().to_path_buf(),
+            &config,
+            root_keys,
+            SocialGraphIndexOptions {
+                warm_graph_for: Duration::from_secs(0),
+                graph_crawl_depth: 1,
+                full_graph_recrawl: false,
+                relays: None,
+                author_allowlist_url: Some(format!("{}/allowlist", allowlist.url())),
+                max_events_seen: None,
+                max_authors: 8,
+                max_follow_distance: Some(0),
+                max_live_bytes: 8 * 1024 * 1024,
+                author_batch_size: 32,
+                concurrent_batches: 1,
+                per_author_event_limit: 8,
+                per_author_live_bytes: None,
+                fetch_timeout: Duration::from_secs(5),
+                relay_event_max_bytes: None,
+                global_relay_scan: true,
+                negentropy_only: false,
+                relay_page_size: 128,
+                max_relay_pages: 1,
+                kinds: Some(vec![0]),
+            },
+        )
+        .await
+        .expect("run index");
+
+        assert_eq!(report.authors_considered, 1);
+        assert_eq!(report.authors_processed, 1);
+        assert_eq!(report.events_selected, 1);
+        assert!(report.profile_search_root.is_some());
+
+        let store = HashtreeStore::with_options(tmp.path(), None, 1024 * 1024 * 1024)
+            .expect("reopen store");
+        let graph_store = socialgraph::open_social_graph_store_with_storage(
+            tmp.path(),
+            store.store_arc(),
+            Some(1024 * 1024 * 1024),
+        )
+        .expect("reopen graph store");
+        let results = graph_store
+            .profile_search_entries_for_prefix("p:alice")
+            .expect("query profile search root");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, format!("p:alice:{alice_pubkey}"));
+        assert_eq!(results[0].1.name, "alice");
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_author_allowlist_filters_invalid_and_deduplicates() {
+        let parsed = parse_author_allowlist(
+            &format!("{}\nnot-hex\n{}\n", "a".repeat(64), "a".repeat(64)),
+            16,
+        );
+
+        assert_eq!(parsed, vec!["a".repeat(64)]);
+    }
+
+    #[test]
+    fn parse_author_allowlist_preserves_input_order_before_limit() {
+        let parsed = parse_author_allowlist(
+            &format!(
+                "{}\n{}\n{}\n",
+                "b".repeat(64),
+                "a".repeat(64),
+                "b".repeat(64)
+            ),
+            2,
+        );
+
+        assert_eq!(parsed, vec!["b".repeat(64), "a".repeat(64)]);
     }
 
     #[test]
@@ -992,6 +1319,7 @@ mod tests {
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
                     .to_string(),
             ),
+            profile_search_root: Some("nhash1profileexample".to_string()),
             authors_considered: 10,
             authors_processed: 10,
             events_seen: 11,

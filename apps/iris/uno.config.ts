@@ -14,6 +14,7 @@ export default defineConfig({
     'i-lucide-clock',
     'i-lucide-x',
     'i-lucide-ellipsis',
+    'i-lucide-user-round',
   ],
   presets: [
     presetUno(),

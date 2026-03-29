@@ -52,7 +52,7 @@
     data-testid="viewer-header"
   >
     <div class="mr-2 flex min-w-0 flex-1 items-center gap-2">
-      <a href={backUrl} class="btn-ghost p-1 no-underline inline-flex items-center justify-center" title="Back">
+      <a href={backUrl} class="btn-circle btn-ghost h-8 w-8 min-h-8 min-w-8 no-underline inline-flex items-center justify-center" title="Back">
         <span class="i-lucide-chevron-left text-lg"></span>
       </a>
       <!-- Avatar (for npub routes) or LinkLock/globe (for nhash routes) -->

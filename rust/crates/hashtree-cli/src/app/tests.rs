@@ -384,6 +384,8 @@ fn test_cli_parses_socialgraph_index_command() {
         "--relay-event-max-bytes",
         "262144",
         "--global-relay-scan",
+        "--author-allowlist-url",
+        "https://graph-api.iris.to/allowlist?maxDistance=6",
         "--negentropy-only",
         "--relay-page-size",
         "2000",
@@ -418,6 +420,7 @@ fn test_cli_parses_socialgraph_index_command() {
                     fetch_timeout_secs,
                     relay_event_max_bytes,
                     global_relay_scan,
+                    author_allowlist_url,
                     negentropy_only,
                     relay_page_size,
                     max_relay_pages,
@@ -439,6 +442,10 @@ fn test_cli_parses_socialgraph_index_command() {
             assert_eq!(fetch_timeout_secs, 7);
             assert_eq!(relay_event_max_bytes, Some(262_144));
             assert!(global_relay_scan);
+            assert_eq!(
+                author_allowlist_url.as_deref(),
+                Some("https://graph-api.iris.to/allowlist?maxDistance=6")
+            );
             assert!(negentropy_only);
             assert_eq!(relay_page_size, 2_000);
             assert_eq!(max_relay_pages, 6);
@@ -468,6 +475,18 @@ fn test_cli_add_uses_unencrypted_flag_with_public_alias() {
     match cli.command {
         Commands::Add { unencrypted, .. } => assert!(unencrypted),
         _ => panic!("expected add command"),
+    }
+}
+
+#[test]
+fn test_cli_parses_socialgraph_rebuild_profile_index_command() {
+    let cli = Cli::parse_from(["htree", "socialgraph", "rebuild-profile-index"]);
+
+    match cli.command {
+        Commands::Socialgraph {
+            command: SocialGraphCommands::RebuildProfileIndex,
+        } => {}
+        _ => panic!("expected socialgraph rebuild-profile-index command"),
     }
 }
 

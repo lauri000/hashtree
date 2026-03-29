@@ -157,11 +157,41 @@ pub enum NostrEventStoreError {
     Validation(String),
 }
 
+const MISSING_STORED_EVENT_BLOB_ERROR: &str = "stored nostr event blob is missing";
+
+fn is_missing_stored_event_error(err: &NostrEventStoreError) -> bool {
+    matches!(
+        err,
+        NostrEventStoreError::Validation(message) if message == MISSING_STORED_EVENT_BLOB_ERROR
+    )
+}
+
 pub struct NostrEventStore<S: Store> {
     store: Arc<S>,
     tree: HashTree<S>,
     index: BTree<S>,
     options: NostrEventStoreOptions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ReplaceableSlot {
+    Replaceable,
+    Parameterized,
+}
+
+#[derive(Debug, Clone)]
+struct ExistingReplaceableEvent {
+    event: StoredNostrEvent,
+    cid: Cid,
+}
+
+#[derive(Debug, Clone)]
+enum ReplaceableDecision {
+    Accept {
+        replaced: Option<ExistingReplaceableEvent>,
+        slot: Option<(ReplaceableSlot, String)>,
+    },
+    Reject,
 }
 
 pub fn encode_signed_event_json(event: &StoredNostrEvent) -> Result<Vec<u8>, NostrEventStoreError> {
@@ -383,8 +413,9 @@ impl<S: Store> NostrEventStore<S> {
             let _profile = ProfileGuard::new("nostr.add.get_manifest");
             buffered_writer.get_manifest(root).await?
         };
+        let mut obsolete_event_cids = Vec::new();
         buffered_writer
-            .insert_into_manifest(&mut manifest, normalized)
+            .insert_into_manifest(&mut manifest, normalized, &mut obsolete_event_cids)
             .await?;
 
         let Some(root) = ({
@@ -401,6 +432,8 @@ impl<S: Store> NostrEventStore<S> {
                 NostrEventStoreError::HashTree(HashTreeError::Store(err.to_string()))
             })?;
         }
+        self.delete_obsolete_event_blobs(&obsolete_event_cids)
+            .await?;
         Ok(root)
     }
 
@@ -416,6 +449,7 @@ impl<S: Store> NostrEventStore<S> {
         if events.is_empty() {
             return Ok(root.cloned());
         }
+        events = retain_latest_replaceable_events(events);
         events.sort_by(|left, right| match compare_events(left, right) {
             x if x < 0 => std::cmp::Ordering::Less,
             x if x > 0 => std::cmp::Ordering::Greater,
@@ -425,6 +459,7 @@ impl<S: Store> NostrEventStore<S> {
         let buffered_store = Arc::new(BufferedStore::new_optimistic(Arc::clone(&self.store)));
         let buffered_writer =
             NostrEventStore::with_options(Arc::clone(&buffered_store), self.options.clone());
+        let mut obsolete_event_cids = Vec::new();
         let next_root = if root.is_none() {
             buffered_writer.build_manifest_from_events(events).await?
         } else {
@@ -432,7 +467,7 @@ impl<S: Store> NostrEventStore<S> {
             for event in events {
                 let normalized = buffered_writer.validate_event(event).await?;
                 buffered_writer
-                    .insert_into_manifest(&mut manifest, normalized)
+                    .insert_into_manifest(&mut manifest, normalized, &mut obsolete_event_cids)
                     .await?;
             }
             buffered_writer.write_manifest(&manifest).await?
@@ -441,6 +476,8 @@ impl<S: Store> NostrEventStore<S> {
             .flush()
             .await
             .map_err(|err| NostrEventStoreError::HashTree(HashTreeError::Store(err.to_string())))?;
+        self.delete_obsolete_event_blobs(&obsolete_event_cids)
+            .await?;
         Ok(next_root)
     }
 
@@ -457,7 +494,11 @@ impl<S: Store> NostrEventStore<S> {
         let Some(event_cid) = self.index.get_link(Some(by_id), event_id).await? else {
             return Ok(None);
         };
-        Ok(Some(self.read_stored_event(&event_cid).await?))
+        match self.read_stored_event(&event_cid).await {
+            Ok(event) => Ok(Some(event)),
+            Err(err) if is_missing_stored_event_error(&err) => Ok(None),
+            Err(err) => Err(err),
+        }
     }
 
     pub async fn list_by_author(
@@ -517,6 +558,21 @@ impl<S: Store> NostrEventStore<S> {
             .await
     }
 
+    pub async fn list_by_kind_lossy(
+        &self,
+        root: Option<&Cid>,
+        kind: u32,
+        options: ListEventsOptions,
+    ) -> Result<Vec<StoredNostrEvent>, NostrEventStoreError> {
+        let manifest = self.get_manifest(root).await?;
+        let Some(by_kind_time) = manifest.by_kind_time.as_ref() else {
+            return Ok(Vec::new());
+        };
+
+        self.collect_events_lossy(by_kind_time, &format!("{}:", pad_kind(kind)), &options)
+            .await
+    }
+
     pub async fn get_replaceable(
         &self,
         root: Option<&Cid>,
@@ -532,7 +588,11 @@ impl<S: Store> NostrEventStore<S> {
         let Some(cid) = self.index.get_link(Some(replaceable), &key).await? else {
             return Ok(None);
         };
-        Ok(Some(self.read_stored_event(&cid).await?))
+        match self.read_stored_event(&cid).await {
+            Ok(event) => Ok(Some(event)),
+            Err(err) if is_missing_stored_event_error(&err) => Ok(None),
+            Err(err) => Err(err),
+        }
     }
 
     pub async fn list_recent(
@@ -545,6 +605,18 @@ impl<S: Store> NostrEventStore<S> {
             return Ok(Vec::new());
         };
         self.collect_events(by_time, "", &options).await
+    }
+
+    pub async fn list_recent_lossy(
+        &self,
+        root: Option<&Cid>,
+        options: ListEventsOptions,
+    ) -> Result<Vec<StoredNostrEvent>, NostrEventStoreError> {
+        let manifest = self.get_manifest(root).await?;
+        let Some(by_time) = manifest.by_time.as_ref() else {
+            return Ok(Vec::new());
+        };
+        self.collect_events_lossy(by_time, "", &options).await
     }
 
     pub async fn list_by_tag(
@@ -569,12 +641,6 @@ impl<S: Store> NostrEventStore<S> {
         kind: u32,
         d_tag: &str,
     ) -> Result<Option<StoredNostrEvent>, NostrEventStoreError> {
-        if d_tag.is_empty() {
-            return Err(NostrEventStoreError::Validation(
-                "parameterized replaceable events require a non-empty d tag".to_string(),
-            ));
-        }
-
         let manifest = self.get_manifest(root).await?;
         let Some(parameterized) = manifest.parameterized_replaceable.as_ref() else {
             return Ok(None);
@@ -585,7 +651,11 @@ impl<S: Store> NostrEventStore<S> {
         let Some(cid) = self.index.get_link(Some(parameterized), &key).await? else {
             return Ok(None);
         };
-        Ok(Some(self.read_stored_event(&cid).await?))
+        match self.read_stored_event(&cid).await {
+            Ok(event) => Ok(Some(event)),
+            Err(err) if is_missing_stored_event_error(&err) => Ok(None),
+            Err(err) => Err(err),
+        }
     }
 
     pub async fn get_manifest(
@@ -640,10 +710,43 @@ impl<S: Store> NostrEventStore<S> {
         Ok(events)
     }
 
+    async fn collect_events_lossy(
+        &self,
+        root: &Cid,
+        prefix: &str,
+        options: &ListEventsOptions,
+    ) -> Result<Vec<StoredNostrEvent>, NostrEventStoreError> {
+        let mut events = Vec::new();
+        let entries = if prefix.is_empty() {
+            self.index.links_entries(Some(root)).await?
+        } else {
+            self.index.prefix_links(root, prefix).await?
+        };
+        for (key, cid) in entries {
+            let created_at = created_at_from_index_key(&key)?;
+            if options.until.is_some_and(|until| created_at > until) {
+                continue;
+            }
+            if options.since.is_some_and(|since| created_at < since) {
+                break;
+            }
+            match self.read_stored_event(&cid).await {
+                Ok(event) => events.push(event),
+                Err(NostrEventStoreError::Validation(message))
+                    if message == MISSING_STORED_EVENT_BLOB_ERROR => {}
+                Err(err) => return Err(err),
+            }
+            if options.limit.is_some_and(|limit| events.len() >= limit) {
+                break;
+            }
+        }
+        Ok(events)
+    }
+
     async fn read_stored_event(&self, cid: &Cid) -> Result<StoredNostrEvent, NostrEventStoreError> {
         let Some(data) = self.tree.get(cid, None).await? else {
             return Err(NostrEventStoreError::Validation(
-                "stored nostr event blob is missing".to_string(),
+                MISSING_STORED_EVENT_BLOB_ERROR.to_string(),
             ));
         };
         self.decode_event(&data)
@@ -653,7 +756,16 @@ impl<S: Store> NostrEventStore<S> {
         &self,
         manifest: &mut NostrEventManifest,
         normalized: StoredNostrEvent,
+        obsolete_event_cids: &mut Vec<Cid>,
     ) -> Result<(), NostrEventStoreError> {
+        let replaceable = self
+            .resolve_replaceable_decision(manifest, &normalized)
+            .await?;
+        let (replaceable_slot, replaced_existing) = match replaceable {
+            ReplaceableDecision::Reject => return Ok(()),
+            ReplaceableDecision::Accept { replaced, slot } => (slot, replaced),
+        };
+
         let event_bytes = {
             let _profile = ProfileGuard::new("nostr.add.encode_event");
             self.encode_validated_event(&normalized)?
@@ -662,6 +774,12 @@ impl<S: Store> NostrEventStore<S> {
             let _profile = ProfileGuard::new("nostr.add.put_file");
             self.tree.put_file(&event_bytes).await?
         };
+
+        if let Some(existing) = replaced_existing.as_ref() {
+            self.remove_event_from_manifest(manifest, &existing.event)
+                .await?;
+            obsolete_event_cids.push(existing.cid.clone());
+        }
 
         manifest.by_id = Some({
             let _profile = ProfileGuard::new("nostr.add.index.by_id");
@@ -719,31 +837,29 @@ impl<S: Store> NostrEventStore<S> {
             });
         }
 
-        if is_replaceable_kind(normalized.kind) {
-            manifest.replaceable = Some({
-                let _profile = ProfileGuard::new("nostr.add.index.replaceable");
-                self.upsert_winner(
-                    manifest.replaceable.as_ref(),
-                    &replaceable_key(&normalized.pubkey, normalized.kind),
-                    &normalized,
-                    &event_cid,
-                )
-                .await?
-            });
-        }
-
-        if is_parameterized_replaceable_kind(normalized.kind) {
-            if let Some(d_tag) = get_d_tag(&normalized) {
-                manifest.parameterized_replaceable = Some({
-                    let _profile = ProfileGuard::new("nostr.add.index.parameterized_replaceable");
-                    self.upsert_winner(
-                        manifest.parameterized_replaceable.as_ref(),
-                        &parameterized_replaceable_key(&normalized.pubkey, normalized.kind, &d_tag),
-                        &normalized,
-                        &event_cid,
-                    )
-                    .await?
-                });
+        if let Some((slot, key)) = replaceable_slot {
+            match slot {
+                ReplaceableSlot::Replaceable => {
+                    manifest.replaceable = Some({
+                        let _profile = ProfileGuard::new("nostr.add.index.replaceable");
+                        self.index
+                            .insert_link(manifest.replaceable.as_ref(), &key, &event_cid)
+                            .await?
+                    });
+                }
+                ReplaceableSlot::Parameterized => {
+                    manifest.parameterized_replaceable = Some({
+                        let _profile =
+                            ProfileGuard::new("nostr.add.index.parameterized_replaceable");
+                        self.index
+                            .insert_link(
+                                manifest.parameterized_replaceable.as_ref(),
+                                &key,
+                                &event_cid,
+                            )
+                            .await?
+                    });
+                }
             }
         }
 
@@ -788,14 +904,16 @@ impl<S: Store> NostrEventStore<S> {
             }
 
             if is_parameterized_replaceable_kind(normalized.kind) {
-                if let Some(d_tag) = get_d_tag(&normalized) {
-                    update_bulk_winner(
-                        &mut parameterized_replaceable,
-                        parameterized_replaceable_key(&normalized.pubkey, normalized.kind, &d_tag),
-                        &normalized,
-                        &event_cid,
-                    );
-                }
+                update_bulk_winner(
+                    &mut parameterized_replaceable,
+                    parameterized_replaceable_key(
+                        &normalized.pubkey,
+                        normalized.kind,
+                        &parameterized_replaceable_d_tag(&normalized),
+                    ),
+                    &normalized,
+                    &event_cid,
+                );
             }
         }
 
@@ -827,28 +945,122 @@ impl<S: Store> NostrEventStore<S> {
         self.write_manifest(&manifest).await
     }
 
-    async fn upsert_winner(
+    async fn resolve_replaceable_decision(
         &self,
-        root: Option<&Cid>,
-        key: &str,
+        manifest: &NostrEventManifest,
         event: &StoredNostrEvent,
-        event_cid: &Cid,
-    ) -> Result<Cid, NostrEventStoreError> {
+    ) -> Result<ReplaceableDecision, NostrEventStoreError> {
+        let slot = if is_replaceable_kind(event.kind) {
+            Some((
+                ReplaceableSlot::Replaceable,
+                replaceable_key(&event.pubkey, event.kind),
+            ))
+        } else if is_parameterized_replaceable_kind(event.kind) {
+            Some((
+                ReplaceableSlot::Parameterized,
+                parameterized_replaceable_key(
+                    &event.pubkey,
+                    event.kind,
+                    &parameterized_replaceable_d_tag(event),
+                ),
+            ))
+        } else {
+            None
+        };
+
+        let Some((slot_kind, key)) = slot else {
+            return Ok(ReplaceableDecision::Accept {
+                replaced: None,
+                slot: None,
+            });
+        };
+
+        let root = match slot_kind {
+            ReplaceableSlot::Replaceable => manifest.replaceable.as_ref(),
+            ReplaceableSlot::Parameterized => manifest.parameterized_replaceable.as_ref(),
+        };
         let existing_cid = match root {
-            Some(root) => self.index.get_link(Some(root), key).await?,
+            Some(root) => self.index.get_link(Some(root), &key).await?,
             None => None,
         };
 
         let Some(existing_cid) = existing_cid else {
-            return Ok(self.index.insert_link(root, key, event_cid).await?);
+            return Ok(ReplaceableDecision::Accept {
+                replaced: None,
+                slot: Some((slot_kind, key)),
+            });
         };
 
-        let existing = self.read_stored_event(&existing_cid).await?;
+        let existing = match self.read_stored_event(&existing_cid).await {
+            Ok(existing) => existing,
+            Err(err) if is_missing_stored_event_error(&err) => {
+                return Ok(ReplaceableDecision::Accept {
+                    replaced: None,
+                    slot: Some((slot_kind, key)),
+                });
+            }
+            Err(err) => return Err(err),
+        };
         if compare_events(event, &existing) > 0 {
-            return Ok(self.index.insert_link(root, key, event_cid).await?);
+            return Ok(ReplaceableDecision::Accept {
+                replaced: Some(ExistingReplaceableEvent {
+                    event: existing,
+                    cid: existing_cid,
+                }),
+                slot: Some((slot_kind, key)),
+            });
         }
 
-        Ok(root.expect("winner root exists").clone())
+        Ok(ReplaceableDecision::Reject)
+    }
+
+    async fn remove_event_from_manifest(
+        &self,
+        manifest: &mut NostrEventManifest,
+        event: &StoredNostrEvent,
+    ) -> Result<(), NostrEventStoreError> {
+        if let Some(root) = manifest.by_id.as_ref() {
+            manifest.by_id = self.index.delete(root, &event.id).await?;
+        }
+        if let Some(root) = manifest.by_author_time.as_ref() {
+            manifest.by_author_time = self.index.delete(root, &author_time_key(event)).await?;
+        }
+        if let Some(root) = manifest.by_author_kind_time.as_ref() {
+            manifest.by_author_kind_time = self
+                .index
+                .delete(root, &author_kind_time_key(event))
+                .await?;
+        }
+        if let Some(root) = manifest.by_kind_time.as_ref() {
+            manifest.by_kind_time = self.index.delete(root, &kind_time_key(event)).await?;
+        }
+        if let Some(root) = manifest.by_time.as_ref() {
+            manifest.by_time = self.index.delete(root, &time_key(event)).await?;
+        }
+        if let Some(root) = manifest.by_tag.as_ref() {
+            let mut current = Some(root.clone());
+            for tag_key in tag_keys(event) {
+                let Some(active_root) = current.as_ref() else {
+                    break;
+                };
+                current = self.index.delete(active_root, &tag_key).await?;
+            }
+            manifest.by_tag = current;
+        }
+
+        Ok(())
+    }
+
+    async fn delete_obsolete_event_blobs(
+        &self,
+        obsolete_event_cids: &[Cid],
+    ) -> Result<(), NostrEventStoreError> {
+        for cid in obsolete_event_cids {
+            self.store.delete(&cid.hash).await.map_err(|err| {
+                NostrEventStoreError::HashTree(HashTreeError::Store(err.to_string()))
+            })?;
+        }
+        Ok(())
     }
 
     async fn write_manifest(
@@ -1109,11 +1321,11 @@ fn parameterized_replaceable_key(pubkey: &str, kind: u32, d_tag: &str) -> String
     format!("{}:{}:{}", pubkey, pad_kind(kind), d_tag)
 }
 
-fn is_replaceable_kind(kind: u32) -> bool {
-    kind == 0 || kind == 3 || (10_000..20_000).contains(&kind)
+pub fn is_replaceable_kind(kind: u32) -> bool {
+    kind == 0 || kind == 3 || kind == 41 || (10_000..20_000).contains(&kind)
 }
 
-fn is_parameterized_replaceable_kind(kind: u32) -> bool {
+pub fn is_parameterized_replaceable_kind(kind: u32) -> bool {
     (30_000..40_000).contains(&kind)
 }
 
@@ -1122,6 +1334,10 @@ fn get_d_tag(event: &StoredNostrEvent) -> Option<String> {
         [name, value, ..] if name == "d" && !value.is_empty() => Some(value.clone()),
         _ => None,
     })
+}
+
+fn parameterized_replaceable_d_tag(event: &StoredNostrEvent) -> String {
+    get_d_tag(event).unwrap_or_default()
 }
 
 fn compare_events(left: &StoredNostrEvent, right: &StoredNostrEvent) -> i8 {
@@ -1134,6 +1350,45 @@ fn compare_events(left: &StoredNostrEvent, right: &StoredNostrEvent) -> i8 {
             std::cmp::Ordering::Equal => 0,
         },
     }
+}
+
+fn retain_latest_replaceable_events(events: Vec<StoredNostrEvent>) -> Vec<StoredNostrEvent> {
+    let mut winners = BTreeMap::<(ReplaceableSlot, String), StoredNostrEvent>::new();
+    let mut plain = Vec::new();
+
+    for event in events {
+        let slot = if is_replaceable_kind(event.kind) {
+            Some((
+                ReplaceableSlot::Replaceable,
+                replaceable_key(&event.pubkey, event.kind),
+            ))
+        } else if is_parameterized_replaceable_kind(event.kind) {
+            Some((
+                ReplaceableSlot::Parameterized,
+                parameterized_replaceable_key(
+                    &event.pubkey,
+                    event.kind,
+                    &parameterized_replaceable_d_tag(&event),
+                ),
+            ))
+        } else {
+            None
+        };
+
+        if let Some(slot) = slot {
+            match winners.get(&slot) {
+                Some(current) if compare_events(&event, current) <= 0 => {}
+                _ => {
+                    winners.insert(slot, event);
+                }
+            }
+        } else {
+            plain.push(event);
+        }
+    }
+
+    plain.extend(winners.into_values());
+    plain
 }
 
 fn update_bulk_winner(

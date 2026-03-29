@@ -14,7 +14,6 @@ const DEFAULT_ORDER: usize = 32;
 #[derive(Debug, Clone, Default)]
 pub struct BTreeOptions {
     pub order: Option<usize>,
-    pub public: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -55,13 +54,8 @@ struct BuiltNode {
 impl<S: Store> BTree<S> {
     pub fn new(store: Arc<S>, options: BTreeOptions) -> Self {
         let order = options.order.unwrap_or(DEFAULT_ORDER).max(2);
-        let tree_config = if options.public {
-            HashTreeConfig::new(store).public()
-        } else {
-            HashTreeConfig::new(store)
-        };
         Self {
-            tree: HashTree::new(tree_config),
+            tree: HashTree::new(HashTreeConfig::new(store)),
             max_keys: order - 1,
         }
     }
@@ -259,6 +253,52 @@ impl<S: Store> BTree<S> {
         }
 
         Ok(Some(result))
+    }
+
+    pub async fn build<I>(&self, items: I) -> Result<Option<Cid>, BTreeError>
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        let mut sorted: Vec<(String, String)> = items.into_iter().collect();
+        if sorted.is_empty() {
+            return Ok(None);
+        }
+
+        sorted.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let mut deduped = Vec::with_capacity(sorted.len());
+        for (key, value) in sorted {
+            if let Some((last_key, last_value)) = deduped.last_mut() {
+                if *last_key == key {
+                    *last_value = value;
+                    continue;
+                }
+            }
+            deduped.push((key, value));
+        }
+
+        let mut level = Vec::with_capacity(deduped.len().div_ceil(self.max_keys));
+        for chunk in deduped.chunks(self.max_keys) {
+            let cid = self.create_leaf(chunk).await?;
+            level.push(BuiltNode {
+                first_key: chunk[0].0.clone(),
+                cid,
+            });
+        }
+
+        while level.len() > 1 {
+            let mut next_level = Vec::with_capacity(level.len().div_ceil(self.max_keys));
+            for chunk in level.chunks(self.max_keys) {
+                let cid = self.create_internal_node(chunk).await?;
+                next_level.push(BuiltNode {
+                    first_key: chunk[0].first_key.clone(),
+                    cid,
+                });
+            }
+            level = next_level;
+        }
+
+        Ok(level.pop().map(|node| node.cid))
     }
 
     pub async fn build_links<I>(&self, items: I) -> Result<Option<Cid>, BTreeError>

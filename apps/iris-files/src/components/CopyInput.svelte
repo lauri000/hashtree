@@ -32,7 +32,7 @@
   />
   <button
     onclick={handleCopy}
-    class="btn-ghost p-1.5 shrink-0"
+    class="btn-circle btn-ghost h-8 w-8 min-h-8 min-w-8 shrink-0"
     title="Copy"
   >
     {#if copied}

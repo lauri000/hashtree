@@ -127,9 +127,9 @@ pub struct NostrConfig {
     /// Social graph root pubkey (npub). Defaults to own key if not set.
     #[serde(default)]
     pub socialgraph_root: Option<String>,
-    /// How many hops to crawl the follow graph (default: 2)
-    #[serde(default = "default_crawl_depth")]
-    pub crawl_depth: u32,
+    /// How many hops to crawl the social graph (default: 2)
+    #[serde(default = "default_social_graph_crawl_depth", alias = "crawl_depth")]
+    pub social_graph_crawl_depth: u32,
     /// Max follow distance for write access (default: 3)
     #[serde(default = "default_max_write_distance")]
     pub max_write_distance: u32,
@@ -140,6 +140,18 @@ pub struct NostrConfig {
     /// Set to 0 for memory-only spambox (no on-disk DB)
     #[serde(default = "default_nostr_spambox_max_size_gb")]
     pub spambox_max_size_gb: u64,
+    /// Require relays to support NIP-77 negentropy for mirror history sync.
+    #[serde(default)]
+    pub negentropy_only: bool,
+    /// Kinds mirrored from upstream relays for the trusted hashtree index.
+    #[serde(default = "default_nostr_mirror_kinds")]
+    pub mirror_kinds: Vec<u16>,
+    /// How many graph authors to reconcile before checkpointing the mirror root.
+    #[serde(default = "default_nostr_history_sync_author_chunk_size")]
+    pub history_sync_author_chunk_size: usize,
+    /// Run a catch-up history sync after relay reconnects.
+    #[serde(default = "default_nostr_history_sync_on_reconnect")]
+    pub history_sync_on_reconnect: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -370,7 +382,7 @@ fn default_blossom_timeout_ms() -> u64 {
     10000
 }
 
-fn default_crawl_depth() -> u32 {
+fn default_social_graph_crawl_depth() -> u32 {
     2
 }
 
@@ -384,6 +396,18 @@ fn default_nostr_db_max_size_gb() -> u64 {
 
 fn default_nostr_spambox_max_size_gb() -> u64 {
     1
+}
+
+fn default_nostr_history_sync_on_reconnect() -> bool {
+    true
+}
+
+fn default_nostr_mirror_kinds() -> Vec<u16> {
+    vec![0]
+}
+
+fn default_nostr_history_sync_author_chunk_size() -> usize {
+    5_000
 }
 
 fn default_relays() -> Vec<String> {
@@ -493,10 +517,14 @@ impl Default for NostrConfig {
             relays: default_relays(),
             allowed_npubs: Vec::new(),
             socialgraph_root: None,
-            crawl_depth: default_crawl_depth(),
+            social_graph_crawl_depth: default_social_graph_crawl_depth(),
             max_write_distance: default_max_write_distance(),
             db_max_size_gb: default_nostr_db_max_size_gb(),
             spambox_max_size_gb: default_nostr_spambox_max_size_gb(),
+            negentropy_only: false,
+            mirror_kinds: default_nostr_mirror_kinds(),
+            history_sync_author_chunk_size: default_nostr_history_sync_author_chunk_size(),
+            history_sync_on_reconnect: default_nostr_history_sync_on_reconnect(),
         }
     }
 }
@@ -751,10 +779,14 @@ mod tests {
             .relays
             .contains(&"wss://upload.iris.to/nostr".to_string()));
         assert!(config.blossom.enabled);
-        assert_eq!(config.nostr.crawl_depth, 2);
+        assert_eq!(config.nostr.social_graph_crawl_depth, 2);
         assert_eq!(config.nostr.max_write_distance, 3);
         assert_eq!(config.nostr.db_max_size_gb, 10);
         assert_eq!(config.nostr.spambox_max_size_gb, 1);
+        assert!(!config.nostr.negentropy_only);
+        assert_eq!(config.nostr.mirror_kinds, vec![0]);
+        assert_eq!(config.nostr.history_sync_author_chunk_size, 5_000);
+        assert!(config.nostr.history_sync_on_reconnect);
         assert!(config.nostr.socialgraph_root.is_none());
         assert!(!config.server.socialgraph_snapshot_public);
         assert!(config.cashu.accepted_mints.is_empty());
@@ -780,10 +812,14 @@ relays = ["wss://relay.damus.io"]
         let config: Config = toml::from_str(toml_str).unwrap();
         assert!(config.nostr.enabled);
         assert_eq!(config.nostr.relays, vec!["wss://relay.damus.io"]);
-        assert_eq!(config.nostr.crawl_depth, 2);
+        assert_eq!(config.nostr.social_graph_crawl_depth, 2);
         assert_eq!(config.nostr.max_write_distance, 3);
         assert_eq!(config.nostr.db_max_size_gb, 10);
         assert_eq!(config.nostr.spambox_max_size_gb, 1);
+        assert!(!config.nostr.negentropy_only);
+        assert_eq!(config.nostr.mirror_kinds, vec![0]);
+        assert_eq!(config.nostr.history_sync_author_chunk_size, 5_000);
+        assert!(config.nostr.history_sync_on_reconnect);
         assert!(config.nostr.socialgraph_root.is_none());
     }
 
@@ -793,16 +829,35 @@ relays = ["wss://relay.damus.io"]
 [nostr]
 relays = ["wss://relay.damus.io"]
 socialgraph_root = "npub1test"
-crawl_depth = 3
+social_graph_crawl_depth = 3
 max_write_distance = 5
+negentropy_only = true
+mirror_kinds = [0, 10000]
+history_sync_author_chunk_size = 250
+history_sync_on_reconnect = false
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert!(config.nostr.enabled);
         assert_eq!(config.nostr.socialgraph_root, Some("npub1test".to_string()));
-        assert_eq!(config.nostr.crawl_depth, 3);
+        assert_eq!(config.nostr.social_graph_crawl_depth, 3);
         assert_eq!(config.nostr.max_write_distance, 5);
         assert_eq!(config.nostr.db_max_size_gb, 10);
         assert_eq!(config.nostr.spambox_max_size_gb, 1);
+        assert!(config.nostr.negentropy_only);
+        assert_eq!(config.nostr.mirror_kinds, vec![0, 10_000]);
+        assert_eq!(config.nostr.history_sync_author_chunk_size, 250);
+        assert!(!config.nostr.history_sync_on_reconnect);
+    }
+
+    #[test]
+    fn test_nostr_config_deserialize_legacy_crawl_depth_alias() {
+        let toml_str = r#"
+[nostr]
+relays = ["wss://relay.damus.io"]
+crawl_depth = 4
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.nostr.social_graph_crawl_depth, 4);
     }
 
     #[test]

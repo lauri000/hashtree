@@ -8,8 +8,7 @@
   import { nostrStore } from '../../nostr';
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { open as openReleaseModal } from './ReleaseModal.svelte';
-  import RepoTabNav from './RepoTabNav.svelte';
-  import RepoHeader from './RepoHeader.svelte';
+  import RepoChildLayout from './RepoChildLayout.svelte';
 
   interface Props {
     npub: string;
@@ -105,91 +104,87 @@
 </script>
 
 <!-- Right panel with releases - shown on mobile -->
-<div class="flex flex-1 flex-col min-w-0 min-h-0 bg-surface-0">
-  <div class="px-4 py-3">
-    <RepoHeader
-      {backUrl}
-      {npub}
-      {rootCid}
-      visibility={currentTree?.visibility}
-      {repoName}
-    />
-  </div>
-
-  <!-- Tab navigation -->
-  <RepoTabNav {npub} {repoName} activeTab="releases" showReleasesTab={true} />
-
-  <!-- Header with new release button -->
-  <div class="flex items-center justify-between px-4 py-3 bg-surface-1 b-b-1 b-b-solid b-b-surface-3">
-    <div class="text-sm text-text-3">
-      {visibleReleases.length} release{visibleReleases.length !== 1 ? 's' : ''}
-    </div>
-    {#if isOwner}
-      <button onclick={handleNewRelease} class="btn-primary flex items-center gap-2 px-3 h-9 text-sm">
-        <span class="i-lucide-plus"></span>
-        New Release
-      </button>
-    {/if}
-  </div>
-
-  <!-- Releases list -->
-  <div class="flex-1 overflow-auto">
-    {#if releasesState.loading}
-      <div class="flex items-center justify-center py-12 text-text-3">
-        <span class="i-lucide-loader-2 animate-spin mr-2"></span>
-        Loading releases...
+<RepoChildLayout
+  {backUrl}
+  {npub}
+  {repoName}
+  {rootCid}
+  contentMaxWidthClass="max-w-5xl"
+  sectionLabel="Releases"
+  showTabNav={false}
+  visibility={currentTree?.visibility}
+>
+  <div class="mx-3 mb-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg b-1 b-solid b-surface-3 bg-surface-0">
+    <div class="flex items-center justify-between px-4 py-3 bg-surface-1 b-b-1 b-b-solid b-b-surface-3">
+      <div class="text-sm text-text-3">
+        {visibleReleases.length} release{visibleReleases.length !== 1 ? 's' : ''}
       </div>
-    {:else if releasesState.error}
-      <div class="flex flex-col items-center justify-center py-12 text-danger">
-        <span class="i-lucide-alert-circle text-2xl mb-2"></span>
-        <span>{releasesState.error}</span>
-        <button onclick={() => releasesStore.refresh()} class="btn-ghost mt-2 text-sm">
-          Try again
+      {#if isOwner}
+        <button onclick={handleNewRelease} class="btn-primary flex items-center gap-2 px-3 h-9 text-sm">
+          <span class="i-lucide-plus"></span>
+          New Release
         </button>
-      </div>
-    {:else if visibleReleases.length === 0}
-      <div class="flex flex-col items-center justify-center py-12 text-text-3">
-        <span class="i-lucide-tag text-4xl mb-4 opacity-50"></span>
-        {#if releasesState.items.length === 0}
-          <span class="text-lg mb-2">No releases yet</span>
-          <span class="text-sm">Publish release notes and attach build artifacts</span>
-        {:else}
-          <span>No published releases</span>
-        {/if}
-      </div>
-    {:else}
-      <div class="divide-y divide-surface-3">
-        {#each visibleReleases as release (release.id)}
-          <div class="px-4 py-3 flex items-start gap-3">
-            <div class="mt-1 text-text-3">
-              <span class="i-lucide-tag"></span>
-            </div>
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-2 mb-1 flex-wrap">
-                <a
-                  href={getReleaseHref(release)}
-                  class="font-medium text-text-1 hover:text-accent hover:underline truncate"
-                >{release.title}</a>
-                {#if release.draft}
-                  <span class="px-2 py-0.5 text-xs rounded-full bg-warning/10 text-warning">Draft</span>
-                {/if}
-                {#if release.prerelease}
-                  <span class="px-2 py-0.5 text-xs rounded-full bg-accent/10 text-accent">Pre-release</span>
-                {/if}
+      {/if}
+    </div>
+
+    <div class="flex-1 overflow-auto">
+      {#if releasesState.loading}
+        <div class="flex items-center justify-center py-12 text-text-3">
+          <span class="i-lucide-loader-2 animate-spin mr-2"></span>
+          Loading releases...
+        </div>
+      {:else if releasesState.error}
+        <div class="flex flex-col items-center justify-center py-12 text-danger">
+          <span class="i-lucide-alert-circle text-2xl mb-2"></span>
+          <span>{releasesState.error}</span>
+          <button onclick={() => releasesStore.refresh()} class="btn-ghost mt-2 text-sm">
+            Try again
+          </button>
+        </div>
+      {:else if visibleReleases.length === 0}
+        <div class="flex flex-col items-center justify-center py-12 text-text-3">
+          <span class="i-lucide-tag text-4xl mb-4 opacity-50"></span>
+          {#if releasesState.items.length === 0}
+            <span class="text-lg mb-2">No releases yet</span>
+            <span class="text-sm">Publish release notes and attach build artifacts</span>
+          {:else}
+            <span>No published releases</span>
+          {/if}
+        </div>
+      {:else}
+        <div class="divide-y divide-surface-3">
+          {#each visibleReleases as release (release.id)}
+            <div class="px-4 py-3 flex items-start gap-3 transition-colors hover:bg-surface-1">
+              <div class="mt-1 text-text-3">
+                <span class="i-lucide-tag"></span>
               </div>
-              <div class="text-sm text-text-3 flex items-center gap-2 flex-wrap">
-                {#if release.tag}
-                  <span class="font-mono text-xs bg-surface-2 px-1 rounded">{release.tag}</span>
-                {/if}
-                <span>published {formatDate(release.published_at ?? release.created_at)}</span>
-                {#if release.commit}
-                  <span class="font-mono text-xs bg-surface-2 px-1 rounded">{release.commit.slice(0, 7)}</span>
-                {/if}
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 mb-1 flex-wrap">
+                  <a
+                    href={getReleaseHref(release)}
+                    class="font-medium text-text-1 hover:text-accent hover:underline truncate"
+                  >{release.title}</a>
+                  {#if release.draft}
+                    <span class="px-2 py-0.5 text-xs rounded-full bg-warning/10 text-warning">Draft</span>
+                  {/if}
+                  {#if release.prerelease}
+                    <span class="px-2 py-0.5 text-xs rounded-full bg-accent/10 text-accent">Pre-release</span>
+                  {/if}
+                </div>
+                <div class="text-sm text-text-3 flex items-center gap-2 flex-wrap">
+                  {#if release.tag}
+                    <span class="font-mono text-xs bg-surface-2 px-1 rounded">{release.tag}</span>
+                  {/if}
+                  <span>published {formatDate(release.published_at ?? release.created_at)}</span>
+                  {#if release.commit}
+                    <span class="font-mono text-xs bg-surface-2 px-1 rounded">{release.commit.slice(0, 7)}</span>
+                  {/if}
+                </div>
               </div>
             </div>
-          </div>
-        {/each}
-      </div>
-    {/if}
+          {/each}
+        </div>
+      {/if}
+    </div>
   </div>
-</div>
+</RepoChildLayout>

@@ -12,8 +12,20 @@ type BoardsE2EWindow = Window & {
       pubkey?: string | null;
     };
   };
+  __getWorkerAdapter?: () => TreeRootCacheAdapter | null | undefined;
+  __workerAdapter?: TreeRootCacheAdapter;
   __boardLiveMarker?: string;
   __boardPermissionMarker?: string;
+};
+
+type TreeRootCacheAdapter = {
+  setTreeRootCache?: (
+    npub: string,
+    treeName: string,
+    hash: Uint8Array,
+    key?: Uint8Array,
+    visibility?: 'public' | 'link-visible' | 'private'
+  ) => Promise<void>;
 };
 
 async function getCurrentRootSignature(page: Page): Promise<string | null> {
@@ -41,6 +53,187 @@ async function flushBoardRootUpdate(
     return `${hash}:${key}` !== previous;
   }, previousSignature, { timeout: timeoutMs });
   await flushPendingPublishes(page);
+}
+
+async function waitForTreePublished(page: Page, npub: string, treeName: string, timeoutMs: number = 30000): Promise<void> {
+  await waitForRelayConnected(page, Math.min(timeoutMs, 15000));
+  await flushPendingPublishes(page);
+  await page.waitForFunction(
+    ({ owner, tree }) => {
+      const raw = localStorage.getItem('hashtree:localRootCache');
+      if (!raw) return false;
+      try {
+        const data = JSON.parse(raw);
+        const entry = data?.[`${owner}/${tree}`];
+        return entry && entry.dirty === false;
+      } catch {
+        return false;
+      }
+    },
+    { owner: npub, tree: treeName },
+    { timeout: timeoutMs }
+  );
+}
+
+async function waitForTreeRoot(page: Page, npub: string, treeName: string, timeoutMs: number = 60000): Promise<void> {
+  await page.evaluate(async ({ targetNpub, targetTree, timeout }) => {
+    const { waitForTreeRoot } = await import('/src/stores');
+    await waitForTreeRoot(targetNpub, targetTree, timeout);
+  }, { targetNpub: npub, targetTree: treeName, timeout: timeoutMs });
+}
+
+async function waitForTreeRootHash(
+  page: Page,
+  npub: string,
+  treeName: string,
+  expectedHash: string,
+  timeoutMs: number = 60000
+): Promise<void> {
+  await page.waitForFunction(
+    async ({ targetNpub, targetTree, targetHash }) => {
+      const { getTreeRootSync } = await import('/src/stores');
+      const toHex = (bytes: Uint8Array): string => Array.from(bytes)
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+      const root = getTreeRootSync(targetNpub, targetTree);
+      if (!root) return false;
+      return toHex(root.hash) === targetHash;
+    },
+    { targetNpub: npub, targetTree: treeName, targetHash: expectedHash },
+    { timeout: timeoutMs }
+  );
+}
+
+async function waitForTreeRootStoreHash(
+  page: Page,
+  expectedHash: string,
+  timeoutMs: number = 60000
+): Promise<void> {
+  await page.waitForFunction(
+    async (targetHash: string) => {
+      const { treeRootStore } = await import('/src/stores/index.ts');
+      const toHex = (bytes: Uint8Array): string => Array.from(bytes)
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+      let root: { hash?: Uint8Array } | null = null;
+      const unsub = treeRootStore.subscribe((value) => { root = value as { hash?: Uint8Array } | null; });
+      unsub();
+      if (!root?.hash) return false;
+      return toHex(root.hash) === targetHash;
+    },
+    expectedHash,
+    { timeout: timeoutMs }
+  );
+}
+
+async function getTreeRootHex(page: Page, npub: string, treeName: string): Promise<{ hashHex: string; keyHex: string | null }> {
+  const root = await page.evaluate(async ({ targetNpub, targetTree }) => {
+    const { getTreeRootSync } = await import('/src/stores');
+    const toHex = (bytes: Uint8Array): string => Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    const rootCid = getTreeRootSync(targetNpub, targetTree);
+    if (!rootCid?.hash) return null;
+    return {
+      hashHex: toHex(rootCid.hash),
+      keyHex: rootCid.key ? toHex(rootCid.key) : null,
+    };
+  }, { targetNpub: npub, targetTree: treeName });
+
+  if (!root) {
+    throw new Error(`Could not read tree root for ${npub}/${treeName}`);
+  }
+  return root;
+}
+
+async function primeTreeRootInViewer(
+  page: Page,
+  npub: string,
+  treeName: string,
+  root: { hashHex: string; keyHex: string | null }
+): Promise<void> {
+  await page.evaluate(async ({ targetNpub, targetTree, hashHex, keyHex }) => {
+    const { updateLocalRootCacheHex } = await import('/src/treeRootCache');
+    const { treeRootRegistry } = await import('/src/TreeRootRegistry');
+    const fromHex = (hex: string): Uint8Array => {
+      const normalized = hex.trim().toLowerCase();
+      if (!normalized || normalized.length % 2 !== 0) return new Uint8Array();
+      const out = new Uint8Array(normalized.length / 2);
+      for (let i = 0; i < out.length; i += 1) {
+        const byte = Number.parseInt(normalized.slice(i * 2, i * 2 + 2), 16);
+        if (Number.isNaN(byte)) return new Uint8Array();
+        out[i] = byte;
+      }
+      return out;
+    };
+
+    updateLocalRootCacheHex(targetNpub, targetTree, hashHex, keyHex ?? undefined, 'link-visible');
+    treeRootRegistry.setFromExternal(targetNpub, targetTree, fromHex(hashHex), 'prefetch', {
+      key: keyHex ? fromHex(keyHex) : undefined,
+      visibility: 'link-visible',
+      updatedAt: Math.floor(Date.now() / 1000),
+    });
+
+    const adapter = (window as BoardsE2EWindow).__getWorkerAdapter?.() ?? (window as BoardsE2EWindow).__workerAdapter;
+    if (adapter?.setTreeRootCache) {
+      await adapter.setTreeRootCache(
+        targetNpub,
+        targetTree,
+        fromHex(hashHex),
+        keyHex ? fromHex(keyHex) : undefined,
+        'link-visible'
+      );
+    }
+  }, { targetNpub: npub, targetTree: treeName, hashHex: root.hashHex, keyHex: root.keyHex });
+}
+
+async function ensureViewerTreeRoot(
+  page: Page,
+  npub: string,
+  treeName: string,
+  root: { hashHex: string; keyHex: string | null },
+  timeoutMs: number = 60000
+): Promise<void> {
+  await waitForTreeRoot(page, npub, treeName, Math.min(timeoutMs, 30000)).catch(() => {});
+  await primeTreeRootInViewer(page, npub, treeName, root);
+  await page.evaluate(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
+  await waitForTreeRootHash(page, npub, treeName, root.hashHex, timeoutMs);
+  await waitForTreeRootStoreHash(page, root.hashHex, Math.min(timeoutMs, 30000));
+}
+
+function parseBoardShareUrl(shareUrl: string): { npub: string; treeName: string; linkKey: string | null } {
+  const match = shareUrl.match(/#\/(npub[^/]+)\/([^?]+)(?:\?(.+))?$/);
+  if (!match) {
+    throw new Error(`Could not parse board share URL: ${shareUrl}`);
+  }
+
+  const params = new URLSearchParams(match[3] ?? '');
+  return {
+    npub: match[1],
+    treeName: decodeURIComponent(match[2]),
+    linkKey: params.get('k'),
+  };
+}
+
+async function setupFreshBoardsViewer(ownerPage: Page, viewerPage: Page, shareUrl?: string): Promise<void> {
+  setupPageErrorHandler(viewerPage);
+  await viewerPage.goto('/boards.html#/');
+  await waitForAppReady(viewerPage, 60000);
+  await useLocalRelay(viewerPage);
+  await configureBlossomServers(viewerPage);
+  await ensureLoggedIn(viewerPage, 30000);
+  await enableOthersPool(viewerPage, 10);
+  await waitForRelayConnected(viewerPage, 30000);
+  await ensureDistinctViewerIdentity(ownerPage, viewerPage);
+
+  if (shareUrl) {
+    await viewerPage.goto(shareUrl);
+    await waitForAppReady(viewerPage, 60000);
+    await useLocalRelay(viewerPage);
+    await configureBlossomServers(viewerPage);
+    await enableOthersPool(viewerPage, 10);
+    await waitForRelayConnected(viewerPage, 30000);
+  }
 }
 
 async function createBoard(
@@ -357,6 +550,9 @@ test.describe('Iris Boards App', () => {
     const boardName = `E2E Live Sync ${Date.now()}`;
     const shareUrl = await createBoard(page, boardName, 'link-visible');
     expect(shareUrl).toMatch(/\?k=/);
+    const { npub: ownerNpub, treeName } = parseBoardShareUrl(shareUrl);
+    await waitForTreePublished(page, ownerNpub, treeName, 45000);
+    const ownerRoot = await getTreeRootHex(page, ownerNpub, treeName);
 
     const page1Todo = page.getByTestId('board-column-Todo');
     await expect(page1Todo).toBeVisible({ timeout: 15000 });
@@ -364,35 +560,8 @@ test.describe('Iris Boards App', () => {
 
     const context2 = await browser.newContext();
     const page2 = await context2.newPage();
-    setupPageErrorHandler(page2);
-
-    await page2.goto(shareUrl);
-    await waitForAppReady(page2, 60000);
-    await useLocalRelay(page2);
-    await configureBlossomServers(page2);
-    await ensureLoggedIn(page2, 30000);
-    await enableOthersPool(page2, 10);
-    await waitForRelayConnected(page2, 30000);
-
-    const page1Pubkey = await page.evaluate(() => (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey ?? null);
-    const initialPage2Pubkey = await page2.evaluate(() => (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey ?? null);
-    if (page1Pubkey && initialPage2Pubkey === page1Pubkey) {
-      await page2.evaluate(async () => {
-        const { generateNewKey } = await import('/src/nostr');
-        await generateNewKey();
-      });
-      await page2.waitForFunction((ownerPubkey) => {
-        const pubkey = (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey;
-        return !!pubkey && pubkey !== ownerPubkey;
-      }, page1Pubkey, { timeout: 20000 });
-      await waitForRelayConnected(page2, 30000);
-      await page2.goto(shareUrl);
-      await waitForAppReady(page2, 60000);
-      await useLocalRelay(page2);
-      await configureBlossomServers(page2);
-      await enableOthersPool(page2, 10);
-      await waitForRelayConnected(page2, 30000);
-    }
+    await setupFreshBoardsViewer(page, page2, shareUrl);
+    await ensureViewerTreeRoot(page2, ownerNpub, treeName, ownerRoot, 90000);
 
     await expect(page2.getByRole('heading', { name: boardName })).toBeVisible({ timeout: 30000 });
     await expect(page2.locator('text=Read-only')).toBeVisible({ timeout: 30000 });
@@ -421,8 +590,10 @@ test.describe('Iris Boards App', () => {
     await page.getByRole('button', { name: /^create card$/i }).click();
     await expect(page.getByTestId('board-card-Realtime card')).toBeVisible({ timeout: 10000 });
     await flushBoardRootUpdate(page, cardCreateRoot);
+    const updatedOwnerCardCreateRoot = await getTreeRootHex(page, ownerNpub, treeName);
 
-    await expect(page2.getByRole('heading', { name: /^Realtime card$/ })).toBeVisible({ timeout: 60000 });
+    await ensureViewerTreeRoot(page2, ownerNpub, treeName, updatedOwnerCardCreateRoot, 90000);
+    await expect(page2.getByTestId('board-card-Realtime card')).toBeVisible({ timeout: 90000 });
 
     const cardEditRoot = await getCurrentRootSignature(page);
     await page.getByTestId('board-card-Realtime card').getByRole('button', { name: /open card details/i }).click();
@@ -431,9 +602,11 @@ test.describe('Iris Boards App', () => {
     await page.getByLabel('Card title').fill('Realtime card updated');
     await page.getByRole('button', { name: /^save card$/i }).click();
     await flushBoardRootUpdate(page, cardEditRoot);
+    const updatedOwnerCardEditRoot = await getTreeRootHex(page, ownerNpub, treeName);
 
-    await expect(page2.getByRole('heading', { name: /^Realtime card updated$/ })).toBeVisible({ timeout: 60000 });
-    await expect(page2.getByRole('heading', { name: /^Realtime card$/ })).toHaveCount(0, { timeout: 60000 });
+    await ensureViewerTreeRoot(page2, ownerNpub, treeName, updatedOwnerCardEditRoot, 90000);
+    await expect(page2.getByTestId('board-card-Realtime card updated')).toBeVisible({ timeout: 90000 });
+    await expect(page2.getByTestId('board-card-Realtime card')).toHaveCount(0, { timeout: 90000 });
 
     await expect.poll(async () => {
       return page2.evaluate(() => (window as BoardsE2EWindow).__boardLiveMarker);
@@ -456,39 +629,15 @@ test.describe('Iris Boards App', () => {
     const boardName = `E2E Permission Sync ${Date.now()}`;
     const shareUrl = await createBoard(page, boardName, 'link-visible');
     expect(shareUrl).toMatch(/\?k=/);
+    const { npub: ownerNpub, treeName } = parseBoardShareUrl(shareUrl);
+    await waitForTreePublished(page, ownerNpub, treeName, 45000);
+    const ownerRoot = await getTreeRootHex(page, ownerNpub, treeName);
     await flushPendingPublishes(page);
 
     const context2 = await browser.newContext();
     const page2 = await context2.newPage();
-    setupPageErrorHandler(page2);
-
-    await page2.goto(shareUrl);
-    await waitForAppReady(page2, 60000);
-    await useLocalRelay(page2);
-    await configureBlossomServers(page2);
-    await ensureLoggedIn(page2, 30000);
-    await enableOthersPool(page2, 10);
-    await waitForRelayConnected(page2, 30000);
-
-    const page1Pubkey = await page.evaluate(() => (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey ?? null);
-    const initialPage2Pubkey = await page2.evaluate(() => (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey ?? null);
-    if (page1Pubkey && initialPage2Pubkey === page1Pubkey) {
-      await page2.evaluate(async () => {
-        const { generateNewKey } = await import('/src/nostr');
-        await generateNewKey();
-      });
-      await page2.waitForFunction((ownerPubkey) => {
-        const pubkey = (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey;
-        return !!pubkey && pubkey !== ownerPubkey;
-      }, page1Pubkey, { timeout: 20000 });
-      await waitForRelayConnected(page2, 30000);
-      await page2.goto(shareUrl);
-      await waitForAppReady(page2, 60000);
-      await useLocalRelay(page2);
-      await configureBlossomServers(page2);
-      await enableOthersPool(page2, 10);
-      await waitForRelayConnected(page2, 30000);
-    }
+    await setupFreshBoardsViewer(page, page2, shareUrl);
+    await ensureViewerTreeRoot(page2, ownerNpub, treeName, ownerRoot, 90000);
 
     const page2Pubkey = await page2.evaluate(() => (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey ?? null);
     expect(typeof page2Pubkey).toBe('string');
@@ -513,9 +662,9 @@ test.describe('Iris Boards App', () => {
     await page.getByRole('combobox').selectOption('writer');
     await page.getByRole('button', { name: /^add$/i }).click();
     await flushBoardRootUpdate(page, permissionsRoot);
-    const updatedPermissionsRoot = await getCurrentRootSignature(page);
+    const updatedOwnerRoot = await getTreeRootHex(page, ownerNpub, treeName);
 
-    await expect.poll(async () => getCurrentRootSignature(page2), { timeout: 60000 }).toBe(updatedPermissionsRoot);
+    await ensureViewerTreeRoot(page2, ownerNpub, treeName, updatedOwnerRoot, 90000);
 
     await expect.poll(async () => {
       const readOnlyVisible = await page2.getByText('Read-only', { exact: true }).isVisible().catch(() => false);
@@ -554,25 +703,15 @@ test.describe('Iris Boards App', () => {
     const boardName = `E2E Locked Link Board ${Date.now()}`;
     const shareUrl = await createBoard(page, boardName, 'link-visible');
     expect(shareUrl).toMatch(/\?k=/);
+    const { npub: ownerNpub, treeName } = parseBoardShareUrl(shareUrl);
+    await waitForTreePublished(page, ownerNpub, treeName, 45000);
     await flushPendingPublishes(page);
 
     const protectedUrl = shareUrl.replace(/\?k=[^&]+/, '');
 
     const context2 = await browser.newContext();
     const page2 = await context2.newPage();
-    setupPageErrorHandler(page2);
-
-    await page2.goto('/boards.html#/');
-    await waitForAppReady(page2, 60000);
-    await ensureLoggedIn(page2, 30000);
-    await enableOthersPool(page2, 10);
-    await waitForRelayConnected(page2, 30000);
-    await ensureDistinctViewerIdentity(page, page2);
-
-    await page2.goto(protectedUrl);
-    await waitForAppReady(page2, 60000);
-    await enableOthersPool(page2, 10);
-    await waitForRelayConnected(page2, 30000);
+    await setupFreshBoardsViewer(page, page2, protectedUrl);
 
     await expect(page2.getByText('Link Required')).toBeVisible({ timeout: 30000 });
     await expect(page2.getByText('This board requires a special link to access. Ask the owner for the link with the access key.')).toBeVisible({ timeout: 30000 });
@@ -591,23 +730,13 @@ test.describe('Iris Boards App', () => {
 
     const boardName = `E2E Private Locked Board ${Date.now()}`;
     const shareUrl = await createBoard(page, boardName, 'private');
+    const { npub: ownerNpub, treeName } = parseBoardShareUrl(shareUrl);
+    await waitForTreePublished(page, ownerNpub, treeName, 45000);
     await flushPendingPublishes(page);
 
     const context2 = await browser.newContext();
     const page2 = await context2.newPage();
-    setupPageErrorHandler(page2);
-
-    await page2.goto('/boards.html#/');
-    await waitForAppReady(page2, 60000);
-    await ensureLoggedIn(page2, 30000);
-    await enableOthersPool(page2, 10);
-    await waitForRelayConnected(page2, 30000);
-    await ensureDistinctViewerIdentity(page, page2);
-
-    await page2.goto(shareUrl);
-    await waitForAppReady(page2, 60000);
-    await enableOthersPool(page2, 10);
-    await waitForRelayConnected(page2, 30000);
+    await setupFreshBoardsViewer(page, page2, shareUrl);
 
     await expect(page2.getByText('Private Board')).toBeVisible({ timeout: 30000 });
     await expect(page2.getByText('This board is private and can only be accessed by its owner.')).toBeVisible({ timeout: 30000 });

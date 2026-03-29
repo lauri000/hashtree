@@ -757,6 +757,8 @@ fn emit_open_url_command<R: tauri::Runtime>(app: &tauri::AppHandle<R>, url: Stri
         automation::AutomationCommand {
             action: automation::AutomationAction::OpenUrl,
             url: Some(url),
+            request_id: None,
+            decision: None,
         },
     );
 }
@@ -885,7 +887,12 @@ fn emit_tray_action<R: tauri::Runtime>(
 ) {
     let _ = app.emit(
         "automation-command",
-        automation::AutomationCommand { action, url: None },
+        automation::AutomationCommand {
+            action,
+            url: None,
+            request_id: None,
+            decision: None,
+        },
     );
 }
 
@@ -1171,7 +1178,7 @@ pub fn run() {
 
     builder
         .plugin(tauri_plugin_os::init())
-        .register_uri_scheme_protocol("htree", htree_protocol::handle_htree_protocol)
+        .register_asynchronous_uri_scheme_protocol("htree", htree_protocol::handle_htree_protocol)
         .invoke_handler(tauri::generate_handler![
             automation::automation_update_state,
             automation::automation_get_state,
@@ -1194,6 +1201,17 @@ pub fn run() {
             nip07::reload_webview,
             nip07::webview_current_url,
             nip07::nip07_request,
+            nip07::get_nip07_account,
+            nip07::list_nip07_accounts,
+            nip07::login_nip07_account,
+            nip07::generate_nip07_account,
+            nip07::logout_nip07_account,
+            nip07::set_active_nip07_account,
+            nip07::remove_nip07_account,
+            nip07::export_nip07_account_secret,
+            nip07::take_nip07_permission_prompt,
+            nip07::respond_nip07_permission_prompt,
+            nip07::show_native_nip07_permission_dialog,
             nip07::webview_event,
             pwa::install_site_pwa,
             history::record_history_visit,
@@ -1255,9 +1273,23 @@ pub fn run() {
             std::env::set_var("HTREE_CONFIG_DIR", &paths.htree_config_dir);
             std::env::set_var("HTREE_DATA_DIR", &paths.htree_data_dir);
 
+            app.handle().plugin(tauri_plugin_secure_storage::init())?;
+
             // Initialize NIP-07 permission state
-            let permission_store = Arc::new(permissions::PermissionStore::new(None));
-            let nip07_state = Arc::new(nip07::Nip07State::new(permission_store));
+            let permission_store = Arc::new(permissions::PermissionStore::new(Some(
+                paths.shell_data_dir.join("nip07-permissions.json"),
+            )));
+            let nip07_account_path = paths.shell_data_dir.join("nip07-account.json");
+            let nip07_confidential_path = paths.shell_data_dir.join("confidential.json");
+            let nip07_secret_store = nip07::confidential_store(
+                app.handle().clone(),
+                Some(nip07_confidential_path),
+            );
+            let nip07_state = Arc::new(nip07::Nip07State::new(
+                permission_store,
+                nip07_account_path,
+                nip07_secret_store,
+            ));
             nip07::init_global_state(nip07_state.clone());
             app.manage(nip07_state);
 

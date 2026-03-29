@@ -15,6 +15,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { nip19, generateSecretKey, getPublicKey } from 'nostr-tools';
 import { acquireRustLock, releaseRustLock } from './rust-lock.js';
+import {
+  hashtreeCiTargetPath,
+  rustTargetPath,
+  withHashtreeCiTargetEnv,
+  withRustTargetEnv,
+} from './rust-target.js';
 
 // Run tests serially to avoid WebRTC conflicts
 test.describe.configure({ mode: 'serial' });
@@ -83,10 +89,15 @@ function hasRustToolchain(): boolean {
   }
 }
 
-function ensureBinary(binaryPath: string, buildCommand: string, cwd: string): string | null {
+function ensureBinary(
+  binaryPath: string,
+  buildCommand: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env
+): string | null {
   try {
     if (fs.existsSync(binaryPath)) return binaryPath;
-    execSync(buildCommand, { cwd, stdio: 'inherit' });
+    execSync(buildCommand, { cwd, env, stdio: 'inherit' });
     return binaryPath;
   } catch (err) {
     console.log(`Failed to build ${binaryPath}:`, err);
@@ -555,18 +566,20 @@ test.describe('CI Status Display', () => {
 
     try {
       const htreeBin = ensureBinary(
-        path.join(HASHTREE_RS_DIR, 'target/release/htree'),
+        rustTargetPath('release', 'htree'),
         'cargo build --release -p hashtree-cli',
-        HASHTREE_RS_DIR
+        HASHTREE_RS_DIR,
+        withRustTargetEnv()
       );
       if (!htreeBin) {
         throw new Error('htree binary unavailable');
       }
 
       const htciBin = ensureBinary(
-        path.join(HASHTREE_CI_DIR, 'target/release/htci'),
+        hashtreeCiTargetPath('release', 'htci'),
         'cargo build --release -p ci-runner',
-        HASHTREE_CI_DIR
+        HASHTREE_CI_DIR,
+        withHashtreeCiTargetEnv()
       );
       if (!htciBin) {
         throw new Error('htci binary unavailable');

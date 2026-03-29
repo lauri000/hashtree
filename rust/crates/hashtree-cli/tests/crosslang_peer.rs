@@ -55,7 +55,7 @@ stun_port = 0
 
 [nostr]
 relays = ["{}"]
-crawl_depth = 0
+social_graph_crawl_depth = 0
 "#,
             relay_url
         );

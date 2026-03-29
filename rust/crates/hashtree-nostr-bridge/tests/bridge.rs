@@ -1194,6 +1194,70 @@ async fn reports_global_recent_progress() -> io::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn global_recent_scan_can_use_external_author_allowlist() -> io::Result<()> {
+    let relay = TestRelay::new();
+    let relay_url = relay.url();
+
+    let root_keys = Keys::generate();
+    let alice_keys = Keys::generate();
+    let bob_keys = Keys::generate();
+    let graph = SocialGraph::new(&root_keys.public_key().to_hex());
+
+    let publisher = Client::new(Keys::generate());
+    publisher.add_relay(&relay_url).await.expect("add relay");
+    publisher.connect().await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    for (keys, created_at, label) in [(&alice_keys, 20, "alice"), (&bob_keys, 21, "bob")] {
+        let note = EventBuilder::new(Kind::TextNote, label, [])
+            .custom_created_at(Timestamp::from_secs(created_at))
+            .to_event(keys)
+            .expect("note");
+        publisher
+            .send_event(note)
+            .await
+            .expect("publish test event");
+    }
+
+    let store = Arc::new(MemoryStore::new());
+    let bridge = NostrBridge::new(
+        store.clone(),
+        CrawlConfig {
+            relays: vec![relay_url],
+            author_allowlist: Some(vec![alice_keys.public_key().to_hex()]),
+            relay_fetch_mode: RelayFetchMode::GlobalRecent,
+            relay_page_size: 16,
+            max_relay_pages: 1,
+            per_author_event_limit: 8,
+            kinds: Some(vec![1]),
+            ..CrawlConfig::default()
+        },
+    );
+
+    let report = bridge.crawl(&graph, None).await.expect("crawl report");
+    let root = report.root.expect("index root");
+    let event_store = NostrEventStore::new(store);
+    let retained = event_store
+        .list_recent(
+            Some(&root),
+            ListEventsOptions {
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("list retained");
+
+    assert_eq!(report.authors_considered, 1);
+    assert_eq!(report.events_seen, 2);
+    assert_eq!(report.events_selected, 1);
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].pubkey, alice_keys.public_key().to_hex());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn global_recent_scan_paginates_older_pages() -> io::Result<()> {
     let relay = TestRelay::new();
     let relay_url = relay.url();

@@ -9,18 +9,30 @@
       id: 'app',
       label: 'App',
       icon: 'i-lucide-settings-2',
+      activeRowClass: 'bg-accent/8',
+      iconFrameClass: 'bg-accent/12 text-accent ring-1 ring-accent/20',
     },
     {
       id: 'storage',
       label: 'Storage',
       icon: 'i-lucide-hard-drive',
+      activeRowClass: 'bg-amber-500/10',
+      iconFrameClass: 'bg-amber-500/12 text-amber-500 ring-1 ring-amber-500/20',
     },
     {
       id: 'network',
       label: 'Network',
       icon: 'i-lucide-server',
+      activeRowClass: 'bg-sky-500/8',
+      iconFrameClass: 'bg-sky-500/12 text-sky-500 ring-1 ring-sky-500/20',
     },
-  ] as const;
+  ] as const satisfies ReadonlyArray<{
+    id: string;
+    label: string;
+    icon: string;
+    activeRowClass: string;
+    iconFrameClass: string;
+  }>;
 
   type TabId = (typeof tabs)[number]['id'];
 
@@ -64,9 +76,9 @@
             data-testid={`settings-nav-${item.id}`}
             onclick={() => selectTab(item.id)}
             aria-current={activeTab === item.id ? 'page' : undefined}
-            class={`relative flex w-full items-center gap-3 px-4 py-3 text-left transition-colors ${activeTab === item.id ? 'bg-surface-3/80' : 'hover:bg-surface-3/40'}`}
+            class={`relative flex w-full items-center gap-3 px-4 py-3 text-left transition-colors ${activeTab === item.id ? item.activeRowClass : 'hover:bg-surface-3/40'}`}
           >
-            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-surface-1 text-text-2">
+            <span class={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${item.iconFrameClass}`}>
               <span class={item.icon}></span>
             </span>
             <span class="min-w-0 flex-1 text-sm font-medium text-text-1">{item.label}</span>

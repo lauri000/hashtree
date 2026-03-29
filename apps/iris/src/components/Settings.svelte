@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { minidenticon } from 'minidenticons';
   import BandwidthHistoryChart from './BandwidthHistoryChart.svelte';
+  import { animalName } from '../lib/animalName';
   import {
     isAutostartEnabled,
     toggleAutostart,
@@ -11,6 +12,7 @@
     clearHistory,
     type DaemonBlossomServerSettings,
     type DaemonNetworkSettings,
+    type Nip07AccountSummary,
   } from '../lib/tauri';
   import { distributedOwner } from '../lib/apps';
   import {
@@ -24,19 +26,68 @@
     type MeshHistoryCursor,
     type MeshPeerInfo,
   } from '../lib/mesh';
+  import {
+    clearClipboardIfUnchanged,
+    sensitiveClipboardClearDelayMs,
+    writeClipboardText,
+  } from '../lib/sensitiveClipboard';
 
   interface Props {
     onnavigate: (url: string) => void | Promise<void>;
+    selectedTab?: TabId | null;
+    onSelectTab?: (tab: TabId | null) => void;
+    nip07Accounts?: Nip07AccountSummary[];
+    activeNip07AccountPubkey?: string | null;
+    exportNip07Secret?: (pubkey: string) => Promise<string>;
   }
 
-  type TabId = 'desktop' | 'privacy' | 'network' | 'about';
+  type TabId = 'app' | 'privacy' | 'users' | 'network' | 'about';
 
   const tabs = [
-    { id: 'desktop', label: 'Desktop', icon: 'i-lucide-monitor' },
-    { id: 'privacy', label: 'Privacy', icon: 'i-lucide-shield' },
-    { id: 'network', label: 'Network', icon: 'i-lucide-server' },
-    { id: 'about', label: 'About', icon: 'i-lucide-info' },
-  ] as const satisfies ReadonlyArray<{ id: TabId; label: string; icon: string }>;
+    {
+      id: 'app',
+      label: 'App',
+      icon: 'i-lucide-settings-2',
+      activeRowClass: 'bg-accent/8',
+      iconFrameClass: 'bg-accent/12 text-accent ring-1 ring-accent/20',
+    },
+    {
+      id: 'privacy',
+      label: 'Privacy',
+      icon: 'i-lucide-shield',
+      activeRowClass: 'bg-rose-500/8',
+      iconFrameClass: 'bg-rose-500/12 text-rose-500 ring-1 ring-rose-500/20',
+    },
+    {
+      id: 'users',
+      label: 'Users',
+      icon: 'i-lucide-user-round',
+      activeRowClass: 'bg-emerald-500/8',
+      iconFrameClass: 'bg-emerald-500/12 text-emerald-500 ring-1 ring-emerald-500/20',
+    },
+    {
+      id: 'network',
+      label: 'Network',
+      icon: 'i-lucide-server',
+      activeRowClass: 'bg-sky-500/8',
+      iconFrameClass: 'bg-sky-500/12 text-sky-500 ring-1 ring-sky-500/20',
+    },
+    {
+      id: 'about',
+      label: 'About',
+      icon: 'i-lucide-info',
+      activeRowClass: 'bg-amber-500/10',
+      iconFrameClass: 'bg-amber-500/12 text-amber-500 ring-1 ring-amber-500/20',
+    },
+  ] as const satisfies ReadonlyArray<{
+    id: TabId;
+    label: string;
+    icon: string;
+    activeRowClass: string;
+    iconFrameClass: string;
+  }>;
+
+  const DEFAULT_TAB: TabId = 'app';
 
   const sourceLinks = [
     {
@@ -53,13 +104,25 @@
     },
   ] as const;
   const NETWORK_STATUS_POLL_INTERVAL_MS = 2000;
+  const CLIPBOARD_CLEAR_DELAY_MS = sensitiveClipboardClearDelayMs();
+  const COPY_FEEDBACK_DURATION_MS = 2_500;
 
-  let { onnavigate }: Props = $props();
+  let {
+    onnavigate,
+    selectedTab = null,
+    onSelectTab = undefined,
+    nip07Accounts = [],
+    activeNip07AccountPubkey = null,
+    exportNip07Secret = undefined,
+  }: Props = $props();
 
-  let activeTab = $state<TabId>('desktop');
+  let routeTab = $state<TabId | null>(null);
   let autostart = $state(false);
   let daemonUrl = $state('');
   let historyCleared = $state(false);
+  let nip07CopyBusyPubkey = $state<string | null>(null);
+  let nip07CopySuccessPubkey = $state<string | null>(null);
+  let nip07CopyError = $state('');
   let meshStatus = $state<DaemonMeshStatus>(emptyDaemonMeshStatus());
   let meshBandwidthHistory = $state<MeshBandwidthHistoryPoint[]>([]);
   let meshHistoryCursor = $state<MeshHistoryCursor | null>(null);
@@ -100,6 +163,8 @@
   let newRelayUrl = $state('');
   let newBlossomUrl = $state('');
   let networkStatusPollInterval: ReturnType<typeof setInterval> | null = null;
+  let clipboardClearTimer: ReturnType<typeof setTimeout> | null = null;
+  let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
 
   const buildLabel = (() => {
     const buildTime = import.meta.env.VITE_BUILD_TIME;
@@ -126,9 +191,19 @@
     })();
 
     return () => {
+      if (clipboardClearTimer) clearTimeout(clipboardClearTimer);
+      if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
       stopNetworkStatusPolling();
     };
   });
+
+  $effect(() => {
+    routeTab = selectedTab;
+  });
+
+  let activeTab = $derived(routeTab ?? DEFAULT_TAB);
+  let activeTabMeta = $derived(tabs.find((tab) => tab.id === activeTab) ?? tabs[0]);
+  let isSettingsRootRoute = $derived(routeTab === null);
 
   $effect(() => {
     const shouldPollNetworkStatus = activeTab === 'network' && daemonUrl.length > 0;
@@ -193,6 +268,17 @@
     meshStatus.peers.filter((peer) => peer.state === 'connected'),
   );
   let inactiveMeshPeerCount = $derived(meshStatus.peers.length - connectedMeshPeers.length);
+  let sortedNip07Accounts = $derived([...nip07Accounts].sort((a, b) => a.addedAt - b.addedAt));
+
+  function selectTab(tab: TabId) {
+    routeTab = tab;
+    onSelectTab?.(tab);
+  }
+
+  function openSettingsIndex() {
+    routeTab = null;
+    onSelectTab?.(null);
+  }
 
   async function refreshDaemonNetworkSettings() {
     try {
@@ -449,38 +535,110 @@
   function formatCount(value: number, singular: string, plural: string): string {
     return `${value} ${value === 1 ? singular : plural}`;
   }
+
+  function nip07AccountLabel(account: Nip07AccountSummary): string {
+    return animalName(account.pubkey);
+  }
+
+  function formatNpubLabel(npub: string): string {
+    return npub.length > 24 ? `${npub.slice(0, 14)}…${npub.slice(-8)}` : npub;
+  }
+
+  function scheduleClipboardClear(secret: string) {
+    if (clipboardClearTimer) {
+      clearTimeout(clipboardClearTimer);
+    }
+    clipboardClearTimer = setTimeout(() => {
+      void clearClipboardIfUnchanged(secret);
+    }, CLIPBOARD_CLEAR_DELAY_MS);
+  }
+
+  function resetCopyFeedbackAfterDelay(pubkey: string) {
+    if (copyFeedbackTimer) {
+      clearTimeout(copyFeedbackTimer);
+    }
+    copyFeedbackTimer = setTimeout(() => {
+      if (nip07CopySuccessPubkey === pubkey) {
+        nip07CopySuccessPubkey = null;
+      }
+    }, COPY_FEEDBACK_DURATION_MS);
+  }
+
+  async function handleCopyNip07Secret(pubkey: string) {
+    if (nip07CopyBusyPubkey) return;
+
+    nip07CopyBusyPubkey = pubkey;
+    nip07CopySuccessPubkey = null;
+    nip07CopyError = '';
+    try {
+      if (!exportNip07Secret) {
+        throw new Error('Nostr secret export is unavailable');
+      }
+      const secret = await exportNip07Secret(pubkey);
+      await writeClipboardText(secret);
+      scheduleClipboardClear(secret);
+      nip07CopySuccessPubkey = pubkey;
+      resetCopyFeedbackAfterDelay(pubkey);
+    } catch (error) {
+      nip07CopyError = error instanceof Error ? error.message : String(error);
+    } finally {
+      nip07CopyBusyPubkey = null;
+    }
+  }
 </script>
 
-<div class="flex-1 flex flex-col overflow-hidden">
-  <div class="shrink-0 border-b border-surface-2 bg-surface-1 px-4">
-    <div class="mx-auto max-w-2xl py-5">
-      <h1 class="text-2xl font-semibold text-text-1">Settings</h1>
-      <p class="mt-1 text-sm text-text-3">
-        Device behavior, local privacy controls, daemon details, and source links.
-      </p>
-    </div>
-    <div class="mx-auto flex max-w-2xl gap-2 overflow-x-auto pb-3">
-      {#each tabs as tab (tab.id)}
-        <button
-          onclick={() => activeTab = tab.id}
-          class="shrink-0 rounded-xl px-4 py-2 text-sm font-medium transition-colors flex items-center gap-2
-            {activeTab === tab.id
-              ? 'bg-surface-3 text-text-1'
-              : 'text-text-2 hover:bg-surface-2 hover:text-text-1'}"
-        >
-          <span class={tab.icon}></span>
-          {tab.label}
-        </button>
-      {/each}
-    </div>
-  </div>
+<div class="flex min-h-0 flex-1 flex-col bg-surface-1 lg:flex-row">
+  <aside
+    class={`min-h-0 shrink-0 overflow-auto border-b border-surface-2 bg-surface-1 lg:w-[22rem] lg:border-b-0 lg:border-r ${isSettingsRootRoute ? 'flex flex-col' : 'hidden lg:flex lg:flex-col'}`}
+  >
+    <div class="w-full px-4 pb-8 pt-6 lg:px-5 lg:py-6">
+      <div class="mb-6">
+        <h1 class="text-2xl font-semibold text-text-1">Settings</h1>
+      </div>
 
-  <div class="flex-1 overflow-auto">
-    <div class="p-4 space-y-6 max-w-2xl mx-auto">
-      {#if activeTab === 'desktop'}
+      <div class="overflow-hidden rounded-2xl bg-surface-2 shadow-sm ring-1 ring-surface-3/80">
+        {#each tabs as tab, index (tab.id)}
+          <button
+            data-testid={tab.id === 'users' ? 'settings-users-tab' : `settings-nav-${tab.id}`}
+            onclick={() => selectTab(tab.id)}
+            aria-current={activeTab === tab.id ? 'page' : undefined}
+            class={`relative flex w-full items-center gap-3 px-4 py-3 text-left transition-colors ${activeTab === tab.id ? tab.activeRowClass : 'hover:bg-surface-3/40'}`}
+          >
+            <span class={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${tab.iconFrameClass}`}>
+              <span class={tab.icon}></span>
+            </span>
+            <span class="min-w-0 flex-1 text-sm font-medium text-text-1">{tab.label}</span>
+            <span class="i-lucide-chevron-right shrink-0 text-base text-text-3"></span>
+            {#if index < tabs.length - 1}
+              <span class="absolute bottom-0 left-16 right-0 border-b border-surface-3/70"></span>
+            {/if}
+          </button>
+        {/each}
+      </div>
+    </div>
+  </aside>
+
+  <section class={`min-w-0 flex-1 overflow-auto ${isSettingsRootRoute ? 'hidden lg:block' : 'block'}`}>
+    <div class="w-full px-4 pb-8 pt-6 lg:px-8 lg:py-8">
+      <div class="mb-6 lg:hidden">
+        <button
+          class="inline-flex items-center gap-2 rounded-full bg-surface-2 px-3 py-2 text-sm font-medium text-text-1 transition-colors hover:bg-surface-3"
+          onclick={openSettingsIndex}
+        >
+          <span class="i-lucide-chevron-left text-base"></span>
+          <span>Settings</span>
+        </button>
+      </div>
+
+      <div class="mb-6">
+        <h2 class="text-2xl font-semibold text-text-1">{activeTabMeta.label}</h2>
+      </div>
+
+      <div class="w-full space-y-6">
+        {#if activeTab === 'app'}
         <div>
           <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-1">
-            Desktop App
+            App
           </h3>
           <p class="text-xs text-text-3 mb-3">Native shell behavior on this device</p>
           <div class="bg-surface-2 rounded divide-y divide-surface-3">
@@ -521,6 +679,75 @@
               </button>
             {/if}
           </div>
+        </div>
+      {:else if activeTab === 'users'}
+        <div data-testid="settings-users-panel" class="space-y-4">
+          <div>
+            <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-1">
+              Nostr Users
+            </h3>
+            <p class="text-xs text-text-3 mb-3">
+              Copy an account `nsec` directly to the clipboard without showing it on screen. If the clipboard still contains that exact `nsec` after 30 seconds, Iris clears it.
+            </p>
+          </div>
+
+          {#if sortedNip07Accounts.length === 0}
+            <div class="rounded-2xl bg-surface-2 px-4 py-4 text-sm text-text-2">
+              No Nostr users are stored in this shell yet. Add or generate one from the account menu first.
+            </div>
+          {:else}
+            <div class="space-y-3">
+              {#each sortedNip07Accounts as account (account.pubkey)}
+                {@const isActive = account.pubkey === activeNip07AccountPubkey}
+                {@const isCopying = nip07CopyBusyPubkey === account.pubkey}
+                {@const isCopied = nip07CopySuccessPubkey === account.pubkey}
+                <div class="rounded-2xl bg-surface-2 p-4 flex items-center gap-3">
+                  <div class="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full bg-surface-1">
+                    <img
+                      src={`data:image/svg+xml;utf8,${encodeURIComponent(minidenticon(account.pubkey, 48, 48))}`}
+                      alt={nip07AccountLabel(account)}
+                      class="h-full w-full rounded-full"
+                    />
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <div class="truncate text-sm font-medium text-text-1">
+                        {nip07AccountLabel(account)}
+                      </div>
+                      {#if isActive}
+                        <span class="rounded-full bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
+                          Active
+                        </span>
+                      {/if}
+                    </div>
+                    <div class="mt-1 text-xs text-text-3">
+                      {formatNpubLabel(account.npub)}
+                    </div>
+                  </div>
+                  <button
+                    data-testid={`copy-nsec-button-${account.pubkey}`}
+                    class="btn shrink-0 bg-surface-1 text-text-1 hover:bg-surface-3 disabled:opacity-60"
+                    onclick={() => void handleCopyNip07Secret(account.pubkey)}
+                    disabled={!!nip07CopyBusyPubkey}
+                  >
+                    {#if isCopying}
+                      Copying…
+                    {:else if isCopied}
+                      Copied
+                    {:else}
+                      Copy nsec
+                    {/if}
+                  </button>
+                </div>
+              {/each}
+            </div>
+          {/if}
+
+          {#if nip07CopyError}
+            <div data-testid="users-copy-error" class="rounded-xl bg-danger/10 px-3 py-2 text-sm text-danger">
+              {nip07CopyError}
+            </div>
+          {/if}
         </div>
       {:else if activeTab === 'network'}
         <div class="space-y-6">
@@ -995,4 +1222,5 @@
       {/if}
     </div>
   </div>
+  </section>
 </div>

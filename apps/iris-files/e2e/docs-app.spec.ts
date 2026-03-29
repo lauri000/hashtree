@@ -1,6 +1,85 @@
 import { test, expect } from './fixtures';
 import { setupPageErrorHandler, disableOthersPool, configureBlossomServers, waitForWebRTCConnection, waitForAppReady, ensureLoggedIn, safeReload, flushPendingPublishes, evaluateWithRetry } from './test-utils';
 
+async function getOwnedTreeRootSnapshot(page: any, treeName: string) {
+  const snapshot = await page.evaluate(async (targetTreeName) => {
+    const { getTreeRootSync } = await import('/src/stores');
+    const nostrStore = (window as any).__nostrStore;
+    const npub = nostrStore?.getState?.()?.npub;
+    if (!npub) return null;
+
+    const rootCid = getTreeRootSync(npub, targetTreeName);
+    if (!rootCid?.hash) return null;
+
+    const registry = (window as any).__treeRootRegistry;
+    const entry = registry?.get?.(npub, targetTreeName);
+
+    const toHex = (bytes: Uint8Array) => Array.from(bytes)
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('');
+
+    return {
+      npub,
+      visibility: entry?.visibility || 'public',
+      hashHex: toHex(rootCid.hash),
+      keyHex: rootCid.key ? toHex(rootCid.key) : null,
+    };
+  }, treeName);
+
+  if (!snapshot) {
+    throw new Error(`Could not resolve tree root snapshot for ${treeName}`);
+  }
+
+  return snapshot as {
+    npub: string;
+    visibility: string;
+    hashHex: string;
+    keyHex: string | null;
+  };
+}
+
+async function primeViewerTreeRoot(
+  page: any,
+  snapshot: {
+    npub: string;
+    visibility: string;
+    hashHex: string;
+    keyHex: string | null;
+  }
+) {
+  await page.evaluate(async ({ npub, visibility, hashHex, keyHex }) => {
+    const { updateLocalRootCacheHex } = await import('/src/treeRootCache');
+    const fromHex = (hex: string): Uint8Array => {
+      const normalized = hex.trim().toLowerCase();
+      if (!normalized || normalized.length % 2 !== 0) return new Uint8Array();
+      const out = new Uint8Array(normalized.length / 2);
+      for (let i = 0; i < out.length; i += 1) {
+        const byte = Number.parseInt(normalized.slice(i * 2, i * 2 + 2), 16);
+        if (Number.isNaN(byte)) return new Uint8Array();
+        out[i] = byte;
+      }
+      return out;
+    };
+
+    const route = (window as any).__routeStore?.getState?.();
+    const treeName = route?.treeName;
+    if (!treeName) return;
+
+    updateLocalRootCacheHex(npub, treeName, hashHex, keyHex ?? undefined, visibility as any);
+
+    const adapter = (window as any).__getWorkerAdapter?.() ?? (window as any).__workerAdapter;
+    if (adapter?.setTreeRootCache) {
+      await adapter.setTreeRootCache(
+        npub,
+        treeName,
+        fromHex(hashHex),
+        keyHex ? fromHex(keyHex) : undefined,
+        visibility,
+      );
+    }
+  }, snapshot);
+}
+
 async function waitForTreeRootChange(page: any, previousRoot: string | null, timeoutMs: number = 30000) {
   await page.waitForFunction(
     () => typeof (window as any).__getTreeRoot === 'function',
@@ -438,6 +517,7 @@ test.describe('Iris Docs App', () => {
         treeName,
         { timeout: 30000 }
       );
+      const sharedRoot = await getOwnedTreeRootSnapshot(page1, treeName!);
 
       await page2.goto('/docs.html#/');
       await waitForAppReady(page2);
@@ -449,6 +529,8 @@ test.describe('Iris Docs App', () => {
       await waitForAppReady(page2);
       await disableOthersPool(page2);
       await configureBlossomServers(page2);
+      await primeViewerTreeRoot(page2, sharedRoot);
+      await page2.evaluate(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
 
       await waitForDocsEditor(page2, 120000);
       const editor2 = page2.locator('.ProseMirror');

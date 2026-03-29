@@ -485,11 +485,7 @@ test.describe('Iris Video App', () => {
     expect(videoProps!.videoHeight).toBeGreaterThan(0);
     expect(videoProps!.error).toBeUndefined();
 
-    // Should show the permalink info box for either signed snapshot permalinks or
-    // plain content-addressed fallbacks.
-    await expect(
-      page.getByText(/signed tree snapshot|content-addressed permalink/i).first()
-    ).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText(/signed tree snapshot|content-addressed permalink/i)).toHaveCount(0);
 
     // Take final screenshot
     await page.screenshot({ path: 'e2e/screenshots/video-permalink-loaded.png' });

@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { LogicalPosition } from '@tauri-apps/api/dpi';
+  import { Menu } from '@tauri-apps/api/menu';
   import {
     automationUpdateState,
     automationShutdown,
@@ -7,13 +9,21 @@
     createHtreeWebview,
     deepLinkFrontendReady,
     closeWebview,
+    exportNip07AccountSecret,
+    generateNip07Account,
     getHtreeServerUrl,
     installSitePwa,
+    listNip07Accounts,
+    loginNip07Account,
     navigateWebview,
     onAutomationCommand,
     webviewHistory,
     reloadWebview,
+    removeNip07Account,
+    respondNip07PermissionPrompt,
+    setActiveNip07Account,
     setWebviewBounds,
+    takeNip07PermissionPrompt,
     onChildWebviewDiagnostic,
     onChildWebviewLocation,
     onChildWebviewPageLoad,
@@ -26,7 +36,11 @@
     type WebviewLocationEvent,
     type WebviewPageLoadEvent,
     type HistoryEntry,
+    type Nip07AccountSummary,
+    type Nip07AccountsSummary,
+    type Nip07PermissionPrompt,
   } from './lib/tauri';
+  import { animalName } from './lib/animalName';
   import { bookmarkSavedName, isBuiltInIrisApp, matchesPwaIdentity } from './lib/apps';
   import { ownerProfileUrl } from './lib/addressIdentity';
   import { appsStore } from './stores/apps';
@@ -34,9 +48,16 @@
   import HistoryEntryIcon from './components/HistoryEntryIcon.svelte';
   import AppLauncher from './components/AppLauncher.svelte';
   import LoadingSpinner from './components/LoadingSpinner.svelte';
+  import Nip07PermissionBar from './components/Nip07PermissionBar.svelte';
   import Settings from './components/Settings.svelte';
+  import { minidenticon } from 'minidenticons';
+  import {
+    clearClipboardIfUnchanged,
+    sensitiveClipboardClearDelayMs,
+  } from './lib/sensitiveClipboard';
 
   type View = 'launcher' | 'settings' | 'webview';
+  type SettingsTabId = 'app' | 'privacy' | 'users' | 'network' | 'about';
   type NavigateOptions = {
     pushHistory?: boolean;
     preferPlainLoopbackHost?: boolean;
@@ -61,24 +82,53 @@
   const BLANK_SUGGESTED_TREE_RECOVERY_DELAY_MS = 1500;
   const BUILT_IN_TREE_ROOT_REFRESH_TIMEOUT_MS = 5000;
   const HTREE_LOAD_STALL_RECOVERY_DELAY_MS = 8000;
+  const NIP07_PERMISSION_POLL_INTERVAL_MS = 350;
   const VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX = 96;
   const MACOS_FUNCTION_KEY_GLYPHS = /[\uF700-\uF8FF]/g;
   const MACOS_FUNCTION_KEY_GLYPHS_SINGLE = /[\uF700-\uF8FF]/;
   const LEGACY_MACOS_ARROW_KEY_CODES = new Set([63232, 63233, 63234, 63235]);
   const RECOVERABLE_TREE_BODY_TEXTS = new Set(['Not found', 'Resolution timeout']);
+  const ACCOUNT_SECRET_CLIPBOARD_CLEAR_DELAY_MS = sensitiveClipboardClearDelayMs();
   const PRIVATE_USE_ARROW_KEYS = {
     '\uF700': 'ArrowUp',
     '\uF701': 'ArrowDown',
     '\uF702': 'ArrowLeft',
     '\uF703': 'ArrowRight',
   } as const;
-  const g = globalThis as typeof globalThis & { __irisChildReady?: boolean };
+  const g = globalThis as typeof globalThis & {
+    __irisChildReady?: boolean;
+    __IRIS_BROWSER_TAURI_MOCK__?: boolean;
+  };
+
+  function isSettingsTabId(value: string): value is SettingsTabId {
+    return value === 'app' || value === 'privacy' || value === 'users' || value === 'network' || value === 'about';
+  }
+
+  function parseSettingsRouteFromHash(hash: string): SettingsTabId | null | undefined {
+    const path = (hash.startsWith('#') ? hash.slice(1) : hash).split('?')[0] ?? '';
+    if (!path) return undefined;
+    if (path === '/settings' || path === 'settings') return null;
+
+    const parts = path.split('/').filter(Boolean);
+    if (parts[0] !== 'settings') return undefined;
+    return parts[1] && isSettingsTabId(parts[1]) ? parts[1] : undefined;
+  }
+
+  function updateShellHash(path: string | null) {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    const nextHash = path ? `#${path}` : '';
+    if (url.hash === nextHash) return;
+    url.hash = path ?? '';
+    window.history.replaceState(window.history.state, '', url);
+  }
 
   let addressValue = $state('');
   let currentUrl = $state('');              // full URL for editing
   let isAddressFocused = $state(false);
   let addressInputEl: HTMLInputElement | null = $state(null);
   let currentView: View = $state('launcher');
+  let settingsTab = $state<SettingsTabId | null>(null);
 
   // Autocomplete dropdown
   let showDropdown = $state(false);
@@ -90,6 +140,7 @@
   let childLoadStallRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
   let boundsRaf: number | null = null;
   let automationSyncRaf: number | null = null;
+  let addressBarEl: HTMLDivElement | null = $state(null);
   let dropdownEl: HTMLDivElement | null = $state(null);
   let safeAreaTopInsetEl: HTMLDivElement | null = $state(null);
   let toolbarHeight = $state(TOOLBAR_BASE_HEIGHT);
@@ -99,6 +150,25 @@
   let keyboardInsetBottom = $state(0);
   let showMobileMenu = $state(false);
   let mobileMenuEl: HTMLDivElement | null = $state(null);
+  let accountMenuEl: HTMLDivElement | null = $state(null);
+  let accountButtonEl: HTMLButtonElement | null = $state(null);
+  let showAccountMenu = $state(false);
+  let savedAccounts: Nip07AccountSummary[] = $state([]);
+  let activeAccountPubkey: string | null = $state(null);
+  let accountSecretDraft = $state('');
+  let showAddAccountSecret = $state(false);
+  let pendingAccountRemovalPubkey: string | null = $state(null);
+  let accountError = $state('');
+  let accountBusy = $state(false);
+  let permissionPromptQueue: Nip07PermissionPrompt[] = $state([]);
+  let permissionPromptBusy = $state(false);
+  let permissionPromptError = $state('');
+  let permissionPromptPollTimer: ReturnType<typeof setInterval> | null = null;
+  let nativeHistoryMenuBusy = $state(false);
+  let nativeHistoryMenuRequested = $state(false);
+  let nativeHistoryMenuFallback = $state(false);
+  let nativeAccountMenuFallback = $state(false);
+  let accountSecretClipboardClearTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Shell-level navigation history
   let historyStack: string[] = $state([]);  // URLs visited
@@ -114,6 +184,8 @@
   let childDocumentTitle = $state('');
   let childBodyText = $state('');
   let childMediaSummary = $state('');
+  let childViewportWidth = $state(0);
+  let childViewportHeight = $state(0);
   let childLastError = $state('');
   let detectedPwa: DetectedPwa | null = $state(null);
   let isInstallingPwa = $state(false);
@@ -147,6 +219,32 @@
     currentUrl.startsWith('https://') &&
     !!detectedPwa?.manifestUrl,
   );
+  let currentPermissionPrompt = $derived(permissionPromptQueue[0] ?? null);
+  let showShellHistoryDropdown = $derived(
+    showDropdown &&
+    dropdownItems.length > 0 &&
+    (!canTryNativeHistoryMenu() || nativeHistoryMenuFallback)
+  );
+  let showShellAccountMenu = $derived(
+    showAccountMenu &&
+    (!canTryNativeAccountMenu() || nativeAccountMenuFallback)
+  );
+  let currentAccount = $derived.by(() => {
+    if (savedAccounts.length === 0) return null;
+    return savedAccounts.find((account) => account.pubkey === activeAccountPubkey) ?? savedAccounts[0] ?? null;
+  });
+  let sortedAccounts = $derived([...savedAccounts].sort((a, b) => a.addedAt - b.addedAt));
+  let currentAccountName = $derived(currentAccount ? animalName(currentAccount.pubkey) : 'Nostr user');
+  let accountAvatarUrl = $derived.by(() => {
+    if (!currentAccount?.pubkey) return '';
+    return `data:image/svg+xml;utf8,${encodeURIComponent(minidenticon(currentAccount.pubkey, 40, 40))}`;
+  });
+  let accountMenuStyle = $derived.by(() => {
+    if (isCompactToolbar) {
+      return `right: 12px; bottom: calc(env(safe-area-inset-bottom, 0px) + ${toolbarHeight}px + ${keyboardInsetBottom}px + 8px);`;
+    }
+    return `right: 12px; top: calc(env(safe-area-inset-top, 0px) + ${toolbarHeight}px + 8px);`;
+  });
 
   function urlToDisplay(url: string): string {
     try {
@@ -427,6 +525,8 @@
     const sanitizedValue = sanitizeAddressFieldValue();
     if (!isAddressFocused) isAddressFocused = true;
     showDropdown = true;
+    nativeHistoryMenuRequested = false;
+    nativeHistoryMenuFallback = false;
     debouncedSearch(sanitizedValue);
   }
 
@@ -467,6 +567,11 @@
       event.stopPropagation();
       dismissDropdown();
       return;
+    }
+
+    if (key === 'ArrowDown' && showDropdown && dropdownItems.length > 0 && canTryNativeHistoryMenu()) {
+      nativeHistoryMenuRequested = false;
+      void tryShowNativeHistoryMenu();
     }
 
     if (key === 'ArrowDown' && showDropdown && dropdownItems.length > 0) {
@@ -680,12 +785,30 @@
     if (!htree?.npub) return null;
     return {
       host: htree.npub,
-      displayLabel: entry.label.trim() || htree.treename || urlToDisplay(entry.path),
+      displayLabel: bookmarkSavedName(entry.path, entry.label),
     };
   }
 
   function historyWebLabel(entry: HistoryEntry): string {
-    return entry.label.trim() || urlToDisplay(entry.path);
+    return bookmarkSavedName(entry.path, entry.label);
+  }
+
+  function historyMenuLabel(entry: HistoryEntry): string {
+    const owner = historyOwnerSummary(entry);
+    if (owner) {
+      return `${owner.displayLabel} - ${owner.host}`;
+    }
+
+    const baseLabel = historyWebLabel(entry);
+    try {
+      const host = new URL(entry.path).host;
+      if (!host || baseLabel === host) {
+        return baseLabel;
+      }
+      return `${baseLabel} - ${host}`;
+    } catch {
+      return baseLabel;
+    }
   }
 
   function isRecordableUrl(url: string): boolean {
@@ -694,13 +817,9 @@
 
   function buildHistoryEntry(url: string, preferredLabel?: string) {
     const htree = parseHtreeUrl(url);
-    const trimmedLabel = preferredLabel?.trim() ?? '';
-    const fallbackLabel = htree?.treename || urlToDisplay(url);
     return {
       path: url,
-      label: trimmedLabel && trimmedLabel !== urlToDisplay(url) && trimmedLabel !== url
-        ? trimmedLabel
-        : fallbackLabel,
+      label: bookmarkSavedName(url, preferredLabel),
       entry_type: htree ? 'tree' : 'web',
       npub: htree?.npub ?? null,
       tree_name: htree?.treename ?? null,
@@ -786,6 +905,8 @@
     childDocumentTitle = '';
     childBodyText = '';
     childMediaSummary = '';
+    childViewportWidth = 0;
+    childViewportHeight = 0;
     childLastError = '';
     detectedPwa = null;
     isInstallingPwa = false;
@@ -823,6 +944,9 @@
 
   /** Open a URL in the child webview. */
   async function navigate(url: string, options: NavigateOptions = {}) {
+    showAccountMenu = false;
+    updateShellHash(null);
+    settingsTab = null;
     const {
       pushHistory = true,
       preferPlainLoopbackHost = false,
@@ -935,17 +1059,27 @@
 
   async function goHome() {
     showMobileMenu = false;
+    showAccountMenu = false;
+    updateShellHash(null);
     await destroyChildWebview();
     currentView = 'launcher';
+    settingsTab = null;
     currentUrl = '';
     addressValue = '';
     webviewNavDepth = 0;
     webviewFwdAvail = 0;
   }
 
-  function goSettings() {
+  async function goSettings(tab: SettingsTabId | null = null, syncHash = true) {
     showMobileMenu = false;
-    destroyChildWebview();
+    showAccountMenu = false;
+    if (syncHash) {
+      updateShellHash(tab ? `/settings/${tab}` : '/settings');
+    }
+    if (currentView === 'webview' || g.__irisChildReady) {
+      await destroyChildWebview();
+    }
+    settingsTab = tab;
     currentView = 'settings';
     currentUrl = '';
     addressValue = '';
@@ -954,6 +1088,402 @@
   }
 
   let isFavorited = $derived(currentUrl ? $appsStore.some(a => a.url === currentUrl) : false);
+
+  function applyAccountsSummary(summary: Nip07AccountsSummary) {
+    savedAccounts = summary.accounts ?? [];
+    activeAccountPubkey = summary.activePubkey ?? null;
+  }
+
+  function nextAccountPubkeyAfterMutation(summary: Nip07AccountsSummary): string | null {
+    return summary.activePubkey
+      ?? summary.accounts.find((account) => account.pubkey === activeAccountPubkey)?.pubkey
+      ?? summary.accounts[0]?.pubkey
+      ?? null;
+  }
+
+  async function refreshChildWebviewForAccountChange(
+    previousPubkey: string | null,
+    nextPubkey: string | null,
+  ) {
+    if (previousPubkey === nextPubkey) return;
+    if (currentView !== 'webview' || !currentUrl) return;
+    if (!childWebviewReady) {
+      await navigate(currentUrl, { pushHistory: false });
+      return;
+    }
+    await reloadWebview(CHILD_LABEL);
+  }
+
+  function accountDisplayName(account: Pick<Nip07AccountSummary, 'pubkey'> | null | undefined): string {
+    return account?.pubkey ? animalName(account.pubkey) : 'Nostr user';
+  }
+
+  async function loadNip07Accounts() {
+    try {
+      applyAccountsSummary(await listNip07Accounts());
+    } catch (error) {
+      console.warn('[Iris] failed to load NIP-07 accounts:', error);
+    }
+  }
+
+  function canTryNativeAccountMenu(): boolean {
+    return currentView === 'webview' && typeof window !== 'undefined' && !g.__IRIS_BROWSER_TAURI_MOCK__;
+  }
+
+  function canTryNativeHistoryMenu(): boolean {
+    return (
+      currentView === 'webview' &&
+      typeof window !== 'undefined' &&
+      !!addressBarEl &&
+      !g.__IRIS_BROWSER_TAURI_MOCK__
+    );
+  }
+
+  function popupLogicalPositionForElement(
+    element: HTMLElement,
+    options: { offsetX?: number; offsetY?: number } = {},
+  ): LogicalPosition {
+    const { offsetX = 0, offsetY = 0 } = options;
+    const rect = element.getBoundingClientRect();
+    return new LogicalPosition(
+      Math.round(rect.left + offsetX),
+      Math.round(rect.bottom + offsetY),
+    );
+  }
+
+  async function addAccountSecret(secret: string) {
+    const trimmed = secret.trim();
+    if (!trimmed || accountBusy) return;
+
+    const previousPubkey = currentAccount?.pubkey ?? null;
+    accountBusy = true;
+    accountError = '';
+    try {
+      await loginNip07Account(trimmed);
+      await loadNip07Accounts();
+      accountSecretDraft = '';
+      showAddAccountSecret = false;
+      showAccountMenu = false;
+      await clearClipboardIfUnchanged(trimmed);
+      await refreshChildWebviewForAccountChange(previousPubkey, activeAccountPubkey);
+    } catch (error) {
+      accountError = formatWebviewError(error);
+      throw error;
+    } finally {
+      accountBusy = false;
+    }
+  }
+
+  async function promptForAccountSecretFromNativeMenu() {
+    const secret = window.prompt('Paste nsec or hex secret', '');
+    if (!secret?.trim()) return;
+    await addAccountSecret(secret);
+  }
+
+  async function confirmRemoveCurrentAccountFromNativeMenu() {
+    if (!activeAccountPubkey) return;
+    if (!window.confirm(`Remove ${currentAccountName}?`)) return;
+    await confirmRemoveAccount(activeAccountPubkey);
+  }
+
+  async function tryShowNativeAccountMenu(): Promise<boolean> {
+    if (!canTryNativeAccountMenu() || !accountButtonEl) return false;
+
+    try {
+      const items: Array<Record<string, unknown>> = [
+        {
+          id: 'account-current',
+          text: currentAccount ? currentAccountName : 'No Nostr user selected',
+          enabled: false,
+        },
+      ];
+
+      if (sortedAccounts.length > 0) {
+        items.push({ item: 'Separator' });
+        for (const account of sortedAccounts) {
+          const isActive = account.pubkey === activeAccountPubkey;
+          items.push({
+            id: `account-${account.pubkey}`,
+            text: isActive ? `Active: ${accountDisplayName(account)}` : accountDisplayName(account),
+            enabled: !accountBusy && !isActive,
+            action: () => {
+              if (!isActive) {
+                void switchToAccount(account);
+              }
+            },
+          });
+        }
+      }
+
+      items.push({ item: 'Separator' });
+      items.push({
+        id: 'account-generate',
+        text: 'Generate New User',
+        enabled: !accountBusy,
+        action: () => {
+          void createAccount();
+        },
+      });
+      items.push({
+        id: 'account-add-existing',
+        text: 'Add Existing Secret…',
+        enabled: !accountBusy,
+        action: () => {
+          void promptForAccountSecretFromNativeMenu();
+        },
+      });
+      items.push({
+        id: 'account-manage-users',
+        text: 'Manage Users…',
+        enabled: true,
+        action: () => {
+          void goSettings('users');
+        },
+      });
+
+      if (currentAccount) {
+        items.push({
+          id: 'account-remove-active',
+          text: 'Remove Active User…',
+          enabled: !accountBusy,
+          action: () => {
+            void confirmRemoveCurrentAccountFromNativeMenu();
+          },
+        });
+      }
+
+      const menu = await Menu.new({ items });
+      try {
+        await menu.popup(popupLogicalPositionForElement(accountButtonEl, {
+          offsetX: Math.max(0, accountButtonEl.offsetWidth - 8),
+          offsetY: 6,
+        }));
+      } finally {
+        await menu.close().catch(() => {});
+      }
+      nativeAccountMenuFallback = false;
+      return true;
+    } catch (error) {
+      nativeAccountMenuFallback = true;
+      console.warn('[Iris] native account menu unavailable:', error);
+      return false;
+    }
+  }
+
+  async function tryShowNativeHistoryMenu(): Promise<boolean> {
+    if (!canTryNativeHistoryMenu() || !addressBarEl || nativeHistoryMenuBusy || dropdownItems.length === 0) {
+      return false;
+    }
+
+    nativeHistoryMenuBusy = true;
+    try {
+      const menu = await Menu.new({
+        items: [
+          {
+            id: 'history-header',
+            text: addressValue.trim() ? 'Suggestions' : 'Recent History',
+            enabled: false,
+          },
+          { item: 'Separator' },
+          ...dropdownItems.map((entry) => ({
+            id: `history-${entry.path}`,
+            text: historyMenuLabel(entry),
+            action: () => {
+              handleDropdownSelect(entry);
+            },
+          })),
+        ],
+      });
+
+      try {
+        await menu.popup(popupLogicalPositionForElement(addressBarEl, { offsetY: 6 }));
+      } finally {
+        await menu.close().catch(() => {});
+      }
+
+      if (showDropdown) {
+        closeDropdown();
+      }
+      nativeHistoryMenuFallback = false;
+      return true;
+    } catch (error) {
+      nativeHistoryMenuFallback = true;
+      console.warn('[Iris] native history menu unavailable:', error);
+      return false;
+    } finally {
+      nativeHistoryMenuBusy = false;
+    }
+  }
+
+  async function toggleAccountMenu() {
+    showMobileMenu = false;
+    if (showDropdown || isAddressFocused) {
+      dismissDropdown();
+    }
+    accountError = '';
+    pendingAccountRemovalPubkey = null;
+    nativeAccountMenuFallback = false;
+    if (await tryShowNativeAccountMenu()) {
+      showAccountMenu = false;
+      return;
+    }
+    showAccountMenu = !showAccountMenu;
+  }
+
+  async function saveAccountSecret() {
+    try {
+      await addAccountSecret(accountSecretDraft);
+    } catch {
+      // addAccountSecret already stored the user-facing error
+    }
+  }
+
+  function scheduleAccountSecretClipboardClear(secret: string) {
+    if (accountSecretClipboardClearTimer) {
+      clearTimeout(accountSecretClipboardClearTimer);
+    }
+    accountSecretClipboardClearTimer = setTimeout(() => {
+      void clearClipboardIfUnchanged(secret);
+    }, ACCOUNT_SECRET_CLIPBOARD_CLEAR_DELAY_MS);
+  }
+
+  function handleAccountSecretPaste(event: ClipboardEvent) {
+    const pasted = event.clipboardData?.getData('text/plain')?.trim();
+    if (!pasted) return;
+    void clearClipboardIfUnchanged(pasted);
+    scheduleAccountSecretClipboardClear(pasted);
+  }
+
+  async function createAccount() {
+    if (accountBusy) return;
+
+    const previousPubkey = currentAccount?.pubkey ?? null;
+    accountBusy = true;
+    accountError = '';
+    try {
+      await generateNip07Account();
+      await loadNip07Accounts();
+      accountSecretDraft = '';
+      showAddAccountSecret = false;
+      await refreshChildWebviewForAccountChange(previousPubkey, activeAccountPubkey);
+    } catch (error) {
+      accountError = formatWebviewError(error);
+    } finally {
+      accountBusy = false;
+    }
+  }
+
+  async function switchToAccount(account: Nip07AccountSummary) {
+    if (accountBusy || account.pubkey === activeAccountPubkey) return;
+
+    const previousPubkey = currentAccount?.pubkey ?? null;
+    accountBusy = true;
+    accountError = '';
+    try {
+      await setActiveNip07Account(account.pubkey);
+      await loadNip07Accounts();
+      pendingAccountRemovalPubkey = null;
+      showAccountMenu = false;
+      await refreshChildWebviewForAccountChange(previousPubkey, account.pubkey);
+    } catch (error) {
+      accountError = formatWebviewError(error);
+    } finally {
+      accountBusy = false;
+    }
+  }
+
+  function startRemoveAccount(pubkey: string) {
+    pendingAccountRemovalPubkey = pubkey;
+  }
+
+  function cancelRemoveAccount() {
+    pendingAccountRemovalPubkey = null;
+  }
+
+  async function confirmRemoveAccount(pubkey: string) {
+    if (accountBusy) return;
+
+    const previousPubkey = currentAccount?.pubkey ?? null;
+    accountBusy = true;
+    accountError = '';
+    try {
+      const nextSummary = await removeNip07Account(pubkey);
+      applyAccountsSummary(nextSummary);
+      pendingAccountRemovalPubkey = null;
+      if (savedAccounts.length === 0) {
+        showAccountMenu = false;
+      }
+      await refreshChildWebviewForAccountChange(
+        previousPubkey,
+        nextAccountPubkeyAfterMutation(nextSummary),
+      );
+    } catch (error) {
+      accountError = formatWebviewError(error);
+    } finally {
+      accountBusy = false;
+    }
+  }
+
+  function permissionMethodLabel(method: string): string {
+    switch (method) {
+      case 'getPublicKey':
+        return 'read your public key';
+      case 'signEvent':
+        return 'sign Nostr events';
+      case 'nip04.encrypt':
+      case 'nip44.encrypt':
+        return 'encrypt messages';
+      case 'nip04.decrypt':
+      case 'nip44.decrypt':
+        return 'decrypt messages';
+      default:
+        return method;
+    }
+  }
+
+  function permissionOriginLabel(origin: string): string {
+    try {
+      const parsed = new URL(origin);
+      return parsed.host || origin;
+    } catch {
+      return origin.replace(/^htree:\/\//, '');
+    }
+  }
+
+  async function pollNip07PermissionQueue() {
+    try {
+      const prompt = await takeNip07PermissionPrompt();
+      if (!prompt) return;
+      if (permissionPromptQueue.some((existing) => existing.requestId === prompt.requestId)) return;
+      showMobileMenu = false;
+      showAccountMenu = false;
+      permissionPromptError = '';
+      permissionPromptQueue = [...permissionPromptQueue, prompt];
+    } catch {
+      // Browser tests and non-native contexts may not support prompt polling.
+    }
+  }
+
+  async function respondToPermissionPrompt(
+    decision: 'deny' | 'allowSession' | 'allowAlways' | 'blockSite',
+  ) {
+    const prompt = currentPermissionPrompt;
+    if (!prompt || permissionPromptBusy) return;
+
+    permissionPromptBusy = true;
+    permissionPromptError = '';
+    try {
+      await respondNip07PermissionPrompt(prompt.requestId, decision);
+      permissionPromptQueue = permissionPromptQueue.filter(
+        (existing) => existing.requestId !== prompt.requestId,
+      );
+    } catch (error) {
+      permissionPromptError = formatWebviewError(error);
+    } finally {
+      permissionPromptBusy = false;
+      await pollNip07PermissionQueue();
+    }
+  }
 
   function toggleFavorite() {
     if (!currentUrl) return;
@@ -970,6 +1500,7 @@
 
   async function installCurrentPwa() {
     showMobileMenu = false;
+    showAccountMenu = false;
     if (!canInstallCurrentPwa || !detectedPwa || isInstallingPwa) return;
     isInstallingPwa = true;
     try {
@@ -992,6 +1523,7 @@
 
   async function refresh() {
     showMobileMenu = false;
+    showAccountMenu = false;
     if (currentView === 'webview' && currentUrl && !childWebviewReady) {
       await navigate(currentUrl, { pushHistory: false });
       return;
@@ -1003,6 +1535,7 @@
 
   async function openAddressOwnerProfile(host: string) {
     showMobileMenu = false;
+    showAccountMenu = false;
     closeDropdown();
     isAddressFocused = false;
     addressInputEl?.blur();
@@ -1023,6 +1556,10 @@
       dropdownItems = [];
     }
     selectedIndex = -1;
+    if (nativeHistoryMenuRequested && showDropdown && dropdownItems.length > 0) {
+      nativeHistoryMenuRequested = false;
+      void tryShowNativeHistoryMenu();
+    }
     scheduleWebviewBoundsUpdate();
   }
 
@@ -1035,6 +1572,8 @@
     showDropdown = false;
     dropdownItems = [];
     selectedIndex = -1;
+    nativeHistoryMenuRequested = false;
+    nativeHistoryMenuFallback = false;
     if (debounceTimer) clearTimeout(debounceTimer);
     scheduleWebviewBoundsUpdate();
   }
@@ -1154,6 +1693,8 @@
     }
     if (event.bodyText) childBodyText = event.bodyText;
     if (event.mediaSummary) childMediaSummary = event.mediaSummary;
+    if (typeof event.viewportWidth === 'number') childViewportWidth = event.viewportWidth;
+    if (typeof event.viewportHeight === 'number') childViewportHeight = event.viewportHeight;
     if (event.error && isFatalChildDiagnosticError(event.error, event.source)) {
       childLastError = event.error;
     }
@@ -1170,6 +1711,8 @@
 
   function handleAddressFocus() {
     showMobileMenu = false;
+    showAccountMenu = false;
+    nativeAccountMenuFallback = false;
     // Cancel any pending blur-close so it doesn't kill the new dropdown
     if (blurTimer) { clearTimeout(blurTimer); blurTimer = null; }
     isAddressFocused = true;
@@ -1177,6 +1720,8 @@
       addressValue = currentUrl;
     }
     showDropdown = true;
+    nativeHistoryMenuRequested = canTryNativeHistoryMenu();
+    nativeHistoryMenuFallback = false;
     fetchDropdownItems(addressValue);
     scheduleWebviewBoundsUpdate();
     // Select all text for easy replacement
@@ -1221,6 +1766,10 @@
     if (automationSyncRaf !== null) cancelAnimationFrame(automationSyncRaf);
     automationSyncRaf = requestAnimationFrame(() => {
       automationSyncRaf = null;
+      const { top, bottom } = browserViewportInsets();
+      const childBoundsHeight = currentView === 'webview'
+        ? Math.max(0, window.innerHeight - top - bottom)
+        : 0;
       automationUpdateState({
         shellReady: true,
         currentView: currentView,
@@ -1238,6 +1787,16 @@
         childLastError: childLastError,
         historyIndex: historyIndex,
         historyLength: historyStack.length,
+        windowInnerHeight: Math.round(window.innerHeight),
+        windowOuterHeight: Math.round(window.outerHeight),
+        toolbarHeight: Math.round(toolbarHeight),
+        childBoundsTop: Math.round(top),
+        childBoundsHeight: Math.round(childBoundsHeight),
+        childViewportWidth: Math.round(childViewportWidth),
+        childViewportHeight: Math.round(childViewportHeight),
+        pendingNip07PromptRequestId: currentPermissionPrompt?.requestId ?? '',
+        pendingNip07PromptOrigin: currentPermissionPrompt?.origin ?? '',
+        pendingNip07PromptMethod: currentPermissionPrompt?.method ?? '',
       }).catch(() => {
         // Browser dev mode and tests without native commands can ignore this.
       });
@@ -1268,8 +1827,20 @@
         await goHome();
         return;
       case 'settings':
-        goSettings();
+        await goSettings();
         return;
+      case 'respond_nip07_prompt': {
+        const requestId = command.requestId?.trim();
+        const decision = command.decision ?? null;
+        if (!requestId || !decision) return;
+        await respondNip07PermissionPrompt(requestId, decision);
+        permissionPromptQueue = permissionPromptQueue.filter(
+          (existing) => existing.requestId !== requestId,
+        );
+        permissionPromptError = '';
+        await pollNip07PermissionQueue();
+        return;
+      }
       case 'shutdown':
         await automationShutdown();
         return;
@@ -1284,6 +1855,11 @@
       addressInputEl?.focus();
       return;
     }
+    if (isEscapeKey(event) && showAccountMenu) {
+      event.preventDefault();
+      showAccountMenu = false;
+      return;
+    }
     if (isEscapeKey(event) && showMobileMenu) {
       event.preventDefault();
       showMobileMenu = false;
@@ -1295,8 +1871,19 @@
   }
 
   function handleGlobalPointerDown(event: PointerEvent) {
-    if (!showMobileMenu) return;
     const target = event.target;
+    if (showAccountMenu) {
+      if (!(target instanceof Element)) {
+        showAccountMenu = false;
+      } else if (
+        !target.closest('[data-testid="account-menu"]') &&
+        !target.closest('[data-testid="account-button"]')
+      ) {
+        showAccountMenu = false;
+      }
+    }
+
+    if (!showMobileMenu) return;
     if (!(target instanceof Element)) {
       showMobileMenu = false;
       return;
@@ -1364,6 +1951,8 @@
     childDocumentTitle;
     childBodyText;
     childMediaSummary;
+    childViewportWidth;
+    childViewportHeight;
     childLastError;
     historyIndex;
     historyStack.length;
@@ -1377,6 +1966,16 @@
 
   onMount(async () => {
     const visualViewport = window.visualViewport;
+    const handleShellHashChange = () => {
+      const routeTab = parseSettingsRouteFromHash(window.location.hash);
+      if (routeTab === undefined) {
+        if (currentView === 'settings') {
+          void goHome();
+        }
+        return;
+      }
+      void goSettings(routeTab, false);
+    };
     const unlistenLocation = await onChildWebviewLocation(handleLocationChange);
     const unlistenPageLoad = await onChildWebviewPageLoad(handlePageLoadEvent);
     const unlistenDiagnostic = await onChildWebviewDiagnostic(handleDiagnosticEvent);
@@ -1385,6 +1984,10 @@
         console.warn('[Iris] automation command failed:', error);
       });
     });
+    const initialSettingsRoute = parseSettingsRouteFromHash(window.location.hash);
+    if (initialSettingsRoute !== undefined) {
+      await goSettings(initialSettingsRoute, false);
+    }
     try {
       const pendingDeepLinks = await deepLinkFrontendReady();
       for (const url of pendingDeepLinks) {
@@ -1393,10 +1996,16 @@
     } catch (error) {
       console.warn('[Iris] deep-link initialization failed:', error);
     }
+    await loadNip07Accounts();
+    await pollNip07PermissionQueue();
+    permissionPromptPollTimer = setInterval(() => {
+      void pollNip07PermissionQueue();
+    }, NIP07_PERMISSION_POLL_INTERVAL_MS);
     syncToolbarMode();
     syncKeyboardInsetBottom();
     scheduleAutomationStateSync();
     window.addEventListener('keydown', handleGlobalKeyDown);
+    window.addEventListener('hashchange', handleShellHashChange);
     window.addEventListener('pointerdown', handleGlobalPointerDown);
     window.addEventListener('resize', syncToolbarMode);
     window.addEventListener('resize', scheduleWebviewBoundsUpdate);
@@ -1404,12 +2013,15 @@
     visualViewport?.addEventListener('scroll', syncKeyboardInsetBottom);
     return () => {
       window.removeEventListener('keydown', handleGlobalKeyDown);
+      window.removeEventListener('hashchange', handleShellHashChange);
       window.removeEventListener('pointerdown', handleGlobalPointerDown);
       window.removeEventListener('resize', syncToolbarMode);
       window.removeEventListener('resize', scheduleWebviewBoundsUpdate);
       visualViewport?.removeEventListener('resize', syncKeyboardInsetBottom);
       visualViewport?.removeEventListener('scroll', syncKeyboardInsetBottom);
       if (automationSyncRaf !== null) cancelAnimationFrame(automationSyncRaf);
+      if (permissionPromptPollTimer) clearInterval(permissionPromptPollTimer);
+      if (accountSecretClipboardClearTimer) clearTimeout(accountSecretClipboardClearTimer);
       unlistenLocation();
       unlistenPageLoad();
       unlistenDiagnostic();
@@ -1482,7 +2094,7 @@
             class="w-full flex items-center justify-between px-4 py-3 text-left text-sm text-text-1 hover:bg-surface-2 transition-colors"
             onclick={() => {
               showMobileMenu = false;
-              goSettings();
+              void goSettings();
             }}
           >
             <span>Settings</span>
@@ -1507,6 +2119,7 @@
 
         <div data-tauri-drag-region class="flex-1 min-w-0 relative">
           <div
+            bind:this={addressBarEl}
             data-testid="address-bar"
             data-tauri-drag-region="false"
             class="w-full min-w-0 flex items-center gap-2 rounded-full bg-surface-0 b-1 b-solid b-surface-3 px-4 py-2 transition-all {isAddressFocused ? 'b-accent' : ''}"
@@ -1618,7 +2231,7 @@
             {/if}
           </div>
 
-          {#if showDropdown && dropdownItems.length > 0}
+          {#if showShellHistoryDropdown}
             <div
               bind:this={dropdownEl}
               class="absolute bottom-full left-0 right-0 mb-2 bg-surface-1 b-1 b-solid b-surface-3 rounded-lg overflow-hidden z-50 max-h-80 overflow-y-auto"
@@ -1665,6 +2278,25 @@
 
         {#if !isAddressFocused}
           <button
+            bind:this={accountButtonEl}
+            data-testid="account-button"
+            data-account-state={currentAccount ? 'signed-in' : 'signed-out'}
+            data-tauri-drag-region="false"
+            class="btn-circle btn-ghost shrink-0 overflow-hidden"
+            onclick={toggleAccountMenu}
+            title={currentAccount ? `Switch Nostr user (${currentAccountName})` : 'Sign in to Nostr'}
+          >
+            {#if currentAccount && accountAvatarUrl}
+              <img
+                src={accountAvatarUrl}
+                alt="Current Nostr account"
+                class="h-7 w-7 rounded-full"
+              />
+            {:else}
+              <span class="i-lucide-user-round text-lg"></span>
+            {/if}
+          </button>
+          <button
             data-tauri-drag-region="false"
             class="btn-circle btn-ghost shrink-0"
             onclick={() => { showMobileMenu = !showMobileMenu; }}
@@ -1674,15 +2306,28 @@
           </button>
         {/if}
       </div>
+
+      {#if currentPermissionPrompt}
+        <Nip07PermissionBar
+          prompt={currentPermissionPrompt}
+          busy={permissionPromptBusy}
+          error={permissionPromptError}
+          compact={true}
+          permissionMethodLabel={permissionMethodLabel}
+          permissionOriginLabel={permissionOriginLabel}
+          respond={(decision) => void respondToPermissionPrompt(decision)}
+        />
+      {/if}
     </div>
   {:else}
     <div
       bind:offsetHeight={toolbarHeight}
       data-testid="toolbar"
       data-tauri-drag-region
-      class="h-12 shrink-0 flex items-center gap-2 px-3 bg-surface-1 border-b border-surface-2"
+      class="shrink-0 border-b border-surface-2 bg-surface-1 px-3 py-2"
       style={`padding-left: ${DESKTOP_TRAFFIC_LIGHTS_PADDING}px;`}
     >
+      <div class="flex h-8 items-center gap-2">
       <div data-tauri-drag-region class="flex items-center gap-1 shrink-0">
         <button
           data-tauri-drag-region="false"
@@ -1711,6 +2356,7 @@
 
       <div data-tauri-drag-region class="flex flex-1 min-w-0 relative justify-center">
         <div
+          bind:this={addressBarEl}
           data-testid="address-bar"
           data-tauri-drag-region="false"
           class="w-full min-w-0 max-w-lg flex items-center gap-2 px-3 py-1 rounded-full bg-surface-0 b-1 b-solid b-surface-3 transition-colors {isAddressFocused ? 'b-accent' : ''}"
@@ -1820,7 +2466,7 @@
           </button>
         </div>
 
-        {#if showDropdown && dropdownItems.length > 0}
+        {#if showShellHistoryDropdown}
           <div
             bind:this={dropdownEl}
             class="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-full max-w-lg bg-surface-1 b-1 b-solid b-surface-3 rounded-lg overflow-hidden z-50 max-h-80 overflow-y-auto"
@@ -1868,11 +2514,248 @@
       <button
         data-tauri-drag-region="false"
         class="btn-circle btn-ghost shrink-0"
-        onclick={goSettings}
+        onclick={() => void goSettings()}
         title="Settings"
       >
         <span class="i-lucide-settings text-lg"></span>
       </button>
+      <button
+        bind:this={accountButtonEl}
+        data-testid="account-button"
+        data-account-state={currentAccount ? 'signed-in' : 'signed-out'}
+        data-tauri-drag-region="false"
+        class="btn-circle btn-ghost shrink-0 overflow-hidden"
+        onclick={toggleAccountMenu}
+        title={currentAccount ? `Switch Nostr user (${currentAccountName})` : 'Sign in to Nostr'}
+      >
+        {#if currentAccount && accountAvatarUrl}
+          <img
+            src={accountAvatarUrl}
+            alt="Current Nostr account"
+            class="h-7 w-7 rounded-full"
+          />
+        {:else}
+          <span class="i-lucide-user-round text-lg"></span>
+        {/if}
+      </button>
+      </div>
+
+      {#if currentPermissionPrompt}
+        <Nip07PermissionBar
+          prompt={currentPermissionPrompt}
+          busy={permissionPromptBusy}
+          error={permissionPromptError}
+          permissionMethodLabel={permissionMethodLabel}
+          permissionOriginLabel={permissionOriginLabel}
+          respond={(decision) => void respondToPermissionPrompt(decision)}
+        />
+      {/if}
+    </div>
+  {/if}
+
+  {#if showShellAccountMenu}
+    <div
+      bind:this={accountMenuEl}
+      data-testid="account-menu"
+      data-tauri-drag-region="false"
+      class="fixed z-60 w-[min(22rem,calc(100vw-1.5rem))] overflow-hidden rounded-2xl b-1 b-solid b-surface-3 bg-surface-1 shadow-lg"
+      style={accountMenuStyle}
+    >
+      <div class="space-y-4 p-4">
+        <div class="flex items-start gap-3">
+          <div class="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-surface-2">
+            {#if currentAccount && accountAvatarUrl}
+              <img
+                src={accountAvatarUrl}
+                alt="Current Nostr account"
+                class="h-full w-full rounded-full"
+              />
+            {:else}
+              <span class="i-lucide-user-round text-lg text-text-3"></span>
+            {/if}
+          </div>
+          <div class="min-w-0 flex-1">
+            <div data-testid="account-current-name" class="truncate text-sm font-medium text-text-1">
+              {currentAccount ? currentAccountName : 'No Nostr user selected'}
+            </div>
+          </div>
+        </div>
+
+        {#if sortedAccounts.length > 0}
+          <div class="space-y-2">
+            {#each sortedAccounts as account (account.pubkey)}
+              {@const isActive = account.pubkey === activeAccountPubkey}
+              {@const isConfirmingRemoval = pendingAccountRemovalPubkey === account.pubkey}
+              {@const isSwitchable = !isActive && !isConfirmingRemoval && !accountBusy}
+              <div
+                data-testid="account-item"
+                class="flex items-center gap-3 rounded-2xl px-3 py-3 transition-colors {isActive ? 'bg-surface-0' : 'bg-surface-1 hover:bg-surface-2'} {isSwitchable ? 'cursor-pointer' : ''}"
+                role="button"
+                aria-disabled={!isSwitchable}
+                tabindex={isSwitchable ? 0 : -1}
+                onclick={() => {
+                  if (isSwitchable) {
+                    void switchToAccount(account);
+                  }
+                }}
+                onkeydown={(event) => {
+                  if (event.key === 'Enter' && isSwitchable) {
+                    event.preventDefault();
+                    void switchToAccount(account);
+                  }
+                }}
+              >
+                <div class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-surface-2">
+                  <img
+                    src={`data:image/svg+xml;utf8,${encodeURIComponent(minidenticon(account.pubkey, 40, 40))}`}
+                    alt={accountDisplayName(account)}
+                    class="h-full w-full rounded-full"
+                  />
+                </div>
+                <div class="min-w-0 flex-1">
+                  <div
+                    data-testid={isActive ? 'active-account-name' : undefined}
+                    class="truncate text-sm font-medium text-text-1"
+                  >
+                    {accountDisplayName(account)}
+                  </div>
+                  <div class="text-xs text-text-3">
+                    {#if isActive}
+                      Active in websites you open here
+                    {:else}
+                      Switch to this user
+                    {/if}
+                  </div>
+                </div>
+                <div class="shrink-0 flex items-center gap-2">
+                  {#if isActive}
+                    <span
+                      data-testid="active-account-indicator"
+                      class="i-lucide-check-circle text-base text-success"
+                    ></span>
+                  {/if}
+                  {#if isConfirmingRemoval}
+                    <button
+                      data-testid="confirm-remove-account-button"
+                      class="btn h-8 px-3 text-xs bg-danger text-white hover:opacity-90"
+                      onclick={(event) => {
+                        event.stopPropagation();
+                        void confirmRemoveAccount(account.pubkey);
+                      }}
+                      disabled={accountBusy}
+                    >
+                      Remove
+                    </button>
+                    <button
+                      class="btn btn-ghost h-8 px-3 text-xs"
+                      onclick={(event) => {
+                        event.stopPropagation();
+                        cancelRemoveAccount();
+                      }}
+                      disabled={accountBusy}
+                    >
+                      Cancel
+                    </button>
+                  {:else}
+                    <button
+                      class="btn-circle btn-ghost h-8 w-8 text-text-3 hover:text-danger"
+                      title={`Remove ${accountDisplayName(account)}`}
+                      onclick={(event) => {
+                        event.stopPropagation();
+                        startRemoveAccount(account.pubkey);
+                      }}
+                      disabled={accountBusy}
+                    >
+                      <span class="i-lucide-trash-2 text-sm"></span>
+                    </button>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        <div class="grid grid-cols-2 gap-2">
+          <button
+            data-testid="generate-account-button"
+            class="btn bg-accent text-white hover:opacity-90 disabled:opacity-50"
+            onclick={createAccount}
+            disabled={accountBusy}
+          >
+            Generate New
+          </button>
+          <button
+            data-testid="toggle-add-account-button"
+            class="btn btn-ghost"
+            onclick={() => {
+              showAddAccountSecret = !showAddAccountSecret;
+              accountError = '';
+              pendingAccountRemovalPubkey = null;
+              if (!showAddAccountSecret) {
+                accountSecretDraft = '';
+              }
+            }}
+            disabled={accountBusy}
+          >
+            {showAddAccountSecret ? 'Cancel' : 'Add Existing'}
+          </button>
+        </div>
+
+        {#if showAddAccountSecret}
+          <div class="space-y-3 rounded-2xl bg-surface-0 px-3 py-3">
+            <div class="space-y-2">
+              <label
+                for="account-secret"
+                class="block text-xs font-medium uppercase tracking-wide text-text-3"
+              >
+                Secret key
+              </label>
+              <input
+                id="account-secret"
+                data-testid="account-nsec-input"
+                type="password"
+                bind:value={accountSecretDraft}
+                placeholder="Paste nsec or hex secret"
+                autocomplete="off"
+                autocorrect="off"
+                autocapitalize="none"
+                spellcheck={false}
+                class="w-full rounded-xl bg-surface-1 px-3 py-2 text-sm text-text-1 outline-none ring-0 b-1 b-solid b-surface-3 focus:b-accent"
+                onpaste={handleAccountSecretPaste}
+                onkeydown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void saveAccountSecret();
+                  }
+                }}
+              />
+            </div>
+            <button
+              data-testid="account-save-button"
+              class="btn w-full bg-accent text-white hover:opacity-90 disabled:opacity-50"
+              onclick={saveAccountSecret}
+              disabled={accountBusy || !accountSecretDraft.trim()}
+            >
+              Add User
+            </button>
+          </div>
+        {/if}
+
+        <button
+          data-testid="manage-users-button"
+          class="btn btn-ghost w-full justify-between"
+          onclick={() => void goSettings('users')}
+        >
+          <span>Manage Users</span>
+          <span class="i-lucide-chevron-right text-sm text-text-3"></span>
+        </button>
+
+        {#if accountError}
+          <div class="rounded-xl bg-danger/10 px-3 py-2 text-sm text-danger">
+            {accountError}
+          </div>
+        {/if}
+      </div>
     </div>
   {/if}
 
@@ -1883,7 +2766,14 @@
         onnavigate={(url) => navigate(url)}
       />
     {:else if currentView === 'settings'}
-      <Settings onnavigate={(url) => navigate(url)} />
+      <Settings
+        onnavigate={(url) => navigate(url)}
+        selectedTab={settingsTab}
+        onSelectTab={(tab) => void goSettings(tab, true)}
+        nip07Accounts={savedAccounts}
+        activeNip07AccountPubkey={activeAccountPubkey}
+        exportNip07Secret={exportNip07AccountSecret}
+      />
     {:else if !childWebviewReady || childLastError}
       <section class="flex flex-1 items-center justify-center p-6">
         {#if childLastError}

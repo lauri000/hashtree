@@ -42,8 +42,64 @@ EOF
 export HTREE_CONFIG_DIR="${CONFIG_DIR}"
 
 cd "${ROOT_DIR}/rust"
-HTREE_BIN="${ROOT_DIR}/rust/target/debug/htree"
-if [[ -x "${HTREE_BIN}" ]]; then
-  exec "${HTREE_BIN}" start --addr "${ADDR}"
-fi
-exec cargo run -p hashtree-cli -- start --addr "${ADDR}"
+CARGO_TARGET_DIR="${HTREE_E2E_RUST_TARGET_DIR:-/tmp/hashtree-iris-files-e2e-rust-target}"
+HTREE_BIN="${CARGO_TARGET_DIR}/debug/htree"
+RUST_LOCK_PATH="${HTREE_RUST_LOCK_PATH:-/tmp/rust-e2e.lock}"
+RUST_LOCK_TIMEOUT_SECS="${HTREE_RUST_LOCK_TIMEOUT_SECS:-240}"
+
+lock_mtime() {
+  if stat -f %m "$1" >/dev/null 2>&1; then
+    stat -f %m "$1"
+  else
+    stat -c %Y "$1"
+  fi
+}
+
+acquire_rust_lock() {
+  local start now mtime age
+  start="$(date +%s)"
+  while true; do
+    if ( set -o noclobber; : > "${RUST_LOCK_PATH}" ) 2>/dev/null; then
+      return 0
+    fi
+
+    if [[ -e "${RUST_LOCK_PATH}" ]]; then
+      now="$(date +%s)"
+      mtime="$(lock_mtime "${RUST_LOCK_PATH}" 2>/dev/null || echo "${now}")"
+      age=$(( now - mtime ))
+      if (( age > RUST_LOCK_TIMEOUT_SECS )); then
+        rm -f "${RUST_LOCK_PATH}"
+        continue
+      fi
+      if (( now - start > RUST_LOCK_TIMEOUT_SECS )); then
+        echo "Timed out waiting for rust lock: ${RUST_LOCK_PATH}" >&2
+        return 1
+      fi
+    fi
+
+    sleep 1
+  done
+}
+
+release_rust_lock() {
+  rm -f "${RUST_LOCK_PATH}"
+}
+
+ensure_htree_bin() {
+  if [[ -x "${HTREE_BIN}" ]]; then
+    return 0
+  fi
+
+  acquire_rust_lock
+  trap release_rust_lock EXIT
+
+  if [[ ! -x "${HTREE_BIN}" ]]; then
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" cargo build --bin htree --features p2p
+  fi
+
+  release_rust_lock
+  trap - EXIT
+}
+
+ensure_htree_bin
+exec "${HTREE_BIN}" start --addr "${ADDR}"

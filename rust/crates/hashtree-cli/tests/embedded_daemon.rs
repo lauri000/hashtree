@@ -180,7 +180,7 @@ async fn embedded_daemon_background_services_follow_live_relay_settings() {
     config.server.stun_port = 0;
     config.nostr.enabled = true;
     config.nostr.relays = vec!["ws://127.0.0.1:1".to_string()];
-    config.nostr.crawl_depth = 1;
+    config.nostr.social_graph_crawl_depth = 1;
     config.sync.enabled = true;
     config.sync.sync_own = true;
     config.sync.sync_followed = false;
@@ -207,6 +207,10 @@ async fn embedded_daemon_background_services_follow_live_relay_settings() {
         "crawler should start when relays are enabled"
     );
     assert!(
+        initial.mirror_active,
+        "mirror should start when relays are enabled"
+    );
+    assert!(
         initial.sync_active,
         "background sync should start when relays are enabled"
     );
@@ -223,6 +227,10 @@ async fn embedded_daemon_background_services_follow_live_relay_settings() {
         "crawler should stop when relays are disabled"
     );
     assert!(
+        !disabled.mirror_active,
+        "mirror should stop when relays are disabled"
+    );
+    assert!(
         !disabled.sync_active,
         "background sync should stop when relays are disabled"
     );
@@ -234,6 +242,10 @@ async fn embedded_daemon_background_services_follow_live_relay_settings() {
     assert!(
         restarted.crawler_active,
         "crawler should restart when relays return"
+    );
+    assert!(
+        restarted.mirror_active,
+        "mirror should restart when relays return"
     );
     assert!(
         restarted.sync_active,

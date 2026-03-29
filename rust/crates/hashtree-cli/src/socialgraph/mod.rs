@@ -17,15 +17,16 @@ use std::sync::{Arc, Mutex as StdMutex};
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures::executor::block_on;
-use hashtree_core::Cid;
+use hashtree_core::{nhash_encode_full, Cid, HashTree, HashTreeConfig, NHashData};
+use hashtree_index::BTree;
+use hashtree_nostr::{
+    is_parameterized_replaceable_kind, is_replaceable_kind, ListEventsOptions, NostrEventStore,
+    NostrEventStoreError, ProfileGuard as NostrProfileGuard, StoredNostrEvent,
+};
 #[cfg(test)]
 use hashtree_nostr::{
     reset_profile as reset_nostr_profile, set_profile_enabled as set_nostr_profile_enabled,
     take_profile as take_nostr_profile,
-};
-use hashtree_nostr::{
-    ListEventsOptions, NostrEventStore, NostrEventStoreError, ProfileGuard as NostrProfileGuard,
-    StoredNostrEvent,
 };
 use nostr::{Event, Filter, JsonUtil, Kind, SingleLetterTag};
 use nostr_social_graph::{
@@ -47,9 +48,14 @@ const DEFAULT_ROOT_HEX: &str = "000000000000000000000000000000000000000000000000
 const EVENTS_ROOT_FILE: &str = "events-root.msgpack";
 const AMBIENT_EVENTS_ROOT_FILE: &str = "events-root-ambient.msgpack";
 const AMBIENT_EVENTS_BLOB_DIR: &str = "ambient-blobs";
+const PROFILE_SEARCH_ROOT_FILE: &str = "profile-search-root.msgpack";
+const PROFILES_BY_PUBKEY_ROOT_FILE: &str = "profiles-by-pubkey-root.msgpack";
 const UNKNOWN_FOLLOW_DISTANCE: u32 = 1000;
 const DEFAULT_SOCIALGRAPH_MAP_SIZE_BYTES: u64 = 64 * 1024 * 1024;
 const SOCIALGRAPH_MAX_DBS: u32 = 16;
+const PROFILE_SEARCH_INDEX_ORDER: usize = 64;
+const PROFILE_SEARCH_PREFIX: &str = "p:";
+const PROFILE_NAME_MAX_LENGTH: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventStorageClass {
@@ -70,10 +76,29 @@ struct EventIndexBucket {
     root_path: PathBuf,
 }
 
+struct ProfileIndexBucket {
+    tree: HashTree<StorageRouter>,
+    index: BTree<StorageRouter>,
+    by_pubkey_root_path: PathBuf,
+    search_root_path: PathBuf,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StoredCid {
     hash: [u8; 32],
     key: Option<[u8; 32]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StoredProfileSearchEntry {
+    pub pubkey: String,
+    pub name: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub nip05: Option<String>,
+    pub created_at: u64,
+    pub event_nhash: String,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -101,6 +126,7 @@ pub struct SocialGraphStore {
     distance_cache: StdMutex<Option<DistanceCache>>,
     public_events: EventIndexBucket,
     ambient_events: EventIndexBucket,
+    profile_index: ProfileIndexBucket,
 }
 
 pub trait SocialGraphBackend: Send + Sync {
@@ -110,6 +136,9 @@ pub trait SocialGraphBackend: Send + Sync {
     fn follow_list_created_at(&self, owner: &[u8; 32]) -> Result<Option<u64>>;
     fn followed_targets(&self, owner: &[u8; 32]) -> Result<UserSet>;
     fn is_overmuted_user(&self, user_pk: &[u8; 32], threshold: f64) -> Result<bool>;
+    fn profile_search_root(&self) -> Result<Option<Cid>> {
+        Ok(None)
+    }
     fn snapshot_chunks(&self, root: &[u8; 32], options: &BinaryBudget) -> Result<Vec<Bytes>>;
     fn ingest_event(&self, event: &Event) -> Result<()>;
     fn ingest_event_with_storage_class(
@@ -181,7 +210,7 @@ pub fn open_social_graph_store_at_path(
     let config = hashtree_config::Config::load_or_default();
     let backend = &config.storage.backend;
     let local_store = Arc::new(
-        LocalStore::new(db_dir.join("blobs"), backend)
+        LocalStore::new_with_lmdb_map_size(db_dir.join("blobs"), backend, mapsize_bytes)
             .map_err(|err| anyhow::anyhow!("Failed to create social graph blob store: {err}"))?,
     );
     let store = Arc::new(StorageRouter::new(local_store));
@@ -195,7 +224,12 @@ pub fn open_social_graph_store_at_path_with_storage(
 ) -> Result<Arc<SocialGraphStore>> {
     let ambient_backend = store.local_store().backend();
     let ambient_local = Arc::new(
-        LocalStore::new(db_dir.join(AMBIENT_EVENTS_BLOB_DIR), &ambient_backend).map_err(|err| {
+        LocalStore::new_with_lmdb_map_size(
+            db_dir.join(AMBIENT_EVENTS_BLOB_DIR),
+            &ambient_backend,
+            mapsize_bytes,
+        )
+        .map_err(|err| {
             anyhow::anyhow!("Failed to create social graph ambient blob store: {err}")
         })?,
     );
@@ -220,12 +254,23 @@ pub fn open_social_graph_store_at_path_with_storage_split(
         graph: StdMutex::new(graph),
         distance_cache: StdMutex::new(None),
         public_events: EventIndexBucket {
-            event_store: NostrEventStore::new(public_store),
+            event_store: NostrEventStore::new(Arc::clone(&public_store)),
             root_path: db_dir.join(EVENTS_ROOT_FILE),
         },
         ambient_events: EventIndexBucket {
             event_store: NostrEventStore::new(ambient_store),
             root_path: db_dir.join(AMBIENT_EVENTS_ROOT_FILE),
+        },
+        profile_index: ProfileIndexBucket {
+            tree: HashTree::new(HashTreeConfig::new(Arc::clone(&public_store))),
+            index: BTree::new(
+                public_store,
+                hashtree_index::BTreeOptions {
+                    order: Some(PROFILE_SEARCH_INDEX_ORDER),
+                },
+            ),
+            by_pubkey_root_path: db_dir.join(PROFILES_BY_PUBKEY_ROOT_FILE),
+            search_root_path: db_dir.join(PROFILE_SEARCH_ROOT_FILE),
         },
     }))
 }
@@ -444,6 +489,114 @@ impl SocialGraphStore {
             .context("check social graph overmute")
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn profile_search_root(&self) -> Result<Option<Cid>> {
+        self.profile_index.search_root()
+    }
+
+    pub(crate) fn public_events_root(&self) -> Result<Option<Cid>> {
+        self.public_events.events_root()
+    }
+
+    pub(crate) fn write_public_events_root(&self, root: Option<&Cid>) -> Result<()> {
+        self.public_events.write_events_root(root)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn latest_profile_event(&self, pubkey_hex: &str) -> Result<Option<Event>> {
+        self.profile_index.profile_event_for_pubkey(pubkey_hex)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn profile_search_entries_for_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<(String, StoredProfileSearchEntry)>> {
+        self.profile_index.search_entries_for_prefix(prefix)
+    }
+
+    pub fn sync_profile_index_for_events(&self, events: &[Event]) -> Result<()> {
+        self.update_profile_index_for_events(events)
+    }
+
+    pub(crate) fn rebuild_profile_index_for_events(&self, events: &[Event]) -> Result<()> {
+        let latest_by_pubkey = latest_metadata_events_by_pubkey(events);
+        let (by_pubkey_root, search_root) = self
+            .profile_index
+            .rebuild_profile_events(latest_by_pubkey.into_values())?;
+        self.profile_index
+            .write_by_pubkey_root(by_pubkey_root.as_ref())?;
+        self.profile_index.write_search_root(search_root.as_ref())?;
+        Ok(())
+    }
+
+    pub fn rebuild_profile_index_from_stored_events(&self) -> Result<usize> {
+        let public_events_root = self.public_events.events_root()?;
+        let ambient_events_root = self.ambient_events.events_root()?;
+        if public_events_root.is_none() && ambient_events_root.is_none() {
+            self.profile_index.write_by_pubkey_root(None)?;
+            self.profile_index.write_search_root(None)?;
+            return Ok(0);
+        }
+
+        let mut events = Vec::new();
+        for (bucket, root) in [
+            (&self.public_events, public_events_root),
+            (&self.ambient_events, ambient_events_root),
+        ] {
+            let Some(root) = root else {
+                continue;
+            };
+            let stored = block_on(bucket.event_store.list_by_kind_lossy(
+                Some(&root),
+                Kind::Metadata.as_u16() as u32,
+                ListEventsOptions::default(),
+            ))
+            .map_err(map_event_store_error)?;
+            events.extend(
+                stored
+                    .into_iter()
+                    .map(nostr_event_from_stored)
+                    .collect::<Result<Vec<_>>>()?,
+            );
+        }
+
+        let latest_count = latest_metadata_events_by_pubkey(&events).len();
+        self.rebuild_profile_index_for_events(&events)?;
+        Ok(latest_count)
+    }
+
+    fn update_profile_index_for_events(&self, events: &[Event]) -> Result<()> {
+        let latest_by_pubkey = latest_metadata_events_by_pubkey(events);
+
+        if latest_by_pubkey.is_empty() {
+            return Ok(());
+        }
+
+        let mut by_pubkey_root = self.profile_index.by_pubkey_root()?;
+        let mut search_root = self.profile_index.search_root()?;
+        let mut changed = false;
+
+        for event in latest_by_pubkey.into_values() {
+            let (next_by_pubkey_root, next_search_root, updated) = self
+                .profile_index
+                .update_profile_event(by_pubkey_root.as_ref(), search_root.as_ref(), event)?;
+            if updated {
+                by_pubkey_root = next_by_pubkey_root;
+                search_root = next_search_root;
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.profile_index
+                .write_by_pubkey_root(by_pubkey_root.as_ref())?;
+            self.profile_index.write_search_root(search_root.as_ref())?;
+        }
+
+        Ok(())
+    }
+
     fn snapshot_chunks(&self, root: &[u8; 32], options: &BinaryBudget) -> Result<Vec<Bytes>> {
         let state = {
             let graph = self.graph.lock().unwrap();
@@ -550,6 +703,8 @@ impl SocialGraphStore {
         self.bucket(storage_class)
             .write_events_root(Some(&next_root))?;
 
+        self.update_profile_index_for_events(std::slice::from_ref(event))?;
+
         if is_social_graph_event(event.kind) {
             {
                 let mut graph = self.graph.lock().unwrap();
@@ -585,6 +740,8 @@ impl SocialGraphStore {
         )
         .map_err(map_event_store_error)?;
         bucket.write_events_root(next_root.as_ref())?;
+
+        self.update_profile_index_for_events(events)?;
 
         let graph_events = events
             .iter()
@@ -645,26 +802,12 @@ impl SocialGraphStore {
 impl EventIndexBucket {
     fn events_root(&self) -> Result<Option<Cid>> {
         let _profile = NostrProfileGuard::new("socialgraph.events_root.read");
-        let Ok(bytes) = std::fs::read(&self.root_path) else {
-            return Ok(None);
-        };
-        decode_cid(&bytes)
+        read_root_file(&self.root_path)
     }
 
     fn write_events_root(&self, root: Option<&Cid>) -> Result<()> {
         let _profile = NostrProfileGuard::new("socialgraph.events_root.write");
-        let Some(root) = root else {
-            if self.root_path.exists() {
-                std::fs::remove_file(&self.root_path)?;
-            }
-            return Ok(());
-        };
-
-        let encoded = encode_cid(root)?;
-        let tmp_path = self.root_path.with_extension("tmp");
-        std::fs::write(&tmp_path, encoded)?;
-        std::fs::rename(tmp_path, &self.root_path)?;
-        Ok(())
+        write_root_file(&self.root_path, root)
     }
 
     fn store_event(&self, root: Option<&Cid>, event: &Event) -> Result<Cid> {
@@ -880,7 +1023,7 @@ impl EventIndexBucket {
 
         let kind = kinds.iter().next().expect("checked single kind").as_u16() as u32;
 
-        if (30_000..40_000).contains(&kind) {
+        if is_parameterized_replaceable_kind(kind) {
             let d_tag = SingleLetterTag::lowercase(nostr::Alphabet::D);
             let Some(d_values) = filter.generic_tags.get(&d_tag) else {
                 return Ok(None);
@@ -904,7 +1047,7 @@ impl EventIndexBucket {
             return Ok(Some(dedupe_events(events)));
         }
 
-        if kind == 0 || kind == 3 || (10_000..20_000).contains(&kind) {
+        if is_replaceable_kind(kind) {
             let mut events = Vec::new();
             for author in authors {
                 if let Some(stored) = block_on(self.event_store.get_replaceable(
@@ -989,6 +1132,211 @@ impl EventIndexBucket {
     }
 }
 
+impl ProfileIndexBucket {
+    fn by_pubkey_root(&self) -> Result<Option<Cid>> {
+        let _profile = NostrProfileGuard::new("socialgraph.profile_by_pubkey_root.read");
+        read_root_file(&self.by_pubkey_root_path)
+    }
+
+    fn search_root(&self) -> Result<Option<Cid>> {
+        let _profile = NostrProfileGuard::new("socialgraph.profile_search_root.read");
+        read_root_file(&self.search_root_path)
+    }
+
+    fn write_by_pubkey_root(&self, root: Option<&Cid>) -> Result<()> {
+        let _profile = NostrProfileGuard::new("socialgraph.profile_by_pubkey_root.write");
+        write_root_file(&self.by_pubkey_root_path, root)
+    }
+
+    fn write_search_root(&self, root: Option<&Cid>) -> Result<()> {
+        let _profile = NostrProfileGuard::new("socialgraph.profile_search_root.write");
+        write_root_file(&self.search_root_path, root)
+    }
+
+    fn mirror_profile_event(&self, event: &Event) -> Result<Cid> {
+        let bytes = event.as_json().into_bytes();
+        block_on(self.tree.put_file(&bytes))
+            .map(|(cid, _size)| cid)
+            .context("store mirrored profile event")
+    }
+
+    fn load_profile_event(&self, cid: &Cid) -> Result<Option<Event>> {
+        let bytes = block_on(self.tree.get(cid, None)).context("read mirrored profile event")?;
+        let Some(bytes) = bytes else {
+            return Ok(None);
+        };
+        let json = String::from_utf8(bytes).context("decode mirrored profile event as utf-8")?;
+        Ok(Some(
+            Event::from_json(json).context("decode mirrored profile event json")?,
+        ))
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn profile_event_for_pubkey(&self, pubkey_hex: &str) -> Result<Option<Event>> {
+        let root = self.by_pubkey_root()?;
+        let Some(cid) = block_on(self.index.get_link(root.as_ref(), pubkey_hex))
+            .context("read mirrored profile event cid by pubkey")?
+        else {
+            return Ok(None);
+        };
+        self.load_profile_event(&cid)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn search_entries_for_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<(String, StoredProfileSearchEntry)>> {
+        let Some(root) = self.search_root()? else {
+            return Ok(Vec::new());
+        };
+        let entries = block_on(self.index.prefix(&root, prefix)).context("query profile search prefix")?;
+        entries
+            .into_iter()
+            .map(|(key, value)| {
+                let entry = serde_json::from_str(&value)
+                    .context("decode stored profile search entry json")?;
+                Ok((key, entry))
+            })
+            .collect()
+    }
+
+    fn rebuild_profile_events<'a, I>(&self, events: I) -> Result<(Option<Cid>, Option<Cid>)>
+    where
+        I: IntoIterator<Item = &'a Event>,
+    {
+        let mut by_pubkey_entries = Vec::<(String, Cid)>::new();
+        let mut search_entries = Vec::<(String, String)>::new();
+
+        for event in events {
+            let pubkey = event.pubkey.to_hex();
+            let mirrored_cid = self.mirror_profile_event(event)?;
+            let search_value =
+                serialize_profile_search_entry(&build_profile_search_entry(event, &mirrored_cid)?)?;
+            by_pubkey_entries.push((pubkey.clone(), mirrored_cid.clone()));
+            for term in profile_search_terms_for_event(event) {
+                search_entries.push((format!("{PROFILE_SEARCH_PREFIX}{term}:{pubkey}"), search_value.clone()));
+            }
+        }
+
+        let by_pubkey_root = block_on(self.index.build_links(by_pubkey_entries))
+            .context("bulk build mirrored profile-by-pubkey index")?;
+        let search_root = block_on(self.index.build(search_entries))
+            .context("bulk build mirrored profile search index")?;
+        Ok((by_pubkey_root, search_root))
+    }
+
+    fn update_profile_event(
+        &self,
+        by_pubkey_root: Option<&Cid>,
+        search_root: Option<&Cid>,
+        event: &Event,
+    ) -> Result<(Option<Cid>, Option<Cid>, bool)> {
+        let pubkey = event.pubkey.to_hex();
+        let existing_cid = block_on(self.index.get_link(by_pubkey_root, &pubkey))
+            .context("lookup existing mirrored profile event")?;
+
+        let existing_event = match existing_cid.as_ref() {
+            Some(cid) => self.load_profile_event(cid)?,
+            None => None,
+        };
+
+        if existing_event
+            .as_ref()
+            .is_some_and(|current| compare_nostr_events(event, current).is_le())
+        {
+            return Ok((by_pubkey_root.cloned(), search_root.cloned(), false));
+        }
+
+        let mirrored_cid = self.mirror_profile_event(event)?;
+        let next_by_pubkey_root = Some(
+            block_on(
+                self.index
+                    .insert_link(by_pubkey_root, &pubkey, &mirrored_cid),
+            )
+            .context("write mirrored profile event index")?,
+        );
+
+        let mut next_search_root = search_root.cloned();
+        if let Some(current) = existing_event.as_ref() {
+            for term in profile_search_terms_for_event(current) {
+                let Some(root) = next_search_root.as_ref() else {
+                    break;
+                };
+                next_search_root = block_on(
+                    self.index
+                        .delete(root, &format!("{PROFILE_SEARCH_PREFIX}{term}:{pubkey}")),
+                )
+                .context("remove stale profile search term")?;
+            }
+        }
+
+        let search_value =
+            serialize_profile_search_entry(&build_profile_search_entry(event, &mirrored_cid)?)?;
+        for term in profile_search_terms_for_event(event) {
+            next_search_root = Some(
+                block_on(self.index.insert(
+                    next_search_root.as_ref(),
+                    &format!("{PROFILE_SEARCH_PREFIX}{term}:{pubkey}"),
+                    &search_value,
+                ))
+                .context("write profile search term")?,
+            );
+        }
+
+        Ok((next_by_pubkey_root, next_search_root, true))
+    }
+}
+
+fn latest_metadata_events_by_pubkey<'a>(events: &'a [Event]) -> BTreeMap<String, &'a Event> {
+    let mut latest_by_pubkey = BTreeMap::<String, &Event>::new();
+    for event in events.iter().filter(|event| event.kind == Kind::Metadata) {
+        let pubkey = event.pubkey.to_hex();
+        match latest_by_pubkey.get(&pubkey) {
+            Some(current) if compare_nostr_events(event, current).is_le() => {}
+            _ => {
+                latest_by_pubkey.insert(pubkey, event);
+            }
+        }
+    }
+    latest_by_pubkey
+}
+
+fn serialize_profile_search_entry(entry: &StoredProfileSearchEntry) -> Result<String> {
+    serde_json::to_string(entry).context("encode stored profile search entry json")
+}
+
+fn cid_to_nhash(cid: &Cid) -> Result<String> {
+    nhash_encode_full(&NHashData {
+        hash: cid.hash,
+        decrypt_key: cid.key,
+    })
+    .context("encode mirrored profile event nhash")
+}
+
+fn build_profile_search_entry(event: &Event, mirrored_cid: &Cid) -> Result<StoredProfileSearchEntry> {
+    let profile = match serde_json::from_str::<serde_json::Value>(&event.content) {
+        Ok(serde_json::Value::Object(profile)) => profile,
+        _ => serde_json::Map::new(),
+    };
+    let names = extract_profile_names(&profile);
+    let primary_name = names.first().cloned();
+    let nip05 = normalize_profile_nip05(&profile, primary_name.as_deref());
+    let name = primary_name
+        .clone()
+        .or_else(|| nip05.clone())
+        .unwrap_or_else(|| event.pubkey.to_hex());
+
+    Ok(StoredProfileSearchEntry {
+        pubkey: event.pubkey.to_hex(),
+        name,
+        aliases: names.into_iter().skip(1).collect(),
+        nip05,
+        created_at: event.created_at.as_u64(),
+        event_nhash: cid_to_nhash(mirrored_cid)?,
+    })
+}
+
 fn filter_list_options(filter: &Filter, limit: usize, exact: bool) -> ListEventsOptions {
     ListEventsOptions {
         limit: exact.then_some(limit.max(1)),
@@ -1037,6 +1385,10 @@ impl SocialGraphBackend for SocialGraphStore {
 
     fn is_overmuted_user(&self, user_pk: &[u8; 32], threshold: f64) -> Result<bool> {
         SocialGraphStore::is_overmuted_user(self, user_pk, threshold)
+    }
+
+    fn profile_search_root(&self) -> Result<Option<Cid>> {
+        SocialGraphStore::profile_search_root(self)
     }
 
     fn snapshot_chunks(&self, root: &[u8; 32], options: &BinaryBudget) -> Result<Vec<Bytes>> {
@@ -1222,6 +1574,10 @@ where
         self.as_ref().is_overmuted_user(user_pk, threshold)
     }
 
+    fn profile_search_root(&self) -> Result<Option<Cid>> {
+        self.as_ref().profile_search_root()
+    }
+
     fn snapshot_chunks(&self, root: &[u8; 32], options: &BinaryBudget) -> Result<Vec<Bytes>> {
         self.as_ref().snapshot_chunks(root, options)
     }
@@ -1339,6 +1695,10 @@ fn nostr_event_from_stored(event: StoredNostrEvent) -> Result<Event> {
     Event::from_json(value.to_string()).context("decode stored nostr event")
 }
 
+pub(crate) fn stored_event_to_nostr_event(event: StoredNostrEvent) -> Result<Event> {
+    nostr_event_from_stored(event)
+}
+
 fn encode_cid(cid: &Cid) -> Result<Vec<u8>> {
     rmp_serde::to_vec_named(&StoredCid {
         hash: cid.hash,
@@ -1354,6 +1714,282 @@ fn decode_cid(bytes: &[u8]) -> Result<Option<Cid>> {
         hash: stored.hash,
         key: stored.key,
     }))
+}
+
+fn read_root_file(path: &Path) -> Result<Option<Cid>> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Ok(None);
+    };
+    decode_cid(&bytes)
+}
+
+fn write_root_file(path: &Path, root: Option<&Cid>) -> Result<()> {
+    let Some(root) = root else {
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        return Ok(());
+    };
+
+    let encoded = encode_cid(root)?;
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, encoded)?;
+    std::fs::rename(tmp_path, path)?;
+    Ok(())
+}
+
+fn normalize_profile_name(value: &serde_json::Value) -> Option<String> {
+    let raw = value.as_str()?;
+    let trimmed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.chars().take(PROFILE_NAME_MAX_LENGTH).collect())
+}
+
+fn extract_profile_names(profile: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut seen = HashSet::new();
+
+    for key in ["display_name", "displayName", "name", "username"] {
+        let Some(value) = profile.get(key).and_then(normalize_profile_name) else {
+            continue;
+        };
+        let lowered = value.to_lowercase();
+        if seen.insert(lowered) {
+            names.push(value);
+        }
+    }
+
+    names
+}
+
+fn should_reject_profile_nip05(local_part: &str, primary_name: &str) -> bool {
+    if local_part.len() == 1 || local_part.starts_with("npub1") {
+        return true;
+    }
+
+    primary_name
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<String>()
+        .contains(local_part)
+}
+
+fn normalize_profile_nip05(
+    profile: &serde_json::Map<String, serde_json::Value>,
+    primary_name: Option<&str>,
+) -> Option<String> {
+    let raw = profile.get("nip05")?.as_str()?;
+    let local_part = raw.split('@').next()?.trim().to_lowercase();
+    if local_part.is_empty() {
+        return None;
+    }
+    let truncated: String = local_part.chars().take(PROFILE_NAME_MAX_LENGTH).collect();
+    if truncated.is_empty() {
+        return None;
+    }
+    if primary_name.is_some_and(|name| should_reject_profile_nip05(&truncated, name)) {
+        return None;
+    }
+    Some(truncated)
+}
+
+fn is_search_stop_word(word: &str) -> bool {
+    matches!(
+        word,
+        "a" | "an"
+            | "the"
+            | "and"
+            | "or"
+            | "but"
+            | "in"
+            | "on"
+            | "at"
+            | "to"
+            | "for"
+            | "of"
+            | "with"
+            | "by"
+            | "from"
+            | "is"
+            | "it"
+            | "as"
+            | "be"
+            | "was"
+            | "are"
+            | "this"
+            | "that"
+            | "these"
+            | "those"
+            | "i"
+            | "you"
+            | "he"
+            | "she"
+            | "we"
+            | "they"
+            | "my"
+            | "your"
+            | "his"
+            | "her"
+            | "its"
+            | "our"
+            | "their"
+            | "what"
+            | "which"
+            | "who"
+            | "whom"
+            | "how"
+            | "when"
+            | "where"
+            | "why"
+            | "will"
+            | "would"
+            | "could"
+            | "should"
+            | "can"
+            | "may"
+            | "might"
+            | "must"
+            | "have"
+            | "has"
+            | "had"
+            | "do"
+            | "does"
+            | "did"
+            | "been"
+            | "being"
+            | "get"
+            | "got"
+            | "just"
+            | "now"
+            | "then"
+            | "so"
+            | "if"
+            | "not"
+            | "no"
+            | "yes"
+            | "all"
+            | "any"
+            | "some"
+            | "more"
+            | "most"
+            | "other"
+            | "into"
+            | "over"
+            | "after"
+            | "before"
+            | "about"
+            | "up"
+            | "down"
+            | "out"
+            | "off"
+            | "through"
+            | "during"
+            | "under"
+            | "again"
+            | "further"
+            | "once"
+    )
+}
+
+fn is_pure_search_number(word: &str) -> bool {
+    if !word.chars().all(|ch| ch.is_ascii_digit()) {
+        return false;
+    }
+    !(word.len() == 4
+        && word
+            .parse::<u16>()
+            .is_ok_and(|year| (1900..=2099).contains(&year)))
+}
+
+fn split_compound_search_word(word: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = word.chars().collect();
+
+    for (index, ch) in chars.iter().copied().enumerate() {
+        let split_before = current.chars().last().is_some_and(|prev| {
+            (prev.is_lowercase() && ch.is_uppercase())
+                || (prev.is_ascii_digit() && ch.is_alphabetic())
+                || (prev.is_alphabetic() && ch.is_ascii_digit())
+                || (prev.is_uppercase()
+                    && ch.is_uppercase()
+                    && chars.get(index + 1).is_some_and(|next| next.is_lowercase()))
+        });
+
+        if split_before && !current.is_empty() {
+            parts.push(std::mem::take(&mut current));
+        }
+
+        current.push(ch);
+    }
+
+    if !current.is_empty() {
+        parts.push(current);
+    }
+
+    parts
+}
+
+fn parse_search_keywords(text: &str) -> Vec<String> {
+    let mut keywords = Vec::new();
+    let mut seen = HashSet::new();
+
+    for word in text
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+    {
+        let mut variants = Vec::with_capacity(1 + word.len() / 4);
+        variants.push(word.to_lowercase());
+        variants.extend(
+            split_compound_search_word(word)
+                .into_iter()
+                .map(|part| part.to_lowercase()),
+        );
+
+        for lowered in variants {
+            if lowered.chars().count() < 2
+                || is_search_stop_word(&lowered)
+                || is_pure_search_number(&lowered)
+            {
+                continue;
+            }
+            if seen.insert(lowered.clone()) {
+                keywords.push(lowered);
+            }
+        }
+    }
+
+    keywords
+}
+
+fn profile_search_terms_for_event(event: &Event) -> Vec<String> {
+    let profile = match serde_json::from_str::<serde_json::Value>(&event.content) {
+        Ok(serde_json::Value::Object(profile)) => profile,
+        _ => serde_json::Map::new(),
+    };
+    let names = extract_profile_names(&profile);
+    let primary_name = names.first().map(String::as_str);
+    let mut parts = Vec::new();
+    if let Some(name) = primary_name {
+        parts.push(name.to_string());
+    }
+    if let Some(nip05) = normalize_profile_nip05(&profile, primary_name) {
+        parts.push(nip05);
+    }
+    parts.push(event.pubkey.to_hex());
+    if names.len() > 1 {
+        parts.extend(names.into_iter().skip(1));
+    }
+    parse_search_keywords(&parts.join(" "))
+}
+
+fn compare_nostr_events(left: &Event, right: &Event) -> std::cmp::Ordering {
+    left.created_at
+        .as_u64()
+        .cmp(&right.created_at.as_u64())
+        .then_with(|| left.id.to_hex().cmp(&right.id.to_hex()))
 }
 
 fn map_event_store_error(err: NostrEventStoreError) -> anyhow::Error {
@@ -1390,16 +2026,371 @@ fn page_size_bytes() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use hashtree_config::StorageBackend;
+    use hashtree_core::{Hash, MemoryStore, Store, StoreError};
+    use hashtree_nostr::NostrEventStoreOptions;
+    use std::collections::HashSet;
     use std::fs::{self, File};
     use std::io::{BufRead, BufReader};
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
+    use std::sync::Mutex;
+    use std::time::Duration;
 
     use nostr::{EventBuilder, JsonUtil, Keys, Tag, Timestamp};
     use tempfile::TempDir;
 
     const WELLORDER_FIXTURE_URL: &str =
         "https://wellorder.xyz/nostr/nostr-wellorder-early-500k-v1.jsonl.bz2";
+
+    #[derive(Debug, Clone, Default)]
+    struct ReadTraceSnapshot {
+        get_calls: u64,
+        total_bytes: u64,
+        unique_blocks: usize,
+        unique_bytes: u64,
+        cache_hits: u64,
+        remote_fetches: u64,
+        remote_bytes: u64,
+    }
+
+    #[derive(Debug, Default)]
+    struct ReadTraceState {
+        get_calls: u64,
+        total_bytes: u64,
+        unique_hashes: HashSet<Hash>,
+        unique_bytes: u64,
+        cache_hits: u64,
+        remote_fetches: u64,
+        remote_bytes: u64,
+    }
+
+    #[derive(Debug)]
+    struct CountingStore<S: Store> {
+        base: Arc<S>,
+        state: Mutex<ReadTraceState>,
+    }
+
+    impl<S: Store> CountingStore<S> {
+        fn new(base: Arc<S>) -> Self {
+            Self {
+                base,
+                state: Mutex::new(ReadTraceState::default()),
+            }
+        }
+
+        fn reset(&self) {
+            *self.state.lock().unwrap() = ReadTraceState::default();
+        }
+
+        fn snapshot(&self) -> ReadTraceSnapshot {
+            let state = self.state.lock().unwrap();
+            ReadTraceSnapshot {
+                get_calls: state.get_calls,
+                total_bytes: state.total_bytes,
+                unique_blocks: state.unique_hashes.len(),
+                unique_bytes: state.unique_bytes,
+                cache_hits: state.cache_hits,
+                remote_fetches: state.remote_fetches,
+                remote_bytes: state.remote_bytes,
+            }
+        }
+
+        fn record_read(&self, hash: &Hash, bytes: usize) {
+            let mut state = self.state.lock().unwrap();
+            state.get_calls += 1;
+            state.total_bytes += bytes as u64;
+            if state.unique_hashes.insert(*hash) {
+                state.unique_bytes += bytes as u64;
+            }
+        }
+    }
+
+    #[async_trait]
+    impl<S: Store> Store for CountingStore<S> {
+        async fn put(&self, hash: Hash, data: Vec<u8>) -> Result<bool, StoreError> {
+            self.base.put(hash, data).await
+        }
+
+        async fn put_many(&self, items: Vec<(Hash, Vec<u8>)>) -> Result<usize, StoreError> {
+            self.base.put_many(items).await
+        }
+
+        async fn get(&self, hash: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
+            let data = self.base.get(hash).await?;
+            if let Some(bytes) = data.as_ref() {
+                self.record_read(hash, bytes.len());
+            }
+            Ok(data)
+        }
+
+        async fn has(&self, hash: &Hash) -> Result<bool, StoreError> {
+            self.base.has(hash).await
+        }
+
+        async fn delete(&self, hash: &Hash) -> Result<bool, StoreError> {
+            self.base.delete(hash).await
+        }
+    }
+
+    #[derive(Debug)]
+    struct ReadThroughStore<R: Store> {
+        cache: Arc<MemoryStore>,
+        remote: Arc<R>,
+        state: Mutex<ReadTraceState>,
+    }
+
+    impl<R: Store> ReadThroughStore<R> {
+        fn new(cache: Arc<MemoryStore>, remote: Arc<R>) -> Self {
+            Self {
+                cache,
+                remote,
+                state: Mutex::new(ReadTraceState::default()),
+            }
+        }
+
+        fn snapshot(&self) -> ReadTraceSnapshot {
+            let state = self.state.lock().unwrap();
+            ReadTraceSnapshot {
+                get_calls: state.get_calls,
+                total_bytes: state.total_bytes,
+                unique_blocks: state.unique_hashes.len(),
+                unique_bytes: state.unique_bytes,
+                cache_hits: state.cache_hits,
+                remote_fetches: state.remote_fetches,
+                remote_bytes: state.remote_bytes,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl<R: Store> Store for ReadThroughStore<R> {
+        async fn put(&self, hash: Hash, data: Vec<u8>) -> Result<bool, StoreError> {
+            self.cache.put(hash, data).await
+        }
+
+        async fn put_many(&self, items: Vec<(Hash, Vec<u8>)>) -> Result<usize, StoreError> {
+            self.cache.put_many(items).await
+        }
+
+        async fn get(&self, hash: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
+            {
+                let mut state = self.state.lock().unwrap();
+                state.get_calls += 1;
+            }
+
+            if let Some(bytes) = self.cache.get(hash).await? {
+                let mut state = self.state.lock().unwrap();
+                state.cache_hits += 1;
+                state.total_bytes += bytes.len() as u64;
+                if state.unique_hashes.insert(*hash) {
+                    state.unique_bytes += bytes.len() as u64;
+                }
+                return Ok(Some(bytes));
+            }
+
+            let data = self.remote.get(hash).await?;
+            if let Some(bytes) = data.as_ref() {
+                let _ = self.cache.put(*hash, bytes.clone()).await?;
+                let mut state = self.state.lock().unwrap();
+                state.remote_fetches += 1;
+                state.remote_bytes += bytes.len() as u64;
+                state.total_bytes += bytes.len() as u64;
+                if state.unique_hashes.insert(*hash) {
+                    state.unique_bytes += bytes.len() as u64;
+                }
+            }
+            Ok(data)
+        }
+
+        async fn has(&self, hash: &Hash) -> Result<bool, StoreError> {
+            if self.cache.has(hash).await? {
+                return Ok(true);
+            }
+            self.remote.has(hash).await
+        }
+
+        async fn delete(&self, hash: &Hash) -> Result<bool, StoreError> {
+            let cache_deleted = self.cache.delete(hash).await?;
+            let remote_deleted = self.remote.delete(hash).await?;
+            Ok(cache_deleted || remote_deleted)
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    enum BenchmarkQueryCase {
+        ById {
+            id: String,
+        },
+        ByAuthor {
+            pubkey: String,
+            limit: usize,
+        },
+        ByAuthorKind {
+            pubkey: String,
+            kind: u32,
+            limit: usize,
+        },
+        ByKind {
+            kind: u32,
+            limit: usize,
+        },
+        ByTag {
+            tag_name: String,
+            tag_value: String,
+            limit: usize,
+        },
+        Recent {
+            limit: usize,
+        },
+        Replaceable {
+            pubkey: String,
+            kind: u32,
+        },
+        ParameterizedReplaceable {
+            pubkey: String,
+            kind: u32,
+            d_tag: String,
+        },
+    }
+
+    impl BenchmarkQueryCase {
+        fn name(&self) -> &'static str {
+            match self {
+                BenchmarkQueryCase::ById { .. } => "by_id",
+                BenchmarkQueryCase::ByAuthor { .. } => "by_author",
+                BenchmarkQueryCase::ByAuthorKind { .. } => "by_author_kind",
+                BenchmarkQueryCase::ByKind { .. } => "by_kind",
+                BenchmarkQueryCase::ByTag { .. } => "by_tag",
+                BenchmarkQueryCase::Recent { .. } => "recent",
+                BenchmarkQueryCase::Replaceable { .. } => "replaceable",
+                BenchmarkQueryCase::ParameterizedReplaceable { .. } => "parameterized_replaceable",
+            }
+        }
+
+        async fn execute<S: Store>(
+            &self,
+            store: &NostrEventStore<S>,
+            root: &Cid,
+        ) -> Result<usize, NostrEventStoreError> {
+            match self {
+                BenchmarkQueryCase::ById { id } => {
+                    Ok(store.get_by_id(Some(root), id).await?.into_iter().count())
+                }
+                BenchmarkQueryCase::ByAuthor { pubkey, limit } => Ok(store
+                    .list_by_author(
+                        Some(root),
+                        pubkey,
+                        ListEventsOptions {
+                            limit: Some(*limit),
+                            ..Default::default()
+                        },
+                    )
+                    .await?
+                    .len()),
+                BenchmarkQueryCase::ByAuthorKind {
+                    pubkey,
+                    kind,
+                    limit,
+                } => Ok(store
+                    .list_by_author_and_kind(
+                        Some(root),
+                        pubkey,
+                        *kind,
+                        ListEventsOptions {
+                            limit: Some(*limit),
+                            ..Default::default()
+                        },
+                    )
+                    .await?
+                    .len()),
+                BenchmarkQueryCase::ByKind { kind, limit } => Ok(store
+                    .list_by_kind(
+                        Some(root),
+                        *kind,
+                        ListEventsOptions {
+                            limit: Some(*limit),
+                            ..Default::default()
+                        },
+                    )
+                    .await?
+                    .len()),
+                BenchmarkQueryCase::ByTag {
+                    tag_name,
+                    tag_value,
+                    limit,
+                } => Ok(store
+                    .list_by_tag(
+                        Some(root),
+                        tag_name,
+                        tag_value,
+                        ListEventsOptions {
+                            limit: Some(*limit),
+                            ..Default::default()
+                        },
+                    )
+                    .await?
+                    .len()),
+                BenchmarkQueryCase::Recent { limit } => Ok(store
+                    .list_recent(
+                        Some(root),
+                        ListEventsOptions {
+                            limit: Some(*limit),
+                            ..Default::default()
+                        },
+                    )
+                    .await?
+                    .len()),
+                BenchmarkQueryCase::Replaceable { pubkey, kind } => Ok(store
+                    .get_replaceable(Some(root), pubkey, *kind)
+                    .await?
+                    .into_iter()
+                    .count()),
+                BenchmarkQueryCase::ParameterizedReplaceable {
+                    pubkey,
+                    kind,
+                    d_tag,
+                } => Ok(store
+                    .get_parameterized_replaceable(Some(root), pubkey, *kind, d_tag)
+                    .await?
+                    .into_iter()
+                    .count()),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct NetworkModel {
+        name: &'static str,
+        rtt_ms: f64,
+        bandwidth_mib_per_s: f64,
+    }
+
+    #[derive(Debug, Clone)]
+    struct QueryBenchmarkResult {
+        average_duration: Duration,
+        p95_duration: Duration,
+        reads: ReadTraceSnapshot,
+    }
+
+    const NETWORK_MODELS: [NetworkModel; 3] = [
+        NetworkModel {
+            name: "lan",
+            rtt_ms: 2.0,
+            bandwidth_mib_per_s: 100.0,
+        },
+        NetworkModel {
+            name: "wan",
+            rtt_ms: 40.0,
+            bandwidth_mib_per_s: 20.0,
+        },
+        NetworkModel {
+            name: "slow",
+            rtt_ms: 120.0,
+            bandwidth_mib_per_s: 5.0,
+        },
+    ];
 
     #[test]
     fn test_open_social_graph_store() {
@@ -1462,6 +2453,348 @@ mod tests {
             &bob_keys.public_key().to_bytes(),
             1.0
         ));
+    }
+
+    #[test]
+    fn test_metadata_ingest_builds_profile_search_index_and_replaces_old_terms() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let keys = Keys::generate();
+
+        let older = EventBuilder::new(
+            Kind::Metadata,
+            serde_json::json!({
+                "display_name": "sirius",
+                "name": "Martti Malmi",
+                "username": "mmalmi",
+                "nip05": "siriusdev@iris.to",
+            })
+            .to_string(),
+            [],
+        )
+        .custom_created_at(Timestamp::from_secs(5))
+        .to_event(&keys)
+        .unwrap();
+        let newer = EventBuilder::new(
+            Kind::Metadata,
+            serde_json::json!({
+                "display_name": "bird",
+                "nip05": "birdman@iris.to",
+            })
+            .to_string(),
+            [],
+        )
+        .custom_created_at(Timestamp::from_secs(6))
+        .to_event(&keys)
+        .unwrap();
+
+        ingest_parsed_event(&graph_store, &older).unwrap();
+
+        let pubkey = keys.public_key().to_hex();
+        let entries = graph_store
+            .profile_search_entries_for_prefix("p:sirius")
+            .unwrap();
+        assert!(entries
+            .iter()
+            .any(|(key, entry)| key == &format!("p:sirius:{pubkey}") && entry.name == "sirius"));
+        assert!(entries.iter().any(|(key, entry)| {
+            key == &format!("p:siriusdev:{pubkey}")
+                && entry.nip05.as_deref() == Some("siriusdev")
+                && entry.aliases == vec!["Martti Malmi".to_string(), "mmalmi".to_string()]
+                && entry.event_nhash.starts_with("nhash1")
+        }));
+        assert!(entries
+            .iter()
+            .all(|(_, entry)| entry.pubkey == pubkey));
+        assert_eq!(
+            graph_store
+                .latest_profile_event(&pubkey)
+                .unwrap()
+                .expect("latest mirrored profile")
+                .id,
+            older.id
+        );
+
+        ingest_parsed_event(&graph_store, &newer).unwrap();
+
+        assert!(graph_store
+            .profile_search_entries_for_prefix("p:sirius")
+            .unwrap()
+            .is_empty());
+        let bird_entries = graph_store
+            .profile_search_entries_for_prefix("p:bird")
+            .unwrap();
+        assert_eq!(bird_entries.len(), 2);
+        assert!(bird_entries
+            .iter()
+            .any(|(key, entry)| key == &format!("p:bird:{pubkey}") && entry.name == "bird"));
+        assert!(bird_entries
+            .iter()
+            .any(|(key, entry)| {
+                key == &format!("p:birdman:{pubkey}")
+                    && entry.nip05.as_deref() == Some("birdman")
+                    && entry.aliases.is_empty()
+            }));
+        assert_eq!(
+            graph_store
+                .latest_profile_event(&pubkey)
+                .unwrap()
+                .expect("latest mirrored profile")
+                .id,
+            newer.id
+        );
+    }
+
+    #[test]
+    fn test_ambient_metadata_events_are_mirrored_into_public_profile_index() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let keys = Keys::generate();
+
+        let profile = EventBuilder::new(
+            Kind::Metadata,
+            serde_json::json!({
+                "display_name": "ambient bird",
+            })
+            .to_string(),
+            [],
+        )
+        .custom_created_at(Timestamp::from_secs(5))
+        .to_event(&keys)
+        .unwrap();
+
+        ingest_parsed_event_with_storage_class(&graph_store, &profile, EventStorageClass::Ambient)
+            .unwrap();
+
+        let pubkey = keys.public_key().to_hex();
+        let mirrored = graph_store
+            .latest_profile_event(&pubkey)
+            .unwrap()
+            .expect("mirrored ambient profile");
+        assert_eq!(mirrored.id, profile.id);
+        assert_eq!(
+            graph_store
+                .profile_search_entries_for_prefix("p:ambient")
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_metadata_ingest_splits_compound_profile_terms_without_losing_whole_token() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let keys = Keys::generate();
+
+        let profile = EventBuilder::new(
+            Kind::Metadata,
+            serde_json::json!({
+                "display_name": "SirLibre",
+                "username": "XMLHttpRequest42",
+            })
+            .to_string(),
+            [],
+        )
+        .custom_created_at(Timestamp::from_secs(5))
+        .to_event(&keys)
+        .unwrap();
+
+        ingest_parsed_event(&graph_store, &profile).unwrap();
+
+        let pubkey = keys.public_key().to_hex();
+        assert!(graph_store
+            .profile_search_entries_for_prefix("p:sirlibre")
+            .unwrap()
+            .iter()
+            .any(|(key, entry)| key == &format!("p:sirlibre:{pubkey}") && entry.name == "SirLibre"));
+        assert!(graph_store
+            .profile_search_entries_for_prefix("p:libre")
+            .unwrap()
+            .iter()
+            .any(|(key, entry)| key == &format!("p:libre:{pubkey}") && entry.name == "SirLibre"));
+        assert!(graph_store
+            .profile_search_entries_for_prefix("p:xml")
+            .unwrap()
+            .iter()
+            .any(|(key, entry)| {
+                key == &format!("p:xml:{pubkey}")
+                    && entry.aliases == vec!["XMLHttpRequest42".to_string()]
+            }));
+        assert!(graph_store
+            .profile_search_entries_for_prefix("p:request")
+            .unwrap()
+            .iter()
+            .any(|(key, entry)| {
+                key == &format!("p:request:{pubkey}")
+                    && entry.aliases == vec!["XMLHttpRequest42".to_string()]
+            }));
+    }
+
+    #[test]
+    fn test_profile_search_index_persists_across_reopen() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let keys = Keys::generate();
+        let pubkey = keys.public_key().to_hex();
+
+        {
+            let graph_store = open_social_graph_store(tmp.path()).unwrap();
+            let profile = EventBuilder::new(
+                Kind::Metadata,
+                serde_json::json!({
+                    "display_name": "reopen user",
+                })
+                .to_string(),
+                [],
+            )
+            .custom_created_at(Timestamp::from_secs(5))
+            .to_event(&keys)
+            .unwrap();
+            ingest_parsed_event(&graph_store, &profile).unwrap();
+            assert!(graph_store.profile_search_root().unwrap().is_some());
+        }
+
+        let reopened = open_social_graph_store(tmp.path()).unwrap();
+        assert!(reopened.profile_search_root().unwrap().is_some());
+        assert_eq!(
+            reopened
+                .latest_profile_event(&pubkey)
+                .unwrap()
+                .expect("mirrored profile after reopen")
+                .pubkey,
+            keys.public_key()
+        );
+        let links = reopened
+            .profile_search_entries_for_prefix("p:reopen")
+            .unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].0, format!("p:reopen:{pubkey}"));
+        assert_eq!(links[0].1.name, "reopen user");
+    }
+
+    #[test]
+    fn test_profile_search_index_with_shared_hashtree_storage() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let store =
+            crate::storage::HashtreeStore::with_options(tmp.path(), None, 1024 * 1024 * 1024)
+                .unwrap();
+        let graph_store =
+            open_social_graph_store_with_storage(tmp.path(), store.store_arc(), None).unwrap();
+        let keys = Keys::generate();
+        let pubkey = keys.public_key().to_hex();
+
+        let profile = EventBuilder::new(
+            Kind::Metadata,
+            serde_json::json!({
+                "display_name": "shared storage user",
+                "nip05": "shareduser@example.com",
+            })
+            .to_string(),
+            [],
+        )
+        .custom_created_at(Timestamp::from_secs(5))
+        .to_event(&keys)
+        .unwrap();
+
+        graph_store
+            .sync_profile_index_for_events(std::slice::from_ref(&profile))
+            .unwrap();
+        assert!(graph_store.profile_search_root().unwrap().is_some());
+        assert!(graph_store.profile_search_root().unwrap().is_some());
+        let links = graph_store
+            .profile_search_entries_for_prefix("p:shared")
+            .unwrap();
+        assert_eq!(links.len(), 2);
+        assert!(links
+            .iter()
+            .any(|(key, entry)| key == &format!("p:shared:{pubkey}") && entry.name == "shared storage user"));
+        assert!(links
+            .iter()
+            .any(|(key, entry)| key == &format!("p:shareduser:{pubkey}") && entry.nip05.as_deref() == Some("shareduser")));
+    }
+
+    #[test]
+    fn test_rebuild_profile_index_from_stored_events_uses_ambient_and_public_metadata() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let public_keys = Keys::generate();
+        let ambient_keys = Keys::generate();
+        let public_pubkey = public_keys.public_key().to_hex();
+        let ambient_pubkey = ambient_keys.public_key().to_hex();
+
+        let older = EventBuilder::new(
+            Kind::Metadata,
+            serde_json::json!({
+                "display_name": "petri old",
+            })
+            .to_string(),
+            [],
+        )
+        .custom_created_at(Timestamp::from_secs(5))
+        .to_event(&public_keys)
+        .unwrap();
+        let newer = EventBuilder::new(
+            Kind::Metadata,
+            serde_json::json!({
+                "display_name": "petri",
+                "name": "Petri Example",
+                "nip05": "petri@example.com",
+            })
+            .to_string(),
+            [],
+        )
+        .custom_created_at(Timestamp::from_secs(6))
+        .to_event(&public_keys)
+        .unwrap();
+        let ambient = EventBuilder::new(
+            Kind::Metadata,
+            serde_json::json!({
+                "display_name": "ambient petri",
+            })
+            .to_string(),
+            [],
+        )
+        .custom_created_at(Timestamp::from_secs(7))
+        .to_event(&ambient_keys)
+        .unwrap();
+
+        ingest_parsed_event_with_storage_class(&graph_store, &older, EventStorageClass::Public)
+            .unwrap();
+        ingest_parsed_event_with_storage_class(&graph_store, &newer, EventStorageClass::Public)
+            .unwrap();
+        ingest_parsed_event_with_storage_class(&graph_store, &ambient, EventStorageClass::Ambient)
+            .unwrap();
+
+        graph_store.profile_index.write_by_pubkey_root(None).unwrap();
+        graph_store.profile_index.write_search_root(None).unwrap();
+
+        let rebuilt = graph_store
+            .rebuild_profile_index_from_stored_events()
+            .unwrap();
+        assert_eq!(rebuilt, 2);
+
+        let entries = graph_store
+            .profile_search_entries_for_prefix("p:petri")
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|(key, entry)| {
+            key == &format!("p:petri:{public_pubkey}")
+                && entry.name == "petri"
+                && entry.aliases == vec!["Petri Example".to_string()]
+                && entry.nip05.is_none()
+        }));
+        assert!(entries.iter().any(|(key, entry)| {
+            key == &format!("p:petri:{ambient_pubkey}")
+                && entry.name == "ambient petri"
+                && entry.aliases.is_empty()
+                && entry.nip05.is_none()
+        }));
     }
 
     #[test]
@@ -1633,6 +2966,33 @@ mod tests {
         let filter = Filter::new()
             .author(keys.public_key())
             .kind(Kind::Custom(10_000));
+        let events = query_events(&graph_store, &filter, 10);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, newer.id);
+    }
+
+    #[test]
+    fn test_query_events_kind_41_replaceable_returns_latest_winner() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let keys = Keys::generate();
+
+        let older = EventBuilder::new(Kind::Custom(41), "older channel metadata", [])
+            .custom_created_at(Timestamp::from_secs(5))
+            .to_event(&keys)
+            .unwrap();
+        let newer = EventBuilder::new(Kind::Custom(41), "newer channel metadata", [])
+            .custom_created_at(Timestamp::from_secs(6))
+            .to_event(&keys)
+            .unwrap();
+
+        ingest_parsed_event(&graph_store, &older).unwrap();
+        ingest_parsed_event(&graph_store, &newer).unwrap();
+
+        let filter = Filter::new()
+            .author(keys.public_key())
+            .kind(Kind::Custom(41));
         let events = query_events(&graph_store, &filter, 10);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].id, newer.id);
@@ -2063,6 +3423,308 @@ mod tests {
             .min(limit)
     }
 
+    fn benchmark_btree_orders() -> Vec<usize> {
+        std::env::var("HASHTREE_BTREE_ORDERS")
+            .ok()
+            .map(|value| {
+                value
+                    .split(',')
+                    .filter_map(|part| part.trim().parse::<usize>().ok())
+                    .filter(|order| *order >= 2)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|orders| !orders.is_empty())
+            .unwrap_or_else(|| vec![16, 24, 32, 48, 64])
+    }
+
+    fn benchmark_read_iterations() -> usize {
+        std::env::var("HASHTREE_BENCH_READ_ITERATIONS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(5)
+            .max(1)
+    }
+
+    fn average_duration(samples: &[Duration]) -> Duration {
+        if samples.is_empty() {
+            return Duration::ZERO;
+        }
+
+        Duration::from_secs_f64(
+            samples.iter().map(Duration::as_secs_f64).sum::<f64>() / samples.len() as f64,
+        )
+    }
+
+    fn average_read_trace(samples: &[ReadTraceSnapshot]) -> ReadTraceSnapshot {
+        if samples.is_empty() {
+            return ReadTraceSnapshot::default();
+        }
+
+        let len = samples.len() as u64;
+        ReadTraceSnapshot {
+            get_calls: samples.iter().map(|sample| sample.get_calls).sum::<u64>() / len,
+            total_bytes: samples.iter().map(|sample| sample.total_bytes).sum::<u64>() / len,
+            unique_blocks: (samples
+                .iter()
+                .map(|sample| sample.unique_blocks as u64)
+                .sum::<u64>()
+                / len) as usize,
+            unique_bytes: samples
+                .iter()
+                .map(|sample| sample.unique_bytes)
+                .sum::<u64>()
+                / len,
+            cache_hits: samples.iter().map(|sample| sample.cache_hits).sum::<u64>() / len,
+            remote_fetches: samples
+                .iter()
+                .map(|sample| sample.remote_fetches)
+                .sum::<u64>()
+                / len,
+            remote_bytes: samples
+                .iter()
+                .map(|sample| sample.remote_bytes)
+                .sum::<u64>()
+                / len,
+        }
+    }
+
+    fn estimate_serialized_remote_ms(snapshot: &ReadTraceSnapshot, model: NetworkModel) -> f64 {
+        let transfer_ms = if model.bandwidth_mib_per_s <= 0.0 {
+            0.0
+        } else {
+            (snapshot.remote_bytes as f64 / (model.bandwidth_mib_per_s * 1024.0 * 1024.0)) * 1000.0
+        };
+        snapshot.remote_fetches as f64 * model.rtt_ms + transfer_ms
+    }
+
+    #[derive(Debug, Clone)]
+    struct IndexBenchmarkDataset {
+        source: String,
+        events: Vec<Event>,
+        guaranteed_tag_name: String,
+        guaranteed_tag_value: String,
+        replaceable_pubkey: String,
+        replaceable_kind: u32,
+        parameterized_pubkey: String,
+        parameterized_kind: u32,
+        parameterized_d_tag: String,
+    }
+
+    fn load_index_benchmark_dataset(
+        event_count: usize,
+        author_count: usize,
+    ) -> Result<IndexBenchmarkDataset> {
+        let (source, mut events) = load_benchmark_events(event_count, author_count)?;
+        let base_timestamp = events
+            .iter()
+            .map(|event| event.created_at.as_u64())
+            .max()
+            .unwrap_or(1_700_000_000)
+            + 1;
+
+        let replaceable_keys = Keys::generate();
+        let parameterized_keys = Keys::generate();
+        let tagged_keys = Keys::generate();
+        let guaranteed_tag_name = "t".to_string();
+        let guaranteed_tag_value = "btreebench".to_string();
+        let replaceable_kind = 10_000u32;
+        let parameterized_kind = 30_023u32;
+        let parameterized_d_tag = "btree-bench".to_string();
+
+        let tagged = EventBuilder::new(
+            Kind::TextNote,
+            "btree benchmark tagged note",
+            vec![Tag::parse(&["t", &guaranteed_tag_value]).unwrap()],
+        )
+        .custom_created_at(Timestamp::from_secs(base_timestamp))
+        .to_event(&tagged_keys)
+        .unwrap();
+        let replaceable_old = EventBuilder::new(
+            Kind::Custom(replaceable_kind.try_into().unwrap()),
+            "replaceable old",
+            [],
+        )
+        .custom_created_at(Timestamp::from_secs(base_timestamp + 1))
+        .to_event(&replaceable_keys)
+        .unwrap();
+        let replaceable_new = EventBuilder::new(
+            Kind::Custom(replaceable_kind.try_into().unwrap()),
+            "replaceable new",
+            [],
+        )
+        .custom_created_at(Timestamp::from_secs(base_timestamp + 2))
+        .to_event(&replaceable_keys)
+        .unwrap();
+        let parameterized_old = EventBuilder::new(
+            Kind::Custom(parameterized_kind.try_into().unwrap()),
+            "",
+            vec![Tag::identifier(&parameterized_d_tag)],
+        )
+        .custom_created_at(Timestamp::from_secs(base_timestamp + 3))
+        .to_event(&parameterized_keys)
+        .unwrap();
+        let parameterized_new = EventBuilder::new(
+            Kind::Custom(parameterized_kind.try_into().unwrap()),
+            "",
+            vec![Tag::identifier(&parameterized_d_tag)],
+        )
+        .custom_created_at(Timestamp::from_secs(base_timestamp + 4))
+        .to_event(&parameterized_keys)
+        .unwrap();
+
+        events.extend([
+            tagged,
+            replaceable_old,
+            replaceable_new,
+            parameterized_old,
+            parameterized_new,
+        ]);
+
+        Ok(IndexBenchmarkDataset {
+            source,
+            events,
+            guaranteed_tag_name,
+            guaranteed_tag_value,
+            replaceable_pubkey: replaceable_keys.public_key().to_hex(),
+            replaceable_kind,
+            parameterized_pubkey: parameterized_keys.public_key().to_hex(),
+            parameterized_kind,
+            parameterized_d_tag,
+        })
+    }
+
+    fn build_btree_query_cases(dataset: &IndexBenchmarkDataset) -> Vec<BenchmarkQueryCase> {
+        let primary_kind = dataset
+            .events
+            .iter()
+            .find(|event| event.kind == Kind::TextNote)
+            .map(|event| event.kind)
+            .or_else(|| dataset.events.first().map(|event| event.kind))
+            .expect("benchmark requires at least one event");
+        let primary_kind_u32 = primary_kind.as_u16() as u32;
+
+        let author_pubkey = dataset
+            .events
+            .iter()
+            .filter(|event| event.kind == primary_kind)
+            .fold(HashMap::<String, usize>::new(), |mut counts, event| {
+                *counts.entry(event.pubkey.to_hex()).or_default() += 1;
+                counts
+            })
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(pubkey, _)| pubkey)
+            .expect("benchmark requires an author for the selected kind");
+
+        let by_id_id = dataset.events[dataset.events.len() / 2].id.to_hex();
+
+        vec![
+            BenchmarkQueryCase::ById { id: by_id_id },
+            BenchmarkQueryCase::ByAuthor {
+                pubkey: author_pubkey.clone(),
+                limit: 50,
+            },
+            BenchmarkQueryCase::ByAuthorKind {
+                pubkey: author_pubkey,
+                kind: primary_kind_u32,
+                limit: 50,
+            },
+            BenchmarkQueryCase::ByKind {
+                kind: primary_kind_u32,
+                limit: 200,
+            },
+            BenchmarkQueryCase::ByTag {
+                tag_name: dataset.guaranteed_tag_name.clone(),
+                tag_value: dataset.guaranteed_tag_value.clone(),
+                limit: 100,
+            },
+            BenchmarkQueryCase::Recent { limit: 100 },
+            BenchmarkQueryCase::Replaceable {
+                pubkey: dataset.replaceable_pubkey.clone(),
+                kind: dataset.replaceable_kind,
+            },
+            BenchmarkQueryCase::ParameterizedReplaceable {
+                pubkey: dataset.parameterized_pubkey.clone(),
+                kind: dataset.parameterized_kind,
+                d_tag: dataset.parameterized_d_tag.clone(),
+            },
+        ]
+    }
+
+    fn benchmark_warm_query_case<S: Store + 'static>(
+        base: Arc<S>,
+        root: &Cid,
+        order: usize,
+        case: &BenchmarkQueryCase,
+        iterations: usize,
+    ) -> QueryBenchmarkResult {
+        let trace_store = Arc::new(CountingStore::new(base));
+        let event_store = NostrEventStore::with_options(
+            Arc::clone(&trace_store),
+            NostrEventStoreOptions {
+                btree_order: Some(order),
+            },
+        );
+        let mut durations = Vec::with_capacity(iterations);
+        let mut traces = Vec::with_capacity(iterations);
+        for _ in 0..iterations {
+            trace_store.reset();
+            let started = Instant::now();
+            let matches = block_on(case.execute(&event_store, root)).unwrap();
+            durations.push(started.elapsed());
+            traces.push(trace_store.snapshot());
+            assert!(
+                matches > 0,
+                "benchmark query {} returned no matches",
+                case.name()
+            );
+        }
+        let mut sorted = durations.clone();
+        sorted.sort_unstable();
+        QueryBenchmarkResult {
+            average_duration: average_duration(&durations),
+            p95_duration: duration_percentile(&sorted, 95, 100),
+            reads: average_read_trace(&traces),
+        }
+    }
+
+    fn benchmark_cold_query_case<S: Store + 'static>(
+        remote: Arc<S>,
+        root: &Cid,
+        order: usize,
+        case: &BenchmarkQueryCase,
+        iterations: usize,
+    ) -> QueryBenchmarkResult {
+        let mut durations = Vec::with_capacity(iterations);
+        let mut traces = Vec::with_capacity(iterations);
+        for _ in 0..iterations {
+            let cache = Arc::new(MemoryStore::new());
+            let trace_store = Arc::new(ReadThroughStore::new(cache, Arc::clone(&remote)));
+            let event_store = NostrEventStore::with_options(
+                Arc::clone(&trace_store),
+                NostrEventStoreOptions {
+                    btree_order: Some(order),
+                },
+            );
+            let started = Instant::now();
+            let matches = block_on(case.execute(&event_store, root)).unwrap();
+            durations.push(started.elapsed());
+            traces.push(trace_store.snapshot());
+            assert!(
+                matches > 0,
+                "benchmark query {} returned no matches",
+                case.name()
+            );
+        }
+        let mut sorted = durations.clone();
+        sorted.sort_unstable();
+        QueryBenchmarkResult {
+            average_duration: average_duration(&durations),
+            p95_duration: duration_percentile(&sorted, 95, 100),
+            reads: average_read_trace(&traces),
+        }
+    }
+
     fn duration_percentile(
         sorted: &[std::time::Duration],
         numerator: usize,
@@ -2236,6 +3898,123 @@ mod tests {
             tag_duration,
             search_duration
         );
+    }
+
+    #[test]
+    #[ignore = "benchmark"]
+    fn benchmark_nostr_btree_query_tradeoffs() {
+        let _guard = test_lock();
+        let event_count = std::env::var("HASHTREE_BENCH_EVENTS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(2_000usize);
+        let iterations = benchmark_read_iterations();
+        let orders = benchmark_btree_orders();
+        let dataset = load_index_benchmark_dataset(event_count, 64).unwrap();
+        let cases = build_btree_query_cases(&dataset);
+        let stored_events = dataset
+            .events
+            .iter()
+            .map(stored_event_from_nostr)
+            .collect::<Vec<_>>();
+
+        println!(
+            "btree-order benchmark: source={} events={} iterations={} orders={:?}",
+            dataset.source,
+            stored_events.len(),
+            iterations,
+            orders
+        );
+        println!(
+            "network models are serialized fetch estimates: {}",
+            NETWORK_MODELS
+                .iter()
+                .map(|model| format!(
+                    "{}={}ms_rtt/{}MiBps",
+                    model.name, model.rtt_ms, model.bandwidth_mib_per_s
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        for order in orders {
+            let tmp = TempDir::new().unwrap();
+            let local_store =
+                Arc::new(LocalStore::new(tmp.path().join("blobs"), &StorageBackend::Lmdb).unwrap());
+            let event_store = NostrEventStore::with_options(
+                Arc::clone(&local_store),
+                NostrEventStoreOptions {
+                    btree_order: Some(order),
+                },
+            );
+            let root = block_on(event_store.build(None, stored_events.clone()))
+                .unwrap()
+                .expect("benchmark build root");
+
+            println!("btree-order={} root={}", order, hex::encode(root.hash));
+            let mut warm_total_ms = 0.0f64;
+            let mut model_totals = NETWORK_MODELS
+                .iter()
+                .map(|model| (model.name, 0.0f64))
+                .collect::<HashMap<_, _>>();
+
+            for case in &cases {
+                let warm = benchmark_warm_query_case(
+                    Arc::clone(&local_store),
+                    &root,
+                    order,
+                    case,
+                    iterations,
+                );
+                let cold = benchmark_cold_query_case(
+                    Arc::clone(&local_store),
+                    &root,
+                    order,
+                    case,
+                    iterations,
+                );
+                warm_total_ms += warm.average_duration.as_secs_f64() * 1000.0;
+
+                let model_estimates = NETWORK_MODELS
+                    .iter()
+                    .map(|model| {
+                        let estimate = estimate_serialized_remote_ms(&cold.reads, *model);
+                        *model_totals.get_mut(model.name).unwrap() += estimate;
+                        format!("{}={:.2}ms", model.name, estimate)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+
+                println!(
+                    "btree-order={} query={} warm_avg={:?} warm_p95={:?} warm_blocks={} warm_unique_bytes={} cold_fetches={} cold_bytes={} cold_local_avg={:?} {}",
+                    order,
+                    case.name(),
+                    warm.average_duration,
+                    warm.p95_duration,
+                    warm.reads.unique_blocks,
+                    warm.reads.unique_bytes,
+                    cold.reads.remote_fetches,
+                    cold.reads.remote_bytes,
+                    cold.average_duration,
+                    model_estimates
+                );
+            }
+
+            println!(
+                "btree-order={} summary unweighted_warm_avg_ms={:.3} {}",
+                order,
+                warm_total_ms / cases.len() as f64,
+                NETWORK_MODELS
+                    .iter()
+                    .map(|model| format!(
+                        "{}={:.2}ms",
+                        model.name,
+                        model_totals[model.name] / cases.len() as f64
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
     }
 
     #[test]

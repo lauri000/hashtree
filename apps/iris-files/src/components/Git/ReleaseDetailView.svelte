@@ -15,8 +15,7 @@
   } from '../../stores/releases';
   import { formatBytes } from '../../store';
   import { open as openReleaseModal } from './ReleaseModal.svelte';
-  import RepoTabNav from './RepoTabNav.svelte';
-  import RepoHeader from './RepoHeader.svelte';
+  import RepoChildLayout from './RepoChildLayout.svelte';
 
   interface Props {
     npub: string;
@@ -122,107 +121,107 @@
 </script>
 
 <!-- Right panel with release detail - shown on mobile -->
-<div class="flex flex-1 flex-col min-w-0 min-h-0 bg-surface-0">
-  <div class="px-4 py-3">
-    <RepoHeader backUrl={getBackHref()} {npub} visibility={currentTree?.visibility} {repoName} />
-  </div>
-
-  <!-- Tab navigation -->
-  <RepoTabNav {npub} {repoName} activeTab="releases" showReleasesTab={true} />
-
-  <!-- Content -->
-  <div class="flex-1 overflow-auto">
-    {#if loading}
-      <div class="flex items-center justify-center py-12 text-text-3">
-        <span class="i-lucide-loader-2 animate-spin mr-2"></span>
-        Loading release...
-      </div>
-    {:else if error}
-      <div class="flex flex-col items-center justify-center py-12 text-danger">
-        <span class="i-lucide-alert-circle text-2xl mb-2"></span>
-        <span>{error}</span>
-        <button onclick={() => releaseDetailStore.refresh()} class="btn-ghost mt-4">
-          Try again
-        </button>
-        <a href={getBackHref()} class="btn-ghost mt-4">
-          <span class="i-lucide-arrow-left mr-2"></span>
-          Back to releases
-        </a>
-      </div>
-    {:else if release}
-      <!-- Header -->
-      <div class="p-4 b-b-1 b-b-solid b-b-surface-3">
-        <div class="flex items-start gap-3">
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2 mb-2 flex-wrap">
-              <h1 class="text-xl font-semibold text-text-1">{release.title}</h1>
-              {#if release.draft}
-                <span class="px-2 py-0.5 text-xs rounded-full bg-warning/10 text-warning">Draft</span>
-              {/if}
-              {#if release.prerelease}
-                <span class="px-2 py-0.5 text-xs rounded-full bg-accent/10 text-accent">Pre-release</span>
-              {/if}
+<RepoChildLayout
+  backUrl={getBackHref()}
+  {npub}
+  {repoName}
+  contentMaxWidthClass="max-w-5xl"
+  sectionHref={getBackHref()}
+  sectionLabel="Releases"
+  showTabNav={false}
+  visibility={currentTree?.visibility}
+>
+  <div class="mx-3 mb-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg b-1 b-solid b-surface-3 bg-surface-0">
+    <div class="flex-1 overflow-auto">
+      {#if loading}
+        <div class="flex items-center justify-center py-12 text-text-3">
+          <span class="i-lucide-loader-2 animate-spin mr-2"></span>
+          Loading release...
+        </div>
+      {:else if error}
+        <div class="flex flex-col items-center justify-center py-12 text-danger">
+          <span class="i-lucide-alert-circle text-2xl mb-2"></span>
+          <span>{error}</span>
+          <button onclick={() => releaseDetailStore.refresh()} class="btn-ghost mt-4">
+            Try again
+          </button>
+          <a href={getBackHref()} class="btn-ghost mt-4">
+            <span class="i-lucide-arrow-left mr-2"></span>
+            Back to releases
+          </a>
+        </div>
+      {:else if release}
+        <div class="p-4 b-b-1 b-b-solid b-b-surface-3">
+          <div class="flex items-start gap-3">
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2 mb-2 flex-wrap">
+                <h1 class="text-xl font-semibold text-text-1">{release.title}</h1>
+                {#if release.draft}
+                  <span class="px-2 py-0.5 text-xs rounded-full bg-warning/10 text-warning">Draft</span>
+                {/if}
+                {#if release.prerelease}
+                  <span class="px-2 py-0.5 text-xs rounded-full bg-accent/10 text-accent">Pre-release</span>
+                {/if}
+              </div>
+              <div class="text-sm text-text-3 flex items-center gap-2 flex-wrap">
+                {#if release.tag}
+                  <span class="font-mono text-xs bg-surface-2 px-1 rounded">{release.tag}</span>
+                {/if}
+                <span>published {formatDate(release.published_at ?? release.created_at)}</span>
+                {#if release.commit}
+                  <span class="font-mono text-xs bg-surface-2 px-1 rounded">{release.commit.slice(0, 7)}</span>
+                {/if}
+              </div>
             </div>
-            <div class="text-sm text-text-3 flex items-center gap-2 flex-wrap">
-              {#if release.tag}
-                <span class="font-mono text-xs bg-surface-2 px-1 rounded">{release.tag}</span>
-              {/if}
-              <span>published {formatDate(release.published_at ?? release.created_at)}</span>
-              {#if release.commit}
-                <span class="font-mono text-xs bg-surface-2 px-1 rounded">{release.commit.slice(0, 7)}</span>
-              {/if}
-            </div>
+
+            {#if isOwner}
+              <div class="flex gap-2">
+                <button onclick={handleEdit} class="btn-ghost text-sm">
+                  <span class="i-lucide-pencil mr-1"></span>
+                  Edit
+                </button>
+                <button onclick={handleDelete} class="btn-ghost text-sm text-danger">
+                  <span class="i-lucide-trash-2 mr-1"></span>
+                  Delete
+                </button>
+              </div>
+            {/if}
           </div>
+        </div>
 
-          {#if isOwner}
-            <div class="flex gap-2">
-              <button onclick={handleEdit} class="btn-ghost text-sm">
-                <span class="i-lucide-pencil mr-1"></span>
-                Edit
-              </button>
-              <button onclick={handleDelete} class="btn-ghost text-sm text-danger">
-                <span class="i-lucide-trash-2 mr-1"></span>
-                Delete
-              </button>
+        <div class="p-4 b-b-1 b-b-solid b-b-surface-3">
+          {#if release.notes}
+            <div class="prose prose-sm max-w-none text-text-2">
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized with DOMPurify -->
+              {@html notesHtml}
             </div>
+          {:else}
+            <div class="text-text-3 text-sm">No release notes provided.</div>
           {/if}
         </div>
-      </div>
 
-      <!-- Notes -->
-      <div class="p-4 b-b-1 b-b-solid b-b-surface-3">
-        {#if release.notes}
-          <div class="prose prose-sm max-w-none text-text-2">
-            <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized with DOMPurify -->
-            {@html notesHtml}
-          </div>
-        {:else}
-          <div class="text-text-3 text-sm">No release notes provided.</div>
-        {/if}
-      </div>
-
-      <!-- Assets -->
-      <div class="p-4">
-        <h2 class="text-sm font-medium text-text-2 mb-3">
-          Assets {release.assets.length > 0 ? `(${release.assets.length})` : ''}
-        </h2>
-        {#if release.assets.length > 0}
-          <div class="flex flex-col gap-2">
-            {#each release.assets as asset (asset.name)}
-              <a
-                href={getAssetHref(asset)}
-                class="flex items-center justify-between bg-surface-1 rounded-md px-3 py-2 text-sm text-text-1 hover:text-accent"
-                download
-              >
-                <span class="truncate">{asset.name}</span>
-                <span class="text-text-3 text-xs">{formatBytes(asset.size)}</span>
-              </a>
-            {/each}
-          </div>
-        {:else}
-          <div class="text-text-3 text-sm">No assets uploaded.</div>
-        {/if}
-      </div>
-    {/if}
+        <div class="p-4">
+          <h2 class="text-sm font-medium text-text-2 mb-3">
+            Assets {release.assets.length > 0 ? `(${release.assets.length})` : ''}
+          </h2>
+          {#if release.assets.length > 0}
+            <div class="flex flex-col gap-2">
+              {#each release.assets as asset (asset.name)}
+                <a
+                  href={getAssetHref(asset)}
+                  class="flex items-center justify-between bg-surface-1 rounded-md px-3 py-2 text-sm text-text-1 hover:text-accent"
+                  download
+                >
+                  <span class="truncate">{asset.name}</span>
+                  <span class="text-text-3 text-xs">{formatBytes(asset.size)}</span>
+                </a>
+              {/each}
+            </div>
+          {:else}
+            <div class="text-text-3 text-sm">No assets uploaded.</div>
+          {/if}
+        </div>
+      {/if}
+    </div>
   </div>
-</div>
+</RepoChildLayout>

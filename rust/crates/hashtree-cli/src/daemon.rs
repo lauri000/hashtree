@@ -3,6 +3,7 @@ use axum::Router;
 use nostr::nips::nip19::ToBech32;
 use nostr::Keys;
 use std::collections::HashSet;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -33,8 +34,14 @@ struct BackgroundSyncRuntime {
     join: JoinHandle<()>,
 }
 
+struct BackgroundMirrorRuntime {
+    service: Arc<crate::nostr_mirror::BackgroundNostrMirror>,
+    join: JoinHandle<()>,
+}
+
 struct BackgroundServicesRuntime {
     crawler: Option<socialgraph::crawler::SocialGraphTaskHandles>,
+    mirror: Option<BackgroundMirrorRuntime>,
     sync: Option<BackgroundSyncRuntime>,
 }
 
@@ -42,6 +49,7 @@ impl BackgroundServicesRuntime {
     fn status(&self) -> EmbeddedBackgroundServicesStatus {
         EmbeddedBackgroundServicesStatus {
             crawler_active: self.crawler.is_some(),
+            mirror_active: self.mirror.is_some(),
             sync_active: self.sync.is_some(),
         }
     }
@@ -50,6 +58,7 @@ impl BackgroundServicesRuntime {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddedBackgroundServicesStatus {
     pub crawler_active: bool,
+    pub mirror_active: bool,
     pub sync_active: bool,
 }
 
@@ -57,6 +66,7 @@ pub struct EmbeddedBackgroundServicesController {
     keys: Keys,
     data_dir: PathBuf,
     store: Arc<HashtreeStore>,
+    graph_store_concrete: Arc<socialgraph::SocialGraphStore>,
     graph_store: Arc<dyn socialgraph::SocialGraphBackend>,
     spambox: Option<Arc<dyn socialgraph::SocialGraphBackend>>,
     webrtc_state: Option<Arc<WebRTCState>>,
@@ -64,10 +74,26 @@ pub struct EmbeddedBackgroundServicesController {
 }
 
 impl EmbeddedBackgroundServicesController {
+    fn local_publish_relay(bind_address: &str) -> Option<String> {
+        let addr: SocketAddr = bind_address.parse().ok()?;
+        if addr.port() == 0 {
+            return None;
+        }
+
+        let host = match addr.ip() {
+            IpAddr::V4(ip) if ip.is_unspecified() => Ipv4Addr::LOCALHOST.to_string(),
+            IpAddr::V6(ip) if ip.is_unspecified() => format!("[{}]", Ipv6Addr::LOCALHOST),
+            IpAddr::V4(ip) => ip.to_string(),
+            IpAddr::V6(ip) => format!("[{ip}]"),
+        };
+        Some(format!("ws://{host}:{}/ws", addr.port()))
+    }
+
     pub fn new(
         keys: Keys,
         data_dir: PathBuf,
         store: Arc<HashtreeStore>,
+        graph_store_concrete: Arc<socialgraph::SocialGraphStore>,
         graph_store: Arc<dyn socialgraph::SocialGraphBackend>,
         spambox: Option<Arc<dyn socialgraph::SocialGraphBackend>>,
         webrtc_state: Option<Arc<WebRTCState>>,
@@ -76,11 +102,13 @@ impl EmbeddedBackgroundServicesController {
             keys,
             data_dir,
             store,
+            graph_store_concrete,
             graph_store,
             spambox,
             webrtc_state,
             runtime: Mutex::new(BackgroundServicesRuntime {
                 crawler: None,
+                mirror: None,
                 sync: None,
             }),
         }
@@ -88,6 +116,13 @@ impl EmbeddedBackgroundServicesController {
 
     pub async fn status(&self) -> EmbeddedBackgroundServicesStatus {
         self.runtime.lock().await.status()
+    }
+
+    pub async fn shutdown(&self) {
+        let mut runtime = self.runtime.lock().await;
+        Self::shutdown_crawler(&mut runtime.crawler).await;
+        Self::shutdown_mirror(&mut runtime.mirror).await;
+        Self::shutdown_sync(&mut runtime.sync).await;
     }
 
     async fn shutdown_crawler(crawler: &mut Option<socialgraph::crawler::SocialGraphTaskHandles>) {
@@ -136,23 +171,85 @@ impl EmbeddedBackgroundServicesController {
         }
     }
 
+    async fn shutdown_mirror(mirror: &mut Option<BackgroundMirrorRuntime>) {
+        let Some(runtime) = mirror.take() else {
+            return;
+        };
+
+        runtime.service.shutdown();
+        let mut join = runtime.join;
+        match tokio::time::timeout(std::time::Duration::from_secs(3), &mut join).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::warn!("Background mirror task ended with join error: {}", err),
+            Err(_) => {
+                tracing::warn!("Timed out waiting for background mirror shutdown");
+                join.abort();
+            }
+        }
+    }
+
     pub async fn apply_config(&self, config: &Config) -> Result<EmbeddedBackgroundServicesStatus> {
         let mut runtime = self.runtime.lock().await;
 
         Self::shutdown_crawler(&mut runtime.crawler).await;
+        Self::shutdown_mirror(&mut runtime.mirror).await;
         Self::shutdown_sync(&mut runtime.sync).await;
 
         let active_relays = config.nostr.active_relays();
 
-        if config.nostr.enabled && config.nostr.crawl_depth > 0 && !active_relays.is_empty() {
+        if config.nostr.enabled
+            && config.nostr.social_graph_crawl_depth > 0
+            && !active_relays.is_empty()
+        {
             runtime.crawler = Some(socialgraph::crawler::spawn_social_graph_tasks(
                 self.graph_store.clone(),
                 self.keys.clone(),
                 active_relays.clone(),
-                config.nostr.crawl_depth,
+                config.nostr.social_graph_crawl_depth,
                 self.spambox.clone(),
                 self.data_dir.clone(),
             ));
+
+            let service = Arc::new(
+                crate::nostr_mirror::BackgroundNostrMirror::new(
+                    crate::nostr_mirror::NostrMirrorConfig {
+                        relays: active_relays.clone(),
+                        publish_relays: Self::local_publish_relay(&config.server.bind_address)
+                            .into_iter()
+                            .collect(),
+                        max_follow_distance: config.nostr.social_graph_crawl_depth,
+                        require_negentropy: config.nostr.negentropy_only,
+                        kinds: config.nostr.mirror_kinds.clone(),
+                        history_sync_author_chunk_size: config
+                            .nostr
+                            .history_sync_author_chunk_size
+                            .max(1),
+                        history_sync_on_reconnect: config.nostr.history_sync_on_reconnect,
+                        ..crate::nostr_mirror::NostrMirrorConfig::default()
+                    },
+                    self.store.clone(),
+                    self.graph_store_concrete.clone(),
+                    Some(
+                        nostr_sdk::Keys::parse(&self.keys.secret_key().to_bech32()?)
+                            .context("Failed to parse keys for background nostr mirror")?,
+                    ),
+                )
+                .await
+                .context("Failed to create background nostr mirror")?,
+            );
+            let service_for_task = service.clone();
+            let join = tokio::task::spawn_blocking(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build background nostr mirror runtime");
+                runtime.block_on(async {
+                    if let Err(err) = service_for_task.run().await {
+                        tracing::error!("Background nostr mirror error: {:#}", err);
+                    }
+                });
+            });
+            runtime.mirror = Some(BackgroundMirrorRuntime { service, join });
         }
 
         if config.sync.enabled
@@ -462,6 +559,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         keys.clone(),
         opts.data_dir.clone(),
         Arc::clone(&store),
+        graph_store.clone(),
         Arc::clone(&social_graph_store),
         crawler_spambox_backend,
         webrtc_state.clone(),

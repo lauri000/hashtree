@@ -181,21 +181,16 @@ async function loadFallbackRelayUrls(localRelayUrl: string | null): Promise<stri
 async function fetchProfileFromRelays(relays: string[], pubkey: string): Promise<AddressOwnerProfile | null> {
   if (relays.length === 0) return null;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 4000);
-
   try {
     const event = await pool.get(
       relays,
       { kinds: [0], authors: [pubkey] },
-      { signal: controller.signal } as { signal: AbortSignal },
+      { maxWait: 4000 },
     );
     if (!event?.content) return null;
     return parseProfileContent(event.content, pubkey);
   } catch {
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

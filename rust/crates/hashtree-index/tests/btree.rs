@@ -14,13 +14,7 @@ fn cid_from_hex(hex: &str) -> Cid {
 fn string_values_support_get_and_range() {
     block_on(async {
         let store = Arc::new(MemoryStore::new());
-        let btree = BTree::new(
-            store,
-            BTreeOptions {
-                order: Some(4),
-                ..BTreeOptions::default()
-            },
-        );
+        let btree = BTree::new(store, BTreeOptions { order: Some(4) });
 
         let mut root = None;
         for key in ["user:002", "user:001", "other:001", "user:003"] {
@@ -46,13 +40,7 @@ fn string_values_support_get_and_range() {
 fn link_btree_matches_typescript_fixture_root() {
     block_on(async {
         let store = Arc::new(MemoryStore::new());
-        let btree = BTree::new(
-            Arc::clone(&store),
-            BTreeOptions {
-                order: Some(4),
-                ..BTreeOptions::default()
-            },
-        );
+        let btree = BTree::new(Arc::clone(&store), BTreeOptions { order: Some(4) });
         let _tree = HashTree::new(HashTreeConfig::new(store));
 
         let mut root = None;
@@ -117,13 +105,7 @@ fn link_btree_matches_typescript_fixture_root() {
 fn bulk_link_build_matches_incremental_entries() {
     block_on(async {
         let store = Arc::new(MemoryStore::new());
-        let btree = BTree::new(
-            Arc::clone(&store),
-            BTreeOptions {
-                order: Some(4),
-                ..BTreeOptions::default()
-            },
-        );
+        let btree = BTree::new(Arc::clone(&store), BTreeOptions { order: Some(4) });
 
         let fixtures = [
             (
@@ -187,6 +169,53 @@ fn bulk_link_build_matches_incremental_entries() {
                 .prefix_links(&incremental_root, "author1:")
                 .await
                 .unwrap()
+        );
+    });
+}
+
+#[test]
+fn bulk_string_build_matches_incremental_entries() {
+    block_on(async {
+        let store = Arc::new(MemoryStore::new());
+        let btree = BTree::new(Arc::clone(&store), BTreeOptions { order: Some(4) });
+
+        let fixtures = [
+            ("profile:petri:1", r#"{"name":"Petri","score":1}"#),
+            ("profile:petri:2", r#"{"name":"Petri Lampinen","score":2}"#),
+            ("profile:jack:1", r#"{"name":"jack","score":3}"#),
+            ("profile:mil:1", r#"{"name":"Michael Miller","score":4}"#),
+            ("profile:mil:2", r#"{"name":"Milad","score":5}"#),
+            ("profile:sirius:1", r#"{"name":"Sirius","score":6}"#),
+        ];
+
+        let mut incremental_root = None;
+        for (key, value) in fixtures.iter() {
+            incremental_root = Some(
+                btree
+                    .insert(incremental_root.as_ref(), key, value)
+                    .await
+                    .unwrap(),
+            );
+        }
+
+        let bulk_root = btree
+            .build(
+                fixtures
+                    .iter()
+                    .map(|(key, value)| ((*key).to_string(), (*value).to_string())),
+            )
+            .await
+            .unwrap()
+            .expect("bulk root");
+        let incremental_root = incremental_root.expect("incremental root");
+
+        assert_eq!(
+            btree.entries(Some(&bulk_root)).await.unwrap(),
+            btree.entries(Some(&incremental_root)).await.unwrap()
+        );
+        assert_eq!(
+            btree.prefix(&bulk_root, "profile:mil:").await.unwrap(),
+            btree.prefix(&incremental_root, "profile:mil:").await.unwrap()
         );
     });
 }

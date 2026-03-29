@@ -20,6 +20,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { nip19, getPublicKey } from 'nostr-tools';
 import { acquireRustLock, releaseRustLock } from './rust-lock.js';
+import { rustTargetPath, withRustTargetEnv } from './rust-target.js';
 import { waitForAppReady } from './test-utils.js';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -27,7 +28,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const HASHTREE_RS_DIR = path.resolve(__dirname, '../../../rust');
-const RELEASE_DIR = path.join(HASHTREE_RS_DIR, 'target/release');
+const RELEASE_DIR = rustTargetPath('release');
 
 test.describe('Git push to htree:// and view in browser', () => {
   // Serial mode: WebRTC from parallel tests can interfere with local git state
@@ -75,6 +76,7 @@ test.describe('Git push to htree:// and view in browser', () => {
       console.log('Building release htree binary...');
       execSync('cargo build --release -p hashtree-cli --bin htree', {
         cwd: HASHTREE_RS_DIR,
+        env: withRustTargetEnv(),
         stdio: 'inherit',
       });
     }
@@ -83,6 +85,7 @@ test.describe('Git push to htree:// and view in browser', () => {
       console.log('Building release git-remote-htree binary...');
       execSync('cargo build --release -p git-remote-htree', {
         cwd: HASHTREE_RS_DIR,
+        env: withRustTargetEnv(),
         stdio: 'inherit',
       });
     }

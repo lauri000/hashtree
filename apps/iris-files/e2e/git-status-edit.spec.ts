@@ -8,6 +8,8 @@ import * as path from 'path';
 import * as os from 'os';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { acquireRustLock, releaseRustLock } from './rust-lock.js';
+import { rustTargetPath, withRustTargetEnv } from './rust-target.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 // Tests use isolated page contexts with disableOthersPool - safe for parallel execution
@@ -16,16 +18,29 @@ const HASHTREE_RS_DIR = path.resolve(__dirname, '../../../rust');
 
 // Check if git-remote-htree is available
 function hasGitRemoteHtree(): boolean {
-  const binary = path.join(HASHTREE_RS_DIR, 'target/release/git-remote-htree');
+  const binary = rustTargetPath('release', 'git-remote-htree');
   return fs.existsSync(binary);
 }
 
-function ensureGitRemoteHtree(): void {
+async function ensureGitRemoteHtree(): Promise<void> {
   if (hasGitRemoteHtree()) return;
-  console.log('[test] git-remote-htree not built - attempting cargo build...');
-  execSync('cargo build --release -p git-remote-htree', { cwd: HASHTREE_RS_DIR, stdio: 'inherit' });
-  if (!hasGitRemoteHtree()) {
-    throw new Error('git-remote-htree build failed - binary not found');
+  let lockFd: number | null = null;
+  try {
+    lockFd = await acquireRustLock(240000);
+    if (hasGitRemoteHtree()) return;
+    console.log('[test] git-remote-htree not built - attempting cargo build...');
+    execSync('cargo build --release -p git-remote-htree', {
+      cwd: HASHTREE_RS_DIR,
+      env: withRustTargetEnv(),
+      stdio: 'inherit',
+    });
+    if (!hasGitRemoteHtree()) {
+      throw new Error('git-remote-htree build failed - binary not found');
+    }
+  } finally {
+    if (lockFd !== null) {
+      releaseRustLock(lockFd);
+    }
   }
 }
 
@@ -542,7 +557,7 @@ test.describe('Git status after file edit', () => {
   // This test verifies that repos pushed via git-remote-htree have a valid index file
   // and git status works when viewing from the browser via nostr.
   test('should show uncommitted in git-remote-htree pushed repo after edit', { timeout: 180000 }, async ({ page }) => {
-    ensureGitRemoteHtree();
+    await ensureGitRemoteHtree();
     test.setTimeout(240000);
 
     // Capture browser console logs for debugging wasm-git
@@ -585,7 +600,7 @@ test.describe('Git status after file edit', () => {
       throw new Error('No blossom servers configured for test');
     }
 
-    const gitRemoteHtree = path.join(HASHTREE_RS_DIR, 'target/release/git-remote-htree');
+    const gitRemoteHtree = rustTargetPath('release', 'git-remote-htree');
     const env = {
       ...process.env,
       HOME: tempDir,
@@ -759,7 +774,8 @@ servers = [${blossomToml}]
       // Wait for the directory toolbar to appear - look for the Commits button (git repo)
       // The Commits button appears when git repo is detected
       const commitsBtn = page.getByRole('button', { name: /commits/i });
-      await expect(commitsBtn).toBeVisible({ timeout: 60000 });
+      // Network-loaded repos can take longer to hydrate git metadata under full-suite CPU load.
+      await expect(commitsBtn).toBeVisible({ timeout: 120000 });
       console.log('[test] Git repo detected - Commits button visible');
 
       // Take screenshot

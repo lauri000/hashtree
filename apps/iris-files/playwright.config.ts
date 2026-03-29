@@ -49,6 +49,8 @@ const testBootstrapPubkey = process.env.VITE_TEST_BOOTSTRAP_PUBKEY ?? getPublicK
 process.env.VITE_TEST_BOOTSTRAP_PUBKEY = testBootstrapPubkey;
 const testBlossomUrl = process.env.PW_TEST_BLOSSOM_URL ?? 'http://127.0.0.1:18780';
 process.env.PW_TEST_BLOSSOM_URL = testBlossomUrl;
+const appPort = process.env.PW_APP_PORT ?? '5173';
+const appBaseUrl = `http://localhost:${appPort}`;
 
 /**
  * Playwright E2E test configuration.
@@ -67,7 +69,7 @@ export default defineConfig({
   timeout: 60000, // 60s global timeout for parallel stability
   expect: { timeout: 20000 }, // 20s for expect assertions
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: appBaseUrl,
     trace: 'off',
     actionTimeout: 20000,
     navigationTimeout: 60000,
@@ -95,8 +97,8 @@ export default defineConfig({
       timeout: 5000,
     },
     {
-      command: 'pnpm run build:deps && pnpm exec vite --port 5173 --strictPort',
-      url: 'http://localhost:5173',
+      command: `pnpm run build:deps && pnpm exec vite --port ${appPort} --strictPort`,
+      url: appBaseUrl,
       // Avoid silently reusing a non-test Vite instance (e.g. boards/docs dev server).
       // Fresh app server startup is slower but deterministic for E2E.
       reuseExistingServer: false,

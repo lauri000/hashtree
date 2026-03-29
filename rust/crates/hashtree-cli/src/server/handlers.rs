@@ -1,5 +1,6 @@
 use super::auth::{AppState, CachedResolvedPathEntry, CachedTreeRootEntry, LookupResult};
 use super::mime::get_mime_type;
+use super::resolve_virtual_tree_host;
 use super::ui::root_page;
 use crate::socialgraph;
 use crate::webrtc::{
@@ -8,7 +9,7 @@ use crate::webrtc::{
 };
 use axum::{
     body::Body,
-    extract::{Multipart, Path, Query, State},
+    extract::{ConnectInfo, Multipart, OriginalUri, Path, Query, State},
     http::{header, Response, StatusCode},
     response::{IntoResponse, Json},
 };
@@ -37,6 +38,20 @@ pub async fn serve_root() -> impl IntoResponse {
     root_page()
 }
 
+pub async fn serve_root_or_virtual_host(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+    connect_info: ConnectInfo<std::net::SocketAddr>,
+) -> impl IntoResponse {
+    let Some(virtual_root) = request_virtual_tree_root(&headers) else {
+        return serve_root().await.into_response();
+    };
+
+    serve_virtual_tree_host_request(&state, &virtual_root, None, params, headers, connect_info)
+        .await
+}
+
 pub async fn htree_test() -> impl IntoResponse {
     Response::builder()
         .status(StatusCode::OK)
@@ -44,6 +59,167 @@ pub async fn htree_test() -> impl IntoResponse {
         .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .body(Body::from("ok"))
         .unwrap()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VirtualTreeRoot {
+    Immutable { nhash: String },
+    Mutable { npub: String, treename: String },
+}
+
+fn request_virtual_tree_root(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .and_then(resolve_virtual_tree_host)
+}
+
+fn parse_virtual_tree_root(root: &str) -> Option<VirtualTreeRoot> {
+    let parsed = reqwest::Url::parse(&format!("http://virtual-host{}", root)).ok()?;
+    let segments: Vec<String> = parsed
+        .path_segments()?
+        .map(|segment| segment.to_string())
+        .collect();
+
+    match segments.as_slice() {
+        [prefix, nhash] if prefix == "htree" && nhash.starts_with("nhash1") => {
+            Some(VirtualTreeRoot::Immutable {
+                nhash: nhash.clone(),
+            })
+        }
+        [prefix, npub, treename]
+            if prefix == "htree" && npub.starts_with("npub1") && !treename.is_empty() =>
+        {
+            Some(VirtualTreeRoot::Mutable {
+                npub: npub.clone(),
+                treename: treename.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn should_fallback_to_virtual_host_index(
+    requested_path: Option<&str>,
+    headers: &axum::http::HeaderMap,
+) -> bool {
+    let accepts_html = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.contains("text/html"))
+        .unwrap_or(false);
+
+    if !accepts_html {
+        return false;
+    }
+
+    let Some(path) = requested_path else {
+        return true;
+    };
+
+    let tail = path.rsplit('/').next().unwrap_or(path);
+    !tail.contains('.')
+}
+
+async fn serve_virtual_tree_host_request(
+    state: &AppState,
+    virtual_root: &str,
+    requested_path: Option<String>,
+    params: HashMap<String, String>,
+    headers: axum::http::HeaderMap,
+    connect_info: ConnectInfo<std::net::SocketAddr>,
+) -> Response<Body> {
+    let Some(root) = parse_virtual_tree_root(virtual_root) else {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(Body::from("Not found"))
+            .unwrap();
+    };
+
+    let initial_response = match &root {
+        VirtualTreeRoot::Immutable { nhash } => {
+            htree_nhash_impl(
+                State(state.clone()),
+                nhash.clone(),
+                requested_path.clone().filter(|path| !path.is_empty()),
+                Query(params.clone()),
+                headers.clone(),
+                ConnectInfo(connect_info.0),
+            )
+            .await
+        }
+        VirtualTreeRoot::Mutable { npub, treename } => {
+            htree_npub_impl(
+                State(state.clone()),
+                npub.clone(),
+                treename.clone(),
+                requested_path.clone().filter(|path| !path.is_empty()),
+                Query(params.clone()),
+                headers.clone(),
+                ConnectInfo(connect_info.0),
+            )
+            .await
+        }
+    };
+
+    if initial_response.status() != StatusCode::NOT_FOUND
+        || !should_fallback_to_virtual_host_index(requested_path.as_deref(), &headers)
+    {
+        return initial_response;
+    }
+
+    match root {
+        VirtualTreeRoot::Immutable { nhash } => {
+            htree_nhash_impl(
+                State(state.clone()),
+                nhash,
+                None,
+                Query(params),
+                headers,
+                connect_info,
+            )
+            .await
+        }
+        VirtualTreeRoot::Mutable { npub, treename } => {
+            htree_npub_impl(
+                State(state.clone()),
+                npub,
+                treename,
+                None,
+                Query(params),
+                headers,
+                connect_info,
+            )
+            .await
+        }
+    }
+}
+
+pub async fn serve_virtual_host_fallback(
+    State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    Query(params): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+    connect_info: ConnectInfo<std::net::SocketAddr>,
+) -> impl IntoResponse {
+    let Some(virtual_root) = request_virtual_tree_root(&headers) else {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(Body::from("Not found"))
+            .unwrap();
+    };
+
+    serve_virtual_tree_host_request(
+        &state,
+        &virtual_root,
+        Some(uri.path().trim_start_matches('/').to_string()).filter(|path| !path.is_empty()),
+        params,
+        headers,
+        connect_info,
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -1911,9 +2087,23 @@ async fn serve_content_internal(
 pub async fn serve_content_or_blob(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
     headers: axum::http::HeaderMap,
     connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
 ) -> impl IntoResponse {
+    if let Some(virtual_root) = request_virtual_tree_root(&headers) {
+        return serve_virtual_tree_host_request(
+            &state,
+            &virtual_root,
+            Some(id.clone()),
+            params,
+            headers,
+            connect_info,
+        )
+        .await
+        .into_response();
+    }
+
     let is_localhost = connect_info.0.ip().is_loopback();
     let _client_ip = headers
         .get("x-forwarded-for")
@@ -2254,10 +2444,7 @@ fn bluetooth_transport_enabled() -> bool {
         .unwrap_or(true)
 }
 
-fn peer_transport_visible(
-    entry: &crate::webrtc::PeerEntry,
-    bluetooth_enabled: bool,
-) -> bool {
+fn peer_transport_visible(entry: &crate::webrtc::PeerEntry, bluetooth_enabled: bool) -> bool {
     bluetooth_enabled || entry.transport != crate::webrtc::PeerTransport::Bluetooth
 }
 

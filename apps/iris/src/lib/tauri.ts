@@ -218,6 +218,82 @@ export async function installSitePwa(url: string): Promise<InstalledSitePwa> {
   return invoke<InstalledSitePwa>('install_site_pwa', { url });
 }
 
+export interface Nip07AccountSummary {
+  pubkey: string;
+  npub: string;
+  addedAt: number;
+}
+
+export interface Nip07AccountsSummary {
+  accounts: Nip07AccountSummary[];
+  activePubkey: string | null;
+}
+
+export interface Nip07PermissionPrompt {
+  requestId: string;
+  origin: string;
+  method: string;
+}
+
+export async function getNip07Account(): Promise<Nip07AccountSummary | null> {
+  return invoke<Nip07AccountSummary | null>('get_nip07_account');
+}
+
+export async function listNip07Accounts(): Promise<Nip07AccountsSummary> {
+  return invoke<Nip07AccountsSummary>('list_nip07_accounts');
+}
+
+export async function loginNip07Account(secret: string): Promise<Nip07AccountSummary> {
+  return invoke<Nip07AccountSummary>('login_nip07_account', { secret });
+}
+
+export async function generateNip07Account(): Promise<Nip07AccountSummary> {
+  return invoke<Nip07AccountSummary>('generate_nip07_account');
+}
+
+export async function logoutNip07Account(): Promise<void> {
+  return invoke<void>('logout_nip07_account');
+}
+
+export async function setActiveNip07Account(pubkey: string): Promise<Nip07AccountSummary> {
+  return invoke<Nip07AccountSummary>('set_active_nip07_account', { pubkey });
+}
+
+export async function removeNip07Account(pubkey: string): Promise<Nip07AccountsSummary> {
+  return invoke<Nip07AccountsSummary>('remove_nip07_account', { pubkey });
+}
+
+export async function exportNip07AccountSecret(pubkey: string): Promise<string> {
+  return invoke<string>('export_nip07_account_secret', { pubkey });
+}
+
+export async function takeNip07PermissionPrompt(): Promise<Nip07PermissionPrompt | null> {
+  return invoke<Nip07PermissionPrompt | null>('take_nip07_permission_prompt');
+}
+
+export async function respondNip07PermissionPrompt(
+  requestId: string,
+  decision: 'deny' | 'allowSession' | 'allowAlways' | 'blockSite',
+): Promise<void> {
+  return invoke<void>('respond_nip07_permission_prompt', {
+    requestId,
+    decision,
+  });
+}
+
+export async function showNativeNip07PermissionDialog(
+  origin: string,
+  method: string,
+): Promise<'deny' | 'allowSession' | 'allowAlways' | 'blockSite' | null> {
+  return invoke<'deny' | 'allowSession' | 'allowAlways' | 'blockSite' | null>(
+    'show_native_nip07_permission_dialog',
+    {
+      origin,
+      method,
+    },
+  );
+}
+
 // ── History ──
 
 export interface HistoryEntry {
@@ -419,11 +495,14 @@ export type AutomationAction =
   | 'reload'
   | 'home'
   | 'settings'
+  | 'respond_nip07_prompt'
   | 'shutdown';
 
 export interface AutomationCommandEvent {
   action: AutomationAction;
   url?: string | null;
+  requestId?: string | null;
+  decision?: 'deny' | 'allowSession' | 'allowAlways' | 'blockSite' | null;
 }
 
 export interface AutomationUiState {
@@ -443,6 +522,16 @@ export interface AutomationUiState {
   childLastError: string;
   historyIndex: number;
   historyLength: number;
+  windowInnerHeight: number;
+  windowOuterHeight: number;
+  toolbarHeight: number;
+  childBoundsTop: number;
+  childBoundsHeight: number;
+  childViewportWidth: number;
+  childViewportHeight: number;
+  pendingNip07PromptRequestId: string;
+  pendingNip07PromptOrigin: string;
+  pendingNip07PromptMethod: string;
 }
 
 export interface AutomationState extends AutomationUiState {
@@ -510,6 +599,8 @@ export interface WebviewDiagnosticEvent {
   readyState?: string | null;
   bodyText?: string | null;
   mediaSummary?: string | null;
+  viewportWidth?: number | null;
+  viewportHeight?: number | null;
   manifestAppId?: string | null;
   manifestUrl?: string | null;
   manifestName?: string | null;

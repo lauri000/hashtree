@@ -1,4 +1,5 @@
 import { test as base, type Page } from '@playwright/test';
+import { finalizeEvent, generateSecretKey, getPublicKey, nip04, nip19, nip44 } from 'nostr-tools';
 import {
   attachRenderLoopGuardToPage,
   formatRenderLoopFailures,
@@ -11,6 +12,36 @@ type Fixtures = {
   renderLoopGuard: void;
 };
 
+function normalizeSecretKey(secret: string): Uint8Array {
+  const trimmed = secret.trim();
+  if (!trimmed) {
+    throw new Error('Missing Nostr secret key');
+  }
+
+  if (trimmed.startsWith('nsec1')) {
+    const decoded = nip19.decode(trimmed);
+    if (decoded.type !== 'nsec' || !(decoded.data instanceof Uint8Array)) {
+      throw new Error('Invalid Nostr secret key');
+    }
+    return decoded.data;
+  }
+
+  if (!/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+    throw new Error('Invalid Nostr secret key');
+  }
+
+  return Uint8Array.from(Buffer.from(trimmed, 'hex'));
+}
+
+function accountSummaryFromSecret(secretKey: Uint8Array, addedAt = Date.now()) {
+  const pubkey = getPublicKey(secretKey);
+  return {
+    pubkey,
+    npub: nip19.npubEncode(pubkey),
+    addedAt,
+  };
+}
+
 /**
  * Mock Tauri IPC so the shell UI can render in a regular browser.
  *
@@ -18,7 +49,319 @@ type Fixtures = {
  * before the app boots so that calls like createNip07Webview / closeWebview don't throw.
  */
 async function mockTauriIPC(page: Page) {
+  const savedAccounts: Array<{
+    secretKey: Uint8Array;
+    summary: ReturnType<typeof accountSummaryFromSecret>;
+  }> = [];
+  let activeAccountPubkey: string | null = null;
+  const grantedPermissions = new Map<string, Map<string, 'allowSession' | 'allowAlways'>>();
+  const blockedOrigins = new Set<string>();
+  const pendingPermissionPrompts: Array<{ requestId: string; origin: string; method: string }> = [];
+  const permissionPromptWaiters = new Map<
+    string,
+    (decision: 'deny' | 'allowSession' | 'allowAlways' | 'blockSite') => void
+  >();
+
+  function activeAccount() {
+    if (!activeAccountPubkey) return null;
+    return savedAccounts.find((account) => account.summary.pubkey === activeAccountPubkey) ?? null;
+  }
+
+  function grantedPermissionFor(origin: string, method: string) {
+    return grantedPermissions.get(origin)?.get(method) ?? null;
+  }
+
+  async function requestPermission(origin: string, method: string): Promise<boolean> {
+    if (origin === 'tauri://localhost') {
+      return true;
+    }
+    if (blockedOrigins.has(origin)) {
+      return false;
+    }
+    const existing = grantedPermissionFor(origin, method);
+    if (existing === 'allowSession' || existing === 'allowAlways') {
+      return true;
+    }
+
+    const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    pendingPermissionPrompts.push({ requestId, origin, method });
+    const decision = await new Promise<'deny' | 'allowSession' | 'allowAlways' | 'blockSite'>((resolve) => {
+      permissionPromptWaiters.set(requestId, resolve);
+    });
+
+    if (decision === 'allowSession' || decision === 'allowAlways') {
+      const originPermissions = grantedPermissions.get(origin) ?? new Map();
+      originPermissions.set(method, decision);
+      grantedPermissions.set(origin, originPermissions);
+      return true;
+    }
+
+    if (decision === 'blockSite') {
+      blockedOrigins.add(origin);
+      grantedPermissions.delete(origin);
+    }
+
+    return false;
+  }
+
+  await page.exposeFunction('__irisNip07GetAccount', async () => {
+    return activeAccount()?.summary ?? null;
+  });
+
+  await page.exposeFunction('__irisNip07ListAccounts', async () => {
+    return {
+      accounts: savedAccounts.map((account) => account.summary),
+      activePubkey: activeAccountPubkey,
+    };
+  });
+
+  await page.exposeFunction('__irisNip07Login', async (secret: string) => {
+    const secretKey = normalizeSecretKey(secret);
+    const summary = accountSummaryFromSecret(secretKey);
+    const existing = savedAccounts.find((account) => account.summary.pubkey === summary.pubkey);
+    if (existing) {
+      existing.secretKey = secretKey;
+      activeAccountPubkey = existing.summary.pubkey;
+      return existing.summary;
+    }
+    savedAccounts.push({ secretKey, summary });
+    activeAccountPubkey = summary.pubkey;
+    return summary;
+  });
+
+  await page.exposeFunction('__irisNip07Generate', async () => {
+    const secretKey = generateSecretKey();
+    const summary = accountSummaryFromSecret(secretKey);
+    savedAccounts.push({ secretKey, summary });
+    activeAccountPubkey = summary.pubkey;
+    return summary;
+  });
+
+  await page.exposeFunction('__irisNip07Logout', async () => {
+    savedAccounts.length = 0;
+    activeAccountPubkey = null;
+    return null;
+  });
+
+  await page.exposeFunction('__irisNip07SetActive', async (pubkey: string) => {
+    const account = savedAccounts.find((entry) => entry.summary.pubkey === pubkey);
+    if (!account) {
+      throw new Error('Nostr account not found');
+    }
+    activeAccountPubkey = account.summary.pubkey;
+    return account.summary;
+  });
+
+  await page.exposeFunction('__irisNip07Remove', async (pubkey: string) => {
+    const index = savedAccounts.findIndex((entry) => entry.summary.pubkey === pubkey);
+    if (index < 0) {
+      throw new Error('Nostr account not found');
+    }
+    savedAccounts.splice(index, 1);
+    if (activeAccountPubkey === pubkey) {
+      activeAccountPubkey = savedAccounts[0]?.summary.pubkey ?? null;
+    }
+    return {
+      accounts: savedAccounts.map((account) => account.summary),
+      activePubkey: activeAccountPubkey,
+    };
+  });
+
+  await page.exposeFunction('__irisNip07Export', async (pubkey: string) => {
+    const account = savedAccounts.find((entry) => entry.summary.pubkey === pubkey);
+    if (!account) {
+      throw new Error('Nostr account not found');
+    }
+    return nip19.nsecEncode(account.secretKey);
+  });
+
+  function requireActiveSecretKey() {
+    const account = activeAccount();
+    if (!account) {
+      return null;
+    }
+    return account.secretKey;
+  }
+
+  await page.exposeFunction('__irisTakeNip07PermissionPrompt', async () => {
+    return pendingPermissionPrompts.shift() ?? null;
+  });
+
+  await page.exposeFunction(
+    '__irisRespondNip07PermissionPrompt',
+    async (
+      requestId: string,
+      decision: 'deny' | 'allowSession' | 'allowAlways' | 'blockSite',
+    ) => {
+      const resolve = permissionPromptWaiters.get(requestId);
+      if (!resolve) {
+        throw new Error('Permission prompt was no longer pending');
+      }
+      permissionPromptWaiters.delete(requestId);
+      resolve(decision);
+      return null;
+    },
+  );
+
+  await page.exposeFunction('__irisNip07HandleRequest', async (request: {
+    method?: string;
+    params?: any;
+    origin?: string;
+  }) => {
+    const method = request?.method ?? '';
+    const params = request?.params ?? {};
+    const origin = request?.origin ?? 'tauri://localhost';
+
+    if (method === 'getPublicKey') {
+      const activeSecretKey = requireActiveSecretKey();
+      if (!activeSecretKey) {
+        return { result: null, error: 'No Nostr account signed in' };
+      }
+      if (!(await requestPermission(origin, method))) {
+        return { result: null, error: 'Permission denied' };
+      }
+      return { result: getPublicKey(activeSecretKey), error: null };
+    }
+
+    if (method === 'signEvent') {
+      const activeSecretKey = requireActiveSecretKey();
+      if (!activeSecretKey) {
+        return { result: null, error: 'No Nostr account signed in' };
+      }
+      if (!(await requestPermission(origin, method))) {
+        return { result: null, error: 'Permission denied' };
+      }
+      const event = params?.event;
+      if (!event || typeof event !== 'object') {
+        return { result: null, error: 'Missing event parameter' };
+      }
+      const signed = finalizeEvent({
+        created_at: event.created_at,
+        kind: event.kind,
+        tags: event.tags,
+        content: event.content,
+      }, activeSecretKey);
+      return { result: signed, error: null };
+    }
+
+    if (method === 'getRelays') {
+      return { result: {}, error: null };
+    }
+
+    if (method === 'nip04.encrypt') {
+      const activeSecretKey = requireActiveSecretKey();
+      if (!activeSecretKey) {
+        return { result: null, error: 'No Nostr account signed in' };
+      }
+      if (!(await requestPermission(origin, method))) {
+        return { result: null, error: 'Permission denied' };
+      }
+      const pubkey = typeof params?.pubkey === 'string' ? params.pubkey : '';
+      const plaintext = typeof params?.plaintext === 'string' ? params.plaintext : '';
+      if (!pubkey) {
+        return { result: null, error: 'Missing pubkey parameter' };
+      }
+      if (!plaintext) {
+        return { result: null, error: 'Missing plaintext parameter' };
+      }
+      try {
+        return { result: await nip04.encrypt(activeSecretKey, pubkey, plaintext), error: null };
+      } catch (error) {
+        return { result: null, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+
+    if (method === 'nip04.decrypt') {
+      const activeSecretKey = requireActiveSecretKey();
+      if (!activeSecretKey) {
+        return { result: null, error: 'No Nostr account signed in' };
+      }
+      if (!(await requestPermission(origin, method))) {
+        return { result: null, error: 'Permission denied' };
+      }
+      const pubkey = typeof params?.pubkey === 'string' ? params.pubkey : '';
+      const ciphertext = typeof params?.ciphertext === 'string' ? params.ciphertext : '';
+      if (!pubkey) {
+        return { result: null, error: 'Missing pubkey parameter' };
+      }
+      if (!ciphertext) {
+        return { result: null, error: 'Missing ciphertext parameter' };
+      }
+      try {
+        return { result: await nip04.decrypt(activeSecretKey, pubkey, ciphertext), error: null };
+      } catch (error) {
+        return { result: null, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+
+    if (method === 'nip44.encrypt') {
+      const activeSecretKey = requireActiveSecretKey();
+      if (!activeSecretKey) {
+        return { result: null, error: 'No Nostr account signed in' };
+      }
+      if (!(await requestPermission(origin, method))) {
+        return { result: null, error: 'Permission denied' };
+      }
+      const pubkey = typeof params?.pubkey === 'string' ? params.pubkey : '';
+      const plaintext = typeof params?.plaintext === 'string' ? params.plaintext : '';
+      if (!pubkey) {
+        return { result: null, error: 'Missing pubkey parameter' };
+      }
+      if (!plaintext) {
+        return { result: null, error: 'Missing plaintext parameter' };
+      }
+      try {
+        return {
+          result: await nip44.encrypt(plaintext, nip44.getConversationKey(activeSecretKey, pubkey)),
+          error: null,
+        };
+      } catch (error) {
+        return { result: null, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+
+    if (method === 'nip44.decrypt') {
+      const activeSecretKey = requireActiveSecretKey();
+      if (!activeSecretKey) {
+        return { result: null, error: 'No Nostr account signed in' };
+      }
+      if (!(await requestPermission(origin, method))) {
+        return { result: null, error: 'Permission denied' };
+      }
+      const pubkey = typeof params?.pubkey === 'string' ? params.pubkey : '';
+      const ciphertext = typeof params?.ciphertext === 'string' ? params.ciphertext : '';
+      if (!pubkey) {
+        return { result: null, error: 'Missing pubkey parameter' };
+      }
+      if (!ciphertext) {
+        return { result: null, error: 'Missing ciphertext parameter' };
+      }
+      try {
+        return {
+          result: await nip44.decrypt(ciphertext, nip44.getConversationKey(activeSecretKey, pubkey)),
+          error: null,
+        };
+      } catch (error) {
+        return { result: null, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+
+    return { result: null, error: `Unknown method: ${method}` };
+  });
+
   await page.addInitScript(() => {
+    (window as any).__IRIS_BROWSER_TAURI_MOCK__ = true;
+    (window as any).__irisClipboardText = '';
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          (window as any).__irisClipboardText = text;
+        },
+        readText: async () => (window as any).__irisClipboardText ?? '',
+      },
+    });
+
     // Track invocations for assertions
     (window as any).__tauriInvocations = [] as Array<{ cmd: string; args: any }>;
     (window as any).__automationState = {
@@ -40,6 +383,16 @@ async function mockTauriIPC(page: Page) {
       childLastError: '',
       historyIndex: -1,
       historyLength: 0,
+      windowInnerHeight: 0,
+      windowOuterHeight: 0,
+      toolbarHeight: 0,
+      childBoundsTop: 0,
+      childBoundsHeight: 0,
+      childViewportWidth: 0,
+      childViewportHeight: 0,
+      pendingNip07PromptRequestId: '',
+      pendingNip07PromptOrigin: '',
+      pendingNip07PromptMethod: '',
     };
     (window as any).__irisAddressOwnerProfiles = {
       npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm: {
@@ -218,6 +571,35 @@ async function mockTauriIPC(page: Page) {
           case 'clear_history':
             historyStore.length = 0;
             return Promise.resolve();
+          case 'get_nip07_account':
+            return (window as any).__irisNip07GetAccount();
+          case 'list_nip07_accounts':
+            return (window as any).__irisNip07ListAccounts();
+          case 'login_nip07_account':
+            return (window as any).__irisNip07Login(args?.secret ?? '');
+          case 'generate_nip07_account':
+            return (window as any).__irisNip07Generate();
+          case 'logout_nip07_account':
+            return (window as any).__irisNip07Logout();
+          case 'set_active_nip07_account':
+            return (window as any).__irisNip07SetActive(args?.pubkey ?? '');
+          case 'remove_nip07_account':
+            return (window as any).__irisNip07Remove(args?.pubkey ?? '');
+          case 'export_nip07_account_secret':
+            return (window as any).__irisNip07Export(args?.pubkey ?? '');
+          case 'take_nip07_permission_prompt':
+            return (window as any).__irisTakeNip07PermissionPrompt();
+          case 'respond_nip07_permission_prompt':
+            return (window as any).__irisRespondNip07PermissionPrompt(
+              args?.requestId ?? '',
+              args?.decision ?? 'deny',
+            );
+          case 'nip07_request':
+            return (window as any).__irisNip07HandleRequest({
+              method: args?.method,
+              params: args?.params ?? {},
+              origin: args?.origin ?? 'tauri://localhost',
+            });
           default:
             return Promise.resolve(null);
         }
@@ -253,6 +635,53 @@ async function mockTauriIPC(page: Page) {
       writable: false,
       configurable: true,
     });
+
+    if (!(window as any).nostr) {
+      const callNip07 = async (method: string, params: Record<string, unknown> = {}) => {
+        const result = await ipc.invoke('nip07_request', {
+          method,
+          params,
+          origin: 'tauri://localhost',
+        });
+        if (result?.error) {
+          throw new Error(result.error);
+        }
+        return result?.result;
+      };
+
+      (window as any).nostr = {
+        async getPublicKey() {
+          return callNip07('getPublicKey');
+        },
+        async signEvent(event: {
+          created_at: number;
+          kind: number;
+          tags: string[][];
+          content: string;
+        }) {
+          return callNip07('signEvent', { event });
+        },
+        async getRelays() {
+          return callNip07('getRelays');
+        },
+        nip04: {
+          async encrypt(pubkey: string, plaintext: string) {
+            return callNip07('nip04.encrypt', { pubkey, plaintext });
+          },
+          async decrypt(pubkey: string, ciphertext: string) {
+            return callNip07('nip04.decrypt', { pubkey, ciphertext });
+          },
+        },
+        nip44: {
+          async encrypt(pubkey: string, plaintext: string) {
+            return callNip07('nip44.encrypt', { pubkey, plaintext });
+          },
+          async decrypt(pubkey: string, ciphertext: string) {
+            return callNip07('nip44.decrypt', { pubkey, ciphertext });
+          },
+        },
+      };
+    }
   });
 }
 

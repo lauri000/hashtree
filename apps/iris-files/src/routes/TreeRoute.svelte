@@ -34,6 +34,7 @@
   let isFullscreen = $derived.by(() => {
     return getQueryParamsFromHash(hash).get('fullscreen') === '1';
   });
+  let showGitFileSidebar = $derived(isViewingFile && !showGenericFileBrowser && !isFullscreen);
 
   // Check if viewing own tree (streaming only allowed on own trees)
   let userNpub = $derived($nostrStore.npub);
@@ -240,11 +241,13 @@
   });
 </script>
 
-<!-- File browser - git app uses repo/content views without the generic sidebar -->
-{#if showGenericFileBrowser && !isFullscreen && !isInGitRepo}
-  <div class={hasFileSelected
-    ? 'hidden lg:flex lg:w-80 shrink-0 flex-col min-h-0'
-    : 'flex flex-1 lg:flex-none lg:w-80 shrink-0 flex-col min-h-0'}>
+<!-- Desktop file sidebar for git file views, otherwise the generic file browser -->
+{#if !isFullscreen && (showGitFileSidebar || (showGenericFileBrowser && !isInGitRepo))}
+  <div class={showGitFileSidebar
+    ? 'hidden lg:flex lg:w-80 shrink-0 flex-col min-h-0 border-r border-surface-2 bg-surface-0'
+    : hasFileSelected
+      ? 'hidden lg:flex lg:w-80 shrink-0 flex-col min-h-0'
+      : 'flex flex-1 lg:flex-none lg:w-80 shrink-0 flex-col min-h-0'}>
     <FileBrowser />
   </div>
 {/if}

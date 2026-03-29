@@ -214,9 +214,8 @@ fn tree_root_index_fallback_path(
     Some(format!("{}/index.html", trimmed))
 }
 
-/// Handle htree:// URI scheme protocol requests
-pub fn handle_htree_protocol<R: tauri::Runtime>(
-    ctx: tauri::UriSchemeContext<'_, R>,
+fn handle_htree_protocol_sync<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     request: tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Vec<u8>> {
     let uri = request.uri();
@@ -230,7 +229,7 @@ pub fn handle_htree_protocol<R: tauri::Runtime>(
     }
 
     if host == "webview" {
-        return nip07::handle_webview_event_protocol_request(ctx.app_handle().clone(), request);
+        return nip07::handle_webview_event_protocol_request(app, request);
     }
 
     // Determine path based on URL format
@@ -278,6 +277,29 @@ pub fn handle_htree_protocol<R: tauri::Runtime>(
     }
 
     response
+}
+
+/// Handle htree:// URI scheme protocol requests without blocking the UI thread.
+pub fn handle_htree_protocol<R: tauri::Runtime>(
+    ctx: tauri::UriSchemeContext<'_, R>,
+    request: tauri::http::Request<Vec<u8>>,
+    responder: tauri::UriSchemeResponder,
+) {
+    let app = ctx.app_handle().clone();
+    tauri::async_runtime::spawn(async move {
+        let response =
+            tokio::task::spawn_blocking(move || handle_htree_protocol_sync(app, request))
+                .await
+                .unwrap_or_else(|error| {
+                    error!("Failed to join htree:// protocol handler task: {}", error);
+                    tauri::http::Response::builder()
+                        .status(500)
+                        .header("content-type", "text/plain")
+                        .body(b"Failed to handle htree:// request".to_vec())
+                        .unwrap()
+                });
+        responder.respond(response);
+    });
 }
 
 /// Cache tree roots from the frontend for faster resolution.

@@ -69,9 +69,11 @@ write_servers = ["https://hashtree.iris.to"]
 
 [nostr]
 relays = ["wss://relay.damus.io", "wss://nos.lol"]
-socialgraph_root = "npub1..."   # defaults to own key
-crawl_depth = 2                 # BFS depth for follow graph crawl
-max_write_distance = 3          # max follow distance for write access
+socialgraph_root = "npub1..."         # defaults to own key
+social_graph_crawl_depth = 2          # BFS depth for social graph crawl
+max_write_distance = 3                # max follow distance for write access
+negentropy_only = false         # require NIP-77 relays for mirror history sync
+history_sync_on_reconnect = true
 ```
 
 Keys file: `~/.hashtree/keys`

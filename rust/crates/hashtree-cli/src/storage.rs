@@ -26,6 +26,8 @@ pub const PRIORITY_OTHER: u8 = 64;
 pub const PRIORITY_FOLLOWED: u8 = 128;
 pub const PRIORITY_OWN: u8 = 255;
 const LMDB_MAX_READERS: u32 = 1024;
+#[cfg(feature = "lmdb")]
+const LMDB_BLOB_MIN_MAP_SIZE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 
 /// Metadata for a synced tree (for eviction tracking)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,15 +81,26 @@ impl LocalStore {
         Self::new_unbounded(path, backend)
     }
 
-    /// Create a new unbounded local store for a specific backend.
-    pub fn new_unbounded<P: AsRef<Path>>(
+    /// Create a new local store with an explicit LMDB map size when using the LMDB backend.
+    pub fn new_with_lmdb_map_size<P: AsRef<Path>>(
         path: P,
         backend: &StorageBackend,
+        map_size_bytes: Option<u64>,
     ) -> Result<Self, StoreError> {
         match backend {
             StorageBackend::Fs => Ok(LocalStore::Fs(FsBlobStore::new(path)?)),
             #[cfg(feature = "lmdb")]
-            StorageBackend::Lmdb => Ok(LocalStore::Lmdb(LmdbBlobStore::new(path)?)),
+            StorageBackend::Lmdb => match map_size_bytes {
+                Some(map_size_bytes) => {
+                    let map_size = usize::try_from(map_size_bytes).map_err(|_| {
+                        StoreError::Other("LMDB map size exceeds usize".to_string())
+                    })?;
+                    Ok(LocalStore::Lmdb(LmdbBlobStore::with_map_size(
+                        path, map_size,
+                    )?))
+                }
+                None => Ok(LocalStore::Lmdb(LmdbBlobStore::new(path)?)),
+            },
             #[cfg(not(feature = "lmdb"))]
             StorageBackend::Lmdb => {
                 tracing::warn!(
@@ -96,6 +109,14 @@ impl LocalStore {
                 Ok(LocalStore::Fs(FsBlobStore::new(path)?))
             }
         }
+    }
+
+    /// Create a new unbounded local store for a specific backend.
+    pub fn new_unbounded<P: AsRef<Path>>(
+        path: P,
+        backend: &StorageBackend,
+    ) -> Result<Self, StoreError> {
+        Self::new_with_lmdb_map_size(path, backend, None)
     }
 
     pub fn backend(&self) -> StorageBackend {
@@ -626,10 +647,32 @@ impl HashtreeStore {
         // Intentionally keep the raw blob backend unbounded here. HashtreeStore
         // owns quota policy above this layer, where it can coordinate eviction
         // with tree refs, blob ownership, pins, and S3 archival behavior.
-        let local_store = Arc::new(
-            LocalStore::new_unbounded(path.join("blobs"), backend)
-                .map_err(|e| anyhow::anyhow!("Failed to create blob store: {}", e))?,
-        );
+        let local_store = Arc::new(match backend {
+            hashtree_config::StorageBackend::Fs => LocalStore::Fs(
+                FsBlobStore::new(path.join("blobs"))
+                    .map_err(|e| anyhow::anyhow!("Failed to create blob store: {}", e))?,
+            ),
+            #[cfg(feature = "lmdb")]
+            hashtree_config::StorageBackend::Lmdb => {
+                let requested_map_size = max_size_bytes.max(LMDB_BLOB_MIN_MAP_SIZE_BYTES);
+                let map_size = usize::try_from(requested_map_size)
+                    .context("LMDB blob map size exceeds usize")?;
+                LocalStore::Lmdb(
+                    LmdbBlobStore::with_map_size(path.join("blobs"), map_size)
+                        .map_err(|e| anyhow::anyhow!("Failed to create blob store: {}", e))?,
+                )
+            }
+            #[cfg(not(feature = "lmdb"))]
+            hashtree_config::StorageBackend::Lmdb => {
+                tracing::warn!(
+                    "LMDB backend requested but lmdb feature not enabled, using filesystem storage"
+                );
+                LocalStore::Fs(
+                    FsBlobStore::new(path.join("blobs"))
+                        .map_err(|e| anyhow::anyhow!("Failed to create blob store: {}", e))?,
+                )
+            }
+        });
 
         // Create storage router with optional S3
         #[cfg(feature = "s3")]
@@ -2545,5 +2588,61 @@ impl crate::webrtc::ContentStore for HashtreeStore {
     fn get(&self, hash_hex: &str) -> Result<Option<Vec<u8>>> {
         let hash = from_hex(hash_hex).map_err(|e| anyhow::anyhow!("Invalid hash: {}", e))?;
         self.get_chunk(&hash)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[cfg(feature = "lmdb")]
+    #[test]
+    fn hashtree_store_expands_blob_lmdb_map_size_to_storage_budget() -> Result<()> {
+        let temp = TempDir::new()?;
+        let requested = LMDB_BLOB_MIN_MAP_SIZE_BYTES + 64 * 1024 * 1024;
+        let store = HashtreeStore::with_options_and_backend(
+            temp.path(),
+            None,
+            requested,
+            &StorageBackend::Lmdb,
+        )?;
+
+        let map_size = match store.router.local.as_ref() {
+            LocalStore::Lmdb(local) => local.map_size_bytes() as u64,
+            LocalStore::Fs(_) => panic!("expected LMDB local store"),
+        };
+
+        assert!(
+            map_size >= requested,
+            "expected blob LMDB map to grow to at least {requested} bytes, got {map_size}"
+        );
+
+        drop(store);
+        Ok(())
+    }
+
+    #[cfg(feature = "lmdb")]
+    #[test]
+    fn local_store_can_override_lmdb_map_size() -> Result<()> {
+        let temp = TempDir::new()?;
+        let requested = 512 * 1024 * 1024u64;
+        let store = LocalStore::new_with_lmdb_map_size(
+            temp.path().join("lmdb-blobs"),
+            &StorageBackend::Lmdb,
+            Some(requested),
+        )?;
+
+        let map_size = match store {
+            LocalStore::Lmdb(local) => local.map_size_bytes() as u64,
+            LocalStore::Fs(_) => panic!("expected LMDB local store"),
+        };
+
+        assert!(
+            map_size >= requested,
+            "expected LMDB map to grow to at least {requested} bytes, got {map_size}"
+        );
+
+        Ok(())
     }
 }

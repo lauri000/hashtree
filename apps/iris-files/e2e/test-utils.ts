@@ -42,6 +42,26 @@ async function waitForWorkerAdapter(page: any, timeoutMs: number = 60000) {
   );
 }
 
+function isTransientNavigationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return [
+    'net::ERR_CONNECTION_REFUSED',
+    'net::ERR_CONNECTION_RESET',
+    'net::ERR_CONNECTION_CLOSED',
+    'net::ERR_EMPTY_RESPONSE',
+    'net::ERR_NETWORK_CHANGED',
+    'Target page, context or browser has been closed',
+  ].some((snippet) => message.includes(snippet));
+}
+
+function resolveNavigationRetries(url: string, retries?: number): number {
+  if (typeof retries === 'number') {
+    return Math.max(0, retries);
+  }
+  // Local e2e servers can restart transiently under heavy suite load.
+  return url.startsWith('/') || /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?(?:\/|$)/.test(url) ? 30 : 2;
+}
+
 export async function evaluateWithRetry<T, R>(
   page: any,
   fn: (arg: T) => Promise<R> | R,
@@ -82,7 +102,7 @@ export async function safeGoto(
 ): Promise<void> {
   const waitUntil = options?.waitUntil ?? 'domcontentloaded';
   const timeoutMs = options?.timeoutMs ?? 60000;
-  const retries = options?.retries ?? 2;
+  const retries = resolveNavigationRetries(url, options?.retries);
   const delayMs = options?.delayMs ?? 1000;
   let lastError: unknown;
 
@@ -92,10 +112,10 @@ export async function safeGoto(
       return;
     } catch (err) {
       lastError = err;
-      if (attempt === retries) {
+      if (attempt === retries || !isTransientNavigationError(err)) {
         break;
       }
-      await page.waitForTimeout(delayMs);
+      await page.waitForTimeout(Math.min(delayMs * (attempt + 1), 5000));
     }
   }
 
@@ -293,7 +313,7 @@ export async function safeReload(
 ): Promise<void> {
   const waitUntil = options?.waitUntil ?? 'domcontentloaded';
   const timeoutMs = options?.timeoutMs ?? 60000;
-  const retries = options?.retries ?? 2;
+  const retries = resolveNavigationRetries(options?.url ?? page.url(), options?.retries);
   const targetUrl = options?.url ?? page.url();
 
   for (let attempt = 0; attempt < retries; attempt++) {
@@ -302,7 +322,7 @@ export async function safeReload(
       return;
     } catch {
       try {
-        await page.goto(targetUrl, { waitUntil, timeout: timeoutMs });
+        await safeGoto(page, targetUrl, { waitUntil, timeoutMs, retries: Math.max(0, retries - attempt - 1) });
         return;
       } catch (err) {
         if (attempt === retries - 1) {

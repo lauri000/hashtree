@@ -29,6 +29,16 @@ async function createFile(page: Page, name: string, content: string = '') {
   await expect(page.locator('textarea')).not.toBeVisible({ timeout: 10000 });
 }
 
+async function openCodeFileAndWaitForLine(
+  page: Page,
+  fileName: string,
+  lineNumber: number,
+  timeoutMs: number = 30000
+) {
+  await page.locator(`a:has-text("${fileName}")`).first().click();
+  await expect(page.locator(`[data-line="${lineNumber}"]`)).toBeVisible({ timeout: timeoutMs });
+}
+
 test.describe('Anchor Links', () => {
   test.setTimeout(120000);
 
@@ -97,8 +107,7 @@ test.describe('Anchor Links', () => {
       await createAndEnterTree(page, 'line-num-test');
       await createFile(page, 'test.ts', 'const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;\nconst e = 5;');
 
-      await page.locator('a:has-text("test.ts")').first().click();
-      await expect(page.locator('pre')).toBeVisible({ timeout: 10000 });
+      await openCodeFileAndWaitForLine(page, 'test.ts', 1);
 
       // Line numbers should be visible
       await expect(page.locator('[data-line="1"]')).toBeVisible();
@@ -109,8 +118,7 @@ test.describe('Anchor Links', () => {
       await createAndEnterTree(page, 'line-layout-test');
       await createFile(page, 'Cargo.toml', '[workspace]\nmembers = ["crates/*"]');
 
-      await page.locator('a:has-text("Cargo.toml")').first().click();
-      await expect(page.locator('[data-line="1"]')).toBeVisible({ timeout: 10000 });
+      await openCodeFileAndWaitForLine(page, 'Cargo.toml', 1);
 
       const lineMetrics = await page.locator('[data-line="1"]').evaluate((el) => {
         const line = el.getBoundingClientRect();
@@ -135,8 +143,7 @@ test.describe('Anchor Links', () => {
       await createAndEnterTree(page, 'line-click-test');
       await createFile(page, 'code.js', 'line1\nline2\nline3\nline4\nline5');
 
-      await page.locator('a:has-text("code.js")').first().click();
-      await expect(page.locator('pre')).toBeVisible({ timeout: 10000 });
+      await openCodeFileAndWaitForLine(page, 'code.js', 1);
 
       // Click line 3
       await page.locator('[data-line="3"] .line-number').click();
@@ -147,8 +154,7 @@ test.describe('Anchor Links', () => {
       await createAndEnterTree(page, 'line-highlight-test');
       await createFile(page, 'src.py', 'a = 1\nb = 2\nc = 3\nd = 4\ne = 5');
 
-      await page.locator('a:has-text("src.py")').first().click();
-      await expect(page.locator('[data-line="3"]')).toBeVisible({ timeout: 10000 });
+      await openCodeFileAndWaitForLine(page, 'src.py', 3);
 
       // Click line 3 to add query param, then verify highlight
       await page.locator('[data-line="3"] .line-number').click();
@@ -160,8 +166,7 @@ test.describe('Anchor Links', () => {
       await createAndEnterTree(page, 'line-range-test');
       await createFile(page, 'range.rs', 'fn main() {\n    let x = 1;\n    let y = 2;\n    let z = 3;\n    println!("{}", x + y + z);\n}');
 
-      await page.locator('a:has-text("range.rs")').first().click();
-      await expect(page.locator('[data-line="2"]')).toBeVisible({ timeout: 10000 });
+      await openCodeFileAndWaitForLine(page, 'range.rs', 2);
 
       // Click line 2, then shift-click line 4 to select range
       await page.locator('[data-line="2"] .line-number').click();
@@ -185,8 +190,7 @@ test.describe('Anchor Links', () => {
       await createAndEnterTree(page, 'shift-click-test');
       await createFile(page, 'multi.go', 'package main\n\nimport "fmt"\n\nfunc main() {\n    fmt.Println("hi")\n}');
 
-      await page.locator('a:has-text("multi.go")').first().click();
-      await expect(page.locator('[data-line="3"]')).toBeVisible({ timeout: 10000 });
+      await openCodeFileAndWaitForLine(page, 'multi.go', 3);
 
       // Click line 3
       await page.locator('[data-line="3"] .line-number').click();

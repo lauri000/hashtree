@@ -11,9 +11,8 @@
   import { encodeEventId, type PullRequest, type ItemStatus } from '../../nip34';
   import ItemStatusBadge from './ItemStatusBadge.svelte';
   import ItemListHeader from './ItemListHeader.svelte';
-  import RepoTabNav from './RepoTabNav.svelte';
-  import RepoHeader from './RepoHeader.svelte';
   import AuthorName from './AuthorName.svelte';
+  import RepoChildLayout from './RepoChildLayout.svelte';
 
   interface Props {
     npub: string;
@@ -120,22 +119,15 @@
 </script>
 
 <!-- Right panel with PRs - shown on mobile -->
-<div class="flex flex-1 flex-col min-w-0 min-h-0 bg-surface-0">
-  <!-- Tab navigation -->
-  <RepoTabNav {npub} {repoName} activeTab="pulls" />
-
-  <div class="mx-auto flex w-full max-w-7xl flex-1 flex-col">
-    <div class="px-3 py-3">
-      <RepoHeader
-        {backUrl}
-        {npub}
-        {rootCid}
-        visibility={currentTree?.visibility}
-        {repoName}
-      />
-    </div>
-
-    <div class="mx-3 mb-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg b-1 b-solid b-surface-3 bg-surface-0">
+<RepoChildLayout
+  {backUrl}
+  {npub}
+  {repoName}
+  {rootCid}
+  activeTab="pulls"
+  visibility={currentTree?.visibility}
+>
+  <div class="mx-3 mb-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg b-1 b-solid b-surface-3 bg-surface-0">
       <!-- Header with filter and new PR button -->
       <ItemListHeader
         type="pr"
@@ -176,16 +168,7 @@
             {#each filteredPRs as pr (pr.id)}
               {@const href = getPRHref(pr)}
               <div
-                role="link"
-                tabindex="0"
-                class="px-4 py-3 flex items-start gap-3 cursor-pointer transition-colors hover:bg-surface-1"
-                onclick={() => window.location.hash = href.slice(1)}
-                onkeydown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    window.location.hash = href.slice(1);
-                  }
-                }}
+                class="px-4 py-3 flex items-start gap-3 transition-colors hover:bg-surface-1"
               >
                 <!-- Status icon -->
                 <div class="mt-1">
@@ -219,6 +202,5 @@
           </div>
         {/if}
       </div>
-    </div>
   </div>
-</div>
+</RepoChildLayout>

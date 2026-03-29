@@ -74,6 +74,8 @@ docker_run_args+=(
     pnpm install --frozen-lockfile
     DBUS_SESSION_BUS_ADDRESS= dbus-run-session -- xvfb-run -a bash -lc '"'"'
       set -euo pipefail
+      export GDK_SCALE=1
+      export GDK_DPI_SCALE=1
       openbox >/tmp/openbox.log 2>&1 &
       eval "${IRIS_NATIVE_DOCKER_COMMAND}"
     '"'"'

@@ -87,6 +87,7 @@
 
   let aboutText = $derived(projectMeta?.about ?? extractReadmeLead(readmeContent));
   let homepage = $derived(projectMeta?.homepage ?? null);
+  let hasAboutSection = $derived(projectMetaLoading || !!aboutText || !!homepage);
 
   function normalizeHref(href: string): string {
     return /^[a-z][a-z0-9+.-]*:/i.test(href) ? href : `https://${href}`;
@@ -131,18 +132,22 @@
     if (days < 30) return `${Math.floor(days / 7)}w ago`;
     return date.toLocaleDateString();
   }
+
+  function shouldShowTagChip(release: ReleaseSummary): boolean {
+    if (!release.tag) return false;
+    return release.tag.trim() !== release.title.trim();
+  }
 </script>
 
 <aside class="w-full shrink-0 lg:sticky lg:top-4 lg:w-72" data-testid="repo-sidebar">
-  <div class="flex flex-col gap-4">
-    {#if projectMetaLoading || aboutText || homepage}
-      <section class="rounded-lg b-1 b-surface-3 b-solid bg-surface-0 overflow-hidden" data-testid="repo-project-sidebar">
-        <div class="flex items-center justify-between gap-3 px-4 py-3 b-b-1 b-b-solid b-b-surface-3">
-          <span class="text-sm font-medium text-text-1">About</span>
-          <span class="i-lucide-info text-text-3"></span>
+  <div class="flex flex-col">
+    {#if hasAboutSection}
+      <section class="px-4 py-4" data-testid="repo-project-sidebar">
+        <div class="mb-3">
+          <span class="text-base font-semibold text-text-1">About</span>
         </div>
 
-        <div class="flex flex-col gap-3 px-4 py-4">
+        <div class="flex flex-col gap-3">
           {#if aboutText}
             <p class="text-sm text-text-2 whitespace-pre-wrap">{aboutText}</p>
           {:else if projectMetaLoading}
@@ -157,74 +162,81 @@
               href={normalizeHref(homepage)}
               target="_blank"
               rel="noreferrer"
-              class="inline-flex items-center gap-2 text-sm text-accent hover:underline break-all"
+              class="inline-flex items-center gap-2 break-all text-sm text-accent no-underline hover:text-accent/80"
             >
-              <span class="i-lucide-globe text-text-3"></span>
               <span>{formatHomepageLabel(homepage)}</span>
             </a>
           {/if}
         </div>
       </section>
+
+      <div class="h-px bg-surface-3" aria-hidden="true"></div>
     {/if}
 
-    <section class="rounded-lg b-1 b-surface-3 b-solid bg-surface-0 overflow-hidden" data-testid="repo-releases-sidebar">
-      <div class="flex items-center justify-between gap-3 px-4 py-3 b-b-1 b-b-solid b-b-surface-3">
-        <div class="min-w-0">
-          <div class="text-sm font-medium text-text-1">Releases</div>
-          <div class="text-xs text-text-3">
-            {#if releasesState.loading}
-              Loading release summary...
-            {:else}
-              {visibleReleases.length} release{visibleReleases.length !== 1 ? 's' : ''}
-            {/if}
-          </div>
+    <section class="px-4 py-4" data-testid="repo-releases-sidebar">
+      <div class="mb-3">
+        <div class="flex min-w-0 items-center gap-2">
+          <a
+            href={buildReleasesHref()}
+            class="text-base font-semibold text-text-1 no-underline hover:text-accent"
+            data-testid="repo-releases-link"
+          >
+            Releases
+          </a>
+          {#if !releasesState.loading}
+            <span class="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-text-3">
+              {visibleReleases.length}
+            </span>
+          {/if}
         </div>
-        <span class="i-lucide-tag text-text-3"></span>
       </div>
 
       {#if releasesState.loading}
-        <div class="flex items-center gap-2 px-4 py-4 text-sm text-text-3">
+        <div class="flex items-center gap-2 py-1 text-sm text-text-3">
           <span class="i-lucide-loader-2 animate-spin"></span>
           Loading releases...
         </div>
       {:else if releasesState.error}
-        <div class="px-4 py-4 text-sm text-danger">
+        <div class="py-1 text-sm text-danger">
           {releasesState.error}
         </div>
       {:else if latestRelease}
-        <div class="flex flex-col gap-3 px-4 py-4">
-          <div class="text-xs font-medium uppercase tracking-wide text-text-3">Latest release</div>
-          <a
-            href={buildReleaseHref(latestRelease)}
-            class="text-sm font-medium text-text-1 hover:text-accent hover:underline"
-            data-testid="repo-latest-release-link"
-          >
-            {latestRelease.title}
-          </a>
+        <div class="flex flex-col gap-3">
+          <div class="flex items-center gap-2">
+            <span class="i-lucide-tag shrink-0 text-sm text-success"></span>
+            <a
+              href={buildReleaseHref(latestRelease)}
+              class="text-base font-medium text-text-1 no-underline hover:text-accent"
+              data-testid="repo-latest-release-link"
+            >
+              {latestRelease.title}
+            </a>
+            <span class="rounded-full bg-success/15 px-2 py-0.5 text-xs text-success">
+              Latest
+            </span>
+          </div>
 
           <div class="flex flex-wrap items-center gap-2 text-xs text-text-3">
-            {#if latestRelease.tag}
+            {#if shouldShowTagChip(latestRelease)}
               <span class="font-mono rounded bg-surface-2 px-1.5 py-0.5">{latestRelease.tag}</span>
             {/if}
-            <span>published {formatDate(latestRelease.published_at ?? latestRelease.created_at)}</span>
+            <span>{formatDate(latestRelease.published_at ?? latestRelease.created_at)}</span>
           </div>
+
+          {#if visibleReleases.length > 1}
+            <a
+              href={buildReleasesHref()}
+              class="text-sm text-accent no-underline hover:text-accent/80"
+            >
+              +{visibleReleases.length - 1} release{visibleReleases.length - 1 !== 1 ? 's' : ''}
+            </a>
+          {/if}
         </div>
       {:else}
-        <div class="px-4 py-4 text-sm text-text-3">
+        <div class="py-1 text-sm text-text-3">
           No releases yet.
         </div>
       {/if}
-
-      <div class="px-4 py-3 b-t-1 b-t-solid b-t-surface-3">
-        <a
-          href={buildReleasesHref()}
-          class="inline-flex items-center gap-2 text-sm text-accent hover:underline"
-          data-testid="repo-releases-link"
-        >
-          <span>View all releases</span>
-          <span class="i-lucide-arrow-right text-xs"></span>
-        </a>
-      </div>
     </section>
   </div>
 </aside>

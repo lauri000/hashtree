@@ -8,17 +8,26 @@ async function openHome(page: import('@playwright/test').Page) {
 }
 
 test.describe('Settings Page', () => {
-  test('shows tabbed settings sections', async ({ tauriPage: page }) => {
+  test('shows settings navigation and defaults to the app section on wide screens', async ({ tauriPage: page }) => {
     await openHome(page);
     await page.getByTitle('Settings').click();
 
-    await expect(page.getByRole('button', { name: 'Desktop' })).toBeVisible();
+    await expect(page.getByTestId('settings-nav-app')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Privacy' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Users' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Network' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'About' })).toBeVisible();
 
     await expect(page.getByText('Launch at startup')).toBeVisible();
     await expect(page.getByText('Open Iris automatically when you log in')).toBeVisible();
+  });
+
+  test('supports direct settings routes', async ({ tauriPage: page }) => {
+    setupPageErrorHandler(page);
+    await page.goto('/#/settings/network');
+
+    await expect(page.getByRole('heading', { name: 'Local Service' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Network' })).toBeVisible();
   });
 
   test('network tab shows local network settings', async ({ tauriPage: page }) => {

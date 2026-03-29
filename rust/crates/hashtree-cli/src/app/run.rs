@@ -6,8 +6,8 @@ use hashtree_cli::config::{
 #[cfg(feature = "p2p")]
 use hashtree_cli::PeerRouter;
 use hashtree_cli::{
-    spawn_background_eviction_task, BackgroundSync, Config, FetchConfig, Fetcher, HashtreeServer,
-    HashtreeStore, NostrKeys, NostrResolverConfig, NostrRootResolver, NostrToBech32, RootResolver,
+    spawn_background_eviction_task, Config, FetchConfig, Fetcher, HashtreeServer, HashtreeStore,
+    NostrKeys, NostrResolverConfig, NostrRootResolver, NostrToBech32, RootResolver,
     BACKGROUND_EVICTION_INTERVAL,
 };
 use hashtree_core::{Cid, HashTree, HashTreeConfig, NHashData};
@@ -31,7 +31,8 @@ use super::peers::{fetch_profile_name, list_peers};
 use super::release::publish_release_version;
 use super::resolve::resolve_cid_input;
 use super::socialgraph::{
-    run_socialgraph_filter, run_socialgraph_snapshot, run_socialgraph_stats, run_socialgraph_warm,
+    run_socialgraph_filter, run_socialgraph_rebuild_profile_index, run_socialgraph_snapshot,
+    run_socialgraph_stats, run_socialgraph_warm,
 };
 use super::util::chrono_humanize_timestamp;
 
@@ -187,14 +188,6 @@ pub(crate) async fn run() -> Result<()> {
             let crawler_spambox_backend = crawler_spambox
                 .clone()
                 .map(|store| store as Arc<dyn hashtree_cli::socialgraph::SocialGraphBackend>);
-            let crawler_tasks = hashtree_cli::socialgraph::crawler::spawn_social_graph_tasks(
-                graph_store.clone(),
-                keys.clone(),
-                config.nostr.relays.clone(),
-                config.nostr.crawl_depth,
-                crawler_spambox_backend,
-                data_dir.clone(),
-            );
 
             #[cfg(feature = "p2p")]
             let peer_router_enabled = hashtree_cli::p2p_common::peer_router_enabled(&config);
@@ -323,43 +316,21 @@ pub(crate) async fn run() -> Result<()> {
                 server = server.with_webrtc_peers(webrtc_state.clone());
             }
 
-            // Start background sync service if enabled
-            let sync_handle = if config.sync.enabled {
-                let sync_config = hashtree_cli::sync::SyncConfig {
-                    sync_own: config.sync.sync_own,
-                    sync_followed: config.sync.sync_followed,
-                    relays: config.nostr.relays.clone(),
-                    max_concurrent: config.sync.max_concurrent,
-                    webrtc_timeout_ms: config.sync.webrtc_timeout_ms,
-                    blossom_timeout_ms: config.sync.blossom_timeout_ms,
-                };
-
-                // Create nostr-sdk Keys from our nostr Keys
-                let sync_keys = nostr_sdk::Keys::parse(&keys.secret_key().to_bech32()?)
-                    .context("Failed to parse keys for sync")?;
-
-                let sync_service = BackgroundSync::new(
-                    sync_config,
+            let background_services_controller = Arc::new(
+                hashtree_cli::daemon::EmbeddedBackgroundServicesController::new(
+                    keys.clone(),
+                    data_dir.clone(),
                     Arc::clone(&store),
-                    sync_keys,
+                    graph_store.clone(),
+                    Arc::clone(&social_graph_store),
+                    crawler_spambox_backend,
                     webrtc_state.clone(),
-                )
+                ),
+            );
+            background_services_controller
+                .apply_config(&config)
                 .await
-                .context("Failed to create background sync service")?;
-
-                let contacts_file = data_dir.join("contacts.json");
-
-                // Spawn the sync service
-                let handle = tokio::spawn(async move {
-                    if let Err(e) = sync_service.run(contacts_file).await {
-                        tracing::error!("Background sync error: {}", e);
-                    }
-                });
-
-                Some(handle)
-            } else {
-                None
-            };
+                .context("Failed to start background services")?;
 
             // Start background eviction task (runs every 5 minutes)
             let eviction_handle = spawn_background_eviction_task(
@@ -410,8 +381,8 @@ pub(crate) async fn run() -> Result<()> {
                 );
             }
             println!(
-                "Social graph: enabled (crawl_depth={}, max_write_distance={})",
-                config.nostr.crawl_depth, config.nostr.max_write_distance
+                "Social graph: enabled (social_graph_crawl_depth={}, max_write_distance={})",
+                config.nostr.social_graph_crawl_depth, config.nostr.max_write_distance
             );
             println!("Storage limit: {} GB", config.storage.max_size_gb);
             if !config.cashu.accepted_mints.is_empty() {
@@ -447,17 +418,10 @@ pub(crate) async fn run() -> Result<()> {
             server.run().await?;
 
             // Shutdown social graph crawler
-            let _ = crawler_tasks.shutdown_tx.send(true);
-            crawler_tasks.crawl_handle.abort();
-            crawler_tasks.local_list_handle.abort();
-
             // Shutdown background eviction
             eviction_handle.abort();
 
-            // Shutdown background sync
-            if let Some(handle) = sync_handle {
-                handle.abort();
-            }
+            background_services_controller.shutdown().await;
 
             // Shutdown WebRTC manager
             #[cfg(feature = "p2p")]
@@ -1147,6 +1111,9 @@ pub(crate) async fn run() -> Result<()> {
                     max_edges_per_node,
                 )?;
             }
+            SocialGraphCommands::RebuildProfileIndex => {
+                run_socialgraph_rebuild_profile_index(data_dir)?;
+            }
             SocialGraphCommands::Index {
                 warm_secs,
                 crawl_depth,
@@ -1161,6 +1128,7 @@ pub(crate) async fn run() -> Result<()> {
                 fetch_timeout_secs,
                 relay_event_max_bytes,
                 global_relay_scan,
+                author_allowlist_url,
                 negentropy_only,
                 relay_page_size,
                 max_relay_pages,
@@ -1169,9 +1137,10 @@ pub(crate) async fn run() -> Result<()> {
                 relays,
             } => {
                 let config = Config::load()?;
-                let effective_crawl_depth = crawl_depth.unwrap_or(config.nostr.crawl_depth);
+                let effective_crawl_depth =
+                    crawl_depth.unwrap_or(config.nostr.social_graph_crawl_depth);
                 let effective_max_follow_distance =
-                    max_follow_distance.or(Some(config.nostr.crawl_depth));
+                    max_follow_distance.or(Some(config.nostr.social_graph_crawl_depth));
                 run_socialgraph_index_from_cli(
                     data_dir,
                     SocialGraphIndexOptions {
@@ -1189,6 +1158,7 @@ pub(crate) async fn run() -> Result<()> {
                         fetch_timeout: Duration::from_secs(fetch_timeout_secs),
                         relay_event_max_bytes,
                         global_relay_scan,
+                        author_allowlist_url,
                         negentropy_only,
                         relay_page_size,
                         max_relay_pages,

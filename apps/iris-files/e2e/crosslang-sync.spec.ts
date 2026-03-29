@@ -20,6 +20,7 @@ import { fileURLToPath } from 'url';
 import { nip19, generateSecretKey, getPublicKey } from 'nostr-tools';
 import fs from 'fs';
 import { acquireRustLock, releaseRustLock } from './rust-lock.js';
+import { rustTargetPath, withRustTargetEnv } from './rust-target.js';
 
 // Run tests in this file serially to avoid WebRTC/timing conflicts
 test.describe.configure({ mode: 'serial' });
@@ -97,8 +98,8 @@ function ensureHtreeBinary(): string | null {
     const workspaceRoot = HASHTREE_RS_DIR;
 
     // Try to find existing binary
-    const debugBin = path.join(workspaceRoot, 'target/debug/htree');
-    const releaseBin = path.join(workspaceRoot, 'target/release/htree');
+    const debugBin = rustTargetPath('debug', 'htree');
+    const releaseBin = rustTargetPath('release', 'htree');
 
     try {
       execSync(`test -f ${debugBin}`, { stdio: 'ignore' });
@@ -112,7 +113,11 @@ function ensureHtreeBinary(): string | null {
 
     // Build the binary
     console.log('Building htree binary...');
-    execSync('cargo build --bin htree --features p2p', { cwd: workspaceRoot, stdio: 'inherit' });
+    execSync('cargo build --bin htree --features p2p', {
+      cwd: workspaceRoot,
+      env: withRustTargetEnv(),
+      stdio: 'inherit',
+    });
     return debugBin;
   } catch (e) {
     console.log('Failed to build htree:', e);
@@ -133,11 +138,6 @@ test.describe('Cross-Language Sync', () => {
     if (!fs.existsSync(path.join(HASHTREE_RS_DIR, 'Cargo.toml'))) {
       test.skip(true, 'rust toolchain not available');
       return;
-    }
-
-    const htreeBin = ensureHtreeBinary();
-    if (!htreeBin) {
-      throw new Error('Could not build htree binary');
     }
 
     setupPageErrorHandler(page);
@@ -169,6 +169,11 @@ test.describe('Cross-Language Sync', () => {
 
     try {
       lockFd = await acquireRustLock(90000);
+      const htreeBin = ensureHtreeBinary();
+      if (!htreeBin) {
+        throw new Error('Could not build htree binary');
+      }
+
       // ===== STEP 1: Start TS app and wait for full initialization =====
       console.log('[TS] Starting app...');
       await page.goto('/');
@@ -251,14 +256,14 @@ test.describe('Cross-Language Sync', () => {
         '--', '--nocapture', '--test-threads=1', '--ignored'
       ], {
         cwd: HASHTREE_RS_DIR,
-        env: {
+        env: withRustTargetEnv({
           ...process.env,
           RUST_LOG: 'debug',
           CROSSLANG_SECRET_KEY: bytesToHex(rustKeys.secretKey),
           CROSSLANG_FOLLOW_PUBKEY: tsPubkeyHex,
           LOCAL_RELAY: localRelay,
           CROSSLANG_PORT: String(crosslangPort),
-        },
+        }),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 

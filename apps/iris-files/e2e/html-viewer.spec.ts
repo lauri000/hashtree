@@ -1,9 +1,5 @@
 /**
- * E2E tests for HTML file handoff to sites.iris.to
- *
- * Iris Files should no longer embed HTML app/site previews directly.
- * HTML entries stay editable/downloadable, but execution and rendering
- * move to the dedicated isolated site runtime.
+ * E2E tests for HTML file viewing with sites.iris.to handoff.
  */
 import { test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
@@ -29,8 +25,8 @@ async function ensureFolderView(page: Page) {
   await expect(backToFolder).toBeHidden({ timeout: 10000 });
 }
 
-test.describe('HTML site handoff', () => {
-  test('should surface sites.iris.to links for a directory site instead of embedding it', async ({ page }) => {
+test.describe('HTML file viewing', () => {
+  test('should show HTML source normally and keep an Open Site link in the header', async ({ page }) => {
     setupPageErrorHandler(page);
     await page.goto('/');
     await navigateToPublicFolder(page);
@@ -80,27 +76,25 @@ test.describe('HTML site handoff', () => {
 
       await page.locator('[data-testid="file-list"] a:has-text("index.html")').click();
 
-      const handoff = page.getByTestId('html-site-handoff');
-      await expect(handoff).toBeVisible({ timeout: 10000 });
-      await expect(handoff).toContainText('Open this HTML file in sites.iris.to');
+      await expect(page.getByTestId('html-site-handoff')).toHaveCount(0);
       await expect(page.locator('iframe')).toHaveCount(0);
 
       const viewerOpenSite = page.getByTestId('viewer-open-site');
-      const handoffOpenSite = page.getByTestId('html-site-handoff-open-site');
       await expect(viewerOpenSite).toBeVisible({ timeout: 10000 });
-      await expect(handoffOpenSite).toBeVisible({ timeout: 10000 });
-
       const viewerHref = await viewerOpenSite.getAttribute('href');
-      const handoffHref = await handoffOpenSite.getAttribute('href');
-      expect(viewerHref).toBe(handoffHref);
       expect(viewerHref).toMatch(/https:\/\/sites\.iris\.to\/#\//);
       expect(viewerHref).toMatch(/html-test\/index\.html\?reload=1$/);
+
+      const codeViewer = page.locator('pre.code-viewer');
+      await expect(codeViewer).toBeVisible({ timeout: 10000 });
+      await expect(codeViewer).toContainText('<h1>Hello from HashTree</h1>');
+      await expect(codeViewer).toContainText('<link rel="stylesheet" href="style.css">');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  test('should hand off app-style HTML entries to sites.iris.to instead of previewing them inline', async ({ page }) => {
+  test('should show app-style HTML source and keep an Open Site link in the header', async ({ page }) => {
     setupPageErrorHandler(page);
     await page.goto('/');
     await disableOthersPool(page);
@@ -165,12 +159,16 @@ test.describe('HTML site handoff', () => {
 
     await page.waitForURL(new RegExp(`${appDir}.*index\\.html`), { timeout: 15000 });
 
-    const handoff = page.getByTestId('html-site-handoff');
-    await expect(handoff).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('html-site-handoff')).toHaveCount(0);
     await expect(page.locator('iframe')).toHaveCount(0);
 
     const viewerOpenSite = page.getByTestId('viewer-open-site');
     await expect(viewerOpenSite).toBeVisible({ timeout: 10000 });
     await expect(viewerOpenSite).toHaveAttribute('href', new RegExp(`${appDir}\\/index\\.html\\?reload=1$`));
+
+    const codeViewer = page.locator('pre.code-viewer');
+    await expect(codeViewer).toBeVisible({ timeout: 10000 });
+    await expect(codeViewer).toContainText('<title>Absolute Assets App</title>');
+    await expect(codeViewer).toContainText('<script src="/assets/app.js"></script>');
   });
 });

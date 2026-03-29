@@ -32,7 +32,9 @@ hashtree-config.workspace = true
 hashtree-nostr.workspace = true
 hashtree-nostr-bridge = { version = "0.2.14", path = "../hashtree-nostr-bridge" }
 hashtree-resolver = { workspace = true, features = ["nostr"] }
+hashtree-index.workspace = true
 hashtree-webrtc = { workspace = true, optional = true }
+cashu-service = { workspace = true, default-features = false }
 
 # AWS S3 (optional)
 aws-sdk-s3 = { workspace = true, optional = true }
@@ -41,8 +43,6 @@ aws-config = { workspace = true, optional = true }
 # Storage (heed needed for metadata databases)
 heed.workspace = true
 tempfile.workspace = true
-cdk = { version = "0.15.1", default-features = false, features = ["wallet"], optional = true }
-cdk-sqlite = { version = "0.15.1", default-features = false, features = ["wallet"], optional = true }
 
 # HTTP/Web
 axum.workspace = true
@@ -105,7 +105,7 @@ rustls = { version = "0.23", features = ["ring"] }
 
 [features]
 default = ["p2p", "lmdb"]
-cashu = ["dep:cdk", "dep:cdk-sqlite"]
+cashu = ["cashu-service/wallet"]
 p2p = ["dep:hashtree-webrtc", "dep:webrtc"]
 stun = ["p2p", "dep:webrtc-stun"]
 s3 = ["dep:aws-sdk-s3", "dep:aws-config"]

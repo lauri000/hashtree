@@ -371,7 +371,7 @@ stun_port = 0
 
 [nostr]
 relays = ["wss://temp.iris.to", "wss://relay.damus.io", "wss://relay.snort.social"]
-crawl_depth = 0
+social_graph_crawl_depth = 0
 "#;
         std::fs::write(config_dir.join("config.toml"), config_content)
             .expect("Failed to write config");

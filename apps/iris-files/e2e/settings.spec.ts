@@ -2,7 +2,7 @@ import { test, expect } from './fixtures';
 import { setupPageErrorHandler, configureBlossomServers, navigateToPublicFolder, disableOthersPool, waitForAppReady, getTestBlossomUrl } from './test-utils.js';
 
 test.describe('Settings page', () => {
-  test('can navigate to settings page', async ({ page }) => {
+  test('can navigate to settings page and defaults to the app section', async ({ page }) => {
     setupPageErrorHandler(page);
     await page.goto('/');
 
@@ -12,12 +12,14 @@ test.describe('Settings page', () => {
 
     await page.waitForURL(/#\/settings/, { timeout: 5000 });
 
+    await expect(page.getByTestId('settings-nav-app')).toBeVisible({ timeout: 5000 });
     await expect(page.getByRole('button', { name: 'Network' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('Refresh App')).toBeVisible({ timeout: 5000 });
   });
 
   test('can expand discovered relays section', async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/#/settings');
+    await page.goto('/#/settings/network');
     await expect(page.getByRole('button', { name: 'Network' })).toBeVisible({ timeout: 10000 });
 
     const seededCount = await page.evaluate(() => {
@@ -53,9 +55,9 @@ test.describe('Settings page', () => {
   test('can add and remove blossom server', async ({ page }) => {
     test.setTimeout(60000);
     setupPageErrorHandler(page);
-    await page.goto('/#/settings');
+    await page.goto('/#/settings/network');
 
-    await expect(page.locator('text=File Servers')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('heading', { name: /File Servers/ })).toBeVisible({ timeout: 10000 });
 
     const blossomSection = page.locator('div').filter({ hasText: /^File Servers/ }).first();
     const editBtn = blossomSection.locator('button', { hasText: 'Edit' });
@@ -92,11 +94,11 @@ test.describe('Settings page', () => {
   test('can toggle blossom server read/write', async ({ page }) => {
     test.setTimeout(60000);
     setupPageErrorHandler(page);
-    await page.goto('/#/settings');
+    await page.goto('/#/settings/network');
     await waitForAppReady(page);
     await configureBlossomServers(page);
 
-    await expect(page.locator('text=File Servers')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('heading', { name: /File Servers/ })).toBeVisible({ timeout: 10000 });
     
     const editBtn = page.locator('h3:has-text("File Servers")').locator('..').locator('button', { hasText: 'Edit' });
     await expect(editBtn).toBeVisible({ timeout: 5000 });
@@ -123,7 +125,8 @@ test.describe('Settings page', () => {
     setupPageErrorHandler(page);
     await page.goto('/#/settings');
 
-    await expect(page.getByRole('button', { name: 'Network' })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('settings-nav-app')).toBeVisible({ timeout: 10000 });
+    await page.getByRole('button', { name: 'Storage' }).click();
 
     for (let i = 0; i < 5; i++) {
       const editBtn = page.locator('button', { hasText: /Edit|Done/ }).first();
@@ -164,7 +167,7 @@ test.describe('Settings page', () => {
 
     await page.getByRole('button', { name: 'Storage' }).click();
 
-    await expect(page.locator('text=Local Storage')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Local Storage' })).toBeVisible({ timeout: 5000 });
 
     const sizeElement = page.getByTestId('storage-size');
     await expect(sizeElement).toBeVisible({ timeout: 5000 });
@@ -192,11 +195,9 @@ test.describe('Settings page', () => {
   test('can edit storage limit', async ({ page }) => {
     test.setTimeout(60000);
     setupPageErrorHandler(page);
-    await page.goto('/#/settings');
+    await page.goto('/#/settings/storage');
 
-    await page.getByRole('button', { name: 'Storage' }).click();
-
-    await expect(page.locator('text=Local Storage')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('heading', { name: 'Local Storage' })).toBeVisible({ timeout: 10000 });
 
     const storageSectionHeader = page.locator('h3:has-text("Local Storage")');
     await expect(storageSectionHeader).toBeVisible({ timeout: 5000 });

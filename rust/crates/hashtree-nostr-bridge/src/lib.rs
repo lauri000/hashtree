@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,6 +20,7 @@ pub enum RelayFetchMode {
 #[derive(Debug, Clone)]
 pub struct CrawlConfig {
     pub relays: Vec<String>,
+    pub author_allowlist: Option<Vec<String>>,
     pub max_live_bytes: Option<u64>,
     pub max_events_seen: Option<usize>,
     pub max_authors: Option<usize>,
@@ -40,6 +41,7 @@ impl Default for CrawlConfig {
     fn default() -> Self {
         Self {
             relays: Vec::new(),
+            author_allowlist: None,
             max_live_bytes: None,
             max_events_seen: None,
             max_authors: None,
@@ -415,6 +417,23 @@ impl<S: Store> NostrBridge<S> {
     }
 
     fn collect_authors<G: SocialGraphBackend>(&self, graph: &G) -> Result<Vec<String>> {
+        if let Some(author_allowlist) = &self.config.author_allowlist {
+            let mut seen = HashSet::new();
+            let mut authors = Vec::new();
+            for author in author_allowlist {
+                if !is_valid_hex_pubkey(author) {
+                    continue;
+                }
+                if seen.insert(author.clone()) {
+                    authors.push(author.clone());
+                }
+            }
+            if let Some(max_authors) = self.config.max_authors {
+                authors.truncate(max_authors);
+            }
+            return Ok(authors);
+        }
+
         let root = graph
             .get_root()
             .map_err(|err| CrawlError::SocialGraph(err.to_string()))?;
@@ -1177,5 +1196,27 @@ mod tests {
             .expect("collect authors");
 
         assert_eq!(authors, vec!["0".repeat(64), "1".repeat(64)]);
+    }
+
+    #[test]
+    fn collect_authors_prefers_allowlist_and_applies_limits() {
+        let bridge = NostrBridge::new(
+            Arc::new(MemoryStore::new()),
+            CrawlConfig {
+                author_allowlist: Some(vec![
+                    "1".repeat(64),
+                    "NOT-HEX".to_string(),
+                    "0".repeat(64),
+                    "1".repeat(64),
+                ]),
+                max_authors: Some(1),
+                ..CrawlConfig::default()
+            },
+        );
+        let authors = bridge
+            .collect_authors(&FakeGraphBackend)
+            .expect("collect authors");
+
+        assert_eq!(authors, vec!["1".repeat(64)]);
     }
 }

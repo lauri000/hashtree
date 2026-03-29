@@ -18,11 +18,73 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock, RwLock};
 use tower_http::cors::CorsLayer;
 
 pub use auth::{new_lookup_cache, AppState, AuthCredentials, CachedTreeRootEntry};
+
+static VIRTUAL_TREE_HOSTS: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
+
+fn virtual_tree_hosts() -> &'static RwLock<HashMap<String, String>> {
+    VIRTUAL_TREE_HOSTS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn normalize_virtual_tree_host(host: &str) -> Option<String> {
+    let trimmed = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(stripped) = trimmed
+        .strip_prefix('[')
+        .and_then(|value| value.split_once(']'))
+    {
+        let host_only = stripped.0.trim();
+        if host_only.is_empty() {
+            return None;
+        }
+        return Some(host_only.to_string());
+    }
+
+    if let Some((host_only, port)) = trimmed.rsplit_once(':') {
+        if !host_only.is_empty() && !port.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) {
+            return Some(host_only.to_string());
+        }
+    }
+
+    Some(trimmed)
+}
+
+pub fn register_virtual_tree_host(host: &str, internal_root: &str) {
+    let Some(normalized_host) = normalize_virtual_tree_host(host) else {
+        return;
+    };
+
+    let normalized_root = internal_root.trim().trim_end_matches('/');
+    if normalized_root.is_empty() {
+        return;
+    }
+
+    if let Ok(mut hosts) = virtual_tree_hosts().write() {
+        hosts.insert(normalized_host, normalized_root.to_string());
+    }
+}
+
+pub fn resolve_virtual_tree_host(host: &str) -> Option<String> {
+    let normalized_host = normalize_virtual_tree_host(host)?;
+    virtual_tree_hosts()
+        .read()
+        .ok()
+        .and_then(|hosts| hosts.get(&normalized_host).cloned())
+}
+
+#[cfg(test)]
+pub fn clear_virtual_tree_hosts_for_test() {
+    if let Ok(mut hosts) = virtual_tree_hosts().write() {
+        hosts.clear();
+    }
+}
 
 pub struct HashtreeServer {
     state: AppState,
@@ -157,7 +219,7 @@ impl HashtreeServer {
         // The handler differentiates based on hash format (64 char hex = blossom)
         let state = self.state.clone();
         let public_routes = Router::new()
-            .route("/", get(handlers::serve_root))
+            .route("/", get(handlers::serve_root_or_virtual_host))
             .route("/ws", get(ws_relay::ws_data))
             .route("/ws/", get(ws_relay::ws_data))
             .route(
@@ -225,6 +287,7 @@ impl HashtreeServer {
                 post(handlers::clear_tree_root_cache),
             )
             .route("/api/trees/:pubkey", get(handlers::list_trees))
+            .fallback(get(handlers::serve_virtual_host_fallback))
             .with_state(state.clone());
 
         // Protected endpoints (require auth if enabled)
@@ -269,7 +332,7 @@ impl HashtreeServer {
 mod tests {
     use super::*;
     use crate::storage::HashtreeStore;
-    use hashtree_core::from_hex;
+    use hashtree_core::{from_hex, nhash_encode, DirEntry, HashTree, HashTreeConfig, LinkType};
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -306,6 +369,97 @@ mod tests {
         let pins = store.list_pins_raw()?;
         assert_eq!(pins.len(), 1);
         assert_eq!(pins[0], hash);
+
+        Ok(())
+    }
+
+    async fn spawn_test_server(
+        store: Arc<HashtreeStore>,
+    ) -> Result<(u16, tokio::task::JoinHandle<Result<()>>)> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let server = HashtreeServer::new(store, "127.0.0.1:0".to_string());
+        let handle =
+            tokio::spawn(async move { server.run_with_listener(listener).await.map(|_| ()) });
+        Ok((port, handle))
+    }
+
+    #[tokio::test]
+    async fn virtual_tree_hosts_serve_root_assets_and_spa_fallbacks() -> Result<()> {
+        clear_virtual_tree_hosts_for_test();
+
+        let temp_dir = TempDir::new()?;
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db"))?);
+        let tree = HashTree::new(HashTreeConfig::new(store.store_arc()).public());
+
+        let (index_cid, _) = tree
+            .put(b"<!doctype html><title>Virtual host ok</title>")
+            .await?;
+        let (favicon_cid, _) = tree.put(b"ico").await?;
+        let (main_js_cid, _) = tree.put(b"console.log('ok');").await?;
+        let assets_dir = tree
+            .put_directory(vec![
+                DirEntry::from_cid("main.js", &main_js_cid).with_link_type(LinkType::File)
+            ])
+            .await?;
+        let root_cid = tree
+            .put_directory(vec![
+                DirEntry::from_cid("index.html", &index_cid).with_link_type(LinkType::File),
+                DirEntry::from_cid("favicon.ico", &favicon_cid).with_link_type(LinkType::File),
+                DirEntry::from_cid("assets", &assets_dir).with_link_type(LinkType::Dir),
+            ])
+            .await?;
+        let nhash = nhash_encode(&root_cid.hash)?;
+        let host = "tree-test.htree.localhost";
+        register_virtual_tree_host(host, &format!("/htree/{nhash}"));
+
+        let (port, handle) = spawn_test_server(store).await?;
+        let base_url = format!("http://127.0.0.1:{port}");
+        let host_header = format!("{host}:{port}");
+        let client = reqwest::Client::new();
+
+        let root_response = client
+            .get(format!("{base_url}/"))
+            .header("Host", &host_header)
+            .header("Accept", "text/html")
+            .send()
+            .await?;
+        assert_eq!(root_response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            root_response.bytes().await?.as_ref(),
+            b"<!doctype html><title>Virtual host ok</title>"
+        );
+
+        let favicon_response = client
+            .get(format!("{base_url}/favicon.ico"))
+            .header("Host", &host_header)
+            .send()
+            .await?;
+        assert_eq!(favicon_response.status(), reqwest::StatusCode::OK);
+        assert_eq!(favicon_response.bytes().await?.as_ref(), b"ico");
+
+        let js_response = client
+            .get(format!("{base_url}/assets/main.js"))
+            .header("Host", &host_header)
+            .send()
+            .await?;
+        assert_eq!(js_response.status(), reqwest::StatusCode::OK);
+        assert_eq!(js_response.bytes().await?.as_ref(), b"console.log('ok');");
+
+        let profile_response = client
+            .get(format!("{base_url}/users/npub1example"))
+            .header("Host", &host_header)
+            .header("Accept", "text/html")
+            .send()
+            .await?;
+        assert_eq!(profile_response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            profile_response.bytes().await?.as_ref(),
+            b"<!doctype html><title>Virtual host ok</title>"
+        );
+
+        handle.abort();
+        clear_virtual_tree_hosts_for_test();
 
         Ok(())
     }

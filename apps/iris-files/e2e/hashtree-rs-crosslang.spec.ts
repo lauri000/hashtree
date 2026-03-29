@@ -13,6 +13,7 @@ import { spawn, execSync, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { acquireRustLock, releaseRustLock } from './rust-lock.js';
+import { rustTargetPath, withRustTargetEnv } from './rust-target.js';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
@@ -36,15 +37,19 @@ const hashtreeRsAvailable = (() => {
 })();
 
 function ensureHtreeBinary(): void {
-  const debugBin = path.join(HASHTREE_RS_DIR, 'target/debug/htree');
-  const releaseBin = path.join(HASHTREE_RS_DIR, 'target/release/htree');
+  const debugBin = rustTargetPath('debug', 'htree');
+  const releaseBin = rustTargetPath('release', 'htree');
 
   if (fs.existsSync(debugBin) || fs.existsSync(releaseBin)) {
     return;
   }
 
   console.log('Building htree binary for rust tests...');
-  execSync('cargo build --bin htree --features p2p', { cwd: HASHTREE_RS_DIR, stdio: 'inherit' });
+  execSync('cargo build --bin htree --features p2p', {
+    cwd: HASHTREE_RS_DIR,
+    env: withRustTargetEnv(),
+    stdio: 'inherit',
+  });
 
   if (!fs.existsSync(debugBin) && !fs.existsSync(releaseBin)) {
     throw new Error('htree binary build completed, but binary not found');
@@ -140,6 +145,7 @@ test.describe('rust Cross-Language', () => {
   test.setTimeout(360000);
   test.describe.configure({ mode: 'serial', timeout: 360000 });
   test.skip(!hashtreeRsAvailable, 'rust toolchain or Rust toolchain not available');
+  const rustStartupTimeoutMs = 180000;
 
   let rsPeerProcess: ChildProcess | null = null;
   let rsPeerPubkey: string | null = null;
@@ -153,12 +159,12 @@ test.describe('rust Cross-Language', () => {
     testInfo.setTimeout(360000);
     // Start rust crosslang test in background
     console.log('Starting rust peer...');
-    ensureHtreeBinary();
     localRelay = relayUrl;
     crosslangPort = getCrosslangPort(testInfo.workerIndex);
     await killProcessesOnPort(crosslangPort);
     lockFd = await acquireRustLock(240000);
     try {
+      ensureHtreeBinary();
       rsPeerProcess = spawn(
         'cargo',
         [
@@ -176,13 +182,13 @@ test.describe('rust Cross-Language', () => {
         ],
         {
           cwd: HASHTREE_RS_DIR,
-          env: {
+          env: withRustTargetEnv({
             ...process.env,
             RUST_LOG: 'warn',
             LOCAL_RELAY: localRelay,
             CROSSLANG_FOLLOW_PUBKEY: tsPubkey,
             CROSSLANG_PORT: String(crosslangPort),
-          },
+          }),
           stdio: ['ignore', 'pipe', 'pipe'],
         }
       );
@@ -223,7 +229,10 @@ test.describe('rust Cross-Language', () => {
     // Wait for pubkey with timeout
     rsPeerPubkey = await Promise.race([
       pubkeyPromise,
-      new Promise<string>((_, reject) => setTimeout(() => reject(new Error(`Timeout waiting for rust pubkey. Recent output:\n${outputLines.join('\n')}`)), 30000))
+      new Promise<string>((_, reject) => setTimeout(
+        () => reject(new Error(`Timeout waiting for rust pubkey. Recent output:\n${outputLines.join('\n')}`)),
+        rustStartupTimeoutMs,
+      ))
     ]).catch(() => null);
 
     if (rsPeerPubkey) {
@@ -239,7 +248,7 @@ test.describe('rust Cross-Language', () => {
           if (rsReady) {
             clearInterval(interval);
             resolve();
-          } else if (Date.now() - start > 90000) {
+          } else if (Date.now() - start > rustStartupTimeoutMs) {
             clearInterval(interval);
             reject(new Error(`Timeout waiting for rust ready. Recent output:\n${outputLines.join('\n')}`));
           }

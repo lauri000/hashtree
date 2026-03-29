@@ -13,6 +13,8 @@
     visibility?: TreeVisibility;
     isPermalink?: boolean;
     rootCid?: CID | null;
+    sectionLabel?: string;
+    sectionHref?: string;
   }
 
   let {
@@ -22,6 +24,8 @@
     visibility,
     isPermalink = false,
     rootCid = null,
+    sectionLabel,
+    sectionHref,
   }: Props = $props();
 
   let route = $derived($routeStore);
@@ -40,7 +44,7 @@
 
 <div class="flex min-w-0 flex-1 flex-col justify-center gap-1" data-testid="repo-header-row">
   <div class="flex min-w-0 items-center gap-2">
-    <a href={backUrl} class="btn-ghost p-1 no-underline inline-flex items-center justify-center shrink-0" title="Back">
+    <a href={backUrl} class="btn-circle btn-ghost h-8 w-8 min-h-8 min-w-8 no-underline inline-flex items-center justify-center shrink-0" title="Back">
       <span class="i-lucide-chevron-left text-lg"></span>
     </a>
     {#if npub && ownerPubkey}
@@ -72,5 +76,20 @@
     >
       {repoHeaderName}
     </a>
+    {#if sectionLabel}
+      <span class="shrink-0 text-text-3">/</span>
+      {#if sectionHref}
+        <a
+          href={sectionHref}
+          class="min-w-0 truncate no-underline text-sm font-medium text-text-2 leading-none hover:text-accent hover:underline"
+        >
+          {sectionLabel}
+        </a>
+      {:else}
+        <span class="min-w-0 truncate text-sm font-medium text-text-2 leading-none">
+          {sectionLabel}
+        </span>
+      {/if}
+    {/if}
   </div>
 </div>

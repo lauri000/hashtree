@@ -9,7 +9,7 @@ const SUBDIR_NAME = 'subdir';
 const SUBFILE_NAME = 'file.txt';
 const README_NAME = 'README.md';
 const GENERIC_SIDEBAR_SELECTOR = '[data-testid="file-list"][aria-label="File list"]';
-const GIT_PENDING_PLACEHOLDER_SELECTOR = 'div.flex-1.flex.items-center.justify-center.bg-surface-0';
+const DIRECTORY_ACTIONS_ADD_FILES_SELECTOR = '[title="Add files"]';
 
 async function createTempGitRepo(): Promise<string> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'git-file-bar-'));
@@ -134,7 +134,7 @@ test.describe('Git file bar', () => {
   test('repo pages constrain the main column and keep file-view git path context', async ({ page }) => {
     test.slow();
 
-    await page.setViewportSize({ width: 1600, height: 900 });
+    await page.setViewportSize({ width: 1800, height: 900 });
 
     const { repoName, npub } = await uploadGitRepo(page);
 
@@ -171,10 +171,13 @@ test.describe('Git file bar', () => {
 
     await expect(page.getByTestId('viewer-context')).toHaveText(`${repoName} / ${SUBDIR_NAME} / ${SUBFILE_NAME}`);
 
+    const sidebarFileBrowser = page.locator(GENERIC_SIDEBAR_SELECTOR);
+    await expect(sidebarFileBrowser).toHaveCount(1);
+
     const fileColumn = page.getByTestId('repo-file-column');
     await expect(fileColumn).toBeVisible({ timeout: 30000 });
     const fileColumnBox = await fileColumn.boundingBox();
-    expect(fileColumnBox?.width ?? 0).toBeLessThanOrEqual(1290);
+    expect(fileColumnBox?.width ?? 0).toBeGreaterThan(1290);
   });
 
   test('shows commit info when viewing a file in git repo', async ({ page }) => {
@@ -191,7 +194,7 @@ test.describe('Git file bar', () => {
     await expect(gitBar.getByText(/\d+\s+(second|minute|hour|day|week|month|year)s?\s+ago/i)).toBeVisible();
   });
 
-  test('does not render the file browser sidebar on repository pages', async ({ page }) => {
+  test('keeps the file browser sidebar off repo pages but shows it on git file pages', async ({ page }) => {
     test.slow();
 
     const { repoName, npub } = await uploadGitRepo(page);
@@ -212,7 +215,7 @@ test.describe('Git file bar', () => {
       { timeout: 15000 }
     );
 
-    await expect(sidebarFileBrowser).toHaveCount(0);
+    await expect(sidebarFileBrowser).toHaveCount(1);
     await expect(page.locator('[data-testid="viewer-header"]')).toBeVisible({ timeout: 30000 });
   });
 
@@ -273,16 +276,16 @@ test.describe('Git file bar', () => {
     await waitForAppReady(page);
 
     const sidebarFileBrowser = page.locator(GENERIC_SIDEBAR_SELECTOR);
-    await expect(sidebarFileBrowser).toHaveCount(0);
+    await expect(sidebarFileBrowser).toHaveCount(1);
     await expect(page.locator('[data-testid="viewer-header"]')).toBeVisible({ timeout: 30000 });
     await expect(page.getByText('hello from subdir')).toBeVisible({ timeout: 30000 });
   });
 
-  test('clicking a git permalink does not flash the generic file browser sidebar', async ({ page }) => {
+  test('clicking a git permalink does not flash directory actions before file view resolves', async ({ page }) => {
     test.slow();
 
     const { repoName, npub } = await uploadGitRepo(page);
-    await installSidebarFlashTracker(page);
+    await installFlashTracker(page, DIRECTORY_ACTIONS_ADD_FILES_SELECTOR, 'add-files');
 
     await page.goto(`/git.html#/${npub}/public/${repoName}?g=${encodeURIComponent(repoName)}`);
     await waitForAppReady(page);
@@ -309,19 +312,16 @@ test.describe('Git file bar', () => {
     const permalinkLink = page.getByTestId('viewer-permalink');
     await expect(permalinkLink).toBeVisible({ timeout: 30000 });
 
-    await page.evaluate(() => {
-      (window as { __sidebarFlashSeen?: boolean }).__sidebarFlashSeen = false;
-    });
-
     await permalinkLink.click();
     await page.waitForFunction(() => window.location.hash.startsWith('#/nhash1'), undefined, { timeout: 15000 });
     await waitForAppReady(page);
-    await expect(page.locator(GENERIC_SIDEBAR_SELECTOR)).toHaveCount(0);
+    await expect(page.locator(GENERIC_SIDEBAR_SELECTOR)).toHaveCount(1);
 
-    const sidebarFlashed = await page.evaluate(() => {
-      return (window as { __sidebarFlashSeen?: boolean }).__sidebarFlashSeen === true;
+    const addFilesFlashed = await page.evaluate(() => {
+      const trackerWindow = window as Window & { __flashTracker?: Record<string, boolean> };
+      return trackerWindow.__flashTracker?.['add-files'] === true;
     });
-    expect(sidebarFlashed).toBe(false);
+    expect(addFilesFlashed).toBe(false);
   });
 
   test('clicking history opens git history modal', async ({ page }) => {
@@ -371,11 +371,11 @@ test.describe('Git file bar', () => {
     await expect(gitBar.getByText(/\d+\s+(second|minute|hour|day|week|month|year)s?\s+ago/i)).toBeVisible();
   });
 
-  test('direct deep links into repo subdirectories still use git UI without g param', async ({ page }) => {
+  test('direct deep links into repo subdirectories still use git UI without flashing directory actions', async ({ page }) => {
     test.slow();
 
     const { repoName, npub } = await uploadGitRepo(page);
-    await installFlashTracker(page, GIT_PENDING_PLACEHOLDER_SELECTOR, 'git-pending');
+    await installFlashTracker(page, DIRECTORY_ACTIONS_ADD_FILES_SELECTOR, 'add-files');
 
     await page.goto(`/git.html#/${npub}/public/${repoName}/${SUBDIR_NAME}`);
     await waitForAppReady(page);
@@ -389,11 +389,12 @@ test.describe('Git file bar', () => {
 
     const gitBar = page.locator('[data-testid="git-file-bar"]');
     await expect(gitBar).toBeVisible({ timeout: 60000 });
+    await expect(page.locator(GENERIC_SIDEBAR_SELECTOR)).toHaveCount(1);
 
-    const pendingFlashed = await page.evaluate(() => {
+    const addFilesFlashed = await page.evaluate(() => {
       const trackerWindow = window as Window & { __flashTracker?: Record<string, boolean> };
-      return trackerWindow.__flashTracker?.['git-pending'] === true;
+      return trackerWindow.__flashTracker?.['add-files'] === true;
     });
-    expect(pendingFlashed).toBe(false);
+    expect(addFilesFlashed).toBe(false);
   });
 });

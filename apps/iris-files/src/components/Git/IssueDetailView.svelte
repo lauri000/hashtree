@@ -15,11 +15,10 @@
     type ItemStatus,
   } from '../../nip34';
   import ItemStatusBadge from './ItemStatusBadge.svelte';
-  import RepoTabNav from './RepoTabNav.svelte';
-  import RepoHeader from './RepoHeader.svelte';
   import AuthorName from './AuthorName.svelte';
   import { ndk } from '../../nostr';
   import { createTreesStore } from '../../stores';
+  import RepoChildLayout from './RepoChildLayout.svelte';
 
   interface Props {
     npub: string;
@@ -150,16 +149,14 @@
 </script>
 
 <!-- Right panel with Issue detail - shown on mobile -->
-<div class="flex flex-1 flex-col min-w-0 min-h-0 bg-surface-0">
-  <!-- Tab navigation -->
-  <RepoTabNav {npub} {repoName} activeTab="issues" />
-
-  <div class="mx-auto flex w-full max-w-7xl flex-1 flex-col">
-    <div class="px-4 py-3">
-      <RepoHeader backUrl={getBackHref()} {npub} visibility={currentTree?.visibility} {repoName} />
-    </div>
-
-    <!-- Content -->
+<RepoChildLayout
+  backUrl={getBackHref()}
+  {npub}
+  {repoName}
+  activeTab="issues"
+  visibility={currentTree?.visibility}
+>
+  <div class="mx-3 mb-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg b-1 b-solid b-surface-3 bg-surface-0">
     <div class="flex-1 overflow-auto">
       {#if loading}
         <div class="flex items-center justify-center py-12 text-text-3">
@@ -273,4 +270,4 @@
       {/if}
     </div>
   </div>
-</div>
+</RepoChildLayout>

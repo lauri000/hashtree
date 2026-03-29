@@ -407,7 +407,7 @@ pub(crate) enum SocialGraphCommands {
         /// Warm the social graph for this many seconds
         #[arg(long, default_value_t = 60)]
         secs: u64,
-        /// Graph crawl depth to use while warming (default: config nostr.crawl_depth)
+        /// Graph crawl depth to use while warming (default: config nostr.social_graph_crawl_depth)
         #[arg(long)]
         crawl_depth: Option<u32>,
         /// Ignore existing graph frontier state and refetch from the root
@@ -441,18 +441,20 @@ pub(crate) enum SocialGraphCommands {
         #[arg(long)]
         max_edges_per_node: Option<usize>,
     },
+    /// Rebuild the profile search index from trusted locally stored kind-0 events
+    RebuildProfileIndex,
     /// Crawl and index Nostr events for authors in the social graph
     Index {
         /// Warm the social graph for this many seconds before indexing
         #[arg(long, default_value_t = 0)]
         warm_secs: u64,
-        /// Graph crawl depth to use while warming (default: config nostr.crawl_depth)
+        /// Graph crawl depth to use while warming (default: config nostr.social_graph_crawl_depth)
         #[arg(long)]
         crawl_depth: Option<u32>,
         /// Ignore existing graph frontier state and refetch from the root
         #[arg(long, default_value_t = false)]
         full_graph_recrawl: bool,
-        /// Maximum follow distance to include in the post index (default: config nostr.crawl_depth)
+        /// Maximum follow distance to include in the post index (default: config nostr.social_graph_crawl_depth)
         #[arg(long)]
         max_follow_distance: Option<u32>,
         /// Maximum number of authors to crawl from the graph
@@ -482,6 +484,9 @@ pub(crate) enum SocialGraphCommands {
         /// Fetch recent relay pages without author filters and filter locally by social graph
         #[arg(long, default_value_t = false)]
         global_relay_scan: bool,
+        /// HTTP URL returning newline-delimited author pubkeys to index
+        #[arg(long)]
+        author_allowlist_url: Option<String>,
         /// Only use relays that advertise NIP-77 negentropy support via NIP-11
         #[arg(long, default_value_t = false)]
         negentropy_only: bool,
