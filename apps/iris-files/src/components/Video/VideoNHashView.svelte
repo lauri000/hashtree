@@ -20,7 +20,8 @@
     resolveSnapshotRootCid,
     type TreeEventSnapshotInfo,
   } from '../../lib/treeEventSnapshots';
-  import { Avatar, Name } from '../User';
+  import VisibilityIcon from '../VisibilityIcon.svelte';
+  import { Avatar, FollowButton, Name } from '../User';
 
   interface Props {
     nhash: string;
@@ -44,6 +45,7 @@
   let snapshotPath = $derived(wild ? wild.split('/').filter(Boolean).map((segment) => decodeURIComponent(segment)) : []);
   let ownerNpub = $derived(snapshotInfo?.npub ?? null);
   let ownerPubkey = $derived(snapshotInfo?.event.pubkey ?? null);
+  let snapshotVisibility = $derived(snapshotInfo?.visibility ?? null);
   let latestSnapshotHref = $derived.by(() =>
     newerSnapshot
       ? buildTreeEventPermalink(newerSnapshot, snapshotPath, route.params.get('k'))
@@ -241,43 +243,49 @@
 
 {#snippet videoContent()}
   {#if videoTitle}
-    <h1 class="text-xl font-semibold text-text-1 mb-4" data-testid="video-title">{videoTitle}</h1>
-  {/if}
-
-  {#if ownerNpub && ownerPubkey}
-    <div class="flex items-center gap-2 flex-wrap mb-4">
-      <a href={`#/${ownerNpub}/profile`} class="inline-flex items-center gap-2 hover:opacity-80">
-        <Avatar pubkey={ownerPubkey} size={24} showBadge={true} />
-        <Name pubkey={ownerPubkey} class="text-sm text-text-2" />
-      </a>
-      <span class="text-xs text-text-3">Verified from signed tree snapshot</span>
-      {#if latestSnapshotHref}
-        <a href={latestSnapshotHref} class="btn-ghost no-underline h-7 px-2 text-xs">
-          See latest version
-        </a>
+    <div class="mb-3 flex items-center gap-2">
+      {#if snapshotVisibility && snapshotVisibility !== 'public'}
+        <VisibilityIcon visibility={snapshotVisibility} class="mr-1 text-base text-text-3" />
       {/if}
+      <h1 class="min-w-0 break-words text-xl font-semibold text-text-1" data-testid="video-title">{videoTitle}</h1>
     </div>
   {/if}
 
-  <div class="flex items-center gap-2 flex-wrap mb-4">
-    <ShareButton url={window.location.href} />
-    <button onclick={handleDownload} class="btn-ghost" disabled={!videoCid} title="Download">
-      <span class="i-lucide-download text-base"></span>
-      <span class="hidden sm:inline ml-1">Download</span>
-    </button>
+  <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+    <div class="flex min-w-0 items-center gap-3">
+      {#if ownerNpub && ownerPubkey}
+        <a href={`#/${ownerNpub}`} class="shrink-0">
+          <Avatar pubkey={ownerPubkey} size={40} />
+        </a>
+        <div class="min-w-0">
+          <a href={`#/${ownerNpub}`} class="font-medium text-text-1 no-underline">
+            <Name pubkey={ownerPubkey} />
+          </a>
+        </div>
+        <FollowButton pubkey={ownerPubkey} />
+      {/if}
+    </div>
+
+    <div class="flex shrink-0 items-center gap-1 flex-wrap">
+      <ShareButton url={window.location.href} />
+      {#if latestSnapshotHref}
+        <a href={latestSnapshotHref} class="btn-ghost no-underline">
+          See latest version
+        </a>
+      {/if}
+      <button onclick={handleDownload} class="btn-ghost" disabled={!videoCid} title="Download">
+        <span class="i-lucide-download text-base"></span>
+        <span class="hidden sm:inline ml-1">Download</span>
+      </button>
+    </div>
   </div>
 
   {#if videoDescription}
-    <VideoDescription text={videoDescription} />
+    <VideoDescription
+      text={videoDescription}
+      class="bg-surface-1 text-sm text-text-1"
+    />
   {/if}
-
-  <div class="bg-surface-1 rounded-lg p-3 text-sm text-text-3 my-4">
-    {#if snapshotInfo}
-      <p>This permalink is anchored to a signed tree snapshot stored on hashtree, so the author and version are verifiable.</p>
-    {:else}
-      <p>This is a content-addressed permalink. The video is identified by its content hash, not by any user or channel.</p>
-    {/if}
-  </div>
 
   <VideoComments {nhash} filename={videoFileName || 'video.mp4'} />
 {/snippet}
