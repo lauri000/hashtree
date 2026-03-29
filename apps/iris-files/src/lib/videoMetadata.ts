@@ -1,6 +1,7 @@
 import type { CID } from '@hashtree/core';
 
 import { findPlayableMediaEntry } from './playableMedia';
+import { decodeVideoTextFile, sanitizeVideoDescription, sanitizeVideoTitle } from './videoText';
 
 interface DirectoryEntry {
   name: string;
@@ -26,8 +27,6 @@ export interface VideoDirectoryMetadata {
   createdAt: number | null;
 }
 
-const textDecoder = new TextDecoder();
-
 function isThumbnailEntry(entry: { name: string }): boolean {
   return (
     entry.name.startsWith('thumbnail.') ||
@@ -46,7 +45,7 @@ async function readOptionalTextFile(
     const resolved = await tree.resolvePath(rootCid, path);
     if (!resolved) return '';
     const data = await tree.readFile(resolved.cid);
-    return data ? textDecoder.decode(data).trim() : '';
+    return decodeVideoTextFile(data);
   } catch {
     return '';
   }
@@ -69,12 +68,8 @@ export async function readVideoDirectoryMetadata(
       thumbnailEntry = entries.find(isThumbnailEntry);
 
       const meta = (videoEntry?.meta as Record<string, unknown> | undefined) ?? undefined;
-      if (typeof meta?.title === 'string') {
-        title = meta.title;
-      }
-      if (typeof meta?.description === 'string') {
-        description = meta.description;
-      }
+      title = sanitizeVideoTitle(meta?.title);
+      description = sanitizeVideoDescription(meta?.description);
       if (typeof meta?.createdAt === 'number') {
         createdAt = meta.createdAt;
       }
@@ -87,12 +82,12 @@ export async function readVideoDirectoryMetadata(
       if (metadataResult) {
         const metadataData = await tree.readFile(metadataResult.cid);
         if (metadataData) {
-          const metadata = JSON.parse(textDecoder.decode(metadataData)) as Record<string, unknown>;
-          if (!title && typeof metadata.title === 'string') {
-            title = metadata.title;
+          const metadata = JSON.parse(new TextDecoder().decode(metadataData)) as Record<string, unknown>;
+          if (!title) {
+            title = sanitizeVideoTitle(metadata.title);
           }
-          if (!description && typeof metadata.description === 'string') {
-            description = metadata.description;
+          if (!description) {
+            description = sanitizeVideoDescription(metadata.description);
           }
           if (createdAt === null && typeof metadata.createdAt === 'number') {
             createdAt = metadata.createdAt;

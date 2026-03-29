@@ -11,6 +11,7 @@ import { toHex, LinkType, nhashEncode } from '@hashtree/core';
 import type { CID, Hash, TreeVisibility } from '@hashtree/core';
 import { getRefResolver } from '../refResolver';
 import { getWorkerAdapter } from '../lib/workerInit';
+import { decodeVideoTextFile, sanitizeVideoDescription, sanitizeVideoTitle } from '../lib/videoText';
 
 /** Check if an entry is a video file */
 function isVideoFile(name: string): boolean {
@@ -214,25 +215,36 @@ async function migrateSingleVideo(
     return false;
   }
 
-  // Check if already migrated (has title in meta)
   const existingMeta = (videoEntry.meta as Record<string, unknown>) || {};
-  if (existingMeta.title) {
-    console.log('[Migration] Already migrated:', treeName);
-    return false;
-  }
-
-  // Check if there's metadata to migrate
   const hasMetadataJson = entries?.some(e => e.name === 'metadata.json');
   const hasTitleTxt = entries?.some(e => e.name === 'title.txt');
   const hasDescTxt = entries?.some(e => e.name === 'description.txt');
+  const newMeta: Record<string, unknown> = { ...existingMeta };
+  const existingTitle = sanitizeVideoTitle(existingMeta.title);
+  const existingDescription = sanitizeVideoDescription(existingMeta.description);
+  const hadInvalidExistingDescription = typeof existingMeta.description === 'string'
+    && existingMeta.description.trim().length > 0
+    && !existingDescription;
 
-  if (!hasMetadataJson && !hasTitleTxt) {
-    console.log('[Migration] No metadata files to migrate:', treeName);
-    return false;
+  if (existingTitle) {
+    newMeta.title = existingTitle;
+  } else {
+    delete newMeta.title;
+  }
+  if (existingDescription) {
+    newMeta.description = existingDescription;
+  } else {
+    delete newMeta.description;
   }
 
-  // Read legacy metadata
-  const newMeta: Record<string, unknown> = { ...existingMeta };
+  if (!hasMetadataJson && !hasTitleTxt && !hasDescTxt && !hadInvalidExistingDescription) {
+    if (newMeta.title) {
+      console.log('[Migration] Already migrated:', treeName);
+    } else {
+      console.log('[Migration] No metadata files to migrate:', treeName);
+    }
+    return false;
+  }
 
   // Try metadata.json first
   if (hasMetadataJson) {
@@ -242,8 +254,14 @@ async function migrateSingleVideo(
         const data = await tree.readFile(result.cid);
         if (data) {
           const metadata = JSON.parse(new TextDecoder().decode(data));
-          if (metadata.title) newMeta.title = metadata.title;
-          if (metadata.description) newMeta.description = metadata.description;
+          if (!newMeta.title) {
+            const title = sanitizeVideoTitle(metadata.title);
+            if (title) newMeta.title = title;
+          }
+          if (!newMeta.description) {
+            const description = sanitizeVideoDescription(metadata.description);
+            if (description) newMeta.description = description;
+          }
           if (metadata.createdAt) newMeta.createdAt = metadata.createdAt;
           if (metadata.originalDate) newMeta.originalDate = metadata.originalDate;
           if (metadata.duration) newMeta.duration = metadata.duration;
@@ -259,7 +277,8 @@ async function migrateSingleVideo(
       if (result) {
         const data = await tree.readFile(result.cid);
         if (data) {
-          newMeta.title = new TextDecoder().decode(data).trim();
+          const title = decodeVideoTextFile(data);
+          if (title) newMeta.title = title;
         }
       }
     } catch {}
@@ -272,7 +291,8 @@ async function migrateSingleVideo(
       if (result) {
         const data = await tree.readFile(result.cid);
         if (data) {
-          newMeta.description = new TextDecoder().decode(data).trim();
+          const description = decodeVideoTextFile(data);
+          if (description) newMeta.description = description;
         }
       }
     } catch {}
@@ -348,21 +368,55 @@ async function migratePlaylistVideo(
   const videoEntry = subEntries?.find(e => isVideoFile(e.name));
   if (!videoEntry) return null;
 
-  // Check if already migrated (parent has title in meta)
   const parentMeta = (parentEntry.meta as Record<string, unknown>) || {};
-  if (parentMeta.title) return null;
-
-  // Check if there's metadata to migrate
   const hasMetadataJson = subEntries?.some(e => e.name === 'metadata.json');
   const hasTitleTxt = subEntries?.some(e => e.name === 'title.txt');
   const hasDescTxt = subEntries?.some(e => e.name === 'description.txt');
   const hasInfoJson = subEntries?.some(e => e.name === 'info.json');
-
-  if (!hasMetadataJson && !hasTitleTxt && !hasInfoJson) return null;
-
-  // Read legacy metadata
+  const rawVideoMeta = (videoEntry.meta as Record<string, unknown>) || {};
   const newMeta: Record<string, unknown> = { ...parentMeta };
-  const videoMeta: Record<string, unknown> = { ...(videoEntry.meta as Record<string, unknown> || {}) };
+  const videoMeta: Record<string, unknown> = { ...rawVideoMeta };
+  const existingParentTitle = sanitizeVideoTitle(parentMeta.title);
+  const existingParentDescription = sanitizeVideoDescription(parentMeta.description);
+  const existingVideoTitle = sanitizeVideoTitle(rawVideoMeta.title);
+  const existingVideoDescription = sanitizeVideoDescription(rawVideoMeta.description);
+  const hadInvalidParentDescription = typeof parentMeta.description === 'string'
+    && parentMeta.description.trim().length > 0
+    && !existingParentDescription;
+  const hadInvalidVideoDescription = typeof rawVideoMeta.description === 'string'
+    && rawVideoMeta.description.trim().length > 0
+    && !existingVideoDescription;
+
+  if (existingParentTitle) {
+    newMeta.title = existingParentTitle;
+  } else {
+    delete newMeta.title;
+  }
+  if (existingParentDescription) {
+    newMeta.description = existingParentDescription;
+  } else {
+    delete newMeta.description;
+  }
+  if (existingVideoTitle) {
+    videoMeta.title = existingVideoTitle;
+  } else {
+    delete videoMeta.title;
+  }
+  if (existingVideoDescription) {
+    videoMeta.description = existingVideoDescription;
+  } else {
+    delete videoMeta.description;
+  }
+  if (!newMeta.title && existingVideoTitle) {
+    newMeta.title = existingVideoTitle;
+  }
+  if (!videoMeta.title && existingParentTitle) {
+    videoMeta.title = existingParentTitle;
+  }
+
+  if (!hasMetadataJson && !hasTitleTxt && !hasDescTxt && !hasInfoJson && !hadInvalidParentDescription && !hadInvalidVideoDescription) {
+    return null;
+  }
 
   // Try metadata.json first
   if (hasMetadataJson) {
@@ -372,13 +426,15 @@ async function migratePlaylistVideo(
         const data = await tree.readFile(result.cid);
         if (data) {
           const metadata = JSON.parse(new TextDecoder().decode(data));
-          if (metadata.title) {
-            newMeta.title = metadata.title;
-            videoMeta.title = metadata.title;
+          const title = sanitizeVideoTitle(metadata.title);
+          if (!newMeta.title && title) {
+            newMeta.title = title;
+            videoMeta.title = title;
           }
-          if (metadata.description) {
-            newMeta.description = metadata.description;
-            videoMeta.description = metadata.description;
+          const description = sanitizeVideoDescription(metadata.description);
+          if (!newMeta.description && description) {
+            newMeta.description = description;
+            videoMeta.description = description;
           }
           if (metadata.createdAt) {
             newMeta.createdAt = metadata.createdAt;
@@ -405,13 +461,15 @@ async function migratePlaylistVideo(
         const data = await tree.readFile(result.cid);
         if (data) {
           const info = JSON.parse(new TextDecoder().decode(data));
-          if (info.title) {
-            newMeta.title = info.title;
-            videoMeta.title = info.title;
+          const title = sanitizeVideoTitle(info.title);
+          if (!newMeta.title && title) {
+            newMeta.title = title;
+            videoMeta.title = title;
           }
-          if (info.description) {
-            newMeta.description = info.description;
-            videoMeta.description = info.description;
+          const description = sanitizeVideoDescription(info.description);
+          if (!newMeta.description && description) {
+            newMeta.description = description;
+            videoMeta.description = description;
           }
           if (info.duration) {
             newMeta.duration = info.duration;
@@ -429,9 +487,11 @@ async function migratePlaylistVideo(
       if (result) {
         const data = await tree.readFile(result.cid);
         if (data) {
-          const title = new TextDecoder().decode(data).trim();
-          newMeta.title = title;
-          videoMeta.title = title;
+          const title = decodeVideoTextFile(data);
+          if (title) {
+            newMeta.title = title;
+            videoMeta.title = title;
+          }
         }
       }
     } catch {}
@@ -444,12 +504,27 @@ async function migratePlaylistVideo(
       if (result) {
         const data = await tree.readFile(result.cid);
         if (data) {
-          const desc = new TextDecoder().decode(data).trim();
-          newMeta.description = desc;
-          videoMeta.description = desc;
+          const desc = decodeVideoTextFile(data);
+          if (desc) {
+            newMeta.description = desc;
+            videoMeta.description = desc;
+          }
         }
       }
     } catch {}
+  }
+
+  if (!newMeta.title && typeof videoMeta.title === 'string') {
+    newMeta.title = videoMeta.title;
+  }
+  if (!videoMeta.title && typeof newMeta.title === 'string') {
+    videoMeta.title = newMeta.title;
+  }
+  if (!newMeta.description && typeof videoMeta.description === 'string') {
+    newMeta.description = videoMeta.description;
+  }
+  if (!videoMeta.description && typeof newMeta.description === 'string') {
+    videoMeta.description = newMeta.description;
   }
 
   if (!newMeta.title) return null;

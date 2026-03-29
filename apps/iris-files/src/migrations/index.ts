@@ -72,7 +72,7 @@ export async function runMigrations(npub: string): Promise<void> {
 // Register video metadata migration
 import { runVideoMetadataMigration } from './videoMetadata';
 
-registerMigration('video-metadata', 6, runVideoMetadataMigration);
+registerMigration('video-metadata', 7, runVideoMetadataMigration);
 
 // Register re-encryption migration for unencrypted trees
 import { runReencryptMigration } from './reencrypt';

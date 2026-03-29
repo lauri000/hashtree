@@ -28,7 +28,7 @@
     removeRecentByTreeName,
   } from '../../stores/recents';
   import { recordDeletedVideo } from '../../stores/videoDeletes';
-  import { Avatar, Name, FollowButton } from '../User';
+  import { FollowButton } from '../User';
   import VideoDetails from './VideoDetails.svelte';
   import VideoComments from './VideoComments.svelte';
   import PlaylistSidebar from './PlaylistSidebar.svelte';
@@ -55,6 +55,7 @@
   import { resolveFeedVideoRootCidAsync } from '../../lib/videoFeedRoot';
   import { getVideoDisplayTitle } from '../../lib/videoDisplayTitle';
   import { readVideoDirectoryMetadata } from '../../lib/videoMetadata';
+  import { sanitizeVideoDescription, sanitizeVideoTitle } from '../../lib/videoText';
   import { setRecentVideoCardInfo } from '../../stores/homeFeedCache';
   import {
     buildTreeEventPermalink,
@@ -1616,13 +1617,20 @@ async function syncTreeRootToWorker(
     const isStaleMetadataLoad = () =>
       expectedLoadKey ? !isActiveVideoLoad(loadedVideoKey, expectedLoadKey) : false;
 
-    const readTextViaStablePath = async (path: string): Promise<string | null> => {
+    const readTextViaStablePath = async (
+      path: string,
+      sanitize: (value: unknown) => string,
+    ): Promise<string | null> => {
       const url = getStablePathUrl({ rootCid, path });
       if (!url) return null;
       try {
         const response = await fetch(url);
         if (!response.ok) return null;
-        const text = (await response.text()).trim();
+        const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+        if (contentType.startsWith('image/') || contentType.startsWith('video/') || contentType.startsWith('audio/')) {
+          return null;
+        }
+        const text = sanitize(await response.text());
         return text || null;
       } catch {
         return null;
@@ -1648,7 +1656,7 @@ async function syncTreeRootToWorker(
     } catch {}
 
     if (!videoTitle) {
-      const remoteTitle = await readTextViaStablePath('title.txt');
+      const remoteTitle = await readTextViaStablePath('title.txt', sanitizeVideoTitle);
       if (isStaleMetadataLoad()) return;
       if (remoteTitle) {
         videoTitle = remoteTitle;
@@ -1657,7 +1665,7 @@ async function syncTreeRootToWorker(
     }
 
     if (!videoDescription) {
-      const remoteDescription = await readTextViaStablePath('description.txt');
+      const remoteDescription = await readTextViaStablePath('description.txt', sanitizeVideoDescription);
       if (isStaleMetadataLoad()) return;
       if (remoteDescription) {
         videoDescription = remoteDescription;
