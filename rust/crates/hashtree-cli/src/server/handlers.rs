@@ -2548,7 +2548,7 @@ pub async fn daemon_status(
     }
 
     let bluetooth_received_events = match state.nostr_relay.as_ref() {
-        Some(relay) => relay.bluetooth_received_events(16).await,
+        Some(relay) => relay.bluetooth_received_events(100).await,
         None => Vec::new(),
     };
 

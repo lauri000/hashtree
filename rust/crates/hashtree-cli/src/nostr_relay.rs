@@ -14,7 +14,7 @@ use nostr::{Event, EventId, Filter as NostrFilter, SubscriptionId};
 
 use crate::socialgraph;
 
-const BLUETOOTH_EVENT_LOG_CAPACITY: usize = 128;
+const BLUETOOTH_EVENT_LOG_CAPACITY: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BluetoothReceivedEventRecord {
@@ -1144,6 +1144,69 @@ mod tests {
         assert_eq!(reloaded_receipts.len(), 1);
         assert_eq!(reloaded_receipts[0].event_id, event.id.to_hex());
         assert_eq!(reloaded_receipts[0].cid_values, vec![nhash]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn relay_caps_bluetooth_received_event_records_to_last_100() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let keys = Keys::generate();
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::from([keys.public_key().to_hex()]),
+        ));
+
+        let relay = NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([keys.public_key().to_hex()]),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?;
+
+        let mut event_ids = Vec::new();
+        for index in 0..(BLUETOOTH_EVENT_LOG_CAPACITY + 5) {
+            let event = EventBuilder::new(
+                Kind::TextNote,
+                format!("bluetooth receipt {index}"),
+                [nostr::Tag::parse(&["cid", &format!("{index:064x}")]).unwrap()],
+            )
+            .to_event(&keys)?;
+            event_ids.push(event.id.to_hex());
+            relay
+                .ingest_trusted_event_from_bluetooth(event, Some("peer-a:session-a".to_string()))
+                .await?;
+        }
+
+        let receipts = relay
+            .bluetooth_received_events(BLUETOOTH_EVENT_LOG_CAPACITY + 10)
+            .await;
+        assert_eq!(receipts.len(), BLUETOOTH_EVENT_LOG_CAPACITY);
+        assert_eq!(receipts[0].event_id, event_ids.last().cloned().unwrap());
+        assert!(
+            receipts
+                .iter()
+                .all(|receipt| !event_ids[..5].contains(&receipt.event_id)),
+            "oldest receipts should be trimmed from the capped log"
+        );
+        assert_eq!(
+            receipts.last().map(|receipt| receipt.event_id.clone()),
+            Some(event_ids[5].clone())
+        );
 
         Ok(())
     }
