@@ -157,7 +157,9 @@ function createGlobalDirectoryEntriesStore() {
   let lastIsPermalink = false;
   let lastIsRemote = false;
   const ENTRY_RETRY_DELAY_MS = 1500;
-  const PERMALINK_MAX_RETRIES = 8;
+  // Snapshot permalinks can arrive before the signed root event and directory
+  // contents are fully hydrated locally, especially under parallel e2e load.
+  const PERMALINK_MAX_RETRIES = 24;
   const REMOTE_MAX_RETRIES = 24;
 
   async function loadEntries(location: CID | null) {

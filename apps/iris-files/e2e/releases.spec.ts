@@ -25,6 +25,8 @@ test.describe('Releases', () => {
     await page.goto(`/git.html#/${route.npub}/${route.treeName}?tab=releases`);
     await expect(page.locator('text=Loading releases...')).not.toBeVisible({ timeout: 20000 });
     await expect(page.locator('text=No releases yet')).toBeVisible({ timeout: 20000 });
+    await expect(page.getByTestId('repo-header-row')).toBeVisible();
+    await expect(page.getByTestId('repo-tab-nav').getByRole('link', { name: 'Releases' })).toBeVisible();
 
     await page.getByRole('button', { name: 'New Release' }).click();
     await page.locator('#release-title').fill('Iris Files v0.1');

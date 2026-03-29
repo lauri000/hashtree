@@ -31,9 +31,11 @@
   import { buildSitesHref, isHtmlFilename } from '../../lib/siteHref';
   import {
     buildTreeEventPermalink,
+    ensureTreeEventSnapshotForRoot,
     ensureLatestTreeEventSnapshot,
     getCachedTreeEventSnapshot,
     isNewerTreeEventSnapshot,
+    snapshotMatchesRootCid,
   } from '../../lib/treeEventSnapshots';
 
   let route = $derived($routeStore);
@@ -673,6 +675,7 @@
     const linkKey = route.params.get('k');
     const snapshot = permalinkSnapshot.snapshot;
     const isSnapshotRoute = route.params.get('snapshot') === '1';
+    const currentRootCid = rootCid;
 
     if (!entry?.cid?.hash) {
       permalinkUrl = null;
@@ -694,19 +697,30 @@
       return;
     }
 
+    if (!currentRootCid?.hash) {
+      permalinkUrl = fallbackUrl;
+      return;
+    }
+
     const cached = getCachedTreeEventSnapshot(npub, treeName);
-    if (cached) {
+    if (cached && snapshotMatchesRootCid(cached, currentRootCid)) {
       permalinkUrl = buildTreeEventPermalink(cached, path, linkKey);
       return;
     }
 
-    permalinkUrl = fallbackUrl;
+    permalinkUrl = null;
     let cancelled = false;
-    ensureLatestTreeEventSnapshot(npub, treeName).then((resolved) => {
-      if (!cancelled && resolved) {
-        permalinkUrl = buildTreeEventPermalink(resolved, path, linkKey);
+    ensureTreeEventSnapshotForRoot(npub, treeName, currentRootCid).then((resolved) => {
+      if (!cancelled) {
+        permalinkUrl = resolved
+          ? buildTreeEventPermalink(resolved, path, linkKey)
+          : fallbackUrl;
       }
-    }).catch(() => {});
+    }).catch(() => {
+      if (!cancelled) {
+        permalinkUrl = fallbackUrl;
+      }
+    });
     return () => { cancelled = true; };
   });
 

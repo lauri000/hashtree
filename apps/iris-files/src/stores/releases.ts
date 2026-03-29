@@ -236,11 +236,29 @@ export async function fetchReleaseDetail(
 
   const notesFile = record?.notes_file || 'notes.md';
   const notes = await readReleaseNotes(tree, entry.cid, notesFile);
-  const assets = record?.assets?.map(asset => ({
-    name: asset.name,
-    path: asset.path,
-    size: asset.size,
-  })) ?? await listReleaseAssets(tree, entry.cid);
+  const listedAssets = await listReleaseAssets(tree, entry.cid);
+  const listedAssetsByPath = new Map(listedAssets.map(asset => [asset.path, asset]));
+  const listedAssetsByName = new Map(listedAssets.map(asset => [asset.name, asset]));
+  const assets = record?.assets?.length
+    ? (() => {
+        const merged = record.assets.map(asset => {
+          const listed = listedAssetsByPath.get(asset.path) ?? listedAssetsByName.get(asset.name);
+          return {
+            name: asset.name,
+            path: asset.path,
+            size: asset.size,
+            cid: listed?.cid,
+          };
+        });
+        const seenPaths = new Set(merged.map(asset => asset.path));
+        for (const listed of listedAssets) {
+          if (!seenPaths.has(listed.path)) {
+            merged.push(listed);
+          }
+        }
+        return merged;
+      })()
+    : listedAssets;
 
   return {
     ...summary,

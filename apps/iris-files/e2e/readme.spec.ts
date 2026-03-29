@@ -18,9 +18,11 @@ async function createFile(page: Page, name: string, content: string = '') {
   await page.locator('input[placeholder="File name..."]').fill(name);
   await page.getByRole('button', { name: 'Create' }).click();
   const doneButton = page.getByRole('button', { name: 'Done' });
+  const editorTextarea = page.locator('textarea').last();
   await expect(doneButton).toBeVisible({ timeout: 5000 });
+  await expect(editorTextarea).toBeVisible({ timeout: 5000 });
   if (content) {
-    await page.locator('textarea').fill(content);
+    await editorTextarea.fill(content);
     const saveButton = page.getByRole('button', { name: /Save|Saved|Saving/ }).first();
     if (await saveButton.isEnabled().catch(() => false)) {
       await saveButton.click();
@@ -28,7 +30,8 @@ async function createFile(page: Page, name: string, content: string = '') {
     await expect(saveButton).toBeDisabled({ timeout: 10000 });
   }
   await doneButton.click();
-  await expect(page.locator('textarea')).not.toBeVisible({ timeout: 10000 });
+  await expect(doneButton).not.toBeVisible({ timeout: 10000 });
+  await expect(editorTextarea).not.toBeVisible({ timeout: 10000 });
 }
 
 test.describe('README Panel', () => {

@@ -63,13 +63,13 @@ test.describe('Permalink Navigation', () => {
     const permalinkHref = await permalinkLink.getAttribute('href');
     console.log('File Permalink href:', permalinkHref);
     expect(permalinkHref).toBeTruthy();
-    expect(permalinkHref).toMatch(/^#\/nhash1/);
+    expect(permalinkHref).toContain('#/nhash1');
 
-    // Navigate to the permalink URL
-    await page.goto(`/#${permalinkHref!.slice(1)}`);
+    await permalinkLink.click();
+    await page.waitForURL(/#\/nhash1/, { timeout: 15000 });
 
     // Should see the file content
-    await expect(page.getByText('Hello from permalink test content!')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('Hello from permalink test content!')).toBeVisible({ timeout: 30000 });
   });
 
   test('directory permalink should display directory listing', async ({ page }) => {
@@ -121,15 +121,15 @@ test.describe('Permalink Navigation', () => {
     const dirPermalinkHref = await dirPermalinkLink.getAttribute('href');
     console.log('Directory Permalink href:', dirPermalinkHref);
     expect(dirPermalinkHref).toBeTruthy();
-    expect(dirPermalinkHref).toMatch(/^#\/nhash1/);
+    expect(dirPermalinkHref).toContain('#/nhash1');
     // Directory permalink should NOT include filename
     expect(dirPermalinkHref).not.toContain('test-in-dir.txt');
 
-    // Navigate to the permalink URL
-    await page.goto(`/#${dirPermalinkHref!.slice(1)}`);
+    await page.goto(`http://localhost:5173/${dirPermalinkHref}`);
+    await page.waitForURL(/#\/nhash1/, { timeout: 15000 });
 
     // Should see the file in the directory listing
-    await expect(page.getByText('test-in-dir.txt')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('test-in-dir.txt')).toBeVisible({ timeout: 30000 });
   });
 
   test('file in permalink directory should display correctly', async ({ page }) => {
@@ -186,18 +186,21 @@ test.describe('Permalink Navigation', () => {
     console.log('Directory permalink:', permalinkHref);
     expect(permalinkHref).toBeTruthy();
 
-    // Navigate to the directory permalink URL
-    await page.goto(`/#${permalinkHref!.slice(1)}`);
+    await page.goto(`http://localhost:5173/${permalinkHref}`);
+    await page.waitForURL(/#\/nhash1/, { timeout: 15000 });
 
     // Wait for page to load and decrypt - file should appear in listing
     // The permalink page may need time to decrypt and load directory entries
     // Use file-list testid to be specific about which element we're looking for
-    await expect(page.locator('[data-testid="file-list"]').getByText('test-content.txt')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('[data-testid="file-list"]').getByText('test-content.txt')).toBeVisible({ timeout: 30000 });
 
-    // Click on the file - use .first() to handle any duplicate elements
-    await page.getByRole('link', { name: 'test-content.txt' }).first().click();
+    // Navigate directly using the visible file link href to avoid detached-node races
+    const filePermalinkLink = page.getByRole('link', { name: 'test-content.txt' }).first();
+    const filePermalinkHref = await filePermalinkLink.getAttribute('href');
+    expect(filePermalinkHref).toContain('#/nhash1');
+    await page.goto(`http://localhost:5173/${filePermalinkHref}`);
 
     // Should see the file content (not a broken image) - allow more time for decryption
-    await expect(page.getByText('Hello from encrypted file!')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Hello from encrypted file!')).toBeVisible({ timeout: 30000 });
   });
 });

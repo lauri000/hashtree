@@ -446,7 +446,7 @@ test.describe('Iris Video App', () => {
     }, { timeout: 30000 });
 
     // Find the Permalink button and click it
-    const permalinkBtn = page.locator('button[title="Permalink (content-addressed)"]');
+    const permalinkBtn = page.locator('button[title="Permalink"]');
     await expect(permalinkBtn).toBeVisible({ timeout: 10000 });
     await permalinkBtn.click();
 
@@ -485,8 +485,11 @@ test.describe('Iris Video App', () => {
     expect(videoProps!.videoHeight).toBeGreaterThan(0);
     expect(videoProps!.error).toBeUndefined();
 
-    // Should show the permalink info box
-    await expect(page.locator('text=content-addressed permalink')).toBeVisible({ timeout: 5000 });
+    // Should show the permalink info box for either signed snapshot permalinks or
+    // plain content-addressed fallbacks.
+    await expect(
+      page.getByText(/signed tree snapshot|content-addressed permalink/i).first()
+    ).toBeVisible({ timeout: 10000 });
 
     // Take final screenshot
     await page.screenshot({ path: 'e2e/screenshots/video-permalink-loaded.png' });

@@ -1,5 +1,5 @@
 import { writable, get, type Readable } from 'svelte/store';
-import type { CID } from '@hashtree/core';
+import { toHex, type CID } from '@hashtree/core';
 import { routeStore, getRouteSync } from './route';
 import type { RouteInfo } from '../utils/route';
 import {
@@ -30,11 +30,44 @@ function isSnapshotPermalinkRoute(route: RouteInfo): boolean {
 
 const permalinkSnapshotWritable = writable<PermalinkSnapshotState>(initialState);
 let requestToken = 0;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let retryAttempts = 0;
+let lastRouteKey: string | null = null;
+const SNAPSHOT_RETRY_DELAY_MS = 1500;
+const SNAPSHOT_MAX_RETRIES = 24;
+
+function getSnapshotRouteKey(route: RouteInfo): string | null {
+  if (!isSnapshotPermalinkRoute(route) || !route.cid?.hash) return null;
+  return `${toHex(route.cid.hash)}:${route.params.get('k') ?? ''}`;
+}
+
+function clearRetryTimer(): void {
+  if (!retryTimer) return;
+  clearTimeout(retryTimer);
+  retryTimer = null;
+}
+
+function scheduleRetry(route: RouteInfo): void {
+  if (retryTimer || retryAttempts >= SNAPSHOT_MAX_RETRIES) return;
+  retryAttempts += 1;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    void updatePermalinkSnapshot(route);
+  }, SNAPSHOT_RETRY_DELAY_MS);
+}
 
 async function updatePermalinkSnapshot(route: RouteInfo): Promise<void> {
   const token = ++requestToken;
+  const routeKey = getSnapshotRouteKey(route);
+
+  if (routeKey !== lastRouteKey) {
+    lastRouteKey = routeKey;
+    retryAttempts = 0;
+    clearRetryTimer();
+  }
 
   if (!isSnapshotPermalinkRoute(route) || !route.cid) {
+    clearRetryTimer();
     permalinkSnapshotWritable.set(initialState);
     return;
   }
@@ -52,6 +85,18 @@ async function updatePermalinkSnapshot(route: RouteInfo): Promise<void> {
     return;
   }
   if (!snapshot) {
+    if (retryAttempts < SNAPSHOT_MAX_RETRIES) {
+      scheduleRetry(route);
+      permalinkSnapshotWritable.set({
+        active: true,
+        loading: true,
+        snapshot: null,
+        rootCid: null,
+        error: null,
+      });
+      return;
+    }
+    clearRetryTimer();
     permalinkSnapshotWritable.set({
       active: true,
       loading: false,
@@ -62,6 +107,7 @@ async function updatePermalinkSnapshot(route: RouteInfo): Promise<void> {
     return;
   }
 
+  clearRetryTimer();
   const rootCid = await resolveSnapshotRootCid(snapshot, route.params.get('k'));
   if (token !== requestToken) {
     return;

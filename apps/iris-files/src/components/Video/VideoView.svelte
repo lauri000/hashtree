@@ -56,7 +56,12 @@
   import { resolveFeedVideoRootCidAsync } from '../../lib/videoFeedRoot';
   import { getVideoDisplayTitle } from '../../lib/videoDisplayTitle';
   import { setRecentVideoCardInfo } from '../../stores/homeFeedCache';
-  import { buildTreeEventPermalink, ensureLatestTreeEventSnapshot, getCachedTreeEventSnapshot } from '../../lib/treeEventSnapshots';
+  import {
+    buildTreeEventPermalink,
+    ensureTreeEventSnapshotForRoot,
+    getCachedTreeEventSnapshot,
+    snapshotMatchesRootCid,
+  } from '../../lib/treeEventSnapshots';
 
   let deleting = $state(false);
   let editing = $state(false);
@@ -826,26 +831,38 @@ async function syncTreeRootToWorker(
     const currentTreeName = treeName;
     const currentVideoIdValue = currentVideoId;
     const linkKey = $routeStore.params.get('k');
+    const currentRootCid = effectiveRouteRootCid;
 
     if (!currentNpub || !currentTreeName) {
       snapshotPermalinkHref = videoNhash ? `#/${videoNhash}` : null;
       return;
     }
 
+    if (!currentRootCid?.hash) {
+      snapshotPermalinkHref = videoNhash ? `#/${videoNhash}` : null;
+      return;
+    }
+
     const permalinkPath = currentVideoIdValue ? [currentVideoIdValue] : [];
     const cached = getCachedTreeEventSnapshot(currentNpub, currentTreeName);
-    if (cached) {
+    if (cached && snapshotMatchesRootCid(cached, currentRootCid)) {
       snapshotPermalinkHref = buildTreeEventPermalink(cached, permalinkPath, linkKey);
       return;
     }
 
-    snapshotPermalinkHref = videoNhash ? `#/${videoNhash}` : null;
+    snapshotPermalinkHref = null;
     let cancelled = false;
-    ensureLatestTreeEventSnapshot(currentNpub, currentTreeName).then((snapshot) => {
-      if (!cancelled && snapshot) {
-        snapshotPermalinkHref = buildTreeEventPermalink(snapshot, permalinkPath, linkKey);
+    ensureTreeEventSnapshotForRoot(currentNpub, currentTreeName, currentRootCid).then((snapshot) => {
+      if (!cancelled) {
+        snapshotPermalinkHref = snapshot
+          ? buildTreeEventPermalink(snapshot, permalinkPath, linkKey)
+          : (videoNhash ? `#/${videoNhash}` : null);
       }
-    }).catch(() => {});
+    }).catch(() => {
+      if (!cancelled) {
+        snapshotPermalinkHref = videoNhash ? `#/${videoNhash}` : null;
+      }
+    });
     return () => { cancelled = true; };
   });
 

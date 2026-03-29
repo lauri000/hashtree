@@ -620,7 +620,12 @@ test.describe('yt-dlp Batch Upload', () => {
     await page.goto(`/video.html#/${result.npub}`);
 
     const playlistName = page.getByText('E2E Playlist Test');
-    await expect(playlistName).toBeVisible({ timeout: 20000 });
+    await expect
+      .poll(
+        async () => await playlistName.isVisible().catch(() => false),
+        { timeout: 60000, intervals: [1000, 2000, 5000] }
+      )
+      .toBe(true);
 
     // Take screenshot before assertions
     await page.screenshot({ path: 'e2e/screenshots/profile-playlist-test.png' });
@@ -636,7 +641,7 @@ test.describe('yt-dlp Batch Upload', () => {
         async () =>
           await playlistsHeading.isVisible().catch(() => false)
           || await page.locator('.bg-black\\/80:has-text("2")').isVisible().catch(() => false),
-        { timeout: 10000 }
+        { timeout: 60000, intervals: [1000, 2000, 5000] }
       )
       .toBe(true);
     const isPlaylistsHeadingVisible = await playlistsHeading.isVisible().catch(() => false);

@@ -193,23 +193,25 @@ test.describe('Search Result Navigation', () => {
     await expect(videoElement).toBeVisible({ timeout: 15000 });
 
     // Get the nhash by clicking the permalink button (it navigates to nhash URL)
-    const permalinkBtn = page.locator('button[title="Permalink (content-addressed)"]');
+    const permalinkBtn = page.locator('button[title="Permalink"]');
     await expect(permalinkBtn).toBeEnabled({ timeout: 10000 });
     await permalinkBtn.click();
 
     // Wait for navigation to nhash URL
     await page.waitForURL(/\/video\.html#\/nhash1/, { timeout: 10000 });
-    const nhashUrl = page.url();
-    console.log('Permalink navigated to:', nhashUrl);
+    const permalinkUrl = page.url();
+    console.log('Permalink navigated to:', permalinkUrl);
 
-    // Extract nhash from URL
-    const nhashMatch = nhashUrl.match(/nhash1[a-z0-9]+/);
+    // Extract nhash from URL for logging/debugging, but preserve the full snapshot
+    // permalink when we test direct navigation.
+    const nhashMatch = permalinkUrl.match(/nhash1[a-z0-9]+/);
     expect(nhashMatch).toBeTruthy();
     const nhash = nhashMatch![0];
     console.log('Extracted nhash:', nhash);
 
-    // Step 2: Navigate directly to the nhash URL
-    await page.goto(`/video.html#/${nhash}`);
+    // Step 2: Simulate a fresh direct navigation to the full permalink URL.
+    await page.goto('/video.html#/');
+    await page.goto(permalinkUrl);
 
     // Step 3: Wait for video to load - check heading, loading, player, or error state
     const videoHeading = page.getByRole('heading', { level: 1 });

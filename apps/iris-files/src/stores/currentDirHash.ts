@@ -32,7 +32,9 @@ let pathRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let pathRetryAttempts = 0;
 let forceRetry = false;
 const PATH_RETRY_DELAY_MS = 1500;
-const PERMALINK_MAX_RETRIES = 8;
+// Snapshot permalinks may need extra time for the signed event snapshot, root CID,
+// and path entry to all become locally readable under suite load.
+const PERMALINK_MAX_RETRIES = 24;
 const TREE_PATH_MAX_RETRIES = 24;
 const TREE_PATH_MAX_RETRIES_WITH_PEERS = 80;
 

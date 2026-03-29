@@ -5,6 +5,7 @@ import {
   buildTreeEventPermalink,
   isNewerTreeEventSnapshot,
   resolveSnapshotRootCid,
+  snapshotMatchesRootCid,
   type TreeEventSnapshotInfo,
 } from '../src/lib/treeEventSnapshots';
 
@@ -91,5 +92,20 @@ describe('tree event snapshots', () => {
 
     expect(isNewerTreeEventSnapshot(newer, older)).toBe(true);
     expect(isNewerTreeEventSnapshot(older, newer)).toBe(false);
+  });
+
+  it('matches tree snapshots against the current root hash', () => {
+    const snapshot = makeSnapshot();
+
+    expect(snapshotMatchesRootCid(snapshot, snapshot.rootCid)).toBe(true);
+    expect(snapshotMatchesRootCid(snapshot, cid(fromHex('9'.repeat(64))))).toBe(false);
+  });
+
+  it('ignores missing public root keys when comparing hashes', () => {
+    const snapshot = makeSnapshot({
+      rootCid: cid(fromHex('1'.repeat(64)), fromHex('2'.repeat(64))),
+    });
+
+    expect(snapshotMatchesRootCid(snapshot, cid(fromHex('1'.repeat(64))))).toBe(true);
   });
 });

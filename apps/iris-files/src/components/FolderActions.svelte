@@ -23,9 +23,11 @@
   import { getFolderCreationBehavior, supportsDocumentFeatures, supportsGitFeatures } from '../appType';
   import {
     buildTreeEventPermalink,
+    ensureTreeEventSnapshotForRoot,
     ensureLatestTreeEventSnapshot,
     getCachedTreeEventSnapshot,
     isNewerTreeEventSnapshot,
+    snapshotMatchesRootCid,
   } from '../lib/treeEventSnapshots';
 
   interface Props {
@@ -70,6 +72,7 @@
     const linkKey = route.params.get('k');
     const isSnapshotRoute = route.params.get('snapshot') === '1';
     const snapshot = permalinkSnapshot.snapshot;
+    const currentRootCid = getCurrentRootCid();
 
     if (!directoryCid?.hash) {
       permalinkHref = null;
@@ -93,19 +96,30 @@
       return;
     }
 
+    if (!currentRootCid?.hash) {
+      permalinkHref = fallbackHref;
+      return;
+    }
+
     const cached = getCachedTreeEventSnapshot(npub, treeName);
-    if (cached) {
+    if (cached && snapshotMatchesRootCid(cached, currentRootCid)) {
       permalinkHref = buildTreeEventPermalink(cached, path, linkKey);
       return;
     }
 
-    permalinkHref = fallbackHref;
+    permalinkHref = null;
     let cancelled = false;
-    ensureLatestTreeEventSnapshot(npub, treeName).then((snapshot) => {
-      if (!cancelled && snapshot) {
-        permalinkHref = buildTreeEventPermalink(snapshot, path, linkKey);
+    ensureTreeEventSnapshotForRoot(npub, treeName, currentRootCid).then((snapshot) => {
+      if (!cancelled) {
+        permalinkHref = snapshot
+          ? buildTreeEventPermalink(snapshot, path, linkKey)
+          : fallbackHref;
       }
-    }).catch(() => {});
+    }).catch(() => {
+      if (!cancelled) {
+        permalinkHref = fallbackHref;
+      }
+    });
     return () => { cancelled = true; };
   });
 

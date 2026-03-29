@@ -15,9 +15,10 @@
   import FolderActions from './FolderActions.svelte';
   import VisibilityIcon from './VisibilityIcon.svelte';
   import { TreeRow } from './ui';
-  import { treeRootStore, routeStore, createTreesStore, type TreeEntry, currentDirCidStore, isViewingFileStore, resolvingPathStore, directoryEntriesStore } from '../stores';
+  import { treeRootStore, routeStore, createTreesStore, type TreeEntry, currentDirCidStore, isViewingFileStore, resolvingPathStore, directoryEntriesStore, permalinkSnapshotStore } from '../stores';
   import { readFilesFromDataTransfer, hasDirectoryItems } from '../utils/directory';
   import { supportsGitFeatures } from '../appType';
+  import { buildTreeEventPermalink } from '../lib/treeEventSnapshots';
 
   import { getFileIcon } from '../utils/fileIcon';
   import { BREAKPOINTS } from '../utils/breakpoints';
@@ -42,6 +43,10 @@
   ): string {
     const parts: string[] = [];
     const suffix = buildQueryString({ k: linkKey, g: gitRootPath });
+
+    if (isSnapshotPermalink && permalinkSnapshot.snapshot) {
+      return buildTreeEventPermalink(permalinkSnapshot.snapshot, [...currentPath, entry.name], linkKey);
+    }
 
     if (currentNpub && currentTreeName) {
       parts.push(currentNpub, currentTreeName);
@@ -75,12 +80,14 @@
   let userNpub = $derived($nostrStore.npub);
   let selectedTree = $derived($nostrStore.selectedTree);
   let route = $derived($routeStore);
+  let permalinkSnapshot = $derived($permalinkSnapshotStore);
   let rootCid = $derived($treeRootStore);
   let currentDirCid = $derived($currentDirCidStore);
   let recentlyChanged = $derived($recentlyChangedFiles);
 
-  let currentNpub = $derived(route.npub);
-  let currentTreeName = $derived(route.treeName);
+  let currentNpub = $derived(route.npub ?? permalinkSnapshot.snapshot?.npub ?? null);
+  let currentTreeName = $derived(route.treeName ?? permalinkSnapshot.snapshot?.treeName ?? null);
+  let isSnapshotPermalink = $derived(route.params.get('snapshot') === '1' && !!permalinkSnapshot.snapshot);
   // Get visibility for current tree (from selectedTree if available)
   // Note: currentTreeVisibility uses effectiveTree which is derived after trees store is created
   // Get directory path (exclude file if URL points to file)
@@ -317,6 +324,10 @@
   function buildDirHref(path: string[]): string {
     const parts: string[] = [];
     const suffix = linkKey ? `?k=${linkKey}` : '';
+
+    if (isSnapshotPermalink && permalinkSnapshot.snapshot) {
+      return buildTreeEventPermalink(permalinkSnapshot.snapshot, path, linkKey);
+    }
 
     if (currentNpub && currentTreeName) {
       parts.push(currentNpub, currentTreeName);

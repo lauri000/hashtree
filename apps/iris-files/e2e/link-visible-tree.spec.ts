@@ -748,7 +748,7 @@ test.describe('Link-visible Tree Visibility', () => {
   test('files in link-visible trees should be encrypted (have CHK)', async ({ page }) => {
     test.slow(); // File operations can be slow under parallel load
     // This test verifies that files uploaded to link-visible trees are properly encrypted
-    // and have CHK (Content Hash Key) in the permalink
+    // and keep the decrypt key in the shared link.
 
     await createTreeWithVisibility(page, 'linkvis-encrypted', 'link-visible');
     await createFileWithContent(page, 'encrypted-file.txt', 'This content should be encrypted');
@@ -766,19 +766,17 @@ test.describe('Link-visible Tree Visibility', () => {
     console.log('Permalink href:', permalinkHref);
     expect(permalinkHref).toBeTruthy();
 
-    // The nhash should be longer than 32 bytes (simple hash) if it includes a key
-    // Simple nhash (32 bytes hash) = ~58 chars (nhash1 + bech32 of 32 bytes)
-    // TLV nhash with key should be longer since it includes hash TLV + key TLV
     const nhashMatch = permalinkHref!.match(/nhash1[a-z0-9]+/);
     expect(nhashMatch).toBeTruthy();
     const nhash = nhashMatch![0];
     console.log('nhash:', nhash);
     console.log('nhash length:', nhash.length);
 
-    // A simple 32-byte hash encoded in bech32 is about 58 chars
-    // With TLV (hash + key), it should be longer (around 115+ chars)
-    // If the file is encrypted, the nhash should include the decrypt key
-    expect(nhash.length).toBeGreaterThan(70); // Should have TLV encoding with key
+    // Snapshot permalinks keep the decrypt key in the shared URL query, not inside
+    // the snapshot nhash itself.
+    expect(permalinkHref).toContain('snapshot=1');
+    expect(permalinkHref).toMatch(/[?&]k=[a-f0-9]{64}\b/i);
+    expect(nhash.length).toBeGreaterThan(60);
   });
 
   test('owner can create and write to private folder', async ({ page }) => {
