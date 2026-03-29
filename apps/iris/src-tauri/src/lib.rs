@@ -1952,18 +1952,13 @@ mod tests {
     }
 
     #[test]
-    fn macos_info_plist_omits_bluetooth_usage_descriptions() {
+    fn macos_info_plist_declares_bluetooth_usage_description() {
         let plist_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Info.plist");
         let plist = std::fs::read_to_string(&plist_path).expect("failed to read macOS Info.plist");
 
         assert!(
-            !plist.contains("<key>NSBluetoothAlwaysUsageDescription</key>"),
-            "did not expect NSBluetoothAlwaysUsageDescription in {:?}",
-            plist_path
-        );
-        assert!(
-            !plist.contains("<key>NSBluetoothPeripheralUsageDescription</key>"),
-            "did not expect NSBluetoothPeripheralUsageDescription in {:?}",
+            plist.contains("<key>NSBluetoothAlwaysUsageDescription</key>"),
+            "expected NSBluetoothAlwaysUsageDescription in {:?}",
             plist_path
         );
     }
