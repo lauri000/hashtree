@@ -89,30 +89,6 @@ export function parseGitRepoAnnouncement(event: GitRepoAnnouncementEvent): GitRe
   };
 }
 
-export function countRepoForks(
-  events: GitRepoAnnouncementEvent[],
-  sourceAddress: string,
-  earliestUniqueCommit: string,
-): number {
-  const latestByAddress = new Map<string, GitRepoAnnouncement>();
-
-  for (const event of events) {
-    const announcement = parseGitRepoAnnouncement(event);
-    if (!announcement || announcement.earliestUniqueCommit !== earliestUniqueCommit) {
-      continue;
-    }
-
-    const current = latestByAddress.get(announcement.address);
-    if (isNewerGitRepoAnnouncement(announcement, current)) {
-      latestByAddress.set(announcement.address, announcement);
-    }
-  }
-
-  return [...latestByAddress.values()].filter(
-    announcement => announcement.address !== sourceAddress && announcement.isPersonalFork,
-  ).length;
-}
-
 export function parseForkOriginLink(value: string): ForkOriginLink | null {
   const trimmed = value.trim();
   if (!trimmed) {

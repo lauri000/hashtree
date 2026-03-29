@@ -646,7 +646,7 @@
     />
 
     <div class="flex max-w-full min-w-0 items-center justify-end max-sm:w-full max-sm:justify-start">
-      <FolderActions {dirCid} {canEdit} />
+      <FolderActions dirCid={gitRootCid ?? null} {canEdit} />
     </div>
   </div>
 

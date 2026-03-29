@@ -11,8 +11,8 @@ import { localStore, getTree } from '../store';
 import { autosaveIfOwn } from '../nostr';
 import { getCurrentRootCid, getCurrentPathFromUrl } from './route';
 import { updateLocalRootCache } from '../treeRootCache';
-import { getRootCommit, initGitRepo, isGitRepo } from '../utils/git';
-import { buildHtreeUrl, publishRepoAnnouncement } from '../nip34';
+import { getRootCommit, initGitRepo } from '../utils/git';
+import { buildHtreeUrl, fetchRepoAnnouncement, publishRepoAnnouncement } from '../nip34';
 import { setProjectForkOrigin } from '../stores/projectMeta';
 import {
   BOARD_CARD_FILE_SUFFIX,
@@ -314,12 +314,54 @@ export async function forkTree(dirCid: CID, name: string, visibility: import('@h
 
   const { saveHashtree } = await import('../nostr');
   const { storeLinkKey } = await import('../stores/trees');
+  const tree = getTree();
+
+  const nostrState = useNostrStore.getState();
+  if (!nostrState.npub || !nostrState.pubkey) return { success: false };
+
+  let forkOriginUrl: string | null = null;
+  let forkAnnouncementEuc: string | undefined;
+  let forkMetadataApplied = false;
+
+  try {
+    const route = parseRoute();
+    const sourceOwnerNpub = route.npub;
+    const sourceTreeName = route.treeName;
+    const sourceRepoName = sourceTreeName
+      ? [sourceTreeName, ...route.path].filter(Boolean).join('/')
+      : null;
+    const sourceAnnouncement = sourceOwnerNpub && sourceRepoName
+      ? await fetchRepoAnnouncement(sourceOwnerNpub, sourceRepoName).catch(() => null)
+      : null;
+    const sourceRootCommit = sourceAnnouncement?.earliestUniqueCommit ?? await getRootCommit(dirCid);
+    const shouldAnnotateFork = (
+      !!sourceOwnerNpub &&
+      !!sourceRepoName &&
+      sourceOwnerNpub !== nostrState.npub &&
+      !!sourceRootCommit
+    );
+
+    if (shouldAnnotateFork && sourceOwnerNpub && sourceRepoName) {
+      forkOriginUrl = buildHtreeUrl(sourceOwnerNpub, sourceRepoName);
+      forkAnnouncementEuc = sourceRootCommit ?? undefined;
+    }
+  } catch (error) {
+    console.warn('[Fork] Failed to resolve fork origin metadata', error);
+  }
 
   // If source is unencrypted (no key), re-encrypt it
   let finalCid = dirCid;
+  if (forkOriginUrl && !finalCid.key) {
+    try {
+      finalCid = await setProjectForkOrigin(finalCid, forkOriginUrl);
+      forkMetadataApplied = true;
+    } catch (error) {
+      console.warn('[Fork] Failed to annotate fork origin metadata before re-encryption', error);
+    }
+  }
+
   if (!dirCid.key) {
     console.log('[Fork] Source is unencrypted, re-encrypting...');
-    const tree = getTree();
 
     // Rebuild with encryption (doesn't publish to Nostr - we'll do that below)
     const rebuildWithEncryption = async (oldCid: CID): Promise<CID> => {
@@ -347,37 +389,17 @@ export async function forkTree(dirCid: CID, name: string, visibility: import('@h
       }
     };
 
-    finalCid = await rebuildWithEncryption(dirCid);
+    finalCid = await rebuildWithEncryption(finalCid);
     console.log('[Fork] Re-encryption complete');
   }
 
-  const nostrState = useNostrStore.getState();
-
-  if (!nostrState.npub || !nostrState.pubkey) return { success: false };
-
-  let forkOriginUrl: string | null = null;
-  let forkAnnouncementEuc: string | undefined;
-
-  try {
-    const route = parseRoute();
-    const sourceOwnerNpub = route.npub;
-    const sourceTreeName = route.treeName;
-    const sourceRepoName = sourceTreeName
-      ? [sourceTreeName, ...route.path].filter(Boolean).join('/')
-      : null;
-
-    if (
-      sourceOwnerNpub &&
-      sourceRepoName &&
-      sourceOwnerNpub !== nostrState.npub &&
-      await isGitRepo(finalCid)
-    ) {
-      forkOriginUrl = buildHtreeUrl(sourceOwnerNpub, sourceRepoName);
+  if (forkOriginUrl && !forkMetadataApplied) {
+    try {
       finalCid = await setProjectForkOrigin(finalCid, forkOriginUrl);
-      forkAnnouncementEuc = await getRootCommit(finalCid) ?? undefined;
+      forkMetadataApplied = true;
+    } catch (error) {
+      console.warn('[Fork] Failed to annotate fork origin metadata', error);
     }
-  } catch (error) {
-    console.warn('[Fork] Failed to annotate fork origin metadata', error);
   }
 
   useNostrStore.setSelectedTree({
@@ -398,11 +420,6 @@ export async function forkTree(dirCid: CID, name: string, visibility: import('@h
     storeLinkKey(nostrState.npub, name, result.linkKey);
   }
 
-  if (result.success) {
-    const linkKeyParam = result.linkKey ? `?k=${result.linkKey}` : '';
-    navigate(`/${encodeURIComponent(nostrState.npub)}/${encodeURIComponent(name)}${linkKeyParam}`);
-  }
-
   if (result.success && forkOriginUrl) {
     try {
       const published = await publishRepoAnnouncement(name, {
@@ -415,6 +432,11 @@ export async function forkTree(dirCid: CID, name: string, visibility: import('@h
     } catch (error) {
       console.warn('[Fork] Failed to publish personal fork announcement', error);
     }
+  }
+
+  if (result.success) {
+    const linkKeyParam = result.linkKey ? `?k=${result.linkKey}` : '';
+    navigate(`/${encodeURIComponent(nostrState.npub)}/${encodeURIComponent(name)}${linkKeyParam}`);
   }
   return result;
 }
