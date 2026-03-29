@@ -1,19 +1,18 @@
 /**
- * E2E tests for HTML Viewer with directory context
+ * E2E tests for HTML file handoff to sites.iris.to
  *
- * Tests the flow of:
- * 1. Uploading HTML file with CSS/JS/image resources
- * 2. HTML viewer loads and renders correctly
- * 3. Resources from same directory are accessible
- * 4. Resources from subdirectories are accessible
+ * Iris Files should no longer embed HTML app/site previews directly.
+ * HTML entries stay editable/downloadable, but execution and rendering
+ * move to the dedicated isolated site runtime.
  */
 import { test, expect } from './fixtures';
+import type { Page } from '@playwright/test';
 import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, useLocalRelay } from './test-utils.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-async function ensureFolderView(page: any) {
+async function ensureFolderView(page: Page) {
   const fileList = page.locator('[data-testid="file-list"]');
   const backToFolder = page.getByRole('link', { name: 'Back to folder' });
   if (await backToFolder.isVisible().catch(() => false)) {
@@ -30,36 +29,19 @@ async function ensureFolderView(page: any) {
   await expect(backToFolder).toBeHidden({ timeout: 10000 });
 }
 
-test.describe('HTML Viewer with directory context', () => {
-  test('should render HTML with inline CSS from same directory', async ({ page }) => {
+test.describe('HTML site handoff', () => {
+  test('should surface sites.iris.to links for a directory site instead of embedding it', async ({ page }) => {
     setupPageErrorHandler(page);
     await page.goto('/');
     await navigateToPublicFolder(page);
 
-    // Create temp files for upload
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'html-test-'));
     const cssPath = path.join(tmpDir, 'style.css');
     const htmlPath = path.join(tmpDir, 'index.html');
 
     try {
-      // Create CSS file content
-      const cssContent = `
-body {
-  background-color: rgb(0, 128, 0);
-  color: white;
-  font-family: sans-serif;
-}
-h1 {
-  color: rgb(255, 255, 0);
-}
-#test-element {
-  background-color: rgb(0, 0, 255);
-  padding: 20px;
-}
-`;
-
-      // Create HTML file content that references the CSS
-      const htmlContent = `<!DOCTYPE html>
+      fs.writeFileSync(cssPath, 'body { background: rgb(0, 128, 0); }');
+      fs.writeFileSync(htmlPath, `<!DOCTYPE html>
 <html>
 <head>
   <title>Test Page</title>
@@ -67,15 +49,9 @@ h1 {
 </head>
 <body>
   <h1>Hello from HashTree</h1>
-  <div id="test-element">This should have blue background</div>
-  <p>If CSS loaded correctly, background is green and heading is yellow.</p>
 </body>
-</html>`;
+</html>`);
 
-      fs.writeFileSync(cssPath, cssContent);
-      fs.writeFileSync(htmlPath, htmlContent);
-
-      // Create a folder for our HTML site
       await page.locator('header a:has-text("Iris")').click();
       await page.waitForTimeout(300);
       await page.getByRole('button', { name: 'New Folder' }).click();
@@ -85,222 +61,46 @@ h1 {
       await input.fill('html-test');
       await page.click('button:has-text("Create")');
 
-      // Wait for folder view
       await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
       await expect(page.getByText(/Drop or click to add|Empty directory/).first()).toBeVisible({ timeout: 10000 });
 
-      // Upload CSS file first
       const fileInput = page.locator('input[type="file"]').first();
       await fileInput.setInputFiles(cssPath);
-
-      // Wait for upload
       await ensureFolderView(page);
       await expect(page.locator('[data-testid="file-list"] a:has-text("style.css")')).toBeVisible({ timeout: 10000 });
 
-      // Upload HTML file
       await fileInput.setInputFiles(htmlPath);
-
-      // Wait for upload
       await ensureFolderView(page);
       await expect(page.locator('[data-testid="file-list"] a:has-text("index.html")')).toBeVisible({ timeout: 10000 });
 
-      // Click on the HTML file to view it
+      const directoryOpenSite = page.getByTestId('directory-open-site');
+      await expect(directoryOpenSite).toBeVisible({ timeout: 10000 });
+      await expect(directoryOpenSite).toHaveAttribute('href', /https:\/\/sites\.iris\.to\/#\//);
+      await expect(directoryOpenSite).toHaveAttribute('href', /html-test\/index\.html\?reload=1$/);
+
       await page.locator('[data-testid="file-list"] a:has-text("index.html")').click();
 
-      // Wait for iframe to appear
-      const iframe = page.frameLocator('iframe');
+      const handoff = page.getByTestId('html-site-handoff');
+      await expect(handoff).toBeVisible({ timeout: 10000 });
+      await expect(handoff).toContainText('Open this HTML file in sites.iris.to');
+      await expect(page.locator('iframe')).toHaveCount(0);
 
-      // Check that HTML content is rendered
-      await expect(iframe.locator('h1')).toContainText('Hello from HashTree', { timeout: 10000 });
+      const viewerOpenSite = page.getByTestId('viewer-open-site');
+      const handoffOpenSite = page.getByTestId('html-site-handoff-open-site');
+      await expect(viewerOpenSite).toBeVisible({ timeout: 10000 });
+      await expect(handoffOpenSite).toBeVisible({ timeout: 10000 });
 
-      // Check that CSS was applied - the heading should be yellow (rgb 255, 255, 0)
-      const h1 = iframe.locator('h1');
-      await expect(h1).toBeVisible();
-
-      // Verify the test element exists
-      const testElement = iframe.locator('#test-element');
-      await expect(testElement).toBeVisible();
-      await expect(testElement).toContainText('This should have blue background');
+      const viewerHref = await viewerOpenSite.getAttribute('href');
+      const handoffHref = await handoffOpenSite.getAttribute('href');
+      expect(viewerHref).toBe(handoffHref);
+      expect(viewerHref).toMatch(/https:\/\/sites\.iris\.to\/#\//);
+      expect(viewerHref).toMatch(/html-test\/index\.html\?reload=1$/);
     } finally {
-      // Cleanup temp files
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  test('should keep JavaScript disabled in secure preview and offer isolated-site handoff', async ({ page }) => {
-    setupPageErrorHandler(page);
-    await page.goto('/');
-    await navigateToPublicFolder(page);
-
-    // Create temp files for upload
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'js-test-'));
-    const jsPath = path.join(tmpDir, 'app.js');
-    const htmlPath = path.join(tmpDir, 'index.html');
-
-    try {
-      // Create JS file that modifies the DOM
-      const jsContent = `
-window.onload = function() {
-  var el = document.getElementById('js-target');
-  if (el) {
-    el.textContent = 'JavaScript loaded successfully!';
-    el.setAttribute('data-loaded', 'true');
-  }
-};
-`;
-
-      // Create HTML file that references the JS at end of body
-      const htmlContent = `<!DOCTYPE html>
-<html>
-<head>
-  <title>JS Test</title>
-</head>
-<body>
-  <h1>JavaScript Test</h1>
-  <div id="js-target">Waiting for JavaScript...</div>
-  <script src="app.js"></script>
-</body>
-</html>`;
-
-      fs.writeFileSync(jsPath, jsContent);
-      fs.writeFileSync(htmlPath, htmlContent);
-
-      // Create a folder
-      await page.locator('header a:has-text("Iris")').click();
-      await page.waitForTimeout(300);
-      await page.getByRole('button', { name: 'New Folder' }).click();
-
-      const input = page.locator('input[placeholder="Folder name..."]');
-      await input.waitFor({ timeout: 5000 });
-      await input.fill('js-test');
-      await page.click('button:has-text("Create")');
-
-      await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
-      await expect(page.getByText(/Drop or click to add|Empty directory/).first()).toBeVisible({ timeout: 10000 });
-
-      // Upload JS file first
-      const fileInput = page.locator('input[type="file"]').first();
-      await fileInput.setInputFiles(jsPath);
-
-      await ensureFolderView(page);
-      await expect(page.locator('[data-testid="file-list"] a:has-text("app.js")')).toBeVisible({ timeout: 10000 });
-
-      // Upload HTML file
-      await fileInput.setInputFiles(htmlPath);
-
-      await ensureFolderView(page);
-      await expect(page.locator('[data-testid="file-list"] a:has-text("index.html")')).toBeVisible({ timeout: 10000 });
-      await expect(page.getByRole('link', { name: 'Open Site' })).toBeVisible({ timeout: 10000 });
-
-      // Click on the HTML file
-      await page.locator('[data-testid="file-list"] a:has-text("index.html")').click();
-
-      // Wait for iframe to appear and load
-      await page.waitForSelector('iframe', { timeout: 10000 });
-
-      // Check that JavaScript did not execute inside the secure preview
-      const iframe = page.frameLocator('iframe');
-      const target = iframe.locator('#js-target');
-      await expect(target).toContainText('Waiting for JavaScript...', { timeout: 15000 });
-      await expect(page.getByRole('link', { name: 'Open Site' })).toBeVisible({ timeout: 10000 });
-    } finally {
-      // Cleanup temp files
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  test('should load resources from subdirectories', { timeout: 30000 }, async ({ page }) => {
-    setupPageErrorHandler(page);
-    await page.goto('/');
-    await navigateToPublicFolder(page);
-
-    // Create temp files for upload
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'subdir-test-'));
-    const cssPath = path.join(tmpDir, 'style.css');
-    const htmlPath = path.join(tmpDir, 'index.html');
-
-    try {
-      const cssContent = `
-body { background-color: rgb(128, 0, 128); }
-h1 { color: rgb(0, 255, 255); }
-`;
-      const htmlContent = `<!DOCTYPE html>
-<html>
-<head>
-  <title>Subdir Test</title>
-  <link rel="stylesheet" href="css/style.css">
-</head>
-<body>
-  <h1>Subdirectory CSS Test</h1>
-  <p id="info">If CSS loaded, background should be purple.</p>
-</body>
-</html>`;
-
-      fs.writeFileSync(cssPath, cssContent);
-      fs.writeFileSync(htmlPath, htmlContent);
-
-      // Create main folder
-      await page.locator('header a:has-text("Iris")').click();
-      await page.waitForTimeout(300);
-      await page.getByRole('button', { name: 'New Folder' }).click();
-
-      const input = page.locator('input[placeholder="Folder name..."]');
-      await input.waitFor({ timeout: 5000 });
-      await input.fill('subdir-test');
-      await page.click('button:has-text("Create")');
-
-      await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
-      await expect(page.getByText(/Drop or click to add|Empty directory/).first()).toBeVisible({ timeout: 10000 });
-
-      // Create subdirectory 'css'
-      await page.getByRole('button', { name: /Folder/ }).click();
-      const subInput = page.locator('input[placeholder="Folder name..."]');
-      await subInput.waitFor({ timeout: 5000 });
-      await subInput.fill('css');
-      await page.click('button:has-text("Create")');
-      await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
-
-      // Navigate into css folder
-      await page.locator('[data-testid="file-list"] a:has-text("css")').click();
-      // Wait for navigation to complete - ".." should appear in subdirectory
-      await expect(page.locator('[data-testid="file-list"] a:has-text("..")')).toBeVisible({ timeout: 5000 });
-
-      // Upload CSS file in subdirectory
-      const fileInput = page.locator('input[type="file"]').first();
-      await fileInput.setInputFiles(cssPath);
-
-      await ensureFolderView(page);
-      await expect(page.locator('[data-testid="file-list"] a:has-text("style.css")')).toBeVisible({ timeout: 10000 });
-
-      // Go back to parent directory (click on ".." link)
-      await page.locator('[data-testid="file-list"] a:has-text("..")').click();
-      // Wait for parent directory - css folder should be visible (use exact match to avoid matching style.css)
-      await expect(page.getByRole('link', { name: 'css', exact: true })).toBeVisible({ timeout: 5000 });
-
-      // Upload HTML that references css/style.css
-      // Re-locate file input after navigation
-      const htmlFileInput = page.locator('input[type="file"]').first();
-      await htmlFileInput.setInputFiles(htmlPath);
-
-      // Wait for file list to show index.html
-      const fileList = page.locator('[data-testid="file-list"]');
-      await ensureFolderView(page);
-      await expect(fileList.locator('a:has-text("index.html")')).toBeVisible({ timeout: 10000 });
-
-      // Click on HTML file in file list
-      await fileList.locator('a:has-text("index.html")').click();
-
-      // Check content loaded
-      const iframe = page.frameLocator('iframe');
-      await expect(iframe.locator('h1')).toContainText('Subdirectory CSS Test', { timeout: 10000 });
-      await expect(iframe.locator('#info')).toBeVisible();
-    } finally {
-      // Cleanup temp files
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  test('should keep app-style builds preview-safe and surface isolated-site handoff', async ({ page }) => {
+  test('should hand off app-style HTML entries to sites.iris.to instead of previewing them inline', async ({ page }) => {
     setupPageErrorHandler(page);
     await page.goto('/');
     await disableOthersPool(page);
@@ -308,21 +108,10 @@ h1 { color: rgb(0, 255, 255); }
     await navigateToPublicFolder(page, { timeoutMs: 60000, requireRelay: false });
 
     const appDir = `absolute-app-${Date.now()}`;
-    const cssContent = `
-body { background-color: rgb(12, 34, 56); }
-#status { color: rgb(200, 10, 10); }
-`;
-    const jsContent = `
-window.addEventListener('load', () => {
-  const el = document.getElementById('status');
-  if (el) {
-    el.textContent = 'App loaded';
-    document.body.setAttribute('data-loaded', 'true');
-  }
-});
-`;
-    const logoBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=';
-    const htmlContent = `<!DOCTYPE html>
+    const files = [
+      {
+        relativePath: `${appDir}/index.html`,
+        content: `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -335,13 +124,17 @@ window.addEventListener('load', () => {
   <img id="logo" src="/assets/logo.png" alt="logo">
   <script src="/assets/app.js"></script>
 </body>
-</html>`;
-
-    const files = [
-      { relativePath: `${appDir}/index.html`, content: htmlContent, type: 'text/html' },
-      { relativePath: `${appDir}/assets/app.css`, content: cssContent, type: 'text/css' },
-      { relativePath: `${appDir}/assets/app.js`, content: jsContent, type: 'application/javascript' },
-      { relativePath: `${appDir}/assets/logo.png`, content: logoBase64, type: 'image/png', encoding: 'base64' },
+</html>`,
+        type: 'text/html',
+      },
+      { relativePath: `${appDir}/assets/app.css`, content: 'body { background: rgb(12, 34, 56); }', type: 'text/css' },
+      { relativePath: `${appDir}/assets/app.js`, content: 'window.__loaded = true;', type: 'application/javascript' },
+      {
+        relativePath: `${appDir}/assets/logo.png`,
+        content: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=',
+        type: 'image/png',
+        encoding: 'base64',
+      },
     ];
 
     await page.evaluate(async (payload) => {
@@ -372,24 +165,12 @@ window.addEventListener('load', () => {
 
     await page.waitForURL(new RegExp(`${appDir}.*index\\.html`), { timeout: 15000 });
 
-    const iframe = page.frameLocator('iframe');
-    await expect(page.getByRole('link', { name: 'Open Site' })).toBeVisible({ timeout: 10000 });
-    await expect(iframe.locator('h1')).toContainText('Absolute Assets App', { timeout: 15000 });
-    await expect(iframe.locator('#status')).toHaveText('Loading...', { timeout: 15000 });
+    const handoff = page.getByTestId('html-site-handoff');
+    await expect(handoff).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('iframe')).toHaveCount(0);
 
-    const background = await iframe.locator('body').evaluate((el) => getComputedStyle(el).backgroundColor);
-    expect(background).toBe('rgb(12, 34, 56)');
-
-    const logoInfo = await iframe.locator('#logo').evaluate((img: HTMLImageElement) => ({
-      src: img.getAttribute('src'),
-      resolvedSrc: img.src,
-      currentSrc: img.currentSrc,
-      complete: img.complete,
-      naturalWidth: img.naturalWidth,
-    }));
-    expect(logoInfo.naturalWidth).toBeGreaterThan(0);
+    const viewerOpenSite = page.getByTestId('viewer-open-site');
+    await expect(viewerOpenSite).toBeVisible({ timeout: 10000 });
+    await expect(viewerOpenSite).toHaveAttribute('href', new RegExp(`${appDir}\\/index\\.html\\?reload=1$`));
   });
-
-  // Preview mode is intentionally document-like:
-  // CSS/images can load, but scripts and persistence are disabled.
 });

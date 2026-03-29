@@ -16,7 +16,6 @@
   import { getQueryParamsFromHash } from '../../lib/router.svelte';
   import DirectoryActions from './DirectoryActions.svelte';
   import FileEditor from './FileEditor.svelte';
-  import HtmlViewer from './HtmlViewer.svelte';
   import MediaPlayer from './MediaPlayer.svelte';
   import YjsDocumentEditor from './YjsDocumentEditor.svelte';
   import ZipPreview from './ZipPreview.svelte';
@@ -1023,10 +1022,36 @@
           path={effectiveVideoTree.path}
         />
       {/key}
-    {:else if isHtml && fileContent !== null}
-      {#key cidKey}
-        <HtmlViewer content={fileContent} fileName={urlFileName} />
-      {/key}
+    {:else if isHtml}
+      <div class="flex-1 flex items-center justify-center p-4">
+        <div
+          class="w-full max-w-xl rounded-xl border border-surface-2 bg-surface-1 p-6 text-center shadow-sm"
+          data-testid="html-site-handoff"
+        >
+          <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-2 text-xl text-text-2">
+            <span class="i-lucide-globe"></span>
+          </div>
+          <h2 class="text-lg font-semibold text-text-1">Open this HTML file in sites.iris.to</h2>
+          <p class="mt-2 text-sm text-text-2">
+            HTML sites and apps now open in the isolated site runtime instead of rendering inside Iris Files.
+          </p>
+          <div class="mt-5 flex flex-wrap items-center justify-center gap-3">
+            {#if openSiteHref}
+              <a
+                href={openSiteHref}
+                target="_blank"
+                rel="noreferrer"
+                class="btn"
+                data-testid="html-site-handoff-open-site"
+              >
+                Open Site
+              </a>
+            {:else}
+              <span class="text-sm text-text-3">Site URL unavailable for this entry.</span>
+            {/if}
+          </div>
+        </div>
+      </div>
     {:else if isImage && entryFromStore?.cid}
       <!-- Image viewer - uses SW URL for caching, keyed by CID -->
       {#key cidKey}
