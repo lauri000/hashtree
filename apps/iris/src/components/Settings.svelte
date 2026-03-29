@@ -268,6 +268,7 @@
     meshStatus.peers.filter((peer) => peer.state === 'connected'),
   );
   let inactiveMeshPeerCount = $derived(meshStatus.peers.length - connectedMeshPeers.length);
+  let recentBluetoothEvents = $derived(meshStatus.bluetoothReceivedEvents.slice(0, 6));
   let sortedNip07Accounts = $derived([...nip07Accounts].sort((a, b) => a.addedAt - b.addedAt));
 
   function selectTab(tab: TabId) {
@@ -347,6 +348,8 @@
 
   function transportLabel(transport: string): string {
     switch (transport.toLowerCase()) {
+      case 'bluetooth':
+        return 'Bluetooth';
       case 'webrtc':
         return 'WebRTC';
       default:
@@ -425,7 +428,7 @@
   }
 
   async function handleTransportToggle(
-    key: keyof Pick<DaemonNetworkSettings, 'webrtc' | 'multicast'>,
+    key: keyof Pick<DaemonNetworkSettings, 'webrtc' | 'multicast' | 'bluetooth'>,
   ) {
     if (daemonNetworkBusy) return;
 
@@ -512,7 +515,10 @@
   }
 
   function updateNumericSetting(
-    key: keyof Pick<DaemonNetworkSettings, 'maxMulticastPeers' | 'multicastPort'>,
+    key: keyof Pick<
+      DaemonNetworkSettings,
+      'maxMulticastPeers' | 'maxBluetoothPeers' | 'multicastPort'
+    >,
     value: string,
   ) {
     const parsed = Number.parseInt(value, 10);
@@ -534,6 +540,16 @@
 
   function formatCount(value: number, singular: string, plural: string): string {
     return `${value} ${value === 1 ? singular : plural}`;
+  }
+
+  function formatBluetoothEventTime(timestampSeconds: number): string {
+    if (!timestampSeconds) return 'Unknown time';
+    return new Date(timestampSeconds * 1000).toLocaleString();
+  }
+
+  function shortEventId(value: string): string {
+    if (value.length <= 18) return value;
+    return `${value.slice(0, 8)}…${value.slice(-8)}`;
   }
 
   function nip07AccountLabel(account: Nip07AccountSummary): string {
@@ -1003,6 +1019,20 @@
                     <span class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform {daemonNetworkDraft.multicast ? 'translate-x-5' : ''}"></span>
                   </button>
                 </label>
+                <label class="flex items-center justify-between gap-4 rounded bg-surface-1/70 px-3 py-2">
+                  <div class="min-w-0 flex-1">
+                    <div class="text-sm font-medium text-text-1">Bluetooth</div>
+                    <div class="text-xs text-text-3">Nearby Nostr event sync with adjacent devices</div>
+                  </div>
+                  <button
+                    class="relative h-6 w-11 shrink-0 overflow-hidden rounded-full transition-colors {daemonNetworkDraft.bluetooth ? 'bg-accent' : 'bg-surface-3'}"
+                    onclick={() => void handleTransportToggle('bluetooth')}
+                    aria-label="Toggle Bluetooth transport"
+                    disabled={!daemonNetworkLoaded || daemonNetworkBusy}
+                  >
+                    <span class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform {daemonNetworkDraft.bluetooth ? 'translate-x-5' : ''}"></span>
+                  </button>
+                </label>
               </div>
 
               <div class="grid gap-3 sm:grid-cols-2">
@@ -1038,6 +1068,17 @@
                     aria-label="Maximum multicast peers"
                   />
                 </label>
+                <label class="space-y-1">
+                  <span class="text-xs uppercase tracking-wide text-text-3">Max Bluetooth Peers</span>
+                  <input
+                    class="w-full rounded-lg bg-surface-1 px-3 py-2 text-sm text-text-1 outline-none ring-0"
+                    type="number"
+                    min="0"
+                    value={daemonNetworkDraft.maxBluetoothPeers}
+                    oninput={(event) => updateNumericSetting('maxBluetoothPeers', event.currentTarget.value)}
+                    aria-label="Maximum bluetooth peers"
+                  />
+                </label>
               </div>
             </div>
           </div>
@@ -1062,7 +1103,17 @@
 
               <div class="rounded bg-surface-2 p-3">
                 <div class="text-xs uppercase tracking-wide text-text-3">Transports</div>
-                <div class="mt-2 grid gap-2">
+                <div class="mt-2 grid gap-2 sm:grid-cols-2">
+                  <div
+                    role="group"
+                    aria-label={`Bluetooth ${formatCount(meshStatus.transportCounts.bluetooth ?? 0, 'peer', 'peers')}`}
+                    class="flex items-center justify-between rounded bg-surface-1 px-3 py-2 text-sm"
+                  >
+                    <span class="text-text-3">Bluetooth</span>
+                    <span class="font-medium text-text-1">
+                      {formatCount(meshStatus.transportCounts.bluetooth ?? 0, 'peer', 'peers')}
+                    </span>
+                  </div>
                   <div
                     role="group"
                     aria-label={`WebRTC ${formatCount(meshStatus.transportCounts.webrtc ?? 0, 'peer', 'peers')}`}
@@ -1103,6 +1154,51 @@
                 <BandwidthHistoryChart history={meshBandwidthHistory} />
               </div>
             </div>
+          </div>
+
+          <div>
+            <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-1">
+              Bluetooth Receipts
+            </h3>
+            <p class="text-xs text-text-3 mb-3">
+              Recently ingested Nostr events that arrived over Bluetooth.
+            </p>
+            {#if recentBluetoothEvents.length === 0}
+              <div class="rounded bg-surface-2 p-3 text-sm text-text-3">
+                No Bluetooth-received events recorded yet
+              </div>
+            {:else}
+              <div class="rounded bg-surface-2 divide-y divide-surface-3">
+                {#each recentBluetoothEvents as event (event.eventId)}
+                  <div class="p-3 text-sm">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="rounded bg-surface-1 px-2 py-1 text-[10px] uppercase tracking-wide text-text-3">
+                        kind {event.kind}
+                      </span>
+                      {#if event.peerId}
+                        <span class="rounded bg-surface-1 px-2 py-1 text-[10px] uppercase tracking-wide text-text-3">
+                          {event.peerId}
+                        </span>
+                      {/if}
+                    </div>
+                    <div class="mt-2 font-mono text-xs text-text-1 break-all">{shortEventId(event.eventId)}</div>
+                    <div class="mt-1 text-xs text-text-3 break-all">{event.pubkey}</div>
+                    <div class="mt-2 text-xs text-text-3">
+                      Received {formatBluetoothEventTime(event.receivedAt)}
+                    </div>
+                    {#if event.cidValues.length > 0}
+                      <div class="mt-2 flex flex-wrap gap-2">
+                        {#each event.cidValues as cid (cid)}
+                          <span class="rounded bg-surface-1 px-2 py-1 font-mono text-[11px] text-text-1 break-all">
+                            {cid}
+                          </span>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
           </div>
 
           <div>

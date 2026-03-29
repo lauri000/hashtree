@@ -14,6 +14,19 @@ use nostr::{Event, EventId, Filter as NostrFilter, SubscriptionId};
 
 use crate::socialgraph;
 
+const BLUETOOTH_EVENT_LOG_CAPACITY: usize = 128;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BluetoothReceivedEventRecord {
+    pub event_id: String,
+    pub pubkey: String,
+    pub kind: u32,
+    pub created_at: u64,
+    pub received_at: u64,
+    pub peer_id: Option<String>,
+    pub cid_values: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct NostrRelayConfig {
     pub spambox_db_max_bytes: u64,
@@ -42,6 +55,7 @@ mod imp {
     use anyhow::Result;
 
     use crate::socialgraph::{EventStorageClass, SocialGraphAccessControl, SocialGraphBackend};
+    use hashtree_core::{nhash_decode, Cid};
     use hashtree_nostr::{is_parameterized_replaceable_kind, is_replaceable_kind};
     use tracing::warn;
 
@@ -230,6 +244,131 @@ mod imp {
         }
     }
 
+    struct BluetoothEventLog {
+        path: PathBuf,
+        state: Mutex<BluetoothEventLogState>,
+    }
+
+    struct BluetoothEventLogState {
+        records: VecDeque<BluetoothReceivedEventRecord>,
+        event_ids: HashSet<String>,
+    }
+
+    impl BluetoothEventLog {
+        fn load(path: PathBuf) -> Self {
+            let records = std::fs::read_to_string(&path)
+                .ok()
+                .map(|serialized| {
+                    serialized
+                        .lines()
+                        .filter_map(|line| {
+                            serde_json::from_str::<BluetoothReceivedEventRecord>(line).ok()
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let mut trimmed = VecDeque::with_capacity(BLUETOOTH_EVENT_LOG_CAPACITY);
+            let start = records.len().saturating_sub(BLUETOOTH_EVENT_LOG_CAPACITY);
+            for record in records.into_iter().skip(start) {
+                trimmed.push_back(record);
+            }
+            let event_ids = trimmed
+                .iter()
+                .map(|record| record.event_id.clone())
+                .collect::<HashSet<_>>();
+
+            Self {
+                path,
+                state: Mutex::new(BluetoothEventLogState {
+                    records: trimmed,
+                    event_ids,
+                }),
+            }
+        }
+
+        async fn recent(&self, limit: usize) -> Vec<BluetoothReceivedEventRecord> {
+            let state = self.state.lock().await;
+            state
+                .records
+                .iter()
+                .rev()
+                .take(limit.max(1))
+                .cloned()
+                .collect()
+        }
+
+        async fn record(&self, event: &Event, peer_id: Option<String>) {
+            let record = BluetoothReceivedEventRecord {
+                event_id: event.id.to_hex(),
+                pubkey: event.pubkey.to_hex(),
+                kind: event.kind.as_u16() as u32,
+                created_at: event.created_at.as_u64(),
+                received_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|value| value.as_secs())
+                    .unwrap_or(0),
+                peer_id,
+                cid_values: cid_values_from_event(event),
+            };
+
+            let serialized = {
+                let mut state = self.state.lock().await;
+                if state.event_ids.contains(&record.event_id) {
+                    return;
+                }
+
+                state.event_ids.insert(record.event_id.clone());
+                state.records.push_back(record);
+                while state.records.len() > BLUETOOTH_EVENT_LOG_CAPACITY {
+                    if let Some(removed) = state.records.pop_front() {
+                        state.event_ids.remove(&removed.event_id);
+                    }
+                }
+
+                state
+                    .records
+                    .iter()
+                    .filter_map(|entry| serde_json::to_string(entry).ok())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+
+            if let Some(parent) = self.path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&self.path, serialized);
+        }
+    }
+
+    fn looks_like_cid_reference(value: &str) -> bool {
+        Cid::parse(value).is_ok() || nhash_decode(value).is_ok()
+    }
+
+    fn cid_values_from_event(event: &Event) -> Vec<String> {
+        let mut values = Vec::new();
+        let mut seen = HashSet::new();
+
+        for tag in &event.tags {
+            let fields = tag.clone().to_vec();
+            if fields.first().is_some_and(|name| name == "cid") {
+                if let Some(value) = fields.get(1).filter(|value| !value.is_empty()) {
+                    if seen.insert(value.clone()) {
+                        values.push(value.clone());
+                    }
+                }
+                continue;
+            }
+
+            for value in fields.into_iter().skip(1) {
+                if looks_like_cid_reference(&value) && seen.insert(value.clone()) {
+                    values.push(value);
+                }
+            }
+        }
+
+        values
+    }
+
     pub struct NostrRelay {
         config: NostrRelayConfig,
         trusted: NostrStore,
@@ -240,6 +379,7 @@ mod imp {
         subscriptions: Mutex<HashMap<u64, HashMap<SubscriptionId, Vec<NostrFilter>>>>,
         recent_events: Mutex<RecentEvents>,
         next_client_id: AtomicU64,
+        bluetooth_event_log: Arc<BluetoothEventLog>,
     }
 
     impl NostrRelay {
@@ -351,6 +491,9 @@ mod imp {
             };
 
             let recent_size = config.max_query_limit.saturating_mul(2);
+            let bluetooth_event_log = Arc::new(BluetoothEventLog::load(
+                data_dir.join("bluetooth-events.jsonl"),
+            ));
 
             Ok(Self {
                 config,
@@ -362,6 +505,7 @@ mod imp {
                 subscriptions: Mutex::new(HashMap::new()),
                 recent_events: Mutex::new(RecentEvents::new(recent_size)),
                 next_client_id: AtomicU64::new(1),
+                bluetooth_event_log,
             })
         }
 
@@ -373,8 +517,25 @@ mod imp {
             self.ingest_trusted_event_inner(event, true).await
         }
 
+        pub async fn ingest_trusted_event_from_bluetooth(
+            &self,
+            event: Event,
+            peer_id: Option<String>,
+        ) -> Result<()> {
+            self.ingest_trusted_event_inner(event.clone(), true).await?;
+            self.bluetooth_event_log.record(&event, peer_id).await;
+            Ok(())
+        }
+
         pub async fn ingest_trusted_event_silent(&self, event: Event) -> Result<()> {
             self.ingest_trusted_event_inner(event, false).await
+        }
+
+        pub async fn bluetooth_received_events(
+            &self,
+            limit: usize,
+        ) -> Vec<BluetoothReceivedEventRecord> {
+            self.bluetooth_event_log.recent(limit).await
         }
 
         async fn ingest_trusted_event_inner(&self, event: Event, broadcast: bool) -> Result<()> {
@@ -849,6 +1010,140 @@ mod tests {
             RelayMessage::EndOfStoredEvents(id) => assert_eq!(id, sub_id),
             other => anyhow::bail!("expected EOSE, got {:?}", other),
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn relay_persists_bluetooth_received_event_records() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let keys = Keys::generate();
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::from([keys.public_key().to_hex()]),
+        ));
+
+        let relay = NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([keys.public_key().to_hex()]),
+            Some(access.clone()),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?;
+
+        let cid = "cd".repeat(32);
+        let event = EventBuilder::new(
+            Kind::TextNote,
+            "bluetooth receipt",
+            [nostr::Tag::parse(&["cid", &cid]).unwrap()],
+        )
+        .to_event(&keys)?;
+        relay
+            .ingest_trusted_event_from_bluetooth(
+                event.clone(),
+                Some("peer-a:session-a".to_string()),
+            )
+            .await?;
+
+        let receipts = relay.bluetooth_received_events(10).await;
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].event_id, event.id.to_hex());
+        assert_eq!(receipts[0].cid_values, vec![cid.clone()]);
+
+        let reloaded = NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([keys.public_key().to_hex()]),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?;
+        let reloaded_receipts = reloaded.bluetooth_received_events(10).await;
+        assert_eq!(reloaded_receipts.len(), 1);
+        assert_eq!(reloaded_receipts[0].event_id, event.id.to_hex());
+        assert_eq!(reloaded_receipts[0].cid_values, vec![cid]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn relay_persists_nhash_bluetooth_received_event_records() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let keys = Keys::generate();
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::from([keys.public_key().to_hex()]),
+        ));
+
+        let relay = NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([keys.public_key().to_hex()]),
+            Some(access.clone()),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?;
+
+        let nhash = hashtree_core::nhash_encode(&[0xef; 32])?;
+        let event = EventBuilder::new(
+            Kind::TextNote,
+            "bluetooth nhash receipt",
+            [nostr::Tag::parse(&["cid", &nhash]).unwrap()],
+        )
+        .to_event(&keys)?;
+        relay
+            .ingest_trusted_event_from_bluetooth(
+                event.clone(),
+                Some("peer-a:session-a".to_string()),
+            )
+            .await?;
+
+        let receipts = relay.bluetooth_received_events(10).await;
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].event_id, event.id.to_hex());
+        assert_eq!(receipts[0].cid_values, vec![nhash.clone()]);
+
+        let reloaded = NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([keys.public_key().to_hex()]),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?;
+        let reloaded_receipts = reloaded.bluetooth_received_events(10).await;
+        assert_eq!(reloaded_receipts.len(), 1);
+        assert_eq!(reloaded_receipts[0].event_id, event.id.to_hex());
+        assert_eq!(reloaded_receipts[0].cid_values, vec![nhash]);
 
         Ok(())
     }

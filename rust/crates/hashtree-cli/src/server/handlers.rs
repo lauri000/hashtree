@@ -2547,6 +2547,11 @@ pub async fn daemon_status(
             .into_response();
     }
 
+    let bluetooth_received_events = match state.nostr_relay.as_ref() {
+        Some(relay) => relay.bluetooth_received_events(16).await,
+        None => Vec::new(),
+    };
+
     // Mesh peers
     let mesh = if let Some(ref webrtc_state) = state.webrtc_peers {
         let peers = webrtc_state.peers.read().await;
@@ -2583,10 +2588,14 @@ pub async fn daemon_status(
             "mesh_received": mesh_received,
             "mesh_forwarded": mesh_forwarded,
             "mesh_dropped_duplicate": mesh_dropped_duplicate,
+            "bluetooth_received_events": bluetooth_received_events,
             "peers": peer_stats,
         })
     } else {
-        json!({"enabled": false})
+        json!({
+            "enabled": false,
+            "bluetooth_received_events": bluetooth_received_events,
+        })
     };
 
     // Upstream servers

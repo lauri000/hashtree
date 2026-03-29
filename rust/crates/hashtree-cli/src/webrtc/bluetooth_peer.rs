@@ -12,12 +12,16 @@ use super::peer::ContentStore;
 use super::signaling::WebRTCState;
 use super::types::{
     encode_request, encode_response, hash_to_hex, parse_message, DataMessage, DataRequest,
-    DataResponse, MeshNostrFrame, PeerDirection, PeerHTLConfig, PeerId, BLOB_REQUEST_POLICY,
+    DataResponse, MeshNostrFrame, PeerDirection, PeerHTLConfig, PeerId, TimedSeenSet,
+    BLOB_REQUEST_POLICY,
 };
 use nostr::{
     ClientMessage as NostrClientMessage, Filter as NostrFilter, JsonUtil as NostrJsonUtil,
-    RelayMessage as NostrRelayMessage, SubscriptionId as NostrSubscriptionId,
+    RelayMessage as NostrRelayMessage, SubscriptionId as NostrSubscriptionId, Timestamp,
 };
+
+const BLUETOOTH_SEEN_EVENT_CAP: usize = 2048;
+const BLUETOOTH_SEEN_EVENT_TTL: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone)]
 pub enum BluetoothFrame {
@@ -45,6 +49,7 @@ pub struct BluetoothPeer {
     nostr_relay: Option<Arc<NostrRelay>>,
     mesh_frame_tx: Option<mpsc::Sender<(PeerId, MeshNostrFrame)>>,
     traffic_state: Option<Arc<WebRTCState>>,
+    seen_event_ids: Arc<Mutex<TimedSeenSet>>,
     htl_config: PeerHTLConfig,
 }
 
@@ -71,10 +76,18 @@ impl BluetoothPeer {
             nostr_relay,
             mesh_frame_tx,
             traffic_state,
+            seen_event_ids: Arc::new(Mutex::new(TimedSeenSet::new(
+                BLUETOOTH_SEEN_EVENT_CAP,
+                BLUETOOTH_SEEN_EVENT_TTL,
+            ))),
             htl_config: PeerHTLConfig::random(),
         });
         Self::spawn_reader(peer.clone());
         peer
+    }
+
+    async fn mark_seen_event_id(&self, event_id: String) -> bool {
+        self.seen_event_ids.lock().await.insert_if_new(event_id)
     }
 
     fn spawn_reader(peer: Arc<Self>) {
@@ -90,9 +103,40 @@ impl BluetoothPeer {
                     .await;
                 nostr_client_id = Some(client_id);
 
+                let live_subscription_id =
+                    NostrSubscriptionId::new(format!("bluetooth-live-{}", rand::random::<u64>()));
+                let _ = relay
+                    .register_subscription_query(
+                        client_id,
+                        live_subscription_id.clone(),
+                        vec![NostrFilter::new().since(Timestamp::now())],
+                    )
+                    .await;
+
                 let peer_for_forward = peer.clone();
                 nostr_forward_task = Some(tokio::spawn(async move {
                     while let Some(text) = nostr_rx.recv().await {
+                        if let Ok(NostrRelayMessage::Event {
+                            subscription_id,
+                            event,
+                        }) = NostrRelayMessage::from_json(&text)
+                        {
+                            if subscription_id == live_subscription_id {
+                                if event.kind.is_ephemeral()
+                                    || !peer_for_forward.mark_seen_event_id(event.id.to_hex()).await
+                                {
+                                    continue;
+                                }
+                                if peer_for_forward
+                                    .send_frame(BluetoothFrame::Text(event.as_json()))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
                         if peer_for_forward
                             .send_frame(BluetoothFrame::Text(text))
                             .await
@@ -184,6 +228,15 @@ impl BluetoothPeer {
         }
 
         if let Some(relay) = self.nostr_relay.as_ref() {
+            if let Ok(event) = nostr::Event::from_json(&text) {
+                if self.mark_seen_event_id(event.id.to_hex()).await {
+                    let _ = relay
+                        .ingest_trusted_event_from_bluetooth(event, Some(self.peer_id.to_string()))
+                        .await;
+                }
+                return;
+            }
+
             if let Ok(nostr_msg) = NostrClientMessage::from_json(&text) {
                 if let Some(client_id) = nostr_client_id {
                     relay.handle_client_message(client_id, nostr_msg).await;
@@ -597,6 +650,125 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].id, event.id);
         responder.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bluetooth_peer_forwards_local_publishes_and_records_bluetooth_provenance() -> Result<()>
+    {
+        let (link_a, link_b) = MockBluetoothLink::pair();
+        let tmp_a = TempDir::new()?;
+        let tmp_b = TempDir::new()?;
+
+        let graph_store_a = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp_a.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let graph_store_b = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp_b.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let author_keys = Keys::generate();
+
+        let backend_a: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store_a.clone();
+        let backend_b: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store_b.clone();
+        let access_a = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend_a),
+            0,
+            HashSet::from([author_keys.public_key().to_hex()]),
+        ));
+        let access_b = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend_b),
+            0,
+            HashSet::from([author_keys.public_key().to_hex()]),
+        ));
+
+        let relay_a = Arc::new(NostrRelay::new(
+            Arc::clone(&backend_a),
+            tmp_a.path().to_path_buf(),
+            HashSet::from([author_keys.public_key().to_hex()]),
+            Some(access_a),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?);
+        let relay_b = Arc::new(NostrRelay::new(
+            Arc::clone(&backend_b),
+            tmp_b.path().to_path_buf(),
+            HashSet::from([author_keys.public_key().to_hex()]),
+            Some(access_b),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?);
+
+        let sender = BluetoothPeer::new(
+            PeerId::new("peer-a".to_string(), Some("sess-a".to_string())),
+            PeerDirection::Outbound,
+            link_a,
+            None,
+            Some(relay_a.clone()),
+            None,
+            None,
+        );
+        let receiver = BluetoothPeer::new(
+            PeerId::new("peer-b".to_string(), Some("sess-b".to_string())),
+            PeerDirection::Inbound,
+            link_b,
+            None,
+            Some(relay_b.clone()),
+            None,
+            None,
+        );
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let cid = "ab".repeat(32);
+        let event = EventBuilder::new(
+            Kind::TextNote,
+            "bluetooth publish sync",
+            [nostr::Tag::parse(&["cid", &cid]).unwrap()],
+        )
+        .to_event(&author_keys)?;
+        relay_a.ingest_trusted_event(event.clone()).await?;
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let received = relay_b
+            .query_events(
+                &Filter::new()
+                    .authors(vec![event.pubkey])
+                    .kinds(vec![event.kind]),
+                10,
+            )
+            .await;
+        assert_eq!(
+            received
+                .iter()
+                .filter(|candidate| candidate.id == event.id)
+                .count(),
+            1
+        );
+
+        let bluetooth_events = relay_b.bluetooth_received_events(10).await;
+        assert_eq!(bluetooth_events.len(), 1);
+        assert_eq!(bluetooth_events[0].event_id, event.id.to_hex());
+        assert_eq!(
+            bluetooth_events[0].peer_id.as_deref(),
+            Some("peer-b:sess-b")
+        );
+        assert_eq!(bluetooth_events[0].cid_values, vec![cid]);
+
+        receiver.close().await?;
+        sender.close().await?;
         Ok(())
     }
 }

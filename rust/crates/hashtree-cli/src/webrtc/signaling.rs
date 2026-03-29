@@ -71,6 +71,13 @@ impl std::fmt::Display for PeerTransport {
     }
 }
 
+fn bluetooth_nostr_only_mode() -> bool {
+    matches!(
+        std::env::var("HTREE_BLUETOOTH_NOSTR_ONLY").ok().as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
 /// Signaling/discovery path through which a peer was seen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PeerSignalPath {
@@ -368,6 +375,9 @@ impl WebRTCState {
         let mut connected_sessions: Vec<ConnectedSession> = Vec::new();
         for (peer_id, peer, transport) in peer_refs {
             if !peer.is_ready() {
+                continue;
+            }
+            if bluetooth_nostr_only_mode() && transport == PeerTransport::Bluetooth {
                 continue;
             }
             if let Some(webrtc_peer) = peer.as_webrtc() {
@@ -831,6 +841,9 @@ impl WebRTCState {
             peers
                 .values()
                 .filter(|entry| entry.state == ConnectionState::Connected)
+                .filter(|entry| {
+                    !bluetooth_nostr_only_mode() || entry.transport != PeerTransport::Bluetooth
+                })
                 .filter_map(|entry| {
                     let peer = entry.peer.as_ref()?;
                     if !peer.is_ready() {
@@ -1295,7 +1308,11 @@ impl WebRTCManager {
             let bluetooth = BluetoothMesh::new(self.config.bluetooth.clone());
             let context = BluetoothRuntimeContext {
                 my_peer_id: self.my_peer_id.clone(),
-                store: self.store.clone(),
+                store: if bluetooth_nostr_only_mode() {
+                    None
+                } else {
+                    self.store.clone()
+                },
                 nostr_relay: self.nostr_relay.clone(),
                 mesh_frame_tx: self.mesh_frame_tx.clone(),
                 registrar: BluetoothPeerRegistrar::new(

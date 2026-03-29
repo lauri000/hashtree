@@ -12,6 +12,16 @@ export interface MeshPeerInfo {
   signalPaths: string[];
 }
 
+export interface BluetoothReceivedEventInfo {
+  eventId: string;
+  pubkey: string;
+  kind: number;
+  createdAt: number;
+  receivedAt: number;
+  peerId: string | null;
+  cidValues: string[];
+}
+
 export interface MeshTotals {
   totalBytesSent: number;
   totalBytesReceived: number;
@@ -36,6 +46,7 @@ export interface DaemonMeshStatus {
   totalBytesSent: number;
   totalBytesReceived: number;
   peers: MeshPeerInfo[];
+  bluetoothReceivedEvents: BluetoothReceivedEventInfo[];
   blossomServers: number;
 }
 
@@ -74,6 +85,7 @@ export function emptyDaemonMeshStatus(): DaemonMeshStatus {
     totalBytesSent: 0,
     totalBytesReceived: 0,
     peers: [],
+    bluetoothReceivedEvents: [],
     blossomServers: 0,
   };
 }
@@ -85,6 +97,7 @@ export function parseDaemonMeshStatus(payload: unknown): DaemonMeshStatus {
   if (!mesh || mesh.enabled !== true) {
     return {
       ...emptyDaemonMeshStatus(),
+      bluetoothReceivedEvents: readBluetoothReceivedEvents(mesh?.bluetooth_received_events),
       blossomServers: readNumber(upstream?.blossom_servers),
     };
   }
@@ -125,8 +138,25 @@ export function parseDaemonMeshStatus(payload: unknown): DaemonMeshStatus {
     totalBytesSent: readNumber(mesh.bytes_sent) || calculateMeshTotals(peers).totalBytesSent,
     totalBytesReceived: readNumber(mesh.bytes_received) || calculateMeshTotals(peers).totalBytesReceived,
     peers,
+    bluetoothReceivedEvents: readBluetoothReceivedEvents(mesh.bluetooth_received_events),
     blossomServers: readNumber(upstream?.blossom_servers),
   };
+}
+
+function readBluetoothReceivedEvents(value: unknown): BluetoothReceivedEventInfo[] {
+  const entries = Array.isArray(value) ? value : [];
+  return entries
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => !!entry)
+    .map((entry) => ({
+      eventId: readString(entry.event_id),
+      pubkey: readString(entry.pubkey),
+      kind: readNumber(entry.kind),
+      createdAt: readNumber(entry.created_at),
+      receivedAt: readNumber(entry.received_at),
+      peerId: readString(entry.peer_id) || null,
+      cidValues: readStringArray(entry.cid_values),
+    }));
 }
 
 export function calculateMeshTotals(
