@@ -25,7 +25,7 @@
   }
 </script>
 
-<div class="p-4 space-y-6 max-w-2xl mx-auto">
+<div class="space-y-6">
   <!-- Account (only show when logged in with nsec) -->
   {#if nsec}
     <div>

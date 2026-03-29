@@ -1,8 +1,10 @@
 <script lang="ts">
   import { currentPath, navigate } from '../../lib/router.svelte';
-  import NetworkSettings from './NetworkSettings.svelte';
   import StorageSettings from './StorageSettings.svelte';
   import AppSettings from './AppSettings.svelte';
+  import P2PSettings from './P2PSettings.svelte';
+  import ServersSettings from './ServersSettings.svelte';
+  import TransportUsageSettings from './TransportUsageSettings.svelte';
 
   const tabs = [
     {
@@ -35,11 +37,46 @@
   }>;
 
   type TabId = (typeof tabs)[number]['id'];
+  const networkSections = [
+    {
+      id: 'traffic',
+      label: 'Traffic',
+      description: 'Transferred totals grouped by transport.',
+    },
+    {
+      id: 'servers',
+      label: 'Servers',
+      description: 'Relays and Blossom endpoints.',
+    },
+    {
+      id: 'p2p',
+      label: 'P2P',
+      description: 'Connection pools and mesh peers.',
+    },
+  ] as const satisfies ReadonlyArray<{
+    id: string;
+    label: string;
+    description: string;
+  }>;
 
   const DEFAULT_TAB: TabId = 'app';
+  const DEFAULT_NETWORK_SECTION = 'traffic';
+  type NetworkSectionId = (typeof networkSections)[number]['id'];
+
+  function networkSectionPath(id: NetworkSectionId) {
+    return `/settings/network/${id}`;
+  }
 
   function selectTab(id: TabId) {
+    if (id === 'network') {
+      navigate(networkSectionPath(DEFAULT_NETWORK_SECTION));
+      return;
+    }
     navigate(`/settings/${id}`);
+  }
+
+  function selectNetworkSection(id: NetworkSectionId) {
+    navigate(networkSectionPath(id));
   }
 
   function openSettingsIndex() {
@@ -57,8 +94,21 @@
     return DEFAULT_TAB;
   });
 
+  let activeNetworkSection = $derived.by((): NetworkSectionId => {
+    const path = $currentPath;
+    if (path.startsWith('/settings/servers')) return 'servers';
+    if (path.startsWith('/settings/p2p')) return 'p2p';
+    if (path.startsWith('/settings/network/servers')) return 'servers';
+    if (path.startsWith('/settings/network/p2p')) return 'p2p';
+    if (path.startsWith('/settings/network/traffic')) return 'traffic';
+    return DEFAULT_NETWORK_SECTION;
+  });
+
   let isSettingsRootRoute = $derived($currentPath === '/settings');
   let activeItem = $derived(tabs.find((tab) => tab.id === activeTab) ?? tabs[0]);
+  let activeNetworkSectionItem = $derived(
+    networkSections.find((section) => section.id === activeNetworkSection) ?? networkSections[0],
+  );
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col bg-surface-1 lg:flex-row">
@@ -106,14 +156,36 @@
 
       <div class="mb-6">
         <h2 class="text-2xl font-semibold text-text-1">{activeItem.label}</h2>
+        {#if activeTab === 'network'}
+          <p class="mt-1 text-sm text-text-3">{activeNetworkSectionItem.description}</p>
+        {/if}
       </div>
+
+      {#if activeTab === 'network'}
+        <div class="mb-6 flex flex-wrap gap-2">
+          {#each networkSections as section (section.id)}
+            <button
+              data-testid={`settings-network-${section.id}`}
+              onclick={() => selectNetworkSection(section.id)}
+              aria-current={activeNetworkSection === section.id ? 'page' : undefined}
+              class={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${activeNetworkSection === section.id ? 'bg-sky-500/12 text-sky-500 ring-1 ring-sky-500/20' : 'bg-surface-2 text-text-2 hover:bg-surface-3'}`}
+            >
+              {section.label}
+            </button>
+          {/each}
+        </div>
+      {/if}
 
       {#if activeTab === 'app'}
         <AppSettings />
       {:else if activeTab === 'storage'}
         <StorageSettings />
+      {:else if activeNetworkSection === 'traffic'}
+        <TransportUsageSettings embedded={true} />
+      {:else if activeNetworkSection === 'servers'}
+        <ServersSettings embedded={true} />
       {:else}
-        <NetworkSettings />
+        <P2PSettings embedded={true} />
       {/if}
     </div>
   </section>

@@ -31,7 +31,7 @@
     { pattern: '/', component: VideoHome },
     { pattern: '/create', component: VideoCreate },
     { pattern: '/settings', component: SettingsLayout },
-    { pattern: '/settings/:tab', component: SettingsLayout },
+    { pattern: '/settings/*', component: SettingsLayout },
     { pattern: '/wallet', component: WalletPage },
     { pattern: '/users', component: UsersPage },
     { pattern: '/:npub/edit', component: EditProfilePage },

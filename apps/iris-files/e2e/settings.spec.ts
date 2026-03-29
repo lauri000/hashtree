@@ -19,8 +19,8 @@ test.describe('Settings page', () => {
 
   test('can expand discovered relays section', async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/#/settings/network');
-    await expect(page.getByRole('button', { name: 'Network' })).toBeVisible({ timeout: 10000 });
+    await page.goto('/#/settings/network/servers');
+    await expect(page.getByTestId('settings-network-servers')).toBeVisible({ timeout: 10000 });
 
     const seededCount = await page.evaluate(() => {
       const store = (window as any).__nostrStore;
@@ -55,7 +55,7 @@ test.describe('Settings page', () => {
   test('can add and remove blossom server', async ({ page }) => {
     test.setTimeout(60000);
     setupPageErrorHandler(page);
-    await page.goto('/#/settings/network');
+    await page.goto('/#/settings/network/servers');
 
     await expect(page.getByRole('heading', { name: /File Servers/ })).toBeVisible({ timeout: 10000 });
 
@@ -94,7 +94,7 @@ test.describe('Settings page', () => {
   test('can toggle blossom server read/write', async ({ page }) => {
     test.setTimeout(60000);
     setupPageErrorHandler(page);
-    await page.goto('/#/settings/network');
+    await page.goto('/#/settings/network/servers');
     await waitForAppReady(page);
     await configureBlossomServers(page);
 

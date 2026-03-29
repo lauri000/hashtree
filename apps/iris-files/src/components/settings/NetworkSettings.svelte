@@ -4,7 +4,7 @@
   import TransportUsageSettings from './TransportUsageSettings.svelte';
 </script>
 
-<div class="p-4 max-w-2xl mx-auto space-y-6">
+<div class="space-y-6">
   <TransportUsageSettings embedded={true} />
   <ServersSettings embedded={true} />
   <P2PSettings embedded={true} />

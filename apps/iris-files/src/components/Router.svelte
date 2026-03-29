@@ -40,7 +40,7 @@
   const routePatterns = [
     { pattern: '/', component: HomeRoute },
     { pattern: '/settings', component: SettingsLayout },
-    { pattern: '/settings/:tab', component: SettingsLayout },
+    { pattern: '/settings/*', component: SettingsLayout },
     { pattern: '/wallet', component: WalletPage },
     { pattern: '/users', component: UsersPage },
     { pattern: '/:npub/follows', component: FollowsPage },

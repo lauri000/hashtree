@@ -25,7 +25,7 @@
   const routePatterns = [
     { pattern: '/', component: DocsHome },
     { pattern: '/settings', component: SettingsLayout },
-    { pattern: '/settings/:tab', component: SettingsLayout },
+    { pattern: '/settings/*', component: SettingsLayout },
     { pattern: '/users', component: UsersPage },
     { pattern: '/:npub/edit', component: EditProfilePage },
     { pattern: '/:npub/profile', component: DocsProfileView },

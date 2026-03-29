@@ -2,13 +2,22 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const root = path.resolve(process.cwd(), 'src', 'components', 'settings');
-const settingsLayoutSource = fs.readFileSync(path.join(root, 'SettingsLayout.svelte'), 'utf8');
-const networkSettingsSource = fs.readFileSync(path.join(root, 'NetworkSettings.svelte'), 'utf8');
-const serversSettingsSource = fs.readFileSync(path.join(root, 'ServersSettings.svelte'), 'utf8');
+const componentsRoot = path.resolve(process.cwd(), 'src', 'components');
+const settingsRoot = path.join(componentsRoot, 'settings');
+const settingsLayoutSource = fs.readFileSync(path.join(settingsRoot, 'SettingsLayout.svelte'), 'utf8');
+const appSettingsSource = fs.readFileSync(path.join(settingsRoot, 'AppSettings.svelte'), 'utf8');
+const storageSettingsSource = fs.readFileSync(path.join(settingsRoot, 'StorageSettings.svelte'), 'utf8');
+const serversSettingsSource = fs.readFileSync(path.join(settingsRoot, 'ServersSettings.svelte'), 'utf8');
+const transportUsageSettingsSource = fs.readFileSync(path.join(settingsRoot, 'TransportUsageSettings.svelte'), 'utf8');
+const p2pSettingsSource = fs.readFileSync(path.join(settingsRoot, 'P2PSettings.svelte'), 'utf8');
+const routerSource = fs.readFileSync(path.join(componentsRoot, 'Router.svelte'), 'utf8');
+const videoRouterSource = fs.readFileSync(path.join(componentsRoot, 'Video', 'VideoRouter.svelte'), 'utf8');
+const docsRouterSource = fs.readFileSync(path.join(componentsRoot, 'Docs', 'DocsRouter.svelte'), 'utf8');
+const mapsRouterSource = fs.readFileSync(path.join(componentsRoot, 'Maps', 'MapsRouter.svelte'), 'utf8');
+const boardsRoutesSource = fs.readFileSync(path.join(componentsRoot, 'Boards', 'routes.ts'), 'utf8');
 
 describe('shared settings layout', () => {
-  it('uses a single plain Network tab for server and peer settings', () => {
+  it('keeps Network as a top-level tab while splitting it into smaller subpages', () => {
     expect(settingsLayoutSource).toContain("id: 'app'");
     expect(settingsLayoutSource).toContain("label: 'App'");
     expect(settingsLayoutSource).toContain("id: 'network'");
@@ -22,7 +31,10 @@ describe('shared settings layout', () => {
     expect(settingsLayoutSource).not.toContain('mx-auto w-full max-w-4xl');
     expect(settingsLayoutSource).not.toContain("{ id: 'servers'");
     expect(settingsLayoutSource).not.toContain("{ id: 'p2p'");
-    expect(settingsLayoutSource).toContain('<NetworkSettings />');
+    expect(settingsLayoutSource).toContain("id: 'traffic'");
+    expect(settingsLayoutSource).toContain("id: 'servers'");
+    expect(settingsLayoutSource).toContain("id: 'p2p'");
+    expect(settingsLayoutSource).toContain('/settings/network/traffic');
   });
 
   it('keeps colored icon pills for the top-level settings navigation', () => {
@@ -31,14 +43,25 @@ describe('shared settings layout', () => {
     expect(settingsLayoutSource).toContain('bg-sky-500/12 text-sky-500 ring-1 ring-sky-500/20');
   });
 
-  it('keeps the old servers and p2p routes on the network tab fallback path', () => {
+  it('routes nested settings paths through the shared layout across app shells', () => {
+    expect(routerSource).toContain("{ pattern: '/settings/*', component: SettingsLayout }");
+    expect(videoRouterSource).toContain("{ pattern: '/settings/*', component: SettingsLayout }");
+    expect(docsRouterSource).toContain("{ pattern: '/settings/*', component: SettingsLayout }");
+    expect(mapsRouterSource).toContain("{ pattern: '/settings/*', component: SettingsLayout }");
+    expect(boardsRoutesSource).toContain("{ pattern: '/settings/*', key: 'settings' }");
+  });
+
+  it('maps legacy network routes onto focused network subpages', () => {
     expect(settingsLayoutSource).toContain("if (path.startsWith('/settings/storage')) return 'storage';");
     expect(settingsLayoutSource).toContain("if (path.startsWith('/settings/network')) return 'network';");
     expect(settingsLayoutSource).toContain("if (path.startsWith('/settings/app')) return 'app';");
+    expect(settingsLayoutSource).toContain("if (path.startsWith('/settings/servers')) return 'servers';");
+    expect(settingsLayoutSource).toContain("if (path.startsWith('/settings/p2p')) return 'p2p';");
     expect(settingsLayoutSource).toContain("return DEFAULT_TAB;");
-    expect(networkSettingsSource).toContain('<TransportUsageSettings embedded={true} />');
-    expect(networkSettingsSource).toContain('<ServersSettings embedded={true} />');
-    expect(networkSettingsSource).toContain('<P2PSettings embedded={true} />');
+    expect(appSettingsSource).not.toContain('max-w-2xl mx-auto');
+    expect(storageSettingsSource).not.toContain('max-w-2xl mx-auto');
+    expect(transportUsageSettingsSource).not.toContain('max-w-2xl mx-auto');
+    expect(p2pSettingsSource).not.toContain('max-w-2xl mx-auto');
   });
 
   it('shows embedded daemon transport and upstream relays inside one relay section', () => {

@@ -18,7 +18,7 @@ interface BoardsRouteMatch {
 const boardsRoutePatterns: Array<{ pattern: string; key: BoardsRouteKey }> = [
   { pattern: '/', key: 'home' },
   { pattern: '/settings', key: 'settings' },
-  { pattern: '/settings/:tab', key: 'settings' },
+  { pattern: '/settings/*', key: 'settings' },
   { pattern: '/users', key: 'users' },
   { pattern: '/:npub/edit', key: 'edit-profile' },
   { pattern: '/:npub/follows', key: 'follows' },

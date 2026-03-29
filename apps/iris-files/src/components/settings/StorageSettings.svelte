@@ -103,7 +103,7 @@
   }
 </script>
 
-<div class="p-4 space-y-6 max-w-2xl mx-auto">
+<div class="space-y-6">
   <!-- Backend -->
   <div>
     <h3 class="text-xs font-medium text-muted uppercase tracking-wide mb-3">

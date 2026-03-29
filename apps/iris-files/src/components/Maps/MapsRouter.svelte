@@ -14,7 +14,7 @@
   const routePatterns = [
     { pattern: '/', component: MapsHome },
     { pattern: '/settings', component: SettingsLayout },
-    { pattern: '/settings/:tab', component: SettingsLayout },
+    { pattern: '/settings/*', component: SettingsLayout },
     { pattern: '/users', component: UsersPage },
     { pattern: '/:npub/edit', component: EditProfilePage },
     { pattern: '/:npub/follows', component: FollowsPage },

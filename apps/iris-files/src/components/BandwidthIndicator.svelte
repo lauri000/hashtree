@@ -43,7 +43,7 @@
 </script>
 
 <a
-  href="#/settings/p2p"
+  href="#/settings/network/p2p"
   class="flex flex-col items-end text-xs no-underline font-mono leading-tight w-24 whitespace-nowrap"
   title="Upload: {formatRate(rates.up)}, Download: {formatRate(rates.down)}"
 >
