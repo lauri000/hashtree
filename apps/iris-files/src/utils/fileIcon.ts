@@ -10,8 +10,6 @@ export function getFileIcon(filename: string): string {
       return 'i-lucide-video';
     case 'mp3': case 'wav': case 'ogg': case 'flac': case 'm4a':
       return 'i-lucide-music';
-    case 'exe': case 'com': case 'bat':
-      return 'i-lucide-terminal';
     case 'js': case 'ts': case 'jsx': case 'tsx': case 'py': case 'rb': case 'go': case 'rs': case 'c': case 'cpp': case 'h': case 'java': case 'php': case 'sh': case 'bash':
       return 'i-lucide-file-code';
     case 'json': case 'yaml': case 'yml': case 'toml': case 'xml': case 'ini': case 'env':

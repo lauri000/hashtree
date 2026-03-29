@@ -14,6 +14,17 @@ describe('files portable build config', () => {
     expect(config.build?.modulePreload).toBe(false);
   });
 
+  it('does not split a removed executable-emulation chunk', async () => {
+    const config = await loadFilesConfig();
+    const manualChunks = config.build?.rollupOptions?.output;
+    const chunker = Array.isArray(manualChunks) ? manualChunks[0]?.manualChunks : manualChunks?.manualChunks;
+
+    expect(typeof chunker).toBe('function');
+    expect(chunker?.('/workspace/node_modules/emulators/dist/index.js')).toBeUndefined();
+    expect(chunker?.('/workspace/node_modules/js-dos/index.js')).toBeUndefined();
+    expect(chunker?.('/workspace/node_modules/marked/lib/marked.js')).toBe('markdown');
+  });
+
   it('strips module preload and crossorigin hints for htree webviews', async () => {
     const configModule = await import('../vite.config.ts');
     const sanitized = configModule.sanitizeFilesHtml(`

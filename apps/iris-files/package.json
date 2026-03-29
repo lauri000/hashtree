@@ -80,8 +80,6 @@
     "coco-cashu-indexeddb": "file:../../ts/vendor/coco-cashu-indexeddb",
     "dexie": "^4.2.1",
     "dompurify": "^3.3.1",
-    "emulators": "^8.3.9",
-    "emulators-ui": "^0.73.9",
     "fflate": "^0.8.2",
     "@hashtree/core": "workspace:*",
     "@hashtree/git": "workspace:*",

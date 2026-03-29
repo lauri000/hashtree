@@ -5,6 +5,7 @@
    */
   import { unzipSync } from 'fflate';
   import { open as openExtractModal, type ArchiveFileInfo } from '../Modals/ExtractModal.svelte';
+  import { getFileIcon } from '../../utils/fileIcon';
 
   interface Props {
     data: Uint8Array;
@@ -24,35 +25,6 @@
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
-
-  function getFileIcon(filename: string): string {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-    switch (ext) {
-      case 'jpg': case 'jpeg': case 'png': case 'gif': case 'webp': case 'svg': case 'ico': case 'bmp':
-        return 'i-lucide-image';
-      case 'mp4': case 'webm': case 'mkv': case 'avi': case 'mov':
-        return 'i-lucide-video';
-      case 'mp3': case 'wav': case 'ogg': case 'flac': case 'm4a':
-        return 'i-lucide-music';
-      case 'exe': case 'com': case 'bat':
-        return 'i-lucide-terminal';
-      case 'js': case 'ts': case 'jsx': case 'tsx': case 'py': case 'rb': case 'go': case 'rs':
-      case 'c': case 'cpp': case 'h': case 'java': case 'php': case 'sh': case 'bash':
-        return 'i-lucide-file-code';
-      case 'json': case 'yaml': case 'yml': case 'toml': case 'xml': case 'ini': case 'env':
-        return 'i-lucide-file-json';
-      case 'pdf': case 'doc': case 'docx': case 'txt': case 'md': case 'markdown': case 'rst':
-        return 'i-lucide-file-text';
-      case 'xls': case 'xlsx': case 'csv':
-        return 'i-lucide-file-spreadsheet';
-      case 'zip': case 'tar': case 'gz': case 'rar': case '7z':
-        return 'i-lucide-file-archive';
-      case 'html': case 'htm': case 'css': case 'scss': case 'sass': case 'less':
-        return 'i-lucide-file-code';
-      default:
-        return 'i-lucide-file';
-    }
   }
 
   // Parse ZIP contents

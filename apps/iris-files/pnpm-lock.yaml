@@ -86,12 +86,6 @@ importers:
       dompurify:
         specifier: ^3.3.1
         version: 3.3.1
-      emulators:
-        specifier: ^8.3.9
-        version: 8.3.9
-      emulators-ui:
-        specifier: ^0.73.9
-        version: 0.73.9
       fflate:
         specifier: ^0.8.2
         version: 0.8.2
@@ -3002,12 +2996,6 @@ packages:
 
   emoji-regex@8.0.0:
     resolution: {integrity: sha512-MSjYzcWNOA0ewAHpz0MxpYFvwg6yjy1NG3xteoqz644VCo/RPgnr1/GGt+ic3iJTzQ8Eu3TdM14SawnVUmGE6A==}
-
-  emulators-ui@0.73.9:
-    resolution: {integrity: sha512-Zx1eD9yHt+QjMwU0ay9FQKhyvvKucL1bRsTlZdHZsBrU3rNsZm52XODXFLSHMmAksEUe5TRocopWduJF7R9+xw==}
-
-  emulators@8.3.9:
-    resolution: {integrity: sha512-KRoi5rvWCrRTzboCQlftbASdsdmnAtkGQdBTcjXV9GZ9hmGL01cxDVUQYpKSH0O4Lcoatwb+2HcYUJFohijNmw==}
 
   encodeurl@2.0.0:
     resolution: {integrity: sha512-Q0n9HRi4m6JuGIV1eFlmvJB7ZEVxu93IrMyiMsGC0lrMJMWzRgx6WGquyfQgZVb31vhGgXnfmPNNXmxnOkRBrg==}
@@ -7930,10 +7918,6 @@ snapshots:
   electron-to-chromium@1.5.286: {}
 
   emoji-regex@8.0.0: {}
-
-  emulators-ui@0.73.9: {}
-
-  emulators@8.3.9: {}
 
   encodeurl@2.0.0: {}
 

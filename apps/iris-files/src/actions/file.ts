@@ -79,29 +79,6 @@ export async function createFile(name: string, content: string = '') {
   updateRoute(name, { edit: true });
 }
 
-// Save binary file (used by DOSBox to sync files back)
-export async function saveBinaryFile(entryName: string, data: Uint8Array): Promise<void> {
-  if (!entryName) return;
-
-  const rootCid = getCurrentRootCid();
-  if (!rootCid) return;
-
-  const tree = getTree();
-  const currentPath = getCurrentPathFromUrl();
-
-  const { cid: fileCid, size } = await tree.putFile(data);
-  const newRootCid = await tree.setEntry(
-    rootCid,
-    currentPath,
-    entryName,
-    fileCid,
-    size
-  );
-
-  autosaveIfOwn(newRootCid);
-  markFilesChanged(new Set([entryName]));
-}
-
 // Upload a single file (used for "Keep as ZIP" option)
 export async function uploadSingleFile(fileName: string, data: Uint8Array): Promise<void> {
   const tree = getTree();

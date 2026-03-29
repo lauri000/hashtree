@@ -19,7 +19,6 @@
   import MediaPlayer from './MediaPlayer.svelte';
   import YjsDocumentEditor from './YjsDocumentEditor.svelte';
   import ZipPreview from './ZipPreview.svelte';
-  import DosBox from './DosBox.svelte';
   import CodeViewer from './CodeViewer.svelte';
   import MarkdownViewer from './MarkdownViewer.svelte';
   import { TreeRow } from '../ui';
@@ -401,8 +400,7 @@
     if (!entry) return;
 
     // Skip loading for video/audio/image/pdf files - they stream via SW URLs
-    // Skip loading for DOS executables - they use their own loader
-    if (isVideo || isAudio || isImage || isPdf || isDos) return;
+    if (isVideo || isAudio || isImage || isPdf) return;
 
     loading = true;
     let cancelled = false;
@@ -532,7 +530,6 @@
   $effect(() => {
     if (!entryFromStore && !urlFileName) return; // Only when viewing a file
     if (isEditing) return; // Don't navigate when editing
-    if (isDos) return; // Don't interfere with DOSBox keyboard input
 
     const handleKeyDown = (e: KeyboardEvent) => {
       // Don't interfere with browser shortcuts (Cmd/Ctrl + arrows)
@@ -629,14 +626,6 @@
   }
 
   let isZip = $derived(urlFileName ? isZipFile(urlFileName) : false);
-
-  // Check if file is DOS executable
-  function isDosExecutable(filename: string): boolean {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-    return ext === 'exe' || ext === 'com' || ext === 'bat';
-  }
-
-  let isDos = $derived(urlFileName ? isDosExecutable(urlFileName) : false);
 
   function isMarkdownFile(filename: string): boolean {
     const ext = filename.split('.').pop()?.toLowerCase() || '';
@@ -1107,11 +1096,6 @@
       <!-- ZIP preview - keyed by CID -->
       {#key cidKey}
         <ZipPreview data={fileData} filename={urlFileName} onDownload={handleDownload} />
-      {/key}
-    {:else if isDos && currentDirCid}
-      <!-- DOS executable - keyed by filename since dirCid changes on file updates -->
-      {#key urlFileName}
-        <DosBox directoryCid={currentDirCid} exeName={urlFileName} />
       {/key}
     {:else if isMarkdown && fileContent !== null}
       <!-- Markdown viewer - keyed by CID -->

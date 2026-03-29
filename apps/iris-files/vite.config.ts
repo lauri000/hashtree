@@ -109,11 +109,6 @@ export default defineConfig({
           return 'assets/[name]-[hash][extname]';
         },
         manualChunks: (id) => {
-          // DOSBox emulator - lazy loaded only when viewing .exe files
-          if (id.includes('emulators') || id.includes('js-dos')) {
-            return 'dosbox';
-          }
-
           // Markdown rendering - statically split for caching
           if (id.includes('marked')) {
             return 'markdown';
