@@ -8,7 +8,7 @@
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { getTree, decodeAsText } from '../../store';
   import { routeStore } from '../../stores';
-  import { npubToPubkey, nostrStore } from '../../nostr';
+  import { nostrStore } from '../../nostr';
   import { createGitLogStore, createGitStatusStore } from '../../stores/git';
   import { createCIStatusStore, loadCIConfig, type CIStatus, type CIConfig } from '../../stores/ci';
   import { createFavoriteRepoStatsStore, createFavoriteReposStore, toggleFavoriteRepo } from '../../stores';
@@ -17,9 +17,8 @@
   import { getFileLastCommits } from '../../utils/git';
   import FolderActions from '../FolderActions.svelte';
   import ReadmePanel from '../Viewer/ReadmePanel.svelte';
-  import VisibilityIcon from '../VisibilityIcon.svelte';
-  import { Avatar, Name } from '../User';
   import RepoTabNav from './RepoTabNav.svelte';
+  import RepoHeader from './RepoHeader.svelte';
   import RepoSidebar from './RepoSidebar.svelte';
   import BranchDropdown from './BranchDropdown.svelte';
   import FileTable from './FileTable.svelte';
@@ -72,7 +71,6 @@
   let currentPath = $derived(route.path);
   let gitRootPathParam = $derived(resolveGitRootPathParam(gitRootPath, currentPath));
   let gitRootParts = $derived(splitGitRootPath(gitRootPathParam) ?? []);
-  let ownerPubkey = $derived(npubToPubkey(npub || '') || '');
   let userNpub = $derived($nostrStore.npub);
   let gitViewContext = $derived.by(() => resolveGitViewContext({
     treeName: route.treeName,
@@ -80,15 +78,6 @@
     fallbackGitRootParts: gitRootPath === null ? currentPath : [],
     currentPath,
   }));
-  let repoHeaderName = $derived(gitViewContext.repoName || route.treeName || '');
-  let repoRootHref = $derived.by(() => {
-    if (!route.npub || !route.treeName) return backUrl;
-    const parts = [route.npub, route.treeName, ...gitViewContext.rootParts];
-    const params = new SvelteURLSearchParams();
-    if (route.params.get('k')) params.set('k', route.params.get('k')!);
-    const query = params.toString();
-    return `#/${parts.map(encodeURIComponent).join('/')}${query ? `?${query}` : ''}`;
-  });
 
   // Full repo path for URLs (treeName + path to git root)
   // e.g., if treeName is "link" and git root is at "link/my-repo", repoPath is "link/my-repo"
@@ -614,48 +603,24 @@
   <RepoTabNav npub={route.npub} repoName={repoPath} activeTab="code" showReleasesTab={false} />
 {/if}
 
-<div class="mx-auto flex w-full max-w-6xl flex-col gap-4 p-3 lg:flex-row lg:items-start">
-  <div class="min-w-0 flex-1 flex flex-col gap-4" data-testid="repo-main-column">
-    <div class="flex flex-wrap items-center justify-between gap-3" data-testid="repo-header-row">
-      <div class="flex min-w-0 flex-1 flex-col justify-center gap-1">
-        <div class="flex min-w-0 items-center gap-2">
-          <a href={backUrl} class="btn-ghost p-1 no-underline inline-flex items-center justify-center shrink-0" title="Back">
-            <span class="i-lucide-chevron-left text-lg"></span>
-          </a>
-          {#if npub && ownerPubkey}
-            <a
-              href="#/{npub}/profile"
-              class="inline-flex min-w-0 items-center gap-1.5 text-sm leading-none text-text-2 hover:opacity-80"
-              aria-label="View repo owner profile"
-            >
-              <Avatar pubkey={ownerPubkey} size={20} showBadge={true} />
-              <Name pubkey={ownerPubkey} class="min-w-0 truncate text-sm leading-none text-text-2 hover:text-accent hover:underline" />
-            </a>
-            <span class="shrink-0 text-text-3">/</span>
-          {:else if isPermalink}
-            {#if rootCid?.key}
-              <span class="relative inline-flex items-center shrink-0 text-text-2" title="Encrypted permalink">
-                <span class="i-lucide-link"></span>
-                <span class="i-lucide-lock absolute -bottom-0.5 -right-1.5 text-[0.6em]"></span>
-              </span>
-            {:else}
-              <span class="i-lucide-globe text-text-2 shrink-0" title="Public permalink"></span>
-            {/if}
-          {/if}
-          {#if visibility}
-            <VisibilityIcon {visibility} class="text-text-2 shrink-0" />
-          {/if}
-          <a href={repoRootHref} class="min-w-0 shrink-0 truncate no-underline text-sm font-medium text-text-1 leading-none hover:text-accent hover:underline">
-            {repoHeaderName}
-          </a>
-        </div>
-      </div>
+<div class="mx-auto flex w-full max-w-7xl flex-col gap-4 p-3">
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <RepoHeader
+      {backUrl}
+      repoName={repoPath}
+      {npub}
+      {visibility}
+      {isPermalink}
+      {rootCid}
+    />
 
-      <div class="flex max-w-full min-w-0 items-center justify-end max-sm:w-full max-sm:justify-start">
-        <FolderActions {dirCid} {canEdit} />
-      </div>
+    <div class="flex max-w-full min-w-0 items-center justify-end max-sm:w-full max-sm:justify-start">
+      <FolderActions {dirCid} {canEdit} />
     </div>
+  </div>
 
+  <div class="flex flex-col gap-4 lg:flex-row lg:items-start">
+    <div class="min-w-0 flex-1 flex flex-col gap-4" data-testid="repo-main-column">
     <!-- Branch selector row (above table, like GitHub) -->
     <div class="flex flex-wrap items-center gap-3 text-sm">
       {#if gitCid}
@@ -754,9 +719,10 @@
     {#if readmeContent}
       <ReadmePanel content={readmeContent} {entries} {canEdit} />
     {/if}
-  </div>
+    </div>
 
-  {#if route.npub && repoPath}
-    <RepoSidebar npub={route.npub} repoName={repoPath} repoCid={gitCid} {readmeContent} />
-  {/if}
+    {#if route.npub && repoPath}
+      <RepoSidebar npub={route.npub} repoName={repoPath} repoCid={gitCid} {readmeContent} />
+    {/if}
+  </div>
 </div>

@@ -16,8 +16,10 @@
   } from '../../nip34';
   import ItemStatusBadge from './ItemStatusBadge.svelte';
   import RepoTabNav from './RepoTabNav.svelte';
+  import RepoHeader from './RepoHeader.svelte';
   import AuthorName from './AuthorName.svelte';
   import { ndk } from '../../nostr';
+  import { createTreesStore } from '../../stores';
 
   interface Props {
     npub: string;
@@ -26,6 +28,20 @@
   }
 
   let { npub, repoName, issueId }: Props = $props();
+
+  let treesStore = $derived(createTreesStore(npub));
+  let trees = $state<Array<{ name: string; visibility?: string }>>([]);
+
+  $effect(() => {
+    const store = treesStore;
+    const unsub = store.subscribe(value => {
+      trees = value;
+    });
+    return unsub;
+  });
+
+  let baseTreeName = $derived(repoName.split('/')[0]);
+  let currentTree = $derived(trees.find(t => t.name === baseTreeName));
 
   // Decode the issue ID
   let eventId = $derived(decodeEventId(issueId) || issueId);
@@ -138,29 +154,31 @@
   <!-- Tab navigation -->
   <RepoTabNav {npub} {repoName} activeTab="issues" />
 
-  <!-- Content -->
-  <div class="flex-1 overflow-auto">
-    {#if loading}
-      <div class="flex items-center justify-center py-12 text-text-3">
-        <span class="i-lucide-loader-2 animate-spin mr-2"></span>
-        Loading issue...
-      </div>
-    {:else if error}
-      <div class="flex flex-col items-center justify-center py-12 text-danger">
-        <span class="i-lucide-alert-circle text-2xl mb-2"></span>
-        <span>{error}</span>
-        <a href={getBackHref()} class="btn-ghost mt-4">
-          <span class="i-lucide-arrow-left mr-2"></span>
-          Back to issues
-        </a>
-      </div>
-    {:else if issue}
-      <!-- Header -->
-      <div class="p-4 b-b-1 b-b-solid b-b-surface-3">
-        <div class="flex items-start gap-3">
-          <a href={getBackHref()} class="mt-1 text-text-3 hover:text-text-1" aria-label="Go back">
-            <span class="i-lucide-arrow-left"></span>
+  <div class="mx-auto flex w-full max-w-7xl flex-1 flex-col">
+    <div class="px-4 py-3">
+      <RepoHeader backUrl={getBackHref()} {npub} visibility={currentTree?.visibility} {repoName} />
+    </div>
+
+    <!-- Content -->
+    <div class="flex-1 overflow-auto">
+      {#if loading}
+        <div class="flex items-center justify-center py-12 text-text-3">
+          <span class="i-lucide-loader-2 animate-spin mr-2"></span>
+          Loading issue...
+        </div>
+      {:else if error}
+        <div class="flex flex-col items-center justify-center py-12 text-danger">
+          <span class="i-lucide-alert-circle text-2xl mb-2"></span>
+          <span>{error}</span>
+          <a href={getBackHref()} class="btn-ghost mt-4">
+            <span class="i-lucide-arrow-left mr-2"></span>
+            Back to issues
           </a>
+        </div>
+      {:else if issue}
+        <!-- Header -->
+        <div class="p-4 b-b-1 b-b-solid b-b-surface-3">
+        <div class="flex items-start gap-3">
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 mb-2 flex-wrap">
               <h1 class="text-xl font-semibold text-text-1">{issue.title}</h1>
@@ -196,62 +214,63 @@
             </div>
           {/if}
         </div>
-      </div>
+        </div>
 
-      <!-- Description -->
-      {#if issue.description}
-        <div class="p-4 b-b-1 b-b-solid b-b-surface-3">
-          <div class="prose prose-sm max-w-none text-text-2 whitespace-pre-wrap">{issue.description}</div>
+        <!-- Description -->
+        {#if issue.description}
+          <div class="p-4 b-b-1 b-b-solid b-b-surface-3">
+            <div class="prose prose-sm max-w-none text-text-2 whitespace-pre-wrap">{issue.description}</div>
+          </div>
+        {/if}
+
+        <!-- Comments -->
+        <div class="p-4">
+          <h2 class="text-sm font-medium text-text-2 mb-4">
+            {comments.length} {comments.length === 1 ? 'comment' : 'comments'}
+          </h2>
+
+          {#if comments.length > 0}
+            <div class="space-y-4 mb-6">
+              {#each comments as comment (comment.id)}
+                <div class="bg-surface-1 rounded-lg p-4">
+                  <div class="flex items-center gap-2 mb-2 text-sm text-text-3">
+                    <AuthorName pubkey={comment.authorPubkey} npub={comment.author} />
+                    <span>·</span>
+                    <span>{formatDate(comment.created_at)}</span>
+                  </div>
+                  <div class="text-text-1 whitespace-pre-wrap">{comment.content}</div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+
+          <!-- New comment form -->
+          {#if canComment}
+            <div class="bg-surface-1 rounded-lg p-4">
+              <textarea
+                bind:value={newComment}
+                placeholder="Leave a comment..."
+                class="w-full bg-surface-0 border border-surface-3 rounded-md p-3 text-text-1 placeholder-text-3 resize-none min-h-24"
+                disabled={submitting}
+              ></textarea>
+              <div class="flex justify-end mt-2">
+                <button
+                  onclick={handleSubmitComment}
+                  disabled={!newComment.trim() || submitting}
+                  class="btn-primary"
+                >
+                  {#if submitting}
+                    <span class="i-lucide-loader-2 animate-spin mr-2"></span>
+                  {/if}
+                  Comment
+                </button>
+              </div>
+            </div>
+          {:else}
+            <p class="text-sm text-text-3">Sign in to comment on this issue.</p>
+          {/if}
         </div>
       {/if}
-
-      <!-- Comments -->
-      <div class="p-4">
-        <h2 class="text-sm font-medium text-text-2 mb-4">
-          {comments.length} {comments.length === 1 ? 'comment' : 'comments'}
-        </h2>
-
-        {#if comments.length > 0}
-          <div class="space-y-4 mb-6">
-            {#each comments as comment (comment.id)}
-              <div class="bg-surface-1 rounded-lg p-4">
-                <div class="flex items-center gap-2 mb-2 text-sm text-text-3">
-                  <AuthorName pubkey={comment.authorPubkey} npub={comment.author} />
-                  <span>·</span>
-                  <span>{formatDate(comment.created_at)}</span>
-                </div>
-                <div class="text-text-1 whitespace-pre-wrap">{comment.content}</div>
-              </div>
-            {/each}
-          </div>
-        {/if}
-
-        <!-- New comment form -->
-        {#if canComment}
-          <div class="bg-surface-1 rounded-lg p-4">
-            <textarea
-              bind:value={newComment}
-              placeholder="Leave a comment..."
-              class="w-full bg-surface-0 border border-surface-3 rounded-md p-3 text-text-1 placeholder-text-3 resize-none min-h-24"
-              disabled={submitting}
-            ></textarea>
-            <div class="flex justify-end mt-2">
-              <button
-                onclick={handleSubmitComment}
-                disabled={!newComment.trim() || submitting}
-                class="btn-primary"
-              >
-                {#if submitting}
-                  <span class="i-lucide-loader-2 animate-spin mr-2"></span>
-                {/if}
-                Comment
-              </button>
-            </div>
-          </div>
-        {:else}
-          <p class="text-sm text-text-3">Sign in to comment on this issue.</p>
-        {/if}
-      </div>
-    {/if}
+    </div>
   </div>
 </div>

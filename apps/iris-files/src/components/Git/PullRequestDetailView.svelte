@@ -17,9 +17,10 @@
   import { getErrorMessage } from '../../utils/errorMessage';
   import ItemStatusBadge from './ItemStatusBadge.svelte';
   import RepoTabNav from './RepoTabNav.svelte';
+  import RepoHeader from './RepoHeader.svelte';
   import AuthorName from './AuthorName.svelte';
   import { ndk } from '../../nostr';
-  import { currentDirCidStore, routeStore } from '../../stores';
+  import { currentDirCidStore, routeStore, createTreesStore } from '../../stores';
   import { diffBranches } from '../../utils/git';
   import { navigate } from '../../lib/router.svelte';
 
@@ -37,6 +38,19 @@
   // Get directory CID for diff
   let dirCid = $derived($currentDirCidStore);
   let route = $derived($routeStore);
+  let treesStore = $derived(createTreesStore(npub));
+  let trees = $state<Array<{ name: string; visibility?: string }>>([]);
+
+  $effect(() => {
+    const store = treesStore;
+    const unsub = store.subscribe(value => {
+      trees = value;
+    });
+    return unsub;
+  });
+
+  let baseTreeName = $derived(repoName.split('/')[0]);
+  let currentTree = $derived(trees.find(t => t.name === baseTreeName));
 
   // Tab state: 'conversation' or 'files'
   let activeTab = $state<'conversation' | 'files'>('conversation');
@@ -229,29 +243,31 @@
   <!-- Tab navigation -->
   <RepoTabNav {npub} {repoName} activeTab="pulls" />
 
-  <!-- Content -->
-  <div class="flex-1 overflow-auto">
-    {#if loading}
-      <div class="flex items-center justify-center py-12 text-text-3">
-        <span class="i-lucide-loader-2 animate-spin mr-2"></span>
-        Loading pull request...
-      </div>
-    {:else if error}
-      <div class="flex flex-col items-center justify-center py-12 text-danger">
-        <span class="i-lucide-alert-circle text-2xl mb-2"></span>
-        <span>{error}</span>
-        <a href={getBackHref()} class="btn-ghost mt-4">
-          <span class="i-lucide-arrow-left mr-2"></span>
-          Back to pull requests
-        </a>
-      </div>
-    {:else if pr}
-      <!-- Header -->
-      <div class="p-4 b-b-1 b-b-solid b-b-surface-3">
-        <div class="flex items-start gap-3">
-          <a href={getBackHref()} class="mt-1 text-text-3 hover:text-text-1" aria-label="Go back">
-            <span class="i-lucide-arrow-left"></span>
+  <div class="mx-auto flex w-full max-w-7xl flex-1 flex-col">
+    <div class="px-4 py-3">
+      <RepoHeader backUrl={getBackHref()} {npub} visibility={currentTree?.visibility} {repoName} />
+    </div>
+
+    <!-- Content -->
+    <div class="flex-1 overflow-auto">
+      {#if loading}
+        <div class="flex items-center justify-center py-12 text-text-3">
+          <span class="i-lucide-loader-2 animate-spin mr-2"></span>
+          Loading pull request...
+        </div>
+      {:else if error}
+        <div class="flex flex-col items-center justify-center py-12 text-danger">
+          <span class="i-lucide-alert-circle text-2xl mb-2"></span>
+          <span>{error}</span>
+          <a href={getBackHref()} class="btn-ghost mt-4">
+            <span class="i-lucide-arrow-left mr-2"></span>
+            Back to pull requests
           </a>
+        </div>
+      {:else if pr}
+        <!-- Header -->
+        <div class="p-4 b-b-1 b-b-solid b-b-surface-3">
+        <div class="flex items-start gap-3">
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 mb-2 flex-wrap">
               <h1 class="text-xl font-semibold text-text-1">{pr.title}</h1>
@@ -301,10 +317,10 @@
             </div>
           {/if}
         </div>
-      </div>
+        </div>
 
-      <!-- PR Tabs -->
-      <div class="flex b-b-1 b-b-solid b-b-surface-3 px-4">
+        <!-- PR Tabs -->
+        <div class="flex b-b-1 b-b-solid b-b-surface-3 px-4">
         <button
           onclick={() => activeTab = 'conversation'}
           class="px-4 py-2 text-sm b-0 bg-transparent cursor-pointer {activeTab === 'conversation' ? 'text-text-1 b-b-2 b-b-solid b-b-accent -mb-px' : 'text-text-3 hover:text-text-1'}"
@@ -325,10 +341,10 @@
             <span class="ml-1 px-1.5 py-0.5 text-xs rounded-full bg-surface-2">{diffData.stats.files.length}</span>
           {/if}
         </button>
-      </div>
+        </div>
 
-      <!-- Conversation Tab -->
-      {#if activeTab === 'conversation'}
+        <!-- Conversation Tab -->
+        {#if activeTab === 'conversation'}
         <!-- Branch info / Clone URL -->
         {#if pr.cloneUrl || pr.commitTip}
           <div class="p-4 b-b-1 b-b-solid b-b-surface-3 bg-surface-1">
@@ -488,7 +504,8 @@
             </div>
           {/if}
         </div>
+        {/if}
       {/if}
-    {/if}
+    </div>
   </div>
 </div>

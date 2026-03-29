@@ -34,9 +34,13 @@ test.describe('NIP-34 Pull Requests', () => {
     await expect(page.locator('text=No pull requests yet')).toBeVisible({ timeout: 5000 });
 
     // Tab navigation should be visible
-    await expect(page.locator('a:has-text("Code")')).toBeVisible();
-    await expect(page.locator('a:has-text("Pull Requests")')).toBeVisible();
-    await expect(page.locator('a:has-text("Issues")')).toBeVisible();
+    const repoHeader = page.getByTestId('repo-header-row');
+    const repoTabNav = page.getByTestId('repo-tab-nav');
+    await expect(repoHeader).toBeVisible();
+    await expect(repoTabNav.getByRole('link', { name: 'Code' })).toBeVisible();
+    await expect(repoTabNav.getByRole('link', { name: 'Pull Requests' })).toBeVisible();
+    await expect(repoTabNav.getByRole('link', { name: 'Issues' })).toBeVisible();
+    await expect(repoTabNav.getByRole('link', { name: 'Releases' })).toHaveCount(0);
   });
 
   test('should navigate to Issues view via URL', async ({ page }) => {
@@ -60,9 +64,13 @@ test.describe('NIP-34 Pull Requests', () => {
     await expect(page.locator('text=No issues yet')).toBeVisible({ timeout: 5000 });
 
     // Tab navigation should be visible
-    await expect(page.locator('a:has-text("Code")')).toBeVisible();
-    await expect(page.locator('a:has-text("Pull Requests")')).toBeVisible();
-    await expect(page.locator('a:has-text("Issues")')).toBeVisible();
+    const repoHeader = page.getByTestId('repo-header-row');
+    const repoTabNav = page.getByTestId('repo-tab-nav');
+    await expect(repoHeader).toBeVisible();
+    await expect(repoTabNav.getByRole('link', { name: 'Code' })).toBeVisible();
+    await expect(repoTabNav.getByRole('link', { name: 'Pull Requests' })).toBeVisible();
+    await expect(repoTabNav.getByRole('link', { name: 'Issues' })).toBeVisible();
+    await expect(repoTabNav.getByRole('link', { name: 'Releases' })).toHaveCount(0);
   });
 
   test('should render the PR view layout', async ({ page }) => {

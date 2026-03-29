@@ -16,6 +16,7 @@
   import { formatBytes } from '../../store';
   import { open as openReleaseModal } from './ReleaseModal.svelte';
   import RepoTabNav from './RepoTabNav.svelte';
+  import RepoHeader from './RepoHeader.svelte';
 
   interface Props {
     npub: string;
@@ -122,8 +123,12 @@
 
 <!-- Right panel with release detail - shown on mobile -->
 <div class="flex flex-1 flex-col min-w-0 min-h-0 bg-surface-0">
+  <div class="px-4 py-3">
+    <RepoHeader backUrl={getBackHref()} {npub} visibility={currentTree?.visibility} {repoName} />
+  </div>
+
   <!-- Tab navigation -->
-  <RepoTabNav {npub} {repoName} activeTab="releases" />
+  <RepoTabNav {npub} {repoName} activeTab="releases" showReleasesTab={true} />
 
   <!-- Content -->
   <div class="flex-1 overflow-auto">
@@ -148,9 +153,6 @@
       <!-- Header -->
       <div class="p-4 b-b-1 b-b-solid b-b-surface-3">
         <div class="flex items-start gap-3">
-          <a href={getBackHref()} class="mt-1 text-text-3 hover:text-text-1" aria-label="Go back">
-            <span class="i-lucide-arrow-left"></span>
-          </a>
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 mb-2 flex-wrap">
               <h1 class="text-xl font-semibold text-text-1">{release.title}</h1>

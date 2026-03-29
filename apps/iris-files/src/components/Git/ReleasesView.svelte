@@ -9,7 +9,7 @@
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { open as openReleaseModal } from './ReleaseModal.svelte';
   import RepoTabNav from './RepoTabNav.svelte';
-  import ViewerHeader from '../Viewer/ViewerHeader.svelte';
+  import RepoHeader from './RepoHeader.svelte';
 
   interface Props {
     npub: string;
@@ -51,9 +51,6 @@
     }
     return `#/${npub}/${route.treeName}${linkKeySuffix}`;
   });
-
-  // Folder name for header
-  let currentDirName = $derived(currentPath.length > 0 ? currentPath[currentPath.length - 1] : baseTreeName);
 
   // Release store
   let releasesStore = $derived(createReleasesStore(npub, repoName));
@@ -109,18 +106,18 @@
 
 <!-- Right panel with releases - shown on mobile -->
 <div class="flex flex-1 flex-col min-w-0 min-h-0 bg-surface-0">
-  <!-- Header with back button, avatar, visibility, folder name -->
-  <ViewerHeader
-    {backUrl}
-    {npub}
-    {rootCid}
-    visibility={currentTree?.visibility}
-    icon="i-lucide-tag text-accent"
-    name={currentDirName}
-  />
+  <div class="px-4 py-3">
+    <RepoHeader
+      {backUrl}
+      {npub}
+      {rootCid}
+      visibility={currentTree?.visibility}
+      {repoName}
+    />
+  </div>
 
   <!-- Tab navigation -->
-  <RepoTabNav {npub} {repoName} activeTab="releases" />
+  <RepoTabNav {npub} {repoName} activeTab="releases" showReleasesTab={true} />
 
   <!-- Header with new release button -->
   <div class="flex items-center justify-between px-4 py-3 bg-surface-1 b-b-1 b-b-solid b-b-surface-3">

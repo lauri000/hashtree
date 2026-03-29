@@ -11,7 +11,7 @@
     showReleasesTab?: boolean;
   }
 
-  let { npub, repoName, activeTab, showReleasesTab = true }: Props = $props();
+  let { npub, repoName, activeTab, showReleasesTab = false }: Props = $props();
   let route = $derived($routeStore);
 
   const allTabs = [
