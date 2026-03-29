@@ -10,6 +10,13 @@ import { SearchIndex } from '@hashtree/index';
 import { cid, toHex, fromHex, type CID } from '@hashtree/core';
 import { localStore } from '../store';
 import { DEFAULT_BOOTSTRAP_PUBKEY } from '../utils/constants';
+import {
+  getUserSearchTerms,
+  parseStoredUserIndexEntry,
+  serializeStoredUserIndexEntry,
+  type UserIndexEntry,
+  type UserIndexEntryInput,
+} from '../lib/search/userIndexEntry';
 
 const STORAGE_KEY = 'searchIndexRoot';
 const INDEX_VERSION_KEY = 'searchIndexVersion';
@@ -26,13 +33,7 @@ export interface VideoIndexEntry {
   duration?: number;
 }
 
-export interface UserIndexEntry {
-  pubkey: string;
-  npub: string;
-  name?: string;
-  displayName?: string;
-  nip05?: string;
-}
+export type { UserIndexEntry, UserIndexEntryInput } from '../lib/search/userIndexEntry';
 
 // SearchIndex instance (uses shared localStore)
 const searchIndex = new SearchIndex(localStore, { order: 64 });
@@ -295,13 +296,13 @@ export async function searchVideos(query: string, limit = 20): Promise<VideoInde
 
 // ============ User Index ============
 
-const pendingUserOps: UserIndexEntry[] = [];
+const pendingUserOps: UserIndexEntryInput[] = [];
 let userFlushTimeout: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * Index a user for search
  */
-export async function indexUser(entry: UserIndexEntry): Promise<void> {
+export async function indexUser(entry: UserIndexEntryInput): Promise<void> {
   pendingUserOps.push(entry);
 
   if (userFlushTimeout) clearTimeout(userFlushTimeout);
@@ -311,44 +312,11 @@ export async function indexUser(entry: UserIndexEntry): Promise<void> {
 /**
  * Index multiple users at once (more efficient)
  */
-export async function indexUsers(entries: UserIndexEntry[]): Promise<void> {
+export async function indexUsers(entries: UserIndexEntryInput[]): Promise<void> {
   pendingUserOps.push(...entries);
 
   if (userFlushTimeout) clearTimeout(userFlushTimeout);
   userFlushTimeout = setTimeout(flushPendingUserOps, 100);
-}
-
-/**
- * Extract searchable terms from a user entry
- */
-function getUserSearchTerms(entry: UserIndexEntry): string[] {
-  const terms: string[] = [];
-
-  // Always index by npub
-  terms.push(entry.npub.toLowerCase());
-
-  // Index by name parts
-  if (entry.name) {
-    const nameParts = entry.name.toLowerCase().split(/\s+/).filter(p => p.length >= 2);
-    terms.push(...nameParts);
-  }
-
-  // Index by display name parts
-  if (entry.displayName && entry.displayName !== entry.name) {
-    const displayParts = entry.displayName.toLowerCase().split(/\s+/).filter(p => p.length >= 2);
-    terms.push(...displayParts);
-  }
-
-  // Index by nip05 username (part before @)
-  if (entry.nip05) {
-    const atIndex = entry.nip05.indexOf('@');
-    const username = atIndex > 0 ? entry.nip05.slice(0, atIndex) : entry.nip05;
-    if (username.length >= 2) {
-      terms.push(username.toLowerCase());
-    }
-  }
-
-  return [...new Set(terms)];
 }
 
 async function flushPendingUserOps(): Promise<void> {
@@ -368,12 +336,12 @@ async function flushPendingUserOps(): Promise<void> {
 
   for (const entry of ops) {
     const terms = getUserSearchTerms(entry);
-    const value = JSON.stringify(entry);
+    const value = serializeStoredUserIndexEntry(entry);
 
     try {
-      root = await searchIndex.index(root, 'u:', terms, entry.npub, value);
+      root = await searchIndex.index(root, 'u:', terms, entry.pubkey, value);
     } catch (e) {
-      console.error('Failed to index user:', entry.npub, e);
+      console.error('Failed to index user:', entry.pubkey, e);
     }
   }
 
@@ -394,7 +362,9 @@ export async function searchUsers(query: string, limit = 10): Promise<UserIndexE
   // (not parsed into keywords) to support npub prefix matching
   const results = await searchIndex.search(root, 'u:', trimmed, { limit });
 
-  return results.map(r => JSON.parse(r.value) as UserIndexEntry);
+  return results
+    .map(result => parseStoredUserIndexEntry(result.value))
+    .filter((entry): entry is UserIndexEntry => !!entry);
 }
 
 // ============ Index Management ============

@@ -33,7 +33,7 @@
   import { UserRow } from '../User';
   import { npubToPubkey, nostrStore } from '../../nostr';
   import { createFollowsStore } from '../../stores/follows';
-  import { searchUsers, indexUsers, type UserIndexEntry } from '../../stores/searchIndex';
+  import { searchUsers, indexUsers, type UserIndexEntry, type UserIndexEntryInput } from '../../stores/searchIndex';
   import { getProfileSync } from '../../stores/profile';
   import QRScanner from '../QRScanner.svelte';
   import CopyText from '../CopyText.svelte';
@@ -75,14 +75,12 @@
   $effect(() => {
     if (follows.length === 0) return;
 
-    const entries: UserIndexEntry[] = [];
+    const entries: UserIndexEntryInput[] = [];
     for (const pubkey of follows) {
       try {
-        const npub = nip19.npubEncode(pubkey);
         const profile = getProfileSync(pubkey);
         entries.push({
           pubkey,
-          npub,
           name: profile?.name,
           displayName: profile?.display_name,
           nip05: profile?.nip05,

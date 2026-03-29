@@ -1,9 +1,8 @@
 <script lang="ts">
   import { nhashEncode, isNHash, isNPath } from '@hashtree/core';
-  import { nip19 } from 'nostr-tools';
   import { nostrStore } from '../nostr';
   import { follows } from '../utils/socialGraph';
-  import { indexUsers, type UserIndexEntry } from '../stores/searchIndex';
+  import { indexUsers, type UserIndexEntryInput } from '../stores/searchIndex';
   import { getProfileSync } from '../stores/profile';
   import { UserRow } from './User';
   import { search, getSuggestions, recordHistoryVisit, type SearchResult } from '../lib/search';
@@ -37,14 +36,12 @@
   $effect(() => {
     if (!userFollows || userFollows.size === 0) return;
 
-    const entries: UserIndexEntry[] = [];
+    const entries: UserIndexEntryInput[] = [];
     for (const pubkey of userFollows) {
       try {
-        const npub = nip19.npubEncode(pubkey);
         const profile = getProfileSync(pubkey);
         entries.push({
           pubkey,
-          npub,
           name: profile?.name,
           displayName: profile?.display_name,
           nip05: profile?.nip05,
