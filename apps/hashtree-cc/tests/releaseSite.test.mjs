@@ -77,8 +77,46 @@ test('adds explicit routes and domains to the Worker deploy command', () => {
   ]);
 });
 
-test('returns parsed hashtree publish data and Worker target on success', () => {
-  const result = runRelease(
+test('runs hashtree publish and Worker deploy in parallel after tests', async () => {
+  let activeReleaseSteps = 0;
+  let maxActiveReleaseSteps = 0;
+  const calls = [];
+
+  await runRelease(
+    {
+      workerName: 'hashtree-cc',
+      treeName: 'hashtree-cc',
+      routes: [],
+      domains: [],
+      skipCloudflare: false,
+      workerCompatibilityDate: '2026-03-19',
+    },
+    async (step) => {
+      calls.push(step.id);
+      if (step.id === 'publish' || step.id === 'deploy') {
+        activeReleaseSteps += 1;
+        maxActiveReleaseSteps = Math.max(maxActiveReleaseSteps, activeReleaseSteps);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        activeReleaseSteps -= 1;
+        if (step.id === 'publish') {
+          return {
+            status: 0,
+            stdout: 'published: npub1example/hashtree-cc\nnhash1ace',
+            stderr: '',
+          };
+        }
+      }
+      return { status: 0, stdout: '', stderr: '' };
+    },
+    { buildOutputExists: () => true },
+  );
+
+  assert.deepEqual(calls, ['build', 'test-1', 'test-2', 'publish', 'deploy']);
+  assert.equal(maxActiveReleaseSteps, 2);
+});
+
+test('returns parsed hashtree publish data and Worker target on success', async () => {
+  const result = await runRelease(
     {
       workerName: 'hashtree-cc',
       treeName: 'hashtree-cc',

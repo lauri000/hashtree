@@ -239,7 +239,7 @@ describe('release-site', () => {
     ).toThrow('--branch is only supported for Pages deployments');
   });
 
-  it('stops before publish when a test step fails', () => {
+  it('stops before publish when a test step fails', async () => {
     const calls = [];
     const runner = vi.fn((step) => {
       calls.push(step.id);
@@ -249,7 +249,7 @@ describe('release-site', () => {
       return { status: 0, stdout: '', stderr: '' };
     });
 
-    expect(() =>
+    await expect(
       runRelease(
         {
           profileName: 'video',
@@ -261,11 +261,49 @@ describe('release-site', () => {
         runner,
         { buildOutputExists: () => true },
       ),
-    ).toThrow('Test Iris Video (2/2) failed with exit code 1');
+    ).rejects.toThrow('Test Iris Video (2/2) failed with exit code 1');
     expect(calls).toEqual(['build', 'test-1', 'test-2']);
   });
 
-  it('returns parsed hashtree and Worker target on success', () => {
+  it('runs hashtree publish and Cloudflare deploy in parallel after tests', async () => {
+    let activeReleaseSteps = 0;
+    let maxActiveReleaseSteps = 0;
+    const calls = [];
+    const runner = vi.fn(async (step) => {
+      calls.push(step.id);
+      if (step.id === 'publish' || step.id === 'deploy') {
+        activeReleaseSteps += 1;
+        maxActiveReleaseSteps = Math.max(maxActiveReleaseSteps, activeReleaseSteps);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        activeReleaseSteps -= 1;
+        if (step.id === 'publish') {
+          return {
+            status: 0,
+            stdout: 'published: npub1example/video\nnhash1ace',
+            stderr: '',
+          };
+        }
+      }
+      return { status: 0, stdout: '', stderr: '' };
+    });
+
+    await runRelease(
+      {
+        profileName: 'video',
+        workerName: 'iris-video',
+        treeName: 'video',
+        skipCloudflare: false,
+        workerCompatibilityDate: '2026-03-19',
+      },
+      runner,
+      { buildOutputExists: () => true },
+    );
+
+    expect(calls).toEqual(['build', 'test-1', 'test-2', 'publish', 'deploy']);
+    expect(maxActiveReleaseSteps).toBe(2);
+  });
+
+  it('returns parsed hashtree and Worker target on success', async () => {
     const runner = vi.fn((step) => {
       if (step.id === 'publish') {
         return {
@@ -277,7 +315,7 @@ describe('release-site', () => {
       return { status: 0, stdout: '', stderr: '' };
     });
 
-    const result = runRelease(
+    const result = await runRelease(
       {
         profileName: 'video',
         workerName: 'iris-video',
@@ -298,7 +336,7 @@ describe('release-site', () => {
     expect(result.pagesUrl).toBeNull();
   });
 
-  it('returns parsed hashtree and Pages URLs on success', () => {
+  it('returns parsed hashtree and Pages URLs on success', async () => {
     const runner = vi.fn((step) => {
       if (step.id === 'publish') {
         return {
@@ -317,16 +355,16 @@ describe('release-site', () => {
       return { status: 0, stdout: '', stderr: '' };
     });
 
-    const result = runRelease(
-        {
-          profileName: 'video',
-          pagesProject: 'video-iris-to',
-          treeName: 'video',
-          skipCloudflare: false,
-        },
-        runner,
-        { buildOutputExists: () => true },
-      );
+    const result = await runRelease(
+      {
+        profileName: 'video',
+        pagesProject: 'video-iris-to',
+        treeName: 'video',
+        skipCloudflare: false,
+      },
+      runner,
+      { buildOutputExists: () => true },
+    );
 
     expect(result.publish).toEqual({
       nhash: 'nhash1ace',
@@ -335,7 +373,7 @@ describe('release-site', () => {
     expect(result.pagesUrl).toBe('https://video-iris-to.pages.dev');
   });
 
-  it('runs all profiles sequentially', () => {
+  it('runs all profiles sequentially', async () => {
     const runner = vi.fn((step) => {
       if (step.id === 'publish') {
         return {
@@ -347,7 +385,7 @@ describe('release-site', () => {
       return { status: 0, stdout: '', stderr: '' };
     });
 
-    const result = runAllReleases(
+    const result = await runAllReleases(
       {
         profileName: 'all',
         skipCloudflare: true,

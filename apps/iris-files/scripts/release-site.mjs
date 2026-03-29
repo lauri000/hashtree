@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -349,24 +349,40 @@ function defaultRunner(step) {
   const [command, ...args] = step.command;
   console.log(`\n==> ${step.label}`);
   console.log(`$ ${[command, ...args].join(' ')}`);
-  const result = spawnSync(command, args, {
-    cwd: step.cwd,
-    encoding: 'utf8',
-    stdio: 'pipe',
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: step.cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk;
+      process.stdout.write(chunk);
+    });
+
+    child.stderr?.setEncoding('utf8');
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk;
+      process.stderr.write(chunk);
+    });
+
+    child.on('error', reject);
+    child.on('close', (code, signal) => {
+      if (signal) {
+        const signalMessage = `Process exited with signal ${signal}\n`;
+        stderr += signalMessage;
+        process.stderr.write(signalMessage);
+      }
+      resolve({
+        status: code ?? 1,
+        stdout,
+        stderr,
+      });
+    });
   });
-
-  if (result.stdout) {
-    process.stdout.write(result.stdout);
-  }
-  if (result.stderr) {
-    process.stderr.write(result.stderr);
-  }
-
-  return {
-    status: result.status ?? 1,
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
-  };
 }
 
 function ensureDistExists(distDir, buildOutputExists = existsSync) {
@@ -397,7 +413,17 @@ function parsePagesOutput(output) {
   return pagesUrlMatch ? pagesUrlMatch[0] : null;
 }
 
-export function runRelease(options, runner = defaultRunner, hooks = {}) {
+function isReleaseStep(step) {
+  return step.id === 'publish' || step.id === 'deploy';
+}
+
+function assertStepSucceeded(step, result) {
+  if (result.status !== 0) {
+    throw new Error(`${step.label} failed with exit code ${result.status}`);
+  }
+}
+
+export async function runRelease(options, runner = defaultRunner, hooks = {}) {
   const plan = createReleasePlan(options);
   const buildOutputExists = hooks.buildOutputExists ?? existsSync;
 
@@ -411,14 +437,28 @@ export function runRelease(options, runner = defaultRunner, hooks = {}) {
 
   let publishOutput = '';
   let pagesOutput = '';
-  for (const step of plan.steps) {
-    const result = runner(step);
-    if (result.status !== 0) {
-      throw new Error(`${step.label} failed with exit code ${result.status}`);
-    }
+  const prereleaseSteps = plan.steps.filter((step) => !isReleaseStep(step));
+  const releaseSteps = plan.steps.filter(isReleaseStep);
+
+  for (const step of prereleaseSteps) {
+    const result = await runner(step);
+    assertStepSucceeded(step, result);
     if (step.id === 'build') {
       ensureDistExists(plan.distDir, buildOutputExists);
     }
+  }
+
+  const releaseResults = await Promise.allSettled(
+    releaseSteps.map((step) => Promise.resolve().then(() => runner(step))),
+  );
+
+  for (const [index, execution] of releaseResults.entries()) {
+    const step = releaseSteps[index];
+    if (execution.status === 'rejected') {
+      throw execution.reason;
+    }
+    const result = execution.value;
+    assertStepSucceeded(step, result);
     if (step.id === 'publish') {
       publishOutput = `${result.stdout}\n${result.stderr}`;
     }
@@ -441,7 +481,7 @@ export function runRelease(options, runner = defaultRunner, hooks = {}) {
   };
 }
 
-export function runAllReleases(options, runner = defaultRunner, hooks = {}) {
+export async function runAllReleases(options, runner = defaultRunner, hooks = {}) {
   const profiles = releaseProfileNames.map((profileName) =>
     parseArgs(
       [
@@ -458,23 +498,22 @@ export function runAllReleases(options, runner = defaultRunner, hooks = {}) {
     ),
   );
 
-  if (options.dryRun) {
-    return {
-      dryRun: true,
-      profiles: profiles.map((profile) => runRelease(profile, runner, hooks)),
-    };
+  const results = [];
+  for (const profile of profiles) {
+    results.push(await runRelease(profile, runner, hooks));
   }
 
   return {
-    profiles: profiles.map((profile) => runRelease(profile, runner, hooks)),
+    ...(options.dryRun ? { dryRun: true } : {}),
+    profiles: results,
   };
 }
 
 export function usage() {
   return `Usage: node ./scripts/release-site.mjs <files|video|docs|git|maps|boards|all> [options]
 
-Build once, test the built output, publish to hashtree, then deploy that same
-directory to Cloudflare Workers Static Assets or Cloudflare Pages.
+Build once, test the built output, then publish to hashtree and deploy that same
+directory to Cloudflare Workers Static Assets or Cloudflare Pages in parallel.
 
 Options:
   --worker-name <name>    Cloudflare Worker service name for static assets
@@ -544,7 +583,7 @@ function isMainModule() {
 }
 
 if (isMainModule()) {
-  try {
+  const main = async () => {
     const parsed = parseArgs(process.argv.slice(2));
     if (parsed.help) {
       console.log(usage());
@@ -552,7 +591,7 @@ if (isMainModule()) {
     }
 
     const result =
-      parsed.profileName === 'all' ? runAllReleases(parsed) : runRelease(parsed);
+      parsed.profileName === 'all' ? await runAllReleases(parsed) : await runRelease(parsed);
     if (result.dryRun) {
       console.log(usage());
       if (parsed.profileName === 'all') {
@@ -574,8 +613,10 @@ if (isMainModule()) {
     } else {
       printSummary(result);
     }
-  } catch (error) {
+  };
+
+  main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
-  }
+  });
 }
