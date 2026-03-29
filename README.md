@@ -1,14 +1,32 @@
 # hashtree
 
-Content-addressed filesystem on Nostr. Merkle roots can be published to get mutable `npub/tree/path` addresses. Data is chunked, optionally encrypted by default (CHK), and works with Blossom-compatible storage and WebRTC fetches.
+Content-addressed storage, git transport, and app runtime on Nostr. Merkle roots can be published to get mutable `npub/tree/path` addresses. Data is chunked, CHK-encrypted by default, and can be fetched from Blossom-compatible storage, peers over WebRTC, or a local daemon.
 
-## Structure
+## Current status
 
+- The core storage format, CHK encryption, CLI/daemon, and `git-remote-htree` are implemented and used across the Rust and TypeScript stacks.
+- `apps/iris` is the current native desktop shell. It embeds the htree daemon, loads `htree://` apps in isolated child webviews, and supports NIP-07 injection for compatible apps.
+- `apps/iris-files` is the main portable web-app workspace for files, git, video, docs, maps, boards, and related release tooling.
+- `apps/iris-sites` is the isolated web runtime for serving `htree://` sites in the browser.
+- `apps/hashtree-cc` is the landing page and file-sharing app.
+- Packaging is still uneven: Cargo installs and release tarballs work today; Homebrew and `apt` style packaging are still pending.
+- The protocol is implemented, but the written spec is still a draft and nearby Bluetooth/Wi-Fi sync work is still in progress.
+
+## Repository layout
+
+- `rust/` - Rust CLI/daemon, git remote helper, and core crates. See [`rust/README.md`](rust/README.md).
 - `ts/` - TypeScript/JavaScript SDK packages. See [`ts/README.md`](ts/README.md).
-- `rust/` - Rust CLI/daemon, git remote helper, and crates. See [`rust/README.md`](rust/README.md).
-- `apps/` - Applications (web + desktop)
-  - `iris-files/` - Iris Files app (Tauri desktop + web). See [`apps/iris-files/README.md`](apps/iris-files/README.md).
-  - `hashtree-cc/` - hashtree.cc landing page and file sharing app. See [`apps/hashtree-cc/README.md`](apps/hashtree-cc/README.md).
+- `apps/iris/` - Native desktop shell built with Tauri. See [`apps/iris/README.md`](apps/iris/README.md).
+- `apps/iris-files/` - Main web-app workspace and release tooling. See [`apps/iris-files/README.md`](apps/iris-files/README.md).
+- `apps/iris-sites/` - Isolated runtime for portable `htree://` sites.
+- `apps/hashtree-cc/` - Landing page and file sharing app. See [`apps/hashtree-cc/README.md`](apps/hashtree-cc/README.md).
+
+## Canonical remote
+
+Hashtree is the canonical remote for this repository:
+
+- `origin = htree://self/hashtree`
+- `github = git@github.com:mmalmi/hashtree.git`
 
 ## Design highlights
 
@@ -22,13 +40,7 @@ Content-addressed filesystem on Nostr. Merkle roots can be published to get muta
 
 ## Installation
 
-### Quick install (macOS/Linux)
-
-```bash
-curl -fsSL https://github.com/mmalmi/hashtree/releases/latest/download/hashtree-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/apple-darwin/' | sed 's/linux/unknown-linux-musl/').tar.gz | tar -xz && cd hashtree && ./install.sh
-```
-
-### Cargo (requires Rust)
+### Cargo (supported today)
 
 ```bash
 # CLI + daemon + git helper + Cashu helper
@@ -38,27 +50,26 @@ cargo install hashtree-cli git-remote-htree hashtree-cashu-cli
 cargo install hashtree-cli --no-default-features
 ```
 
-### Binary Release Tree
-
-Binary releases are being published under the hashtree publisher identity at:
-
-- `htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree-releases`
-- `htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree-releases/latest`
-- [files.iris.to browser view](https://files.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree-releases)
-- [upload.iris.to direct download root](https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree-releases/latest/)
-
-The htree-native install URL pattern is:
+### Local install from this repo
 
 ```bash
-curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree-releases/latest/hashtree-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/apple-darwin/' | sed 's/linux/unknown-linux-musl/').tar.gz | tar -xz && cd hashtree && ./install.sh
+cargo install --path rust/crates/hashtree-cli
+cargo install --path rust/crates/git-remote-htree
+cargo install --path rust/crates/hashtree-cashu-cli
 ```
 
-The GitHub quick-install line above is kept until the first `hashtree-releases/latest` tree is published, so the README does not point at an empty path.
+### Packaging status
+
+- CLI release artifacts are assembled under `rust/dist/` and published with `rust/scripts/release_to_htree.sh`.
+- Iris native release artifacts are assembled under `dist/iris-native/`.
+- Homebrew and Linux package-manager installs are not shipped yet.
 
 ## Getting started
 
-- Web app + JS SDK: follow [`ts/README.md`](ts/README.md)
 - CLI + daemon + git remote: follow [`rust/README.md`](rust/README.md)
+- JS SDK packages: follow [`ts/README.md`](ts/README.md)
+- Native desktop shell: follow [`apps/iris/README.md`](apps/iris/README.md)
+- Portable web apps and release flows: follow [`apps/iris-files/README.md`](apps/iris-files/README.md)
 
 ## Site Releases
 
