@@ -197,6 +197,93 @@ test.describe('Git branch features', () => {
     expect(result.error).toBeNull();
   });
 
+  test('tags appear in the ref dropdown and commit history', { timeout: 90000 }, async ({ page }) => {
+    test.slow();
+    await navigateToPublicFolder(page);
+
+    await createRepositoryInCurrentDirectory(page, 'tag-test-repo');
+
+    const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: 'tag-test-repo' }).first();
+    await expect(folderLink).toBeVisible({ timeout: 15000 });
+    await folderLink.click();
+    await page.waitForURL(/tag-test-repo/, { timeout: 10000 });
+
+    await page.evaluate(async () => {
+      const { getTree, LinkType } = await import('/src/store.ts');
+      const { autosaveIfOwn } = await import('/src/nostr.ts');
+      const { getCurrentRootCid } = await import('/src/actions/route.ts');
+      const { getRouteSync } = await import('/src/stores/index.ts');
+
+      const route = getRouteSync();
+      const tree = getTree();
+      let rootCid = getCurrentRootCid();
+      if (!rootCid) return;
+
+      const content = new TextEncoder().encode('# Tagged repo\n');
+      const { cid, size } = await tree.putFile(content);
+      rootCid = await tree.setEntry(rootCid, route.path, 'README.md', cid, size, LinkType.Blob);
+      autosaveIfOwn(rootCid);
+    });
+
+    await expect(page.locator('[data-testid="file-list"] a').filter({ hasText: 'README.md' })).toBeVisible({ timeout: 15000 });
+    await ensureGitRepoInitialized(page);
+    await commitCurrentDirectoryChanges(page, 'Initial tagged commit');
+
+    await page.evaluate(async () => {
+      const { getTree, LinkType } = await import('/src/store.ts');
+      const { autosaveIfOwn } = await import('/src/nostr.ts');
+      const { runGitCommand, applyGitChanges } = await import('/src/utils/git.ts');
+      const { getCurrentRootCid } = await import('/src/actions/route.ts');
+      const { useCurrentDirCid, getRouteSync } = await import('/src/stores/index.ts');
+
+      const route = getRouteSync();
+      const dirCid = useCurrentDirCid();
+      const treeRootCid = getCurrentRootCid();
+      if (!dirCid || !treeRootCid) throw new Error('Missing directory or tree root for git tag');
+
+      const result = await runGitCommand(dirCid, 'tag v1.0.0');
+      if (result.error || !result.gitFiles) {
+        throw new Error(result.error || 'Failed to create tag');
+      }
+
+      const newDirCid = await applyGitChanges(dirCid, result.gitFiles);
+      let newRootCid = newDirCid;
+      if (route.path.length > 0) {
+        const tree = getTree();
+        const parentPath = route.path.slice(0, -1);
+        const dirName = route.path[route.path.length - 1];
+        newRootCid = await tree.setEntry(treeRootCid, parentPath, dirName, newDirCid, 0, LinkType.Dir);
+      }
+
+      autosaveIfOwn(newRootCid);
+    });
+
+    await expect(page.getByText('1 tag')).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText('v1.0.0').first()).toBeVisible({ timeout: 20000 });
+
+    const refButton = page.locator('button').filter({ has: page.locator('.i-lucide-git-branch, .i-lucide-tag') }).first();
+    await expect(refButton).toBeVisible({ timeout: 20000 });
+    await refButton.click();
+
+    await expect(page.getByText('Tags')).toBeVisible({ timeout: 5000 });
+    const tagButton = page.locator('button').filter({ hasText: 'v1.0.0' }).first();
+    await expect(tagButton).toBeVisible({ timeout: 5000 });
+    await tagButton.click();
+
+    await expect(refButton).toContainText('v1.0.0', { timeout: 20000 });
+
+    const commitsBtn = page.getByRole('button', { name: /commits/i });
+    await expect(commitsBtn).toBeVisible({ timeout: 15000 });
+    await commitsBtn.click();
+
+    const historyModal = page.locator('.fixed.inset-0').filter({ hasText: 'Commit History' });
+    await expect(historyModal).toBeVisible({ timeout: 5000 });
+    await expect(historyModal.getByText('Detached HEAD')).toBeVisible({ timeout: 5000 });
+    await expect(historyModal.getByText('v1.0.0')).toBeVisible({ timeout: 5000 });
+
+    await page.keyboard.press('Escape');
+  });
+
   // Note: "checkout older commit changes visible files" test was removed as it's
   // a duplicate of the more comprehensive test in git-checkout.spec.ts
 

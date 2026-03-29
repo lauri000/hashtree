@@ -7,6 +7,7 @@ import { LinkType, toHex } from '@hashtree/core';
 import { decodeAsText, getTree } from '../store';
 import { buildUnifiedDiff, type UnifiedDiffRenderedFile } from './gitDiffText';
 import { LRUCache } from './lruCache';
+import type { GitRefsResult } from './wasmGit';
 
 /**
  * Cache for file commit info, keyed by git repo hash
@@ -34,9 +35,9 @@ const gitLogCache = new LRUCache<string, CommitLog>(20);
 const gitHeadCache = new LRUCache<string, string | null>(20);
 
 /**
- * Cache for branches info, keyed by git repo hash
+ * Cache for git refs info, keyed by git repo hash
  */
-const gitBranchesCache = new LRUCache<string, { branches: string[]; currentBranch: string | null }>(20);
+const gitRefsCache = new LRUCache<string, GitRefsResult>(20);
 
 /**
  * Cache for git status, keyed by git repo hash
@@ -147,31 +148,38 @@ export async function getLog(rootCid: CID, options?: { depth?: number; debug?: b
 }
 
 /**
- * Get list of branches
+ * Get branches and tags
  * Results are cached by git repo hash
- * Uses wasm-git (libgit2)
+ * Uses the native hashtree ref reader
  */
-export async function getBranches(rootCid: CID) {
+export async function getRefs(rootCid: CID): Promise<GitRefsResult> {
   const cacheKey = toHex(rootCid.hash);
 
   // Check cache first
-  const cached = gitBranchesCache.get(cacheKey);
+  const cached = gitRefsCache.get(cacheKey);
   if (cached) {
     return cached;
   }
 
   try {
-    const { getBranches } = await import('./wasmGit');
-    const result = await getBranches(rootCid);
-    if (result.branches.length > 0 || result.currentBranch) {
-      gitBranchesCache.set(cacheKey, result);
+    const { getRefs } = await import('./wasmGit');
+    const result = await getRefs(rootCid);
+    if (result.branches.length > 0 || result.tags.length > 0 || result.currentBranch) {
+      gitRefsCache.set(cacheKey, result);
     } else {
-      gitBranchesCache.delete(cacheKey);
+      gitRefsCache.delete(cacheKey);
     }
     return result;
   } catch {
-    return { branches: [], currentBranch: null };
+    return { branches: [], currentBranch: null, tags: [], tagsByCommit: {} };
   }
+}
+
+/**
+ * Backward-compatible alias for older call sites.
+ */
+export async function getBranches(rootCid: CID): Promise<GitRefsResult> {
+  return getRefs(rootCid);
 }
 
 /**

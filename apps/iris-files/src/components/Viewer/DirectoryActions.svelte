@@ -156,10 +156,19 @@
 
   // Full git info (branches, etc) - loaded async once metadata CID is ready
   let gitInfoStore = $derived(createGitInfoStore(gitMetadataReady ? gitRootCid : null));
-  let gitInfo = $state<{ isRepo: boolean; currentBranch: string | null; branches: string[]; loading: boolean }>({
+  let gitInfo = $state<{
+    isRepo: boolean;
+    currentBranch: string | null;
+    branches: string[];
+    tags: string[];
+    tagsByCommit: Record<string, string[]>;
+    loading: boolean;
+  }>({
     isRepo: false,
     currentBranch: null,
     branches: [],
+    tags: [],
+    tagsByCommit: {},
     loading: true,
   });
 
@@ -306,6 +315,8 @@
         {canEdit}
         currentBranch={gitInfo.currentBranch}
         branches={gitInfo.branches}
+        tags={gitInfo.tags}
+        tagsByCommit={gitInfo.tagsByCommit}
         {backUrl}
         npub={viewedNpub}
         isPermalink={route.isPermalink}

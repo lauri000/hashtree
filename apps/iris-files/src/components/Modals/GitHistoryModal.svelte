@@ -33,7 +33,7 @@
   import { SvelteSet, SvelteURLSearchParams } from 'svelte/reactivity';
   import { routeStore } from '../../stores';
   import { nhashEncode } from '@hashtree/core';
-  import { checkoutCommit, getBranches } from '../../utils/git';
+  import { checkoutCommit, getRefs } from '../../utils/git';
   import { getErrorMessage } from '../../utils/errorMessage';
   import CIStatusBadge from '../Git/CIStatusBadge.svelte';
   import { open as openCIRunsModal } from './CIRunsModal.svelte';
@@ -86,9 +86,14 @@
     return `#/${route.npub}/${repoPath}?${params.toString()}`;
   }
 
-  // Branch info for detached HEAD detection
-  let branchInfo = $state<{ branches: string[]; currentBranch: string | null }>({ branches: [], currentBranch: null });
-  let isDetachedHead = $derived(branchInfo.currentBranch === null && allCommits.length > 0);
+  // Ref info for detached HEAD detection and tag badges
+  let gitRefs = $state<{ branches: string[]; currentBranch: string | null; tags: string[]; tagsByCommit: Record<string, string[]> }>({
+    branches: [],
+    currentBranch: null,
+    tags: [],
+    tagsByCommit: {},
+  });
+  let isDetachedHead = $derived(gitRefs.currentBranch === null && allCommits.length > 0);
 
   let checkoutInProgress = $state<string | null>(null);
   let checkoutError = $state<string | null>(null);
@@ -156,11 +161,11 @@
   // Fetch branch info when modal opens
   $effect(() => {
     if (!target) {
-      branchInfo = { branches: [], currentBranch: null };
+      gitRefs = { branches: [], currentBranch: null, tags: [], tagsByCommit: {} };
       return;
     }
-    getBranches(target.dirCid).then(info => {
-      branchInfo = info;
+    getRefs(target.dirCid).then(info => {
+      gitRefs = info;
     });
   });
 
@@ -383,7 +388,7 @@
               {checkoutError}
             </div>
           {/if}
-          {#if isDetachedHead && target?.canEdit && branchInfo.branches.length > 0}
+          {#if isDetachedHead && target?.canEdit && gitRefs.branches.length > 0}
             <div class="mb-4 p-3 bg-warning/10 text-warning rounded-lg text-sm">
               <div class="flex items-center gap-2 mb-2">
                 <span class="i-lucide-alert-triangle"></span>
@@ -393,7 +398,7 @@
                 You're viewing an older commit. Switch to a branch to see all commits:
               </p>
               <div class="flex flex-wrap gap-2">
-                {#each branchInfo.branches as branch (branch)}
+                {#each gitRefs.branches as branch (branch)}
                   <button
                     onclick={() => handleCheckoutBranch(branch)}
                     disabled={checkoutInProgress !== null}
@@ -415,6 +420,7 @@
                 {#each uniqueCommits() as commit, i (commit.oid)}
                   {@const isHead = commit.oid === initialLogState.headOid}
                   {@const ciStatus = ciStatusByCommit.get(commit.oid) ?? null}
+                  {@const commitTags = gitRefs.tagsByCommit[commit.oid] ?? []}
                   {@const commitsArray = uniqueCommits()}
                   <div class="flex gap-3 pb-4 {i < commitsArray.length - 1 || hasMoreCommits ? 'b-b-1 b-b-solid b-b-surface-3 mb-4' : ''} {isHead ? 'bg-accent/5 -mx-4 px-4 py-3 rounded-lg' : ''}">
                     <!-- Timeline dot -->
@@ -457,6 +463,12 @@
                             HEAD
                           </span>
                         {/if}
+                        {#each commitTags as tag (tag)}
+                          <span class="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-text-2 flex items-center gap-1">
+                            <span class="i-lucide-tag text-[10px]"></span>
+                            {tag}
+                          </span>
+                        {/each}
                       </div>
                       <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-text-3">
                         {#if route.npub && repoPath}

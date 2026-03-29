@@ -41,6 +41,8 @@
     canEdit: boolean;
     currentBranch: string | null;
     branches: string[];
+    tags: string[];
+    tagsByCommit: Record<string, string[]>;
     backUrl: string;
     npub?: string | null;
     isPermalink?: boolean;
@@ -57,6 +59,8 @@
     canEdit,
     currentBranch,
     branches,
+    tags,
+    tagsByCommit,
     backUrl,
     npub = null,
     isPermalink = false,
@@ -208,19 +212,25 @@
     return unsub;
   });
 
-  // Track which branch we're switching to (null = not switching)
-  let switchingToBranch = $state<string | null>(null);
+  // Track which ref we're switching to (null = not switching)
+  let switchingToRef = $state<string | null>(null);
+
+  let selectedTag = $derived.by(() => {
+    if (currentBranch || !headOid) return null;
+    const matchingTags = tagsByCommit[headOid] ?? [];
+    return matchingTags[0] ?? null;
+  });
 
   // Detached HEAD state - show short commit hash instead of branch name
-  // While switching, show the target branch name optimistically
+  // While switching, show the target ref name optimistically
   let branchDisplay = $derived(
-    switchingToBranch || currentBranch || (headOid ? headOid.slice(0, 7) : (loadGitMetadata ? 'detached' : 'loading'))
+    switchingToRef || currentBranch || selectedTag || (headOid ? headOid.slice(0, 7) : (loadGitMetadata ? 'detached' : 'loading'))
   );
 
-  // Clear switchingToBranch once currentBranch catches up
+  // Clear switchingToRef once the selected branch/tag catches up
   $effect(() => {
-    if (switchingToBranch && currentBranch === switchingToBranch) {
-      switchingToBranch = null;
+    if (switchingToRef && (currentBranch === switchingToRef || selectedTag === switchingToRef)) {
+      switchingToRef = null;
     }
   });
 
@@ -237,10 +247,10 @@
     }
 
     // Skip if already switching
-    if (switchingToBranch) return;
+    if (switchingToRef) return;
 
-    // Auto-switch to the branch from URL (handleBranchSelect manages switchingToBranch state)
-    handleBranchSelect(targetBranch);
+    // Auto-switch to the branch from URL (handleRefSelect manages switchingToRef state)
+    handleRefSelect(targetBranch);
   });
 
   // Calculate subdirectory path relative to git root
@@ -470,12 +480,12 @@
 
 
   // Handle branch selection - checkout the branch
-  async function handleBranchSelect(branch: string) {
+  async function handleRefSelect(ref: string) {
     if (!gitCid) return;
-    // Skip if already on this branch or already switching
-    if (branch === currentBranch || switchingToBranch) return;
+    // Skip if already on this ref or already switching
+    if (ref === currentBranch || ref === selectedTag || switchingToRef) return;
 
-    switchingToBranch = branch;
+    switchingToRef = ref;
 
     try {
       const { checkoutCommit } = await import('../../utils/git');
@@ -486,8 +496,8 @@
       const treeRootCid = getCurrentRootCid();
       if (!treeRootCid) return;
 
-      // Checkout the branch - use gitCid for git operations
-      const newDirCid = await checkoutCommit(gitCid, branch);
+      // Checkout the ref - use gitCid for git operations
+      const newDirCid = await checkoutCommit(gitCid, ref);
 
       // Determine the path to the git root (use gitRootPath if in subdirectory, otherwise currentPath)
       const gitPath = gitRootParts;
@@ -514,8 +524,8 @@
       // Save and publish - UI will react automatically via store subscriptions
       autosaveIfOwn(newRootCid);
     } catch (err) {
-      console.error('Failed to switch branch:', err);
-      switchingToBranch = null;
+      console.error('Failed to switch ref:', err);
+      switchingToRef = null;
     }
   }
 
@@ -628,13 +638,15 @@
         <BranchDropdown
           {branches}
           {currentBranch}
+          {tags}
+          {selectedTag}
           {branchDisplay}
           {canEdit}
           dirCid={gitCid}
           npub={route.npub}
           {repoPath}
-          onBranchSelect={handleBranchSelect}
-          loading={!!switchingToBranch}
+          onRefSelect={handleRefSelect}
+          loading={!!switchingToRef}
         />
       {:else}
         <button class="btn-ghost flex items-center gap-1 px-3 h-9 text-sm" disabled>
@@ -648,6 +660,13 @@
         <span class="i-lucide-git-branch text-text-3"></span>
         <span>{gitCid ? `${branches.length} branch${branches.length !== 1 ? 'es' : ''}` : 'Detecting branches...'}</span>
       </span>
+
+      {#if gitCid}
+        <span class="flex items-center gap-1.5 text-sm text-text-2">
+          <span class="i-lucide-tag text-text-3"></span>
+          <span>{tags.length} tag{tags.length !== 1 ? 's' : ''}</span>
+        </span>
+      {/if}
 
       <!-- Git status indicator and commit button -->
       {#if canEdit}
@@ -712,7 +731,20 @@
     <!-- Directory listing table - GitHub style -->
     <div class="b-1 b-surface-3 b-solid rounded-lg overflow-hidden bg-surface-0" data-testid="file-list">
       <!-- File table with commit info header -->
-      <FileTable {entries} {fileCommits} {buildEntryHref} {buildCommitHref} {latestCommit} commitsLoading={!loadGitMetadata || commitsLoading} {parentHref} {ciStatus} {ciStatusStore} {repoPath} {ciConfig} />
+      <FileTable
+        {entries}
+        {fileCommits}
+        {buildEntryHref}
+        {buildCommitHref}
+        {latestCommit}
+        latestCommitTags={latestCommit ? (tagsByCommit[latestCommit.oid] ?? []) : []}
+        commitsLoading={!loadGitMetadata || commitsLoading}
+        {parentHref}
+        {ciStatus}
+        {ciStatusStore}
+        {repoPath}
+        {ciConfig}
+      />
     </div>
 
     <!-- README.md panel -->

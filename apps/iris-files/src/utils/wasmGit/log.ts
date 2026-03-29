@@ -5,6 +5,7 @@ import type { CID } from '@hashtree/core';
 import { LinkType, toHex } from '@hashtree/core';
 import { getTree } from '../../store';
 import { withWasmGitLock, loadWasmGit, copyGitDirToWasmFS, rmRf, createRepoPath } from './core';
+import { collectLooseRefs, isFullSha, readPackedRefs, readRefSha } from './refs';
 
 /**
  * Get current HEAD commit SHA
@@ -14,7 +15,6 @@ export async function getHead(
   rootCid: CID
 ): Promise<string | null> {
   const tree = getTree();
-  const isSha = (value: string): boolean => /^[0-9a-f]{40}$/.test(value);
 
   // Check for .git directory
   const gitDirResult = await tree.resolvePath(rootCid, '.git');
@@ -22,81 +22,33 @@ export async function getHead(
     return null;
   }
 
-  const readRefSha = async (refPath: string): Promise<string | null> => {
-    const refResult = await tree.resolvePath(gitDirResult.cid, refPath);
-    if (!refResult || refResult.type === LinkType.Dir) {
-      return null;
-    }
-    const refData = await tree.readFile(refResult.cid);
-    if (!refData) {
-      return null;
-    }
-    const sha = new TextDecoder().decode(refData).trim();
-    return isSha(sha) ? sha : null;
-  };
-
-  const readPackedRefs = async (): Promise<Map<string, string>> => {
-    const refs = new Map<string, string>();
-    const packedRefsResult = await tree.resolvePath(gitDirResult.cid, 'packed-refs');
-    if (!packedRefsResult || packedRefsResult.type === LinkType.Dir) {
-      return refs;
-    }
-    const packedRefsData = await tree.readFile(packedRefsResult.cid);
-    if (!packedRefsData) {
-      return refs;
-    }
-    const lines = new TextDecoder().decode(packedRefsData).split('\n');
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line || line.startsWith('#') || line.startsWith('^')) {
-        continue;
-      }
-      const [sha, ref] = line.split(' ');
-      if (sha && ref) {
-        refs.set(ref, sha);
-      }
-    }
-    return refs;
-  };
-
   const fallbackHead = async (): Promise<string | null> => {
     const preferredBranches = ['main', 'master'];
     for (const branch of preferredBranches) {
-      const sha = await readRefSha(`refs/heads/${branch}`);
+      const sha = await readRefSha(tree, gitDirResult.cid, `refs/heads/${branch}`);
       if (sha) {
         return sha;
       }
     }
 
-    try {
-      const refsResult = await tree.resolvePath(gitDirResult.cid, 'refs/heads');
-      if (refsResult && refsResult.type === LinkType.Dir) {
-        const entries = await tree.listDirectory(refsResult.cid);
-        const branchNames = entries
-          .filter(entry => entry.type !== LinkType.Dir)
-          .map(entry => entry.name)
-          .sort();
-        for (const name of branchNames) {
-          const sha = await readRefSha(`refs/heads/${name}`);
-          if (sha) {
-            return sha;
-          }
-        }
+    const looseHeads = await collectLooseRefs(tree, gitDirResult.cid, 'refs/heads');
+    for (const name of Array.from(looseHeads.keys()).sort()) {
+      const sha = looseHeads.get(name);
+      if (sha) {
+        return sha;
       }
-    } catch {
-      // Ignore fallback errors
     }
 
-    const packedRefs = await readPackedRefs();
+    const packedRefs = await readPackedRefs(tree, gitDirResult.cid);
     for (const ref of ['refs/heads/main', 'refs/heads/master']) {
-      const sha = packedRefs.get(ref);
-      if (sha && isSha(sha)) {
-        return sha;
+      const entry = packedRefs.get(ref);
+      if (entry?.sha) {
+        return entry.sha;
       }
     }
-    for (const [ref, sha] of packedRefs.entries()) {
-      if (ref.startsWith('refs/heads/') && isSha(sha)) {
-        return sha;
+    for (const [ref, entry] of packedRefs.entries()) {
+      if (ref.startsWith('refs/heads/') && entry.sha) {
+        return entry.sha;
       }
     }
 
@@ -118,8 +70,8 @@ export async function getHead(
     const headContent = new TextDecoder().decode(headData).trim();
 
     // Check if HEAD is a direct SHA (detached)
-    if (isSha(headContent)) {
-      return headContent;
+    if (isFullSha(headContent)) {
+      return headContent.toLowerCase();
     }
 
     // HEAD is a ref like "ref: refs/heads/master"
@@ -130,9 +82,15 @@ export async function getHead(
 
     // Resolve the ref to get commit SHA
     const refPath = refMatch[1]; // e.g., "refs/heads/master"
-    const sha = await readRefSha(refPath);
+    const sha = await readRefSha(tree, gitDirResult.cid, refPath);
     if (sha) {
       return sha;
+    }
+
+    const packedRefs = await readPackedRefs(tree, gitDirResult.cid);
+    const packedSha = packedRefs.get(refPath)?.sha ?? null;
+    if (packedSha) {
+      return packedSha;
     }
 
     return await fallbackHead();
@@ -163,6 +121,11 @@ interface ParsedCommit {
   email: string;
   timestamp: number;
   message: string;
+}
+
+interface ParsedTag {
+  object: string;
+  type: string;
 }
 
 export interface CommitDetails extends CommitInfo {
@@ -688,6 +651,29 @@ function parseCommit(content: Uint8Array): ParsedCommit | null {
   return { tree, parents, author, email, timestamp, message };
 }
 
+function parseTag(content: Uint8Array): ParsedTag | null {
+  const text = new TextDecoder().decode(content);
+  const lines = text.split('\n');
+
+  let object = '';
+  let type = '';
+
+  for (const line of lines) {
+    if (line === '') break;
+    if (line.startsWith('object ')) {
+      object = line.slice(7).trim();
+    } else if (line.startsWith('type ')) {
+      type = line.slice(5).trim();
+    }
+  }
+
+  if (!isFullSha(object) || !type) {
+    return null;
+  }
+
+  return { object: object.toLowerCase(), type };
+}
+
 async function getParsedCommitFromSha(
   tree: ReturnType<typeof getTree>,
   gitDirCid: CID,
@@ -708,13 +694,101 @@ async function getParsedCommitFromSha(
   return parsed;
 }
 
-async function resolveCommitSha(rootCid: CID, ref: string): Promise<string | null> {
+async function peelObjectToCommit(
+  tree: ReturnType<typeof getTree>,
+  gitDirCid: CID,
+  sha: string,
+  seen = new Set<string>()
+): Promise<string | null> {
+  const normalizedSha = sha.toLowerCase();
+  if (seen.has(normalizedSha)) {
+    return null;
+  }
+  seen.add(normalizedSha);
+
+  const obj = await readGitObject(tree, gitDirCid, normalizedSha);
+  if (!obj) {
+    return null;
+  }
+
+  if (obj.type === 'commit') {
+    return normalizedSha;
+  }
+
+  if (obj.type !== 'tag') {
+    return null;
+  }
+
+  const parsed = parseTag(obj.content);
+  if (!parsed) {
+    return null;
+  }
+
+  if (parsed.type === 'commit') {
+    return parsed.object;
+  }
+
+  return peelObjectToCommit(tree, gitDirCid, parsed.object, seen);
+}
+
+async function resolveNamedRefToCommit(
+  tree: ReturnType<typeof getTree>,
+  gitDirCid: CID,
+  rootCid: CID,
+  ref: string
+): Promise<string | null> {
+  const candidates = ref.startsWith('refs/')
+    ? [ref]
+    : [`refs/heads/${ref}`, `refs/tags/${ref}`];
+
+  const packedRefs = await readPackedRefs(tree, gitDirCid);
+
+  for (const candidate of candidates) {
+    const looseSha = await readRefSha(tree, gitDirCid, candidate);
+    if (looseSha) {
+      const peeled = await peelObjectToCommit(tree, gitDirCid, looseSha);
+      if (peeled) {
+        return peeled;
+      }
+    }
+
+    const packed = packedRefs.get(candidate);
+    if (packed?.peeled) {
+      return packed.peeled;
+    }
+    if (packed?.sha) {
+      const peeled = await peelObjectToCommit(tree, gitDirCid, packed.sha);
+      if (peeled) {
+        return peeled;
+      }
+    }
+  }
+
+  if (ref === 'HEAD') {
+    return getHead(rootCid);
+  }
+
+  return null;
+}
+
+export async function resolveRevisionToCommit(rootCid: CID, ref: string): Promise<string | null> {
   if (ref === 'HEAD') {
     return await getHead(rootCid);
   }
 
-  if (/^[0-9a-f]{40}$/i.test(ref)) {
+  if (isFullSha(ref)) {
     return ref.toLowerCase();
+  }
+
+  const tree = getTree();
+  const gitDirResult = await tree.resolvePath(rootCid, '.git');
+  if (!gitDirResult || gitDirResult.type !== LinkType.Dir) {
+    return null;
+  }
+
+  const resolvedRef = await resolveNamedRefToCommit(tree, gitDirResult.cid, rootCid, ref);
+  if (resolvedRef) {
+    return resolvedRef;
   }
 
   if (/^[0-9a-f]{4,39}$/i.test(ref)) {
@@ -734,7 +808,7 @@ export async function getCommitInfo(rootCid: CID, ref: string): Promise<CommitDe
     return null;
   }
 
-  const sha = await resolveCommitSha(rootCid, ref);
+  const sha = await resolveRevisionToCommit(rootCid, ref);
   if (!sha) {
     return null;
   }
@@ -1758,8 +1832,8 @@ export async function getDiff(
 
   try {
     const [fromSha, toSha] = await Promise.all([
-      resolveCommitSha(rootCid, fromCommit),
-      resolveCommitSha(rootCid, toCommit),
+      resolveRevisionToCommit(rootCid, fromCommit),
+      resolveRevisionToCommit(rootCid, toCommit),
     ]);
     if (!fromSha || !toSha) return result;
 
@@ -1804,7 +1878,7 @@ export async function getFileAtCommit(
   }
 
   try {
-    const resolvedSha = await resolveCommitSha(rootCid, commitSha);
+    const resolvedSha = await resolveRevisionToCommit(rootCid, commitSha);
     if (!resolvedSha) return null;
 
     const commit = await getParsedCommitFromSha(htree, gitDirResult.cid, resolvedSha);
@@ -1859,7 +1933,7 @@ export async function getCommitTreeEntries(rootCid: CID, ref: string): Promise<C
     return [];
   }
 
-  const resolvedSha = await resolveCommitSha(rootCid, ref);
+  const resolvedSha = await resolveRevisionToCommit(rootCid, ref);
   if (!resolvedSha) return [];
 
   const commit = await getParsedCommitFromSha(htree, gitDirResult.cid, resolvedSha);

@@ -20,7 +20,10 @@ export {
 } from './log';
 export type { CommitInfo, CommitDetails, DiffEntry } from './log';
 
-export { getBranches } from './branch';
+export { getBranches, getRefs } from './branch';
+export type { GitRefsResult } from './branch';
+export { parsePackedRefs } from './refs';
+export type { GitTreeReader, PackedRefEntry } from './refs';
 
 // Wasm implementations (slower, but handle writes correctly)
 export { createBranchWasm } from './branch';

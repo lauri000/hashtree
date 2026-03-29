@@ -3,7 +3,7 @@
  */
 import { writable, get, type Readable } from 'svelte/store';
 import { toHex, type CID } from '@hashtree/core';
-import { isGitRepo, getBranches, getLog, getStatus, getHead } from '../utils/git';
+import { isGitRepo, getRefs, getLog, getStatus, getHead } from '../utils/git';
 import type { GitStatusResult } from '../utils/wasmGit';
 import { nostrStore } from '../nostr';
 import { LRUCache } from '../utils/lruCache';
@@ -12,6 +12,8 @@ export interface GitInfo {
   isRepo: boolean;
   currentBranch: string | null;
   branches: string[];
+  tags: string[];
+  tagsByCommit: Record<string, string[]>;
   loading: boolean;
 }
 
@@ -37,7 +39,16 @@ function cidCacheKey(cid: CID): string {
  */
 export function createGitInfoStore(dirCid: CID | null, repoPath?: string): Readable<GitInfo> {
   if (!dirCid) {
-    return { subscribe: writable<GitInfo>({ isRepo: false, currentBranch: null, branches: [], loading: false }).subscribe };
+    return {
+      subscribe: writable<GitInfo>({
+        isRepo: false,
+        currentBranch: null,
+        branches: [],
+        tags: [],
+        tagsByCommit: {},
+        loading: false,
+      }).subscribe,
+    };
   }
 
   const cacheKey = `${repoPath ?? ''}:${cidCacheKey(dirCid)}`;
@@ -49,6 +60,8 @@ export function createGitInfoStore(dirCid: CID | null, repoPath?: string): Reada
     isRepo: false,
     currentBranch: null,
     branches: [],
+    tags: [],
+    tagsByCommit: {},
     loading: true,
   });
 
@@ -60,25 +73,27 @@ export function createGitInfoStore(dirCid: CID | null, repoPath?: string): Reada
   // Check if it's a git repo
   isGitRepo(dirCid).then(async (isRepo) => {
     if (!isRepo) {
-      set({ isRepo: false, currentBranch: null, branches: [], loading: false });
+      set({ isRepo: false, currentBranch: null, branches: [], tags: [], tagsByCommit: {}, loading: false });
       return;
     }
 
     try {
-      const { branches, currentBranch } = await getBranches(dirCid);
+      const { branches, currentBranch, tags, tagsByCommit } = await getRefs(dirCid);
       set({
         isRepo: true,
         currentBranch,
         branches,
+        tags,
+        tagsByCommit,
         loading: false,
       });
     } catch (err) {
       console.error('Error getting git branches:', err);
-      set({ isRepo: true, currentBranch: null, branches: [], loading: false });
+      set({ isRepo: true, currentBranch: null, branches: [], tags: [], tagsByCommit: {}, loading: false });
     }
   }).catch((err) => {
     console.error('Error checking git repo:', err);
-    set({ isRepo: false, currentBranch: null, branches: [], loading: false });
+    set({ isRepo: false, currentBranch: null, branches: [], tags: [], tagsByCommit: {}, loading: false });
   });
 
   return store;

@@ -1,25 +1,45 @@
 /**
- * Git branch operations
+ * Git ref operations
  */
 import type { CID } from '@hashtree/core';
 import { LinkType } from '@hashtree/core';
 import { getTree } from '../../store';
 import { withWasmGitLock, loadWasmGit, copyToWasmFS, runSilent, rmRf, readGitDirectory, createRepoPath } from './core';
 import { getErrorMessage } from '../errorMessage';
+import { collectLooseRefs, isFullSha, readPackedRefs, type GitTreeReader } from './refs';
+import { resolveRevisionToCommit } from './log';
+
+export interface GitRefsResult {
+  branches: string[];
+  currentBranch: string | null;
+  tags: string[];
+  tagsByCommit: Record<string, string[]>;
+}
+
+interface GetRefsOptions {
+  tree?: GitTreeReader;
+  resolveRevisionToCommit?: (rootCid: CID, revision: string) => Promise<string | null>;
+}
+
+function sortedRefNames(values: Iterable<string>): string[] {
+  return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
+}
 
 /**
- * Get list of branches by reading directly from hashtree
- * No wasm-git needed - just reads .git/HEAD and .git/refs/heads/
+ * Get branches and tags by reading directly from hashtree.
+ * No wasm-git needed for read-only ref discovery.
  */
-export async function getBranches(
-  rootCid: CID
-): Promise<{ branches: string[]; currentBranch: string | null }> {
-  const tree = getTree();
+export async function getRefs(
+  rootCid: CID,
+  options: GetRefsOptions = {}
+): Promise<GitRefsResult> {
+  const tree = options.tree ?? getTree();
+  const resolveCommit = options.resolveRevisionToCommit ?? resolveRevisionToCommit;
 
   // Check for .git directory
   const gitDirResult = await tree.resolvePath(rootCid, '.git');
   if (!gitDirResult || gitDirResult.type !== LinkType.Dir) {
-    return { branches: [], currentBranch: null };
+    return { branches: [], currentBranch: null, tags: [], tagsByCommit: {} };
   }
 
   // Read HEAD file to get current branch
@@ -34,7 +54,7 @@ export async function getBranches(
         const refMatch = headContent.match(/^ref: refs\/heads\/(\S+)/);
         if (refMatch) {
           currentBranch = refMatch[1];
-        } else if (/^[0-9a-f]{40}$/i.test(headContent)) {
+        } else if (isFullSha(headContent)) {
           headIsDetached = true;
         }
         // If no match, HEAD is a direct SHA (detached state) - currentBranch stays null
@@ -44,42 +64,34 @@ export async function getBranches(
     // HEAD file not found or unreadable
   }
 
-  // Read refs/heads directory to get branch list
-  const branches: string[] = [];
-  try {
-    const refsResult = await tree.resolvePath(gitDirResult.cid, 'refs/heads');
-    if (refsResult && refsResult.type === LinkType.Dir) {
-      const entries = await tree.listDirectory(refsResult.cid);
-      for (const entry of entries) {
-        if (entry.type !== LinkType.Dir) {
-          branches.push(entry.name);
-        }
-      }
-    }
-  } catch {
-    // refs/heads may not exist
+  const looseHeads = await collectLooseRefs(tree, gitDirResult.cid, 'refs/heads');
+  const looseTags = await collectLooseRefs(tree, gitDirResult.cid, 'refs/tags');
+  const packedRefs = await readPackedRefs(tree, gitDirResult.cid);
+
+  const branches = sortedRefNames([
+    ...looseHeads.keys(),
+    ...Array.from(packedRefs.keys())
+      .filter((refPath) => refPath.startsWith('refs/heads/'))
+      .map((refPath) => refPath.slice('refs/heads/'.length)),
+  ]);
+
+  const tags = sortedRefNames([
+    ...looseTags.keys(),
+    ...Array.from(packedRefs.keys())
+      .filter((refPath) => refPath.startsWith('refs/tags/'))
+      .map((refPath) => refPath.slice('refs/tags/'.length)),
+  ]);
+
+  const tagsByCommit: Record<string, string[]> = {};
+  for (const tag of tags) {
+    const commitSha = await resolveCommit(rootCid, `refs/tags/${tag}`);
+    if (!commitSha) continue;
+    tagsByCommit[commitSha] ??= [];
+    tagsByCommit[commitSha].push(tag);
   }
 
-  if (branches.length === 0) {
-    try {
-      const packedRefsResult = await tree.resolvePath(gitDirResult.cid, 'packed-refs');
-      if (packedRefsResult && packedRefsResult.type !== LinkType.Dir) {
-        const packedRefsData = await tree.readFile(packedRefsResult.cid);
-        if (packedRefsData) {
-          const lines = new TextDecoder().decode(packedRefsData).split('\n');
-          for (const rawLine of lines) {
-            const line = rawLine.trim();
-            if (!line || line.startsWith('#') || line.startsWith('^')) continue;
-            const [, ref] = line.split(' ');
-            if (ref?.startsWith('refs/heads/')) {
-              branches.push(ref.slice('refs/heads/'.length));
-            }
-          }
-        }
-      }
-    } catch {
-      // packed-refs may not exist
-    }
+  for (const tagList of Object.values(tagsByCommit)) {
+    tagList.sort((a, b) => a.localeCompare(b));
   }
 
   if (!currentBranch && !headIsDetached && branches.length > 0) {
@@ -92,7 +104,14 @@ export async function getBranches(
     }
   }
 
-  return { branches, currentBranch };
+  return { branches, currentBranch, tags, tagsByCommit };
+}
+
+export async function getBranches(
+  rootCid: CID,
+  options: GetRefsOptions = {}
+): Promise<GitRefsResult> {
+  return getRefs(rootCid, options);
 }
 
 /**

@@ -15,6 +15,7 @@
     buildEntryHref: (entry: TreeEntry) => string;
     buildCommitHref: (commitOid: string) => string;
     latestCommit?: CommitInfo | null;
+    latestCommitTags?: string[];
     commitsLoading?: boolean;
     /** Optional href for parent directory (..) navigation */
     parentHref?: string | null;
@@ -28,7 +29,20 @@
     ciConfig?: CIConfig | null;
   }
 
-  let { entries, fileCommits, buildEntryHref, buildCommitHref, latestCommit = null, commitsLoading = false, parentHref = null, ciStatus = null, ciStatusStore = null, repoPath = '', ciConfig = null }: Props = $props();
+  let {
+    entries,
+    fileCommits,
+    buildEntryHref,
+    buildCommitHref,
+    latestCommit = null,
+    latestCommitTags = [],
+    commitsLoading = false,
+    parentHref = null,
+    ciStatus = null,
+    ciStatusStore = null,
+    repoPath = '',
+    ciConfig = null,
+  }: Props = $props();
 
   // Build link to CI runner's tree
   function getCIRunnerLink(): string | null {
@@ -105,13 +119,21 @@
           {latestCommit.author}
         </td>
         <td class="py-3 px-4 truncate max-w-md hidden sm:table-cell" title={latestCommit.message}>
-          <a
-            href={buildCommitHref(latestCommit.oid)}
-            class="text-text-2 hover:text-accent hover:underline no-underline"
-            onclick={(e) => e.stopPropagation()}
-          >
-            {getCommitTitle(latestCommit.message)}
-          </a>
+          <div class="flex items-center gap-2 min-w-0">
+            <a
+              href={buildCommitHref(latestCommit.oid)}
+              class="min-w-0 truncate text-text-2 hover:text-accent hover:underline no-underline"
+              onclick={(e) => e.stopPropagation()}
+            >
+              {getCommitTitle(latestCommit.message)}
+            </a>
+            {#each latestCommitTags as tag (tag)}
+              <span class="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-text-2 flex items-center gap-1">
+                <span class="i-lucide-tag text-[10px]"></span>
+                {tag}
+              </span>
+            {/each}
+          </div>
         </td>
         <td class="py-3 px-4 text-right whitespace-nowrap flex items-center justify-end gap-2">
           {#if ciStatus?.loading}

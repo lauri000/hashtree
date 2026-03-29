@@ -15,18 +15,32 @@
   interface Props {
     branches: string[];
     currentBranch: string | null;
+    tags: string[];
+    selectedTag: string | null;
     branchDisplay: string;
     canEdit: boolean;
     dirCid: CID;
     npub?: string;
     /** Full path to git repo (treeName + subdirectory path if any) */
     repoPath?: string;
-    onBranchSelect?: (branch: string) => void;
+    onRefSelect?: (ref: string) => void;
     /** Show loading spinner (e.g., when switching branches) */
     loading?: boolean;
   }
 
-  let { branches, currentBranch, branchDisplay, canEdit, dirCid, npub, repoPath, onBranchSelect, loading = false }: Props = $props();
+  let {
+    branches,
+    currentBranch,
+    tags,
+    selectedTag,
+    branchDisplay,
+    canEdit,
+    dirCid,
+    npub,
+    repoPath,
+    onRefSelect,
+    loading = false,
+  }: Props = $props();
 
   let route = $derived($routeStore);
 
@@ -38,9 +52,9 @@
   let isCreatingBranch = $state(false);
   let branchError = $state<string | null>(null);
 
-  function handleBranchSelect(branch: string) {
-    if (onBranchSelect) {
-      onBranchSelect(branch);
+  function handleRefSelect(ref: string) {
+    if (onRefSelect) {
+      onRefSelect(ref);
     }
     isDropdownOpen = false;
   }
@@ -130,29 +144,53 @@
     >
       {#if loading}
         <span class="i-lucide-loader-2 animate-spin"></span>
+      {:else if selectedTag && !currentBranch}
+        <span class="i-lucide-tag"></span>
       {:else}
         <span class="i-lucide-git-branch"></span>
       {/if}
-      <span class={currentBranch ? '' : 'font-mono text-xs'}>{branchDisplay}</span>
+      <span class={currentBranch || selectedTag ? '' : 'font-mono text-xs'}>{branchDisplay}</span>
       {#if !loading}
         <span class="i-lucide-chevron-down text-xs"></span>
       {/if}
     </button>
   {/snippet}
-  <!-- Branch list -->
-  {#each branches as branch (branch)}
-    <button
-      onclick={() => handleBranchSelect(branch)}
-      class="w-full text-left px-3 py-1.5 text-sm bg-surface-2 hover:bg-surface-3 flex items-center gap-2 text-text-1 b-0 cursor-pointer"
-    >
-      {#if branch === currentBranch}
-        <span class="i-lucide-check text-accent text-xs"></span>
-      {:else}
-        <span class="ml-4"></span>
-      {/if}
-      <span>{branch}</span>
-    </button>
-  {/each}
+  {#if branches.length > 0}
+    <!-- Branch list -->
+    {#each branches as branch (branch)}
+      <button
+        onclick={() => handleRefSelect(branch)}
+        class="w-full text-left px-3 py-1.5 text-sm bg-surface-2 hover:bg-surface-3 flex items-center gap-2 text-text-1 b-0 cursor-pointer"
+      >
+        {#if branch === currentBranch}
+          <span class="i-lucide-check text-accent text-xs"></span>
+        {:else}
+          <span class="ml-4"></span>
+        {/if}
+        <span>{branch}</span>
+      </button>
+    {/each}
+  {/if}
+
+  {#if tags.length > 0}
+    <div class="px-3 py-2 text-xs font-medium uppercase tracking-wide text-text-3 {branches.length > 0 ? 'b-t-1 b-t-solid b-t-surface-3' : ''}">
+      Tags
+    </div>
+    {#each tags as tag (tag)}
+      <button
+        onclick={() => handleRefSelect(tag)}
+        class="w-full text-left px-3 py-1.5 text-sm bg-surface-2 hover:bg-surface-3 flex items-center gap-2 text-text-1 b-0 cursor-pointer"
+      >
+        {#if tag === selectedTag}
+          <span class="i-lucide-check text-accent text-xs"></span>
+        {:else}
+          <span class="ml-4"></span>
+        {/if}
+        <span class="i-lucide-tag text-xs text-text-3"></span>
+        <span>{tag}</span>
+      </button>
+    {/each}
+  {/if}
   <!-- Compare branches option (when there are multiple branches and we have navigation info) -->
   {#if branches.length > 1 && npub && repoPath && currentBranch}
     {#if showCompareSelect}
