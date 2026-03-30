@@ -268,12 +268,16 @@ fn default_max_upload_mb() -> u64 {
 }
 
 impl BlossomConfig {
-    /// Get all read servers (legacy + read_servers)
+    /// Get all readable servers (legacy + read_servers + write_servers).
+    /// Write servers are included because freshly published immutable content
+    /// may be available there before it has replicated to dedicated read tiers.
     pub fn all_read_servers(&self) -> Vec<String> {
         let mut servers = self.servers.clone();
         servers.extend(self.read_servers.clone());
+        servers.extend(self.write_servers.clone());
         if servers.is_empty() {
             servers = default_read_servers();
+            servers.extend(default_write_servers());
         }
         servers.sort();
         servers.dedup();
@@ -712,6 +716,7 @@ write_servers = ["https://custom.server"]
         assert!(read.contains(&"https://legacy.server".to_string()));
         assert!(read.contains(&"https://cdn.iris.to".to_string()));
         assert!(read.contains(&"https://blossom.primal.net".to_string()));
+        assert!(read.contains(&"https://upload.iris.to".to_string()));
 
         let write = config.all_write_servers();
         assert!(write.contains(&"https://legacy.server".to_string()));
@@ -728,7 +733,11 @@ write_servers = ["https://custom.server"]
             force_upload: false,
         };
 
-        assert_eq!(config.all_read_servers(), default_read_servers());
+        let mut expected_read = default_read_servers();
+        expected_read.extend(default_write_servers());
+        expected_read.sort();
+        expected_read.dedup();
+        assert_eq!(config.all_read_servers(), expected_read);
         assert_eq!(config.all_write_servers(), default_write_servers());
     }
 

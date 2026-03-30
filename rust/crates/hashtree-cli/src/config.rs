@@ -179,8 +179,10 @@ impl BlossomConfig {
         }
         let mut servers = self.servers.clone();
         servers.extend(self.read_servers.clone());
+        servers.extend(self.write_servers.clone());
         if servers.is_empty() {
             servers = default_read_servers();
+            servers.extend(default_write_servers());
         }
         servers.sort();
         servers.dedup();
@@ -950,7 +952,7 @@ chunk_target_bytes = 65536
     }
 
     #[test]
-    fn test_blossom_read_servers_exclude_write_only_servers() {
+    fn test_blossom_read_servers_include_write_only_servers_as_fresh_fallbacks() {
         let mut config = BlossomConfig::default();
         config.servers = vec!["https://legacy.server".to_string()];
 
@@ -958,7 +960,7 @@ chunk_target_bytes = 65536
         assert!(read.contains(&"https://legacy.server".to_string()));
         assert!(read.contains(&"https://cdn.iris.to".to_string()));
         assert!(read.contains(&"https://blossom.primal.net".to_string()));
-        assert!(!read.contains(&"https://upload.iris.to".to_string()));
+        assert!(read.contains(&"https://upload.iris.to".to_string()));
 
         let write = config.all_write_servers();
         assert!(write.contains(&"https://legacy.server".to_string()));
@@ -976,7 +978,11 @@ chunk_target_bytes = 65536
         };
 
         let read = config.all_read_servers();
-        assert_eq!(read, default_read_servers());
+        let mut expected = default_read_servers();
+        expected.extend(default_write_servers());
+        expected.sort();
+        expected.dedup();
+        assert_eq!(read, expected);
 
         let write = config.all_write_servers();
         assert_eq!(write, default_write_servers());
