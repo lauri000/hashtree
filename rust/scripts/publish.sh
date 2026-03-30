@@ -4,8 +4,9 @@
 # Usage:
 #   ./scripts/publish.sh        # Publish all crates
 #   ./scripts/publish.sh --dry-run  # Test without publishing
+#   ./scripts/publish.sh --plan     # Print publish order
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUST_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -38,6 +39,7 @@ TIER_1_CRATES=(
     "hashtree-core"
     "hashtree-config"
     "hashtree-merge"
+    "cashu-service"
 )
 
 TIER_2_CRATES=(
@@ -109,15 +111,6 @@ echo "Publishing hashtree crates to crates.io"
 echo ""
 
 cd "$RUST_DIR"
-
-# Check if logged in
-if [[ -z "$DRY_RUN" ]]; then
-    echo "Checking crates.io authentication..."
-    if ! cargo login --help > /dev/null 2>&1; then
-        echo "Please run 'cargo login' first"
-        exit 1
-    fi
-fi
 
 # Tier 1: No internal dependencies
 for crate in "${TIER_1_CRATES[@]}"; do

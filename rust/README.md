@@ -220,16 +220,16 @@ htree following                         # List followed users
 Publish a new binary release while keeping older versions in the same mutable tree:
 
 ```bash
-release="$(htree add dist/hashtree-v0.2.3 | awk '/^  url:/ {print $2}')"
-scripts/publish_release.sh v0.2.3 "$release" hashtree-releases
+release="$(htree add dist/hashtree-v<version> | awk '/^  url:/ {print $2}')"
+scripts/publish_release.sh v<version> "$release" hashtree-releases
 ```
 
-That stores the new release under `v0.2.3/`, repoints `latest/` at the same CID, and leaves older versions intact.
+That stores the new release under `v<version>/`, repoints `latest/` at the same CID, and leaves older versions intact.
 
 Build and publish a local CLI release directory in one step:
 
 ```bash
-scripts/release_to_htree.sh --version v0.2.3
+scripts/release_to_htree.sh --version v<version>
 ```
 
 On macOS this builds the macOS CLI artifacts locally, uses `cross` for the Linux musl CLI artifacts, and can optionally include Windows MSVC binaries from a VM via `--windows-artifacts-dir <shared-dir>`.
@@ -243,7 +243,13 @@ https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2ds
 Skip that step explicitly with:
 
 ```bash
-scripts/release_to_htree.sh --version v0.2.3 --skip-homebrew-tap
+scripts/release_to_htree.sh --version v<version> --skip-homebrew-tap
+```
+
+If you also want the same command to publish the crates.io release, opt into the irreversible step explicitly:
+
+```bash
+scripts/release_to_htree.sh --version v<version> --cargo-publish
 ```
 
 ## Development

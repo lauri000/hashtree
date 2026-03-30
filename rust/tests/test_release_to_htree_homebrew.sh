@@ -66,6 +66,13 @@ fi
 EOF
 chmod +x "${REPO_ROOT}/packaging/homebrew/publish_tap.sh"
 
+cat >"${REPO_ROOT}/rust/scripts/publish.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+echo "cargo_publish:$*" >>"${TEST_LOG_DIR}/calls.log"
+EOF
+chmod +x "${REPO_ROOT}/rust/scripts/publish.sh"
+
 cat >"${TMPDIR}/bin/htree" <<'EOF'
 #!/bin/bash
 set -euo pipefail
@@ -89,8 +96,34 @@ PATH="${TMPDIR}/bin:$PATH" TEST_LOG_DIR="${TMPDIR}/logs" \
     --version v0.2.3 \
     --output-dir "${TMPDIR}/out" >/dev/null
 
-grep -F "publish_release:v0.2.3 nhash1release hashtree-releases" "${TMPDIR}/logs/calls.log" >/dev/null
-grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/npub1releaseowner/hashtree-releases/v0.2.3 --checksums-dir ${TMPDIR}/out --tap-repo homebrew-hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
+grep -F "publish_release:v0.2.3 nhash1release releases/hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
+grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/npub1releaseowner/releases/hashtree/v0.2.3 --checksums-dir ${TMPDIR}/out --tap-repo homebrew-hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
+if grep -F "cargo_publish:" "${TMPDIR}/logs/calls.log" >/dev/null; then
+    echo "release_to_htree should not cargo publish unless requested" >&2
+    exit 1
+fi
+
+rm -f "${TMPDIR}/logs/calls.log"
+PATH="${TMPDIR}/bin:$PATH" TEST_LOG_DIR="${TMPDIR}/logs" \
+    "${REPO_ROOT}/rust/scripts/release_to_htree.sh" \
+    --version v0.2.3 \
+    --output-dir "${TMPDIR}/out" \
+    --cargo-publish >/dev/null
+
+grep -F "cargo_publish:" "${TMPDIR}/logs/calls.log" >/dev/null
+publish_release_line="$(grep -n '^publish_release:' "${TMPDIR}/logs/calls.log" | cut -d: -f1)"
+publish_tap_line="$(grep -n '^publish_tap:' "${TMPDIR}/logs/calls.log" | cut -d: -f1)"
+cargo_publish_line="$(grep -n '^cargo_publish:' "${TMPDIR}/logs/calls.log" | cut -d: -f1)"
+
+if [ -z "$publish_release_line" ] || [ -z "$publish_tap_line" ] || [ -z "$cargo_publish_line" ]; then
+    echo "Expected publish_release, publish_tap, and cargo_publish calls" >&2
+    exit 1
+fi
+
+if [ "$cargo_publish_line" -le "$publish_tap_line" ] || [ "$publish_tap_line" -le "$publish_release_line" ]; then
+    echo "Expected cargo publish to run after release and tap publication" >&2
+    exit 1
+fi
 
 rm -f "${TMPDIR}/logs/calls.log"
 STDOUT_FILE="${TMPDIR}/release_to_htree_homebrew.out"

@@ -8,7 +8,7 @@ Usage: packaging/homebrew/publish_tap.sh --version <version> --release-base-url 
 Generate a Homebrew tap repository and push it to a git remote.
 
 Required options:
-  --version <version>              Release version, for example: v0.2.14
+  --version <version>              Release version, for example: v0.2.15
   --release-base-url <url>         Base URL containing hashtree-<target>.tar.gz files
   --checksums-dir <dir>            Directory containing hashtree-<target>.sha256 files
 
@@ -27,9 +27,9 @@ Optional:
 
 Examples:
   packaging/homebrew/publish_tap.sh \
-    --version v0.2.14 \
-    --release-base-url https://upload.iris.to/<npub>/hashtree-releases/v0.2.14 \
-    --checksums-dir rust/dist/hashtree-v0.2.14
+    --version v0.2.15 \
+    --release-base-url https://upload.iris.to/<npub>/releases/hashtree/v0.2.15 \
+    --checksums-dir rust/dist/hashtree-v0.2.15
 EOF
 }
 

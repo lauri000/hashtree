@@ -11,9 +11,10 @@ hashtree, then publishes it into a mutable release tree.
 Options:
   --version <version>                 Release version label, for example: v0.2.3
   --version-path <path>              Published path inside the release tree (default: <version>)
-  --tree-name <name>                 Mutable release tree name (default: <repo>-releases)
+  --tree-name <name>                 Mutable release tree name (default: releases/<repo>)
   --homebrew-tap-repo <name>         Homebrew tap repo name (default: homebrew-<repo>)
   --skip-homebrew-tap                Skip updating the Homebrew tap
+  --cargo-publish                    Publish Rust crates to crates.io after releasing artifacts
   --output-dir <dir>                 Release directory to create/use
   --target-dir <dir>                 Cargo target dir to read/write
   --targets <csv>                    Comma-separated targets to build/package
@@ -36,9 +37,10 @@ REPO_NAME="$(basename "$REPO_DIR")"
 
 VERSION=""
 VERSION_PATH=""
-TREE_NAME="${REPO_NAME}-releases"
+TREE_NAME="releases/${REPO_NAME}"
 HOMEBREW_TAP_REPO="homebrew-${REPO_NAME}"
 SKIP_HOMEBREW_TAP=0
+CARGO_PUBLISH=0
 
 BUILD_ARGS=()
 
@@ -63,6 +65,10 @@ while [ $# -gt 0 ]; do
             ;;
         --skip-homebrew-tap)
             SKIP_HOMEBREW_TAP=1
+            shift
+            ;;
+        --cargo-publish)
+            CARGO_PUBLISH=1
             shift
             ;;
         --output-dir|--target-dir|--targets|--windows-artifacts-dir|--cargo-bin|--cross-bin)
@@ -161,4 +167,8 @@ if [ "$SKIP_HOMEBREW_TAP" -eq 0 ]; then
             echo "Warning: Homebrew tap update failed; release artifacts are still published." >&2
         fi
     fi
+fi
+
+if [ "$CARGO_PUBLISH" -eq 1 ]; then
+    "${SCRIPT_DIR}/publish.sh"
 fi
