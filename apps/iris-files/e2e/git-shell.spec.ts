@@ -15,10 +15,10 @@ async function assertCodeDropdown(page: import('@playwright/test').Page, repoNam
   expect(npubMatch).toBeTruthy();
   const expectedClone = `git clone htree://${npubMatch![0]}/public/${repoName}`;
 
-  const inputs = page.locator('.code-dropdown input[type="text"]');
-  await expect(inputs).toHaveCount(2, { timeout: 5000 });
-  await expect(inputs.nth(0)).toHaveValue(expectedClone);
-  await expect(inputs.nth(1)).toHaveValue(GIT_REMOTE_HTREE_INSTALL_COMMAND);
+  const fields = page.locator('.code-dropdown input[type="text"], .code-dropdown textarea');
+  await expect(fields).toHaveCount(2, { timeout: 5000 });
+  await expect(fields.nth(0)).toHaveValue(expectedClone);
+  await expect(fields.nth(1)).toHaveValue(GIT_REMOTE_HTREE_INSTALL_COMMAND);
   await expect(page.getByRole('link', { name: /install options/i })).toHaveAttribute(
     'href',
     GIT_REMOTE_HTREE_INSTALL_DOCS_URL,

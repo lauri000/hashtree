@@ -106,7 +106,7 @@
           <p class="text-xs text-text-3">
             First time using <code>htree://</code> URLs? Quick-install the prebuilt binaries once:
           </p>
-          <CopyInput text={GIT_REMOTE_HTREE_INSTALL_COMMAND} />
+          <CopyInput text={GIT_REMOTE_HTREE_INSTALL_COMMAND} multiline rows={4} />
           <p class="text-xs text-text-3">
             Prefer Cargo, Homebrew, or manual install? <a href={GIT_REMOTE_HTREE_INSTALL_DOCS_URL} target="_blank" rel="noopener" class="text-accent hover:underline">See install options</a>.
           </p>
