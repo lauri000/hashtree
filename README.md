@@ -40,9 +40,20 @@ Hashtree is the canonical remote for this repository:
 
 ## Installation
 
+### Quick install (prebuilt binaries)
+
+```bash
+curl -fsSL https://github.com/mmalmi/hashtree/releases/latest/download/hashtree-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/apple-darwin/' | sed 's/linux/unknown-linux-musl/').tar.gz | tar -xz && cd hashtree && ./install.sh
+```
+
+That installs `htree`, `htree-cashu`, and `git-remote-htree`.
+
 ### Cargo (supported today)
 
 ```bash
+# Git helper only (enables git clone/pull/push for htree:// URLs)
+cargo install git-remote-htree
+
 # CLI + daemon + git helper + Cashu helper
 cargo install hashtree-cli git-remote-htree hashtree-cashu-cli
 

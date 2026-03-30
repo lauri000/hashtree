@@ -1,7 +1,11 @@
 import { test, expect } from './fixtures';
 import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, gotoGitApp } from './test-utils.js';
+import {
+  GIT_REMOTE_HTREE_INSTALL_COMMAND,
+  GIT_REMOTE_HTREE_INSTALL_DOCS_URL,
+} from '../src/components/Git/codeDropdownCopy.js';
 
-async function assertCodeDropdown(page: any, repoName: string): Promise<void> {
+async function assertCodeDropdown(page: import('@playwright/test').Page, repoName: string): Promise<void> {
   const codeBtn = page.locator('.code-dropdown > button');
   await expect(codeBtn).toBeVisible({ timeout: 15000 });
   await codeBtn.click();
@@ -12,10 +16,13 @@ async function assertCodeDropdown(page: any, repoName: string): Promise<void> {
   const expectedClone = `git clone htree://${npubMatch![0]}/public/${repoName}`;
 
   const inputs = page.locator('.code-dropdown input[type="text"]');
-  await expect(inputs).toHaveCount(3, { timeout: 5000 });
+  await expect(inputs).toHaveCount(2, { timeout: 5000 });
   await expect(inputs.nth(0)).toHaveValue(expectedClone);
-  await expect(inputs.nth(1)).toHaveValue(/https:\/\/sh\.rustup\.rs/);
-  await expect(inputs.nth(2)).toHaveValue(/cargo install git-remote-htree/);
+  await expect(inputs.nth(1)).toHaveValue(GIT_REMOTE_HTREE_INSTALL_COMMAND);
+  await expect(page.getByRole('link', { name: /install options/i })).toHaveAttribute(
+    'href',
+    GIT_REMOTE_HTREE_INSTALL_DOCS_URL,
+  );
 }
 
 test.describe('Git code dropdown', () => {

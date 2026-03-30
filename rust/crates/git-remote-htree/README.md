@@ -5,6 +5,14 @@ Git remote helper for hashtree - push/pull git repos via Nostr and hashtree.
 ## Installation
 
 ```bash
+curl -fsSL https://github.com/mmalmi/hashtree/releases/latest/download/hashtree-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/apple-darwin/' | sed 's/linux/unknown-linux-musl/').tar.gz | tar -xz && cd hashtree && ./install.sh
+```
+
+That installs `htree`, `htree-cashu`, and `git-remote-htree`.
+
+Or install with Cargo:
+
+```bash
 cargo install hashtree-cli git-remote-htree
 ```
 

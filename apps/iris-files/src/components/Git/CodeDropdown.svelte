@@ -3,6 +3,10 @@
    * CodeDropdown - GitHub-style green "<> Code" button with clone instructions
    */
   import CopyInput from '../CopyInput.svelte';
+  import {
+    GIT_REMOTE_HTREE_INSTALL_COMMAND,
+    GIT_REMOTE_HTREE_INSTALL_DOCS_URL,
+  } from './codeDropdownCopy.js';
 
   interface Props {
     npub: string;
@@ -17,8 +21,6 @@
 
   // Build the git clone command
   let cloneCommand = $derived(`git clone htree://${npub}/${repoPath}`);
-  const rustCommand = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh";
-  const cargoCommand = "cargo install git-remote-htree";
 
   function handleClickOutside(event: MouseEvent) {
     const target = event.target as HTMLElement;
@@ -93,18 +95,21 @@
 
       <!-- Content -->
       <div class="p-3 space-y-3">
-        <CopyInput text={cloneCommand} />
-
-        <!-- Requirements -->
         <div class="space-y-2">
           <p class="text-xs text-text-3">
-            Requires <a href="https://rustup.rs" target="_blank" rel="noopener" class="text-accent hover:underline">Rust</a> and <code>git-remote-htree</code>.
+            Clone with Git:
           </p>
-          <CopyInput text={rustCommand} />
+          <CopyInput text={cloneCommand} />
+        </div>
+
+        <div class="space-y-2 pt-3 b-t b-surface-3 b-solid">
           <p class="text-xs text-text-3">
-            Or install the git helper via cargo:
+            First time using <code>htree://</code> URLs? Quick-install the prebuilt binaries once:
           </p>
-          <CopyInput text={cargoCommand} />
+          <CopyInput text={GIT_REMOTE_HTREE_INSTALL_COMMAND} />
+          <p class="text-xs text-text-3">
+            Prefer Cargo, Homebrew, or manual install? <a href={GIT_REMOTE_HTREE_INSTALL_DOCS_URL} target="_blank" rel="noopener" class="text-accent hover:underline">See install options</a>.
+          </p>
         </div>
       </div>
     </div>
