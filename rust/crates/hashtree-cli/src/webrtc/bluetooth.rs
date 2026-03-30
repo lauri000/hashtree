@@ -677,6 +677,9 @@ mod macos {
                         "Discovered BLE peripheral {} advertising htree service",
                         peripheral_id
                     );
+                    if let Err(err) = adapter.stop_scan().await {
+                        debug!("Failed to stop BLE scan before connecting to {}: {}", peripheral_id, err);
+                    }
                     match connect_peripheral(peripheral.clone()).await {
                         Ok(Some(link)) => {
                             let tracked_link = link.clone();
@@ -723,7 +726,22 @@ mod macos {
 
         if !peripheral.is_connected().await? {
             info!("Connecting to BLE peripheral {}", peripheral_id);
-            peripheral.connect().await?;
+            match tokio::time::timeout(Duration::from_secs(5), peripheral.connect()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => return Err(err.into()),
+                Err(_) => {
+                    let connected = peripheral.is_connected().await.unwrap_or(false);
+                    if !connected {
+                        warn!("BLE connect timed out for {} without establishing a link", peripheral_id);
+                        let _ = peripheral.disconnect().await;
+                        return Ok(None);
+                    }
+                    warn!(
+                        "BLE connect timed out for {} but the adapter reports it connected; continuing",
+                        peripheral_id
+                    );
+                }
+            }
         }
         let mut rx_char = None;
         let mut tx_char = None;

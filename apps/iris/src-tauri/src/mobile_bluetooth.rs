@@ -1,12 +1,14 @@
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use async_trait::async_trait;
 #[cfg(any(target_os = "android", target_os = "ios"))]
+use base64::Engine;
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use hashtree_cli::webrtc::{
     install_mobile_bluetooth_bridge, BluetoothFrame, BluetoothLink, MobileBluetoothBridge,
     PeerDirection, PendingBluetoothLink,
 };
 #[cfg(any(target_os = "android", target_os = "ios"))]
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -21,9 +23,14 @@ use tauri_plugin_iris_mobile_bluetooth::{
     MobileBluetooth, MobileBluetoothEvent, MobileBluetoothExt,
 };
 #[cfg(any(target_os = "android", target_os = "ios"))]
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Notify};
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use tokio::time::{self, Duration, MissedTickBehavior};
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use tracing::{info, warn};
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+const MOBILE_BLUETOOTH_RECONCILE_INTERVAL: Duration = Duration::from_millis(250);
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[derive(serde::Deserialize)]
@@ -133,17 +140,14 @@ where
     ) -> anyhow::Result<mpsc::Receiver<PendingBluetoothLink>> {
         let (pending_tx, pending_rx) = mpsc::channel::<PendingBluetoothLink>(32);
         let mut events = self.state.bluetooth.subscribe();
-        let state = self.state.clone();
-        let pending_tx_for_events = pending_tx.clone();
+        let reconcile_notify = Arc::new(Notify::new());
+        let reconcile_notify_for_events = reconcile_notify.clone();
         tokio::spawn(async move {
             loop {
                 match events.recv().await {
                     Ok(event) => {
-                        if let Err(error) =
-                            handle_mobile_event(state.clone(), &pending_tx_for_events, event).await
-                        {
-                            warn!("Mobile Bluetooth bridge event failed: {}", error);
-                        }
+                        log_mobile_hint(&event);
+                        reconcile_notify_for_events.notify_one();
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!("Mobile Bluetooth bridge lagged by {} events", skipped);
@@ -170,89 +174,146 @@ where
             info!("Mobile Bluetooth bridge start command accepted");
         }
 
-        let peers = self
-            .state
-            .bluetooth
-            .list_peers()
-            .map_err(anyhow::Error::msg)?;
-        let ready_peers = peers
-            .into_iter()
-            .filter(|peer| peer.ready)
-            .collect::<Vec<_>>();
-        info!(
-            "Mobile Bluetooth bridge seeded {} ready peer(s) from listPeers()",
-            ready_peers.len()
-        );
-        for peer in ready_peers {
-            // On cold start the mobile BLE plugin may already have a subscribed
-            // device before the Rust bridge subscribes. Only seed peers that are
-            // already ready for notifications; connected-but-not-ready devices
-            // can otherwise consume the one pending-link attempt too early.
-            emit_pending_link(self.state.clone(), &pending_tx, peer.address).await;
-        }
+        reconcile_mobile_transport(self.state.clone(), &pending_tx).await?;
+        let state = self.state.clone();
+        let pending_tx_for_reconcile = pending_tx.clone();
+        let reconcile_notify_for_loop = reconcile_notify.clone();
+        tokio::spawn(async move {
+            let mut interval = time::interval(MOBILE_BLUETOOTH_RECONCILE_INTERVAL);
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    _ = reconcile_notify_for_loop.notified() => {}
+                }
+                if let Err(error) =
+                    reconcile_mobile_transport(state.clone(), &pending_tx_for_reconcile).await
+                {
+                    warn!("Mobile Bluetooth bridge reconcile failed: {}", error);
+                }
+            }
+        });
 
         Ok(pending_rx)
     }
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
-async fn handle_mobile_event<R: Runtime>(
+async fn reconcile_mobile_transport<R: Runtime>(
     state: Arc<BridgeState<R>>,
     pending_tx: &mpsc::Sender<PendingBluetoothLink>,
-    event: MobileBluetoothEvent,
 ) -> anyhow::Result<()> {
-    match event {
-        MobileBluetoothEvent::PeerConnected { address } => {
-            state.ensure_link(&address).await;
-            info!("Mobile BLE peer connected: {}", address);
-        }
-        MobileBluetoothEvent::PeerReady { address } => {
-            info!("Mobile BLE peer ready: {}", address);
-            emit_pending_link(state.clone(), pending_tx, address).await;
-        }
-        MobileBluetoothEvent::PeerDisconnected { address } => {
-            if let Some(link) = state.remove_link(&address).await {
-                let _ = link.close().await;
-            }
-            info!("Mobile BLE peer disconnected: {}", address);
-        }
-        MobileBluetoothEvent::Frame {
-            address,
-            kind,
-            payload,
-        } => {
-            let mut promote_on_frame = false;
-            let frame = match kind.as_str() {
-                "text" => match String::from_utf8(payload) {
-                    Ok(text) => {
-                        promote_on_frame = is_bluetooth_hello_text(&text);
-                        BluetoothFrame::Text(text)
-                    }
-                    Err(error) => {
-                        warn!(
-                            "Discarding invalid UTF-8 BLE text frame from {}: {}",
-                            address, error
-                        );
-                        return Ok(());
-                    }
-                },
-                "binary" => BluetoothFrame::Binary(payload),
-                other => {
-                    warn!(
-                        "Discarding unknown BLE frame kind from {}: {}",
-                        address, other
-                    );
-                    return Ok(());
-                }
-            };
-            state.ensure_link(&address).await.enqueue(frame).await;
-            if promote_on_frame {
-                info!("Mobile BLE hello frame received from {}", address);
-                emit_pending_link(state.clone(), pending_tx, address).await;
-            }
+    let snapshot = state
+        .bluetooth
+        .poll_transport()
+        .map_err(anyhow::Error::msg)?;
+    let connected_addresses = snapshot
+        .peers
+        .iter()
+        .map(|peer| peer.address.clone())
+        .collect::<HashSet<_>>();
+    for peer in snapshot.peers {
+        state.ensure_link(&peer.address).await;
+        if peer.ready {
+            emit_pending_link(state.clone(), pending_tx, peer.address).await;
         }
     }
+
+    for frame in snapshot.frames {
+        if !connected_addresses.contains(&frame.address) {
+            continue;
+        }
+        handle_drained_frame(
+            state.clone(),
+            pending_tx,
+            frame.address,
+            frame.kind,
+            frame.payload_base64,
+        )
+        .await?;
+    }
+
+    let stale_addresses = {
+        let links = state.links.lock().await;
+        links
+            .keys()
+            .filter(|address| !connected_addresses.contains(*address))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    for address in stale_addresses {
+        if let Some(link) = state.remove_link(&address).await {
+            let _ = link.close().await;
+        }
+    }
+
     Ok(())
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+async fn handle_drained_frame<R: Runtime>(
+    state: Arc<BridgeState<R>>,
+    pending_tx: &mpsc::Sender<PendingBluetoothLink>,
+    address: String,
+    kind: String,
+    payload_base64: String,
+) -> anyhow::Result<()> {
+    let payload = match base64::engine::general_purpose::STANDARD.decode(payload_base64) {
+        Ok(payload) => payload,
+        Err(error) => {
+            warn!(
+                "Discarding invalid base64 BLE frame from {}: {}",
+                address, error
+            );
+            return Ok(());
+        }
+    };
+    let mut promote_on_frame = false;
+    let frame = match kind.as_str() {
+        "text" => match String::from_utf8(payload) {
+            Ok(text) => {
+                promote_on_frame = is_bluetooth_hello_text(&text);
+                BluetoothFrame::Text(text)
+            }
+            Err(error) => {
+                warn!(
+                    "Discarding invalid UTF-8 BLE text frame from {}: {}",
+                    address, error
+                );
+                return Ok(());
+            }
+        },
+        "binary" => BluetoothFrame::Binary(payload),
+        other => {
+            warn!(
+                "Discarding unknown BLE frame kind from {}: {}",
+                address, other
+            );
+            return Ok(());
+        }
+    };
+    state.ensure_link(&address).await.enqueue(frame).await;
+    if promote_on_frame {
+        info!("Mobile BLE hello frame received from {}", address);
+        emit_pending_link(state.clone(), pending_tx, address).await;
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn log_mobile_hint(event: &MobileBluetoothEvent) {
+    match event {
+        MobileBluetoothEvent::PeerConnected { address } => {
+            info!("Mobile BLE peer connected hint: {}", address);
+        }
+        MobileBluetoothEvent::PeerReady { address } => {
+            info!("Mobile BLE peer ready hint: {}", address);
+        }
+        MobileBluetoothEvent::PeerDisconnected { address } => {
+            info!("Mobile BLE peer disconnected hint: {}", address);
+        }
+    }
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]

@@ -16,6 +16,8 @@ import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Base64
 import android.util.Log
@@ -29,6 +31,7 @@ import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.json.JSONArray
@@ -39,6 +42,7 @@ private val RX_UUID: UUID = UUID.fromString("0bb5f5c9-6369-4511-a84f-4d4c14d8f8d
 private val TX_UUID: UUID = UUID.fromString("4ec9c0c2-97c6-4f46-9fd1-927d699b2f6d")
 private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 private const val CHUNK_BYTES: Int = 180
+private const val UNREADY_DISCONNECT_DELAY_MS: Long = 2500
 
 @InvokeArg
 class StartArgs {
@@ -53,6 +57,8 @@ class SendArgs {
 }
 
 private data class DecodedFrame(val kind: String, val payload: ByteArray)
+
+private data class QueuedFrame(val address: String, val kind: String, val payloadBase64: String)
 
 private class FrameDecoder {
     private val buffer = ArrayList<Byte>()
@@ -109,6 +115,9 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
     private val devices = ConcurrentHashMap<String, BluetoothDevice>()
     private val subscribed = ConcurrentHashMap.newKeySet<String>()
     private val decoders = ConcurrentHashMap<String, FrameDecoder>()
+    private val drainedFrames = ConcurrentLinkedQueue<QueuedFrame>()
+    private val pendingDisconnects = ConcurrentHashMap<String, Runnable>()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val advertiseCallback = object : AdvertiseCallback() {}
     private var bluetoothActive = false
 
@@ -140,9 +149,11 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
                         Log.d(TAG, "BLE device connected: $address")
                         devices[address] = device
                         decoders[address] = FrameDecoder()
+                        scheduleUnreadyDisconnect(address, device, "startup-timeout")
                         triggerAddress("peer-connected", address)
                     } else if (newState == android.bluetooth.BluetoothProfile.STATE_DISCONNECTED) {
                         Log.d(TAG, "BLE device disconnected: $address")
+                        cancelPendingDisconnect(address)
                         devices.remove(address)
                         subscribed.remove(address)
                         decoders.remove(address)
@@ -200,6 +211,7 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
                     if (descriptor.uuid == CCCD_UUID && value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) {
                         Log.d(TAG, "Notifications enabled for ${device.address}")
                         subscribed.add(device.address)
+                        cancelPendingDisconnect(device.address)
                         sendHello(device)
                         triggerAddress("peer-ready", device.address)
                     }
@@ -274,7 +286,6 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
                 advertiseCallback,
             )
 
-            disconnectUnreadyDevices("gatt-restart")
             bluetoothActive = true
             Log.i(TAG, "Bluetooth advertising and GATT server started")
             invoke.resolve()
@@ -321,18 +332,9 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
     }
 
     @Command
-    fun listPeers(invoke: Invoke) {
-        Log.i(TAG, "listPeers returning ${devices.size} device(s); ready=${subscribed.size}")
-        val peers = JSONArray()
-        devices.keys.sorted().forEach { address ->
-            val peer = JSObject()
-            peer.put("address", address)
-            peer.put("ready", subscribed.contains(address))
-            peers.put(peer)
-        }
-        val payload = JSObject()
-        payload.put("peers", peers)
-        invoke.resolve(payload)
+    fun pollTransport(invoke: Invoke) {
+        Log.i(TAG, "pollTransport returning ${devices.size} device(s); ready=${subscribed.size}")
+        invoke.resolve(buildTransportPollPayload())
     }
 
     override fun onDestroy() {
@@ -357,11 +359,8 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
     }
 
     private fun triggerFrame(address: String, kind: String, payloadBytes: ByteArray) {
-        val payload = JSObject()
-        payload.put("address", address)
-        payload.put("kind", kind)
-        payload.put("payloadBase64", Base64.encodeToString(payloadBytes, Base64.NO_WRAP))
-        trigger("frame", payload)
+        val payloadBase64 = Base64.encodeToString(payloadBytes, Base64.NO_WRAP)
+        drainedFrames.add(QueuedFrame(address, kind, payloadBase64))
     }
 
     private fun stopInternal() {
@@ -378,6 +377,40 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
         devices.clear()
         subscribed.clear()
         decoders.clear()
+        drainedFrames.clear()
+        pendingDisconnects.values.forEach { mainHandler.removeCallbacks(it) }
+        pendingDisconnects.clear()
+    }
+
+    private fun buildTransportPollPayload(): JSObject {
+        val payload = JSObject()
+        payload.put("peers", buildPeerSnapshots())
+        payload.put("frames", drainQueuedFrames())
+        return payload
+    }
+
+    private fun buildPeerSnapshots(): JSONArray {
+        val peers = JSONArray()
+        devices.keys.sorted().forEach { address ->
+            val peer = JSObject()
+            peer.put("address", address)
+            peer.put("ready", subscribed.contains(address))
+            peers.put(peer)
+        }
+        return peers
+    }
+
+    private fun drainQueuedFrames(): JSONArray {
+        val frames = JSONArray()
+        while (true) {
+            val frame = drainedFrames.poll() ?: break
+            val payload = JSObject()
+            payload.put("address", frame.address)
+            payload.put("kind", frame.kind)
+            payload.put("payloadBase64", frame.payloadBase64)
+            frames.put(payload)
+        }
+        return frames
     }
 
     private fun disconnectUnreadyDevices(reason: String) {
@@ -395,6 +428,33 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
                     Log.w(TAG, "Failed to cancel BLE connection for $address", error)
                 }
             }
+    }
+
+    private fun scheduleUnreadyDisconnect(address: String, device: BluetoothDevice, reason: String) {
+        cancelPendingDisconnect(address)
+        val disconnectTask =
+            Runnable {
+                if (!bluetoothActive || subscribed.contains(address)) {
+                    pendingDisconnects.remove(address)
+                    return@Runnable
+                }
+                Log.i(TAG, "Disconnecting BLE device $address after readiness timeout ($reason)")
+                try {
+                    gattServer?.cancelConnection(device)
+                } catch (error: Exception) {
+                    Log.w(TAG, "Failed to cancel BLE connection for $address", error)
+                } finally {
+                    pendingDisconnects.remove(address)
+                }
+            }
+        pendingDisconnects[address] = disconnectTask
+        mainHandler.postDelayed(disconnectTask, UNREADY_DISCONNECT_DELAY_MS)
+    }
+
+    private fun cancelPendingDisconnect(address: String) {
+        pendingDisconnects.remove(address)?.let { pending ->
+            mainHandler.removeCallbacks(pending)
+        }
     }
 
     @Suppress("DEPRECATION")

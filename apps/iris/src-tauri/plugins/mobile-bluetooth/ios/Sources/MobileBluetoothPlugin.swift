@@ -27,8 +27,9 @@ private struct PeerSnapshot: Encodable {
   let ready: Bool
 }
 
-private struct PeerSnapshotResponse: Encodable {
+private struct TransportPollResponse: Encodable {
   let peers: [PeerSnapshot]
+  let frames: [FrameEvent]
 }
 
 private struct DecodedFrame {
@@ -136,6 +137,7 @@ class MobileBluetoothPlugin: Plugin, CBPeripheralManagerDelegate {
   private var peers = [String: CBCentral]()
   private var readyPeers = Set<String>()
   private var decoders = [String: FrameDecoder]()
+  private var drainedFrames = [FrameEvent]()
   private var pendingSends = [PendingSend]()
   private var pendingStartInvoke: Invoke?
 
@@ -178,12 +180,14 @@ class MobileBluetoothPlugin: Plugin, CBPeripheralManagerDelegate {
     }
   }
 
-  @objc public func listPeers(_ invoke: Invoke) throws {
+  @objc public func pollTransport(_ invoke: Invoke) throws {
     DispatchQueue.main.async {
       let peers = self.peers.keys.sorted().map { address in
         PeerSnapshot(address: address, ready: self.readyPeers.contains(address))
       }
-      invoke.resolve(PeerSnapshotResponse(peers: peers))
+      let frames = self.drainedFrames
+      self.drainedFrames.removeAll(keepingCapacity: true)
+      invoke.resolve(TransportPollResponse(peers: peers, frames: frames))
     }
   }
 
@@ -407,6 +411,7 @@ class MobileBluetoothPlugin: Plugin, CBPeripheralManagerDelegate {
     peers.removeAll()
     readyPeers.removeAll()
     decoders.removeAll()
+    drainedFrames.removeAll(keepingCapacity: false)
 
     if rejectPendingSends {
       rejectAllPendingSends("Bluetooth stopped")
@@ -511,9 +516,8 @@ class MobileBluetoothPlugin: Plugin, CBPeripheralManagerDelegate {
   }
 
   private func triggerFrame(address: String, kind: String, payload: Data) {
-    try? trigger(
-      "frame",
-      data: FrameEvent(address: address, kind: kind, payloadBase64: payload.base64EncodedString())
+    drainedFrames.append(
+      FrameEvent(address: address, kind: kind, payloadBase64: payload.base64EncodedString())
     )
   }
 }

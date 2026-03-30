@@ -31,11 +31,6 @@ pub enum MobileBluetoothEvent {
     PeerDisconnected {
         address: String,
     },
-    Frame {
-        address: String,
-        kind: String,
-        payload: Vec<u8>,
-    },
 }
 
 pub struct MobileBluetooth<R: Runtime> {
@@ -86,15 +81,6 @@ struct AddressPayload {
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct FramePayload {
-    address: String,
-    kind: String,
-    payload_base64: String,
-}
-
-#[cfg(any(target_os = "android", target_os = "ios"))]
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct PeerSnapshot {
     pub address: String,
     pub ready: bool,
@@ -103,8 +89,18 @@ pub struct PeerSnapshot {
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PeerSnapshotResponse {
-    peers: Vec<PeerSnapshot>,
+pub struct DrainedFrame {
+    pub address: String,
+    pub kind: String,
+    pub payload_base64: String,
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransportPoll {
+    pub peers: Vec<PeerSnapshot>,
+    pub frames: Vec<DrainedFrame>,
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -128,7 +124,7 @@ fn register_native_listeners<R: Runtime>(
 ) -> tauri::Result<()> {
     let tx = bluetooth.events.clone();
     let handle = bluetooth.handle.clone();
-    for event_name in ["peer-connected", "peer-ready", "peer-disconnected", "frame"] {
+    for event_name in ["peer-connected", "peer-ready", "peer-disconnected"] {
         let tx = tx.clone();
         handle.run_mobile_plugin::<()>(
             "registerListener",
@@ -152,22 +148,6 @@ fn register_native_listeners<R: Runtime>(
                             let payload = decode_channel_payload::<AddressPayload>(body)?;
                             let _ = tx.send(MobileBluetoothEvent::PeerDisconnected {
                                 address: payload.address,
-                            });
-                        }
-                        "frame" => {
-                            let payload = decode_channel_payload::<FramePayload>(body)?;
-                            let decoded = base64::engine::general_purpose::STANDARD
-                                .decode(payload.payload_base64)
-                                .map_err(|error| {
-                                    tauri::Error::PluginInitialization(
-                                        "iris-mobile-bluetooth".to_string(),
-                                        format!("decode frame payload: {}", error),
-                                    )
-                                })?;
-                            let _ = tx.send(MobileBluetoothEvent::Frame {
-                                address: payload.address,
-                                kind: payload.kind,
-                                payload: decoded,
                             });
                         }
                         _ => {}
@@ -242,16 +222,14 @@ impl<R: Runtime> MobileBluetooth<R> {
     }
 
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    pub fn list_peers(&self) -> Result<Vec<PeerSnapshot>, String> {
-        let response = self
-            .handle
-            .run_mobile_plugin::<PeerSnapshotResponse>("listPeers", serde_json::json!({}))
-            .map_err(|error| error.to_string())?;
-        Ok(response.peers)
+    pub fn poll_transport(&self) -> Result<TransportPoll, String> {
+        self.handle
+            .run_mobile_plugin::<TransportPoll>("pollTransport", serde_json::json!({}))
+            .map_err(|error| error.to_string())
     }
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    pub fn list_peers(&self) -> Result<Vec<()>, String> {
+    pub fn poll_transport(&self) -> Result<Vec<()>, String> {
         Ok(Vec::new())
     }
 
