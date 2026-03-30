@@ -1271,6 +1271,7 @@ pub fn run() {
             nip07::show_native_nip07_permission_dialog,
             nip07::webview_event,
             pwa::install_site_pwa,
+            pwa::cache_bookmark_icon,
             history::record_history_visit,
             history::search_history,
             history::get_recent_history,

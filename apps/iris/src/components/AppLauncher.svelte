@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { bookmarkDisplayName, suggestedApps, type AppBookmark } from '../lib/apps';
+  import { bookmarkDisplayName, isRemoteIconUrl, suggestedApps, type AppBookmark } from '../lib/apps';
   import { appsStore } from '../stores/apps';
   import { dismissedSuggestionsStore } from '../stores/dismissedSuggestions';
 
@@ -63,6 +63,20 @@
   function favoriteName(app: AppBookmark): string {
     return bookmarkDisplayName(app);
   }
+
+  let failedIconUrls = $state<Set<string>>(new Set());
+
+  function markIconFailed(iconUrl?: string) {
+    if (!iconUrl || failedIconUrls.has(iconUrl)) return;
+    const next = new Set(failedIconUrls);
+    next.add(iconUrl);
+    failedIconUrls = next;
+  }
+
+  function usableIcon(iconUrl?: string): string | null {
+    if (!iconUrl || failedIconUrls.has(iconUrl) || isRemoteIconUrl(iconUrl)) return null;
+    return iconUrl;
+  }
 </script>
 
 <div class="flex-1 overflow-auto p-8 md:p-12">
@@ -76,6 +90,7 @@
         <div class="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-4">
           {#each favorites as app (app.url)}
             {@const displayName = favoriteName(app)}
+            {@const iconUrl = usableIcon(app.icon)}
             <div class="group relative">
               <button
                 class="w-full flex flex-col items-center gap-2"
@@ -84,12 +99,18 @@
               >
                 <div
                   class={`w-14 h-14 rounded-xl flex items-center justify-center text-white text-xl font-semibold shadow-lg hover:scale-105 transition-transform ${
-                    app.icon ? '' : getColor(displayName)
+                    iconUrl ? '' : getColor(displayName)
                   }`}
                   data-testid={`favorite-icon-${slugifyName(displayName)}`}
                 >
-                  {#if app.icon}
-                    <img src={app.icon} alt="" class="w-14 h-14 rounded-xl" />
+                  {#if iconUrl}
+                    <img
+                      src={iconUrl}
+                      alt=""
+                      class="w-14 h-14 rounded-xl object-cover"
+                      loading="lazy"
+                      onerror={() => markIconFailed(iconUrl)}
+                    />
                   {:else}
                     {getInitial(displayName)}
                   {/if}
@@ -127,6 +148,7 @@
       {:else}
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
           {#each visibleSuggestions as app (app.url)}
+            {@const iconUrl = usableIcon(app.icon)}
             <div
               class="group flex items-center gap-3 rounded-2xl bg-surface-1 px-3 py-3 transition-colors hover:bg-surface-2"
               data-testid={`suggestion-card-${slugifyName(app.name)}`}
@@ -137,8 +159,14 @@
                 onclick={() => openApp(app)}
               >
                 <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface-2">
-                  {#if app.icon}
-                    <img src={app.icon} alt="" class="h-7 w-7 rounded-lg" />
+                  {#if iconUrl}
+                    <img
+                      src={iconUrl}
+                      alt=""
+                      class="h-7 w-7 rounded-lg object-cover"
+                      loading="lazy"
+                      onerror={() => markIconFailed(iconUrl)}
+                    />
                   {:else}
                     <span class="text-lg font-semibold text-text-2">{getInitial(app.name)}</span>
                   {/if}

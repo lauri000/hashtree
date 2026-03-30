@@ -1996,6 +1996,7 @@
     } catch (error) {
       console.warn('[Iris] deep-link initialization failed:', error);
     }
+    appsStore.cacheRemoteIcons();
     await loadNip07Accounts();
     await pollNip07PermissionQueue();
     permissionPromptPollTimer = setInterval(() => {

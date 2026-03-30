@@ -6,6 +6,7 @@ use reqwest::{Client, Url};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 use tauri::State;
 
@@ -66,6 +67,31 @@ pub async fn install_site_pwa(
         .map_err(|error| format!("Failed to install site PWA: {error}"))
 }
 
+#[tauri::command]
+pub async fn cache_bookmark_icon(
+    state: State<'_, Arc<PwaInstallState>>,
+    source_url: Option<String>,
+    source_manifest_url: Option<String>,
+    icon_url: Option<String>,
+) -> Result<Option<String>, String> {
+    let store = {
+        state
+            .store
+            .read()
+            .clone()
+            .ok_or_else(|| "Embedded daemon is not ready yet".to_string())?
+    };
+
+    cache_bookmark_icon_to_store(
+        store.as_ref(),
+        source_url.as_deref(),
+        source_manifest_url.as_deref(),
+        icon_url.as_deref(),
+    )
+    .await
+    .map_err(|error| format!("Failed to cache bookmark icon: {error}"))
+}
+
 async fn install_site_pwa_to_store(store: &HashtreeStore, url: &str) -> Result<InstalledSitePwa> {
     let fetched = fetch_pwa(url).await.context("fetch installable PWA")?;
     let root_cid = store_pwa_assets(store, &fetched.assets)
@@ -92,11 +118,43 @@ async fn install_site_pwa_to_store(store: &HashtreeStore, url: &str) -> Result<I
     })
 }
 
-async fn fetch_pwa(url: &str) -> Result<FetchedPwa> {
-    let client = Client::builder()
+async fn cache_bookmark_icon_to_store(
+    store: &HashtreeStore,
+    source_url: Option<&str>,
+    source_manifest_url: Option<&str>,
+    icon_url: Option<&str>,
+) -> Result<Option<String>> {
+    let client = build_reqwest_client()?;
+
+    match cache_manifest_icon_to_store(store, &client, source_url, source_manifest_url).await {
+        Ok(Some(cached_icon)) => return Ok(Some(cached_icon)),
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!("Failed to cache manifest-derived bookmark icon: {}", error);
+        }
+    }
+
+    let Some(icon_url) = icon_url.filter(|value| is_http_url(value)) else {
+        return Ok(None);
+    };
+    match cache_direct_icon_to_store(store, &client, icon_url).await {
+        Ok(cached_icon) => Ok(Some(cached_icon)),
+        Err(error) => {
+            tracing::warn!("Failed to cache direct bookmark icon {}: {}", icon_url, error);
+            Ok(None)
+        }
+    }
+}
+
+fn build_reqwest_client() -> Result<Client> {
+    Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()
-        .context("build reqwest client")?;
+        .context("build reqwest client")
+}
+
+async fn fetch_pwa(url: &str) -> Result<FetchedPwa> {
+    let client = build_reqwest_client()?;
 
     let html_response = client
         .get(url)
@@ -238,6 +296,140 @@ async fn fetch_pwa(url: &str) -> Result<FetchedPwa> {
         icon_path,
         assets,
     })
+}
+
+async fn cache_manifest_icon_to_store(
+    store: &HashtreeStore,
+    client: &Client,
+    source_url: Option<&str>,
+    source_manifest_url: Option<&str>,
+) -> Result<Option<String>> {
+    let Some((manifest, manifest_url)) =
+        fetch_manifest_for_icon(client, source_url, source_manifest_url).await?
+    else {
+        return Ok(None);
+    };
+    let Some(icon_url) = pick_manifest_icon_url(&manifest, &manifest_url) else {
+        return Ok(None);
+    };
+    cache_icon_url_to_store(store, client, &icon_url)
+        .await
+        .map(Some)
+}
+
+async fn fetch_manifest_for_icon(
+    client: &Client,
+    source_url: Option<&str>,
+    source_manifest_url: Option<&str>,
+) -> Result<Option<(Value, Url)>> {
+    if let Some(manifest_url) = source_manifest_url.filter(|value| is_http_url(value)) {
+        return fetch_manifest_json(client, manifest_url).await.map(Some);
+    }
+
+    let Some(source_url) = source_url.filter(|value| is_http_url(value)) else {
+        return Ok(None);
+    };
+
+    let html_response = client
+        .get(source_url)
+        .send()
+        .await
+        .with_context(|| format!("fetch page {source_url}"))?;
+    let html_response = html_response
+        .error_for_status()
+        .with_context(|| format!("fetch page {source_url}"))?;
+    let base_url = html_response.url().clone();
+    let html = html_response
+        .text()
+        .await
+        .with_context(|| format!("read page body {}", base_url))?;
+    let Some(manifest_reference) = extract_manifest_reference(&html, &base_url) else {
+        return Ok(None);
+    };
+
+    fetch_manifest_json(client, manifest_reference.resolved_url.as_str())
+        .await
+        .map(Some)
+}
+
+async fn fetch_manifest_json(client: &Client, manifest_url: &str) -> Result<(Value, Url)> {
+    let parsed_manifest_url =
+        Url::parse(manifest_url).with_context(|| format!("parse manifest url {manifest_url}"))?;
+    let manifest_response = client
+        .get(parsed_manifest_url.clone())
+        .send()
+        .await
+        .with_context(|| format!("fetch manifest {parsed_manifest_url}"))?;
+    let manifest_response = manifest_response
+        .error_for_status()
+        .with_context(|| format!("fetch manifest {parsed_manifest_url}"))?;
+    let resolved_manifest_url = manifest_response.url().clone();
+    let manifest: Value = manifest_response
+        .json()
+        .await
+        .with_context(|| format!("parse manifest JSON {}", resolved_manifest_url))?;
+    Ok((manifest, resolved_manifest_url))
+}
+
+async fn cache_direct_icon_to_store(
+    store: &HashtreeStore,
+    client: &Client,
+    icon_url: &str,
+) -> Result<String> {
+    let parsed_icon_url =
+        Url::parse(icon_url).with_context(|| format!("parse icon url {icon_url}"))?;
+    cache_icon_url_to_store(store, client, &parsed_icon_url).await
+}
+
+async fn cache_icon_url_to_store(
+    store: &HashtreeStore,
+    client: &Client,
+    icon_url: &Url,
+) -> Result<String> {
+    if !matches!(icon_url.scheme(), "http" | "https") {
+        return Err(anyhow!("icon URL must use http:// or https://"));
+    }
+
+    let response = client
+        .get(icon_url.clone())
+        .send()
+        .await
+        .with_context(|| format!("fetch icon {icon_url}"))?;
+    let response = response
+        .error_for_status()
+        .with_context(|| format!("fetch icon {icon_url}"))?;
+    let resolved_icon_url = response.url().clone();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let bytes = response
+        .bytes()
+        .await
+        .with_context(|| format!("read icon body {resolved_icon_url}"))?;
+
+    if !looks_like_image_payload(&content_type, &bytes) {
+        return Err(anyhow!("icon response was not an image"));
+    }
+
+    let icon_path = icon_asset_path(&resolved_icon_url, &content_type, &bytes);
+    let root_cid = store_pwa_assets(
+        store,
+        &[PwaAsset {
+            path: icon_path.clone(),
+            data: bytes.to_vec(),
+        }],
+    )
+    .await
+    .context("store bookmark icon in hashtree")?;
+    store
+        .pin(&root_cid.hash)
+        .context("pin cached bookmark icon")?;
+
+    let nhash = nhash_encode(&root_cid.hash).context("encode cached bookmark icon root")?;
+    Ok(format!("htree://{nhash}{}", absolute_tree_path(&icon_path)))
 }
 
 async fn fetch_asset(
@@ -403,7 +595,7 @@ fn extract_manifest_icon_urls(manifest: &Value, manifest_url: &Url) -> Vec<Url> 
         .collect()
 }
 
-fn pick_manifest_icon_path(manifest: &Value, manifest_url: &Url) -> Option<String> {
+fn pick_manifest_icon_url(manifest: &Value, manifest_url: &Url) -> Option<Url> {
     let icons = manifest.get("icons")?.as_array()?;
     let icon = icons
         .iter()
@@ -417,7 +609,11 @@ fn pick_manifest_icon_path(manifest: &Value, manifest_url: &Url) -> Option<Strin
             Some((src, size))
         })
         .max_by(|(_, left), (_, right)| left.cmp(right))?;
-    let resolved = manifest_url.join(icon.0).ok()?;
+    manifest_url.join(icon.0).ok()
+}
+
+fn pick_manifest_icon_path(manifest: &Value, manifest_url: &Url) -> Option<String> {
+    let resolved = pick_manifest_icon_url(manifest, manifest_url)?;
     Some(url_to_path(&resolved, manifest_url))
 }
 
@@ -537,6 +733,100 @@ fn rewrite_css_urls(css: &str, css_path: &str, css_url: &Url, base_url: &Url) ->
 
     output.push_str(&css[cursor..]);
     output
+}
+
+fn is_http_url(value: &str) -> bool {
+    Url::parse(value)
+        .ok()
+        .map(|url| matches!(url.scheme(), "http" | "https"))
+        .unwrap_or(false)
+}
+
+fn looks_like_image_payload(content_type: &str, bytes: &[u8]) -> bool {
+    let normalized_content_type = content_type
+        .split(';')
+        .next()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if normalized_content_type.starts_with("image/") {
+        return true;
+    }
+
+    bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])
+        || bytes.starts_with(&[0xFF, 0xD8, 0xFF])
+        || bytes.starts_with(b"GIF87a")
+        || bytes.starts_with(b"GIF89a")
+        || bytes.starts_with(&[0x00, 0x00, 0x01, 0x00])
+        || bytes.starts_with(&[0x00, 0x00, 0x02, 0x00])
+        || (bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP")
+        || bytes_trimmed_starts_with_svg(bytes)
+}
+
+fn bytes_trimmed_starts_with_svg(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let trimmed = text.trim_start_matches(|ch: char| ch.is_whitespace() || ch == '\u{FEFF}');
+    trimmed.starts_with("<svg")
+        || (trimmed.starts_with("<?xml") && trimmed.contains("<svg"))
+}
+
+fn icon_asset_path(icon_url: &Url, content_type: &str, bytes: &[u8]) -> String {
+    let mut path = url_to_path(icon_url, icon_url);
+    let has_extension = Path::new(&path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| !value.is_empty())
+        .unwrap_or(false);
+
+    if !has_extension {
+        let extension = infer_icon_extension(content_type, bytes).unwrap_or("bin");
+        if path == "index.html" {
+            path = format!("icon.{extension}");
+        } else {
+            path = format!("{path}.{extension}");
+        }
+    }
+
+    path
+}
+
+fn infer_icon_extension<'a>(content_type: &'a str, bytes: &'a [u8]) -> Option<&'static str> {
+    let normalized_content_type = content_type
+        .split(';')
+        .next()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if normalized_content_type == "image/png" || bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        return Some("png");
+    }
+    if normalized_content_type == "image/jpeg" || bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("jpg");
+    }
+    if normalized_content_type == "image/gif"
+        || bytes.starts_with(b"GIF87a")
+        || bytes.starts_with(b"GIF89a")
+    {
+        return Some("gif");
+    }
+    if normalized_content_type == "image/webp"
+        || (bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP")
+    {
+        return Some("webp");
+    }
+    if normalized_content_type == "image/svg+xml" || bytes_trimmed_starts_with_svg(bytes) {
+        return Some("svg");
+    }
+    if normalized_content_type == "image/x-icon"
+        || normalized_content_type == "image/vnd.microsoft.icon"
+        || bytes.starts_with(&[0x00, 0x00, 0x01, 0x00])
+        || bytes.starts_with(&[0x00, 0x00, 0x02, 0x00])
+    {
+        return Some("ico");
+    }
+    None
 }
 
 fn extract_manifest_reference(html: &str, base_url: &Url) -> Option<AssetReference> {

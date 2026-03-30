@@ -24,7 +24,7 @@ async function emitPwaDiagnostic(page: import('@playwright/test').Page) {
     title: 'Jumble',
     manifestUrl: 'https://jumble.social/manifest.webmanifest',
     manifestName: 'Jumble',
-    manifestIconUrl: 'https://jumble.social/icon-192.png',
+    manifestIconUrl: 'https://jumble.social/pwa-192x192.png',
   });
 }
 
@@ -76,7 +76,7 @@ test.describe('PWA install', () => {
     await setTauriCommandResult(page, 'install_site_pwa', {
       name: 'Jumble',
       launchUrl: 'htree://nhash1jumble/index.html',
-      iconUrl: 'htree://nhash1jumble/icon-192.png',
+      iconUrl: 'htree://nhash1jumble/pwa-192x192.png',
       sourceUrl: 'https://jumble.social/',
       sourceManifestUrl: 'https://jumble.social/manifest.webmanifest',
       sourceAppId: null,
@@ -97,7 +97,7 @@ test.describe('PWA install', () => {
     expect(installedApps[0]).toMatchObject({
       name: 'Jumble',
       url: 'htree://nhash1jumble/index.html',
-      icon: 'htree://nhash1jumble/icon-192.png',
+      icon: 'htree://nhash1jumble/pwa-192x192.png',
       sourceUrl: 'https://jumble.social/',
       sourceManifestUrl: 'https://jumble.social/manifest.webmanifest',
     });
@@ -119,7 +119,7 @@ test.describe('PWA install', () => {
     await setTauriCommandResult(page, 'install_site_pwa', {
       name: 'Jumble',
       launchUrl: 'htree://nhash1jumble-new/index.html',
-      iconUrl: 'htree://nhash1jumble-new/icon-192.png',
+      iconUrl: 'htree://nhash1jumble-new/pwa-192x192.png',
       sourceAppId: 'https://jumble.social/app',
       sourceUrl: 'https://jumble.social/',
       sourceManifestUrl: 'https://jumble.social/manifest.webmanifest',
@@ -138,7 +138,7 @@ test.describe('PWA install', () => {
     expect(installedApps[0]).toMatchObject({
       name: 'Jumble',
       url: 'htree://nhash1jumble-new/index.html',
-      icon: 'htree://nhash1jumble-new/icon-192.png',
+      icon: 'htree://nhash1jumble-new/pwa-192x192.png',
       sourceAppId: 'https://jumble.social/app',
       sourceUrl: 'https://jumble.social/',
       sourceManifestUrl: 'https://jumble.social/manifest.webmanifest',

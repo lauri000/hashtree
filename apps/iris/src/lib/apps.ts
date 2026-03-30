@@ -106,8 +106,45 @@ export const suggestedApps: readonly AppBookmark[] = [
   { url: `htree://${distributedOwner}/hashtree-cc`, name: 'hashtree.cc', icon: '/hashtree-cc-favicon.svg', addedAt: 0 },
 ];
 
+function normalizeBookmarkIcon(icon?: string): string | undefined {
+  const trimmed = icon?.trim();
+  return trimmed || undefined;
+}
+
+function normalizeBookmarkField(value?: string): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+export function normalizeBookmark(bookmark: AppBookmark): AppBookmark {
+  return {
+    ...bookmark,
+    name: bookmark.name.trim(),
+    icon: normalizeBookmarkIcon(bookmark.icon),
+    sourceAppId: normalizeBookmarkField(bookmark.sourceAppId),
+    sourceUrl: normalizeBookmarkField(bookmark.sourceUrl),
+    sourceManifestUrl: normalizeBookmarkField(bookmark.sourceManifestUrl),
+  };
+}
+
+export function normalizeBookmarks(bookmarks: readonly AppBookmark[]): AppBookmark[] {
+  return bookmarks.map(normalizeBookmark);
+}
+
+export function isRemoteIconUrl(icon?: string | null): boolean {
+  const trimmed = icon?.trim();
+  if (!trimmed) return false;
+
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export function cloneBookmarks(bookmarks: readonly AppBookmark[]): AppBookmark[] {
-  return bookmarks.map((bookmark) => ({ ...bookmark }));
+  return normalizeBookmarks(bookmarks);
 }
 
 function titleCaseWords(value: string): string {

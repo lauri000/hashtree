@@ -218,6 +218,18 @@ export async function installSitePwa(url: string): Promise<InstalledSitePwa> {
   return invoke<InstalledSitePwa>('install_site_pwa', { url });
 }
 
+export async function cacheBookmarkIcon(args: {
+  sourceUrl?: string | null;
+  sourceManifestUrl?: string | null;
+  iconUrl?: string | null;
+}): Promise<string | null> {
+  return invoke<string | null>('cache_bookmark_icon', {
+    sourceUrl: args.sourceUrl ?? null,
+    sourceManifestUrl: args.sourceManifestUrl ?? null,
+    iconUrl: args.iconUrl ?? null,
+  });
+}
+
 export interface Nip07AccountSummary {
   pubkey: string;
   npub: string;

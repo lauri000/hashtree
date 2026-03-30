@@ -269,6 +269,62 @@ test.describe('App Launcher', () => {
     await expect(favourites).not.toContainText(distributedOwner);
   });
 
+  test('caches remote favorite icons into htree on startup', async ({ tauriPage: page }) => {
+    await page.addInitScript(() => {
+      (window as any).__tauriInvokeResults = {
+        ...((window as any).__tauriInvokeResults ?? {}),
+        cache_bookmark_icon: 'htree://nhash1sample/icon.png',
+      };
+      localStorage.setItem('iris:apps', JSON.stringify([
+        {
+          url: 'https://example.com/app',
+          name: 'Sample App',
+          icon: 'https://example.com/icon.png',
+          sourceUrl: 'https://example.com/app',
+          sourceManifestUrl: 'https://example.com/manifest.webmanifest',
+          addedAt: 123,
+        },
+      ]));
+    });
+
+    await gotoHome(page);
+
+    await expect.poll(async () => (await getInvocationsFor(page, 'cache_bookmark_icon')).length).toBe(1);
+    await expect.poll(async () => {
+      const apps = await page.evaluate(() => JSON.parse(localStorage.getItem('iris:apps') ?? '[]'));
+      return apps[0]?.icon ?? null;
+    }).toBe('htree://nhash1sample/icon.png');
+  });
+
+  test('favorites fall back to initials when a saved icon fails to load', async ({ tauriPage: page }) => {
+    await page.route('**/broken-jumble-icon.png', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/html',
+        body: '<!doctype html><title>broken</title>',
+      });
+    });
+    await page.addInitScript(() => {
+      localStorage.setItem('iris:apps', JSON.stringify([
+        {
+          url: 'https://jumble.social/',
+          name: 'Jumble',
+          icon: '/broken-jumble-icon.png',
+          addedAt: 123,
+        },
+      ]));
+    });
+
+    await gotoHome(page);
+
+    const favouriteIcon = page.getByTestId('favorite-icon-jumble');
+    await expect.poll(async () => favouriteIcon.locator('img').count()).toBe(0);
+    await expect(favouriteIcon).toContainText('J');
+    await expect(favouriteIcon).toHaveClass(
+      /(bg-orange-500|bg-blue-500|bg-green-500|bg-purple-500|bg-pink-500|bg-yellow-500|bg-red-500|bg-teal-500)/,
+    );
+  });
+
   test('add to favourites button works', async ({ tauriPage: page }) => {
     await openHome(page);
     await page.evaluate(() => localStorage.setItem('iris:apps', JSON.stringify([])));
