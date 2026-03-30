@@ -785,7 +785,7 @@
     </div>
 
     {#if route.npub && repoPath}
-      <RepoSidebar npub={route.npub} repoName={repoPath} repoCid={gitCid} {readmeContent} />
+      <RepoSidebar npub={route.npub} repoName={repoPath} repoCid={gitCid} />
     {/if}
   </div>
 </div>

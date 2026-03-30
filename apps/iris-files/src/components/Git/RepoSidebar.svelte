@@ -11,10 +11,9 @@
     npub: string;
     repoName: string;
     repoCid: CID | null;
-    readmeContent?: string | null;
   }
 
-  let { npub, repoName, repoCid, readmeContent = null }: Props = $props();
+  let { npub, repoName, repoCid }: Props = $props();
 
   let route = $derived($routeStore);
   let releasesStore = $derived(createReleasesStore(npub, repoName));
@@ -55,38 +54,7 @@
     };
   });
 
-  function extractReadmeLead(content: string | null | undefined): string | null {
-    if (!content) return null;
-
-    const lines = content.split('\n');
-    const paragraph: string[] = [];
-    let inCodeBlock = false;
-
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (line.startsWith('```')) {
-        inCodeBlock = !inCodeBlock;
-        if (paragraph.length > 0) break;
-        continue;
-      }
-      if (inCodeBlock) continue;
-      if (!line) {
-        if (paragraph.length > 0) break;
-        continue;
-      }
-      if (line.startsWith('#')) continue;
-      if (line.startsWith('- ') || /^\d+\.\s/.test(line)) {
-        if (paragraph.length > 0) break;
-        continue;
-      }
-      paragraph.push(line);
-    }
-
-    if (paragraph.length === 0) return null;
-    return paragraph.join(' ').replace(/\s+/g, ' ');
-  }
-
-  let aboutText = $derived(projectMeta?.about ?? extractReadmeLead(readmeContent));
+  let aboutText = $derived(projectMeta?.about ?? null);
   let homepage = $derived(projectMeta?.homepage ?? null);
   let forkOrigin = $derived(projectMeta?.forkedFrom ? parseForkOriginLink(projectMeta.forkedFrom) : null);
   let hasAboutSection = $derived(projectMetaLoading || !!aboutText || !!homepage || !!forkOrigin);
