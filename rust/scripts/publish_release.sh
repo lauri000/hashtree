@@ -28,7 +28,7 @@ version_path="$1"
 release_cid="$2"
 repo_name="$(basename "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)")"
 tree_name="${3:-${repo_name}-releases}"
-npub="$(htree user)"
+npub="$(htree user | awk '{print $1}')"
 
 if [[ "$version_path" == */* ]]; then
     latest_path="${version_path%/*}/latest"

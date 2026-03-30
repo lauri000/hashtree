@@ -234,6 +234,18 @@ scripts/release_to_htree.sh --version v0.2.3
 
 On macOS this builds the macOS CLI artifacts locally, uses `cross` for the Linux musl CLI artifacts, and can optionally include Windows MSVC binaries from a VM via `--windows-artifacts-dir <shared-dir>`.
 
+When the release directory includes the full macOS/Linux CLI checksum set, the same script also updates the Homebrew tap at:
+
+```bash
+https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/homebrew-hashtree/.git
+```
+
+Skip that step explicitly with:
+
+```bash
+scripts/release_to_htree.sh --version v0.2.3 --skip-homebrew-tap
+```
+
 ## Development
 
 ```bash

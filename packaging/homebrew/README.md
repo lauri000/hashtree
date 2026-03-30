@@ -79,6 +79,22 @@ brew tap <user>/htree https://upload.iris.to/<npub>/<repo>/.git
 brew install htree
 ```
 
+The repo includes a helper for that flow:
+
+```bash
+packaging/homebrew/publish_tap.sh \
+  --version v0.2.14 \
+  --release-base-url https://upload.iris.to/<npub>/hashtree-releases/v0.2.14 \
+  --checksums-dir rust/dist/hashtree-v0.2.14
+```
+
+By default it pushes to `htree://self/homebrew-hashtree`, creating or
+replacing that tap repo without needing a pre-existing GitHub repository or
+manually managed tap checkout.
+
+`rust/scripts/release_to_htree.sh` calls this automatically when the release
+directory contains the full macOS/Linux checksum set needed by the formula.
+
 ## Local verification
 
 Run the end-to-end transport test:
@@ -89,3 +105,9 @@ packaging/homebrew/tests/test_static_http_tap.sh
 
 That test serves a bare tap repository over local static HTTP, runs
 `brew tap ... <URL>`, installs the formula, and runs `brew test`.
+
+To verify the publish helper against a local git remote:
+
+```bash
+packaging/homebrew/tests/test_publish_tap_to_file_remote.sh
+```

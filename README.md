@@ -9,7 +9,7 @@ Content-addressed storage, git transport, and app runtime on Nostr. Merkle roots
 - `apps/iris-files` is the main portable web-app workspace for files, git, video, docs, maps, boards, and related release tooling.
 - `apps/iris-sites` is the isolated web runtime for serving `htree://` sites in the browser.
 - `apps/hashtree-cc` is the landing page and file-sharing app.
-- Packaging is still uneven: Cargo installs and release tarballs work today; Homebrew and `apt` style packaging are still pending.
+- Packaging is still uneven: Cargo installs, release tarballs, and the Homebrew tap work today; `apt` style packaging is still pending.
 - The protocol is implemented, but the written spec is still a draft and nearby Bluetooth/Wi-Fi sync work is still in progress.
 
 ## Repository layout
@@ -58,11 +58,21 @@ cargo install --path rust/crates/git-remote-htree
 cargo install --path rust/crates/hashtree-cashu-cli
 ```
 
+### Homebrew
+
+```bash
+brew tap mmalmi/hashtree https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/homebrew-hashtree/.git
+brew install htree
+```
+
+That installs `htree`, `htree-cashu`, and `git-remote-htree`. After tapping, `brew install hashtree` also works via the alias.
+
 ### Packaging status
 
 - CLI release artifacts are assembled under `rust/dist/` and published with `rust/scripts/release_to_htree.sh`.
+- The release script also updates the `homebrew-hashtree` tap when the full macOS/Linux CLI artifact set is present.
 - Iris native release artifacts are assembled under `dist/iris-native/`.
-- Homebrew and Linux package-manager installs are not shipped yet.
+- Linux package-manager installs beyond Homebrew are not shipped yet.
 
 ## Getting started
 
