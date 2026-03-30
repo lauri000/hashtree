@@ -12,8 +12,7 @@
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
 use hashtree_webrtc::{
-    build_hedged_wave_plan, normalize_dispatch_config, run_hedged_waves, sync_selector_peers,
-    HedgedWaveAction, PeerSelector,
+    run_hedged_waves, sync_selector_peers, HedgedWaveAction, PeerSelector,
 };
 use nostr::{
     nips::nip44, ClientMessage, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey,
@@ -2612,6 +2611,7 @@ mod tests {
     use crate::webrtc::SelectionStrategy;
     use anyhow::Result as AnyResult;
     use async_trait::async_trait;
+    use hashtree_webrtc::{build_hedged_wave_plan, normalize_dispatch_config};
     use nostr::{EventBuilder, Keys, Tag};
     use std::time::Duration;
 
