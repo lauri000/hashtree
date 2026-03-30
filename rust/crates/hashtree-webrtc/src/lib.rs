@@ -55,9 +55,9 @@ pub mod types;
 
 pub use channel::{ChannelError, LatencyChannel, MockChannel, PeerChannel};
 pub use generic_store::{
-    build_hedged_wave_plan, normalize_dispatch_config, sync_selector_peers, GenericStore,
-    GenericStoreRoutingConfig, ProductionStore, RequestDispatchConfig, ResponseBehaviorConfig,
-    SimStore,
+    build_hedged_wave_plan, normalize_dispatch_config, run_hedged_waves, sync_selector_peers,
+    GenericStore, GenericStoreRoutingConfig, HedgedWaveAction, ProductionStore,
+    RequestDispatchConfig, ResponseBehaviorConfig, SimStore,
 };
 pub use mock::{
     clear_channel_registry, MockConnectionFactory, MockDataChannel, MockLatencyMode, MockRelay,

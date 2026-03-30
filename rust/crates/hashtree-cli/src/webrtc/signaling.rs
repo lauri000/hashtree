@@ -12,7 +12,8 @@
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
 use hashtree_webrtc::{
-    build_hedged_wave_plan, normalize_dispatch_config, sync_selector_peers, PeerSelector,
+    build_hedged_wave_plan, normalize_dispatch_config, run_hedged_waves, sync_selector_peers,
+    HedgedWaveAction, PeerSelector,
 };
 use nostr::{
     nips::nip44, ClientMessage, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey,
@@ -461,17 +462,10 @@ impl WebRTCState {
             ordered_peers.push((peer_id, peer, transport));
         }
 
-        let dispatch = normalize_dispatch_config(self.request_dispatch, ordered_peers.len());
-        let wave_plan = build_hedged_wave_plan(ordered_peers.len(), dispatch);
-        if wave_plan.is_empty() {
-            return None;
-        }
-
         debug!(
-            "Querying {} peers for {} (strategy order + hedged waves {:?})",
+            "Querying {} peers for {} with shared hedged scheduler",
             ordered_peers.len(),
             &hash_hex[..8.min(hash_hex.len())],
-            wave_plan
         );
 
         if let Some((requested_mint, payment_sat, quote_ttl_ms)) =
@@ -518,89 +512,100 @@ impl WebRTCState {
             Err(_) => return None,
         };
         let wire_len = wire.len() as u64;
-        let hedge_wait_window = Duration::from_millis(dispatch.hedge_interval_ms.max(1));
-        let mut next_peer_idx = 0usize;
-        for wave_size in wave_plan {
-            let from = next_peer_idx;
-            let to = (next_peer_idx + wave_size).min(ordered_peers.len());
-            next_peer_idx = to;
-
-            if from == to {
-                continue;
-            }
-
-            let (result_tx, mut result_rx) =
-                mpsc::channel::<(String, Instant, Result<Option<Vec<u8>>>)>(to - from);
-
-            for (peer_id, peer, transport) in &ordered_peers[from..to] {
-                if *transport != PeerTransport::Bluetooth {
-                    self.record_sent(peer_id, wire_len).await;
-                }
-                self.peer_selector
-                    .write()
-                    .await
-                    .record_request(peer_id, wire_len);
-
-                let peer_id = peer_id.clone();
-                let peer = peer.clone();
+        let current_result_rx = Arc::new(Mutex::new(None));
+        if let Some((data, peer_id)) = run_hedged_waves(
+            ordered_peers.len(),
+            self.request_dispatch,
+            self.request_timeout,
+            |range| {
+                let wave_peers = ordered_peers[range].to_vec();
+                let (result_tx, result_rx) =
+                    mpsc::channel::<(String, Instant, Result<Option<Vec<u8>>>)>(wave_peers.len());
+                let current_result_rx = current_result_rx.clone();
                 let hash_hex = hash_hex.to_string();
-                let result_tx = result_tx.clone();
-                let per_request_timeout = self.request_timeout;
-                tokio::spawn(async move {
-                    let started = Instant::now();
-                    let result = peer.request(&hash_hex, per_request_timeout).await;
-                    let _ = result_tx.send((peer_id, started, result)).await;
-                });
-            }
-            drop(result_tx);
-
-            let is_last_wave = next_peer_idx >= ordered_peers.len();
-            let deadline = Instant::now()
-                + if is_last_wave {
-                    self.request_timeout
-                } else {
-                    hedge_wait_window
-                };
-            loop {
-                let now = Instant::now();
-                if now >= deadline {
-                    break;
-                }
-                let remaining = deadline.saturating_duration_since(now);
-                match tokio::time::timeout(remaining, result_rx.recv()).await {
-                    Ok(Some((peer_id, started, Ok(Some(data))))) => {
-                        let rtt_ms = started.elapsed().as_millis() as u64;
-                        if hashtree_core::sha256(&data) == expected_hash {
-                            let should_record = {
-                                let peers = self.peers.read().await;
-                                peers
-                                    .get(&peer_id)
-                                    .map(|entry| entry.transport != PeerTransport::Bluetooth)
-                                    .unwrap_or(true)
-                            };
-                            if should_record {
-                                self.record_received(&peer_id, data.len() as u64).await;
-                            }
-                            self.peer_selector.write().await.record_success(
-                                &peer_id,
-                                rtt_ms,
-                                data.len() as u64,
-                            );
-                            debug!(
-                                "Got response from peer {} for {}",
-                                peer_id,
-                                &hash_hex[..8.min(hash_hex.len())]
-                            );
-                            return Some((data, peer_id));
+                async move {
+                    *current_result_rx.lock().await = Some(result_rx);
+                    let sent = wave_peers.len();
+                    for (peer_id, peer, transport) in wave_peers {
+                        if transport != PeerTransport::Bluetooth {
+                            self.record_sent(&peer_id, wire_len).await;
                         }
-                        self.peer_selector.write().await.record_failure(&peer_id);
+                        self.peer_selector
+                            .write()
+                            .await
+                            .record_request(&peer_id, wire_len);
+
+                        let result_tx = result_tx.clone();
+                        let peer_id_for_task = peer_id.clone();
+                        let peer = peer.clone();
+                        let hash_hex = hash_hex.clone();
+                        let per_request_timeout = self.request_timeout;
+                        tokio::spawn(async move {
+                            let started = Instant::now();
+                            let result = peer.request(&hash_hex, per_request_timeout).await;
+                            let _ = result_tx.send((peer_id_for_task, started, result)).await;
+                        });
                     }
-                    Ok(Some((peer_id, _, Ok(None)))) | Ok(Some((peer_id, _, Err(_)))) => {
-                        self.peer_selector.write().await.record_timeout(&peer_id);
-                    }
-                    Ok(None) | Err(_) => break,
+                    drop(result_tx);
+                    sent
                 }
-            }
+            },
+            |wait| {
+                let current_result_rx = current_result_rx.clone();
+                async move {
+                    let mut current_result_rx = current_result_rx.lock().await;
+                    let Some(result_rx) = current_result_rx.as_mut() else {
+                        return HedgedWaveAction::Abort;
+                    };
+                    let deadline = Instant::now() + wait;
+                    loop {
+                        let now = Instant::now();
+                        if now >= deadline {
+                            return HedgedWaveAction::Continue;
+                        }
+                        let remaining = deadline.saturating_duration_since(now);
+                        match tokio::time::timeout(remaining, result_rx.recv()).await {
+                            Ok(Some((peer_id, started, Ok(Some(data))))) => {
+                                let rtt_ms = started.elapsed().as_millis() as u64;
+                                if hashtree_core::sha256(&data) == expected_hash {
+                                    let should_record = {
+                                        let peers = self.peers.read().await;
+                                        peers
+                                            .get(&peer_id)
+                                            .map(|entry| {
+                                                entry.transport != PeerTransport::Bluetooth
+                                            })
+                                            .unwrap_or(true)
+                                    };
+                                    if should_record {
+                                        self.record_received(&peer_id, data.len() as u64).await;
+                                    }
+                                    self.peer_selector.write().await.record_success(
+                                        &peer_id,
+                                        rtt_ms,
+                                        data.len() as u64,
+                                    );
+                                    return HedgedWaveAction::Success((data, peer_id));
+                                }
+                                self.peer_selector.write().await.record_failure(&peer_id);
+                            }
+                            Ok(Some((peer_id, _, Ok(None)))) | Ok(Some((peer_id, _, Err(_)))) => {
+                                self.peer_selector.write().await.record_timeout(&peer_id);
+                            }
+                            Ok(None) | Err(_) => return HedgedWaveAction::Continue,
+                        }
+                    }
+                }
+            },
+        )
+        .await
+        {
+            debug!(
+                "Got response from peer {} for {}",
+                peer_id,
+                &hash_hex[..8.min(hash_hex.len())]
+            );
+            return Some((data, peer_id));
         }
 
         debug!(
@@ -622,14 +627,8 @@ impl WebRTCState {
             return None;
         }
 
-        let dispatch = normalize_dispatch_config(self.request_dispatch, ordered_peers.len());
-        let wave_plan = build_hedged_wave_plan(ordered_peers.len(), dispatch);
-        if wave_plan.is_empty() {
-            return None;
-        }
-
         let hash_hex = hex::encode(hash_bytes);
-        let mut rx = self
+        let rx = self
             .cashu_quotes
             .register_pending_quote(hash_hex.clone(), Some(requested_mint.clone()), payment_sat)
             .await;
@@ -646,58 +645,40 @@ impl WebRTCState {
                 return None;
             }
         };
-        let deadline = Instant::now() + self.request_timeout;
-        let mut sent_total = 0usize;
-        let mut next_peer_idx = 0usize;
-
-        for (wave_idx, wave_size) in wave_plan.iter().copied().enumerate() {
-            let from = next_peer_idx;
-            let to = (next_peer_idx + wave_size).min(ordered_peers.len());
-            for (_, _, dc) in &ordered_peers[from..to] {
-                if dc.send(&bytes::Bytes::copy_from_slice(&wire)).await.is_ok() {
-                    sent_total += 1;
+        let rx = Arc::new(Mutex::new(rx));
+        let result = run_hedged_waves(
+            ordered_peers.len(),
+            self.request_dispatch,
+            self.request_timeout,
+            |range| {
+                let wave_peers = ordered_peers[range].to_vec();
+                let wire = wire.clone();
+                async move {
+                    let mut sent = 0usize;
+                    for (_, _, dc) in wave_peers {
+                        if dc.send(&bytes::Bytes::copy_from_slice(&wire)).await.is_ok() {
+                            sent += 1;
+                        }
+                    }
+                    sent
                 }
-            }
-            next_peer_idx = to;
-
-            if sent_total == 0 {
-                if next_peer_idx >= ordered_peers.len() {
-                    break;
+            },
+            |wait| {
+                let rx = rx.clone();
+                async move {
+                    let mut rx = rx.lock().await;
+                    match tokio::time::timeout(wait, &mut *rx).await {
+                        Ok(Ok(Some(quote))) => HedgedWaveAction::Success(quote),
+                        Ok(Ok(None)) | Ok(Err(_)) => HedgedWaveAction::Abort,
+                        Err(_) => HedgedWaveAction::Continue,
+                    }
                 }
-                continue;
-            }
-
-            let now = Instant::now();
-            if now >= deadline {
-                break;
-            }
-            let remaining = deadline.saturating_duration_since(now);
-            let is_last_wave =
-                wave_idx + 1 == wave_plan.len() || next_peer_idx >= ordered_peers.len();
-            let wait = if is_last_wave {
-                remaining
-            } else if dispatch.hedge_interval_ms == 0 {
-                Duration::ZERO
-            } else {
-                Duration::from_millis(dispatch.hedge_interval_ms).min(remaining)
-            };
-
-            if wait.is_zero() {
-                continue;
-            }
-
-            match tokio::time::timeout(wait, &mut rx).await {
-                Ok(Ok(Some(quote))) => {
-                    self.cashu_quotes.clear_pending_quote(&hash_hex).await;
-                    return Some(quote);
-                }
-                Ok(Ok(None)) | Ok(Err(_)) => break,
-                Err(_) => {}
-            }
-        }
+            },
+        )
+        .await;
 
         self.cashu_quotes.clear_pending_quote(&hash_hex).await;
-        None
+        result
     }
 
     async fn request_from_single_peer(

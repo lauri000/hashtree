@@ -7,10 +7,12 @@
 use async_trait::async_trait;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::hash::{Hash as _, Hasher};
+use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{oneshot, Mutex, RwLock};
 
 use hashtree_core::{Hash, Store, StoreError};
 
@@ -131,6 +133,86 @@ pub fn build_hedged_wave_plan(peer_count: usize, dispatch: RequestDispatchConfig
         sent += next;
     }
     plan
+}
+
+/// Outcome returned after waiting on a hedged dispatch wave.
+#[derive(Debug)]
+pub enum HedgedWaveAction<T> {
+    Continue,
+    Success(T),
+    Abort,
+}
+
+/// Run a staged hedged dispatch over peer index ranges.
+///
+/// This scheduler is shared by the reusable `GenericStore` and the native
+/// `hashtree-cli` mesh path so tests and production use the same wave timing.
+pub async fn run_hedged_waves<T, SendWave, SendWaveFut, WaitWave, WaitWaveFut>(
+    peer_count: usize,
+    dispatch: RequestDispatchConfig,
+    request_timeout: Duration,
+    mut send_wave: SendWave,
+    mut wait_wave: WaitWave,
+) -> Option<T>
+where
+    SendWave: FnMut(Range<usize>) -> SendWaveFut,
+    SendWaveFut: Future<Output = usize>,
+    WaitWave: FnMut(Duration) -> WaitWaveFut,
+    WaitWaveFut: Future<Output = HedgedWaveAction<T>>,
+{
+    let dispatch = normalize_dispatch_config(dispatch, peer_count);
+    let wave_plan = build_hedged_wave_plan(peer_count, dispatch);
+    if wave_plan.is_empty() {
+        return None;
+    }
+
+    let deadline = Instant::now() + request_timeout;
+    let mut sent_total = 0usize;
+    let mut next_peer_idx = 0usize;
+
+    for (wave_idx, wave_size) in wave_plan.iter().copied().enumerate() {
+        let from = next_peer_idx;
+        let to = (next_peer_idx + wave_size).min(peer_count);
+        next_peer_idx = to;
+
+        if from == to {
+            continue;
+        }
+
+        sent_total += send_wave(from..to).await;
+        if sent_total == 0 {
+            if next_peer_idx >= peer_count {
+                break;
+            }
+            continue;
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        let is_last_wave = wave_idx + 1 == wave_plan.len() || next_peer_idx >= peer_count;
+        let wait = if is_last_wave {
+            remaining
+        } else if dispatch.hedge_interval_ms == 0 {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(dispatch.hedge_interval_ms).min(remaining)
+        };
+
+        if wait.is_zero() {
+            continue;
+        }
+
+        match wait_wave(wait).await {
+            HedgedWaveAction::Continue => {}
+            HedgedWaveAction::Success(value) => return Some(value),
+            HedgedWaveAction::Abort => break,
+        }
+    }
+
+    None
 }
 
 /// Keep selector membership aligned with currently connected peer IDs.
@@ -801,12 +883,6 @@ where
         }
         let requested_mint = self.requested_quote_mint().map(str::to_string);
 
-        let dispatch = normalize_dispatch_config(self.routing.dispatch, ordered_peer_ids.len());
-        let wave_plan = build_hedged_wave_plan(ordered_peer_ids.len(), dispatch);
-        if wave_plan.is_empty() {
-            return None;
-        }
-
         let hash_key = hash_to_key(hash);
         let (tx, rx) = oneshot::channel();
         self.pending_quotes.write().await.insert(
@@ -818,69 +894,49 @@ where
             },
         );
 
-        let mut sent_total = 0usize;
-        let mut next_peer_idx = 0usize;
-        let mut rx = rx;
-        let deadline = Instant::now() + self.request_timeout;
-
-        for (wave_idx, wave_size) in wave_plan.iter().copied().enumerate() {
-            let from = next_peer_idx;
-            let to = (next_peer_idx + wave_size).min(ordered_peer_ids.len());
-            for peer_id in &ordered_peer_ids[from..to] {
-                if self
-                    .send_quote_request_to_peer(
-                        peer_id,
-                        hash,
-                        payment_sat,
-                        ttl_ms,
-                        requested_mint.as_deref(),
-                    )
-                    .await
-                {
-                    sent_total += 1;
+        let rx = Arc::new(Mutex::new(rx));
+        let result = run_hedged_waves(
+            ordered_peer_ids.len(),
+            self.routing.dispatch,
+            self.request_timeout,
+            |range| {
+                let wave_peer_ids = ordered_peer_ids[range].to_vec();
+                let requested_mint = requested_mint.clone();
+                let hash = *hash;
+                async move {
+                    let mut sent = 0usize;
+                    for peer_id in wave_peer_ids {
+                        if self
+                            .send_quote_request_to_peer(
+                                &peer_id,
+                                &hash,
+                                payment_sat,
+                                ttl_ms,
+                                requested_mint.as_deref(),
+                            )
+                            .await
+                        {
+                            sent += 1;
+                        }
+                    }
+                    sent
                 }
-            }
-            next_peer_idx = to;
-
-            if sent_total == 0 {
-                if next_peer_idx >= ordered_peer_ids.len() {
-                    break;
+            },
+            |wait| {
+                let rx = rx.clone();
+                async move {
+                    let mut rx = rx.lock().await;
+                    match tokio::time::timeout(wait, &mut *rx).await {
+                        Ok(Ok(Some(quote))) => HedgedWaveAction::Success(quote),
+                        Ok(Ok(None)) | Ok(Err(_)) => HedgedWaveAction::Abort,
+                        Err(_) => HedgedWaveAction::Continue,
+                    }
                 }
-                continue;
-            }
-
-            let now = Instant::now();
-            if now >= deadline {
-                break;
-            }
-            let remaining = deadline.saturating_duration_since(now);
-            let is_last_wave =
-                wave_idx + 1 == wave_plan.len() || next_peer_idx >= ordered_peer_ids.len();
-            let wait = if is_last_wave {
-                remaining
-            } else if dispatch.hedge_interval_ms == 0 {
-                Duration::ZERO
-            } else {
-                Duration::from_millis(dispatch.hedge_interval_ms).min(remaining)
-            };
-
-            if wait.is_zero() {
-                continue;
-            }
-
-            match tokio::time::timeout(wait, &mut rx).await {
-                Ok(Ok(Some(quote))) => {
-                    let _ = self.pending_quotes.write().await.remove(&hash_key);
-                    return Some(quote);
-                }
-                Ok(Ok(None)) => break,
-                Ok(Err(_)) => break,
-                Err(_) => {}
-            }
-        }
-
+            },
+        )
+        .await;
         let _ = self.pending_quotes.write().await.remove(&hash_key);
-        None
+        result
     }
 
     async fn request_from_single_peer(
@@ -926,12 +982,6 @@ where
         hash: &Hash,
         ordered_peer_ids: &[String],
     ) -> Option<Vec<u8>> {
-        let dispatch = normalize_dispatch_config(self.routing.dispatch, ordered_peer_ids.len());
-        let wave_plan = build_hedged_wave_plan(ordered_peer_ids.len(), dispatch);
-        if wave_plan.is_empty() {
-            return None;
-        }
-
         let hash_key = hash_to_key(hash);
         let (tx, rx) = oneshot::channel();
         self.pending_requests.write().await.insert(
@@ -943,76 +993,58 @@ where
             },
         );
 
-        let mut sent_total = 0usize;
-        let mut next_peer_idx = 0usize;
-        let mut rx = rx;
-        let deadline = Instant::now() + self.request_timeout;
-
-        for (wave_idx, wave_size) in wave_plan.iter().copied().enumerate() {
-            let from = next_peer_idx;
-            let to = (next_peer_idx + wave_size).min(ordered_peer_ids.len());
-            for peer_id in &ordered_peer_ids[from..to] {
-                if self.send_request_to_peer(peer_id, hash, None).await {
-                    sent_total += 1;
-                    if let Some(pending) = self.pending_requests.write().await.get_mut(&hash_key) {
-                        pending.queried_peers.push(peer_id.clone());
+        let rx = Arc::new(Mutex::new(rx));
+        let result = run_hedged_waves(
+            ordered_peer_ids.len(),
+            self.routing.dispatch,
+            self.request_timeout,
+            |range| {
+                let wave_peer_ids = ordered_peer_ids[range].to_vec();
+                let hash = *hash;
+                let hash_key = hash_key.clone();
+                async move {
+                    let mut sent = 0usize;
+                    for peer_id in wave_peer_ids {
+                        if self.send_request_to_peer(&peer_id, &hash, None).await {
+                            sent += 1;
+                            if let Some(pending) =
+                                self.pending_requests.write().await.get_mut(&hash_key)
+                            {
+                                pending.queried_peers.push(peer_id);
+                            }
+                        }
+                    }
+                    sent
+                }
+            },
+            |wait| {
+                let rx = rx.clone();
+                async move {
+                    let mut rx = rx.lock().await;
+                    match tokio::time::timeout(wait, &mut *rx).await {
+                        Ok(Ok(Some(data))) if hashtree_core::sha256(&data) == *hash => {
+                            HedgedWaveAction::Success(data)
+                        }
+                        Ok(Ok(Some(_))) => HedgedWaveAction::Continue,
+                        Ok(Ok(None)) | Ok(Err(_)) => HedgedWaveAction::Abort,
+                        Err(_) => HedgedWaveAction::Continue,
                     }
                 }
-            }
-            next_peer_idx = to;
+            },
+        )
+        .await;
 
-            if sent_total == 0 {
-                if next_peer_idx >= ordered_peer_ids.len() {
-                    break;
-                }
-                continue;
-            }
-
-            let now = Instant::now();
-            if now >= deadline {
-                break;
-            }
-            let remaining = deadline.saturating_duration_since(now);
-            let is_last_wave =
-                wave_idx + 1 == wave_plan.len() || next_peer_idx >= ordered_peer_ids.len();
-            let wait = if is_last_wave {
-                remaining
-            } else if dispatch.hedge_interval_ms == 0 {
-                Duration::ZERO
-            } else {
-                Duration::from_millis(dispatch.hedge_interval_ms).min(remaining)
-            };
-
-            if wait.is_zero() {
-                continue;
-            }
-
-            match tokio::time::timeout(wait, &mut rx).await {
-                Ok(Ok(Some(data))) => {
-                    if hashtree_core::sha256(&data) == *hash {
-                        let _ = self.local_store.put(*hash, data.clone()).await;
-                        return Some(data);
-                    }
-                }
-                Ok(Ok(None)) => break,
-                Ok(Err(_)) => break,
-                Err(_) => {
-                    // Timed wait window expired; send next hedge wave if any.
+        let Some(data) = result else {
+            if let Some(pending) = self.pending_requests.write().await.remove(&hash_key) {
+                for peer_id in pending.queried_peers {
+                    self.peer_selector.write().await.record_timeout(&peer_id);
                 }
             }
-        }
-
-        if sent_total == 0 {
-            let _ = self.pending_requests.write().await.remove(&hash_key);
             return None;
-        }
+        };
 
-        if let Some(pending) = self.pending_requests.write().await.remove(&hash_key) {
-            for peer_id in pending.queried_peers {
-                self.peer_selector.write().await.record_timeout(&peer_id);
-            }
-        }
-        None
+        let _ = self.local_store.put(*hash, data.clone()).await;
+        Some(data)
     }
 
     /// Request data from peers
@@ -1491,6 +1523,37 @@ mod tests {
             },
         );
         assert_eq!(plan, vec![2, 3, 3]);
+    }
+
+    #[tokio::test]
+    async fn test_run_hedged_waves_uses_zero_interval_as_immediate_hedge() {
+        let waits = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let waits_clone = waits.clone();
+
+        let result = run_hedged_waves(
+            3,
+            RequestDispatchConfig {
+                initial_fanout: 1,
+                hedge_fanout: 1,
+                max_fanout: 3,
+                hedge_interval_ms: 0,
+            },
+            Duration::from_millis(25),
+            |_range| async { 1 },
+            move |wait| {
+                let waits = waits_clone.clone();
+                async move {
+                    waits.lock().expect("wait lock").push(wait);
+                    HedgedWaveAction::<()>::Continue
+                }
+            },
+        )
+        .await;
+
+        assert!(result.is_none());
+        let waits = waits.lock().expect("wait lock");
+        assert_eq!(waits.len(), 1);
+        assert!(waits[0] <= Duration::from_millis(25));
     }
 
     #[test]
