@@ -5,7 +5,9 @@
 //!     .git/
 //!       HEAD -> "ref: refs/heads/main"
 //!       refs/heads/main -> <commit-sha1>
+//!       info/refs -> dumb-HTTP ref advertisement
 //!       objects/XX/YYYY... -> zlib-compressed loose object (standard git layout)
+//!       objects/info/packs -> dumb-HTTP pack advertisement
 //!
 //! The root hash (SHA-256) is the content-addressed identifier for the entire repo state.
 
@@ -529,11 +531,88 @@ impl GitStorage {
             ObjectType::Tree
         } else if header.starts_with("commit") {
             ObjectType::Commit
+        } else if header.starts_with("tag") {
+            ObjectType::Tag
         } else {
             return None;
         };
         let content = decompressed[null_pos + 1..].to_vec();
         Some((obj_type, content))
+    }
+
+    fn peel_tag_target(&self, oid: &str, objects: &HashMap<String, Vec<u8>>) -> Option<String> {
+        let (obj_type, content) = self.get_object_content(oid, objects)?;
+        if obj_type != ObjectType::Tag {
+            return Some(oid.to_string());
+        }
+
+        let target = std::str::from_utf8(&content)
+            .ok()?
+            .lines()
+            .find_map(|line| line.strip_prefix("object "))
+            .map(str::trim)?
+            .to_string();
+
+        match self.get_object_content(&target, objects)?.0 {
+            ObjectType::Tag => self.peel_tag_target(&target, objects),
+            _ => Some(target),
+        }
+    }
+
+    fn build_info_refs_content(
+        &self,
+        refs: &HashMap<String, String>,
+        objects: &HashMap<String, Vec<u8>>,
+    ) -> String {
+        let mut lines = Vec::new();
+
+        for (name, value) in refs {
+            if name == "HEAD" {
+                continue;
+            }
+
+            let oid = value.trim().to_string();
+            lines.push((name.clone(), oid.clone()));
+
+            if name.starts_with("refs/tags/") {
+                if let Some(peeled) = self.peel_tag_target(&oid, objects) {
+                    if peeled != oid {
+                        lines.push((format!("{}^{{}}", name), peeled));
+                    }
+                }
+            }
+        }
+
+        lines.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut content = String::new();
+        for (name, oid) in lines {
+            content.push_str(&oid);
+            content.push('\t');
+            content.push_str(&name);
+            content.push('\n');
+        }
+        content
+    }
+
+    async fn build_info_dir(
+        &self,
+        refs: &HashMap<String, String>,
+        objects: &HashMap<String, Vec<u8>>,
+    ) -> Result<Cid> {
+        let info_refs = self.build_info_refs_content(refs, objects);
+        let (info_refs_cid, info_refs_size) = self
+            .tree
+            .put(info_refs.as_bytes())
+            .await
+            .map_err(|e| Error::StorageError(format!("put info/refs: {}", e)))?;
+
+        self.tree
+            .put_directory(vec![
+                DirEntry::from_cid("refs", &info_refs_cid).with_size(info_refs_size)
+            ])
+            .await
+            .map_err(|e| Error::StorageError(format!("put info dir: {}", e)))
     }
 
     /// Build the hashtree and return the root CID (hash + encryption key)
@@ -589,6 +668,9 @@ impl GitStorage {
             // Build refs directory
             let refs_cid = self.build_refs_dir(&refs).await?;
 
+            // Build dumb-HTTP info directory
+            let info_cid = self.build_info_dir(&refs, &objects_clone).await?;
+
             // Build HEAD file - use default_branch if no explicit HEAD
             // Git expects HEAD to end with newline, so add it if missing
             let head_content = refs.get("HEAD")
@@ -603,6 +685,7 @@ impl GitStorage {
             // Build .git directory - use from_cid to preserve encryption keys
             let mut git_entries = vec![
                 DirEntry::from_cid("HEAD", &head_cid).with_size(head_size),
+                DirEntry::from_cid("info", &info_cid).with_link_type(LinkType::Dir),
                 DirEntry::from_cid("objects", &objects_cid).with_link_type(LinkType::Dir),
                 DirEntry::from_cid("refs", &refs_cid).with_link_type(LinkType::Dir),
             ];
@@ -743,56 +826,63 @@ impl GitStorage {
 
     /// Build the objects directory using HashTree
     async fn build_objects_dir(&self, objects: &HashMap<String, Vec<u8>>) -> Result<Cid> {
-        if objects.is_empty() {
-            // Return empty directory Cid
-            let empty_cid = self
-                .tree
-                .put_directory(vec![])
-                .await
-                .map_err(|e| Error::StorageError(format!("put empty objects: {}", e)))?;
-            return Ok(empty_cid);
-        }
-
-        // Group objects by first 2 characters of SHA (git loose object structure)
-        // Git expects objects/XX/YYYYYY... where XX is first 2 hex chars
-        let mut buckets: HashMap<String, Vec<(String, Vec<u8>)>> = HashMap::new();
-        for (oid, data) in objects {
-            let prefix = &oid[..2];
-            let suffix = &oid[2..];
-            buckets
-                .entry(prefix.to_string())
-                .or_default()
-                .push((suffix.to_string(), data.clone()));
-        }
-
-        // Build subdirectories for each prefix
         let mut top_entries = Vec::new();
-        for (prefix, objs) in buckets {
-            let mut sub_entries = Vec::new();
-            for (suffix, data) in objs {
-                // Use put() instead of put_blob() to chunk large objects
-                // Git blobs can be >5MB which exceeds blossom server limits
-                let (cid, size) = self.tree.put(&data).await.map_err(|e| {
-                    Error::StorageError(format!("put object {}{}: {}", prefix, suffix, e))
-                })?;
-                // Use from_cid to preserve encryption key
-                sub_entries.push(DirEntry::from_cid(suffix, &cid).with_size(size));
-            }
-            // Sort for deterministic ordering
-            sub_entries.sort_by(|a, b| a.name.cmp(&b.name));
 
-            let sub_cid = self
-                .tree
-                .put_directory(sub_entries)
-                .await
-                .map_err(|e| Error::StorageError(format!("put objects/{}: {}", prefix, e)))?;
-            top_entries.push(DirEntry::from_cid(prefix, &sub_cid).with_link_type(LinkType::Dir));
+        if !objects.is_empty() {
+            // Group objects by first 2 characters of SHA (git loose object structure)
+            // Git expects objects/XX/YYYYYY... where XX is first 2 hex chars
+            let mut buckets: HashMap<String, Vec<(String, Vec<u8>)>> = HashMap::new();
+            for (oid, data) in objects {
+                let prefix = &oid[..2];
+                let suffix = &oid[2..];
+                buckets
+                    .entry(prefix.to_string())
+                    .or_default()
+                    .push((suffix.to_string(), data.clone()));
+            }
+
+            // Build subdirectories for each prefix
+            for (prefix, objs) in buckets {
+                let mut sub_entries = Vec::new();
+                for (suffix, data) in objs {
+                    // Use put() instead of put_blob() to chunk large objects
+                    // Git blobs can be >5MB which exceeds blossom server limits
+                    let (cid, size) = self.tree.put(&data).await.map_err(|e| {
+                        Error::StorageError(format!("put object {}{}: {}", prefix, suffix, e))
+                    })?;
+                    // Use from_cid to preserve encryption key
+                    sub_entries.push(DirEntry::from_cid(suffix, &cid).with_size(size));
+                }
+                // Sort for deterministic ordering
+                sub_entries.sort_by(|a, b| a.name.cmp(&b.name));
+
+                let sub_cid =
+                    self.tree.put_directory(sub_entries).await.map_err(|e| {
+                        Error::StorageError(format!("put objects/{}: {}", prefix, e))
+                    })?;
+                top_entries
+                    .push(DirEntry::from_cid(prefix, &sub_cid).with_link_type(LinkType::Dir));
+            }
         }
+
+        let (packs_cid, packs_size) = self
+            .tree
+            .put(b"")
+            .await
+            .map_err(|e| Error::StorageError(format!("put objects/info/packs: {}", e)))?;
+        let info_cid = self
+            .tree
+            .put_directory(vec![
+                DirEntry::from_cid("packs", &packs_cid).with_size(packs_size)
+            ])
+            .await
+            .map_err(|e| Error::StorageError(format!("put objects/info: {}", e)))?;
+        top_entries.push(DirEntry::from_cid("info", &info_cid).with_link_type(LinkType::Dir));
 
         // Sort for deterministic ordering
         top_entries.sort_by(|a, b| a.name.cmp(&b.name));
 
-        let bucket_count = top_entries.len();
+        let entry_count = top_entries.len();
         let cid = self
             .tree
             .put_directory(top_entries)
@@ -800,8 +890,8 @@ impl GitStorage {
             .map_err(|e| Error::StorageError(format!("put objects dir: {}", e)))?;
 
         debug!(
-            "Built objects dir with {} buckets: {}",
-            bucket_count,
+            "Built objects dir with {} entries: {}",
+            entry_count,
             hex::encode(cid.hash)
         );
         Ok(cid)
@@ -1096,6 +1186,11 @@ impl GitStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hashtree_core::store::Store;
+    use hashtree_core::LinkType;
+    use std::net::TcpListener;
+    use std::path::Path;
+    use std::process::{Child, Command, Stdio};
     use tempfile::TempDir;
 
     fn create_test_storage() -> (GitStorage, TempDir) {
@@ -1121,6 +1216,73 @@ mod tests {
             #[cfg(feature = "lmdb")]
             LocalStore::Lmdb(store) => store.stats().unwrap().total_bytes,
         }
+    }
+
+    fn write_test_commit(storage: &GitStorage) -> ObjectId {
+        let blob_oid = storage
+            .write_raw_object(ObjectType::Blob, b"hello from hashtree\n")
+            .unwrap();
+
+        let mut tree_content = Vec::new();
+        tree_content.extend_from_slice(b"100644 README.md\0");
+        tree_content.extend_from_slice(&hex::decode(blob_oid.to_hex()).unwrap());
+        let tree_oid = storage
+            .write_raw_object(ObjectType::Tree, &tree_content)
+            .unwrap();
+
+        let commit_content = format!(
+            "tree {}\nauthor Test User <test@example.com> 0 +0000\ncommitter Test User <test@example.com> 0 +0000\n\nInitial commit\n",
+            tree_oid.to_hex()
+        );
+        storage
+            .write_raw_object(ObjectType::Commit, commit_content.as_bytes())
+            .unwrap()
+    }
+
+    fn export_tree_to_fs<S: Store>(
+        runtime: &RuntimeExecutor,
+        tree: &HashTree<S>,
+        cid: &Cid,
+        dst: &Path,
+    ) {
+        std::fs::create_dir_all(dst).unwrap();
+        let entries = runtime.block_on(tree.list_directory(cid)).unwrap();
+        for entry in entries {
+            let entry_cid = Cid {
+                hash: entry.hash,
+                key: entry.key,
+            };
+            let path = dst.join(&entry.name);
+            match entry.link_type {
+                LinkType::Dir => export_tree_to_fs(runtime, tree, &entry_cid, &path),
+                LinkType::Blob | LinkType::File => {
+                    let data = runtime
+                        .block_on(tree.get(&entry_cid, None))
+                        .unwrap()
+                        .unwrap();
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent).unwrap();
+                    }
+                    std::fs::write(path, data).unwrap();
+                }
+            }
+        }
+    }
+
+    fn spawn_http_server(root: &Path, port: u16) -> Child {
+        Command::new("python3")
+            .args([
+                "-m",
+                "http.server",
+                &port.to_string(),
+                "--bind",
+                "127.0.0.1",
+            ])
+            .current_dir(root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn python http server")
     }
 
     #[test]
@@ -1281,5 +1443,115 @@ mod tests {
 
         let after = local_total_bytes(&storage);
         assert!(after <= 1_024);
+    }
+
+    #[test]
+    fn test_build_tree_adds_dumb_http_metadata() {
+        let (storage, _temp) = create_test_storage();
+        let commit_oid = write_test_commit(&storage);
+        let tag_content = format!(
+            "object {}\ntype commit\ntag v1.0.0\ntagger Test User <test@example.com> 0 +0000\n\nrelease\n",
+            commit_oid.to_hex()
+        );
+        let tag_oid = storage
+            .write_raw_object(ObjectType::Tag, tag_content.as_bytes())
+            .unwrap();
+
+        storage
+            .write_ref("refs/heads/main", &Ref::Direct(commit_oid))
+            .unwrap();
+        storage
+            .write_ref("refs/tags/v1.0.0", &Ref::Direct(tag_oid))
+            .unwrap();
+        storage
+            .write_ref("HEAD", &Ref::Symbolic("refs/heads/main".to_string()))
+            .unwrap();
+
+        let root_cid = storage.build_tree().unwrap();
+
+        let info_refs_cid = storage
+            .runtime
+            .block_on(storage.tree.resolve_path(&root_cid, ".git/info/refs"))
+            .unwrap()
+            .expect("info/refs exists");
+        let info_refs = storage
+            .runtime
+            .block_on(storage.tree.get(&info_refs_cid, None))
+            .unwrap()
+            .unwrap();
+        let info_refs = String::from_utf8(info_refs).unwrap();
+
+        assert_eq!(
+            info_refs,
+            format!(
+                "{commit}\trefs/heads/main\n{tag}\trefs/tags/v1.0.0\n{commit}\trefs/tags/v1.0.0^{{}}\n",
+                commit = commit_oid.to_hex(),
+                tag = tag_oid.to_hex()
+            )
+        );
+
+        let packs_cid = storage
+            .runtime
+            .block_on(
+                storage
+                    .tree
+                    .resolve_path(&root_cid, ".git/objects/info/packs"),
+            )
+            .unwrap()
+            .expect("objects/info/packs exists");
+        let packs = storage
+            .runtime
+            .block_on(storage.tree.get(&packs_cid, None))
+            .unwrap()
+            .unwrap();
+        assert!(packs.is_empty(), "objects/info/packs should be empty");
+    }
+
+    #[test]
+    fn test_materialized_tree_supports_static_http_clone_from_git_dir() {
+        let (storage, _temp) = create_test_storage();
+        let commit_oid = write_test_commit(&storage);
+        storage
+            .write_ref("refs/heads/main", &Ref::Direct(commit_oid))
+            .unwrap();
+        storage
+            .write_ref("HEAD", &Ref::Symbolic("refs/heads/main".to_string()))
+            .unwrap();
+
+        let root_cid = storage.build_tree().unwrap();
+        let export_dir = TempDir::new().unwrap();
+        let repo_dir = export_dir.path().join("repo");
+        export_tree_to_fs(&storage.runtime, &storage.tree, &root_cid, &repo_dir);
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let mut server = spawn_http_server(export_dir.path(), port);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let clone_dir = TempDir::new().unwrap();
+        let clone_path = clone_dir.path().join("clone");
+        let output = Command::new("git")
+            .args([
+                "clone",
+                &format!("http://127.0.0.1:{port}/repo/.git", port = port),
+                clone_path.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+
+        let _ = server.kill();
+        let _ = server.wait();
+
+        assert!(
+            output.status.success(),
+            "git clone failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(clone_path.join("README.md")).unwrap(),
+            "hello from hashtree\n"
+        );
     }
 }
