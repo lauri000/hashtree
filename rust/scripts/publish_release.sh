@@ -24,11 +24,15 @@ if [ $# -lt 2 ] || [ $# -gt 3 ]; then
     exit 1
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/release_common.sh"
+REPO_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
 version_path="$1"
 release_cid="$2"
-repo_name="$(basename "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)")"
+repo_name="$(infer_repo_name "$REPO_DIR")"
 tree_name="${3:-${repo_name}-releases}"
-npub="$(htree user | awk '{print $1}')"
+npub="$(current_npub)"
 
 if [[ "$version_path" == */* ]]; then
     latest_path="${version_path%/*}/latest"
@@ -37,6 +41,11 @@ else
 fi
 
 htree release publish "$tree_name" "$version_path" "$release_cid"
+
+if [ -z "$npub" ]; then
+    echo "Warning: release published, but current npub could not be determined for printed URLs." >&2
+    exit 0
+fi
 
 cat <<EOF
 

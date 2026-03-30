@@ -11,7 +11,7 @@ hashtree, then publishes it into a mutable release tree.
 Options:
   --version <version>                 Release version label, for example: v0.2.3
   --version-path <path>              Published path inside the release tree (default: <version>)
-  --tree-name <name>                 Mutable release tree name (default: releases/<repo>)
+  --tree-name <name>                 Mutable release tree name (default: <repo>-releases)
   --homebrew-tap-repo <name>         Homebrew tap repo name (default: homebrew-<repo>)
   --skip-homebrew-tap                Skip updating the Homebrew tap
   --cargo-publish                    Publish Rust crates to crates.io after releasing artifacts
@@ -31,13 +31,14 @@ EOF
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/release_common.sh"
 RUST_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_DIR="$(cd "${RUST_DIR}/.." && pwd)"
-REPO_NAME="$(basename "$REPO_DIR")"
+REPO_NAME="$(infer_repo_name "$REPO_DIR")"
 
 VERSION=""
 VERSION_PATH=""
-TREE_NAME="releases/${REPO_NAME}"
+TREE_NAME="${REPO_NAME}-releases"
 HOMEBREW_TAP_REPO="homebrew-${REPO_NAME}"
 SKIP_HOMEBREW_TAP=0
 CARGO_PUBLISH=0
@@ -155,16 +156,20 @@ if [ "$SKIP_HOMEBREW_TAP" -eq 0 ]; then
     elif ! homebrew_checksums_ready "$OUTPUT_DIR"; then
         echo "Warning: Homebrew tap update skipped because the release directory does not contain the full macOS/Linux checksum set." >&2
     else
-        npub="$(htree user | awk '{print $1}')"
-        release_base_url="https://upload.iris.to/${npub}/${TREE_NAME}/${VERSION_PATH}"
-        if ! "${HOMEBREW_PUBLISH_SCRIPT}" \
-            --version "$VERSION" \
-            --release-base-url "$release_base_url" \
-            --checksums-dir "$OUTPUT_DIR" \
-            --tap-repo "$HOMEBREW_TAP_REPO" \
-            --target-dir "$TARGET_DIR"
-        then
-            echo "Warning: Homebrew tap update failed; release artifacts are still published." >&2
+        npub="$(current_npub)"
+        if [ -z "$npub" ]; then
+            echo "Warning: Could not determine current npub; skipping Homebrew tap update." >&2
+        else
+            release_base_url="https://upload.iris.to/${npub}/${TREE_NAME}/${VERSION_PATH}"
+            if ! "${HOMEBREW_PUBLISH_SCRIPT}" \
+                --version "$VERSION" \
+                --release-base-url "$release_base_url" \
+                --checksums-dir "$OUTPUT_DIR" \
+                --tap-repo "$HOMEBREW_TAP_REPO" \
+                --target-dir "$TARGET_DIR"
+            then
+                echo "Warning: Homebrew tap update failed; release artifacts are still published." >&2
+            fi
         fi
     fi
 fi

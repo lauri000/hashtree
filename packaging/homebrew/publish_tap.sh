@@ -28,13 +28,14 @@ Optional:
 Examples:
   packaging/homebrew/publish_tap.sh \
     --version v0.2.15 \
-    --release-base-url https://upload.iris.to/<npub>/releases/hashtree/v0.2.15 \
+    --release-base-url https://upload.iris.to/<npub>/hashtree-releases/v0.2.15 \
     --checksums-dir rust/dist/hashtree-v0.2.15
 EOF
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+source "${REPO_DIR}/rust/scripts/release_common.sh"
 RUST_DIR="${REPO_DIR}/rust"
 CREATE_TAP_SCRIPT="${SCRIPT_DIR}/create_tap.sh"
 
@@ -165,7 +166,7 @@ fi
 require_command git
 require_command "$CREATE_TAP_SCRIPT"
 
-repo_name="$(basename "$REPO_DIR")"
+repo_name="$(infer_repo_name "$REPO_DIR")"
 if [ -z "$TAP_REPO" ]; then
     TAP_REPO="homebrew-${repo_name}"
 fi
@@ -179,7 +180,7 @@ if [[ "$PUSH_URL" == htree://* ]]; then
 fi
 
 if [ -z "$NPUB" ] && command -v htree >/dev/null 2>&1; then
-    NPUB="$(htree user | awk '{print $1}')"
+    NPUB="$(current_npub)"
 fi
 
 tmp_dir="$(mktemp -d)"

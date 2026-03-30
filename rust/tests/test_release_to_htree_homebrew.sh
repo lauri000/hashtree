@@ -2,7 +2,7 @@
 set -euo pipefail
 
 TMPDIR="$(mktemp -d)"
-REPO_ROOT="${TMPDIR}/hashtree"
+REPO_ROOT="${TMPDIR}/hashtree-release-worktree"
 cleanup() {
     rm -rf "$TMPDIR"
 }
@@ -16,7 +16,10 @@ mkdir -p \
     "${TMPDIR}/out"
 
 cp /Users/sirius/src/hashtree/rust/scripts/release_to_htree.sh "${REPO_ROOT}/rust/scripts/release_to_htree.sh"
+cp /Users/sirius/src/hashtree/rust/scripts/release_common.sh "${REPO_ROOT}/rust/scripts/release_common.sh"
 chmod +x "${REPO_ROOT}/rust/scripts/release_to_htree.sh"
+git init "${REPO_ROOT}" >/dev/null
+git -C "${REPO_ROOT}" remote add origin htree://self/hashtree
 
 cat >"${REPO_ROOT}/rust/scripts/build_release_artifacts.sh" <<'EOF'
 #!/bin/bash
@@ -81,7 +84,8 @@ case "${1:-}" in
         printf '  url: nhash1release\n'
         ;;
     user)
-        printf 'npub1releaseowner (Release Owner)\n'
+        printf '2026-03-31T10:00:00Z INFO loading profile\n'
+        printf 'npub1qqqqqqqqqqqqqqqqqqqqq (Release Owner)\n'
         ;;
     *)
         echo "unexpected htree command: $*" >&2
@@ -96,8 +100,8 @@ PATH="${TMPDIR}/bin:$PATH" TEST_LOG_DIR="${TMPDIR}/logs" \
     --version v0.2.3 \
     --output-dir "${TMPDIR}/out" >/dev/null
 
-grep -F "publish_release:v0.2.3 nhash1release releases/hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
-grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/npub1releaseowner/releases/hashtree/v0.2.3 --checksums-dir ${TMPDIR}/out --tap-repo homebrew-hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
+grep -F "publish_release:v0.2.3 nhash1release hashtree-releases" "${TMPDIR}/logs/calls.log" >/dev/null
+grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/hashtree-releases/v0.2.3 --checksums-dir ${TMPDIR}/out --tap-repo homebrew-hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
 if grep -F "cargo_publish:" "${TMPDIR}/logs/calls.log" >/dev/null; then
     echo "release_to_htree should not cargo publish unless requested" >&2
     exit 1
