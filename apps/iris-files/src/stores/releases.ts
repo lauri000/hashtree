@@ -7,7 +7,7 @@
 import { writable, type Readable } from 'svelte/store';
 import { LinkType, type CID, type TreeEntry, type TreeVisibility } from '@hashtree/core';
 import { getTree, decodeAsText } from '../store';
-import { waitForTreeRoot } from './treeRoot';
+import { subscribeToTreeRoot, waitForTreeRoot } from './treeRoot';
 import { onCacheUpdate } from '../treeRootCache';
 import { saveHashtree } from '../nostr';
 import { getErrorMessage } from '../utils/errorMessage';
@@ -303,15 +303,18 @@ export function createReleasesStore(
   }
 
   if (npub && repoPath) {
-    refresh();
+    void refresh();
   } else {
     set({ items: [], loading: false, error: null });
   }
 
   if (npub && releaseTreeName) {
+    subscribeToTreeRoot(npub, releaseTreeName, () => {
+      void refresh();
+    });
     onCacheUpdate((owner, treeName) => {
       if (owner === npub && treeName === releaseTreeName) {
-        refresh();
+        void refresh();
       }
     });
   }
@@ -360,6 +363,9 @@ export function createReleaseDetailStore(
   }
 
   if (npub && releaseTreeName) {
+    subscribeToTreeRoot(npub, releaseTreeName, () => {
+      void refresh();
+    });
     onCacheUpdate((owner, treeName) => {
       if (owner === npub && treeName === releaseTreeName) {
         void refresh();
