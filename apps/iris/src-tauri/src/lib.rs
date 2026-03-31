@@ -87,6 +87,74 @@ impl DeepLinkState {
 
 const DEFAULT_MULTICAST_TOGGLE_MAX_PEERS: usize = 12;
 const DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS: usize = 6;
+const IRIS_BLUETOOTH_DEFAULTS_MARKER_FILE: &str = ".iris-bluetooth-defaults-v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BluetoothDefaultPlatform {
+    Android,
+    Ios,
+    MacOs,
+    Other,
+}
+
+fn current_bluetooth_default_platform() -> BluetoothDefaultPlatform {
+    if cfg!(target_os = "android") {
+        BluetoothDefaultPlatform::Android
+    } else if cfg!(target_os = "ios") {
+        BluetoothDefaultPlatform::Ios
+    } else if cfg!(target_os = "macos") {
+        BluetoothDefaultPlatform::MacOs
+    } else {
+        BluetoothDefaultPlatform::Other
+    }
+}
+
+fn bluetooth_enabled_by_default_for_platform(platform: BluetoothDefaultPlatform) -> bool {
+    matches!(
+        platform,
+        BluetoothDefaultPlatform::Android
+            | BluetoothDefaultPlatform::Ios
+            | BluetoothDefaultPlatform::MacOs
+    )
+}
+
+fn apply_iris_bluetooth_defaults(
+    config: &mut hashtree_cli::Config,
+    platform: BluetoothDefaultPlatform,
+) -> bool {
+    if !bluetooth_enabled_by_default_for_platform(platform) {
+        return false;
+    }
+
+    if config.server.enable_bluetooth || config.server.max_bluetooth_peers > 0 {
+        return false;
+    }
+
+    config.server.enable_bluetooth = true;
+    config.server.max_bluetooth_peers = DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS;
+    true
+}
+
+fn ensure_iris_default_network_config(paths: &IrisPaths) -> Result<(), String> {
+    let marker_path = paths
+        .shell_data_dir
+        .join(IRIS_BLUETOOTH_DEFAULTS_MARKER_FILE);
+    if marker_path.exists() {
+        return Ok(());
+    }
+
+    let mut config = hashtree_cli::Config::load()
+        .map_err(|error| format!("Failed to load config for Iris defaults: {}", error))?;
+    if apply_iris_bluetooth_defaults(&mut config, current_bluetooth_default_platform()) {
+        config
+            .save()
+            .map_err(|error| format!("Failed to save Iris Bluetooth defaults: {}", error))?;
+    }
+
+    std::fs::write(&marker_path, b"v1\n")
+        .map_err(|error| format!("Failed to persist Iris defaults marker: {}", error))?;
+    Ok(())
+}
 
 #[derive(Default)]
 struct DaemonRuntimeState {
@@ -1355,6 +1423,10 @@ pub fn run() {
             std::env::set_var("HTREE_DATA_DIR", &paths.htree_data_dir);
             std::env::set_var("HTREE_BLUETOOTH_NOSTR_ONLY", "1");
 
+            if let Err(error) = ensure_iris_default_network_config(&paths) {
+                tracing::warn!("Failed to apply Iris default network config: {}", error);
+            }
+
             #[cfg(any(target_os = "android", target_os = "ios"))]
             if let Err(error) = mobile_bluetooth::install_from_app(&app.handle()) {
                 tracing::warn!("Failed to install mobile Bluetooth bridge: {}", error);
@@ -1506,13 +1578,14 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_network_settings, apply_transport_settings, collect_supported_launch_deep_links,
+        apply_iris_bluetooth_defaults, apply_network_settings, apply_transport_settings,
+        bluetooth_enabled_by_default_for_platform, collect_supported_launch_deep_links,
         is_supported_launch_host, mobile_default_htree_paths, normalize_automation_startup_url,
         normalize_supported_launch_deep_link, resolve_iris_paths,
         tray_connection_status_from_peers, tray_menu_spec, tray_primary_click_action,
-        tray_status_text, DaemonBlossomServerSettings, DaemonNetworkSettings,
-        DaemonTransportSettings, DesktopPlatform, IrisPaths, TrayConnectionStatus,
-        TrayMenuItemSpec, TrayPeersResponse, TrayPrimaryClickAction,
+        tray_status_text, BluetoothDefaultPlatform, DaemonBlossomServerSettings,
+        DaemonNetworkSettings, DaemonTransportSettings, DesktopPlatform, IrisPaths,
+        TrayConnectionStatus, TrayMenuItemSpec, TrayPeersResponse, TrayPrimaryClickAction,
         DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS, DEFAULT_MULTICAST_TOGGLE_MAX_PEERS,
     };
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -1832,6 +1905,45 @@ mod tests {
             applied.max_bluetooth_peers,
             DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS
         );
+    }
+
+    #[test]
+    fn iris_bluetooth_defaults_enable_supported_platforms() {
+        for platform in [
+            BluetoothDefaultPlatform::Android,
+            BluetoothDefaultPlatform::Ios,
+            BluetoothDefaultPlatform::MacOs,
+        ] {
+            let mut config = hashtree_cli::Config::default();
+            let changed = apply_iris_bluetooth_defaults(&mut config, platform);
+
+            assert!(bluetooth_enabled_by_default_for_platform(platform));
+            assert!(changed);
+            assert!(config.server.enable_bluetooth);
+            assert_eq!(
+                config.server.max_bluetooth_peers,
+                DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS
+            );
+        }
+    }
+
+    #[test]
+    fn iris_bluetooth_defaults_skip_unsupported_platforms_and_existing_choices() {
+        let mut unsupported = hashtree_cli::Config::default();
+        let changed =
+            apply_iris_bluetooth_defaults(&mut unsupported, BluetoothDefaultPlatform::Other);
+        assert!(!changed);
+        assert!(!unsupported.server.enable_bluetooth);
+        assert_eq!(unsupported.server.max_bluetooth_peers, 0);
+
+        let mut existing = hashtree_cli::Config::default();
+        existing.server.enable_bluetooth = true;
+        existing.server.max_bluetooth_peers = 2;
+        let changed =
+            apply_iris_bluetooth_defaults(&mut existing, BluetoothDefaultPlatform::Android);
+        assert!(!changed);
+        assert!(existing.server.enable_bluetooth);
+        assert_eq!(existing.server.max_bluetooth_peers, 2);
     }
 
     #[test]
@@ -2156,6 +2268,34 @@ mod tests {
                 manifest.contains(required),
                 "expected {required:?} in {:?}",
                 manifest_path
+            );
+        }
+    }
+
+    #[test]
+    fn android_mobile_bluetooth_plugin_requests_runtime_bluetooth_permissions() {
+        let plugin_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "plugins/mobile-bluetooth/android/src/main/java/to/iris/browser/mobilebluetooth/MobileBluetoothPlugin.kt",
+        );
+        if !plugin_path.exists() {
+            return;
+        }
+
+        let plugin =
+            std::fs::read_to_string(&plugin_path).expect("failed to read Android Bluetooth plugin");
+
+        for required in [
+            "@TauriPlugin(",
+            "Manifest.permission.BLUETOOTH_CONNECT",
+            "Manifest.permission.BLUETOOTH_ADVERTISE",
+            "requestPermissionForAlias(BLUETOOTH_PERMISSION_ALIAS, invoke, \"onBluetoothPermissionResult\")",
+            "@PermissionCallback",
+            "Bluetooth permission denied",
+        ] {
+            assert!(
+                plugin.contains(required),
+                "expected {required:?} in {:?}",
+                plugin_path
             );
         }
     }

@@ -1,5 +1,6 @@
 package to.iris.browser.mobilebluetooth
 
+import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
@@ -22,8 +23,11 @@ import android.os.ParcelUuid
 import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
+import app.tauri.PermissionState
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
+import app.tauri.annotation.Permission
+import app.tauri.annotation.PermissionCallback
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
@@ -38,6 +42,7 @@ import java.util.concurrent.TimeUnit
 import org.json.JSONArray
 
 private const val TAG = "MobileBluetoothPlugin"
+private const val BLUETOOTH_PERMISSION_ALIAS = "bluetooth"
 private val SERVICE_UUID: UUID = UUID.fromString("f18ef5f6-b7ee-4f40-b869-10a2d4f35932")
 private val RX_UUID: UUID = UUID.fromString("0bb5f5c9-6369-4511-a84f-4d4c14d8f8d4")
 private val TX_UUID: UUID = UUID.fromString("4ec9c0c2-97c6-4f46-9fd1-927d699b2f6d")
@@ -102,7 +107,17 @@ private fun helloPayload(localPeerId: String): ByteArray {
     return """{"type":"hello","peerId":"$localPeerId"}""".toByteArray(StandardCharsets.UTF_8)
 }
 
-@TauriPlugin
+@TauriPlugin(
+    permissions = [
+        Permission(
+            strings = [
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+            ],
+            alias = BLUETOOTH_PERMISSION_ALIAS,
+        ),
+    ],
+)
 class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin(activity) {
     private val appContext: Context = activity.applicationContext
     private val bluetoothManager =
@@ -130,6 +145,32 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
         val args = invoke.parseArgs(StartArgs::class.java)
         localPeerId = args.localPeerId
         Log.i(TAG, "start invoked for peer ${args.localPeerId}")
+        if (shouldRequestBluetoothPermissions()) {
+            Log.i(TAG, "Requesting Bluetooth runtime permissions")
+            requestPermissionForAlias(BLUETOOTH_PERMISSION_ALIAS, invoke, "onBluetoothPermissionResult")
+            return
+        }
+        startBluetooth(invoke)
+    }
+
+    @PermissionCallback
+    private fun onBluetoothPermissionResult(invoke: Invoke) {
+        if (shouldRequestBluetoothPermissions()) {
+            Log.w(TAG, "Bluetooth permission denied")
+            invoke.reject("Bluetooth permission denied")
+            return
+        }
+        startBluetooth(invoke)
+    }
+
+    private fun shouldRequestBluetoothPermissions(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return false
+        }
+        return getPermissionState(BLUETOOTH_PERMISSION_ALIAS) != PermissionState.GRANTED
+    }
+
+    private fun startBluetooth(invoke: Invoke) {
         try {
             bluetoothActive = false
             stopInternal()
