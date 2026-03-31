@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, watch, Mutex};
+use tokio::time::Sleep;
 use tracing::{debug, warn};
 
 use super::root_events::{
@@ -73,6 +74,8 @@ pub struct MulticastNostrBus {
     pending_queries: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<RelayMessage>>>>,
     announced_event_ids: Arc<Mutex<HashSet<String>>>,
 }
+
+const QUERY_SETTLE_GRACE_MS: u64 = 150;
 
 impl MulticastNostrBus {
     pub async fn bind(
@@ -194,10 +197,16 @@ impl MulticastNostrBus {
         let mut events = Vec::new();
         let deadline = tokio::time::sleep(timeout);
         tokio::pin!(deadline);
+        let mut settle_deadline: Option<std::pin::Pin<Box<Sleep>>> = None;
 
         loop {
             tokio::select! {
                 _ = &mut deadline => break,
+                _ = async {
+                    if let Some(deadline) = &mut settle_deadline {
+                        deadline.as_mut().await;
+                    }
+                }, if settle_deadline.is_some() => break,
                 maybe_msg = rx.recv() => {
                     let Some(msg) = maybe_msg else {
                         break;
@@ -207,9 +216,16 @@ impl MulticastNostrBus {
                             if sid.to_string() == subscription_id =>
                         {
                             events.push(*event);
+                            settle_deadline = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
+                                QUERY_SETTLE_GRACE_MS,
+                            ))));
                         }
                         RelayMessage::EndOfStoredEvents(sid) if sid.to_string() == subscription_id => {
-                            break;
+                            if !events.is_empty() && settle_deadline.is_none() {
+                                settle_deadline = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
+                                    QUERY_SETTLE_GRACE_MS,
+                                ))));
+                            }
                         }
                         _ => {}
                     }
@@ -323,6 +339,137 @@ impl MulticastNostrBus {
                 self.broadcast_event(&event).await?;
             }
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nostr_relay::{NostrRelay, NostrRelayConfig};
+    use crate::socialgraph;
+    use nostr::{Alphabet, EventBuilder, Kind, SingleLetterTag, Tag, TagKind};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tempfile::TempDir;
+
+    const HASHTREE_LABEL: &str = "hashtree";
+
+    fn unique_multicast_port() -> u16 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        40000 + (nanos % 2000) as u16
+    }
+
+    fn build_root_event(keys: &Keys, tree_name: &str, hash_hex: &str) -> Event {
+        EventBuilder::new(
+            Kind::Custom(HASHTREE_KIND),
+            "",
+            [
+                Tag::identifier(tree_name.to_string()),
+                Tag::custom(
+                    TagKind::SingleLetter(SingleLetterTag::lowercase(Alphabet::L)),
+                    vec![HASHTREE_LABEL.to_string()],
+                ),
+                Tag::custom(TagKind::Custom("hash".into()), vec![hash_hex.to_string()]),
+            ],
+        )
+        .to_event(keys)
+        .expect("root event")
+    }
+
+    async fn make_relay(dir: &TempDir, allowed_pubkey: String) -> Result<Arc<NostrRelay>> {
+        let graph_store = socialgraph::open_social_graph_store_with_mapsize(
+            dir.path(),
+            Some(128 * 1024 * 1024),
+        )?;
+        let backend: Arc<dyn socialgraph::SocialGraphBackend> = graph_store.clone();
+        let mut allowed = HashSet::new();
+        allowed.insert(allowed_pubkey.clone());
+        let access = Arc::new(socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            allowed,
+        ));
+
+        Ok(Arc::new(NostrRelay::new(
+            backend,
+            dir.path().to_path_buf(),
+            HashSet::from([allowed_pubkey]),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?))
+    }
+
+    #[tokio::test]
+    async fn query_root_ignores_early_eose_until_grace_period_expires() -> Result<()> {
+        let keys = Keys::generate();
+        let owner_keys = Keys::generate();
+        let dir = TempDir::new()?;
+        let relay = make_relay(&dir, keys.public_key().to_hex()).await?;
+        let bus = MulticastNostrBus::bind(
+            MulticastConfig {
+                enabled: true,
+                group: "239.255.43.10".to_string(),
+                port: unique_multicast_port(),
+                max_peers: 4,
+                announce_interval_ms: 60_000,
+            },
+            keys,
+            relay,
+        )
+        .await?;
+
+        let tree_name = "eose-race";
+        let hash_hex = "ef".repeat(32);
+        let event = build_root_event(&owner_keys, tree_name, &hash_hex);
+
+        let query_bus = Arc::clone(&bus);
+        let query = tokio::spawn(async move {
+            query_bus
+                .query_root(
+                    &owner_keys.public_key().to_hex(),
+                    tree_name,
+                    Duration::from_millis(500),
+                )
+                .await
+        });
+
+        let subscription_id = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Some(subscription_id) = bus.pending_queries.lock().await.keys().next().cloned() {
+                    break subscription_id;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("query registered pending subscription");
+
+        let (signal_tx, _signal_rx) = mpsc::channel(1);
+        bus.handle_datagram(
+            &RelayMessage::eose(nostr::SubscriptionId::new(subscription_id.clone())).as_json(),
+            &signal_tx,
+        )
+        .await;
+        bus.handle_datagram(
+            &RelayMessage::event(
+                nostr::SubscriptionId::new(subscription_id),
+                event.clone(),
+            )
+            .as_json(),
+            &signal_tx,
+        )
+        .await;
+
+        let resolved = query.await.expect("query task completed");
+        let resolved = resolved.expect("query returned root event after early eose");
+        assert_eq!(resolved.hash, hash_hex);
+        assert_eq!(resolved.event_id, event.id.to_hex());
         Ok(())
     }
 }

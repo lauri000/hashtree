@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.17 - 2026-03-31
+
+Changes since the `0.2.16` crates.io release.
+
+### Fixed
+
+- Fixed GitHub CI by refreshing the shared TypeScript lockfile and removing lint failures that had started failing the `ts` workflow.
+- Fixed GitHub Iris desktop release builds by removing the cross-app `apps/iris` import on `iris-files` source-only TypeScript config and assets.
+- Fixed flaky Rust workspace failures in multicast root queries and embedded daemon integration tests, so the GitHub Rust and release workflows complete reliably.
+
 ## 0.2.16 - 2026-03-31
 
 Changes since the `0.2.15` crates.io release.

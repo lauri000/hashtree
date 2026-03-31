@@ -6,7 +6,7 @@
  */
 import { writable, get, type Readable } from 'svelte/store';
 import { getRefResolver } from '../refResolver';
-import { toHex, type Hash, type TreeVisibility } from '@hashtree/core';
+import { toHex, type Hash, type RefResolverListEntry, type TreeVisibility } from '@hashtree/core';
 import { nostrStore } from '../nostr';
 import Dexie from 'dexie';
 import { getAllLocalRoots, onCacheUpdate } from '../treeRootCache';
@@ -165,8 +165,8 @@ export function createTreesStore(npub: string | null): Readable<TreeEntry[]> {
   const decryptedLinkKeys: Record<string, string> = {};
   const pendingDecryptions = new Set<string>();
 
-  const mergeWithLocalRoots = (entries: any[] | null) => {
-    const merged = new Map<string, any>();
+  const mergeWithLocalRoots = (entries: RefResolverListEntry[] | null) => {
+    const merged = new Map<string, RefResolverListEntry>();
 
     for (const entry of entries ?? []) {
       merged.set(entry.key, entry);
@@ -208,9 +208,9 @@ export function createTreesStore(npub: string | null): Readable<TreeEntry[]> {
   };
 
   // Helper to update store with current decrypted keys
-  const updateStore = (entries: any[] | null) => {
+  const updateStore = (entries: RefResolverListEntry[] | null) => {
     if (!entries) return;
-    const mapped = entries.map(e => {
+    const mapped = entries.map((e) => {
       const slashIdx = e.key.indexOf('/');
       const name = slashIdx >= 0 ? e.key.slice(slashIdx + 1) : '';
       const visibility = e.visibility;
@@ -236,9 +236,9 @@ export function createTreesStore(npub: string | null): Readable<TreeEntry[]> {
   };
 
   // Keep reference to last entries for re-rendering after decryption
-  let lastEntries: any[] | null = null;
+  let lastEntries: RefResolverListEntry[] | null = null;
 
-  const handleEntries = (entries: any[] | null) => {
+  const handleEntries = (entries: RefResolverListEntry[] | null) => {
     lastEntries = mergeWithLocalRoots(entries);
     updateStore(lastEntries);
 

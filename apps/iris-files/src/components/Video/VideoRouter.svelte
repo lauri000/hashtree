@@ -104,6 +104,6 @@
   {#if matchedRoute.kind === 'nhash'}
     <VideoNHashView {...matchedRoute.params} />
   {:else}
-    <matchedRoute.component {...(matchedRoute.params as any)} />
+    <matchedRoute.component {...matchedRoute.params} />
   {/if}
 {/key}

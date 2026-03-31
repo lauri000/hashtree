@@ -44,7 +44,7 @@
   import { feedStore, setFeedVideos } from '../../stores/feedStore';
   import { recordDeletedVideo, getDeletedVideoTimestamp, clearDeletedVideo } from '../../stores/videoDeletes';
   import { resolveFeedVideoRootCid, resolveFeedVideoRootCidAsync } from '../../lib/videoFeedRoot';
-  import { getStableThumbnailUrl, isThumbnailAliasUrl } from '../../lib/mediaUrl';
+  import { getStableThumbnailUrl } from '../../lib/mediaUrl';
   import { onCacheUpdate } from '../../treeRootCache';
   import { resolveReadableThumbnailRoot, resolveReadableVideoRoot } from '../../lib/readableVideoRoot';
   import {

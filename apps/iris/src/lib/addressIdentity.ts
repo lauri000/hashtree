@@ -2,7 +2,7 @@ import { writable, type Readable } from 'svelte/store';
 import { SimplePool, nip19 } from 'nostr-tools';
 import { minidenticon } from 'minidenticons';
 import { animalName } from './animalName';
-import { generateProxyUrlAsync } from '../../../iris-files/src/utils/imgproxy';
+import { generateProxyUrlAsync } from './imgproxy';
 import { distributedOwner } from './apps';
 import { getDaemonNetworkSettings, getHtreeServerUrl } from './tauri';
 

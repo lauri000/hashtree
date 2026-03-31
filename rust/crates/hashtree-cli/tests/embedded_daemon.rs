@@ -1,3 +1,5 @@
+use std::ffi::{OsStr, OsString};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
@@ -6,11 +8,40 @@ use serde_json::Value;
 use tempfile::TempDir;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(value) = &self.previous {
+            std::env::set_var(self.key, value);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
+
 #[tokio::test]
 async fn embedded_daemon_serves_htree_test() {
     let dir = TempDir::new().expect("temp dir");
-    std::env::set_var("HTREE_CONFIG_DIR", dir.path());
-    std::env::set_var("HTREE_DATA_DIR", dir.path());
+    let _lock = env_lock().lock().expect("env lock");
+    let _config_env = EnvVarGuard::set("HTREE_CONFIG_DIR", dir.path());
+    let _data_env = EnvVarGuard::set("HTREE_DATA_DIR", dir.path());
 
     let data_dir = dir.path().join("data");
     std::fs::create_dir_all(&data_dir).expect("create data dir");
@@ -50,8 +81,9 @@ async fn embedded_daemon_serves_htree_test() {
 #[tokio::test]
 async fn embedded_daemon_uses_default_blossom_servers_when_config_is_empty() {
     let dir = TempDir::new().expect("temp dir");
-    std::env::set_var("HTREE_CONFIG_DIR", dir.path());
-    std::env::set_var("HTREE_DATA_DIR", dir.path());
+    let _lock = env_lock().lock().expect("env lock");
+    let _config_env = EnvVarGuard::set("HTREE_CONFIG_DIR", dir.path());
+    let _data_env = EnvVarGuard::set("HTREE_DATA_DIR", dir.path());
 
     let data_dir = dir.path().join("data");
     std::fs::create_dir_all(&data_dir).expect("create data dir");
@@ -95,8 +127,9 @@ async fn embedded_daemon_uses_default_blossom_servers_when_config_is_empty() {
 #[tokio::test]
 async fn embedded_daemon_accepts_ws_route_with_trailing_slash() {
     let dir = TempDir::new().expect("temp dir");
-    std::env::set_var("HTREE_CONFIG_DIR", dir.path());
-    std::env::set_var("HTREE_DATA_DIR", dir.path());
+    let _lock = env_lock().lock().expect("env lock");
+    let _config_env = EnvVarGuard::set("HTREE_CONFIG_DIR", dir.path());
+    let _data_env = EnvVarGuard::set("HTREE_DATA_DIR", dir.path());
 
     let data_dir = dir.path().join("data");
     std::fs::create_dir_all(&data_dir).expect("create data dir");
@@ -163,8 +196,9 @@ async fn embedded_daemon_accepts_ws_route_with_trailing_slash() {
 #[tokio::test]
 async fn embedded_daemon_background_services_follow_live_relay_settings() {
     let dir = TempDir::new().expect("temp dir");
-    std::env::set_var("HTREE_CONFIG_DIR", dir.path());
-    std::env::set_var("HTREE_DATA_DIR", dir.path());
+    let _lock = env_lock().lock().expect("env lock");
+    let _config_env = EnvVarGuard::set("HTREE_CONFIG_DIR", dir.path());
+    let _data_env = EnvVarGuard::set("HTREE_DATA_DIR", dir.path());
 
     let data_dir = dir.path().join("data");
     std::fs::create_dir_all(&data_dir).expect("create data dir");
@@ -262,8 +296,9 @@ async fn embedded_daemon_background_services_follow_live_relay_settings() {
 #[tokio::test]
 async fn embedded_daemon_exposes_live_peer_router_controller() {
     let dir = TempDir::new().expect("temp dir");
-    std::env::set_var("HTREE_CONFIG_DIR", dir.path());
-    std::env::set_var("HTREE_DATA_DIR", dir.path());
+    let _lock = env_lock().lock().expect("env lock");
+    let _config_env = EnvVarGuard::set("HTREE_CONFIG_DIR", dir.path());
+    let _data_env = EnvVarGuard::set("HTREE_DATA_DIR", dir.path());
 
     let data_dir = dir.path().join("data");
     std::fs::create_dir_all(&data_dir).expect("create data dir");

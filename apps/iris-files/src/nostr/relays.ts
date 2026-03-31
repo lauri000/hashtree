@@ -1,9 +1,8 @@
-import { nostrStore, type RelayStatus, type RelayInfo } from './store';
+import { nostrStore } from './store';
 import { settingsStore, DEFAULT_NETWORK_SETTINGS } from '../stores/settings';
 import { getWorkerAdapter } from '../lib/workerInit';
 import {
   buildRelayStatusSnapshot,
-  normalizeRelayUrl,
   relayInfoListsEqual,
   relayStatusMapsEqual,
 } from './relayStatusSnapshot';
