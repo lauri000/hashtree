@@ -686,7 +686,14 @@ impl TestEnv {
         // Build config
         let relays = match nostr_relay {
             Some(url) => format!(r#"relays = ["{}"]"#, url),
-            None => r#"relays = ["wss://temp.iris.to", "wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net"]"#.to_string(),
+            None => format!(
+                "relays = [{}]",
+                hashtree_config::DEFAULT_RELAYS
+                    .iter()
+                    .map(|url| format!(r#""{}""#, url))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         };
 
         let blossom = match blossom_server {

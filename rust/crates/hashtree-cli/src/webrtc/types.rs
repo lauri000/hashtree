@@ -289,7 +289,6 @@ impl Default for WebRTCConfig {
             relays: vec![
                 "wss://relay.damus.io".to_string(),
                 "wss://relay.primal.net".to_string(),
-                "wss://nos.lol".to_string(),
                 "wss://temp.iris.to".to_string(),
                 "wss://relay.snort.social".to_string(),
             ],

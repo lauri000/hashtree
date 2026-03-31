@@ -17,7 +17,7 @@ use tracing::{debug, error, info, warn};
 const DEFAULT_RELAYS: &[&str] = &[
     "wss://relay.damus.io",
     "wss://relay.primal.net",
-    "wss://nos.lol",
+    "wss://relay.snort.social",
 ];
 
 #[derive(Clone)]

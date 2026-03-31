@@ -10,7 +10,7 @@ import {
   type SignalingInnerEvent,
   type SignalingTemplate,
 } from '@hashtree/worker/p2p';
-import type { SignalingMessage } from '@hashtree/nostr';
+import { DEFAULT_RELAYS as DEFAULT_NOSTR_RELAYS, type SignalingMessage } from '@hashtree/nostr';
 import { SimplePool, type Event, nip44 } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { writable } from 'svelte/store';
@@ -26,11 +26,11 @@ import { getEffectiveRelayUrls } from './irisRuntimeNetwork';
 
 const STATS_INTERVAL_MS = 1000;
 
-const DEFAULT_RELAYS = [
-  'wss://relay.primal.net',
-  'wss://nos.lol',
-  'wss://temp.iris.to',
-];
+const DEFAULT_RELAYS = DEFAULT_NOSTR_RELAYS.filter((relay) =>
+  relay === 'wss://relay.primal.net'
+  || relay === 'wss://relay.snort.social'
+  || relay === 'wss://temp.iris.to'
+);
 
 export type P2PRelayStatus = 'connected' | 'connecting' | 'disconnected';
 

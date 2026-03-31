@@ -12,6 +12,7 @@ import {
   PREFERRED_PLAYABLE_MEDIA_FILENAMES,
 } from './playableMedia';
 import { readDirectPlayableMediaFileName } from './directPlayableRoot';
+import { DEFAULT_HISTORY_RELAYS } from './defaultRelays';
 import { getStablePathUrl } from './mediaUrl';
 
 const ROOT_READ_TIMEOUT_MS = 8000;
@@ -26,15 +27,6 @@ const MAX_PLAYLIST_CHILD_PROBES = 12;
 const THUMBNAIL_PROBE_METADATA_TIMEOUT_MS = 2500;
 const THUMBNAIL_BLOB_PROBE_TIMEOUT_MS = 2500;
 const PREFERRED_VIDEO_ROOT_STORAGE_KEY = 'hashtree:preferredVideoRoots';
-const DEFAULT_HISTORY_RELAYS = [
-  'wss://relay.damus.io',
-  'wss://offchain.pub',
-  'wss://relay.primal.net',
-  'wss://nos.lol',
-  'wss://relay.nostr.band',
-  'wss://relay.snort.social',
-  'wss://temp.iris.to',
-];
 const PRIORITY_HISTORY_RELAY_COUNT = 3;
 const MIN_DISTINCT_HISTORY_EVENTS = 2;
 

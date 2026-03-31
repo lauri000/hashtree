@@ -9,7 +9,7 @@ import { getDaemonNetworkSettings, getHtreeServerUrl } from './tauri';
 const pool = new SimplePool();
 const DEFAULT_PROFILE_RELAYS = [
   'wss://relay.damus.io',
-  'wss://nos.lol',
+  'wss://relay.snort.social',
   'wss://relay.primal.net',
 ];
 const OWNER_AVATAR_SIZE = 48;

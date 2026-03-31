@@ -423,7 +423,6 @@ fn default_relays() -> Vec<String> {
     vec![
         "wss://relay.damus.io".to_string(),
         "wss://relay.snort.social".to_string(),
-        "wss://nos.lol".to_string(),
         "wss://temp.iris.to".to_string(),
         "wss://upload.iris.to/nostr".to_string(),
     ]

@@ -3,6 +3,7 @@
  */
 
 import { expect } from './fixtures';
+import { DEFAULT_E2E_PRODUCTION_RELAYS } from '../src/lib/defaultRelays';
 
 /**
  * Filter out noisy errors from relays that are irrelevant to tests.
@@ -777,15 +778,7 @@ export async function presetLocalRelayInDB(page: any, relayUrl: string = getTest
  * IMPORTANT: Call this BEFORE reload or initial navigation that should use production relays.
  */
 export async function presetProductionRelaysInDB(page: any) {
-  await page.evaluate(async () => {
-    const relays = [
-      'wss://relay.damus.io',
-      'wss://relay.primal.net',
-      'wss://nos.lol',
-      'wss://relay.nostr.band',
-      'wss://relay.snort.social',
-      'wss://temp.iris.to',
-    ];
+  await page.evaluate(async (relays: string[]) => {
     const blossomServers = [
       { url: 'https://upload.iris.to', read: false, write: true },
       { url: 'https://cdn.iris.to', read: true, write: false },
@@ -845,7 +838,7 @@ export async function presetProductionRelaysInDB(page: any) {
         tx.onerror = () => reject(tx.error);
       };
     });
-  });
+  }, [...DEFAULT_E2E_PRODUCTION_RELAYS]);
 }
 
 /**

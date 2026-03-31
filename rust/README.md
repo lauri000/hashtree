@@ -168,7 +168,6 @@ max_upload_mb = 100
 relays = [
     "wss://relay.damus.io",
     "wss://relay.snort.social",
-    "wss://nos.lol",
     "wss://relay.primal.net"
 ]
 ```

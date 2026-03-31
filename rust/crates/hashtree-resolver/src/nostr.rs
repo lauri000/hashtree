@@ -49,7 +49,7 @@ impl Default for NostrResolverConfig {
             relays: vec![
                 "wss://relay.damus.io".into(),
                 "wss://relay.primal.net".into(),
-                "wss://nos.lol".into(),
+                "wss://relay.snort.social".into(),
             ],
             resolve_timeout: Duration::from_millis(500),
             secret_key: None,

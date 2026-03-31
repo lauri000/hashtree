@@ -4,6 +4,7 @@
 import { writable, get } from 'svelte/store';
 import Dexie, { type Table } from 'dexie';
 import { canUseInjectedHtreeServerUrl } from '../lib/nativeHtree';
+import { DEFAULT_PUBLIC_RELAYS } from '../lib/defaultRelays';
 
 // Pool configuration
 export interface PoolSettings {
@@ -135,15 +136,7 @@ export interface NetworkSettings {
 export const DEFAULT_NETWORK_SETTINGS: NetworkSettings = {
   relays: isTestMode && effectiveTestRelay
     ? [effectiveTestRelay]
-    : [
-        'wss://relay.damus.io',
-        'wss://relay.primal.net',
-        'wss://nos.lol',
-        'wss://relay.nostr.band',
-        'wss://relay.snort.social',
-        'wss://temp.iris.to',
-        'wss://offchain.pub',
-      ],
+    : DEFAULT_PUBLIC_RELAYS,
   blossomServers: isTestMode
     ? []
     : [

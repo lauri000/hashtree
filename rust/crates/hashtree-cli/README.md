@@ -68,7 +68,7 @@ read_servers = ["https://cdn.iris.to", "https://hashtree.iris.to"]
 write_servers = ["https://hashtree.iris.to"]
 
 [nostr]
-relays = ["wss://relay.damus.io", "wss://nos.lol"]
+relays = ["wss://relay.damus.io", "wss://relay.snort.social"]
 socialgraph_root = "npub1..."         # defaults to own key
 social_graph_crawl_depth = 2          # BFS depth for social graph crawl
 max_write_distance = 3                # max follow distance for write access

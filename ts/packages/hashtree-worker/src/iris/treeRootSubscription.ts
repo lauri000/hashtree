@@ -25,7 +25,6 @@ const HISTORICAL_TREE_ROOT_CACHE_TTL_MS = 30_000;
 const DEFAULT_TREE_ROOT_RELAYS = [
   'wss://relay.damus.io',
   'wss://relay.primal.net',
-  'wss://nos.lol',
   'wss://relay.nostr.band',
   'wss://relay.snort.social',
   'wss://temp.iris.to',
