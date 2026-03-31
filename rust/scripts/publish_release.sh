@@ -10,7 +10,7 @@ Publishes a release directory CID into a mutable release tree and repoints the
 
 Examples:
   rust/scripts/publish_release.sh v0.2.3 nhash1...
-  rust/scripts/publish_release.sh releases/v0.2.3 nhash1... releases/hashtree
+  rust/scripts/publish_release.sh releases/v0.2.3 nhash1... hashtree/releases
 EOF
 }
 
@@ -31,7 +31,7 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 version_path="$1"
 release_cid="$2"
 repo_name="$(infer_repo_name "$REPO_DIR")"
-tree_name="${3:-releases/${repo_name}}"
+tree_name="${3:-${repo_name}/releases}"
 npub="$(current_npub)"
 
 if [[ "$version_path" == */* ]]; then
@@ -54,8 +54,8 @@ Canonical:
   htree://${npub}/${tree_name}/${latest_path}
 
 Direct:
-  https://upload.iris.to/${npub}/${tree_name}/${version_path}/
-  https://upload.iris.to/${npub}/${tree_name}/${latest_path}/
+  $(gateway_release_base_url "$npub" "$tree_name" "$version_path")/
+  $(gateway_release_base_url "$npub" "$tree_name" "$latest_path")/
 
 Browser:
   https://files.iris.to/#/${npub}/${tree_name}/${version_path}

@@ -44,3 +44,58 @@ current_npub() {
         | grep -oE 'npub1[023456789acdefghjklmnpqrstuvwxyz]+' \
         | head -n1
 }
+
+urlencode_path_segment() {
+    local input="$1"
+    local output=""
+    local i ch
+
+    LC_ALL=C
+    for ((i = 0; i < ${#input}; i++)); do
+        ch="${input:i:1}"
+        case "$ch" in
+            [a-zA-Z0-9.~_-])
+                output+="$ch"
+                ;;
+            *)
+                printf -v output '%s%%%02X' "$output" "'$ch"
+                ;;
+        esac
+    done
+
+    printf '%s\n' "$output"
+}
+
+urlencode_path() {
+    local input="$1"
+    local output=""
+    local segment
+    local first=1
+
+    IFS='/' read -r -a segments <<<"$input"
+    for segment in "${segments[@]}"; do
+        if [ "$first" -eq 1 ]; then
+            first=0
+        else
+            output+="/"
+        fi
+        output+="$(urlencode_path_segment "$segment")"
+    done
+
+    printf '%s\n' "$output"
+}
+
+gateway_tree_base_url() {
+    local npub="$1"
+    local tree_name="$2"
+    printf 'https://upload.iris.to/%s/%s\n' "$npub" "$(urlencode_path_segment "$tree_name")"
+}
+
+gateway_release_base_url() {
+    local npub="$1"
+    local tree_name="$2"
+    local version_path="$3"
+    printf '%s/%s\n' \
+        "$(gateway_tree_base_url "$npub" "$tree_name")" \
+        "$(urlencode_path "$version_path")"
+}

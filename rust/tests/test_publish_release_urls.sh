@@ -45,9 +45,10 @@ OUTPUT="$(
         "${REPO_ROOT}/rust/scripts/publish_release.sh" v0.2.3 nhash1example
 )"
 
-grep -F "release publish releases/hashtree v0.2.3 nhash1example" "${TMPDIR}/htree.log" >/dev/null
-printf '%s\n' "$OUTPUT" | grep -F "htree://npub1qqqqqqqqqqqqqqqqqqqqq/releases/hashtree/v0.2.3" >/dev/null
-printf '%s\n' "$OUTPUT" | grep -F "https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/releases/hashtree/v0.2.3/" >/dev/null
+grep -F "release publish hashtree/releases v0.2.3 nhash1example" "${TMPDIR}/htree.log" >/dev/null
+printf '%s\n' "$OUTPUT" | grep -F "htree://npub1qqqqqqqqqqqqqqqqqqqqq/hashtree/releases/v0.2.3" >/dev/null
+printf '%s\n' "$OUTPUT" | grep -F "https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/hashtree%2Freleases/v0.2.3/" >/dev/null
+printf '%s\n' "$OUTPUT" | grep -F "https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/hashtree%2Freleases/latest/" >/dev/null
 if printf '%s\n' "$OUTPUT" | grep -F "Release Owner" >/dev/null; then
     echo "publish_release output should not include display names from htree user" >&2
     exit 1

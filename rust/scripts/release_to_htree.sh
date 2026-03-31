@@ -11,7 +11,7 @@ hashtree, then publishes it into a mutable release tree.
 Options:
   --version <version>                 Release version label, for example: v0.2.3
   --version-path <path>              Published path inside the release tree (default: <version>)
-  --tree-name <name>                 Mutable release tree name (default: releases/<repo>)
+  --tree-name <name>                 Mutable release tree name (default: <repo>/releases)
   --homebrew-tap-repo <name>         Homebrew tap repo name (default: homebrew-<repo>)
   --skip-homebrew-tap                Skip updating the Homebrew tap
   --cargo-publish                    Publish Rust crates to crates.io after releasing artifacts
@@ -38,7 +38,7 @@ REPO_NAME="$(infer_repo_name "$REPO_DIR")"
 
 VERSION=""
 VERSION_PATH=""
-TREE_NAME="releases/${REPO_NAME}"
+TREE_NAME="${REPO_NAME}/releases"
 HOMEBREW_TAP_REPO="homebrew-${REPO_NAME}"
 SKIP_HOMEBREW_TAP=0
 CARGO_PUBLISH=0
@@ -131,10 +131,89 @@ homebrew_checksums_ready() {
     return 0
 }
 
+write_release_bootstrap_installer() {
+    local path="$1"
+    local base_url="$2"
+
+    cat >"$path" <<EOF
+#!/bin/sh
+set -eu
+
+BASE_URL="${base_url}"
+
+# This bootstrap is the trust root for curl|sh installs. Same-origin checksum
+# files would not improve security here, so it downloads the release archive
+# directly and delegates to the packaged installer.
+
+require_command() {
+    if ! command -v "\$1" >/dev/null 2>&1; then
+        echo "Missing required command: \$1" >&2
+        exit 1
+    fi
+}
+
+detect_arch() {
+    case "\$(uname -m)" in
+        arm64|aarch64)
+            printf '%s\n' aarch64
+            ;;
+        x86_64|amd64)
+            printf '%s\n' x86_64
+            ;;
+        *)
+            echo "Unsupported architecture: \$(uname -m)" >&2
+            exit 1
+            ;;
+    esac
+}
+
+detect_os() {
+    case "\$(uname -s)" in
+        Darwin)
+            printf '%s\n' apple-darwin
+            ;;
+        Linux)
+            printf '%s\n' unknown-linux-musl
+            ;;
+        *)
+            echo "Unsupported operating system: \$(uname -s)" >&2
+            exit 1
+            ;;
+    esac
+}
+
+require_command curl
+require_command tar
+require_command mktemp
+
+target="\$(detect_arch)-\$(detect_os)"
+archive="hashtree-\${target}.tar.gz"
+tmpdir="\$(mktemp -d 2>/dev/null || mktemp -d -t hashtree-install)"
+trap 'rm -rf "\$tmpdir"' EXIT HUP INT TERM
+
+curl -fsSL "\${BASE_URL}/\${archive}" -o "\${tmpdir}/\${archive}"
+tar -xzf "\${tmpdir}/\${archive}" -C "\${tmpdir}"
+
+cd "\${tmpdir}/hashtree"
+exec ./install.sh "\$@"
+EOF
+
+    chmod +x "$path"
+}
+
 "${SCRIPT_DIR}/build_release_artifacts.sh" "${BUILD_ARGS[@]}"
 
 OUTPUT_DIR="$(value_from_build_args --output-dir "${RUST_DIR}/dist/hashtree-${VERSION}")"
 TARGET_DIR="$(value_from_build_args --target-dir "${RUST_DIR}/target")"
+npub="$(current_npub)"
+
+if [ -n "$npub" ]; then
+    write_release_bootstrap_installer \
+        "${OUTPUT_DIR}/install.sh" \
+        "$(gateway_release_base_url "$npub" "$TREE_NAME" "$VERSION_PATH")"
+else
+    echo "Warning: Could not determine current npub; skipping release installer generation." >&2
+fi
 
 release_cid="$(
     cd "$REPO_DIR"
@@ -156,11 +235,10 @@ if [ "$SKIP_HOMEBREW_TAP" -eq 0 ]; then
     elif ! homebrew_checksums_ready "$OUTPUT_DIR"; then
         echo "Warning: Homebrew tap update skipped because the release directory does not contain the full macOS/Linux checksum set." >&2
     else
-        npub="$(current_npub)"
         if [ -z "$npub" ]; then
             echo "Warning: Could not determine current npub; skipping Homebrew tap update." >&2
         else
-            release_base_url="https://upload.iris.to/${npub}/${TREE_NAME}/${VERSION_PATH}"
+            release_base_url="$(gateway_release_base_url "$npub" "$TREE_NAME" "$VERSION_PATH")"
             if ! "${HOMEBREW_PUBLISH_SCRIPT}" \
                 --version "$VERSION" \
                 --release-base-url "$release_base_url" \

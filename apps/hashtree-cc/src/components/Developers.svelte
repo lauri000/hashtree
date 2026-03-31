@@ -22,7 +22,7 @@
     }
   }
 
-  const installCmd = `curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree-releases/latest/hashtree-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/apple-darwin/' | sed 's/linux/unknown-linux-musl/').tar.gz | tar -xz && cd hashtree && ./install.sh`;
+  const installCmd = 'curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree%2Freleases/latest/install.sh | sh';
   const cargoCmd = 'cargo install hashtree-cli';
   const cloneCmd = 'git clone htree://npub1dqgr6ds2kdauzpqtvpt2ldc5ca4spemj4n4jnjcvn7496x45gnesls5j6g/hashtree';
   const pushCmd = 'git push htree://self/myrepo master';
