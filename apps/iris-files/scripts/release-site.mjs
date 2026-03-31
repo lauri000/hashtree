@@ -350,6 +350,36 @@ function defaultRunner(step) {
   const [command, ...args] = step.command;
   console.log(`\n==> ${step.label}`);
   console.log(`$ ${[command, ...args].join(' ')}`);
+
+  const suppressDisplayPatterns = step.id === 'publish'
+    ? [/^\s*hash:\s+/i, /^\s*key:\s+/i]
+    : [];
+
+  function createOutputWriter(stream) {
+    let pending = '';
+
+    return {
+      write(chunk) {
+        pending += chunk;
+        const lines = pending.split('\n');
+        pending = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!suppressDisplayPatterns.some((pattern) => pattern.test(line))) {
+            stream.write(`${line}\n`);
+          }
+        }
+      },
+      flush() {
+        if (!pending) return;
+        if (!suppressDisplayPatterns.some((pattern) => pattern.test(pending))) {
+          stream.write(pending);
+        }
+        pending = '';
+      },
+    };
+  }
+
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: step.cwd,
@@ -357,21 +387,25 @@ function defaultRunner(step) {
     });
     let stdout = '';
     let stderr = '';
+    const stdoutWriter = createOutputWriter(process.stdout);
+    const stderrWriter = createOutputWriter(process.stderr);
 
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk) => {
       stdout += chunk;
-      process.stdout.write(chunk);
+      stdoutWriter.write(chunk);
     });
 
     child.stderr?.setEncoding('utf8');
     child.stderr?.on('data', (chunk) => {
       stderr += chunk;
-      process.stderr.write(chunk);
+      stderrWriter.write(chunk);
     });
 
     child.on('error', reject);
     child.on('close', (code, signal) => {
+      stdoutWriter.flush();
+      stderrWriter.flush();
       if (signal) {
         const signalMessage = `Process exited with signal ${signal}\n`;
         stderr += signalMessage;
