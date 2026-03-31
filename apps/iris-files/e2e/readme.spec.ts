@@ -2,6 +2,10 @@ import { test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
 import { setupPageErrorHandler, navigateToPublicFolder, goToTreeList } from './test-utils.js';
 
+test.use({
+  permissions: ['clipboard-read', 'clipboard-write'],
+});
+
 // Helper to create tree and navigate into it
 async function createAndEnterTree(page: Page, name: string) {
   await goToTreeList(page);
@@ -153,5 +157,33 @@ test.describe('README Panel', () => {
 
     expect(wrapState.hasOverflow).toBe(false);
     expect(wrapState.codeRight).toBeLessThanOrEqual(wrapState.containerRight + 1);
+  });
+
+  test('should copy fenced command blocks from README.md', async ({ page }) => {
+    const installCommand = 'curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree%2Freleases/latest/install.sh | sh';
+
+    await createAndEnterTree(page, 'readme-copy-test');
+    await createFile(
+      page,
+      'README.md',
+      `# Install
+
+\`\`\`bash
+${installCommand}
+\`\`\`
+`
+    );
+
+    await goToTreeList(page);
+    await page.locator('a:has-text("readme-copy-test")').first().click();
+
+    await expect(page.locator('.i-lucide-book-open')).toBeVisible({ timeout: 30000 });
+    const copyButton = page.locator('.markdown-content').first().getByRole('button', { name: 'Copy code' });
+    await expect(copyButton).toBeVisible();
+
+    await copyButton.click();
+
+    await expect.poll(async () => page.evaluate(() => navigator.clipboard.readText())).toBe(installCommand);
+    await expect(copyButton).toContainText('Copied');
   });
 });
