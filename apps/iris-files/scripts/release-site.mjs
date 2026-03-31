@@ -9,7 +9,7 @@ const appDir = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(appDir, '..', '..');
 const manifestPath = path.join(repoRoot, 'rust', 'Cargo.toml');
 const defaultWorkerCompatibilityDate = '2026-03-19';
-const wranglerVersion = '4.78.0';
+export const wranglerVersion = '4.78.0';
 
 export const releaseProfiles = {
   files: {

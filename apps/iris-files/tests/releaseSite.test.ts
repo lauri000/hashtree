@@ -1,7 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createReleasePlan, parseArgs, parsePublishOutput, runAllReleases, runRelease } from '../scripts/release-site.mjs';
+import {
+  createReleasePlan,
+  parseArgs,
+  parsePublishOutput,
+  runAllReleases,
+  runRelease,
+  wranglerVersion,
+} from '../scripts/release-site.mjs';
 
 describe('release-site', () => {
+  const wranglerCommand = `wrangler@${wranglerVersion}`;
+
   it('uses the built-in Worker default for files', () => {
     const parsed = parseArgs(['files']);
     expect(parsed.workerName).toBe('iris-files');
@@ -120,7 +129,7 @@ describe('release-site', () => {
 
     expect(plan.steps.at(-1)?.command).toEqual([
       'npx',
-      'wrangler@4',
+      wranglerCommand,
       'deploy',
       '--assets',
       'dist-video',
@@ -147,7 +156,7 @@ describe('release-site', () => {
 
     expect(plan.steps.at(-1)?.command).toEqual([
       'npx',
-      'wrangler@4',
+      wranglerCommand,
       'deploy',
       '--assets',
       'dist-boards',
@@ -179,7 +188,7 @@ describe('release-site', () => {
     ]);
     expect(plan.steps.at(-1)?.command).toEqual([
       'npx',
-      'wrangler@4',
+      wranglerCommand,
       'deploy',
       '--assets',
       'dist',
@@ -215,7 +224,7 @@ describe('release-site', () => {
 
     expect(plan.steps.at(-1)?.command).toEqual([
       'npx',
-      'wrangler@4',
+      wranglerCommand,
       'pages',
       'deploy',
       'dist',
