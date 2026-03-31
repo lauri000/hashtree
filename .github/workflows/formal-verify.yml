@@ -199,10 +199,10 @@ jobs:
             ${{ runner.os }}-webrtc-formal-
 
       - name: Run webrtc formal integration tests
-        run: cargo test -p hashtree-webrtc --test formal_webrtc_props -- --nocapture
+        run: cargo test -p hashtree-network --test formal_webrtc_props -- --nocapture
 
       - name: Run webrtc fragment reassembly tests
-        run: cargo test -p hashtree-webrtc fragment_reassembly -- --nocapture
+        run: cargo test -p hashtree-network fragment_reassembly -- --nocapture
 
       - name: Upload webrtc formal artifacts
         if: always()
