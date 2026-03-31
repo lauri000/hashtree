@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use hashtree_webrtc::PeerSelector;
+use hashtree_network::PeerSelector;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -895,7 +895,7 @@ mod tests {
         CashuMintBalance, CashuPaymentClient, CashuReceivedPayment, CashuSentPayment,
     };
     use async_trait::async_trait;
-    use hashtree_webrtc::SelectionStrategy;
+    use hashtree_network::SelectionStrategy;
     use std::collections::HashMap;
     use std::sync::Mutex as StdMutex;
 

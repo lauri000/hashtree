@@ -1,7 +1,7 @@
 #[cfg(feature = "nostr")]
 mod nostr_p2p {
+    use hashtree_network::{SignalingMessage, NOSTR_KIND_HASHTREE};
     use hashtree_sim::nostr_mesh::NostrMesh;
-    use hashtree_webrtc::{SignalingMessage, NOSTR_KIND_HASHTREE};
     use nostr::{Alphabet, Filter, Kind, SingleLetterTag};
 
     #[tokio::test]

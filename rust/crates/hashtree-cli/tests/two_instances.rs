@@ -109,6 +109,9 @@ mod test_relay {
 
     impl TestRelay {
         pub fn new(port: u16) -> Self {
+            let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            listener.set_nonblocking(true).unwrap();
             let events: Arc<RwLock<HashMap<String, serde_json::Value>>> =
                 Arc::new(RwLock::new(HashMap::new()));
             let (shutdown, _) = broadcast::channel(1);
@@ -132,8 +135,6 @@ mod test_relay {
                     .unwrap();
 
                 rt.block_on(async move {
-                    let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
-                    listener.set_nonblocking(true).unwrap();
                     let listener = tokio::net::TcpListener::from_std(listener).unwrap();
 
                     loop {
@@ -348,47 +349,43 @@ struct TestInstance {
     process: Option<Child>,
     data_path: PathBuf,
     home_dir: PathBuf,
+    addr: String,
     pubkey_hex: String,
 }
 
 impl TestInstance {
     /// Create a new test instance with pre-generated keys
     /// The `follow_pubkeys` parameter specifies other instance pubkeys to follow (for peer classification)
-    fn new(port: u16, htree_bin: &str, keys: &Keys, follow_pubkeys: &[String]) -> Self {
+    fn new_with_relays(
+        port: u16,
+        htree_bin: &str,
+        keys: &Keys,
+        follow_pubkeys: &[String],
+        relay_urls: &[String],
+    ) -> Result<Self> {
         let data_dir = TempDir::new().expect("Failed to create temp dir");
         let data_path = data_dir.path().to_path_buf();
         let home_dir = data_dir.path().to_path_buf();
+        let addr = format!("127.0.0.1:{}", port);
 
         // Create .hashtree config dir
         let config_dir = home_dir.join(".hashtree");
-        std::fs::create_dir_all(&config_dir).expect("Failed to create config dir");
-
-        // Create config - use relays that don't require PoW
-        let config_content = r#"
-[server]
-enable_auth = false
-stun_port = 0
-
-[nostr]
-relays = ["wss://temp.iris.to", "wss://relay.damus.io", "wss://relay.snort.social"]
-social_graph_crawl_depth = 0
-"#;
-        std::fs::write(config_dir.join("config.toml"), config_content)
-            .expect("Failed to write config");
+        std::fs::create_dir_all(&config_dir).context("Failed to create config dir")?;
+        write_test_config_with_relays(&config_dir, relay_urls)?;
 
         // Write pre-generated keys file
         let nsec = keys
             .secret_key()
             .to_bech32()
-            .expect("Failed to encode nsec");
-        std::fs::write(config_dir.join("keys"), &nsec).expect("Failed to write keys");
+            .context("Failed to encode nsec")?;
+        std::fs::write(config_dir.join("keys"), &nsec).context("Failed to write keys")?;
 
         // Write contacts.json with follow_pubkeys so peer classifier puts them in Follows pool
         if !follow_pubkeys.is_empty() {
             let contacts_json =
-                serde_json::to_string(&follow_pubkeys).expect("Failed to serialize contacts");
+                serde_json::to_string(&follow_pubkeys).context("Failed to serialize contacts")?;
             std::fs::write(data_dir.path().join("contacts.json"), &contacts_json)
-                .expect("Failed to write contacts.json");
+                .context("Failed to write contacts.json")?;
         }
 
         let pubkey_hex = keys.public_key().to_hex();
@@ -398,21 +395,25 @@ social_graph_crawl_depth = 0
             .arg(data_dir.path())
             .arg("start")
             .arg("--addr")
-            .arg(format!("127.0.0.1:{}", port))
+            .arg(&addr)
             .env("HOME", &home_dir)
+            .env("HTREE_CONFIG_DIR", &config_dir)
             .env("RUST_LOG", "warn,hashtree_cli::webrtc::signaling=info")
             .stdout(Stdio::null())
             .stderr(Stdio::inherit()) // Show errors on stderr
             .spawn()
-            .expect("Failed to start htree instance");
+            .context("Failed to start htree instance")?;
 
-        TestInstance {
+        wait_for_health(&addr, Duration::from_secs(10))?;
+
+        Ok(TestInstance {
             _data_dir: data_dir,
             process: Some(process),
             data_path,
             home_dir,
+            addr,
             pubkey_hex,
-        }
+        })
     }
 
     fn new_without_server() -> Self {
@@ -425,6 +426,7 @@ social_graph_crawl_depth = 0
             process: None,
             data_path,
             home_dir,
+            addr: String::new(),
             pubkey_hex: String::new(),
         }
     }
@@ -437,6 +439,10 @@ social_graph_crawl_depth = 0
             .env("HOME", &self.home_dir)
             .output()
             .expect("Failed to run htree command")
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://{}", self.addr)
     }
 }
 
@@ -606,6 +612,17 @@ fn find_free_port() -> Result<u16> {
         .context("Failed to read ephemeral test port")?
         .port();
     Ok(port)
+}
+
+fn find_unique_free_ports(count: usize) -> Result<Vec<u16>> {
+    let mut ports = Vec::with_capacity(count);
+    while ports.len() < count {
+        let port = find_free_port()?;
+        if !ports.contains(&port) {
+            ports.push(port);
+        }
+    }
+    Ok(ports)
 }
 
 fn create_test_directory() -> TempDir {
@@ -794,9 +811,14 @@ fn fetch_bytes(url: &str) -> Result<Vec<u8>> {
 
 #[test]
 #[ignore = "requires external Nostr relays and network connectivity - run manually with --ignored"]
-fn test_two_instances_discover_and_sync() {
+fn test_two_instances_discover_and_sync() -> Result<()> {
     let htree_bin = find_htree_binary();
     let htree_bin_str = htree_bin.to_str().unwrap();
+    let relay = test_relay::TestRelay::new(0);
+    let relay_url = relay.url();
+    let ports = find_unique_free_ports(2)?;
+    let port_a = ports[0];
+    let port_b = ports[1];
 
     println!("Using htree binary: {:?}", htree_bin);
 
@@ -815,25 +837,25 @@ fn test_two_instances_discover_and_sync() {
 
     // Start two instances with servers for WebRTC (each has its own data directory)
     // Each instance follows the other to prioritize peer connections in "Follows" pool
-    println!("\nStarting Instance A on port 18081 (follows B)...");
-    let instance_a = TestInstance::new(
-        18081,
+    println!("\nStarting Instance A on port {} (follows B)...", port_a);
+    let instance_a = TestInstance::new_with_relays(
+        port_a,
         htree_bin_str,
         &keys_a,
         std::slice::from_ref(&pubkey_b),
-    );
+        std::slice::from_ref(&relay_url),
+    )?;
     println!("Instance A data dir: {:?}", instance_a.data_path);
-    std::thread::sleep(Duration::from_secs(5));
 
-    println!("\nStarting Instance B on port 18082 (follows A)...");
-    let instance_b = TestInstance::new(
-        18082,
+    println!("\nStarting Instance B on port {} (follows A)...", port_b);
+    let instance_b = TestInstance::new_with_relays(
+        port_b,
         htree_bin_str,
         &keys_b,
         std::slice::from_ref(&pubkey_a),
-    );
+        std::slice::from_ref(&relay_url),
+    )?;
     println!("Instance B data dir: {:?}", instance_b.data_path);
-    std::thread::sleep(Duration::from_secs(5));
 
     // Verify they have different data directories
     assert_ne!(
@@ -852,7 +874,7 @@ fn test_two_instances_discover_and_sync() {
         .arg("POST")
         .arg("-F")
         .arg(format!("file=@{}", test_file.display()))
-        .arg("http://127.0.0.1:18081/upload")
+        .arg(format!("{}/upload", instance_a.base_url()))
         .output()
         .expect("Failed to upload file");
 
@@ -885,7 +907,7 @@ fn test_two_instances_discover_and_sync() {
         .arg("-s")
         .arg("-X")
         .arg("POST")
-        .arg(format!("http://127.0.0.1:18081/api/pin/{}", cid))
+        .arg(format!("{}/api/pin/{}", instance_a.base_url(), cid))
         .output()
         .expect("Failed to pin");
     println!(
@@ -902,7 +924,7 @@ fn test_two_instances_discover_and_sync() {
     println!("\nVerifying servers are responding...");
     let check_a = Command::new("curl")
         .arg("-s")
-        .arg("http://127.0.0.1:18081/api/stats")
+        .arg(format!("{}/api/stats", instance_a.base_url()))
         .output();
     println!(
         "Instance A stats: {}",
@@ -913,7 +935,7 @@ fn test_two_instances_discover_and_sync() {
 
     let check_b = Command::new("curl")
         .arg("-s")
-        .arg("http://127.0.0.1:18082/api/stats")
+        .arg(format!("{}/api/stats", instance_b.base_url()))
         .output();
     println!(
         "Instance B stats: {}",
@@ -928,7 +950,7 @@ fn test_two_instances_discover_and_sync() {
         .arg("-s")
         .arg("-w")
         .arg("\nHTTP_CODE:%{http_code}")
-        .arg(format!("http://127.0.0.1:18081/{}", cid))
+        .arg(format!("{}/{}", instance_a.base_url(), cid))
         .output();
     println!(
         "Instance A content check: {}",
@@ -956,11 +978,11 @@ fn test_two_instances_discover_and_sync() {
         // Check peers on both instances
         let peers_a = Command::new("curl")
             .arg("-s")
-            .arg("http://127.0.0.1:18081/api/peers")
+            .arg(format!("{}/api/peers", instance_a.base_url()))
             .output();
         let peers_b = Command::new("curl")
             .arg("-s")
-            .arg("http://127.0.0.1:18082/api/peers")
+            .arg(format!("{}/api/peers", instance_b.base_url()))
             .output();
 
         let peers_a_json = peers_a
@@ -1033,7 +1055,7 @@ fn test_two_instances_discover_and_sync() {
             .arg("-s")
             .arg("-w")
             .arg("\n__HTTP_CODE:%{http_code}__")
-            .arg(format!("http://127.0.0.1:18082/{}", cid))
+            .arg(format!("{}/{}", instance_b.base_url(), cid))
             .output();
 
         match curl_output {
@@ -1074,6 +1096,7 @@ fn test_two_instances_discover_and_sync() {
     println!("Retrieved {} bytes", retrieved_content.len());
 
     println!("\nTest completed!");
+    Ok(())
 }
 
 fn extract_cid(text: &str) -> Option<String> {
@@ -1151,16 +1174,17 @@ fn test_status_command_reports_running_daemon() -> Result<()> {
 )]
 fn test_two_instances_connect_local_relay() -> Result<()> {
     let htree_bin = find_htree_binary();
-    let relay = test_relay::TestRelay::new(19110);
+    let relay = test_relay::TestRelay::new(0);
     let relay_url = relay.url();
+    let ports = find_unique_free_ports(2)?;
 
     let keys_a = Keys::generate();
     let keys_b = Keys::generate();
     let pubkey_a = keys_a.public_key().to_hex();
     let pubkey_b = keys_b.public_key().to_hex();
 
-    let instance_a = DaemonInstance::new(18191, &htree_bin, &keys_a, &[pubkey_b], &relay_url)?;
-    let instance_b = DaemonInstance::new(18192, &htree_bin, &keys_b, &[pubkey_a], &relay_url)?;
+    let instance_a = DaemonInstance::new(ports[0], &htree_bin, &keys_a, &[pubkey_b], &relay_url)?;
+    let instance_b = DaemonInstance::new(ports[1], &htree_bin, &keys_b, &[pubkey_a], &relay_url)?;
 
     assert_ne!(instance_a.pid_file, instance_b.pid_file);
     assert!(is_process_running(instance_a.pid));
@@ -1210,10 +1234,11 @@ fn test_two_instances_connect_local_relay() -> Result<()> {
 )]
 fn test_three_peers_chain_bootstrap_then_ac_connect_without_relay() -> Result<()> {
     let htree_bin = find_htree_binary();
-    let mut relay_r1 = test_relay::TestRelay::new(19120);
-    let mut relay_r2 = test_relay::TestRelay::new(19121);
+    let mut relay_r1 = test_relay::TestRelay::new(0);
+    let mut relay_r2 = test_relay::TestRelay::new(0);
     let relay_r1_url = relay_r1.url();
     let relay_r2_url = relay_r2.url();
+    let ports = find_unique_free_ports(3)?;
 
     let keys_a = Keys::generate();
     let keys_b = Keys::generate();
@@ -1224,21 +1249,21 @@ fn test_three_peers_chain_bootstrap_then_ac_connect_without_relay() -> Result<()
     let pubkey_c = keys_c.public_key().to_hex();
 
     let instance_a = DaemonInstance::new_with_relays(
-        18201,
+        ports[0],
         &htree_bin,
         &keys_a,
         std::slice::from_ref(&pubkey_b),
         std::slice::from_ref(&relay_r1_url),
     )?;
     let instance_b = DaemonInstance::new_with_relays(
-        18202,
+        ports[1],
         &htree_bin,
         &keys_b,
         &[pubkey_a.clone(), pubkey_c.clone()],
         &[relay_r1_url.clone(), relay_r2_url.clone()],
     )?;
     let instance_c = DaemonInstance::new_with_relays(
-        18203,
+        ports[2],
         &htree_bin,
         &keys_c,
         std::slice::from_ref(&pubkey_b),

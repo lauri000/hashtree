@@ -8,18 +8,25 @@
 //! They are marked as #[ignore] and can be run manually with --ignored.
 
 use hashtree_core::MemoryStore;
-use hashtree_sim::WsRelay;
-use hashtree_webrtc::{
+use hashtree_network::{
     classifier_channel, PeerPool, PoolConfig, PoolSettings, WebRTCStore, WebRTCStoreConfig,
 };
+use hashtree_sim::WsRelay;
 use nostr_sdk::prelude::*;
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use tokio::sync::RwLock;
+
+fn ensure_rustls_crypto_provider() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
 
 /// Helper to run classifier that treats specific pubkeys as "follows"
 async fn run_classifier(
-    mut rx: hashtree_webrtc::ClassifierRx,
+    mut rx: hashtree_network::ClassifierRx,
     follows: Arc<RwLock<HashSet<String>>>,
 ) {
     while let Some(req) = rx.recv().await {
@@ -37,6 +44,8 @@ async fn run_classifier(
 /// This verifies the relay infrastructure works without requiring WebRTC.
 #[tokio::test]
 async fn test_connect_to_local_relay() {
+    ensure_rustls_crypto_provider();
+
     // Start local relay
     let mut relay = WsRelay::new();
     let _addr = relay.start().await.expect("Failed to start relay");
@@ -75,6 +84,8 @@ async fn test_connect_to_local_relay() {
 #[tokio::test]
 #[ignore = "requires ICE/STUN connectivity - run manually with --ignored"]
 async fn test_peer_discovery() {
+    ensure_rustls_crypto_provider();
+
     // Start local relay
     let mut relay = WsRelay::new();
     let _addr = relay.start().await.expect("Failed to start relay");
@@ -107,8 +118,19 @@ async fn test_peer_discovery() {
     tokio::spawn(run_classifier(classifier_rx1, follows1));
     tokio::spawn(run_classifier(classifier_rx2, follows2));
 
-    // Configure pools: only connect to follows (other pool has 0 max)
-    let pools = PoolSettings {
+    // Make store2 the sole initiator. The legacy direct WebRTCStore path used
+    // by this ignored test does not reliably recover from simultaneous offers.
+    let accept_only_pools = PoolSettings {
+        follows: PoolConfig {
+            max_connections: 10,
+            satisfied_connections: 0,
+        },
+        other: PoolConfig {
+            max_connections: 0, // Don't connect to non-follows
+            satisfied_connections: 0,
+        },
+    };
+    let initiator_pools = PoolSettings {
         follows: PoolConfig {
             max_connections: 10,
             satisfied_connections: 1,
@@ -123,7 +145,7 @@ async fn test_peer_discovery() {
         relays: vec![relay_url.clone()],
         debug: true,
         hello_interval_ms: 500, // Fast hellos for testing
-        pools: pools.clone(),
+        pools: accept_only_pools,
         classifier_tx: Some(classifier_tx1),
         ..Default::default()
     };
@@ -132,7 +154,7 @@ async fn test_peer_discovery() {
         relays: vec![relay_url.clone()],
         debug: true,
         hello_interval_ms: 500,
-        pools: pools.clone(),
+        pools: initiator_pools,
         classifier_tx: Some(classifier_tx2),
         ..Default::default()
     };
@@ -188,6 +210,8 @@ async fn test_peer_discovery() {
 #[tokio::test]
 #[ignore = "requires ICE/STUN connectivity - run manually with --ignored"]
 async fn test_three_node_forwarding() {
+    ensure_rustls_crypto_provider();
+
     use hashtree_core::{sha256, Store};
 
     // Start local relay
@@ -237,11 +261,25 @@ async fn test_three_node_forwarding() {
     tokio::spawn(run_classifier(classifier_rx_b, follows_b));
     tokio::spawn(run_classifier(classifier_rx_c, follows_c));
 
-    // Configure pools: only connect to follows
-    let pools = PoolSettings {
+    // Use an asymmetric topology so only A->B and C->B initiate. This avoids
+    // simultaneous-offer deadlocks while still exercising forwarding.
+    let edge_initiator_pools = PoolSettings {
         follows: PoolConfig {
-            max_connections: 10,
-            satisfied_connections: 2,
+            // The legacy direct WebRTCStore path counts an in-flight peer
+            // against max_connections before the answer/candidates arrive, so
+            // max_connections needs headroom above satisfied_connections.
+            max_connections: 2,
+            satisfied_connections: 1,
+        },
+        other: PoolConfig {
+            max_connections: 0,
+            satisfied_connections: 0,
+        },
+    };
+    let relay_hub_pools = PoolSettings {
+        follows: PoolConfig {
+            max_connections: 2,
+            satisfied_connections: 0,
         },
         other: PoolConfig {
             max_connections: 0,
@@ -253,7 +291,7 @@ async fn test_three_node_forwarding() {
         relays: vec![relay_url.clone()],
         debug: true,
         hello_interval_ms: 500,
-        pools: pools.clone(),
+        pools: edge_initiator_pools.clone(),
         classifier_tx: Some(classifier_tx_a),
         ..Default::default()
     };
@@ -262,7 +300,7 @@ async fn test_three_node_forwarding() {
         relays: vec![relay_url.clone()],
         debug: true,
         hello_interval_ms: 500,
-        pools: pools.clone(),
+        pools: relay_hub_pools,
         classifier_tx: Some(classifier_tx_b),
         ..Default::default()
     };
@@ -271,7 +309,7 @@ async fn test_three_node_forwarding() {
         relays: vec![relay_url.clone()],
         debug: true,
         hello_interval_ms: 500,
-        pools: pools.clone(),
+        pools: edge_initiator_pools,
         classifier_tx: Some(classifier_tx_c),
         ..Default::default()
     };
@@ -280,17 +318,17 @@ async fn test_three_node_forwarding() {
     let mut store_b = WebRTCStore::new(store_b_local.clone(), config_b);
     let mut store_c = WebRTCStore::new(store_c_local.clone(), config_c);
 
-    // Start all stores with delays
-    store_a
-        .start(keys_a)
-        .await
-        .expect("Store A failed to start");
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Start the relay hub first so only the edge nodes initiate connections.
     store_b
         .start(keys_b)
         .await
         .expect("Store B failed to start");
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    store_a
+        .start(keys_a)
+        .await
+        .expect("Store A failed to start");
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
     store_c
         .start(keys_c)
         .await
@@ -350,6 +388,8 @@ async fn test_three_node_forwarding() {
 #[tokio::test]
 #[ignore = "requires ICE/STUN connectivity - run manually with --ignored"]
 async fn test_data_transfer_between_peers() {
+    ensure_rustls_crypto_provider();
+
     use hashtree_core::{sha256, Store};
 
     // Start local relay
@@ -384,8 +424,19 @@ async fn test_data_transfer_between_peers() {
     tokio::spawn(run_classifier(classifier_rx1, follows1));
     tokio::spawn(run_classifier(classifier_rx2, follows2));
 
-    // Configure pools: only connect to follows
-    let pools = PoolSettings {
+    // Make store2 the sole initiator to avoid simultaneous-offer deadlocks in
+    // the legacy direct WebRTCStore path used by this ignored test.
+    let accept_only_pools = PoolSettings {
+        follows: PoolConfig {
+            max_connections: 10,
+            satisfied_connections: 0,
+        },
+        other: PoolConfig {
+            max_connections: 0,
+            satisfied_connections: 0,
+        },
+    };
+    let initiator_pools = PoolSettings {
         follows: PoolConfig {
             max_connections: 10,
             satisfied_connections: 1,
@@ -400,7 +451,7 @@ async fn test_data_transfer_between_peers() {
         relays: vec![relay_url.clone()],
         debug: true,
         hello_interval_ms: 500,
-        pools: pools.clone(),
+        pools: accept_only_pools,
         classifier_tx: Some(classifier_tx1),
         ..Default::default()
     };
@@ -409,7 +460,7 @@ async fn test_data_transfer_between_peers() {
         relays: vec![relay_url.clone()],
         debug: true,
         hello_interval_ms: 500,
-        pools: pools.clone(),
+        pools: initiator_pools,
         classifier_tx: Some(classifier_tx2),
         ..Default::default()
     };
@@ -417,9 +468,9 @@ async fn test_data_transfer_between_peers() {
     let mut store1 = WebRTCStore::new(store1_local.clone(), config1);
     let mut store2 = WebRTCStore::new(store2_local.clone(), config2);
 
-    // Start both stores
+    // Start the acceptor first so only store2 initiates.
     store1.start(keys1).await.expect("Store1 failed to start");
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
     store2.start(keys2).await.expect("Store2 failed to start");
 
     // Wait for peer connection

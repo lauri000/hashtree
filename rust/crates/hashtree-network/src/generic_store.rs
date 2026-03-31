@@ -27,6 +27,8 @@ use crate::signaling::MeshRouter;
 use crate::transport::{PeerLinkFactory, SignalingTransport, TransportError};
 use crate::types::{PeerHTLConfig, SignalingMessage, MAX_HTL};
 
+// Keep the on-disk namespace stable across the crate rename so existing peer
+// metadata does not disappear for users upgrading from the old package name.
 const PEER_METADATA_POINTER_SLOT_KEY: &[u8] = b"hashtree-webrtc/peer-metadata/latest/v1";
 
 /// Pending request awaiting response

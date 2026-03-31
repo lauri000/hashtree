@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hashtree_webrtc::{
+use hashtree_network::{
     clear_channel_registry, MeshRouter, MockConnectionFactory, MockRelay, MockRelayTransport,
     PoolConfig, PoolSettings, SignalingTransport,
 };

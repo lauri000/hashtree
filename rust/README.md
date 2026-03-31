@@ -87,7 +87,7 @@ The `Store` trait is just `get(hash) → bytes` and `put(hash, bytes)`. The core
 - `hashtree-fs` - Filesystem helpers and tree traversal
 - `hashtree-resolver` - Nostr-based tree resolution
 - `hashtree-blossom` - Blossom client/server helpers
-- `hashtree-webrtc` - WebRTC transport and peer discovery
+- `hashtree-network` - Mesh routing, signaling, peer links, and store composition
 - `hashtree-lmdb` - LMDB storage backend
 - `hashtree-s3` - S3 storage backend
 - `hashtree-config` - Config loading and defaults

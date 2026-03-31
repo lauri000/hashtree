@@ -31,7 +31,7 @@ println!("{}", serde_json::to_string_pretty(&report).unwrap());
 The simulation uses the **same types and defaults as production WebRTC**:
 
 ```rust
-// Uses hashtree_webrtc::PoolConfig - same defaults as real WebRTC
+// Uses hashtree_network::PoolConfig - same defaults as real WebRTC
 let config = SimConfig {
     pool: PoolConfig::default(),  // max_connections: 16, satisfied_connections: 8
     ..Default::default()

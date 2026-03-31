@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 
-use hashtree_webrtc::{
+use hashtree_network::{
     decrement_htl_with_policy, should_forward_htl, validate_mesh_frame, MeshNostrFrame,
     PeerHTLConfig, SignalingMessage, MESH_EVENT_POLICY, MESH_MAX_HTL, NOSTR_KIND_HASHTREE,
 };

@@ -21,14 +21,14 @@
 //!
 //! async fn example(resolver: impl RootResolver) {
 //!     // One-shot resolve
-//!     if let Some(hash) = resolver.resolve("npub1.../mydata").await.unwrap() {
-//!         println!("Found hash: {}", hashtree_core::to_hex(&hash));
+//!     if let Some(cid) = resolver.resolve("npub1.../mydata").await.unwrap() {
+//!         println!("Found cid: {}", cid);
 //!     }
 //!
 //!     // Subscribe to updates (returns a channel receiver)
 //!     let mut rx = resolver.subscribe("npub1.../mydata").await.unwrap();
-//!     while let Some(hash) = rx.recv().await {
-//!         println!("Updated hash: {:?}", hash);
+//!     while let Some(cid) = rx.recv().await {
+//!         println!("Updated cid: {:?}", cid);
 //!     }
 //! }
 //! ```

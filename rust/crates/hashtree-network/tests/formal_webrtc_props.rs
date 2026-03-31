@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use hashtree_webrtc::{should_forward_htl, PeerHTLConfig, PeerSelector, MAX_HTL};
+use hashtree_network::{should_forward_htl, PeerHTLConfig, PeerSelector, MAX_HTL};
 
 #[test]
 fn test_htl_monotonicity_and_forwarding_bounds() {

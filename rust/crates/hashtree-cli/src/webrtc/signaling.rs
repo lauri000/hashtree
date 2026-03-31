@@ -12,7 +12,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
-use hashtree_webrtc::{
+use hashtree_network::{
     decode_signaling_event, encode_signaling_event, run_hedged_waves, sync_selector_peers,
     ClassifyRequest as SharedClassifyRequest, HedgedWaveAction, IceCandidate as SharedIceCandidate,
     MeshRouter, PeerLink as SharedPeerLink, PeerLinkFactory as SharedPeerLinkFactory, PeerSelector,
@@ -2244,7 +2244,7 @@ mod tests {
     use crate::webrtc::SelectionStrategy;
     use anyhow::Result as AnyResult;
     use async_trait::async_trait;
-    use hashtree_webrtc::{build_hedged_wave_plan, normalize_dispatch_config};
+    use hashtree_network::{build_hedged_wave_plan, normalize_dispatch_config};
     use nostr::{EventBuilder, Keys, Tag};
     use std::time::Duration;
 

@@ -1,6 +1,6 @@
 //! WebRTC signaling types compatible with iris-client and hashtree-ts
 
-pub use hashtree_webrtc::{
+pub use hashtree_network::{
     decrement_htl_with_policy, should_forward_htl, validate_mesh_frame, HtlMode, HtlPolicy,
     IceCandidate, MeshNostrFrame, MeshNostrPayload, PeerHTLConfig, PeerPool, PoolConfig,
     PoolSettings, RequestDispatchConfig, SelectionStrategy, SignalingMessage, TimedSeenSet,

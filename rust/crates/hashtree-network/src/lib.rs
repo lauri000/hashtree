@@ -17,7 +17,7 @@
 //!
 //! ```rust,no_run
 //! use hashtree_core::MemoryStore;
-//! use hashtree_webrtc::{MeshStore, MeshStoreConfig};
+//! use hashtree_network::{MeshStore, MeshStoreConfig};
 //! use nostr_sdk::prelude::*;
 //! use std::sync::Arc;
 //!

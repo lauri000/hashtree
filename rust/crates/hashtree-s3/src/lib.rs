@@ -12,6 +12,7 @@
 //! use hashtree_core::store::MemoryStore;
 //! use std::sync::Arc;
 //!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let local_store = Arc::new(MemoryStore::new());
 //! let config = S3Config {
 //!     bucket: "my-bucket".to_string(),
@@ -20,7 +21,9 @@
 //!     endpoint: None, // For S3-compatible services
 //! };
 //!
-//! let s3_store = S3Store::new(local_store, config).await?;
+//! let _s3_store = S3Store::new(local_store, config).await?;
+//! # Ok(())
+//! # }
 //! ```
 
 use async_trait::async_trait;

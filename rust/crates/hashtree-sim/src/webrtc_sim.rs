@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 use hashtree_core::{HashTree, HashTreeConfig, MemoryStore, Store};
-use hashtree_webrtc::{
+use hashtree_network::{
     parse_message, DataMessage, GenericStore, GenericStoreRoutingConfig, MeshRouter,
     MockConnectionFactory, MockLatencyMode, MockRelay, MockRelayTransport, PoolConfig,
     PoolSettings, RequestDispatchConfig, ResponseBehaviorConfig, SelectionStrategy,
@@ -408,7 +408,7 @@ impl Simulation {
     pub async fn run(&self) {
         // Mock WebRTC channels share a global registry; each simulation run must
         // start from a clean slate or later runs inherit stale links.
-        hashtree_webrtc::clear_channel_registry().await;
+        hashtree_network::clear_channel_registry().await;
         let run_started = Instant::now();
         let total_ms = self.config.duration.as_millis() as u64;
         let tick_ms = self.config.discovery_interval_ms;
@@ -489,7 +489,7 @@ impl Simulation {
             .local_resources
             .finalize_tick_samples(&tick_durations_us);
         drop(stats);
-        hashtree_webrtc::clear_channel_registry().await;
+        hashtree_network::clear_channel_registry().await;
     }
 
     async fn update_resource_peaks(&self) {
@@ -1936,7 +1936,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cashu_post_delivery_payment_failure_records_default_in_peer_metadata() {
-        hashtree_webrtc::clear_channel_registry().await;
+        hashtree_network::clear_channel_registry().await;
         let config = SimConfig {
             node_count: 2,
             duration: Duration::from_secs(2),
@@ -2003,7 +2003,7 @@ mod tests {
             .find(|peer| peer.principal == payer_id)
             .expect("payer metadata");
         assert_eq!(payer_meta.cashu_payment_defaults, 1);
-        hashtree_webrtc::clear_channel_registry().await;
+        hashtree_network::clear_channel_registry().await;
     }
 
     #[tokio::test]

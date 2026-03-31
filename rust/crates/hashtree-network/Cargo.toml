@@ -1,12 +1,12 @@
 [package]
-name = "hashtree-webrtc"
+name = "hashtree-network"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
-description = "WebRTC P2P transport for hashtree using Nostr relay signaling"
+description = "Mesh networking stack for hashtree: routing, signaling, peer links, and stores"
 keywords = ["merkle", "webrtc", "p2p", "nostr", "hashtree"]
 
 [dependencies]
@@ -32,3 +32,4 @@ tracing = "0.1"
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "rt-multi-thread", "macros"] }
 hashtree-sim = { path = "../hashtree-sim" }
+rustls = { version = "0.23", features = ["ring"] }

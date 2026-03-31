@@ -1,6 +1,6 @@
-# hashtree-webrtc
+# hashtree-network
 
-WebRTC P2P transport for hashtree using Nostr relay signaling.
+Mesh networking stack for hashtree: routing, signaling, peer links, and stores.
 
 Enables direct peer-to-peer data transfer between hashtree nodes using WebRTC data channels, with signaling performed over Nostr relays.
 

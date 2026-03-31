@@ -12,7 +12,7 @@ publish = false
 [dependencies]
 # Core hashtree crates
 hashtree-core.workspace = true
-hashtree-webrtc = { path = "../hashtree-webrtc" }
+hashtree-network = { path = "../hashtree-network" }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }

@@ -54,7 +54,7 @@ TIER_2_CRATES=(
 
 TIER_3_CRATES=(
     "hashtree-nostr"
-    "hashtree-webrtc"
+    "hashtree-network"
 )
 
 TIER_4_CRATES=(

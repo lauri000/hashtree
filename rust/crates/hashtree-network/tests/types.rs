@@ -1,6 +1,6 @@
 //! Tests for WebRTC types
 
-use hashtree_webrtc::{
+use hashtree_network::{
     bytes_to_hash, create_fragment_response, create_request, create_response, encode_request,
     encode_response, is_fragmented, parse_message, should_forward, should_forward_htl,
     validate_mesh_frame, DataMessage, MeshNostrFrame, PeerHTLConfig, PeerId, PeerState,

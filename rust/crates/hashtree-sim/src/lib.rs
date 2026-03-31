@@ -29,8 +29,8 @@ pub use webrtc_sim::{
 };
 pub use ws_relay::WsRelay;
 
-// Re-export types from hashtree-webrtc for convenience
-pub use hashtree_webrtc::{
+// Re-export types from hashtree-network for convenience
+pub use hashtree_network::{
     PoolConfig, PoolSettings, RequestDispatchConfig, ResponseBehaviorConfig, SelectionStrategy,
     SignalingMessage,
 };
