@@ -198,6 +198,7 @@ write_release_bootstrap_installer() {
 set -eu
 
 BASE_URL="${base_url}"
+ASSET_BASE_URL="\${BASE_URL}/assets"
 
 # This bootstrap is the trust root for curl|sh installs. Same-origin checksum
 # files would not improve security here, so it downloads the release archive
@@ -249,7 +250,7 @@ archive="hashtree-\${target}.tar.gz"
 tmpdir="\$(mktemp -d 2>/dev/null || mktemp -d -t hashtree-install)"
 trap 'rm -rf "\$tmpdir"' EXIT HUP INT TERM
 
-curl -fsSL "\${BASE_URL}/\${archive}" -o "\${tmpdir}/\${archive}"
+curl -fsSL "\${ASSET_BASE_URL}/\${archive}" -o "\${tmpdir}/\${archive}"
 tar -xzf "\${tmpdir}/\${archive}" -C "\${tmpdir}"
 
 cd "\${tmpdir}/hashtree"

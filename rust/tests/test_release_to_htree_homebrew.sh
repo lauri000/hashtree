@@ -115,6 +115,8 @@ grep -F "publish_release:v0.2.3 nhash1release releases/hashtree" "${TMPDIR}/logs
 grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/releases%2Fhashtree/v0.2.3 --checksums-dir ${TMPDIR}/out --tap-repo homebrew-hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
 test -f "${TMPDIR}/out/install.sh"
 grep -F 'BASE_URL="https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/releases%2Fhashtree/v0.2.3"' "${TMPDIR}/out/install.sh" >/dev/null
+grep -F 'ASSET_BASE_URL="${BASE_URL}/assets"' "${TMPDIR}/out/install.sh" >/dev/null
+grep -F 'curl -fsSL "${ASSET_BASE_URL}/${archive}" -o "${tmpdir}/${archive}"' "${TMPDIR}/out/install.sh" >/dev/null
 if grep -F "cargo_publish:" "${TMPDIR}/logs/calls.log" >/dev/null; then
     echo "release_to_htree should not cargo publish unless requested" >&2
     exit 1
