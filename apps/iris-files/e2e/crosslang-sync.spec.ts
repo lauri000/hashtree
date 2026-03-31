@@ -345,6 +345,18 @@ test.describe('Cross-Language Sync', () => {
       // ===== STEP 5: Request content via WebRTC =====
       console.log(`[TS] Requesting content: ${contentHash!.slice(0, 16)}...`);
 
+      const initialTransferStats = await page.evaluate(async (rustPk) => {
+        const adapter = (window as any).__getWorkerAdapter?.();
+        const peers = await adapter?.getPeerStats?.() || [];
+        const rustPeer = peers.find((p: any) => p.pubkey === rustPk);
+        return {
+          requestsSent: rustPeer?.requestsSent ?? 0,
+          responsesReceived: rustPeer?.responsesReceived ?? 0,
+          bytesReceived: rustPeer?.bytesReceived ?? 0,
+        };
+      }, rustKeys.pubkeyHex);
+      console.log('[TS] Initial transfer stats:', initialTransferStats);
+
       const content = await page.evaluate(async (hashHex) => {
         // Use window-exposed getter to get the actual store instance
         const getWebRTCStore = (window as any).__getWebRTCStore;
@@ -389,6 +401,29 @@ test.describe('Cross-Language Sync', () => {
 
       expect(content).not.toBeNull();
       expect(content?.source).toBe('webrtc');
+
+      await expect.poll(async () => {
+        const stats = await page.evaluate(async (rustPk) => {
+          const adapter = (window as any).__getWorkerAdapter?.();
+          const peers = await adapter?.getPeerStats?.() || [];
+          const rustPeer = peers.find((p: any) => p.pubkey === rustPk);
+          return {
+            requestsSent: rustPeer?.requestsSent ?? 0,
+            responsesReceived: rustPeer?.responsesReceived ?? 0,
+            bytesReceived: rustPeer?.bytesReceived ?? 0,
+          };
+        }, rustKeys.pubkeyHex);
+
+        const deltas = {
+          requestsSent: stats.requestsSent - initialTransferStats.requestsSent,
+          responsesReceived: stats.responsesReceived - initialTransferStats.responsesReceived,
+          bytesReceived: stats.bytesReceived - initialTransferStats.bytesReceived,
+        };
+        console.log('[TS] Post-fetch transfer deltas:', deltas);
+        return deltas.requestsSent >= 1
+          && deltas.responsesReceived >= 1
+          && deltas.bytesReceived > 0;
+      }, { timeout: 15000, intervals: [1000] }).toBe(true);
 
     } finally {
       if (rustProcess) {
