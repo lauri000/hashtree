@@ -1,4 +1,4 @@
-const RELEASES_PREFIX = 'releases';
+const RELEASES_SUFFIX = 'releases';
 
 function normalizeRepoPath(repoPath: string): string {
   return repoPath.replace(/^\/+/, '').replace(/\/+$/, '');
@@ -6,7 +6,7 @@ function normalizeRepoPath(repoPath: string): string {
 
 export function buildReleaseTreeName(repoPath: string): string {
   const clean = normalizeRepoPath(repoPath);
-  return clean ? `${RELEASES_PREFIX}/${clean}` : RELEASES_PREFIX;
+  return clean ? `${clean}/${RELEASES_SUFFIX}` : RELEASES_SUFFIX;
 }
 
 export function sanitizeReleaseId(input: string): string {

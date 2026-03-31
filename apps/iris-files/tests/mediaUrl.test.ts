@@ -94,13 +94,13 @@ describe('mediaUrl thumbnail helpers', () => {
     installWindow();
     const url = getNpubFileUrl(
       'npub1example',
-      'releases/nostr-vpn',
+      'nostr-vpn/releases',
       'v0.3.0/assets/nostr-vpn-v0.3.0-macos-arm64.zip',
     );
 
     expect(parseMutableHtreePath(getRawHtreePath(new URL(`https://git.iris.to${url}`)))).toEqual({
       npub: 'npub1example',
-      treeName: 'releases/nostr-vpn',
+      treeName: 'nostr-vpn/releases',
       filePath: 'v0.3.0/assets/nostr-vpn-v0.3.0-macos-arm64.zip',
     });
   });
@@ -109,11 +109,11 @@ describe('mediaUrl thumbnail helpers', () => {
     expect(
       getPublicNpubFileUrl(
         'npub1example',
-        'releases/nostr-vpn',
+        'nostr-vpn/releases',
         'v0.3.0/assets/nostr-vpn-v0.3.0-macos-arm64.zip',
       ),
     ).toBe(
-      'https://upload.iris.to/npub1example/releases%2Fnostr-vpn/v0.3.0/assets/nostr-vpn-v0.3.0-macos-arm64.zip',
+      'https://upload.iris.to/npub1example/nostr-vpn%2Freleases/v0.3.0/assets/nostr-vpn-v0.3.0-macos-arm64.zip',
     );
   });
 

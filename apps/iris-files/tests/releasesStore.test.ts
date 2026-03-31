@@ -3,8 +3,8 @@ import { buildReleaseTreeName, isListedReleaseEntryName, sanitizeReleaseId } fro
 
 describe('releases store helpers', () => {
   it('builds the nested release tree name for a repo', () => {
-    expect(buildReleaseTreeName('nostr-vpn')).toBe('releases/nostr-vpn');
-    expect(buildReleaseTreeName('/nostr-vpn/')).toBe('releases/nostr-vpn');
+    expect(buildReleaseTreeName('nostr-vpn')).toBe('nostr-vpn/releases');
+    expect(buildReleaseTreeName('/nostr-vpn/')).toBe('nostr-vpn/releases');
   });
 
   it('sanitizes release ids for tree entries', () => {

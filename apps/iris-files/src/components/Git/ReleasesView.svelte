@@ -52,7 +52,7 @@
   });
 
   // Release store
-  let releasesStore = $derived(createReleasesStore(npub, repoName));
+  let releasesStore = $derived(createReleasesStore(npub, repoName, releaseTreeName));
   let releasesState = $derived($releasesStore);
 
   let isOwner = $derived($nostrStore.npub === npub);
@@ -66,6 +66,7 @@
       repoName,
       visibility: releaseVisibility as 'public' | 'link-visible' | 'private',
       linkKey: releaseLinkKey ?? undefined,
+      treeName: releaseTreeName,
       existingIds: releasesState.items.map(r => r.id),
       onSave: () => {
         releasesStore.refresh();

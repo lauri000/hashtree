@@ -8,6 +8,7 @@
   export interface ReleaseModalTarget {
     npub: string;
     repoName: string;
+    treeName?: string;
     visibility?: TreeVisibility;
     linkKey?: string;
     existingIds?: string[];
@@ -102,6 +103,7 @@
       const saved = await saveRelease({
         npub: target.npub,
         repoPath: target.repoName,
+        treeName: target.treeName,
         title: title.trim(),
         tag: tag.trim() || undefined,
         commit: commit.trim() || undefined,

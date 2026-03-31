@@ -1,7 +1,7 @@
 /**
  * Release store and helpers for git repositories.
  *
- * Releases are stored at: npub/releases/<repoPath>
+ * Releases are stored at: npub/<repoPath>/releases
  * Each release is a directory containing release.json, notes.md, and assets/.
  */
 import { writable, type Readable } from 'svelte/store';
@@ -65,6 +65,7 @@ export interface ReleaseDetailState {
 export interface SaveReleaseOptions {
   npub: string;
   repoPath: string;
+  treeName?: string;
   title: string;
   tag?: string;
   commit?: string;
@@ -185,9 +186,13 @@ async function listReleaseAssets(tree: ReturnType<typeof getTree>, releaseCid: C
     }));
 }
 
-async function listReleaseEntries(npub: string, repoPath: string): Promise<ReleaseSummary[]> {
-  const treeName = buildReleaseTreeName(repoPath);
-  const rootCid = await waitForTreeRoot(npub, treeName, 8000);
+async function listReleaseEntries(
+  npub: string,
+  repoPath: string,
+  treeName?: string
+): Promise<ReleaseSummary[]> {
+  const releaseTreeName = treeName ?? buildReleaseTreeName(repoPath);
+  const rootCid = await waitForTreeRoot(npub, releaseTreeName, 8000);
   if (!rootCid) return [];
 
   const tree = getTree();
@@ -215,10 +220,11 @@ async function listReleaseEntries(npub: string, repoPath: string): Promise<Relea
 export async function fetchReleaseDetail(
   npub: string,
   repoPath: string,
-  releaseId: string
+  releaseId: string,
+  treeName?: string
 ): Promise<ReleaseDetail | null> {
-  const treeName = buildReleaseTreeName(repoPath);
-  const rootCid = await waitForTreeRoot(npub, treeName, 8000);
+  const releaseTreeName = treeName ?? buildReleaseTreeName(repoPath);
+  const rootCid = await waitForTreeRoot(npub, releaseTreeName, 8000);
   if (!rootCid) return null;
 
   const tree = getTree();
@@ -270,7 +276,8 @@ export async function fetchReleaseDetail(
 
 export function createReleasesStore(
   npub: string | null,
-  repoPath: string | null
+  repoPath: string | null,
+  treeName?: string | null
 ): Readable<ReleasesState> & { refresh: () => Promise<void> } {
   const { subscribe, set, update } = writable<ReleasesState>({
     items: [],
@@ -278,7 +285,7 @@ export function createReleasesStore(
     error: null,
   });
 
-  const releaseTreeName: string | null = repoPath ? buildReleaseTreeName(repoPath) : null;
+  const releaseTreeName: string | null = treeName ?? (repoPath ? buildReleaseTreeName(repoPath) : null);
 
   async function refresh(): Promise<void> {
     if (!npub || !repoPath) {
@@ -289,7 +296,7 @@ export function createReleasesStore(
     update(state => ({ ...state, loading: true, error: null }));
 
     try {
-      const items = await listReleaseEntries(npub, repoPath);
+      const items = await listReleaseEntries(npub, repoPath, treeName ?? undefined);
       set({ items, loading: false, error: null });
     } catch (err) {
       set({ items: [], loading: false, error: getErrorMessage(err) });
@@ -316,7 +323,8 @@ export function createReleasesStore(
 export function createReleaseDetailStore(
   npub: string | null,
   repoPath: string | null,
-  releaseId: string | null
+  releaseId: string | null,
+  treeName?: string | null
 ): Readable<ReleaseDetailState> & { refresh: () => Promise<void> } {
   const { subscribe, set, update } = writable<ReleaseDetailState>({
     item: null,
@@ -324,7 +332,7 @@ export function createReleaseDetailStore(
     error: null,
   });
 
-  const releaseTreeName: string | null = repoPath ? buildReleaseTreeName(repoPath) : null;
+  const releaseTreeName: string | null = treeName ?? (repoPath ? buildReleaseTreeName(repoPath) : null);
 
   async function refresh(): Promise<void> {
     if (!npub || !repoPath || !releaseId) {
@@ -335,7 +343,7 @@ export function createReleaseDetailStore(
     update(state => ({ ...state, loading: true, error: null }));
 
     try {
-      const item = await fetchReleaseDetail(npub, repoPath, releaseId);
+      const item = await fetchReleaseDetail(npub, repoPath, releaseId, treeName ?? undefined);
       if (!item) {
         set({ item: null, loading: false, error: 'Release not found' });
         return;
@@ -370,7 +378,7 @@ export async function saveRelease(options: SaveReleaseOptions): Promise<ReleaseS
     throw new Error('Missing link key for link-visible release tree');
   }
 
-  const treeName = buildReleaseTreeName(options.repoPath);
+  const treeName = options.treeName ?? buildReleaseTreeName(options.repoPath);
   const tree = getTree();
   const rootCid = await waitForTreeRoot(options.npub, treeName, 5000);
   const existingIds = new Set(options.existingIds ?? []);
@@ -477,15 +485,16 @@ export async function deleteRelease(
   repoPath: string,
   releaseId: string,
   visibility: TreeVisibility = 'public',
-  linkKey?: string
+  linkKey?: string,
+  treeName?: string
 ): Promise<boolean> {
   if (visibility === 'link-visible' && !linkKey) return false;
-  const treeName = buildReleaseTreeName(repoPath);
-  const rootCid = await waitForTreeRoot(npub, treeName, 5000);
+  const resolvedTreeName = treeName ?? buildReleaseTreeName(repoPath);
+  const rootCid = await waitForTreeRoot(npub, resolvedTreeName, 5000);
   if (!rootCid) return false;
 
   const tree = getTree();
   const newRootCid = await tree.removeEntry(rootCid, [], releaseId);
-  const result = await saveHashtree(treeName, newRootCid, { visibility, linkKey });
+  const result = await saveHashtree(resolvedTreeName, newRootCid, { visibility, linkKey });
   return result.success;
 }
