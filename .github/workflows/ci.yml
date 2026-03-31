@@ -106,7 +106,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Prebuild Rust artifacts for E2E
+        env:
+          HTREE_E2E_RUST_TARGET_DIR: ${{ github.workspace }}/rust/target
         run: |
+          cargo build --manifest-path ../rust/Cargo.toml -p hashtree-cli --bin htree --features p2p
           cargo build --manifest-path ../rust/Cargo.toml --release -p hashtree-cli --bin htree
           cargo build --manifest-path ../rust/Cargo.toml --release -p git-remote-htree
           cargo test --manifest-path ../rust/Cargo.toml -p hashtree-cli --features p2p --test crosslang_peer --no-run
@@ -118,6 +121,7 @@ jobs:
         run: ${{ matrix.suite.command }}
         env:
           CI: true
+          HTREE_E2E_RUST_TARGET_DIR: ${{ github.workspace }}/rust/target
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
