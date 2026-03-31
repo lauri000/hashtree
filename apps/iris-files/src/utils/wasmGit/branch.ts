@@ -4,7 +4,7 @@
 import type { CID } from '@hashtree/core';
 import { LinkType } from '@hashtree/core';
 import { getTree } from '../../store';
-import { withWasmGitLock, loadWasmGit, copyToWasmFS, runSilent, rmRf, readGitDirectory, createRepoPath } from './core';
+import { withWasmGitLock, loadWasmGit, copyToWasmFS, runSilent, rmRf, readGitDirectory, createRepoPath, fixBareConfig } from './core';
 import { getErrorMessage } from '../errorMessage';
 import { collectLooseRefs, isFullSha, readPackedRefs, type GitTreeReader } from './refs';
 import { resolveRevisionToCommit } from './log';
@@ -148,6 +148,7 @@ export async function createBranchWasm(
       module.FS.chdir(repoPath);
 
       await copyToWasmFS(module, rootCid, '.');
+      fixBareConfig(module);
 
       // Create the branch
       try {

@@ -87,7 +87,7 @@
 
     // Don't reload merge info if merge was already successful
     // (dirCid changes after merge due to autosave)
-    if (mergeSuccess) return;
+    if (mergeSuccess || merging) return;
 
     loading = true;
     error = null;
@@ -213,18 +213,16 @@
         }
       }
 
-      // Update PR status if this merge is from a PR
-      if (prEventId && prAuthorPubkey) {
-        try {
-          await updateStatus(prEventId, prAuthorPubkey, 'merged');
-        } catch (err) {
-          console.error('Failed to update PR status:', err);
-          // Don't fail the merge if status update fails
-        }
-      }
-
       mergeSuccess = true;
       merging = false;
+
+      // Publish the PR status update in the background so relay latency does not
+      // block the merge success UI after the git state has already been saved.
+      if (prEventId && prAuthorPubkey) {
+        void updateStatus(prEventId, prAuthorPubkey, 'merged').catch((err) => {
+          console.error('Failed to update PR status:', err);
+        });
+      }
     } catch (err) {
       mergeError = getErrorMessage(err);
       merging = false;

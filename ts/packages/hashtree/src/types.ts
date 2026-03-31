@@ -334,4 +334,6 @@ export interface RefResolver {
 export interface RefResolverSubscriptionMetadata {
   /** Unix seconds from the underlying source event */
   updatedAt: number;
+  /** Optional source event id for same-timestamp tie-breaking */
+  eventId?: string;
 }

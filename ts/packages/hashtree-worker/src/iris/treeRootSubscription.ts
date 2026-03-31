@@ -115,6 +115,24 @@ function uniqueEvents(events: SignedEvent[]): SignedEvent[] {
   return result;
 }
 
+function compareReplaceableEvents(left: SignedEvent, right: SignedEvent): number {
+  const leftCreatedAt = left.created_at ?? 0;
+  const rightCreatedAt = right.created_at ?? 0;
+  if (leftCreatedAt !== rightCreatedAt) {
+    return rightCreatedAt - leftCreatedAt;
+  }
+
+  const leftId = left.id ?? '';
+  const rightId = right.id ?? '';
+  if (leftId === rightId) {
+    return 0;
+  }
+
+  if (!leftId) return 1;
+  if (!rightId) return -1;
+  return rightId.localeCompare(leftId);
+}
+
 function parseLabels(event: SignedEvent): string[] | undefined {
   const seen = new Set<string>();
   const labels: string[] = [];
@@ -216,7 +234,7 @@ async function fetchTreeRootEventsFromNdk(
     );
     if (!events) return [];
     return uniqueEvents(Array.from(events).map((event) => toSignedEvent(event.rawEvent?.() ?? event)))
-      .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
+      .sort(compareReplaceableEvents);
   } catch {
     return [];
   }
@@ -245,7 +263,7 @@ async function fetchTreeRootEventsFromRelays(
     );
     if (!events) return [];
     return uniqueEvents(Array.from(events).map((event) => toSignedEvent(event)))
-      .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
+      .sort(compareReplaceableEvents);
   } catch {
     return [];
   } finally {
@@ -314,7 +332,7 @@ export async function getHistoricalTreeRoots(
 
     const roots = dedupeRoots(
       uniqueEvents([...ndkEvents, ...relayEvents])
-        .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
+        .sort(compareReplaceableEvents)
         .map((event) => {
           const parsed = parseTreeRootEvent(event);
           if (!parsed) return null;
@@ -389,6 +407,7 @@ export async function resolveTreeRootNow(
     const key = parsed.key ? hexToBytes(parsed.key) : undefined;
     const { applied, record } = await setCachedRoot(npub, treeName, { hash, key }, parsed.visibility, {
       updatedAt: fetched.created_at,
+      eventId: fetched.id,
       labels: parsed.labels,
       encryptedKey: parsed.encryptedKey,
       keyId: parsed.keyId,
@@ -499,6 +518,7 @@ export async function handleTreeRootEvent(event: SignedEvent): Promise<void> {
   // Update cache
   const { applied, record } = await setCachedRoot(npub, treeName, { hash, key }, visibility, {
     updatedAt: event.created_at,
+    eventId: event.id,
     labels: parsed.labels,
     encryptedKey: parsed.encryptedKey,
     keyId: parsed.keyId,

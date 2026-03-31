@@ -44,12 +44,14 @@
 //! Then use: `htree://work/myrepo` or `htree://npub1.../myrepo`
 
 use anyhow::{Context, Result};
+use futures::{SinkExt, StreamExt};
 use hashtree_blossom::BlossomClient;
 use hashtree_core::{decode_tree_node, decrypt_chk, LinkType};
 use nostr_sdk::prelude::*;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Duration;
+use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use tracing::{debug, info, warn};
 
 /// Event kind for application-specific data (NIP-78)
@@ -147,6 +149,67 @@ pub struct PullRequestListItem {
     pub branch: Option<String>,
     pub target_branch: Option<String>,
     pub created_at: u64,
+}
+
+async fn fetch_events_via_raw_relay_query(
+    relays: &[String],
+    filter: Filter,
+    timeout: Duration,
+) -> Vec<Event> {
+    let request_json = ClientMessage::req(SubscriptionId::generate(), vec![filter]).as_json();
+    let mut events_by_id = HashMap::<String, Event>::new();
+
+    for relay_url in relays {
+        let relay_events = match tokio::time::timeout(timeout, async {
+            let (mut ws, _) = connect_async(relay_url).await?;
+            ws.send(WsMessage::Text(request_json.clone())).await?;
+
+            let mut relay_events = Vec::new();
+            while let Some(message) = ws.next().await {
+                let message = message?;
+                let WsMessage::Text(text) = message else {
+                    continue;
+                };
+
+                match RelayMessage::from_json(text.as_str()) {
+                    Ok(RelayMessage::Event { event, .. }) => relay_events.push(*event),
+                    Ok(RelayMessage::EndOfStoredEvents(_)) => break,
+                    Ok(RelayMessage::Closed { message, .. }) => {
+                        debug!("Raw relay PR query closed by {}: {}", relay_url, message);
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        debug!(
+                            "Failed to parse raw relay response from {}: {}",
+                            relay_url, err
+                        );
+                    }
+                }
+            }
+
+            let _ = ws.close(None).await;
+            Ok::<Vec<Event>, anyhow::Error>(relay_events)
+        })
+        .await
+        {
+            Ok(Ok(events)) => events,
+            Ok(Err(err)) => {
+                debug!("Raw relay PR query failed for {}: {}", relay_url, err);
+                continue;
+            }
+            Err(_) => {
+                debug!("Raw relay PR query timed out for {}", relay_url);
+                continue;
+            }
+        };
+
+        for event in relay_events {
+            events_by_id.insert(event.id.to_hex(), event);
+        }
+    }
+
+    events_by_id.into_values().collect()
 }
 
 type FetchedRefs = (HashMap<String, String>, Option<String>, Option<[u8; 32]>);
@@ -1914,13 +1977,13 @@ impl NostrClient {
 
         // Query for kind 1618 PRs targeting this repo
         let repo_address = format!("{}:{}:{}", KIND_REPO_ANNOUNCEMENT, self.pubkey, repo_name);
-        let pr_filter = Filter::new()
+        let pull_request_filter = Filter::new()
             .kind(Kind::Custom(KIND_PULL_REQUEST))
             .custom_tag(SingleLetterTag::lowercase(Alphabet::A), vec![&repo_address]);
 
-        let pr_events = match tokio::time::timeout(
+        let mut pr_events = match tokio::time::timeout(
             Duration::from_secs(3),
-            client.get_events_of(vec![pr_filter], EventSource::relays(None)),
+            client.get_events_of(vec![pull_request_filter.clone()], EventSource::relays(None)),
         )
         .await
         {
@@ -1939,6 +2002,23 @@ impl NostrClient {
         };
 
         if pr_events.is_empty() {
+            let fallback_events = fetch_events_via_raw_relay_query(
+                &self.relays,
+                pull_request_filter,
+                Duration::from_secs(3),
+            )
+            .await;
+            if !fallback_events.is_empty() {
+                debug!(
+                    "Raw relay fallback recovered {} PR event(s) for {}",
+                    fallback_events.len(),
+                    repo_name
+                );
+                pr_events = fallback_events;
+            }
+        }
+
+        if pr_events.is_empty() {
             let _ = client.disconnect().await;
             return Ok(Vec::new());
         }
@@ -1947,7 +2027,7 @@ impl NostrClient {
         let pr_ids: Vec<String> = pr_events.iter().map(|e| e.id.to_hex()).collect();
 
         // Query for status events referencing these PRs
-        let status_filter = Filter::new()
+        let status_event_filter = Filter::new()
             .kinds(vec![
                 Kind::Custom(KIND_STATUS_OPEN),
                 Kind::Custom(KIND_STATUS_APPLIED),
@@ -1959,9 +2039,9 @@ impl NostrClient {
                 pr_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             );
 
-        let status_events = match tokio::time::timeout(
+        let mut status_events = match tokio::time::timeout(
             Duration::from_secs(3),
-            client.get_events_of(vec![status_filter], EventSource::relays(None)),
+            client.get_events_of(vec![status_event_filter.clone()], EventSource::relays(None)),
         )
         .await
         {
@@ -1980,6 +2060,23 @@ impl NostrClient {
                 ));
             }
         };
+
+        if status_events.is_empty() {
+            let fallback_events = fetch_events_via_raw_relay_query(
+                &self.relays,
+                status_event_filter,
+                Duration::from_secs(3),
+            )
+            .await;
+            if !fallback_events.is_empty() {
+                debug!(
+                    "Raw relay fallback recovered {} PR status event(s) for {}",
+                    fallback_events.len(),
+                    repo_name
+                );
+                status_events = fallback_events;
+            }
+        }
 
         let _ = client.disconnect().await;
 

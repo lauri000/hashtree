@@ -7,7 +7,7 @@
 import type { CID } from '@hashtree/core';
 import { LinkType } from '@hashtree/core';
 import { getTree } from '../../store';
-import { withWasmGitLock, loadWasmGit, copyToWasmFS, readGitDirectory, runSilent, rmRf, createRepoPath } from './core';
+import { withWasmGitLock, loadWasmGit, copyToWasmFS, readGitDirectory, runSilent, rmRf, createRepoPath, fixBareConfig } from './core';
 import { getErrorMessage } from '../errorMessage';
 
 export interface MergeResult {
@@ -64,6 +64,7 @@ export async function mergeWasm(
       module.FS.chdir(repoPath);
 
       await copyToWasmFS(module, rootCid, '.');
+      fixBareConfig(module);
 
       // Get commit hashes for both branches
       let baseCommit: string;

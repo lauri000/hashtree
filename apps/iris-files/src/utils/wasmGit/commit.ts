@@ -4,7 +4,7 @@
 import type { CID } from '@hashtree/core';
 import { LinkType } from '@hashtree/core';
 import { getTree } from '../../store';
-import { withWasmGitLock, loadWasmGit, copyToWasmFS, readGitDirectory, runSilent, rmRf, createRepoPath } from './core';
+import { withWasmGitLock, loadWasmGit, copyToWasmFS, readGitDirectory, runSilent, rmRf, createRepoPath, fixBareConfig } from './core';
 import { getErrorMessage } from '../errorMessage';
 
 /**
@@ -36,6 +36,7 @@ export async function initRepoWasm(
 
       // Copy all files from hashtree to wasm filesystem
       await copyToWasmFS(module, rootCid, '.');
+      fixBareConfig(module);
 
       // Initialize git repo
       runSilent(module, ['init', '.']);
@@ -99,6 +100,7 @@ export async function commitWasm(
       module.FS.chdir(repoPath);
 
       await copyToWasmFS(module, rootCid, '.');
+      fixBareConfig(module);
 
       // Stage files
       try {

@@ -180,6 +180,22 @@ export async function copyToWasmFS(
 }
 
 /**
+ * git-remote-htree persists repos with bare=true, but browser-side wasm-git
+ * operations run against a working tree and need bare=false semantics.
+ */
+export function fixBareConfig(module: WasmGitModule, configPath: string = '.git/config'): void {
+  try {
+    const configContent = module.FS.readFile(configPath, { encoding: 'utf8' }) as string;
+    const fixedConfig = configContent.replace(/bare\s*=\s*true/g, 'bare = false');
+    if (fixedConfig !== configContent) {
+      module.FS.writeFile(configPath, fixedConfig);
+    }
+  } catch {
+    // Config missing or unreadable - continue with the original repo shape.
+  }
+}
+
+/**
  * Copy only the .git directory to wasm-git filesystem
  * Much faster than copyToWasmFS for read-only git operations (log, branches, etc.)
  */

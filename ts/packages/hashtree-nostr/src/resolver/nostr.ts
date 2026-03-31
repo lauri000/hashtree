@@ -60,7 +60,10 @@ interface SubscriptionEntry {
   currentKey: string | null;
   currentVisibility: SubscribeVisibilityInfo | null;
   latestCreatedAt: number;
+  latestEventId: string | null;
 }
+
+type CachedListEntry = ParsedTreeVisibility & { created_at: number; eventId?: string };
 
 /**
  * Parsed visibility info from a nostr event
@@ -109,6 +112,27 @@ function uniqueLabels(labels: string[]): string[] {
     result.push(label);
   }
   return result;
+}
+
+function compareReplaceableEventOrder(
+  candidateCreatedAt: number,
+  candidateEventId: string | null | undefined,
+  currentCreatedAt: number,
+  currentEventId: string | null | undefined,
+): number {
+  if (candidateCreatedAt !== currentCreatedAt) {
+    return candidateCreatedAt - currentCreatedAt;
+  }
+
+  const candidateId = candidateEventId ?? '';
+  const currentId = currentEventId ?? '';
+  if (candidateId === currentId) {
+    return 0;
+  }
+
+  if (!candidateId) return -1;
+  if (!currentId) return 1;
+  return candidateId.localeCompare(currentId);
 }
 
 function parseLabels(event: NostrEvent): string[] {
@@ -240,7 +264,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
   // Supports multiple callbacks per npub (multiple components can subscribe)
   interface ListSubscriptionEntry {
     npub: string;
-    entriesByDTag: Map<string, ParsedTreeVisibility & { created_at: number }>;
+    entriesByDTag: Map<string, CachedListEntry>;
     callbacks: Set<(entries: RefResolverListEntry[]) => void>;
     unsubscribe: () => void;
   }
@@ -248,7 +272,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
 
   // Persistent local cache for list entries (survives subscription lifecycle)
   // Key is npub, value is map of tree name -> entry
-  const localListCache = new Map<string, Map<string, ParsedTreeVisibility & { created_at: number }>>();
+  const localListCache = new Map<string, Map<string, CachedListEntry>>();
 
   /**
    * Parse a pointer key into pubkey and tree name
@@ -285,6 +309,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
       return new Promise((resolve) => {
         let latestData: { hash: string; key?: string } | null = null;
         let latestCreatedAt = 0;
+        let latestEventId: string | null = null;
         let resolveTimeout: ReturnType<typeof setTimeout> | null = null;
 
         const doResolve = () => {
@@ -310,8 +335,14 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
             const hashAndKey = parseHashAndKey(event);
             if (!hashAndKey) return;
 
-            if ((event.created_at || 0) > latestCreatedAt) {
+            if (compareReplaceableEventOrder(
+              event.created_at || 0,
+              event.id ?? null,
+              latestCreatedAt,
+              latestEventId,
+            ) > 0) {
               latestCreatedAt = event.created_at || 0;
+              latestEventId = event.id ?? null;
               latestData = hashAndKey;
             }
 
@@ -363,7 +394,10 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
           callback(
             cid(fromHex(sub.currentHash), keyBytes),
             sub.currentVisibility ?? undefined,
-            { updatedAt: sub.latestCreatedAt }
+            {
+              updatedAt: sub.latestCreatedAt,
+              eventId: sub.latestEventId ?? undefined,
+            }
           );
         }
       } else {
@@ -372,7 +406,10 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
           if (!subEntry.currentHash) return;
           const keyBytes = subEntry.currentKey ? fromHex(subEntry.currentKey) : undefined;
           const visibilityInfo = subEntry.currentVisibility ?? undefined;
-          const metadata = { updatedAt: subEntry.latestCreatedAt };
+          const metadata = {
+            updatedAt: subEntry.latestCreatedAt,
+            eventId: subEntry.latestEventId ?? undefined,
+          };
           for (const cb of subEntry.callbacks) {
             try {
               cb(cid(fromHex(subEntry.currentHash), keyBytes), visibilityInfo, metadata);
@@ -410,12 +447,33 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
             const eventCreatedAt = event.created_at || 0;
             const newHash = visibilityData.hash;
             const newKey = visibilityData.key;
+            const eventOrder = compareReplaceableEventOrder(
+              eventCreatedAt,
+              event.id ?? null,
+              subEntry.latestCreatedAt,
+              subEntry.latestEventId,
+            );
 
-            // Only update if this event is newer (or same timestamp with different hash)
-            if (eventCreatedAt >= subEntry.latestCreatedAt && newHash && newHash !== subEntry.currentHash) {
+            // Only update if this event is newer, or if it matches the same source event but
+            // provides data we haven't stored yet.
+            const currentVisibilityJson = JSON.stringify(subEntry.currentVisibility ?? null);
+            const nextVisibilityJson = JSON.stringify({
+              visibility: visibilityData.visibility,
+              encryptedKey: visibilityData.encryptedKey,
+              keyId: visibilityData.keyId,
+              selfEncryptedKey: visibilityData.selfEncryptedKey,
+              selfEncryptedLinkKey: visibilityData.selfEncryptedLinkKey,
+            });
+            const hasChangedData =
+              newHash !== subEntry.currentHash ||
+              (newKey ?? null) !== subEntry.currentKey ||
+              nextVisibilityJson !== currentVisibilityJson;
+
+            if (eventOrder > 0 || (eventOrder === 0 && hasChangedData)) {
               subEntry.currentHash = newHash;
               subEntry.currentKey = newKey || null;
               subEntry.latestCreatedAt = eventCreatedAt;
+              subEntry.latestEventId = event.id ?? null;
 
               // Build visibility info for callback
               const visibilityInfo: SubscribeVisibilityInfo = {
@@ -443,6 +501,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
                 selfEncryptedKey: visibilityData.selfEncryptedKey,
                 selfEncryptedLinkKey: visibilityData.selfEncryptedLinkKey,
                 created_at: eventCreatedAt,
+                eventId: event.id,
               });
 
               notifyCallbacks(subEntry);
@@ -467,6 +526,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
             selfEncryptedLinkKey: cachedEntry.selfEncryptedLinkKey,
           } : null,
           latestCreatedAt: cachedEntry?.created_at ?? 0,
+          latestEventId: cachedEntry?.eventId ?? null,
         };
         subscriptions.set(key, sub);
 
@@ -476,7 +536,10 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
           callback(
             cid(fromHex(cachedEntry.hash), keyBytes),
             sub.currentVisibility ?? undefined,
-            { updatedAt: sub.latestCreatedAt }
+            {
+              updatedAt: sub.latestCreatedAt,
+              eventId: sub.latestEventId ?? undefined,
+            }
           );
         }
       }
@@ -629,6 +692,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
         selfEncryptedKey: visibilityInfo.selfEncryptedKey,
         selfEncryptedLinkKey: visibilityInfo.selfEncryptedLinkKey,
         created_at: now,
+        eventId: undefined,
       });
 
       // Update active subscription state
@@ -637,6 +701,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
         sub.currentHash = hashHex;
         sub.currentKey = visibilityType === 'public' ? chkKeyHex || null : null;
         sub.latestCreatedAt = now;
+        sub.latestEventId = null;
         sub.currentVisibility = visibilityInfo;
         // Notify callbacks with CID
         for (const cb of sub.callbacks) {
@@ -667,8 +732,9 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
             encryptedKey: visibilityInfo.encryptedKey,
             keyId: visibilityInfo.keyId,
             selfEncryptedKey: visibilityInfo.selfEncryptedKey,
-        selfEncryptedLinkKey: visibilityInfo.selfEncryptedLinkKey,
+            selfEncryptedLinkKey: visibilityInfo.selfEncryptedLinkKey,
             created_at: now,
+            eventId: undefined,
           });
           // Emit updated state immediately to ALL callbacks
           const result: RefResolverListEntry[] = [];
@@ -781,7 +847,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
       }
 
       // Create new subscription
-      const entriesByDTag = new Map<string, ParsedTreeVisibility & { created_at: number }>();
+      const entriesByDTag = new Map<string, CachedListEntry>();
       const callbacks = new Set<(entries: RefResolverListEntry[]) => void>([callback]);
 
       // Pre-populate from local cache (for instant display of locally-created trees)
@@ -839,32 +905,22 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
           const existing = entriesByDTag.get(dTag);
           const eventTime = event.created_at || 0;
 
-          // Timestamp-based update logic:
-          // 1. Accept if no existing entry
-          // 2. Accept if event is strictly newer
-          // 3. Accept if same timestamp and this is a delete (no hash) overwriting a create (has hash)
-          // 4. Reject if same timestamp and this would "undelete" (create overwriting delete)
-          // 5. Reject if existing is deleted and new event is within 30s (prevent stale event undelete)
-
           if (existing) {
             const existingIsDeleted = !existing.hash;
             const timeDiff = eventTime - existing.created_at;
+            const eventOrder = compareReplaceableEventOrder(
+              eventTime,
+              event.id ?? null,
+              existing.created_at,
+              existing.eventId,
+            );
 
             // Block stale events from "undeleting" within 30 seconds
             if (existingIsDeleted && hasHash && timeDiff < 30) {
               return;
             }
-
-            // Block same-timestamp undelete (create can't overwrite delete at same time)
-            if (existingIsDeleted && hasHash && timeDiff === 0) {
-              return;
-            }
-
-            // Only update if newer, or if same time and delete wins over create
-            const shouldUpdate = eventTime > existing.created_at ||
-              (eventTime === existing.created_at && !hasHash && existing.hash);
-
-            if (!shouldUpdate) return;
+            if (eventOrder < 0) return;
+            if (eventOrder === 0 && existing.hash === (parsed?.hash ?? '')) return;
           }
 
           // Update the entry
@@ -878,6 +934,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
             selfEncryptedKey: parsed?.selfEncryptedKey,
             selfEncryptedLinkKey: parsed?.selfEncryptedLinkKey,
             created_at: eventTime,
+            eventId: event.id,
           };
           entriesByDTag.set(dTag, entryData);
 
@@ -948,6 +1005,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
         visibility: 'public',
         key: undefined,
         created_at: now,
+        eventId: undefined,
       });
 
       // Update active subscription state
@@ -956,6 +1014,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
         sub.currentHash = null;
         sub.currentKey = null;
         sub.latestCreatedAt = now;
+        sub.latestEventId = null;
         sub.currentVisibility = null;
         // Notify callbacks with null CID
         for (const cb of sub.callbacks) {
@@ -975,6 +1034,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
           visibility: 'public',
           key: undefined,
           created_at: now,
+          eventId: undefined,
         });
         // Emit - filter out empty hashes (deleted trees)
         const result: RefResolverListEntry[] = [];
@@ -1046,7 +1106,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
         return;
       }
 
-      if (!existing || now >= existing.created_at) {
+      if (!existing || compareReplaceableEventOrder(now, null, existing.created_at, existing.eventId) >= 0) {
         npubCache.set(treeName, {
           hash: toHex(entry.cid.hash),
           visibility: entry.visibility ?? 'public',
@@ -1055,8 +1115,9 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
           encryptedKey: entry.encryptedKey,
           keyId: entry.keyId,
           selfEncryptedKey: entry.selfEncryptedKey,
-            selfEncryptedLinkKey: entry.selfEncryptedLinkKey,
+          selfEncryptedLinkKey: entry.selfEncryptedLinkKey,
           created_at: now,
+          eventId: undefined,
         });
       }
 
@@ -1072,7 +1133,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
           return;
         }
 
-        if (!existingSub || now >= existingSub.created_at) {
+        if (!existingSub || compareReplaceableEventOrder(now, null, existingSub.created_at, existingSub.eventId) >= 0) {
           listSub.entriesByDTag.set(treeName, {
             hash: toHex(entry.cid.hash),
             visibility: entry.visibility ?? 'public',
@@ -1083,6 +1144,7 @@ export function createNostrRefResolver(config: NostrRefResolverConfig): RefResol
             selfEncryptedKey: entry.selfEncryptedKey,
             selfEncryptedLinkKey: entry.selfEncryptedLinkKey,
             created_at: now,
+            eventId: undefined,
           });
           // Emit updated state to ALL callbacks
           const result: RefResolverListEntry[] = [];

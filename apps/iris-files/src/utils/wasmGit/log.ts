@@ -744,8 +744,12 @@ async function resolveNamedRefToCommit(
   const packedRefs = await readPackedRefs(tree, gitDirCid);
 
   for (const candidate of candidates) {
+    const isBranchRef = candidate.startsWith('refs/heads/');
     const looseSha = await readRefSha(tree, gitDirCid, candidate);
     if (looseSha) {
+      if (isBranchRef) {
+        return looseSha;
+      }
       const peeled = await peelObjectToCommit(tree, gitDirCid, looseSha);
       if (peeled) {
         return peeled;
@@ -757,6 +761,9 @@ async function resolveNamedRefToCommit(
       return packed.peeled;
     }
     if (packed?.sha) {
+      if (isBranchRef) {
+        return packed.sha;
+      }
       const peeled = await peelObjectToCommit(tree, gitDirCid, packed.sha);
       if (peeled) {
         return peeled;

@@ -34,6 +34,7 @@ hashtree-blossom = { workspace = true, features = ["store"] }
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
+tokio-tungstenite = "0.24"
 
 # Serialization
 serde.workspace = true
@@ -66,7 +67,6 @@ lmdb = ["dep:hashtree-lmdb"]
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio-tungstenite = "0.24"
 hashtree-lmdb.workspace = true
 axum.workspace = true
 

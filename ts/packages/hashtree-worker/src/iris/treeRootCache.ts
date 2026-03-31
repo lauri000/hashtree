@@ -23,6 +23,7 @@ interface CachedRoot {
   visibility: TreeVisibility;
   labels?: string[];
   updatedAt: number;       // Unix timestamp
+  eventId?: string;        // Source event id for same-second tie-breaking
   encryptedKey?: string;   // For link-visible trees
   keyId?: string;          // For link-visible trees
   selfEncryptedKey?: string; // For private trees
@@ -41,6 +42,27 @@ const updateListeners = new Set<(npub: string, treeName: string, cid: CID | null
 
 // Store reference
 let store: Store | null = null;
+
+function compareReplaceableEventOrder(
+  candidateUpdatedAt: number,
+  candidateEventId: string | null | undefined,
+  currentUpdatedAt: number,
+  currentEventId: string | null | undefined,
+): number {
+  if (candidateUpdatedAt !== currentUpdatedAt) {
+    return candidateUpdatedAt - currentUpdatedAt;
+  }
+
+  const candidateId = candidateEventId ?? '';
+  const currentId = currentEventId ?? '';
+  if (candidateId === currentId) {
+    return 0;
+  }
+
+  if (!candidateId) return -1;
+  if (!currentId) return 1;
+  return candidateId.localeCompare(currentId);
+}
 
 function notifyUpdate(npub: string, treeName: string, cid: CID | null): void {
   for (const listener of updateListeners) {
@@ -128,6 +150,7 @@ export async function setCachedRoot(
   visibility: TreeVisibility = 'public',
   options?: {
     updatedAt?: number;
+    eventId?: string;
     labels?: string[];
     encryptedKey?: string;
     keyId?: string;
@@ -138,21 +161,24 @@ export async function setCachedRoot(
   const cacheKey = `${npub}/${treeName}`;
   const existing = await getCachedRootInfo(npub, treeName);
   const updatedAt = options?.updatedAt ?? Math.floor(Date.now() / 1000);
+  const eventId = options?.eventId;
+  const sameHash = !!existing && hashEquals(existing.hash, cid.hash);
 
-  if (existing && existing.updatedAt > updatedAt) {
+  if (existing && compareReplaceableEventOrder(updatedAt, eventId, existing.updatedAt, existing.eventId) < 0) {
     return { applied: false, record: existing };
   }
 
   const cached: CachedRoot = {
     hash: cid.hash,
-    key: cid.key,
+    key: cid.key ?? (sameHash ? existing?.key : undefined),
     visibility,
     labels: options?.labels ?? existing?.labels,
     updatedAt,
-    encryptedKey: options?.encryptedKey,
-    keyId: options?.keyId,
-    selfEncryptedKey: options?.selfEncryptedKey,
-    selfEncryptedLinkKey: options?.selfEncryptedLinkKey,
+    eventId: eventId ?? (sameHash ? existing?.eventId : undefined),
+    encryptedKey: options?.encryptedKey ?? (sameHash ? existing?.encryptedKey : undefined),
+    keyId: options?.keyId ?? (sameHash ? existing?.keyId : undefined),
+    selfEncryptedKey: options?.selfEncryptedKey ?? (sameHash ? existing?.selfEncryptedKey : undefined),
+    selfEncryptedLinkKey: options?.selfEncryptedLinkKey ?? (sameHash ? existing?.selfEncryptedLinkKey : undefined),
   };
 
   if (existing && cachedRootEquals(existing, cached)) {

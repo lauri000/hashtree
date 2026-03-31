@@ -4,7 +4,7 @@
 import type { CID } from '@hashtree/core';
 import { LinkType } from '@hashtree/core';
 import { getTree } from '../../store';
-import { withWasmGitLock, loadWasmGit, copyToWasmFS, rmRf, createRepoPath } from './core';
+import { withWasmGitLock, loadWasmGit, copyToWasmFS, rmRf, createRepoPath, fixBareConfig } from './core';
 
 /**
  * Git status entry from porcelain format
@@ -64,19 +64,7 @@ export async function getStatusWasm(
       module.FS.chdir(repoPath);
 
       await copyToWasmFS(module, rootCid, '.');
-
-      // Fix bare=true in config - git-remote-htree creates repos with bare=true
-      // but we have a working tree, so we need bare=false for status to work
-      try {
-        const configPath = '.git/config';
-        const configContent = module.FS.readFile(configPath, { encoding: 'utf8' }) as string;
-        if (configContent.includes('bare = true')) {
-          const fixedConfig = configContent.replace('bare = true', 'bare = false');
-          module.FS.writeFile(configPath, fixedConfig);
-        }
-      } catch {
-        // Config read/write failed - continue anyway
-      }
+      fixBareConfig(module);
 
       // Check if index file exists
       // git-remote-htree now generates index files during push, but legacy repos may lack them

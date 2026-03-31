@@ -223,6 +223,23 @@ export async function getRootCommit(rootCid: CID): Promise<string | null> {
 }
 
 /**
+ * Resolve a git revision/ref to a commit SHA using the native ref reader.
+ */
+export async function resolveRevision(rootCid: CID, revision: string): Promise<string | null> {
+  const repoError = await ensureGitRepo(rootCid);
+  if (repoError) {
+    return null;
+  }
+
+  try {
+    const { resolveRevisionToCommit } = await import('./wasmGit/log');
+    return await resolveRevisionToCommit(rootCid, revision);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Get git status (staged, unstaged, untracked files)
  * Results are cached by git repo hash
  * Uses wasm-git (libgit2)
@@ -375,6 +392,39 @@ export async function isGitRepo(rootCid: CID): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function waitForGitRepo(
+  rootCid: CID,
+  options?: {
+    attempts?: number;
+    delayMs?: number;
+  },
+): Promise<boolean> {
+  const attempts = Math.max(1, options?.attempts ?? 20);
+  const delayMs = Math.max(0, options?.delayMs ?? 500);
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (await isGitRepo(rootCid)) {
+      return true;
+    }
+    if (attempt < attempts - 1 && delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  return false;
+}
+
+async function ensureGitRepo(
+  rootCid: CID,
+  options?: {
+    attempts?: number;
+    delayMs?: number;
+  },
+): Promise<string | null> {
+  const ready = await waitForGitRepo(rootCid, options);
+  return ready ? null : 'Not a git repository';
 }
 
 /**
@@ -650,6 +700,11 @@ export async function runGitCommand(
  * Returns diff output, stats, and whether fast-forward is possible
  */
 export async function diffBranches(rootCid: CID, baseBranch: string, headBranch: string) {
+  const repoError = await ensureGitRepo(rootCid);
+  if (repoError) {
+    return { diff: '', stats: { additions: 0, deletions: 0, files: [] }, canFastForward: false, error: repoError };
+  }
+
   const { diffBranchesWasm } = await import('./wasmGit');
   return await diffBranchesWasm(rootCid, baseBranch, headBranch);
 }
@@ -658,6 +713,11 @@ export async function diffBranches(rootCid: CID, baseBranch: string, headBranch:
  * Check if branches can be merged without conflicts
  */
 export async function canMerge(rootCid: CID, baseBranch: string, headBranch: string) {
+  const repoError = await ensureGitRepo(rootCid);
+  if (repoError) {
+    return { canMerge: false, conflicts: [], isFastForward: false, error: repoError };
+  }
+
   const { canMergeWasm } = await import('./wasmGit');
   return await canMergeWasm(rootCid, baseBranch, headBranch);
 }
@@ -674,6 +734,11 @@ export async function mergeBranches(
   authorName: string = 'User',
   authorEmail: string = 'user@example.com'
 ) {
+  const repoError = await ensureGitRepo(rootCid);
+  if (repoError) {
+    return { success: false, error: repoError };
+  }
+
   const { mergeWasm } = await import('./wasmGit');
   return await mergeWasm(rootCid, baseBranch, headBranch, commitMessage, authorName, authorEmail);
 }

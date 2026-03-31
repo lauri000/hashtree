@@ -652,6 +652,51 @@ fn test_pr_list_reports_empty_results() {
 }
 
 #[test]
+fn test_pr_list_includes_self_authored_browser_style_pr() {
+    let fixture = setup_pr_list_fixture();
+    let repo_address = fixture.target_repo_address();
+    let clone_url = fixture.target_repo_url();
+
+    let browser_style_pr = EventBuilder::new(
+        Kind::Custom(1618),
+        "interop test PR",
+        [
+            Tag::custom(TagKind::custom("a"), vec![repo_address]),
+            Tag::custom(
+                TagKind::custom("p"),
+                vec![fixture.target_pubkey_hex.clone()],
+            ),
+            Tag::custom(
+                TagKind::custom("subject"),
+                vec!["iris-git created PR".to_string()],
+            ),
+            Tag::custom(TagKind::custom("clone"), vec![clone_url]),
+            Tag::custom(TagKind::custom("branch"), vec!["feature-ui".to_string()]),
+            Tag::custom(TagKind::custom("target-branch"), vec!["master".to_string()]),
+        ],
+    )
+    .custom_created_at(Timestamp::from_secs(1_700_209_000))
+    .to_event(&fixture.target_keys)
+    .expect("build browser-style self PR");
+    fixture.publish(&browser_style_pr);
+
+    let output = fixture.run_htree(&["pr", "list", &fixture.target_repo_url()]);
+    assert!(
+        output.status.success(),
+        "htree pr list failed.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("iris-git created PR"),
+        "expected browser-style self-authored PR in output.\nstdout:\n{}",
+        stdout
+    );
+}
+
+#[test]
 fn test_pr_list_surfaces_fetch_failure_instead_of_empty_results() {
     let fixture = setup_pr_list_fixture();
     let unreachable_relay = unused_localhost_ws_url();

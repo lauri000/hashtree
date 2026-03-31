@@ -152,4 +152,45 @@ describe('handleTreeRootEvent', () => {
       }),
     );
   });
+
+  it('keeps the higher-id root when same-second replaceable events arrive out of order', async () => {
+    const notify = vi.fn();
+    setNotifyCallback(notify);
+
+    const treeName = 'videos/Same second';
+    const pubkey = 'b'.repeat(64);
+    const npub = nip19.npubEncode(pubkey);
+    const highIdHash = '3'.repeat(64);
+    const lowIdHash = '4'.repeat(64);
+    const createdAt = 300;
+
+    await handleTreeRootEvent(buildEvent({
+      id: 'ffff',
+      pubkey,
+      created_at: createdAt,
+      tags: [
+        ['d', treeName],
+        ['l', 'hashtree'],
+        ['hash', highIdHash],
+      ],
+    }));
+
+    await handleTreeRootEvent(buildEvent({
+      id: '0001',
+      pubkey,
+      created_at: createdAt,
+      tags: [
+        ['d', treeName],
+        ['l', 'hashtree'],
+        ['hash', lowIdHash],
+      ],
+    }));
+
+    const cached = await getCachedRootInfo(npub, treeName);
+
+    expect(cached).toBeTruthy();
+    expect(toHex(cached!.hash)).toBe(highIdHash);
+    expect(cached!.updatedAt).toBe(createdAt);
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
 });

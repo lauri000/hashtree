@@ -84,6 +84,7 @@
     openNewPullRequestModal({
       npub,
       repoName,
+      repoRootCid: dirCid,
       branches: gitInfo.branches,
       currentBranch: gitInfo.currentBranch || undefined,
       onCreate: () => {

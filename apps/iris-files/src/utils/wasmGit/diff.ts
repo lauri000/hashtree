@@ -4,7 +4,7 @@
 import type { CID } from '@hashtree/core';
 import { LinkType } from '@hashtree/core';
 import { getTree } from '../../store';
-import { withWasmGitLock, loadWasmGit, copyToWasmFS, createRepoPath } from './core';
+import { withWasmGitLock, loadWasmGit, copyToWasmFS, createRepoPath, fixBareConfig } from './core';
 import { getErrorMessage } from '../errorMessage';
 
 export interface BranchDiffStats {
@@ -74,6 +74,7 @@ export async function diffBranchesWasm(
       module.FS.chdir(repoPath);
 
       await copyToWasmFS(module, rootCid, '.');
+      fixBareConfig(module);
 
       // Get diff between branches using git diff base head
       // wasm-git doesn't support the ... syntax, so we use two-dot diff
@@ -145,6 +146,7 @@ export async function canMergeWasm(
       module.FS.chdir(repoPath);
 
       await copyToWasmFS(module, rootCid, '.');
+      fixBareConfig(module);
 
       // Check for fast-forward possibility
       let isFastForward = false;

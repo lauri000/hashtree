@@ -4,7 +4,7 @@
 import type { CID } from '@hashtree/core';
 import { LinkType } from '@hashtree/core';
 import { getTree } from '../../store';
-import { withWasmGitLock, loadWasmGit, copyToWasmFS, readGitDirectory, parseCommandArgs, rmRf, createRepoPath } from './core';
+import { withWasmGitLock, loadWasmGit, copyToWasmFS, readGitDirectory, parseCommandArgs, rmRf, createRepoPath, fixBareConfig } from './core';
 import { getErrorMessage } from '../errorMessage';
 
 /**
@@ -55,6 +55,7 @@ export async function runGitCommand(
 
       // Copy full working directory from hashtree (including .git)
       await copyToWasmFS(module, rootCid, '.');
+      fixBareConfig(module);
 
       if (args.length === 0) {
         return { output: '', error: 'No command provided' };

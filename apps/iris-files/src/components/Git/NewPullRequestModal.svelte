@@ -5,10 +5,12 @@
    * - Branch selection via dropdowns when branches are available
    * - Cross-repo PRs with source repo specification (npub/path or nhash)
    */
+  import type { CID } from '@hashtree/core';
 
   export interface NewPullRequestTarget {
     npub: string;
     repoName: string;
+    repoRootCid?: CID | null;
     branches?: string[];
     currentBranch?: string;
     onCreate?: (pr: { id: string; title: string }) => void;
@@ -34,6 +36,7 @@
   import { createGitInfoStore } from '../../stores/git';
   import { getLocalRootCache, getLocalRootKey } from '../../treeRootCache';
   import { waitForTreeRoot } from '../../stores/treeRoot';
+  import { resolveRevision } from '../../utils/git';
   import type { CID } from '@hashtree/core';
 
   // Available branches from the target (destination) repo
@@ -197,6 +200,10 @@
     close();
   }
 
+  async function resolveBranchTip(rootCid: CID, branch: string): Promise<string | null> {
+    return await resolveRevision(rootCid, branch);
+  }
+
   async function handleSubmit(e: Event) {
     e.preventDefault();
     if (!target || !title.trim()) return;
@@ -216,11 +223,27 @@
     const onCreate = target.onCreate;
 
     try {
+      const trimmedSourceRepo = sourceRepo.trim();
+      const usingFork = showSourceRepo && !!trimmedSourceRepo;
+      const sourceRepoRootCid = usingFork ? forkRootCid : (target.repoRootCid ?? null);
+
+      if (!sourceRepoRootCid) {
+        error = usingFork ? (forkError || 'Could not resolve source repository') : 'Repository is not ready yet';
+        return;
+      }
+
+      const commitTip = await resolveBranchTip(sourceRepoRootCid, sourceBranch.trim());
+      if (!commitTip) {
+        error = `Could not resolve branch tip for ${sourceBranch.trim()}`;
+        return;
+      }
+
       const pr = await createPullRequest(targetNpub, targetRepoName, title.trim(), description.trim(), {
         branch: sourceBranch.trim(),
         targetBranch: targetBranch.trim() || 'main',
+        commitTip,
         // Include source repo info in clone URL if specified
-        cloneUrl: sourceRepo.trim() || undefined,
+        cloneUrl: trimmedSourceRepo || undefined,
       });
 
       if (pr) {

@@ -201,6 +201,21 @@ export async function waitForCurrentDirectoryEntries(
   );
 }
 
+export async function waitForGitRepoReady(page: any, timeoutMs: number = 60000) {
+  await waitForTestHelpers(page, timeoutMs);
+  await page.waitForFunction(
+    async () => {
+      const { useCurrentDirCid } = await import('/src/stores/index.ts');
+      const { isGitRepo } = await import('/src/utils/git.ts');
+      const dirCid = useCurrentDirCid();
+      if (!dirCid) return false;
+      return await isGitRepo(dirCid);
+    },
+    undefined,
+    { timeout: timeoutMs }
+  );
+}
+
 export async function commitCurrentDirectoryChanges(
   page: any,
   message: string,
@@ -549,13 +564,13 @@ export async function disableOthersPool(page: any) {
     if (setPoolSettings) {
       setPoolSettings({ otherMax: 0, otherSatisfied: 0 });
     } else {
-      const { settingsStore } = await import('/src/stores/settings');
+      const { settingsStore } = await import('/src/stores/settings.ts');
       settingsStore.setPoolSettings({ otherMax: 0, otherSatisfied: 0 });
     }
 
     let adapter = win.__getWorkerAdapter?.();
     if (!adapter) {
-      const { getWorkerAdapter } = await import('/src/workerAdapter');
+      const { getWorkerAdapter } = await import('/src/workerAdapter.ts');
       adapter = getWorkerAdapter();
     }
     adapter?.setWebRTCPools({
@@ -573,7 +588,7 @@ export async function flushPendingPublishes(page: any): Promise<void> {
   await waitForTestHelpers(page);
   await waitForWorkerAdapter(page);
   await evaluateWithRetry(page, async () => {
-    const { flushPendingPublishes: flush } = await import('/src/treeRootCache');
+    const { flushPendingPublishes: flush } = await import('/src/treeRootCache.ts');
     await flush();
   }, undefined);
 }
@@ -601,14 +616,14 @@ export async function enableOthersPool(page: any, max: number = 10) {
     if (setPoolSettings) {
       setPoolSettings({ otherMax: maxPeers, otherSatisfied: Math.floor(maxPeers / 5), followsMax: 20, followsSatisfied: 10 });
     } else {
-      const { settingsStore } = await import('/src/stores/settings');
+      const { settingsStore } = await import('/src/stores/settings.ts');
       settingsStore.setPoolSettings({ otherMax: maxPeers, otherSatisfied: Math.floor(maxPeers / 5), followsMax: 20, followsSatisfied: 10 });
     }
 
     // Update the worker's WebRTC pool config - use the exposed global to avoid module duplication issues
     let adapter = win.__getWorkerAdapter?.();
     if (!adapter) {
-      const { getWorkerAdapter } = await import('/src/workerAdapter');
+      const { getWorkerAdapter } = await import('/src/workerAdapter.ts');
       adapter = getWorkerAdapter();
     }
     if (adapter) {
@@ -854,7 +869,7 @@ export async function useLocalRelay(page: any, relayOverride?: string) {
   const localRelay = relayOverride || getTestRelayUrl();
   await evaluateWithRetry(page, async (relay) => {
     // Update settings store for future store creations
-    const { settingsStore } = await import('/src/stores/settings');
+    const { settingsStore } = await import('/src/stores/settings.ts');
     settingsStore.setNetworkSettings({
       relays: [relay],
     });

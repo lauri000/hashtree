@@ -4,7 +4,7 @@
 import type { CID } from '@hashtree/core';
 import { LinkType } from '@hashtree/core';
 import { getTree } from '../../store';
-import { withWasmGitLock, loadWasmGit, copyToWasmFS, runSilent, rmRf, createRepoPath } from './core';
+import { withWasmGitLock, loadWasmGit, copyToWasmFS, runSilent, rmRf, createRepoPath, fixBareConfig } from './core';
 import { getCommitTreeEntries, getHead } from './log';
 
 /**
@@ -64,6 +64,7 @@ export async function checkoutWasm(
       module.FS.chdir(repoPath);
 
       await copyToWasmFS(module, rootCid, '.');
+      fixBareConfig(module);
 
       // Checkout the commit
       try {

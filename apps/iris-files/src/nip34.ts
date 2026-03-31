@@ -48,6 +48,26 @@ async function fetchEventsViaSubscribe(filter: NDKFilter, timeoutMs = 5000): Pro
   });
 }
 
+async function publishNip34Event(event: NDKEvent): Promise<void> {
+  const hasDirectRelays = ndk.pool.relays.size > 0 || (ndk.explicitRelayUrls?.length ?? 0) > 0;
+  if (hasDirectRelays) {
+    await event.publish();
+    return;
+  }
+
+  await event.sign();
+  const rawEvent = event.rawEvent();
+  ndk.subManager.dispatchEvent(rawEvent, undefined, true);
+
+  const { getWorkerAdapter, waitForWorkerAdapter } = await import('./lib/workerInit');
+  const adapter = getWorkerAdapter() ?? await waitForWorkerAdapter(5000);
+  if (!adapter) {
+    throw new Error('Worker adapter unavailable for NIP-34 publish');
+  }
+
+  await adapter.publish(rawEvent as Parameters<typeof adapter.publish>[0]);
+}
+
 // Status types for PRs and Issues
 export type ItemStatus = 'open' | 'merged' | 'closed' | 'draft';
 
@@ -343,7 +363,7 @@ export async function createPullRequest(
   }
 
   try {
-    await event.publish();
+    await publishNip34Event(event);
 
     return {
       id: event.id!,
@@ -398,7 +418,7 @@ export async function createIssue(
   }
 
   try {
-    await event.publish();
+    await publishNip34Event(event);
 
     return {
       id: event.id!,
@@ -440,7 +460,7 @@ export async function updateStatus(
   ];
 
   try {
-    await event.publish();
+    await publishNip34Event(event);
     return true;
   } catch (e) {
     console.error('Failed to update status:', e);
@@ -501,7 +521,7 @@ export async function addComment(
   ];
 
   try {
-    await event.publish();
+    await publishNip34Event(event);
 
     return {
       id: event.id!,
@@ -569,7 +589,7 @@ export async function publishRepoAnnouncement(
   }
 
   try {
-    await event.publish();
+    await publishNip34Event(event);
     return true;
   } catch (e) {
     console.error('Failed to publish repo announcement:', e);
