@@ -512,7 +512,7 @@ pub(crate) enum SocialGraphCommands {
 pub(crate) enum ReleaseCommands {
     /// Publish a version directory CID into a mutable release tree and repoint latest
     Publish {
-        /// Mutable release tree name (repo releases usually use "<repo>-releases")
+        /// Mutable release tree name (repo releases usually use "releases/<repo>")
         tree_name: String,
         /// Version path within the release tree (for example: "v0.2.3" or "releases/v0.2.3")
         version_path: String,

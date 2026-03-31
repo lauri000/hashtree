@@ -31,7 +31,7 @@ The generated formula installs:
 Examples:
   packaging/homebrew/create_tap.sh \
     --version v0.2.15 \
-    --release-base-url https://upload.iris.to/<npub>/hashtree-releases/v0.2.15 \
+    --release-base-url https://upload.iris.to/<npub>/releases/hashtree/v0.2.15 \
     --checksums-dir rust/dist/hashtree-v0.2.15 \
     --output-dir dist/homebrew-htree.git
 EOF

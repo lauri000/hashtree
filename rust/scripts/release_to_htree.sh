@@ -11,7 +11,7 @@ hashtree, then publishes it into a mutable release tree.
 Options:
   --version <version>                 Release version label, for example: v0.2.3
   --version-path <path>              Published path inside the release tree (default: <version>)
-  --tree-name <name>                 Mutable release tree name (default: <repo>-releases)
+  --tree-name <name>                 Mutable release tree name (default: releases/<repo>)
   --homebrew-tap-repo <name>         Homebrew tap repo name (default: homebrew-<repo>)
   --skip-homebrew-tap                Skip updating the Homebrew tap
   --cargo-publish                    Publish Rust crates to crates.io after releasing artifacts
@@ -38,7 +38,7 @@ REPO_NAME="$(infer_repo_name "$REPO_DIR")"
 
 VERSION=""
 VERSION_PATH=""
-TREE_NAME="${REPO_NAME}-releases"
+TREE_NAME="releases/${REPO_NAME}"
 HOMEBREW_TAP_REPO="homebrew-${REPO_NAME}"
 SKIP_HOMEBREW_TAP=0
 CARGO_PUBLISH=0

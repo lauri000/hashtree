@@ -84,7 +84,7 @@ The repo includes a helper for that flow:
 ```bash
 packaging/homebrew/publish_tap.sh \
   --version v<version> \
-  --release-base-url https://upload.iris.to/<npub>/hashtree-releases/v<version> \
+  --release-base-url https://upload.iris.to/<npub>/releases/hashtree/v<version> \
   --checksums-dir rust/dist/hashtree-v<version>
 ```
 

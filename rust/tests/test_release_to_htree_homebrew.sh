@@ -100,8 +100,8 @@ PATH="${TMPDIR}/bin:$PATH" TEST_LOG_DIR="${TMPDIR}/logs" \
     --version v0.2.3 \
     --output-dir "${TMPDIR}/out" >/dev/null
 
-grep -F "publish_release:v0.2.3 nhash1release hashtree-releases" "${TMPDIR}/logs/calls.log" >/dev/null
-grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/hashtree-releases/v0.2.3 --checksums-dir ${TMPDIR}/out --tap-repo homebrew-hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
+grep -F "publish_release:v0.2.3 nhash1release releases/hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
+grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/releases/hashtree/v0.2.3 --checksums-dir ${TMPDIR}/out --tap-repo homebrew-hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
 if grep -F "cargo_publish:" "${TMPDIR}/logs/calls.log" >/dev/null; then
     echo "release_to_htree should not cargo publish unless requested" >&2
     exit 1
