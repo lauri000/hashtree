@@ -90,24 +90,29 @@ function listTopLevelFiles(root) {
     .filter((fullPath) => statSync(fullPath).isFile())
 }
 
+function buildTopLevelAssetEntries(root, mapper, excludeNames = new Set()) {
+  return listTopLevelFiles(root)
+    .filter((fullPath) => !excludeNames.has(basename(fullPath)))
+    .map((sourcePath) => mapper(sourcePath))
+}
+
 function buildCliAssetEntries(cliDir) {
   if (!cliDir) {
     throw new Error('Missing --cli-dir')
   }
 
-  return listTopLevelFiles(cliDir)
-    .filter((fullPath) => {
-      const name = basename(fullPath)
-      return name !== 'release.json' && name !== 'notes.md'
-    })
-    .map((sourcePath) => {
+  return buildTopLevelAssetEntries(
+    cliDir,
+    (sourcePath) => {
       const name = basename(sourcePath)
       return {
         name,
         sourcePath,
         relativePath: name === 'install.sh' ? 'install.sh' : `assets/${name}`,
       }
-    })
+    },
+    new Set(['release.json', 'notes.md']),
+  )
 }
 
 function buildIrisAssetEntries(irisStageDir) {
@@ -116,7 +121,19 @@ function buildIrisAssetEntries(irisStageDir) {
   }
 
   const assetsDir = join(irisStageDir, 'assets')
-  return listTopLevelFiles(assetsDir).map((sourcePath) => ({
+  return buildTopLevelAssetEntries(assetsDir, (sourcePath) => ({
+    name: basename(sourcePath),
+    sourcePath,
+    relativePath: `assets/${basename(sourcePath)}`,
+  }))
+}
+
+function buildAssetDirEntries(assetsDir) {
+  if (!assetsDir) {
+    return []
+  }
+
+  return buildTopLevelAssetEntries(assetsDir, (sourcePath) => ({
     name: basename(sourcePath),
     sourcePath,
     relativePath: `assets/${basename(sourcePath)}`,
@@ -145,82 +162,58 @@ export function renderReleaseNotes({ tag, commit, assetEntries, installUrl = '' 
   const assetNames = assetEntries.map((entry) => entry.name)
   const assets = classifyAssetNames(assetNames)
   const lines = ['## Installation', '']
-
-  lines.push('### htree CLI', '')
-  if (installUrl && assets.installSh) {
-    lines.push('Auto-detect install:', '', '```bash', `curl -fsSL ${installUrl} | sh`, '```', '')
-  } else if (assets.installSh) {
-    lines.push('Bootstrap installer: `install.sh`', '')
-  }
-
-  if (
+  const hasCliArchives =
     assets.cliMacArm64 ||
     assets.cliMacX64 ||
     assets.cliLinuxX64 ||
     assets.cliLinuxArm64 ||
     assets.cliWindowsX64
-  ) {
-    lines.push('Manual downloads:', '')
-    if (assets.cliMacArm64 || assets.cliMacX64) {
-      lines.push('macOS:')
-      if (assets.cliMacArm64) {
-        lines.push(`- Apple Silicon: \`${assets.cliMacArm64}\``)
-      }
-      if (assets.cliMacX64) {
-        lines.push(`- Intel: \`${assets.cliMacX64}\``)
-      }
-    }
-    if (assets.cliLinuxX64 || assets.cliLinuxArm64) {
-      lines.push('Linux:')
-      if (assets.cliLinuxX64) {
-        lines.push(`- x86_64: \`${assets.cliLinuxX64}\``)
-      }
-      if (assets.cliLinuxArm64) {
-        lines.push(`- ARM64: \`${assets.cliLinuxArm64}\``)
-      }
-    }
-    if (assets.cliWindowsX64) {
-      lines.push('Windows:')
-      lines.push(`- \`${assets.cliWindowsX64}\``)
-    }
-    lines.push('')
-  }
-
-  if (
+  const hasIrisAssets =
     assets.irisMacArm64 ||
     assets.irisLinuxAppImage ||
     assets.irisLinuxDeb ||
     assets.irisWindowsX64
-  ) {
+
+  lines.push('### htree CLI', '')
+  if (installUrl && assets.installSh) {
+    lines.push('Install with shell:', '', '```bash', `curl -fsSL ${installUrl} | sh`, '```', '')
+  } else if (assets.installSh) {
+    lines.push('Install with the shell script asset below.', '')
+  }
+
+  if (hasCliArchives) {
+    lines.push('Manual install: download the archive for your platform from the release assets below, extract it, and run `./install.sh`.', '')
+  }
+
+  if (hasIrisAssets) {
     lines.push('### Iris Desktop App', '')
     if (assets.irisMacArm64) {
-      lines.push(`- macOS: download \`${assets.irisMacArm64}\`, unzip it, and move \`Iris.app\` into \`/Applications\`.`)
+      lines.push('- macOS: download the macOS app archive below, unzip it, and move `Iris.app` into `/Applications`.')
     }
     if (assets.irisLinuxAppImage) {
-      lines.push(`- Linux AppImage: run \`chmod +x ${assets.irisLinuxAppImage} && ./${assets.irisLinuxAppImage}\`.`)
+      lines.push('- Linux AppImage: download the AppImage asset below, make it executable, and run it.')
     }
     if (assets.irisLinuxDeb) {
-      lines.push(`- Linux .deb: install \`${assets.irisLinuxDeb}\` with \`sudo apt install ./${assets.irisLinuxDeb}\`.`)
+      lines.push('- Linux .deb: install the Debian package asset below with `sudo apt install ./<package>.deb`.')
     }
     if (assets.irisWindowsX64) {
-      lines.push(`- Windows: run \`${assets.irisWindowsX64}\`.`)
+      lines.push('- Windows: run the installer asset below.')
     }
     lines.push('')
   }
 
-  lines.push('## Downloads', '')
-  for (const entry of [...assetEntries].sort((left, right) => left.name.localeCompare(right.name))) {
-    lines.push(`- \`${entry.name}\``)
-  }
-
-  lines.push('', '## Build Info', '', `- Release \`${tag}\` from commit \`${commit}\`.`)
-  if (assets.irisMacArm64 || assets.irisLinuxAppImage || assets.irisLinuxDeb || assets.irisWindowsX64) {
+  lines.push('## Build Info', '', `- Release \`${tag}\` from commit \`${commit}\`.`)
+  if (hasIrisAssets) {
     lines.push('- Includes Iris desktop release assets.')
   } else {
     lines.push('- No Iris desktop release assets were staged.')
   }
 
   return `${lines.join('\n')}\n`
+}
+
+export function collectReleaseAssetEntries({ cliDir = '', irisStageDir = '', irisAssetsDir = '' }) {
+  return [...buildCliAssetEntries(cliDir), ...buildIrisAssetEntries(irisStageDir), ...buildAssetDirEntries(irisAssetsDir)]
 }
 
 export function stageRepoRelease({
@@ -242,7 +235,7 @@ export function stageRepoRelease({
     throw new Error('Missing --output-dir')
   }
 
-  const assetEntries = [...buildCliAssetEntries(cliDir), ...buildIrisAssetEntries(irisStageDir)]
+  const assetEntries = collectReleaseAssetEntries({ cliDir, irisStageDir })
   if (assetEntries.length === 0) {
     throw new Error('No release assets found to stage')
   }

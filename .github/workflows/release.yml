@@ -743,6 +743,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve release commit
+        id: release_commit
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
       - name: Download hashtree artifacts
         uses: actions/download-artifact@v4
         with:
@@ -766,7 +781,6 @@ jobs:
         id: release_assets
         shell: bash
         env:
-          IRIS_ASSET_PREFIX: ${{ needs.iris-release-metadata.outputs.asset_prefix }}
           IRIS_RELEASE_READY: ${{ needs.build-macos-app.outputs.release_ready }}
           IRIS_RELEASE_REASON: ${{ needs.build-macos-app.outputs.release_reason }}
         run: |
@@ -801,84 +815,21 @@ jobs:
             echo "EOF"
           } >> "${GITHUB_OUTPUT}"
 
-          cat > release-body.md <<EOF
-          ## Installation
-
-          ### Linux / macOS (auto-detect)
-          \`\`\`bash
-          curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hashtree-\$(uname -m | sed 's/arm64/aarch64/')-\$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/apple-darwin/' | sed 's/linux/unknown-linux-musl/').tar.gz | tar -xz && cd hashtree && ./install.sh
-          \`\`\`
-
-          ### macOS (manual)
-          \`\`\`bash
-          # Apple Silicon (M1/M2/M3)
-          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hashtree-aarch64-apple-darwin.tar.gz
-
-          # Intel Mac
-          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hashtree-x86_64-apple-darwin.tar.gz
-
-          tar -xzf hashtree-*.tar.gz && cd hashtree && ./install.sh
-          \`\`\`
-
-          ### Linux (manual)
-          \`\`\`bash
-          # x86_64
-          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hashtree-x86_64-unknown-linux-musl.tar.gz
-
-          # ARM64 (Raspberry Pi, etc.)
-          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hashtree-aarch64-unknown-linux-musl.tar.gz
-
-          tar -xzf hashtree-*.tar.gz && cd hashtree && ./install.sh
-          \`\`\`
-
-          ### Windows
-          Download \`hashtree-x86_64-pc-windows-msvc.zip\`, extract, and add the folder to PATH.
-          EOF
+          render_args=(
+            --tag "${{ github.event.inputs.tag || github.ref_name }}"
+            --commit "${{ steps.release_commit.outputs.sha }}"
+            --cli-dir artifacts/hashtree
+            --output-file release-body.md
+            --install-url "https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/install.sh"
+          )
 
           if [ "${IRIS_RELEASE_READY}" = "true" ]; then
-            cat >> release-body.md <<EOF
-
-          ### Iris desktop app
-          macOS:
-          Download \`${IRIS_ASSET_PREFIX}-macos-arm64.zip\`, unzip it, and move \`Iris.app\` into \`/Applications\`.
-
-          Linux:
-          Download \`${IRIS_ASSET_PREFIX}-linux-x86_64.AppImage\` and run \`chmod +x ${IRIS_ASSET_PREFIX}-linux-x86_64.AppImage && ./${IRIS_ASSET_PREFIX}-linux-x86_64.AppImage\`,
-          or install \`${IRIS_ASSET_PREFIX}-linux-x86_64.deb\` with \`sudo apt install ./${IRIS_ASSET_PREFIX}-linux-x86_64.deb\`.
-
-          Windows:
-          Run \`${IRIS_ASSET_PREFIX}-windows-x64-setup.exe\`.
-          EOF
+            render_args+=(--iris-assets-dir artifacts/iris)
           else
-            cat >> release-body.md <<EOF
-
-          ### Iris desktop app
-          Iris desktop installers were not attached to this release because ${IRIS_RELEASE_REASON}.
-          EOF
+            echo "Rendering notes without Iris assets: ${IRIS_RELEASE_REASON}"
           fi
 
-          cat >> release-body.md <<EOF
-
-          ### Verify
-          \`\`\`bash
-          htree --help
-          htree cashu balance
-          git clone htree://npub1.../repo
-          \`\`\`
-
-          ## What's included
-          - \`htree\` - CLI + daemon for hashtree (add, get, push, start)
-          - \`htree-cashu\` - Cashu wallet helper for \`htree cashu\`
-          - \`git-remote-htree\` - Git remote helper for \`htree://\` URLs
-          - \`install.sh\` - Installer script (Unix)
-          - \`README.txt\` - Quick reference
-          EOF
-
-          if [ "${IRIS_RELEASE_READY}" = "true" ]; then
-            cat >> release-body.md <<EOF
-          - \`Iris\` desktop installers for macOS, Linux, and Windows - native shell with embedded htree daemon
-          EOF
-          fi
+          node scripts/render_repo_release_notes.mjs "${render_args[@]}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

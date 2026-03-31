@@ -80,9 +80,15 @@ test('stageRepoRelease creates a metadata-backed repo release directory', () => 
 
     const notes = readFileSync(join(outputDir, 'notes.md'), 'utf8')
     assert.match(notes, /curl -fsSL https:\/\/upload\.example\/releases%2Fhashtree\/latest\/install\.sh \| sh/)
+    assert.match(notes, /Install with shell:/)
+    assert.match(notes, /Manual install: download the archive for your platform from the release assets below/)
     assert.match(notes, /Iris Desktop App/)
-    assert.match(notes, /iris-v0.2.16-macos-arm64\.zip/)
+    assert.match(notes, /download the macOS app archive below/)
     assert.match(notes, /Includes Iris desktop release assets\./)
+    assert.doesNotMatch(notes, /## Downloads/)
+    assert.doesNotMatch(notes, /hashtree-aarch64-apple-darwin\.sha256/)
+    assert.doesNotMatch(notes, /hashtree-aarch64-apple-darwin\.tar\.gz/)
+    assert.doesNotMatch(notes, /iris-v0.2.16-macos-arm64\.zip/)
   } finally {
     rmSync(tempDir, { recursive: true, force: true })
   }
