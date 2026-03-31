@@ -17,9 +17,11 @@ export function getTreeRootSubscriptionPlan(options: {
   workerHydrated: boolean;
   hasRouteLinkKey?: boolean;
 }): TreeRootSubscriptionPlan {
-  const { workerSubscribed, workerHydrated, hasRouteLinkKey = false } = options;
+  const { workerSubscribed } = options;
   return {
     attachWorkerSubscription: workerSubscribed,
-    useResolverSubscription: !workerHydrated || hasRouteLinkKey,
+    // Keep the exact resolver subscription even when the worker has a cached root.
+    // Old sessions can otherwise stay pinned to stale or incomplete worker cache state.
+    useResolverSubscription: true,
   };
 }

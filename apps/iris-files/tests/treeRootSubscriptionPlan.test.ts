@@ -15,13 +15,13 @@ describe('getTreeRootSubscriptionPlan', () => {
     });
   });
 
-  it('skips the exact resolver subscription once the specific tree is hydrated', () => {
+  it('keeps the exact resolver subscription once the specific tree is hydrated', () => {
     expect(getTreeRootSubscriptionPlan({
       workerSubscribed: true,
       workerHydrated: true,
     })).toEqual({
       attachWorkerSubscription: true,
-      useResolverSubscription: false,
+      useResolverSubscription: true,
     });
   });
 
