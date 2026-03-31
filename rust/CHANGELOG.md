@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.18 - 2026-03-31
+
+Changes since the `0.2.17` crates.io release.
+
+### Improved
+
+- Unified the shared mesh signaling path across `hashtree-cli`, `hashtree-sim`, and the TypeScript interop tests, so production and simulation now exercise the same router-layer protocol and hedged retrieval scheduling.
+- Renamed the reusable networking crate from `hashtree-webrtc` to `hashtree-network`, which better matches its scope: mesh routing, signaling, peer links, and store composition rather than just transport bindings.
+
+### Fixed
+
+- Fixed Rust ignored integration and doctest coverage so the full workspace, including network-gated tests and cross-language WebRTC checks, passes from the merged `master` tip.
+
 ## 0.2.17 - 2026-03-31
 
 Changes since the `0.2.16` crates.io release.
