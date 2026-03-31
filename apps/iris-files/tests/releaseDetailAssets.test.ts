@@ -107,4 +107,70 @@ describe('fetchReleaseDetail assets', () => {
       },
     ]);
   });
+
+  it('resolves latest through the tree path before reading release metadata', async () => {
+    const releaseJson = new TextEncoder().encode(JSON.stringify({
+      id: 'v0.2.16',
+      title: 'v0.2.16',
+      created_at: 1,
+      published_at: 2,
+      assets: [
+        { name: 'iris-v0.2.16-macos-arm64.zip', path: 'assets/iris-v0.2.16-macos-arm64.zip', size: 123 },
+      ],
+    }));
+    const notes = new TextEncoder().encode('locally built release');
+    const fakeTree = {
+      resolvePath: vi.fn(async (cid: string, path: string) => {
+        if (cid === 'root-cid' && path === 'latest') {
+          return { name: 'latest', cid: 'release-dir-cid', type: LinkType.Dir };
+        }
+        if (cid === 'release-dir-cid' && path === 'release.json') {
+          return { name: 'release.json', cid: 'release-json-cid', type: LinkType.Blob };
+        }
+        if (cid === 'release-dir-cid' && path === 'notes.md') {
+          return { name: 'notes.md', cid: 'notes-cid', type: LinkType.Blob };
+        }
+        if (cid === 'release-dir-cid' && path === 'assets') {
+          return { name: 'assets', cid: 'assets-dir-cid', type: LinkType.Blob };
+        }
+        return null;
+      }),
+      readFile: vi.fn(async (cid: string) => {
+        if (cid === 'release-json-cid') return releaseJson;
+        if (cid === 'notes-cid') return notes;
+        return null;
+      }),
+      listDirectory: vi.fn(async (cid: string) => {
+        if (cid === 'assets-dir-cid') {
+          return [{ name: 'iris-v0.2.16-macos-arm64.zip', cid: 'asset-cid', size: 123, type: LinkType.Blob }];
+        }
+        if (cid === 'root-cid') {
+          return [{ name: 'latest', cid: 'latest-link-cid', type: LinkType.Dir }];
+        }
+        return [];
+      }),
+    };
+
+    getTree.mockReturnValue(fakeTree);
+    waitForTreeRoot.mockResolvedValue('root-cid');
+
+    const { fetchReleaseDetail } = await import('../src/stores/releases');
+    const release = await fetchReleaseDetail('npub1owner', 'hashtree', 'latest');
+
+    expect(release).toMatchObject({
+      id: 'v0.2.16',
+      title: 'v0.2.16',
+      notes: 'locally built release',
+      assets: [
+        {
+          name: 'iris-v0.2.16-macos-arm64.zip',
+          path: 'assets/iris-v0.2.16-macos-arm64.zip',
+          size: 123,
+          cid: 'asset-cid',
+        },
+      ],
+    });
+    expect(fakeTree.resolvePath).toHaveBeenCalledWith('root-cid', 'latest');
+    expect(fakeTree.resolvePath).toHaveBeenCalledWith('release-dir-cid', 'release.json');
+  });
 });

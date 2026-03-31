@@ -228,8 +228,7 @@ export async function fetchReleaseDetail(
   if (!rootCid) return null;
 
   const tree = getTree();
-  const entries = await tree.listDirectory(rootCid);
-  const entry = entries.find(item => item.name === releaseId);
+  const entry = await tree.resolvePath(rootCid, releaseId);
   if (!entry?.cid || entry.type !== LinkType.Dir) return null;
 
   const record = await readReleaseRecord(tree, entry.cid);
