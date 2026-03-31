@@ -93,3 +93,36 @@ test('stageRepoRelease creates a metadata-backed repo release directory', () => 
     rmSync(tempDir, { recursive: true, force: true })
   }
 })
+
+test('stageRepoRelease notes include partial Iris asset sets', () => {
+  const tempDir = mkdtempSync(join(os.tmpdir(), 'stage-repo-release-partial-'))
+
+  try {
+    const cliDir = join(tempDir, 'cli')
+    const irisStageDir = join(tempDir, 'iris-stage')
+    const outputDir = join(tempDir, 'out')
+
+    mkdirSync(cliDir, { recursive: true })
+    mkdirSync(join(irisStageDir, 'assets'), { recursive: true })
+
+    writeFileSync(join(cliDir, 'install.sh'), '#!/bin/sh\necho install\n')
+    writeFileSync(join(cliDir, 'hashtree-x86_64-unknown-linux-musl.tar.gz'), 'cli-tar')
+    writeFileSync(join(irisStageDir, 'assets', 'iris-v0.2.16-linux-x86_64.AppImage'), 'iris-appimage')
+
+    stageRepoRelease({
+      tag: 'v0.2.16',
+      commit: 'def456',
+      cliDir,
+      outputDir,
+      irisStageDir,
+    })
+
+    const notes = readFileSync(join(outputDir, 'notes.md'), 'utf8')
+    assert.match(notes, /Iris Desktop App/)
+    assert.match(notes, /Linux AppImage: download the AppImage asset below/)
+    assert.match(notes, /Includes Iris desktop release assets\./)
+    assert.doesNotMatch(notes, /No Iris desktop release assets were staged\./)
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})

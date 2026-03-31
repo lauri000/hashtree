@@ -766,7 +766,6 @@ jobs:
           merge-multiple: true
 
       - name: Download Iris artifacts
-        if: needs.build-macos-app.outputs.release_ready == 'true'
         uses: actions/download-artifact@v4
         with:
           pattern: iris-*
@@ -781,28 +780,26 @@ jobs:
         id: release_assets
         shell: bash
         env:
-          IRIS_RELEASE_READY: ${{ needs.build-macos-app.outputs.release_ready }}
-          IRIS_RELEASE_REASON: ${{ needs.build-macos-app.outputs.release_reason }}
+          IRIS_MACOS_RELEASE_READY: ${{ needs.build-macos-app.outputs.release_ready }}
+          IRIS_MACOS_RELEASE_REASON: ${{ needs.build-macos-app.outputs.release_reason }}
         run: |
           set -euo pipefail
           shopt -s nullglob
 
           files=()
+          iris_asset_count=0
           for file in artifacts/hashtree/*; do
             if [ -f "${file}" ]; then
               files+=("${file}")
             fi
           done
 
-          if [ "${IRIS_RELEASE_READY}" = "true" ]; then
-            for file in artifacts/iris/*; do
-              if [ -f "${file}" ]; then
-                files+=("${file}")
-              fi
-            done
-          else
-            echo "Skipping Iris release assets: ${IRIS_RELEASE_REASON}"
-          fi
+          for file in artifacts/iris/*; do
+            if [ -f "${file}" ]; then
+              files+=("${file}")
+              iris_asset_count=$((iris_asset_count + 1))
+            fi
+          done
 
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No release files found"
@@ -823,10 +820,14 @@ jobs:
             --install-url "https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/install.sh"
           )
 
-          if [ "${IRIS_RELEASE_READY}" = "true" ]; then
+          if [ "${iris_asset_count}" -gt 0 ]; then
             render_args+=(--iris-assets-dir artifacts/iris)
           else
-            echo "Rendering notes without Iris assets: ${IRIS_RELEASE_REASON}"
+            echo "Rendering notes without Iris assets."
+          fi
+
+          if [ "${IRIS_MACOS_RELEASE_READY}" != "true" ]; then
+            echo "macOS Iris release asset unavailable: ${IRIS_MACOS_RELEASE_REASON}"
           fi
 
           node scripts/render_repo_release_notes.mjs "${render_args[@]}"
