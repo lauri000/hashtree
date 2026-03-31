@@ -17,7 +17,6 @@ android {
     compileSdk = 36
     namespace = "to.iris.browser"
     defaultConfig {
-        manifestPlaceholders["usesCleartextTraffic"] = "false"
         applicationId = "to.iris.browser"
         minSdk = 24
         targetSdk = 36
@@ -26,14 +25,11 @@ android {
     }
     buildTypes {
         getByName("debug") {
-            manifestPlaceholders["usesCleartextTraffic"] = "true"
             isDebuggable = true
             isJniDebuggable = true
             isMinifyEnabled = false
-            packaging {                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")
-                jniLibs.keepDebugSymbols.add("*/armeabi-v7a/*.so")
-                jniLibs.keepDebugSymbols.add("*/x86/*.so")
-                jniLibs.keepDebugSymbols.add("*/x86_64/*.so")
+            packaging {
+                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")
             }
         }
         getByName("release") {

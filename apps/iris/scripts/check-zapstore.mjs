@@ -9,7 +9,7 @@ const packageJsonPath = path.join(appRoot, 'package.json');
 const tauriConfigPath = path.join(appRoot, 'src-tauri/tauri.conf.json');
 const expectedRepository = 'https://github.com/mmalmi/hashtree';
 const expectedIcon = 'src-tauri/gen/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png';
-const expectedAsset = 'src-tauri/gen/android/app/build/outputs/apk/universal/release/.*\\.apk';
+const expectedReleaseSource = 'src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk';
 const expectedSummary = 'Native shell for hashtree apps with embedded htree daemon';
 const expectedBlossomServers = [
   'https://cdn.zapstore.dev',
@@ -71,14 +71,14 @@ const tauriConfig = JSON.parse(tauriConfigRaw);
 assert.equal(zapstore.name, tauriConfig.productName, 'Zapstore name should match Tauri productName');
 assert.equal(zapstore.identifier, tauriConfig.identifier, 'Zapstore identifier should match Tauri identifier');
 assert.equal(zapstore.license, packageJson.license, 'Zapstore license should match package.json');
-assert.equal(zapstore.homepage, packageJson.homepage, 'Zapstore homepage should match package.json');
+assert.equal(zapstore.website, packageJson.homepage, 'Zapstore website should match package.json homepage');
 assert.equal(zapstore.repository, expectedRepository, 'Zapstore repository should point at the GitHub repo');
 assert.equal(zapstore.summary, expectedSummary, 'Zapstore summary drifted');
 assert.equal(zapstore.description, expectedSummary, 'Zapstore description drifted');
 assert.equal(zapstore.icon, expectedIcon, 'Zapstore icon should use the generated Android launcher icon');
-assert.equal(zapstore.tags, 'nostr', 'Zapstore tags drifted');
-assert.deepEqual(zapstore.assets, [expectedAsset], 'Zapstore assets drifted');
-assert.deepEqual(zapstore.remote_metadata, ['github'], 'Zapstore remote metadata drifted');
+assert.deepEqual(zapstore.tags, ['nostr'], 'Zapstore tags drifted');
+assert.equal(zapstore.release_source, expectedReleaseSource, 'Zapstore release source drifted');
+assert.deepEqual(zapstore.metadata_sources, ['github'], 'Zapstore metadata sources drifted');
 assert.deepEqual(zapstore.blossom_servers, expectedBlossomServers, 'Zapstore blossom servers drifted');
 
 await assertExists(zapstore.icon);

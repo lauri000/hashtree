@@ -2,13 +2,13 @@ name: Iris
 summary: Native shell for hashtree apps with embedded htree daemon
 identifier: to.iris.browser
 repository: https://github.com/mmalmi/hashtree
-homepage: https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree/apps/iris
-assets:
-  - src-tauri/gen/android/app/build/outputs/apk/universal/release/.*\.apk
+website: https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree/apps/iris
+release_source: src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
 icon: src-tauri/gen/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 license: MIT
-tags: nostr
-remote_metadata:
+tags:
+  - nostr
+metadata_sources:
   - github
 blossom_servers:
   - https://cdn.zapstore.dev

@@ -23,9 +23,12 @@ The `actual_url` transport detail is intentional: it keeps content on the local 
 pnpm install
 pnpm run tauri:dev    # Dev mode
 pnpm run tauri:build  # Build for distribution
+pnpm run tauri:build:android
 ```
 
 Requires [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
+
+Android packaging is intentionally 64-bit only. Use `pnpm run tauri:build:android`; the raw `tauri android build` command defaults to multiple Android targets upstream. The checked-in Gradle project is also pinned to `aarch64` / `arm64-v8a`, and the test suite guards against reintroducing 32-bit Android targets.
 
 ## Testing
 
