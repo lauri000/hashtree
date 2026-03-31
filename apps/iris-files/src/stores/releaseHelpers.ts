@@ -6,7 +6,7 @@ function normalizeRepoPath(repoPath: string): string {
 
 export function buildReleaseTreeName(repoPath: string): string {
   const clean = normalizeRepoPath(repoPath);
-  return clean ? `${clean}/${RELEASES_SUFFIX}` : RELEASES_SUFFIX;
+  return clean ? `${RELEASES_SUFFIX}/${clean}` : RELEASES_SUFFIX;
 }
 
 export function sanitizeReleaseId(input: string): string {
