@@ -55,10 +55,18 @@ struct WsResponse {
 }
 
 pub async fn ws_data(State(state): State<AppState>, ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    ws_data_with_client_pubkey(state, ws, None)
 }
 
-async fn handle_socket(socket: WebSocket, state: AppState) {
+pub fn ws_data_with_client_pubkey(
+    state: AppState,
+    ws: WebSocketUpgrade,
+    client_pubkey: Option<String>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, state, client_pubkey))
+}
+
+async fn handle_socket(socket: WebSocket, state: AppState, client_pubkey: Option<String>) {
     // Use the Nostr relay's client-id generator when available so `/ws` IDs
     // can't collide with WebRTC relay clients.
     let client_id = state
@@ -77,44 +85,48 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         protocols.insert(client_id, WsProtocol::HashtreeJson);
     }
 
-    // Register Nostr relay client if enabled
-    if let Some(relay) = state.nostr_relay.clone() {
-        let (nostr_tx, mut nostr_rx) = mpsc::unbounded_channel::<String>();
-        relay.register_client(client_id, nostr_tx, None).await;
-        let ws_sender = {
-            let clients = state.ws_relay.clients.lock().await;
-            clients.get(&client_id).cloned()
-        };
-        if let Some(ws_sender) = ws_sender {
-            tokio::spawn(async move {
-                while let Some(text) = nostr_rx.recv().await {
-                    if ws_sender.send(Message::Text(text)).is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-    }
+    let mut nostr_rx = if let Some(relay) = state.nostr_relay.clone() {
+        let (nostr_tx, nostr_rx) = mpsc::unbounded_channel::<String>();
+        relay
+            .register_client(client_id, nostr_tx, client_pubkey.clone())
+            .await;
+        Some(nostr_rx)
+    } else {
+        None
+    };
 
     let (mut sender, mut receiver) = socket.split();
-    let send_task = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            if sender.send(msg).await.is_err() {
-                break;
+    loop {
+        tokio::select! {
+            maybe_msg = rx.recv() => {
+                let Some(msg) = maybe_msg else {
+                    break;
+                };
+                if sender.send(msg).await.is_err() {
+                    break;
+                }
+            }
+            maybe_text = async {
+                match &mut nostr_rx {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let Some(text) = maybe_text else {
+                    nostr_rx = None;
+                    continue;
+                };
+                if sender.send(Message::Text(text)).await.is_err() {
+                    break;
+                }
+            }
+            maybe_incoming = receiver.next() => {
+                match maybe_incoming {
+                    Some(Ok(msg)) => handle_message(client_id, msg, &state).await,
+                    Some(Err(_)) | None => break,
+                }
             }
         }
-    });
-
-    let recv_state = state.clone();
-    let recv_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = receiver.next().await {
-            handle_message(client_id, msg, &recv_state).await;
-        }
-    });
-
-    tokio::select! {
-        _ = send_task => {},
-        _ = recv_task => {},
     }
 
     close_all_upstream_nostr_subscriptions(&state, client_id).await;
@@ -1413,6 +1425,94 @@ mod tests {
             other => panic!("expected aggregated EOSE, got {:?}", other),
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn websocket_publish_returns_ok_for_trusted_event() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let author_keys = Keys::generate();
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::from([author_keys.public_key().to_hex()]),
+        ));
+        let relay = Arc::new(NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([author_keys.public_key().to_hex()]),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?);
+
+        let state = test_app_state(&tmp, relay.clone(), String::new())?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let client_pubkey = author_keys.public_key().to_hex();
+        let app = axum::Router::new().route(
+            "/ws",
+            axum::routing::get({
+                let state = state.clone();
+                let client_pubkey = client_pubkey.clone();
+                move |ws: WebSocketUpgrade| {
+                    let state = state.clone();
+                    let client_pubkey = client_pubkey.clone();
+                    async move {
+                        ws_data_with_client_pubkey(state, ws, Some(client_pubkey))
+                    }
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let (mut socket, _) = connect_async(format!("ws://{addr}/ws")).await?;
+        let event = EventBuilder::new(Kind::TextNote, "websocket publish ack", [])
+            .to_event(&author_keys)?;
+        socket
+            .send(TungsteniteMessage::Text(
+                NostrClientMessage::event(event.clone()).as_json().into(),
+            ))
+            .await?;
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("websocket closed before publish ack"))??;
+        let TungsteniteMessage::Text(text) = reply else {
+            anyhow::bail!("expected text publish ack");
+        };
+
+        match NostrRelayMessage::from_json(text.as_str())? {
+            NostrRelayMessage::Ok {
+                event_id, status, ..
+            } => {
+                assert_eq!(event_id, event.id);
+                assert!(status);
+            }
+            other => anyhow::bail!("expected OK publish ack, got {:?}", other),
+        }
+
+        let stored = relay
+            .query_events(
+                &Filter::new()
+                    .authors(vec![event.pubkey])
+                    .kinds(vec![event.kind]),
+                10,
+            )
+            .await;
+        assert!(stored.iter().any(|candidate| candidate.id == event.id));
         Ok(())
     }
 }

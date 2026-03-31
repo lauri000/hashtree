@@ -7,7 +7,9 @@
 
 use crate::permissions::{PermissionStore, PermissionType};
 use axum::body::{Body, Bytes};
+use axum::extract::{ws::WebSocketUpgrade, Query, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
 use axum::response::Response as AxumResponse;
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 use hashtree_cli::server::register_virtual_tree_host;
@@ -296,11 +298,13 @@ fn append_internal_htree_query_params(
     url: &str,
     server_url: &str,
     canonical_url: &str,
+    session_token: &str,
     cache_bust: Option<&str>,
 ) -> Result<String, String> {
     let mut params = vec![
         ("iris_htree_server", server_url),
         ("iris_htree_canonical", canonical_url),
+        ("iris_htree_session", session_token),
     ];
     if let Some(cache_bust) = cache_bust.map(str::trim).filter(|value| !value.is_empty()) {
         params.push(("iris_htree_root", cache_bust));
@@ -683,6 +687,10 @@ impl Nip07State {
             .get(origin)
             .map(|t| t == token)
             .unwrap_or(false)
+    }
+
+    pub fn validate_any_token(&self, token: &str) -> bool {
+        self.session_tokens.read().values().any(|value| value == token)
     }
 
     pub fn current_account(&self) -> Result<Option<Nip07AccountSummary>, String> {
@@ -1807,6 +1815,7 @@ pub fn generate_nip07_script(
   console.log('[NIP-07] Initializing with server:', SERVER_URL);
   window.__HTREE_SERVER_URL__ = SERVER_URL;
   window.__HTREE_CANONICAL_URL__ = null;
+  window.__HTREE_SESSION_TOKEN__ = SESSION_TOKEN;
 
   let invokePromise = null;
   let resolvedInvoke = null;
@@ -1907,6 +1916,7 @@ pub fn generate_nip07_script(
       const parsed = new URL(url);
       parsed.searchParams.delete('iris_htree_server');
       parsed.searchParams.delete('iris_htree_canonical');
+      parsed.searchParams.delete('iris_htree_session');
       return parsed.toString();
     }} catch (_error) {{
       return url;
@@ -2505,6 +2515,7 @@ pub fn generate_webview_diagnostic_probe_script(
       const parsed = new URL(url);
       parsed.searchParams.delete('iris_htree_server');
       parsed.searchParams.delete('iris_htree_canonical');
+      parsed.searchParams.delete('iris_htree_session');
       return parsed.toString();
     }} catch (_error) {{
       return url;
@@ -3367,6 +3378,8 @@ pub async fn create_nip07_webview<R: Runtime>(
         allowed_origin_rule,
         actual_url_root: None,
         canonical_url_root: None,
+        server_url: None,
+        session_token: None,
     })
 }
 
@@ -3399,7 +3412,7 @@ pub async fn create_htree_webview<R: Runtime>(
     // diagnostics, but it loads over a per-root loopback host so the browser's
     // own origin model isolates storage, service workers, and other origin-
     // scoped state between different trees and nhashes.
-    let (canonical_url, actual_url, origin, canonical_url_root, actual_url_root) =
+    let (canonical_url, actual_url_base, origin, canonical_url_root, actual_url_root) =
         if let Some(nhash) = &nhash {
             let request_host = host.as_deref().unwrap_or(nhash);
             let (canonical_url, canonical_root) = if let Some(treename) = &treename {
@@ -3434,13 +3447,6 @@ pub async fn create_htree_webview<R: Runtime>(
                 daemon_proxy_url_from_nhash(&server_url, nhash, &path, use_origin_isolated_hosts)?,
                 query.as_deref(),
             );
-            let actual_url = append_internal_htree_query_params(
-                &actual_url,
-                &server_url,
-                &canonical_url,
-                cache_bust.as_deref(),
-            )?;
-            let actual_url = append_fragment(actual_url, fragment.as_deref());
             let actual_root =
                 daemon_proxy_url_from_nhash(&server_url, nhash, "/", use_origin_isolated_hosts)?
                     .trim_end_matches('/')
@@ -3480,13 +3486,6 @@ pub async fn create_htree_webview<R: Runtime>(
                 )?,
                 query.as_deref(),
             );
-            let actual_url = append_internal_htree_query_params(
-                &actual_url,
-                &server_url,
-                &canonical_url,
-                cache_bust.as_deref(),
-            )?;
-            let actual_url = append_fragment(actual_url, fragment.as_deref());
             let actual_root = daemon_proxy_url_from_tree_host(
                 &server_url,
                 resolved_host,
@@ -3525,6 +3524,14 @@ pub async fn create_htree_webview<R: Runtime>(
         .try_state::<Arc<Nip07State>>()
         .ok_or("Nip07State not found")?;
     let session_token = nip07_state.new_session(&origin);
+    let actual_url = append_internal_htree_query_params(
+        &actual_url_base,
+        &server_url,
+        &canonical_url,
+        &session_token,
+        cache_bust.as_deref(),
+    )?;
+    let actual_url = append_fragment(actual_url, fragment.as_deref());
 
     let init_script = generate_nip07_script(
         &server_url,
@@ -3680,7 +3687,7 @@ pub async fn create_htree_webview<R: Runtime>(
     let server_url =
         crate::htree_protocol::get_htree_server_url().ok_or("htree server not running")?;
 
-    let (_canonical_url, actual_url, origin, canonical_url_root, actual_url_root) =
+    let (_canonical_url, actual_url_base, origin, canonical_url_root, actual_url_root) =
         if let Some(nhash) = &nhash {
             let request_host = host.as_deref().unwrap_or(nhash);
             let canonical_url = append_fragment(
@@ -3699,13 +3706,6 @@ pub async fn create_htree_webview<R: Runtime>(
                 )?,
                 query.as_deref(),
             );
-            let actual_url = append_internal_htree_query_params(
-                &actual_url,
-                &server_url,
-                &canonical_url,
-                cache_bust.as_deref(),
-            )?;
-            let actual_url = append_fragment(actual_url, fragment.as_deref());
             let actual_root = daemon_proxy_url_from_nhash(
                 &server_url,
                 request_host,
@@ -3749,13 +3749,6 @@ pub async fn create_htree_webview<R: Runtime>(
                 )?,
                 query.as_deref(),
             );
-            let actual_url = append_internal_htree_query_params(
-                &actual_url,
-                &server_url,
-                &canonical_url,
-                cache_bust.as_deref(),
-            )?;
-            let actual_url = append_fragment(actual_url, fragment.as_deref());
             let actual_root = daemon_proxy_url_from_tree_host(
                 &server_url,
                 resolved_host,
@@ -3781,6 +3774,14 @@ pub async fn create_htree_webview<R: Runtime>(
         .try_state::<Arc<Nip07State>>()
         .ok_or("Nip07State not found")?;
     let session_token = nip07_state.new_session(&origin);
+    let actual_url = append_internal_htree_query_params(
+        &actual_url_base,
+        &server_url,
+        &_canonical_url,
+        &session_token,
+        cache_bust.as_deref(),
+    )?;
+    let actual_url = append_fragment(actual_url, fragment.as_deref());
 
     let init_script = generate_nip07_script(
         &server_url,
@@ -3815,6 +3816,8 @@ pub async fn create_htree_webview<R: Runtime>(
         allowed_origin_rule: url_origin(&actual_parsed_url),
         actual_url_root: Some(actual_url_root),
         canonical_url_root: Some(canonical_url_root),
+        server_url: Some(server_url),
+        session_token: Some(session_token),
     })
 }
 
@@ -3873,7 +3876,10 @@ fn strip_internal_htree_query_params(url: &str) -> String {
     let retained_query: Vec<(String, String)> = parsed
         .query_pairs()
         .filter(|(key, _)| {
-            key != "iris_htree_server" && key != "iris_htree_canonical" && key != "iris_htree_root"
+            key != "iris_htree_server"
+                && key != "iris_htree_canonical"
+                && key != "iris_htree_session"
+                && key != "iris_htree_root"
         })
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect();
@@ -4061,6 +4067,35 @@ pub fn reload_webview<R: Runtime>(app: AppHandle<R>, label: String) -> Result<()
 }
 
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+pub fn run_webview_script<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+    script: String,
+) -> Result<(), String> {
+    let script = script.trim();
+    if script.is_empty() {
+        return Err("Script cannot be empty".to_string());
+    }
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| format!("Webview {} not found", label))?;
+    webview
+        .eval(script)
+        .map_err(|error| format!("Failed to run child webview script: {}", error))?;
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+pub fn run_webview_script<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+    _script: String,
+) -> Result<(), String> {
+    let _ = (app, label);
+    Err("Child webview scripting is not supported on mobile yet".to_string())
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 pub fn run_webview_nip07_probe<R: Runtime>(
     app: AppHandle<R>,
     label: String,
@@ -4130,6 +4165,49 @@ struct WebviewEventHttpEnvelope {
     #[serde(rename = "sessionToken", alias = "session_token")]
     session_token: String,
     payload: WebviewEventRequest,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IrisRelaySessionQuery {
+    #[serde(rename = "sessionToken", alias = "session_token")]
+    pub session_token: Option<String>,
+}
+
+pub async fn handle_authenticated_relay_websocket<R: Runtime>(
+    app: AppHandle<R>,
+    State(state): State<hashtree_cli::server::AppState>,
+    Query(query): Query<IrisRelaySessionQuery>,
+    ws: WebSocketUpgrade,
+) -> Result<impl IntoResponse, StatusCode> {
+    let token = query
+        .session_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let nip07_state = app
+        .try_state::<Arc<Nip07State>>()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if !nip07_state.validate_any_token(token) {
+        warn!("[iris-relay] Rejecting websocket with invalid session token");
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let client_pubkey = nip07_state
+        .current_account()
+        .map_err(|error| {
+            warn!("[iris-relay] Failed to resolve active account: {}", error);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .map(|account| account.pubkey);
+
+    Ok(hashtree_cli::server::ws_relay::ws_data_with_client_pubkey(
+        state,
+        ws,
+        client_pubkey,
+    ))
 }
 
 #[tauri::command]
@@ -4563,11 +4641,38 @@ mod tests {
     #[test]
     fn canonicalized_child_urls_strip_internal_query_params_without_removing_user_query() {
         let url = canonicalize_child_webview_url(
-            "htree://npub1example/video/index.html?smoke=1&iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Fvideo%2Findex.html%3Fsmoke%3D1&iris_htree_root=97562a6d",
+            "htree://npub1example/video/index.html?smoke=1&iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Fvideo%2Findex.html%3Fsmoke%3D1&iris_htree_session=session-token&iris_htree_root=97562a6d",
             "http://127.0.0.1:21417/htree/npub1example/video",
             "htree://npub1example/video",
         );
         assert_eq!(url, "htree://npub1example/video/index.html?smoke=1");
+    }
+
+    #[test]
+    fn appended_internal_query_params_include_session_token() {
+        let url = append_internal_htree_query_params(
+            "http://127.0.0.1:21417/htree/nhash1example/index.html?smoke=1",
+            "http://127.0.0.1:21417",
+            "htree://nhash1example/index.html?smoke=1",
+            "session-token",
+            Some("deadbeef"),
+        )
+        .expect("internal query params appended");
+        let parsed = tauri::Url::parse(&url).expect("valid URL");
+        let params: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+        assert_eq!(
+            params.get("iris_htree_server").map(String::as_str),
+            Some("http://127.0.0.1:21417")
+        );
+        assert_eq!(
+            params.get("iris_htree_canonical").map(String::as_str),
+            Some("htree://nhash1example/index.html?smoke=1")
+        );
+        assert_eq!(
+            params.get("iris_htree_session").map(String::as_str),
+            Some("session-token")
+        );
+        assert_eq!(params.get("iris_htree_root").map(String::as_str), Some("deadbeef"));
     }
 
     #[test]
@@ -4591,6 +4696,23 @@ mod tests {
                 .count(),
             2,
             "expected subframe guard for both location and diagnostic reporting"
+        );
+    }
+
+    #[test]
+    fn generated_bridge_script_exposes_session_token_for_authenticated_relay_use() {
+        let script = generate_nip07_script(
+            "http://127.0.0.1:21417",
+            "session-token",
+            "content",
+            None,
+            None,
+            None,
+        );
+
+        assert!(
+            script.contains("window.__HTREE_SESSION_TOKEN__ = SESSION_TOKEN;"),
+            "expected child bridge to expose the session token for authenticated relay use"
         );
     }
 
@@ -5050,6 +5172,16 @@ mod tests {
         assert!(!metadata.contains("secret_key"));
         assert!(!metadata.contains("nsec1"));
         assert!(metadata.contains(&second.pubkey));
+    }
+
+    #[test]
+    fn session_tokens_can_be_validated_without_origin_round_trip() {
+        let (_temp_dir, state) = test_nip07_state();
+
+        let token = state.new_session("htree://npub1example/iris-client");
+
+        assert!(state.validate_any_token(&token));
+        assert!(!state.validate_any_token("not-a-real-token"));
     }
 
     #[test]

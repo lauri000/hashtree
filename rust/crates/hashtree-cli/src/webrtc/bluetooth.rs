@@ -1,7 +1,5 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-#[cfg(target_os = "macos")]
-use futures::StreamExt;
 use std::collections::BTreeSet;
 #[cfg(target_os = "macos")]
 use std::collections::HashMap;
@@ -594,12 +592,22 @@ async fn receive_remote_hello(link: &Arc<dyn BluetoothLink>) -> Result<PeerId> {
 mod macos {
     use super::*;
     use btleplug::api::{
-        Central, CharPropFlags, Characteristic, Manager as _, Peripheral as _, ScanFilter,
-        ValueNotification, WriteType,
+        Central, CentralEvent, CharPropFlags, Characteristic, Manager as _, Peripheral as _,
+        ScanFilter, ValueNotification, WriteType,
     };
     use btleplug::platform::{Manager, Peripheral};
+    use futures::StreamExt;
+    use std::collections::HashSet;
     use tokio::sync::Mutex;
     use uuid::Uuid;
+
+    const FRESH_ADVERTISEMENT_WINDOW: Duration = Duration::from_secs(10);
+
+    #[derive(Clone)]
+    struct AdvertisementSnapshot {
+        last_seen: Instant,
+        peer_hint: Option<String>,
+    }
 
     pub(super) async fn start_macos_central(
         config: BluetoothConfig,
@@ -608,6 +616,7 @@ mod macos {
         struct ConnectedPeripheral {
             peripheral: Peripheral,
             link: Arc<dyn BluetoothLink>,
+            peer_hint: Option<String>,
         }
 
         let manager = Manager::new().await?;
@@ -621,12 +630,61 @@ mod macos {
             context.my_peer_id.short(),
             config.max_peers
         );
+        let service_uuid = Uuid::parse_str(HTREE_BLE_SERVICE_UUID).expect("valid UUID");
+        let mut events = adapter.events().await?;
+        let fresh_advertisements =
+            Arc::new(Mutex::new(HashMap::<String, AdvertisementSnapshot>::new()));
+        let fresh_advertisements_for_events = fresh_advertisements.clone();
+        tokio::spawn(async move {
+            while let Some(event) = events.next().await {
+                match event {
+                    CentralEvent::ServicesAdvertisement { id, services }
+                        if services.contains(&service_uuid) =>
+                    {
+                        let mut advertisements = fresh_advertisements_for_events.lock().await;
+                        let entry = advertisements
+                            .entry(id.to_string())
+                            .or_insert_with(|| AdvertisementSnapshot {
+                                last_seen: Instant::now(),
+                                peer_hint: None,
+                            });
+                        entry.last_seen = Instant::now();
+                    }
+                    CentralEvent::ServiceDataAdvertisement { id, service_data } => {
+                        if let Some(data) = service_data.get(&service_uuid) {
+                            let mut advertisements = fresh_advertisements_for_events.lock().await;
+                            let entry = advertisements
+                                .entry(id.to_string())
+                                .or_insert_with(|| AdvertisementSnapshot {
+                                    last_seen: Instant::now(),
+                                    peer_hint: None,
+                                });
+                            entry.last_seen = Instant::now();
+                            if !data.is_empty() {
+                                entry.peer_hint = Some(hex::encode(data));
+                            }
+                        }
+                    }
+                    CentralEvent::DeviceDisconnected(id) => {
+                        fresh_advertisements_for_events
+                            .lock()
+                            .await
+                            .remove(&id.to_string());
+                    }
+                    _ => {}
+                }
+            }
+        });
 
         tokio::spawn(async move {
-            let service_uuid = Uuid::parse_str(HTREE_BLE_SERVICE_UUID).expect("valid UUID");
             let mut connected: HashMap<String, ConnectedPeripheral> = HashMap::new();
             loop {
-                if let Err(err) = adapter.start_scan(ScanFilter::default()).await {
+                if let Err(err) = adapter
+                    .start_scan(ScanFilter {
+                        services: vec![service_uuid],
+                    })
+                    .await
+                {
                     warn!("Failed to start BLE scan: {}", err);
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     continue;
@@ -658,14 +716,30 @@ mod macos {
                     })
                 });
 
+                let advertisement_snapshot = {
+                    let now = Instant::now();
+                    let mut seen = fresh_advertisements.lock().await;
+                    seen.retain(|_, advertisement| {
+                        now.saturating_duration_since(advertisement.last_seen)
+                            <= FRESH_ADVERTISEMENT_WINDOW
+                    });
+                    seen.clone()
+                };
+
+                let mut candidates = Vec::new();
                 for peripheral in peripherals {
-                    if connected.len() >= config.max_peers {
-                        break;
-                    }
                     let peripheral_id = peripheral.id().to_string();
                     if connected.contains_key(&peripheral_id) {
                         continue;
                     }
+                    let Some(advertisement) = advertisement_snapshot.get(&peripheral_id).cloned()
+                    else {
+                        debug!(
+                            "Skipping cached BLE peripheral {} without a fresh advertisement",
+                            peripheral_id
+                        );
+                        continue;
+                    };
                     let properties = match peripheral.properties().await {
                         Ok(Some(properties)) => properties,
                         _ => continue,
@@ -673,13 +747,38 @@ mod macos {
                     if !properties.services.contains(&service_uuid) {
                         continue;
                     }
-                    info!(
-                        "Discovered BLE peripheral {} advertising htree service",
-                        peripheral_id
-                    );
-                    if let Err(err) = adapter.stop_scan().await {
-                        debug!("Failed to stop BLE scan before connecting to {}: {}", peripheral_id, err);
+                    candidates.push((peripheral, peripheral_id, advertisement));
+                }
+
+                candidates.sort_by(|left, right| right.2.last_seen.cmp(&left.2.last_seen));
+                let mut represented_peer_hints = connected
+                    .values()
+                    .filter_map(|connection| connection.peer_hint.clone())
+                    .collect::<HashSet<_>>();
+
+                for (peripheral, peripheral_id, advertisement) in candidates {
+                    if connected.len() >= config.max_peers {
+                        break;
                     }
+                    if let Some(peer_hint) = advertisement.peer_hint.as_ref() {
+                        if !represented_peer_hints.insert(peer_hint.clone()) {
+                            debug!(
+                                "Skipping stale BLE peripheral {} because peer hint {} is already represented by a fresher advertisement or live link",
+                                peripheral_id,
+                                peer_hint
+                            );
+                            continue;
+                        }
+                    }
+                    info!(
+                        "Discovered BLE peripheral {} advertising htree service{}",
+                        peripheral_id,
+                        advertisement
+                            .peer_hint
+                            .as_ref()
+                            .map(|hint| format!(" (peer hint {})", hint))
+                            .unwrap_or_default()
+                    );
                     match connect_peripheral(peripheral.clone()).await {
                         Ok(Some(link)) => {
                             let tracked_link = link.clone();
@@ -687,7 +786,10 @@ mod macos {
                                 link,
                                 direction: PeerDirection::Outbound,
                                 local_hello_sent: false,
-                                peer_hint: Some(peripheral_id.clone()),
+                                peer_hint: advertisement
+                                    .peer_hint
+                                    .clone()
+                                    .or(Some(peripheral_id.clone())),
                             };
                             match handle_pending_link(pending, context.clone()).await {
                                 Ok(true) => {
@@ -696,6 +798,7 @@ mod macos {
                                         ConnectedPeripheral {
                                             peripheral,
                                             link: tracked_link,
+                                            peer_hint: advertisement.peer_hint.clone(),
                                         },
                                     );
                                 }
@@ -724,33 +827,47 @@ mod macos {
         let tx_uuid = Uuid::parse_str(HTREE_BLE_TX_CHARACTERISTIC_UUID)?;
         let peripheral_id = peripheral.id().to_string();
 
+        let mut connect_timed_out = false;
         if !peripheral.is_connected().await? {
             info!("Connecting to BLE peripheral {}", peripheral_id);
-            match tokio::time::timeout(Duration::from_secs(5), peripheral.connect()).await {
+            match tokio::time::timeout(Duration::from_secs(25), peripheral.connect()).await {
                 Ok(Ok(())) => {}
                 Ok(Err(err)) => return Err(err.into()),
                 Err(_) => {
-                    let connected = peripheral.is_connected().await.unwrap_or(false);
-                    if !connected {
-                        warn!("BLE connect timed out for {} without establishing a link", peripheral_id);
-                        let _ = peripheral.disconnect().await;
-                        return Ok(None);
-                    }
                     warn!(
-                        "BLE connect timed out for {} but the adapter reports it connected; continuing",
+                        "BLE connect timed out for {}; probing services before giving up",
                         peripheral_id
                     );
+                    connect_timed_out = true;
                 }
             }
         }
         let mut rx_char = None;
         let mut tx_char = None;
-        for attempt in 1..=6 {
+        for attempt in 1..=8 {
             info!(
-                "Discovering BLE services for {} (attempt {}/6)",
+                "Discovering BLE services for {} (attempt {}/8)",
                 peripheral_id, attempt
             );
-            peripheral.discover_services().await?;
+            if let Err(err) = peripheral.discover_services().await {
+                if attempt == 8 {
+                    if connect_timed_out {
+                        warn!(
+                            "BLE service discovery failed for {} after soft connect timeout: {}",
+                            peripheral_id, err
+                        );
+                        let _ = peripheral.disconnect().await;
+                        return Ok(None);
+                    }
+                    return Err(err.into());
+                }
+                warn!(
+                    "BLE service discovery attempt {}/8 failed for {}: {}",
+                    attempt, peripheral_id, err
+                );
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
 
             let characteristics = peripheral.characteristics();
             if !characteristics.is_empty() {

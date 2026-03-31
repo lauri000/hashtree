@@ -157,6 +157,9 @@ pub struct NostrConfig {
     /// Require relays to support NIP-77 negentropy for mirror history sync.
     #[serde(default)]
     pub negentropy_only: bool,
+    /// Threshold for treating a user as overmuted in mirrored profile indexing/search.
+    #[serde(default = "default_nostr_overmute_threshold")]
+    pub overmute_threshold: f64,
     /// Kinds mirrored from upstream relays for the trusted hashtree index.
     #[serde(default = "default_nostr_mirror_kinds")]
     pub mirror_kinds: Vec<u16>,
@@ -179,6 +182,7 @@ impl Default for NostrConfig {
             db_max_size_gb: default_nostr_db_max_size_gb(),
             spambox_max_size_gb: default_nostr_spambox_max_size_gb(),
             negentropy_only: false,
+            overmute_threshold: default_nostr_overmute_threshold(),
             mirror_kinds: default_nostr_mirror_kinds(),
             history_sync_author_chunk_size: default_nostr_history_sync_author_chunk_size(),
             history_sync_on_reconnect: default_nostr_history_sync_on_reconnect(),
@@ -188,6 +192,10 @@ impl Default for NostrConfig {
 
 fn default_social_graph_crawl_depth() -> u32 {
     2
+}
+
+fn default_nostr_overmute_threshold() -> f64 {
+    1.0
 }
 
 fn default_max_write_distance() -> u32 {
@@ -207,7 +215,7 @@ fn default_nostr_history_sync_on_reconnect() -> bool {
 }
 
 fn default_nostr_mirror_kinds() -> Vec<u16> {
-    vec![0]
+    vec![0, 3]
 }
 
 fn default_nostr_history_sync_author_chunk_size() -> usize {
@@ -898,7 +906,8 @@ nsec1ghi789
         assert_eq!(config.max_write_distance, 3);
         assert!(config.socialgraph_root.is_none());
         assert!(!config.negentropy_only);
-        assert_eq!(config.mirror_kinds, vec![0]);
+        assert_eq!(config.overmute_threshold, 1.0);
+        assert_eq!(config.mirror_kinds, vec![0, 3]);
         assert_eq!(config.history_sync_author_chunk_size, 5_000);
         assert!(config.history_sync_on_reconnect);
     }
@@ -912,6 +921,7 @@ socialgraph_root = "npub1test"
 social_graph_crawl_depth = 6
 max_write_distance = 7
 negentropy_only = true
+overmute_threshold = 1.5
 mirror_kinds = [0, 3]
 history_sync_author_chunk_size = 512
 history_sync_on_reconnect = false
@@ -924,6 +934,7 @@ history_sync_on_reconnect = false
         assert_eq!(config.social_graph_crawl_depth, 6);
         assert_eq!(config.max_write_distance, 7);
         assert!(config.negentropy_only);
+        assert_eq!(config.overmute_threshold, 1.5);
         assert_eq!(config.mirror_kinds, vec![0, 3]);
         assert_eq!(config.history_sync_author_chunk_size, 512);
         assert!(!config.history_sync_on_reconnect);

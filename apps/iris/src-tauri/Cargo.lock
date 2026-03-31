@@ -903,7 +903,7 @@ dependencies = [
 
 [[package]]
 name = "cashu-service"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2296,7 +2296,7 @@ dependencies = [
 
 [[package]]
 name = "git-remote-htree"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2510,7 +2510,7 @@ checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
 name = "hashtree-blossom"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2528,7 +2528,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-cli"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2548,7 +2548,6 @@ dependencies = [
  "hashtree-index",
  "hashtree-lmdb",
  "hashtree-nostr",
- "hashtree-nostr-bridge",
  "hashtree-resolver",
  "hashtree-webrtc",
  "heed",
@@ -2586,7 +2585,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-config"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -2596,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-core"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2615,7 +2614,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-fs"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "async-trait",
  "hashtree-core",
@@ -2627,7 +2626,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-index"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "futures",
  "hashtree-core",
@@ -2637,7 +2636,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-lmdb"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "async-trait",
  "hashtree-core",
@@ -2646,33 +2645,24 @@ dependencies = [
 
 [[package]]
 name = "hashtree-nostr"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "futures",
  "hashtree-core",
  "hashtree-index",
  "hex",
+ "nostr-sdk",
+ "nostr-social-graph",
  "rmp-serde",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "hashtree-nostr-bridge"
-version = "0.2.14"
-dependencies = [
- "hashtree-core",
- "hashtree-nostr",
- "nostr-sdk",
- "nostr-social-graph",
  "thiserror 1.0.69",
  "tokio",
 ]
 
 [[package]]
 name = "hashtree-resolver"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "async-trait",
  "hashtree-core",
@@ -2684,7 +2674,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-webrtc"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "async-trait",
  "bytes",

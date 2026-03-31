@@ -45,6 +45,8 @@ impl<R: Runtime> MobileBrowser<R> {
             UrlMapping {
                 actual_url_root: request.actual_url_root.clone(),
                 canonical_url_root: request.canonical_url_root.clone(),
+                server_url: request.server_url.clone(),
+                session_token: request.session_token.clone(),
             },
         );
 
@@ -64,8 +66,31 @@ impl<R: Runtime> MobileBrowser<R> {
     }
 
     pub fn navigate(&self, label: String, url: String) -> Result<(), String> {
+        let mapped_url = {
+            let mapping = self
+                .mappings
+                .lock()
+                .unwrap()
+                .get(&label)
+                .cloned()
+                .unwrap_or_default();
+            if url.starts_with("htree://") {
+                super::materialize_htree_navigation_url(&url, &mapping).ok_or_else(|| {
+                    format!("htree navigation for {label} requires recreating the webview")
+                })?
+            } else {
+                url
+            }
+        };
+
         self.handle
-            .run_mobile_plugin::<()>("navigate", BrowserNavigateRequest { label, url })
+            .run_mobile_plugin::<()>(
+                "navigate",
+                BrowserNavigateRequest {
+                    label,
+                    url: mapped_url,
+                },
+            )
             .map_err(|error| error.to_string())
     }
 

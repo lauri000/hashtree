@@ -146,6 +146,7 @@ pub(crate) async fn run_socialgraph_index(
         ),
     )
     .context("Failed to initialize social graph store")?;
+    graph_store.set_profile_index_overmute_threshold(config.nostr.overmute_threshold);
 
     let root_pk = if let Some(root_npub) = config.nostr.socialgraph_root.as_deref() {
         parse_npub(root_npub).unwrap_or_else(|_| keys.public_key().to_bytes())
@@ -1194,6 +1195,8 @@ mod tests {
         config.nostr.social_graph_crawl_depth = 1;
         config.storage.max_size_gb = 1;
 
+        let db_max_size_bytes = config.nostr.db_max_size_gb * 1024 * 1024 * 1024;
+
         let report = run_socialgraph_index(
             tmp.path().to_path_buf(),
             &config,
@@ -1234,7 +1237,7 @@ mod tests {
         let graph_store = socialgraph::open_social_graph_store_with_storage(
             tmp.path(),
             store.store_arc(),
-            Some(1024 * 1024 * 1024),
+            Some(db_max_size_bytes),
         )
         .expect("reopen graph store");
         let results = graph_store
@@ -1243,7 +1246,7 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, format!("p:alice:{alice_pubkey}"));
-        assert_eq!(results[0].1.name, "alice");
+        assert_eq!(results[0].1.name, "Alice Allowlist");
 
         Ok(())
     }

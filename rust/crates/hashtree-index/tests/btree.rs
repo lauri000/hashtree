@@ -215,7 +215,10 @@ fn bulk_string_build_matches_incremental_entries() {
         );
         assert_eq!(
             btree.prefix(&bulk_root, "profile:mil:").await.unwrap(),
-            btree.prefix(&incremental_root, "profile:mil:").await.unwrap()
+            btree
+                .prefix(&incremental_root, "profile:mil:")
+                .await
+                .unwrap()
         );
     });
 }

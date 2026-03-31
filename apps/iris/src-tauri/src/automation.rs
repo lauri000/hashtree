@@ -119,6 +119,14 @@ pub struct AutomationNip07ProbeRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AutomationChildScriptRequest {
+    #[serde(default = "default_child_webview_label")]
+    pub label: String,
+    pub script: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AutomationNip07PermissionResponse {
     pub request_id: String,
     pub decision: nip07::Nip07PermissionDecisionAction,
@@ -201,6 +209,7 @@ pub fn maybe_start_server<R: Runtime + 'static>(
     let app_for_routes = app.clone();
     let automation_for_health = automation.clone();
     let automation_for_state = automation.clone();
+    let app_for_child_script = app.clone();
     let app_for_nip07_probe = app.clone();
     let app_for_nip07_prompt = app.clone();
     let app_for_nip07_response = app.clone();
@@ -253,6 +262,17 @@ pub fn maybe_start_server<R: Runtime + 'static>(
                                 warn!("[automation] failed to emit command: {}", error);
                             }
                         });
+                        Ok::<StatusCode, (StatusCode, String)>(StatusCode::ACCEPTED)
+                    }
+                }),
+            )
+            .route(
+                "/automation/child-script",
+                post(move |Json(request): Json<AutomationChildScriptRequest>| {
+                    let app = app_for_child_script.clone();
+                    async move {
+                        nip07::run_webview_script(app, request.label, request.script)
+                            .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
                         Ok::<StatusCode, (StatusCode, String)>(StatusCode::ACCEPTED)
                     }
                 }),

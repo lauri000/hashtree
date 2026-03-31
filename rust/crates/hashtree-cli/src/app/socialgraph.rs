@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use hashtree_core::{nhash_encode_full, NHashData};
 use hashtree_cli::{Config, HashtreeStore};
+use hashtree_core::{nhash_encode_full, NHashData};
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -54,6 +54,7 @@ fn init_socialgraph(
         Some(nostr_db_max_bytes),
     )
     .context("Failed to initialize social graph store")?;
+    graph_store.set_profile_index_overmute_threshold(config.nostr.overmute_threshold);
     hashtree_cli::socialgraph::set_social_graph_root(&graph_store, &social_graph_root_bytes);
 
     Ok((graph_store, social_graph_root_bytes))
@@ -97,6 +98,7 @@ fn init_socialgraph_with_shared_storage(
         Some(nostr_db_max_bytes),
     )
     .context("Failed to initialize shared social graph store")?;
+    graph_store.set_profile_index_overmute_threshold(config.nostr.overmute_threshold);
     hashtree_cli::socialgraph::set_social_graph_root(&graph_store, &social_graph_root_bytes);
 
     Ok((graph_store, social_graph_root_bytes))
@@ -292,7 +294,10 @@ pub(crate) fn run_socialgraph_rebuild_profile_index(data_dir: PathBuf) -> Result
         .context("rebuild profile search index from stored metadata events")?;
     let root = graph_store.profile_search_root()?;
 
-    println!("Rebuilt profile search index from {} latest profiles", rebuilt);
+    println!(
+        "Rebuilt profile search index from {} latest profiles",
+        rebuilt
+    );
     match root {
         Some(root) => {
             let nhash = nhash_encode_full(&NHashData {

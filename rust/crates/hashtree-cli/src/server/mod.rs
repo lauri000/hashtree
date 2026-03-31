@@ -5,7 +5,7 @@ mod mime;
 #[cfg(feature = "p2p")]
 pub mod stun;
 mod ui;
-mod ws_relay;
+pub mod ws_relay;
 
 use crate::nostr_relay::NostrRelay;
 use crate::socialgraph;

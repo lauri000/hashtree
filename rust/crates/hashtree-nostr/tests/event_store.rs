@@ -77,6 +77,30 @@ async fn by_id_event_cid(store: Arc<MemoryStore>, root: &Cid, event_id: &str) ->
         .expect("get by-id link")
 }
 
+async fn replaceable_event_cid(
+    store: Arc<MemoryStore>,
+    root: &Cid,
+    pubkey: &str,
+    kind: u32,
+) -> Option<Cid> {
+    let tree = HashTree::new(HashTreeConfig::new(Arc::clone(&store)));
+    let replaceable_root = tree
+        .list_directory(root)
+        .await
+        .expect("list manifest directory")
+        .into_iter()
+        .find(|entry| entry.name == "replaceable")
+        .map(|entry| Cid {
+            hash: entry.hash,
+            key: entry.key,
+        })?;
+    let index = BTree::new(store, BTreeOptions::default());
+    index
+        .get_link(Some(&replaceable_root), &format!("{pubkey}:{kind:08x}"))
+        .await
+        .expect("get replaceable link")
+}
+
 #[test]
 fn stores_events_by_id_author_and_replaceable_views() {
     block_on(async {
@@ -456,6 +480,32 @@ fn manifest_root_matches_typescript_fixture() {
                     "4d6e07652d9fd5d148d826e2acb06195a416efff0df27fdd0c11a52cd7ee3a34".to_string()
                 )
             )
+        );
+    });
+}
+
+#[test]
+fn add_recovers_when_existing_replaceable_blob_is_missing() {
+    block_on(async {
+        let store = Arc::new(MemoryStore::new());
+        let nostr_store = NostrEventStore::new(Arc::clone(&store));
+        let author = "a".repeat(64);
+        let older = canonical_store_event(&author, 10, 3, Vec::new(), "older contacts");
+        let newer = canonical_store_event(&author, 20, 3, Vec::new(), "newer contacts");
+
+        let root = nostr_store.add(None, older.clone()).await.unwrap();
+        let missing_cid = replaceable_event_cid(Arc::clone(&store), &root, &author, 3)
+            .await
+            .expect("replaceable cid");
+        assert!(store.delete(&missing_cid.hash).await.unwrap());
+
+        let next_root = nostr_store.add(Some(&root), newer.clone()).await.unwrap();
+        assert_eq!(
+            nostr_store
+                .get_replaceable(Some(&next_root), &author, 3)
+                .await
+                .unwrap(),
+            Some(newer)
         );
     });
 }

@@ -131,6 +131,7 @@ pub(crate) async fn run() -> Result<()> {
                 Some(nostr_db_max_bytes),
             )
             .context("Failed to initialize social graph store")?;
+            graph_store.set_profile_index_overmute_threshold(config.nostr.overmute_threshold);
 
             // Set social graph root (configured npub or own key)
             let social_graph_root_bytes = if let Some(ref root_npub) = config.nostr.socialgraph_root

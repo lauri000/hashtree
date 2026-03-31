@@ -31,18 +31,50 @@ struct PeerRouterRuntime {
 
 struct BackgroundSyncRuntime {
     service: Arc<crate::sync::BackgroundSync>,
-    join: JoinHandle<()>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl Drop for BackgroundSyncRuntime {
+    fn drop(&mut self) {
+        self.service.shutdown();
+        if let Some(join) = self.join.take() {
+            join.abort();
+        }
+    }
 }
 
 struct BackgroundMirrorRuntime {
     service: Arc<crate::nostr_mirror::BackgroundNostrMirror>,
-    join: JoinHandle<()>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl Drop for BackgroundMirrorRuntime {
+    fn drop(&mut self) {
+        self.service.shutdown();
+        if let Some(join) = self.join.take() {
+            join.abort();
+        }
+    }
 }
 
 struct BackgroundServicesRuntime {
     crawler: Option<socialgraph::crawler::SocialGraphTaskHandles>,
     mirror: Option<BackgroundMirrorRuntime>,
     sync: Option<BackgroundSyncRuntime>,
+}
+
+impl Drop for BackgroundServicesRuntime {
+    fn drop(&mut self) {
+        if let Some(handles) = self.crawler.as_ref() {
+            let _ = handles.shutdown_tx.send(true);
+        }
+        if let Some(runtime) = self.mirror.as_ref() {
+            runtime.service.shutdown();
+        }
+        if let Some(runtime) = self.sync.as_ref() {
+            runtime.service.shutdown();
+        }
+    }
 }
 
 impl BackgroundServicesRuntime {
@@ -155,35 +187,41 @@ impl EmbeddedBackgroundServicesController {
     }
 
     async fn shutdown_sync(sync: &mut Option<BackgroundSyncRuntime>) {
-        let Some(runtime) = sync.take() else {
+        let Some(mut runtime) = sync.take() else {
             return;
         };
 
         runtime.service.shutdown();
-        let mut join = runtime.join;
-        match tokio::time::timeout(std::time::Duration::from_secs(3), &mut join).await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => tracing::warn!("Background sync task ended with join error: {}", err),
-            Err(_) => {
-                tracing::warn!("Timed out waiting for background sync shutdown");
-                join.abort();
+        if let Some(mut join) = runtime.join.take() {
+            match tokio::time::timeout(std::time::Duration::from_secs(3), &mut join).await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    tracing::warn!("Background sync task ended with join error: {}", err)
+                }
+                Err(_) => {
+                    tracing::warn!("Timed out waiting for background sync shutdown");
+                    join.abort();
+                }
             }
         }
     }
 
     async fn shutdown_mirror(mirror: &mut Option<BackgroundMirrorRuntime>) {
-        let Some(runtime) = mirror.take() else {
+        let Some(mut runtime) = mirror.take() else {
             return;
         };
 
         runtime.service.shutdown();
-        let mut join = runtime.join;
-        match tokio::time::timeout(std::time::Duration::from_secs(3), &mut join).await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => tracing::warn!("Background mirror task ended with join error: {}", err),
-            Err(_) => {
-                tracing::warn!("Timed out waiting for background mirror shutdown");
-                join.abort();
+        if let Some(mut join) = runtime.join.take() {
+            match tokio::time::timeout(std::time::Duration::from_secs(3), &mut join).await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    tracing::warn!("Background mirror task ended with join error: {}", err)
+                }
+                Err(_) => {
+                    tracing::warn!("Timed out waiting for background mirror shutdown");
+                    join.abort();
+                }
             }
         }
     }
@@ -218,9 +256,14 @@ impl EmbeddedBackgroundServicesController {
                             .into_iter()
                             .collect(),
                         max_follow_distance: config.nostr.social_graph_crawl_depth,
+                        overmute_threshold: config.nostr.overmute_threshold,
                         require_negentropy: config.nostr.negentropy_only,
                         kinds: config.nostr.mirror_kinds.clone(),
                         history_sync_author_chunk_size: config
+                            .nostr
+                            .history_sync_author_chunk_size
+                            .max(1),
+                        missing_profile_backfill_batch_size: config
                             .nostr
                             .history_sync_author_chunk_size
                             .max(1),
@@ -249,7 +292,10 @@ impl EmbeddedBackgroundServicesController {
                     }
                 });
             });
-            runtime.mirror = Some(BackgroundMirrorRuntime { service, join });
+            runtime.mirror = Some(BackgroundMirrorRuntime {
+                service,
+                join: Some(join),
+            });
         }
 
         if config.sync.enabled
@@ -284,7 +330,10 @@ impl EmbeddedBackgroundServicesController {
                     tracing::error!("Background sync error: {}", err);
                 }
             });
-            runtime.sync = Some(BackgroundSyncRuntime { service, join });
+            runtime.sync = Some(BackgroundSyncRuntime {
+                service,
+                join: Some(join),
+            });
         }
 
         Ok(runtime.status())
@@ -438,6 +487,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         Some(nostr_db_max_bytes),
     )
     .context("Failed to initialize social graph store")?;
+    graph_store.set_profile_index_overmute_threshold(config.nostr.overmute_threshold);
 
     let social_graph_root_bytes = if let Some(ref root_npub) = config.nostr.socialgraph_root {
         parse_npub(root_npub).unwrap_or(pk_bytes)

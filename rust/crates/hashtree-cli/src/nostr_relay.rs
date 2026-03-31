@@ -834,9 +834,7 @@ mod imp {
         }
 
         async fn is_trusted_event(&self, client_id: u64, event: &Event) -> bool {
-            if let Some(ref social_graph) = self.social_graph {
-                return social_graph.check_write_access(&event.pubkey.to_hex());
-            }
+            let event_pubkey = event.pubkey.to_hex();
             let client_pubkey = {
                 let clients = self.clients.lock().await;
                 clients
@@ -844,7 +842,14 @@ mod imp {
                     .and_then(|state| state.pubkey.clone())
             };
             if let Some(pubkey) = client_pubkey {
-                return pubkey == event.pubkey.to_hex();
+                return pubkey == event_pubkey
+                    || self
+                        .social_graph
+                        .as_ref()
+                        .is_some_and(|social_graph| social_graph.check_write_access(&event_pubkey));
+            }
+            if let Some(ref social_graph) = self.social_graph {
+                return social_graph.check_write_access(&event_pubkey);
             }
             true
         }
@@ -1358,6 +1363,86 @@ mod tests {
         match recv_relay_message(&mut rx).await? {
             RelayMessage::EndOfStoredEvents(id) => assert_eq!(id, sub_id),
             other => anyhow::bail!("expected EOSE only, got {:?}", other),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn relay_trusts_authenticated_client_for_its_own_events() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+
+        crate::socialgraph::set_social_graph_root(&graph_store, &[1u8; 32]);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::new(),
+        ));
+
+        let relay = NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::new(),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let keys = Keys::generate();
+        relay
+            .register_client(9, tx, Some(keys.public_key().to_hex()))
+            .await;
+
+        let event = EventBuilder::new(Kind::TextNote, "self-authored", []).to_event(&keys)?;
+        relay
+            .handle_client_message(9, NostrClientMessage::event(event.clone()))
+            .await;
+
+        match recv_relay_message(&mut rx).await? {
+            RelayMessage::Ok { status, message, .. } => {
+                assert!(status);
+                assert_eq!(message, "");
+            }
+            other => anyhow::bail!("expected OK, got {:?}", other),
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let sub_id = SubscriptionId::new("sub-auth");
+        let filter = Filter::new()
+            .authors(vec![event.pubkey])
+            .kinds(vec![event.kind]);
+        relay
+            .handle_client_message(9, NostrClientMessage::req(sub_id.clone(), vec![filter]))
+            .await;
+
+        match recv_relay_message(&mut rx).await? {
+            RelayMessage::Event {
+                subscription_id,
+                event: stored,
+            } => {
+                assert_eq!(subscription_id, sub_id);
+                assert_eq!(stored.id, event.id);
+            }
+            other => anyhow::bail!("expected EVENT, got {:?}", other),
+        }
+
+        match recv_relay_message(&mut rx).await? {
+            RelayMessage::EndOfStoredEvents(id) => assert_eq!(id, sub_id),
+            other => anyhow::bail!("expected EOSE, got {:?}", other),
         }
 
         Ok(())

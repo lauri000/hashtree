@@ -19,6 +19,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import app.tauri.annotation.Command
@@ -42,7 +43,7 @@ private val RX_UUID: UUID = UUID.fromString("0bb5f5c9-6369-4511-a84f-4d4c14d8f8d
 private val TX_UUID: UUID = UUID.fromString("4ec9c0c2-97c6-4f46-9fd1-927d699b2f6d")
 private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 private const val CHUNK_BYTES: Int = 180
-private const val UNREADY_DISCONNECT_DELAY_MS: Long = 2500
+private const val UNREADY_DISCONNECT_DELAY_MS: Long = 30000
 
 @InvokeArg
 class StartArgs {
@@ -115,11 +116,14 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
     private val devices = ConcurrentHashMap<String, BluetoothDevice>()
     private val subscribed = ConcurrentHashMap.newKeySet<String>()
     private val decoders = ConcurrentHashMap<String, FrameDecoder>()
+    private val peerActivityAtMs = ConcurrentHashMap<String, Long>()
     private val drainedFrames = ConcurrentLinkedQueue<QueuedFrame>()
     private val pendingDisconnects = ConcurrentHashMap<String, Runnable>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val advertiseCallback = object : AdvertiseCallback() {}
     private var bluetoothActive = false
+    private var acceptingConnections = false
+    private var pendingStartupSweep: Runnable? = null
 
     @Command
     fun start(invoke: Invoke) {
@@ -127,167 +131,10 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
         localPeerId = args.localPeerId
         Log.i(TAG, "start invoked for peer ${args.localPeerId}")
         try {
+            bluetoothActive = false
             stopInternal()
-            if (bluetoothAdapter == null || advertiser == null) {
-                Log.w(TAG, "Bluetooth LE advertiser is unavailable")
-                invoke.reject("Bluetooth LE advertiser is unavailable")
-                return
-            }
-            if (!bluetoothAdapter.isEnabled) {
-                Log.w(TAG, "Bluetooth is disabled")
-                invoke.reject("Bluetooth is disabled")
-                return
-            }
-
-            val serviceAdded = CountDownLatch(1)
-            var serviceAddedOk = false
-
-            val serverCallback = object : BluetoothGattServerCallback() {
-                override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
-                    val address = device.address
-                    if (newState == android.bluetooth.BluetoothProfile.STATE_CONNECTED) {
-                        Log.d(TAG, "BLE device connected: $address")
-                        devices[address] = device
-                        decoders[address] = FrameDecoder()
-                        scheduleUnreadyDisconnect(address, device, "startup-timeout")
-                        triggerAddress("peer-connected", address)
-                    } else if (newState == android.bluetooth.BluetoothProfile.STATE_DISCONNECTED) {
-                        Log.d(TAG, "BLE device disconnected: $address")
-                        cancelPendingDisconnect(address)
-                        devices.remove(address)
-                        subscribed.remove(address)
-                        decoders.remove(address)
-                        triggerAddress("peer-disconnected", address)
-                    }
-                }
-
-                override fun onCharacteristicReadRequest(
-                    device: BluetoothDevice,
-                    requestId: Int,
-                    offset: Int,
-                    characteristic: BluetoothGattCharacteristic,
-                ) {
-                    if (characteristic.uuid == TX_UUID) {
-                        val frame = encodeFrame("text", helloPayload(localPeerId))
-                        val value =
-                            if (offset in 0 until frame.size) frame.copyOfRange(offset, frame.size) else ByteArray(0)
-                        Log.d(TAG, "Serving hello read to ${device.address} (${value.size} bytes, offset=$offset)")
-                        gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
-                    } else {
-                        gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
-                    }
-                }
-
-                override fun onCharacteristicWriteRequest(
-                    device: BluetoothDevice,
-                    requestId: Int,
-                    characteristic: BluetoothGattCharacteristic,
-                    preparedWrite: Boolean,
-                    responseNeeded: Boolean,
-                    offset: Int,
-                    value: ByteArray,
-                ) {
-                    if (characteristic.uuid == RX_UUID) {
-                        Log.d(TAG, "Received BLE write from ${device.address} (${value.size} bytes)")
-                        val decoder = decoders.computeIfAbsent(device.address) { FrameDecoder() }
-                        decoder.append(value).forEach { frame ->
-                            triggerFrame(device.address, frame.kind, frame.payload)
-                        }
-                    }
-                    if (responseNeeded) {
-                        gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
-                    }
-                }
-
-                override fun onDescriptorWriteRequest(
-                    device: BluetoothDevice,
-                    requestId: Int,
-                    descriptor: BluetoothGattDescriptor,
-                    preparedWrite: Boolean,
-                    responseNeeded: Boolean,
-                    offset: Int,
-                    value: ByteArray,
-                ) {
-                    if (descriptor.uuid == CCCD_UUID && value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) {
-                        Log.d(TAG, "Notifications enabled for ${device.address}")
-                        subscribed.add(device.address)
-                        cancelPendingDisconnect(device.address)
-                        sendHello(device)
-                        triggerAddress("peer-ready", device.address)
-                    }
-                    if (responseNeeded) {
-                        gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
-                    }
-                }
-
-                override fun onServiceAdded(status: Int, service: BluetoothGattService) {
-                    if (service.uuid != SERVICE_UUID) {
-                        return
-                    }
-                    serviceAddedOk = status == BluetoothGatt.GATT_SUCCESS
-                    Log.i(TAG, "Service add callback for ${service.uuid} status=$status")
-                    serviceAdded.countDown()
-                }
-            }
-
-            gattServer = bluetoothManager.openGattServer(appContext, serverCallback)
-            if (gattServer == null) {
-                Log.e(TAG, "Failed to open Bluetooth GATT server")
-                invoke.reject("Failed to open Bluetooth GATT server")
-                return
-            }
-            val rx = BluetoothGattCharacteristic(
-                RX_UUID,
-                BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
-                BluetoothGattCharacteristic.PERMISSION_WRITE,
-            )
-            val tx = BluetoothGattCharacteristic(
-                TX_UUID,
-                BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_READ,
-                BluetoothGattCharacteristic.PERMISSION_READ,
-            )
-            tx.addDescriptor(
-                BluetoothGattDescriptor(
-                    CCCD_UUID,
-                    BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE,
-                )
-            )
-            txCharacteristic = tx
-            val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
-            service.addCharacteristic(rx)
-            service.addCharacteristic(tx)
-            if (gattServer?.addService(service) != true) {
-                Log.e(TAG, "Failed to queue Bluetooth GATT service")
-                invoke.reject("Failed to add Bluetooth GATT service")
-                return
-            }
-            if (!serviceAdded.await(3, TimeUnit.SECONDS)) {
-                Log.e(TAG, "Timed out waiting for Bluetooth GATT service registration")
-                invoke.reject("Timed out waiting for Bluetooth GATT service registration")
-                return
-            }
-            if (!serviceAddedOk) {
-                Log.e(TAG, "Bluetooth GATT service registration failed")
-                invoke.reject("Bluetooth GATT service registration failed")
-                return
-            }
-            Log.i(TAG, "Bluetooth GATT service registered, starting advertising")
-
-            advertiser.startAdvertising(
-                AdvertiseSettings.Builder()
-                    .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-                    .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
-                    .setConnectable(true)
-                    .build(),
-                AdvertiseData.Builder()
-                    .addServiceUuid(ParcelUuid(SERVICE_UUID))
-                    .setIncludeDeviceName(false)
-                    .build(),
-                advertiseCallback,
-            )
-
-            bluetoothActive = true
-            Log.i(TAG, "Bluetooth advertising and GATT server started")
+            ensureBluetoothReady()
+            startGattServerOrThrow()
             invoke.resolve()
         } catch (error: SecurityException) {
             Log.e(TAG, "Bluetooth permission missing", error)
@@ -347,9 +194,32 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
         val characteristic = txCharacteristic ?: return
         val server = gattServer ?: return
         val frame = encodeFrame("text", helloPayload(localPeerId))
+        touchPeer(device.address)
         for (chunk in frame.asList().chunked(CHUNK_BYTES)) {
             notifyCharacteristicChanged(server, device, characteristic, chunk.toByteArray())
         }
+    }
+
+    private fun advertisedPeerHintBytes(): ByteArray {
+        val pubkeyHex = localPeerId.substringBefore(':')
+        return try {
+            pubkeyHex
+                .chunked(2)
+                .take(8)
+                .map { it.toInt(16).toByte() }
+                .toByteArray()
+        } catch (_: Exception) {
+            ByteArray(0)
+        }
+    }
+
+    private fun touchPeer(address: String) {
+        peerActivityAtMs[address] = SystemClock.elapsedRealtime()
+    }
+
+    private fun hasRecentPeerActivity(address: String): Boolean {
+        val lastActivity = peerActivityAtMs[address] ?: return false
+        return SystemClock.elapsedRealtime() - lastActivity < UNREADY_DISCONNECT_DELAY_MS
     }
 
     private fun triggerAddress(event: String, address: String) {
@@ -365,6 +235,7 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
 
     private fun stopInternal() {
         Log.d(TAG, "Stopping Bluetooth advertiser and GATT server")
+        acceptingConnections = false
         disconnectUnreadyDevices("stop")
         try {
             advertiser?.stopAdvertising(advertiseCallback)
@@ -378,6 +249,8 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
         subscribed.clear()
         decoders.clear()
         drainedFrames.clear()
+        pendingStartupSweep?.let { mainHandler.removeCallbacks(it) }
+        pendingStartupSweep = null
         pendingDisconnects.values.forEach { mainHandler.removeCallbacks(it) }
         pendingDisconnects.clear()
     }
@@ -421,11 +294,18 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
                 if (subscribed.contains(address)) {
                     return@forEach
                 }
+                if (hasRecentPeerActivity(address)) {
+                    Log.i(TAG, "Keeping BLE device $address connected because handshake activity is still recent ($reason)")
+                    scheduleUnreadyDisconnect(address, device, reason)
+                    return@forEach
+                }
                 Log.i(TAG, "Disconnecting BLE device $address to recover clean startup ($reason)")
                 try {
                     server.cancelConnection(device)
                 } catch (error: Exception) {
                     Log.w(TAG, "Failed to cancel BLE connection for $address", error)
+                } finally {
+                    dropPeerState(address)
                 }
             }
     }
@@ -438,22 +318,245 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
                     pendingDisconnects.remove(address)
                     return@Runnable
                 }
+                if (hasRecentPeerActivity(address)) {
+                    Log.i(TAG, "Deferring BLE readiness timeout for $address because handshake activity is still recent ($reason)")
+                    pendingDisconnects.remove(address)
+                    scheduleUnreadyDisconnect(address, device, reason)
+                    return@Runnable
+                }
                 Log.i(TAG, "Disconnecting BLE device $address after readiness timeout ($reason)")
                 try {
                     gattServer?.cancelConnection(device)
                 } catch (error: Exception) {
                     Log.w(TAG, "Failed to cancel BLE connection for $address", error)
                 } finally {
+                    dropPeerState(address)
                     pendingDisconnects.remove(address)
+                    restartGattServer("unready-$reason")
                 }
             }
         pendingDisconnects[address] = disconnectTask
         mainHandler.postDelayed(disconnectTask, UNREADY_DISCONNECT_DELAY_MS)
     }
 
+    private fun scheduleStartupSweep() {
+        pendingStartupSweep?.let { mainHandler.removeCallbacks(it) }
+        val sweep =
+            Runnable {
+                pendingStartupSweep = null
+                if (!bluetoothActive) {
+                    return@Runnable
+                }
+                val hadStalePeers = devices.keys.any { !subscribed.contains(it) }
+                disconnectUnreadyDevices("post-start")
+                if (hadStalePeers) {
+                    restartGattServer("post-start")
+                }
+            }
+        pendingStartupSweep = sweep
+        mainHandler.postDelayed(sweep, UNREADY_DISCONNECT_DELAY_MS)
+    }
+
+    private fun ensureBluetoothReady() {
+        if (bluetoothAdapter == null || advertiser == null) {
+            throw IllegalStateException("Bluetooth LE advertiser is unavailable")
+        }
+        if (!bluetoothAdapter.isEnabled) {
+            throw IllegalStateException("Bluetooth is disabled")
+        }
+    }
+
+    private fun startGattServerOrThrow() {
+        val serviceAdded = CountDownLatch(1)
+        val serviceAddedOk = booleanArrayOf(false)
+
+        val serverCallback = object : BluetoothGattServerCallback() {
+            override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+                val address = device.address
+                if (newState == android.bluetooth.BluetoothProfile.STATE_CONNECTED) {
+                    if (!acceptingConnections) {
+                        Log.i(TAG, "Rejecting BLE device $address because advertising is not ready yet")
+                        try {
+                            gattServer?.cancelConnection(device)
+                        } catch (error: Exception) {
+                            Log.w(TAG, "Failed to reject BLE connection for $address", error)
+                        }
+                        return
+                    }
+                    Log.d(TAG, "BLE device connected: $address")
+                    devices[address] = device
+                    decoders[address] = FrameDecoder()
+                    touchPeer(address)
+                    scheduleUnreadyDisconnect(address, device, "startup-timeout")
+                    triggerAddress("peer-connected", address)
+                } else if (newState == android.bluetooth.BluetoothProfile.STATE_DISCONNECTED) {
+                    Log.d(TAG, "BLE device disconnected: $address")
+                    cancelPendingDisconnect(address)
+                    dropPeerState(address)
+                }
+            }
+
+            override fun onCharacteristicReadRequest(
+                device: BluetoothDevice,
+                requestId: Int,
+                offset: Int,
+                characteristic: BluetoothGattCharacteristic,
+            ) {
+                touchPeer(device.address)
+                if (characteristic.uuid == TX_UUID) {
+                    val frame = encodeFrame("text", helloPayload(localPeerId))
+                    val value =
+                        if (offset in 0 until frame.size) frame.copyOfRange(offset, frame.size) else ByteArray(0)
+                    Log.d(TAG, "Serving hello read to ${device.address} (${value.size} bytes, offset=$offset)")
+                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+                } else {
+                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
+                }
+            }
+
+            override fun onCharacteristicWriteRequest(
+                device: BluetoothDevice,
+                requestId: Int,
+                characteristic: BluetoothGattCharacteristic,
+                preparedWrite: Boolean,
+                responseNeeded: Boolean,
+                offset: Int,
+                value: ByteArray,
+            ) {
+                touchPeer(device.address)
+                if (characteristic.uuid == RX_UUID) {
+                    Log.d(TAG, "Received BLE write from ${device.address} (${value.size} bytes)")
+                    val decoder = decoders.computeIfAbsent(device.address) { FrameDecoder() }
+                    decoder.append(value).forEach { frame ->
+                        triggerFrame(device.address, frame.kind, frame.payload)
+                    }
+                }
+                if (responseNeeded) {
+                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                }
+            }
+
+            override fun onDescriptorWriteRequest(
+                device: BluetoothDevice,
+                requestId: Int,
+                descriptor: BluetoothGattDescriptor,
+                preparedWrite: Boolean,
+                responseNeeded: Boolean,
+                offset: Int,
+                value: ByteArray,
+            ) {
+                touchPeer(device.address)
+                if (descriptor.uuid == CCCD_UUID && value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) {
+                    Log.d(TAG, "Notifications enabled for ${device.address}")
+                    subscribed.add(device.address)
+                    cancelPendingDisconnect(device.address)
+                    sendHello(device)
+                    triggerAddress("peer-ready", device.address)
+                }
+                if (responseNeeded) {
+                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                }
+            }
+
+            override fun onServiceAdded(status: Int, service: BluetoothGattService) {
+                if (service.uuid != SERVICE_UUID) {
+                    return
+                }
+                serviceAddedOk[0] = status == BluetoothGatt.GATT_SUCCESS
+                Log.i(TAG, "Service add callback for ${service.uuid} status=$status")
+                serviceAdded.countDown()
+            }
+        }
+
+        gattServer = bluetoothManager.openGattServer(appContext, serverCallback)
+            ?: throw IllegalStateException("Failed to open Bluetooth GATT server")
+        val rx = BluetoothGattCharacteristic(
+            RX_UUID,
+            BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
+            BluetoothGattCharacteristic.PERMISSION_WRITE,
+        )
+        val tx = BluetoothGattCharacteristic(
+            TX_UUID,
+            BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_READ,
+            BluetoothGattCharacteristic.PERMISSION_READ,
+        )
+        tx.addDescriptor(
+            BluetoothGattDescriptor(
+                CCCD_UUID,
+                BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE,
+            )
+        )
+        txCharacteristic = tx
+        val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
+        service.addCharacteristic(rx)
+        service.addCharacteristic(tx)
+        if (gattServer?.addService(service) != true) {
+            throw IllegalStateException("Failed to add Bluetooth GATT service")
+        }
+        if (!serviceAdded.await(3, TimeUnit.SECONDS)) {
+            throw IllegalStateException("Timed out waiting for Bluetooth GATT service registration")
+        }
+        if (!serviceAddedOk[0]) {
+            throw IllegalStateException("Bluetooth GATT service registration failed")
+        }
+        Log.i(TAG, "Bluetooth GATT service registered, starting advertising")
+        val advertiseData =
+            AdvertiseData.Builder()
+                .addServiceUuid(ParcelUuid(SERVICE_UUID))
+                .setIncludeDeviceName(false)
+                .build()
+        val scanResponse =
+            AdvertiseData.Builder()
+                .addServiceData(ParcelUuid(SERVICE_UUID), advertisedPeerHintBytes())
+                .setIncludeDeviceName(false)
+                .build()
+        advertiser?.startAdvertising(
+            AdvertiseSettings.Builder()
+                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+                .setConnectable(true)
+                .build(),
+            advertiseData,
+            scanResponse,
+            advertiseCallback,
+        )
+        acceptingConnections = true
+        bluetoothActive = true
+        scheduleStartupSweep()
+        Log.i(TAG, "Bluetooth advertising and GATT server started")
+    }
+
+    private fun restartGattServer(reason: String) {
+        if (localPeerId.isBlank()) {
+            return
+        }
+        Log.i(TAG, "Restarting Bluetooth GATT server after $reason")
+        bluetoothActive = false
+        try {
+            stopInternal()
+            ensureBluetoothReady()
+            startGattServerOrThrow()
+        } catch (error: Exception) {
+            Log.e(TAG, "Failed to restart Bluetooth GATT server after $reason", error)
+            bluetoothActive = false
+            stopInternal()
+        }
+    }
+
     private fun cancelPendingDisconnect(address: String) {
         pendingDisconnects.remove(address)?.let { pending ->
             mainHandler.removeCallbacks(pending)
+        }
+    }
+
+    private fun dropPeerState(address: String) {
+        val hadDevice = devices.remove(address) != null
+        val wasReady = subscribed.remove(address)
+        val hadDecoder = decoders.remove(address) != null
+        peerActivityAtMs.remove(address)
+        cancelPendingDisconnect(address)
+        if (hadDevice || wasReady || hadDecoder) {
+            triggerAddress("peer-disconnected", address)
         }
     }
 

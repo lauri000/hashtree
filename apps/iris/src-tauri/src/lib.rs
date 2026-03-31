@@ -20,7 +20,7 @@ pub mod relay_proxy;
 
 use axum::body::Bytes;
 use axum::http::HeaderMap;
-use axum::routing::{any, post};
+use axum::routing::{any, get, post};
 use axum::Router;
 use hashtree_cli::daemon::{EmbeddedDaemonInfo, EmbeddedDaemonOptions};
 use hashtree_cli::server::AppState;
@@ -452,9 +452,29 @@ async fn start_daemon<R: tauri::Runtime + 'static>(
 
     // Add extra routes for relay proxy and NIP-07
     let app_for_webview_bridge = app.clone();
+    let app_for_authenticated_relay = app.clone();
+    let app_for_authenticated_relay_slash = app.clone();
     let extra_routes = Router::<AppState>::new()
         .merge(backend_routes::router())
         .route("/relay", any(relay_proxy::handle_relay_websocket))
+        .route(
+            "/__iris_relay",
+            get(move |state, query, ws| {
+                let app = app_for_authenticated_relay.clone();
+                async move {
+                    nip07::handle_authenticated_relay_websocket(app, state, query, ws).await
+                }
+            }),
+        )
+        .route(
+            "/__iris_relay/",
+            get(move |state, query, ws| {
+                let app = app_for_authenticated_relay_slash.clone();
+                async move {
+                    nip07::handle_authenticated_relay_websocket(app, state, query, ws).await
+                }
+            }),
+        )
         .route(
             "/__iris_nip07",
             post(|body: Bytes| async move { nip07::handle_nip07_http_bridge(body).await }),
@@ -777,6 +797,7 @@ fn normalize_automation_startup_url(raw: &str) -> Option<String> {
 }
 
 fn emit_open_url_command<R: tauri::Runtime>(app: &tauri::AppHandle<R>, url: String) {
+    tracing::info!("Emitting open_url automation command for deep link {}", url);
     let _ = show_main_window(app);
     let _ = app.emit(
         "automation-command",
@@ -791,6 +812,11 @@ fn emit_open_url_command<R: tauri::Runtime>(app: &tauri::AppHandle<R>, url: Stri
 
 fn handle_deep_link_urls<R: tauri::Runtime>(app: &tauri::AppHandle<R>, urls: &[tauri::Url]) {
     let supported_urls = collect_supported_launch_deep_links(urls);
+    tracing::info!(
+        "Handling deep-link URLs: total={} supported={:?}",
+        urls.len(),
+        supported_urls
+    );
     if supported_urls.is_empty() {
         return;
     }
@@ -800,10 +826,12 @@ fn handle_deep_link_urls<R: tauri::Runtime>(app: &tauri::AppHandle<R>, urls: &[t
     };
 
     if state.is_frontend_ready() {
+        tracing::info!("Deep-link frontend ready; emitting URLs immediately");
         for url in supported_urls {
             emit_open_url_command(app, url);
         }
     } else {
+        tracing::info!("Deep-link frontend not ready; queueing URLs");
         let _ = show_main_window(app);
         state.queue_urls(supported_urls);
     }
@@ -817,6 +845,10 @@ fn deep_link_frontend_ready<R: tauri::Runtime>(
         .try_state::<Arc<DeepLinkState>>()
         .ok_or_else(|| "DeepLinkState not found".to_string())?;
     let pending_urls = state.mark_frontend_ready();
+    tracing::info!(
+        "Frontend reported deep-link readiness; pending URLs={:?}",
+        pending_urls
+    );
     if !pending_urls.is_empty() {
         let _ = show_main_window(&app);
     }

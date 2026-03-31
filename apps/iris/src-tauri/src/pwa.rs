@@ -140,7 +140,11 @@ async fn cache_bookmark_icon_to_store(
     match cache_direct_icon_to_store(store, &client, icon_url).await {
         Ok(cached_icon) => Ok(Some(cached_icon)),
         Err(error) => {
-            tracing::warn!("Failed to cache direct bookmark icon {}: {}", icon_url, error);
+            tracing::warn!(
+                "Failed to cache direct bookmark icon {}: {}",
+                icon_url,
+                error
+            );
             Ok(None)
         }
     }
@@ -768,8 +772,7 @@ fn bytes_trimmed_starts_with_svg(bytes: &[u8]) -> bool {
         return false;
     };
     let trimmed = text.trim_start_matches(|ch: char| ch.is_whitespace() || ch == '\u{FEFF}');
-    trimmed.starts_with("<svg")
-        || (trimmed.starts_with("<?xml") && trimmed.contains("<svg"))
+    trimmed.starts_with("<svg") || (trimmed.starts_with("<?xml") && trimmed.contains("<svg"))
 }
 
 fn icon_asset_path(icon_url: &Url, content_type: &str, bytes: &[u8]) -> String {

@@ -19,7 +19,7 @@ use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use crate::socialgraph::crawler::SOCIALGRAPH_RELAY_EVENT_MAX_SIZE;
-use crate::socialgraph::{self, SocialGraphStore};
+use crate::socialgraph::{self, SocialGraphBackend, SocialGraphStore};
 use crate::HashtreeStore;
 
 #[cfg(not(test))]
@@ -42,8 +42,13 @@ const MIRROR_RECONNECT_HISTORY_SYNC_COOLDOWN: Duration = Duration::from_secs(30)
 #[cfg(test)]
 const MIRROR_RECONNECT_HISTORY_SYNC_COOLDOWN: Duration = Duration::from_millis(100);
 
-const DEFAULT_HISTORY_KINDS: [u16; 1] = [0];
+const DEFAULT_HISTORY_KINDS: [u16; 2] = [0, 3];
 const DEFAULT_PROFILE_SEARCH_TREE_NAME: &str = "profile-search";
+
+#[cfg(not(test))]
+const MIRROR_MISSING_PROFILE_BACKFILL_INTERVAL: Duration = Duration::from_secs(300);
+#[cfg(test)]
+const MIRROR_MISSING_PROFILE_BACKFILL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[cfg(not(test))]
 const MIRROR_ROOT_PUBLISH_DEBOUNCE: Duration = Duration::from_secs(5);
@@ -60,8 +65,10 @@ pub struct NostrMirrorConfig {
     pub relays: Vec<String>,
     pub publish_relays: Vec<String>,
     pub max_follow_distance: u32,
+    pub overmute_threshold: f64,
     pub author_batch_size: usize,
     pub history_sync_author_chunk_size: usize,
+    pub missing_profile_backfill_batch_size: usize,
     pub fetch_timeout: Duration,
     pub relay_event_max_size: Option<u32>,
     pub require_negentropy: bool,
@@ -77,8 +84,10 @@ impl Default for NostrMirrorConfig {
             relays: Vec::new(),
             publish_relays: Vec::new(),
             max_follow_distance: 2,
+            overmute_threshold: 1.0,
             author_batch_size: 256,
             history_sync_author_chunk_size: 5_000,
+            missing_profile_backfill_batch_size: 5_000,
             fetch_timeout: Duration::from_secs(15),
             relay_event_max_size: Some(SOCIALGRAPH_RELAY_EVENT_MAX_SIZE),
             require_negentropy: false,
@@ -106,6 +115,7 @@ pub struct BackgroundNostrMirror {
     client: Client,
     publish_client: Option<Client>,
     profile_search_publish_state: Mutex<RootPublishState>,
+    missing_profile_cursor: Mutex<usize>,
     shutdown_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
 }
@@ -158,6 +168,7 @@ impl BackgroundNostrMirror {
             client,
             publish_client,
             profile_search_publish_state: Mutex::new(RootPublishState::default()),
+            missing_profile_cursor: Mutex::new(0),
             shutdown_tx,
             shutdown_rx,
         })
@@ -192,6 +203,22 @@ impl BackgroundNostrMirror {
         if initial_authors.is_empty() {
             info!("Nostr mirror: no social-graph authors to mirror yet");
         } else if self.config.history_sync_on_start {
+            if self.should_backfill_missing_profiles(None) {
+                let missing_profile_authors = self.collect_missing_profile_authors(
+                    self.config.missing_profile_backfill_batch_size,
+                )?;
+                if !missing_profile_authors.is_empty() {
+                    info!(
+                        "Nostr mirror missing-profile backfill starting: authors={}",
+                        missing_profile_authors.len()
+                    );
+                    self.history_sync_authors_with_kinds(
+                        missing_profile_authors,
+                        &[Kind::Metadata.as_u16()],
+                    )
+                    .await?;
+                }
+            }
             self.history_sync_authors(initial_authors.clone()).await?;
         }
 
@@ -201,6 +228,7 @@ impl BackgroundNostrMirror {
 
         let mut relay_statuses = self.capture_relay_statuses().await;
         let mut last_reconnect_history_sync_at: Option<Instant> = None;
+        let mut last_missing_profile_backfill_at: Option<Instant> = None;
         let mut notifications = self.client.notifications();
         let mut shutdown_rx = self.shutdown_rx.clone();
         let mut refresh_interval = tokio::time::interval(MIRROR_AUTHOR_REFRESH_INTERVAL);
@@ -231,6 +259,23 @@ impl BackgroundNostrMirror {
                             &mut subscribed_authors,
                         )
                         .await?;
+                    }
+                    if self.should_backfill_missing_profiles(last_missing_profile_backfill_at) {
+                        let missing_profile_authors = self.collect_missing_profile_authors(
+                            self.config.missing_profile_backfill_batch_size,
+                        )?;
+                        if !missing_profile_authors.is_empty() {
+                            info!(
+                                "Nostr mirror missing-profile backfill starting: authors={}",
+                                missing_profile_authors.len()
+                            );
+                            self.history_sync_authors_with_kinds(
+                                missing_profile_authors,
+                                &[Kind::Metadata.as_u16()],
+                            )
+                            .await?;
+                            last_missing_profile_backfill_at = Some(Instant::now());
+                        }
                     }
                 }
                 _ = publish_interval.tick() => {
@@ -319,6 +364,12 @@ impl BackgroundNostrMirror {
             )
             .with_context(|| format!("load social-graph distance {distance}"))?
             {
+                if self
+                    .graph_store
+                    .is_overmuted_user(&pubkey, self.config.overmute_threshold)?
+                {
+                    continue;
+                }
                 let hex = hex::encode(pubkey);
                 if seen.insert(hex.clone()) {
                     authors.push(hex);
@@ -326,6 +377,52 @@ impl BackgroundNostrMirror {
             }
         }
         Ok(authors)
+    }
+
+    fn collect_missing_profile_authors(&self, limit: usize) -> Result<Vec<String>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let authors = self.collect_authors()?;
+        if authors.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut cursor = self
+            .missing_profile_cursor
+            .lock()
+            .expect("missing profile cursor");
+        let mut index = (*cursor).min(authors.len());
+        let mut scanned = 0usize;
+        let mut missing = Vec::new();
+
+        while scanned < authors.len() && missing.len() < limit {
+            let author = &authors[index];
+            if self.graph_store.latest_profile_event(author)?.is_none() {
+                missing.push(author.clone());
+            }
+            index += 1;
+            if index == authors.len() {
+                index = 0;
+            }
+            scanned += 1;
+        }
+
+        *cursor = index;
+        Ok(missing)
+    }
+
+    fn should_backfill_missing_profiles(&self, last_run: Option<Instant>) -> bool {
+        if self.config.missing_profile_backfill_batch_size == 0
+            || !self.config.kinds.contains(&Kind::Metadata.as_u16())
+        {
+            return false;
+        }
+        match last_run {
+            Some(last_run) => last_run.elapsed() >= MIRROR_MISSING_PROFILE_BACKFILL_INTERVAL,
+            None => true,
+        }
     }
 
     fn should_history_sync_on_reconnect(
@@ -355,8 +452,17 @@ impl BackgroundNostrMirror {
     }
 
     async fn history_sync_authors(&self, authors: Vec<String>) -> Result<()> {
+        self.history_sync_authors_with_kinds(authors, &self.config.kinds)
+            .await
+    }
+
+    async fn history_sync_authors_with_kinds(
+        &self,
+        authors: Vec<String>,
+        kinds: &[u16],
+    ) -> Result<()> {
         self.history_sync_authors_chunked(authors, |current_root, author_chunk| async move {
-            self.history_sync_author_chunk(current_root, author_chunk)
+            self.history_sync_author_chunk(current_root, author_chunk, kinds)
                 .await
         })
         .await
@@ -448,6 +554,7 @@ impl BackgroundNostrMirror {
         &self,
         current_root: Option<hashtree_core::Cid>,
         authors: Vec<String>,
+        kinds: &[u16],
     ) -> Result<CrawlReport> {
         let mut last_error = None;
         let mut report = None;
@@ -463,10 +570,10 @@ impl BackgroundNostrMirror {
                     max_authors: None,
                     max_follow_distance: None,
                     author_batch_size: self.config.author_batch_size.max(1),
-                    per_author_event_limit: self.config.kinds.len().max(1),
+                    per_author_event_limit: kinds.len().max(1),
                     per_author_live_bytes: None,
                     fetch_timeout: self.config.fetch_timeout,
-                    kinds: Some(self.config.kinds.clone()),
+                    kinds: Some(kinds.to_vec()),
                     relay_fetch_mode: RelayFetchMode::AuthorBatches,
                     require_negentropy: self.config.require_negentropy,
                     relay_event_max_size: self.config.relay_event_max_size,
@@ -1310,6 +1417,120 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mirror_collect_authors_skips_overmuted_users() -> Result<()> {
+        let _guard = crate::socialgraph::test_lock();
+        let tmp = TempDir::new().expect("tempdir");
+        let store = Arc::new(HashtreeStore::new(tmp.path())?);
+        let graph_store = open_social_graph_store_with_storage(
+            tmp.path(),
+            store.store_arc(),
+            Some(64 * 1024 * 1024),
+        )?;
+
+        let root_keys = nostr::Keys::generate();
+        let target_keys = nostr::Keys::generate();
+        set_social_graph_root(&graph_store, &root_keys.public_key().to_bytes());
+
+        let follow = EventBuilder::new(
+            Kind::ContactList,
+            "",
+            vec![Tag::public_key(target_keys.public_key())],
+        )
+        .custom_created_at(Timestamp::from_secs(10))
+        .to_event(&root_keys)
+        .expect("follow");
+        crate::socialgraph::ingest_parsed_event(&graph_store, &follow)?;
+
+        let mute = EventBuilder::new(
+            Kind::MuteList,
+            "",
+            vec![Tag::public_key(target_keys.public_key())],
+        )
+        .custom_created_at(Timestamp::from_secs(11))
+        .to_event(&root_keys)
+        .expect("mute");
+        crate::socialgraph::ingest_parsed_event(&graph_store, &mute)?;
+
+        let mirror = BackgroundNostrMirror::new(
+            NostrMirrorConfig {
+                max_follow_distance: 1,
+                overmute_threshold: 1.0,
+                ..NostrMirrorConfig::default()
+            },
+            store,
+            graph_store.clone(),
+            None,
+        )
+        .await?;
+
+        let authors = mirror.collect_authors()?;
+        assert!(authors.contains(&root_keys.public_key().to_hex()));
+        assert!(!authors.contains(&target_keys.public_key().to_hex()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mirror_collect_missing_profile_authors_skips_existing_profiles() -> Result<()> {
+        let _guard = crate::socialgraph::test_lock();
+        let tmp = TempDir::new().expect("tempdir");
+        let store = Arc::new(HashtreeStore::new(tmp.path())?);
+        let graph_store = open_social_graph_store_with_storage(
+            tmp.path(),
+            store.store_arc(),
+            Some(64 * 1024 * 1024),
+        )?;
+
+        let root_keys = nostr::Keys::generate();
+        let existing_keys = nostr::Keys::generate();
+        let missing_keys = nostr::Keys::generate();
+        set_social_graph_root(&graph_store, &root_keys.public_key().to_bytes());
+
+        let root_profile = EventBuilder::new(Kind::Metadata, r#"{"name":"root"}"#, [])
+            .custom_created_at(Timestamp::from_secs(5))
+            .to_event(&root_keys)
+            .expect("root profile");
+        crate::socialgraph::ingest_parsed_event(&graph_store, &root_profile)?;
+
+        let follow = EventBuilder::new(
+            Kind::ContactList,
+            "",
+            vec![
+                Tag::public_key(existing_keys.public_key()),
+                Tag::public_key(missing_keys.public_key()),
+            ],
+        )
+        .custom_created_at(Timestamp::from_secs(10))
+        .to_event(&root_keys)
+        .expect("follow");
+        crate::socialgraph::ingest_parsed_event(&graph_store, &follow)?;
+
+        let existing_profile = EventBuilder::new(Kind::Metadata, r#"{"name":"existing"}"#, [])
+            .custom_created_at(Timestamp::from_secs(11))
+            .to_event(&existing_keys)
+            .expect("existing profile");
+        crate::socialgraph::ingest_parsed_event(&graph_store, &existing_profile)?;
+
+        let mirror = BackgroundNostrMirror::new(
+            NostrMirrorConfig {
+                max_follow_distance: 1,
+                kinds: vec![0, 3],
+                history_sync_on_start: false,
+                ..NostrMirrorConfig::default()
+            },
+            store,
+            graph_store.clone(),
+            None,
+        )
+        .await?;
+
+        let authors = mirror.collect_missing_profile_authors(10)?;
+        assert!(authors.contains(&missing_keys.public_key().to_hex()));
+        assert!(!authors.contains(&existing_keys.public_key().to_hex()));
+        assert!(!authors.contains(&root_keys.public_key().to_hex()));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn mirror_live_ingest_updates_profile_index() -> Result<()> {
         let _guard = crate::socialgraph::test_lock();
         let tmp = TempDir::new().expect("tempdir");
@@ -1343,6 +1564,7 @@ mod tests {
                     max_follow_distance: 1,
                     author_batch_size: 32,
                     history_sync_on_start: false,
+                    missing_profile_backfill_batch_size: 0,
                     ..NostrMirrorConfig::default()
                 },
                 store,
@@ -1367,6 +1589,7 @@ mod tests {
             relay.request_count() > 0
         })
         .await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
         let updated_profile =
             EventBuilder::new(Kind::Metadata, r#"{"name":"Alice Mirror Updated"}"#, [])
                 .to_event(&alice_keys)

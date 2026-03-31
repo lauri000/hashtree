@@ -127,6 +127,7 @@ pub struct SocialGraphStore {
     public_events: EventIndexBucket,
     ambient_events: EventIndexBucket,
     profile_index: ProfileIndexBucket,
+    profile_index_overmute_threshold: StdMutex<f64>,
 }
 
 pub trait SocialGraphBackend: Send + Sync {
@@ -272,6 +273,7 @@ pub fn open_social_graph_store_at_path_with_storage_split(
             by_pubkey_root_path: db_dir.join(PROFILES_BY_PUBKEY_ROOT_FILE),
             search_root_path: db_dir.join(PROFILE_SEARCH_ROOT_FILE),
         },
+        profile_index_overmute_threshold: StdMutex::new(1.0),
     }))
 }
 
@@ -366,6 +368,20 @@ pub fn query_events(
 }
 
 impl SocialGraphStore {
+    pub fn set_profile_index_overmute_threshold(&self, threshold: f64) {
+        *self
+            .profile_index_overmute_threshold
+            .lock()
+            .expect("profile index overmute threshold") = threshold;
+    }
+
+    fn profile_index_overmute_threshold(&self) -> f64 {
+        *self
+            .profile_index_overmute_threshold
+            .lock()
+            .expect("profile index overmute threshold")
+    }
+
     fn invalidate_distance_cache(&self) {
         *self.distance_cache.lock().unwrap() = None;
     }
@@ -520,7 +536,7 @@ impl SocialGraphStore {
     }
 
     pub(crate) fn rebuild_profile_index_for_events(&self, events: &[Event]) -> Result<()> {
-        let latest_by_pubkey = latest_metadata_events_by_pubkey(events);
+        let latest_by_pubkey = self.filtered_latest_metadata_events_by_pubkey(events)?;
         let (by_pubkey_root, search_root) = self
             .profile_index
             .rebuild_profile_events(latest_by_pubkey.into_values())?;
@@ -561,13 +577,14 @@ impl SocialGraphStore {
             );
         }
 
-        let latest_count = latest_metadata_events_by_pubkey(&events).len();
+        let latest_count = self.filtered_latest_metadata_events_by_pubkey(&events)?.len();
         self.rebuild_profile_index_for_events(&events)?;
         Ok(latest_count)
     }
 
     fn update_profile_index_for_events(&self, events: &[Event]) -> Result<()> {
         let latest_by_pubkey = latest_metadata_events_by_pubkey(events);
+        let threshold = self.profile_index_overmute_threshold();
 
         if latest_by_pubkey.is_empty() {
             return Ok(());
@@ -578,9 +595,17 @@ impl SocialGraphStore {
         let mut changed = false;
 
         for event in latest_by_pubkey.into_values() {
-            let (next_by_pubkey_root, next_search_root, updated) = self
-                .profile_index
-                .update_profile_event(by_pubkey_root.as_ref(), search_root.as_ref(), event)?;
+            let overmuted = self.is_overmuted_user(&event.pubkey.to_bytes(), threshold)?;
+            let (next_by_pubkey_root, next_search_root, updated) = if overmuted {
+                self.profile_index.remove_profile_event(
+                    by_pubkey_root.as_ref(),
+                    search_root.as_ref(),
+                    &event.pubkey.to_hex(),
+                )?
+            } else {
+                self.profile_index
+                    .update_profile_event(by_pubkey_root.as_ref(), search_root.as_ref(), event)?
+            };
             if updated {
                 by_pubkey_root = next_by_pubkey_root;
                 search_root = next_search_root;
@@ -595,6 +620,27 @@ impl SocialGraphStore {
         }
 
         Ok(())
+    }
+
+    fn filtered_latest_metadata_events_by_pubkey<'a>(
+        &self,
+        events: &'a [Event],
+    ) -> Result<BTreeMap<String, &'a Event>> {
+        let threshold = self.profile_index_overmute_threshold();
+        let mut latest_by_pubkey = BTreeMap::<String, &Event>::new();
+        for event in events.iter().filter(|event| event.kind == Kind::Metadata) {
+            if self.is_overmuted_user(&event.pubkey.to_bytes(), threshold)? {
+                continue;
+            }
+            let pubkey = event.pubkey.to_hex();
+            match latest_by_pubkey.get(&pubkey) {
+                Some(current) if compare_nostr_events(event, current).is_le() => {}
+                _ => {
+                    latest_by_pubkey.insert(pubkey, event);
+                }
+            }
+        }
+        Ok(latest_by_pubkey)
     }
 
     fn snapshot_chunks(&self, root: &[u8; 32], options: &BinaryBudget) -> Result<Vec<Bytes>> {
@@ -1190,7 +1236,8 @@ impl ProfileIndexBucket {
         let Some(root) = self.search_root()? else {
             return Ok(Vec::new());
         };
-        let entries = block_on(self.index.prefix(&root, prefix)).context("query profile search prefix")?;
+        let entries =
+            block_on(self.index.prefix(&root, prefix)).context("query profile search prefix")?;
         entries
             .into_iter()
             .map(|(key, value)| {
@@ -1215,7 +1262,10 @@ impl ProfileIndexBucket {
                 serialize_profile_search_entry(&build_profile_search_entry(event, &mirrored_cid)?)?;
             by_pubkey_entries.push((pubkey.clone(), mirrored_cid.clone()));
             for term in profile_search_terms_for_event(event) {
-                search_entries.push((format!("{PROFILE_SEARCH_PREFIX}{term}:{pubkey}"), search_value.clone()));
+                search_entries.push((
+                    format!("{PROFILE_SEARCH_PREFIX}{term}:{pubkey}"),
+                    search_value.clone(),
+                ));
             }
         }
 
@@ -1286,6 +1336,42 @@ impl ProfileIndexBucket {
 
         Ok((next_by_pubkey_root, next_search_root, true))
     }
+
+    fn remove_profile_event(
+        &self,
+        by_pubkey_root: Option<&Cid>,
+        search_root: Option<&Cid>,
+        pubkey: &str,
+    ) -> Result<(Option<Cid>, Option<Cid>, bool)> {
+        let existing_cid = block_on(self.index.get_link(by_pubkey_root, pubkey))
+            .context("lookup mirrored profile event for removal")?;
+        let Some(existing_cid) = existing_cid else {
+            return Ok((by_pubkey_root.cloned(), search_root.cloned(), false));
+        };
+
+        let existing_event = self.load_profile_event(&existing_cid)?;
+        let next_by_pubkey_root = match by_pubkey_root {
+            Some(root) => block_on(self.index.delete(root, pubkey))
+                .context("remove mirrored profile-by-pubkey entry")?,
+            None => None,
+        };
+
+        let mut next_search_root = search_root.cloned();
+        if let Some(current) = existing_event.as_ref() {
+            for term in profile_search_terms_for_event(current) {
+                let Some(root) = next_search_root.as_ref() else {
+                    break;
+                };
+                next_search_root = block_on(
+                    self.index
+                        .delete(root, &format!("{PROFILE_SEARCH_PREFIX}{term}:{pubkey}")),
+                )
+                .context("remove overmuted profile search term")?;
+            }
+        }
+
+        Ok((next_by_pubkey_root, next_search_root, true))
+    }
 }
 
 fn latest_metadata_events_by_pubkey<'a>(events: &'a [Event]) -> BTreeMap<String, &'a Event> {
@@ -1314,7 +1400,10 @@ fn cid_to_nhash(cid: &Cid) -> Result<String> {
     .context("encode mirrored profile event nhash")
 }
 
-fn build_profile_search_entry(event: &Event, mirrored_cid: &Cid) -> Result<StoredProfileSearchEntry> {
+fn build_profile_search_entry(
+    event: &Event,
+    mirrored_cid: &Cid,
+) -> Result<StoredProfileSearchEntry> {
     let profile = match serde_json::from_str::<serde_json::Value>(&event.content) {
         Ok(serde_json::Value::Object(profile)) => profile,
         _ => serde_json::Map::new(),
@@ -2504,9 +2593,7 @@ mod tests {
                 && entry.aliases == vec!["Martti Malmi".to_string(), "mmalmi".to_string()]
                 && entry.event_nhash.starts_with("nhash1")
         }));
-        assert!(entries
-            .iter()
-            .all(|(_, entry)| entry.pubkey == pubkey));
+        assert!(entries.iter().all(|(_, entry)| entry.pubkey == pubkey));
         assert_eq!(
             graph_store
                 .latest_profile_event(&pubkey)
@@ -2529,13 +2616,11 @@ mod tests {
         assert!(bird_entries
             .iter()
             .any(|(key, entry)| key == &format!("p:bird:{pubkey}") && entry.name == "bird"));
-        assert!(bird_entries
-            .iter()
-            .any(|(key, entry)| {
-                key == &format!("p:birdman:{pubkey}")
-                    && entry.nip05.as_deref() == Some("birdman")
-                    && entry.aliases.is_empty()
-            }));
+        assert!(bird_entries.iter().any(|(key, entry)| {
+            key == &format!("p:birdman:{pubkey}")
+                && entry.nip05.as_deref() == Some("birdman")
+                && entry.aliases.is_empty()
+        }));
         assert_eq!(
             graph_store
                 .latest_profile_event(&pubkey)
@@ -2606,11 +2691,14 @@ mod tests {
         ingest_parsed_event(&graph_store, &profile).unwrap();
 
         let pubkey = keys.public_key().to_hex();
-        assert!(graph_store
-            .profile_search_entries_for_prefix("p:sirlibre")
-            .unwrap()
-            .iter()
-            .any(|(key, entry)| key == &format!("p:sirlibre:{pubkey}") && entry.name == "SirLibre"));
+        assert!(
+            graph_store
+                .profile_search_entries_for_prefix("p:sirlibre")
+                .unwrap()
+                .iter()
+                .any(|(key, entry)| key == &format!("p:sirlibre:{pubkey}")
+                    && entry.name == "SirLibre")
+        );
         assert!(graph_store
             .profile_search_entries_for_prefix("p:libre")
             .unwrap()
@@ -2712,10 +2800,12 @@ mod tests {
         assert_eq!(links.len(), 2);
         assert!(links
             .iter()
-            .any(|(key, entry)| key == &format!("p:shared:{pubkey}") && entry.name == "shared storage user"));
+            .any(|(key, entry)| key == &format!("p:shared:{pubkey}")
+                && entry.name == "shared storage user"));
         assert!(links
             .iter()
-            .any(|(key, entry)| key == &format!("p:shareduser:{pubkey}") && entry.nip05.as_deref() == Some("shareduser")));
+            .any(|(key, entry)| key == &format!("p:shareduser:{pubkey}")
+                && entry.nip05.as_deref() == Some("shareduser")));
     }
 
     #[test]
@@ -2771,7 +2861,10 @@ mod tests {
         ingest_parsed_event_with_storage_class(&graph_store, &ambient, EventStorageClass::Ambient)
             .unwrap();
 
-        graph_store.profile_index.write_by_pubkey_root(None).unwrap();
+        graph_store
+            .profile_index
+            .write_by_pubkey_root(None)
+            .unwrap();
         graph_store.profile_index.write_search_root(None).unwrap();
 
         let rebuilt = graph_store
@@ -2795,6 +2888,56 @@ mod tests {
                 && entry.aliases.is_empty()
                 && entry.nip05.is_none()
         }));
+    }
+
+    #[test]
+    fn test_rebuild_profile_index_excludes_overmuted_users() {
+        let _guard = test_lock();
+        let tmp = TempDir::new().unwrap();
+        let graph_store = open_social_graph_store(tmp.path()).unwrap();
+        let root_keys = Keys::generate();
+        let muted_keys = Keys::generate();
+        let muted_pubkey = muted_keys.public_key().to_hex();
+
+        set_social_graph_root(&graph_store, &root_keys.public_key().to_bytes());
+        graph_store.set_profile_index_overmute_threshold(1.0);
+
+        let profile = EventBuilder::new(
+            Kind::Metadata,
+            serde_json::json!({
+                "display_name": "muted petri",
+            })
+            .to_string(),
+            [],
+        )
+        .custom_created_at(Timestamp::from_secs(5))
+        .to_event(&muted_keys)
+        .unwrap();
+        ingest_parsed_event(&graph_store, &profile).unwrap();
+        assert!(graph_store.latest_profile_event(&muted_pubkey).unwrap().is_some());
+
+        let mute = EventBuilder::new(
+            Kind::MuteList,
+            "",
+            vec![Tag::public_key(muted_keys.public_key())],
+        )
+        .custom_created_at(Timestamp::from_secs(6))
+        .to_event(&root_keys)
+        .unwrap();
+        ingest_parsed_event(&graph_store, &mute).unwrap();
+        assert!(graph_store
+            .is_overmuted_user(&muted_keys.public_key().to_bytes(), 1.0)
+            .unwrap());
+
+        let rebuilt = graph_store
+            .rebuild_profile_index_from_stored_events()
+            .unwrap();
+        assert_eq!(rebuilt, 0);
+        assert!(graph_store.latest_profile_event(&muted_pubkey).unwrap().is_none());
+        assert!(graph_store
+            .profile_search_entries_for_prefix("p:muted")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

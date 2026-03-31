@@ -272,7 +272,10 @@ impl BluetoothPeer {
             BluetoothFrame::Text(text) => text.len() as u64,
             BluetoothFrame::Binary(payload) => payload.len() as u64,
         };
-        self.link.send(frame).await?;
+        if let Err(err) = self.link.send(frame).await {
+            let _ = self.link.close().await;
+            return Err(err);
+        }
         self.record_sent(bytes).await;
         Ok(())
     }
@@ -444,10 +447,12 @@ impl BluetoothLink for MockBluetoothLink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::anyhow;
     use crate::nostr_relay::{NostrRelay, NostrRelayConfig};
     use crate::webrtc::signaling::{ConnectionState, PeerEntry, PeerSignalPath, PeerTransport};
     use nostr::{EventBuilder, Filter, Keys, Kind};
     use std::collections::HashSet;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Instant;
     use tempfile::TempDir;
@@ -459,6 +464,30 @@ mod tests {
     impl ContentStore for TestStore {
         fn get(&self, hash_hex: &str) -> Result<Option<Vec<u8>>> {
             Ok(self.blobs.get(hash_hex).cloned())
+        }
+    }
+
+    struct FailingSendLink {
+        open: AtomicBool,
+    }
+
+    #[async_trait]
+    impl BluetoothLink for FailingSendLink {
+        async fn send(&self, _frame: BluetoothFrame) -> Result<()> {
+            Err(anyhow!("send failed"))
+        }
+
+        async fn recv(&self) -> Option<BluetoothFrame> {
+            std::future::pending::<Option<BluetoothFrame>>().await
+        }
+
+        fn is_open(&self) -> bool {
+            self.open.load(Ordering::Relaxed)
+        }
+
+        async fn close(&self) -> Result<()> {
+            self.open.store(false, Ordering::Relaxed);
+            Ok(())
         }
     }
 
@@ -769,6 +798,58 @@ mod tests {
 
         receiver.close().await?;
         sender.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bluetooth_peer_closes_after_local_publish_send_failure() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let author_keys = Keys::generate();
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::from([author_keys.public_key().to_hex()]),
+        ));
+        let relay = Arc::new(NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::from([author_keys.public_key().to_hex()]),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?);
+
+        let peer = BluetoothPeer::new(
+            PeerId::new("peer-a".to_string(), Some("sess-a".to_string())),
+            PeerDirection::Outbound,
+            Arc::new(FailingSendLink {
+                open: AtomicBool::new(true),
+            }),
+            None,
+            Some(relay.clone()),
+            None,
+            None,
+        );
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(peer.is_connected());
+
+        let event = EventBuilder::new(Kind::TextNote, "close stale bluetooth peer", [])
+            .to_event(&author_keys)?;
+        relay.ingest_trusted_event(event).await?;
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!peer.is_connected());
         Ok(())
     }
 }

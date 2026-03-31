@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.16 - 2026-03-31
+
+Changes since the `0.2.15` crates.io release.
+
+### Improved
+
+- Unified slash-containing mutable tree paths across the Rust server, service-worker-facing helpers, and release publishing flow, so repo releases and encoded `htree` paths resolve consistently.
+- Improved embedded daemon and background Nostr service behavior with cleaner shutdown, better default Blossom fallback handling, and broader profile-index/social-graph coverage.
+- Improved the native Iris shell transport stack with more robust Bluetooth session handling, origin-isolated `htree` child webviews, and tighter user-facing deep-link/PWA path handling.
+
+### Fixed
+
+- Fixed release publishing defaults to use repo-scoped `releases/<repo>` trees and removed the obsolete standalone `hashtree-nostr-bridge` crate by merging its crawler into `hashtree-nostr`.
+- Fixed Rust test hangs caused by embedded daemon background services outliving Tokio runtime shutdown.
+
 ## 0.2.15 - 2026-03-31
 
 Changes since the `0.2.14` crates.io release.
