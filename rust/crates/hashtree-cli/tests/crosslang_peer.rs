@@ -125,6 +125,34 @@ impl Drop for CrosslangServer {
 }
 
 fn find_htree_binary() -> PathBuf {
+    if let Some(bin) = std::env::var_os("CARGO_BIN_EXE_htree") {
+        let path = PathBuf::from(bin);
+        if path.exists() {
+            return path;
+        }
+    }
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(profile_dir) = current_exe.parent().and_then(|deps| deps.parent()) {
+            let profile_bin = profile_dir.join("htree");
+            if profile_bin.exists() {
+                return profile_bin;
+            }
+        }
+    }
+
+    if let Some(target_dir) = std::env::var_os("CARGO_TARGET_DIR") {
+        let target_dir = PathBuf::from(target_dir);
+        let debug_bin = target_dir.join("debug/htree");
+        let release_bin = target_dir.join("release/htree");
+        if debug_bin.exists() {
+            return debug_bin;
+        }
+        if release_bin.exists() {
+            return release_bin;
+        }
+    }
+
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let workspace_root = PathBuf::from(manifest_dir)
         .parent()

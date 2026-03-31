@@ -175,10 +175,40 @@ impl<R: SignalingTransport + 'static, F: PeerLinkFactory + 'static> MeshRouter<R
                     Ok(()) // Not for us
                 }
             }
-            SignalingMessage::Candidate { .. } | SignalingMessage::Candidates { .. } => {
-                // ICE candidates are handled by the connection factory
-                // For mocks, these are no-ops
-                Ok(())
+            SignalingMessage::Candidate {
+                peer_id,
+                target_peer_id,
+                candidate,
+                sdp_m_line_index,
+                sdp_mid,
+            } => {
+                if target_peer_id == &self.peer_id {
+                    self.conn_factory
+                        .handle_candidate(
+                            peer_id,
+                            crate::types::IceCandidate {
+                                candidate: candidate.clone(),
+                                sdp_m_line_index: *sdp_m_line_index,
+                                sdp_mid: sdp_mid.clone(),
+                            },
+                        )
+                        .await
+                } else {
+                    Ok(())
+                }
+            }
+            SignalingMessage::Candidates {
+                peer_id,
+                target_peer_id,
+                candidates,
+            } => {
+                if target_peer_id == &self.peer_id {
+                    self.conn_factory
+                        .handle_candidates(peer_id, candidates.clone())
+                        .await
+                } else {
+                    Ok(())
+                }
             }
         }
     }
@@ -382,6 +412,18 @@ impl<R: SignalingTransport + 'static, F: PeerLinkFactory + 'static> MeshRouter<R
             .map(|e| e.channel.clone())
     }
 
+    /// Remove a peer and any pending offer state.
+    pub async fn remove_peer(&self, peer_id: &str) -> Option<Arc<dyn PeerLink>> {
+        self.pending_offers.write().await.remove(peer_id);
+        self.peer_roots.write().await.remove(peer_id);
+        let _ = self.conn_factory.remove_peer(peer_id).await;
+        self.peers
+            .write()
+            .await
+            .remove(peer_id)
+            .map(|entry| entry.channel)
+    }
+
     /// Check if we need more peers (below satisfied in any pool)
     pub async fn needs_peers(&self) -> bool {
         let (follows, other) = self.count_pools().await;
@@ -392,5 +434,165 @@ impl<R: SignalingTransport + 'static, F: PeerLinkFactory + 'static> MeshRouter<R
     pub async fn can_accept(&self) -> bool {
         let (follows, other) = self.count_pools().await;
         self.pools.follows.can_accept(follows) || self.pools.other.can_accept(other)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    use crate::types::{IceCandidate, PoolConfig, PoolSettings};
+
+    #[derive(Default)]
+    struct NoopTransport;
+
+    #[async_trait]
+    impl SignalingTransport for NoopTransport {
+        async fn connect(&self, _relays: &[String]) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) {}
+
+        async fn publish(&self, _msg: SignalingMessage) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        async fn recv(&self) -> Option<SignalingMessage> {
+            None
+        }
+
+        fn try_recv(&self) -> Option<SignalingMessage> {
+            None
+        }
+
+        fn peer_id(&self) -> &str {
+            "local:session"
+        }
+
+        fn pubkey(&self) -> &str {
+            "local"
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingFactory {
+        candidates: Mutex<Vec<(String, IceCandidate)>>,
+        removed: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl PeerLinkFactory for RecordingFactory {
+        async fn create_offer(
+            &self,
+            _target_peer_id: &str,
+        ) -> Result<(Arc<dyn PeerLink>, String), TransportError> {
+            Err(TransportError::ConnectionFailed(
+                "not used in this test".to_string(),
+            ))
+        }
+
+        async fn accept_offer(
+            &self,
+            _from_peer_id: &str,
+            _offer_sdp: &str,
+        ) -> Result<(Arc<dyn PeerLink>, String), TransportError> {
+            Err(TransportError::ConnectionFailed(
+                "not used in this test".to_string(),
+            ))
+        }
+
+        async fn handle_answer(
+            &self,
+            _target_peer_id: &str,
+            _answer_sdp: &str,
+        ) -> Result<Arc<dyn PeerLink>, TransportError> {
+            Err(TransportError::ConnectionFailed(
+                "not used in this test".to_string(),
+            ))
+        }
+
+        async fn handle_candidate(
+            &self,
+            peer_id: &str,
+            candidate: IceCandidate,
+        ) -> Result<(), TransportError> {
+            self.candidates
+                .lock()
+                .await
+                .push((peer_id.to_string(), candidate));
+            Ok(())
+        }
+
+        async fn remove_peer(&self, peer_id: &str) -> Result<(), TransportError> {
+            self.removed.lock().await.push(peer_id.to_string());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn routes_targeted_candidates_to_factory() {
+        let router = MeshRouter::new(
+            "local:session".to_string(),
+            "local".to_string(),
+            Arc::new(NoopTransport),
+            Arc::new(RecordingFactory::default()),
+            PoolSettings {
+                follows: PoolConfig::default(),
+                other: PoolConfig::default(),
+            },
+            false,
+        );
+
+        router
+            .handle_message(SignalingMessage::Candidate {
+                peer_id: "remote:peer".to_string(),
+                target_peer_id: "local:session".to_string(),
+                candidate: "candidate:1".to_string(),
+                sdp_m_line_index: Some(0),
+                sdp_mid: Some("data".to_string()),
+            })
+            .await
+            .expect("candidate should route");
+
+        let factory = router.conn_factory.clone();
+        let recorded = factory
+            .candidates
+            .lock()
+            .await
+            .iter()
+            .map(|(peer_id, candidate)| (peer_id.clone(), candidate.candidate.clone()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            recorded,
+            vec![("remote:peer".to_string(), "candidate:1".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_peer_cleans_factory_state() {
+        let factory = Arc::new(RecordingFactory::default());
+        let router = MeshRouter::new(
+            "local:session".to_string(),
+            "local".to_string(),
+            Arc::new(NoopTransport),
+            factory.clone(),
+            PoolSettings {
+                follows: PoolConfig::default(),
+                other: PoolConfig::default(),
+            },
+            false,
+        );
+
+        let removed = router.remove_peer("remote:peer").await;
+        assert!(removed.is_none());
+        assert_eq!(
+            factory.removed.lock().await.as_slice(),
+            &["remote:peer".to_string()]
+        );
     }
 }

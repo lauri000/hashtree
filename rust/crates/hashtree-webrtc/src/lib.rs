@@ -63,7 +63,9 @@ pub use mock::{
     clear_channel_registry, MockConnectionFactory, MockDataChannel, MockLatencyMode, MockRelay,
     MockRelayTransport, MockSignalingTransport,
 };
-pub use nostr::{NostrRelayTransport, NostrSignalingTransport};
+pub use nostr::{
+    decode_signaling_event, encode_signaling_event, NostrRelayTransport, NostrSignalingTransport,
+};
 pub use peer::{ForwardRequestCallback, Peer, PeerError};
 pub use peer_selector::{
     peer_principal, PeerMetadataSnapshot, PeerSelector, PeerStats, PersistedPeerMetadata,

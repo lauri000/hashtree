@@ -10,14 +10,15 @@
 //! relays cannot see the actual sender or correlate messages.
 
 use anyhow::Result;
+use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use hashtree_webrtc::{
-    run_hedged_waves, sync_selector_peers, HedgedWaveAction, PeerSelector,
+    decode_signaling_event, encode_signaling_event, run_hedged_waves, sync_selector_peers,
+    ClassifyRequest as SharedClassifyRequest, HedgedWaveAction, IceCandidate as SharedIceCandidate,
+    MeshRouter, PeerLink as SharedPeerLink, PeerLinkFactory as SharedPeerLinkFactory, PeerSelector,
+    SignalingTransport as SharedSignalingTransport, TransportError as SharedTransportError,
 };
-use nostr::{
-    nips::nip44, ClientMessage, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey,
-    RelayMessage, Tag,
-};
+use nostr::{ClientMessage, Filter, JsonUtil, Keys, Kind, RelayMessage};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -185,6 +186,298 @@ type ConnectedPeer = (
     Arc<webrtc::data_channel::RTCDataChannel>,
 );
 type ConnectedSession = (String, MeshPeer, PeerTransport);
+type SharedProductionRouter = MeshRouter<RouterSignalingBridge, SharedRouterPeerFactory>;
+
+async fn remember_peer_signal_path(state: &WebRTCState, peer_id: &str, source: &str) {
+    if let Some(entry) = state.peers.write().await.get_mut(peer_id) {
+        entry
+            .signal_paths
+            .insert(PeerSignalPath::from_source_name(source));
+    }
+}
+
+#[derive(Clone)]
+struct RouterSignalingBridge {
+    peer_id: String,
+    pubkey: String,
+    signaling_tx: mpsc::Sender<SignalingMessage>,
+}
+
+impl RouterSignalingBridge {
+    fn new(peer_id: String, pubkey: String, signaling_tx: mpsc::Sender<SignalingMessage>) -> Self {
+        Self {
+            peer_id,
+            pubkey,
+            signaling_tx,
+        }
+    }
+}
+
+#[async_trait]
+impl SharedSignalingTransport for RouterSignalingBridge {
+    async fn connect(&self, _relays: &[String]) -> Result<(), SharedTransportError> {
+        Ok(())
+    }
+
+    async fn disconnect(&self) {}
+
+    async fn publish(&self, msg: SignalingMessage) -> Result<(), SharedTransportError> {
+        self.signaling_tx
+            .send(msg)
+            .await
+            .map_err(|e| SharedTransportError::SendFailed(e.to_string()))
+    }
+
+    async fn recv(&self) -> Option<SignalingMessage> {
+        None
+    }
+
+    fn try_recv(&self) -> Option<SignalingMessage> {
+        None
+    }
+
+    fn peer_id(&self) -> &str {
+        &self.peer_id
+    }
+
+    fn pubkey(&self) -> &str {
+        &self.pubkey
+    }
+}
+
+struct SharedRouterPeerLink {
+    peer: Arc<Peer>,
+}
+
+#[async_trait]
+impl SharedPeerLink for SharedRouterPeerLink {
+    async fn send(&self, data: Vec<u8>) -> Result<(), SharedTransportError> {
+        let dc = self
+            .peer
+            .data_channel
+            .lock()
+            .await
+            .as_ref()
+            .cloned()
+            .ok_or(SharedTransportError::NotConnected)?;
+        dc.send(&bytes::Bytes::from(data))
+            .await
+            .map(|_| ())
+            .map_err(|e| SharedTransportError::SendFailed(e.to_string()))
+    }
+
+    async fn recv(&self) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn try_recv(&self) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn is_open(&self) -> bool {
+        self.peer.has_data_channel()
+    }
+
+    async fn close(&self) {
+        let _ = self.peer.close().await;
+    }
+}
+
+struct SharedRouterPeerFactory {
+    my_peer_id: PeerId,
+    signaling_tx: mpsc::Sender<SignalingMessage>,
+    stun_servers: Vec<String>,
+    store: Option<Arc<dyn ContentStore>>,
+    state: Arc<WebRTCState>,
+    state_event_tx: mpsc::Sender<PeerStateEvent>,
+    nostr_relay: Option<Arc<NostrRelay>>,
+    mesh_frame_tx: mpsc::Sender<(PeerId, MeshNostrFrame)>,
+    peer_classifier: PeerClassifier,
+    peers: RwLock<HashMap<String, Arc<Peer>>>,
+}
+
+impl SharedRouterPeerFactory {
+    fn new(
+        my_peer_id: PeerId,
+        signaling_tx: mpsc::Sender<SignalingMessage>,
+        stun_servers: Vec<String>,
+        store: Option<Arc<dyn ContentStore>>,
+        state: Arc<WebRTCState>,
+        state_event_tx: mpsc::Sender<PeerStateEvent>,
+        nostr_relay: Option<Arc<NostrRelay>>,
+        mesh_frame_tx: mpsc::Sender<(PeerId, MeshNostrFrame)>,
+        peer_classifier: PeerClassifier,
+    ) -> Self {
+        Self {
+            my_peer_id,
+            signaling_tx,
+            stun_servers,
+            store,
+            state,
+            state_event_tx,
+            nostr_relay,
+            mesh_frame_tx,
+            peer_classifier,
+            peers: RwLock::new(HashMap::new()),
+        }
+    }
+
+    async fn register_peer(&self, peer_id: PeerId, direction: PeerDirection, peer: Arc<Peer>) {
+        let peer_key = peer_id.to_string();
+        let pool = (self.peer_classifier)(&peer_id.pubkey);
+        self.peers
+            .write()
+            .await
+            .insert(peer_key.clone(), peer.clone());
+
+        let mut peers = self.state.peers.write().await;
+        peers.insert(
+            peer_key,
+            PeerEntry {
+                peer_id,
+                direction,
+                state: ConnectionState::Connecting,
+                last_seen: Instant::now(),
+                peer: Some(MeshPeer::WebRtc(peer)),
+                pool,
+                transport: PeerTransport::WebRtc,
+                signal_paths: BTreeSet::from([PeerSignalPath::Relay]),
+                bytes_sent: 0,
+                bytes_received: 0,
+            },
+        );
+    }
+
+    async fn create_peer(
+        &self,
+        peer_id: PeerId,
+        direction: PeerDirection,
+    ) -> Result<Peer, SharedTransportError> {
+        Peer::new_with_store_and_events(
+            peer_id,
+            direction,
+            self.my_peer_id.clone(),
+            self.signaling_tx.clone(),
+            self.stun_servers.clone(),
+            self.store.clone(),
+            Some(self.state_event_tx.clone()),
+            self.nostr_relay.clone(),
+            Some(self.mesh_frame_tx.clone()),
+            Some(self.state.cashu_quotes.clone()),
+        )
+        .await
+        .map_err(|e| SharedTransportError::ConnectionFailed(e.to_string()))
+    }
+}
+
+#[async_trait]
+impl SharedPeerLinkFactory for SharedRouterPeerFactory {
+    async fn create_offer(
+        &self,
+        target_peer_id: &str,
+    ) -> Result<(Arc<dyn SharedPeerLink>, String), SharedTransportError> {
+        let target_peer = PeerId::from_string(target_peer_id).ok_or_else(|| {
+            SharedTransportError::ConnectionFailed(format!("invalid peer id {target_peer_id}"))
+        })?;
+        let peer = Arc::new(
+            self.create_peer(target_peer.clone(), PeerDirection::Outbound)
+                .await?,
+        );
+        peer.setup_handlers()
+            .await
+            .map_err(|e| SharedTransportError::ConnectionFailed(e.to_string()))?;
+        let offer = peer
+            .connect()
+            .await
+            .map_err(|e| SharedTransportError::ConnectionFailed(e.to_string()))?;
+        let sdp = offer
+            .get("sdp")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                SharedTransportError::ConnectionFailed("missing SDP in CLI peer offer".to_string())
+            })?
+            .to_string();
+        self.register_peer(target_peer, PeerDirection::Outbound, peer.clone())
+            .await;
+        Ok((Arc::new(SharedRouterPeerLink { peer }), sdp))
+    }
+
+    async fn accept_offer(
+        &self,
+        from_peer_id: &str,
+        offer_sdp: &str,
+    ) -> Result<(Arc<dyn SharedPeerLink>, String), SharedTransportError> {
+        let from_peer = PeerId::from_string(from_peer_id).ok_or_else(|| {
+            SharedTransportError::ConnectionFailed(format!("invalid peer id {from_peer_id}"))
+        })?;
+        let peer = Arc::new(
+            self.create_peer(from_peer.clone(), PeerDirection::Inbound)
+                .await?,
+        );
+        peer.setup_handlers()
+            .await
+            .map_err(|e| SharedTransportError::ConnectionFailed(e.to_string()))?;
+        let answer = peer
+            .handle_offer(serde_json::json!({ "type": "offer", "sdp": offer_sdp }))
+            .await
+            .map_err(|e| SharedTransportError::ConnectionFailed(e.to_string()))?;
+        let sdp = answer
+            .get("sdp")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                SharedTransportError::ConnectionFailed("missing SDP in CLI peer answer".to_string())
+            })?
+            .to_string();
+        self.register_peer(from_peer, PeerDirection::Inbound, peer.clone())
+            .await;
+        Ok((Arc::new(SharedRouterPeerLink { peer }), sdp))
+    }
+
+    async fn handle_answer(
+        &self,
+        target_peer_id: &str,
+        answer_sdp: &str,
+    ) -> Result<Arc<dyn SharedPeerLink>, SharedTransportError> {
+        let peer = self
+            .peers
+            .read()
+            .await
+            .get(target_peer_id)
+            .cloned()
+            .ok_or_else(|| {
+                SharedTransportError::ConnectionFailed(format!(
+                    "missing outbound peer for {target_peer_id}"
+                ))
+            })?;
+        peer.handle_answer(serde_json::json!({ "type": "answer", "sdp": answer_sdp }))
+            .await
+            .map_err(|e| SharedTransportError::ConnectionFailed(e.to_string()))?;
+        Ok(Arc::new(SharedRouterPeerLink { peer }))
+    }
+
+    async fn handle_candidate(
+        &self,
+        peer_id: &str,
+        candidate: SharedIceCandidate,
+    ) -> Result<(), SharedTransportError> {
+        let peer = self.peers.read().await.get(peer_id).cloned();
+        if let Some(peer) = peer {
+            peer.handle_candidate(serde_json::json!({
+                "candidate": candidate.candidate,
+                "sdpMLineIndex": candidate.sdp_m_line_index,
+                "sdpMid": candidate.sdp_mid,
+            }))
+            .await
+            .map_err(|e| SharedTransportError::ConnectionFailed(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn remove_peer(&self, peer_id: &str) -> Result<(), SharedTransportError> {
+        self.peers.write().await.remove(peer_id);
+        Ok(())
+    }
+}
 
 impl WebRTCState {
     pub fn new() -> Self {
@@ -950,6 +1243,7 @@ pub struct WebRTCManager {
     /// Channel for relayless mesh signaling frames received from peers.
     mesh_frame_tx: mpsc::Sender<(PeerId, MeshNostrFrame)>,
     mesh_frame_rx: Option<mpsc::Receiver<(PeerId, MeshNostrFrame)>>,
+    shared_router: Option<Arc<SharedProductionRouter>>,
     seen_frame_ids: Arc<Mutex<TimedSeenSet>>,
     seen_event_ids: Arc<Mutex<TimedSeenSet>>,
 }
@@ -993,6 +1287,7 @@ impl WebRTCManager {
             state_event_rx: Some(state_event_rx),
             mesh_frame_tx,
             mesh_frame_rx: Some(mesh_frame_rx),
+            shared_router: None,
             seen_frame_ids: Arc::new(Mutex::new(TimedSeenSet::new(
                 SEEN_FRAME_CAP,
                 SEEN_FRAME_TTL,
@@ -1188,42 +1483,11 @@ impl WebRTCManager {
         )
     }
 
-    /// Check if we can accept a peer in a given pool
-    fn can_accept_peer(&self, pool: PeerPool, pool_counts: &(usize, usize, usize, usize)) -> bool {
-        let (_, follows_active, _, other_active) = *pool_counts;
-        match pool {
-            PeerPool::Follows => follows_active < self.config.pools.follows.max_connections,
-            PeerPool::Other => other_active < self.config.pools.other.max_connections,
+    fn local_hello_message(&self) -> SignalingMessage {
+        SignalingMessage::Hello {
+            peer_id: self.my_peer_id.to_string(),
+            roots: Vec::new(),
         }
-    }
-
-    /// Check if a pool is satisfied
-    #[allow(dead_code)]
-    fn is_pool_satisfied(
-        &self,
-        pool: PeerPool,
-        pool_counts: &(usize, usize, usize, usize),
-    ) -> bool {
-        let (follows_connected, _, other_connected, _) = *pool_counts;
-        match pool {
-            PeerPool::Follows => {
-                follows_connected >= self.config.pools.follows.satisfied_connections
-            }
-            PeerPool::Other => other_connected >= self.config.pools.other.satisfied_connections,
-        }
-    }
-
-    /// Check if both pools are satisfied
-    #[allow(dead_code)]
-    fn is_satisfied(&self, pool_counts: &(usize, usize, usize, usize)) -> bool {
-        self.is_pool_satisfied(PeerPool::Follows, pool_counts)
-            && self.is_pool_satisfied(PeerPool::Other, pool_counts)
-    }
-
-    /// Check if we should initiate connection (tie-breaking)
-    /// Lower UUID initiates - same as iris-client/hashtree-ts
-    fn should_initiate(&self, their_uuid: &str) -> bool {
-        self.my_peer_id.uuid.as_str() < their_uuid
     }
 
     fn local_bus_max_peers(&self, source: &str) -> Option<usize> {
@@ -1383,6 +1647,43 @@ impl WebRTCManager {
             }
         }
 
+        if self.config.signaling_enabled {
+            let transport = Arc::new(RouterSignalingBridge::new(
+                self.my_peer_id.to_string(),
+                self.my_peer_id.pubkey.clone(),
+                self.signaling_tx.clone(),
+            ));
+            let factory = Arc::new(SharedRouterPeerFactory::new(
+                self.my_peer_id.clone(),
+                self.signaling_tx.clone(),
+                self.config.stun_servers.clone(),
+                self.store.clone(),
+                self.state.clone(),
+                self.state_event_tx.clone(),
+                self.nostr_relay.clone(),
+                self.mesh_frame_tx.clone(),
+                self.peer_classifier.clone(),
+            ));
+            let (classifier_tx, mut classifier_rx) = mpsc::channel::<SharedClassifyRequest>(32);
+            let classifier = self.peer_classifier.clone();
+            tokio::spawn(async move {
+                while let Some(request) = classifier_rx.recv().await {
+                    let _ = request.response.send(classifier(&request.pubkey));
+                }
+            });
+
+            let mut router = MeshRouter::new(
+                self.my_peer_id.to_string(),
+                self.my_peer_id.pubkey.clone(),
+                transport,
+                factory.clone(),
+                self.config.pools.clone(),
+                self.config.debug,
+            );
+            router.set_classifier(classifier_tx);
+            self.shared_router = Some(Arc::new(router));
+        }
+
         // Process incoming events and outgoing signaling messages
         let mut shutdown_rx = self.shutdown_rx.clone();
         // Cleanup interval - run every 30 seconds as a fallback (not for real-time sync)
@@ -1390,11 +1691,12 @@ impl WebRTCManager {
         let mut hello_ticker =
             tokio::time::interval(Duration::from_millis(self.config.hello_interval_ms));
         if self.config.signaling_enabled {
-            self.dispatch_signaling_message(
-                SignalingMessage::hello(&self.my_peer_id.uuid),
-                &relay_write_tx,
-            )
-            .await;
+            if let Some(shared_router) = self.shared_router.as_ref() {
+                let _ = shared_router.send_hello(Vec::new()).await;
+            } else {
+                self.dispatch_signaling_message(self.local_hello_message(), &relay_write_tx)
+                    .await;
+            }
         }
         loop {
             tokio::select! {
@@ -1405,7 +1707,10 @@ impl WebRTCManager {
                     }
                 }
                 Some((relay, event)) = event_rx.recv() => {
-                    if let Err(e) = self.handle_event(&relay, &event, &relay_write_tx).await {
+                    if let Err(e) = self
+                        .handle_event(&relay, &event, self.shared_router.as_ref())
+                        .await
+                    {
                         debug!("Error handling event from {}: {}", relay, e);
                     }
                 }
@@ -1417,13 +1722,15 @@ impl WebRTCManager {
                     self.handle_peer_state_event(event, &relay_write_tx).await;
                 }
                 Some((from_peer_id, frame)) = mesh_frame_rx.recv() => {
-                    self.handle_mesh_frame(from_peer_id, frame, &relay_write_tx).await;
+                    self.handle_mesh_frame(from_peer_id, frame).await;
                 }
                 _ = hello_ticker.tick(), if self.config.signaling_enabled => {
-                    self.dispatch_signaling_message(
-                        SignalingMessage::hello(&self.my_peer_id.uuid),
-                        &relay_write_tx,
-                    ).await;
+                    if let Some(shared_router) = self.shared_router.as_ref() {
+                        let _ = shared_router.send_hello(Vec::new()).await;
+                    } else {
+                        self.dispatch_signaling_message(self.local_hello_message(), &relay_write_tx)
+                            .await;
+                    }
                 }
                 _ = cleanup_interval.tick() => {
                     // Periodic cleanup of stale peers and state sync (fallback)
@@ -1641,12 +1948,7 @@ impl WebRTCManager {
         forwarded
     }
 
-    async fn handle_mesh_frame(
-        &self,
-        from_peer_id: PeerId,
-        frame: MeshNostrFrame,
-        relay_write_tx: &tokio::sync::broadcast::Sender<SignalingMessage>,
-    ) {
+    async fn handle_mesh_frame(&self, from_peer_id: PeerId, frame: MeshNostrFrame) {
         if let Err(reason) = validate_mesh_frame(&frame) {
             debug!(
                 "Ignoring mesh frame from {} (invalid: {})",
@@ -1680,7 +1982,10 @@ impl WebRTCManager {
 
         self.state.record_mesh_received();
 
-        if let Err(e) = self.handle_event("mesh", &event, relay_write_tx).await {
+        if let Err(e) = self
+            .handle_event("mesh", &event, self.shared_router.as_ref())
+            .await
+        {
             debug!(
                 "Error handling mesh event from {}: {}",
                 from_peer_id.short(),
@@ -1702,58 +2007,13 @@ impl WebRTCManager {
     /// gift wrapping with ephemeral keys for privacy.
     /// Hello messages use kind 25050 with #l: "hello" tag and peerId.
     async fn create_signaling_event(keys: &Keys, msg: &SignalingMessage) -> Result<nostr::Event> {
-        // Check if message has a recipient (needs gift wrapping)
-        if let Some(recipient_str) = msg.recipient() {
-            // Parse recipient to get their pubkey
-            if let Some(peer_id) = PeerId::from_string(recipient_str) {
-                let recipient_pubkey = PublicKey::from_hex(&peer_id.pubkey)?;
-
-                // Create seal with sender's actual pubkey (the "rumor")
-                let seal = serde_json::json!({
-                    "pubkey": keys.public_key().to_hex(),
-                    "kind": WEBRTC_KIND,
-                    "content": serde_json::to_string(msg)?,
-                    "tags": []
-                });
-
-                // Generate ephemeral keypair for the wrapper
-                let ephemeral_keys = Keys::generate();
-
-                // Encrypt the seal for the recipient using ephemeral key (NIP-44)
-                let encrypted_content = nip44::encrypt(
-                    ephemeral_keys.secret_key(),
-                    &recipient_pubkey,
-                    seal.to_string(),
-                    nip44::Version::V2,
-                )?;
-
-                // Create wrapper event with ephemeral key
-                let created_at = nostr::Timestamp::now();
-                let expiration = created_at + Duration::from_secs(5 * 60); // 5 minutes
-
-                let tags = vec![
-                    Tag::parse(&["p", &recipient_pubkey.to_hex()])?,
-                    Tag::parse(&["expiration", &expiration.as_u64().to_string()])?,
-                ];
-
-                let event =
-                    EventBuilder::new(Kind::Ephemeral(WEBRTC_KIND as u16), encrypted_content, tags)
-                        .to_event(&ephemeral_keys)?;
-
-                return Ok(event);
-            }
-        }
-
-        // Hello messages - kind 25050 with #l: "hello" tag and peerId
-        let tags = vec![
-            Tag::parse(&["l", HELLO_TAG])?,
-            Tag::parse(&["peerId", msg.peer_id()])?,
-        ];
-
-        let event =
-            EventBuilder::new(Kind::Ephemeral(WEBRTC_KIND as u16), "", tags).to_event(keys)?;
-
-        Ok(event)
+        encode_signaling_event(
+            keys,
+            msg.peer_id(),
+            msg,
+            Kind::Ephemeral(WEBRTC_KIND as u16),
+        )
+        .map_err(|e| anyhow::anyhow!(e.to_string()))
     }
 
     /// Handle an incoming event
@@ -1765,685 +2025,47 @@ impl WebRTCManager {
         &self,
         relay: &str,
         event: &nostr::Event,
-        relay_write_tx: &tokio::sync::broadcast::Sender<SignalingMessage>,
+        shared_router: Option<&Arc<SharedProductionRouter>>,
     ) -> Result<()> {
         if !self.config.signaling_enabled {
             return Ok(());
         }
 
-        // Must be kind 25050
-        if event.kind != Kind::Ephemeral(WEBRTC_KIND as u16) {
+        let Some(shared_router) = shared_router else {
             return Ok(());
-        }
-
-        // Helper to get tag value
-        let get_tag = |name: &str| -> Option<String> {
-            event.tags.iter().find_map(|tag| {
-                let v: Vec<String> = tag.clone().to_vec();
-                if v.len() >= 2 && v[0] == name {
-                    Some(v[1].clone())
-                } else {
-                    None
-                }
-            })
         };
 
-        // Check if this is a hello message (#l: "hello" tag)
-        let l_tag = get_tag("l");
-        if l_tag.as_deref() == Some(HELLO_TAG) {
-            let sender_pubkey = event.pubkey.to_hex();
+        let Some(msg) = decode_signaling_event(
+            event,
+            &self.my_peer_id.to_string(),
+            &self.keys.public_key().to_hex(),
+            &self.keys,
+        ) else {
+            return Ok(());
+        };
 
-            // Skip our own hello messages
-            if sender_pubkey == self.my_peer_id.pubkey {
+        if matches!(
+            msg,
+            SignalingMessage::Hello { .. } | SignalingMessage::Offer { .. }
+        ) {
+            let peers = self.state.peers.read().await;
+            if !self.can_track_local_bus_peer(relay, msg.peer_id(), &peers) {
                 return Ok(());
             }
-
-            if let Some(their_uuid) = get_tag("peerId") {
-                debug!("Received hello from {} via {}", &sender_pubkey[..8], relay);
-                self.handle_hello(&sender_pubkey, &their_uuid, relay, relay_write_tx)
-                    .await?;
-            }
-            return Ok(());
         }
-
-        // Check if this is a directed message for us (#p tag with our pubkey)
-        let p_tag = get_tag("p");
-        if p_tag.as_deref() != Some(&self.keys.public_key().to_hex()) {
-            // Not for us - ignore silently
-            return Ok(());
-        }
-
-        // Gift-wrapped directed message - decrypt using our key and ephemeral sender's pubkey
-        if event.content.is_empty() {
-            return Ok(());
-        }
-
-        // Try to unwrap the gift - decrypt with our key and the ephemeral sender's pubkey
-        let seal: serde_json::Value =
-            match nip44::decrypt(self.keys.secret_key(), &event.pubkey, &event.content) {
-                Ok(plaintext) => match serde_json::from_str(&plaintext) {
-                    Ok(v) => v,
-                    Err(_) => return Ok(()),
-                },
-                Err(_) => {
-                    // Can't decrypt - not for us or invalid
-                    return Ok(());
-                }
-            };
-
-        // Extract the actual sender's pubkey and content from the seal
-        let sender_pubkey = seal
-            .get("pubkey")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing pubkey in seal"))?;
-
-        // Skip our own messages
-        if sender_pubkey == self.my_peer_id.pubkey {
-            return Ok(());
-        }
-
-        let content = seal
-            .get("content")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing content in seal"))?;
-
-        let raw_msg: serde_json::Value = serde_json::from_str(content)?;
-        let msg_type = raw_msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-        // Support hashtree-ts format: { type, peerId, targetPeerId, sdp/candidate/candidates }
-        if raw_msg.get("targetPeerId").is_some() {
-            let target_peer = raw_msg
-                .get("targetPeerId")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if target_peer != self.my_peer_id.to_string() {
-                return Ok(());
-            }
-
-            let peer_id = raw_msg.get("peerId").and_then(|v| v.as_str()).unwrap_or("");
-            let their_uuid = peer_id.split(':').nth(1).unwrap_or(peer_id);
-
-            match msg_type {
-                "offer" => {
-                    let sdp = raw_msg
-                        .get("sdp")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| anyhow::anyhow!("Missing SDP in offer"))?;
-                    let offer = serde_json::json!({ "type": "offer", "sdp": sdp });
-                    self.handle_offer(sender_pubkey, their_uuid, offer, relay, relay_write_tx)
-                        .await?;
-                }
-                "answer" => {
-                    let sdp = raw_msg
-                        .get("sdp")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| anyhow::anyhow!("Missing SDP in answer"))?;
-                    let answer = serde_json::json!({ "type": "answer", "sdp": sdp });
-                    self.handle_answer(sender_pubkey, their_uuid, answer)
-                        .await?;
-                }
-                "candidate" => {
-                    let candidate = raw_msg
-                        .get("candidate")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if !candidate.is_empty() {
-                        let candidate_json = serde_json::json!({
-                            "candidate": candidate,
-                            "sdpMid": raw_msg.get("sdpMid"),
-                            "sdpMLineIndex": raw_msg.get("sdpMLineIndex"),
-                        });
-                        self.handle_candidate(sender_pubkey, their_uuid, candidate_json)
-                            .await?;
-                    }
-                }
-                "candidates" => {
-                    let candidates = raw_msg
-                        .get("candidates")
-                        .and_then(|v| v.as_array())
-                        .map(|entries| {
-                            entries
-                                .iter()
-                                .filter_map(|entry| {
-                                    entry
-                                        .get("candidate")
-                                        .and_then(|v| v.as_str())
-                                        .or_else(|| entry.as_str())
-                                        .map(|candidate_str| {
-                                            serde_json::json!({
-                                                "candidate": candidate_str,
-                                                "sdpMid": entry.get("sdpMid"),
-                                                "sdpMLineIndex": entry.get("sdpMLineIndex"),
-                                            })
-                                        })
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    self.handle_candidates(sender_pubkey, their_uuid, candidates)
-                        .await?;
-                }
-                _ => {}
-            }
-
-            return Ok(());
-        }
-
-        let msg: SignalingMessage = serde_json::from_value(raw_msg)?;
 
         debug!(
-            "Received {} from {} via {} (gift-wrapped)",
+            "Received {} from {} via {}",
             msg.msg_type(),
-            &sender_pubkey[..8],
+            msg.peer_id(),
             relay
         );
-
-        match msg {
-            SignalingMessage::Hello { .. } => {
-                // Hello messages should come via tags, not gift wrap
-                return Ok(());
-            }
-            SignalingMessage::Offer {
-                recipient,
-                peer_id: their_uuid,
-                offer,
-            } => {
-                if recipient != self.my_peer_id.to_string() {
-                    return Ok(()); // Not for us
-                }
-                if let Err(e) = self
-                    .handle_offer(sender_pubkey, &their_uuid, offer, relay, relay_write_tx)
-                    .await
-                {
-                    error!(
-                        "handle_offer FAILED: sender={}, uuid={}, error={:?}",
-                        &sender_pubkey[..8.min(sender_pubkey.len())],
-                        their_uuid,
-                        e
-                    );
-                    return Err(e);
-                }
-            }
-            SignalingMessage::Answer {
-                recipient,
-                peer_id: their_uuid,
-                answer,
-            } => {
-                if recipient != self.my_peer_id.to_string() {
-                    return Ok(());
-                }
-                self.handle_answer(sender_pubkey, &their_uuid, answer)
-                    .await?;
-            }
-            SignalingMessage::Candidate {
-                recipient,
-                peer_id: their_uuid,
-                candidate,
-            } => {
-                if recipient != self.my_peer_id.to_string() {
-                    return Ok(());
-                }
-                self.handle_candidate(sender_pubkey, &their_uuid, candidate)
-                    .await?;
-            }
-            SignalingMessage::Candidates {
-                recipient,
-                peer_id: their_uuid,
-                candidates,
-            } => {
-                if recipient != self.my_peer_id.to_string() {
-                    return Ok(());
-                }
-                self.handle_candidates(sender_pubkey, &their_uuid, candidates)
-                    .await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Handle incoming hello message
-    async fn handle_hello(
-        &self,
-        sender_pubkey: &str,
-        their_uuid: &str,
-        source: &str,
-        relay_write_tx: &tokio::sync::broadcast::Sender<SignalingMessage>,
-    ) -> Result<()> {
-        let full_peer_id = PeerId::new(sender_pubkey.to_string(), Some(their_uuid.to_string()));
-        let peer_key = full_peer_id.to_string();
-        let mut already_discovered = false;
-        let mut signal_paths = BTreeSet::from([PeerSignalPath::from_source_name(source)]);
-
-        // Check if we already have this peer
-        {
-            let peers = self.state.peers.read().await;
-            if !self.can_track_local_bus_peer(source, &peer_key, &peers) {
-                debug!(
-                    "Ignoring hello from {} via {} - local bus peer limit reached",
-                    full_peer_id.short(),
-                    source
-                );
-                return Ok(());
-            }
-            if let Some(entry) = peers.get(&peer_key) {
-                // Already connected or connecting, just update last_seen
-                if entry.state == ConnectionState::Connected
-                    || entry.state == ConnectionState::Connecting
-                {
-                    return Ok(());
-                }
-                already_discovered = true;
-                signal_paths.extend(entry.signal_paths.iter().copied());
-            }
-        }
-
-        // Classify the peer into a pool
-        let pool = (self.peer_classifier)(sender_pubkey);
-
-        // Check pool limits
-        let pool_counts = self.get_pool_counts().await;
-        if !self.can_accept_peer(pool, &pool_counts) {
-            debug!(
-                "Ignoring hello from {} - pool {:?} is full",
-                full_peer_id.short(),
-                pool
-            );
-            return Ok(());
-        }
-
-        // Decide if we should initiate based on tie-breaking
-        let should_initiate = self.should_initiate(their_uuid);
-
-        // If pool is already satisfied, don't initiate new outbound connections
-        // This reserves space for inbound connections
-        let pool_satisfied = self.is_pool_satisfied(pool, &pool_counts);
-        let will_initiate = should_initiate && !pool_satisfied;
-
-        info!(
-            "Discovered peer: {} (pool: {:?}, initiate: {}, pool_satisfied: {})",
-            full_peer_id.short(),
-            pool,
-            will_initiate,
-            pool_satisfied
-        );
-
-        // If we're not initiating and pool is satisfied, don't even add to discovered
-        // (we won't accept their offer either since pool check happens in handle_offer)
-        if !will_initiate && pool_satisfied {
-            debug!(
-                "Pool {:?} is satisfied, not tracking peer {}",
-                pool,
-                full_peer_id.short()
-            );
-            return Ok(());
-        }
-
-        // Create peer entry with pool assignment
-        {
-            let mut peers = self.state.peers.write().await;
-            peers.insert(
-                peer_key.clone(),
-                PeerEntry {
-                    peer_id: full_peer_id.clone(),
-                    direction: if will_initiate {
-                        PeerDirection::Outbound
-                    } else {
-                        PeerDirection::Inbound
-                    },
-                    state: ConnectionState::Discovered,
-                    last_seen: Instant::now(),
-                    peer: None,
-                    pool,
-                    transport: PeerTransport::WebRtc,
-                    signal_paths,
-                    bytes_sent: 0,
-                    bytes_received: 0,
-                },
-            );
-        }
-
-        // If we discovered a peer but are not the initiator, send one immediate hello
-        // to accelerate reciprocal discovery over relayless mesh paths.
-        if !will_initiate && !already_discovered {
-            self.dispatch_signaling_message(
-                SignalingMessage::hello(&self.my_peer_id.uuid),
-                relay_write_tx,
-            )
-            .await;
-        }
-
-        // If we should initiate, create offer
-        if will_initiate {
-            self.initiate_connection(&full_peer_id, pool, relay_write_tx)
-                .await?;
-        }
-
-        Ok(())
-    }
-
-    /// Initiate a connection to a peer (create and send offer)
-    async fn initiate_connection(
-        &self,
-        peer_id: &PeerId,
-        pool: PeerPool,
-        relay_write_tx: &tokio::sync::broadcast::Sender<SignalingMessage>,
-    ) -> Result<()> {
-        let peer_key = peer_id.to_string();
-
-        info!(
-            "Initiating connection to {} (pool: {:?})",
-            peer_id.short(),
-            pool
-        );
-
-        // Create peer connection with content store and state events
-        let peer = Peer::new_with_store_and_events(
-            peer_id.clone(),
-            PeerDirection::Outbound,
-            self.my_peer_id.clone(),
-            self.signaling_tx.clone(),
-            self.config.stun_servers.clone(),
-            self.store.clone(),
-            Some(self.state_event_tx.clone()),
-            self.nostr_relay.clone(),
-            Some(self.mesh_frame_tx.clone()),
-            Some(self.state.cashu_quotes.clone()),
-        )
-        .await?;
-
-        peer.setup_handlers().await?;
-
-        // Create offer
-        let offer = peer.connect().await?;
-
-        // Update state
-        {
-            let mut peers = self.state.peers.write().await;
-            if let Some(entry) = peers.get_mut(&peer_key) {
-                entry.state = ConnectionState::Connecting;
-                entry.peer = Some(MeshPeer::WebRtc(Arc::new(peer)));
-                entry.pool = pool;
-            }
-        }
-
-        // Send offer
-        let offer_msg = SignalingMessage::Offer {
-            offer,
-            recipient: peer_id.to_string(),
-            peer_id: self.my_peer_id.uuid.clone(),
-        };
-        self.dispatch_signaling_message(offer_msg, relay_write_tx)
-            .await;
-
-        info!("Sent offer to {}", peer_id.short());
-
-        Ok(())
-    }
-
-    /// Handle incoming offer
-    async fn handle_offer(
-        &self,
-        sender_pubkey: &str,
-        their_uuid: &str,
-        offer: serde_json::Value,
-        source: &str,
-        relay_write_tx: &tokio::sync::broadcast::Sender<SignalingMessage>,
-    ) -> Result<()> {
-        debug!(
-            "handle_offer ENTRY: sender={}, uuid={}",
-            &sender_pubkey[..8.min(sender_pubkey.len())],
-            their_uuid
-        );
-        let full_peer_id = PeerId::new(sender_pubkey.to_string(), Some(their_uuid.to_string()));
-        let peer_key = full_peer_id.to_string();
-        let mut signal_paths = BTreeSet::from([PeerSignalPath::from_source_name(source)]);
-
-        // Classify the peer into a pool
-        let pool = (self.peer_classifier)(sender_pubkey);
-
-        info!(
-            "Received offer from {} (pool: {:?})",
-            full_peer_id.short(),
-            pool
-        );
-
-        // Check if we already have this peer with an actual connection
-        {
-            let peers = self.state.peers.read().await;
-            if !self.can_track_local_bus_peer(source, &peer_key, &peers) {
-                warn!(
-                    "Rejecting offer from {} via {} - local bus peer limit reached",
-                    full_peer_id.short(),
-                    source
-                );
-                return Ok(());
-            }
-            debug!(
-                "Checking for existing peer, peer_key: {}, known_peers: {}",
-                peer_key,
-                peers.len()
-            );
-            if let Some(entry) = peers.get(&peer_key) {
-                // Only skip if we have an actual peer connection (not just discovered)
-                if entry.peer.is_some() {
-                    debug!(
-                        "Already have peer {} with connection, skipping offer",
-                        full_peer_id.short()
-                    );
-                    return Ok(());
-                }
-                signal_paths.extend(entry.signal_paths.iter().copied());
-                debug!(
-                    "Peer {} exists but has no connection, proceeding",
-                    full_peer_id.short()
-                );
-            } else {
-                debug!(
-                    "Peer {} not found in peers map, will create new entry",
-                    full_peer_id.short()
-                );
-            }
-        }
-
-        // Check pool limits
-        let pool_counts = self.get_pool_counts().await;
-        debug!(
-            "Pool counts: {:?}, checking can_accept_peer for {:?}",
-            pool_counts, pool
-        );
-        if !self.can_accept_peer(pool, &pool_counts) {
-            warn!(
-                "Rejecting offer from {} - pool {:?} is full",
-                full_peer_id.short(),
-                pool
-            );
-            return Ok(());
-        }
-        debug!("Pool check passed for {}", full_peer_id.short());
-
-        // Create peer connection with content store and state events
-        debug!("Creating peer connection for {}", full_peer_id.short());
-        let peer = Peer::new_with_store_and_events(
-            full_peer_id.clone(),
-            PeerDirection::Inbound,
-            self.my_peer_id.clone(),
-            self.signaling_tx.clone(),
-            self.config.stun_servers.clone(),
-            self.store.clone(),
-            Some(self.state_event_tx.clone()),
-            self.nostr_relay.clone(),
-            Some(self.mesh_frame_tx.clone()),
-            Some(self.state.cashu_quotes.clone()),
-        )
-        .await?;
-        debug!("Peer connection created for {}", full_peer_id.short());
-
-        peer.setup_handlers().await?;
-        debug!("Handlers set up for {}", full_peer_id.short());
-
-        // Handle offer and create answer
-        let answer = peer.handle_offer(offer).await?;
-        debug!("Answer created for {}", full_peer_id.short());
-
-        // Update state
-        {
-            let mut peers = self.state.peers.write().await;
-            peers.insert(
-                peer_key,
-                PeerEntry {
-                    peer_id: full_peer_id.clone(),
-                    direction: PeerDirection::Inbound,
-                    state: ConnectionState::Connecting,
-                    last_seen: Instant::now(),
-                    peer: Some(MeshPeer::WebRtc(Arc::new(peer))),
-                    pool,
-                    transport: PeerTransport::WebRtc,
-                    signal_paths,
-                    bytes_sent: 0,
-                    bytes_received: 0,
-                },
-            );
-        }
-
-        // Send answer
-        // Note: peer_id is just the UUID, not full pubkey:uuid
-        // The recipient will construct full peer_id from sender pubkey + this UUID
-        let answer_msg = SignalingMessage::Answer {
-            answer,
-            recipient: full_peer_id.to_string(),
-            peer_id: self.my_peer_id.uuid.clone(),
-        };
-        self.dispatch_signaling_message(answer_msg, relay_write_tx)
-            .await;
-        info!("Sent answer to {}", full_peer_id.short());
-
-        Ok(())
-    }
-
-    /// Handle incoming answer
-    async fn handle_answer(
-        &self,
-        sender_pubkey: &str,
-        their_uuid: &str,
-        answer: serde_json::Value,
-    ) -> Result<()> {
-        let full_peer_id = PeerId::new(sender_pubkey.to_string(), Some(their_uuid.to_string()));
-        let peer_key = full_peer_id.to_string();
-
-        info!("Received answer from {}", full_peer_id.short());
-
-        let maybe_peer = {
-            let peers = self.state.peers.read().await;
-            peers.get(&peer_key).and_then(|entry| {
-                // Skip if already connected - duplicate answers from multiple relays
-                if entry.state == ConnectionState::Connected {
-                    debug!(
-                        "Ignoring duplicate answer from {} - already connected",
-                        full_peer_id.short()
-                    );
-                    return None;
-                }
-                entry
-                    .peer
-                    .as_ref()
-                    .and_then(|peer| peer.as_webrtc().cloned())
-            })
-        };
-
-        if let Some(webrtc_peer) = maybe_peer {
-            // Skip if already connected - duplicate answers from multiple relays
-            use webrtc::peer_connection::signaling_state::RTCSignalingState;
-            let signaling_state = webrtc_peer.signaling_state();
-            if signaling_state != RTCSignalingState::HaveLocalOffer {
-                debug!(
-                    "Ignoring answer from {} - signaling state is {:?}, not HaveLocalOffer",
-                    full_peer_id.short(),
-                    signaling_state
-                );
-                return Ok(());
-            }
-            webrtc_peer.handle_answer(answer).await?;
-            info!("Applied answer from {}", full_peer_id.short());
-        } else {
-            let peers = self.state.peers.read().await;
-            if let Some(entry) = peers.get(&peer_key) {
-                if entry.peer.is_some() {
-                    debug!(
-                        "Peer {} does not use answer signaling",
-                        full_peer_id.short()
-                    );
-                } else {
-                    debug!("Peer {} has no connection object", full_peer_id.short());
-                }
-            } else {
-                debug!("No peer found for key: {}", peer_key);
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Handle incoming ICE candidate
-    async fn handle_candidate(
-        &self,
-        sender_pubkey: &str,
-        their_uuid: &str,
-        candidate: serde_json::Value,
-    ) -> Result<()> {
-        let full_peer_id = PeerId::new(sender_pubkey.to_string(), Some(their_uuid.to_string()));
-        let peer_key = full_peer_id.to_string();
-
-        info!("Received ICE candidate from {}", full_peer_id.short());
-
-        let maybe_peer = {
-            let peers = self.state.peers.read().await;
-            peers.get(&peer_key).and_then(|entry| {
-                entry
-                    .peer
-                    .as_ref()
-                    .and_then(|peer| peer.as_webrtc().cloned())
-            })
-        };
-        if let Some(peer) = maybe_peer {
-            peer.handle_candidate(candidate).await?;
-        }
-
-        Ok(())
-    }
-
-    /// Handle batched ICE candidates
-    async fn handle_candidates(
-        &self,
-        sender_pubkey: &str,
-        their_uuid: &str,
-        candidates: Vec<serde_json::Value>,
-    ) -> Result<()> {
-        let full_peer_id = PeerId::new(sender_pubkey.to_string(), Some(their_uuid.to_string()));
-        let peer_key = full_peer_id.to_string();
-
-        debug!(
-            "Received {} candidates from {}",
-            candidates.len(),
-            full_peer_id.short()
-        );
-
-        let maybe_peer = {
-            let peers = self.state.peers.read().await;
-            peers.get(&peer_key).and_then(|entry| {
-                entry
-                    .peer
-                    .as_ref()
-                    .and_then(|peer| peer.as_webrtc().cloned())
-            })
-        };
-        if let Some(peer) = maybe_peer {
-            for candidate in candidates {
-                if let Err(e) = peer.handle_candidate(candidate).await {
-                    debug!("Failed to add candidate: {}", e);
-                }
-            }
-        }
+        let peer_id = msg.peer_id().to_string();
+        shared_router
+            .handle_message(msg)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        remember_peer_signal_path(self.state.as_ref(), &peer_id, relay).await;
 
         Ok(())
     }
@@ -2472,11 +2094,12 @@ impl WebRTCManager {
                 }
                 drop(peers);
                 if emit_hello {
-                    self.dispatch_signaling_message(
-                        SignalingMessage::hello(&self.my_peer_id.uuid),
-                        relay_write_tx,
-                    )
-                    .await;
+                    if let Some(shared_router) = self.shared_router.as_ref() {
+                        let _ = shared_router.send_hello(Vec::new()).await;
+                    } else {
+                        self.dispatch_signaling_message(self.local_hello_message(), relay_write_tx)
+                            .await;
+                    }
                 }
             }
             PeerStateEvent::Failed(peer_id) => {
@@ -2501,6 +2124,11 @@ impl WebRTCManager {
                         let _ = peer.close().await;
                     }
                 }
+                if let Some(shared_router) = self.shared_router.as_ref() {
+                    if let Some(channel) = shared_router.remove_peer(&peer_key).await {
+                        channel.close().await;
+                    }
+                }
             }
             PeerStateEvent::Disconnected(peer_id) => {
                 let peer_key = peer_id.to_string();
@@ -2519,6 +2147,11 @@ impl WebRTCManager {
                     // Close the peer connection if it exists
                     if let Some(peer) = entry.peer {
                         let _ = peer.close().await;
+                    }
+                }
+                if let Some(shared_router) = self.shared_router.as_ref() {
+                    if let Some(channel) = shared_router.remove_peer(&peer_key).await {
+                        channel.close().await;
                     }
                 }
             }
@@ -2877,7 +2510,10 @@ mod tests {
         let (relay_tx, _) = tokio::sync::broadcast::channel(4);
         manager
             .dispatch_signaling_message(
-                SignalingMessage::hello(&manager.my_peer_id.uuid),
+                SignalingMessage::Hello {
+                    peer_id: manager.my_peer_id.to_string(),
+                    roots: Vec::new(),
+                },
                 &relay_tx,
             )
             .await;

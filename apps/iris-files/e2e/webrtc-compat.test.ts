@@ -148,6 +148,7 @@ test.describe('WebRTC Signaling Protocol Compatibility', () => {
     const parsedOffer = JSON.parse(JSON.stringify(offerMsg)) as SignalingMessage;
     expect(parsedOffer.type).toBe('offer');
     expect((parsedOffer as OfferMessage).targetPeerId).toBe(peerId2);
+    expect((parsedOffer as any).recipient).toBeUndefined();
 
     console.log('All signaling message formats are valid');
   });

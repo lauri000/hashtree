@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use thiserror::Error;
 
-use crate::types::SignalingMessage;
+use crate::types::{IceCandidate, SignalingMessage};
 
 /// Errors from signaling and peer-link transport operations.
 #[derive(Debug, Error, Clone)]
@@ -110,6 +110,32 @@ pub trait PeerLinkFactory: Send + Sync {
         target_peer_id: &str,
         answer_sdp: &str,
     ) -> Result<Arc<dyn PeerLink>, TransportError>;
+
+    /// Apply a trickle candidate update for an in-flight link, if relevant.
+    async fn handle_candidate(
+        &self,
+        _peer_id: &str,
+        _candidate: IceCandidate,
+    ) -> Result<(), TransportError> {
+        Ok(())
+    }
+
+    /// Apply a batch of trickle candidate updates.
+    async fn handle_candidates(
+        &self,
+        peer_id: &str,
+        candidates: Vec<IceCandidate>,
+    ) -> Result<(), TransportError> {
+        for candidate in candidates {
+            self.handle_candidate(peer_id, candidate).await?;
+        }
+        Ok(())
+    }
+
+    /// Drop any factory-owned state for a peer that has been removed.
+    async fn remove_peer(&self, _peer_id: &str) -> Result<(), TransportError> {
+        Ok(())
+    }
 }
 
 pub use PeerLinkFactory as PeerConnectionFactory;

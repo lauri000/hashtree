@@ -348,8 +348,10 @@ test.describe('rust Cross-Language', () => {
             const msg = JSON.parse(content);
 
             if (msg.type === 'offer') {
-              const target = typeof msg.targetPeerId === 'string' ? msg.targetPeerId : msg.recipient;
-              const recipientPk = typeof target === 'string' ? target.split(':')[0] : null;
+              if (typeof msg.targetPeerId !== 'string' || 'recipient' in msg) {
+                throw new Error(`unexpected rust signaling shape: ${content}`);
+              }
+              const recipientPk = msg.targetPeerId.split(':')[0] ?? null;
               if (recipientPk === tsPk) {
                 console.log(`Received OFFER from ${senderPubkey.slice(0, 16)}...`);
                 if (rsPeerPubkey && senderPubkey === rsPeerPubkey) {
@@ -462,8 +464,10 @@ test.describe('rust Cross-Language', () => {
             }
             const msg = JSON.parse(content);
             if (msg.type === 'offer') {
-              const target = typeof msg.targetPeerId === 'string' ? msg.targetPeerId : msg.recipient;
-              const recipientPk = typeof target === 'string' ? target.split(':')[0] : null;
+              if (typeof msg.targetPeerId !== 'string' || 'recipient' in msg) {
+                throw new Error(`unexpected rust signaling shape: ${content}`);
+              }
+              const recipientPk = msg.targetPeerId.split(':')[0] ?? null;
               if (recipientPk === tsPk && senderPubkey === rsPeerPubkey) {
                 receivedOfferFromRs = true;
                 console.log('*** RECEIVED OFFER FROM HASHTREE-RS ***');

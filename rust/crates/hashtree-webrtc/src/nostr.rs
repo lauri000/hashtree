@@ -18,6 +18,129 @@ use crate::types::{SignalingMessage, NOSTR_KIND_HASHTREE};
 /// Hello tag for broadcast peer discovery
 const HELLO_TAG: &str = "hello";
 
+/// Decode a Nostr signaling event into a mesh signaling message.
+pub fn decode_signaling_event(
+    event: &Event,
+    my_peer_id: &str,
+    my_pubkey: &str,
+    keys: &Keys,
+) -> Option<SignalingMessage> {
+    if event.kind != Kind::Custom(NOSTR_KIND_HASHTREE)
+        && event.kind != Kind::Ephemeral(NOSTR_KIND_HASHTREE)
+    {
+        return None;
+    }
+
+    let get_tag = |name: &str| -> Option<String> {
+        event.tags.iter().find_map(|tag| {
+            let v: Vec<String> = tag.clone().to_vec();
+            if v.len() >= 2 && v[0] == name {
+                Some(v[1].clone())
+            } else {
+                None
+            }
+        })
+    };
+
+    if get_tag("l").as_deref() == Some(HELLO_TAG) {
+        let sender_pubkey = event.pubkey.to_hex();
+        if sender_pubkey == my_pubkey {
+            return None;
+        }
+
+        return get_tag("peerId").map(|their_uuid| SignalingMessage::Hello {
+            peer_id: format!("{sender_pubkey}:{their_uuid}"),
+            roots: vec![],
+        });
+    }
+
+    if get_tag("p").as_deref() != Some(my_pubkey) || event.content.is_empty() {
+        return None;
+    }
+
+    let seal: serde_json::Value =
+        match nip44::decrypt(keys.secret_key(), &event.pubkey, &event.content) {
+            Ok(plaintext) => serde_json::from_str(&plaintext).ok()?,
+            Err(_) => return None,
+        };
+
+    let sender_pubkey = seal.get("pubkey").and_then(|v| v.as_str())?;
+    if sender_pubkey == my_pubkey {
+        return None;
+    }
+
+    let content = seal.get("content").and_then(|v| v.as_str())?;
+    let msg: SignalingMessage = serde_json::from_str(content).ok()?;
+    let claimed_pubkey = msg.peer_id().split(':').next().unwrap_or_default();
+    if claimed_pubkey.is_empty() || claimed_pubkey != sender_pubkey {
+        return None;
+    }
+
+    msg.is_for(my_peer_id).then_some(msg)
+}
+
+/// Encode a mesh signaling message as a Nostr event.
+pub fn encode_signaling_event(
+    keys: &Keys,
+    local_peer_id: &str,
+    msg: &SignalingMessage,
+    kind: Kind,
+) -> Result<Event, TransportError> {
+    let local_pubkey = keys.public_key().to_hex();
+
+    if let Some(target_peer_id) = msg.target_peer_id() {
+        let recipient_pubkey = target_peer_id.split(':').next().ok_or_else(|| {
+            TransportError::SendFailed("Invalid target peer ID format".to_string())
+        })?;
+        let recipient_pk = PublicKey::from_hex(recipient_pubkey)
+            .map_err(|e| TransportError::SendFailed(format!("Invalid recipient pubkey: {e}")))?;
+
+        let seal = serde_json::json!({
+            "pubkey": local_pubkey,
+            "kind": NOSTR_KIND_HASHTREE,
+            "content": serde_json::to_string(msg)
+                .map_err(|e| TransportError::SendFailed(e.to_string()))?,
+            "tags": []
+        });
+
+        let ephemeral_keys = Keys::generate();
+        let encrypted_content = nip44::encrypt(
+            ephemeral_keys.secret_key(),
+            &recipient_pk,
+            seal.to_string(),
+            nip44::Version::V2,
+        )
+        .map_err(|e| TransportError::SendFailed(format!("Encryption failed: {e}")))?;
+
+        let expiration = Timestamp::now() + Duration::from_secs(5 * 60);
+        let tags = vec![Tag::public_key(recipient_pk), Tag::expiration(expiration)];
+
+        return EventBuilder::new(kind, encrypted_content, tags)
+            .to_event(&ephemeral_keys)
+            .map_err(|e| TransportError::SendFailed(e.to_string()));
+    }
+
+    let our_uuid = local_peer_id.split(':').nth(1).unwrap_or(local_peer_id);
+    let expiration = Timestamp::now() + Duration::from_secs(5 * 60);
+    let tags = vec![
+        Tag::custom(
+            nostr_sdk::TagKind::SingleLetter(nostr_sdk::SingleLetterTag::lowercase(
+                nostr_sdk::Alphabet::L,
+            )),
+            vec![HELLO_TAG.to_string()],
+        ),
+        Tag::custom(
+            nostr_sdk::TagKind::Custom(std::borrow::Cow::Borrowed("peerId")),
+            vec![our_uuid.to_string()],
+        ),
+        Tag::expiration(expiration),
+    ];
+
+    EventBuilder::new(kind, "", tags)
+        .to_event(keys)
+        .map_err(|e| TransportError::SendFailed(format!("Failed to sign hello: {e}")))
+}
+
 /// Nostr websocket signaling transport for production use.
 pub struct NostrRelayTransport {
     /// Our peer ID (pubkey:uuid)
@@ -82,18 +205,21 @@ impl NostrRelayTransport {
         let peer_id = self.peer_id.clone();
         let pubkey = self.pubkey.clone();
         let keys = self.keys.clone();
-        let debug = self.debug;
-
+        let debug_enabled = self.debug;
         // Get notifications receiver
         let mut notifications = self.client.notifications();
 
         tokio::spawn(async move {
-            debug!("[NostrTransport] Event handler started");
+            if debug_enabled {
+                debug!("[NostrTransport] Event handler started");
+            }
             loop {
                 match notifications.recv().await {
                     Ok(notification) => {
                         if let RelayPoolNotification::Event { event, .. } = notification {
-                            if event.kind == Kind::Custom(NOSTR_KIND_HASHTREE) {
+                            if event.kind == Kind::Custom(NOSTR_KIND_HASHTREE)
+                                || event.kind == Kind::Ephemeral(NOSTR_KIND_HASHTREE)
+                            {
                                 info!(
                                     "[NostrTransport] Received kind={} event from {}",
                                     NOSTR_KIND_HASHTREE,
@@ -101,17 +227,11 @@ impl NostrRelayTransport {
                                 );
                                 // Handle the event - may be hello (plain) or directed (encrypted)
                                 if let Some(msg) =
-                                    Self::handle_event(&event, &peer_id, &pubkey, &keys, debug)
+                                    decode_signaling_event(&event, &peer_id, &pubkey, &keys)
                                 {
                                     info!(
                                         "[NostrTransport] Forwarding message to recv channel: {}",
-                                        match &msg {
-                                            SignalingMessage::Hello { .. } => "hello",
-                                            SignalingMessage::Offer { .. } => "offer",
-                                            SignalingMessage::Answer { .. } => "answer",
-                                            SignalingMessage::Candidate { .. } => "candidate",
-                                            SignalingMessage::Candidates { .. } => "candidates",
-                                        }
+                                        msg.msg_type()
                                     );
                                     let _ = msg_tx.send(msg);
                                 }
@@ -119,7 +239,9 @@ impl NostrRelayTransport {
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => {
-                        debug!("[NostrTransport] Event handler closed");
+                        if debug_enabled {
+                            debug!("[NostrTransport] Event handler closed");
+                        }
                         break;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -129,106 +251,6 @@ impl NostrRelayTransport {
                 }
             }
         });
-    }
-
-    /// Handle incoming event - returns SignalingMessage if valid and for us
-    fn handle_event(
-        event: &Event,
-        my_peer_id: &str,
-        my_pubkey: &str,
-        keys: &Keys,
-        _debug: bool,
-    ) -> Option<SignalingMessage> {
-        // Helper to get tag value
-        let get_tag = |name: &str| -> Option<String> {
-            event.tags.iter().find_map(|tag| {
-                let v: Vec<String> = tag.clone().to_vec();
-                if v.len() >= 2 && v[0] == name {
-                    Some(v[1].clone())
-                } else {
-                    None
-                }
-            })
-        };
-
-        // Check if this is a hello message (#l: "hello" tag)
-        if get_tag("l").as_deref() == Some(HELLO_TAG) {
-            let sender_pubkey = event.pubkey.to_hex();
-
-            // Skip our own hello messages
-            if sender_pubkey == my_pubkey {
-                return None;
-            }
-
-            if let Some(their_uuid) = get_tag("peerId") {
-                let their_peer_id = format!("{}:{}", sender_pubkey, their_uuid);
-                info!(
-                    "[NostrTransport] Received hello from {}",
-                    &sender_pubkey[..8.min(sender_pubkey.len())]
-                );
-                return Some(SignalingMessage::Hello {
-                    peer_id: their_peer_id,
-                    roots: vec![],
-                });
-            }
-            return None;
-        }
-
-        // Check if this is a directed message for us (#p tag with our pubkey)
-        let p_tag = get_tag("p");
-        if p_tag.as_deref() != Some(my_pubkey) {
-            // Not for us - ignore silently
-            return None;
-        }
-
-        // Gift-wrapped directed message - decrypt using our key and ephemeral sender's pubkey
-        if event.content.is_empty() {
-            return None;
-        }
-
-        // Try to unwrap the gift - decrypt with our key and the ephemeral sender's pubkey
-        let seal: serde_json::Value =
-            match nip44::decrypt(keys.secret_key(), &event.pubkey, &event.content) {
-                Ok(plaintext) => match serde_json::from_str(&plaintext) {
-                    Ok(v) => v,
-                    Err(_) => return None,
-                },
-                Err(_) => {
-                    // Can't decrypt - not for us or invalid
-                    return None;
-                }
-            };
-
-        // Extract the actual sender's pubkey from the seal
-        let sender_pubkey = seal.get("pubkey").and_then(|v| v.as_str())?;
-
-        // Skip our own messages
-        if sender_pubkey == my_pubkey {
-            return None;
-        }
-
-        let content = seal.get("content").and_then(|v| v.as_str())?;
-
-        let msg: SignalingMessage = serde_json::from_str(content).ok()?;
-
-        info!(
-            "[NostrTransport] Received {} from {} (gift-wrapped)",
-            match &msg {
-                SignalingMessage::Hello { .. } => "hello",
-                SignalingMessage::Offer { .. } => "offer",
-                SignalingMessage::Answer { .. } => "answer",
-                SignalingMessage::Candidate { .. } => "candidate",
-                SignalingMessage::Candidates { .. } => "candidates",
-            },
-            &sender_pubkey[..8.min(sender_pubkey.len())]
-        );
-
-        // Only forward if message is for us
-        if msg.is_for(my_peer_id) {
-            Some(msg)
-        } else {
-            None
-        }
     }
 
     /// Get the nostr client (for advanced usage)
@@ -300,133 +322,54 @@ impl SignalingTransport for NostrRelayTransport {
             return Err(TransportError::NotConnected);
         }
 
-        // Check if message has a target (needs gift wrapping)
-        if let Some(target_peer_id) = msg.target_peer_id() {
-            // Parse target peer ID to get their pubkey (format: pubkey:uuid)
-            let recipient_pubkey = target_peer_id.split(':').next().ok_or_else(|| {
-                TransportError::SendFailed("Invalid target peer ID format".to_string())
-            })?;
-
-            let recipient_pk = PublicKey::from_hex(recipient_pubkey).map_err(|e| {
-                TransportError::SendFailed(format!("Invalid recipient pubkey: {}", e))
-            })?;
-
-            // Create seal with sender's actual pubkey (the "rumor")
-            let seal = serde_json::json!({
-                "pubkey": self.pubkey,
-                "kind": NOSTR_KIND_HASHTREE,
-                "content": serde_json::to_string(&msg)
-                    .map_err(|e| TransportError::SendFailed(e.to_string()))?,
-                "tags": []
-            });
-
-            // Generate ephemeral keypair for the wrapper
-            let ephemeral_keys = Keys::generate();
-
-            // Encrypt the seal for the recipient using ephemeral key (NIP-44)
-            let encrypted_content = nip44::encrypt(
-                ephemeral_keys.secret_key(),
-                &recipient_pk,
-                seal.to_string(),
-                nip44::Version::V2,
-            )
-            .map_err(|e| TransportError::SendFailed(format!("Encryption failed: {}", e)))?;
-
-            // Create wrapper event with ephemeral key
-            let expiration = Timestamp::now() + Duration::from_secs(5 * 60); // 5 minutes
-
-            let tags = vec![Tag::public_key(recipient_pk), Tag::expiration(expiration)];
-
+        if msg.target_peer_id().is_some() {
+            let recipient_pubkey = msg
+                .target_peer_id()
+                .and_then(|peer_id| peer_id.split(':').next())
+                .unwrap_or_default();
             info!(
                 "[NostrTransport] Publishing {} to {} (gift-wrapped)",
-                match &msg {
-                    SignalingMessage::Hello { .. } => "hello",
-                    SignalingMessage::Offer { .. } => "offer",
-                    SignalingMessage::Answer { .. } => "answer",
-                    SignalingMessage::Candidate { .. } => "candidate",
-                    SignalingMessage::Candidates { .. } => "candidates",
-                },
+                msg.msg_type(),
                 &recipient_pubkey[..8.min(recipient_pubkey.len())]
             );
-
-            let builder =
-                EventBuilder::new(Kind::Custom(NOSTR_KIND_HASHTREE), encrypted_content, tags);
-            let event = builder
-                .to_event(&ephemeral_keys)
-                .map_err(|e| TransportError::SendFailed(e.to_string()))?;
-
-            match self.client.send_event(event).await {
-                Ok(output) => {
-                    if output.success.is_empty() {
-                        warn!("[NostrTransport] Directed message rejected - no relay accepted");
-                        return Err(TransportError::SendFailed(
-                            "No relay accepted event".to_string(),
-                        ));
-                    }
-                    info!(
-                        "[NostrTransport] Directed message sent to {} relays",
-                        output.success.len()
-                    );
-                    Ok(())
-                }
-                Err(e) => {
-                    warn!("[NostrTransport] Directed message send error: {}", e);
-                    Err(TransportError::SendFailed(e.to_string()))
-                }
-            }
         } else {
-            // Hello message - broadcast with #l: "hello" tag
-            // Extract UUID from our peer_id (format: pubkey:uuid)
             let our_uuid = self.peer_id.split(':').nth(1).unwrap_or(&self.peer_id);
-
             debug!(
                 "[NostrTransport] Publishing hello (kind={}, uuid={}, pubkey={})",
                 NOSTR_KIND_HASHTREE,
                 our_uuid,
                 &self.pubkey[..8]
             );
+        }
 
-            // Add expiration tag (5 minutes) to match browser behavior
-            let expiration = Timestamp::now() + Duration::from_secs(5 * 60);
-            let tags = vec![
-                Tag::custom(
-                    nostr_sdk::TagKind::SingleLetter(nostr_sdk::SingleLetterTag::lowercase(
-                        nostr_sdk::Alphabet::L,
-                    )),
-                    vec![HELLO_TAG.to_string()],
-                ),
-                Tag::custom(
-                    nostr_sdk::TagKind::Custom(std::borrow::Cow::Borrowed("peerId")),
-                    vec![our_uuid.to_string()],
-                ),
-                Tag::expiration(expiration),
-            ];
+        let event = encode_signaling_event(
+            &self.keys,
+            &self.peer_id,
+            &msg,
+            Kind::Custom(NOSTR_KIND_HASHTREE),
+        )?;
 
-            let builder = EventBuilder::new(Kind::Custom(NOSTR_KIND_HASHTREE), "", tags);
-
-            // Sign with our identity keys (not the client's signer which may be different)
-            let event = builder
-                .to_event(&self.keys)
-                .map_err(|e| TransportError::SendFailed(format!("Failed to sign hello: {}", e)))?;
-
-            match self.client.send_event(event).await {
-                Ok(output) => {
-                    if output.success.is_empty() {
-                        warn!("[NostrTransport] Hello rejected - no relay accepted event");
-                        return Err(TransportError::SendFailed(
-                            "No relay accepted event".to_string(),
-                        ));
-                    }
-                    info!(
-                        "[NostrTransport] Hello sent successfully to {} relays",
-                        output.success.len()
+        match self.client.send_event(event).await {
+            Ok(output) => {
+                if output.success.is_empty() {
+                    warn!(
+                        "[NostrTransport] {} rejected - no relay accepted event",
+                        msg.msg_type()
                     );
-                    Ok(())
+                    return Err(TransportError::SendFailed(
+                        "No relay accepted event".to_string(),
+                    ));
                 }
-                Err(e) => {
-                    warn!("[NostrTransport] Hello send error: {}", e);
-                    Err(TransportError::SendFailed(e.to_string()))
-                }
+                info!(
+                    "[NostrTransport] {} sent successfully to {} relays",
+                    msg.msg_type(),
+                    output.success.len()
+                );
+                Ok(())
+            }
+            Err(e) => {
+                warn!("[NostrTransport] {} send error: {}", msg.msg_type(), e);
+                Err(TransportError::SendFailed(e.to_string()))
             }
         }
     }
@@ -488,3 +431,113 @@ impl SignalingTransport for NostrRelayTransport {
 }
 
 pub type NostrSignalingTransport = NostrRelayTransport;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directed_events_round_trip_with_target_peer_id_shape() {
+        let sender_keys = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let sender_peer_id = format!("{}:sender-session", sender_keys.public_key().to_hex());
+        let recipient_peer_id =
+            format!("{}:recipient-session", recipient_keys.public_key().to_hex());
+        let msg = SignalingMessage::Offer {
+            peer_id: sender_peer_id.clone(),
+            target_peer_id: recipient_peer_id.clone(),
+            sdp: "test-sdp".to_string(),
+        };
+
+        let event = encode_signaling_event(
+            &sender_keys,
+            &sender_peer_id,
+            &msg,
+            Kind::Ephemeral(NOSTR_KIND_HASHTREE),
+        )
+        .expect("encode signaling event");
+
+        let plaintext = nip44::decrypt(recipient_keys.secret_key(), &event.pubkey, &event.content)
+            .expect("decrypt directed signaling");
+        let seal: serde_json::Value =
+            serde_json::from_str(&plaintext).expect("decode outer seal payload");
+        let inner = seal
+            .get("content")
+            .and_then(|value| value.as_str())
+            .expect("inner signaling payload");
+        assert!(inner.contains("\"targetPeerId\""));
+        assert!(!inner.contains("\"recipient\""));
+
+        let decoded = decode_signaling_event(
+            &event,
+            &recipient_peer_id,
+            &recipient_keys.public_key().to_hex(),
+            &recipient_keys,
+        )
+        .expect("decode directed signaling");
+
+        match decoded {
+            SignalingMessage::Offer {
+                peer_id,
+                target_peer_id,
+                sdp,
+            } => {
+                assert_eq!(peer_id, sender_peer_id);
+                assert_eq!(target_peer_id, recipient_peer_id);
+                assert_eq!(sdp, "test-sdp");
+            }
+            other => panic!("expected offer, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn decoder_rejects_legacy_recipient_shape() {
+        let sender_keys = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let sender_peer_id = format!("{}:sender-session", sender_keys.public_key().to_hex());
+        let recipient_peer_id =
+            format!("{}:recipient-session", recipient_keys.public_key().to_hex());
+        let legacy_content = serde_json::json!({
+            "type": "offer",
+            "peerId": sender_peer_id,
+            "recipient": recipient_peer_id,
+            "offer": { "type": "offer", "sdp": "legacy-sdp" }
+        })
+        .to_string();
+        let seal = serde_json::json!({
+            "pubkey": sender_keys.public_key().to_hex(),
+            "kind": NOSTR_KIND_HASHTREE,
+            "content": legacy_content,
+            "tags": []
+        });
+
+        let recipient_pk =
+            PublicKey::from_hex(&recipient_keys.public_key().to_hex()).expect("recipient pubkey");
+        let ephemeral_keys = Keys::generate();
+        let ciphertext = nip44::encrypt(
+            ephemeral_keys.secret_key(),
+            &recipient_pk,
+            seal.to_string(),
+            nip44::Version::V2,
+        )
+        .expect("encrypt legacy message");
+        let event = EventBuilder::new(
+            Kind::Ephemeral(NOSTR_KIND_HASHTREE),
+            ciphertext,
+            vec![
+                Tag::public_key(recipient_pk),
+                Tag::expiration(Timestamp::now() + Duration::from_secs(300)),
+            ],
+        )
+        .to_event(&ephemeral_keys)
+        .expect("build event");
+
+        assert!(decode_signaling_event(
+            &event,
+            &recipient_peer_id,
+            &recipient_keys.public_key().to_hex(),
+            &recipient_keys,
+        )
+        .is_none());
+    }
+}

@@ -32,18 +32,24 @@ fn test_peer_id_from_string_invalid() {
 
 #[test]
 fn test_signaling_message_hello() {
-    let msg = SignalingMessage::hello("my-uuid");
+    let msg = SignalingMessage::Hello {
+        peer_id: "my-pubkey:my-uuid".to_string(),
+        roots: Vec::new(),
+    };
     assert_eq!(msg.msg_type(), "hello");
-    assert_eq!(msg.peer_id(), "my-uuid");
-    assert!(msg.recipient().is_none());
+    assert_eq!(msg.peer_id(), "my-pubkey:my-uuid");
+    assert!(msg.target_peer_id().is_none());
 }
 
 #[test]
 fn test_signaling_message_offer() {
-    let offer = serde_json::json!({"sdp": "test"});
-    let msg = SignalingMessage::offer(offer.clone(), "recipient", "peer-id");
+    let msg = SignalingMessage::Offer {
+        peer_id: "peer-id".to_string(),
+        target_peer_id: "recipient".to_string(),
+        sdp: "test".to_string(),
+    };
     assert_eq!(msg.msg_type(), "offer");
-    assert_eq!(msg.recipient(), Some("recipient"));
+    assert_eq!(msg.target_peer_id(), Some("recipient"));
     assert_eq!(msg.peer_id(), "peer-id");
 }
 

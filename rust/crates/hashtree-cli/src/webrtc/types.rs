@@ -2,9 +2,10 @@
 
 pub use hashtree_webrtc::{
     decrement_htl_with_policy, should_forward_htl, validate_mesh_frame, HtlMode, HtlPolicy,
-    MeshNostrFrame, MeshNostrPayload, PeerHTLConfig, RequestDispatchConfig, SelectionStrategy,
-    TimedSeenSet, BLOB_REQUEST_POLICY, DECREMENT_AT_MAX_PROB, DECREMENT_AT_MIN_PROB, MAX_HTL,
-    MESH_DEFAULT_HTL, MESH_EVENT_POLICY, MESH_MAX_HTL, MESH_PROTOCOL, MESH_PROTOCOL_VERSION,
+    IceCandidate, MeshNostrFrame, MeshNostrPayload, PeerHTLConfig, PeerPool, PoolConfig,
+    PoolSettings, RequestDispatchConfig, SelectionStrategy, SignalingMessage, TimedSeenSet,
+    BLOB_REQUEST_POLICY, DECREMENT_AT_MAX_PROB, DECREMENT_AT_MIN_PROB, MAX_HTL, MESH_DEFAULT_HTL,
+    MESH_EVENT_POLICY, MESH_MAX_HTL, MESH_PROTOCOL, MESH_PROTOCOL_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -91,160 +92,6 @@ impl PeerId {
 impl std::fmt::Display for PeerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.pubkey, self.uuid)
-    }
-}
-
-/// Hello message for peer discovery
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HelloMessage {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    #[serde(rename = "peerId")]
-    pub peer_id: String,
-}
-
-/// WebRTC offer message
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OfferMessage {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    pub offer: serde_json::Value,
-    pub recipient: String,
-    #[serde(rename = "peerId")]
-    pub peer_id: String,
-}
-
-/// WebRTC answer message
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AnswerMessage {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    pub answer: serde_json::Value,
-    pub recipient: String,
-    #[serde(rename = "peerId")]
-    pub peer_id: String,
-}
-
-/// ICE candidate message
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CandidateMessage {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    pub candidate: serde_json::Value,
-    pub recipient: String,
-    #[serde(rename = "peerId")]
-    pub peer_id: String,
-}
-
-/// Batched ICE candidates message (hashtree-ts extension)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CandidatesMessage {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    pub candidates: Vec<serde_json::Value>,
-    pub recipient: String,
-    #[serde(rename = "peerId")]
-    pub peer_id: String,
-}
-
-/// All signaling message types
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum SignalingMessage {
-    #[serde(rename = "hello")]
-    Hello {
-        #[serde(rename = "peerId")]
-        peer_id: String,
-    },
-    #[serde(rename = "offer")]
-    Offer {
-        offer: serde_json::Value,
-        recipient: String,
-        #[serde(rename = "peerId")]
-        peer_id: String,
-    },
-    #[serde(rename = "answer")]
-    Answer {
-        answer: serde_json::Value,
-        recipient: String,
-        #[serde(rename = "peerId")]
-        peer_id: String,
-    },
-    #[serde(rename = "candidate")]
-    Candidate {
-        candidate: serde_json::Value,
-        recipient: String,
-        #[serde(rename = "peerId")]
-        peer_id: String,
-    },
-    #[serde(rename = "candidates")]
-    Candidates {
-        candidates: Vec<serde_json::Value>,
-        recipient: String,
-        #[serde(rename = "peerId")]
-        peer_id: String,
-    },
-}
-
-impl SignalingMessage {
-    pub fn msg_type(&self) -> &str {
-        match self {
-            SignalingMessage::Hello { .. } => "hello",
-            SignalingMessage::Offer { .. } => "offer",
-            SignalingMessage::Answer { .. } => "answer",
-            SignalingMessage::Candidate { .. } => "candidate",
-            SignalingMessage::Candidates { .. } => "candidates",
-        }
-    }
-
-    pub fn recipient(&self) -> Option<&str> {
-        match self {
-            SignalingMessage::Hello { .. } => None,
-            SignalingMessage::Offer { recipient, .. } => Some(recipient),
-            SignalingMessage::Answer { recipient, .. } => Some(recipient),
-            SignalingMessage::Candidate { recipient, .. } => Some(recipient),
-            SignalingMessage::Candidates { recipient, .. } => Some(recipient),
-        }
-    }
-
-    pub fn peer_id(&self) -> &str {
-        match self {
-            SignalingMessage::Hello { peer_id } => peer_id,
-            SignalingMessage::Offer { peer_id, .. } => peer_id,
-            SignalingMessage::Answer { peer_id, .. } => peer_id,
-            SignalingMessage::Candidate { peer_id, .. } => peer_id,
-            SignalingMessage::Candidates { peer_id, .. } => peer_id,
-        }
-    }
-
-    pub fn hello(peer_id: &str) -> Self {
-        SignalingMessage::Hello {
-            peer_id: peer_id.to_string(),
-        }
-    }
-
-    pub fn offer(offer: serde_json::Value, recipient: &str, peer_id: &str) -> Self {
-        SignalingMessage::Offer {
-            offer,
-            recipient: recipient.to_string(),
-            peer_id: peer_id.to_string(),
-        }
-    }
-
-    pub fn answer(answer: serde_json::Value, recipient: &str, peer_id: &str) -> Self {
-        SignalingMessage::Answer {
-            answer,
-            recipient: recipient.to_string(),
-            peer_id: peer_id.to_string(),
-        }
-    }
-
-    pub fn candidate(candidate: serde_json::Value, recipient: &str, peer_id: &str) -> Self {
-        SignalingMessage::Candidate {
-            candidate,
-            recipient: recipient.to_string(),
-            peer_id: peer_id.to_string(),
-        }
     }
 }
 
@@ -348,55 +195,6 @@ pub enum PeerStateEvent {
     Failed(PeerId),
     /// Peer disconnected
     Disconnected(PeerId),
-}
-
-/// Pool type for peer classification
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PeerPool {
-    /// Users in social graph (followed or followers)
-    Follows,
-    /// Everyone else
-    Other,
-}
-
-/// Configuration for a peer pool
-#[derive(Debug, Clone, Copy)]
-pub struct PoolConfig {
-    /// Maximum connections in this pool
-    pub max_connections: usize,
-    /// Number of connections to consider "satisfied" (stop sending hellos)
-    pub satisfied_connections: usize,
-}
-
-impl Default for PoolConfig {
-    fn default() -> Self {
-        Self {
-            max_connections: 16,
-            satisfied_connections: 8,
-        }
-    }
-}
-
-/// Pool settings for both pools
-#[derive(Debug, Clone)]
-pub struct PoolSettings {
-    pub follows: PoolConfig,
-    pub other: PoolConfig,
-}
-
-impl Default for PoolSettings {
-    fn default() -> Self {
-        Self {
-            follows: PoolConfig {
-                max_connections: 16,
-                satisfied_connections: 8,
-            },
-            other: PoolConfig {
-                max_connections: 16,
-                satisfied_connections: 8,
-            },
-        }
-    }
 }
 
 impl std::fmt::Display for PeerDirection {

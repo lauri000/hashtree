@@ -102,6 +102,17 @@ pub enum SignalingMessage {
 }
 
 impl SignalingMessage {
+    /// Get the message type label.
+    pub fn msg_type(&self) -> &str {
+        match self {
+            Self::Hello { .. } => "hello",
+            Self::Offer { .. } => "offer",
+            Self::Answer { .. } => "answer",
+            Self::Candidate { .. } => "candidate",
+            Self::Candidates { .. } => "candidates",
+        }
+    }
+
     /// Get the sender's peer ID
     pub fn peer_id(&self) -> &str {
         match self {

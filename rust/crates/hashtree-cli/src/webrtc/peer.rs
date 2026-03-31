@@ -758,14 +758,14 @@ impl Peer {
         let peer_id = self.peer_id.clone();
         let signaling_tx = self.signaling_tx.clone();
         let my_peer_id_str = self.my_peer_id.to_string();
-        let recipient = self.peer_id.to_string();
+        let target_peer_id = self.peer_id.to_string();
 
         // Handle ICE candidates - work MUST be inside the returned future
         self.pc
             .on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
                 let signaling_tx = signaling_tx.clone();
                 let my_peer_id_str = my_peer_id_str.clone();
-                let recipient = recipient.clone();
+                let target_peer_id = target_peer_id.clone();
 
                 Box::pin(async move {
                     if let Some(c) = candidate {
@@ -774,11 +774,13 @@ impl Peer {
                                 "ICE candidate generated: {}",
                                 &init.candidate[..init.candidate.len().min(60)]
                             );
-                            let msg = SignalingMessage::candidate(
-                                serde_json::to_value(&init).unwrap_or_default(),
-                                &recipient,
-                                &my_peer_id_str,
-                            );
+                            let msg = SignalingMessage::Candidate {
+                                peer_id: my_peer_id_str.clone(),
+                                target_peer_id: target_peer_id.clone(),
+                                candidate: init.candidate,
+                                sdp_m_line_index: init.sdp_mline_index,
+                                sdp_mid: init.sdp_mid,
+                            };
                             if let Err(e) = signaling_tx.send(msg).await {
                                 error!("Failed to send ICE candidate: {}", e);
                             }
