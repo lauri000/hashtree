@@ -30,7 +30,6 @@ hashtree-lmdb = { workspace = true, optional = true }
 hashtree-blossom.workspace = true
 hashtree-config.workspace = true
 hashtree-nostr.workspace = true
-hashtree-nostr-bridge = { version = "0.2.15", path = "../hashtree-nostr-bridge" }
 hashtree-resolver = { workspace = true, features = ["nostr"] }
 hashtree-index.workspace = true
 hashtree-webrtc = { workspace = true, optional = true }

@@ -5,8 +5,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use hashtree_core::{nhash_decode, nhash_encode_full, Cid, NHashData};
-use hashtree_nostr::{ListEventsOptions, NostrEventStore, StoredNostrEvent};
-use hashtree_nostr_bridge::{CrawlConfig, CrawlReport, NostrBridge, RelayFetchMode};
+use hashtree_nostr::{
+    CrawlConfig, CrawlReport, ListEventsOptions, NostrBridge, NostrEventStore, RelayFetchMode,
+    StoredNostrEvent,
+};
 use nostr::{Event, JsonUtil, Keys};
 use reqwest::header::ACCEPT;
 use serde::Deserialize;

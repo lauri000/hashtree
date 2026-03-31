@@ -7,8 +7,10 @@ use std::time::Duration;
 use futures::{SinkExt, StreamExt};
 use hashtree_core::{MemoryStore, Store};
 use hashtree_index::{BTree, BTreeOptions};
-use hashtree_nostr::{ListEventsOptions, NostrEventStore, StoredNostrEvent};
-use hashtree_nostr_bridge::{CrawlConfig, NostrBridge, RelayFetchMode};
+use hashtree_nostr::{
+    CrawlConfig, ListEventsOptions, NostrBridge, NostrEventStore, RelayFetchMode,
+    StoredNostrEvent,
+};
 use negentropy::{Id, Negentropy, NegentropyStorageVector};
 use nostr::prelude::{
     ClientMessage, Event, EventBuilder, Filter, JsonUtil, Kind, RelayMessage, Tag, Timestamp,

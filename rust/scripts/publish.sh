@@ -59,7 +59,6 @@ TIER_3_CRATES=(
 
 TIER_4_CRATES=(
     "git-remote-htree"
-    "hashtree-nostr-bridge"
     "hashtree-cli"
     "hashtree-cashu-cli"
 )

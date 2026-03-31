@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hashtree_core::{Cid, Store};
-use hashtree_nostr::{ListEventsOptions, NostrEventStore, NostrEventStoreError, StoredNostrEvent};
+use crate::{ListEventsOptions, NostrEventStore, NostrEventStoreError, StoredNostrEvent};
 use nostr_sdk::{
     pool::RelayLimits, Client, EventId, Filter, Keys, Kind, NegentropyOptions, Options, PublicKey,
     Timestamp,

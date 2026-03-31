@@ -5,8 +5,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use hashtree_nostr::{ListEventsOptions, NostrEventStore};
-use hashtree_nostr_bridge::{CrawlConfig, CrawlReport, NostrBridge, RelayFetchMode};
+use hashtree_nostr::{
+    CrawlConfig, CrawlReport, ListEventsOptions, NostrBridge, NostrEventStore, RelayFetchMode,
+};
 use nostr::{
     Alphabet, Event, EventBuilder, Filter, Kind, PublicKey, SingleLetterTag, Tag, TagKind,
     Timestamp,

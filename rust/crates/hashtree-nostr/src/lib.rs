@@ -1,5 +1,11 @@
 //! Hashtree-native Nostr event indexes.
 
+pub mod crawl;
+pub use crawl::{
+    CrawlConfig, CrawlError, CrawlReport, EventSelectionPolicy, KindPriorityPolicy, NostrBridge,
+    RelayFetchMode,
+};
+
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
