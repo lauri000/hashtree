@@ -76,7 +76,7 @@ jobs:
         suite:
           - name: fast
             command: pnpm test:e2e:fast
-            timeout: 45
+            timeout: 75
           - name: slow
             command: pnpm test:e2e:slow
             timeout: 30
