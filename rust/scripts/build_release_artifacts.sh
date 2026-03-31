@@ -410,6 +410,9 @@ if [ -z "$OUTPUT_DIR" ]; then
     OUTPUT_DIR="${RUST_DIR}/dist/hashtree-${VERSION}"
 fi
 
+mkdir -p "$(dirname "$OUTPUT_DIR")"
+OUTPUT_DIR="$(cd "$(dirname "$OUTPUT_DIR")" && pwd)/$(basename "$OUTPUT_DIR")"
+
 require_command tar
 require_command python3
 

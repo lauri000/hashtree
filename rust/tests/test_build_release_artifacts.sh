@@ -91,4 +91,17 @@ PY
 grep -F "hashtree-aarch64-apple-darwin.tar.gz" "${OUTPUT_DIR}/hashtree-aarch64-apple-darwin.sha256" >/dev/null
 grep -F "hashtree-x86_64-pc-windows-msvc.zip" "${OUTPUT_DIR}/hashtree-x86_64-pc-windows-msvc.sha256" >/dev/null
 
+RELATIVE_ROOT="${TMPDIR}/relative-output-check"
+mkdir -p "${RELATIVE_ROOT}"
+(
+    cd "${RELATIVE_ROOT}"
+    "${BUILD_SCRIPT}" \
+        --version v0.2.3 \
+        --output-dir out \
+        --targets , \
+        --windows-artifacts-dir "${WINDOWS_DIR}" \
+        --package-only
+)
+test -f "${RELATIVE_ROOT}/out/hashtree-x86_64-pc-windows-msvc.zip"
+
 echo "test_build_release_artifacts.sh passed"

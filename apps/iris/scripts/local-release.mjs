@@ -141,6 +141,26 @@ export function workspaceInstallCommands(pnpmCommand = 'pnpm', installDirs = fro
   return installDirs.map((dir) => `${pnpmCommand} --dir ${dir} install --frozen-lockfile --ignore-scripts`)
 }
 
+export function windowsTauriBuildCommand(
+  target,
+  {
+    relativeAppDir = 'apps\\iris',
+    configPath = packagingConfigPath(),
+  } = {},
+) {
+  return [
+    `& ${psQuote(`.\\${relativeAppDir}\\node_modules\\.bin\\tauri.cmd`)}`,
+    'build',
+    '--config',
+    psQuote(configPath),
+    '--target',
+    psQuote(target),
+    '--bundles',
+    'nsis',
+    '--ci',
+  ].join(' ')
+}
+
 export function linuxDockerShellCommand(target = 'x86_64-unknown-linux-gnu') {
   return [
     'set -euo pipefail',
@@ -331,7 +351,8 @@ $sharedRepo = ${psQuote(sharedRepoPath)}
 $guestRepo = Join-Path $env:USERPROFILE 'src\\hashtree'
 $guestRoot = Split-Path $guestRepo
 New-Item -ItemType Directory -Force -Path $guestRoot | Out-Null
-robocopy $sharedRepo $guestRepo /MIR /XD target node_modules .pnpm-store .git | Out-Null
+robocopy $sharedRepo $guestRepo /E /XD target dist node_modules .pnpm-store .git artifacts /XF .env.release.local .env.zapstore.local | Out-Null
+if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
 $binDir = Join-Path $env:USERPROFILE 'bin'
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 $shimPath = Join-Path $binDir 'pnpm.cmd'
@@ -372,7 +393,10 @@ function buildWindowsArtifacts({ env, assetPrefix, dryRun, builtLines }) {
   const guiTargets = splitCsv(env.IRIS_WINDOWS_GUI_TARGETS || 'x86_64-pc-windows-msvc')
   const guestRepo = "(Join-Path $env:USERPROFILE 'src\\hashtree')"
   const distPath = `${sharedRepoPath}\\dist\\iris-native`
-  const pathSetup = "$env:PATH = (Join-Path $env:USERPROFILE 'bin') + ';' + $env:PATH"
+  const pathSetup = [
+    "$env:CI = 'true'",
+    "$env:PATH = (Join-Path $env:USERPROFILE 'bin') + ';' + $env:PATH",
+  ].join('\n')
 
   runWindowsPowerShell(
     vmName,
@@ -393,7 +417,7 @@ New-Item -ItemType Directory -Force -Path ${psQuote(distPath)} | Out-Null
       `
 ${pathSetup}
 Set-Location ${guestRepo}
-corepack pnpm --dir apps/iris exec tauri build --config ${psQuote(packagingConfigPath())} --target ${psQuote(target)} --bundles nsis --ci
+${windowsTauriBuildCommand(target)}
 $bundleDir = Join-Path ${guestRepo} ${psQuote(`apps\\iris\\src-tauri\\target\\${target}\\release\\bundle\\nsis`)}
 $installer = Get-ChildItem $bundleDir -Filter '*-setup.exe' | Select-Object -First 1
 if (-not $installer) { throw ${psQuote(`No NSIS installer found for ${target}`)} }

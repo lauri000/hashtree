@@ -1,4 +1,6 @@
-use anyhow::{Context, Result};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::Result;
 use std::path::PathBuf;
 
 use super::util::format_bytes;
@@ -67,6 +69,7 @@ pub(crate) fn format_daemon_status(status: &serde_json::Value, include_header: b
     lines.join("\n")
 }
 
+#[cfg(unix)]
 fn default_daemon_log_file() -> PathBuf {
     hashtree_cli::config::get_hashtree_dir()
         .join("logs")
@@ -77,6 +80,7 @@ fn default_daemon_pid_file() -> PathBuf {
     hashtree_cli::config::get_hashtree_dir().join("htree.pid")
 }
 
+#[cfg(unix)]
 pub(crate) fn build_daemon_args(
     addr: &str,
     relays: Option<&str>,
@@ -176,6 +180,7 @@ pub(crate) fn spawn_daemon(
     }
 }
 
+#[cfg(unix)]
 pub(crate) fn parse_pid(contents: &str) -> Result<i32> {
     let trimmed = contents.trim();
     if trimmed.is_empty() {
@@ -188,12 +193,14 @@ pub(crate) fn parse_pid(contents: &str) -> Result<i32> {
     Ok(pid)
 }
 
+#[cfg(unix)]
 pub(crate) fn read_pid_file(path: &std::path::Path) -> Result<i32> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read pid file {}", path.display()))?;
     parse_pid(&contents)
 }
 
+#[cfg(unix)]
 pub(crate) fn write_pid_file(path: &std::path::Path, pid: u32) -> Result<()> {
     std::fs::write(path, format!("{}\n", pid))
         .with_context(|| format!("Failed to write pid file {}", path.display()))?;
@@ -226,10 +233,10 @@ fn signal_process(pid: i32, signal: i32) -> Result<()> {
 
 pub(crate) fn stop_daemon(pid_file: Option<&PathBuf>) -> Result<()> {
     let pid_path = pid_file.cloned().unwrap_or_else(default_daemon_pid_file);
-    let pid = read_pid_file(&pid_path)?;
 
     #[cfg(unix)]
     {
+        let pid = read_pid_file(&pid_path)?;
         if !is_process_running(pid) {
             let _ = std::fs::remove_file(&pid_path);
             anyhow::bail!("Daemon not running (pid {})", pid);

@@ -10,7 +10,7 @@ curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3a
 
 That installs `htree`, `htree-cashu`, and `git-remote-htree` into `~/.local/bin` by default. For a system-wide install, pass a target directory, for example `sh -s -- /usr/local/bin`.
 
-Windows note: this shell bootstrap is not supported on Windows, and the latest hashtree release does not currently publish a Windows zip artifact.
+Windows note: this shell bootstrap is not supported on Windows. Download the latest `hashtree-x86_64-pc-windows-msvc.zip` release asset, extract it, and add `htree.exe`, `htree-cashu.exe`, and `git-remote-htree.exe` to your PATH.
 
 Or install with Cargo:
 

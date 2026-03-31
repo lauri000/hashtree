@@ -13,6 +13,7 @@ import {
   parseArgs,
   usage,
   windowsArtifactArch,
+  windowsTauriBuildCommand,
   workspaceInstallCommands,
 } from '../scripts/local-release.mjs'
 
@@ -84,6 +85,15 @@ test('workspaceInstallCommands bootstraps iris-files before iris', () => {
     'pnpm --dir apps/iris-files install --frozen-lockfile --ignore-scripts',
     'pnpm --dir apps/iris install --frozen-lockfile --ignore-scripts',
   ])
+})
+
+test('windowsTauriBuildCommand uses the Windows tauri.cmd shim directly', () => {
+  const command = windowsTauriBuildCommand('x86_64-pc-windows-msvc')
+  assert.match(command, /node_modules\\\.bin\\tauri\.cmd/)
+  assert.match(command, /--config 'src-tauri\/tauri\.release\.no-frontend\.json'/)
+  assert.match(command, /--target 'x86_64-pc-windows-msvc'/)
+  assert.match(command, /--bundles nsis --ci$/)
+  assert.doesNotMatch(command, /pnpm --dir apps\/iris exec tauri/)
 })
 
 test('linuxDockerShellCommand exports CI before pnpm installs', () => {

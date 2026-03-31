@@ -232,7 +232,7 @@ Build and publish a local CLI release directory in one step:
 scripts/release_to_htree.sh --version v<version>
 ```
 
-On macOS this builds the macOS CLI artifacts locally, uses `cross` for the Linux musl CLI artifacts, and can optionally include Windows MSVC binaries from a VM via `--windows-artifacts-dir <shared-dir>`.
+On macOS this builds the macOS CLI artifacts locally, uses `cross` for the Linux musl CLI artifacts, and auto-builds the Windows x64 CLI binaries from a running Parallels Windows VM when available. You can still override that input explicitly with `--windows-artifacts-dir <shared-dir>`, or skip the VM step with `--skip-windows-vm`.
 
 When `apps/iris/scripts/local-release.mjs` is present, the same command also stages Iris desktop installers into the repo release. Skip that with:
 

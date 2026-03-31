@@ -81,7 +81,7 @@ test('stageRepoRelease creates a metadata-backed repo release directory', () => 
     const notes = readFileSync(join(outputDir, 'notes.md'), 'utf8')
     assert.match(notes, /curl -fsSL https:\/\/upload\.example\/releases%2Fhashtree\/latest\/install\.sh \| sh/)
     assert.match(notes, /Install with shell:/)
-    assert.match(notes, /Manual install: download the archive for your platform from the release assets below/)
+    assert.match(notes, /Manual macOS\/Linux install: download the archive for your platform from the release assets below/)
     assert.match(notes, /Iris Desktop App/)
     assert.match(notes, /download the macOS app archive below/)
     assert.match(notes, /Includes Iris desktop release assets\./)
@@ -122,6 +122,35 @@ test('stageRepoRelease notes include partial Iris asset sets', () => {
     assert.match(notes, /Linux AppImage: download the AppImage asset below/)
     assert.match(notes, /Includes Iris desktop release assets\./)
     assert.doesNotMatch(notes, /No Iris desktop release assets were staged\./)
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('stageRepoRelease notes include Windows CLI install instructions when a zip asset is present', () => {
+  const tempDir = mkdtempSync(join(os.tmpdir(), 'stage-repo-release-windows-cli-'))
+
+  try {
+    const cliDir = join(tempDir, 'cli')
+    const outputDir = join(tempDir, 'out')
+
+    mkdirSync(cliDir, { recursive: true })
+
+    writeFileSync(join(cliDir, 'install.sh'), '#!/bin/sh\necho install\n')
+    writeFileSync(join(cliDir, 'hashtree-x86_64-pc-windows-msvc.zip'), 'cli-zip')
+
+    stageRepoRelease({
+      tag: 'v0.2.16',
+      commit: 'fedcba',
+      cliDir,
+      outputDir,
+      installUrl: 'https://upload.example/releases%2Fhashtree/latest/install.sh',
+    })
+
+    const notes = readFileSync(join(outputDir, 'notes.md'), 'utf8')
+    assert.match(notes, /Windows x64 CLI: download the zip asset below/)
+    assert.match(notes, /git-remote-htree\.exe/)
+    assert.doesNotMatch(notes, /Manual install: download the archive for your platform/)
   } finally {
     rmSync(tempDir, { recursive: true, force: true })
   }

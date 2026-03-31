@@ -21,6 +21,10 @@ Options:
   --target-dir <dir>                 Cargo target dir to read/write
   --targets <csv>                    Comma-separated targets to build/package
   --windows-artifacts-dir <dir>      Directory containing Windows .exe binaries from a VM
+  --skip-windows-vm                  Skip auto-building Windows CLI artifacts from a Parallels VM
+  --windows-vm-name <name>           Override the Parallels Windows VM name for auto builds
+  --windows-shared-repo-path <path>  Override the repo path inside Parallels shared folders
+  --windows-guest-repo-path <path>   Override the guest repo path used for the Windows build
   --package-only                     Skip builds and package existing binaries only
   --skip-iris                        Do not include Iris desktop assets in the repo release
   --skip-iris-verify                 Skip pnpm build/icon verification before Iris packaging
@@ -59,6 +63,10 @@ RELEASE_STAGE_DIR=""
 
 BUILD_ARGS=()
 TEMP_DIRS=()
+SKIP_WINDOWS_VM=0
+WINDOWS_VM_NAME=""
+WINDOWS_SHARED_REPO_PATH=""
+WINDOWS_GUEST_REPO_PATH=""
 
 cleanup() {
     local path
@@ -101,6 +109,22 @@ while [ $# -gt 0 ]; do
         --skip-iris)
             SKIP_IRIS=1
             shift
+            ;;
+        --skip-windows-vm)
+            SKIP_WINDOWS_VM=1
+            shift
+            ;;
+        --windows-vm-name)
+            WINDOWS_VM_NAME="${2:-}"
+            shift 2
+            ;;
+        --windows-shared-repo-path)
+            WINDOWS_SHARED_REPO_PATH="${2:-}"
+            shift 2
+            ;;
+        --windows-guest-repo-path)
+            WINDOWS_GUEST_REPO_PATH="${2:-}"
+            shift 2
             ;;
         --skip-iris-verify)
             SKIP_IRIS_VERIFY=1
@@ -259,6 +283,53 @@ EOF
 
     chmod +x "$path"
 }
+
+auto_build_windows_vm_artifacts() {
+    local helper_script windows_output_dir
+
+    if [ "$SKIP_WINDOWS_VM" -eq 1 ]; then
+        return
+    fi
+
+    if [ -n "$(value_from_build_args --windows-artifacts-dir)" ]; then
+        return
+    fi
+
+    helper_script="${SCRIPT_DIR}/build_windows_vm_artifacts.mjs"
+    if [ ! -f "$helper_script" ]; then
+        echo "Warning: Windows VM build helper not found at ${helper_script}; skipping Windows CLI artifacts." >&2
+        return
+    fi
+
+    if ! command -v node >/dev/null 2>&1; then
+        echo "Warning: node is required for Windows VM builds; skipping Windows CLI artifacts." >&2
+        return
+    fi
+
+    mkdir -p "${RUST_DIR}/dist"
+    windows_output_dir="$(mktemp -d "${RUST_DIR}/dist/windows-vm-XXXXXX")"
+    TEMP_DIRS+=("$windows_output_dir")
+
+    WINDOWS_BUILD_ARGS=("$helper_script" "--output-dir" "$windows_output_dir")
+    if [ -n "$WINDOWS_VM_NAME" ]; then
+        WINDOWS_BUILD_ARGS+=("--vm-name" "$WINDOWS_VM_NAME")
+    fi
+    if [ -n "$WINDOWS_SHARED_REPO_PATH" ]; then
+        WINDOWS_BUILD_ARGS+=("--shared-repo-path" "$WINDOWS_SHARED_REPO_PATH")
+    fi
+    if [ -n "$WINDOWS_GUEST_REPO_PATH" ]; then
+        WINDOWS_BUILD_ARGS+=("--guest-repo-path" "$WINDOWS_GUEST_REPO_PATH")
+    fi
+
+    if node "${WINDOWS_BUILD_ARGS[@]}"; then
+        BUILD_ARGS+=("--windows-artifacts-dir" "$windows_output_dir")
+    else
+        echo "Warning: Windows VM build failed; continuing without Windows CLI artifacts." >&2
+        rm -rf "$windows_output_dir"
+    fi
+}
+
+auto_build_windows_vm_artifacts
 
 "${SCRIPT_DIR}/build_release_artifacts.sh" "${BUILD_ARGS[@]}"
 

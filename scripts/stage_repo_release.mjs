@@ -181,8 +181,18 @@ export function renderReleaseNotes({ tag, commit, assetEntries, installUrl = '' 
     lines.push('Install with the shell script asset below.', '')
   }
 
-  if (hasCliArchives) {
-    lines.push('Manual install: download the archive for your platform from the release assets below, extract it, and run `./install.sh`.', '')
+  if (assets.cliMacArm64 || assets.cliMacX64 || assets.cliLinuxX64 || assets.cliLinuxArm64) {
+    lines.push(
+      'Manual macOS/Linux install: download the archive for your platform from the release assets below, extract it, and run `./install.sh`.',
+      '',
+    )
+  }
+
+  if (assets.cliWindowsX64) {
+    lines.push(
+      '- Windows x64 CLI: download the zip asset below, extract it, and add `htree.exe`, `htree-cashu.exe`, and `git-remote-htree.exe` to your PATH.',
+      '',
+    )
   }
 
   if (hasIrisAssets) {
