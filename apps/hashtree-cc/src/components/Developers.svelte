@@ -226,7 +226,7 @@
             {/if}
           </button>
         </div>
-        <p class="text-text-3 text-xs mt-2">Installs to <code class="text-accent">~/.local/bin</code> by default. For a system-wide install, pass <code class="text-accent">/usr/local/bin</code>. Or with Cargo: <code class="text-accent">{cargoCmd}</code></p>
+        <p class="text-text-3 text-xs mt-2">macOS/Linux shell bootstrap. Installs to <code class="text-accent">~/.local/bin</code> by default. For a system-wide install, pass <code class="text-accent">/usr/local/bin</code>. On Windows, use the source build path for now. Or with Cargo: <code class="text-accent">{cargoCmd}</code></p>
       </div>
 
       <div>

@@ -4,13 +4,15 @@ Content-addressed storage, git transport, and app runtime on Nostr. Merkle roots
 
 ## Installation
 
-### Quick install (prebuilt binaries)
+### Quick install (prebuilt binaries, macOS/Linux)
 
 ```bash
 curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/releases%2Fhashtree/latest/install.sh | sh
 ```
 
 That installs `htree`, `htree-cashu`, and `git-remote-htree` into `~/.local/bin` by default. For a system-wide install, pass a target directory, for example `sh -s -- /usr/local/bin`.
+
+Windows note: the shell bootstrap is not supported there, and the latest hashtree release does not currently publish a Windows zip artifact. Use the source build path below on Windows for now.
 
 ### Build from source
 
