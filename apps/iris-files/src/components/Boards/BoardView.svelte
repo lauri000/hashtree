@@ -25,7 +25,8 @@
   import Modal from '../ui/Modal.svelte';
   import VisibilityIcon from '../VisibilityIcon.svelte';
   import MediaPlayer from '../Viewer/MediaPlayer.svelte';
-  import { Avatar, Name } from '../User';
+  import { Avatar, Name, NpubRow } from '../User';
+  import { shortNpub } from '../../utils/format';
   import {
     BOARD_CARD_FILE_SUFFIX,
     BOARD_CARD_ATTACHMENTS_SUFFIX,
@@ -529,12 +530,6 @@
     const next = { ...localAttachmentPreviewUrls };
     delete next[attachmentId];
     localAttachmentPreviewUrls = next;
-  }
-
-  function shortNpub(npub: string): string {
-    if (!npub) return '';
-    if (npub.length <= 18) return npub;
-    return `${npub.slice(0, 10)}...${npub.slice(-6)}`;
   }
 
   function npubToPubkey(npub: string): string | null {
@@ -3220,7 +3215,9 @@
         <ul class="space-y-1 list-none m-0 p-0">
           {#each permissions.admins as adminNpub (adminNpub)}
             <li class="bg-surface-2 rounded px-2 py-1.5 flex items-center justify-between gap-2">
-              <span class="font-mono text-xs truncate">{adminNpub}</span>
+              <a href={`#/${adminNpub}/profile`} class="flex-1 min-w-0 hover:opacity-80" title={adminNpub}>
+                <NpubRow npub={adminNpub} avatarSize={32} class="min-w-0" />
+              </a>
               {#if canManage}
                 <button
                   class="btn-circle btn-ghost text-danger"
@@ -3243,7 +3240,9 @@
           {/if}
           {#each permissions.writers as writerNpub (writerNpub)}
             <li class="bg-surface-2 rounded px-2 py-1.5 flex items-center justify-between gap-2">
-              <span class="font-mono text-xs truncate">{writerNpub}</span>
+              <a href={`#/${writerNpub}/profile`} class="flex-1 min-w-0 hover:opacity-80" title={writerNpub}>
+                <NpubRow npub={writerNpub} avatarSize={32} class="min-w-0" />
+              </a>
               {#if canManage}
                 <button
                   class="btn-circle btn-ghost text-danger"

@@ -30,11 +30,12 @@
 <script lang="ts">
   import { open as openShareModal } from './ShareModal.svelte';
   import { nip19 } from 'nostr-tools';
-  import { UserRow } from '../User';
+  import { NpubRow, UserRow } from '../User';
   import { npubToPubkey, nostrStore } from '../../nostr';
   import { createFollowsStore } from '../../stores/follows';
   import { searchUsers, indexUsers, type UserIndexEntry, type UserIndexEntryInput } from '../../stores/searchIndex';
   import { getProfileSync } from '../../stores/profile';
+  import { shortNpub } from '../../utils/format';
   import QRScanner from '../QRScanner.svelte';
   import CopyText from '../CopyText.svelte';
 
@@ -325,7 +326,7 @@
             <div class="flex items-center gap-2">
               <CopyText
                 text={userNpub}
-                displayText={userNpub.slice(0, 12) + '...' + userNpub.slice(-6)}
+                displayText={shortNpub(userNpub, { start: 12, end: 6 })}
                 class="text-sm flex-1 min-w-0"
               />
               <button
@@ -345,16 +346,10 @@
             <span class="text-sm font-medium">Current editors:</span>
             <ul class="space-y-1 list-none m-0 p-0">
               {#each localNpubs as npub, index (npub)}
-                {@const pubkey = npubToPubkey(npub)}
                 <li class="flex items-center gap-2 bg-surface-2 rounded px-3 py-2">
-                  {#if pubkey}
-                    <a href="#/{npub}" class="flex-1 min-w-0 hover:opacity-80">
-                      <UserRow {pubkey} avatarSize={32} />
-                    </a>
-                  {:else}
-                    <span class="i-lucide-user text-text-3"></span>
-                    <span class="flex-1 text-sm font-mono truncate">{npub}</span>
-                  {/if}
+                  <a href={`#/${npub}/profile`} class="flex-1 min-w-0 hover:opacity-80">
+                    <NpubRow npub={npub} avatarSize={32} class="min-w-0" />
+                  </a>
                   {#if canEdit}
                     <button
                       onclick={() => handleRemoveEditor(index)}
@@ -382,7 +377,7 @@
             <div class="bg-surface-2 rounded p-3 space-y-3">
               <div class="flex items-center gap-3">
                 {#if pendingPubkey}
-                  <UserRow pubkey={pendingPubkey} avatarSize={40} />
+                  <NpubRow npub={pendingNpub} avatarSize={40} />
                 {:else}
                   <span class="text-text-3 text-sm">Invalid npub</span>
                 {/if}
@@ -411,7 +406,7 @@
             <div class="bg-surface-2 rounded p-3 space-y-3">
               <div class="flex items-center gap-3">
                 {#if detectedPubkey}
-                  <UserRow pubkey={detectedPubkey} avatarSize={40} />
+                  <NpubRow npub={detectedNpub} avatarSize={40} />
                 {:else}
                   <span class="text-text-3 text-sm">Invalid npub</span>
                 {/if}

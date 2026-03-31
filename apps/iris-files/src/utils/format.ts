@@ -47,3 +47,17 @@ export function formatTimeAgo(timestamp: number): string {
   const years = Math.floor(days / 365);
   return `${years} year${years !== 1 ? 's' : ''} ago`;
 }
+
+interface ShortNpubOptions {
+  start?: number;
+  end?: number;
+}
+
+export function shortNpub(npub: string, options: ShortNpubOptions = {}): string {
+  if (!npub) return '';
+
+  const { start = 10, end = 6 } = options;
+  if (npub.length <= start + end + 3) return npub;
+
+  return `${npub.slice(0, start)}...${npub.slice(-end)}`;
+}
