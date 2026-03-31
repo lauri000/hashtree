@@ -1,5 +1,7 @@
 import type { SignalingMessage } from '@hashtree/nostr';
 
+type DirectedSignalingMessage = Exclude<SignalingMessage, { type: 'hello' }>;
+
 export const SIGNALING_KIND = 25050;
 export const HELLO_TAG = 'hello';
 export const MAX_EVENT_AGE_SEC = 30;
@@ -88,25 +90,49 @@ function isExpired(event: SignalingEventLike, nowSec: number, maxEventAgeSec: nu
   return false;
 }
 
+function normalizePeerEndpoint(value: string, senderPubkey: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return senderPubkey;
+  if (trimmed.includes(':')) {
+    const [principal] = trimmed.split(':');
+    return principal || senderPubkey;
+  }
+  if (trimmed === senderPubkey || /^[0-9a-f]{64}$/i.test(trimmed)) {
+    return trimmed;
+  }
+  return senderPubkey;
+}
+
 function normalizeSignalingMessage(raw: unknown, senderPubkey: string): SignalingMessage | null {
   if (!raw || typeof raw !== 'object' || !('type' in raw)) return null;
   const msg = raw as Record<string, unknown>;
   if (typeof msg.type !== 'string') return null;
+
+  if (typeof msg.peerId === 'string' && msg.type === 'hello') {
+    return {
+      ...(msg as unknown as Extract<SignalingMessage, { type: 'hello' }>),
+      peerId: senderPubkey,
+    };
+  }
 
   if (
     'targetPeerId' in msg &&
     typeof msg.targetPeerId === 'string' &&
     typeof msg.peerId === 'string'
   ) {
-    return msg as unknown as SignalingMessage;
+    return {
+      ...(msg as unknown as DirectedSignalingMessage),
+      peerId: senderPubkey,
+      targetPeerId: normalizePeerEndpoint(msg.targetPeerId, senderPubkey),
+    };
   }
 
   if (!('recipient' in msg) || typeof msg.recipient !== 'string' || typeof msg.peerId !== 'string') {
     return null;
   }
 
-  const senderPeerId = msg.peerId.includes(':') ? msg.peerId : `${senderPubkey}:${msg.peerId}`;
-  const targetPeerId = msg.recipient;
+  const senderPeerId = senderPubkey;
+  const targetPeerId = normalizePeerEndpoint(msg.recipient, senderPubkey);
 
   switch (msg.type) {
     case 'offer': {
@@ -233,11 +259,15 @@ export async function decodeSignalingEvent<TEvent extends SignalingEventLike>({
   if (isHello) {
     const peerIdTag = event.tags.find((tag) => tag[0] === 'peerId');
     if (!peerIdTag?.[1]) return null;
+    const senderPeerId = normalizePeerEndpoint(event.pubkey, event.pubkey);
+    if (normalizePeerEndpoint(peerIdTag[1], event.pubkey) !== senderPeerId) {
+      return null;
+    }
     return {
       senderPubkey: event.pubkey,
       message: {
         type: 'hello',
-        peerId: peerIdTag[1],
+        peerId: senderPeerId,
       },
     };
   }

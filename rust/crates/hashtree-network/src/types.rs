@@ -16,31 +16,41 @@ use crate::peer_selector::SelectionStrategy;
 /// Unique identifier for a peer in the network
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PeerId {
-    /// Nostr public key (hex encoded)
+    /// Nostr public key / endpoint identity
     pub pubkey: String,
-    /// Unique session identifier
-    pub uuid: String,
 }
 
 impl PeerId {
-    pub fn new(pubkey: String, uuid: String) -> Self {
-        Self { pubkey, uuid }
+    pub fn new(pubkey: String) -> Self {
+        Self { pubkey }
     }
 
     pub fn to_peer_string(&self) -> String {
-        format!("{}:{}", self.pubkey, self.uuid)
+        self.pubkey.clone()
     }
 
     pub fn from_peer_string(s: &str) -> Option<Self> {
-        let parts: Vec<&str> = s.split(':').collect();
-        if parts.len() == 2 {
-            Some(Self {
-                pubkey: parts[0].to_string(),
-                uuid: parts[1].to_string(),
-            })
-        } else {
-            None
+        let pubkey = s.split(':').next()?.trim();
+        if pubkey.is_empty() {
+            return None;
         }
+        Some(Self {
+            pubkey: pubkey.to_string(),
+        })
+    }
+
+    pub fn from_string(s: &str) -> Option<Self> {
+        Self::from_peer_string(s)
+    }
+
+    pub fn short(&self) -> String {
+        self.pubkey[..8.min(self.pubkey.len())].to_string()
+    }
+}
+
+impl std::fmt::Display for PeerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.pubkey)
     }
 }
 

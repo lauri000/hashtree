@@ -38,7 +38,7 @@ describe('p2p signaling core', () => {
     const giftWrap = vi.fn();
     const nowMs = 1700000000000;
 
-    const message: SignalingMessage = { type: 'hello', peerId: 'uuid-123' };
+    const message: SignalingMessage = { type: 'hello', peerId: 'f'.repeat(64) };
     await sendSignalingMessage({
       msg: message,
       signEvent,
@@ -53,7 +53,7 @@ describe('p2p signaling core', () => {
     expect(signEvent).toHaveBeenCalledTimes(1);
     expect(published).toHaveLength(1);
     expect(published[0]?.tags).toContainEqual(['l', HELLO_TAG]);
-    expect(published[0]?.tags).toContainEqual(['peerId', 'uuid-123']);
+    expect(published[0]?.tags).toContainEqual(['peerId', 'f'.repeat(64)]);
   });
 
   it('sends directed signaling via giftWrap + publish', async () => {
@@ -68,8 +68,8 @@ describe('p2p signaling core', () => {
 
     const message: SignalingMessage = {
       type: 'offer',
-      peerId: 'sender:uuid',
-      targetPeerId: 'recipient:uuid',
+      peerId: 'sender',
+      targetPeerId: 'recipient',
       sdp: 'v=0',
     };
 
@@ -94,7 +94,7 @@ describe('p2p signaling core', () => {
       created_at: Math.floor(Date.now() / 1000),
       tags: [
         ['l', HELLO_TAG],
-        ['peerId', 'hello-uuid'],
+        ['peerId', 'sender-pubkey'],
       ],
       content: '',
     };
@@ -109,7 +109,7 @@ describe('p2p signaling core', () => {
       senderPubkey: 'sender-pubkey',
       message: {
         type: 'hello',
-        peerId: 'hello-uuid',
+        peerId: 'sender-pubkey',
       },
     });
   });
@@ -128,7 +128,7 @@ describe('p2p signaling core', () => {
       tags: [],
       content: JSON.stringify({
         type: 'offer',
-        peerId: 'sender-uuid',
+        peerId: 'sender:uuid',
         recipient: 'target:uuid',
         offer: { sdp: 'v=0' },
       }),
@@ -144,8 +144,8 @@ describe('p2p signaling core', () => {
       senderPubkey: 'sender-pubkey',
       message: {
         type: 'offer',
-        peerId: 'sender-pubkey:sender-uuid',
-        targetPeerId: 'target:uuid',
+        peerId: 'sender-pubkey',
+        targetPeerId: 'target',
         sdp: 'v=0',
       },
     });
@@ -156,7 +156,7 @@ describe('p2p signaling core', () => {
     const event: SignalingEventLike = {
       pubkey: 'sender',
       created_at: Math.floor((nowMs - 120000) / 1000),
-      tags: [['l', HELLO_TAG], ['peerId', 'uuid']],
+      tags: [['l', HELLO_TAG], ['peerId', 'sender']],
       content: '',
     };
 

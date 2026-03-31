@@ -126,27 +126,24 @@ describe('PeerId', () => {
     expect(uuid1.length).toBeGreaterThan(10);
   });
 
-  it('should format peerId as pubkey:uuid', async () => {
+  it('should format peerId as pubkey', async () => {
     const { PeerId } = await import('../src/webrtc/types.js');
 
     const pubkey = 'a'.repeat(64);
-    const uuid = 'test123';
-    const peerId = new PeerId(pubkey, uuid);
+    const peerId = new PeerId(pubkey);
 
-    expect(peerId.toString()).toBe(`${pubkey}:${uuid}`);
+    expect(peerId.toString()).toBe(pubkey);
     expect(peerId.pubkey).toBe(pubkey);
-    expect(peerId.uuid).toBe(uuid);
   });
 
   it('should generate short form for display', async () => {
     const { PeerId } = await import('../src/webrtc/types.js');
 
     const pubkey = 'abcdef1234567890'.repeat(4);
-    const uuid = 'xyz789abc';
-    const peerId = new PeerId(pubkey, uuid);
+    const peerId = new PeerId(pubkey);
 
     const short = peerId.short();
-    expect(short).toBe('abcdef12:xyz789');
+    expect(short).toBe('abcdef12');
   });
 
   it('should parse peerId from string', async () => {
@@ -156,7 +153,7 @@ describe('PeerId', () => {
     const peerId = PeerId.fromString(str);
 
     expect(peerId.pubkey).toBe('a'.repeat(64));
-    expect(peerId.uuid).toBe('myuuid123');
+    expect(peerId.toString()).toBe('a'.repeat(64));
   });
 });
 

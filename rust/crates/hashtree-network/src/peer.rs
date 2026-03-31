@@ -440,7 +440,7 @@ impl<S: Store + 'static> Peer<S> {
 
                 match parsed {
                     ProtoMessage::Request(req) => {
-                        let htl = req.htl.unwrap_or(MAX_HTL);
+                        let htl = req.htl;
                         let hash_key = hash_to_key(&req.h);
 
                         if debug {

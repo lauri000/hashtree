@@ -1045,6 +1045,8 @@ async fn send_msgpack_response(state: &AppState, client_id: u64, hash: &[u8], da
     let res = DataResponse {
         h: hash.to_vec(),
         d: data.to_vec(),
+        i: None,
+        n: None,
     };
     if let Ok(wire) = encode_response(&res) {
         send_to_client(state, client_id, Message::Binary(wire)).await;
@@ -1468,9 +1470,7 @@ mod tests {
                 move |ws: WebSocketUpgrade| {
                     let state = state.clone();
                     let client_pubkey = client_pubkey.clone();
-                    async move {
-                        ws_data_with_client_pubkey(state, ws, Some(client_pubkey))
-                    }
+                    async move { ws_data_with_client_pubkey(state, ws, Some(client_pubkey)) }
                 }
             }),
         );

@@ -20,7 +20,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, RwLock};
-use uuid::Uuid;
 
 #[derive(Debug, Error)]
 pub enum WebRTCStoreError {
@@ -84,7 +83,7 @@ impl<S: Store + 'static> WebRTCStore<S> {
         let mut selector = PeerSelector::with_strategy(config.request_selection_strategy);
         selector.set_fairness(config.request_fairness_enabled);
 
-        let peer_id = PeerId::new(String::new(), Uuid::new_v4().to_string());
+        let peer_id = PeerId::new(String::new());
 
         Self {
             local_store,
@@ -159,7 +158,7 @@ impl<S: Store + 'static> WebRTCStore<S> {
     /// Start the WebRTC store (connect to relays, begin peer discovery)
     pub async fn start(&mut self, keys: Keys) -> Result<(), WebRTCStoreError> {
         // Update peer ID with actual pubkey
-        self.peer_id.pubkey = keys.public_key().to_hex();
+        self.peer_id = PeerId::new(keys.public_key().to_hex());
 
         // Create Nostr client with its own separate database to avoid event deduplication
         // across multiple clients in the same process (important for tests)
@@ -484,11 +483,12 @@ impl<S: Store + 'static> WebRTCStore<S> {
                     return; // Ignore own messages
                 }
 
-                // Extract pubkey from peer_id (format: "pubkey:uuid")
-                let peer_pubkey = peer_id.split(':').next().unwrap_or("");
+                let peer_pubkey = PeerId::from_peer_string(peer_id)
+                    .map(|remote| remote.pubkey)
+                    .unwrap_or_else(|| peer_id.clone());
 
                 // Classify the peer
-                let pool = Self::classify_peer(peer_pubkey, config).await;
+                let pool = Self::classify_peer(&peer_pubkey, config).await;
 
                 // Check pool limits
                 let peers_read = peers.read().await;
@@ -584,10 +584,12 @@ impl<S: Store + 'static> WebRTCStore<S> {
                 }
 
                 // Extract pubkey from peer_id
-                let peer_pubkey = peer_id.split(':').next().unwrap_or("");
+                let peer_pubkey = PeerId::from_peer_string(peer_id)
+                    .map(|remote| remote.pubkey)
+                    .unwrap_or_else(|| peer_id.clone());
 
                 // Classify the peer
-                let pool = Self::classify_peer(peer_pubkey, config).await;
+                let pool = Self::classify_peer(&peer_pubkey, config).await;
 
                 // Check pool limits
                 let peers_read = peers.read().await;

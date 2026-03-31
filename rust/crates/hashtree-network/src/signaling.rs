@@ -31,7 +31,7 @@ pub struct PeerEntry {
 /// - On collision (both sent offers), "polite" peer backs off and accepts incoming
 /// - This ensures connections form even when one peer is satisfied but can accept
 pub struct MeshRouter<R: SignalingTransport, F: PeerLinkFactory> {
-    /// Our peer ID (pubkey:uuid format)
+    /// Our peer ID (pubkey format)
     peer_id: String,
     /// Our pubkey (stored for future use in debugging/logging)
     #[allow(dead_code)]
@@ -227,11 +227,12 @@ impl<R: SignalingTransport + 'static, F: PeerLinkFactory + 'static> MeshRouter<R
             return Ok(());
         }
 
-        // Extract pubkey from peer_id (format: "pubkey:uuid")
-        let peer_pubkey = from_peer_id.split(':').next().unwrap_or("");
+        let peer_pubkey = crate::types::PeerId::from_peer_string(from_peer_id)
+            .map(|peer_id| peer_id.pubkey)
+            .unwrap_or_else(|| from_peer_id.to_string());
 
         // Classify the peer
-        let pool = self.classify_peer(peer_pubkey).await;
+        let pool = self.classify_peer(&peer_pubkey).await;
 
         // Check pool limits
         let (follows_count, other_count) = self.count_pools().await;
@@ -303,10 +304,12 @@ impl<R: SignalingTransport + 'static, F: PeerLinkFactory + 'static> MeshRouter<R
     /// the "polite" peer (lower ID) backs off and accepts the incoming offer.
     async fn handle_offer(&self, from_peer_id: &str, sdp: &str) -> Result<(), TransportError> {
         // Extract pubkey
-        let peer_pubkey = from_peer_id.split(':').next().unwrap_or("");
+        let peer_pubkey = crate::types::PeerId::from_peer_string(from_peer_id)
+            .map(|peer_id| peer_id.pubkey)
+            .unwrap_or_else(|| from_peer_id.to_string());
 
         // Classify and check limits
-        let pool = self.classify_peer(peer_pubkey).await;
+        let pool = self.classify_peer(&peer_pubkey).await;
         let (follows_count, other_count) = self.count_pools().await;
 
         if !self.can_accept_peer(pool, follows_count, other_count) {

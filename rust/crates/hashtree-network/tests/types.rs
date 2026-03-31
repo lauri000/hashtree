@@ -12,28 +12,34 @@ use nostr_sdk::nostr::{EventBuilder, Keys, Kind};
 
 #[test]
 fn test_peer_id_creation() {
-    let peer_id = PeerId::new("abc123".to_string(), "uuid-456".to_string());
+    let peer_id = PeerId::new("abc123".to_string());
     assert_eq!(peer_id.pubkey, "abc123");
-    assert_eq!(peer_id.uuid, "uuid-456");
 }
 
 #[test]
 fn test_peer_id_to_string() {
-    let peer_id = PeerId::new("abc123".to_string(), "uuid-456".to_string());
-    assert_eq!(peer_id.to_peer_string(), "abc123:uuid-456");
+    let peer_id = PeerId::new("abc123".to_string());
+    assert_eq!(peer_id.to_peer_string(), "abc123");
+    assert_eq!(peer_id.to_string(), "abc123");
 }
 
 #[test]
 fn test_peer_id_from_string() {
-    let peer_id = PeerId::from_peer_string("abc123:uuid-456").unwrap();
+    let peer_id = PeerId::from_string("abc123:uuid-456").unwrap();
     assert_eq!(peer_id.pubkey, "abc123");
-    assert_eq!(peer_id.uuid, "uuid-456");
 }
 
 #[test]
 fn test_peer_id_from_string_invalid() {
-    assert!(PeerId::from_peer_string("invalid").is_none());
-    assert!(PeerId::from_peer_string("").is_none());
+    let peer_id = PeerId::from_string("invalid").unwrap();
+    assert_eq!(peer_id.pubkey, "invalid");
+    assert!(PeerId::from_string("").is_none());
+}
+
+#[test]
+fn test_peer_id_short() {
+    let peer_id = PeerId::new("abc123def456ghijklmnop".to_string());
+    assert_eq!(peer_id.short(), "abc123de");
 }
 
 #[test]
@@ -98,7 +104,7 @@ fn test_encode_decode_request() {
     match parsed {
         DataMessage::Request(r) => {
             assert_eq!(r.h, hash.to_vec());
-            assert_eq!(r.htl, Some(10));
+            assert_eq!(r.htl, 10);
         }
         _ => panic!("Expected request"),
     }

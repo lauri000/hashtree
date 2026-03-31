@@ -1,11 +1,14 @@
 //! WebRTC signaling types compatible with iris-client and hashtree-ts
 
+use hashtree_network::DataMessage as SharedDataMessage;
 pub use hashtree_network::{
-    decrement_htl_with_policy, should_forward_htl, validate_mesh_frame, HtlMode, HtlPolicy,
-    IceCandidate, MeshNostrFrame, MeshNostrPayload, PeerHTLConfig, PeerPool, PoolConfig,
-    PoolSettings, RequestDispatchConfig, SelectionStrategy, SignalingMessage, TimedSeenSet,
-    BLOB_REQUEST_POLICY, DECREMENT_AT_MAX_PROB, DECREMENT_AT_MIN_PROB, MAX_HTL, MESH_DEFAULT_HTL,
-    MESH_EVENT_POLICY, MESH_MAX_HTL, MESH_PROTOCOL, MESH_PROTOCOL_VERSION,
+    decrement_htl_with_policy, should_forward_htl, validate_mesh_frame, DataQuoteRequest,
+    DataQuoteResponse, DataRequest, DataResponse, HtlMode, HtlPolicy, IceCandidate, MeshNostrFrame,
+    MeshNostrPayload, PeerHTLConfig, PeerId, PeerPool, PoolConfig, PoolSettings,
+    RequestDispatchConfig, SelectionStrategy, SignalingMessage, TimedSeenSet, BLOB_REQUEST_POLICY,
+    DECREMENT_AT_MAX_PROB, DECREMENT_AT_MIN_PROB, MAX_HTL, MESH_DEFAULT_HTL, MESH_EVENT_POLICY,
+    MESH_MAX_HTL, MESH_PROTOCOL, MESH_PROTOCOL_VERSION, MSG_TYPE_QUOTE_REQUEST,
+    MSG_TYPE_QUOTE_RESPONSE, MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -28,72 +31,6 @@ pub const HELLO_TAG: &str = "hello";
 
 /// Legacy tag for WebRTC signaling messages (kept for compatibility)
 pub const WEBRTC_TAG: &str = "webrtc";
-
-/// Generate a UUID for peer identification
-pub fn generate_uuid() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    format!(
-        "{}{}",
-        (0..15)
-            .map(|_| char::from_digit(rng.gen_range(0..36), 36).unwrap())
-            .collect::<String>(),
-        (0..15)
-            .map(|_| char::from_digit(rng.gen_range(0..36), 36).unwrap())
-            .collect::<String>()
-    )
-}
-
-fn configured_peer_uuid() -> Option<String> {
-    std::env::var("HTREE_PEER_UUID")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-/// Peer identifier combining pubkey and session UUID
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PeerId {
-    pub pubkey: String,
-    pub uuid: String,
-}
-
-impl PeerId {
-    pub fn new(pubkey: String, uuid: Option<String>) -> Self {
-        Self {
-            pubkey,
-            uuid: uuid
-                .or_else(configured_peer_uuid)
-                .unwrap_or_else(generate_uuid),
-        }
-    }
-
-    pub fn from_string(s: &str) -> Option<Self> {
-        let parts: Vec<&str> = s.split(':').collect();
-        if parts.len() == 2 {
-            Some(Self {
-                pubkey: parts[0].to_string(),
-                uuid: parts[1].to_string(),
-            })
-        } else {
-            None
-        }
-    }
-
-    pub fn short(&self) -> String {
-        format!(
-            "{}:{}",
-            &self.pubkey[..8.min(self.pubkey.len())],
-            &self.uuid[..6.min(self.uuid.len())]
-        )
-    }
-}
-
-impl std::fmt::Display for PeerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.pubkey, self.uuid)
-    }
-}
 
 /// Configuration for WebRTC manager
 #[derive(Clone)]
@@ -206,11 +143,6 @@ impl std::fmt::Display for PeerDirection {
     }
 }
 
-/// Message type bytes (prefix before MessagePack body)
-pub const MSG_TYPE_REQUEST: u8 = 0x00;
-pub const MSG_TYPE_RESPONSE: u8 = 0x01;
-pub const MSG_TYPE_QUOTE_REQUEST: u8 = 0x02;
-pub const MSG_TYPE_QUOTE_RESPONSE: u8 = 0x03;
 pub const MSG_TYPE_PAYMENT: u8 = 0x04;
 pub const MSG_TYPE_PAYMENT_ACK: u8 = 0x05;
 pub const MSG_TYPE_CHUNK: u8 = 0x06;
@@ -226,49 +158,6 @@ pub const MSG_TYPE_CHUNK: u8 = 0x06;
 /// Payment:       [0x04][msgpack: {h: bytes32, q: u64, c: u32, p: u64, m?: string, tok: string}]
 /// PaymentAck:    [0x05][msgpack: {h: bytes32, q: u64, c: u32, a: bool, e?: string}]
 /// Chunk:         [0x06][msgpack: {h: bytes32, q: u64, c: u32, n: u32, p: u64, d: bytes}]
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataRequest {
-    #[serde(with = "serde_bytes")]
-    pub h: Vec<u8>, // 32-byte hash
-    #[serde(default = "default_htl", skip_serializing_if = "is_max_htl")]
-    pub htl: u8,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub q: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataResponse {
-    #[serde(with = "serde_bytes")]
-    pub h: Vec<u8>, // 32-byte hash
-    #[serde(with = "serde_bytes")]
-    pub d: Vec<u8>, // Data
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataQuoteRequest {
-    #[serde(with = "serde_bytes")]
-    pub h: Vec<u8>,
-    pub p: u64,
-    pub t: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub m: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataQuoteResponse {
-    #[serde(with = "serde_bytes")]
-    pub h: Vec<u8>,
-    pub a: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub q: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub p: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub t: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub m: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataPayment {
@@ -316,50 +205,26 @@ pub enum DataMessage {
     Chunk(DataChunk),
 }
 
-fn default_htl() -> u8 {
-    BLOB_REQUEST_POLICY.max_htl
-}
-
-fn is_max_htl(htl: &u8) -> bool {
-    *htl == BLOB_REQUEST_POLICY.max_htl
-}
-
 /// Encode a request to wire format: [0x00][msgpack body]
 /// Uses named fields for cross-language compatibility with TypeScript
 pub fn encode_request(req: &DataRequest) -> Result<Vec<u8>, rmp_serde::encode::Error> {
-    let body = rmp_serde::to_vec_named(req)?;
-    let mut result = Vec::with_capacity(1 + body.len());
-    result.push(MSG_TYPE_REQUEST);
-    result.extend(body);
-    Ok(result)
+    Ok(hashtree_network::encode_request(req))
 }
 
 /// Encode a response to wire format: [0x01][msgpack body]
 /// Uses named fields for cross-language compatibility with TypeScript
 pub fn encode_response(res: &DataResponse) -> Result<Vec<u8>, rmp_serde::encode::Error> {
-    let body = rmp_serde::to_vec_named(res)?;
-    let mut result = Vec::with_capacity(1 + body.len());
-    result.push(MSG_TYPE_RESPONSE);
-    result.extend(body);
-    Ok(result)
+    Ok(hashtree_network::encode_response(res))
 }
 
 /// Encode a quote request to wire format: [0x02][msgpack body]
 pub fn encode_quote_request(req: &DataQuoteRequest) -> Result<Vec<u8>, rmp_serde::encode::Error> {
-    let body = rmp_serde::to_vec_named(req)?;
-    let mut result = Vec::with_capacity(1 + body.len());
-    result.push(MSG_TYPE_QUOTE_REQUEST);
-    result.extend(body);
-    Ok(result)
+    Ok(hashtree_network::encode_quote_request(req))
 }
 
 /// Encode a quote response to wire format: [0x03][msgpack body]
 pub fn encode_quote_response(res: &DataQuoteResponse) -> Result<Vec<u8>, rmp_serde::encode::Error> {
-    let body = rmp_serde::to_vec_named(res)?;
-    let mut result = Vec::with_capacity(1 + body.len());
-    result.push(MSG_TYPE_QUOTE_RESPONSE);
-    result.extend(body);
-    Ok(result)
+    Ok(hashtree_network::encode_quote_response(res))
 }
 
 pub fn encode_payment(req: &DataPayment) -> Result<Vec<u8>, rmp_serde::encode::Error> {
@@ -393,35 +258,27 @@ pub fn parse_message(data: &[u8]) -> Result<DataMessage, rmp_serde::decode::Erro
     }
 
     let msg_type = data[0];
-    let body = &data[1..];
 
     match msg_type {
-        MSG_TYPE_REQUEST => {
-            let req: DataRequest = rmp_serde::from_slice(body)?;
-            Ok(DataMessage::Request(req))
-        }
-        MSG_TYPE_RESPONSE => {
-            let res: DataResponse = rmp_serde::from_slice(body)?;
-            Ok(DataMessage::Response(res))
-        }
-        MSG_TYPE_QUOTE_REQUEST => {
-            let req: DataQuoteRequest = rmp_serde::from_slice(body)?;
-            Ok(DataMessage::QuoteRequest(req))
-        }
-        MSG_TYPE_QUOTE_RESPONSE => {
-            let res: DataQuoteResponse = rmp_serde::from_slice(body)?;
-            Ok(DataMessage::QuoteResponse(res))
+        MSG_TYPE_REQUEST | MSG_TYPE_RESPONSE | MSG_TYPE_QUOTE_REQUEST | MSG_TYPE_QUOTE_RESPONSE => {
+            match hashtree_network::parse_message(data) {
+                Some(SharedDataMessage::Request(req)) => Ok(DataMessage::Request(req)),
+                Some(SharedDataMessage::Response(res)) => Ok(DataMessage::Response(res)),
+                Some(SharedDataMessage::QuoteRequest(req)) => Ok(DataMessage::QuoteRequest(req)),
+                Some(SharedDataMessage::QuoteResponse(res)) => Ok(DataMessage::QuoteResponse(res)),
+                None => Err(rmp_serde::decode::Error::LengthMismatch(msg_type as u32)),
+            }
         }
         MSG_TYPE_PAYMENT => {
-            let req: DataPayment = rmp_serde::from_slice(body)?;
+            let req: DataPayment = rmp_serde::from_slice(&data[1..])?;
             Ok(DataMessage::Payment(req))
         }
         MSG_TYPE_PAYMENT_ACK => {
-            let res: DataPaymentAck = rmp_serde::from_slice(body)?;
+            let res: DataPaymentAck = rmp_serde::from_slice(&data[1..])?;
             Ok(DataMessage::PaymentAck(res))
         }
         MSG_TYPE_CHUNK => {
-            let chunk: DataChunk = rmp_serde::from_slice(body)?;
+            let chunk: DataChunk = rmp_serde::from_slice(&data[1..])?;
             Ok(DataMessage::Chunk(chunk))
         }
         _ => Err(rmp_serde::decode::Error::LengthMismatch(msg_type as u32)),
@@ -430,7 +287,7 @@ pub fn parse_message(data: &[u8]) -> Result<DataMessage, rmp_serde::decode::Erro
 
 /// Convert hash to hex string for logging/map keys
 pub fn hash_to_hex(hash: &[u8]) -> String {
-    hash.iter().map(|b| format!("{:02x}", b)).collect()
+    hashtree_network::hash_to_key(hash)
 }
 
 /// Encode a DataMessage to wire format (deprecated - use encode_request/encode_response)

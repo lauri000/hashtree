@@ -1252,7 +1252,7 @@ impl WebRTCManager {
     /// Create a new WebRTC manager
     pub fn new(keys: Keys, config: WebRTCConfig) -> Self {
         let pubkey = keys.public_key().to_hex();
-        let my_peer_id = PeerId::new(pubkey, None);
+        let my_peer_id = PeerId::new(pubkey);
         let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
         let (signaling_tx, signaling_rx) = mpsc::channel(100);
         let (state_event_tx, state_event_rx) = mpsc::channel(100);
@@ -2374,7 +2374,7 @@ mod tests {
         config.wifi_aware.enabled = true;
         config.wifi_aware.max_peers = 1;
         let manager = WebRTCManager::new(keys, config);
-        let existing_peer = PeerId::new("peer-a".to_string(), Some("sess-a".to_string()));
+        let existing_peer = PeerId::new("peer-a".to_string());
         let existing_key = existing_peer.to_string();
         let mut peers = HashMap::new();
         peers.insert(
@@ -2407,7 +2407,7 @@ mod tests {
         state.peers.write().await.insert(
             "peer-a".to_string(),
             PeerEntry {
-                peer_id: PeerId::new("peer-a-pub".to_string(), Some("session-a".to_string())),
+                peer_id: PeerId::new("peer-a-pub".to_string()),
                 direction: PeerDirection::Outbound,
                 state: ConnectionState::Connected,
                 last_seen: Instant::now(),
@@ -2428,7 +2428,7 @@ mod tests {
             .expect("expected mock mesh peer response");
 
         assert_eq!(resolved.0, data);
-        assert_eq!(resolved.1, "peer-a-pub:session-a");
+        assert_eq!(resolved.1, "peer-a-pub");
     }
 
     #[tokio::test]
@@ -2453,7 +2453,7 @@ mod tests {
         state.peers.write().await.insert(
             "peer-a".to_string(),
             PeerEntry {
-                peer_id: PeerId::new("peer-a-pub".to_string(), Some("session-a".to_string())),
+                peer_id: PeerId::new("peer-a-pub".to_string()),
                 direction: PeerDirection::Outbound,
                 state: ConnectionState::Connected,
                 last_seen: Instant::now(),
@@ -2477,7 +2477,7 @@ mod tests {
             .expect("expected delayed mock mesh peer response");
 
         assert_eq!(resolved.0, data);
-        assert_eq!(resolved.1, "peer-a-pub:session-a");
+        assert_eq!(resolved.1, "peer-a-pub");
     }
 
     #[tokio::test]
@@ -2486,7 +2486,7 @@ mod tests {
         let mut config = WebRTCConfig::default();
         config.signaling_enabled = false;
         let manager = WebRTCManager::new(keys, config);
-        let peer_id = PeerId::new("peer-a-pub".to_string(), Some("session-a".to_string()));
+        let peer_id = PeerId::new("peer-a-pub".to_string());
         let peer_key = peer_id.to_string();
         let peer = MeshPeer::mock_for_tests(TestMeshPeer::with_response(None));
         let peer_ref = peer.mock_ref().expect("mock peer").clone();
@@ -2525,7 +2525,7 @@ mod tests {
     async fn failed_peer_cleanup_does_not_hold_peer_map_lock_while_closing() {
         let keys = Keys::generate();
         let manager = Arc::new(WebRTCManager::new(keys, WebRTCConfig::default()));
-        let peer_id = PeerId::new("peer-a-pub".to_string(), Some("session-a".to_string()));
+        let peer_id = PeerId::new("peer-a-pub".to_string());
         let peer_key = peer_id.to_string();
 
         manager.state.peers.write().await.insert(
@@ -2587,7 +2587,7 @@ mod tests {
         .to_event(&owner_keys)
         .unwrap();
 
-        let peer_id = PeerId::new("peer-a-pub".to_string(), Some("session-a".to_string()));
+        let peer_id = PeerId::new("peer-a-pub".to_string());
         let peer_key = peer_id.to_string();
 
         manager.state.peers.write().await.insert(

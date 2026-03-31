@@ -4,40 +4,38 @@ use super::types::*;
 
 #[test]
 fn test_peer_id_display() {
-    let peer_id = PeerId::new("abc123def456".to_string(), Some("uuid-12345".to_string()));
-    assert_eq!(peer_id.to_string(), "abc123def456:uuid-12345");
+    let peer_id = PeerId::new("abc123def456".to_string());
+    assert_eq!(peer_id.to_string(), "abc123def456");
 }
 
 #[test]
 fn test_peer_id_short() {
-    let peer_id = PeerId::new(
-        "abc123def456ghijklmnop".to_string(),
-        Some("uuid-12345678".to_string()),
-    );
-    assert_eq!(peer_id.short(), "abc123de:uuid-1");
+    let peer_id = PeerId::new("abc123def456ghijklmnop".to_string());
+    assert_eq!(peer_id.short(), "abc123de");
 }
 
 #[test]
 fn test_peer_id_from_string() {
     let peer_id = PeerId::from_string("abc123:uuid456").unwrap();
     assert_eq!(peer_id.pubkey, "abc123");
-    assert_eq!(peer_id.uuid, "uuid456");
 }
 
 #[test]
 fn test_peer_id_from_string_invalid() {
-    assert!(PeerId::from_string("no-colon").is_none());
-    assert!(PeerId::from_string("a:b:c").is_none());
+    let peer_id = PeerId::from_string("no-colon").unwrap();
+    assert_eq!(peer_id.pubkey, "no-colon");
+    let peer_id = PeerId::from_string("a:b:c").unwrap();
+    assert_eq!(peer_id.pubkey, "a");
 }
 
 #[test]
 fn test_signaling_message_hello() {
     let msg = SignalingMessage::Hello {
-        peer_id: "my-pubkey:my-uuid".to_string(),
+        peer_id: "my-pubkey".to_string(),
         roots: Vec::new(),
     };
     assert_eq!(msg.msg_type(), "hello");
-    assert_eq!(msg.peer_id(), "my-pubkey:my-uuid");
+    assert_eq!(msg.peer_id(), "my-pubkey");
     assert!(msg.target_peer_id().is_none());
 }
 
@@ -75,19 +73,6 @@ fn test_webrtc_config_default() {
     assert_eq!(config.request_dispatch.hedge_fanout, 1);
     assert_eq!(config.request_dispatch.max_fanout, 8);
     assert_eq!(config.request_dispatch.hedge_interval_ms, 120);
-}
-
-#[test]
-fn test_generate_uuid() {
-    let uuid1 = generate_uuid();
-    let uuid2 = generate_uuid();
-
-    // Should be 30 characters (15 + 15)
-    assert_eq!(uuid1.len(), 30);
-    assert_eq!(uuid2.len(), 30);
-
-    // Should be different
-    assert_ne!(uuid1, uuid2);
 }
 
 #[test]
@@ -135,6 +120,8 @@ fn test_wire_format_response_encode_decode() {
     let res = DataResponse {
         h: vec![0xcd; 32],
         d: vec![1, 2, 3, 4, 5],
+        i: None,
+        n: None,
     };
     let encoded = encode_response(&res).unwrap();
 

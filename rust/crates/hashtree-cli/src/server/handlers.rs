@@ -3381,7 +3381,6 @@ mod tests {
         let state = Arc::new(WebRTCState::new());
         let peer_id = crate::webrtc::PeerId::new(
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
-            Some("peer-session".to_string()),
         );
         let peer_key = peer_id.to_string();
         let signal_paths = BTreeSet::from([PeerSignalPath::Relay, PeerSignalPath::Multicast]);
@@ -4342,21 +4341,22 @@ mod tests {
         let asset_bytes = b"nostr-vpn-macos-zip".to_vec();
         let (asset_cid, _) = tree.put(&asset_bytes).await.unwrap();
         let assets_dir = tree
-            .put_directory(vec![
-                DirEntry::from_cid("nostr-vpn-v0.3.0-macos-arm64.zip", &asset_cid)
-                    .with_link_type(LinkType::File),
-            ])
+            .put_directory(vec![DirEntry::from_cid(
+                "nostr-vpn-v0.3.0-macos-arm64.zip",
+                &asset_cid,
+            )
+            .with_link_type(LinkType::File)])
             .await
             .unwrap();
         let version_dir = tree
             .put_directory(vec![
-                DirEntry::from_cid("assets", &assets_dir).with_link_type(LinkType::Dir),
+                DirEntry::from_cid("assets", &assets_dir).with_link_type(LinkType::Dir)
             ])
             .await
             .unwrap();
         let root_cid = tree
             .put_directory(vec![
-                DirEntry::from_cid("v0.3.0", &version_dir).with_link_type(LinkType::Dir),
+                DirEntry::from_cid("v0.3.0", &version_dir).with_link_type(LinkType::Dir)
             ])
             .await
             .unwrap();
@@ -4595,9 +4595,13 @@ mod tests {
         let refresh = resolve_to_hash(
             State(state),
             OriginalUri(
-                format!("/api/resolve/{}/{}", keys.public_key().to_bech32().unwrap(), tree_name)
-                    .parse()
-                    .unwrap(),
+                format!(
+                    "/api/resolve/{}/{}",
+                    keys.public_key().to_bech32().unwrap(),
+                    tree_name
+                )
+                .parse()
+                .unwrap(),
             ),
             Path((
                 keys.public_key().to_bech32().unwrap(),

@@ -11,6 +11,14 @@
 use hashtree_core::Hash;
 use serde::{Deserialize, Serialize};
 
+fn default_htl() -> u8 {
+    crate::types::MAX_HTL
+}
+
+fn is_max_htl(htl: &u8) -> bool {
+    *htl == crate::types::MAX_HTL
+}
+
 /// Message type bytes (prefix before MessagePack body)
 pub const MSG_TYPE_REQUEST: u8 = 0x00;
 pub const MSG_TYPE_RESPONSE: u8 = 0x01;
@@ -26,9 +34,9 @@ pub struct DataRequest {
     /// 32-byte hash
     #[serde(with = "serde_bytes")]
     pub h: Vec<u8>,
-    /// Hops To Live (optional, defaults to MAX_HTL)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub htl: Option<u8>,
+    /// Hops To Live (defaults to MAX_HTL when omitted on the wire)
+    #[serde(default = "default_htl", skip_serializing_if = "is_max_htl")]
+    pub htl: u8,
     /// Optional quote identifier for paid retrieval.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub q: Option<u64>,
@@ -165,7 +173,7 @@ pub fn parse_message(data: &[u8]) -> Option<DataMessage> {
 pub fn create_request(hash: &Hash, htl: u8) -> DataRequest {
     DataRequest {
         h: hash.to_vec(),
-        htl: Some(htl),
+        htl,
         q: None,
     }
 }
@@ -174,7 +182,7 @@ pub fn create_request(hash: &Hash, htl: u8) -> DataRequest {
 pub fn create_request_with_quote(hash: &Hash, htl: u8, quote_id: u64) -> DataRequest {
     DataRequest {
         h: hash.to_vec(),
-        htl: Some(htl),
+        htl,
         q: Some(quote_id),
     }
 }
@@ -291,7 +299,30 @@ mod tests {
         match parsed {
             DataMessage::Request(r) => {
                 assert_eq!(r.h, hash.to_vec());
-                assert_eq!(r.htl, Some(10));
+                assert_eq!(r.htl, 10);
+            }
+            _ => panic!("Expected request"),
+        }
+    }
+
+    #[test]
+    fn test_decode_request_without_explicit_htl_defaults_to_max() {
+        #[derive(Serialize)]
+        struct LegacyRequest {
+            #[serde(with = "serde_bytes")]
+            h: Vec<u8>,
+        }
+
+        let hash = [0x21; 32];
+        let body = rmp_serde::to_vec_named(&LegacyRequest { h: hash.to_vec() }).unwrap();
+        let mut encoded = vec![MSG_TYPE_REQUEST];
+        encoded.extend(body);
+
+        let parsed = parse_message(&encoded).unwrap();
+        match parsed {
+            DataMessage::Request(r) => {
+                assert_eq!(r.h, hash.to_vec());
+                assert_eq!(r.htl, crate::types::MAX_HTL);
             }
             _ => panic!("Expected request"),
         }
@@ -385,7 +416,7 @@ mod tests {
         match parsed_req {
             DataMessage::Request(r) => {
                 assert_eq!(r.h, hash.to_vec());
-                assert_eq!(r.htl, Some(9));
+                assert_eq!(r.htl, 9);
                 assert_eq!(r.q, Some(19));
             }
             _ => panic!("Expected quoted request"),

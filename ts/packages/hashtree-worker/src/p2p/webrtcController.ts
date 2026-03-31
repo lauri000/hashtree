@@ -24,7 +24,6 @@ import {
   MSG_TYPE_RESPONSE,
   FRAGMENT_SIZE,
   PeerId,
-  generateUuid,
   encodeRequest,
   encodeResponse,
   parseMessage,
@@ -154,7 +153,7 @@ export class WebRTCController {
   private readonly HELLO_INTERVAL = 5000;
 
   constructor(config: WebRTCControllerConfig) {
-    this.myPeerId = new PeerId(config.pubkey, generateUuid());
+    this.myPeerId = new PeerId(config.pubkey);
     this.localStore = config.localStore;
     this.sendCommand = config.sendCommand;
     this.sendSignaling = config.sendSignaling;
@@ -223,7 +222,7 @@ export class WebRTCController {
   private sendHello(): void {
     const msg: SignalingMessage = {
       type: 'hello',
-      peerId: this.myPeerId.uuid,
+      peerId: this.myPeerId.toString(),
     };
     this.sendSignaling(msg).catch(err => {
       console.error('[WebRTC] sendSignaling error:', err);
@@ -241,24 +240,17 @@ export class WebRTCController {
   /**
    * Handle incoming signaling message (from Nostr kind 25050)
    *
-   * Note: For hello messages, msg.peerId is just the UUID (from Nostr tag).
-   * For directed messages (offer/answer/candidate), msg.peerId is already the full
-   * pubkey:uuid format from Rust's SignalingMessage.
+   * `peerId` is the remote endpoint identity.
    */
   async handleSignalingMessage(msg: SignalingMessage, senderPubkey: string): Promise<void> {
     this.log(`Signaling from ${senderPubkey.slice(0, 8)}:`, msg.type);
 
     switch (msg.type) {
       case 'hello':
-        // For hello, msg.peerId is just UUID - handleHello constructs the full peer ID
-        {
-          const senderUuid = msg.peerId.includes(':') ? msg.peerId.split(':').slice(-1)[0] : msg.peerId;
-          await this.handleHello(senderPubkey, senderUuid);
-        }
+        await this.handleHello(senderPubkey);
         break;
 
       case 'offer':
-        // For directed messages, msg.peerId is already full pubkey:uuid format
         if (msg.peerId === this.myPeerId.toString()) {
           return; // Skip messages from ourselves
         }
@@ -316,8 +308,8 @@ export class WebRTCController {
     return true;
   }
 
-  private async handleHello(senderPubkey: string, senderUuid: string): Promise<void> {
-    const peerId = `${senderPubkey}:${senderUuid}`;
+  private async handleHello(senderPubkey: string): Promise<void> {
+    const peerId = new PeerId(senderPubkey).toString();
 
     // Already connected?
     if (this.peers.has(peerId)) {
@@ -337,8 +329,8 @@ export class WebRTCController {
       return;
     }
 
-    // Tie-breaking: lower UUID initiates
-    const shouldInitiate = this.myPeerId.uuid < senderUuid;
+    // Tie-breaking: lower endpoint ID initiates
+    const shouldInitiate = this.myPeerId.toString() < peerId;
     if (shouldInitiate) {
       this.log(`Initiating connection to ${peerId.slice(0, 20)}`);
       await this.createOutboundPeer(peerId, senderPubkey, pool);
@@ -578,12 +570,12 @@ export class WebRTCController {
     // Set local description
     this.sendCommand({ type: 'rtc:setLocalDescription', peerId, sdp });
 
-    // Send offer via signaling (use Rust-compatible format: full pubkey:uuid for peerId)
+    // Send offer via signaling using endpoint identities.
     const msg: SignalingMessage = {
       type: 'offer',
       sdp: sdp.sdp!,
       targetPeerId: peerId,
-      peerId: this.myPeerId.toString(),  // Full pubkey:uuid
+      peerId: this.myPeerId.toString(),
     };
     this.sendSignaling(msg, peer.pubkey);
   }
@@ -635,14 +627,14 @@ export class WebRTCController {
     const peer = this.peers.get(peerId);
     if (!peer) return;
 
-    // Send candidate via signaling (use Rust-compatible format: full pubkey:uuid for peerId)
+    // Send candidate via signaling using endpoint identities.
     const msg: SignalingMessage = {
       type: 'candidate',
       candidate: candidate.candidate,
       sdpMLineIndex: candidate.sdpMLineIndex ?? undefined,
       sdpMid: candidate.sdpMid ?? undefined,
       targetPeerId: peerId,
-      peerId: this.myPeerId.toString(),  // Full pubkey:uuid
+      peerId: this.myPeerId.toString(),
     };
     this.sendSignaling(msg, peer.pubkey);
   }
@@ -1184,7 +1176,7 @@ export class WebRTCController {
 
     const wasStarted = !!this.helloInterval;
     this.stop();
-    this.myPeerId = new PeerId(pubkey, generateUuid());
+    this.myPeerId = new PeerId(pubkey);
     if (wasStarted) {
       this.start();
     }

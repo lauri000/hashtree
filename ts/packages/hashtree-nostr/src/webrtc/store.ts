@@ -19,7 +19,6 @@ import type { Store, Hash } from '@hashtree/core';
 import { fromHex, sha256, toHex } from '@hashtree/core';
 import {
   PeerId,
-  generateUuid,
   createMeshNostrEventFrame,
   type SignalingMessage,
   type DirectedMessage,
@@ -157,7 +156,7 @@ export class WebRTCStore implements Store {
     this.decrypt = config.decrypt;
     this.giftWrap = config.giftWrap;
     this.giftUnwrap = config.giftUnwrap;
-    this.myPeerId = new PeerId(config.pubkey, generateUuid());
+    this.myPeerId = new PeerId(config.pubkey);
 
     // Default classifier: everyone is 'other' unless classifier provided
     this.peerClassifier = config.peerClassifier ?? (() => 'other');
@@ -516,9 +515,8 @@ export class WebRTCStore implements Store {
     // Check if this is a hello message (#l: hello tag)
     const lTag = event.tags.find(t => t[0] === 'l')?.[1];
     if (lTag === HELLO_TAG) {
-      const peerIdTag = event.tags.find(t => t[0] === 'peerId')?.[1];
-      if (peerIdTag) {
-        await this.handleHello(peerIdTag, event.pubkey);
+      if (event.tags.some((tag) => tag[0] === 'peerId' && typeof tag[1] === 'string')) {
+        await this.handleHello(event.pubkey);
       }
       return;
     }
@@ -542,29 +540,36 @@ export class WebRTCStore implements Store {
   }
 
   private async handleSignalingMessage(msg: DirectedMessage, senderPubkey: string): Promise<void> {
+    const targetPeerId = PeerId.fromString(msg.targetPeerId).toString();
+
     // Directed message - check if it's for us
-    if (msg.targetPeerId !== this.myPeerId.toString()) {
+    if (targetPeerId !== this.myPeerId.toString()) {
       return;
     }
 
-    const peerId = new PeerId(senderPubkey, msg.peerId);
+    const peerId = new PeerId(senderPubkey);
     const peerIdStr = peerId.toString();
+    const normalizedMsg = {
+      ...msg,
+      peerId: peerIdStr,
+      targetPeerId,
+    } as DirectedMessage;
 
-    if (msg.type === 'offer') {
-      await this.handleOffer(peerId, msg);
+    if (normalizedMsg.type === 'offer') {
+      await this.handleOffer(peerId, normalizedMsg);
     } else {
       // answer or candidate
       const peerInfo = this.peers.get(peerIdStr);
       if (peerInfo) {
-        await peerInfo.peer.handleSignaling(msg);
+        await peerInfo.peer.handleSignaling(normalizedMsg);
       }
     }
   }
 
-  private async handleHello(peerUuid: string, senderPubkey: string): Promise<void> {
-    const peerId = new PeerId(senderPubkey, peerUuid);
+  private async handleHello(senderPubkey: string): Promise<void> {
+    const peerId = new PeerId(senderPubkey);
 
-    // Skip self (exact same peerId = same session)
+    // Skip self
     if (peerId.toString() === this.myPeerId.toString()) {
       return;
     }
@@ -654,7 +659,7 @@ export class WebRTCStore implements Store {
 
     const peer = new Peer({
       peerId,
-      myPeerId: this.myPeerId.uuid,
+      myPeerId: this.myPeerId.toString(),
       direction: 'inbound',
       localStore: this.config.localStore,
       sendSignaling: (m) => this.dispatchSignaling(m, peerId.pubkey),
@@ -689,7 +694,7 @@ export class WebRTCStore implements Store {
 
     const peer = new Peer({
       peerId,
-      myPeerId: this.myPeerId.uuid,
+      myPeerId: this.myPeerId.toString(),
       direction: 'outbound',
       localStore: this.config.localStore,
       sendSignaling: (m) => this.dispatchSignaling(m, peerId.pubkey),
@@ -980,7 +985,7 @@ export class WebRTCStore implements Store {
   ): Promise<Event | null> {
     // Fill in our peer ID
     if ('peerId' in msg && msg.peerId === '') {
-      msg.peerId = this.myPeerId.uuid;
+      msg.peerId = this.myPeerId.toString();
     }
 
     if (recipientPubkey) {
@@ -1038,7 +1043,7 @@ export class WebRTCStore implements Store {
 
     void this.dispatchSignaling({
       type: 'hello',
-      peerId: this.myPeerId.uuid,
+      peerId: this.myPeerId.toString(),
     });
   }
 
@@ -1102,10 +1107,10 @@ export class WebRTCStore implements Store {
   }
 
   /**
-   * Get my peer ID (uuid part only)
+   * Get my endpoint ID
    */
   getMyPeerId(): string {
-    return this.myPeerId.uuid;
+    return this.myPeerId.toString();
   }
 
   /**

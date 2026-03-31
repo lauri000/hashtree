@@ -1347,7 +1347,12 @@ impl Peer {
                                         }
                                     }
                                 } else {
-                                    let response = DataResponse { h: req.h, d: data };
+                                    let response = DataResponse {
+                                        h: req.h,
+                                        d: data,
+                                        i: None,
+                                        n: None,
+                                    };
                                     if let Ok(wire) = encode_response(&response) {
                                         if let Err(e) = dc.send(&Bytes::from(wire)).await {
                                             error!(

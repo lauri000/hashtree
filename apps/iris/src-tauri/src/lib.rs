@@ -411,16 +411,7 @@ fn resolve_iris_paths(
 fn ensure_mobile_peer_id() -> Result<String, String> {
     let (keys, _) = hashtree_cli::config::ensure_keys()
         .map_err(|error| format!("Failed to load keys for mobile Bluetooth: {}", error))?;
-    let peer_uuid = std::env::var("HTREE_PEER_UUID")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| {
-            let value = hashtree_cli::webrtc::types::generate_uuid();
-            std::env::set_var("HTREE_PEER_UUID", &value);
-            value
-        });
-    Ok(format!("{}:{}", keys.public_key().to_hex(), peer_uuid))
+    Ok(keys.public_key().to_hex())
 }
 
 /// Start the embedded htree daemon

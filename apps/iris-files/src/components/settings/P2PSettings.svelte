@@ -91,8 +91,8 @@
     return () => clearInterval(interval);
   });
 
-  function getPeerUuid(peerId: string): string {
-    return peerId.split(':')[1] || peerId;
+  function getPeerLabel(peerId: string): string {
+    return peerId;
   }
 
   function stateColor(state: string): string {
@@ -298,7 +298,7 @@
                 </span>
               {/if}
               <span class="text-xs text-muted font-mono shrink-0">
-                {getPeerUuid(peer.peerId).slice(0, 8)}
+                {getPeerLabel(peer.peerId).slice(0, 8)}
               </span>
               <button
                 onclick={(e) => {

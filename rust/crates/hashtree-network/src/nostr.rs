@@ -48,8 +48,14 @@ pub fn decode_signaling_event(
             return None;
         }
 
-        return get_tag("peerId").map(|their_uuid| SignalingMessage::Hello {
-            peer_id: format!("{sender_pubkey}:{their_uuid}"),
+        let claimed_peer_id =
+            get_tag("peerId").and_then(|value| crate::types::PeerId::from_peer_string(&value))?;
+        if claimed_peer_id.pubkey != sender_pubkey {
+            return None;
+        }
+
+        return Some(SignalingMessage::Hello {
+            peer_id: sender_pubkey,
             roots: vec![],
         });
     }
@@ -70,8 +76,8 @@ pub fn decode_signaling_event(
     }
 
     let content = seal.get("content").and_then(|v| v.as_str())?;
-    let msg: SignalingMessage = serde_json::from_str(content).ok()?;
-    let claimed_pubkey = msg.peer_id().split(':').next().unwrap_or_default();
+    let msg = normalize_signaling_message(serde_json::from_str(content).ok()?, sender_pubkey)?;
+    let claimed_pubkey = crate::types::PeerId::from_peer_string(msg.peer_id())?.pubkey;
     if claimed_pubkey.is_empty() || claimed_pubkey != sender_pubkey {
         return None;
     }
@@ -89,9 +95,11 @@ pub fn encode_signaling_event(
     let local_pubkey = keys.public_key().to_hex();
 
     if let Some(target_peer_id) = msg.target_peer_id() {
-        let recipient_pubkey = target_peer_id.split(':').next().ok_or_else(|| {
-            TransportError::SendFailed("Invalid target peer ID format".to_string())
-        })?;
+        let recipient_pubkey = crate::types::PeerId::from_peer_string(target_peer_id)
+            .map(|peer_id| peer_id.pubkey)
+            .ok_or_else(|| {
+                TransportError::SendFailed("Invalid target peer ID format".to_string())
+            })?;
         let recipient_pk = PublicKey::from_hex(recipient_pubkey)
             .map_err(|e| TransportError::SendFailed(format!("Invalid recipient pubkey: {e}")))?;
 
@@ -120,7 +128,6 @@ pub fn encode_signaling_event(
             .map_err(|e| TransportError::SendFailed(e.to_string()));
     }
 
-    let our_uuid = local_peer_id.split(':').nth(1).unwrap_or(local_peer_id);
     let expiration = Timestamp::now() + Duration::from_secs(5 * 60);
     let tags = vec![
         Tag::custom(
@@ -131,7 +138,7 @@ pub fn encode_signaling_event(
         ),
         Tag::custom(
             nostr_sdk::TagKind::Custom(std::borrow::Cow::Borrowed("peerId")),
-            vec![our_uuid.to_string()],
+            vec![local_peer_id.to_string()],
         ),
         Tag::expiration(expiration),
     ];
@@ -143,7 +150,7 @@ pub fn encode_signaling_event(
 
 /// Nostr websocket signaling transport for production use.
 pub struct NostrRelayTransport {
-    /// Our peer ID (pubkey:uuid)
+    /// Our peer ID (pubkey)
     peer_id: String,
     /// Our pubkey (hex)
     pubkey: String,
@@ -165,14 +172,14 @@ pub struct NostrRelayTransport {
 
 impl NostrRelayTransport {
     /// Create a new Nostr signaling transport with its own client.
-    pub fn new(keys: Keys, peer_uuid: String, debug: bool) -> Self {
+    pub fn new(keys: Keys, debug: bool) -> Self {
         // Create client with in-memory database to avoid event deduplication
         let client = ClientBuilder::new()
             .signer(keys.clone())
             .database(nostr_sdk::database::MemoryDatabase::new())
             .build();
 
-        Self::with_client(client, keys, peer_uuid, debug)
+        Self::with_client(client, keys, debug)
     }
 
     /// Create a new Nostr relay transport with an existing client
@@ -180,9 +187,9 @@ impl NostrRelayTransport {
     /// This allows sharing the same relay connection pool with other components
     /// (e.g., Tauri's NostrManager). The client should already have relays added
     /// but `connect()` will be called when the signaling transport is started.
-    pub fn with_client(client: Client, keys: Keys, peer_uuid: String, debug: bool) -> Self {
+    pub fn with_client(client: Client, keys: Keys, debug: bool) -> Self {
         let pubkey = keys.public_key().to_hex();
-        let peer_id = format!("{}:{}", pubkey, peer_uuid);
+        let peer_id = pubkey.clone();
 
         let (msg_tx, msg_rx) = broadcast::channel(1000);
 
@@ -325,7 +332,8 @@ impl SignalingTransport for NostrRelayTransport {
         if msg.target_peer_id().is_some() {
             let recipient_pubkey = msg
                 .target_peer_id()
-                .and_then(|peer_id| peer_id.split(':').next())
+                .and_then(crate::types::PeerId::from_peer_string)
+                .map(|peer_id| peer_id.pubkey)
                 .unwrap_or_default();
             info!(
                 "[NostrTransport] Publishing {} to {} (gift-wrapped)",
@@ -333,11 +341,10 @@ impl SignalingTransport for NostrRelayTransport {
                 &recipient_pubkey[..8.min(recipient_pubkey.len())]
             );
         } else {
-            let our_uuid = self.peer_id.split(':').nth(1).unwrap_or(&self.peer_id);
             debug!(
-                "[NostrTransport] Publishing hello (kind={}, uuid={}, pubkey={})",
+                "[NostrTransport] Publishing hello (kind={}, peer_id={}, pubkey={})",
                 NOSTR_KIND_HASHTREE,
-                our_uuid,
+                self.peer_id,
                 &self.pubkey[..8]
             );
         }
@@ -432,6 +439,62 @@ impl SignalingTransport for NostrRelayTransport {
 
 pub type NostrSignalingTransport = NostrRelayTransport;
 
+fn normalize_signaling_message(
+    msg: SignalingMessage,
+    sender_pubkey: &str,
+) -> Option<SignalingMessage> {
+    let sender_peer_id = crate::types::PeerId::from_peer_string(sender_pubkey)
+        .unwrap_or_else(|| crate::types::PeerId::new(sender_pubkey.to_string()))
+        .to_string();
+
+    Some(match msg {
+        SignalingMessage::Hello { roots, .. } => SignalingMessage::Hello {
+            peer_id: sender_peer_id,
+            roots,
+        },
+        SignalingMessage::Offer {
+            target_peer_id,
+            sdp,
+            ..
+        } => SignalingMessage::Offer {
+            peer_id: sender_peer_id,
+            target_peer_id: crate::types::PeerId::from_peer_string(&target_peer_id)?.to_string(),
+            sdp,
+        },
+        SignalingMessage::Answer {
+            target_peer_id,
+            sdp,
+            ..
+        } => SignalingMessage::Answer {
+            peer_id: sender_peer_id,
+            target_peer_id: crate::types::PeerId::from_peer_string(&target_peer_id)?.to_string(),
+            sdp,
+        },
+        SignalingMessage::Candidate {
+            target_peer_id,
+            candidate,
+            sdp_m_line_index,
+            sdp_mid,
+            ..
+        } => SignalingMessage::Candidate {
+            peer_id: sender_peer_id,
+            target_peer_id: crate::types::PeerId::from_peer_string(&target_peer_id)?.to_string(),
+            candidate,
+            sdp_m_line_index,
+            sdp_mid,
+        },
+        SignalingMessage::Candidates {
+            target_peer_id,
+            candidates,
+            ..
+        } => SignalingMessage::Candidates {
+            peer_id: sender_peer_id,
+            target_peer_id: crate::types::PeerId::from_peer_string(&target_peer_id)?.to_string(),
+            candidates,
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,9 +503,8 @@ mod tests {
     fn directed_events_round_trip_with_target_peer_id_shape() {
         let sender_keys = Keys::generate();
         let recipient_keys = Keys::generate();
-        let sender_peer_id = format!("{}:sender-session", sender_keys.public_key().to_hex());
-        let recipient_peer_id =
-            format!("{}:recipient-session", recipient_keys.public_key().to_hex());
+        let sender_peer_id = sender_keys.public_key().to_hex();
+        let recipient_peer_id = recipient_keys.public_key().to_hex();
         let msg = SignalingMessage::Offer {
             peer_id: sender_peer_id.clone(),
             target_peer_id: recipient_peer_id.clone(),
@@ -494,9 +556,8 @@ mod tests {
     fn decoder_rejects_legacy_recipient_shape() {
         let sender_keys = Keys::generate();
         let recipient_keys = Keys::generate();
-        let sender_peer_id = format!("{}:sender-session", sender_keys.public_key().to_hex());
-        let recipient_peer_id =
-            format!("{}:recipient-session", recipient_keys.public_key().to_hex());
+        let sender_peer_id = sender_keys.public_key().to_hex();
+        let recipient_peer_id = recipient_keys.public_key().to_hex();
         let legacy_content = serde_json::json!({
             "type": "offer",
             "peerId": sender_peer_id,

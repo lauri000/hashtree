@@ -294,7 +294,7 @@ mod tests {
             2,
         );
 
-        let peer_id = PeerId::new("peer-pub".to_string(), Some("session".to_string()));
+        let peer_id = PeerId::new("peer-pub".to_string());
         let first = MeshPeer::mock_for_tests(TestMeshPeer::with_response(None));
         let second = MeshPeer::mock_for_tests(TestMeshPeer::with_response(None));
         let first_ref = first.mock_ref().expect("mock peer").clone();
@@ -323,8 +323,8 @@ mod tests {
             2,
         );
 
-        let first_peer_id = PeerId::new("peer-pub".to_string(), Some("session-a".to_string()));
-        let second_peer_id = PeerId::new("peer-pub".to_string(), Some("session-b".to_string()));
+        let first_peer_id = PeerId::new("peer-pub".to_string());
+        let second_peer_id = PeerId::new("peer-pub".to_string());
         let first = MeshPeer::mock_for_tests(TestMeshPeer::with_response(None));
         let second = MeshPeer::mock_for_tests(TestMeshPeer::with_response(None));
         let first_ref = first.mock_ref().expect("mock peer").clone();
@@ -342,8 +342,8 @@ mod tests {
 
         assert!(first_ref.is_closed());
         let peers = state.peers.read().await;
-        assert!(!peers.contains_key(&first_peer_id.to_string()));
         assert!(peers.contains_key(&second_peer_id.to_string()));
+        assert_eq!(peers.len(), 1);
         assert_eq!(
             state
                 .connected_count
@@ -363,9 +363,8 @@ mod tests {
             2,
         );
         let (mesh_frame_tx, _mesh_frame_rx) = mpsc::channel(4);
-        let local_peer_id = PeerId::new("local-pub".to_string(), Some("local-session".to_string()));
-        let remote_peer_id =
-            PeerId::new("remote-pub".to_string(), Some("remote-session".to_string()));
+        let local_peer_id = PeerId::new("local-pub".to_string());
+        let remote_peer_id = PeerId::new("remote-pub".to_string());
         let remote_link: Arc<dyn BluetoothLink> = link_b.clone();
 
         send_hello(&remote_link, &remote_peer_id)
@@ -642,23 +641,23 @@ mod macos {
                         if services.contains(&service_uuid) =>
                     {
                         let mut advertisements = fresh_advertisements_for_events.lock().await;
-                        let entry = advertisements
-                            .entry(id.to_string())
-                            .or_insert_with(|| AdvertisementSnapshot {
+                        let entry = advertisements.entry(id.to_string()).or_insert_with(|| {
+                            AdvertisementSnapshot {
                                 last_seen: Instant::now(),
                                 peer_hint: None,
-                            });
+                            }
+                        });
                         entry.last_seen = Instant::now();
                     }
                     CentralEvent::ServiceDataAdvertisement { id, service_data } => {
                         if let Some(data) = service_data.get(&service_uuid) {
                             let mut advertisements = fresh_advertisements_for_events.lock().await;
-                            let entry = advertisements
-                                .entry(id.to_string())
-                                .or_insert_with(|| AdvertisementSnapshot {
+                            let entry = advertisements.entry(id.to_string()).or_insert_with(|| {
+                                AdvertisementSnapshot {
                                     last_seen: Instant::now(),
                                     peer_hint: None,
-                                });
+                                }
+                            });
                             entry.last_seen = Instant::now();
                             if !data.is_empty() {
                                 entry.peer_hint = Some(hex::encode(data));

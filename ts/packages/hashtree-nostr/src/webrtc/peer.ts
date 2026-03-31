@@ -123,7 +123,7 @@ export class Peer {
 
   constructor(options: {
     peerId: PeerId;
-    myPeerId: string; // Our peer ID (uuid) for perfect negotiation
+    myPeerId: string; // Our endpoint ID for perfect negotiation
     direction: 'inbound' | 'outbound';
     localStore: Store | null;
     sendSignaling: (msg: SignalingMessage) => Promise<void>;
@@ -151,7 +151,7 @@ export class Peer {
 
     // Perfect negotiation: polite peer (smaller ID) rolls back on collision
     this.myPeerId = options.myPeerId;
-    this.isPolite = options.myPeerId < options.peerId.uuid;
+    this.isPolite = options.myPeerId < options.peerId.toString();
 
     // Start fragment reassembly cleanup interval
     this.reassemblyCleanupInterval = setInterval(

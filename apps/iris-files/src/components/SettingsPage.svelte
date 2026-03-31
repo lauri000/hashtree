@@ -315,9 +315,8 @@
     return () => clearInterval(statsInterval);
   });
 
-  // Helper function to extract uuid from peerId (format: "pubkey:uuid")
-  function getPeerUuid(peerId: string): string {
-    return peerId.split(':')[1] || peerId;
+  function getPeerLabel(peerId: string): string {
+    return peerId;
   }
 
   // Helper function to get state color
@@ -831,7 +830,7 @@
                   />
                 </a>
                 <span class="text-xs text-muted font-mono shrink-0">
-                  {getPeerUuid(peer.peerId).slice(0, 8)}
+                  {getPeerLabel(peer.peerId).slice(0, 8)}
                 </span>
                 {#if !peer.isSelf}
                   <button

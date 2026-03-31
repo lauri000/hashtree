@@ -371,13 +371,11 @@ export function generateUuid(): string {
 
 export class PeerId {
   readonly pubkey: string;
-  readonly uuid: string;
   private readonly str: string;
 
-  constructor(pubkey: string, uuid?: string) {
+  constructor(pubkey: string) {
     this.pubkey = pubkey;
-    this.uuid = uuid || generateUuid();
-    this.str = `${pubkey}:${this.uuid}`;
+    this.str = pubkey;
   }
 
   toString(): string {
@@ -385,14 +383,14 @@ export class PeerId {
   }
 
   short(): string {
-    return `${this.pubkey.slice(0, 8)}:${this.uuid.slice(0, 6)}`;
+    return this.pubkey.slice(0, 8);
   }
 
   static fromString(str: string): PeerId {
-    const [pubkey, uuid] = str.split(':');
-    if (!pubkey || !uuid) {
+    const [pubkey] = str.split(':');
+    if (!pubkey) {
       throw new Error(`Invalid peer string: ${str}`);
     }
-    return new PeerId(pubkey, uuid);
+    return new PeerId(pubkey);
   }
 }

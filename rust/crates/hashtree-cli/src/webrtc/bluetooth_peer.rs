@@ -182,7 +182,12 @@ impl BluetoothPeer {
                 let hash_hex = hash_to_hex(&req.h);
                 if let Some(store) = self.store.as_ref() {
                     if let Ok(Some(data)) = store.get(&hash_hex) {
-                        let response = DataResponse { h: req.h, d: data };
+                        let response = DataResponse {
+                            h: req.h,
+                            d: data,
+                            i: None,
+                            n: None,
+                        };
                         let wire = encode_response(&response)?;
                         self.send_frame(BluetoothFrame::Binary(wire)).await?;
                     }
@@ -447,9 +452,9 @@ impl BluetoothLink for MockBluetoothLink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::anyhow;
     use crate::nostr_relay::{NostrRelay, NostrRelayConfig};
     use crate::webrtc::signaling::{ConnectionState, PeerEntry, PeerSignalPath, PeerTransport};
+    use anyhow::anyhow;
     use nostr::{EventBuilder, Filter, Keys, Kind};
     use std::collections::HashSet;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -498,7 +503,7 @@ mod tests {
         let hash_hex = hex::encode(hashtree_core::sha256(&data));
 
         let requester = BluetoothPeer::new(
-            PeerId::new("peer-a".to_string(), Some("sess-a".to_string())),
+            PeerId::new("peer-a".to_string()),
             PeerDirection::Outbound,
             link_a,
             None,
@@ -510,7 +515,7 @@ mod tests {
         let mut blobs = HashMap::new();
         blobs.insert(hash_hex.clone(), data.clone());
         let responder = BluetoothPeer::new(
-            PeerId::new("peer-b".to_string(), Some("sess-b".to_string())),
+            PeerId::new("peer-b".to_string()),
             PeerDirection::Inbound,
             link_b,
             Some(Arc::new(TestStore { blobs })),
@@ -534,8 +539,8 @@ mod tests {
         let state = Arc::new(WebRTCState::new());
         let data = b"bluetooth stats payload".to_vec();
         let hash_hex = hex::encode(hashtree_core::sha256(&data));
-        let requester_id = PeerId::new("peer-a".to_string(), Some("sess-a".to_string()));
-        let responder_id = PeerId::new("peer-b".to_string(), Some("sess-b".to_string()));
+        let requester_id = PeerId::new("peer-a".to_string());
+        let responder_id = PeerId::new("peer-b".to_string());
 
         for peer_id in [&requester_id, &responder_id] {
             state.peers.write().await.insert(
@@ -594,6 +599,8 @@ mod tests {
         let expected_response_len = encode_response(&DataResponse {
             h: hash,
             d: data.clone(),
+            i: None,
+            n: None,
         })
         .expect("response encoding")
         .len() as u64;
@@ -644,7 +651,7 @@ mod tests {
         )?);
 
         let requester = BluetoothPeer::new(
-            PeerId::new("peer-a".to_string(), Some("sess-a".to_string())),
+            PeerId::new("peer-a".to_string()),
             PeerDirection::Outbound,
             link_a,
             None,
@@ -653,7 +660,7 @@ mod tests {
             None,
         );
         let responder = BluetoothPeer::new(
-            PeerId::new("peer-b".to_string(), Some("sess-b".to_string())),
+            PeerId::new("peer-b".to_string()),
             PeerDirection::Inbound,
             link_b,
             None,
@@ -740,7 +747,7 @@ mod tests {
         )?);
 
         let sender = BluetoothPeer::new(
-            PeerId::new("peer-a".to_string(), Some("sess-a".to_string())),
+            PeerId::new("peer-a".to_string()),
             PeerDirection::Outbound,
             link_a,
             None,
@@ -749,7 +756,7 @@ mod tests {
             None,
         );
         let receiver = BluetoothPeer::new(
-            PeerId::new("peer-b".to_string(), Some("sess-b".to_string())),
+            PeerId::new("peer-b".to_string()),
             PeerDirection::Inbound,
             link_b,
             None,
@@ -790,10 +797,7 @@ mod tests {
         let bluetooth_events = relay_b.bluetooth_received_events(10).await;
         assert_eq!(bluetooth_events.len(), 1);
         assert_eq!(bluetooth_events[0].event_id, event.id.to_hex());
-        assert_eq!(
-            bluetooth_events[0].peer_id.as_deref(),
-            Some("peer-b:sess-b")
-        );
+        assert_eq!(bluetooth_events[0].peer_id.as_deref(), Some("peer-b"));
         assert_eq!(bluetooth_events[0].cid_values, vec![cid]);
 
         receiver.close().await?;
@@ -830,7 +834,7 @@ mod tests {
         )?);
 
         let peer = BluetoothPeer::new(
-            PeerId::new("peer-a".to_string(), Some("sess-a".to_string())),
+            PeerId::new("peer-a".to_string()),
             PeerDirection::Outbound,
             Arc::new(FailingSendLink {
                 open: AtomicBool::new(true),
