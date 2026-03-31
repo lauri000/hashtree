@@ -8,7 +8,7 @@ Git remote helper for hashtree - push/pull git repos via Nostr and hashtree.
 curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/releases%2Fhashtree/latest/install.sh | sh
 ```
 
-That installs `htree`, `htree-cashu`, and `git-remote-htree`.
+That installs `htree`, `htree-cashu`, and `git-remote-htree` into `~/.local/bin` by default. For a system-wide install, pass a target directory, for example `sh -s -- /usr/local/bin`.
 
 Or install with Cargo:
 

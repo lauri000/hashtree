@@ -10,9 +10,16 @@ Content-addressed storage, git transport, and app runtime on Nostr. Merkle roots
 curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/releases%2Fhashtree/latest/install.sh | sh
 ```
 
-That installs `htree`, `htree-cashu`, and `git-remote-htree`.
+That installs `htree`, `htree-cashu`, and `git-remote-htree` into `~/.local/bin` by default. For a system-wide install, pass a target directory, for example `sh -s -- /usr/local/bin`.
 
-### Cargo (supported today)
+### Build from source
+
+Install Rust first if needed:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+```
 
 ```bash
 # Git helper only (enables git clone/pull/push for htree:// URLs)

@@ -68,9 +68,67 @@ write_unix_install_script() {
 #!/bin/bash
 set -e
 
-INSTALL_DIR="${1:-/usr/local/bin}"
+default_install_dir() {
+  if [ "${1:-}" = "root" ]; then
+    printf '%s\n' /usr/local/bin
+    return
+  fi
+
+  if [ -n "${XDG_BIN_HOME:-}" ]; then
+    printf '%s\n' "${XDG_BIN_HOME}"
+    return
+  fi
+
+  if [ -n "${HOME:-}" ]; then
+    printf '%s\n' "${HOME}/.local/bin"
+    return
+  fi
+
+  printf '%s\n' /usr/local/bin
+}
+
+path_contains() {
+  local target="$1"
+  local entry
+  local old_ifs="${IFS}"
+  IFS=:
+  for entry in ${PATH:-}; do
+    if [ "$entry" = "$target" ]; then
+      IFS="${old_ifs}"
+      return 0
+    fi
+  done
+  IFS="${old_ifs}"
+  return 1
+}
+
+existing_parent_dir() {
+  local dir="$1"
+  while [ ! -e "$dir" ]; do
+    dir="$(dirname "$dir")"
+  done
+  printf '%s\n' "$dir"
+}
+
+if [ $# -gt 0 ]; then
+  INSTALL_DIR="$1"
+elif [ "$(id -u)" -eq 0 ]; then
+  INSTALL_DIR="$(default_install_dir root)"
+else
+  INSTALL_DIR="$(default_install_dir)"
+fi
 
 echo "Installing hashtree binaries to $INSTALL_DIR"
+
+if [ ! -d "$INSTALL_DIR" ]; then
+  EXISTING_PARENT="$(existing_parent_dir "$INSTALL_DIR")"
+  if [ -w "$EXISTING_PARENT" ]; then
+    mkdir -p "$INSTALL_DIR"
+  else
+    echo "Need sudo to create $INSTALL_DIR"
+    sudo mkdir -p "$INSTALL_DIR"
+  fi
+fi
 
 if [ ! -w "$INSTALL_DIR" ]; then
   echo "Need sudo to install to $INSTALL_DIR"
@@ -80,6 +138,11 @@ else
 fi
 
 echo "✓ Installed htree, htree-cashu, and git-remote-htree"
+if ! path_contains "$INSTALL_DIR"; then
+  echo ""
+  echo "Add $INSTALL_DIR to your PATH, for example:"
+  echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
+fi
 echo ""
 echo "Verify with:"
 echo "  htree --help"
@@ -101,11 +164,11 @@ Binaries included:
   git-remote-htree  - Git remote helper for htree:// URLs
 
 Quick install:
-  ./install.sh              # installs to /usr/local/bin (may need sudo)
-  ./install.sh ~/.local/bin # installs to custom directory
+  ./install.sh               # installs to ~/.local/bin by default
+  ./install.sh /usr/local/bin # installs system-wide (may need sudo)
 
 Manual install:
-  cp htree htree-cashu git-remote-htree /usr/local/bin/
+  cp htree htree-cashu git-remote-htree ~/.local/bin/
 
 Usage:
   htree add <file>                    # add file to hashtree

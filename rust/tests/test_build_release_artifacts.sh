@@ -49,6 +49,26 @@ tar -tzf "${OUTPUT_DIR}/hashtree-aarch64-apple-darwin.tar.gz" | grep -Fx "hashtr
 tar -tzf "${OUTPUT_DIR}/hashtree-aarch64-apple-darwin.tar.gz" | grep -Fx "hashtree/htree" >/dev/null
 tar -tzf "${OUTPUT_DIR}/hashtree-x86_64-unknown-linux-musl.tar.gz" | grep -Fx "hashtree/README.txt" >/dev/null
 
+INSTALL_TMPDIR="${TMPDIR}/install-test"
+INSTALL_HOME="${INSTALL_TMPDIR}/home"
+CUSTOM_BIN="${INSTALL_TMPDIR}/custom-bin"
+mkdir -p "${INSTALL_TMPDIR}" "${INSTALL_HOME}"
+tar -xzf "${OUTPUT_DIR}/hashtree-aarch64-apple-darwin.tar.gz" -C "${INSTALL_TMPDIR}"
+(
+    cd "${INSTALL_TMPDIR}/hashtree"
+    env HOME="${INSTALL_HOME}" PATH="/usr/bin:/bin" ./install.sh
+)
+test -x "${INSTALL_HOME}/.local/bin/htree"
+test -x "${INSTALL_HOME}/.local/bin/htree-cashu"
+test -x "${INSTALL_HOME}/.local/bin/git-remote-htree"
+(
+    cd "${INSTALL_TMPDIR}/hashtree"
+    env HOME="${INSTALL_HOME}" PATH="/usr/bin:/bin" ./install.sh "${CUSTOM_BIN}"
+)
+test -x "${CUSTOM_BIN}/htree"
+test -x "${CUSTOM_BIN}/htree-cashu"
+test -x "${CUSTOM_BIN}/git-remote-htree"
+
 python3 - <<'PY' "${OUTPUT_DIR}/hashtree-x86_64-pc-windows-msvc.zip"
 import sys
 import zipfile

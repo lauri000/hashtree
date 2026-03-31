@@ -42,12 +42,41 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$output_dir"
+make_unix_archive() {
+    local target="$1"
+    local stage_dir package_dir
+    stage_dir="$(mktemp -d)"
+    package_dir="${stage_dir}/hashtree"
+    mkdir -p "${package_dir}"
+
+    cat >"${package_dir}/install.sh" <<'SCRIPT'
+#!/bin/bash
+set -euo pipefail
+install_dir="${1:-$HOME/.local/bin}"
+mkdir -p "$install_dir"
+install -m 755 htree htree-cashu git-remote-htree "$install_dir/"
+SCRIPT
+    chmod +x "${package_dir}/install.sh"
+
+    for binary in htree htree-cashu git-remote-htree; do
+        printf '#!/bin/sh\necho %s\n' "$binary" >"${package_dir}/${binary}"
+        chmod +x "${package_dir}/${binary}"
+    done
+
+    (
+        cd "$stage_dir"
+        tar -czf "${output_dir}/hashtree-${target}.tar.gz" hashtree
+    )
+    rm -rf "$stage_dir"
+}
+
 for target in \
     aarch64-apple-darwin \
     x86_64-apple-darwin \
     aarch64-unknown-linux-musl \
     x86_64-unknown-linux-musl
 do
+    make_unix_archive "$target"
     printf 'deadbeef  hashtree-%s.tar.gz\n' "$target" >"${output_dir}/hashtree-${target}.sha256"
 done
 
@@ -117,6 +146,45 @@ test -f "${TMPDIR}/out/install.sh"
 grep -F 'BASE_URL="https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/releases%2Fhashtree/v0.2.3"' "${TMPDIR}/out/install.sh" >/dev/null
 grep -F 'ASSET_BASE_URL="${BASE_URL}/assets"' "${TMPDIR}/out/install.sh" >/dev/null
 grep -F 'curl -fsSL "${ASSET_BASE_URL}/${archive}" -o "${tmpdir}/${archive}"' "${TMPDIR}/out/install.sh" >/dev/null
+
+PORT_FILE="${TMPDIR}/http-port"
+SERVER_LOG="${TMPDIR}/http-server.log"
+python3 - <<'PY' "${TMPDIR}/release-stage" "${PORT_FILE}" >"${SERVER_LOG}" 2>&1 &
+import functools
+import http.server
+import socketserver
+import sys
+
+directory = sys.argv[1]
+port_file = sys.argv[2]
+handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=directory)
+
+with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
+    with open(port_file, "w", encoding="utf-8") as fh:
+        fh.write(str(httpd.server_address[1]))
+    httpd.serve_forever()
+PY
+SERVER_PID=$!
+cleanup() {
+    if [ -n "${SERVER_PID:-}" ]; then
+        kill "${SERVER_PID}" 2>/dev/null || true
+        wait "${SERVER_PID}" 2>/dev/null || true
+    fi
+    rm -rf "$TMPDIR"
+}
+while [ ! -s "${PORT_FILE}" ]; do
+    sleep 0.1
+done
+PORT="$(cat "${PORT_FILE}")"
+perl -0pi -e "s|^BASE_URL=.*$|BASE_URL=\"http://127.0.0.1:${PORT}\"|m" "${TMPDIR}/release-stage/install.sh"
+BOOTSTRAP_HOME="${TMPDIR}/bootstrap-home"
+BOOTSTRAP_BIN="${TMPDIR}/bootstrap-bin"
+mkdir -p "${BOOTSTRAP_HOME}"
+env HOME="${BOOTSTRAP_HOME}" PATH="/usr/bin:/bin" /bin/bash "${TMPDIR}/release-stage/install.sh" "${BOOTSTRAP_BIN}"
+test -x "${BOOTSTRAP_BIN}/htree"
+test -x "${BOOTSTRAP_BIN}/htree-cashu"
+test -x "${BOOTSTRAP_BIN}/git-remote-htree"
+
 if grep -F "cargo_publish:" "${TMPDIR}/logs/calls.log" >/dev/null; then
     echo "release_to_htree should not cargo publish unless requested" >&2
     exit 1
