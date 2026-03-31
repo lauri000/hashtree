@@ -1188,9 +1188,11 @@ mod tests {
     use super::*;
     use hashtree_core::store::Store;
     use hashtree_core::LinkType;
-    use std::net::TcpListener;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::path::Path;
     use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
     fn create_test_storage() -> (GitStorage, TempDir) {
@@ -1283,6 +1285,41 @@ mod tests {
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn python http server")
+    }
+
+    fn wait_for_http_server(server: &mut Child, port: u16, path: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        loop {
+            if let Some(status) = server.try_wait().expect("check http server status") {
+                panic!("python http server exited before becoming ready: {status}");
+            }
+
+            if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
+                stream
+                    .set_read_timeout(Some(Duration::from_millis(200)))
+                    .expect("set read timeout");
+                stream
+                    .set_write_timeout(Some(Duration::from_millis(200)))
+                    .expect("set write timeout");
+                let request = format!(
+                    "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+                );
+                if stream.write_all(request.as_bytes()).is_ok() {
+                    let mut response = String::new();
+                    if stream.read_to_string(&mut response).is_ok()
+                        && response.starts_with("HTTP/1.0 200")
+                    {
+                        return;
+                    }
+                }
+            }
+
+            if Instant::now() >= deadline {
+                panic!("python http server did not become ready on port {port}");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     #[test]
@@ -1528,7 +1565,7 @@ mod tests {
         drop(listener);
 
         let mut server = spawn_http_server(export_dir.path(), port);
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        wait_for_http_server(&mut server, port, "/repo/.git/HEAD");
 
         let clone_dir = TempDir::new().unwrap();
         let clone_path = clone_dir.path().join("clone");
