@@ -75,6 +75,15 @@ fn request_virtual_tree_root(headers: &axum::http::HeaderMap) -> Option<String> 
 }
 
 fn parse_virtual_tree_root(root: &str) -> Option<VirtualTreeRoot> {
+    if let Some(parsed) = parse_mutable_htree_request_path(root) {
+        if parsed.path.is_none() {
+            return Some(VirtualTreeRoot::Mutable {
+                npub: parsed.npub,
+                treename: parsed.treename,
+            });
+        }
+    }
+
     let parsed = reqwest::Url::parse(&format!("http://virtual-host{}", root)).ok()?;
     let segments: Vec<String> = parsed
         .path_segments()?
@@ -119,6 +128,131 @@ fn should_fallback_to_virtual_host_index(
 
     let tail = path.rsplit('/').next().unwrap_or(path);
     !tail.contains('.')
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedMutableHtreeRequestPath {
+    npub: String,
+    treename: String,
+    path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedTreeRequestPath {
+    pubkey: String,
+    treename: String,
+    path: Option<String>,
+}
+
+fn decode_uri_path_segment(segment: &str) -> String {
+    let bytes = segment.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hi = bytes[index + 1] as char;
+            let lo = bytes[index + 2] as char;
+            if let (Some(hi), Some(lo)) = (hi.to_digit(16), lo.to_digit(16)) {
+                decoded.push(((hi << 4) | lo) as u8);
+                index += 3;
+                continue;
+            }
+        }
+
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+
+    String::from_utf8(decoded).unwrap_or_else(|_| segment.to_string())
+}
+
+fn parse_mutable_htree_request_path(raw_path: &str) -> Option<ParsedMutableHtreeRequestPath> {
+    let parsed = reqwest::Url::parse(&format!("http://htree{}", raw_path)).ok()?;
+    let segments: Vec<String> = parsed
+        .path_segments()?
+        .map(decode_uri_path_segment)
+        .collect();
+
+    let parsed = parse_tree_request_segments(&segments, &["htree"])?;
+    if !parsed.pubkey.starts_with("npub1") {
+        return None;
+    }
+
+    Some(ParsedMutableHtreeRequestPath {
+        npub: parsed.pubkey,
+        treename: parsed.treename,
+        path: parsed.path,
+    })
+}
+
+fn parse_tree_request_segments(
+    segments: &[String],
+    prefix: &[&str],
+) -> Option<ParsedTreeRequestPath> {
+    if segments.len() < prefix.len() + 2 {
+        return None;
+    }
+    if !segments
+        .iter()
+        .zip(prefix.iter())
+        .all(|(segment, expected)| segment == expected)
+    {
+        return None;
+    }
+
+    let pubkey = segments.get(prefix.len())?.clone();
+    let treename = segments.get(prefix.len() + 1)?.clone();
+    if pubkey.is_empty() || treename.is_empty() {
+        return None;
+    }
+
+    let path = (segments.len() > prefix.len() + 2)
+        .then(|| segments[prefix.len() + 2..].join("/"))
+        .filter(|value| !value.is_empty());
+
+    Some(ParsedTreeRequestPath {
+        pubkey,
+        treename,
+        path,
+    })
+}
+
+fn parse_resolve_request_path(raw_path: &str) -> Option<ParsedTreeRequestPath> {
+    let parsed = reqwest::Url::parse(&format!("http://htree{}", raw_path)).ok()?;
+    let segments: Vec<String> = parsed
+        .path_segments()?
+        .map(decode_uri_path_segment)
+        .collect();
+    parse_tree_request_segments(&segments, &["n"])
+}
+
+fn parse_api_resolve_request_path(raw_path: &str) -> Option<ParsedTreeRequestPath> {
+    let parsed = reqwest::Url::parse(&format!("http://htree{}", raw_path)).ok()?;
+    let segments: Vec<String> = parsed
+        .path_segments()?
+        .map(decode_uri_path_segment)
+        .collect();
+    parse_tree_request_segments(&segments, &["api", "resolve"])
+        .or_else(|| parse_tree_request_segments(&segments, &["api", "nostr", "resolve"]))
+}
+
+fn parse_bare_npub_request_path(raw_path: &str) -> Option<ParsedMutableHtreeRequestPath> {
+    let parsed = reqwest::Url::parse(&format!("http://htree{}", raw_path)).ok()?;
+    let segments: Vec<String> = parsed
+        .path_segments()?
+        .map(decode_uri_path_segment)
+        .collect();
+    let parsed = parse_tree_request_segments(&segments, &[])?;
+    if !parsed.pubkey.starts_with("npub1") {
+        return None;
+    }
+
+    Some(ParsedMutableHtreeRequestPath {
+        npub: parsed.pubkey,
+        treename: parsed.treename,
+        path: parsed.path,
+    })
 }
 
 async fn serve_virtual_tree_host_request(
@@ -1617,16 +1751,25 @@ async fn htree_npub_impl(
 
 pub async fn htree_npub(
     State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
     Path((npub, treename)): Path<(String, String)>,
     Query(params): Query<HashMap<String, String>>,
     headers: axum::http::HeaderMap,
     connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
 ) -> impl IntoResponse {
-    let full = format!("npub1{}", npub);
+    let parsed = parse_mutable_htree_request_path(uri.path());
+    let full = parsed
+        .as_ref()
+        .map(|entry| entry.npub.clone())
+        .unwrap_or_else(|| format!("npub1{}", npub));
+    let resolved_treename = parsed
+        .as_ref()
+        .map(|entry| entry.treename.clone())
+        .unwrap_or(treename);
     htree_npub_impl(
         State(state),
         full,
-        treename,
+        resolved_treename,
         None,
         Query(params),
         headers,
@@ -1637,17 +1780,27 @@ pub async fn htree_npub(
 
 pub async fn htree_npub_path(
     State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
     Path((npub, treename, path)): Path<(String, String, String)>,
     Query(params): Query<HashMap<String, String>>,
     headers: axum::http::HeaderMap,
     connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
 ) -> impl IntoResponse {
-    let full = format!("npub1{}", npub);
+    let parsed = parse_mutable_htree_request_path(uri.path());
+    let full = parsed
+        .as_ref()
+        .map(|entry| entry.npub.clone())
+        .unwrap_or_else(|| format!("npub1{}", npub));
+    let resolved_treename = parsed
+        .as_ref()
+        .map(|entry| entry.treename.clone())
+        .unwrap_or(treename);
+    let resolved_path = parsed.and_then(|entry| entry.path).or(Some(path));
     htree_npub_impl(
         State(state),
         full,
-        treename,
-        Some(path),
+        resolved_treename,
+        resolved_path,
         Query(params),
         headers,
         connect_info,
@@ -2204,11 +2357,16 @@ pub async fn serve_content_or_blob(
 /// Route: /npub1... (the "npub1" prefix is matched by the route, :rest captures pubkey remainder + /ref)
 pub async fn serve_npub(
     State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
     Path(rest): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     // Reconstruct full key: "npub1" + rest (e.g., "abc.../mydata")
-    let key = format!("npub1{}", rest);
+    let parsed = parse_bare_npub_request_path(uri.path());
+    let key = parsed
+        .as_ref()
+        .map(|entry| format!("{}/{}", entry.npub, entry.treename))
+        .unwrap_or_else(|| format!("npub1{}", rest));
 
     // Validate format: must have a / for ref name
     if !key.contains('/') {
@@ -2235,7 +2393,11 @@ pub async fn serve_npub(
     // npub routes are mutable - the reference can change over time
     match tokio::time::timeout(HTTP_RESOLVER_TIMEOUT, resolver.resolve_wait(&key)).await {
         Ok(Ok(cid)) => {
-            if let Some((pubkey, treename)) = key.split_once('/') {
+            let cache_entry = parsed
+                .as_ref()
+                .map(|entry| (entry.npub.as_str(), entry.treename.as_str()))
+                .or_else(|| key.split_once('/'));
+            if let Some((pubkey, treename)) = cache_entry {
                 cache_public_tree_root(&state, pubkey, treename, &cid);
             }
             let _ = resolver.stop().await;
@@ -2783,10 +2945,20 @@ fn resolver_config(state: &AppState) -> NostrResolverConfig {
 /// Route: /n/:pubkey/:treename or /n/:pubkey/:treename/*path
 pub async fn resolve_and_serve(
     State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
     Path(params): Path<(String, String)>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let (pubkey, treename) = params;
+    let (fallback_pubkey, fallback_treename) = params;
+    let parsed = parse_resolve_request_path(uri.path());
+    let pubkey = parsed
+        .as_ref()
+        .map(|entry| entry.pubkey.clone())
+        .unwrap_or(fallback_pubkey);
+    let treename = parsed
+        .as_ref()
+        .map(|entry| entry.treename.clone())
+        .unwrap_or(fallback_treename);
     let key = format!("{}/{}", pubkey, treename);
 
     if let Some(resolved) = resolve_root_offline(&state, &pubkey, &treename, None).await {
@@ -2859,10 +3031,20 @@ pub async fn resolve_and_serve(
 /// Tries relays first, then WebRTC peers if available.
 pub async fn resolve_to_hash(
     State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
     Path(params): Path<(String, String)>,
     Query(query): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let (pubkey, treename) = params;
+    let (fallback_pubkey, fallback_treename) = params;
+    let parsed = parse_api_resolve_request_path(uri.path());
+    let pubkey = parsed
+        .as_ref()
+        .map(|entry| entry.pubkey.clone())
+        .unwrap_or(fallback_pubkey);
+    let treename = parsed
+        .as_ref()
+        .map(|entry| entry.treename.clone())
+        .unwrap_or(fallback_treename);
     let key = format!("{}/{}", pubkey, treename);
     let refresh = query_flag(&query, "refresh")
         || query_flag(&query, "force")
@@ -3761,6 +3943,44 @@ mod tests {
         assert_eq!(content_type_for_path(None), "application/octet-stream");
     }
 
+    #[test]
+    fn parse_mutable_htree_request_path_decodes_tree_names_with_slashes() {
+        assert_eq!(
+            parse_mutable_htree_request_path(
+                "/htree/npub1example/releases%2Fnostr-vpn/v0.3.0/assets/nostr-vpn-v0.3.0-macos-arm64.zip"
+            ),
+            Some(ParsedMutableHtreeRequestPath {
+                npub: "npub1example".to_string(),
+                treename: "releases/nostr-vpn".to_string(),
+                path: Some("v0.3.0/assets/nostr-vpn-v0.3.0-macos-arm64.zip".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_api_resolve_request_path_decodes_tree_names_with_slashes() {
+        assert_eq!(
+            parse_api_resolve_request_path("/api/resolve/npub1example/releases%2Fnostr-vpn"),
+            Some(ParsedTreeRequestPath {
+                pubkey: "npub1example".to_string(),
+                treename: "releases/nostr-vpn".to_string(),
+                path: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_bare_npub_request_path_decodes_tree_names_with_slashes() {
+        assert_eq!(
+            parse_bare_npub_request_path("/npub1example/releases%2Fnostr-vpn/latest"),
+            Some(ParsedMutableHtreeRequestPath {
+                npub: "npub1example".to_string(),
+                treename: "releases/nostr-vpn".to_string(),
+                path: Some("latest".to_string()),
+            })
+        );
+    }
+
     #[tokio::test]
     async fn htree_nhash_path_fetches_nested_assets_from_upstream_tree() {
         let source_dir = TempDir::new().unwrap();
@@ -4114,6 +4334,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn htree_npub_path_uses_original_uri_for_encoded_tree_names() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());
+        let tree = HashTree::new(HashTreeConfig::new(store.store_arc()).public());
+
+        let asset_bytes = b"nostr-vpn-macos-zip".to_vec();
+        let (asset_cid, _) = tree.put(&asset_bytes).await.unwrap();
+        let assets_dir = tree
+            .put_directory(vec![
+                DirEntry::from_cid("nostr-vpn-v0.3.0-macos-arm64.zip", &asset_cid)
+                    .with_link_type(LinkType::File),
+            ])
+            .await
+            .unwrap();
+        let version_dir = tree
+            .put_directory(vec![
+                DirEntry::from_cid("assets", &assets_dir).with_link_type(LinkType::Dir),
+            ])
+            .await
+            .unwrap();
+        let root_cid = tree
+            .put_directory(vec![
+                DirEntry::from_cid("v0.3.0", &version_dir).with_link_type(LinkType::Dir),
+            ])
+            .await
+            .unwrap();
+
+        let state = test_app_state(store, Vec::new());
+        put_cached_tree_root(
+            &state,
+            tree_root_cache_key("npub1example", "releases/nostr-vpn", None),
+            root_cid.clone(),
+            "cache",
+            None,
+        );
+
+        let response = htree_npub_path(
+            State(state),
+            OriginalUri(
+                "/htree/npub1example/releases%2Fnostr-vpn/v0.3.0/assets/nostr-vpn-v0.3.0-macos-arm64.zip"
+                    .parse()
+                    .unwrap(),
+            ),
+            Path((
+                "example".to_string(),
+                "releases%2Fnostr-vpn".to_string(),
+                "v0.3.0/assets/nostr-vpn-v0.3.0-macos-arm64.zip".to_string(),
+            )),
+            Query(HashMap::new()),
+            axum::http::HeaderMap::new(),
+            axum::extract::ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 43123))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), asset_bytes.as_slice());
+    }
+
+    #[tokio::test]
     async fn serve_content_internal_honors_suffix_ranges() {
         let temp_dir = TempDir::new().unwrap();
         let store = Arc::new(HashtreeStore::new(temp_dir.path().join("store")).unwrap());
@@ -4248,6 +4529,7 @@ mod tests {
 
         let cached = resolve_to_hash(
             State(state.clone()),
+            OriginalUri("/api/resolve/npub1example/video".parse().unwrap()),
             Path(("npub1example".to_string(), "video".to_string())),
             Query(HashMap::new()),
         )
@@ -4260,6 +4542,7 @@ mod tests {
 
         let refresh = resolve_to_hash(
             State(state),
+            OriginalUri("/api/resolve/npub1example/video".parse().unwrap()),
             Path(("npub1example".to_string(), "video".to_string())),
             Query(HashMap::from([("refresh".to_string(), "1".to_string())])),
         )
@@ -4311,6 +4594,11 @@ mod tests {
 
         let refresh = resolve_to_hash(
             State(state),
+            OriginalUri(
+                format!("/api/resolve/{}/{}", keys.public_key().to_bech32().unwrap(), tree_name)
+                    .parse()
+                    .unwrap(),
+            ),
             Path((
                 keys.public_key().to_bech32().unwrap(),
                 tree_name.to_string(),

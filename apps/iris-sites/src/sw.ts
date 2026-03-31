@@ -6,6 +6,7 @@
  */
 
 /// <reference lib="webworker" />
+import { getRawHtreePath, parseImmutableHtreePath, parseMutableHtreePath } from '@hashtree/worker/htree-path';
 import { precacheAndRoute } from 'workbox-precaching';
 
 declare let self: ServiceWorkerGlobalScope & {
@@ -317,29 +318,23 @@ self.addEventListener('fetch', (event: FetchEvent) => {
   if (event.request.method !== 'GET' && event.request.method !== 'HEAD') return;
 
   const url = new URL(event.request.url);
-  const parts = url.pathname.replace(/^\/+/, '').split('/');
-  if (parts[0] !== 'htree') return;
+  const rawPath = getRawHtreePath(url);
+  if (!rawPath.startsWith('/htree/')) return;
 
-  if (parts.length >= 2 && parts[1].startsWith('nhash1')) {
-    const nhash = parts[1];
-    const filePath = decodePathSegments(parts.slice(2)) || 'file';
+  const immutablePath = parseImmutableHtreePath(rawPath);
+  if (immutablePath) {
+    const { nhash, filePath } = immutablePath;
     event.respondWith(
-      createNhashResponse({ nhash }, filePath, event.request, event.clientId).then(addCORSHeaders)
+      createNhashResponse({ nhash }, filePath || 'file', event.request, event.clientId).then(addCORSHeaders)
     );
     return;
   }
 
-  if (parts.length >= 3 && parts[1].startsWith('npub1')) {
-    let treeName = parts[2];
-    try {
-      treeName = decodeURIComponent(treeName);
-    } catch {
-      // Keep encoded tree name when decode fails.
-    }
-    const npub = parts[1];
-    const filePath = decodePathSegments(parts.slice(3)) || 'file';
+  const mutablePath = parseMutableHtreePath(rawPath);
+  if (mutablePath) {
+    const { npub, treeName, filePath } = mutablePath;
     event.respondWith(
-      createNhashResponse({ npub, treeName }, filePath, event.request, event.clientId).then(addCORSHeaders)
+      createNhashResponse({ npub, treeName }, filePath || 'file', event.request, event.clientId).then(addCORSHeaders)
     );
     return;
   }

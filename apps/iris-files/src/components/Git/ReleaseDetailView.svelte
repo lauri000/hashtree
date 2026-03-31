@@ -7,7 +7,7 @@
   import DOMPurify from 'dompurify';
   import { routeStore, createTreesStore } from '../../stores';
   import { nostrStore } from '../../nostr';
-  import { getNpubFileUrl } from '../../lib/mediaUrl';
+  import { getPublicNpubFileUrl } from '../../lib/mediaUrl';
   import {
     createReleaseDetailStore,
     deleteRelease,
@@ -80,7 +80,7 @@
   function getAssetHref(asset: { path: string }): string {
     if (!release) return '#';
     const assetPath = `${release.id}/${asset.path}`;
-    return getNpubFileUrl(npub, releaseTreeName, assetPath);
+    return getPublicNpubFileUrl(npub, releaseTreeName, assetPath);
   }
 
   async function handleDelete() {

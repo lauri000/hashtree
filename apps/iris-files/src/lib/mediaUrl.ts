@@ -19,6 +19,7 @@ const LOCAL_PROBE_TIMEOUT_MS = 500;
 const LOCAL_PROBE_INTERVAL_MS = 1000;
 const PREFIX_READY_TIMEOUT_MS = 15000;
 const COMMON_THUMBNAIL_FILENAMES = ['thumbnail.jpg', 'thumbnail.webp', 'thumbnail.png', 'thumbnail.jpeg'] as const;
+const PUBLIC_HTREE_HTTP_BASE_URL = 'https://upload.iris.to';
 
 let cachedPrefix = '';
 const prefixListeners = new Set<(prefix: string) => void>();
@@ -225,6 +226,12 @@ export function getNpubFileUrl(npub: string, treeName: string, path: string): st
   const encodedPath = path.split('/').map(encodeURIComponent).join('/');
   const url = `${getHtreePrefix()}/htree/${npub}/${encodedTreeName}/${encodedPath}`;
   return appendHtreeCacheBust(appendMediaClientKey(url));
+}
+
+export function getPublicNpubFileUrl(npub: string, treeName: string, path: string): string {
+  const encodedTreeName = encodeURIComponent(treeName);
+  const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+  return `${PUBLIC_HTREE_HTTP_BASE_URL}/${npub}/${encodedTreeName}/${encodedPath}`;
 }
 
 /**

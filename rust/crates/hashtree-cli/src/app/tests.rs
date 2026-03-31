@@ -3,7 +3,7 @@ use super::lists::{
     build_mute_list_event, load_mute_entries, update_hex_list_file,
     update_mute_list_file_with_status, MuteEntry, MuteUpdate,
 };
-use super::resolve::resolve_cid_input;
+use super::resolve::{parse_published_target, resolve_cid_input, ParsedPublishedTarget};
 use super::run::{
     build_files_iris_to_url_for_add_route, build_files_iris_to_url_for_published_ref,
     build_sites_iris_to_url_for_add_route, build_sites_iris_to_url_for_published_ref,
@@ -224,6 +224,20 @@ fn test_build_sites_iris_to_url_for_published_ref_enables_auto_reload() {
 }
 
 #[test]
+fn test_parse_published_target_decodes_slash_containing_tree_names() {
+    assert_eq!(
+        parse_published_target(
+            "htree://npub1owner/releases%2Fnostr-vpn/v0.3.0/assets/nostr-vpn-v0.3.0-macos-arm64.zip",
+        ),
+        Some(ParsedPublishedTarget {
+            npub: "npub1owner".to_string(),
+            tree_name: "releases/nostr-vpn".to_string(),
+            path: Some("v0.3.0/assets/nostr-vpn-v0.3.0-macos-arm64.zip".to_string()),
+        })
+    );
+}
+
+#[test]
 fn test_detect_site_entry_for_path_finds_html_file() {
     let temp_dir = tempfile::tempdir().unwrap();
     let html_path = temp_dir.path().join("Landing.HTM");
@@ -305,7 +319,7 @@ fn test_cli_parses_release_publish_command() {
         "htree",
         "release",
         "publish",
-        "hashtree-releases",
+        "releases/hashtree",
         "releases/v0.2.3",
         "nhash1qqsq9qxpq9qcrsszg2pvxq6rs0zqg3yyc5fc5z0knh0wlh",
         "--local",
@@ -321,7 +335,7 @@ fn test_cli_parses_release_publish_command() {
                     local,
                 },
         } => {
-            assert_eq!(tree_name, "hashtree-releases");
+            assert_eq!(tree_name, "releases/hashtree");
             assert_eq!(version_path, "releases/v0.2.3");
             assert_eq!(cid, "nhash1qqsq9qxpq9qcrsszg2pvxq6rs0zqg3yyc5fc5z0knh0wlh");
             assert!(local);

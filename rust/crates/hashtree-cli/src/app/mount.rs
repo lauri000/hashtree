@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use super::resolve::{resolve_cid_input_with_opts, ResolveOptions};
+use super::resolve::{parse_published_target, resolve_cid_input_with_opts, ResolveOptions};
 
 struct MountVisibility {
     visibility: hashtree_core::TreeVisibility,
@@ -192,17 +192,10 @@ pub(crate) async fn mount_fuse(
     }
 
     let resolved = resolve_cid_input_with_opts(base, &opts).await?;
-
-    let nostr_key = if base.starts_with("npub1") && base.contains('/') {
-        let parts: Vec<&str> = base.splitn(3, '/').collect();
-        if parts.len() >= 2 {
-            Some(format!("{}/{}", parts[0], parts[1]))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let published_target = parse_published_target(base);
+    let nostr_key = published_target
+        .as_ref()
+        .map(|target| format!("{}/{}", target.npub, target.tree_name));
 
     let max_size_bytes = config.storage.max_size_gb * 1024 * 1024 * 1024;
     let store = Arc::new(HashtreeStore::with_options(
@@ -237,10 +230,9 @@ pub(crate) async fn mount_fuse(
             .await
             .context("Failed to create nostr resolver")?;
 
-        let (npub, tree_name) = nostr_key
-            .split_once('/')
-            .ok_or_else(|| anyhow::anyhow!("Invalid nostr key: {}", nostr_key))?;
-        let pubkey_bytes = hashtree_cli::config::parse_npub(npub)?;
+        let published_target =
+            published_target.ok_or_else(|| anyhow::anyhow!("Invalid nostr key: {}", nostr_key))?;
+        let pubkey_bytes = hashtree_cli::config::parse_npub(&published_target.npub)?;
         if keys.public_key().to_bytes() != pubkey_bytes {
             anyhow::bail!("Nostr key does not match mounted npub");
         }
@@ -253,7 +245,7 @@ pub(crate) async fn mount_fuse(
             link_key: mount_link_key,
             store: store.clone(),
             pubkey_hex,
-            tree_name: tree_name.to_string(),
+            tree_name: published_target.tree_name,
             handle: tokio::runtime::Handle::current(),
         }) as Arc<dyn RootPublisher>)
     } else {

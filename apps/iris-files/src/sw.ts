@@ -15,6 +15,7 @@
  */
 
 /// <reference lib="webworker" />
+import { getRawHtreePath, parseImmutableHtreePath, parseMutableHtreePath } from '@hashtree/worker/htree-path';
 import { precacheAndRoute } from 'workbox-precaching';
 import { shouldInterceptHtreeRequestForWorker } from './lib/swRoutePolicy';
 import { getSameOriginResponseMode } from './lib/swSameOriginPolicy';
@@ -763,10 +764,8 @@ async function fetchSameOriginWithCache(request: Request): Promise<Response> {
  */
 self.addEventListener('fetch', (event: FetchEvent) => {
   const url = new URL(event.request.url);
-  // Use href to preserve encoded characters (pathname auto-decodes %2F)
-  // Extract path from URL without decoding: /htree/npub/videos%2FName/file.mp4
-  const pathMatch = url.href.match(/^[^:]+:\/\/[^/]+(.*)$/);
-  const rawPath = pathMatch ? pathMatch[1].split('?')[0] : url.pathname;
+  // Use href to preserve encoded characters (pathname auto-decodes %2F).
+  const rawPath = getRawHtreePath(url);
   const pathParts = rawPath.slice(1).split('/'); // Remove leading /
   const rangeHeader = event.request.headers.get('Range');
   const clientKey = url.searchParams.get('htree_c');
@@ -782,9 +781,10 @@ self.addEventListener('fetch', (event: FetchEvent) => {
       // other ordinary tree files load directly from the embedded server.
     } else {
       // /htree/{nhash}/{filename} - Direct nhash access (content-addressed)
-      if (pathParts.length >= 2 && pathParts[1].startsWith('nhash1')) {
-        const nhash = pathParts[1];
-        const filename = pathParts.slice(2).join('/') || 'file';
+      const immutablePath = parseImmutableHtreePath(rawPath);
+      if (immutablePath) {
+        const { nhash, filePath } = immutablePath;
+        const filename = filePath || 'file';
         const forceDownload = url.searchParams.get('download') === '1';
         event.respondWith(
           createNhashFileResponse(
@@ -801,11 +801,10 @@ self.addEventListener('fetch', (event: FetchEvent) => {
       }
 
       // /htree/{npub}/{treeName}/{path...} - Npub-based file access
-      // treeName is URL-encoded (may contain %2F for slashes)
-      if (pathParts.length >= 3 && NPUB_PATTERN.test(pathParts[1])) {
-        const npub = pathParts[1];
-        const treeName = decodeURIComponent(pathParts[2]);
-        const filePath = pathParts.slice(3).map(decodeURIComponent).join('/');
+      // treeName is URL-encoded and may itself contain slashes.
+      const mutablePath = parseMutableHtreePath(rawPath);
+      if (mutablePath && NPUB_PATTERN.test(mutablePath.npub)) {
+        const { npub, treeName, filePath } = mutablePath;
         event.respondWith(
           createNpubFileResponse(
             npub,

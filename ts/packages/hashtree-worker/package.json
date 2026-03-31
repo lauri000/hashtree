@@ -25,6 +25,10 @@
     "./protocol": {
       "types": "./dist/protocol.d.ts",
       "import": "./dist/protocol.js"
+    },
+    "./htree-path": {
+      "types": "./dist/htree-path.d.ts",
+      "import": "./dist/htree-path.js"
     }
   },
   "files": [

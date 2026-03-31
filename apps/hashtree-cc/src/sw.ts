@@ -6,6 +6,7 @@
  */
 
 /// <reference lib="webworker" />
+import { getRawHtreePath, parseImmutableHtreePath } from '@hashtree/worker/htree-path';
 import { precacheAndRoute } from 'workbox-precaching';
 import { createInactivityTimer, type InactivityTimer } from './lib/inactivityTimeout';
 
@@ -351,20 +352,19 @@ self.addEventListener('fetch', (event: FetchEvent) => {
   if (event.request.method !== 'GET' && event.request.method !== 'HEAD') return;
 
   const url = new URL(event.request.url);
-  const pathMatch = url.href.match(/^[^:]+:\/\/[^/]+(.*)$/);
-  const rawPath = pathMatch ? pathMatch[1].split('?')[0] : url.pathname;
-  const parts = rawPath.slice(1).split('/');
-  if (parts[0] !== 'htree') return;
+  const rawPath = getRawHtreePath(url);
+  if (!rawPath.startsWith('/htree/')) return;
 
-  if (parts.length >= 2 && parts[1].startsWith('nhash1')) {
-    const nhash = parts[1];
-    const filePath = parts.slice(2).join('/') || 'file';
+  const immutablePath = parseImmutableHtreePath(rawPath);
+  if (immutablePath) {
+    const { nhash, filePath } = immutablePath;
     event.respondWith(
-      createNhashResponse(nhash, filePath, event.request, event.clientId).then(addCORSHeaders)
+      createNhashResponse(nhash, filePath || 'file', event.request, event.clientId).then(addCORSHeaders)
     );
     return;
   }
 
+  const parts = rawPath.slice(1).split('/');
   if (parts.length >= 3 && parts[1].startsWith('npub1')) {
     event.respondWith(new Response('npub routes are not available in hashtree-cc', { status: 501 }));
     return;

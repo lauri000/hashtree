@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fromHex, nhashEncode } from '@hashtree/core';
+import { getRawHtreePath, parseMutableHtreePath } from '@hashtree/worker/htree-path';
 import {
+  getNpubFileUrl,
+  getPublicNpubFileUrl,
   getStableFileUrl,
   getStablePathUrl,
   getStableResolvedMediaUrls,
@@ -84,6 +87,33 @@ describe('mediaUrl thumbnail helpers', () => {
       }),
     ).toBe(
       '/htree/npub1example/videos%2FTest%20Clip/clips/demo%20reel/video.mp4?htree_c=test-media-client',
+    );
+  });
+
+  it('round-trips encoded release tree urls through the mutable htree path parser', () => {
+    installWindow();
+    const url = getNpubFileUrl(
+      'npub1example',
+      'releases/nostr-vpn',
+      'v0.3.0/assets/nostr-vpn-v0.3.0-macos-arm64.zip',
+    );
+
+    expect(parseMutableHtreePath(getRawHtreePath(new URL(`https://git.iris.to${url}`)))).toEqual({
+      npub: 'npub1example',
+      treeName: 'releases/nostr-vpn',
+      filePath: 'v0.3.0/assets/nostr-vpn-v0.3.0-macos-arm64.zip',
+    });
+  });
+
+  it('builds public upload urls with slash-containing tree names as a single segment', () => {
+    expect(
+      getPublicNpubFileUrl(
+        'npub1example',
+        'releases/nostr-vpn',
+        'v0.3.0/assets/nostr-vpn-v0.3.0-macos-arm64.zip',
+      ),
+    ).toBe(
+      'https://upload.iris.to/npub1example/releases%2Fnostr-vpn/v0.3.0/assets/nostr-vpn-v0.3.0-macos-arm64.zip',
     );
   });
 
