@@ -7,6 +7,8 @@ import { join } from 'node:path'
 import {
   collectReleaseAssetPaths,
   defaultSharedWindowsRepoPath,
+  linuxDockerShellCommand,
+  linuxDockerVolumeMounts,
   packagingConfigPath,
   parseArgs,
   usage,
@@ -81,6 +83,25 @@ test('workspaceInstallCommands bootstraps iris-files before iris', () => {
   assert.deepEqual(workspaceInstallCommands('pnpm'), [
     'pnpm --dir apps/iris-files install --frozen-lockfile --ignore-scripts',
     'pnpm --dir apps/iris install --frozen-lockfile --ignore-scripts',
+  ])
+})
+
+test('linuxDockerShellCommand exports CI before pnpm installs', () => {
+  const command = linuxDockerShellCommand('x86_64-unknown-linux-gnu')
+  assert.match(command, /export CI=true/)
+  assert.match(command, /pnpm --dir apps\/iris-files install --frozen-lockfile --ignore-scripts/)
+  assert.match(command, /pnpm --dir apps\/iris exec tauri build --config src-tauri\/tauri\.release\.no-frontend\.json --target x86_64-unknown-linux-gnu --bundles appimage,deb --ci/)
+})
+
+test('linuxDockerVolumeMounts isolates both workspace node_modules directories', () => {
+  assert.deepEqual(linuxDockerVolumeMounts('/repo'), [
+    '/repo:/workspace',
+    'hashtree-iris-release-iris-files-node-modules:/workspace/apps/iris-files/node_modules',
+    'hashtree-iris-release-node-modules:/workspace/apps/iris/node_modules',
+    'hashtree-iris-release-pnpm-store:/pnpm/store',
+    'hashtree-iris-release-target:/workspace/apps/iris/src-tauri/target',
+    'hashtree-iris-release-cargo-registry:/root/.cargo/registry',
+    'hashtree-iris-release-cargo-git:/root/.cargo/git',
   ])
 })
 

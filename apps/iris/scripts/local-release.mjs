@@ -141,6 +141,28 @@ export function workspaceInstallCommands(pnpmCommand = 'pnpm', installDirs = fro
   return installDirs.map((dir) => `${pnpmCommand} --dir ${dir} install --frozen-lockfile --ignore-scripts`)
 }
 
+export function linuxDockerShellCommand(target = 'x86_64-unknown-linux-gnu') {
+  return [
+    'set -euo pipefail',
+    'export CI=true',
+    'pnpm config set store-dir /pnpm/store',
+    ...workspaceInstallCommands('pnpm'),
+    `pnpm --dir apps/iris exec tauri build --config ${quote(packagingConfigPath())} --target ${target} --bundles appimage,deb --ci`,
+  ].join(' && ')
+}
+
+export function linuxDockerVolumeMounts(currentRepoRoot = repoRoot) {
+  return [
+    `${currentRepoRoot}:/workspace`,
+    'hashtree-iris-release-iris-files-node-modules:/workspace/apps/iris-files/node_modules',
+    'hashtree-iris-release-node-modules:/workspace/apps/iris/node_modules',
+    'hashtree-iris-release-pnpm-store:/pnpm/store',
+    'hashtree-iris-release-target:/workspace/apps/iris/src-tauri/target',
+    'hashtree-iris-release-cargo-registry:/root/.cargo/registry',
+    'hashtree-iris-release-cargo-git:/root/.cargo/git',
+  ]
+}
+
 export function packagingConfigPath() {
   return packagingConfig
 }
@@ -437,12 +459,7 @@ function buildLinuxArtifacts({ pnpmInvocation, env, assetPrefix, dryRun, builtLi
 
     const imageName = env.IRIS_RELEASE_DOCKER_IMAGE || 'hashtree/iris-native-linux-release'
     const platform = env.IRIS_RELEASE_DOCKER_PLATFORM || 'linux/amd64'
-    const command = [
-      'set -euo pipefail',
-      'pnpm config set store-dir /pnpm/store',
-      ...workspaceInstallCommands('pnpm'),
-      `pnpm --dir apps/iris exec tauri build --config ${quote(packagingConfigPath())} --target ${target} --bundles appimage,deb --ci`,
-    ].join(' && ')
+    const command = linuxDockerShellCommand(target)
 
     run('docker', ['build', '--platform', platform, '-f', dockerfile, '-t', imageName, dirname(dockerfile)], { dryRun })
     run(
@@ -452,18 +469,9 @@ function buildLinuxArtifacts({ pnpmInvocation, env, assetPrefix, dryRun, builtLi
         '--rm',
         '--platform',
         platform,
-        '-v',
-        `${repoRoot}:/workspace`,
-        '-v',
-        'hashtree-iris-release-node-modules:/workspace/apps/iris/node_modules',
-        '-v',
-        'hashtree-iris-release-pnpm-store:/pnpm/store',
-        '-v',
-        'hashtree-iris-release-target:/workspace/apps/iris/src-tauri/target',
-        '-v',
-        'hashtree-iris-release-cargo-registry:/root/.cargo/registry',
-        '-v',
-        'hashtree-iris-release-cargo-git:/root/.cargo/git',
+        '-e',
+        'CI=true',
+        ...linuxDockerVolumeMounts(repoRoot).flatMap((mount) => ['-v', mount]),
         '-w',
         '/workspace',
         imageName,

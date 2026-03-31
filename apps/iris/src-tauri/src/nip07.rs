@@ -49,6 +49,7 @@ use tracing::{debug, error, info, warn};
 #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 const MOBILE_CHILD_WEBVIEWS_UNSUPPORTED: &str = "Mobile child webviews are not supported yet";
 const IRIS_CONFIDENTIAL_STORAGE_KEY: &str = "iris-confidential";
+#[cfg(debug_assertions)]
 const IRIS_INSECURE_DEV_CONFIDENTIAL_ENV: &str = "IRIS_INSECURE_DEV_CONFIDENTIAL";
 
 // ============================================
@@ -426,6 +427,9 @@ pub(crate) fn confidential_store(
     app: AppHandle,
     insecure_dev_path: Option<PathBuf>,
 ) -> Arc<dyn ConfidentialStore> {
+    #[cfg(not(debug_assertions))]
+    let _ = insecure_dev_path;
+
     #[cfg(debug_assertions)]
     if insecure_dev_confidential_store_enabled() {
         if let Some(path) = insecure_dev_path {
