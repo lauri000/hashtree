@@ -43,7 +43,7 @@ Hashtree is the canonical remote for this repository:
 ### Quick install (prebuilt binaries)
 
 ```bash
-curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree%2Freleases/latest/install.sh | sh
+curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/releases%2Fhashtree/latest/install.sh | sh
 ```
 
 That installs `htree`, `htree-cashu`, and `git-remote-htree`.
@@ -81,6 +81,7 @@ That installs `htree`, `htree-cashu`, and `git-remote-htree`. After tapping, `br
 ### Packaging status
 
 - CLI release artifacts are assembled under `rust/dist/` and published with `rust/scripts/release_to_htree.sh`.
+- The same repo release flow also stages Iris desktop installers from `apps/iris` when they are available locally.
 - The release script also updates the `homebrew-hashtree` tap when the full macOS/Linux CLI artifact set is present.
 - Iris native release artifacts are assembled under `dist/iris-native/`.
 - Linux package-manager installs beyond Homebrew are not shipped yet.

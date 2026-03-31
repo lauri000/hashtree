@@ -160,7 +160,7 @@ test.describe('README Panel', () => {
   });
 
   test('should copy fenced command blocks from README.md', async ({ page }) => {
-    const installCommand = 'curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree%2Freleases/latest/install.sh | sh';
+    const installCommand = 'curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/releases%2Fhashtree/latest/install.sh | sh';
 
     await createAndEnterTree(page, 'readme-copy-test');
     await createFile(

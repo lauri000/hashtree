@@ -212,7 +212,7 @@ htree unpin <hash>                      # Unpin content
 # Nostr identity
 htree user                              # Show npub
 htree publish mydata <hash>             # Publish hash to npub.../mydata
-htree release publish hashtree/releases v0.2.3 <cid-or-nhash>
+htree release publish releases/hashtree v0.2.3 <cid-or-nhash>
 htree follow npub1...                   # Follow user
 htree following                         # List followed users
 ```
@@ -221,7 +221,7 @@ Publish a new binary release while keeping older versions in the same mutable tr
 
 ```bash
 release="$(htree add dist/hashtree-v<version> | awk '/^  url:/ {print $2}')"
-scripts/publish_release.sh v<version> "$release" hashtree/releases
+scripts/publish_release.sh v<version> "$release" releases/hashtree
 ```
 
 That stores the new release under `v<version>/`, repoints `latest/` at the same CID, and leaves older versions intact.
@@ -233,6 +233,18 @@ scripts/release_to_htree.sh --version v<version>
 ```
 
 On macOS this builds the macOS CLI artifacts locally, uses `cross` for the Linux musl CLI artifacts, and can optionally include Windows MSVC binaries from a VM via `--windows-artifacts-dir <shared-dir>`.
+
+When `apps/iris/scripts/local-release.mjs` is present, the same command also stages Iris desktop installers into the repo release. Skip that with:
+
+```bash
+scripts/release_to_htree.sh --version v<version> --skip-iris
+```
+
+To limit the local Iris packaging pass to specific steps, forward the same step filters used by `apps/iris/scripts/local-release.mjs`:
+
+```bash
+scripts/release_to_htree.sh --version v<version> --iris-only macos,linux
+```
 
 When the release directory includes the full macOS/Linux CLI checksum set, the same script also updates the Homebrew tap at:
 

@@ -10,13 +10,16 @@ trap cleanup EXIT
 
 mkdir -p \
     "${REPO_ROOT}/rust/scripts" \
+    "${REPO_ROOT}/scripts" \
     "${REPO_ROOT}/packaging/homebrew" \
     "${TMPDIR}/bin" \
     "${TMPDIR}/logs" \
-    "${TMPDIR}/out"
+    "${TMPDIR}/out" \
+    "${TMPDIR}/release-stage"
 
 cp /Users/sirius/src/hashtree/rust/scripts/release_to_htree.sh "${REPO_ROOT}/rust/scripts/release_to_htree.sh"
 cp /Users/sirius/src/hashtree/rust/scripts/release_common.sh "${REPO_ROOT}/rust/scripts/release_common.sh"
+cp /Users/sirius/src/hashtree/scripts/stage_repo_release.mjs "${REPO_ROOT}/scripts/stage_repo_release.mjs"
 chmod +x "${REPO_ROOT}/rust/scripts/release_to_htree.sh"
 git init "${REPO_ROOT}" >/dev/null
 git -C "${REPO_ROOT}" remote add origin htree://self/hashtree
@@ -81,6 +84,7 @@ cat >"${TMPDIR}/bin/htree" <<'EOF'
 set -euo pipefail
 case "${1:-}" in
     add)
+        echo "htree_add:$2" >>"${TEST_LOG_DIR}/calls.log"
         printf '  url: nhash1release\n'
         ;;
     user)
@@ -98,12 +102,19 @@ chmod +x "${TMPDIR}/bin/htree"
 PATH="${TMPDIR}/bin:$PATH" TEST_LOG_DIR="${TMPDIR}/logs" \
     "${REPO_ROOT}/rust/scripts/release_to_htree.sh" \
     --version v0.2.3 \
-    --output-dir "${TMPDIR}/out" >/dev/null
+    --output-dir "${TMPDIR}/out" \
+    --release-stage-dir "${TMPDIR}/release-stage" >/dev/null
 
-grep -F "publish_release:v0.2.3 nhash1release hashtree/releases" "${TMPDIR}/logs/calls.log" >/dev/null
-grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/hashtree%2Freleases/v0.2.3 --checksums-dir ${TMPDIR}/out --tap-repo homebrew-hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
+grep -F "htree_add:${TMPDIR}/release-stage" "${TMPDIR}/logs/calls.log" >/dev/null
+test -f "${TMPDIR}/release-stage/release.json"
+test -f "${TMPDIR}/release-stage/notes.md"
+test -f "${TMPDIR}/release-stage/install.sh"
+test -f "${TMPDIR}/release-stage/assets/hashtree-aarch64-apple-darwin.sha256"
+
+grep -F "publish_release:v0.2.3 nhash1release releases/hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
+grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/releases%2Fhashtree/v0.2.3 --checksums-dir ${TMPDIR}/out --tap-repo homebrew-hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
 test -f "${TMPDIR}/out/install.sh"
-grep -F 'BASE_URL="https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/hashtree%2Freleases/v0.2.3"' "${TMPDIR}/out/install.sh" >/dev/null
+grep -F 'BASE_URL="https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/releases%2Fhashtree/v0.2.3"' "${TMPDIR}/out/install.sh" >/dev/null
 if grep -F "cargo_publish:" "${TMPDIR}/logs/calls.log" >/dev/null; then
     echo "release_to_htree should not cargo publish unless requested" >&2
     exit 1

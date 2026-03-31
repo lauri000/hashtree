@@ -5,13 +5,15 @@ usage() {
     cat <<'EOF'
 Usage: rust/scripts/release_to_htree.sh --version <version> [options]
 
-Builds local CLI release artifacts, adds the assembled release directory to
-hashtree, then publishes it into a mutable release tree.
+Builds local CLI release artifacts, stages a metadata-backed repo release
+directory, adds it to hashtree, then publishes it into a mutable release tree.
+When apps/iris is present, the same release also stages locally-built Iris
+desktop installers unless explicitly skipped.
 
 Options:
   --version <version>                 Release version label, for example: v0.2.3
   --version-path <path>              Published path inside the release tree (default: <version>)
-  --tree-name <name>                 Mutable release tree name (default: <repo>/releases)
+  --tree-name <name>                 Mutable release tree name (default: releases/<repo>)
   --homebrew-tap-repo <name>         Homebrew tap repo name (default: homebrew-<repo>)
   --skip-homebrew-tap                Skip updating the Homebrew tap
   --cargo-publish                    Publish Rust crates to crates.io after releasing artifacts
@@ -20,6 +22,12 @@ Options:
   --targets <csv>                    Comma-separated targets to build/package
   --windows-artifacts-dir <dir>      Directory containing Windows .exe binaries from a VM
   --package-only                     Skip builds and package existing binaries only
+  --skip-iris                        Do not include Iris desktop assets in the repo release
+  --skip-iris-verify                 Skip pnpm build/icon verification before Iris packaging
+  --iris-only <csv>                  Limit Iris packaging steps to verify,macos,linux,windows
+  --iris-skip <csv>                  Skip selected Iris packaging steps
+  --iris-stage-dir <dir>             Directory to use for staged Iris release metadata
+  --release-stage-dir <dir>          Directory to use for the staged repo release metadata
   --cargo-bin <path>                 Cargo binary to use
   --cross-bin <path>                 cross binary to use for Linux musl targets
   -h, --help                         Show this help
@@ -38,12 +46,30 @@ REPO_NAME="$(infer_repo_name "$REPO_DIR")"
 
 VERSION=""
 VERSION_PATH=""
-TREE_NAME="${REPO_NAME}/releases"
+TREE_NAME="releases/${REPO_NAME}"
 HOMEBREW_TAP_REPO="homebrew-${REPO_NAME}"
 SKIP_HOMEBREW_TAP=0
 CARGO_PUBLISH=0
+SKIP_IRIS=0
+SKIP_IRIS_VERIFY=0
+IRIS_ONLY=""
+IRIS_SKIP=""
+IRIS_STAGE_DIR=""
+RELEASE_STAGE_DIR=""
 
 BUILD_ARGS=()
+TEMP_DIRS=()
+
+cleanup() {
+    local path
+    for path in "${TEMP_DIRS[@]:-}"; do
+        if [ -n "$path" ] && [ -e "$path" ]; then
+            rm -rf "$path"
+        fi
+    done
+}
+
+trap cleanup EXIT
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -71,6 +97,30 @@ while [ $# -gt 0 ]; do
         --cargo-publish)
             CARGO_PUBLISH=1
             shift
+            ;;
+        --skip-iris)
+            SKIP_IRIS=1
+            shift
+            ;;
+        --skip-iris-verify)
+            SKIP_IRIS_VERIFY=1
+            shift
+            ;;
+        --iris-only)
+            IRIS_ONLY="${2:-}"
+            shift 2
+            ;;
+        --iris-skip)
+            IRIS_SKIP="${2:-}"
+            shift 2
+            ;;
+        --iris-stage-dir)
+            IRIS_STAGE_DIR="${2:-}"
+            shift 2
+            ;;
+        --release-stage-dir)
+            RELEASE_STAGE_DIR="${2:-}"
+            shift 2
             ;;
         --output-dir|--target-dir|--targets|--windows-artifacts-dir|--cargo-bin|--cross-bin)
             BUILD_ARGS+=("$1" "${2:-}")
@@ -113,6 +163,14 @@ value_from_build_args() {
         fi
     done
     echo "$default_value"
+}
+
+require_command() {
+    local cmd="$1"
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "Missing required command: $cmd" >&2
+        exit 1
+    fi
 }
 
 homebrew_checksums_ready() {
@@ -206,6 +264,8 @@ EOF
 OUTPUT_DIR="$(value_from_build_args --output-dir "${RUST_DIR}/dist/hashtree-${VERSION}")"
 TARGET_DIR="$(value_from_build_args --target-dir "${RUST_DIR}/target")"
 npub="$(current_npub)"
+RELEASE_STAGE_SCRIPT="${REPO_DIR}/scripts/stage_repo_release.mjs"
+IRIS_RELEASE_SCRIPT="${REPO_DIR}/apps/iris/scripts/local-release.mjs"
 
 if [ -n "$npub" ]; then
     write_release_bootstrap_installer \
@@ -215,9 +275,64 @@ else
     echo "Warning: Could not determine current npub; skipping release installer generation." >&2
 fi
 
+if [ "$SKIP_IRIS" -eq 0 ]; then
+    if [ -f "$IRIS_RELEASE_SCRIPT" ]; then
+        require_command node
+
+        if [ -z "$IRIS_STAGE_DIR" ]; then
+            IRIS_STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hashtree-iris-release-XXXXXX")"
+            TEMP_DIRS+=("$IRIS_STAGE_DIR")
+        fi
+
+        IRIS_ARGS=("$IRIS_RELEASE_SCRIPT" "--tag" "$VERSION" "--stage-dir" "$IRIS_STAGE_DIR")
+        if [ "$SKIP_IRIS_VERIFY" -eq 1 ]; then
+            IRIS_ARGS+=("--skip-verify")
+        fi
+        if [ -n "$IRIS_ONLY" ]; then
+            IRIS_ARGS+=("--only" "$IRIS_ONLY")
+        fi
+        if [ -n "$IRIS_SKIP" ]; then
+            IRIS_ARGS+=("--skip" "$IRIS_SKIP")
+        fi
+
+        node "${IRIS_ARGS[@]}"
+    else
+        echo "Warning: Iris release script not found at apps/iris/scripts/local-release.mjs; skipping Iris desktop assets." >&2
+    fi
+fi
+
+if [ ! -f "$RELEASE_STAGE_SCRIPT" ]; then
+    echo "Missing repo release staging helper: ${RELEASE_STAGE_SCRIPT}" >&2
+    exit 1
+fi
+
+require_command node
+if [ -z "$RELEASE_STAGE_DIR" ]; then
+    RELEASE_STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hashtree-release-stage-XXXXXX")"
+    TEMP_DIRS+=("$RELEASE_STAGE_DIR")
+fi
+RELEASE_COMMIT="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || printf '%s\n' HEAD)"
+STAGE_ARGS=(
+    "$RELEASE_STAGE_SCRIPT"
+    --tag "$VERSION"
+    --commit "$RELEASE_COMMIT"
+    --cli-dir "$OUTPUT_DIR"
+    --output-dir "$RELEASE_STAGE_DIR"
+)
+
+if [ -n "$IRIS_STAGE_DIR" ] && [ -d "$IRIS_STAGE_DIR" ]; then
+    STAGE_ARGS+=(--iris-stage-dir "$IRIS_STAGE_DIR")
+fi
+
+if [ -n "$npub" ] && [ -f "${OUTPUT_DIR}/install.sh" ]; then
+    STAGE_ARGS+=(--install-url "$(gateway_release_base_url "$npub" "$TREE_NAME" "$VERSION_PATH")/install.sh")
+fi
+
+node "${STAGE_ARGS[@]}"
+
 release_cid="$(
     cd "$REPO_DIR"
-    htree add "$OUTPUT_DIR" | awk '/^  url:/ {print $2}'
+    htree add "$RELEASE_STAGE_DIR" | awk '/^  url:/ {print $2}'
 )"
 
 if [ -z "$release_cid" ]; then

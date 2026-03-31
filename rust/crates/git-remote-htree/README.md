@@ -5,7 +5,7 @@ Git remote helper for hashtree - push/pull git repos via Nostr and hashtree.
 ## Installation
 
 ```bash
-curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree%2Freleases/latest/install.sh | sh
+curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/releases%2Fhashtree/latest/install.sh | sh
 ```
 
 That installs `htree`, `htree-cashu`, and `git-remote-htree`.
