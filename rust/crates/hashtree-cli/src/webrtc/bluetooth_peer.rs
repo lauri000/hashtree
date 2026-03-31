@@ -806,6 +806,165 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bluetooth_peer_forwards_local_publishes_both_directions() -> Result<()> {
+        let (link_a, link_b) = MockBluetoothLink::pair();
+        let tmp_a = TempDir::new()?;
+        let tmp_b = TempDir::new()?;
+
+        let graph_store_a = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp_a.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let graph_store_b = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp_b.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let author_keys_a = Keys::generate();
+        let author_keys_b = Keys::generate();
+
+        let backend_a: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store_a.clone();
+        let backend_b: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store_b.clone();
+        let access_a = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend_a),
+            0,
+            HashSet::from([
+                author_keys_a.public_key().to_hex(),
+                author_keys_b.public_key().to_hex(),
+            ]),
+        ));
+        let access_b = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend_b),
+            0,
+            HashSet::from([
+                author_keys_a.public_key().to_hex(),
+                author_keys_b.public_key().to_hex(),
+            ]),
+        ));
+
+        let relay_a = Arc::new(NostrRelay::new(
+            Arc::clone(&backend_a),
+            tmp_a.path().to_path_buf(),
+            HashSet::from([
+                author_keys_a.public_key().to_hex(),
+                author_keys_b.public_key().to_hex(),
+            ]),
+            Some(access_a),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?);
+        let relay_b = Arc::new(NostrRelay::new(
+            Arc::clone(&backend_b),
+            tmp_b.path().to_path_buf(),
+            HashSet::from([
+                author_keys_a.public_key().to_hex(),
+                author_keys_b.public_key().to_hex(),
+            ]),
+            Some(access_b),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?);
+
+        let peer_a = BluetoothPeer::new(
+            PeerId::new("peer-a".to_string()),
+            PeerDirection::Outbound,
+            link_a,
+            None,
+            Some(relay_a.clone()),
+            None,
+            None,
+        );
+        let peer_b = BluetoothPeer::new(
+            PeerId::new("peer-b".to_string()),
+            PeerDirection::Inbound,
+            link_b,
+            None,
+            Some(relay_b.clone()),
+            None,
+            None,
+        );
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let cid_a = "ab".repeat(32);
+        let event_a = EventBuilder::new(
+            Kind::TextNote,
+            "bluetooth publish from a",
+            [nostr::Tag::parse(&["cid", &cid_a]).unwrap()],
+        )
+        .to_event(&author_keys_a)?;
+        relay_a.ingest_trusted_event(event_a.clone()).await?;
+
+        let cid_b = "cd".repeat(32);
+        let event_b = EventBuilder::new(
+            Kind::TextNote,
+            "bluetooth publish from b",
+            [nostr::Tag::parse(&["cid", &cid_b]).unwrap()],
+        )
+        .to_event(&author_keys_b)?;
+        relay_b.ingest_trusted_event(event_b.clone()).await?;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let received_on_b = relay_b
+            .query_events(
+                &Filter::new()
+                    .authors(vec![event_a.pubkey])
+                    .kinds(vec![event_a.kind]),
+                10,
+            )
+            .await;
+        assert_eq!(
+            received_on_b
+                .iter()
+                .filter(|candidate| candidate.id == event_a.id)
+                .count(),
+            1
+        );
+
+        let received_on_a = relay_a
+            .query_events(
+                &Filter::new()
+                    .authors(vec![event_b.pubkey])
+                    .kinds(vec![event_b.kind]),
+                10,
+            )
+            .await;
+        assert_eq!(
+            received_on_a
+                .iter()
+                .filter(|candidate| candidate.id == event_b.id)
+                .count(),
+            1
+        );
+
+        let bluetooth_events_a = relay_a.bluetooth_received_events(10).await;
+        assert_eq!(bluetooth_events_a.len(), 1);
+        assert_eq!(bluetooth_events_a[0].event_id, event_b.id.to_hex());
+        assert_eq!(bluetooth_events_a[0].peer_id.as_deref(), Some("peer-a"));
+        assert_eq!(bluetooth_events_a[0].cid_values, vec![cid_b]);
+
+        let bluetooth_events_b = relay_b.bluetooth_received_events(10).await;
+        assert_eq!(bluetooth_events_b.len(), 1);
+        assert_eq!(bluetooth_events_b[0].event_id, event_a.id.to_hex());
+        assert_eq!(bluetooth_events_b[0].peer_id.as_deref(), Some("peer-b"));
+        assert_eq!(bluetooth_events_b[0].cid_values, vec![cid_a]);
+
+        peer_b.close().await?;
+        peer_a.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn bluetooth_peer_closes_after_local_publish_send_failure() -> Result<()> {
         let tmp = TempDir::new()?;
         let graph_store = {

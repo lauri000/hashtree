@@ -2299,4 +2299,45 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn mobile_bluetooth_plugins_expose_rx_descriptor_for_macos_btleplug() {
+        let android_plugin_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "plugins/mobile-bluetooth/android/src/main/java/to/iris/browser/mobilebluetooth/MobileBluetoothPlugin.kt",
+        );
+        if android_plugin_path.exists() {
+            let plugin = std::fs::read_to_string(&android_plugin_path)
+                .expect("failed to read Android Bluetooth plugin");
+            for required in [
+                "USER_DESCRIPTION_UUID",
+                "00002901-0000-1000-8000-00805f9b34fb",
+                "rx.addDescriptor(",
+            ] {
+                assert!(
+                    plugin.contains(required),
+                    "expected {required:?} in {:?}",
+                    android_plugin_path
+                );
+            }
+        }
+
+        let ios_plugin_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("plugins/mobile-bluetooth/ios/Sources/MobileBluetoothPlugin.swift");
+        if ios_plugin_path.exists() {
+            let plugin =
+                std::fs::read_to_string(&ios_plugin_path).expect("failed to read iOS plugin");
+            for required in [
+                "userDescriptionUUID",
+                "CBUUID(string: \"2901\")",
+                "rx.descriptors = [",
+                "CBMutableDescriptor(type: userDescriptionUUID, value: \"iris-rx\" as NSString)",
+            ] {
+                assert!(
+                    plugin.contains(required),
+                    "expected {required:?} in {:?}",
+                    ios_plugin_path
+                );
+            }
+        }
+    }
 }

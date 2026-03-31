@@ -47,6 +47,7 @@ private struct PendingSend {
 private let serviceUUID = CBUUID(string: "f18ef5f6-b7ee-4f40-b869-10a2d4f35932")
 private let rxUUID = CBUUID(string: "0bb5f5c9-6369-4511-a84f-4d4c14d8f8d4")
 private let txUUID = CBUUID(string: "4ec9c0c2-97c6-4f46-9fd1-927d699b2f6d")
+private let userDescriptionUUID = CBUUID(string: "2901")
 private let chunkBytes = 180
 
 private final class FrameDecoder {
@@ -359,6 +360,11 @@ class MobileBluetoothPlugin: Plugin, CBPeripheralManagerDelegate {
         value: nil,
         permissions: [.writeable]
       )
+      // macOS btleplug waits for descriptor discovery on every characteristic before
+      // considering the connection fully established.
+      rx.descriptors = [
+        CBMutableDescriptor(type: userDescriptionUUID, value: "iris-rx" as NSString)
+      ]
       let tx = CBMutableCharacteristic(
         type: txUUID,
         properties: [.notify, .read],

@@ -47,6 +47,7 @@ private val SERVICE_UUID: UUID = UUID.fromString("f18ef5f6-b7ee-4f40-b869-10a2d4
 private val RX_UUID: UUID = UUID.fromString("0bb5f5c9-6369-4511-a84f-4d4c14d8f8d4")
 private val TX_UUID: UUID = UUID.fromString("4ec9c0c2-97c6-4f46-9fd1-927d699b2f6d")
 private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+private val USER_DESCRIPTION_UUID: UUID = UUID.fromString("00002901-0000-1000-8000-00805f9b34fb")
 private const val CHUNK_BYTES: Int = 180
 private const val UNREADY_DISCONNECT_DELAY_MS: Long = 30000
 
@@ -174,6 +175,9 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
         try {
             bluetoothActive = false
             stopInternal()
+            // Give Android's BLE stack a moment to release the previous server instance
+            // before reopening it. Samsung devices in particular are prone to stale handles.
+            Thread.sleep(100)
             ensureBluetoothReady()
             startGattServerOrThrow()
             invoke.resolve()
@@ -515,6 +519,14 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
             RX_UUID,
             BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
             BluetoothGattCharacteristic.PERMISSION_WRITE,
+        )
+        // macOS btleplug waits for descriptor discovery on every characteristic before
+        // treating the connection as ready, so expose a harmless descriptor on RX too.
+        rx.addDescriptor(
+            BluetoothGattDescriptor(
+                USER_DESCRIPTION_UUID,
+                BluetoothGattDescriptor.PERMISSION_READ,
+            )
         )
         val tx = BluetoothGattCharacteristic(
             TX_UUID,
