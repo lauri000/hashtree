@@ -282,11 +282,32 @@ struct PrCreateFixture {
     target_npub: String,
     target_pubkey_hex: String,
     target_repo_name: String,
+    source_repo_name: String,
 }
 
 impl PrCreateFixture {
     fn target_repo_url(&self) -> String {
         format!("htree://{}/{}", self.target_npub, self.target_repo_name)
+    }
+
+    fn source_repo_url(&self) -> String {
+        format!("htree://{}/{}", self.self_npub, self.source_repo_name)
+    }
+
+    fn configure_source_upstream(&self, remote_name: &str) {
+        let source_repo_url = self.source_repo_url();
+        run_git(
+            &self.repo_dir,
+            &["remote", "add", remote_name, &source_repo_url],
+        );
+        run_git(
+            &self.repo_dir,
+            &["config", "branch.feature.remote", remote_name],
+        );
+        run_git(
+            &self.repo_dir,
+            &["config", "branch.feature.merge", "refs/heads/feature"],
+        );
     }
 
     fn run_htree_in(&self, dir: &Path, args: &[&str]) -> Output {
@@ -357,12 +378,14 @@ fn setup_pr_create_fixture_with_relay(relay: test_relay::TestRelay) -> PrCreateF
         target_npub,
         target_pubkey_hex,
         target_repo_name: "target-repo".to_string(),
+        source_repo_name: "source-repo".to_string(),
     }
 }
 
 #[test]
 fn test_pr_create_publishes_kind_1618_event() {
     let fixture = setup_pr_create_fixture();
+    fixture.configure_source_upstream("source");
     let commit_tip = git_stdout(&fixture.repo_dir, &["rev-parse", "HEAD"]);
 
     let title = "CLI PR create test";
@@ -426,7 +449,7 @@ fn test_pr_create_publishes_kind_1618_event() {
         "30617:{}:{}",
         fixture.target_pubkey_hex, fixture.target_repo_name
     );
-    let expected_clone = format!("htree://{}/{}", fixture.self_npub, fixture.target_repo_name);
+    let expected_clone = fixture.source_repo_url();
 
     assert_eq!(tag_value(&event, "a"), Some(expected_a.as_str()));
     assert_eq!(
@@ -435,6 +458,7 @@ fn test_pr_create_publishes_kind_1618_event() {
     );
     assert_eq!(tag_value(&event, "subject"), Some(title));
     assert_eq!(tag_value(&event, "branch"), Some("feature"));
+    assert_eq!(tag_value(&event, "branch-name"), Some("feature"));
     assert_eq!(tag_value(&event, "target-branch"), Some("master"));
     assert_eq!(tag_value(&event, "c"), Some(commit_tip.as_str()));
     assert_eq!(tag_value(&event, "clone"), Some(expected_clone.as_str()));
@@ -444,6 +468,7 @@ fn test_pr_create_publishes_kind_1618_event() {
 #[test]
 fn test_pr_create_accepts_git_remote_alias() {
     let fixture = setup_pr_create_fixture();
+    fixture.configure_source_upstream("source");
     let commit_tip = git_stdout(&fixture.repo_dir, &["rev-parse", "HEAD"]);
     run_git(
         &fixture.repo_dir,
@@ -477,12 +502,15 @@ fn test_pr_create_accepts_git_remote_alias() {
     );
     assert_eq!(tag_value(&event, "a"), Some(expected_a.as_str()));
     assert_eq!(tag_value(&event, "branch"), Some("feature"));
+    assert_eq!(tag_value(&event, "branch-name"), Some("feature"));
     assert_eq!(tag_value(&event, "c"), Some(commit_tip.as_str()));
+    assert_eq!(tag_value(&event, "clone"), Some(fixture.source_repo_url().as_str()));
 }
 
 #[test]
 fn test_pr_create_accepts_git_remote_alias_with_slash() {
     let fixture = setup_pr_create_fixture();
+    fixture.configure_source_upstream("source");
     let commit_tip = git_stdout(&fixture.repo_dir, &["rev-parse", "HEAD"]);
     run_git(
         &fixture.repo_dir,
@@ -516,7 +544,9 @@ fn test_pr_create_accepts_git_remote_alias_with_slash() {
     );
     assert_eq!(tag_value(&event, "a"), Some(expected_a.as_str()));
     assert_eq!(tag_value(&event, "branch"), Some("feature"));
+    assert_eq!(tag_value(&event, "branch-name"), Some("feature"));
     assert_eq!(tag_value(&event, "c"), Some(commit_tip.as_str()));
+    assert_eq!(tag_value(&event, "clone"), Some(fixture.source_repo_url().as_str()));
 }
 
 #[test]
@@ -534,6 +564,8 @@ fn test_pr_create_infers_single_htree_remote_when_repo_omitted() {
         "Inferred target PR",
         "--target-branch",
         "master",
+        "--clone-url",
+        &fixture.source_repo_url(),
     ]);
 
     assert!(
@@ -552,11 +584,13 @@ fn test_pr_create_infers_single_htree_remote_when_repo_omitted() {
         fixture.target_pubkey_hex, fixture.target_repo_name
     );
     assert_eq!(tag_value(&event, "a"), Some(expected_a.as_str()));
+    assert_eq!(tag_value(&event, "clone"), Some(fixture.source_repo_url().as_str()));
 }
 
 #[test]
 fn test_pr_create_sanitizes_fragment_from_repo_and_clone_tags() {
     let fixture = setup_pr_create_fixture();
+    fixture.configure_source_upstream("source");
     let target_repo_with_fragment = format!("{}#k=super-secret", fixture.target_repo_url());
 
     let output = fixture.run_htree(&[
@@ -584,7 +618,7 @@ fn test_pr_create_sanitizes_fragment_from_repo_and_clone_tags() {
         "30617:{}:{}",
         fixture.target_pubkey_hex, fixture.target_repo_name
     );
-    let expected_clone = format!("htree://{}/{}", fixture.self_npub, fixture.target_repo_name);
+    let expected_clone = fixture.source_repo_url();
     assert_eq!(tag_value(&event, "a"), Some(expected_a.as_str()));
     assert_eq!(tag_value(&event, "clone"), Some(expected_clone.as_str()));
     assert!(
@@ -599,6 +633,7 @@ fn test_pr_create_fails_when_no_relay_confirms_event() {
     let fixture = setup_pr_create_fixture_with_relay(test_relay::TestRelay::new_rejecting(
         "blocked for test",
     ));
+    fixture.configure_source_upstream("source");
 
     let output = fixture.run_htree(&[
         "pr",
@@ -636,6 +671,35 @@ fn test_pr_create_fails_when_no_relay_confirms_event() {
             .wait_for_kind(1618, Duration::from_millis(250))
             .is_none(),
         "rejected relay should not store the PR event"
+    );
+}
+
+#[test]
+fn test_pr_create_fails_when_clone_url_cannot_be_inferred() {
+    let fixture = setup_pr_create_fixture();
+
+    let output = fixture.run_htree(&[
+        "pr",
+        "create",
+        &fixture.target_repo_url(),
+        "--title",
+        "Missing clone inference should fail",
+        "--target-branch",
+        "master",
+    ]);
+
+    assert!(
+        !output.status.success(),
+        "expected pr create without source clone inference to fail.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Could not infer source clone URL"),
+        "stderr missing clone inference failure.\nstderr:\n{}",
+        stderr
     );
 }
 

@@ -145,6 +145,7 @@ pub struct PullRequestListItem {
     pub subject: Option<String>,
     pub commit_tip: Option<String>,
     pub branch: Option<String>,
+    pub clone_url: Option<String>,
     pub target_branch: Option<String>,
     pub created_at: u64,
 }
@@ -1999,6 +2000,8 @@ impl NostrClient {
             let mut subject = None;
             let mut commit_tip = None;
             let mut branch = None;
+            let mut branch_name = None;
+            let mut clone_url = None;
             let mut target_branch = None;
 
             for tag in event.tags.iter() {
@@ -2008,6 +2011,8 @@ impl NostrClient {
                         "subject" => subject = Some(slice[1].to_string()),
                         "c" => commit_tip = Some(slice[1].to_string()),
                         "branch" => branch = Some(slice[1].to_string()),
+                        "branch-name" => branch_name = Some(slice[1].to_string()),
+                        "clone" => clone_url = Some(slice[1].to_string()),
                         "target-branch" => target_branch = Some(slice[1].to_string()),
                         _ => {}
                     }
@@ -2020,7 +2025,8 @@ impl NostrClient {
                 state,
                 subject,
                 commit_tip,
-                branch,
+                branch: branch.or(branch_name),
+                clone_url,
                 target_branch,
                 created_at: event.created_at.as_u64(),
             });

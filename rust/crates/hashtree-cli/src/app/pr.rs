@@ -1,9 +1,10 @@
-//! Pull request creation via NIP-34 (kind 1618)
+//! Pull request creation and resolution via NIP-34 (kind 1618)
 
 use anyhow::{Context, Result};
-#[cfg(test)]
-use git_remote_htree::nostr_client::PullRequestStateFilter;
-use git_remote_htree::nostr_client::{resolve_identity, NostrClient};
+use git_remote_htree::nostr_client::{
+    resolve_identity, NostrClient, PullRequestListItem, PullRequestStateFilter,
+};
+use nostr::nips::nip19::FromBech32;
 use nostr_sdk::prelude::*;
 use std::process::Command;
 use std::time::Duration;
@@ -34,7 +35,7 @@ enum SourceBranchSelection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CloneUrlSelection {
-    DefaultFromSelfAndRepo,
+    InferFromSourceBranchUpstream,
     Explicit(String),
 }
 
@@ -56,6 +57,13 @@ struct NormalizedCreatePrParams {
     branch: SourceBranchSelection,
     target_branch: String,
     clone_url: CloneUrlSelection,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedPullRequest {
+    target_pubkey: String,
+    repo_name: String,
+    pr: PullRequestListItem,
 }
 
 /// Create a pull request by publishing a kind 1618 event
@@ -86,11 +94,6 @@ pub(crate) async fn create_pr(
     let secret = nostr::SecretKey::from_slice(&secret_bytes)
         .map_err(|e| anyhow::anyhow!("Invalid secret key: {}", e))?;
     let keys = Keys::new(secret);
-    let self_npub = keys
-        .public_key()
-        .to_bech32()
-        .map_err(|e| anyhow::anyhow!("Failed to encode npub: {}", e))?;
-
     // 2. Resolve current branch + commit tip
     let source_branch = match &params.branch {
         SourceBranchSelection::CurrentBranch => git_current_branch()?,
@@ -113,7 +116,9 @@ pub(crate) async fn create_pr(
     // 5. Build clone URL
     let clone_url = match &params.clone_url {
         CloneUrlSelection::Explicit(url) => url.clone(),
-        CloneUrlSelection::DefaultFromSelfAndRepo => format!("htree://{}/{}", self_npub, repo_name),
+        CloneUrlSelection::InferFromSourceBranchUpstream => {
+            infer_source_clone_url(&source_branch)?
+        }
     };
 
     // Best-effort safeguard: warn if the source branch is not pushed (no upstream) or upstream
@@ -126,6 +131,7 @@ pub(crate) async fn create_pr(
         Tag::custom(TagKind::custom("p"), vec![target_pubkey.clone()]),
         Tag::custom(TagKind::custom("subject"), vec![params.title.clone()]),
         Tag::custom(TagKind::custom("branch"), vec![source_branch.clone()]),
+        Tag::custom(TagKind::custom("branch-name"), vec![source_branch.clone()]),
         Tag::custom(
             TagKind::custom("target-branch"),
             vec![params.target_branch.clone()],
@@ -269,6 +275,315 @@ pub(crate) async fn list_prs(repo: Option<&str>, state: PrListState) -> Result<(
     Ok(())
 }
 
+/// Show a single pull request with normalized metadata and suggested git commands.
+pub(crate) async fn show_pr(selector: &str, repo: Option<&str>) -> Result<()> {
+    let resolved = resolve_pr(selector, repo).await?;
+    let pr = &resolved.pr;
+    let author_display = public_key_display(&pr.author_pubkey);
+    let branch = pr.branch.as_deref().unwrap_or("?");
+    let target_branch = pr.target_branch.as_deref().unwrap_or("master");
+    let clone_url = pr.clone_url.as_deref().unwrap_or("?");
+    let commit_tip = pr.commit_tip.as_deref().unwrap_or("?");
+    let fetch_ref = stable_pr_ref(&pr.event_id);
+
+    println!(
+        "Pull request {} for {}/{}",
+        short_id(&pr.event_id),
+        public_key_display(&resolved.target_pubkey),
+        resolved.repo_name
+    );
+    println!("  Event: {}", pr.event_id);
+    println!("  State: {}", pr.state.as_str());
+    println!("  Author: {}", author_display);
+    println!(
+        "  Title: {}",
+        pr.subject.as_deref().unwrap_or("(no subject)")
+    );
+    println!("  Branch: {} -> {}", branch, target_branch);
+    println!("  Clone: {}", clone_url);
+    println!("  Commit: {}", short_id(commit_tip));
+
+    if let (Some(branch), Some(clone_url), Some(_)) = (
+        pr.branch.as_deref(),
+        pr.clone_url.as_deref(),
+        pr.commit_tip.as_deref(),
+    ) {
+        let fetch_spec = git_fetch_spec(branch, &fetch_ref);
+        println!("  Fetch: git fetch {} {}", clone_url, fetch_spec);
+        println!("  Merge: git merge --no-ff {}", fetch_ref);
+    } else {
+        println!("  Fetch: unavailable (missing clone, branch, or commit tip)");
+    }
+
+    Ok(())
+}
+
+/// Fetch a PR source branch into a deterministic local ref.
+pub(crate) async fn fetch_pr(selector: &str, repo: Option<&str>) -> Result<()> {
+    ensure_git_work_tree()?;
+    let resolved = resolve_pr(selector, repo).await?;
+    let fetched_ref = fetch_pr_source_ref(&resolved)?;
+
+    println!(
+        "Fetched PR {} into {}",
+        short_id(&resolved.pr.event_id),
+        fetched_ref
+    );
+    println!(
+        "  Commit: {}",
+        short_id(
+            resolved
+                .pr
+                .commit_tip
+                .as_deref()
+                .unwrap_or_default()
+        )
+    );
+    Ok(())
+}
+
+/// Merge a PR source branch into the current target branch using a merge commit.
+pub(crate) async fn merge_pr(selector: &str, repo: Option<&str>) -> Result<()> {
+    ensure_git_work_tree()?;
+    let resolved = resolve_pr(selector, repo).await?;
+    let target_branch = resolved.pr.target_branch.as_deref().unwrap_or("master");
+    let current_branch = git_current_branch()?;
+    if current_branch != target_branch {
+        anyhow::bail!(
+            "Current branch '{}' does not match PR target branch '{}'. Checkout '{}' and retry.",
+            current_branch,
+            target_branch,
+            target_branch
+        );
+    }
+
+    let fetched_ref = fetch_pr_source_ref(&resolved)?;
+    git_merge_ref_no_ff(&fetched_ref)?;
+
+    println!(
+        "Merged PR {} into {}",
+        short_id(&resolved.pr.event_id),
+        target_branch
+    );
+    match git_branch_upstream_remote_opt(target_branch)? {
+        Some(remote) => println!("  Next: git push {} {}", remote, target_branch),
+        None => println!("  Next: git push <remote> {}", target_branch),
+    }
+    Ok(())
+}
+
+async fn resolve_pr(selector: &str, repo: Option<&str>) -> Result<ResolvedPullRequest> {
+    let repo_target = resolve_list_repo_target_input(repo)?;
+    let (target_pubkey, repo_name) = parse_repo_target(&repo_target)?;
+    let config = hashtree_config::Config::load_or_default();
+    let client = NostrClient::new(&target_pubkey, None, None, false, &config)
+        .context("Failed to initialize Nostr client")?;
+    let prs = client
+        .fetch_prs_async(&repo_name, PullRequestStateFilter::All)
+        .await?;
+    let pr = select_pr(&prs, selector)?;
+
+    Ok(ResolvedPullRequest {
+        target_pubkey,
+        repo_name,
+        pr,
+    })
+}
+
+fn select_pr(prs: &[PullRequestListItem], selector: &str) -> Result<PullRequestListItem> {
+    let normalized = normalize_pr_selector(selector)?;
+    let mut matches = prs
+        .iter()
+        .filter(|pr| pr_matches_selector(pr, &normalized))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        0 => anyhow::bail!("No pull request matched selector '{}'.", selector),
+        _ => {
+            let ids = matches
+                .into_iter()
+                .map(|pr| short_id(&pr.event_id).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!("Selector '{}' is ambiguous. Matches: {}", selector, ids);
+        }
+    }
+}
+
+fn normalize_pr_selector(selector: &str) -> Result<String> {
+    let trimmed = selector.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Pull request selector cannot be empty");
+    }
+
+    if trimmed.starts_with("nevent1") {
+        let event = Nip19Event::from_bech32(trimmed)
+            .map_err(|e| anyhow::anyhow!("Invalid nevent selector '{}': {}", trimmed, e))?;
+        return Ok(event.event_id.to_hex());
+    }
+
+    Ok(trimmed.to_ascii_lowercase())
+}
+
+fn pr_matches_selector(pr: &PullRequestListItem, selector: &str) -> bool {
+    let event_id = pr.event_id.to_ascii_lowercase();
+    if selector.len() == 64 && selector.chars().all(|c| c.is_ascii_hexdigit()) {
+        return event_id == selector;
+    }
+
+    event_id.starts_with(selector)
+}
+
+fn fetch_pr_source_ref(resolved: &ResolvedPullRequest) -> Result<String> {
+    let clone_url = resolved
+        .pr
+        .clone_url
+        .as_deref()
+        .context("Pull request is missing clone URL metadata")?;
+    let source_branch = resolved
+        .pr
+        .branch
+        .as_deref()
+        .context("Pull request is missing source branch metadata")?;
+    let commit_tip = resolved
+        .pr
+        .commit_tip
+        .as_deref()
+        .context("Pull request is missing commit tip metadata")?;
+    let stable_ref = stable_pr_ref(&resolved.pr.event_id);
+    let temp_ref = temp_pr_ref(&resolved.pr.event_id);
+    let fetch_spec = git_fetch_spec(source_branch, &temp_ref);
+
+    let result = (|| -> Result<String> {
+        let output = Command::new("git")
+            .args(["fetch", clone_url, &fetch_spec])
+            .output()
+            .context("Failed to run git fetch")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to fetch PR source from '{}': {}",
+                clone_url,
+                format_git_command_error(&output)
+            );
+        }
+
+        let fetched_tip = git_rev_parse(&temp_ref)?;
+        if fetched_tip != commit_tip {
+            anyhow::bail!(
+                "Fetched tip {} does not match PR commit tip {}.",
+                short_id(&fetched_tip),
+                short_id(commit_tip)
+            );
+        }
+
+        git_update_ref(&stable_ref, &fetched_tip)?;
+        Ok(stable_ref)
+    })();
+
+    let _ = git_delete_ref_if_exists(&temp_ref);
+    result
+}
+
+fn infer_source_clone_url(source_branch: &str) -> Result<String> {
+    match git_upstream_htree_remote_url_opt(source_branch)? {
+        Some(url) => Ok(url),
+        None => anyhow::bail!(
+            "Could not infer source clone URL for branch '{}'. Set an htree upstream on the branch or pass --clone-url explicitly.",
+            source_branch
+        ),
+    }
+}
+
+fn stable_pr_ref(event_id: &str) -> String {
+    format!("refs/remotes/htree-pr/{}", event_id)
+}
+
+fn temp_pr_ref(event_id: &str) -> String {
+    format!("refs/htree-pr/tmp/{}", event_id)
+}
+
+fn git_fetch_spec(branch: &str, dst_ref: &str) -> String {
+    format!("refs/heads/{}:{}", branch, dst_ref)
+}
+
+fn git_update_ref(reference: &str, sha: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(["update-ref", reference, sha])
+        .output()
+        .context("Failed to run git update-ref")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "Failed to update ref '{}': {}",
+            reference,
+            format_git_command_error(&output)
+        );
+    }
+
+    Ok(())
+}
+
+fn git_delete_ref_if_exists(reference: &str) -> Result<()> {
+    if git_rev_parse_opt(reference)?.is_none() {
+        return Ok(());
+    }
+
+    let output = Command::new("git")
+        .args(["update-ref", "-d", reference])
+        .output()
+        .context("Failed to run git update-ref -d")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "Failed to delete ref '{}': {}",
+            reference,
+            format_git_command_error(&output)
+        );
+    }
+
+    Ok(())
+}
+
+fn git_merge_ref_no_ff(reference: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(["merge", "--no-ff", "--no-edit", reference])
+        .output()
+        .context("Failed to run git merge")?;
+
+    if !output.status.success() {
+        anyhow::bail!("git merge failed: {}", format_git_command_error(&output));
+    }
+
+    Ok(())
+}
+
+fn format_git_command_error(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return stdout;
+    }
+
+    "command failed".to_string()
+}
+
+fn public_key_display(pubkey_hex: &str) -> String {
+    PublicKey::from_hex(pubkey_hex)
+        .ok()
+        .and_then(|pk| pk.to_bech32().ok())
+        .unwrap_or_else(|| pubkey_hex.to_string())
+}
+
+fn short_id(value: &str) -> &str {
+    value.get(..12).unwrap_or(value)
+}
+
 fn resolve_list_repo_target_input(repo: Option<&str>) -> Result<String> {
     match repo.map(str::trim) {
         Some("") | None => infer_repo_target_from_git_for_list(),
@@ -338,7 +653,7 @@ fn normalize_create_pr_params(input: CreatePrParamsInput<'_>) -> Result<Normaliz
     };
 
     let normalized_clone_url = match input.clone_url.map(str::trim) {
-        Some("") | None => CloneUrlSelection::DefaultFromSelfAndRepo,
+        Some("") | None => CloneUrlSelection::InferFromSourceBranchUpstream,
         Some(url) => CloneUrlSelection::Explicit(url.to_string()),
     };
 
@@ -660,7 +975,10 @@ mod tests {
 
         assert_eq!(params.repo, RepoTargetSelection::InferFromGit);
         assert_eq!(params.branch, SourceBranchSelection::CurrentBranch);
-        assert_eq!(params.clone_url, CloneUrlSelection::DefaultFromSelfAndRepo);
+        assert_eq!(
+            params.clone_url,
+            CloneUrlSelection::InferFromSourceBranchUpstream
+        );
         assert_eq!(params.title, "A Title");
         assert_eq!(params.description, "");
         assert!(!params.description_was_provided);
@@ -739,7 +1057,10 @@ mod tests {
 
         assert_eq!(params.repo, RepoTargetSelection::InferFromGit);
         assert_eq!(params.branch, SourceBranchSelection::CurrentBranch);
-        assert_eq!(params.clone_url, CloneUrlSelection::DefaultFromSelfAndRepo);
+        assert_eq!(
+            params.clone_url,
+            CloneUrlSelection::InferFromSourceBranchUpstream
+        );
     }
 
     #[test]
@@ -835,5 +1156,44 @@ mod tests {
 
         let out = resolve_list_repo_target_input(Some("npub1test/repo")).expect("resolve");
         assert_eq!(out, "npub1test/repo");
+    }
+
+    #[test]
+    fn normalize_pr_selector_decodes_nevent() {
+        let event_id =
+            EventId::from_hex("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+                .expect("event id");
+        let nevent = Nip19Event::new(event_id, Vec::<String>::new())
+            .to_bech32()
+            .expect("encode nevent");
+
+        let decoded = normalize_pr_selector(&nevent).expect("decode");
+        assert_eq!(
+            decoded,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn pr_matches_selector_supports_prefix_and_full_id() {
+        let pr = PullRequestListItem {
+            event_id: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
+            author_pubkey: "author".to_string(),
+            state: git_remote_htree::nostr_client::PullRequestState::Open,
+            subject: None,
+            commit_tip: None,
+            branch: None,
+            clone_url: None,
+            target_branch: None,
+            created_at: 0,
+        };
+
+        assert!(pr_matches_selector(
+            &pr,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
+        assert!(pr_matches_selector(&pr, "0123456789ab"));
+        assert!(!pr_matches_selector(&pr, "fedcba"));
     }
 }

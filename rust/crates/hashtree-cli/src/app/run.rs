@@ -1360,6 +1360,15 @@ pub(crate) async fn run() -> Result<()> {
             PrCommands::List { repo, state } => {
                 super::pr::list_prs(repo.as_deref(), state).await?;
             }
+            PrCommands::Show { pr, repo } => {
+                super::pr::show_pr(&pr, repo.as_deref()).await?;
+            }
+            PrCommands::Fetch { pr, repo } => {
+                super::pr::fetch_pr(&pr, repo.as_deref()).await?;
+            }
+            PrCommands::Merge { pr, repo } => {
+                super::pr::merge_pr(&pr, repo.as_deref()).await?;
+            }
         },
         Commands::Repos { owner } => {
             super::repos::list_repos(owner.as_deref()).await?;

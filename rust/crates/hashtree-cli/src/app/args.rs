@@ -291,6 +291,30 @@ pub(crate) enum PrCommands {
         #[arg(long, value_enum, default_value_t = PrListState::Open)]
         state: PrListState,
     },
+    /// Show pull request details and suggested git commands
+    Show {
+        /// Pull request selector (full event id, unique prefix, or nevent)
+        pr: String,
+        /// Target repository (git remote alias, npub/reponame, or htree:// URL)
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Fetch a pull request source branch into a local ref
+    Fetch {
+        /// Pull request selector (full event id, unique prefix, or nevent)
+        pr: String,
+        /// Target repository (git remote alias, npub/reponame, or htree:// URL)
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Merge a pull request source branch into the current target branch
+    Merge {
+        /// Pull request selector (full event id, unique prefix, or nevent)
+        pr: String,
+        /// Target repository (git remote alias, npub/reponame, or htree:// URL)
+        #[arg(long)]
+        repo: Option<String>,
+    },
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
