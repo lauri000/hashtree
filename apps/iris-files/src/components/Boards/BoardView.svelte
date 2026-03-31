@@ -21,11 +21,11 @@
   import { updateLocalRootCacheHex } from '../../treeRootCache';
   import VisibilityPicker from '../Modals/VisibilityPicker.svelte';
   import { open as openShareModal } from '../Modals/ShareModal.svelte';
-  import CopyText from '../CopyText.svelte';
+  import NpubAccessModal from '../Modals/NpubAccessModal.svelte';
   import Modal from '../ui/Modal.svelte';
   import VisibilityIcon from '../VisibilityIcon.svelte';
   import MediaPlayer from '../Viewer/MediaPlayer.svelte';
-  import { Avatar, Name, NpubRow } from '../User';
+  import { Avatar, Name } from '../User';
   import { shortNpub } from '../../utils/format';
   import {
     BOARD_CARD_FILE_SUFFIX,
@@ -80,7 +80,6 @@
     type BoardColumn,
     type BoardMergeSource,
     type BoardPermissions,
-    type BoardRole,
     type BoardState,
     type BoardTombstones,
   } from '../../lib/boards';
@@ -130,9 +129,6 @@
   let tombstones = $state<BoardTombstones>(createInitialBoardTombstones());
 
   let showPermissionsModal = $state(false);
-  let permissionRole = $state<BoardRole>('writer');
-  let permissionNpub = $state('');
-  let permissionError = $state('');
   let visibilityDraft = $state<TreeVisibility>('public');
   let visibilityError = $state('');
   let savingVisibility = $state(false);
@@ -239,6 +235,37 @@
     }
     return result;
   });
+  let permissionSections = $derived.by(() => {
+    if (!permissions) return [];
+    return [
+      {
+        id: 'admin',
+        label: 'Admins',
+        memberLabel: 'admin',
+        npubs: permissions.admins,
+        emptyText: 'Board must have at least one admin.',
+        removeTitle: 'Remove admin',
+      },
+      {
+        id: 'writer',
+        label: 'Writers',
+        memberLabel: 'writer',
+        npubs: permissions.writers,
+        emptyText: 'No writers assigned',
+        removeTitle: 'Remove writer',
+      },
+    ];
+  });
+  let permissionIntro = $derived(
+    canManage
+      ? 'Admins can manage admins/writers and edit cards. Writers can edit cards only.'
+      : 'Admins can manage roles. Writers can edit cards.'
+  );
+  let permissionRequestAccess = $derived(
+    !canWrite && userNpub
+      ? { text: 'Share your npub with an admin to request write access:', visible: !canWrite }
+      : null
+  );
 
   let viewedCardState = $derived.by(() => {
     if (!board || !cardViewColumnId || !cardViewCardId) return null;
@@ -2205,47 +2232,50 @@
   }
 
   function handleOpenPermissions() {
-    permissionNpub = '';
-    permissionRole = 'writer';
-    permissionError = '';
     visibilityDraft = visibility;
     visibilityError = '';
     showPermissionsModal = true;
   }
 
-  async function handleAddPermission() {
-    if (!permissions || !userNpub) return;
-    const targetNpub = permissionNpub.trim();
-    if (!isValidNpub(targetNpub)) {
-      permissionError = 'Enter a valid npub.';
-      return;
-    }
-
+  function validatePermissionAdd(targetNpub: string, role: string): string | null {
+    if (!permissions) return 'Permissions unavailable.';
+    if (role !== 'admin' && role !== 'writer') return 'Invalid role.';
     const alreadyAdmin = permissions.admins.includes(targetNpub);
     const alreadyWriter = permissions.writers.includes(targetNpub);
-    if ((permissionRole === 'admin' && alreadyAdmin) || (permissionRole === 'writer' && alreadyWriter)) {
-      permissionError = 'User already has that role.';
-      return;
+    if (role === 'admin' && alreadyAdmin) {
+      return 'User is already an admin.';
     }
+    if (role === 'writer' && alreadyAdmin) {
+      return 'User is already an admin.';
+    }
+    if (role === 'writer' && alreadyWriter) {
+      return 'User is already a writer.';
+    }
+    return null;
+  }
 
-    const next = addBoardPermission(permissions, permissionRole, targetNpub, userNpub);
-    permissionError = '';
-    permissionNpub = '';
+  async function handleAddPermission(targetNpub: string, role: string): Promise<string | void> {
+    if (!permissions || !userNpub) return 'Could not update permissions.';
+    if (!isValidNpub(targetNpub)) return 'Enter a valid npub.';
+    if (role !== 'admin' && role !== 'writer') return 'Invalid role.';
+    const validationError = validatePermissionAdd(targetNpub, role);
+    if (validationError) return validationError;
+
+    const next = addBoardPermission(permissions, role, targetNpub, userNpub);
     permissions = next;
     await persistPermissions(next);
   }
 
-  async function handleRemovePermission(role: BoardRole, targetNpub: string) {
-    if (!permissions || !userNpub) return;
+  async function handleRemovePermission(role: string, targetNpub: string): Promise<string | void> {
+    if (!permissions || !userNpub) return 'Could not update permissions.';
+    if (role !== 'admin' && role !== 'writer') return 'Invalid role.';
     const next = removeBoardPermission(permissions, role, targetNpub, userNpub);
     if (next === permissions) {
-      permissionError = role === 'admin'
+      return role === 'admin'
         ? 'Board must have at least one admin.'
         : 'Could not update permissions.';
-      return;
     }
 
-    permissionError = '';
     permissions = next;
     await persistPermissions(next);
   }
@@ -3145,148 +3175,65 @@
 {/if}
 
 {#if permissions}
-  <Modal
+  <NpubAccessModal
     open={showPermissionsModal}
     onClose={() => showPermissionsModal = false}
-    label="Board Permissions"
-    panelClass="bg-surface-1 rounded-lg shadow-lg w-full max-w-lg mx-4 border border-surface-3 p-5 space-y-4"
+    title="Board Permissions"
+    intro={permissionIntro}
+    sections={permissionSections}
+    canEdit={canManage}
+    validateAdd={validatePermissionAdd}
+    onAdd={handleAddPermission}
+    onRemove={handleRemovePermission}
+    initialSectionId="writer"
+    addPromptLabel="Assign role"
+    requestAccess={permissionRequestAccess}
+    panelClass="w-full max-w-lg mx-4"
+    sectionsClass="grid grid-cols-1 gap-3 sm:grid-cols-2"
   >
-    <div class="flex items-center justify-between">
-      <h3 class="text-lg font-semibold">Board Permissions</h3>
-      <button class="btn-circle btn-ghost" onclick={() => showPermissionsModal = false} aria-label="Close permissions dialog">
-        <span class="i-lucide-x"></span>
-      </button>
-    </div>
-
-    <div class="text-xs text-text-3">
-      {#if canManage}
-        Admins can manage admins/writers and edit cards. Writers can edit cards only.
-      {:else}
-        Admins can manage roles. Writers can edit cards.
-      {/if}
-    </div>
-
-    <div class="rounded-lg border border-surface-3 bg-surface-2 px-3 py-3 space-y-3">
-      <div class="flex items-center justify-between gap-3">
-        <div>
-          <div class="text-sm font-medium">Visibility</div>
-          <p class="text-xs text-text-3 mt-1">This controls who can open the shared board link.</p>
-        </div>
-        <div class="inline-flex items-center gap-2 text-xs text-text-3">
-          <VisibilityIcon {visibility} class="text-sm" />
-          <span>{visibility}</span>
-        </div>
-      </div>
-
-      {#if isOwnBoard}
-        <VisibilityPicker value={visibilityDraft} onchange={(value) => {
-          visibilityDraft = value;
-          visibilityError = '';
-        }} />
+    {#snippet beforeSections()}
+      <div class="rounded-lg border border-surface-3 bg-surface-2 px-3 py-3 space-y-3">
         <div class="flex items-center justify-between gap-3">
-          <p class="text-xs text-text-3">
-            Public boards are open to everyone. Link-visible boards need the URL key. Private boards are owner-only.
-          </p>
-          <button
-            class="btn-primary shrink-0"
-            onclick={handleUpdateVisibility}
-            disabled={savingVisibility || visibilityDraft === visibility}
-          >
-            {#if savingVisibility}
-              Updating...
-            {:else if visibilityDraft === visibility}
-              Current
-            {:else}
-              Update Visibility
-            {/if}
-          </button>
+          <div>
+            <div class="text-sm font-medium">Visibility</div>
+            <p class="text-xs text-text-3 mt-1">This controls who can open the shared board link.</p>
+          </div>
+          <div class="inline-flex items-center gap-2 text-xs text-text-3">
+            <VisibilityIcon {visibility} class="text-sm" />
+            <span>{visibility}</span>
+          </div>
         </div>
-        {#if visibilityError}
-          <p class="text-xs text-danger">{visibilityError}</p>
-        {/if}
-      {:else}
-        <p class="text-xs text-text-3">Only the board owner can change visibility for the shared board link.</p>
-      {/if}
-    </div>
 
-    <div class="grid grid-cols-2 gap-3">
-      <div class="space-y-2">
-        <div class="text-sm font-medium">Admins</div>
-        <ul class="space-y-1 list-none m-0 p-0">
-          {#each permissions.admins as adminNpub (adminNpub)}
-            <li class="bg-surface-2 rounded px-2 py-1.5 flex items-center justify-between gap-2">
-              <a href={`#/${adminNpub}/profile`} class="flex-1 min-w-0 hover:opacity-80" title={adminNpub}>
-                <NpubRow npub={adminNpub} avatarSize={32} class="min-w-0" />
-              </a>
-              {#if canManage}
-                <button
-                  class="btn-circle btn-ghost text-danger"
-                  title="Remove admin"
-                  onclick={() => handleRemovePermission('admin', adminNpub)}
-                >
-                  <span class="i-lucide-x text-xs"></span>
-                </button>
+        {#if isOwnBoard}
+          <VisibilityPicker value={visibilityDraft} onchange={(value) => {
+            visibilityDraft = value;
+            visibilityError = '';
+          }} />
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-xs text-text-3">
+              Public boards are open to everyone. Link-visible boards need the URL key. Private boards are owner-only.
+            </p>
+            <button
+              class="btn-primary shrink-0"
+              onclick={handleUpdateVisibility}
+              disabled={savingVisibility || visibilityDraft === visibility}
+            >
+              {#if savingVisibility}
+                Updating...
+              {:else if visibilityDraft === visibility}
+                Current
+              {:else}
+                Update Visibility
               {/if}
-            </li>
-          {/each}
-        </ul>
-      </div>
-
-      <div class="space-y-2">
-        <div class="text-sm font-medium">Writers</div>
-        <ul class="space-y-1 list-none m-0 p-0">
-          {#if permissions.writers.length === 0}
-            <li class="bg-surface-2 rounded px-2 py-1.5 text-xs text-text-3">No writers assigned</li>
+            </button>
+          </div>
+          {#if visibilityError}
+            <p class="text-xs text-danger">{visibilityError}</p>
           {/if}
-          {#each permissions.writers as writerNpub (writerNpub)}
-            <li class="bg-surface-2 rounded px-2 py-1.5 flex items-center justify-between gap-2">
-              <a href={`#/${writerNpub}/profile`} class="flex-1 min-w-0 hover:opacity-80" title={writerNpub}>
-                <NpubRow npub={writerNpub} avatarSize={32} class="min-w-0" />
-              </a>
-              {#if canManage}
-                <button
-                  class="btn-circle btn-ghost text-danger"
-                  title="Remove writer"
-                  onclick={() => handleRemovePermission('writer', writerNpub)}
-                >
-                  <span class="i-lucide-x text-xs"></span>
-                </button>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      </div>
-    </div>
-
-    {#if !canWrite && userNpub}
-      <div class="rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 space-y-2">
-        <p class="text-sm text-text-2">Share your npub with an admin to request write access:</p>
-        <CopyText text={userNpub} displayText={shortNpub(userNpub)} class="text-sm" />
-      </div>
-    {/if}
-
-    {#if canManage}
-      <div class="space-y-2">
-        <div class="text-sm font-medium">Assign Role</div>
-        <div class="flex gap-2">
-          <input
-            class="input flex-1 font-mono text-sm"
-            placeholder="npub1..."
-            bind:value={permissionNpub}
-            onkeydown={(e) => e.key === 'Enter' && handleAddPermission()}
-          />
-          <select class="input w-28" bind:value={permissionRole}>
-            <option value="writer">Writer</option>
-            <option value="admin">Admin</option>
-          </select>
-          <button class="btn-success" onclick={handleAddPermission} disabled={savingPermissions}>
-            Add
-          </button>
-        </div>
-        {#if permissionError}
-          <p class="text-xs text-danger">{permissionError}</p>
+        {:else}
+          <p class="text-xs text-text-3">Only the board owner can change visibility for the shared board link.</p>
         {/if}
       </div>
-    {/if}
-  </Modal>
+    {/snippet}
+  </NpubAccessModal>
 {/if}
