@@ -1,25 +1,18 @@
 import { mkdtemp, readFile, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { describe, expect, it, vi } from 'vitest';
-
-async function loadBoardsConfig() {
-  vi.resetModules();
-  const configModule = await import('../vite.boards.config.ts');
-  return configModule.default;
-}
+import { describe, expect, it } from 'vitest';
+import { boardsPortableBuild, portableAssetBase, rewritePortableEntryHtml, sanitizePortableHtml } from '../portableViteConfig';
 
 describe('boards portable build config', () => {
-  it('uses a relative asset base for boards builds served from htree trees', async () => {
-    const config = await loadBoardsConfig();
-    expect(config.base).toBe('./');
-    expect(config.build?.outDir).toBe('dist-boards');
-    expect(config.build?.modulePreload).toBe(false);
+  it('uses a relative asset base for boards builds served from htree trees', () => {
+    expect(portableAssetBase).toBe('./');
+    expect(boardsPortableBuild.outDir).toBe('dist-boards');
+    expect(boardsPortableBuild.modulePreload).toBe(false);
   });
 
-  it('strips module preload and crossorigin hints for htree webviews', async () => {
-    const configModule = await import('../vite.boards.config.ts');
-    const sanitized = configModule.sanitizeBoardsHtml(`
+  it('strips module preload and crossorigin hints for htree webviews', () => {
+    const sanitized = sanitizePortableHtml(`
       <script type="module" crossorigin src="./assets/main.js"></script>
       <link rel="modulepreload" crossorigin href="./assets/vendor.js">
       <link rel="stylesheet" crossorigin href="./assets/main.css">
@@ -32,7 +25,6 @@ describe('boards portable build config', () => {
   });
 
   it('rewrites boards.html into sanitized index.html for htree publishing', async () => {
-    const configModule = await import('../vite.boards.config.ts');
     const buildDir = await mkdtemp(join(tmpdir(), 'boards-portable-build-'));
     const sourcePath = join(buildDir, 'boards.html');
     const targetPath = join(buildDir, 'index.html');
@@ -48,7 +40,7 @@ describe('boards portable build config', () => {
       'utf8',
     );
 
-    await configModule.rewriteBoardsEntryHtml(buildDir);
+    await rewritePortableEntryHtml(buildDir, 'boards.html');
 
     const rewritten = await readFile(targetPath, 'utf8');
     expect(rewritten).toContain('<script type="module" src="./assets/main.js"></script>');

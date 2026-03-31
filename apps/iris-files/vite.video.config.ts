@@ -3,17 +3,20 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import UnoCSS from 'unocss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { resolve } from 'path';
-import { readFile, rename, unlink, writeFile } from 'fs/promises';
 import { getAppBrand, getAppPwaIcons } from './src/lib/appBrand';
+import {
+  portableAssetBase,
+  portableAssetFileNames,
+  rewritePortableEntryHtml,
+  sanitizePortableHtml,
+  videoManualChunks,
+  videoPortableBuild,
+} from './portableViteConfig';
 
-const outDir = 'dist-video';
+const outDir = videoPortableBuild.outDir;
 const brand = getAppBrand('video');
 
-export function sanitizeVideoHtml(html: string): string {
-  return html
-    .replace(/^\s*<link rel="modulepreload".*$/gm, '')
-    .replace(/\s+crossorigin(?=[\s>])/g, '');
-}
+export const sanitizeVideoHtml = sanitizePortableHtml;
 
 function videoEntryPlugin(): Plugin {
   return {
@@ -30,13 +33,7 @@ function videoEntryPlugin(): Plugin {
       // Rename video.html to index.html and remove custom-scheme-hostile
       // preload/crossorigin hints that blank the app inside htree:// webviews.
       try {
-        const source = resolve(__dirname, outDir, 'video.html');
-        const target = resolve(__dirname, outDir, 'index.html');
-        const html = await readFile(source, 'utf8');
-        await writeFile(target, sanitizeVideoHtml(html), 'utf8');
-        if (source !== target) {
-          await unlink(source);
-        }
+        await rewritePortableEntryHtml(resolve(__dirname, outDir), 'video.html');
       } catch {
         // Ignore if file doesn't exist (dev mode)
       }
@@ -45,7 +42,7 @@ function videoEntryPlugin(): Plugin {
 }
 
 export default defineConfig({
-  base: './',
+  base: portableAssetBase,
   define: {
     'import.meta.env.VITE_BUILD_TIME': JSON.stringify(new Date().toISOString()),
   },
@@ -88,7 +85,7 @@ export default defineConfig({
     },
   },
   build: {
-    modulePreload: false,
+    modulePreload: videoPortableBuild.modulePreload,
     outDir,
     emptyOutDir: true,
     reportCompressedSize: true,
@@ -114,36 +111,8 @@ export default defineConfig({
         handler(level, log);
       },
       output: {
-        assetFileNames: (assetInfo) => {
-          if (assetInfo.name?.endsWith('.wasm')) {
-            return 'assets/[name][extname]';
-          }
-          return 'assets/[name]-[hash][extname]';
-        },
-        manualChunks: (id) => {
-          // NDK
-          if (id.includes('@nostr-dev-kit/ndk')) {
-            return 'ndk';
-          }
-
-          // Dexie
-          if (id.includes('dexie')) {
-            return 'dexie';
-          }
-
-          // Core vendor libraries
-          const vendorLibs = [
-            'svelte',
-            'nostr-tools',
-            '@noble/hashes',
-            '@noble/curves',
-            '@scure/base',
-            'idb-keyval',
-          ];
-          if (vendorLibs.some((lib) => id.includes(`node_modules/${lib}`))) {
-            return 'vendor';
-          }
-        },
+        assetFileNames: portableAssetFileNames,
+        manualChunks: videoManualChunks,
       },
     },
   },

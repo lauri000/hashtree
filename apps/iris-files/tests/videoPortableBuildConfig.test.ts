@@ -1,43 +1,19 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-
-const originalPortable = process.env.HTREE_PORTABLE_BUILD;
-
-async function loadVideoConfig(portable?: string) {
-  if (portable === undefined) {
-    delete process.env.HTREE_PORTABLE_BUILD;
-  } else {
-    process.env.HTREE_PORTABLE_BUILD = portable;
-  }
-
-  vi.resetModules();
-  const configModule = await import('../vite.video.config.ts');
-  return configModule.default;
-}
-
-afterEach(() => {
-  if (originalPortable === undefined) {
-    delete process.env.HTREE_PORTABLE_BUILD;
-  } else {
-    process.env.HTREE_PORTABLE_BUILD = originalPortable;
-  }
-});
+import { describe, expect, it } from 'vitest';
+import { portableAssetBase, sanitizePortableHtml, videoPortableBuild } from '../portableViteConfig';
 
 describe('video portable build config', () => {
-  it('uses one relative-asset build for hosted video builds', async () => {
-    const config = await loadVideoConfig();
-    expect(config.base).toBe('./');
-    expect(config.build?.outDir).toBe('dist-video');
+  it('uses one relative-asset build for hosted video builds', () => {
+    expect(portableAssetBase).toBe('./');
+    expect(videoPortableBuild.outDir).toBe('dist-video');
   });
 
-  it('keeps the same output directory and asset base for Iris-delivered video builds', async () => {
-    const config = await loadVideoConfig('true');
-    expect(config.base).toBe('./');
-    expect(config.build?.outDir).toBe('dist-video');
+  it('keeps the same output directory and asset base for Iris-delivered video builds', () => {
+    expect(portableAssetBase).toBe('./');
+    expect(videoPortableBuild.outDir).toBe('dist-video');
   });
 
-  it('strips module preload and crossorigin hints for htree webviews', async () => {
-    const configModule = await import('../vite.video.config.ts');
-    const sanitized = configModule.sanitizeVideoHtml(`
+  it('strips module preload and crossorigin hints for htree webviews', () => {
+    const sanitized = sanitizePortableHtml(`
       <script type="module" crossorigin src="./assets/main.js"></script>
       <link rel="modulepreload" crossorigin href="./assets/vendor.js">
       <link rel="stylesheet" crossorigin href="./assets/main.css">

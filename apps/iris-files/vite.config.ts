@@ -4,27 +4,27 @@ import UnoCSS from 'unocss/vite';
 import { visualizer } from 'rollup-plugin-visualizer';
 import { VitePWA } from 'vite-plugin-pwa';
 import { resolve } from 'path';
-import { readFile, writeFile } from 'fs/promises';
 import { getAppBrand, getAppPwaIcons } from './src/lib/appBrand';
+import {
+  filesManualChunks,
+  filesPortableBuild,
+  getFilesBase,
+  portableAssetFileNames,
+  rewritePortableEntryHtml,
+  sanitizePortableHtml,
+} from './portableViteConfig';
 
-const isGithubPagesBuild = process.env.GITHUB_PAGES === 'true';
 const outDir = 'dist';
 const brand = getAppBrand('files');
 
-export function sanitizeFilesHtml(html: string): string {
-  return html
-    .replace(/^\s*<link rel="modulepreload".*$/gm, '')
-    .replace(/\s+crossorigin(?=[\s>])/g, '');
-}
+export const sanitizeFilesHtml = sanitizePortableHtml;
 
 function filesPortableHtmlPlugin(): Plugin {
   return {
     name: 'files-portable-html',
     async closeBundle() {
       try {
-        const indexPath = resolve(__dirname, outDir, 'index.html');
-        const html = await readFile(indexPath, 'utf8');
-        await writeFile(indexPath, sanitizeFilesHtml(html), 'utf8');
+        await rewritePortableEntryHtml(resolve(__dirname, outDir), 'index.html');
       } catch {
         // Ignore missing build output in dev mode.
       }
@@ -33,7 +33,7 @@ function filesPortableHtmlPlugin(): Plugin {
 }
 
 export default defineConfig({
-  base: isGithubPagesBuild ? '/hashtree/' : './',
+  base: getFilesBase(),
   define: {
     'import.meta.env.VITE_BUILD_TIME': JSON.stringify(new Date().toISOString()),
   },
@@ -89,7 +89,7 @@ export default defineConfig({
     },
   },
   build: {
-    modulePreload: false,
+    modulePreload: filesPortableBuild.modulePreload,
     reportCompressedSize: true,
     chunkSizeWarningLimit: 2000,
     rollupOptions: {
@@ -101,57 +101,8 @@ export default defineConfig({
         handler(level, log);
       },
       output: {
-        assetFileNames: (assetInfo) => {
-          // Keep WASM files in assets root with original name
-          if (assetInfo.name?.endsWith('.wasm')) {
-            return 'assets/[name][extname]';
-          }
-          return 'assets/[name]-[hash][extname]';
-        },
-        manualChunks: (id) => {
-          // Markdown rendering - statically split for caching
-          if (id.includes('marked')) {
-            return 'markdown';
-          }
-
-          // ZIP handling - lazy loaded for archive operations
-          if (id.includes('fflate')) {
-            return 'compression';
-          }
-
-          // Video/media handling
-          if (id.includes('hls.js')) {
-            return 'media';
-          }
-
-          // Cashu wallet - only loaded on wallet page
-          if (id.includes('coco-cashu') || id.includes('cashu-ts')) {
-            return 'wallet';
-          }
-
-          // NDK - large, keep separate from vendor for caching
-          if (id.includes('@nostr-dev-kit/ndk')) {
-            return 'ndk';
-          }
-
-          // Dexie (IndexedDB) - large, separate chunk
-          if (id.includes('dexie')) {
-            return 'dexie';
-          }
-
-          // Core vendor libraries - Svelte, crypto, state management
-          const vendorLibs = [
-            'svelte',
-            'nostr-tools',
-            '@noble/hashes',
-            '@noble/curves',
-            '@scure/base',
-            'idb-keyval',
-          ];
-          if (vendorLibs.some((lib) => id.includes(`node_modules/${lib}`))) {
-            return 'vendor';
-          }
-        },
+        assetFileNames: portableAssetFileNames,
+        manualChunks: filesManualChunks,
       },
     },
   },

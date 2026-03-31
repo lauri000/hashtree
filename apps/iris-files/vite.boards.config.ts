@@ -3,33 +3,27 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import UnoCSS from 'unocss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { resolve } from 'path';
-import { readFile, unlink, writeFile } from 'fs/promises';
 import { getAppBrand, getAppPwaIcons } from './src/lib/appBrand';
+import {
+  boardsManualChunks,
+  boardsPortableBuild,
+  portableAssetBase,
+  portableAssetFileNames,
+  rewritePortableEntryHtml,
+  sanitizePortableHtml,
+  type PortableFileOps,
+} from './portableViteConfig';
 
-const outDir = 'dist-boards';
+const outDir = boardsPortableBuild.outDir;
 const brand = getAppBrand('boards');
 
-export function sanitizeBoardsHtml(html: string): string {
-  return html
-    .replace(/^\s*<link rel="modulepreload".*$/gm, '')
-    .replace(/\s+crossorigin(?=[\s>])/g, '');
-}
+export const sanitizeBoardsHtml = sanitizePortableHtml;
 
 export async function rewriteBoardsEntryHtml(
   buildDir: string,
-  fileOps: Pick<typeof import('fs/promises'), 'readFile' | 'writeFile' | 'unlink'> = {
-    readFile,
-    writeFile,
-    unlink,
-  },
+  fileOps?: PortableFileOps,
 ): Promise<void> {
-  const source = resolve(buildDir, 'boards.html');
-  const target = resolve(buildDir, 'index.html');
-  const html = await fileOps.readFile(source, 'utf8');
-  await fileOps.writeFile(target, sanitizeBoardsHtml(html), 'utf8');
-  if (source !== target) {
-    await fileOps.unlink(source);
-  }
+  await rewritePortableEntryHtml(buildDir, 'boards.html', fileOps);
 }
 
 function boardsEntryPlugin(): Plugin {
@@ -54,7 +48,7 @@ function boardsEntryPlugin(): Plugin {
 }
 
 export default defineConfig({
-  base: './',
+  base: portableAssetBase,
   define: {
     'import.meta.env.VITE_BUILD_TIME': JSON.stringify(new Date().toISOString()),
   },
@@ -96,7 +90,7 @@ export default defineConfig({
     },
   },
   build: {
-    modulePreload: false,
+    modulePreload: boardsPortableBuild.modulePreload,
     outDir,
     emptyOutDir: true,
     reportCompressedSize: true,
@@ -114,37 +108,8 @@ export default defineConfig({
         handler(level, log);
       },
       output: {
-        assetFileNames: (assetInfo) => {
-          if (assetInfo.name?.endsWith('.wasm')) {
-            return 'assets/[name][extname]';
-          }
-          return 'assets/[name]-[hash][extname]';
-        },
-        manualChunks: (id) => {
-          if (id.includes('marked')) {
-            return 'markdown';
-          }
-          if (id.includes('coco-cashu') || id.includes('cashu-ts')) {
-            return 'wallet';
-          }
-          if (id.includes('@nostr-dev-kit/ndk')) {
-            return 'ndk';
-          }
-          if (id.includes('dexie')) {
-            return 'dexie';
-          }
-          const vendorLibs = [
-            'svelte',
-            'nostr-tools',
-            '@noble/hashes',
-            '@noble/curves',
-            '@scure/base',
-            'idb-keyval',
-          ];
-          if (vendorLibs.some((lib) => id.includes(`node_modules/${lib}`))) {
-            return 'vendor';
-          }
-        },
+        assetFileNames: portableAssetFileNames,
+        manualChunks: boardsManualChunks,
       },
     },
   },

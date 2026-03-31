@@ -3,17 +3,20 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import UnoCSS from 'unocss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { resolve } from 'path';
-import { readFile, unlink, writeFile } from 'fs/promises';
 import { getAppBrand, getAppPwaIcons } from './src/lib/appBrand';
+import {
+  docsManualChunks,
+  docsPortableBuild,
+  portableAssetBase,
+  portableAssetFileNames,
+  rewritePortableEntryHtml,
+  sanitizePortableHtml,
+} from './portableViteConfig';
 
-const outDir = 'dist-docs';
+const outDir = docsPortableBuild.outDir;
 const brand = getAppBrand('docs');
 
-export function sanitizeDocsHtml(html: string): string {
-  return html
-    .replace(/^\s*<link rel="modulepreload".*$/gm, '')
-    .replace(/\s+crossorigin(?=[\s>])/g, '');
-}
+export const sanitizeDocsHtml = sanitizePortableHtml;
 
 function docsEntryPlugin(): Plugin {
   return {
@@ -29,13 +32,7 @@ function docsEntryPlugin(): Plugin {
     async closeBundle() {
       // Rename docs.html to index.html and strip hints that break htree:// delivery.
       try {
-        const source = resolve(__dirname, outDir, 'docs.html');
-        const target = resolve(__dirname, outDir, 'index.html');
-        const html = await readFile(source, 'utf8');
-        await writeFile(target, sanitizeDocsHtml(html), 'utf8');
-        if (source !== target) {
-          await unlink(source);
-        }
+        await rewritePortableEntryHtml(resolve(__dirname, outDir), 'docs.html');
       } catch {
         // Ignore if file doesn't exist (dev mode)
       }
@@ -44,7 +41,7 @@ function docsEntryPlugin(): Plugin {
 }
 
 export default defineConfig({
-  base: './',
+  base: portableAssetBase,
   define: {
     'import.meta.env.VITE_BUILD_TIME': JSON.stringify(new Date().toISOString()),
   },
@@ -86,7 +83,7 @@ export default defineConfig({
     },
   },
   build: {
-    modulePreload: false,
+    modulePreload: docsPortableBuild.modulePreload,
     outDir,
     emptyOutDir: true,
     reportCompressedSize: true,
@@ -104,51 +101,8 @@ export default defineConfig({
         handler(level, log);
       },
       output: {
-        assetFileNames: (assetInfo) => {
-          if (assetInfo.name?.endsWith('.wasm')) {
-            return 'assets/[name][extname]';
-          }
-          return 'assets/[name]-[hash][extname]';
-        },
-        manualChunks: (id) => {
-          // Markdown rendering
-          if (id.includes('marked')) {
-            return 'markdown';
-          }
-
-          // Cashu wallet - only loaded on wallet page
-          if (id.includes('coco-cashu') || id.includes('cashu-ts')) {
-            return 'wallet';
-          }
-
-          // NDK
-          if (id.includes('@nostr-dev-kit/ndk')) {
-            return 'ndk';
-          }
-
-          // Dexie
-          if (id.includes('dexie')) {
-            return 'dexie';
-          }
-
-          // Tiptap/Yjs for collaborative editing
-          if (id.includes('@tiptap') || id.includes('yjs') || id.includes('prosemirror')) {
-            return 'editor';
-          }
-
-          // Core vendor libraries
-          const vendorLibs = [
-            'svelte',
-            'nostr-tools',
-            '@noble/hashes',
-            '@noble/curves',
-            '@scure/base',
-            'idb-keyval',
-          ];
-          if (vendorLibs.some((lib) => id.includes(`node_modules/${lib}`))) {
-            return 'vendor';
-          }
-        },
+        assetFileNames: portableAssetFileNames,
+        manualChunks: docsManualChunks,
       },
     },
   },
