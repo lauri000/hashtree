@@ -9,6 +9,7 @@ const appDir = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(appDir, '..', '..');
 const manifestPath = path.join(repoRoot, 'rust', 'Cargo.toml');
 const defaultWorkerCompatibilityDate = '2026-03-19';
+const wranglerVersion = '4.78.0';
 
 export const releaseProfiles = {
   files: {
@@ -112,11 +113,11 @@ function usesBuiltInWorker(profile, workerName) {
 }
 
 function wranglerPagesCommand(...args) {
-  return ['npx', 'wrangler@4', ...args];
+  return ['npx', `wrangler@${wranglerVersion}`, ...args];
 }
 
 function wranglerWorkerAssetsCommand(...args) {
-  return ['npx', 'wrangler@4', 'deploy', ...args];
+  return ['npx', `wrangler@${wranglerVersion}`, 'deploy', ...args];
 }
 
 export function parseArgs(argv, env = process.env) {
