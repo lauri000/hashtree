@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: packaging/homebrew/create_tap.sh --version <version> --release-base-url <url> --checksums-dir <dir> --output-dir <dir> [options]
+Usage: packaging/homebrew/create_tap.sh --version <version> --release-base-url <url> --assets-dir <dir> --output-dir <dir> [options]
 
 Generate a Homebrew tap as a bare Git repository that can be published on a
 static HTTP host.
@@ -11,7 +11,7 @@ static HTTP host.
 Required options:
   --version <version>              Release version, for example: v0.2.15
   --release-base-url <url>         Base URL containing hashtree-<target>.tar.gz files
-  --checksums-dir <dir>            Directory containing hashtree-<target>.sha256 files
+  --assets-dir <dir>               Directory containing hashtree-<target>.tar.gz files
   --output-dir <dir>               Output directory for the bare tap repository
 
 Optional:
@@ -32,7 +32,7 @@ Examples:
   packaging/homebrew/create_tap.sh \
     --version v0.2.15 \
     --release-base-url https://upload.iris.to/<npub>/releases%2Fhashtree/v0.2.15 \
-    --checksums-dir rust/dist/hashtree-v0.2.15 \
+    --assets-dir rust/dist/hashtree-v0.2.15 \
     --output-dir dist/homebrew-htree.git
 EOF
 }
@@ -42,7 +42,7 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 VERSION=""
 RELEASE_BASE_URL=""
-CHECKSUMS_DIR=""
+ASSETS_DIR=""
 OUTPUT_DIR=""
 FORMULA_NAME="htree"
 ALIAS_NAME="hashtree"
@@ -80,14 +80,21 @@ escape_ruby_string() {
 
 checksum_for_target() {
     local target="$1"
-    local file="${CHECKSUMS_DIR}/hashtree-${target}.sha256"
+    local file="${ASSETS_DIR}/hashtree-${target}.tar.gz"
 
     if [ ! -f "$file" ]; then
-        echo "Missing checksum file: $file" >&2
+        echo "Missing release archive: $file" >&2
         exit 1
     fi
 
-    awk '{print $1}' "$file"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    else
+        echo "Missing required command: sha256sum or shasum" >&2
+        exit 1
+    fi
 }
 
 write_formula() {
@@ -155,8 +162,12 @@ while [ $# -gt 0 ]; do
             RELEASE_BASE_URL="${2:-}"
             shift 2
             ;;
+        --assets-dir)
+            ASSETS_DIR="${2:-}"
+            shift 2
+            ;;
         --checksums-dir)
-            CHECKSUMS_DIR="${2:-}"
+            ASSETS_DIR="${2:-}"
             shift 2
             ;;
         --output-dir)
@@ -200,13 +211,13 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ -z "$VERSION" ] || [ -z "$RELEASE_BASE_URL" ] || [ -z "$CHECKSUMS_DIR" ] || [ -z "$OUTPUT_DIR" ]; then
+if [ -z "$VERSION" ] || [ -z "$RELEASE_BASE_URL" ] || [ -z "$ASSETS_DIR" ] || [ -z "$OUTPUT_DIR" ]; then
     usage >&2
     exit 1
 fi
 
-if [ ! -d "$CHECKSUMS_DIR" ]; then
-    echo "Checksums directory does not exist: $CHECKSUMS_DIR" >&2
+if [ ! -d "$ASSETS_DIR" ]; then
+    echo "Assets directory does not exist: $ASSETS_DIR" >&2
     exit 1
 fi
 

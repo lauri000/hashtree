@@ -33,7 +33,7 @@ allowing discovery by the project name.
 
 ## Create a tap repository
 
-Build release artifacts first so the checksum files exist:
+Build release artifacts first so the release archives exist:
 
 ```bash
 rust/scripts/build_release_artifacts.sh --version v<version>
@@ -45,7 +45,7 @@ Then generate a bare tap repository:
 packaging/homebrew/create_tap.sh \
   --version v<version> \
   --release-base-url https://upload.iris.to/<npub>/<release-tree>/v<version> \
-  --checksums-dir rust/dist/hashtree-v<version> \
+  --assets-dir rust/dist/hashtree-v<version> \
   --output-dir dist/homebrew-htree.git
 ```
 
@@ -85,7 +85,7 @@ The repo includes a helper for that flow:
 packaging/homebrew/publish_tap.sh \
   --version v<version> \
   --release-base-url https://upload.iris.to/<npub>/releases%2Fhashtree/v<version> \
-  --checksums-dir rust/dist/hashtree-v<version>
+  --assets-dir rust/dist/hashtree-v<version>
 ```
 
 By default it pushes to `htree://self/homebrew-hashtree`, creating or
@@ -93,7 +93,7 @@ replacing that tap repo without needing a pre-existing GitHub repository or
 manually managed tap checkout.
 
 `rust/scripts/release_to_htree.sh` calls this automatically when the release
-directory contains the full macOS/Linux checksum set needed by the formula. Add
+directory contains the full macOS/Linux archive set needed by the formula. Add
 `--cargo-publish` there if you also want the same command to publish the Rust
 crates to crates.io.
 

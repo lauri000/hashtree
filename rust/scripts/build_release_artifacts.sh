@@ -209,16 +209,6 @@ More info: https://github.com/mmalmi/hashtree
 EOF
 }
 
-write_sha256() {
-    local file="$1"
-    local output="$2"
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$(basename "$file")" >"$output"
-    else
-        shasum -a 256 "$(basename "$file")" >"$output"
-    fi
-}
-
 ensure_rust_target() {
     local target="$1"
     if [ "$PACKAGE_ONLY" -eq 1 ]; then
@@ -298,10 +288,6 @@ package_unix_target() {
         cd "$stage_dir"
         tar -czf "${OUTPUT_DIR}/hashtree-${target}.tar.gz" hashtree
     )
-    (
-        cd "$OUTPUT_DIR"
-        write_sha256 "hashtree-${target}.tar.gz" "hashtree-${target}.sha256"
-    )
 
     rm -rf "$stage_dir"
 }
@@ -336,10 +322,6 @@ with zipfile.ZipFile("hashtree-x86_64-pc-windows-msvc.zip", "w", compression=zip
             zf.write(path, path.as_posix())
 PY
         mv "hashtree-x86_64-pc-windows-msvc.zip" "${OUTPUT_DIR}/"
-    )
-    (
-        cd "$OUTPUT_DIR"
-        write_sha256 "hashtree-x86_64-pc-windows-msvc.zip" "hashtree-x86_64-pc-windows-msvc.sha256"
     )
 
     rm -rf "$stage_dir"

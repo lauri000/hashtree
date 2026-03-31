@@ -12,6 +12,7 @@ fi
 
 grep -F "tauri build --target x86_64-pc-windows-msvc --bundles nsis --ci" .github/workflows/release.yml >/dev/null
 grep -F 'Copy-Item $nsis.FullName "dist/$env:IRIS_ASSET_PREFIX-windows-x64-setup.exe"' .github/workflows/release.yml >/dev/null
+grep -F 'name: iris-macos-arm64' .github/workflows/release.yml >/dev/null
 grep -F 'name: iris-windows-x64' .github/workflows/release.yml >/dev/null
 grep -F "pattern: iris-*" .github/workflows/release.yml >/dev/null
 grep -F 'render_args+=(--iris-assets-dir artifacts/iris)' .github/workflows/release.yml >/dev/null
@@ -24,6 +25,21 @@ fi
 
 if rg -F "iris-windows-x64.msi" .github/workflows/release.yml >/dev/null; then
   echo "Release workflow still references MSI artifacts for Iris on Windows" >&2
+  exit 1
+fi
+
+if rg -F ".sha256" .github/workflows/release.yml >/dev/null; then
+  echo "Release workflow still references .sha256 release assets" >&2
+  exit 1
+fi
+
+if rg -F "sha256sum" .github/workflows/release.yml >/dev/null; then
+  echo "Release workflow still generates release checksum sidecars" >&2
+  exit 1
+fi
+
+if rg -F "Get-FileHash" .github/workflows/release.yml >/dev/null; then
+  echo "Release workflow still generates Windows checksum sidecars" >&2
   exit 1
 fi
 

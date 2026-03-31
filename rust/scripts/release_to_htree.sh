@@ -197,8 +197,8 @@ require_command() {
     fi
 }
 
-homebrew_checksums_ready() {
-    local checksums_dir="$1"
+homebrew_archives_ready() {
+    local assets_dir="$1"
     local target
     for target in \
         aarch64-apple-darwin \
@@ -206,7 +206,7 @@ homebrew_checksums_ready() {
         aarch64-unknown-linux-musl \
         x86_64-unknown-linux-musl
     do
-        if [ ! -f "${checksums_dir}/hashtree-${target}.sha256" ]; then
+        if [ ! -f "${assets_dir}/hashtree-${target}.tar.gz" ]; then
             return 1
         fi
     done
@@ -419,8 +419,8 @@ if [ "$SKIP_HOMEBREW_TAP" -eq 0 ]; then
     HOMEBREW_PUBLISH_SCRIPT="${REPO_DIR}/packaging/homebrew/publish_tap.sh"
     if [ ! -x "$HOMEBREW_PUBLISH_SCRIPT" ]; then
         echo "Warning: Homebrew tap script not found at packaging/homebrew/publish_tap.sh; skipping tap update." >&2
-    elif ! homebrew_checksums_ready "$OUTPUT_DIR"; then
-        echo "Warning: Homebrew tap update skipped because the release directory does not contain the full macOS/Linux checksum set." >&2
+    elif ! homebrew_archives_ready "$OUTPUT_DIR"; then
+        echo "Warning: Homebrew tap update skipped because the release directory does not contain the full macOS/Linux archive set." >&2
     else
         if [ -z "$npub" ]; then
             echo "Warning: Could not determine current npub; skipping Homebrew tap update." >&2
@@ -429,7 +429,7 @@ if [ "$SKIP_HOMEBREW_TAP" -eq 0 ]; then
             if ! "${HOMEBREW_PUBLISH_SCRIPT}" \
                 --version "$VERSION" \
                 --release-base-url "$release_base_url" \
-                --checksums-dir "$OUTPUT_DIR" \
+                --assets-dir "$OUTPUT_DIR" \
                 --tap-repo "$HOMEBREW_TAP_REPO" \
                 --target-dir "$TARGET_DIR"
             then

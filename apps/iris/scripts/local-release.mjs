@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process'
 import {
   copyFileSync,
   existsSync,
+  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -40,6 +41,16 @@ const defaultEnvFiles = [
   join(appDir, '.env.release.local'),
 ]
 const frontendInstallDirs = ['apps/iris-files', 'apps/iris']
+const macosSigningRequiredEnv = [
+  'MACOS_SIGNING_IDENTITY',
+  'MACOS_CERTIFICATE_P12',
+  'MACOS_CERTIFICATE_PASSWORD',
+]
+const macosNotarizationRequiredEnv = [
+  'MACOS_NOTARIZE_APPLE_ID',
+  'MACOS_NOTARIZE_APP_PASSWORD',
+  'MACOS_NOTARIZE_TEAM_ID',
+]
 
 class SkipStepError extends Error {}
 
@@ -59,10 +70,12 @@ Options:
   --env-file <path>        Extra dotenv file to load (repeatable)
   --only <csv>             Limit steps to verify,macos,linux,windows
   --skip <csv>             Skip steps by name
+  --allow-unsigned-macos   Build the macOS app without signing when signing inputs are unavailable
   --help                   Show this help
 
 Notes:
   - macOS app bundles build locally on Apple Silicon macOS.
+  - Signed macOS releases use MACOS_* signing/notarization env vars from the shell or .env.release.local.
   - Linux bundles build natively on Linux or inside Docker elsewhere.
   - Windows installers build inside a Parallels Windows VM when available.
   - --publish requires an explicit --release-tree so partial app-only releases do not
@@ -81,6 +94,7 @@ export function parseArgs(argv) {
     envFiles: [],
     only: null,
     skip: new Set(),
+    allowUnsignedMacos: false,
   }
 
   for (let index = 0; index < args.length; index += 1) {
@@ -117,6 +131,9 @@ export function parseArgs(argv) {
         for (const value of splitCsv(args[++index] ?? '')) {
           options.skip.add(value)
         }
+        break
+      case '--allow-unsigned-macos':
+        options.allowUnsignedMacos = true
         break
       default:
         throw new Error(`Unknown argument: ${arg}`)
@@ -231,6 +248,26 @@ function quote(arg) {
   return /[^\w./:-]/.test(value) ? JSON.stringify(value) : value
 }
 
+function envFlagEnabled(value) {
+  return /^(1|true|yes|on)$/i.test(String(value ?? '').trim())
+}
+
+function missingEnvVars(names, env) {
+  return names.filter((name) => !String(env[name] ?? '').trim())
+}
+
+function detectLocalMacosReleaseCapabilities(env) {
+  const missingSigning = missingEnvVars(macosSigningRequiredEnv, env)
+  const missingNotarization = missingEnvVars(macosNotarizationRequiredEnv, env)
+
+  return {
+    signingReady: missingSigning.length === 0,
+    notarizationReady: missingNotarization.length === 0,
+    missingSigning,
+    missingNotarization,
+  }
+}
+
 function run(command, args, { cwd = repoRoot, env = process.env, capture = false, dryRun = false } = {}) {
   const rendered = [command, ...args].map(quote).join(' ')
   console.log(`$ ${rendered}`)
@@ -322,6 +359,167 @@ function appBundleCandidates(target) {
 
 function psQuote(value) {
   return `'${String(value).replace(/'/g, "''")}'`
+}
+
+function prepareLocalMacosSigning(env, { dryRun }) {
+  const tempRoot = dryRun
+    ? join(os.tmpdir(), 'iris-local-signing-dry-run')
+    : mkdtempSync(join(os.tmpdir(), 'iris-local-signing-'))
+  const keychainPath = join(tempRoot, 'iris-signing.keychain-db')
+  const certPath = join(tempRoot, 'iris-signing-cert.p12')
+  const keychainPassword = env.MACOS_KEYCHAIN_PASSWORD || 'temp_signing_password'
+
+  if (!dryRun) {
+    writeFileSync(certPath, Buffer.from(env.MACOS_CERTIFICATE_P12, 'base64'))
+  }
+
+  run('security', ['create-keychain', '-p', keychainPassword, keychainPath], { dryRun })
+  run('security', ['set-keychain-settings', '-lut', '21600', keychainPath], { dryRun })
+  run('security', ['unlock-keychain', '-p', keychainPassword, keychainPath], { dryRun })
+  run(
+    'security',
+    [
+      'import',
+      certPath,
+      '-k',
+      keychainPath,
+      '-P',
+      env.MACOS_CERTIFICATE_PASSWORD,
+      '-T',
+      '/usr/bin/codesign',
+      '-T',
+      '/usr/bin/security',
+    ],
+    { dryRun },
+  )
+  run(
+    'security',
+    ['set-key-partition-list', '-S', 'apple-tool:,apple:', '-k', keychainPassword, keychainPath],
+    { dryRun },
+  )
+
+  const identities = run('security', ['find-identity', '-v', '-p', 'codesigning', keychainPath], {
+    capture: true,
+    dryRun,
+  })
+  if (!dryRun && !identities.includes(env.MACOS_SIGNING_IDENTITY)) {
+    throw new Error(`Expected signing identity not found: ${env.MACOS_SIGNING_IDENTITY}`)
+  }
+
+  return {
+    keychainPath,
+    cleanup() {
+      if (dryRun) {
+        return
+      }
+      rmSync(certPath, { force: true })
+      run('security', ['delete-keychain', keychainPath], { dryRun })
+      rmSync(tempRoot, { recursive: true, force: true })
+    },
+  }
+}
+
+function signLocalMacosApp({ appPath, env, keychainPath, dryRun }) {
+  const entitlementsPath = join(appDir, 'src-tauri', 'Release.entitlements')
+  const args = ['--force', '--deep', '--options', 'runtime', '--timestamp', '--keychain', keychainPath]
+  if (existsSync(entitlementsPath)) {
+    args.push('--entitlements', entitlementsPath)
+  }
+  args.push('--sign', env.MACOS_SIGNING_IDENTITY, appPath)
+
+  run('codesign', args, { dryRun })
+  run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath], { dryRun })
+}
+
+function notarizeLocalMacosApp({ appPath, env, dryRun }) {
+  const tempRoot = dryRun
+    ? join(os.tmpdir(), 'iris-local-notary-dry-run')
+    : mkdtempSync(join(os.tmpdir(), 'iris-local-notary-'))
+  const notaryZipPath = join(tempRoot, 'iris-notarize.zip')
+
+  try {
+    run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, notaryZipPath], { dryRun })
+    const submitOutput = run(
+      'xcrun',
+      [
+        'notarytool',
+        'submit',
+        notaryZipPath,
+        '--apple-id',
+        env.MACOS_NOTARIZE_APPLE_ID,
+        '--password',
+        env.MACOS_NOTARIZE_APP_PASSWORD,
+        '--team-id',
+        env.MACOS_NOTARIZE_TEAM_ID,
+        '--wait',
+        '--output-format',
+        'json',
+      ],
+      { capture: true, dryRun },
+    )
+
+    if (!dryRun) {
+      const submission = JSON.parse(submitOutput)
+      if (submission.status !== 'Accepted') {
+        if (submission.id) {
+          try {
+            run(
+              'xcrun',
+              [
+                'notarytool',
+                'log',
+                submission.id,
+                '--apple-id',
+                env.MACOS_NOTARIZE_APPLE_ID,
+                '--password',
+                env.MACOS_NOTARIZE_APP_PASSWORD,
+                '--team-id',
+                env.MACOS_NOTARIZE_TEAM_ID,
+              ],
+              { dryRun },
+            )
+          } catch {}
+        }
+        throw new Error(`Notarization status was '${submission.status}' (expected 'Accepted').`)
+      }
+    }
+
+    run('xcrun', ['stapler', 'staple', appPath], { dryRun })
+    run('xcrun', ['stapler', 'validate', appPath], { dryRun })
+  } finally {
+    if (!dryRun) {
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
+  }
+}
+
+function verifyPackagedMacosArtifact({ zipPath, signed, notarized, dryRun }) {
+  const verifyDir = dryRun
+    ? join(os.tmpdir(), 'iris-local-verify-dry-run')
+    : mkdtempSync(join(os.tmpdir(), 'iris-local-verify-'))
+
+  try {
+    run('ditto', ['-x', '-k', zipPath, verifyDir], { dryRun })
+    const appPath = findFirstFile(verifyDir, (entry) => entry.endsWith('.app'))
+    if (!dryRun && !appPath) {
+      throw new Error('Packaged zip did not contain a macOS .app bundle.')
+    }
+
+    if (signed) {
+      run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath || '<macos-app-bundle>'], {
+        dryRun,
+      })
+    }
+    if (notarized) {
+      run('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath || '<macos-app-bundle>'], {
+        dryRun,
+      })
+    }
+  } finally {
+    if (!dryRun) {
+      rmSync(verifyDir, { recursive: true, force: true })
+    }
+  }
 }
 
 function runWindowsPowerShell(vmName, script, { capture = false, dryRun = false } = {}) {
@@ -429,13 +627,26 @@ Copy-Item $installer.FullName ${psQuote(`${distPath}\\${installerName}`)} -Force
   }
 }
 
-function buildMacosArtifacts({ pnpmInvocation, assetPrefix, dryRun, builtLines }) {
+function buildMacosArtifacts({ env, pnpmInvocation, assetPrefix, dryRun, builtLines, allowUnsignedMacos }) {
   if (process.platform !== 'darwin' || process.arch !== 'arm64') {
     throw new SkipStepError('Skipping macOS app bundle because the host is not Apple Silicon macOS.')
   }
 
   ensureFrontendDistAvailable(dryRun)
   ensureDistDir(dryRun)
+  const macosZipPath = join(distDir, `${assetPrefix}-macos-arm64.zip`)
+  if (!dryRun) {
+    rmSync(macosZipPath, { force: true })
+  }
+
+  const capabilities = detectLocalMacosReleaseCapabilities(env)
+  if (!capabilities.signingReady && !allowUnsignedMacos) {
+    const missing = capabilities.missingSigning.join(', ')
+    throw new SkipStepError(
+      `Skipping macOS app bundle because signing inputs are missing (${missing}). Pass --allow-unsigned-macos or set IRIS_ALLOW_UNSIGNED_MACOS=1 to force an unsigned zip.`,
+    )
+  }
+
   installFrontendDependencies(pnpmInvocation, { dryRun })
   runPnpm(
     pnpmInvocation,
@@ -452,13 +663,48 @@ function buildMacosArtifacts({ pnpmInvocation, assetPrefix, dryRun, builtLines }
     throw new Error('No macOS .app bundle found in build output.')
   }
 
+  const appPathForZip = appPath || '<macos-app-bundle>'
+  let signed = false
+  let notarized = false
+  let signingContext = null
+  try {
+    if (capabilities.signingReady) {
+      signingContext = prepareLocalMacosSigning(env, { dryRun })
+      signLocalMacosApp({
+        appPath: appPathForZip,
+        env,
+        keychainPath: signingContext.keychainPath,
+        dryRun,
+      })
+      signed = true
+
+      if (capabilities.notarizationReady) {
+        notarizeLocalMacosApp({ appPath: appPathForZip, env, dryRun })
+        notarized = true
+      }
+    }
+  } finally {
+    signingContext?.cleanup()
+  }
+
   run(
     'ditto',
-    ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath || '<macos-app-bundle>', join(distDir, `${assetPrefix}-macos-arm64.zip`)],
+    ['-c', '-k', '--sequesterRsrc', '--keepParent', appPathForZip, macosZipPath],
     { dryRun },
   )
 
-  builtLines.push('Built Apple Silicon macOS Iris app locally.')
+  verifyPackagedMacosArtifact({ zipPath: macosZipPath, signed, notarized, dryRun })
+
+  if (notarized) {
+    builtLines.push('Built signed and notarized Apple Silicon macOS Iris app locally.')
+  } else if (signed) {
+    const missing = capabilities.notarizationReady
+      ? ''
+      : ` Missing notarization inputs: ${capabilities.missingNotarization.join(', ')}.`
+    builtLines.push(`Built signed Apple Silicon macOS Iris app locally without notarization.${missing}`)
+  } else {
+    builtLines.push('Built unsigned Apple Silicon macOS Iris app locally because unsigned output was explicitly allowed.')
+  }
 }
 
 function buildLinuxArtifacts({ pnpmInvocation, env, assetPrefix, dryRun, builtLines }) {
@@ -552,6 +798,7 @@ export function collectReleaseAssetPaths(assetPrefix, outputDir = distDir) {
     .map((entry) => join(outputDir, entry))
     .filter((fullPath) => statSync(fullPath).isFile())
     .filter((fullPath) => basename(fullPath).startsWith(`${assetPrefix}-`))
+    .filter((fullPath) => !fullPath.endsWith('.sha256'))
 }
 
 function stageRelease({ tag, commit, stageDir, outputDir, assetPrefix, builtLines, skippedLines, dryRun }) {
@@ -657,10 +904,18 @@ function main() {
     console.log('Dry run mode: no build, copy, or publish commands will be executed.')
   }
 
+  const allowUnsignedMacos = options.allowUnsignedMacos || envFlagEnabled(env.IRIS_ALLOW_UNSIGNED_MACOS)
   const pnpmInvocation = resolveHostPnpmInvocation()
   const steps = [
     ['verify', () => runVerify({ pnpmInvocation, dryRun: options.dryRun, builtLines })],
-    ['macos', () => buildMacosArtifacts({ pnpmInvocation, assetPrefix, dryRun: options.dryRun, builtLines })],
+    ['macos', () => buildMacosArtifacts({
+      env,
+      pnpmInvocation,
+      assetPrefix,
+      dryRun: options.dryRun,
+      builtLines,
+      allowUnsignedMacos,
+    })],
     ['linux', () => buildLinuxArtifacts({ pnpmInvocation, env, assetPrefix, dryRun: options.dryRun, builtLines })],
     ['windows', () => buildWindowsArtifacts({ env, assetPrefix, dryRun: options.dryRun, builtLines })],
   ]

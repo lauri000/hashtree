@@ -18,7 +18,6 @@ trap cleanup EXIT
 
 ROOT_DIR="${TMP_DIR}/root"
 ASSETS_DIR="${ROOT_DIR}/assets"
-CHECKSUMS_DIR="${TMP_DIR}/checksums"
 DEST_REPO="${TMP_DIR}/dest.git"
 CLONE_DIR="${TMP_DIR}/clone"
 PORT=18082
@@ -32,21 +31,12 @@ require_command() {
     fi
 }
 
-sha256_file() {
-    local file="$1"
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$file"
-    else
-        shasum -a 256 "$file"
-    fi
-}
-
 require_command git
 require_command python3
 require_command tar
 require_command "$PUBLISH_TAP_SCRIPT"
 
-mkdir -p "$ASSETS_DIR" "$CHECKSUMS_DIR"
+mkdir -p "$ASSETS_DIR"
 git init --bare "$DEST_REPO" >/dev/null
 
 for target in \
@@ -80,7 +70,6 @@ EOF
         cd "$stage_dir"
         tar -czf "${ASSETS_DIR}/hashtree-${target}.tar.gz" hashtree
     )
-    sha256_file "${ASSETS_DIR}/hashtree-${target}.tar.gz" > "${CHECKSUMS_DIR}/hashtree-${target}.sha256"
 done
 
 (
@@ -93,7 +82,7 @@ sleep 1
 output="$("${PUBLISH_TAP_SCRIPT}" \
     --version v0.0.1 \
     --release-base-url "http://127.0.0.1:${PORT}/assets" \
-    --checksums-dir "$CHECKSUMS_DIR" \
+    --assets-dir "$ASSETS_DIR" \
     --push-url "$DEST_REPO" \
     --tap-repo homebrew-htree-test \
     --npub npub1test)"

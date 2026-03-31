@@ -46,7 +46,6 @@ test('stageRepoRelease creates a metadata-backed repo release directory', () => 
 
     writeFileSync(join(cliDir, 'install.sh'), '#!/bin/sh\necho install\n')
     writeFileSync(join(cliDir, 'hashtree-aarch64-apple-darwin.tar.gz'), 'cli-tar')
-    writeFileSync(join(cliDir, 'hashtree-aarch64-apple-darwin.sha256'), 'cli-sha')
     writeFileSync(join(irisStageDir, 'assets', 'iris-v0.2.16-macos-arm64.zip'), 'iris-zip')
     writeFileSync(join(irisStageDir, 'assets', 'iris-v0.2.16-windows-x64-setup.exe'), 'iris-exe')
 
@@ -59,7 +58,7 @@ test('stageRepoRelease creates a metadata-backed repo release directory', () => 
       installUrl: 'https://upload.example/releases%2Fhashtree/latest/install.sh',
     })
 
-    assert.equal(result.assetCount, 5)
+    assert.equal(result.assetCount, 4)
     assert.equal(existsSync(join(outputDir, 'release.json')), true)
     assert.equal(existsSync(join(outputDir, 'notes.md')), true)
     assert.equal(existsSync(join(outputDir, 'install.sh')), true)
@@ -70,7 +69,6 @@ test('stageRepoRelease creates a metadata-backed repo release directory', () => 
     assert.deepEqual(
       manifest.assets.map((asset) => asset.path),
       [
-        'assets/hashtree-aarch64-apple-darwin.sha256',
         'assets/hashtree-aarch64-apple-darwin.tar.gz',
         'install.sh',
         'assets/iris-v0.2.16-macos-arm64.zip',
@@ -89,6 +87,38 @@ test('stageRepoRelease creates a metadata-backed repo release directory', () => 
     assert.doesNotMatch(notes, /hashtree-aarch64-apple-darwin\.sha256/)
     assert.doesNotMatch(notes, /hashtree-aarch64-apple-darwin\.tar\.gz/)
     assert.doesNotMatch(notes, /iris-v0.2.16-macos-arm64\.zip/)
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('stageRepoRelease excludes checksum sidecar files from staged assets', () => {
+  const tempDir = mkdtempSync(join(os.tmpdir(), 'stage-repo-release-no-sha-'))
+
+  try {
+    const cliDir = join(tempDir, 'cli')
+    const outputDir = join(tempDir, 'out')
+
+    mkdirSync(cliDir, { recursive: true })
+    writeFileSync(join(cliDir, 'install.sh'), '#!/bin/sh\necho install\n')
+    writeFileSync(join(cliDir, 'hashtree-aarch64-apple-darwin.tar.gz'), 'cli-tar')
+    writeFileSync(join(cliDir, 'hashtree-aarch64-apple-darwin.sha256'), 'cli-sha')
+
+    const result = stageRepoRelease({
+      tag: 'v0.2.16',
+      commit: '112233',
+      cliDir,
+      outputDir,
+    })
+
+    assert.equal(result.assetCount, 2)
+    assert.equal(existsSync(join(outputDir, 'assets', 'hashtree-aarch64-apple-darwin.sha256')), false)
+
+    const manifest = JSON.parse(readFileSync(join(outputDir, 'release.json'), 'utf8'))
+    assert.deepEqual(
+      manifest.assets.map((asset) => asset.path),
+      ['assets/hashtree-aarch64-apple-darwin.tar.gz', 'install.sh'],
+    )
   } finally {
     rmSync(tempDir, { recursive: true, force: true })
   }

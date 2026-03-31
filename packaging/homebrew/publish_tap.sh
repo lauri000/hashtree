@@ -3,14 +3,14 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: packaging/homebrew/publish_tap.sh --version <version> --release-base-url <url> --checksums-dir <dir> [options]
+Usage: packaging/homebrew/publish_tap.sh --version <version> --release-base-url <url> --assets-dir <dir> [options]
 
 Generate a Homebrew tap repository and push it to a git remote.
 
 Required options:
   --version <version>              Release version, for example: v0.2.15
   --release-base-url <url>         Base URL containing hashtree-<target>.tar.gz files
-  --checksums-dir <dir>            Directory containing hashtree-<target>.sha256 files
+  --assets-dir <dir>               Directory containing hashtree-<target>.tar.gz files
 
 Optional:
   --tap-repo <name>                Tap repo name (default: homebrew-<repo-name>)
@@ -29,7 +29,7 @@ Examples:
   packaging/homebrew/publish_tap.sh \
     --version v0.2.15 \
     --release-base-url https://upload.iris.to/<npub>/releases%2Fhashtree/v0.2.15 \
-    --checksums-dir rust/dist/hashtree-v0.2.15
+    --assets-dir rust/dist/hashtree-v0.2.15
 EOF
 }
 
@@ -41,7 +41,7 @@ CREATE_TAP_SCRIPT="${SCRIPT_DIR}/create_tap.sh"
 
 VERSION=""
 RELEASE_BASE_URL=""
-CHECKSUMS_DIR=""
+ASSETS_DIR=""
 TARGET_DIR="${RUST_DIR}/target"
 TAP_REPO=""
 PUSH_URL=""
@@ -98,9 +98,14 @@ while [ $# -gt 0 ]; do
             CREATE_TAP_ARGS+=("$1" "${2:-}")
             shift 2
             ;;
-        --checksums-dir)
-            CHECKSUMS_DIR="${2:-}"
+        --assets-dir)
+            ASSETS_DIR="${2:-}"
             CREATE_TAP_ARGS+=("$1" "${2:-}")
+            shift 2
+            ;;
+        --checksums-dir)
+            ASSETS_DIR="${2:-}"
+            CREATE_TAP_ARGS+=(--assets-dir "${2:-}")
             shift 2
             ;;
         --tap-repo)
@@ -153,13 +158,13 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ -z "$VERSION" ] || [ -z "$RELEASE_BASE_URL" ] || [ -z "$CHECKSUMS_DIR" ]; then
+if [ -z "$VERSION" ] || [ -z "$RELEASE_BASE_URL" ] || [ -z "$ASSETS_DIR" ]; then
     usage >&2
     exit 1
 fi
 
-if [ ! -d "$CHECKSUMS_DIR" ]; then
-    echo "Checksums directory does not exist: $CHECKSUMS_DIR" >&2
+if [ ! -d "$ASSETS_DIR" ]; then
+    echo "Assets directory does not exist: $ASSETS_DIR" >&2
     exit 1
 fi
 

@@ -93,6 +93,7 @@ function listTopLevelFiles(root) {
 function buildTopLevelAssetEntries(root, mapper, excludeNames = new Set()) {
   return listTopLevelFiles(root)
     .filter((fullPath) => !excludeNames.has(basename(fullPath)))
+    .filter((fullPath) => !fullPath.endsWith('.sha256'))
     .map((sourcePath) => mapper(sourcePath))
 }
 

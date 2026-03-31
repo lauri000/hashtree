@@ -153,11 +153,6 @@ jobs:
           
           cd dist
           tar -czvf hashtree-${{ matrix.target }}.tar.gz hashtree
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum hashtree-${{ matrix.target }}.tar.gz > hashtree-${{ matrix.target }}.sha256
-          else
-            shasum -a 256 hashtree-${{ matrix.target }}.tar.gz > hashtree-${{ matrix.target }}.sha256
-          fi
           rm -rf hashtree
 
       - name: Package (Windows)
@@ -194,8 +189,6 @@ jobs:
           "@ | Out-File -FilePath dist/hashtree/README.txt -Encoding UTF8
           
           Compress-Archive -Path dist/hashtree -DestinationPath dist/hashtree-${{ matrix.target }}.zip
-          $hash = (Get-FileHash dist/hashtree-${{ matrix.target }}.zip -Algorithm SHA256).Hash.ToLower()
-          "$hash  hashtree-${{ matrix.target }}.zip" | Out-File -FilePath dist/hashtree-${{ matrix.target }}.sha256 -Encoding ASCII
           Remove-Item -Recurse dist/hashtree
 
       - name: Upload artifacts
@@ -588,8 +581,6 @@ jobs:
 
           cp "${appimage}" "dist/${IRIS_ASSET_PREFIX}-linux-x86_64.AppImage"
           cp "${deb}" "dist/${IRIS_ASSET_PREFIX}-linux-x86_64.deb"
-          sha256sum "dist/${IRIS_ASSET_PREFIX}-linux-x86_64.AppImage" > "dist/${IRIS_ASSET_PREFIX}-linux-x86_64.AppImage.sha256"
-          sha256sum "dist/${IRIS_ASSET_PREFIX}-linux-x86_64.deb" > "dist/${IRIS_ASSET_PREFIX}-linux-x86_64.deb.sha256"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -671,9 +662,6 @@ jobs:
           }
 
           Copy-Item $nsis.FullName "dist/$env:IRIS_ASSET_PREFIX-windows-x64-setup.exe"
-
-          $nsisHash = (Get-FileHash "dist/$env:IRIS_ASSET_PREFIX-windows-x64-setup.exe" -Algorithm SHA256).Hash.ToLower()
-          "$nsisHash  $env:IRIS_ASSET_PREFIX-windows-x64-setup.exe" | Out-File -FilePath "dist/$env:IRIS_ASSET_PREFIX-windows-x64-setup.exe.sha256" -Encoding ASCII
 
       - name: Detect Windows signing capabilities
         id: windows_capabilities

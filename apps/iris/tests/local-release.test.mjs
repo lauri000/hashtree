@@ -25,6 +25,7 @@ test('parseArgs accepts tag normalization and step filters', () => {
     'macos,windows',
     '--skip',
     'verify',
+    '--allow-unsigned-macos',
     '--release-tree',
     'releases/hashtree',
     '--publish',
@@ -33,6 +34,7 @@ test('parseArgs accepts tag normalization and step filters', () => {
   assert.equal(parsed.tag, 'v0.2.14')
   assert.equal(parsed.publish, true)
   assert.equal(parsed.releaseTree, 'releases/hashtree')
+  assert.equal(parsed.allowUnsignedMacos, true)
   assert.deepEqual([...parsed.only], ['macos', 'windows'])
   assert.deepEqual([...parsed.skip], ['verify'])
 })
@@ -78,6 +80,7 @@ test('defaultSharedWindowsRepoPath derives the shared Parallels path on mac-styl
 
 test('usage mentions explicit release-tree requirement for publish', () => {
   assert.match(usage(), /--publish requires an explicit --release-tree/)
+  assert.match(usage(), /--allow-unsigned-macos/)
 })
 
 test('workspaceInstallCommands bootstraps iris-files before iris', () => {

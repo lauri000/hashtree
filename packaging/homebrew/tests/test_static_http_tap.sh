@@ -35,15 +35,6 @@ require_command() {
     fi
 }
 
-sha256_file() {
-    local file="$1"
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$file"
-    else
-        shasum -a 256 "$file"
-    fi
-}
-
 cleanup() {
     local exit_code=$?
 
@@ -83,10 +74,9 @@ trap cleanup EXIT
 
 ROOT_DIR="${TMP_DIR}/root"
 ASSETS_DIR="${ROOT_DIR}/assets"
-CHECKSUMS_DIR="${TMP_DIR}/checksums"
 TAP_DIR="${ROOT_DIR}/homebrew-htree.git"
 
-mkdir -p "${ASSETS_DIR}" "${CHECKSUMS_DIR}"
+mkdir -p "${ASSETS_DIR}"
 
 for target in \
     aarch64-apple-darwin \
@@ -119,13 +109,12 @@ EOF
         cd "$stage_dir"
         tar -czf "${ASSETS_DIR}/hashtree-${target}.tar.gz" hashtree
     )
-    sha256_file "${ASSETS_DIR}/hashtree-${target}.tar.gz" > "${CHECKSUMS_DIR}/hashtree-${target}.sha256"
 done
 
 "$CREATE_TAP_SCRIPT" \
     --version v0.0.1 \
     --release-base-url "http://127.0.0.1:${PORT}/assets" \
-    --checksums-dir "$CHECKSUMS_DIR" \
+    --assets-dir "$ASSETS_DIR" \
     --output-dir "$TAP_DIR"
 
 (
