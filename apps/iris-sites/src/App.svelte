@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { resetShellFavicon, syncShellFaviconFromFrame } from './lib/faviconSync';
+  import ShareModal, { open as openShareModal } from './lib/ShareModal.svelte';
   import {
     HASHTREE_INSTALL_DOCS_HREF,
     PUBLISH_IMMUTABLE_COMMAND,
@@ -116,6 +117,13 @@
 
   function toggleRuntimeMenu(): void {
     runtimeMenuOpen = !runtimeMenuOpen;
+  }
+
+  function showShareQr(): void {
+    const href = buildCurrentLauncherHref();
+    if (!href) return;
+    runtimeMenuOpen = false;
+    openShareModal(href);
   }
 
   function buildCurrentLauncherHref(): string {
@@ -569,6 +577,10 @@
           Hide Menu For This URL
         </button>
 
+        <button class="runtime-menu-item" type="button" onclick={showShareQr}>
+          Show QR
+        </button>
+
         <button
           class="runtime-menu-link-button"
           type="button"
@@ -612,6 +624,8 @@
     </button>
   </div>
 {/if}
+
+<ShareModal />
 
 <style>
   :global(html, body, #app) {

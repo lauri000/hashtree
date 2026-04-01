@@ -12,6 +12,8 @@ describe('iris-sites runtime menu markup', () => {
 
     expect(source).toMatch(/href=\{launcherHref\}>\s*sites\.iris\.to\s*<\/a>/);
     expect(source).toMatch(/href=\{sourceHref\}>\s*source\s*<\/a>/);
+    expect(source).toMatch(/>\s*Show QR\s*<\/button>/);
+    expect(source).toContain('<ShareModal />');
     expect(source).toContain('aria-label="Copy sites launcher URL"');
   });
 });
