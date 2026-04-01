@@ -15,7 +15,8 @@ describe('iris-sites runtime menu markup', () => {
     const source = await loadAppSource();
 
     expect(source).toMatch(/href=\{launcherHref\}>\s*sites\.iris\.to\s*<\/a>/);
-    expect(source).toMatch(/href=\{sourceHref\}>\s*source\s*<\/a>/);
+    expect(source).toMatch(/class="runtime-menu-item" href=\{sourceHref\}>\s*Source\s*<\/a>/);
+    expect(source).not.toMatch(/class="runtime-menu-home-link" href=\{sourceHref\}/);
     expect(source).toMatch(/>\s*Show QR\s*<\/button>/);
     expect(source).toContain('<ShareModal />');
     expect(source).toContain('aria-label="Copy sites launcher URL"');
@@ -28,5 +29,6 @@ describe('iris-sites runtime menu markup', () => {
     expect(source).toContain('justify-self: center;');
     expect(source).toContain('@media (prefers-color-scheme: light)');
     expect(source).toContain('--share-modal-card-background');
+    expect(source).not.toContain('Open this site elsewhere');
   });
 });

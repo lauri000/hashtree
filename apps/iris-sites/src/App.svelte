@@ -548,7 +548,6 @@
           <div class="runtime-menu-title">{currentSite?.title}</div>
           <div class="runtime-menu-links">
             <a class="runtime-menu-home-link" href={launcherHref}>sites.iris.to</a>
-            <a class="runtime-menu-home-link" href={sourceHref}>source</a>
           </div>
         </div>
 
@@ -561,6 +560,8 @@
             Update Now
           </button>
         {/if}
+
+        <a class="runtime-menu-item" href={sourceHref}>Source</a>
 
         {#if currentSite?.kind === 'mutable'}
           {#if currentSite?.kind === 'mutable' && permalinkHref}
@@ -960,6 +961,7 @@
 
   .runtime-menu-item,
   .runtime-menu-toggle {
+    display: block;
     width: 100%;
     padding: 11px 12px;
     text-align: left;

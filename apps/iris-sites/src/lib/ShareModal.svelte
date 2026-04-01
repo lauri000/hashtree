@@ -132,10 +132,7 @@
       data-testid="share-modal"
     >
       <div class="share-modal-header">
-        <div>
-          <p class="share-modal-eyebrow">Share</p>
-          <h2 class="share-modal-title">Open this site elsewhere</h2>
-        </div>
+        <p class="share-modal-eyebrow">Share</p>
         <button class="share-modal-close" type="button" aria-label="Close share dialog" onclick={close}>
           Close
         </button>
@@ -230,23 +227,17 @@
 
   .share-modal-header {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 16px;
   }
 
   .share-modal-eyebrow {
-    margin: 0 0 6px;
+    margin: 0;
     font-size: 0.72rem;
     letter-spacing: 0.16em;
     text-transform: uppercase;
     color: var(--share-modal-eyebrow);
-  }
-
-  .share-modal-title {
-    margin: 0;
-    font-size: 1.08rem;
-    line-height: 1.2;
   }
 
   .share-modal-close,
