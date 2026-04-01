@@ -76,6 +76,35 @@ export function findThumbnailEntry<T extends { name: string }>(entries: T[]): T 
   );
 }
 
+type PlaylistTreeEntry = {
+  name: string;
+  cid?: CID;
+  type?: LinkType;
+  meta?: Record<string, unknown>;
+};
+
+function hasPlaylistEntryMetadataHint(entry: PlaylistTreeEntry): boolean {
+  const meta = entry.meta as Record<string, unknown> | undefined;
+  if (!meta) return false;
+  return (
+    (typeof meta.title === 'string' && meta.title.trim().length > 0)
+    || (typeof meta.thumbnail === 'string' && meta.thumbnail.trim().length > 0)
+    || typeof meta.duration === 'number'
+    || typeof meta.createdAt === 'number'
+    || typeof meta.originalDate === 'number'
+  );
+}
+
+function looksLikePlaylistEntryName(name: string): boolean {
+  return /^video[_-]/i.test(name) || !/\.[a-z0-9]{1,8}$/i.test(name);
+}
+
+function isLikelyPlaylistVideoEntry(entry: PlaylistTreeEntry): boolean {
+  if (!entry?.cid) return false;
+  if (typeof entry.type === 'number' && entry.type !== LinkType.Dir) return false;
+  return hasPlaylistEntryMetadataHint(entry) || looksLikePlaylistEntryName(entry.name);
+}
+
 /** Build SW URL for a thumbnail */
 export function buildThumbnailUrl(
   npub: string,
@@ -125,7 +154,7 @@ export async function findFirstVideoEntry(rootCid: CID): Promise<string | null> 
       .filter((entry) => !!entry?.cid)
       .sort((a, b) => a.name.localeCompare(b.name));
     const fallbackEntry = sorted.find((entry) => /^video[_-]/i.test(entry.name))
-      ?? sorted.find((entry) => !/\.[a-z0-9]{1,8}$/i.test(entry.name))
+      ?? sorted.find((entry) => isLikelyPlaylistVideoEntry(entry))
       ?? sorted[0];
     let hadIndeterminateChild = false;
     for (const entry of sorted) {
@@ -621,21 +650,51 @@ export async function loadPlaylist(
 
     // Quick check: identify which entries are video directories
     // Use short timeout for initial detection
+    const candidateEntries = entries.filter((entry) => !!entry?.cid);
     const quickChecks = await Promise.all(
-      entries.map(async (entry): Promise<{ entry: typeof entries[0]; isVideo: boolean }> => {
+      candidateEntries.map(async (entry): Promise<{ entry: typeof candidateEntries[number]; status: 'video' | 'not-video' | 'indeterminate' }> => {
         try {
           const subEntries = await Promise.race([
             tree.listDirectory(entry.cid),
             new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500))
           ]);
-          return { entry, isVideo: subEntries ? hasVideoFile(subEntries) : false };
+          return {
+            entry,
+            status: subEntries && hasVideoFile(subEntries) ? 'video' : 'not-video',
+          };
         } catch {
-          return { entry, isVideo: false };
+          return { entry, status: 'indeterminate' };
         }
       })
     );
 
-    const videoEntries = quickChecks.filter(c => c.isVideo).map(c => c.entry);
+    const selectedEntries = new Map<string, typeof candidateEntries[number]>();
+    for (const check of quickChecks) {
+      if (check.status === 'video') {
+        selectedEntries.set(check.entry.name, check.entry);
+      }
+    }
+
+    if (currentVideoId) {
+      const currentEntry = candidateEntries.find((entry) => entry.name === currentVideoId);
+      if (currentEntry) {
+        selectedEntries.set(currentEntry.name, currentEntry);
+      }
+    }
+
+    if (selectedEntries.size < MIN_VIDEOS_FOR_SIDEBAR) {
+      for (const check of quickChecks) {
+        if (check.status !== 'indeterminate' || !isLikelyPlaylistVideoEntry(check.entry)) {
+          continue;
+        }
+        selectedEntries.set(check.entry.name, check.entry);
+        if (selectedEntries.size >= MIN_VIDEOS_FOR_SIDEBAR) {
+          break;
+        }
+      }
+    }
+
+    const videoEntries = Array.from(selectedEntries.values());
 
     // Only show playlist sidebar if we have enough videos
     if (videoEntries.length < MIN_VIDEOS_FOR_SIDEBAR) return null;
