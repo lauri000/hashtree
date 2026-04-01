@@ -213,6 +213,22 @@ homebrew_archives_ready() {
     return 0
 }
 
+require_homebrew_archives_for_release() {
+    local assets_dir="$1"
+    if [ "$SKIP_HOMEBREW_TAP" -eq 1 ]; then
+        return 0
+    fi
+    if homebrew_archives_ready "$assets_dir"; then
+        return 0
+    fi
+
+    cat >&2 <<EOF
+Error: release directory ${assets_dir} does not contain the full macOS/Linux archive set required for the Homebrew tap.
+Re-run with the default targets (or explicit macOS and Linux musl targets), or pass --skip-homebrew-tap to publish a partial release intentionally.
+EOF
+    exit 1
+}
+
 write_release_bootstrap_installer() {
     local path="$1"
     local base_url="$2"
@@ -335,6 +351,7 @@ auto_build_windows_vm_artifacts
 
 OUTPUT_DIR="$(value_from_build_args --output-dir "${RUST_DIR}/dist/hashtree-${VERSION}")"
 TARGET_DIR="$(value_from_build_args --target-dir "${RUST_DIR}/target")"
+require_homebrew_archives_for_release "$OUTPUT_DIR"
 npub="$(current_npub)"
 RELEASE_STAGE_SCRIPT="${REPO_DIR}/scripts/stage_repo_release.mjs"
 IRIS_RELEASE_SCRIPT="${REPO_DIR}/apps/iris/scripts/local-release.mjs"
@@ -419,8 +436,6 @@ if [ "$SKIP_HOMEBREW_TAP" -eq 0 ]; then
     HOMEBREW_PUBLISH_SCRIPT="${REPO_DIR}/packaging/homebrew/publish_tap.sh"
     if [ ! -x "$HOMEBREW_PUBLISH_SCRIPT" ]; then
         echo "Warning: Homebrew tap script not found at packaging/homebrew/publish_tap.sh; skipping tap update." >&2
-    elif ! homebrew_archives_ready "$OUTPUT_DIR"; then
-        echo "Warning: Homebrew tap update skipped because the release directory does not contain the full macOS/Linux archive set." >&2
     else
         if [ -z "$npub" ]; then
             echo "Warning: Could not determine current npub; skipping Homebrew tap update." >&2

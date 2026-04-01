@@ -12,15 +12,15 @@ For a generic static file host, the tap repository must be served as an
 HTTP-cloneable bare Git repository. A plain directory of files is not enough.
 The bare repository needs `git update-server-info` so dumb HTTP cloning works.
 
-For an `htree://`-published repository served through the `upload.iris.to`
-gateway, users can tap the repository's `/.git` subtree directly:
+For an `htree://`-published bare tap served through the `upload.iris.to`
+gateway, users can tap the published `.git` directory directly:
 
 ```bash
-brew tap <user>/htree https://upload.iris.to/<npub>/<repo>/.git
+brew tap <user>/htree https://upload.iris.to/<npub>/<repo>.git
 ```
 
-That path works as long as the published repo includes dumb-HTTP metadata in
-`.git/info/refs` and `.git/objects/info/packs`.
+That path works as long as the published bare repository includes dumb-HTTP
+metadata in `info/refs` and `objects/info/packs`.
 
 ## Recommended naming
 
@@ -71,11 +71,11 @@ brew install <user>/htree/htree
 After tapping, `brew install hashtree` should also work via the alias.
 
 If you prefer publishing the tap repo itself through hashtree instead of
-hosting a bare repo directory, push a normal Git repository to
-`htree://self/<repo>` and tap the gateway URL instead:
+hosting a separate static host, publish the generated bare repo directory into
+hashtree and tap the gateway URL:
 
 ```bash
-brew tap <user>/htree https://upload.iris.to/<npub>/<repo>/.git
+brew tap <user>/htree https://upload.iris.to/<npub>/<repo>.git
 brew install htree
 ```
 
@@ -88,9 +88,9 @@ packaging/homebrew/publish_tap.sh \
   --assets-dir rust/dist/hashtree-v<version>
 ```
 
-By default it pushes to `htree://self/homebrew-hashtree`, creating or
-replacing that tap repo without needing a pre-existing GitHub repository or
-manually managed tap checkout.
+By default it publishes the generated bare repo to `htree://self/homebrew-hashtree.git`,
+creating or replacing that tap without needing a pre-existing GitHub repository
+or manually managed tap checkout.
 
 `rust/scripts/release_to_htree.sh` calls this automatically when the release
 directory contains the full macOS/Linux archive set needed by the formula. Add

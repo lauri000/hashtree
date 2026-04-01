@@ -45,7 +45,7 @@ cargo install --path rust/crates/hashtree-cashu-cli
 ### Homebrew
 
 ```bash
-brew tap sirius/hashtree https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/homebrew-hashtree/.git
+brew tap sirius/hashtree https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/homebrew-hashtree.git
 brew install htree
 ```
 

@@ -5,7 +5,7 @@ usage() {
     cat <<'EOF'
 Usage: packaging/homebrew/publish_tap.sh --version <version> --release-base-url <url> --assets-dir <dir> [options]
 
-Generate a Homebrew tap repository and push it to a git remote.
+Generate a Homebrew tap repository and publish it.
 
 Required options:
   --version <version>              Release version, for example: v0.2.15
@@ -14,7 +14,7 @@ Required options:
 
 Optional:
   --tap-repo <name>                Tap repo name (default: homebrew-<repo-name>)
-  --push-url <git-url>             Git remote to push (default: htree://self/<tap-repo>)
+  --push-url <url>                 Publish destination (default: htree://self/<tap-repo>)
   --npub <npub>                    Npub used only for install URL output
   --target-dir <dir>               Cargo target dir searched for git-remote-htree
   --formula-name <name>            Formula name (default: htree)
@@ -60,30 +60,20 @@ require_command() {
     fi
 }
 
-prefer_local_git_helper_dir() {
-    local candidate
-    while IFS= read -r candidate; do
-        if [ -x "${candidate}/git-remote-htree" ]; then
-            PATH="${candidate}:${PATH}"
-            export PATH
-            return 0
-        fi
-    done < <(
-        {
-            printf '%s\n' \
-                "${TARGET_DIR}/debug" \
-                "${RUST_DIR}/target/debug"
-            find "${TARGET_DIR}" "${RUST_DIR}/target" -type f -name git-remote-htree -print 2>/dev/null \
-                | sed 's#/git-remote-htree$##'
-        } | awk '!seen[$0]++'
-    )
-
-    if command -v git-remote-htree >/dev/null 2>&1; then
-        return 0
+default_htree_publish_name() {
+    local name="$1"
+    if [[ "$name" == *.git ]]; then
+        printf '%s\n' "$name"
+    else
+        printf '%s.git\n' "$name"
     fi
+}
 
-    echo "Missing git-remote-htree in PATH and could not find a local build under ${TARGET_DIR}" >&2
-    exit 1
+htree_publish_name_from_url() {
+    local url="$1"
+    local name="${url#htree://}"
+    name="${name#*/}"
+    default_htree_publish_name "$name"
 }
 
 while [ $# -gt 0 ]; do
@@ -180,10 +170,6 @@ if [ -z "$PUSH_URL" ]; then
     PUSH_URL="htree://self/${TAP_REPO}"
 fi
 
-if [[ "$PUSH_URL" == htree://* ]]; then
-    prefer_local_git_helper_dir
-fi
-
 if [ -z "$NPUB" ] && command -v htree >/dev/null 2>&1; then
     NPUB="$(current_npub)"
 fi
@@ -198,31 +184,52 @@ trap 'rm -rf "$tmp_dir"' EXIT
     --output-dir "${bare_repo}" >/dev/null
 
 git clone "${bare_repo}" "${work_repo}" >/dev/null
-(
-    cd "${work_repo}"
-    git remote remove origin
-    git remote add origin "${PUSH_URL}"
-    git push --force origin master >/dev/null
-)
+
+gateway_url=""
+canonical_url=""
+if [[ "$PUSH_URL" == htree://* ]]; then
+    require_command htree
+
+    publish_name="$(htree_publish_name_from_url "$PUSH_URL")"
+    (
+        cd "${REPO_DIR}"
+        htree add "${bare_repo}" --publish "${publish_name}" >/dev/null
+    )
+
+    canonical_url="htree://self/${publish_name}"
+    if [ -n "$NPUB" ]; then
+        gateway_url="https://upload.iris.to/${NPUB}/${publish_name}"
+    fi
+else
+    (
+        cd "${work_repo}"
+        git remote remove origin
+        git remote add origin "${PUSH_URL}"
+        git push --force origin master >/dev/null
+    )
+fi
 
 echo "Published Homebrew tap."
 
-if [[ "$PUSH_URL" == htree://* ]]; then
+if [ -n "$canonical_url" ]; then
     cat <<EOF
 
 Canonical:
-  ${PUSH_URL}
+  ${canonical_url}
 EOF
 fi
 
 if [ -n "$NPUB" ]; then
+    if [ -z "$gateway_url" ]; then
+        gateway_url="https://upload.iris.to/${NPUB}/${TAP_REPO}/.git"
+    fi
     cat <<EOF
 
 Gateway URL:
-  https://upload.iris.to/${NPUB}/${TAP_REPO}/.git
+  ${gateway_url}
 
 Install:
-  brew tap <user>/<repo> https://upload.iris.to/${NPUB}/${TAP_REPO}/.git
+  brew tap <user>/<repo> ${gateway_url}
   brew install ${FORMULA_NAME}
 EOF
 

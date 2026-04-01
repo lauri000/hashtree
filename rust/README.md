@@ -248,7 +248,7 @@ scripts/release_to_htree.sh --version v<version> --iris-only macos,linux
 When the release directory includes the full macOS/Linux CLI checksum set, the same script also updates the Homebrew tap at:
 
 ```bash
-https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/homebrew-hashtree/.git
+https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/homebrew-hashtree.git
 ```
 
 Skip that step explicitly with:
