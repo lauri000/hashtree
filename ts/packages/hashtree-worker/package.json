@@ -1,6 +1,6 @@
 {
   "name": "@hashtree/worker",
-  "version": "0.1.1",
+  "version": "0.1.11",
   "description": "Modular browser worker for hashtree blob caching and Blossom connectivity",
   "type": "module",
   "main": "dist/index.js",
@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
     },
     "./p2p": {
       "types": "./dist/p2p/index.d.ts",
@@ -61,12 +65,28 @@
     "@hashtree/dexie": "workspace:*",
     "@hashtree/nostr": "workspace:*",
     "dexie": "^4.2.1",
+    "nostr-tools": "^2.18.2"
+  },
+  "peerDependencies": {
+    "ndk": "*",
+    "ndk-cache": "*",
+    "nostr-social-graph": "*"
+  },
+  "peerDependenciesMeta": {
+    "ndk": {
+      "optional": true
+    },
+    "ndk-cache": {
+      "optional": true
+    },
+    "nostr-social-graph": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
     "ndk": "workspace:*",
     "ndk-cache": "workspace:*",
     "nostr-social-graph": "workspace:*",
-    "nostr-tools": "^2.18.2"
-  },
-  "devDependencies": {
     "typescript": "^5.3.0",
     "vitest": "^2.1.9"
   }

@@ -212,7 +212,7 @@ async function loadBlobData(hashHex: string): Promise<{ data: Uint8Array; source
   if (blossom) {
     const fetched = await blossom.fetch(hashHex);
     if (fetched) {
-      await storage.putByHash(hashHex, fetched);
+      void storage.putByHashTrusted(hashHex, fetched).catch(() => undefined);
       return { data: fetched, source: 'blossom' };
     }
   }
@@ -291,18 +291,37 @@ function postMediaError(port: MessagePort, requestId: string, message: string): 
   port.postMessage(response);
 }
 
+function cloneTransferableChunk(chunk: Uint8Array): Uint8Array {
+  if (chunk.byteOffset === 0 && chunk.byteLength === chunk.buffer.byteLength) {
+    return chunk;
+  }
+  return chunk.slice();
+}
+
 async function handleMediaFileRequest(port: MessagePort, request: MediaFileRequest): Promise<void> {
   if (!tree) {
     postMediaError(port, request.requestId, 'Worker not initialized');
     return;
   }
 
-  let cid: CID;
+  let rootCid: CID;
   try {
-    cid = nhashDecode(request.nhash);
+    rootCid = nhashDecode(request.nhash);
   } catch {
     postMediaError(port, request.requestId, 'Invalid nhash');
     return;
+  }
+
+  let cid = rootCid;
+  const requestedPath = request.path.trim().replace(/^\/+/, '');
+  if (requestedPath) {
+    const resolved = await tree.resolvePath(rootCid, requestedPath);
+    if (resolved) {
+      cid = resolved.cid;
+    } else if (await tree.isDirectory(rootCid)) {
+      postMediaError(port, request.requestId, 'File not found');
+      return;
+    }
   }
 
   const totalSize = await getPlaintextFileSize(cid);
@@ -379,12 +398,13 @@ async function handleMediaFileRequest(port: MessagePort, request: MediaFileReque
 
   if (!request.head) {
     for await (const chunk of streamFileRangeChunks(tree, cid, start, end, MEDIA_CHUNK_SIZE)) {
+      const transferableChunk = cloneTransferableChunk(chunk);
       const chunkMessage: MediaChunkResponse = {
         type: 'chunk',
         requestId: request.requestId,
-        data: chunk,
+        data: transferableChunk,
       };
-      port.postMessage(chunkMessage, [chunk.buffer]);
+      port.postMessage(chunkMessage, [transferableChunk.buffer]);
     }
   }
 

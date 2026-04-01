@@ -903,7 +903,7 @@ dependencies = [
 
 [[package]]
 name = "cashu-service"
-version = "0.2.18"
+version = "0.2.20"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2296,7 +2296,7 @@ dependencies = [
 
 [[package]]
 name = "git-remote-htree"
-version = "0.2.18"
+version = "0.2.20"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2511,7 +2511,7 @@ checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
 name = "hashtree-blossom"
-version = "0.2.18"
+version = "0.2.20"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2529,7 +2529,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-cli"
-version = "0.2.18"
+version = "0.2.20"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-config"
-version = "0.2.18"
+version = "0.2.20"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -2596,7 +2596,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-core"
-version = "0.2.18"
+version = "0.2.20"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2615,7 +2615,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-fs"
-version = "0.2.18"
+version = "0.2.20"
 dependencies = [
  "async-trait",
  "hashtree-core",
@@ -2627,7 +2627,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-index"
-version = "0.2.18"
+version = "0.2.20"
 dependencies = [
  "futures",
  "hashtree-core",
@@ -2637,7 +2637,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-lmdb"
-version = "0.2.18"
+version = "0.2.20"
 dependencies = [
  "async-trait",
  "hashtree-core",
@@ -2646,7 +2646,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-network"
-version = "0.2.18"
+version = "0.2.20"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2669,7 +2669,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-nostr"
-version = "0.2.18"
+version = "0.2.20"
 dependencies = [
  "futures",
  "hashtree-core",
@@ -2686,7 +2686,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-resolver"
-version = "0.2.18"
+version = "0.2.20"
 dependencies = [
  "async-trait",
  "hashtree-core",
@@ -3167,7 +3167,7 @@ dependencies = [
 
 [[package]]
 name = "iris"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -445,7 +445,7 @@ fn default_enable_webrtc() -> bool {
 }
 
 fn default_enable_multicast() -> bool {
-    false
+    true
 }
 
 fn default_multicast_group() -> String {
@@ -457,7 +457,7 @@ fn default_multicast_port() -> u16 {
 }
 
 fn default_max_multicast_peers() -> usize {
-    0
+    12
 }
 
 fn default_enable_wifi_aware() -> bool {
@@ -773,10 +773,10 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.server.bind_address, "127.0.0.1:8080");
         assert!(config.server.enable_auth);
-        assert!(!config.server.enable_multicast);
+        assert!(config.server.enable_multicast);
         assert_eq!(config.server.multicast_group, "239.255.42.98");
         assert_eq!(config.server.multicast_port, 48555);
-        assert_eq!(config.server.max_multicast_peers, 0);
+        assert_eq!(config.server.max_multicast_peers, 12);
         assert!(!config.server.enable_wifi_aware);
         assert_eq!(config.server.max_wifi_aware_peers, 0);
         assert!(!config.server.enable_bluetooth);

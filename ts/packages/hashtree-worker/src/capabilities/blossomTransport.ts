@@ -172,22 +172,19 @@ export class BlossomTransport {
   }
 
   private async fetchFromServer(baseUrl: string, hashHex: string): Promise<Uint8Array | null> {
-    const urls = [`${baseUrl}/${hashHex}`, `${baseUrl}/${hashHex}.bin`];
-    for (const url of urls) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), READ_FETCH_TIMEOUT_MS);
-      try {
-        const res = await fetch(url, { signal: controller.signal });
-        if (!res.ok) continue;
-        const data = new Uint8Array(await res.arrayBuffer());
-        const verified = toHex(await sha256(data)) === hashHex;
-        if (verified) return data;
-      } catch {
-        continue;
-      } finally {
-        clearTimeout(timeout);
-      }
+    const url = `${baseUrl}/${hashHex}.bin`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), READ_FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      if (!res.ok) return null;
+      const data = new Uint8Array(await res.arrayBuffer());
+      const verified = toHex(await sha256(data)) === hashHex;
+      return verified ? data : null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeout);
     }
-    return null;
   }
 }

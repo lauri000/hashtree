@@ -16,12 +16,12 @@ describe('BlossomTransport.fetch', () => {
     let resolveSlow: ((value: unknown) => void) | null = null;
     const fetchMock = vi.fn((input: string | URL) => {
       const url = String(input);
-      if (url === `${slowBase}/${hashHex}`) {
+      if (url === `${slowBase}/${hashHex}.bin`) {
         return new Promise((resolve) => {
           resolveSlow = resolve;
         });
       }
-      if (url === `${fastBase}/${hashHex}`) {
+      if (url === `${fastBase}/${hashHex}.bin`) {
         return Promise.resolve({
           ok: true,
           arrayBuffer: async () => data.buffer.slice(0),
@@ -44,8 +44,8 @@ describe('BlossomTransport.fetch', () => {
     await Promise.resolve();
 
     const requestedUrls = fetchMock.mock.calls.map(([url]) => String(url));
-    expect(requestedUrls).toContain(`${slowBase}/${hashHex}`);
-    expect(requestedUrls).toContain(`${fastBase}/${hashHex}`);
+    expect(requestedUrls).toContain(`${slowBase}/${hashHex}.bin`);
+    expect(requestedUrls).toContain(`${fastBase}/${hashHex}.bin`);
 
     resolveSlow?.({
       ok: false,

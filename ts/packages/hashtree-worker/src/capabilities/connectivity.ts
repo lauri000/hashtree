@@ -36,7 +36,7 @@ export async function probeConnectivity(servers: BlossomServerConfig[]): Promise
   const writeServers = servers.filter(server => server.write);
 
   const [readResults, writeResults] = await Promise.all([
-    Promise.all(readServers.map(server => probe(`${stripTrailingSlash(server.url)}/${DUMMY_HASH}`))),
+    Promise.all(readServers.map(server => probe(`${stripTrailingSlash(server.url)}/${DUMMY_HASH}.bin`))),
     Promise.all(writeServers.map(server => probe(`${stripTrailingSlash(server.url)}/upload`))),
   ]);
 
