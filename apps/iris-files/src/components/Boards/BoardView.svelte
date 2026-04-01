@@ -1662,7 +1662,7 @@
     }
   }
 
-  function flushPendingBoardSave(reason: 'microtask' | 'hidden' | 'pagehide' | 'destroy') {
+  function flushPendingBoardSave(_reason: 'microtask' | 'hidden' | 'pagehide' | 'destroy') {
     const snapshot = pendingBoardSave;
     pendingBoardSave = null;
     if (!snapshot) return;
