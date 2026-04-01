@@ -79,7 +79,68 @@
 
   function getAssetHref(asset: { path: string }): string {
     if (!release) return '#';
-    return getReleaseAssetUrl(npub, repoName, release.id, asset.path);
+    return getReleaseAssetUrl(npub, repoName, release.id, asset.path, releaseLinkKey);
+  }
+
+  async function handleAssetDownload(asset: { name: string; path: string }) {
+    const href = getAssetHref(asset);
+    if (!href || href === '#') return;
+
+    if (window.showSaveFilePicker) {
+      try {
+        const extension = asset.name.includes('.') ? `.${asset.name.split('.').pop() || ''}` : '';
+        const handle = await window.showSaveFilePicker({
+          suggestedName: asset.name,
+          types: extension ? [{
+            description: 'File',
+            accept: { 'application/octet-stream': [extension] },
+          }] : undefined,
+        });
+        const response = await fetch(href);
+        if (!response.ok || !response.body) {
+          throw new Error(`Download failed with status ${response.status}`);
+        }
+
+        const writable = await handle.createWritable();
+        try {
+          const reader = response.body.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) {
+              await writable.write(value as BufferSource);
+            }
+          }
+          await writable.close();
+          return;
+        } catch (error) {
+          await writable.abort().catch(() => {});
+          throw error;
+        }
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === 'AbortError') return;
+        console.warn('Streaming release asset download failed, falling back to blob:', err);
+      }
+    }
+
+    try {
+      const response = await fetch(href);
+      if (!response.ok) {
+        throw new Error(`Download failed with status ${response.status}`);
+      }
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = asset.name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+    } catch (err) {
+      console.error('Failed to download release asset:', err);
+      alert(`Failed to download ${asset.name}`);
+    }
   }
 
   async function handleDelete() {
@@ -210,6 +271,10 @@
                   href={getAssetHref(asset)}
                   class="flex items-center justify-between bg-surface-1 rounded-md px-3 py-2 text-sm text-text-1 hover:text-accent"
                   download
+                  onclick={(event) => {
+                    event.preventDefault();
+                    void handleAssetDownload(asset);
+                  }}
                 >
                   <span class="truncate">{asset.name}</span>
                   <span class="text-text-3 text-xs">{formatBytes(asset.size)}</span>

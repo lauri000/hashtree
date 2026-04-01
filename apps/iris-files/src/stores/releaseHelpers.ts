@@ -16,8 +16,12 @@ export function getReleaseAssetUrl(
   repoPath: string,
   releaseId: string,
   assetPath: string,
+  linkKey?: string,
 ): string {
-  return getNpubFileUrl(npub, buildReleaseTreeName(repoPath), `${releaseId}/${assetPath}`);
+  const url = getNpubFileUrl(npub, buildReleaseTreeName(repoPath), `${releaseId}/${assetPath}`);
+  if (!linkKey) return url;
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}k=${encodeURIComponent(linkKey)}`;
 }
 
 export function sanitizeReleaseId(input: string): string {
