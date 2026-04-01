@@ -208,13 +208,15 @@
             );
           }
 
+          // Switch the UI to success before autosave side effects update tree stores.
+          // Otherwise a root refresh can briefly re-enter merge preview state.
+          mergeSuccess = true;
+          merging = false;
+
           // Save and publish
           autosaveIfOwn(newRootCid);
         }
       }
-
-      mergeSuccess = true;
-      merging = false;
 
       // Publish the PR status update in the background so relay latency does not
       // block the merge success UI after the git state has already been saved.

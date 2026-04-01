@@ -52,7 +52,6 @@ type OwnerFixture = {
   cleanup: () => void;
 };
 
-let rustLockFd: number | null = null;
 let htreeBin = '';
 let gitRemoteHtreeBin = '';
 let relayProcess: ChildProcess | null = null;
@@ -395,19 +394,19 @@ test.describe('iris-git <-> htree PR interop', () => {
   test.setTimeout(240000);
 
   test.beforeAll(async () => {
-    rustLockFd = await acquireRustLock(240000);
-    ensureRustGitBinaries();
-    dedicatedRelayUrl = await startDedicatedRelay();
+    const rustLockFd = await acquireRustLock(240000);
+    try {
+      ensureRustGitBinaries();
+      dedicatedRelayUrl = await startDedicatedRelay();
+    } finally {
+      releaseRustLock(rustLockFd);
+    }
   });
 
   test.afterAll(() => {
     if (relayProcess) {
       relayProcess.kill('SIGTERM');
       relayProcess = null;
-    }
-    if (rustLockFd !== null) {
-      releaseRustLock(rustLockFd);
-      rustLockFd = null;
     }
   });
 

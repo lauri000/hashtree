@@ -557,8 +557,8 @@ test.describe('Git status after file edit', () => {
   // This test verifies that repos pushed via git-remote-htree have a valid index file
   // and git status works when viewing from the browser via nostr.
   test('should show uncommitted in git-remote-htree pushed repo after edit', { timeout: 180000 }, async ({ page }) => {
-    await ensureGitRemoteHtree();
     test.setTimeout(240000);
+    await ensureGitRemoteHtree();
 
     // Capture browser console logs for debugging wasm-git
     const consoleLogs: string[] = [];

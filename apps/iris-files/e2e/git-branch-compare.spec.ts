@@ -134,7 +134,7 @@ test.describe('Git branch comparison and merge', () => {
     await page.goto(`${baseUrl}?merge=1&base=master&head=nonexistent`);
 
     // Verify merge view is shown (via the Merge header icon)
-    await expect(page.locator('.i-lucide-git-merge')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('.i-lucide-git-merge').first()).toBeVisible({ timeout: 10000 });
   });
 
   test('compare URL shows diff between branches', async ({ page }) => {

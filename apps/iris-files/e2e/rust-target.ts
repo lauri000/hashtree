@@ -1,7 +1,12 @@
+import { fileURLToPath } from 'url';
 import os from 'os';
 import path from 'path';
 
-const defaultRustTargetDir = path.join(os.tmpdir(), 'hashtree-iris-files-e2e-rust-target');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const repoRustTargetDir = path.resolve(__dirname, '../../../rust/target');
+
+const defaultRustTargetDir = repoRustTargetDir;
 const defaultHashtreeCiTargetDir = path.join(os.tmpdir(), 'hashtree-iris-files-e2e-hashtree-ci-target');
 
 export const HASHTREE_E2E_RUST_TARGET_DIR =

@@ -38,7 +38,6 @@ test.describe('Git push to htree:// and view in browser', () => {
   let tempDir: string;
   let htreeProcess: ChildProcess | null = null;
   let npub: string | null = null;
-  let lockFd: number | null = null;
   let htreeBin: string;
   let gitRemoteHtree: string;
 
@@ -106,8 +105,12 @@ test.describe('Git push to htree:// and view in browser', () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'htree-test-'));
     console.log(`Using temp directory: ${tempDir}`);
 
-    lockFd = await acquireRustLock(240000);
-    ({ htreeBin, gitRemoteHtree } = ensureRustBinaries());
+    const lockFd = await acquireRustLock(240000);
+    try {
+      ({ htreeBin, gitRemoteHtree } = ensureRustBinaries());
+    } finally {
+      releaseRustLock(lockFd);
+    }
   });
 
   test.afterAll(async () => {
@@ -117,11 +120,6 @@ test.describe('Git push to htree:// and view in browser', () => {
       htreeProcess.kill('SIGTERM');
       htreeProcess = null;
     }
-    if (lockFd !== null) {
-      releaseRustLock(lockFd);
-      lockFd = null;
-    }
-
     // Cleanup temp directory
     if (tempDir && fs.existsSync(tempDir)) {
       console.log(`Cleaning up temp directory: ${tempDir}`);
@@ -270,15 +268,15 @@ test.describe('Git push to htree:// and view in browser', () => {
     console.log('Opening ts...');
     let serverReady = false;
     try {
-      await page.goto('http://localhost:5173/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.goto('/', { waitUntil: 'domcontentloaded', timeout: 30000 });
       serverReady = true;
     } catch {
       // Retry once in case the dev server is still starting under load
       try {
-        await page.goto('http://localhost:5173/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.goto('/', { waitUntil: 'domcontentloaded', timeout: 30000 });
         serverReady = true;
       } catch {
-        throw new Error('Dev server not running on port 5173');
+        throw new Error('Dev server not running at the configured Playwright base URL');
       }
     }
     if (serverReady) {
@@ -327,7 +325,7 @@ test.describe('Git push to htree:// and view in browser', () => {
 
     // First, follow the htree daemon's npub so the browser prioritizes connecting to it
     console.log(`Following htree daemon: ${npub}`);
-    await page.goto(`http://localhost:5173/#/${npub}`);
+    await page.goto(`/#/${npub}`);
 
     // Wait for profile page to load and click Follow button
     const followButton = page.getByRole('button', { name: 'Follow', exact: true });
@@ -346,7 +344,7 @@ test.describe('Git push to htree:// and view in browser', () => {
     }
 
     // Navigate to the pushed tree
-    const treeUrl = `http://localhost:5173/#/${npub}/test-repo`;
+    const treeUrl = `/#/${npub}/test-repo`;
     console.log(`Navigating to: ${treeUrl}`);
     await page.goto(treeUrl);
 
