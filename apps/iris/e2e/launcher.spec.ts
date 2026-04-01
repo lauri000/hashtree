@@ -136,7 +136,7 @@ test.describe('App Launcher', () => {
     expect(createCalls[0].args.path).toBe('/index.html');
   });
 
-  test('clicking Iris Social suggestion opens the iris-client tree once', async ({ tauriPage: page }) => {
+  test('clicking Iris Social suggestion opens the iris-client-site tree once', async ({ tauriPage: page }) => {
     await openHome(page);
 
     const socialSuggestion = page.getByTestId('suggestion-open-iris-social');
@@ -153,7 +153,7 @@ test.describe('App Launcher', () => {
     expect(createCalls[0].args.host).toBe(distributedOwner);
     expect(createCalls[0].args.nhash).toBeNull();
     expect(createCalls[0].args.npub).toBe(distributedOwner);
-    expect(createCalls[0].args.treename).toBe('iris-client');
+    expect(createCalls[0].args.treename).toBe('iris-client-site');
     expect(createCalls[0].args.path).toBe('/index.html');
   });
 

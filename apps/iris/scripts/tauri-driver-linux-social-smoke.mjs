@@ -14,7 +14,7 @@ const webdriverBase = `http://127.0.0.1:${webdriverPort}`;
 const automationBase = `http://127.0.0.1:${automationPort}/automation`;
 const elementRefKey = 'element-6066-11e4-a52e-4f735466cecf';
 const distributedOwner = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
-const socialUrl = `htree://${distributedOwner}/iris-client`;
+const socialUrl = `htree://${distributedOwner}/iris-client-site`;
 
 let driverProcess = null;
 let sessionId = null;
@@ -239,8 +239,8 @@ function currentUrlMatchesSocial(state) {
       currentUrl === `${socialUrl}/` ||
       currentUrl === `${socialUrl}/index.html` ||
       currentUrl.startsWith('htree://nhash1') ||
-      currentUrl.includes('/iris-client/') ||
-      currentUrl.includes('/iris-client/index.html')
+      currentUrl.includes('/iris-client-site/') ||
+      currentUrl.includes('/iris-client-site/index.html')
     );
 }
 

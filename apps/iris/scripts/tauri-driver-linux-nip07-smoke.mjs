@@ -11,7 +11,7 @@ const launcherPath = path.join(appDir, 'scripts', 'launch-linux-debug-iris.sh');
 const smokeMode = process.env.IRIS_NIP07_SMOKE_MODE ?? 'probe';
 const isLiveSmoke = smokeMode === 'live';
 const distributedOwner = 'npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm';
-const socialUrl = process.env.IRIS_NIP07_SOCIAL_URL ?? `htree://${distributedOwner}/iris-client`;
+const socialUrl = process.env.IRIS_NIP07_SOCIAL_URL ?? `htree://${distributedOwner}/iris-client-site`;
 const jumbleUrl = process.env.IRIS_NIP07_JUMBLE_URL ?? 'https://jumble.social/';
 const artifactsDir = process.env.IRIS_NATIVE_ARTIFACT_DIR ?? path.join(
   appDir,
@@ -435,8 +435,8 @@ function currentUrlMatchesSocial(state) {
       currentUrl === `${socialUrl}/` ||
       currentUrl === `${socialUrl}/index.html` ||
       currentUrl.startsWith('htree://nhash1') ||
-      currentUrl.includes('/iris-client/') ||
-      currentUrl.includes('/iris-client/index.html')
+      currentUrl.includes('/iris-client-site/') ||
+      currentUrl.includes('/iris-client-site/index.html')
     );
 }
 

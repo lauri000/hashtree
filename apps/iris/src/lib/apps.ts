@@ -79,6 +79,7 @@ const builtInIrisTreeNames = new Set([
   'maps',
   'boards',
   'iris-client',
+  'iris-client-site',
   'iris-chat',
   'meet',
 ]);
@@ -94,7 +95,7 @@ export const suggestedIrisApps: readonly AppBookmark[] = [
   { url: builtInAppUrl('git'), name: 'Iris Git', icon: irisLauncherIcons.git, addedAt: 0 },
   { url: builtInAppUrl('maps'), name: 'Iris Maps', icon: irisLauncherIcons.maps, addedAt: 0 },
   { url: builtInAppUrl('boards'), name: 'Iris Boards', icon: irisLauncherIcons.boards, addedAt: 0 },
-  { url: builtInAppUrl('iris-client'), name: 'Iris Social', icon: '/iris-logo.png', addedAt: 0 },
+  { url: builtInAppUrl('iris-client-site'), name: 'Iris Social', icon: '/iris-logo.png', addedAt: 0 },
   { url: builtInAppUrl('iris-chat'), name: 'Iris Chat', icon: '/iris-logo.png', addedAt: 0 },
   { url: builtInAppUrl('meet'), name: 'Iris Meet', icon: irisLauncherIcons.meet, addedAt: 0 },
 ];
@@ -157,6 +158,8 @@ function titleCaseWords(value: string): string {
 
 function humanizeTreeName(treeName: string): string {
   if (!treeName) return '';
+  if (treeName === 'iris-client' || treeName === 'iris-client-site') return 'Social';
+  if (treeName === 'iris-chat') return 'Chat';
   if (treeName === 'hashtree-cc') return 'hashtree.cc';
   return titleCaseWords(treeName);
 }
