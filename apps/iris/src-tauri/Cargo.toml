@@ -1,6 +1,6 @@
 [package]
 name = "iris"
-version = "0.1.0"
+version = "0.1.2"
 description = "Iris - Thin native shell with embedded htree daemon"
 authors = ["Martti Malmi"]
 license = "MIT"
