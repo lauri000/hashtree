@@ -197,6 +197,7 @@ htree add mydir/ --unencrypted          # Add directory as raw plaintext
 htree add myfile.txt --publish mydata   # Add and publish to Nostr
 
 # Mount a published tree or subdirectory locally (requires build/install with --features fuse)
+htree mount htree://self/mytree          # mounts to ./mytree and errors if it already exists
 htree mount htree://npub1.../mytree ~/mnt/mytree
 htree mount htree://npub1.../mytree/docs ~/mnt/docs
 

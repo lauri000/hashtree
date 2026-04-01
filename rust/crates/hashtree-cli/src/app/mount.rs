@@ -7,6 +7,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use super::mount_publish::{MountPublishQueue, PublishSink, MOUNT_PUBLISH_DEBOUNCE};
+use super::mount_target::{
+    create_mountpoint_dir, derive_implicit_mountpoint, normalize_mount_target_for_resolution,
+};
 use super::resolve::{parse_published_target, resolve_cid_input_with_opts, ResolveOptions};
 use super::run::build_files_iris_to_url_for_published_target;
 
@@ -148,7 +151,7 @@ where
 
 pub(crate) async fn mount_fuse(
     target: String,
-    mountpoint: PathBuf,
+    mountpoint: Option<PathBuf>,
     visibility: Option<String>,
     link_key: Option<String>,
     private: bool,
@@ -156,11 +159,20 @@ pub(crate) async fn mount_fuse(
     allow_other: bool,
     data_dir: PathBuf,
 ) -> Result<()> {
+    let (mountpoint, implicit_mountpoint) = match mountpoint {
+        Some(path) => (path, false),
+        None => (
+            derive_implicit_mountpoint(&std::env::current_dir()?, &target)?,
+            true,
+        ),
+    };
+
     let target = target.strip_prefix("htree://").unwrap_or(&target);
     let (base, fragment) = match target.split_once('#') {
         Some((base, fragment)) => (base, Some(fragment)),
         None => (target, None),
     };
+    let base = normalize_mount_target_for_resolution(base)?;
 
     let MountVisibility {
         visibility: mount_visibility,
@@ -185,8 +197,8 @@ pub(crate) async fn mount_fuse(
         opts.secret_key = Some(keys);
     }
 
-    let resolved = resolve_cid_input_with_opts(base, &opts).await?;
-    let published_target = parse_published_target(base);
+    let resolved = resolve_cid_input_with_opts(&base, &opts).await?;
+    let published_target = parse_published_target(&base);
     let nostr_key = published_target
         .as_ref()
         .map(|target| format!("{}/{}", target.npub, target.tree_name));
@@ -316,7 +328,15 @@ pub(crate) async fn mount_fuse(
         options.push(fuser::MountOption::AllowOther);
     }
 
-    fs.mount(mountpoint, &options)?;
+    if implicit_mountpoint {
+        create_mountpoint_dir(&mountpoint)?;
+    }
+
+    let mount_result = fs.mount(mountpoint.clone(), &options);
+    if mount_result.is_err() && implicit_mountpoint {
+        let _ = std::fs::remove_dir(&mountpoint);
+    }
+    mount_result?;
     if let Some(queue) = publish_queue {
         queue.shutdown().await?;
     }

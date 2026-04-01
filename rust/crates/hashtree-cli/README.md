@@ -55,6 +55,7 @@ htree stop                              # Stop background daemon
 htree status                            # Check daemon status
 
 # FUSE mount (requires build/install with --features fuse)
+htree mount htree://self/mytree          # mounts to ./mytree and errors if it already exists
 htree mount htree://npub1.../mytree ~/mnt/mytree
 htree mount htree://npub1.../mytree/docs ~/mnt/docs
 ```

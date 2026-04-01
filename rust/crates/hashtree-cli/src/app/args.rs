@@ -152,8 +152,8 @@ pub(crate) enum Commands {
     Mount {
         /// Target to mount (nhash, npub/tree, or htree:// URL)
         target: String,
-        /// Mount point directory
-        mountpoint: PathBuf,
+        /// Mount point directory (defaults to a new ./<target-name> directory)
+        mountpoint: Option<PathBuf>,
         /// Visibility: public, link-visible, or private
         #[arg(long)]
         visibility: Option<String>,

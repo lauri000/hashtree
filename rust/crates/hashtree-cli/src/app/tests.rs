@@ -357,6 +357,22 @@ fn test_cli_parses_release_publish_command() {
     }
 }
 
+#[cfg(feature = "fuse")]
+#[test]
+fn test_cli_parses_mount_command_without_explicit_mountpoint() {
+    let cli = Cli::parse_from(["htree", "mount", "htree://self/mydir"]);
+
+    match cli.command {
+        Commands::Mount {
+            target, mountpoint, ..
+        } => {
+            assert_eq!(target, "htree://self/mydir");
+            assert_eq!(mountpoint, None);
+        }
+        _ => panic!("expected mount command"),
+    }
+}
+
 #[test]
 fn test_cli_parses_repos_command_default_owner() {
     let cli = Cli::parse_from(["htree", "repos"]);
