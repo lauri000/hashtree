@@ -7,11 +7,11 @@
   import DOMPurify from 'dompurify';
   import { routeStore, createTreesStore } from '../../stores';
   import { nostrStore } from '../../nostr';
-  import { getPublicNpubFileUrl } from '../../lib/mediaUrl';
   import {
     createReleaseDetailStore,
     deleteRelease,
     buildReleaseTreeName,
+    getReleaseAssetUrl,
   } from '../../stores/releases';
   import { formatBytes } from '../../store';
   import { open as openReleaseModal } from './ReleaseModal.svelte';
@@ -79,8 +79,7 @@
 
   function getAssetHref(asset: { path: string }): string {
     if (!release) return '#';
-    const assetPath = `${release.id}/${asset.path}`;
-    return getPublicNpubFileUrl(npub, releaseTreeName, assetPath);
+    return getReleaseAssetUrl(npub, repoName, release.id, asset.path);
   }
 
   async function handleDelete() {

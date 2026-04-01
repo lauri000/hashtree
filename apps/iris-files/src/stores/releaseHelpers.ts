@@ -1,3 +1,5 @@
+import { getNpubFileUrl } from '../lib/mediaUrl';
+
 const RELEASES_SUFFIX = 'releases';
 
 function normalizeRepoPath(repoPath: string): string {
@@ -7,6 +9,15 @@ function normalizeRepoPath(repoPath: string): string {
 export function buildReleaseTreeName(repoPath: string): string {
   const clean = normalizeRepoPath(repoPath);
   return clean ? `${RELEASES_SUFFIX}/${clean}` : RELEASES_SUFFIX;
+}
+
+export function getReleaseAssetUrl(
+  npub: string,
+  repoPath: string,
+  releaseId: string,
+  assetPath: string,
+): string {
+  return getNpubFileUrl(npub, buildReleaseTreeName(repoPath), `${releaseId}/${assetPath}`);
 }
 
 export function sanitizeReleaseId(input: string): string {

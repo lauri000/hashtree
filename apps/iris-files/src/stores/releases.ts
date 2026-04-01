@@ -13,7 +13,7 @@ import { saveHashtree } from '../nostr';
 import { getErrorMessage } from '../utils/errorMessage';
 import { buildReleaseTreeName, isListedReleaseEntryName, sanitizeReleaseId } from './releaseHelpers';
 
-export { buildReleaseTreeName, sanitizeReleaseId } from './releaseHelpers';
+export { buildReleaseTreeName, getReleaseAssetUrl, sanitizeReleaseId } from './releaseHelpers';
 
 export interface ReleaseSummary {
   id: string;
