@@ -11,7 +11,7 @@ use super::run::{
 };
 use crate::app::args::{CashuCommands, CashuMintCommands, ReleaseCommands, SocialGraphCommands};
 use crate::app::args::{Cli, Commands};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use hashtree_core::{nhash_decode, Cid};
 use nostr::Kind;
 use std::path::PathBuf;
@@ -371,6 +371,21 @@ fn test_cli_parses_mount_command_without_explicit_mountpoint() {
         }
         _ => panic!("expected mount command"),
     }
+}
+
+#[test]
+fn test_cli_help_groups_commands_by_purpose() {
+    let mut cmd = Cli::command();
+    let help = cmd.render_long_help().to_string();
+
+    assert!(help.contains("Daemon Commands:"));
+    assert!(help.contains("Content Commands:"));
+    assert!(help.contains("Storage Commands:"));
+    assert!(help.contains("Publishing & Git Commands:"));
+    assert!(help.contains("Identity & Social Commands:"));
+    assert!(help.contains("Wallet Commands:"));
+    assert!(help.contains("General Commands:"));
+    assert!(!help.contains("\nCommands:\n"));
 }
 
 #[test]

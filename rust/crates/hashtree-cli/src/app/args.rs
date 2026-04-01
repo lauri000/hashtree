@@ -2,10 +2,112 @@ use clap::{Parser, Subcommand, ValueEnum};
 use git_remote_htree::nostr_client::PullRequestStateFilter;
 use std::path::PathBuf;
 
+const CLI_HELP_TEMPLATE: &str = "\
+{about-with-newline}\
+\n{usage-heading} {usage}\n\n\
+Options:\n\
+{options}\
+{after-help}";
+
+#[cfg(feature = "fuse")]
+const CLI_GROUPED_COMMANDS: &str = "\
+\nDaemon Commands:
+  start        Start the hashtree daemon
+  stop         Stop the hashtree daemon
+  status       Show daemon status (peers, storage, etc.)
+  peer         Show connected P2P peers
+
+Content Commands:
+  add          Add file or directory to hashtree (like ipfs add)
+  get          Get/download content by CID
+  cat          Output file content to stdout (like cat)
+  push         Push content to file servers (Blossom)
+  info         Get information about a CID
+
+Storage Commands:
+  pin          Pin a CID
+  unpin        Unpin a CID
+  pins         List all pinned CIDs
+  stats        Get storage statistics
+  gc           Run garbage collection
+  storage      Manage storage limits and eviction
+  mount        Mount a hashtree via FUSE
+
+Publishing & Git Commands:
+  publish      Publish a hash to Nostr under a ref name
+  release      Manage published release trees
+  repos        List published git repositories for yourself or another user
+  pr           Pull request management
+
+Identity & Social Commands:
+  user         Show or set your nostr identity
+  profile      Show or update your Nostr profile
+  follow       Follow a user (adds to your contact list)
+  unfollow     Unfollow a user (removes from your contact list)
+  following    List users you follow
+  mute         Mute a user (adds to your mute list)
+  unmute       Unmute a user (removes from your mute list)
+  muted        List users you mute
+  socialgraph  Social graph utilities
+
+Wallet Commands:
+  cashu        Manage Cashu wallet and accepted mints
+
+General Commands:
+  help         Print this message or the help of the given subcommand(s)";
+
+#[cfg(not(feature = "fuse"))]
+const CLI_GROUPED_COMMANDS: &str = "\
+\nDaemon Commands:
+  start        Start the hashtree daemon
+  stop         Stop the hashtree daemon
+  status       Show daemon status (peers, storage, etc.)
+  peer         Show connected P2P peers
+
+Content Commands:
+  add          Add file or directory to hashtree (like ipfs add)
+  get          Get/download content by CID
+  cat          Output file content to stdout (like cat)
+  push         Push content to file servers (Blossom)
+  info         Get information about a CID
+
+Storage Commands:
+  pin          Pin a CID
+  unpin        Unpin a CID
+  pins         List all pinned CIDs
+  stats        Get storage statistics
+  gc           Run garbage collection
+  storage      Manage storage limits and eviction
+
+Publishing & Git Commands:
+  publish      Publish a hash to Nostr under a ref name
+  release      Manage published release trees
+  repos        List published git repositories for yourself or another user
+  pr           Pull request management
+
+Identity & Social Commands:
+  user         Show or set your nostr identity
+  profile      Show or update your Nostr profile
+  follow       Follow a user (adds to your contact list)
+  unfollow     Unfollow a user (removes from your contact list)
+  following    List users you follow
+  mute         Mute a user (adds to your mute list)
+  unmute       Unmute a user (removes from your mute list)
+  muted        List users you mute
+  socialgraph  Social graph utilities
+
+Wallet Commands:
+  cashu        Manage Cashu wallet and accepted mints
+
+General Commands:
+  help         Print this message or the help of the given subcommand(s)";
+
 #[derive(Parser)]
 #[command(name = "htree")]
 #[command(version)]
 #[command(about = "Content-addressed filesystem", long_about = None)]
+#[command(help_template = CLI_HELP_TEMPLATE)]
+#[command(after_help = CLI_GROUPED_COMMANDS)]
 pub(crate) struct Cli {
     /// Data directory (default: ~/.hashtree/data)
     #[arg(long, global = true, env = "HTREE_DATA_DIR")]
