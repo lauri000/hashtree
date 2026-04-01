@@ -38,7 +38,7 @@ import {
   type SelectionStrategy,
   type RequestDispatchConfig,
   type PeerMetadataSnapshot,
-  type WebRTCStats,
+  type MeshStats,
   type MeshNostrFrame,
   validateMeshNostrFrame,
   MESH_EVENT_POLICY,
@@ -1237,7 +1237,7 @@ export class WebRTCStore implements Store {
    * Get WebRTC stats (aggregate and per-peer)
    */
   getStats(): {
-    aggregate: WebRTCStats;
+    aggregate: MeshStats;
     perPeer: Map<string, {
       pubkey: string;
       pool: PeerPool;
@@ -1245,7 +1245,7 @@ export class WebRTCStore implements Store {
     }>;
   } {
     // Aggregate stats from all peers + store-level stats
-    const aggregate: WebRTCStats = {
+    const aggregate: MeshStats = {
       requestsSent: 0,
       requestsReceived: 0,
       responsesSent: 0,

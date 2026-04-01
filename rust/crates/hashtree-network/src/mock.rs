@@ -40,10 +40,9 @@ impl MockRelay {
     }
 
     /// Create a transport connected to this relay
-    pub fn create_transport(&self, peer_id: String, pubkey: String) -> MockRelayTransport {
+    pub fn create_transport(&self, peer_id: String) -> MockRelayTransport {
         MockRelayTransport {
             peer_id,
-            pubkey,
             tx: self.tx.clone(),
             rx: tokio::sync::Mutex::new(self.tx.subscribe()),
             buffer: tokio::sync::Mutex::new(Vec::new()),
@@ -62,7 +61,6 @@ impl Default for MockRelay {
 /// Mock relay transport using broadcast channels
 pub struct MockRelayTransport {
     peer_id: String,
-    pubkey: String,
     tx: broadcast::Sender<SignalingMessage>,
     rx: tokio::sync::Mutex<broadcast::Receiver<SignalingMessage>>,
     buffer: tokio::sync::Mutex<Vec<SignalingMessage>>,
@@ -73,11 +71,6 @@ impl MockRelayTransport {
     /// Get our peer ID
     pub fn peer_id_owned(&self) -> String {
         self.peer_id.clone()
-    }
-
-    /// Get our pubkey
-    pub fn pubkey_owned(&self) -> String {
-        self.pubkey.clone()
     }
 }
 
@@ -155,10 +148,6 @@ impl SignalingTransport for MockRelayTransport {
 
     fn peer_id(&self) -> &str {
         &self.peer_id
-    }
-
-    fn pubkey(&self) -> &str {
-        &self.pubkey
     }
 }
 
@@ -393,5 +382,3 @@ impl PeerLinkFactory for MockConnectionFactory {
         Ok(channel)
     }
 }
-
-pub type MockSignalingTransport = MockRelayTransport;

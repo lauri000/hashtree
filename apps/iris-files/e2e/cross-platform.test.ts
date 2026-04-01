@@ -61,8 +61,7 @@ test.describe('Cross-Platform WebRTC Discovery', () => {
     // Generate keys for our test peer
     const sk = generateSecretKey();
     const pk = getPublicKey(sk);
-    const uuid = generateUuid();
-    const myPeerId = `${pk}:${uuid}`;
+    const myPeerId = pk;
 
     console.log('Test peer pubkey:', pk.slice(0, 16) + '...');
     console.log('Test peer ID:', myPeerId.slice(0, 20) + '...');
@@ -85,7 +84,7 @@ test.describe('Cross-Platform WebRTC Discovery', () => {
           try {
             const msg = JSON.parse(event.content) as SignalingMessage;
             if (msg.type === 'hello') {
-              const senderPeerId = `${event.pubkey}:${msg.peerId}`;
+              const senderPeerId = msg.peerId || event.pubkey;
               discoveredPeers.set(senderPeerId, msg);
               console.log('Discovered peer:', senderPeerId.slice(0, 20) + '...');
             }
@@ -100,7 +99,7 @@ test.describe('Cross-Platform WebRTC Discovery', () => {
     await new Promise(r => setTimeout(r, 2000));
 
     // Send our hello message
-    const helloMsg: HelloMessage = { type: 'hello', peerId: uuid };
+    const helloMsg: HelloMessage = { type: 'hello', peerId: myPeerId };
     const msgUuid = generateUuid();
     const expiration = Math.floor((Date.now() + 15000) / 1000);
 
@@ -151,21 +150,21 @@ test.describe('Cross-Platform WebRTC Discovery', () => {
   test('signaling protocol format is identical between ts and nosta', async () => {
     // Test that the JSON format used by both implementations is identical
 
-    const uuid = 'test-uuid-12345';
+    const peerId = 'a'.repeat(64);
 
     // ts format
-    const tsHello = JSON.stringify({ type: 'hello', peerId: uuid });
+    const tsHello = JSON.stringify({ type: 'hello', peerId });
 
     // nosta format (verified from nosta/src/webrtc/types.rs tests)
     // The Rust serde serialization produces identical JSON
-    const expectedFormat = '{"type":"hello","peerId":"test-uuid-12345"}';
+    const expectedFormat = `{"type":"hello","peerId":"${peerId}"}`;
 
     expect(tsHello).toBe(expectedFormat);
 
     // Verify parsing works both ways
     const parsed = JSON.parse(expectedFormat);
     expect(parsed.type).toBe('hello');
-    expect(parsed.peerId).toBe(uuid);
+    expect(parsed.peerId).toBe(peerId);
 
     console.log('Protocol format verified:');
     console.log('  TypeScript:', tsHello);
@@ -176,9 +175,8 @@ test.describe('Cross-Platform WebRTC Discovery', () => {
   test('nostr event structure is compatible', async () => {
     const sk = generateSecretKey();
     const pk = getPublicKey(sk);
-    const uuid = generateUuid();
 
-    const helloMsg = { type: 'hello', peerId: uuid };
+    const helloMsg = { type: 'hello', peerId: pk };
     const msgUuid = generateUuid();
     const expiration = Math.floor((Date.now() + 15000) / 1000);
 
@@ -202,7 +200,7 @@ test.describe('Cross-Platform WebRTC Discovery', () => {
     // Verify content can be parsed as SignalingMessage
     const content = JSON.parse(tsEvent.content);
     expect(content.type).toBe('hello');
-    expect(content.peerId).toBe(uuid);
+    expect(content.peerId).toBe(pk);
 
     console.log('Nostr event structure verified:');
     console.log('  Kind:', tsEvent.kind);

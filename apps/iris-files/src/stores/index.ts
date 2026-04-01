@@ -1,7 +1,7 @@
 export { createProfileStore, getProfileName, invalidateProfile, type Profile } from './profile';
 export { recentlyChangedFiles, markFilesChanged } from './recentlyChanged';
 export { uploadProgress, setUploadProgress, getUploadProgress, cancelUpload, uploadFiles, uploadFilesWithPaths, uploadDirectory, type UploadProgress } from './upload';
-export { treeRootStore, getTreeRootSync, waitForTreeRoot, invalidateTreeRoot, updateSubscriptionCache, subscribeToTreeRoot, signalWorkerReady } from './treeRoot';
+export { treeRootStore, getTreeRoot, getTreeRootSync, waitForTreeRoot, invalidateTreeRoot, updateSubscriptionCache, subscribeToTreeRoot, signalWorkerReady } from './treeRoot';
 export { routeStore, currentHash, parseRouteFromHash, getRouteSync, currentPathStore } from './route';
 export { createTreesStore, trees, storeLinkKey, getLinkKey, type TreeEntry } from './trees';
 export { createDirectoryEntriesStore, directoryEntries, directoryEntriesStore, type DirectoryEntriesState } from './directoryEntries';

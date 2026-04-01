@@ -2,13 +2,13 @@
 
 P2P network simulation for hashtree, testing routing strategies and network behavior.
 
-## Recommended: webrtc_sim
+## Recommended: mesh_sim
 
-The `webrtc_sim` module uses the **exact same code** as production WebRTCStore,
+The `mesh_sim` module uses the **exact same code** as the production `MeshStore`,
 just with mock transports. This is the recommended approach for testing:
 
 ```rust
-use hashtree_sim::webrtc_sim::{Simulation, SimConfig};
+use hashtree_sim::mesh_sim::{Simulation, SimConfig};
 
 let config = SimConfig {
     node_count: 100,
@@ -28,10 +28,10 @@ println!("{}", serde_json::to_string_pretty(&report).unwrap());
 
 ## Shared Code with Production
 
-The simulation uses the **same types and defaults as production WebRTC**:
+The simulation uses the same shared router/store core as the default production mesh stack:
 
 ```rust
-// Uses hashtree_network::PoolConfig - same defaults as real WebRTC
+// Uses hashtree_network::PoolConfig - same defaults as the production mesh wrapper
 let config = SimConfig {
     pool: PoolConfig::default(),  // max_connections: 16, satisfied_connections: 8
     ..Default::default()
@@ -178,7 +178,8 @@ Use `largest_component` and `component_count` as first-class tuning objectives, 
 
 ### Discovery with Perfect Negotiation
 
-Nodes discover each other via Hello messages on a mock relay. We use the WebRTC **"perfect negotiation"** pattern:
+Nodes discover each other via Hello messages on a mock relay. We use the shared
+concurrent-offer negotiation pattern:
 
 1. When a node sees a Hello and NEEDS more peers (below `satisfied_connections`), it sends an offer
 2. Both peers may send offers simultaneously - this is expected, not an error
@@ -215,7 +216,7 @@ fn is_polite_peer(local_id: &str, remote_id: &str) -> bool {
 ## Latency Simulation
 
 Per-link latency is configurable:
-- `network_latency_ms`: Mean latency (e.g., 50ms for realistic WebRTC)
+- `network_latency_ms`: Mean latency for the simulated direct-link transport
 
 In `VirtualSteps`, latency still affects ordering/outcomes but wall-clock runtime is compressed.
 
@@ -237,7 +238,7 @@ cargo run -p hashtree-sim --example tune_webrtc_params -- --mode=manual
 cargo run -p hashtree-sim --example tune_webrtc_params -- --mode=auto
 
 # 1000-node connectivity/scalability test
-cargo test -p hashtree-sim webrtc_sim::tests::test_webrtc_sim_1000_nodes_connectivity -- --nocapture
+cargo test -p hashtree-sim mesh_sim::tests::test_mesh_sim_1000_nodes_connectivity -- --nocapture
 ```
 
 Progress notes and experiment outcomes are tracked in:
@@ -250,4 +251,4 @@ Progress notes and experiment outcomes are tracked in:
 3. **Latency variation** is important - uniform latency is unrealistic
 4. **Multi-hop forwarding** dramatically increases reach but adds latency
 5. **Perfect negotiation + periodic Hello beats one-shot discovery**: late joiners need periodic discovery refresh, otherwise large runs fragment.
-6. **Use same code for simulation**: Using the exact same signaling code as production ensures simulation behavior matches reality. The `webrtc_sim` module does this.
+6. **Use same code for simulation**: Using the exact same signaling/router/store core as production ensures simulation behavior matches reality. The `mesh_sim` module does this.

@@ -97,6 +97,18 @@ export function upsertProjectForkedFrom(tomlContent: string, forkedFrom: string)
   return `${prefix}${separator}[project]\n${serialized}\n`;
 }
 
+function upsertGitExcludePatterns(content: string, patterns: string[]): string {
+  const existingLines = content.split('\n');
+  const existing = new Set(existingLines.map(line => line.trim()).filter(Boolean));
+  const missing = patterns.filter(pattern => !existing.has(pattern));
+  if (missing.length === 0) {
+    return content;
+  }
+
+  const normalized = content.length > 0 && !content.endsWith('\n') ? `${content}\n` : content;
+  return `${normalized}${missing.join('\n')}\n`;
+}
+
 export async function setProjectForkOrigin(repoCid: CID, forkedFrom: string): Promise<CID> {
   const tree = getTree();
 
@@ -133,6 +145,46 @@ export async function setProjectForkOrigin(repoCid: CID, forkedFrom: string): Pr
     { name: fileName, cid: fileCid, size: fileSize, type: LinkType.Blob },
   ]);
   return tree.setEntry(repoCid, [], '.hashtree', hashtreeDirCid, 0, LinkType.Dir);
+}
+
+export async function ignoreGeneratedProjectMetaInGitStatus(repoCid: CID): Promise<CID> {
+  const tree = getTree();
+  const gitDir = await tree.resolvePath(repoCid, '.git').catch(() => null);
+  if (!gitDir || gitDir.type !== LinkType.Dir) {
+    return repoCid;
+  }
+
+  const excludePath = '.git/info/exclude';
+  let excludeContent = '';
+
+  const excludeResult = await tree.resolvePath(repoCid, excludePath).catch(() => null);
+  if (excludeResult && excludeResult.type !== LinkType.Dir) {
+    const data = await tree.readFile(excludeResult.cid);
+    if (data) {
+      excludeContent = decodeAsText(data) ?? new TextDecoder().decode(data);
+    }
+  }
+
+  const updatedContent = upsertGitExcludePatterns(excludeContent, [
+    '.hashtree/project.toml',
+    '.hashtree/meta.toml',
+  ]);
+  if (updatedContent === excludeContent) {
+    return repoCid;
+  }
+
+  const encoded = new TextEncoder().encode(updatedContent);
+  const { cid: excludeCid, size: excludeSize } = await tree.putFile(encoded);
+
+  const infoDir = await tree.resolvePath(repoCid, '.git/info').catch(() => null);
+  if (infoDir && infoDir.type === LinkType.Dir) {
+    return tree.setEntry(repoCid, ['.git', 'info'], 'exclude', excludeCid, excludeSize, LinkType.Blob);
+  }
+
+  const { cid: infoCid } = await tree.putDirectory([
+    { name: 'exclude', cid: excludeCid, size: excludeSize, type: LinkType.Blob },
+  ]);
+  return tree.setEntry(repoCid, ['.git'], 'info', infoCid, 0, LinkType.Dir);
 }
 
 export async function loadProjectMeta(repoCid: CID): Promise<ProjectMeta | null> {

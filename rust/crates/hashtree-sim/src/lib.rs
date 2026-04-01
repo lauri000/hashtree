@@ -1,32 +1,33 @@
-//! Simulation tools for hashtree P2P protocols
+//! Simulation tools for hashtree mesh protocols.
 //!
-//! Provides simulation and router tests using the same code as production transports.
+//! Provides simulation and router tests using the same router and store core as
+//! production, but with mock transports.
 //!
 //! ## Architecture
 //!
-//! - `webrtc_sim::Simulation` - uses GenericStore with mock transports
+//! - `mesh_sim::Simulation` - uses `MeshStoreCore` with mock transports
 //! - Shared router tests - exercise the production signaling/router core directly
 //! - `WsRelay` - WebSocket Nostr relay for integration testing
 
 pub mod cashu_test_mint;
+pub mod mesh_sim;
 pub mod mint_client;
 #[cfg(feature = "nostr")]
 pub mod nostr_mesh;
-pub mod webrtc_sim;
 pub mod ws_relay;
 
-// Re-export main types from webrtc_sim
+// Re-export main types from mesh_sim
 pub use cashu_test_mint::{
     ChannelSettlement, ChannelState, LocalTestCashuMint, MintError, MintStats,
 };
-pub use mint_client::{LocalMintClient, MintClient};
-#[cfg(feature = "nostr")]
-pub use nostr_mesh::NostrMesh;
-pub use webrtc_sim::{
+pub use mesh_sim::{
     run_parameter_sweep, CashuIncentiveConfig, LocalResourceStats, NodeStrategyProfile,
     RetrievalStats, RetrievalTimingMode, SimConfig, SimEvent, SimStats, Simulation, SweepResult,
     TopologyStats,
 };
+pub use mint_client::{LocalMintClient, MintClient};
+#[cfg(feature = "nostr")]
+pub use nostr_mesh::NostrMesh;
 pub use ws_relay::WsRelay;
 
 // Re-export types from hashtree-network for convenience

@@ -1,11 +1,11 @@
-//! Tests for WebRTC types
+//! Tests for mesh transport types
 
 use hashtree_network::{
     bytes_to_hash, create_fragment_response, create_request, create_response, encode_request,
     encode_response, is_fragmented, parse_message, should_forward, should_forward_htl,
-    validate_mesh_frame, DataMessage, MeshNostrFrame, PeerHTLConfig, PeerId, PeerState,
-    SelectionStrategy, SignalingMessage, TimedSeenSet, WebRTCStats, WebRTCStoreConfig,
-    BLOB_REQUEST_POLICY, MAX_HTL, MESH_DEFAULT_HTL, MESH_EVENT_POLICY, MESH_MAX_HTL, MESH_PROTOCOL,
+    validate_mesh_frame, DataMessage, MeshNostrFrame, MeshStats, MeshStoreConfig, PeerHTLConfig,
+    PeerId, PeerState, SelectionStrategy, SignalingMessage, TimedSeenSet, BLOB_REQUEST_POLICY,
+    MAX_HTL, MESH_DEFAULT_HTL, MESH_EVENT_POLICY, MESH_MAX_HTL, MESH_PROTOCOL,
     MESH_PROTOCOL_VERSION, MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE, NOSTR_KIND_HASHTREE,
 };
 use nostr_sdk::nostr::{EventBuilder, Keys, Kind};
@@ -25,7 +25,7 @@ fn test_peer_id_to_string() {
 
 #[test]
 fn test_peer_id_from_string() {
-    let peer_id = PeerId::from_string("abc123:uuid-456").unwrap();
+    let peer_id = PeerId::from_string("abc123").unwrap();
     assert_eq!(peer_id.pubkey, "abc123");
 }
 
@@ -34,6 +34,7 @@ fn test_peer_id_from_string_invalid() {
     let peer_id = PeerId::from_string("invalid").unwrap();
     assert_eq!(peer_id.pubkey, "invalid");
     assert!(PeerId::from_string("").is_none());
+    assert!(PeerId::from_string("abc123:legacy").is_none());
 }
 
 #[test]
@@ -45,12 +46,12 @@ fn test_peer_id_short() {
 #[test]
 fn test_signaling_message_hello_serialize() {
     let msg = SignalingMessage::Hello {
-        peer_id: "test:123".to_string(),
+        peer_id: "test123".to_string(),
         roots: vec!["abc".to_string(), "def".to_string()],
     };
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains("\"type\":\"hello\""));
-    assert!(json.contains("\"peerId\":\"test:123\""));
+    assert!(json.contains("\"peerId\":\"test123\""));
 }
 
 #[test]
@@ -174,8 +175,8 @@ fn test_parse_invalid_message() {
 }
 
 #[test]
-fn test_webrtc_store_config_default() {
-    let config = WebRTCStoreConfig::default();
+fn test_mesh_store_config_default() {
+    let config = MeshStoreConfig::default();
     assert_eq!(config.pools.follows.satisfied_connections, 8);
     assert_eq!(config.pools.follows.max_connections, 16);
     assert_eq!(config.pools.other.satisfied_connections, 8);
@@ -202,8 +203,8 @@ fn test_peer_state_equality() {
 }
 
 #[test]
-fn test_webrtc_stats_default() {
-    let stats = WebRTCStats::default();
+fn test_mesh_stats_default() {
+    let stats = MeshStats::default();
     assert_eq!(stats.connected_peers, 0);
     assert_eq!(stats.pending_requests, 0);
     assert_eq!(stats.bytes_sent, 0);
@@ -310,8 +311,7 @@ fn test_mesh_frame_roundtrip_and_validation() {
     let event = EventBuilder::new(Kind::Custom(NOSTR_KIND_HASHTREE), "", [])
         .to_event(&keys)
         .unwrap();
-    let frame =
-        MeshNostrFrame::new_event_with_id(event, "peer-a:uuid-a", "frame-1", MESH_DEFAULT_HTL);
+    let frame = MeshNostrFrame::new_event_with_id(event, "peer-a", "frame-1", MESH_DEFAULT_HTL);
     assert!(validate_mesh_frame(&frame).is_ok());
 
     let encoded = serde_json::to_string(&frame).unwrap();
@@ -328,13 +328,16 @@ fn test_mesh_frame_validation_rejects_invalid_protocol_and_htl() {
     let event = EventBuilder::new(Kind::Custom(NOSTR_KIND_HASHTREE), "", [])
         .to_event(&keys)
         .unwrap();
-    let mut frame =
-        MeshNostrFrame::new_event_with_id(event, "peer-a:uuid-a", "frame-1", MESH_DEFAULT_HTL);
+    let mut frame = MeshNostrFrame::new_event_with_id(event, "peer-a", "frame-1", MESH_DEFAULT_HTL);
 
     frame.protocol = "invalid".to_string();
     assert_eq!(validate_mesh_frame(&frame), Err("invalid protocol"));
 
     frame.protocol = MESH_PROTOCOL.to_string();
+    frame.sender_peer_id = "peer-a:legacy".to_string();
+    assert_eq!(validate_mesh_frame(&frame), Err("invalid sender peer id"));
+
+    frame.sender_peer_id = "peer-a".to_string();
     frame.htl = 0;
     assert_eq!(validate_mesh_frame(&frame), Err("invalid htl"));
 

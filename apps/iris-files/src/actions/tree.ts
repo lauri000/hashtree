@@ -13,7 +13,7 @@ import { getCurrentRootCid, getCurrentPathFromUrl } from './route';
 import { updateLocalRootCache } from '../treeRootCache';
 import { getRootCommit, initGitRepo } from '../utils/git';
 import { buildHtreeUrl, fetchRepoAnnouncement, publishRepoAnnouncement } from '../nip34';
-import { setProjectForkOrigin } from '../stores/projectMeta';
+import { ignoreGeneratedProjectMetaInGitStatus, setProjectForkOrigin } from '../stores/projectMeta';
 import {
   BOARD_CARD_FILE_SUFFIX,
   BOARD_CARDS_DIR,
@@ -399,6 +399,14 @@ export async function forkTree(dirCid: CID, name: string, visibility: import('@h
       forkMetadataApplied = true;
     } catch (error) {
       console.warn('[Fork] Failed to annotate fork origin metadata', error);
+    }
+  }
+
+  if (forkOriginUrl && forkMetadataApplied) {
+    try {
+      finalCid = await ignoreGeneratedProjectMetaInGitStatus(finalCid);
+    } catch (error) {
+      console.warn('[Fork] Failed to hide generated fork metadata from git status', error);
     }
   }
 

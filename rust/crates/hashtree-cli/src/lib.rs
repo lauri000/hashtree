@@ -40,7 +40,7 @@ pub use sync::{BackgroundSync, SyncConfig, SyncPriority, SyncStatus, SyncTask};
 #[cfg(feature = "p2p")]
 pub use webrtc::{
     BluetoothBackendState, BluetoothConfig, ContentStore, DataMessage, LocalNostrBus,
-    PeerClassifier, PeerId, PeerPool, PeerRouter, PeerRouterConfig, PeerRouterState, PoolConfig,
-    PoolSettings, SharedLocalNostrBus, WebRTCConfig, WebRTCManager,
+    PeerClassifier, PeerId, PeerPool, PoolConfig, PoolSettings, SharedLocalNostrBus, WebRTCConfig,
+    WebRTCManager,
 };
 pub use webrtc::{ConnectionState, WebRTCState};

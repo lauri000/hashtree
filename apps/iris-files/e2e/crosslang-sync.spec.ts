@@ -14,7 +14,17 @@
 
 import { test, expect } from './fixtures';
 import { spawn, execSync, type ChildProcess } from 'child_process';
-import { enableOthersPool, ensureLoggedIn, setupPageErrorHandler, useLocalRelay, waitForAppReady, waitForRelayConnected, getTestRelayUrl, getCrosslangPort } from './test-utils.js';
+import {
+  enableOthersPool,
+  ensureLoggedIn,
+  presetLocalRelayInDB,
+  setupPageErrorHandler,
+  useLocalRelay,
+  waitForAppReady,
+  waitForRelayConnected,
+  getTestRelayUrl,
+  getCrosslangPort,
+} from './test-utils.js';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { nip19, generateSecretKey, getPublicKey } from 'nostr-tools';
@@ -41,6 +51,20 @@ function generateKeypair() {
   const nsec = nip19.nsecEncode(secretKey);
   const npub = nip19.npubEncode(pubkeyHex);
   return { secretKey, pubkeyHex, nsec, npub };
+}
+
+function withRelayNamespace(baseUrl: string, namespace: string): string {
+  try {
+    const url = new URL(baseUrl);
+    let path = url.pathname || '/';
+    if (!path.endsWith('/')) path += '/';
+    path += namespace;
+    url.pathname = path;
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    const trimmed = baseUrl.replace(/\/$/, '');
+    return `${trimmed}/${namespace}`;
+  }
 }
 
 async function stopProcess(proc: ChildProcess | null, graceMs = 4000): Promise<void> {
@@ -141,8 +165,9 @@ test.describe('Cross-Language Sync', () => {
     }
 
     setupPageErrorHandler(page);
-    const localRelay = getTestRelayUrl();
     const crosslangPort = getCrosslangPort(testInfo.workerIndex);
+    const relayNamespace = `crosslang-${testInfo.workerIndex}-${crosslangPort}`;
+    const localRelay = withRelayNamespace(getTestRelayUrl(), relayNamespace);
     await killProcessesOnPort(crosslangPort);
 
     // Set up console logging early to capture relay/worker messages
@@ -177,9 +202,11 @@ test.describe('Cross-Language Sync', () => {
       // ===== STEP 1: Start TS app and wait for full initialization =====
       console.log('[TS] Starting app...');
       await page.goto('/');
+      await presetLocalRelayInDB(page, localRelay);
+      await page.reload({ waitUntil: 'domcontentloaded' });
       await waitForAppReady(page);
       await ensureLoggedIn(page, 20000);
-      await useLocalRelay(page);
+      await useLocalRelay(page, localRelay);
       await enableOthersPool(page, 2);
       await waitForRelayConnected(page, 20000);
 

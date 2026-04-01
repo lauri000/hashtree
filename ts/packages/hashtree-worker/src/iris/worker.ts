@@ -511,7 +511,21 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         await handleResolveRoot(msg.id, msg.npub, msg.path);
         break;
       case 'setTreeRootCache':
-        await handleSetTreeRootCache(msg.id, msg.npub, msg.treeName, msg.hash, msg.key, msg.visibility, msg.labels);
+        await handleSetTreeRootCache(
+          msg.id,
+          msg.npub,
+          msg.treeName,
+          msg.hash,
+          msg.key,
+          msg.visibility,
+          msg.labels,
+          {
+            encryptedKey: msg.encryptedKey,
+            keyId: msg.keyId,
+            selfEncryptedKey: msg.selfEncryptedKey,
+            selfEncryptedLinkKey: msg.selfEncryptedLinkKey,
+          },
+        );
         break;
       case 'getTreeRootInfo':
         await handleGetTreeRootInfo(msg.id, msg.npub, msg.treeName);
@@ -1261,10 +1275,22 @@ async function handleSetTreeRootCache(
   hash: Uint8Array,
   key: Uint8Array | undefined,
   visibility: 'public' | 'link-visible' | 'private',
-  labels?: string[]
+  labels?: string[],
+  metadata?: {
+    encryptedKey?: string;
+    keyId?: string;
+    selfEncryptedKey?: string;
+    selfEncryptedLinkKey?: string;
+  },
 ) {
   try {
-    await setCachedRoot(npub, treeName, { hash, key }, visibility, { labels });
+    await setCachedRoot(npub, treeName, { hash, key }, visibility, {
+      labels,
+      encryptedKey: metadata?.encryptedKey,
+      keyId: metadata?.keyId,
+      selfEncryptedKey: metadata?.selfEncryptedKey,
+      selfEncryptedLinkKey: metadata?.selfEncryptedLinkKey,
+    });
     respond({ type: 'void', id });
   } catch (err) {
     respond({ type: 'void', id, error: getErrorMessage(err) });

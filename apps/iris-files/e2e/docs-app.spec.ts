@@ -20,6 +20,7 @@ async function getOwnedTreeRootSnapshot(page: any, treeName: string) {
 
     return {
       npub,
+      treeName: targetTreeName,
       visibility: entry?.visibility || 'public',
       hashHex: toHex(rootCid.hash),
       keyHex: rootCid.key ? toHex(rootCid.key) : null,
@@ -32,6 +33,7 @@ async function getOwnedTreeRootSnapshot(page: any, treeName: string) {
 
   return snapshot as {
     npub: string;
+    treeName: string;
     visibility: string;
     hashHex: string;
     keyHex: string | null;
@@ -42,12 +44,14 @@ async function primeViewerTreeRoot(
   page: any,
   snapshot: {
     npub: string;
+    treeName: string;
     visibility: string;
     hashHex: string;
     keyHex: string | null;
-  }
+  },
+  targetTreeName?: string
 ) {
-  await page.evaluate(async ({ npub, visibility, hashHex, keyHex }) => {
+  await page.evaluate(async ({ npub, treeName, visibility, hashHex, keyHex, overrideTreeName }) => {
     const { updateLocalRootCacheHex } = await import('/src/treeRootCache');
     const fromHex = (hex: string): Uint8Array => {
       const normalized = hex.trim().toLowerCase();
@@ -62,22 +66,25 @@ async function primeViewerTreeRoot(
     };
 
     const route = (window as any).__routeStore?.getState?.();
-    const treeName = route?.treeName;
-    if (!treeName) return;
+    const resolvedTreeName = overrideTreeName || route?.treeName || treeName;
+    if (!resolvedTreeName) return;
 
-    updateLocalRootCacheHex(npub, treeName, hashHex, keyHex ?? undefined, visibility as any);
+    updateLocalRootCacheHex(npub, resolvedTreeName, hashHex, keyHex ?? undefined, visibility as any);
 
     const adapter = (window as any).__getWorkerAdapter?.() ?? (window as any).__workerAdapter;
     if (adapter?.setTreeRootCache) {
       await adapter.setTreeRootCache(
         npub,
-        treeName,
+        resolvedTreeName,
         fromHex(hashHex),
         keyHex ? fromHex(keyHex) : undefined,
         visibility,
       );
     }
-  }, snapshot);
+  }, {
+    ...snapshot,
+    overrideTreeName: targetTreeName ?? null,
+  });
 }
 
 async function waitForTreeRootChange(page: any, previousRoot: string | null, timeoutMs: number = 30000) {
@@ -178,6 +185,32 @@ async function waitForEditorContent(
   for (const expected of expectedTexts) {
     expect(finalText).toContain(expected);
   }
+}
+
+async function waitForPersistedDocContent(
+  page: any,
+  treeName: string,
+  expectedTexts: string[],
+  timeoutMs: number = 90000
+) {
+  await expect.poll(async () => {
+    const text = await evaluateWithRetry(page, async (targetTreeName) => {
+      const { getTree } = await import('/src/store');
+      const { getTreeRootSync } = await import('/src/stores');
+      const { loadDocumentTextFromEntries } = await import('/src/lib/yjs');
+      const nostrStore = (window as any).__nostrStore;
+      const npub = nostrStore?.getState?.()?.npub;
+      if (!npub) return '';
+
+      const rootCid = getTreeRootSync(npub, targetTreeName as string);
+      if (!rootCid) return '';
+
+      const tree = getTree();
+      const entries = await tree.listDirectory(rootCid);
+      return loadDocumentTextFromEntries(entries);
+    }, treeName);
+    return expectedTexts.every(expected => text.includes(expected));
+  }, { timeout: timeoutMs, intervals: [1000, 2000, 3000] }).toBe(true);
 }
 
 test.describe('Iris Docs App', () => {
@@ -333,7 +366,7 @@ test.describe('Iris Docs App', () => {
   });
 
   test('edits to existing document persist after navigation and refresh', async ({ page }) => {
-    test.setTimeout(180000); // Longer timeout for multiple reload operations under parallel load
+    test.setTimeout(240000); // Extra headroom for Yjs/editor recovery under full-suite parallel load
 
     await page.goto('/docs.html#/');
     await waitForAppReady(page);
@@ -361,6 +394,7 @@ test.describe('Iris Docs App', () => {
     await expect(editor).toContainText('Initial content.', { timeout: 15000 });
     await waitForTreeRootChange(page, rootBeforeInitial, 60000);
     await flushPendingPublishes(page);
+    const initialSnapshot = await getOwnedTreeRootSnapshot(page, treeName);
 
     await page.evaluate(() => window.location.hash = '#/');
     await expect(page.locator('[role="button"]:has-text("New Document")')).toBeVisible({ timeout: 30000 });
@@ -371,16 +405,17 @@ test.describe('Iris Docs App', () => {
     await ensureLoggedIn(page, 30000);
     await disableOthersPool(page);
     await expect(page.locator('[role="button"]:has-text("New Document")')).toBeVisible({ timeout: 30000 });
+    await primeViewerTreeRoot(page, initialSnapshot, treeName);
 
     const docCard = page.locator(`text=${docName}`);
     await expect(docCard).toBeVisible({ timeout: 60000 });
     await docCard.click();
 
     await page.waitForURL(url => url.toString().includes(encodedDocPath), { timeout: 60000 });
-    await waitForDocsEditor(page, 90000);
+    await waitForDocsEditor(page, 120000);
     await expect(page.locator('button[title="Bold (Ctrl+B)"]')).toBeVisible({ timeout: 30000 });
-    await waitForYjsEntry(page, 90000);
-    await waitForEditorContent(page, ['Initial content.'], 90000);
+    await waitForYjsEntry(page, 120000);
+    await waitForEditorContent(page, ['Initial content.'], 120000);
 
     const editor2 = page.locator('.ProseMirror');
     const rootBeforeAppend = await page.evaluate(() => (window as any).__getTreeRoot?.() ?? null);
@@ -438,11 +473,36 @@ test.describe('Iris Docs App', () => {
     );
     await waitForTreeRootChange(page, rootBeforeAppend, 60000);
     await flushPendingPublishes(page);
+    await waitForPersistedDocContent(page, treeName, ['Initial content.', 'Added more content.'], 120000);
+    const appendedSnapshot = await getOwnedTreeRootSnapshot(page, treeName);
+
+    await page.evaluate(() => window.location.hash = '#/');
+    await expect(page.locator('[role="button"]:has-text("New Document")')).toBeVisible({ timeout: 30000 });
+    await primeViewerTreeRoot(page, appendedSnapshot, treeName);
+
+    const persistedDocCard = page.locator(`text=${docName}`);
+    await expect(persistedDocCard).toBeVisible({ timeout: 60000 });
+    await persistedDocCard.click();
+    await page.waitForURL(url => url.toString().includes(encodedDocPath), { timeout: 60000 });
+    await waitForDocsEditor(page, 90000);
+    await expect(page.locator('button[title="Bold (Ctrl+B)"]')).toBeVisible({ timeout: 30000 });
+    await waitForYjsEntry(page, 90000);
+    await waitForEditorContent(page, ['Initial content.', 'Added more content.'], 120000);
+
+    await page.evaluate(() => window.location.hash = '#/');
+    await expect(page.locator('[role="button"]:has-text("New Document")')).toBeVisible({ timeout: 30000 });
 
     await safeReload(page, { waitUntil: 'domcontentloaded', timeoutMs: 60000 });
     await waitForAppReady(page);
     await ensureLoggedIn(page, 30000);
     await disableOthersPool(page);
+    await expect(page.locator('[role="button"]:has-text("New Document")')).toBeVisible({ timeout: 30000 });
+    await primeViewerTreeRoot(page, appendedSnapshot, treeName);
+
+    const reloadedDocCard = page.locator(`text=${docName}`);
+    await expect(reloadedDocCard).toBeVisible({ timeout: 60000 });
+    await reloadedDocCard.click();
+    await page.waitForURL(url => url.toString().includes(encodedDocPath), { timeout: 60000 });
 
     await waitForDocsEditor(page, 90000);
     await expect(page.locator('button[title="Bold (Ctrl+B)"]')).toBeVisible({ timeout: 30000 });

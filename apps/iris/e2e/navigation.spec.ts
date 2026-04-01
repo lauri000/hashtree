@@ -248,22 +248,22 @@ test.describe('Navigation', () => {
     await expect(page.locator('input[placeholder="Search or enter address"]')).toBeVisible();
 
     const dragRegions = await page.evaluate(() => {
+      const toolbar = document.querySelector<HTMLElement>('[data-testid="toolbar"]');
       const input = document.querySelector<HTMLInputElement>('input[placeholder="Search or enter address"]');
       const backButton = document.querySelector<HTMLButtonElement>('button[title="Back"]');
       const settingsButton = document.querySelector<HTMLButtonElement>('button[title="Settings"]');
       const addressBar = document.querySelector<HTMLElement>('[data-testid="address-bar"]');
 
-      if (!input || !backButton || !settingsButton || !addressBar) {
+      if (!toolbar || !input || !backButton || !settingsButton || !addressBar) {
         throw new Error('toolbar controls not found');
       }
 
       const centerRegion = addressBar?.parentElement;
       const navRegion = backButton.parentElement;
-      const toolbar = navRegion?.parentElement;
       const searchIcon = addressBar?.querySelector('.i-lucide-search');
 
       return {
-        toolbar: toolbar?.getAttribute('data-tauri-drag-region'),
+        toolbar: toolbar.getAttribute('data-tauri-drag-region'),
         navRegion: navRegion?.getAttribute('data-tauri-drag-region'),
         centerRegion: centerRegion?.getAttribute('data-tauri-drag-region'),
         addressBar: addressBar?.getAttribute('data-tauri-drag-region'),
@@ -316,10 +316,9 @@ test.describe('Navigation', () => {
 
     await page.getByTitle('Settings').click();
 
-    await expect(page.getByText('Settings')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Desktop' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Network' })).toBeVisible();
-    await expect(page.getByText('Launch at startup')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+    await expect(page.getByTestId('settings-nav-app')).toBeVisible();
+    await expect(page.getByTestId('settings-nav-network')).toBeVisible();
   });
 
   test('back button from settings returns to launcher', async ({ tauriPage: page }) => {

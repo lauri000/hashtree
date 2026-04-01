@@ -265,7 +265,7 @@ describe('Protocol Wire Format', () => {
         tags: [['l', 'hello']],
         content: '',
       };
-      const frame = createMeshNostrEventFrame(event as any, 'peer-a:uuid-a', 4);
+      const frame = createMeshNostrEventFrame(event as any, 'peer-a', 4);
       const json = JSON.parse(JSON.stringify(frame)) as Record<string, unknown>;
 
       expect(json.protocol).toBe(MESH_PROTOCOL);

@@ -1302,9 +1302,8 @@ mod tests {
                 stream
                     .set_write_timeout(Some(Duration::from_millis(200)))
                     .expect("set write timeout");
-                let request = format!(
-                    "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
-                );
+                let request =
+                    format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
                 if stream.write_all(request.as_bytes()).is_ok() {
                     let mut response = String::new();
                     if stream.read_to_string(&mut response).is_ok()

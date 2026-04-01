@@ -8,8 +8,7 @@ use futures::{SinkExt, StreamExt};
 use hashtree_core::{MemoryStore, Store};
 use hashtree_index::{BTree, BTreeOptions};
 use hashtree_nostr::{
-    CrawlConfig, ListEventsOptions, NostrBridge, NostrEventStore, RelayFetchMode,
-    StoredNostrEvent,
+    CrawlConfig, ListEventsOptions, NostrBridge, NostrEventStore, RelayFetchMode, StoredNostrEvent,
 };
 use negentropy::{Id, Negentropy, NegentropyStorageVector};
 use nostr::prelude::{

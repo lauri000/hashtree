@@ -1,6 +1,6 @@
-//! Generic P2P store using abstract transports.
+//! Shared routed mesh store core.
 //!
-//! This module provides a store wrapper that works with any local storage
+//! This module provides a concrete store wrapper that works with any local storage
 //! backend plus any signaling transport and peer-link factory. Both production
 //! (Nostr websockets + WebRTC) and simulation (mocks) use this same code.
 
@@ -60,9 +60,20 @@ struct IssuedQuote {
     mint_url: Option<String>,
 }
 
+/// Aggregate stats from draining currently available peer-link messages.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DataPumpStats {
+    pub processed: usize,
+    pub request_messages: usize,
+    pub response_messages: usize,
+    pub quote_request_messages: u64,
+    pub quote_response_messages: u64,
+    pub processed_bytes: u64,
+}
+
 /// Request dispatch strategy for peer queries.
 ///
-/// `GenericStore` supports two practical retrieval modes:
+/// `MeshStoreCore` supports two practical retrieval modes:
 /// - Flood (`usize::MAX` fanout): maximize success/latency at bandwidth cost.
 /// - Staged hedging: probe a subset first, then expand.
 #[derive(Debug, Clone, Copy)]
@@ -147,7 +158,7 @@ pub enum HedgedWaveAction<T> {
 
 /// Run a staged hedged dispatch over peer index ranges.
 ///
-/// This scheduler is shared by the reusable `GenericStore` and the native
+/// This scheduler is shared by the reusable `MeshStoreCore` and the native
 /// `hashtree-cli` mesh path so tests and production use the same wave timing.
 pub async fn run_hedged_waves<T, SendWave, SendWaveFut, WaitWave, WaitWaveFut>(
     peer_count: usize,
@@ -267,7 +278,7 @@ impl ResponseBehaviorConfig {
 
 /// Routing policy for request ordering + dispatch fanout.
 #[derive(Debug, Clone)]
-pub struct GenericStoreRoutingConfig {
+pub struct MeshRoutingConfig {
     pub selection_strategy: SelectionStrategy,
     pub fairness_enabled: bool,
     /// Blend weight for payment-priority ranking in selector (`0.0` disables).
@@ -291,7 +302,7 @@ pub struct GenericStoreRoutingConfig {
     pub response_behavior: ResponseBehaviorConfig,
 }
 
-impl Default for GenericStoreRoutingConfig {
+impl Default for MeshRoutingConfig {
     fn default() -> Self {
         Self {
             selection_strategy: SelectionStrategy::Weighted,
@@ -310,13 +321,13 @@ impl Default for GenericStoreRoutingConfig {
     }
 }
 
-/// Generic mesh store that works with any storage backend and transport
+/// Routed mesh store core that works with any storage backend and transport
 /// implementation.
 ///
 /// This is the shared code between production and simulation.
-/// - Production: `GenericStore<LmdbStore, NostrSignalingTransport, WebRtcPeerLinkFactory>`
-/// - Simulation: `GenericStore<MemoryStore, MockSignalingTransport, MockConnectionFactory>`
-pub struct GenericStore<S, R, F>
+/// - Production: `MeshStoreCore<LmdbStore, NostrRelayTransport, WebRtcPeerLinkFactory>`
+/// - Simulation: `MeshStoreCore<MemoryStore, MockRelayTransport, MockConnectionFactory>`
+pub struct MeshStoreCore<S, R, F>
 where
     S: Store + Send + Sync + 'static,
     R: SignalingTransport + Send + Sync + 'static,
@@ -339,7 +350,7 @@ where
     /// Adaptive selector for peer ordering.
     peer_selector: RwLock<PeerSelector>,
     /// Routing/dispatch configuration.
-    routing: GenericStoreRoutingConfig,
+    routing: MeshRoutingConfig,
     /// Request timeout
     request_timeout: Duration,
     /// Debug mode
@@ -348,13 +359,13 @@ where
     running: RwLock<bool>,
 }
 
-impl<S, R, F> GenericStore<S, R, F>
+impl<S, R, F> MeshStoreCore<S, R, F>
 where
     S: Store + Send + Sync + 'static,
     R: SignalingTransport + Send + Sync + 'static,
     F: PeerLinkFactory + Send + Sync + 'static,
 {
-    /// Create a new generic store
+    /// Create a new routed mesh store core.
     pub fn new(
         local_store: Arc<S>,
         signaling: Arc<MeshRouter<R, F>>,
@@ -370,13 +381,13 @@ where
         )
     }
 
-    /// Create a new generic store with explicit routing configuration.
+    /// Create a new routed mesh store core with explicit routing configuration.
     pub fn new_with_routing(
         local_store: Arc<S>,
         signaling: Arc<MeshRouter<R, F>>,
         request_timeout: Duration,
         debug: bool,
-        routing: GenericStoreRoutingConfig,
+        routing: MeshRoutingConfig,
     ) -> Self {
         let mut selector = PeerSelector::with_strategy(routing.selection_strategy);
         selector.set_fairness(routing.fairness_enabled);
@@ -736,6 +747,35 @@ where
         self.signaling.send_hello(vec![]).await
     }
 
+    /// Drain all currently available peer-link messages and handle them.
+    ///
+    /// This keeps the message pump logic shared between simulation and the
+    /// default production wrapper instead of duplicating per-channel loops.
+    pub async fn drain_available_data_messages(&self) -> DataPumpStats {
+        let mut stats = DataPumpStats::default();
+        let peer_ids = self.signaling.peer_ids().await;
+        for peer_id in peer_ids {
+            let Some(channel) = self.signaling.get_channel(&peer_id).await else {
+                continue;
+            };
+
+            while let Some(data) = channel.try_recv() {
+                stats.processed += 1;
+                stats.processed_bytes += data.len() as u64;
+                if let Some(msg) = parse_message(&data) {
+                    match msg {
+                        DataMessage::Request(_) => stats.request_messages += 1,
+                        DataMessage::Response(_) => stats.response_messages += 1,
+                        DataMessage::QuoteRequest(_) => stats.quote_request_messages += 1,
+                        DataMessage::QuoteResponse(_) => stats.quote_response_messages += 1,
+                    }
+                }
+                self.handle_data_message(&peer_id, &data).await;
+            }
+        }
+        stats
+    }
+
     /// Apply an out-of-band payment credit to a peer's routing priority.
     pub async fn record_cashu_payment_for_peer(&self, peer_id: &str, amount_sat: u64) {
         self.peer_selector
@@ -758,6 +798,11 @@ where
             .write()
             .await
             .record_cashu_payment_default(peer_id);
+    }
+
+    /// Snapshot routing/selection summary for inspection/debugging.
+    pub async fn selector_summary(&self) -> crate::peer_selector::SelectorSummary {
+        self.peer_selector.read().await.summary()
     }
 
     fn should_refuse_requests_from_peer(&self, selector: &PeerSelector, peer_id: &str) -> bool {
@@ -1123,7 +1168,7 @@ where
         if hashtree_core::sha256(&res.d) != hash {
             self.peer_selector.write().await.record_failure(from_peer);
             if self.debug {
-                println!("[GenericStore] Ignoring invalid response payload for {hash_key}");
+                println!("[MeshStoreCore] Ignoring invalid response payload for {hash_key}");
             }
             return;
         }
@@ -1144,7 +1189,7 @@ where
             if self.should_refuse_requests_from_peer(&selector, from_peer) {
                 if self.debug {
                     println!(
-                        "[GenericStore] Refusing quote request from delinquent peer {}",
+                        "[MeshStoreCore] Refusing quote request from delinquent peer {}",
                         from_peer
                     );
                 }
@@ -1183,7 +1228,7 @@ where
             if self.should_refuse_requests_from_peer(&selector, from_peer) {
                 if self.debug {
                     println!(
-                        "[GenericStore] Refusing request from delinquent peer {}",
+                        "[MeshStoreCore] Refusing request from delinquent peer {}",
                         from_peer
                     );
                 }
@@ -1195,7 +1240,7 @@ where
             if !self.take_valid_quote(from_peer, &hash_key, quote_id).await {
                 if self.debug {
                     println!(
-                        "[GenericStore] Refusing request with invalid or expired quote {} from {}",
+                        "[MeshStoreCore] Refusing request with invalid or expired quote {} from {}",
                         quote_id, from_peer
                     );
                 }
@@ -1208,7 +1253,7 @@ where
             if self.should_drop_response(&hash) {
                 if self.debug {
                     println!(
-                        "[GenericStore] Dropping response for {} due to actor profile",
+                        "[MeshStoreCore] Dropping response for {} due to actor profile",
                         hash_to_key(&hash)
                     );
                 }
@@ -1263,7 +1308,7 @@ where
 }
 
 #[async_trait]
-impl<S, R, F> Store for GenericStore<S, R, F>
+impl<S, R, F> Store for MeshStoreCore<S, R, F>
 where
     S: Store + Send + Sync + 'static,
     R: SignalingTransport + Send + Sync + 'static,
@@ -1300,7 +1345,7 @@ mod tests {
     use std::sync::OnceLock;
     use std::time::Duration;
 
-    type TestStore = GenericStore<
+    type TestStore = MeshStoreCore<
         MemoryStore,
         crate::mock::MockRelayTransport,
         crate::mock::MockConnectionFactory,
@@ -1318,22 +1363,21 @@ mod tests {
     }
 
     fn make_test_store(local_store: Arc<MemoryStore>, node_id: &str) -> TestStore {
-        make_test_store_with_routing(local_store, node_id, GenericStoreRoutingConfig::default())
+        make_test_store_with_routing(local_store, node_id, MeshRoutingConfig::default())
     }
 
     fn make_test_store_with_routing(
         local_store: Arc<MemoryStore>,
         node_id: &str,
-        routing: GenericStoreRoutingConfig,
+        routing: MeshRoutingConfig,
     ) -> TestStore {
         let relay = crate::mock::MockRelay::new();
-        let transport = Arc::new(relay.create_transport(node_id.to_string(), node_id.to_string()));
+        let transport = Arc::new(relay.create_transport(node_id.to_string()));
         let conn_factory = Arc::new(crate::mock::MockConnectionFactory::new(
             node_id.to_string(),
             0,
         ));
         let signaling = Arc::new(crate::signaling::MeshRouter::new(
-            node_id.to_string(),
             node_id.to_string(),
             transport,
             conn_factory,
@@ -1353,15 +1397,14 @@ mod tests {
     fn make_shared_test_node(
         relay: Arc<crate::mock::MockRelay>,
         node_id: &str,
-        routing: GenericStoreRoutingConfig,
+        routing: MeshRoutingConfig,
     ) -> TestNode {
-        let transport = Arc::new(relay.create_transport(node_id.to_string(), node_id.to_string()));
+        let transport = Arc::new(relay.create_transport(node_id.to_string()));
         let conn_factory = Arc::new(crate::mock::MockConnectionFactory::new(
             node_id.to_string(),
             0,
         ));
         let signaling = Arc::new(crate::signaling::MeshRouter::new(
-            node_id.to_string(),
             node_id.to_string(),
             transport.clone(),
             conn_factory,
@@ -1455,7 +1498,7 @@ mod tests {
         let requester = make_shared_test_node(
             relay.clone(),
             "requester-reject",
-            GenericStoreRoutingConfig {
+            MeshRoutingConfig {
                 selection_strategy: strategy,
                 fairness_enabled: false,
                 dispatch: RequestDispatchConfig {
@@ -1470,7 +1513,7 @@ mod tests {
         let bad = make_shared_test_node(
             relay.clone(),
             "a-bad",
-            GenericStoreRoutingConfig {
+            MeshRoutingConfig {
                 response_behavior: ResponseBehaviorConfig {
                     drop_response_prob: 1.0,
                     ..Default::default()
@@ -1478,7 +1521,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let honest = make_shared_test_node(relay, "b-honest", GenericStoreRoutingConfig::default());
+        let honest = make_shared_test_node(relay, "b-honest", MeshRoutingConfig::default());
         let nodes = [&requester, &bad, &honest];
 
         for node in &nodes {
@@ -1592,12 +1635,12 @@ mod tests {
         let writer = make_test_store(local_store.clone(), "0");
         {
             let mut selector = writer.peer_selector.write().await;
-            selector.add_peer("npub1stable:session-a");
-            selector.record_request("npub1stable:session-a", 64);
-            selector.record_success("npub1stable:session-a", 35, 1024);
-            selector.record_cashu_payment("npub1stable:session-a", 120);
-            selector.record_cashu_receipt("npub1stable:session-a", 40);
-            selector.record_cashu_payment_default("npub1stable:session-a");
+            selector.add_peer("npub1stable");
+            selector.record_request("npub1stable", 64);
+            selector.record_success("npub1stable", 35, 1024);
+            selector.record_cashu_payment("npub1stable", 120);
+            selector.record_cashu_receipt("npub1stable", 40);
+            selector.record_cashu_payment_default("npub1stable");
         }
 
         let snapshot_hash = writer
@@ -1617,10 +1660,8 @@ mod tests {
             .expect("load peer metadata snapshot"));
 
         let mut selector = reader.peer_selector.write().await;
-        selector.add_peer("npub1stable:session-b");
-        let stats = selector
-            .get_stats("npub1stable:session-b")
-            .expect("restored peer stats");
+        selector.add_peer("npub1stable");
+        let stats = selector.get_stats("npub1stable").expect("restored peer stats");
         assert_eq!(stats.requests_sent, 1);
         assert_eq!(stats.successes, 1);
         assert_eq!(stats.cashu_paid_sat, 120);
@@ -1635,7 +1676,7 @@ mod tests {
         let store = make_test_store_with_routing(
             local_store,
             "0",
-            GenericStoreRoutingConfig {
+            MeshRoutingConfig {
                 cashu_payment_default_block_threshold: 1,
                 ..Default::default()
             },
@@ -1715,7 +1756,7 @@ mod tests {
         let requester = make_shared_test_node(
             relay.clone(),
             "requester-reject",
-            GenericStoreRoutingConfig {
+            MeshRoutingConfig {
                 cashu_accepted_mints: vec!["https://mint-a.example".to_string()],
                 cashu_default_mint: Some("https://mint-a.example".to_string()),
                 dispatch: RequestDispatchConfig {
@@ -1730,7 +1771,7 @@ mod tests {
         let provider = make_shared_test_node(
             relay,
             "provider-reject",
-            GenericStoreRoutingConfig {
+            MeshRoutingConfig {
                 cashu_accepted_mints: vec!["https://mint-b.example".to_string()],
                 ..Default::default()
             },
@@ -1771,7 +1812,7 @@ mod tests {
         let requester = make_shared_test_node(
             relay.clone(),
             "requester-suggested",
-            GenericStoreRoutingConfig {
+            MeshRoutingConfig {
                 cashu_accepted_mints: vec!["https://mint-a.example".to_string()],
                 cashu_default_mint: Some("https://mint-a.example".to_string()),
                 cashu_peer_suggested_mint_base_cap_sat: 3,
@@ -1788,7 +1829,7 @@ mod tests {
         let provider = make_shared_test_node(
             relay,
             "provider-suggested",
-            GenericStoreRoutingConfig {
+            MeshRoutingConfig {
                 cashu_accepted_mints: vec!["https://mint-b.example".to_string()],
                 cashu_default_mint: Some("https://mint-b.example".to_string()),
                 ..Default::default()
@@ -1828,7 +1869,7 @@ mod tests {
         let requester = make_shared_test_node(
             relay.clone(),
             "requester-reputation",
-            GenericStoreRoutingConfig {
+            MeshRoutingConfig {
                 cashu_accepted_mints: vec!["https://mint-a.example".to_string()],
                 cashu_default_mint: Some("https://mint-a.example".to_string()),
                 cashu_peer_suggested_mint_base_cap_sat: 1,
@@ -1847,7 +1888,7 @@ mod tests {
         let provider = make_shared_test_node(
             relay,
             "provider-reputation",
-            GenericStoreRoutingConfig {
+            MeshRoutingConfig {
                 cashu_accepted_mints: vec!["https://mint-b.example".to_string()],
                 cashu_default_mint: Some("https://mint-b.example".to_string()),
                 ..Default::default()
@@ -1926,7 +1967,7 @@ mod tests {
         let requester = make_shared_test_node(
             relay.clone(),
             "requester-match",
-            GenericStoreRoutingConfig {
+            MeshRoutingConfig {
                 cashu_accepted_mints: vec!["https://mint-a.example".to_string()],
                 cashu_default_mint: Some("https://mint-a.example".to_string()),
                 dispatch: RequestDispatchConfig {
@@ -1941,7 +1982,7 @@ mod tests {
         let provider = make_shared_test_node(
             relay,
             "provider-match",
-            GenericStoreRoutingConfig {
+            MeshRoutingConfig {
                 cashu_accepted_mints: vec!["https://mint-a.example".to_string()],
                 ..Default::default()
             },
@@ -1982,13 +2023,10 @@ mod tests {
     }
 }
 
-/// Type alias for simulation store
-pub type SimStore<S> =
-    GenericStore<S, crate::mock::MockRelayTransport, crate::mock::MockConnectionFactory>;
+/// Type alias for simulation store.
+pub type SimMeshStore<S> =
+    MeshStoreCore<S, crate::mock::MockRelayTransport, crate::mock::MockConnectionFactory>;
 
-/// Type alias for production store (using real WebRTC)
-pub type ProductionStore<S> = GenericStore<
-    S,
-    crate::nostr::NostrRelayTransport,
-    crate::real_factory::RealPeerConnectionFactory,
->;
+/// Type alias for the default production core (Nostr signaling + WebRTC links).
+pub type ProductionMeshStore<S> =
+    MeshStoreCore<S, crate::nostr::NostrRelayTransport, crate::real_factory::WebRtcPeerLinkFactory>;

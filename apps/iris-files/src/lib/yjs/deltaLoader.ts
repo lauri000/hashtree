@@ -47,6 +47,18 @@ export async function loadDeltasFromEntries(docEntries: TreeEntry[]): Promise<Ui
   return deltas;
 }
 
+export async function loadDocumentTextFromEntries(docEntries: TreeEntry[]): Promise<string> {
+  const deltas = await loadDeltasFromEntries(docEntries);
+  if (deltas.length === 0) return '';
+
+  const ydoc = new Y.Doc();
+  for (const delta of deltas) {
+    Y.applyUpdate(ydoc, delta, 'remote');
+  }
+
+  return ydoc.getXmlFragment('default').toString();
+}
+
 /**
  * Load deltas from all collaborators' trees
  */

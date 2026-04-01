@@ -203,8 +203,27 @@ function setupTreeRootRegistryBridge(): void {
       const treeName = key.slice(slashIndex + 1);
 
       try {
-        await (adapter as { setTreeRootCache: (npub: string, treeName: string, hash: Uint8Array, key?: Uint8Array, visibility?: 'public' | 'link-visible' | 'private', labels?: string[]) => Promise<void> })
-          .setTreeRootCache(npub, treeName, record.hash, record.key, record.visibility, record.labels);
+        await (adapter as {
+          setTreeRootCache: (
+            npub: string,
+            treeName: string,
+            hash: Uint8Array,
+            key?: Uint8Array,
+            visibility?: 'public' | 'link-visible' | 'private',
+            labels?: string[],
+            metadata?: {
+              encryptedKey?: string;
+              keyId?: string;
+              selfEncryptedKey?: string;
+              selfEncryptedLinkKey?: string;
+            }
+          ) => Promise<void>;
+        }).setTreeRootCache(npub, treeName, record.hash, record.key, record.visibility, record.labels, {
+          encryptedKey: record.encryptedKey,
+          keyId: record.keyId,
+          selfEncryptedKey: record.selfEncryptedKey,
+          selfEncryptedLinkKey: record.selfEncryptedLinkKey,
+        });
       } catch (err) {
         console.warn('[WorkerInit] Failed to sync local write to worker:', err);
       }
@@ -220,8 +239,28 @@ function setupTreeRootRegistryBridge(): void {
       const npub = key.slice(0, slashIndex);
       const treeName = key.slice(slashIndex + 1);
 
-      (adapter as { setTreeRootCache: (npub: string, treeName: string, hash: Uint8Array, key?: Uint8Array, visibility?: 'public' | 'link-visible' | 'private', labels?: string[]) => Promise<void> })
-        .setTreeRootCache(npub, treeName, record.hash, record.key, record.visibility, record.labels)
+      (adapter as {
+        setTreeRootCache: (
+          npub: string,
+          treeName: string,
+          hash: Uint8Array,
+          key?: Uint8Array,
+          visibility?: 'public' | 'link-visible' | 'private',
+          labels?: string[],
+          metadata?: {
+            encryptedKey?: string;
+            keyId?: string;
+            selfEncryptedKey?: string;
+            selfEncryptedLinkKey?: string;
+          }
+        ) => Promise<void>;
+      })
+        .setTreeRootCache(npub, treeName, record.hash, record.key, record.visibility, record.labels, {
+          encryptedKey: record.encryptedKey,
+          keyId: record.keyId,
+          selfEncryptedKey: record.selfEncryptedKey,
+          selfEncryptedLinkKey: record.selfEncryptedLinkKey,
+        })
         .catch(err => console.warn('[WorkerInit] Failed to sync initial local write to worker:', err));
     }
   }

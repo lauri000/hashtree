@@ -21,7 +21,7 @@ import * as os from 'os';
 import { nip19, getPublicKey } from 'nostr-tools';
 import { acquireRustLock, releaseRustLock } from './rust-lock.js';
 import { rustTargetPath, withRustTargetEnv } from './rust-target.js';
-import { waitForAppReady } from './test-utils.js';
+import { useLocalRelay, waitForAppReady, waitForRelayConnected } from './test-utils.js';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
@@ -32,8 +32,8 @@ const RELEASE_DIR = rustTargetPath('release');
 
 test.describe('Git push to htree:// and view in browser', () => {
   // Serial mode: WebRTC from parallel tests can interfere with local git state
-  test.describe.configure({ mode: 'serial', timeout: 180000 });
-  test.setTimeout(180000); // 3 minutes - git operations can be slow
+  test.describe.configure({ mode: 'serial', timeout: 420000 });
+  test.setTimeout(420000);
 
   let tempDir: string;
   let htreeProcess: ChildProcess | null = null;
@@ -101,7 +101,7 @@ test.describe('Git push to htree:// and view in browser', () => {
   };
 
   test.beforeAll(async () => {
-    test.setTimeout(180000);
+    test.setTimeout(420000);
     // Create temp directory for htree data
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'htree-test-'));
     console.log(`Using temp directory: ${tempDir}`);
@@ -129,7 +129,7 @@ test.describe('Git push to htree:// and view in browser', () => {
     }
   });
 
-  test('push repo to htree:// and view in browser', async ({ page }) => {
+  test('push repo to htree:// and view in browser', async ({ page, relayUrl }) => {
     // Capture browser console logs
     page.on('console', msg => {
       if (msg.text().includes('[WebRTC]') || msg.text().includes('[WebRTCStore]') || msg.text().includes('[RefResolver]')) {
@@ -144,7 +144,7 @@ test.describe('Git push to htree:// and view in browser', () => {
     // Environment setup - use temp dir for all data
     const configDir = path.join(tempDir, '.hashtree');
     fs.mkdirSync(configDir, { recursive: true });
-    const relayUrl = process.env.VITE_TEST_RELAY || 'ws://localhost:4736';
+    const localRelay = relayUrl;
     fs.writeFileSync(path.join(configDir, 'config.toml'), [
       '[server]',
       'enable_auth = false',
@@ -152,7 +152,7 @@ test.describe('Git push to htree:// and view in browser', () => {
       'stun_port = 0',
       '',
       '[nostr]',
-      `relays = ["${relayUrl}"]`,
+      `relays = ["${localRelay}"]`,
       'crawl_depth = 0',
       '',
     ].join('\n'));
@@ -283,6 +283,8 @@ test.describe('Git push to htree:// and view in browser', () => {
     }
     if (serverReady) {
       await waitForAppReady(page, 30000);
+      await useLocalRelay(page, localRelay);
+      await waitForRelayConnected(page, 30000);
     }
 
     // Browser automatically generates a key via restoreSession() - wait for it

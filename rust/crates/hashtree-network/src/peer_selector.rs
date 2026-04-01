@@ -127,15 +127,12 @@ fn clamp_rto(rto_ms: u64) -> u64 {
     }
 }
 
-/// Extract stable principal identity from a transient peer id.
+/// Extract the stable principal identity for a peer.
 ///
-/// Peer IDs are generally `"<principal>:<session>"`; if no `:` exists we treat
-/// the full peer id as the principal.
+/// Peer IDs are the stable endpoint identifier now, so selector state keys map
+/// directly to the peer id instead of stripping any session suffix.
 pub fn peer_principal(peer_id: &str) -> &str {
     peer_id
-        .split_once(':')
-        .map(|(principal, _)| principal)
-        .unwrap_or(peer_id)
 }
 
 /// Per-peer performance statistics
@@ -1382,20 +1379,20 @@ mod tests {
     }
 
     #[test]
-    fn test_peer_principal_prefers_stable_identity_prefix() {
-        assert_eq!(peer_principal("npub1abc:session-1"), "npub1abc");
+    fn test_peer_principal_matches_peer_id() {
         assert_eq!(peer_principal("npub1abc"), "npub1abc");
+        assert_eq!(peer_principal("peer-hex-01"), "peer-hex-01");
     }
 
     #[test]
-    fn test_metadata_snapshot_restores_across_session_ids() {
+    fn test_metadata_snapshot_restores_for_same_peer_id() {
         let mut selector = PeerSelector::new();
-        selector.add_peer("npub1stable:session-a");
-        selector.record_request("npub1stable:session-a", 64);
-        selector.record_success("npub1stable:session-a", 32, 1024);
-        selector.record_cashu_payment("npub1stable:session-a", 77);
-        selector.record_cashu_receipt("npub1stable:session-a", 33);
-        selector.record_cashu_payment_default("npub1stable:session-a");
+        selector.add_peer("npub1stable");
+        selector.record_request("npub1stable", 64);
+        selector.record_success("npub1stable", 32, 1024);
+        selector.record_cashu_payment("npub1stable", 77);
+        selector.record_cashu_receipt("npub1stable", 33);
+        selector.record_cashu_payment_default("npub1stable");
 
         let snapshot = selector.export_peer_metadata_snapshot();
         assert_eq!(snapshot.version, PEER_METADATA_SNAPSHOT_VERSION);
@@ -1404,10 +1401,8 @@ mod tests {
 
         let mut restored = PeerSelector::new();
         restored.import_peer_metadata_snapshot(&snapshot);
-        restored.add_peer("npub1stable:session-b");
-        let stats = restored
-            .get_stats("npub1stable:session-b")
-            .expect("restored stats");
+        restored.add_peer("npub1stable");
+        let stats = restored.get_stats("npub1stable").expect("restored stats");
         assert_eq!(stats.requests_sent, 1);
         assert_eq!(stats.successes, 1);
         assert_eq!(stats.cashu_paid_sat, 77);

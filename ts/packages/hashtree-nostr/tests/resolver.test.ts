@@ -139,12 +139,15 @@ function createNostrFunctions(ndk: NDK) {
       });
       return () => sub.stop();
     },
-    publish: async (event: Omit<NostrEvent, 'id' | 'pubkey' | 'created_at'>) => {
+    publish: async (event: Omit<NostrEvent, 'id' | 'pubkey' | 'created_at'> & { created_at?: number }) => {
       try {
         const ndkEvent = new NDKEvent(ndk);
         ndkEvent.kind = event.kind;
         ndkEvent.content = event.content;
         ndkEvent.tags = event.tags;
+        if (event.created_at) {
+          ndkEvent.created_at = event.created_at;
+        }
         await ndkEvent.publish();
         return true;
       } catch (e) {
@@ -686,6 +689,37 @@ describe('NostrRefResolver', () => {
     unsubscribe();
     resolver.stop?.();
   }, 10000);
+
+  it('publishes strictly increasing created_at for rapid updates to the same tree', async () => {
+    const publishedEvents: Array<{ created_at?: number; tags: string[][] }> = [];
+    const resolver = createNostrRefResolver({
+      subscribe: () => () => {},
+      publish: async (event) => {
+        publishedEvents.push({
+          created_at: event.created_at,
+          tags: event.tags,
+        });
+        return true;
+      },
+      getPubkey: () => pubkey,
+      nip19,
+    });
+
+    const treeName = `monotonic-publish-${Date.now()}`;
+    const key = `${npub}/${treeName}`;
+    const cidA = cid(fromHex('8888'.repeat(16)));
+    const cidB = cid(fromHex('9999'.repeat(16)));
+
+    await resolver.publish!(key, cidA);
+    await resolver.publish!(key, cidB);
+
+    expect(publishedEvents).toHaveLength(2);
+    expect(typeof publishedEvents[0]?.created_at).toBe('number');
+    expect(typeof publishedEvents[1]?.created_at).toBe('number');
+    expect(publishedEvents[1]!.created_at!).toBeGreaterThan(publishedEvents[0]!.created_at!);
+
+    resolver.stop?.();
+  });
 
   it('should preserve visibility info when publishing with visibility', async () => {
     const { subscribe, publish } = createNostrFunctions(ndk);

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   getBoardRouteKey,
   resolveHydratedBoardResult,
+  shouldScheduleHydratedBoardRetry,
   shouldApplyHydratedBoardState,
   shouldShowBoardLoading,
 } from '../src/lib/boards/viewState';
@@ -73,6 +74,15 @@ describe('board view loading state', () => {
     expect(resolveHydratedBoardResult({
       hasBoardSnapshot: false,
       hasIncompleteData: true,
+      hasPendingData: false,
+    })).toBe('retry');
+  });
+
+  it('keeps retrying when collaborator roots are still pending', () => {
+    expect(resolveHydratedBoardResult({
+      hasBoardSnapshot: false,
+      hasIncompleteData: false,
+      hasPendingData: true,
     })).toBe('retry');
   });
 
@@ -80,6 +90,7 @@ describe('board view loading state', () => {
     expect(resolveHydratedBoardResult({
       hasBoardSnapshot: false,
       hasIncompleteData: false,
+      hasPendingData: false,
     })).toBe('missing');
   });
 
@@ -87,6 +98,21 @@ describe('board view loading state', () => {
     expect(resolveHydratedBoardResult({
       hasBoardSnapshot: true,
       hasIncompleteData: true,
+      hasPendingData: true,
     })).toBe('ready');
+  });
+
+  it('schedules a background retry when collaborator data is still pending', () => {
+    expect(shouldScheduleHydratedBoardRetry({
+      hasIncompleteData: false,
+      hasPendingData: true,
+    })).toBe(true);
+  });
+
+  it('stops retrying once hydration is complete', () => {
+    expect(shouldScheduleHydratedBoardRetry({
+      hasIncompleteData: false,
+      hasPendingData: false,
+    })).toBe(false);
   });
 });

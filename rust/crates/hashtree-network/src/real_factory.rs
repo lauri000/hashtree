@@ -89,10 +89,8 @@ struct PendingConnection {
     data_channel: Option<Arc<RTCDataChannel>>,
 }
 
-/// Real WebRTC peer-link factory
-///
-/// Creates actual WebRTC connections using the webrtc crate.
-pub struct RealPeerConnectionFactory {
+/// WebRTC peer-link factory for the default production transport stack.
+pub struct WebRtcPeerLinkFactory {
     /// Pending outbound connections (we sent offer, waiting for answer)
     pending: RwLock<HashMap<String, PendingConnection>>,
     /// Pending inbound connections (we received offer, sent answer)
@@ -101,7 +99,7 @@ pub struct RealPeerConnectionFactory {
     stun_servers: Vec<String>,
 }
 
-impl RealPeerConnectionFactory {
+impl WebRtcPeerLinkFactory {
     pub fn new() -> Self {
         Self::with_stun_servers(vec![
             "stun:stun.iris.to:3478".to_string(),
@@ -165,14 +163,14 @@ impl RealPeerConnectionFactory {
     }
 }
 
-impl Default for RealPeerConnectionFactory {
+impl Default for WebRtcPeerLinkFactory {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl PeerLinkFactory for RealPeerConnectionFactory {
+impl PeerLinkFactory for WebRtcPeerLinkFactory {
     async fn create_offer(
         &self,
         target_peer_id: &str,
@@ -312,5 +310,3 @@ impl PeerLinkFactory for RealPeerConnectionFactory {
         Ok(RealDataChannel::new(dc))
     }
 }
-
-pub type WebRtcPeerLinkFactory = RealPeerConnectionFactory;

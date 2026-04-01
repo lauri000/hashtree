@@ -1,7 +1,7 @@
 /**
  * WebRTC signaling types for hashtree P2P connections
  *
- * These types match the Rust hashtree-webrtc crate for interoperability.
+ * These types match the Rust hashtree-network mesh transport types.
  */
 
 import type { Store } from '@hashtree/core';
@@ -190,6 +190,7 @@ export function validateMeshNostrFrame(frame: MeshNostrFrame): string | null {
   if (frame.version !== MESH_PROTOCOL_VERSION) return 'invalid version';
   if (!frame.frame_id) return 'missing frame id';
   if (!frame.sender_peer_id) return 'missing sender peer id';
+  if (frame.sender_peer_id.includes(':')) return 'invalid sender peer id';
   if (frame.htl <= 0 || frame.htl > MESH_MAX_HTL) return 'invalid htl';
   if (frame.payload?.type !== 'EVENT') return 'invalid payload type';
   if (frame.payload.event.kind !== WEBRTC_KIND) return 'unsupported event kind';
@@ -328,7 +329,7 @@ export type WebRTCStoreEvent =
 export type WebRTCStoreEventHandler = (event: WebRTCStoreEvent) => void;
 
 // Stats tracking
-export interface WebRTCStats {
+export interface MeshStats {
   requestsSent: number;           // Requests we sent to peers
   requestsReceived: number;       // Requests we received from peers
   responsesSent: number;          // Responses we sent to peers
@@ -346,6 +347,8 @@ export interface WebRTCStats {
   meshForwarded: number;          // Relayless mesh frames forwarded
   meshDroppedDuplicate: number;   // Relayless mesh frames/events dropped by dedupe
 }
+
+export type WebRTCStats = MeshStats;
 
 // Bandwidth sample for rolling average calculation
 export interface BandwidthSample {
@@ -387,8 +390,8 @@ export class PeerId {
   }
 
   static fromString(str: string): PeerId {
-    const [pubkey] = str.split(':');
-    if (!pubkey) {
+    const pubkey = str.trim();
+    if (!pubkey || pubkey.includes(':')) {
       throw new Error(`Invalid peer string: ${str}`);
     }
     return new PeerId(pubkey);

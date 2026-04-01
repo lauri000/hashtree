@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
-use hashtree_core::{Cid, Store};
 use crate::{ListEventsOptions, NostrEventStore, NostrEventStoreError, StoredNostrEvent};
+use hashtree_core::{Cid, Store};
 use nostr_sdk::{
     pool::RelayLimits, Client, EventId, Filter, Keys, Kind, NegentropyOptions, Options, PublicKey,
     Timestamp,

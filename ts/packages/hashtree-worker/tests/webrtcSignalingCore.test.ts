@@ -128,8 +128,8 @@ describe('p2p signaling core', () => {
       tags: [],
       content: JSON.stringify({
         type: 'offer',
-        peerId: 'sender:uuid',
-        recipient: 'target:uuid',
+        peerId: 'sender-pubkey',
+        recipient: 'target',
         offer: { sdp: 'v=0' },
       }),
     };

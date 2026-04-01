@@ -26,7 +26,7 @@ test.describe('Releases', () => {
     await expect(page.locator('text=Loading releases...')).not.toBeVisible({ timeout: 20000 });
     await expect(page.locator('text=No releases yet')).toBeVisible({ timeout: 20000 });
     await expect(page.getByTestId('repo-header-row')).toBeVisible();
-    await expect(page.getByTestId('repo-tab-nav').getByRole('link', { name: 'Releases' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'New Release' })).toBeVisible();
 
     await page.getByRole('button', { name: 'New Release' }).click();
     await page.locator('#release-title').fill('Iris Files v0.1');
@@ -93,8 +93,9 @@ test.describe('Releases', () => {
 
     const releasesSidebar = page.getByTestId('repo-releases-sidebar');
     await expect(releasesSidebar).toBeVisible({ timeout: 20000 });
-    await expect(releasesSidebar).toContainText('release');
+    await expect(releasesSidebar.getByTestId('repo-releases-link')).toHaveText('Releases');
     await expect(releasesSidebar.getByTestId('repo-latest-release-link')).toHaveText(releaseTitle);
+    await expect(releasesSidebar).toContainText('Latest');
     await expect(releasesSidebar).toContainText(releaseTag);
 
     const repoTabNav = page.getByTestId('repo-tab-nav');

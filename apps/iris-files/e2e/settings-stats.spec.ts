@@ -1,14 +1,20 @@
 import { test, expect, type Page } from './fixtures';
 import { setupPageErrorHandler, disableOthersPool } from './test-utils.js';
 
+async function goToSettings(page: Page): Promise<void> {
+  await page.goto('/#/settings');
+  await disableOthersPool(page);
+  await expect(page.getByRole('button', { name: 'Network' })).toBeVisible({ timeout: 10000 });
+}
+
+async function openP2PSettings(page: Page): Promise<void> {
+  await goToSettings(page);
+  await page.getByRole('button', { name: 'Network' }).click();
+  await page.getByTestId('settings-network-p2p').click();
+}
+
 test.describe('Settings Stats', () => {
   test.setTimeout(90000);
-
-  async function goToSettings(page: Page): Promise<void> {
-    await page.goto('/#/settings');
-    await disableOthersPool(page);
-    await expect(page.getByRole('button', { name: 'Network' })).toBeVisible({ timeout: 10000 });
-  }
 
   test('displays storage stats section', async ({ page }) => {
     setupPageErrorHandler(page);
@@ -27,8 +33,7 @@ test.describe('Settings Stats', () => {
 
   test('displays connection pools section', async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/#/settings');
-    await disableOthersPool(page);
+    await openP2PSettings(page);
 
     await expect(page.locator('text=Connection Pools').first()).toBeVisible({ timeout: 10000 });
     await expect(page.locator('text=Follows')).toBeVisible({ timeout: 5000 });
@@ -36,8 +41,7 @@ test.describe('Settings Stats', () => {
 
   test('displays peer stats section', async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/#/settings');
-    await disableOthersPool(page);
+    await openP2PSettings(page);
 
     await expect(page.locator('text=Mesh Peers').first()).toBeVisible({ timeout: 5000 });
   });
@@ -124,7 +128,7 @@ test.describe('Block Peer', () => {
         return;
       }
 
-      await page1.goto('/#/settings');
+      await openP2PSettings(page1);
       await expect(page1.locator('text=Mesh Peers').first()).toBeVisible({ timeout: 10000 });
 
       const peerSection = page1.locator('text=Mesh Peers').first();
@@ -161,8 +165,7 @@ test.describe('Block Peer', () => {
 
   test('blocked peer list persists in settings', async ({ page }) => {
     setupPageErrorHandler(page);
-    await page.goto('/#/settings');
-    await disableOthersPool(page);
+    await openP2PSettings(page);
 
     await expect(page.locator('text=Connection Pools').first()).toBeVisible({ timeout: 10000 });
 

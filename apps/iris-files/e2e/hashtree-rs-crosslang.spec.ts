@@ -56,9 +56,9 @@ function ensureHtreeBinary(): void {
   }
 }
 
-function generateUuid(): string {
-  return Math.random().toString(36).substring(2, 15) +
-    Math.random().toString(36).substring(2, 15);
+function withRelayNamespace(baseUrl: string, namespace: string): string {
+  const trimmed = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+  return `${trimmed}/${namespace}`;
 }
 
 async function killProcessesOnPort(port: number): Promise<void> {
@@ -159,8 +159,11 @@ test.describe('rust Cross-Language', () => {
     testInfo.setTimeout(360000);
     // Start rust crosslang test in background
     console.log('Starting rust peer...');
-    localRelay = relayUrl;
     crosslangPort = getCrosslangPort(testInfo.workerIndex);
+    localRelay = withRelayNamespace(
+      relayUrl,
+      `hashtree-rs-crosslang-${testInfo.workerIndex}-${crosslangPort}`
+    );
     await killProcessesOnPort(crosslangPort);
     lockFd = await acquireRustLock(240000);
     try {
@@ -286,7 +289,6 @@ test.describe('rust Cross-Language', () => {
     // Generate keys for TypeScript peer
     const tsSk = tsSecretKey;
     const tsPk = tsPubkey;
-    const tsUuid = generateUuid();
 
     console.log('TypeScript peer pubkey:', tsPk.slice(0, 16) + '...');
 
@@ -351,8 +353,7 @@ test.describe('rust Cross-Language', () => {
               if (typeof msg.targetPeerId !== 'string' || 'recipient' in msg) {
                 throw new Error(`unexpected rust signaling shape: ${content}`);
               }
-              const recipientPk = msg.targetPeerId.split(':')[0] ?? null;
-              if (recipientPk === tsPk) {
+              if (msg.targetPeerId === tsPk) {
                 console.log(`Received OFFER from ${senderPubkey.slice(0, 16)}...`);
                 if (rsPeerPubkey && senderPubkey === rsPeerPubkey) {
                   receivedOfferFromRsPeer = true;
@@ -377,7 +378,7 @@ test.describe('rust Cross-Language', () => {
         created_at: Math.floor(Date.now() / 1000),
         tags: [
           ['l', HELLO_TAG],
-          ['peerId', tsUuid],
+          ['peerId', tsPk],
           ['expiration', expiration.toString()],
         ],
         content: '',
@@ -407,9 +408,7 @@ test.describe('rust Cross-Language', () => {
     if (rsPeerPubkey && foundRsPeer) {
       const rsPeer = discoveredPeers.get(rsPeerPubkey);
       console.log(`rust peerId: ${rsPeer?.peerId}`);
-      expect(rsPeer?.peerId).toBeTruthy();
-      expect(typeof rsPeer?.peerId).toBe('string');
-      expect(rsPeer?.peerId.length).toBeGreaterThan(5);
+      expect(rsPeer?.peerId).toBe(rsPeerPubkey);
     }
 
     expect(foundRsPeer || receivedOfferFromRsPeer).toBe(true);
@@ -423,11 +422,9 @@ test.describe('rust Cross-Language', () => {
     const pool = new SimplePool();
     const tsSk = tsSecretKey;
     const tsPk = tsPubkey;
-    // Use a high UUID so rust (lower UUID) initiates the offer.
-    const tsUuid = 'z'.repeat(30);
 
     console.log('TypeScript peer pubkey:', tsPk.slice(0, 16) + '...');
-    console.log('TypeScript peer UUID:', tsUuid);
+    console.log('TypeScript peer ID:', tsPk);
 
     let receivedOfferFromRs = false;
 
@@ -467,8 +464,7 @@ test.describe('rust Cross-Language', () => {
               if (typeof msg.targetPeerId !== 'string' || 'recipient' in msg) {
                 throw new Error(`unexpected rust signaling shape: ${content}`);
               }
-              const recipientPk = msg.targetPeerId.split(':')[0] ?? null;
-              if (recipientPk === tsPk && senderPubkey === rsPeerPubkey) {
+              if (msg.targetPeerId === tsPk && senderPubkey === rsPeerPubkey) {
                 receivedOfferFromRs = true;
                 console.log('*** RECEIVED OFFER FROM HASHTREE-RS ***');
               }
@@ -490,7 +486,7 @@ test.describe('rust Cross-Language', () => {
         created_at: Math.floor(Date.now() / 1000),
         tags: [
           ['l', HELLO_TAG],
-          ['peerId', tsUuid],
+          ['peerId', tsPk],
           ['expiration', expiration.toString()],
         ],
         content: '',

@@ -1,8 +1,8 @@
 //! Mesh transport types for peer-to-peer data exchange.
 //!
 //! Defines signaling frames, negotiated peer-link messages, and shared mesh
-//! constants used across Nostr websocket transports, local buses, WebRTC, and
-//! simulation.
+//! constants used across Nostr websocket transports, local buses, direct-link
+//! transports such as WebRTC, and simulation.
 
 use hashtree_core::Hash;
 use nostr_sdk::nostr::{Event, Kind};
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use crate::generic_store::RequestDispatchConfig;
+use crate::mesh_store_core::RequestDispatchConfig;
 use crate::peer_selector::SelectionStrategy;
 
 /// Unique identifier for a peer in the network
@@ -30,8 +30,8 @@ impl PeerId {
     }
 
     pub fn from_peer_string(s: &str) -> Option<Self> {
-        let pubkey = s.split(':').next()?.trim();
-        if pubkey.is_empty() {
+        let pubkey = s.trim();
+        if pubkey.is_empty() || pubkey.contains(':') {
             return None;
         }
         Some(Self {
@@ -154,9 +154,9 @@ impl SignalingMessage {
     }
 }
 
-/// Perfect negotiation: determine if we are the "polite" peer
+/// Shared concurrent-offer negotiation: determine if we are the "polite" peer.
 ///
-/// In perfect negotiation, both peers can send offers simultaneously.
+/// In this negotiation flow, both peers can send offers simultaneously.
 /// When a collision occurs (we receive an offer while we have a pending offer),
 /// the "polite" peer backs off and accepts the incoming offer instead.
 ///
@@ -362,23 +362,6 @@ pub fn should_forward(htl: u8) -> bool {
 
 use tokio::sync::{mpsc, oneshot};
 
-/// Request to forward a data request to other peers
-pub struct ForwardRequest {
-    /// Hash being requested
-    pub hash: Hash,
-    /// Peer ID to exclude (the one who sent the request)
-    pub exclude_peer_id: String,
-    /// HTL for forwarded request
-    pub htl: u8,
-    /// Channel to send result back
-    pub response: oneshot::Sender<Option<Vec<u8>>>,
-}
-
-/// Sender for forward requests
-pub type ForwardTx = mpsc::Sender<ForwardRequest>;
-/// Receiver for forward requests
-pub type ForwardRx = mpsc::Receiver<ForwardRequest>;
-
 /// Peer pool classification
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PeerPool {
@@ -469,7 +452,7 @@ pub fn classifier_channel(buffer: usize) -> (ClassifierTx, ClassifierRx) {
 
 /// Configuration for the default mesh-backed store composition.
 #[derive(Clone)]
-pub struct WebRTCStoreConfig {
+pub struct MeshStoreConfig {
     /// Nostr relays for signaling
     pub relays: Vec<String>,
     /// Root hashes to advertise
@@ -485,7 +468,7 @@ pub struct WebRTCStoreConfig {
     /// Channel for peer classification (optional)
     /// If None, all peers go to "Other" pool
     pub classifier_tx: Option<ClassifierTx>,
-    /// Retrieval peer selection strategy (shared with GenericStore/CLI/sim).
+    /// Retrieval peer selection strategy (shared with MeshStoreCore/CLI/sim).
     pub request_selection_strategy: SelectionStrategy,
     /// Whether fairness constraints are enabled for retrieval selection.
     pub request_fairness_enabled: bool,
@@ -493,7 +476,7 @@ pub struct WebRTCStoreConfig {
     pub request_dispatch: RequestDispatchConfig,
 }
 
-impl Default for WebRTCStoreConfig {
+impl Default for MeshStoreConfig {
     fn default() -> Self {
         Self {
             relays: vec![
@@ -518,9 +501,6 @@ impl Default for WebRTCStoreConfig {
     }
 }
 
-/// Backward-compatible alias for the generic mesh store configuration.
-pub type MeshStoreConfig = WebRTCStoreConfig;
-
 /// Connection state for a peer
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerState {
@@ -538,7 +518,7 @@ pub enum PeerState {
 
 /// Statistics for the default mesh-backed store composition.
 #[derive(Debug, Clone, Default)]
-pub struct WebRTCStats {
+pub struct MeshStats {
     pub connected_peers: usize,
     pub pending_requests: usize,
     pub bytes_sent: u64,
@@ -547,8 +527,8 @@ pub struct WebRTCStats {
     pub requests_fulfilled: u64,
 }
 
-/// Backward-compatible alias for generic mesh store statistics.
-pub type MeshStats = WebRTCStats;
+/// Backward-compatible alias for the previous production-specific name.
+pub type WebRTCStats = MeshStats;
 
 /// Nostr event kind for hashtree signaling envelopes (ephemeral, NIP-17 style).
 pub const NOSTR_KIND_HASHTREE: u16 = 25050;
@@ -690,6 +670,9 @@ pub fn validate_mesh_frame(frame: &MeshNostrFrame) -> Result<(), &'static str> {
     if frame.sender_peer_id.is_empty() {
         return Err("missing sender peer id");
     }
+    if frame.sender_peer_id.contains(':') {
+        return Err("invalid sender peer id");
+    }
     if frame.htl == 0 || frame.htl > MESH_MAX_HTL {
         return Err("invalid htl");
     }
@@ -704,5 +687,5 @@ pub fn validate_mesh_frame(frame: &MeshNostrFrame) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Default WebRTC data channel label.
+/// Default data channel label used by the WebRTC peer-link implementation.
 pub const DATA_CHANNEL_LABEL: &str = "hashtree";

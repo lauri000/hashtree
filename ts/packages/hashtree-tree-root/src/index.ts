@@ -620,6 +620,10 @@ class TreeRootRegistryImpl {
       visibility?: TreeVisibility;
       labels?: string[];
       updatedAt?: number;
+      encryptedKey?: string;
+      keyId?: string;
+      selfEncryptedKey?: string;
+      selfEncryptedLinkKey?: string;
     }
   ): void {
     const cacheKey = this.makeKey(npub, treeName);
@@ -650,6 +654,10 @@ class TreeRootRegistryImpl {
       updatedAt,
       source,
       dirty: false,
+      encryptedKey: options?.encryptedKey ?? (sameHash ? existing?.encryptedKey : undefined),
+      keyId: options?.keyId ?? (sameHash ? existing?.keyId : undefined),
+      selfEncryptedKey: options?.selfEncryptedKey ?? (sameHash ? existing?.selfEncryptedKey : undefined),
+      selfEncryptedLinkKey: options?.selfEncryptedLinkKey ?? (sameHash ? existing?.selfEncryptedLinkKey : undefined),
     };
 
     this.records.set(cacheKey, record);

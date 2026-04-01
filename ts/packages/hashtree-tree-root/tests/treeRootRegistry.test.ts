@@ -104,4 +104,32 @@ describe('tree root registry same-hash merges', () => {
     expect(record).not.toBeNull();
     expect(record?.key && toHex(record.key)).toBe(toHex(KEY_B));
   });
+
+  it('preserves link-visible metadata on same-hash external refreshes that omit it', () => {
+    const npub = 'npub-test-external-metadata-preserve';
+    const treeName = 'boards/test-external-metadata-preserve';
+
+    treeRootRegistry.delete(npub, treeName);
+    treeRootRegistry.setFromResolver(npub, treeName, HASH_A, 100, {
+      key: KEY_A,
+      visibility: 'link-visible',
+      encryptedKey: 'aa'.repeat(32),
+      keyId: 'key-id-2',
+      selfEncryptedLinkKey: 'bb'.repeat(32),
+    });
+
+    treeRootRegistry.setFromExternal(npub, treeName, HASH_A, 'prefetch', {
+      key: KEY_A,
+      visibility: 'link-visible',
+      updatedAt: 200,
+    });
+
+    const record = treeRootRegistry.get(npub, treeName);
+    expect(record).not.toBeNull();
+    expect(record?.key && toHex(record.key)).toBe(toHex(KEY_A));
+    expect(record?.visibility).toBe('link-visible');
+    expect(record?.encryptedKey).toBe('aa'.repeat(32));
+    expect(record?.keyId).toBe('key-id-2');
+    expect(record?.selfEncryptedLinkKey).toBe('bb'.repeat(32));
+  });
 });

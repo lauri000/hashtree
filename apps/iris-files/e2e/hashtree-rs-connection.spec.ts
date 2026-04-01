@@ -9,7 +9,17 @@ import { test, expect } from './fixtures';
 import { spawn, execSync, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { enableOthersPool, ensureLoggedIn, setupPageErrorHandler, useLocalRelay, waitForAppReady, waitForRelayConnected, getTestRelayUrl, getCrosslangPort } from './test-utils.js';
+import {
+  enableOthersPool,
+  ensureLoggedIn,
+  getCrosslangPort,
+  getTestRelayUrl,
+  presetLocalRelayInDB,
+  setupPageErrorHandler,
+  useLocalRelay,
+  waitForAppReady,
+  waitForRelayConnected,
+} from './test-utils.js';
 import { acquireRustLock, releaseRustLock } from './rust-lock.js';
 import { rustTargetPath, withRustTargetEnv } from './rust-target.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
@@ -52,6 +62,11 @@ function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function withRelayNamespace(baseUrl: string, namespace: string): string {
+  const trimmed = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+  return `${trimmed}/${namespace}`;
+}
+
 async function killProcessesOnPort(port: number): Promise<void> {
   const killBySignal = (signal: 'TERM' | 'KILL') => {
     try {
@@ -74,15 +89,18 @@ test.describe('hashtreeRs WebRTC Connection', () => {
   test.setTimeout(420000);
 
   test('ts and hashtreeRs establish WebRTC connection', async ({ page }, testInfo) => {
-    const localRelay = getTestRelayUrl();
     const crosslangPort = getCrosslangPort(testInfo.workerIndex);
+    const relayNamespace = `hashtree-rs-connection-${testInfo.workerIndex}-${crosslangPort}`;
+    const localRelay = withRelayNamespace(getTestRelayUrl(), relayNamespace);
     await killProcessesOnPort(crosslangPort);
 
     setupPageErrorHandler(page);
     await page.goto('/');
+    await presetLocalRelayInDB(page, localRelay);
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await waitForAppReady(page);
     await ensureLoggedIn(page, 20000);
-    await useLocalRelay(page);
+    await useLocalRelay(page, localRelay);
     await enableOthersPool(page, 2);
     await waitForRelayConnected(page, 20000);
 

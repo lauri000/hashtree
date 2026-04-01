@@ -44,6 +44,26 @@ function createBlossomTracker(page: Page, options?: { log?: boolean }): BlossomR
   return blossomRequests;
 }
 
+async function waitForUploadedVideo(page: Page, fileName: string, timeoutMs: number = 60000): Promise<'list' | 'viewer'> {
+  const deadline = Date.now() + timeoutMs;
+  const videoLink = page.locator('[data-testid="file-list"] a')
+    .filter({ hasText: fileName })
+    .first();
+
+  while (Date.now() < deadline) {
+    if (await videoLink.isVisible().catch(() => false)) {
+      return 'list';
+    }
+    const url = page.url();
+    if (url.includes(fileName) || url.includes(encodeURIComponent(fileName))) {
+      return 'viewer';
+    }
+    await page.waitForTimeout(500);
+  }
+
+  throw new Error(`Timed out waiting for uploaded video "${fileName}" to appear in list or viewer`);
+}
+
 async function waitForVideoReady(page: Page, timeoutMs: number = 30000) {
   const video = page.locator('video').first();
   await expect(video).toBeAttached({ timeout: timeoutMs });
@@ -96,11 +116,8 @@ test.describe('Blossom Fallback Behavior', () => {
     console.log('File input set');
 
     // Wait for upload to complete - file should appear in list
-    const videoLink = page.locator('[data-testid="file-list"] a')
-      .filter({ hasText: 'Big_Buck_Bunny_360_10s_1MB.mp4' })
-      .first();
-    await expect(videoLink).toBeVisible({ timeout: 60000 });
-    console.log('File appeared in list');
+    const uploadState = await waitForUploadedVideo(page, 'Big_Buck_Bunny_360_10s_1MB.mp4', 60000);
+    console.log(`Upload settled in ${uploadState} view`);
 
     // Count Blossom requests during upload phase
     const uploadPhaseRequests = blossomRequests.length;
@@ -110,8 +127,13 @@ test.describe('Blossom Fallback Behavior', () => {
     const viewStartIndex = blossomRequests.length;
 
     // Click to view the file (this triggers loading from storage)
-    await videoLink.click();
-    console.log('Clicked to view file');
+    if (uploadState === 'list') {
+      const videoLink = page.locator('[data-testid="file-list"] a')
+        .filter({ hasText: 'Big_Buck_Bunny_360_10s_1MB.mp4' })
+        .first();
+      await videoLink.click();
+      console.log('Clicked to view file');
+    }
 
     await waitForVideoReady(page);
     console.log('Video loaded and playable');
@@ -151,10 +173,7 @@ test.describe('Blossom Fallback Behavior', () => {
     const fileInput = page.locator('input[type="file"][multiple]').first();
     await fileInput.setInputFiles(TEST_VIDEO);
 
-    const videoLink = page.locator('[data-testid="file-list"] a')
-      .filter({ hasText: 'Big_Buck_Bunny_360_10s_1MB.mp4' })
-      .first();
-    await expect(videoLink).toBeVisible({ timeout: 60000 });
+    await waitForUploadedVideo(page, 'Big_Buck_Bunny_360_10s_1MB.mp4', 60000);
 
     // Analyze upload phase
     const putRequests = blossomRequests.filter(r => r.method === 'PUT');

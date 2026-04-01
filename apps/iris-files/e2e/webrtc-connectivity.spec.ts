@@ -238,7 +238,8 @@ test.describe('WebRTC Connectivity', () => {
       await expect(settingsLink).toBeVisible({ timeout: 10000 });
       await settingsLink.click();
       await page1.waitForURL(/#\/settings/, { timeout: 10000 });
-      await expect(page1.getByRole('button', { name: 'Network' })).toBeVisible({ timeout: 10000 });
+      await page1.getByRole('button', { name: 'Network' }).click();
+      await page1.getByTestId('settings-network-p2p').click();
       await expect(page1.locator('text=Mesh Peers').first()).toBeVisible({ timeout: 10000 });
 
       // Wait for Settings UI to show connected peers

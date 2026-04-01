@@ -51,7 +51,7 @@ Key observation:
 Always-on connectivity test:
 
 ```bash
-cargo test -p hashtree-sim webrtc_sim::tests::test_webrtc_sim_1000_nodes_connectivity -- --nocapture
+cargo test -p hashtree-sim mesh_sim::tests::test_mesh_sim_1000_nodes_connectivity -- --nocapture
 ```
 
 Recent sample:

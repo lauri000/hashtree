@@ -556,7 +556,13 @@ export class NativeBackendAdapter implements BackendAdapter {
     hash: Uint8Array,
     key?: Uint8Array,
     visibility: 'public' | 'link-visible' | 'private' = 'public',
-    _labels?: string[]
+    _labels?: string[],
+    _metadata?: {
+      encryptedKey?: string;
+      keyId?: string;
+      selfEncryptedKey?: string;
+      selfEncryptedLinkKey?: string;
+    }
   ): Promise<void> {
     await syncNativeTreeRootCache(npub, treeName, cid(hash, key), visibility);
   }

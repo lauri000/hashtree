@@ -10,6 +10,7 @@ export {
 
 export {
   loadDeltasFromEntries,
+  loadDocumentTextFromEntries,
   loadCollaboratorDeltas,
   setupCollaboratorSubscriptions,
 } from './deltaLoader';

@@ -182,6 +182,7 @@ async function deleteSession() {
 }
 
 async function takeScreenshot(filename) {
+  await mkdir(artifactsDir, { recursive: true });
   const importBinary = getFramebufferCaptureBinary();
   if (importBinary) {
     const captured = captureFramebufferToFile(importBinary, filename);
@@ -194,7 +195,6 @@ async function takeScreenshot(filename) {
   if (!encoded) {
     fail('WebDriver screenshot response did not contain image data');
   }
-  await mkdir(artifactsDir, { recursive: true });
   await writeFile(path.join(artifactsDir, filename), Buffer.from(encoded, 'base64'));
 }
 

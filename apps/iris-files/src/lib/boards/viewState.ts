@@ -33,7 +33,15 @@ export function shouldApplyHydratedBoardState(
 export function resolveHydratedBoardResult(options: {
   hasBoardSnapshot: boolean;
   hasIncompleteData: boolean;
+  hasPendingData?: boolean;
 }): HydratedBoardResult {
   if (options.hasBoardSnapshot) return 'ready';
-  return options.hasIncompleteData ? 'retry' : 'missing';
+  return options.hasIncompleteData || !!options.hasPendingData ? 'retry' : 'missing';
+}
+
+export function shouldScheduleHydratedBoardRetry(options: {
+  hasIncompleteData: boolean;
+  hasPendingData: boolean;
+}): boolean {
+  return options.hasIncompleteData || options.hasPendingData;
 }

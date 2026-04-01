@@ -891,7 +891,7 @@ servers = [${blossomToml}]
 
       // Wait for the uncommitted changes indicator to appear
       console.log('[test] Waiting for uncommitted indicator in forked htree repo...');
-      const uncommittedBtn = page.locator('button').filter({ hasText: /uncommitted/i });
+      const uncommittedBtn = page.locator('button').filter({ hasText: /uncommitted/i }).first();
 
       // Take screenshot for debugging
       await page.screenshot({ path: 'e2e/screenshots/git-status-htree-forked-edit.png' });
@@ -902,11 +902,14 @@ servers = [${blossomToml}]
         console.log('  ', log);
       }
 
-      await expect(uncommittedBtn).toBeVisible({ timeout: 30000 });
+      await expect(uncommittedBtn).toBeVisible({ timeout: 60000 });
       console.log('[test] SUCCESS: uncommitted indicator visible after editing forked htree repo');
 
       // Verify the count shows 1 change
-      await expect(uncommittedBtn).toContainText(/1/);
+      await expect.poll(
+        async () => (await uncommittedBtn.textContent())?.replace(/\s+/g, ' ').trim() ?? '',
+        { timeout: 60000, intervals: [1000, 2000] }
+      ).toMatch(/1\s+uncommitted/i);
       console.log('[test] SUCCESS: uncommitted count shows 1 change');
 
     } finally {

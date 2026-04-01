@@ -149,11 +149,16 @@ describe('PeerId', () => {
   it('should parse peerId from string', async () => {
     const { PeerId } = await import('../src/webrtc/types.js');
 
-    const str = 'a'.repeat(64) + ':myuuid123';
+    const str = 'a'.repeat(64);
     const peerId = PeerId.fromString(str);
 
     expect(peerId.pubkey).toBe('a'.repeat(64));
     expect(peerId.toString()).toBe('a'.repeat(64));
+  });
+
+  it('should reject legacy session-suffixed peerId strings', async () => {
+    const { PeerId } = await import('../src/webrtc/types.js');
+    expect(() => PeerId.fromString('a'.repeat(64) + ':legacy')).toThrow('Invalid peer string');
   });
 });
 
@@ -241,12 +246,12 @@ describe('HTL (Hops To Live)', () => {
 
       const frame = createMeshNostrEventFrame(
         event as any,
-        'peer-a:uuid-a',
+        'peer-a',
         MESH_EVENT_POLICY.maxHtl,
       );
       expect(validateMeshNostrFrame(frame)).toBeNull();
       expect(frame.frame_id.length).toBeGreaterThan(0);
-      expect(frame.sender_peer_id).toBe('peer-a:uuid-a');
+      expect(frame.sender_peer_id).toBe('peer-a');
     });
 
     it('rejects non-webrtc event kind', () => {
@@ -261,7 +266,7 @@ describe('HTL (Hops To Live)', () => {
       };
       const frame = createMeshNostrEventFrame(
         event as any,
-        'peer-a:uuid-a',
+        'peer-a',
         MESH_EVENT_POLICY.maxHtl,
       );
       expect(validateMeshNostrFrame(frame)).toBe('unsupported event kind');
@@ -277,7 +282,7 @@ describe('HTL (Hops To Live)', () => {
         tags: [['l', 'hello']],
         content: '',
       };
-      const frame = createMeshNostrEventFrame(event as any, 'peer-a:uuid-a', MESH_EVENT_POLICY.maxHtl);
+      const frame = createMeshNostrEventFrame(event as any, 'peer-a', MESH_EVENT_POLICY.maxHtl);
 
       expect(validateMeshNostrFrame(frame)).toBeNull();
 
@@ -305,12 +310,16 @@ describe('HTL (Hops To Live)', () => {
         tags: [['l', 'hello']],
         content: '',
       };
-      const frame = createMeshNostrEventFrame(event as any, 'peer-a:uuid-a', MESH_EVENT_POLICY.maxHtl);
+      const frame = createMeshNostrEventFrame(event as any, 'peer-a', MESH_EVENT_POLICY.maxHtl);
 
       frame.frame_id = '';
       expect(validateMeshNostrFrame(frame)).toBe('missing frame id');
 
       frame.frame_id = 'frame-1';
+      frame.sender_peer_id = 'peer-a:legacy';
+      expect(validateMeshNostrFrame(frame)).toBe('invalid sender peer id');
+
+      frame.sender_peer_id = 'peer-a';
       frame.sender_peer_id = '';
       expect(validateMeshNostrFrame(frame)).toBe('missing sender peer id');
     });
@@ -431,7 +440,7 @@ describe('HTL (Hops To Live)', () => {
         created_at: Math.floor(Date.now() / 1000),
         tags: [['l', 'hello']],
         content: '',
-      } as any, 'peer-origin:uuid', htl);
+      } as any, 'peer-origin', htl);
     }
 
     it('formal: frame/event seen sets reject duplicates', () => {

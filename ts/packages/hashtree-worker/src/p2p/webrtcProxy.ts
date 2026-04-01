@@ -240,6 +240,12 @@ export class WebRTCProxy {
     if (!peer) return;
 
     try {
+      if (sdp.type === 'offer'
+        && peer.pc.signalingState !== 'stable'
+        && peer.pc.signalingState !== 'closed') {
+        await peer.pc.setLocalDescription({ type: 'rollback' });
+      }
+
       await peer.pc.setRemoteDescription(sdp);
 
       // Apply any pending ICE candidates

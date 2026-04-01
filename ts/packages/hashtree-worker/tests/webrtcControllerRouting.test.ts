@@ -133,9 +133,9 @@ describe('WebRTCController routing', () => {
       sendSignaling: async () => {},
     });
     const selector1 = (first as any).peerSelector;
-    selector1.addPeer('fav-pub:session-a');
-    selector1.recordRequest('fav-pub:session-a', 32);
-    selector1.recordSuccess('fav-pub:session-a', 12, 1024);
+    selector1.addPeer('fav-pub');
+    selector1.recordRequest('fav-pub', 32);
+    selector1.recordSuccess('fav-pub', 12, 1024);
 
     const hash = await first.persistPeerMetadata();
     expect(hash).not.toBeNull();
@@ -151,10 +151,10 @@ describe('WebRTCController routing', () => {
     expect(loaded).toBe(true);
 
     const selector2 = (second as any).peerSelector;
-    selector2.addPeer('fav-pub:session-b');
-    selector2.addPeer('other-pub:session-z');
+    selector2.addPeer('fav-pub');
+    selector2.addPeer('other-pub');
     const ordered = selector2.selectPeers();
-    expect(ordered[0]).toBe('fav-pub:session-b');
+    expect(ordered[0]).toBe('fav-pub');
   });
 
   it('promotes previously successful peers on subsequent lookups', async () => {

@@ -59,8 +59,7 @@ test.describe('rust Interoperability', () => {
     // Generate keys for TypeScript peer
     const tsSk = generateSecretKey();
     const tsPk = getPublicKey(tsSk);
-    const tsUuid = generateUuid();
-    const tsPeerId = `${tsPk}:${tsUuid}`;
+    const tsPeerId = tsPk;
 
     console.log('TypeScript peer pubkey:', tsPk.slice(0, 16) + '...');
 
@@ -86,7 +85,7 @@ test.describe('rust Interoperability', () => {
             if (event.content.startsWith('{')) {
               const msg = JSON.parse(event.content);
               if (msg.type === 'hello') {
-                const senderPeerId = `${event.pubkey}:${msg.peerId}`;
+                const senderPeerId = msg.peerId || event.pubkey;
                 discoveredPeers.set(event.pubkey, { peerId: senderPeerId, msg });
                 console.log('Discovered peer via hello:', event.pubkey.slice(0, 8) + '...');
               }
@@ -112,7 +111,7 @@ test.describe('rust Interoperability', () => {
     await new Promise(r => setTimeout(r, 1000));
 
     // Send hello message
-    const helloMsg = { type: 'hello', peerId: tsUuid };
+    const helloMsg = { type: 'hello', peerId: tsPeerId };
     const helloEvent = finalizeEvent({
       kind: WEBRTC_KIND,
       created_at: Math.floor(Date.now() / 1000),
@@ -182,12 +181,10 @@ test.describe('rust Interoperability', () => {
     // Peer 1
     const sk1 = generateSecretKey();
     const pk1 = getPublicKey(sk1);
-    const uuid1 = generateUuid();
 
     // Peer 2
     const sk2 = generateSecretKey();
     const pk2 = getPublicKey(sk2);
-    const uuid2 = generateUuid();
 
     console.log('Peer 1:', pk1.slice(0, 16) + '...');
     console.log('Peer 2:', pk2.slice(0, 16) + '...');
@@ -254,14 +251,14 @@ test.describe('rust Interoperability', () => {
         kind: WEBRTC_KIND,
         created_at: Math.floor(Date.now() / 1000),
         tags: [['l', WEBRTC_TAG], ['d', generateUuid()]],
-        content: JSON.stringify({ type: 'hello', peerId: uuid1 }),
+        content: JSON.stringify({ type: 'hello', peerId: pk1 }),
       }, sk1);
 
       const hello2 = finalizeEvent({
         kind: WEBRTC_KIND,
         created_at: Math.floor(Date.now() / 1000),
         tags: [['l', WEBRTC_TAG], ['d', generateUuid()]],
-        content: JSON.stringify({ type: 'hello', peerId: uuid2 }),
+        content: JSON.stringify({ type: 'hello', peerId: pk2 }),
       }, sk2);
 
       await Promise.all([

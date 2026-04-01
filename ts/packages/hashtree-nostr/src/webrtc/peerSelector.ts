@@ -144,8 +144,7 @@ function totalRequests(stats: PeerStats[]): number {
 }
 
 export function peerPrincipal(peerId: string): string {
-  const [principal] = peerId.split(':');
-  return principal || peerId;
+  return peerId;
 }
 
 export class PeerSelector {

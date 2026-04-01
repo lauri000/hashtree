@@ -98,8 +98,11 @@ export async function initServiceWorker(options: InitOptions = {}): Promise<void
       if (!gotController && !navigator.serviceWorker.controller) {
         const isLocalChildRuntime =
           pageProtocol === 'http:' && shouldPreferSameOriginHtreeRoutes();
-        if (isLocalChildRuntime) {
-          console.log('[SW] No controller after SW ready in local child runtime; continuing without forced reload');
+        if (isLocalChildRuntime || isTestMode) {
+          console.log('[SW] No controller after SW ready; continuing without forced reload', {
+            isLocalChildRuntime,
+            isTestMode,
+          });
         } else {
           console.log('[SW] No controller after SW ready, reloading...');
           window.location.reload();
@@ -126,6 +129,10 @@ export async function initServiceWorker(options: InitOptions = {}): Promise<void
   if (options.requireCrossOriginIsolation) {
     const coiReloadKey = 'coi-reload-attempted';
     if (navigator.serviceWorker.controller && !self.crossOriginIsolated) {
+      if (isTestMode) {
+        console.log('[SW] Cross-origin isolation unavailable in test mode; continuing without forced reload');
+        return;
+      }
       if (!sessionStorage.getItem(coiReloadKey)) {
         sessionStorage.setItem(coiReloadKey, '1');
         console.log('[SW] Not cross-origin isolated, reloading for COOP/COEP headers...');

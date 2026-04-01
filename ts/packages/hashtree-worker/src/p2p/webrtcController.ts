@@ -127,6 +127,7 @@ type PoolConnectionConfig = { maxConnections: number; satisfiedConnections: numb
 export class WebRTCController {
   private myPeerId: PeerId;
   private peers = new Map<string, WorkerPeer>();
+  private pendingRemoteCandidates = new Map<string, RTCIceCandidateInit[]>();
   private localStore: Store;
   private sendCommand: (cmd: WebRTCCommand) => void;
   private sendSignaling: (msg: SignalingMessage, recipientPubkey?: string) => Promise<void>;
@@ -354,6 +355,17 @@ export class WebRTCController {
       }
       this.log(`Creating inbound peer for ${pubkey.slice(0, 8)}`);
       peer = this.createPeer(peerId, pubkey, pool, 'inbound');
+    } else if (peer.direction === 'outbound' && peer.state === 'connecting') {
+      const isPolite = this.myPeerId.toString() < peerId;
+      if (!isPolite) {
+        this.log(`Ignoring offer collision from ${pubkey.slice(0, 8)} as impolite peer`);
+        return;
+      }
+
+      // Perfect negotiation: the polite peer abandons its local offer and
+      // switches into answerer mode for the remote offer.
+      peer.direction = 'inbound';
+      peer.answerCreated = false;
     }
 
     this.log(`Setting remote description for ${peerId.slice(0, 20)}`);
@@ -373,6 +385,9 @@ export class WebRTCController {
   private async handleIceCandidate(peerId: string, candidate: RTCIceCandidateInit): Promise<void> {
     const peer = this.peers.get(peerId);
     if (!peer) {
+      const queued = this.pendingRemoteCandidates.get(peerId) ?? [];
+      queued.push(candidate);
+      this.pendingRemoteCandidates.set(peerId, queued);
       return;
     }
 
@@ -465,6 +480,7 @@ export class WebRTCController {
     peer.state = 'disconnected';
     this.sendCommand({ type: 'rtc:closePeer', peerId });
     this.peers.delete(peerId);
+    this.pendingRemoteCandidates.delete(peerId);
     this.peerSelector.removePeer(peerId);
     this.forwardingMachine.removePeer(peerId);
 
@@ -537,6 +553,14 @@ export class WebRTCController {
   private onPeerCreated(peerId: string): void {
     const peer = this.peers.get(peerId);
     if (!peer) return;
+
+    const queuedCandidates = this.pendingRemoteCandidates.get(peerId);
+    if (queuedCandidates?.length) {
+      for (const candidate of queuedCandidates) {
+        this.sendCommand({ type: 'rtc:addIceCandidate', peerId, candidate });
+      }
+      this.pendingRemoteCandidates.delete(peerId);
+    }
 
     // If outbound, create offer
     if (peer.direction === 'outbound') {

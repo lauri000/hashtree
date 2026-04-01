@@ -1,7 +1,37 @@
 import { test, expect } from './fixtures';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, goToTreeList } from './test-utils.js';
 import * as fs from 'fs';
 import * as path from 'path';
+
+async function createFolderAndOpen(page: any, folderName: string): Promise<void> {
+  await goToTreeList(page);
+
+  const newFolderButton = page.getByRole('button', { name: 'New Folder' }).first();
+  await expect(newFolderButton).toBeVisible({ timeout: 5000 });
+  await newFolderButton.click();
+
+  const input = page.locator('input[placeholder="Folder name..."]');
+  await input.waitFor({ timeout: 5000 });
+  await input.fill(folderName);
+  await page.click('button:has-text("Create")');
+
+  await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
+
+  const folderLink = page.locator('[data-testid="file-list"] a').filter({ hasText: folderName }).first();
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const url = page.url();
+    if (url.includes(folderName) || url.includes(encodeURIComponent(folderName))) {
+      break;
+    }
+    if (await folderLink.isVisible().catch(() => false)) {
+      await folderLink.click().catch(() => {});
+    }
+    await page.waitForTimeout(500);
+  }
+
+  await expect(page.getByText(/Drop or click to add|Empty directory/).first()).toBeVisible({ timeout: 10000 });
+}
 
 test.describe('Compression features', () => {
   test.describe.configure({ timeout: 90000 });
@@ -14,22 +44,7 @@ test.describe('Compression features', () => {
   test('should show ZIP button when viewing a folder', async ({ page }) => {
     await navigateToPublicFolder(page, { timeoutMs: 60000, requireRelay: false });
 
-    // Navigate to tree list and create a folder
-    await page.locator('header a:has-text("Iris")').click();
-    const newFolderButton = page.getByRole('button', { name: 'New Folder' }).first();
-    await expect(newFolderButton).toBeVisible({ timeout: 5000 });
-    await newFolderButton.click();
-
-    const input = page.locator('input[placeholder="Folder name..."]');
-    await input.waitFor({ timeout: 5000 });
-    await input.fill('zip-test-folder');
-    await page.click('button:has-text("Create")');
-
-    // Wait for modal to close
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
-
-    // Wait for the folder to be created (should show empty directory)
-    await expect(page.locator('text=Empty directory')).toBeVisible({ timeout: 10000 });
+    await createFolderAndOpen(page, 'zip-test-folder');
 
     // The ZIP button should be visible in the folder actions (use getByRole for more reliable selection)
     const zipButton = page.getByRole('button', { name: 'ZIP' });
@@ -42,20 +57,7 @@ test.describe('Compression features', () => {
   test('should show ZIP button with proper icon', async ({ page }) => {
     await navigateToPublicFolder(page, { timeoutMs: 60000, requireRelay: false });
 
-    // Navigate to tree list and create a folder
-    await page.locator('header a:has-text("Iris")').click();
-    const newFolderButton = page.getByRole('button', { name: 'New Folder' }).first();
-    await expect(newFolderButton).toBeVisible({ timeout: 5000 });
-    await newFolderButton.click();
-
-    const input = page.locator('input[placeholder="Folder name..."]');
-    await input.waitFor({ timeout: 5000 });
-    await input.fill('zip-icon-test');
-    await page.click('button:has-text("Create")');
-
-    // Wait for modal to close
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
-    await expect(page.locator('text=Empty directory')).toBeVisible({ timeout: 10000 });
+    await createFolderAndOpen(page, 'zip-icon-test');
 
     // Check that the ZIP button exists and contains the archive icon
     const zipButton = page.getByRole('button', { name: 'ZIP' });
@@ -69,20 +71,7 @@ test.describe('Compression features', () => {
   test('should show Permalink, Fork, and ZIP buttons for folder', async ({ page }) => {
     await navigateToPublicFolder(page, { timeoutMs: 60000, requireRelay: false });
 
-    // Navigate to tree list and create a folder
-    await page.locator('header a:has-text("Iris")').click();
-    const newFolderButton = page.getByRole('button', { name: 'New Folder' }).first();
-    await expect(newFolderButton).toBeVisible({ timeout: 5000 });
-    await newFolderButton.click();
-
-    const input = page.locator('input[placeholder="Folder name..."]');
-    await input.waitFor({ timeout: 5000 });
-    await input.fill('actions-test-folder');
-    await page.click('button:has-text("Create")');
-
-    // Wait for modal to close
-    await expect(page.locator('.fixed.inset-0.bg-black')).not.toBeVisible({ timeout: 10000 });
-    await expect(page.locator('text=Empty directory')).toBeVisible({ timeout: 10000 });
+    await createFolderAndOpen(page, 'actions-test-folder');
 
     // All three folder action buttons should be visible (use getByRole for reliable selection)
     await expect(page.getByRole('link', { name: 'Permalink' })).toBeVisible({ timeout: 5000 });

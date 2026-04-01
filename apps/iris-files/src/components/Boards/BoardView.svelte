@@ -1,5 +1,5 @@
   <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import { cid as makeCid, fromHex, LinkType, nhashEncode, toHex, type CID, type TreeEntry, type TreeVisibility } from '@hashtree/core';
   import DOMPurify from 'dompurify';
   import { marked } from 'marked';
@@ -9,6 +9,7 @@
   import {
     getBoardRouteKey,
     resolveHydratedBoardResult,
+    shouldScheduleHydratedBoardRetry,
     shouldApplyHydratedBoardState,
     shouldShowBoardLoading,
   } from '../../lib/boards/viewState';
@@ -16,7 +17,7 @@
   import { getTree } from '../../store';
   import { setUploadProgress } from '../../stores/upload';
   import { toast } from '../../stores/toast';
-  import { routeStore, treeRootStore, createTreesStore, waitForTreeRoot, getTreeRootSync, addRecent, updateRecentVisibility, getLinkKey, storeLinkKey } from '../../stores';
+  import { routeStore, treeRootStore, createTreesStore, waitForTreeRoot, getTreeRoot, getTreeRootSync, subscribeToTreeRoot, addRecent, updateRecentVisibility, getLinkKey, storeLinkKey } from '../../stores';
   import { autosaveIfOwn, linkKeyUtils, nostrStore, saveHashtree } from '../../nostr';
   import { updateLocalRootCacheHex } from '../../treeRootCache';
   import VisibilityPicker from '../Modals/VisibilityPicker.svelte';
@@ -203,15 +204,23 @@
   let draggingColumn = $state<DragColumnState | null>(null);
   let columnDropTarget = $state<ColumnDropTarget | null>(null);
 
-  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let saveQueued = false;
+  let pendingBoardSave: {
+    board: BoardState;
+    tombstones: BoardTombstones;
+    permissions: BoardPermissions | null;
+  } | null = null;
   let hydrateRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let hydrateRetryAttempts = 0;
   let hydrateRetryKey: string | null = null;
   let hydratedRouteKey: string | null = null;
+  let participantHydrateTimer: ReturnType<typeof setTimeout> | null = null;
+  let participantHydrationNonce = $state(0);
   let loadGeneration = 0;
   const HYDRATE_RETRY_DELAY_MS = 1500;
   const LOCAL_HYDRATE_MAX_RETRIES = 3;
   const REMOTE_HYDRATE_MAX_RETRIES = 24;
+  const PARTICIPANT_ROOT_WAIT_MS = 250;
 
   let canManage = $derived(
     !!permissions && !!ownerNpub && canManageBoard(permissions, userNpub, ownerNpub)
@@ -676,7 +685,12 @@
     fallbackBoardId: string,
     fallbackTitle: string,
     fallbackUpdatedBy: string
-  ): Promise<{ board: BoardState | null; permissions: BoardPermissions | null; tombstones: BoardTombstones; incomplete: boolean }> {
+  ): Promise<{
+    board: BoardState | null;
+    permissions: BoardPermissions | null;
+    tombstones: BoardTombstones;
+    incomplete: boolean;
+  }> {
     const tree = getTree();
     const entries = await tree.listDirectory(dirCid);
     let incomplete = false;
@@ -852,27 +866,64 @@
   async function loadParticipantData(
     participantNpub: string,
     treeName: string,
-    boardPath: string[]
-  ): Promise<{ board: BoardState | null; permissions: BoardPermissions | null; tombstones: BoardTombstones; incomplete: boolean } | null> {
+    boardPath: string[],
+    timeoutMs: number
+  ): Promise<{
+    data: {
+      board: BoardState | null;
+      permissions: BoardPermissions | null;
+      tombstones: BoardTombstones;
+      incomplete: boolean;
+    } | null;
+    hasPendingRoot: boolean;
+  }> {
     let participantRoot: CID | null = null;
 
     if (participantNpub === viewedNpub) {
       participantRoot = treeRoot;
     } else {
-      participantRoot = await waitForTreeRoot(participantNpub, treeName, 3000);
+      participantRoot = await getTreeRoot(participantNpub, treeName, linkKey ?? null);
+      if (!participantRoot) {
+        participantRoot = await waitForTreeRoot(participantNpub, treeName, timeoutMs, linkKey ?? null);
+      }
     }
 
-    if (!participantRoot) return null;
+    if (!participantRoot) {
+      return {
+        data: null,
+        hasPendingRoot: true,
+      };
+    }
 
-    const participantBoardDir = await resolveBoardDirectory(participantRoot, boardPath);
-    if (!participantBoardDir) return null;
+    try {
+      const participantBoardDir = await resolveBoardDirectory(participantRoot, boardPath);
+      if (!participantBoardDir) {
+        return {
+          data: null,
+          hasPendingRoot: true,
+        };
+      }
 
-    return loadBoardFromDirectory(
-      participantBoardDir,
-      createBoardId(),
-      boardDisplayName(treeName),
-      participantNpub
-    );
+      return {
+        data: await loadBoardFromDirectory(
+          participantBoardDir,
+          createBoardId(),
+          boardDisplayName(treeName),
+          participantNpub
+        ),
+        hasPendingRoot: false,
+      };
+    } catch (error) {
+      console.debug('[BoardView] Pending participant board hydration', {
+        participantNpub,
+        treeName,
+        error,
+      });
+      return {
+        data: null,
+        hasPendingRoot: true,
+      };
+    }
   }
 
   function clearHydrateRetry(): void {
@@ -880,6 +931,12 @@
       clearTimeout(hydrateRetryTimer);
       hydrateRetryTimer = null;
     }
+  }
+
+  function clearParticipantHydrateTimer(): void {
+    if (!participantHydrateTimer) return;
+    clearTimeout(participantHydrateTimer);
+    participantHydrateTimer = null;
   }
 
   function getHydrateRetryKey(root: CID): string {
@@ -891,6 +948,90 @@
     hydrateRetryKey = nextKey;
     hydrateRetryAttempts = 0;
     clearHydrateRetry();
+  }
+
+  function applyHydratedSnapshot(
+    routeKey: string,
+    resolvedBoard: BoardState,
+    resolvedPermissions: BoardPermissions,
+    resolvedTombstones: BoardTombstones,
+  ): void {
+    const shouldApplyBoard = shouldApplyHydratedBoardState(
+      hydratedRouteKey,
+      routeKey,
+      board?.updatedAt,
+      resolvedBoard.updatedAt
+    );
+    const shouldApplyPermissions = shouldApplyHydratedBoardState(
+      hydratedRouteKey,
+      routeKey,
+      permissions?.updatedAt,
+      resolvedPermissions.updatedAt
+    );
+    const shouldApplyTombstones = shouldApplyHydratedBoardState(
+      hydratedRouteKey,
+      routeKey,
+      latestTombstoneUpdatedAt(tombstones),
+      latestTombstoneUpdatedAt(resolvedTombstones),
+    );
+
+    if (shouldApplyPermissions) {
+      permissions = resolvedPermissions;
+    }
+    if (shouldApplyBoard) {
+      board = resolvedBoard;
+    }
+    if (shouldApplyBoard || shouldApplyTombstones) {
+      tombstones = resolvedTombstones;
+    }
+
+    hydratedRouteKey = routeKey;
+    error = null;
+    loading = false;
+  }
+
+  function applyHydratedPermissions(routeKey: string, resolvedPermissions: BoardPermissions): void {
+    const shouldApplyPermissions = shouldApplyHydratedBoardState(
+      hydratedRouteKey,
+      routeKey,
+      permissions?.updatedAt,
+      resolvedPermissions.updatedAt
+    );
+
+    if (shouldApplyPermissions) {
+      permissions = resolvedPermissions;
+    }
+  }
+
+  function triggerHydrate(root: CID, routeKey: string, options?: {
+    showLoading?: boolean;
+    previousRouteKey?: string | null;
+    hasBoard?: boolean;
+  }): void {
+    resetHydrateRetry(getHydrateRetryKey(root));
+    loadGeneration += 1;
+    const generation = loadGeneration;
+
+    if (options?.showLoading) {
+      loading = shouldShowBoardLoading(
+        options.previousRouteKey ?? hydratedRouteKey,
+        routeKey,
+        options.hasBoard ?? !!board
+      );
+    }
+
+    error = null;
+    void hydrateBoardState(generation, root, routeKey);
+  }
+
+  function scheduleParticipantHydration(): void {
+    clearParticipantHydrateTimer();
+    participantHydrateTimer = setTimeout(() => {
+      participantHydrateTimer = null;
+      hydrateRetryAttempts = 0;
+      clearHydrateRetry();
+      participantHydrationNonce += 1;
+    }, 75);
   }
 
   function scheduleHydrateRetry(generation: number, root: CID, routeKey: string): void {
@@ -946,13 +1087,31 @@
         ownerNpub
       );
 
+      if (localData.permissions && generation === loadGeneration) {
+        applyHydratedPermissions(routeKey, localData.permissions);
+      }
+
+      const localSourceNpub = viewedNpub || ownerNpub;
       const mergeSources: BoardMergeSource[] = [{
-        source: viewedNpub || ownerNpub,
+        source: localSourceNpub,
         board: localData.board,
         permissions: localPermissions,
         tombstones: localData.tombstones,
       }];
       let hasIncompleteData = localData.incomplete;
+      let hasPendingData = false;
+
+      if (localData.board && generation === loadGeneration) {
+        const localSnapshot = mergeBoardSnapshots(mergeSources, {
+          ownerNpub,
+          fallbackBoardId: localData.board.boardId || localPermissions.boardId || createBoardId(),
+          fallbackTitle: localData.board.title || localPermissions.title || boardName,
+        });
+        const resolvedLocalPermissions = localSnapshot.permissions || localPermissions;
+        if (localSnapshot.board) {
+          applyHydratedSnapshot(routeKey, localSnapshot.board, resolvedLocalPermissions, localSnapshot.tombstones);
+        }
+      }
 
       const participants = new Set<string>([
         ownerNpub,
@@ -960,15 +1119,27 @@
         ...localPermissions.writers,
       ]);
 
-      for (const participant of participants) {
-        if (participant === viewedNpub) continue;
-        const participantData = await loadParticipantData(participant, route.treeName, route.path);
-        if (!participantData) continue;
-        if (participantData.incomplete) hasIncompleteData = true;
+      const participantNpubs = Array.from(participants)
+        .filter(participant => participant !== localSourceNpub);
+      const participantResults = await Promise.all(
+        participantNpubs.map(participant => loadParticipantData(
+          participant,
+          route.treeName,
+          route.path,
+          localData.board ? PARTICIPANT_ROOT_WAIT_MS : 3000
+        ).then(result => ({ participant, result })))
+      );
+
+      for (const { participant, result } of participantResults) {
+        if (result.hasPendingRoot) {
+          hasPendingData = true;
+        }
+        if (!result.data) continue;
+        if (result.data.incomplete) hasIncompleteData = true;
         mergeSources.push({
           source: participant,
-          board: participantData.board,
-          tombstones: participantData.tombstones,
+          board: result.data.board,
+          tombstones: result.data.tombstones,
         });
       }
 
@@ -982,6 +1153,7 @@
       const boardResult = resolveHydratedBoardResult({
         hasBoardSnapshot: !!mergedSnapshot.board,
         hasIncompleteData,
+        hasPendingData,
       });
       if (boardResult === 'retry') {
         scheduleHydrateRetry(generation, root, routeKey);
@@ -1003,40 +1175,10 @@
         return;
       }
       const resolvedTombstones = mergedSnapshot.tombstones;
-      const shouldApplyBoard = shouldApplyHydratedBoardState(
-        hydratedRouteKey,
-        routeKey,
-        board?.updatedAt,
-        resolvedBoard?.updatedAt
-      );
-      const shouldApplyPermissions = shouldApplyHydratedBoardState(
-        hydratedRouteKey,
-        routeKey,
-        permissions?.updatedAt,
-        resolvedPermissions?.updatedAt
-      );
-      const shouldApplyTombstones = shouldApplyHydratedBoardState(
-        hydratedRouteKey,
-        routeKey,
-        latestTombstoneUpdatedAt(tombstones),
-        latestTombstoneUpdatedAt(resolvedTombstones),
-      );
-
       if (generation !== loadGeneration) return;
-      if (shouldApplyPermissions) {
-        permissions = resolvedPermissions;
-      }
-      if (shouldApplyBoard) {
-        board = resolvedBoard;
-      }
-      if (shouldApplyBoard || shouldApplyTombstones) {
-        tombstones = resolvedTombstones;
-      }
-      hydratedRouteKey = routeKey;
-      error = null;
-      loading = false;
+      applyHydratedSnapshot(routeKey, resolvedBoard, resolvedPermissions, resolvedTombstones);
 
-      if (hasIncompleteData) {
+      if (shouldScheduleHydratedBoardRetry({ hasIncompleteData, hasPendingData })) {
         scheduleHydrateRetry(generation, root, routeKey);
       } else {
         hydrateRetryAttempts = 0;
@@ -1055,6 +1197,7 @@
     const treeName = route.treeName;
     const currentVisibility = resolvedVisibility;
     const protectedWithoutAccess = isProtectedBoardWithoutAccess;
+    participantHydrationNonce;
     const previousRouteKey = untrack(() => hydratedRouteKey);
     const hasBoard = untrack(() => !!board);
     const routeKey = getBoardRouteKey({
@@ -1094,12 +1237,101 @@
       return;
     }
 
-    resetHydrateRetry(getHydrateRetryKey(root));
-    loadGeneration += 1;
-    const generation = loadGeneration;
-    loading = shouldShowBoardLoading(previousRouteKey, routeKey, hasBoard);
-    error = null;
-    void hydrateBoardState(generation, root, routeKey);
+    triggerHydrate(root, routeKey, {
+      showLoading: true,
+      previousRouteKey,
+      hasBoard,
+    });
+  });
+
+  $effect(() => {
+    const root = treeRoot;
+    const treeName = route.treeName;
+    const participants = boardMemberNpubs;
+    const localSourceNpub = viewedNpub || ownerNpub;
+
+    if (!root || !treeName) {
+      clearParticipantHydrateTimer();
+      return;
+    }
+
+    const seen: Record<string, true> = {};
+    const unsubscribes: Array<() => void> = [];
+    const participantNpubs: string[] = [];
+    const participantRootSignatures: Record<string, string> = {};
+    let pollInFlight = false;
+    let cancelled = false;
+
+    for (const participant of participants) {
+      if (!participant || participant === localSourceNpub || seen[participant]) continue;
+      seen[participant] = true;
+      participantNpubs.push(participant);
+      unsubscribes.push(subscribeToTreeRoot(participant, treeName, (hash) => {
+        if (!hash) return;
+        scheduleParticipantHydration();
+      }));
+    }
+
+    const pollParticipantRoots = async () => {
+      if (cancelled || pollInFlight) return;
+      pollInFlight = true;
+
+      try {
+        let changed = false;
+
+        for (const participant of participantNpubs) {
+          const participantRoot = await getTreeRoot(participant, treeName, linkKey ?? null);
+          const signature = participantRoot
+            ? `${toHex(participantRoot.hash)}:${participantRoot.key ? toHex(participantRoot.key) : ''}`
+            : '';
+          if ((participantRootSignatures[participant] ?? '') !== signature) {
+            participantRootSignatures[participant] = signature;
+            changed = true;
+          }
+        }
+
+        if (changed) {
+          scheduleParticipantHydration();
+        }
+      } finally {
+        pollInFlight = false;
+      }
+    };
+
+    void pollParticipantRoots();
+    const pollTimer = setInterval(() => {
+      void pollParticipantRoots();
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(pollTimer);
+      clearParticipantHydrateTimer();
+      unsubscribes.forEach(unsub => unsub());
+    };
+  });
+
+  $effect(() => {
+    const root = treeRoot;
+    const treeName = route.treeName;
+    const routeKey = getBoardRouteKey({
+      npub: route.npub,
+      treeName,
+      path: route.path,
+    });
+    const localSourceNpub = viewedNpub || ownerNpub;
+    const participantCount = boardMemberNpubs.filter(participant => participant && participant !== localSourceNpub).length;
+    const shouldKeepHydrating = !isOwnBoard || participantCount > 0;
+
+    if (!root || !treeName || !shouldKeepHydrating) {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      triggerHydrate(root, routeKey);
+    }, 5000);
+
+    return () => clearInterval(interval);
   });
 
   async function ensureOwnRootCid(): Promise<CID | null> {
@@ -1130,7 +1362,7 @@
     return rootCid;
   }
 
-  function publishUpdatedRoot(rootCid: CID) {
+  async function publishUpdatedRoot(rootCid: CID): Promise<void> {
     if (!route.treeName || !userNpub) return;
 
     if (isOwnBoard) {
@@ -1138,13 +1370,34 @@
       return;
     }
 
-    updateLocalRootCacheHex(
-      userNpub,
-      route.treeName,
-      toHex(rootCid.hash),
-      rootCid.key ? toHex(rootCid.key) : undefined,
-      (visibility as 'public' | 'link-visible' | 'private') || 'public'
-    );
+    const nextVisibility = (visibility as 'public' | 'link-visible' | 'private') || 'public';
+    const sharedLinkKey = nextVisibility === 'link-visible'
+      ? (
+        linkKey
+        || getLinkKey(userNpub, route.treeName)
+        || (ownerNpub ? getLinkKey(ownerNpub, route.treeName) : null)
+      )
+      : null;
+
+    if (nextVisibility === 'link-visible' && sharedLinkKey) {
+      await storeLinkKey(userNpub, route.treeName, sharedLinkKey);
+    }
+
+    const result = await saveHashtree(route.treeName, rootCid, {
+      visibility: nextVisibility,
+      linkKey: sharedLinkKey ?? undefined,
+      labels: resolveBoardPublishLabels(currentTree?.labels ?? nostrStore.getState().selectedTree?.labels),
+    });
+
+    if (!result.success) {
+      updateLocalRootCacheHex(
+        userNpub,
+        route.treeName,
+        toHex(rootCid.hash),
+        rootCid.key ? toHex(rootCid.key) : undefined,
+        nextVisibility
+      );
+    }
   }
 
   async function putTextFile(text: string): Promise<{ cid: CID; size: number }> {
@@ -1269,20 +1522,47 @@
   ): Promise<boolean> {
     const newRootCid = await buildUpdatedBoardRootCid(nextBoard, nextPermissions, nextTombstones);
     if (!newRootCid) return false;
-    publishUpdatedRoot(newRootCid);
+    await publishUpdatedRoot(newRootCid);
     return true;
   }
 
-  async function persistBoard(nextBoard: BoardState, nextTombstones: BoardTombstones) {
-    if (!canWrite || !userNpub) return;
+  function clonePendingPermissionsSnapshot(
+    source: BoardPermissions | null | undefined,
+    nextBoard: BoardState,
+    actorNpub: string
+  ): BoardPermissions | null {
+    if (!source) return null;
+    return {
+      ...source,
+      boardId: nextBoard.boardId,
+      title: nextBoard.title,
+      updatedAt: nextBoard.updatedAt,
+      updatedBy: source.updatedBy || actorNpub,
+      admins: [...source.admins],
+      writers: [...source.writers],
+    };
+  }
+
+  async function persistBoard(
+    nextBoard: BoardState,
+    nextTombstones: BoardTombstones,
+    queuedPermissions: BoardPermissions | null = null,
+  ) {
+    if (!userNpub) return;
     savingBoard = true;
     try {
-      const nextPermissions = permissions
+      const nextPermissions = queuedPermissions
         ? {
-          ...permissions,
+          ...queuedPermissions,
           boardId: nextBoard.boardId,
           title: nextBoard.title,
         }
+        : permissions
+          ? {
+            ...permissions,
+            boardId: nextBoard.boardId,
+            title: nextBoard.title,
+          }
         : createInitialBoardPermissions(nextBoard.boardId, nextBoard.title, userNpub, nextBoard.updatedAt);
 
       const success = await persistBoardDirectory(nextBoard, nextPermissions, nextTombstones);
@@ -1338,10 +1618,8 @@
     visibilityError = '';
 
     try {
-      if (saveTimer) {
-        clearTimeout(saveTimer);
-        saveTimer = null;
-      }
+      saveQueued = false;
+      pendingBoardSave = null;
 
       const nextRootCid = await buildUpdatedBoardRootCid(board, permissions, tombstones);
       if (!nextRootCid) {
@@ -1384,20 +1662,32 @@
     }
   }
 
-  function queueBoardSave() {
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      saveTimer = null;
-      if (!board) return;
-      void persistBoard(cloneBoardState(board), cloneBoardTombstones(tombstones));
-    }, 700);
+  function flushPendingBoardSave(reason: 'microtask' | 'hidden' | 'pagehide' | 'destroy') {
+    const snapshot = pendingBoardSave;
+    pendingBoardSave = null;
+    if (!snapshot) return;
+    void persistBoard(snapshot.board, snapshot.tombstones, snapshot.permissions);
+  }
+
+  function queueBoardSave(nextBoard: BoardState, nextTombstones: BoardTombstones) {
+    pendingBoardSave = {
+      board: cloneBoardState(nextBoard),
+      tombstones: cloneBoardTombstones(nextTombstones),
+      permissions: clonePendingPermissionsSnapshot(permissions, nextBoard, userNpub || ownerNpub || ''),
+    };
+    if (saveQueued) return;
+    saveQueued = true;
+    queueMicrotask(() => {
+      saveQueued = false;
+      flushPendingBoardSave('microtask');
+    });
   }
 
   function applyBoardEdit(next: { board: BoardState; tombstones: BoardTombstones; changed: boolean }) {
     if (!next.changed) return;
     board = next.board;
     tombstones = next.tombstones;
-    queueBoardSave();
+    queueBoardSave(next.board, next.tombstones);
   }
 
   function normalizeTitle(value: string, fallback: string): string {
@@ -2284,9 +2574,29 @@
     openShareModal(window.location.href);
   }
 
+  onMount(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        flushPendingBoardSave('hidden');
+      }
+    };
+    const handlePageHide = () => {
+      flushPendingBoardSave('pagehide');
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
+    };
+  });
+
   onDestroy(() => {
-    if (saveTimer) clearTimeout(saveTimer);
+    flushPendingBoardSave('destroy');
     clearHydrateRetry();
+    clearParticipantHydrateTimer();
     for (const previewUrl of Object.values(localAttachmentPreviewUrls)) {
       URL.revokeObjectURL(previewUrl);
     }

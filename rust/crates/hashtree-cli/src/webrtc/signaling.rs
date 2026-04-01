@@ -199,15 +199,13 @@ async fn remember_peer_signal_path(state: &WebRTCState, peer_id: &str, source: &
 #[derive(Clone)]
 struct RouterSignalingBridge {
     peer_id: String,
-    pubkey: String,
     signaling_tx: mpsc::Sender<SignalingMessage>,
 }
 
 impl RouterSignalingBridge {
-    fn new(peer_id: String, pubkey: String, signaling_tx: mpsc::Sender<SignalingMessage>) -> Self {
+    fn new(peer_id: String, signaling_tx: mpsc::Sender<SignalingMessage>) -> Self {
         Self {
             peer_id,
-            pubkey,
             signaling_tx,
         }
     }
@@ -238,48 +236,6 @@ impl SharedSignalingTransport for RouterSignalingBridge {
 
     fn peer_id(&self) -> &str {
         &self.peer_id
-    }
-
-    fn pubkey(&self) -> &str {
-        &self.pubkey
-    }
-}
-
-struct SharedRouterPeerLink {
-    peer: Arc<Peer>,
-}
-
-#[async_trait]
-impl SharedPeerLink for SharedRouterPeerLink {
-    async fn send(&self, data: Vec<u8>) -> Result<(), SharedTransportError> {
-        let dc = self
-            .peer
-            .data_channel
-            .lock()
-            .await
-            .as_ref()
-            .cloned()
-            .ok_or(SharedTransportError::NotConnected)?;
-        dc.send(&bytes::Bytes::from(data))
-            .await
-            .map(|_| ())
-            .map_err(|e| SharedTransportError::SendFailed(e.to_string()))
-    }
-
-    async fn recv(&self) -> Option<Vec<u8>> {
-        None
-    }
-
-    fn try_recv(&self) -> Option<Vec<u8>> {
-        None
-    }
-
-    fn is_open(&self) -> bool {
-        self.peer.has_data_channel()
-    }
-
-    async fn close(&self) {
-        let _ = self.peer.close().await;
     }
 }
 
@@ -399,7 +355,7 @@ impl SharedPeerLinkFactory for SharedRouterPeerFactory {
             .to_string();
         self.register_peer(target_peer, PeerDirection::Outbound, peer.clone())
             .await;
-        Ok((Arc::new(SharedRouterPeerLink { peer }), sdp))
+        Ok((peer as Arc<dyn SharedPeerLink>, sdp))
     }
 
     async fn accept_offer(
@@ -430,7 +386,7 @@ impl SharedPeerLinkFactory for SharedRouterPeerFactory {
             .to_string();
         self.register_peer(from_peer, PeerDirection::Inbound, peer.clone())
             .await;
-        Ok((Arc::new(SharedRouterPeerLink { peer }), sdp))
+        Ok((peer as Arc<dyn SharedPeerLink>, sdp))
     }
 
     async fn handle_answer(
@@ -452,7 +408,7 @@ impl SharedPeerLinkFactory for SharedRouterPeerFactory {
         peer.handle_answer(serde_json::json!({ "type": "answer", "sdp": answer_sdp }))
             .await
             .map_err(|e| SharedTransportError::ConnectionFailed(e.to_string()))?;
-        Ok(Arc::new(SharedRouterPeerLink { peer }))
+        Ok(peer as Arc<dyn SharedPeerLink>)
     }
 
     async fn handle_candidate(
@@ -1217,9 +1173,7 @@ impl Default for WebRTCState {
     }
 }
 
-pub type PeerRouterState = WebRTCState;
-
-/// Native peer router handles peer discovery and transport fan-out.
+/// Native mesh manager handles peer discovery and transport fan-out.
 pub struct WebRTCManager {
     config: WebRTCConfig,
     my_peer_id: PeerId,
@@ -1650,7 +1604,6 @@ impl WebRTCManager {
         if self.config.signaling_enabled {
             let transport = Arc::new(RouterSignalingBridge::new(
                 self.my_peer_id.to_string(),
-                self.my_peer_id.pubkey.clone(),
                 self.signaling_tx.clone(),
             ));
             let factory = Arc::new(SharedRouterPeerFactory::new(
@@ -1674,7 +1627,6 @@ impl WebRTCManager {
 
             let mut router = MeshRouter::new(
                 self.my_peer_id.to_string(),
-                self.my_peer_id.pubkey.clone(),
                 transport,
                 factory.clone(),
                 self.config.pools.clone(),
@@ -2223,8 +2175,6 @@ impl WebRTCManager {
             .store(connected_count, std::sync::atomic::Ordering::Relaxed);
     }
 }
-
-pub type PeerRouter = WebRTCManager;
 
 // Keep the old PeerState for backward compatibility with tests
 #[allow(dead_code)]

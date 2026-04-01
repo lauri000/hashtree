@@ -52,6 +52,7 @@ export {
   type RequestDispatchConfig,
   type PersistedPeerMetadata,
   type PeerMetadataSnapshot,
+  type MeshStats,
   type WebRTCStats,
   type BandwidthSample,
   type DataRequest,

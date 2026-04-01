@@ -12,8 +12,7 @@ async function init() {
   mount(BoardsApp, {
     target: document.getElementById('app')!,
   });
-  const swPromise = initServiceWorker();
-  await swPromise;
+  await initServiceWorker();
   const htreePromise = initHtreeApi();
   const backendPromise = initReadonlyBackend();
   const sessionPromise = restoreSession();
@@ -23,5 +22,5 @@ async function init() {
 
 init();
 if (import.meta.env.DEV && import.meta.env.VITE_TEST_MODE) {
-  void import('./lib/testHelpers').then(({ setupTestHelpers }) => setupTestHelpers());
+  void import('./lib/testHelpers.ts').then(({ setupTestHelpers }) => setupTestHelpers());
 }

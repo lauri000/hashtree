@@ -16,16 +16,16 @@ fn test_peer_id_short() {
 
 #[test]
 fn test_peer_id_from_string() {
-    let peer_id = PeerId::from_string("abc123:uuid456").unwrap();
+    let peer_id = PeerId::from_string("abc123").unwrap();
     assert_eq!(peer_id.pubkey, "abc123");
 }
 
 #[test]
 fn test_peer_id_from_string_invalid() {
-    let peer_id = PeerId::from_string("no-colon").unwrap();
-    assert_eq!(peer_id.pubkey, "no-colon");
-    let peer_id = PeerId::from_string("a:b:c").unwrap();
-    assert_eq!(peer_id.pubkey, "a");
+    let peer_id = PeerId::from_string("plain-peer").unwrap();
+    assert_eq!(peer_id.pubkey, "plain-peer");
+    assert!(PeerId::from_string("a:b:c").is_none());
+    assert!(PeerId::from_string("").is_none());
 }
 
 #[test]
@@ -310,7 +310,7 @@ fn test_mesh_frame_validation_accepts_kind_25050_event() {
     .to_event(&keys)
     .unwrap();
 
-    let frame = MeshNostrFrame::new_event(event, "peer-a:uuid-a", MESH_EVENT_POLICY.max_htl);
+    let frame = MeshNostrFrame::new_event(event, "peer-a", MESH_EVENT_POLICY.max_htl);
     assert!(validate_mesh_frame(&frame).is_ok());
 }
 
@@ -320,7 +320,7 @@ fn test_mesh_frame_validation_rejects_non_webrtc_kind() {
     let event = nostr::EventBuilder::new(nostr::Kind::TextNote, "nope", [])
         .to_event(&keys)
         .unwrap();
-    let frame = MeshNostrFrame::new_event(event, "peer-a:uuid-a", MESH_EVENT_POLICY.max_htl);
+    let frame = MeshNostrFrame::new_event(event, "peer-a", MESH_EVENT_POLICY.max_htl);
     assert!(validate_mesh_frame(&frame).is_err());
 }
 
@@ -389,7 +389,7 @@ fn test_formal_mesh_frame_validation_rejects_protocol_version_and_htl_bounds() {
     .to_event(&keys)
     .unwrap();
 
-    let mut frame = MeshNostrFrame::new_event(event, "peer-a:uuid-a", MESH_EVENT_POLICY.max_htl);
+    let mut frame = MeshNostrFrame::new_event(event, "peer-a", MESH_EVENT_POLICY.max_htl);
     assert!(validate_mesh_frame(&frame).is_ok());
 
     frame.protocol = "invalid".to_string();
@@ -417,12 +417,16 @@ fn test_formal_mesh_frame_validation_requires_non_empty_ids() {
     .to_event(&keys)
     .unwrap();
 
-    let mut frame = MeshNostrFrame::new_event(event, "peer-a:uuid-a", MESH_EVENT_POLICY.max_htl);
+    let mut frame = MeshNostrFrame::new_event(event, "peer-a", MESH_EVENT_POLICY.max_htl);
 
     frame.frame_id.clear();
     assert_eq!(validate_mesh_frame(&frame), Err("missing frame id"));
 
     frame.frame_id = "frame-1".to_string();
+    frame.sender_peer_id = "peer-a:legacy".to_string();
+    assert_eq!(validate_mesh_frame(&frame), Err("invalid sender peer id"));
+
+    frame.sender_peer_id = "peer-a".to_string();
     frame.sender_peer_id.clear();
     assert_eq!(validate_mesh_frame(&frame), Err("missing sender peer id"));
 }

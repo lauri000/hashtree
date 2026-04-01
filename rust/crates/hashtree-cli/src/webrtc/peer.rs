@@ -1,7 +1,9 @@
 //! WebRTC peer connection for hashtree data exchange
 
 use anyhow::Result;
+use async_trait::async_trait;
 use bytes::Bytes;
+use hashtree_network::{PeerLink as RoutedPeerLink, TransportError as RoutedTransportError};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex, Notify};
@@ -1712,5 +1714,38 @@ fn relay_subscription_id(msg: &NostrRelayMessage) -> Option<String> {
             subscription_id, ..
         } => Some(subscription_id.to_string()),
         _ => None,
+    }
+}
+
+#[async_trait]
+impl RoutedPeerLink for Peer {
+    async fn send(&self, data: Vec<u8>) -> std::result::Result<(), RoutedTransportError> {
+        let dc = self
+            .data_channel
+            .lock()
+            .await
+            .as_ref()
+            .cloned()
+            .ok_or(RoutedTransportError::NotConnected)?;
+        dc.send(&Bytes::from(data))
+            .await
+            .map(|_| ())
+            .map_err(|e| RoutedTransportError::SendFailed(e.to_string()))
+    }
+
+    async fn recv(&self) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn try_recv(&self) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn is_open(&self) -> bool {
+        self.has_data_channel()
+    }
+
+    async fn close(&self) {
+        let _ = Peer::close(self).await;
     }
 }

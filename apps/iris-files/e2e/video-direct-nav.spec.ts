@@ -8,7 +8,7 @@ import { test, expect } from './fixtures';
 import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'url';
-import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, configureBlossomServers, followUser, waitForFollowInWorker, waitForWebRTCConnection, waitForAppReady, waitForRelayConnected, presetLocalRelayInDB, safeReload, useLocalRelay } from './test-utils.js';
+import { setupPageErrorHandler, navigateToPublicFolder, disableOthersPool, configureBlossomServers, followUser, waitForFollowInWorker, waitForWebRTCConnection, waitForAppReady, waitForRelayConnected, presetLocalRelayInDB, safeGoto, safeReload, useLocalRelay } from './test-utils.js';
 // Run tests in this file serially to avoid WebRTC/timing conflicts
 test.describe.configure({ mode: 'serial' });
 
@@ -327,21 +327,10 @@ test.describe('Video Direct Navigation', () => {
 
     // === Direct navigate to the video file ===
     const videoUrl = `http://localhost:5173/#/${page1Npub}/public/${videoFileName}`;
-    const videoHash = `#/${page1Npub}/public/${videoFileName}`;
     console.log(`Direct navigating to: ${videoUrl}`);
-    await page2.evaluate((hash: string) => {
-      if (window.location.hash !== hash) {
-        window.location.hash = hash;
-        window.dispatchEvent(new HashChangeEvent('hashchange'));
-      }
-    }, videoHash);
+    await safeGoto(page2, videoUrl, { timeoutMs: 30000, retries: 2, delayMs: 500 });
     const videoUrlPattern = new RegExp(videoFileName.replace(/\./g, '\\.'));
-    await page2.waitForURL(videoUrlPattern, { timeout: 20000 }).catch(async () => {
-      const nextHash = `/${page1Npub}/public/${videoFileName}`;
-      await page2.evaluate((hash: string) => {
-        window.location.hash = hash;
-      }, nextHash);
-    });
+    await page2.waitForURL(videoUrlPattern, { timeout: 20000 }).catch(() => {});
 
     await waitForAppReady(page2);
     await disableOthersPool(page2);

@@ -148,6 +148,10 @@ declare class TreeRootRegistryImpl {
         visibility?: TreeVisibility;
         labels?: string[];
         updatedAt?: number;
+        encryptedKey?: string;
+        keyId?: string;
+        selfEncryptedKey?: string;
+        selfEncryptedLinkKey?: string;
     }): void;
     /**
      * Delete a record

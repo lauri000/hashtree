@@ -110,9 +110,9 @@ describe('WebRTCStore routing', () => {
     const localStore = new MemoryStore();
     const first = createStore({ localStore });
     const selector1 = (first as any).peerSelector;
-    selector1.addPeer('fav-pub:session-a');
-    selector1.recordRequest('fav-pub:session-a', 32);
-    selector1.recordSuccess('fav-pub:session-a', 20, 1024);
+    selector1.addPeer('fav-pub');
+    selector1.recordRequest('fav-pub', 32);
+    selector1.recordSuccess('fav-pub', 20, 1024);
 
     const snapshotHash = await first.persistPeerMetadata();
     expect(snapshotHash).not.toBeNull();
@@ -122,9 +122,9 @@ describe('WebRTCStore routing', () => {
     expect(loaded).toBe(true);
 
     const selector2 = (second as any).peerSelector;
-    selector2.addPeer('fav-pub:session-b');
-    selector2.addPeer('other-pub:session-c');
+    selector2.addPeer('fav-pub');
+    selector2.addPeer('other-pub');
     const ordered = selector2.selectPeers();
-    expect(ordered[0]).toBe('fav-pub:session-b');
+    expect(ordered[0]).toBe('fav-pub');
   });
 });

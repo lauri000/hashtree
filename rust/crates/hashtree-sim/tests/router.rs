@@ -32,14 +32,12 @@ async fn drain_router_messages(
 fn test_router(
     relay: &Arc<MockRelay>,
     peer_id: &str,
-    pubkey: &str,
     pools: PoolSettings,
 ) -> (Arc<MockRelayTransport>, Arc<TestRouter>) {
-    let transport = Arc::new(relay.create_transport(peer_id.to_string(), pubkey.to_string()));
+    let transport = Arc::new(relay.create_transport(peer_id.to_string()));
     let factory = Arc::new(MockConnectionFactory::new(peer_id.to_string(), 0));
     let router = Arc::new(MeshRouter::new(
         peer_id.to_string(),
-        pubkey.to_string(),
         transport.clone(),
         factory,
         pools,
@@ -64,8 +62,8 @@ async fn peer_router_sim_forms_connection_between_two_nodes() {
         },
     };
 
-    let (transport_a, router_a) = test_router(&relay, "1", "aaaa", pools.clone());
-    let (transport_b, router_b) = test_router(&relay, "2", "bbbb", pools);
+    let (transport_a, router_a) = test_router(&relay, "1", pools.clone());
+    let (transport_b, router_b) = test_router(&relay, "2", pools);
 
     transport_a.connect(&[]).await.expect("connect a");
     transport_b.connect(&[]).await.expect("connect b");
@@ -103,9 +101,9 @@ async fn peer_router_sim_respects_pool_capacity() {
         },
     };
 
-    let (transport_a, router_a) = test_router(&relay, "1", "aaaa", saturated.clone());
-    let (transport_b, router_b) = test_router(&relay, "2", "bbbb", saturated.clone());
-    let (transport_c, router_c) = test_router(&relay, "3", "cccc", saturated);
+    let (transport_a, router_a) = test_router(&relay, "1", saturated.clone());
+    let (transport_b, router_b) = test_router(&relay, "2", saturated.clone());
+    let (transport_c, router_c) = test_router(&relay, "3", saturated);
 
     transport_a.connect(&[]).await.expect("connect a");
     transport_b.connect(&[]).await.expect("connect b");

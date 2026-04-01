@@ -145,9 +145,20 @@ async function syncResolvedTreeRootToWorker(key: string, record: TreeRootRecord)
         hash: Hash,
         key?: Hash,
         visibility?: TreeVisibility,
-        labels?: string[]
+        labels?: string[],
+        metadata?: {
+          encryptedKey?: string;
+          keyId?: string;
+          selfEncryptedKey?: string;
+          selfEncryptedLinkKey?: string;
+        }
       ) => Promise<void>;
-    }).setTreeRootCache(npub, treeName, record.hash, record.key, record.visibility, record.labels);
+    }).setTreeRootCache(npub, treeName, record.hash, record.key, record.visibility, record.labels, {
+      encryptedKey: record.encryptedKey,
+      keyId: record.keyId,
+      selfEncryptedKey: record.selfEncryptedKey,
+      selfEncryptedLinkKey: record.selfEncryptedLinkKey,
+    });
 
     workerRootCacheSync.set(key, signature);
   } catch (err) {
@@ -625,8 +636,9 @@ async function decryptEncryptionKey(
         console.error('[decryptEncryptionKey] Decryption failed:', e);
       }
     } else {
-      console.warn('[decryptEncryptionKey] Link-visible but no encryptedKey in visibilityInfo!');
+      console.warn('[decryptEncryptionKey] Link-visible tree missing encryptedKey metadata; waiting for resolver update');
     }
+    return undefined;
   }
 
   // Link-visible tree - owner access via selfEncryptedLinkKey
@@ -662,8 +674,8 @@ async function decryptEncryptionKey(
     }
   }
 
-  // Fallback: if linkKey is present but couldn't be used via encryptedKey,
-  // try using it directly (for legacy content or when visibility info is incomplete)
+  // Fallback: if linkKey is present but we have no visibility metadata at all,
+  // try using it directly for legacy content.
   if (linkKey && linkKey.length === 64) {
     try {
       return fromHex(linkKey);
@@ -1217,6 +1229,55 @@ export function getTreeRootSync(npub: string | null | undefined, treeName: strin
   return null;
 }
 
+async function resolveTreeRootWithLinkKey(
+  key: string,
+  linkKey: string | null = null
+): Promise<CID | null> {
+  const record = treeRootRegistry.getByKey(key);
+  if (!record?.hash) return null;
+
+  const state = subscriptionState.get(key);
+  const visibilityInfo = getVisibilityInfoFromRegistry(key);
+  let effectiveKey = record.key ?? state?.decryptedKey;
+
+  if (!effectiveKey && (linkKey || visibilityInfo?.selfEncryptedKey || visibilityInfo?.selfEncryptedLinkKey)) {
+    const decryptedKey = await decryptEncryptionKey(visibilityInfo, undefined, linkKey);
+    if (decryptedKey) {
+      const slashIndex = key.indexOf('/');
+      if (slashIndex > 0 && slashIndex < key.length - 1) {
+        const npub = key.slice(0, slashIndex);
+        const treeName = key.slice(slashIndex + 1);
+        treeRootRegistry.mergeKey(npub, treeName, record.hash, decryptedKey);
+      }
+      if (state) {
+        state.decryptedKey = decryptedKey;
+      }
+      effectiveKey = decryptedKey;
+    }
+  }
+
+  if ((visibilityInfo?.visibility ?? record.visibility) === 'link-visible' && !effectiveKey) {
+    return null;
+  }
+
+  return cid(record.hash, effectiveKey);
+}
+
+export async function getTreeRoot(
+  npub: string | null | undefined,
+  treeName: string | null | undefined,
+  linkKey: string | null = null
+): Promise<CID | null> {
+  const key = getResolverKey(npub ?? undefined, treeName ?? undefined);
+  if (!key) return null;
+
+  if (!linkKey) {
+    return getTreeRootSync(npub, treeName);
+  }
+
+  return resolveTreeRootWithLinkKey(key, linkKey);
+}
+
 /**
  * Wait for tree root to be resolved (async version of getTreeRootSync)
  * Subscribes to the resolver and waits for the first non-null result or timeout
@@ -1224,34 +1285,52 @@ export function getTreeRootSync(npub: string | null | undefined, treeName: strin
 export function waitForTreeRoot(
   npub: string,
   treeName: string,
-  timeoutMs: number = 10000
+  timeoutMs: number = 10000,
+  linkKey: string | null = null
 ): Promise<CID | null> {
   return new Promise((resolve) => {
-    // Check registry first
-    const record = treeRootRegistry.get(npub, treeName);
-    if (record) {
-      resolve(cid(record.hash, record.key));
-      return;
-    }
-
     let resolved = false;
     let unsub: (() => void) | null = null;
+    const finish = (value: CID | null) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeout);
+      unsub?.();
+      resolve(value);
+    };
+
+    const maybeResolve = async (hash: Hash | null, encryptionKey?: Hash) => {
+      if (!hash || resolved) return;
+      if (encryptionKey) {
+        finish(cid(hash, encryptionKey));
+        return;
+      }
+
+      const hydrated = await getTreeRoot(npub, treeName, linkKey);
+      if (hydrated) {
+        finish(hydrated);
+        return;
+      }
+
+      if (treeRootRegistry.getVisibility(npub, treeName) === 'link-visible') {
+        return;
+      }
+
+      finish(cid(hash));
+    };
 
     const timeout = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        unsub?.();
-        resolve(null);
-      }
+      finish(null);
     }, timeoutMs);
 
-    unsub = subscribeToTreeRoot(npub, treeName, (hash, encryptionKey) => {
-      if (!resolved && hash) {
-        resolved = true;
-        clearTimeout(timeout);
-        unsub?.();
-        resolve(cid(hash, encryptionKey));
+    void getTreeRoot(npub, treeName, linkKey).then((root) => {
+      if (root) {
+        finish(root);
       }
+    });
+
+    unsub = subscribeToTreeRoot(npub, treeName, (hash, encryptionKey) => {
+      void maybeResolve(hash, encryptionKey);
     });
   });
 }

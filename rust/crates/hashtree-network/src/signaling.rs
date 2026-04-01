@@ -1,7 +1,7 @@
-//! Shared signaling logic for peer discovery and connection management
+//! Shared signaling logic for peer discovery and connection management.
 //!
-//! This module contains the core signaling logic used by both production WebRTCStore
-//! and simulation. It handles:
+//! This module contains the core signaling logic used by both the default
+//! production mesh transport stack and simulation. It handles:
 //! - Hello broadcasts and discovery
 //! - Pool management (follows vs other peers)
 //! - Tie-breaking for connection initiation
@@ -26,16 +26,13 @@ pub struct PeerEntry {
 /// It uses traits for signaling transport and negotiated link factories so the
 /// same router can drive Nostr websockets, LAN buses, BLE, WebRTC, or mocks.
 ///
-/// Uses WebRTC "perfect negotiation" pattern:
+/// Uses the standard concurrent-offer "perfect negotiation" pattern:
 /// - Both peers can send offers when they discover each other
 /// - On collision (both sent offers), "polite" peer backs off and accepts incoming
 /// - This ensures connections form even when one peer is satisfied but can accept
 pub struct MeshRouter<R: SignalingTransport, F: PeerLinkFactory> {
     /// Our peer ID (pubkey format)
     peer_id: String,
-    /// Our pubkey (stored for future use in debugging/logging)
-    #[allow(dead_code)]
-    pubkey: String,
     /// Relay transport for signaling
     transport: Arc<R>,
     /// Link factory for creating negotiated peer links
@@ -54,14 +51,10 @@ pub struct MeshRouter<R: SignalingTransport, F: PeerLinkFactory> {
     debug: bool,
 }
 
-pub type SignalingManager<R, F> = MeshRouter<R, F>;
-pub type PeerRouter<R, F> = MeshRouter<R, F>;
-
 impl<R: SignalingTransport + 'static, F: PeerLinkFactory + 'static> MeshRouter<R, F> {
     /// Create a new mesh router.
     pub fn new(
         peer_id: String,
-        pubkey: String,
         transport: Arc<R>,
         conn_factory: Arc<F>,
         pools: PoolSettings,
@@ -69,7 +62,6 @@ impl<R: SignalingTransport + 'static, F: PeerLinkFactory + 'static> MeshRouter<R
     ) -> Self {
         Self {
             peer_id,
-            pubkey,
             transport,
             conn_factory,
             peers: RwLock::new(HashMap::new()),
@@ -213,7 +205,7 @@ impl<R: SignalingTransport + 'static, F: PeerLinkFactory + 'static> MeshRouter<R
         }
     }
 
-    /// Handle hello message - peer discovery (perfect negotiation)
+    /// Handle hello message using the shared concurrent-offer negotiation flow.
     ///
     /// With perfect negotiation, we send an offer if we need peers.
     /// No tie-breaking here - collisions are handled in handle_offer.
@@ -253,7 +245,7 @@ impl<R: SignalingTransport + 'static, F: PeerLinkFactory + 'static> MeshRouter<R
             .await
             .insert(from_peer_id.to_string(), roots.to_vec());
 
-        // Perfect negotiation: send offer if we NEED more peers
+        // Shared perfect negotiation: send offer if we NEED more peers
         // Both sides may send offers - collision handled in handle_offer
         if self.pool_needs_peers(pool, follows_count, other_count) {
             // Check if already connected or pending
@@ -298,7 +290,7 @@ impl<R: SignalingTransport + 'static, F: PeerLinkFactory + 'static> MeshRouter<R
         Ok(())
     }
 
-    /// Handle offer message (perfect negotiation)
+    /// Handle offer message in the shared concurrent-offer negotiation flow.
     ///
     /// Handles offer collision: if we also sent an offer to this peer,
     /// the "polite" peer (lower ID) backs off and accepts the incoming offer.
@@ -473,10 +465,6 @@ mod tests {
         }
 
         fn peer_id(&self) -> &str {
-            "local:session"
-        }
-
-        fn pubkey(&self) -> &str {
             "local"
         }
     }
@@ -539,7 +527,6 @@ mod tests {
     #[tokio::test]
     async fn routes_targeted_candidates_to_factory() {
         let router = MeshRouter::new(
-            "local:session".to_string(),
             "local".to_string(),
             Arc::new(NoopTransport),
             Arc::new(RecordingFactory::default()),
@@ -553,7 +540,7 @@ mod tests {
         router
             .handle_message(SignalingMessage::Candidate {
                 peer_id: "remote:peer".to_string(),
-                target_peer_id: "local:session".to_string(),
+                target_peer_id: "local".to_string(),
                 candidate: "candidate:1".to_string(),
                 sdp_m_line_index: Some(0),
                 sdp_mid: Some("data".to_string()),
@@ -580,7 +567,6 @@ mod tests {
     async fn remove_peer_cleans_factory_state() {
         let factory = Arc::new(RecordingFactory::default());
         let router = MeshRouter::new(
-            "local:session".to_string(),
             "local".to_string(),
             Arc::new(NoopTransport),
             factory.clone(),

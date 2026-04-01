@@ -1010,7 +1010,13 @@ export class WorkerAdapter {
     hash: Uint8Array,
     key?: Uint8Array,
     visibility: 'public' | 'link-visible' | 'private' = 'public',
-    labels?: string[]
+    labels?: string[],
+    metadata?: {
+      encryptedKey?: string;
+      keyId?: string;
+      selfEncryptedKey?: string;
+      selfEncryptedLinkKey?: string;
+    }
   ): Promise<void> {
     const id = generateRequestId();
     await this.request<{ error?: string }>({
@@ -1022,6 +1028,10 @@ export class WorkerAdapter {
       key,
       visibility,
       labels,
+      encryptedKey: metadata?.encryptedKey,
+      keyId: metadata?.keyId,
+      selfEncryptedKey: metadata?.selfEncryptedKey,
+      selfEncryptedLinkKey: metadata?.selfEncryptedLinkKey,
     } as WorkerRequest);
   }
 

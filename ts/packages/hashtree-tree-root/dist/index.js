@@ -468,6 +468,10 @@ class TreeRootRegistryImpl {
             updatedAt,
             source,
             dirty: false,
+            encryptedKey: options?.encryptedKey ?? (sameHash ? existing?.encryptedKey : undefined),
+            keyId: options?.keyId ?? (sameHash ? existing?.keyId : undefined),
+            selfEncryptedKey: options?.selfEncryptedKey ?? (sameHash ? existing?.selfEncryptedKey : undefined),
+            selfEncryptedLinkKey: options?.selfEncryptedLinkKey ?? (sameHash ? existing?.selfEncryptedLinkKey : undefined),
         };
         this.records.set(cacheKey, record);
         this.persistence.save(cacheKey, record);

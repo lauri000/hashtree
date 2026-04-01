@@ -19,7 +19,7 @@ use crate::socialgraph;
 use crate::storage::HashtreeStore;
 
 #[cfg(feature = "p2p")]
-use crate::webrtc::{ContentStore, PeerClassifier, PeerRouter, WebRTCState};
+use crate::webrtc::{ContentStore, PeerClassifier, WebRTCManager, WebRTCState};
 #[cfg(not(feature = "p2p"))]
 use crate::WebRTCState;
 
@@ -397,7 +397,7 @@ impl EmbeddedPeerRouterController {
         }
 
         let webrtc_config = crate::p2p_common::default_webrtc_config(config);
-        let mut manager = PeerRouter::new_with_state_and_store_and_classifier(
+        let mut manager = WebRTCManager::new_with_state_and_store_and_classifier(
             self.keys.clone(),
             webrtc_config,
             self.state.clone(),

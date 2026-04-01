@@ -207,6 +207,7 @@ async function getWindowRect() {
 }
 
 async function takeScreenshot(filename) {
+  await mkdir(artifactsDir, { recursive: true });
   const importBinary = getFramebufferCaptureBinary();
   if (importBinary) {
     const captured = captureFramebufferToFile(importBinary, filename);
@@ -219,7 +220,6 @@ async function takeScreenshot(filename) {
   if (!encoded) {
     fail('WebDriver screenshot response did not contain image data');
   }
-  await mkdir(artifactsDir, { recursive: true });
   await writeFile(path.join(artifactsDir, filename), Buffer.from(encoded, 'base64'));
 }
 
@@ -348,7 +348,7 @@ async function main() {
       return;
     }
 
-    const toolbar = await findElement('css selector', "div[style='padding-left: 88px;']");
+    const toolbar = await waitForElement('css selector', "[data-testid='toolbar']", 'toolbar');
     const windowBeforeFocusClick = await getWindowRect();
     await clickElementOffset(toolbar, 20, 20);
     const windowAfterFocusClick = await getWindowRect();
@@ -379,9 +379,10 @@ async function main() {
       `Focused toolbar drag moved the window from (${windowAfterFocusClick.x}, ${windowAfterFocusClick.y}) to (${windowAfterDrag.x}, ${windowAfterDrag.y})`,
     );
 
-    const irisFilesCard = await findElement(
-      'xpath',
-      "//*[@role='button'][.//*[normalize-space(text())='Iris Files']]",
+    const irisFilesCard = await waitForElement(
+      'css selector',
+      "[data-testid='suggestion-open-iris-files']",
+      'Iris Files launcher suggestion',
     );
     await clickElement(irisFilesCard);
 

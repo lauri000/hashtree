@@ -380,10 +380,8 @@ mod tests {
     }
 
     async fn make_relay(dir: &TempDir, allowed_pubkey: String) -> Result<Arc<NostrRelay>> {
-        let graph_store = socialgraph::open_social_graph_store_with_mapsize(
-            dir.path(),
-            Some(128 * 1024 * 1024),
-        )?;
+        let graph_store =
+            socialgraph::open_social_graph_store_with_mapsize(dir.path(), Some(128 * 1024 * 1024))?;
         let backend: Arc<dyn socialgraph::SocialGraphBackend> = graph_store.clone();
         let mut allowed = HashSet::new();
         allowed.insert(allowed_pubkey.clone());
@@ -441,7 +439,9 @@ mod tests {
 
         let subscription_id = tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if let Some(subscription_id) = bus.pending_queries.lock().await.keys().next().cloned() {
+                if let Some(subscription_id) =
+                    bus.pending_queries.lock().await.keys().next().cloned()
+                {
                     break subscription_id;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -457,11 +457,8 @@ mod tests {
         )
         .await;
         bus.handle_datagram(
-            &RelayMessage::event(
-                nostr::SubscriptionId::new(subscription_id),
-                event.clone(),
-            )
-            .as_json(),
+            &RelayMessage::event(nostr::SubscriptionId::new(subscription_id), event.clone())
+                .as_json(),
             &signal_tx,
         )
         .await;

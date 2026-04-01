@@ -1,4 +1,4 @@
-//! Integration tests for WebRTC peer connectivity
+//! Integration tests for the default production mesh transport stack.
 //!
 //! These tests use a local in-memory Nostr relay for signaling to ensure
 //! deterministic test behavior without external relay dependencies.
@@ -9,7 +9,7 @@
 
 use hashtree_core::MemoryStore;
 use hashtree_network::{
-    classifier_channel, PeerPool, PoolConfig, PoolSettings, WebRTCStore, WebRTCStoreConfig,
+    classifier_channel, MeshStore, MeshStoreConfig, PeerPool, PoolConfig, PoolSettings,
 };
 use hashtree_sim::WsRelay;
 use nostr_sdk::prelude::*;
@@ -52,14 +52,14 @@ async fn test_connect_to_local_relay() {
     let relay_url = relay.url().expect("Relay URL should be available");
 
     let local_store = Arc::new(MemoryStore::new());
-    let config = WebRTCStoreConfig {
+    let config = MeshStoreConfig {
         relays: vec![relay_url],
         debug: false,
         hello_interval_ms: 5000,
         ..Default::default()
     };
 
-    let mut store = WebRTCStore::new(local_store, config);
+    let mut store = MeshStore::new(local_store, config);
     let keys = Keys::generate();
 
     // Should connect without error
@@ -118,8 +118,8 @@ async fn test_peer_discovery() {
     tokio::spawn(run_classifier(classifier_rx1, follows1));
     tokio::spawn(run_classifier(classifier_rx2, follows2));
 
-    // Make store2 the sole initiator. The legacy direct WebRTCStore path used
-    // by this ignored test does not reliably recover from simultaneous offers.
+    // Make store2 the sole initiator to keep the ignored ICE/STUN test
+    // deterministic across slower CI and local environments.
     let accept_only_pools = PoolSettings {
         follows: PoolConfig {
             max_connections: 10,
@@ -141,7 +141,7 @@ async fn test_peer_discovery() {
         },
     };
 
-    let config1 = WebRTCStoreConfig {
+    let config1 = MeshStoreConfig {
         relays: vec![relay_url.clone()],
         debug: true,
         hello_interval_ms: 500, // Fast hellos for testing
@@ -150,7 +150,7 @@ async fn test_peer_discovery() {
         ..Default::default()
     };
 
-    let config2 = WebRTCStoreConfig {
+    let config2 = MeshStoreConfig {
         relays: vec![relay_url.clone()],
         debug: true,
         hello_interval_ms: 500,
@@ -159,8 +159,8 @@ async fn test_peer_discovery() {
         ..Default::default()
     };
 
-    let mut store1 = WebRTCStore::new(store1_local, config1);
-    let mut store2 = WebRTCStore::new(store2_local, config2);
+    let mut store1 = MeshStore::new(store1_local, config1);
+    let mut store2 = MeshStore::new(store2_local, config2);
 
     // Start both stores with longer delay between them
     store1.start(keys1).await.expect("Store1 failed to start");
@@ -261,13 +261,10 @@ async fn test_three_node_forwarding() {
     tokio::spawn(run_classifier(classifier_rx_b, follows_b));
     tokio::spawn(run_classifier(classifier_rx_c, follows_c));
 
-    // Use an asymmetric topology so only A->B and C->B initiate. This avoids
-    // simultaneous-offer deadlocks while still exercising forwarding.
+    // Use an asymmetric topology so only A->B and C->B initiate. This keeps
+    // the ignored ICE/STUN test deterministic while still exercising forwarding.
     let edge_initiator_pools = PoolSettings {
         follows: PoolConfig {
-            // The legacy direct WebRTCStore path counts an in-flight peer
-            // against max_connections before the answer/candidates arrive, so
-            // max_connections needs headroom above satisfied_connections.
             max_connections: 2,
             satisfied_connections: 1,
         },
@@ -287,7 +284,7 @@ async fn test_three_node_forwarding() {
         },
     };
 
-    let config_a = WebRTCStoreConfig {
+    let config_a = MeshStoreConfig {
         relays: vec![relay_url.clone()],
         debug: true,
         hello_interval_ms: 500,
@@ -296,7 +293,7 @@ async fn test_three_node_forwarding() {
         ..Default::default()
     };
 
-    let config_b = WebRTCStoreConfig {
+    let config_b = MeshStoreConfig {
         relays: vec![relay_url.clone()],
         debug: true,
         hello_interval_ms: 500,
@@ -305,7 +302,7 @@ async fn test_three_node_forwarding() {
         ..Default::default()
     };
 
-    let config_c = WebRTCStoreConfig {
+    let config_c = MeshStoreConfig {
         relays: vec![relay_url.clone()],
         debug: true,
         hello_interval_ms: 500,
@@ -314,9 +311,9 @@ async fn test_three_node_forwarding() {
         ..Default::default()
     };
 
-    let mut store_a = WebRTCStore::new(store_a_local.clone(), config_a);
-    let mut store_b = WebRTCStore::new(store_b_local.clone(), config_b);
-    let mut store_c = WebRTCStore::new(store_c_local.clone(), config_c);
+    let mut store_a = MeshStore::new(store_a_local.clone(), config_a);
+    let mut store_b = MeshStore::new(store_b_local.clone(), config_b);
+    let mut store_c = MeshStore::new(store_c_local.clone(), config_c);
 
     // Start the relay hub first so only the edge nodes initiate connections.
     store_b
@@ -424,8 +421,8 @@ async fn test_data_transfer_between_peers() {
     tokio::spawn(run_classifier(classifier_rx1, follows1));
     tokio::spawn(run_classifier(classifier_rx2, follows2));
 
-    // Make store2 the sole initiator to avoid simultaneous-offer deadlocks in
-    // the legacy direct WebRTCStore path used by this ignored test.
+    // Make store2 the sole initiator to keep the ignored ICE/STUN test more
+    // deterministic across environments.
     let accept_only_pools = PoolSettings {
         follows: PoolConfig {
             max_connections: 10,
@@ -447,7 +444,7 @@ async fn test_data_transfer_between_peers() {
         },
     };
 
-    let config1 = WebRTCStoreConfig {
+    let config1 = MeshStoreConfig {
         relays: vec![relay_url.clone()],
         debug: true,
         hello_interval_ms: 500,
@@ -456,7 +453,7 @@ async fn test_data_transfer_between_peers() {
         ..Default::default()
     };
 
-    let config2 = WebRTCStoreConfig {
+    let config2 = MeshStoreConfig {
         relays: vec![relay_url.clone()],
         debug: true,
         hello_interval_ms: 500,
@@ -465,8 +462,8 @@ async fn test_data_transfer_between_peers() {
         ..Default::default()
     };
 
-    let mut store1 = WebRTCStore::new(store1_local.clone(), config1);
-    let mut store2 = WebRTCStore::new(store2_local.clone(), config2);
+    let mut store1 = MeshStore::new(store1_local.clone(), config1);
+    let mut store2 = MeshStore::new(store2_local.clone(), config2);
 
     // Start the acceptor first so only store2 initiates.
     store1.start(keys1).await.expect("Store1 failed to start");

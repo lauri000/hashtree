@@ -41,10 +41,9 @@
 //! ```
 
 pub mod channel;
-pub mod generic_store;
+pub mod mesh_store_core;
 pub mod mock;
 pub mod nostr;
-pub mod peer;
 pub mod peer_selector;
 pub mod protocol;
 pub mod real_factory;
@@ -54,19 +53,16 @@ pub mod transport;
 pub mod types;
 
 pub use channel::{ChannelError, LatencyChannel, MockChannel, PeerChannel};
-pub use generic_store::{
+pub use mesh_store_core::{
     build_hedged_wave_plan, normalize_dispatch_config, run_hedged_waves, sync_selector_peers,
-    GenericStore, GenericStoreRoutingConfig, HedgedWaveAction, ProductionStore,
-    RequestDispatchConfig, ResponseBehaviorConfig, SimStore,
+    DataPumpStats, HedgedWaveAction, MeshRoutingConfig, MeshStoreCore, ProductionMeshStore,
+    RequestDispatchConfig, ResponseBehaviorConfig, SimMeshStore,
 };
 pub use mock::{
     clear_channel_registry, MockConnectionFactory, MockDataChannel, MockLatencyMode, MockRelay,
-    MockRelayTransport, MockSignalingTransport,
+    MockRelayTransport,
 };
-pub use nostr::{
-    decode_signaling_event, encode_signaling_event, NostrRelayTransport, NostrSignalingTransport,
-};
-pub use peer::{ForwardRequestCallback, Peer, PeerError};
+pub use nostr::{decode_signaling_event, encode_signaling_event, NostrRelayTransport};
 pub use peer_selector::{
     peer_principal, PeerMetadataSnapshot, PeerSelector, PeerStats, PersistedPeerMetadata,
     SelectionStrategy, SelectorSummary, PEER_METADATA_SNAPSHOT_VERSION,
@@ -79,20 +75,16 @@ pub use protocol::{
     DataRequest, DataResponse, FRAGMENT_SIZE, MSG_TYPE_QUOTE_REQUEST, MSG_TYPE_QUOTE_RESPONSE,
     MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE,
 };
-pub use real_factory::{RealPeerConnectionFactory, WebRtcPeerLinkFactory};
-pub use signaling::{MeshRouter, PeerEntry, PeerRouter, SignalingManager};
-pub use store::{MeshStore, MeshStoreError, WebRTCStore, WebRTCStoreError};
-pub use transport::{
-    DataChannel, MeshRouterConfig, PeerConnectionFactory, PeerLink, PeerLinkFactory,
-    RelayTransport, SignalingConfig, SignalingTransport, TransportError,
-};
+pub use real_factory::WebRtcPeerLinkFactory;
+pub use signaling::{MeshRouter, PeerEntry};
+pub use store::{MeshStore, MeshStoreError};
+pub use transport::{PeerLink, PeerLinkFactory, SignalingTransport, TransportError};
 pub use types::{
     classifier_channel, decrement_htl_with_policy, is_polite_peer, should_forward,
-    should_forward_htl, validate_mesh_frame, ClassifierRx, ClassifierTx, ClassifyRequest,
-    ForwardRequest, ForwardRx, ForwardTx, HtlMode, HtlPolicy, IceCandidate, MeshNostrFrame,
-    MeshNostrPayload, MeshStats, MeshStoreConfig, PeerHTLConfig, PeerId, PeerPool, PeerState,
-    PoolConfig, PoolSettings, SignalingMessage, TimedSeenSet, WebRTCStats, WebRTCStoreConfig,
-    BLOB_REQUEST_POLICY, DATA_CHANNEL_LABEL, DECREMENT_AT_MAX_PROB, DECREMENT_AT_MIN_PROB, MAX_HTL,
-    MESH_DEFAULT_HTL, MESH_EVENT_POLICY, MESH_MAX_HTL, MESH_PROTOCOL, MESH_PROTOCOL_VERSION,
-    MESH_SIGNALING_EVENT_KIND, NOSTR_KIND_HASHTREE,
+    should_forward_htl, validate_mesh_frame, ClassifierRx, ClassifierTx, ClassifyRequest, HtlMode,
+    HtlPolicy, IceCandidate, MeshNostrFrame, MeshNostrPayload, MeshStats, MeshStoreConfig,
+    PeerHTLConfig, PeerId, PeerPool, PeerState, PoolConfig, PoolSettings, SignalingMessage,
+    TimedSeenSet, WebRTCStats, BLOB_REQUEST_POLICY, DATA_CHANNEL_LABEL, DECREMENT_AT_MAX_PROB,
+    DECREMENT_AT_MIN_PROB, MAX_HTL, MESH_DEFAULT_HTL, MESH_EVENT_POLICY, MESH_MAX_HTL,
+    MESH_PROTOCOL, MESH_PROTOCOL_VERSION, MESH_SIGNALING_EVENT_KIND, NOSTR_KIND_HASHTREE,
 };

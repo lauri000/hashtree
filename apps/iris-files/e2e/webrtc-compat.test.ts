@@ -90,16 +90,14 @@ test.describe('WebRTC Signaling Protocol Compatibility', () => {
     // Generate test keys
     const sk1 = generateSecretKey();
     const pk1 = getPublicKey(sk1);
-    const uuid1 = generateUuid();
-    const peerId1 = `${pk1}:${uuid1}`;
+    const peerId1 = pk1;
 
     const sk2 = generateSecretKey();
     const pk2 = getPublicKey(sk2);
-    const uuid2 = generateUuid();
-    const peerId2 = `${pk2}:${uuid2}`;
+    const peerId2 = pk2;
 
     // Create a hello message (as ts would)
-    const helloMsg: HelloMessage = { type: 'hello', peerId: uuid1 };
+    const helloMsg: HelloMessage = { type: 'hello', peerId: peerId1 };
 
     const offerMsg: OfferMessage = {
       type: 'offer',
@@ -156,11 +154,10 @@ test.describe('WebRTC Signaling Protocol Compatibility', () => {
   test('nostr event format matches signaling protocol', async () => {
     const sk = generateSecretKey();
     const pk = getPublicKey(sk);
-    const uuid = generateUuid();
 
     const helloMsg: HelloMessage = {
       type: 'hello',
-      peerId: uuid,
+      peerId: pk,
     };
 
     const expiration = Math.floor((Date.now() + 5 * 60 * 1000) / 1000);
@@ -192,7 +189,7 @@ test.describe('WebRTC Signaling Protocol Compatibility', () => {
     expect(expTag).toBeTruthy();
 
     const peerIdTag = signedEvent.tags.find(t => t[0] === 'peerId');
-    expect(peerIdTag?.[1]).toBe(uuid);
+    expect(peerIdTag?.[1]).toBe(pk);
 
     // Hello events carry no JSON content
     expect(signedEvent.content).toBe('');
@@ -203,43 +200,35 @@ test.describe('WebRTC Signaling Protocol Compatibility', () => {
   });
 
   test('peer ID format is compatible', async () => {
-    const sk = generateSecretKey();
-    const pk = getPublicKey(sk);
-    const uuid = generateUuid();
-
-    // PeerId format: pubkey:uuid
-    const peerId = `${pk}:${uuid}`;
+    const peerId = getPublicKey(generateSecretKey());
 
     // Verify format
-    const parts = peerId.split(':');
-    expect(parts.length).toBe(2);
-    expect(parts[0]).toBe(pk);
-    expect(parts[0].length).toBe(64); // hex pubkey
-    expect(parts[1]).toBe(uuid);
+    expect(peerId.length).toBe(64);
+    expect(peerId).toMatch(/^[0-9a-f]{64}$/);
 
     // Verify short format for logging
-    const shortPeerId = `${pk.slice(0, 8)}:${uuid.slice(0, 6)}`;
-    expect(shortPeerId.length).toBe(15); // 8 + 1 + 6
+    const shortPeerId = peerId.slice(0, 8);
+    expect(shortPeerId.length).toBe(8);
 
     console.log('PeerId format:', peerId);
     console.log('Short format:', shortPeerId);
   });
 
   test('tie-breaking logic is consistent', async () => {
-    // Both implementations use: lower UUID initiates connection
-    const uuid1 = 'aaaaaaaaaaaaaaa';
-    const uuid2 = 'zzzzzzzzzzzzzzz';
+    // Both implementations use: lower endpoint ID initiates or stays polite
+    const peerId1 = '1'.repeat(64);
+    const peerId2 = 'f'.repeat(64);
 
-    // uuid1 < uuid2, so uuid1 should initiate
-    expect(uuid1 < uuid2).toBe(true);
+    // peerId1 < peerId2, so peerId1 should initiate / remain polite
+    expect(peerId1 < peerId2).toBe(true);
 
-    // Real UUID comparison
-    const realUuid1 = generateUuid();
-    const realUuid2 = generateUuid();
+    // Real peer ID comparison
+    const realPeerId1 = getPublicKey(generateSecretKey());
+    const realPeerId2 = getPublicKey(generateSecretKey());
 
     // One of them should be "smaller" and initiate
-    const initiator = realUuid1 < realUuid2 ? 'uuid1' : 'uuid2';
-    console.log(`${initiator} would initiate (${realUuid1} vs ${realUuid2})`);
+    const initiator = realPeerId1 < realPeerId2 ? 'peer1' : 'peer2';
+    console.log(`${initiator} would initiate (${realPeerId1} vs ${realPeerId2})`);
   });
 
   test('can exchange hello messages via relay', async ({ relayUrl }) => {
@@ -248,11 +237,6 @@ test.describe('WebRTC Signaling Protocol Compatibility', () => {
 
     const sk1 = generateSecretKey();
     const pk1 = getPublicKey(sk1);
-    const uuid1 = generateUuid();
-
-    const sk2 = generateSecretKey();
-    const pk2 = getPublicKey(sk2);
-    const uuid2 = generateUuid();
 
     const receivedMessages: Event[] = [];
 
@@ -282,7 +266,7 @@ test.describe('WebRTC Signaling Protocol Compatibility', () => {
       created_at: Math.floor(Date.now() / 1000),
       tags: [
         ['l', HELLO_TAG],
-        ['peerId', uuid1],
+        ['peerId', pk1],
         ['expiration', expiration.toString()],
       ],
       content: '',
@@ -304,7 +288,7 @@ test.describe('WebRTC Signaling Protocol Compatibility', () => {
     const ownHello = receivedMessages.find((event) => event.pubkey === pk1);
     expect(ownHello).toBeTruthy();
     const peerIdTag = ownHello?.tags.find((t) => t[0] === 'peerId');
-    expect(peerIdTag?.[1]).toBe(uuid1);
+    expect(peerIdTag?.[1]).toBe(pk1);
 
     try {
       sub.close();

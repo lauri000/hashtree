@@ -1,7 +1,7 @@
-//! WebRTC-based simulation using shared code with production
+//! Mesh simulation using the shared routed mesh core.
 //!
-//! This module uses the exact same signaling and data transfer code
-//! as production WebRTCStore, just with mock transports.
+//! This module runs the same router and store core as the production mesh
+//! wrapper, but swaps in mock signaling/data transports.
 
 use crate::cashu_test_mint::{MintError, MintStats};
 use crate::mint_client::{LocalMintClient, MintClient};
@@ -14,10 +14,9 @@ use tokio::sync::RwLock;
 
 use hashtree_core::{HashTree, HashTreeConfig, MemoryStore, Store};
 use hashtree_network::{
-    parse_message, DataMessage, GenericStore, GenericStoreRoutingConfig, MeshRouter,
-    MockConnectionFactory, MockLatencyMode, MockRelay, MockRelayTransport, PoolConfig,
-    PoolSettings, RequestDispatchConfig, ResponseBehaviorConfig, SelectionStrategy,
-    SignalingTransport,
+    MeshRouter, MeshRoutingConfig, MeshStoreCore, MockConnectionFactory, MockLatencyMode,
+    MockRelay, MockRelayTransport, PoolConfig, PoolSettings, RequestDispatchConfig,
+    ResponseBehaviorConfig, SelectionStrategy, SignalingTransport, SimMeshStore,
 };
 
 /// Simulation configuration
@@ -154,16 +153,13 @@ pub enum SimEvent {
     },
 }
 
-/// Type alias for the store used in simulation
-pub type SimStore = GenericStore<MemoryStore, MockRelayTransport, MockConnectionFactory>;
-
 /// A running node in the simulation
 struct RunningNode {
     /// HashTree for content operations (stored for future use)
     #[allow(dead_code)]
-    tree: Arc<HashTree<SimStore>>,
+    tree: Arc<HashTree<SimMeshStore<MemoryStore>>>,
     /// The underlying store for P2P operations
-    store: Arc<SimStore>,
+    store: Arc<SimMeshStore<MemoryStore>>,
     /// Relay transport for this node
     transport: Arc<MockRelayTransport>,
     /// Strategy profile used by this node
@@ -305,9 +301,9 @@ impl LocalResourceStats {
     }
 }
 
-/// Network simulation using GenericStore with mock transports
+/// Network simulation using `MeshStoreCore` with mock transports.
 ///
-/// Uses the exact same code as production WebRTCStore, just with mocks.
+/// Uses the exact same routed core as production `MeshStore`, just with mocks.
 pub struct Simulation {
     config: SimConfig,
     strategy_mix: Vec<NodeStrategyProfile>,
@@ -406,7 +402,7 @@ impl Simulation {
 
     /// Run the simulation
     pub async fn run(&self) {
-        // Mock WebRTC channels share a global registry; each simulation run must
+        // Mock negotiated channels share a global registry; each simulation run must
         // start from a clean slate or later runs inherit stale links.
         hashtree_network::clear_channel_registry().await;
         let run_started = Instant::now();
@@ -517,10 +513,7 @@ impl Simulation {
         };
 
         // Create transport connected to shared relay
-        let transport = Arc::new(
-            self.relay
-                .create_transport(node_id.clone(), node_id.clone()),
-        );
+        let transport = Arc::new(self.relay.create_transport(node_id.clone()));
 
         // In virtual timing mode we still sleep, but with scaled-down latency so ordering
         // effects remain while wall-clock runtime stays fast.
@@ -569,7 +562,6 @@ impl Simulation {
         // Create mesh router
         let signaling = Arc::new(MeshRouter::new(
             node_id.clone(),
-            node_id.clone(),
             transport.clone(),
             conn_factory,
             pools,
@@ -579,13 +571,13 @@ impl Simulation {
         // Create local storage
         let local_store = Arc::new(MemoryStore::new());
 
-        // Create GenericStore
-        let store = Arc::new(GenericStore::new_with_routing(
+        // Create the shared routed mesh store core.
+        let store = Arc::new(MeshStoreCore::new_with_routing(
             local_store,
             signaling,
             Duration::from_secs(1),
             false,
-            GenericStoreRoutingConfig {
+            MeshRoutingConfig {
                 selection_strategy: selected_strategy.selection_strategy,
                 fairness_enabled: selected_strategy.fairness_enabled,
                 cashu_payment_weight: self
@@ -669,7 +661,7 @@ impl Simulation {
     }
 
     async fn broadcast_hellos(&self) {
-        let stores: Vec<Arc<SimStore>> = {
+        let stores: Vec<Arc<SimMeshStore<MemoryStore>>> = {
             let nodes = self.nodes.read().await;
             nodes
                 .values()
@@ -741,12 +733,7 @@ impl Simulation {
         let mut node_ids: Vec<String> = self.nodes.read().await.keys().cloned().collect();
         node_ids.sort();
 
-        let mut processed = 0usize;
-        let mut request_messages = 0usize;
-        let mut response_messages = 0usize;
-        let mut quote_request_messages = 0u64;
-        let mut quote_response_messages = 0u64;
-        let mut processed_bytes = 0u64;
+        let mut aggregate = hashtree_network::DataPumpStats::default();
 
         for node_id in node_ids {
             let store = {
@@ -757,36 +744,23 @@ impl Simulation {
                 continue;
             };
 
-            let peer_ids = store.signaling().peer_ids().await;
-            for peer_id in peer_ids {
-                let Some(channel) = store.signaling().get_channel(&peer_id).await else {
-                    continue;
-                };
-
-                while let Some(data) = channel.try_recv() {
-                    processed += 1;
-                    processed_bytes += data.len() as u64;
-                    if let Some(msg) = parse_message(&data) {
-                        match msg {
-                            DataMessage::Request(_) => request_messages += 1,
-                            DataMessage::Response(_) => response_messages += 1,
-                            DataMessage::QuoteRequest(_) => quote_request_messages += 1,
-                            DataMessage::QuoteResponse(_) => quote_response_messages += 1,
-                        }
-                    }
-                    store.handle_data_message(&peer_id, &data).await;
-                }
-            }
+            let stats = store.drain_available_data_messages().await;
+            aggregate.processed += stats.processed;
+            aggregate.request_messages += stats.request_messages;
+            aggregate.response_messages += stats.response_messages;
+            aggregate.quote_request_messages += stats.quote_request_messages;
+            aggregate.quote_response_messages += stats.quote_response_messages;
+            aggregate.processed_bytes += stats.processed_bytes;
         }
 
-        if processed > 0 {
+        if aggregate.processed > 0 {
             let mut stats = self.stats.write().await;
-            stats.data_messages_processed += processed;
-            stats.data_request_messages += request_messages;
-            stats.data_response_messages += response_messages;
-            stats.data_bytes_processed += processed_bytes;
-            stats.cashu.quote_requests_sent += quote_request_messages;
-            stats.cashu.quote_responses_received += quote_response_messages;
+            stats.data_messages_processed += aggregate.processed;
+            stats.data_request_messages += aggregate.request_messages;
+            stats.data_response_messages += aggregate.response_messages;
+            stats.data_bytes_processed += aggregate.processed_bytes;
+            stats.cashu.quote_requests_sent += aggregate.quote_request_messages;
+            stats.cashu.quote_responses_received += aggregate.quote_response_messages;
         }
     }
 
@@ -800,8 +774,8 @@ impl Simulation {
         &self,
         payer_id: &str,
         payee_id: &str,
-        payer_store: Arc<SimStore>,
-        payee_store: Arc<SimStore>,
+        payer_store: Arc<SimMeshStore<MemoryStore>>,
+        payee_store: Arc<SimMeshStore<MemoryStore>>,
     ) {
         if payer_id == payee_id {
             return;
@@ -985,7 +959,7 @@ impl Simulation {
 
     async fn retrieve_with_processing(
         &self,
-        store: Arc<SimStore>,
+        store: Arc<SimMeshStore<MemoryStore>>,
         hash: hashtree_core::Hash,
         timeout: Duration,
         time_ms: u64,
@@ -1591,7 +1565,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_webrtc_sim_small() {
+    async fn test_mesh_sim_small() {
         let config = SimConfig {
             node_count: 10,
             duration: Duration::from_secs(2),
@@ -1628,7 +1602,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_webrtc_sim_with_churn() {
+    async fn test_mesh_sim_with_churn() {
         let config = SimConfig {
             node_count: 20,
             duration: Duration::from_secs(3),
@@ -1674,7 +1648,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_webrtc_sim_1000_nodes_connectivity() {
+    async fn test_mesh_sim_1000_nodes_connectivity() {
         let config = SimConfig {
             node_count: 1000,
             duration: Duration::from_secs(8),
@@ -1722,7 +1696,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_webrtc_sim_collects_retrieval_probe_metrics() {
+    async fn test_mesh_sim_collects_retrieval_probe_metrics() {
         let config = SimConfig {
             node_count: 12,
             duration: Duration::from_secs(4),
@@ -1767,7 +1741,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_webrtc_sim_report_json_contains_objectives() {
+    async fn test_mesh_sim_report_json_contains_objectives() {
         let config = SimConfig {
             node_count: 8,
             duration: Duration::from_secs(2),
@@ -1805,7 +1779,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_webrtc_sim_cashu_incentives_use_local_test_mint() {
+    async fn test_mesh_sim_cashu_incentives_use_local_test_mint() {
         let config = SimConfig {
             node_count: 16,
             duration: Duration::from_secs(3),
@@ -1884,10 +1858,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_webrtc_sim_accepts_injected_mint_client() {
+    async fn test_mesh_sim_accepts_injected_mint_client() {
         let config = SimConfig {
             node_count: 12,
-            duration: Duration::from_secs(2),
+            duration: Duration::from_secs(3),
             seed: 188,
             pool: PoolConfig {
                 max_connections: 8,
@@ -1898,7 +1872,7 @@ mod tests {
             churn_rate: 0.0,
             allow_rejoin: false,
             network_latency_ms: 0,
-            retrieval_probe_count: 8,
+            retrieval_probe_count: 12,
             retrieval_payload_bytes: 128,
             retrieval_timeout_ms: 1000,
             max_events_retained: 10_000,
@@ -2007,7 +1981,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_webrtc_sim_strategy_mix_reports_reference_metrics() {
+    async fn test_mesh_sim_strategy_mix_reports_reference_metrics() {
         let config = SimConfig {
             node_count: 30,
             duration: Duration::from_secs(2),
@@ -2164,7 +2138,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_webrtc_sim_goofballs_reduce_reference_success() {
+    async fn test_mesh_sim_goofballs_reduce_reference_success() {
         let honest_config = SimConfig {
             node_count: 80,
             duration: Duration::from_secs(5),
@@ -2221,7 +2195,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_webrtc_sim_caps_event_log_for_memory() {
+    async fn test_mesh_sim_caps_event_log_for_memory() {
         let config = SimConfig {
             node_count: 30,
             duration: Duration::from_secs(3),
@@ -2314,7 +2288,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_webrtc_sim_virtual_timing_reflects_network_latency() {
+    async fn test_mesh_sim_virtual_timing_reflects_network_latency() {
         let base = SimConfig {
             node_count: 36,
             duration: Duration::from_secs(3),
@@ -2360,7 +2334,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_webrtc_sim_short_timeout_retrieval_success_floor() {
+    async fn test_mesh_sim_short_timeout_retrieval_success_floor() {
         // Regression guard for low retrieval success when timeouts are shorter
         // than sequential per-peer probing.
         let config = SimConfig {

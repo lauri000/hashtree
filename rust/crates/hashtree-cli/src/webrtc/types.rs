@@ -103,8 +103,6 @@ impl Default for WebRTCConfig {
     }
 }
 
-pub type PeerRouterConfig = WebRTCConfig;
-
 /// Peer connection status
 #[derive(Debug, Clone)]
 pub struct PeerStatus {

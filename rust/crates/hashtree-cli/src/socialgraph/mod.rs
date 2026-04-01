@@ -577,7 +577,9 @@ impl SocialGraphStore {
             );
         }
 
-        let latest_count = self.filtered_latest_metadata_events_by_pubkey(&events)?.len();
+        let latest_count = self
+            .filtered_latest_metadata_events_by_pubkey(&events)?
+            .len();
         self.rebuild_profile_index_for_events(&events)?;
         Ok(latest_count)
     }
@@ -603,8 +605,11 @@ impl SocialGraphStore {
                     &event.pubkey.to_hex(),
                 )?
             } else {
-                self.profile_index
-                    .update_profile_event(by_pubkey_root.as_ref(), search_root.as_ref(), event)?
+                self.profile_index.update_profile_event(
+                    by_pubkey_root.as_ref(),
+                    search_root.as_ref(),
+                    event,
+                )?
             };
             if updated {
                 by_pubkey_root = next_by_pubkey_root;
@@ -2914,7 +2919,10 @@ mod tests {
         .to_event(&muted_keys)
         .unwrap();
         ingest_parsed_event(&graph_store, &profile).unwrap();
-        assert!(graph_store.latest_profile_event(&muted_pubkey).unwrap().is_some());
+        assert!(graph_store
+            .latest_profile_event(&muted_pubkey)
+            .unwrap()
+            .is_some());
 
         let mute = EventBuilder::new(
             Kind::MuteList,
@@ -2933,7 +2941,10 @@ mod tests {
             .rebuild_profile_index_from_stored_events()
             .unwrap();
         assert_eq!(rebuilt, 0);
-        assert!(graph_store.latest_profile_event(&muted_pubkey).unwrap().is_none());
+        assert!(graph_store
+            .latest_profile_event(&muted_pubkey)
+            .unwrap()
+            .is_none());
         assert!(graph_store
             .profile_search_entries_for_prefix("p:muted")
             .unwrap()

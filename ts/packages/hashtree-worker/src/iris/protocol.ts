@@ -78,7 +78,20 @@ export type WorkerRequest =
   | { type: 'resolveRoot'; id: string; npub: string; path?: string }
 
   // Tree root cache and subscriptions
-  | { type: 'setTreeRootCache'; id: string; npub: string; treeName: string; hash: Uint8Array; key?: Uint8Array; visibility: TreeVisibility; labels?: string[] }
+  | {
+      type: 'setTreeRootCache';
+      id: string;
+      npub: string;
+      treeName: string;
+      hash: Uint8Array;
+      key?: Uint8Array;
+      visibility: TreeVisibility;
+      labels?: string[];
+      encryptedKey?: string;
+      keyId?: string;
+      selfEncryptedKey?: string;
+      selfEncryptedLinkKey?: string;
+    }
   | { type: 'getTreeRootInfo'; id: string; npub: string; treeName: string }
   | { type: 'mergeTreeRootKey'; id: string; npub: string; treeName: string; hash: Uint8Array; key: Uint8Array }
   | { type: 'subscribeTreeRoots'; id: string; pubkey: string }

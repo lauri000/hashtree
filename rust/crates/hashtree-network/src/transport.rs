@@ -49,12 +49,7 @@ pub trait SignalingTransport: Send + Sync {
 
     /// Get our peer ID.
     fn peer_id(&self) -> &str;
-
-    /// Get our public key.
-    fn pubkey(&self) -> &str;
 }
-
-pub use SignalingTransport as RelayTransport;
 
 /// Bidirectional peer link for direct data exchange.
 ///
@@ -80,8 +75,6 @@ pub trait PeerLink: Send + Sync {
     /// Close the link.
     async fn close(&self);
 }
-
-pub use PeerLink as DataChannel;
 
 /// Factory for creating negotiated direct peer links.
 ///
@@ -138,37 +131,6 @@ pub trait PeerLinkFactory: Send + Sync {
     }
 }
 
-pub use PeerLinkFactory as PeerConnectionFactory;
-
-/// Configuration for generic router behavior.
-#[derive(Debug, Clone)]
-pub struct MeshRouterConfig {
-    /// Our peer ID
-    pub peer_id: String,
-    /// Maximum number of peers to connect to
-    pub max_peers: usize,
-    /// Interval between hello broadcasts (ms)
-    pub hello_interval_ms: u64,
-    /// Root hashes to advertise in hello messages
-    pub roots: Vec<String>,
-    /// Enable debug logging
-    pub debug: bool,
-}
-
-impl Default for MeshRouterConfig {
-    fn default() -> Self {
-        Self {
-            peer_id: String::new(),
-            max_peers: 10,
-            hello_interval_ms: 30000,
-            roots: Vec::new(),
-            debug: false,
-        }
-    }
-}
-
-pub type SignalingConfig = MeshRouterConfig;
-
 // Blanket implementations for Arc<T> to allow calling trait methods on Arc-wrapped transports
 
 #[async_trait]
@@ -195,10 +157,6 @@ impl<T: SignalingTransport + ?Sized> SignalingTransport for Arc<T> {
 
     fn peer_id(&self) -> &str {
         (**self).peer_id()
-    }
-
-    fn pubkey(&self) -> &str {
-        (**self).pubkey()
     }
 }
 

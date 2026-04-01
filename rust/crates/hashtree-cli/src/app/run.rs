@@ -4,7 +4,7 @@ use hashtree_cli::config::{
     ensure_auth_cookie, ensure_keys, ensure_keys_string, parse_npub, pubkey_bytes,
 };
 #[cfg(feature = "p2p")]
-use hashtree_cli::PeerRouter;
+use hashtree_cli::WebRTCManager;
 use hashtree_cli::{
     spawn_background_eviction_task, Config, FetchConfig, Fetcher, HashtreeServer, HashtreeStore,
     NostrKeys, NostrResolverConfig, NostrRootResolver, NostrToBech32, RootResolver,
@@ -256,7 +256,7 @@ pub(crate) async fn run() -> Result<()> {
                         None
                     };
 
-                    let mut manager = PeerRouter::new_with_store_and_classifier_and_cashu(
+                    let mut manager = WebRTCManager::new_with_store_and_classifier_and_cashu(
                         keys.clone(),
                         webrtc_config,
                         Arc::clone(&store) as Arc<dyn hashtree_cli::ContentStore>,

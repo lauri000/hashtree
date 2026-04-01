@@ -20,7 +20,7 @@ describe('mesh stats helpers', () => {
         },
         peers: [
           {
-            peer_id: 'npub-peer:session-a',
+            peer_id: 'npub-peer',
             pubkey: 'npub-peer',
             state: 'connected',
             pool: 'follows',
@@ -45,8 +45,8 @@ describe('mesh stats helpers', () => {
     expect(stats.relayBytesReceived).toBe(4096);
     expect(stats.peers).toEqual([
       {
-        id: 'daemon:bluetooth:npub-peer:session-a',
-        peerId: 'npub-peer:session-a',
+        id: 'daemon:bluetooth:npub-peer',
+        peerId: 'npub-peer',
         pubkey: 'npub-peer',
         state: 'connected',
         pool: 'follows',
@@ -62,7 +62,7 @@ describe('mesh stats helpers', () => {
   it('normalizes and merges worker peers with deterministic ids', () => {
     const workerPeers = normalizeWorkerPeerStats([
       {
-        peerId: 'worker-peer:session-b',
+        peerId: 'worker-peer',
         pubkey: 'worker-peer',
         connected: true,
         pool: 'other',
@@ -73,8 +73,8 @@ describe('mesh stats helpers', () => {
 
     const merged = mergeMeshPeers(workerPeers, [
       {
-        id: 'daemon:bluetooth:daemon-peer:session-c',
-        peerId: 'daemon-peer:session-c',
+        id: 'daemon:bluetooth:daemon-peer',
+        peerId: 'daemon-peer',
         pubkey: 'daemon-peer',
         state: 'connected',
         pool: 'follows',
@@ -87,8 +87,8 @@ describe('mesh stats helpers', () => {
     ]);
 
     expect(merged.map((peer) => peer.id)).toEqual([
-      'daemon:bluetooth:daemon-peer:session-c',
-      'worker:webrtc:worker-peer:session-b',
+      'daemon:bluetooth:daemon-peer',
+      'worker:webrtc:worker-peer',
     ]);
     expect(merged[1]?.signalPaths).toEqual(['relay']);
   });

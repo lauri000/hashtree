@@ -843,10 +843,9 @@ mod imp {
             };
             if let Some(pubkey) = client_pubkey {
                 return pubkey == event_pubkey
-                    || self
-                        .social_graph
-                        .as_ref()
-                        .is_some_and(|social_graph| social_graph.check_write_access(&event_pubkey));
+                    || self.social_graph.as_ref().is_some_and(|social_graph| {
+                        social_graph.check_write_access(&event_pubkey)
+                    });
             }
             if let Some(ref social_graph) = self.social_graph {
                 return social_graph.check_write_access(&event_pubkey);
@@ -1059,7 +1058,7 @@ mod tests {
         relay
             .ingest_trusted_event_from_bluetooth(
                 event.clone(),
-                Some("peer-a:session-a".to_string()),
+                Some("peer-a".to_string()),
             )
             .await?;
 
@@ -1126,7 +1125,7 @@ mod tests {
         relay
             .ingest_trusted_event_from_bluetooth(
                 event.clone(),
-                Some("peer-a:session-a".to_string()),
+                Some("peer-a".to_string()),
             )
             .await?;
 
@@ -1193,7 +1192,7 @@ mod tests {
             .to_event(&keys)?;
             event_ids.push(event.id.to_hex());
             relay
-                .ingest_trusted_event_from_bluetooth(event, Some("peer-a:session-a".to_string()))
+                .ingest_trusted_event_from_bluetooth(event, Some("peer-a".to_string()))
                 .await?;
         }
 
@@ -1412,7 +1411,9 @@ mod tests {
             .await;
 
         match recv_relay_message(&mut rx).await? {
-            RelayMessage::Ok { status, message, .. } => {
+            RelayMessage::Ok {
+                status, message, ..
+            } => {
                 assert!(status);
                 assert_eq!(message, "");
             }

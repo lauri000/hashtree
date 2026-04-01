@@ -4,6 +4,24 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
+async function waitForUploadedEntry(page: any, fileName: string, timeoutMs = 30000): Promise<'list' | 'viewer'> {
+  const deadline = Date.now() + timeoutMs;
+  const fileLink = page.locator('[data-testid="file-list"] a').filter({ hasText: fileName }).first();
+
+  while (Date.now() < deadline) {
+    if (await fileLink.isVisible().catch(() => false)) {
+      return 'list';
+    }
+    const url = page.url();
+    if (url.includes(fileName) || url.includes(encodeURIComponent(fileName))) {
+      return 'viewer';
+    }
+    await page.waitForTimeout(500);
+  }
+
+  throw new Error(`Timed out waiting for uploaded file "${fileName}" to appear in list or viewer`);
+}
+
 test.describe('Blossom Push', () => {
   test('can open push modal', { timeout: 60000 }, async ({ page }) => {
     test.setTimeout(90000);
@@ -118,7 +136,7 @@ test.describe('Blossom Push', () => {
       await fileInput.setInputFiles(testFilePath, { timeout: 60000 });
 
       // Wait for file to appear in the tree (may be hidden on smaller layouts)
-      await expect(page.locator('[data-testid="file-list"] a:has-text("test-content.txt")')).toBeAttached({ timeout: 10000 });
+      await waitForUploadedEntry(page, 'test-content.txt', 20000);
 
       // Navigate back to folder view without relying on sidebar visibility
       const npub = await page.evaluate(() => (window as any).__nostrStore?.getState?.()?.npub || '');
@@ -144,7 +162,7 @@ test.describe('Blossom Push', () => {
 
       // Should show progress or completion
       // Wait for done state (may be quick with mocked server)
-      await expect(modal.locator('button', { hasText: 'Done' })).toBeVisible({ timeout: 30000 });
+      await expect(modal.locator('button', { hasText: 'Done' })).toBeVisible({ timeout: 60000 });
 
       // Verify uploads - with actual file content we should have multiple blocks:
       // - directory node
@@ -203,7 +221,7 @@ test.describe('Blossom Push', () => {
       await fileInput.setInputFiles(testFilePath, { timeout: 60000 });
 
       // Wait for file to appear in the tree (may be hidden on smaller layouts)
-      await expect(page.locator('[data-testid="file-list"] a:has-text("error-test.txt")')).toBeAttached({ timeout: 10000 });
+      await waitForUploadedEntry(page, 'error-test.txt', 20000);
 
       // Navigate back to folder view without relying on sidebar visibility
       const npub = await page.evaluate(() => (window as any).__nostrStore?.getState?.()?.npub || '');
@@ -225,7 +243,7 @@ test.describe('Blossom Push', () => {
       await page.locator('[data-testid="start-push-btn"]').click();
 
       // Wait for completion with errors
-      await expect(modal.locator('button', { hasText: 'Done' })).toBeVisible({ timeout: 30000 });
+      await expect(modal.locator('button', { hasText: 'Done' })).toBeVisible({ timeout: 60000 });
 
       // Should show error count (Failed label should be visible in stats grid)
       await expect(modal.locator('text=Failed').first()).toBeVisible({ timeout: 10000 });

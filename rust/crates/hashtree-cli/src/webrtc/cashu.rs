@@ -1038,7 +1038,7 @@ mod tests {
 
         let accepted = state
             .should_accept_quote_response(
-                "peer-a:session-1",
+                "peer-a",
                 Some("https://mint-a.example"),
                 3,
                 &quote_response(Some("https://mint-b.example"), 3),
@@ -1063,11 +1063,11 @@ mod tests {
             .peer_selector
             .write()
             .await
-            .record_cashu_payment_default("peer-a:session-1");
+            .record_cashu_payment_default("peer-a");
 
         let accepted = state
             .should_accept_quote_response(
-                "peer-a:session-1",
+                "peer-a",
                 Some("https://mint-a.example"),
                 3,
                 &quote_response(Some("https://mint-b.example"), 3),
@@ -1089,7 +1089,7 @@ mod tests {
 
         let accepted = state
             .should_accept_quote_response(
-                "peer-a:session-1",
+                "peer-a",
                 Some("https://mint-empty.example"),
                 5,
                 &quote_response(Some("https://mint-empty.example"), 5),
@@ -1118,7 +1118,7 @@ mod tests {
 
         let handled = state
             .handle_quote_response(
-                "peer-a:session-1",
+                "peer-a",
                 quote_response(Some("https://mint-b.example"), 3),
             )
             .await;
@@ -1128,7 +1128,7 @@ mod tests {
             .try_recv()
             .expect("expected negotiated quote")
             .expect("expected quote payload");
-        assert_eq!(quote.peer_id, "peer-a:session-1");
+        assert_eq!(quote.peer_id, "peer-a");
         assert_eq!(quote.quote_id, 7);
         assert_eq!(quote.payment_sat, 3);
         assert_eq!(quote.mint_url.as_deref(), Some("https://mint-b.example"));
@@ -1147,7 +1147,7 @@ mod tests {
 
         let res = state
             .build_quote_response(
-                "peer-a:session-1",
+                "peer-a",
                 &DataQuoteRequest {
                     h: vec![0x22; 32],
                     p: 3,
@@ -1160,7 +1160,7 @@ mod tests {
         assert!(res.a);
 
         let expected = state
-            .take_valid_quote("peer-a:session-1", &[0x22; 32], res.q.unwrap())
+            .take_valid_quote("peer-a", &[0x22; 32], res.q.unwrap())
             .await
             .expect("quote should validate");
         assert_eq!(expected.payment_sat, 3);
@@ -1179,7 +1179,7 @@ mod tests {
         );
         state
             .register_expected_payment(
-                "peer-a:session-1".to_string(),
+                "peer-a".to_string(),
                 hex::encode([0x33; 32]),
                 7,
                 ExpectedSettlement {
@@ -1193,7 +1193,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(25)).await;
         let selector = state.peer_selector.read().await;
-        let stats = selector.get_stats("peer-a:session-1").expect("peer stats");
+        let stats = selector.get_stats("peer-a").expect("peer stats");
         assert_eq!(stats.cashu_payment_defaults, 1);
     }
 

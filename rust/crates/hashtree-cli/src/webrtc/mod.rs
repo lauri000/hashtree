@@ -1,9 +1,8 @@
-//! Native peer-to-peer connectivity for hashtree data exchange
+//! Native mesh connectivity for hashtree data exchange.
 //!
-//! Uses Nostr relays for signaling with the same protocol as iris-client:
-//! - Event kind: 30078 (KIND_APP_DATA)
-//! - Tag: ["l", "webrtc"]
-//! - Message types: hello, offer, answer, candidate
+//! The default negotiated path is Nostr signaling plus WebRTC data channels,
+//! but this module also layers in nearby/offline transports such as Bluetooth,
+//! multicast, and Wi-Fi Aware around the same mesh state and routing logic.
 
 mod bluetooth;
 mod bluetooth_peer;
@@ -33,13 +32,13 @@ pub use root_events::PeerRootEvent;
 pub(crate) use root_events::{build_root_filter, pick_latest_event, root_event_from_peer};
 pub use session::MeshPeer;
 pub use signaling::{
-    ConnectionState, PeerClassifier, PeerEntry, PeerRouter, PeerRouterState, PeerSignalPath,
-    PeerTransport, WebRTCManager, WebRTCState,
+    ConnectionState, PeerClassifier, PeerEntry, PeerSignalPath, PeerTransport, WebRTCManager,
+    WebRTCState,
 };
 pub use types::{
-    encode_request, DataMessage, DataRequest, PeerDirection, PeerId, PeerPool, PeerRouterConfig,
-    PoolConfig, PoolSettings, RequestDispatchConfig, SelectionStrategy, SignalingMessage,
-    WebRTCConfig, MAX_HTL,
+    encode_request, DataMessage, DataRequest, PeerDirection, PeerId, PeerPool, PoolConfig,
+    PoolSettings, RequestDispatchConfig, SelectionStrategy, SignalingMessage, WebRTCConfig,
+    MAX_HTL,
 };
 pub use wifi_aware::{
     install_mobile_wifi_aware_bridge, MobileWifiAwareBridge, WifiAwareConfig, WifiAwareEvent,

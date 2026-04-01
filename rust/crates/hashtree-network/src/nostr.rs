@@ -431,13 +431,7 @@ impl SignalingTransport for NostrRelayTransport {
     fn peer_id(&self) -> &str {
         &self.peer_id
     }
-
-    fn pubkey(&self) -> &str {
-        &self.pubkey
-    }
 }
-
-pub type NostrSignalingTransport = NostrRelayTransport;
 
 fn normalize_signaling_message(
     msg: SignalingMessage,

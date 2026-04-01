@@ -1,24 +1,27 @@
 # hashtree-network
 
-Mesh networking stack for hashtree: routing, signaling, peer links, and stores.
+Shared mesh networking primitives for hashtree: routing, signaling, negotiated
+peer links, and routed store logic.
 
-Enables direct peer-to-peer data transfer between hashtree nodes using WebRTC data channels, with signaling performed over Nostr relays.
+The core is transport-generic:
 
-## Features
+- `SignalingTransport` abstracts discovery and negotiation message delivery
+- `PeerLink` / `PeerLinkFactory` abstract the direct byte path between peers
+- `MeshRouter` coordinates peer discovery plus negotiated link setup
+- `MeshStoreCore` runs routed retrieval over any local `Store`
 
-- WebRTC data channels for P2P blob transfer
-- Nostr-based signaling (kind 25050 ephemeral events)
-- Peer discovery via contact lists
-- Automatic fallback to Blossom servers
+The default production composition uses Nostr relays for signaling and WebRTC
+data channels for direct links, but the same router/store core also powers
+simulation and can support nearby transports such as Bluetooth.
 
 ## Architecture
 
-1. **Signaling**: Peers exchange WebRTC offers/answers via Nostr relays
-2. **Connection**: Direct P2P connection established via ICE/STUN
-3. **Data Transfer**: Blobs requested and transferred over data channels
+1. Discovery and negotiation flow through a `SignalingTransport`
+2. Direct peer links are created by a `PeerLinkFactory`
+3. `MeshStoreCore` routes hash-addressed requests over the connected peers
 
 ## Usage
 
-Used internally by `hashtree-cli` when running `htree start`. The daemon manages WebRTC connections and responds to blob requests from peers.
-
-Part of [hashtree-rs](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree).
+`hashtree-cli` and simulation both build on this crate. The production
+`MeshStore` wrapper is intentionally thin and just wires the default Nostr +
+WebRTC transport pair into the shared core.

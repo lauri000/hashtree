@@ -93,14 +93,7 @@ function isExpired(event: SignalingEventLike, nowSec: number, maxEventAgeSec: nu
 function normalizePeerEndpoint(value: string, senderPubkey: string): string {
   const trimmed = value.trim();
   if (!trimmed) return senderPubkey;
-  if (trimmed.includes(':')) {
-    const [principal] = trimmed.split(':');
-    return principal || senderPubkey;
-  }
-  if (trimmed === senderPubkey || /^[0-9a-f]{64}$/i.test(trimmed)) {
-    return trimmed;
-  }
-  return senderPubkey;
+  return trimmed.includes(':') ? senderPubkey : trimmed;
 }
 
 function normalizeSignalingMessage(raw: unknown, senderPubkey: string): SignalingMessage | null {

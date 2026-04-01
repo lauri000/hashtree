@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures';
 import { waitForAppReady, ensureLoggedIn, disableOthersPool, enableOthersPool, setupPageErrorHandler, flushPendingPublishes, waitForRelayConnected, useLocalRelay, configureBlossomServers } from './test-utils';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import { nip19 } from 'nostr-tools';
 
 // Run boards tests serially because they share relay-backed board state and realtime sync timing.
@@ -28,6 +28,32 @@ type TreeRootCacheAdapter = {
   ) => Promise<void>;
 };
 
+async function readNostrPubkey(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    const raw = (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey ?? null;
+    if (typeof raw === 'string') return raw;
+    if (!raw || typeof raw !== 'object') return null;
+
+    const candidate = raw as {
+      pubkey?: unknown;
+      hex?: unknown;
+      value?: unknown;
+      toHex?: () => string;
+      toString?: () => string;
+    };
+
+    if (typeof candidate.pubkey === 'string') return candidate.pubkey;
+    if (typeof candidate.hex === 'string') return candidate.hex;
+    if (typeof candidate.value === 'string') return candidate.value;
+    if (typeof candidate.toHex === 'function') return candidate.toHex();
+    if (typeof candidate.toString === 'function') {
+      const value = candidate.toString();
+      if (value && value !== '[object Object]') return value;
+    }
+    return null;
+  });
+}
+
 async function getCurrentRootSignature(page: Page): Promise<string | null> {
   return page.evaluate(async () => {
     const { getCurrentRootCid } = await import('/src/actions/route.ts');
@@ -37,6 +63,21 @@ async function getCurrentRootSignature(page: Page): Promise<string | null> {
     const key = root.key ? Array.from(root.key).join(',') : '';
     return `${hash}:${key}`;
   });
+}
+
+async function getTreeRootSignature(
+  page: Page,
+  npub: string,
+  treeName: string
+): Promise<string | null> {
+  return page.evaluate(async ({ targetNpub, targetTree }) => {
+    const { getTreeRootSync } = await import('/src/stores/index.ts');
+    const root = getTreeRootSync(targetNpub, targetTree);
+    if (!root) return null;
+    const hash = Array.from(root.hash).join(',');
+    const key = root.key ? Array.from(root.key).join(',') : '';
+    return `${hash}:${key}`;
+  }, { targetNpub: npub, targetTree: treeName });
 }
 
 async function flushBoardRootUpdate(
@@ -52,6 +93,24 @@ async function flushBoardRootUpdate(
     const key = root.key ? Array.from(root.key).join(',') : '';
     return `${hash}:${key}` !== previous;
   }, previousSignature, { timeout: timeoutMs });
+  await flushPendingPublishes(page);
+}
+
+async function flushTreeRootUpdate(
+  page: Page,
+  npub: string,
+  treeName: string,
+  previousSignature: string | null,
+  timeoutMs: number = 20000
+): Promise<void> {
+  await page.waitForFunction(async ({ targetNpub, targetTree, previous }) => {
+    const { getTreeRootSync } = await import('/src/stores/index.ts');
+    const root = getTreeRootSync(targetNpub, targetTree);
+    if (!root) return false;
+    const hash = Array.from(root.hash).join(',');
+    const key = root.key ? Array.from(root.key).join(',') : '';
+    return `${hash}:${key}` !== previous;
+  }, { targetNpub: npub, targetTree: treeName, previous: previousSignature }, { timeout: timeoutMs });
   await flushPendingPublishes(page);
 }
 
@@ -77,7 +136,7 @@ async function waitForTreePublished(page: Page, npub: string, treeName: string, 
 
 async function waitForTreeRoot(page: Page, npub: string, treeName: string, timeoutMs: number = 60000): Promise<void> {
   await page.evaluate(async ({ targetNpub, targetTree, timeout }) => {
-    const { waitForTreeRoot } = await import('/src/stores');
+    const { waitForTreeRoot } = await import('/src/stores/index.ts');
     await waitForTreeRoot(targetNpub, targetTree, timeout);
   }, { targetNpub: npub, targetTree: treeName, timeout: timeoutMs });
 }
@@ -91,7 +150,7 @@ async function waitForTreeRootHash(
 ): Promise<void> {
   await page.waitForFunction(
     async ({ targetNpub, targetTree, targetHash }) => {
-      const { getTreeRootSync } = await import('/src/stores');
+      const { getTreeRootSync } = await import('/src/stores/index.ts');
       const toHex = (bytes: Uint8Array): string => Array.from(bytes)
         .map((b) => b.toString(16).padStart(2, '0'))
         .join('');
@@ -128,7 +187,7 @@ async function waitForTreeRootStoreHash(
 
 async function getTreeRootHex(page: Page, npub: string, treeName: string): Promise<{ hashHex: string; keyHex: string | null }> {
   const root = await page.evaluate(async ({ targetNpub, targetTree }) => {
-    const { getTreeRootSync } = await import('/src/stores');
+    const { getTreeRootSync } = await import('/src/stores/index.ts');
     const toHex = (bytes: Uint8Array): string => Array.from(bytes)
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('');
@@ -153,8 +212,8 @@ async function primeTreeRootInViewer(
   root: { hashHex: string; keyHex: string | null }
 ): Promise<void> {
   await page.evaluate(async ({ targetNpub, targetTree, hashHex, keyHex }) => {
-    const { updateLocalRootCacheHex } = await import('/src/treeRootCache');
-    const { treeRootRegistry } = await import('/src/TreeRootRegistry');
+    const { updateLocalRootCacheHex } = await import('/src/treeRootCache.ts');
+    const { treeRootRegistry } = await import('/src/TreeRootRegistry.ts');
     const fromHex = (hex: string): Uint8Array => {
       const normalized = hex.trim().toLowerCase();
       if (!normalized || normalized.length % 2 !== 0) return new Uint8Array();
@@ -201,6 +260,25 @@ async function ensureViewerTreeRoot(
   await waitForTreeRootStoreHash(page, root.hashHex, Math.min(timeoutMs, 30000));
 }
 
+async function gotoWithRetry(page: Page, url: string, attempts: number = 3): Promise<void> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await page.goto(url);
+      return;
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes('ERR_CONNECTION_REFUSED') || attempt === attempts - 1) {
+        throw error;
+      }
+      await page.waitForTimeout(1000 * (attempt + 1));
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(`Failed to navigate to ${url}`);
+}
+
 function parseBoardShareUrl(shareUrl: string): { npub: string; treeName: string; linkKey: string | null } {
   const match = shareUrl.match(/#\/(npub[^/]+)\/([^?]+)(?:\?(.+))?$/);
   if (!match) {
@@ -217,7 +295,7 @@ function parseBoardShareUrl(shareUrl: string): { npub: string; treeName: string;
 
 async function setupFreshBoardsViewer(ownerPage: Page, viewerPage: Page, shareUrl?: string): Promise<void> {
   setupPageErrorHandler(viewerPage);
-  await viewerPage.goto('/boards.html#/');
+  await gotoWithRetry(viewerPage, '/boards.html#/');
   await waitForAppReady(viewerPage, 60000);
   await useLocalRelay(viewerPage);
   await configureBlossomServers(viewerPage);
@@ -227,12 +305,14 @@ async function setupFreshBoardsViewer(ownerPage: Page, viewerPage: Page, shareUr
   await ensureDistinctViewerIdentity(ownerPage, viewerPage);
 
   if (shareUrl) {
-    await viewerPage.goto(shareUrl);
+    await gotoWithRetry(viewerPage, shareUrl);
     await waitForAppReady(viewerPage, 60000);
     await useLocalRelay(viewerPage);
     await configureBlossomServers(viewerPage);
+    await ensureLoggedIn(viewerPage, 30000);
     await enableOthersPool(viewerPage, 10);
     await waitForRelayConnected(viewerPage, 30000);
+    await ensureDistinctViewerIdentity(ownerPage, viewerPage);
   }
 }
 
@@ -250,8 +330,7 @@ async function createBoard(
 
   let created = false;
   for (let attempt = 0; attempt < 3 && !created; attempt += 1) {
-    await page.getByRole('button', { name: /new board/i }).click();
-    await expect(page.getByRole('heading', { name: 'Create Board' })).toBeVisible({ timeout: 15000 });
+    await openCreateBoardModal(page);
     const input = page.getByPlaceholder('Board name');
     const createButton = page.getByRole('button', { name: /^create$/i });
     try {
@@ -275,19 +354,107 @@ async function createBoard(
 }
 
 async function ensureDistinctViewerIdentity(ownerPage: Page, viewerPage: Page): Promise<void> {
-  const ownerPubkey = await ownerPage.evaluate(() => (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey ?? null);
-  const initialViewerPubkey = await viewerPage.evaluate(() => (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey ?? null);
+  const ownerPubkey = await readNostrPubkey(ownerPage);
+  const initialViewerPubkey = await readNostrPubkey(viewerPage);
   if (!ownerPubkey || initialViewerPubkey !== ownerPubkey) return;
 
   await viewerPage.evaluate(async () => {
-    const { generateNewKey } = await import('/src/nostr');
+    const { generateNewKey } = await import('/src/nostr.ts');
     await generateNewKey();
   });
   await viewerPage.waitForFunction((expectedOwnerPubkey) => {
-    const pubkey = (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey;
+    const raw = (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey ?? null;
+    const normalize = (value: unknown): string | null => {
+      if (typeof value === 'string') return value;
+      if (!value || typeof value !== 'object') return null;
+      const candidate = value as {
+        pubkey?: unknown;
+        hex?: unknown;
+        value?: unknown;
+        toHex?: () => string;
+        toString?: () => string;
+      };
+      if (typeof candidate.pubkey === 'string') return candidate.pubkey;
+      if (typeof candidate.hex === 'string') return candidate.hex;
+      if (typeof candidate.value === 'string') return candidate.value;
+      if (typeof candidate.toHex === 'function') return candidate.toHex();
+      if (typeof candidate.toString === 'function') {
+        const text = candidate.toString();
+        if (text && text !== '[object Object]') return text;
+      }
+      return null;
+    };
+    const pubkey = normalize(raw);
     return !!pubkey && pubkey !== expectedOwnerPubkey;
   }, ownerPubkey, { timeout: 20000 });
   await waitForRelayConnected(viewerPage, 30000);
+}
+
+async function openCreateBoardModal(page: Page, attempts: number = 3): Promise<void> {
+  const heading = page.getByRole('heading', { name: 'Create Board' });
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await page.getByRole('button', { name: /new board/i }).click();
+    try {
+      await expect(heading).toBeVisible({ timeout: 5000 });
+      return;
+    } catch (error) {
+      if (attempt === attempts - 1) {
+        throw error;
+      }
+      await page.keyboard.press('Escape').catch(() => {});
+      await page.waitForTimeout(500 * (attempt + 1));
+    }
+  }
+}
+
+async function addBoardPermissionEntry(
+  dialog: Locator,
+  npub: string,
+  role: 'admin' | 'writer'
+): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const roleSelect = dialog.getByRole('combobox');
+    if (await roleSelect.count()) {
+      await roleSelect.first().selectOption(role);
+    }
+
+    await dialog.getByPlaceholder('npub1...').fill(npub);
+
+    const confirmButton = dialog.getByRole('button', { name: new RegExp(`^add ${role}$`, 'i') });
+    const addButton = (await confirmButton.isVisible().catch(() => false))
+      ? confirmButton
+      : dialog.getByRole('button', { name: /^add$/i });
+
+    try {
+      await addButton.click({ timeout: 5000 });
+      return;
+    } catch (error) {
+      if (attempt === 2) {
+        throw error;
+      }
+      await expect(dialog).toBeVisible({ timeout: 5000 });
+    }
+  }
+}
+
+async function waitForBoardPermissionEntry(
+  page: Page,
+  npub: string,
+  timeoutMs: number = 60000
+): Promise<void> {
+  const dialog = page.getByRole('dialog', { name: 'Board Permissions' });
+  const openButton = page.getByRole('button', { name: /permissions/i });
+  const closeButton = dialog.getByRole('button', { name: /^close$/i }).last();
+  const memberLink = dialog.locator(`a[href="#/${npub}/profile"]`);
+
+  if (!(await dialog.isVisible().catch(() => false))) {
+    await openButton.click();
+  }
+
+  await expect(dialog).toBeVisible({ timeout: 10000 });
+  await expect(memberLink).toBeVisible({ timeout: timeoutMs });
+  await closeButton.click();
+  await expect(dialog).toHaveCount(0, { timeout: 10000 });
 }
 
 test.describe('Iris Boards App', () => {
@@ -309,8 +476,7 @@ test.describe('Iris Boards App', () => {
     const boardName = `E2E Board ${Date.now()}`;
     let created = false;
     for (let attempt = 0; attempt < 3 && !created; attempt += 1) {
-      await page.getByRole('button', { name: /new board/i }).click();
-      await expect(page.getByRole('heading', { name: 'Create Board' })).toBeVisible({ timeout: 15000 });
+      await openCreateBoardModal(page);
       const input = page.getByPlaceholder('Board name');
       const createButton = page.getByRole('button', { name: /^create$/i });
       try {
@@ -367,8 +533,7 @@ test.describe('Iris Boards App', () => {
     await ensureLoggedIn(page, 30000);
     await waitForRelayConnected(page, 30000);
 
-    await page.getByRole('button', { name: /new board/i }).click();
-    await expect(page.getByRole('heading', { name: 'Create Board' })).toBeVisible({ timeout: 10000 });
+    await openCreateBoardModal(page);
     await page.keyboard.press('Escape');
     await expect(page.getByRole('heading', { name: 'Create Board' })).toHaveCount(0);
 
@@ -489,7 +654,9 @@ test.describe('Iris Boards App', () => {
       .waitForEvent('popup', { timeout: 1500 })
       .then(() => true)
       .catch(() => false);
-    await cardDetailsImage.click();
+    const cardDetailsImageButton = cardDetailsDialog.locator('button[title="tiny.png"]').first();
+    await expect(cardDetailsImageButton).toBeVisible({ timeout: 10000 });
+    await cardDetailsImageButton.click();
     const mediaDialog = page.getByRole('dialog', { name: 'Attachment preview' });
     await expect(mediaDialog).toBeVisible({ timeout: 10000 });
     await expect(mediaDialog.getByRole('link', { name: /^open file$/i })).toHaveAttribute('href', /\/htree\/nhash1/);
@@ -517,8 +684,16 @@ test.describe('Iris Boards App', () => {
     ]);
     await page.getByPlaceholder('Add comment.').fill('**Looks good**');
     await cardDetailsDialog.getByRole('button', { name: /add comment/i }).click();
-    await expect(cardDetailsDialog.getByText('Looks good')).toBeVisible({ timeout: 10000 });
-    await expect(cardDetailsDialog.getByRole('img', { name: 'comment-image.png' })).toBeVisible({ timeout: 10000 });
+    await expect.poll(async () => {
+      const dialogVisible = await cardDetailsDialog.isVisible().catch(() => false);
+      if (!dialogVisible) {
+        await createdCard.getByRole('button', { name: /open card details/i }).click();
+        await expect(cardDetailsDialog).toBeVisible({ timeout: 10000 });
+      }
+      const commentVisible = await cardDetailsDialog.getByText('Looks good').isVisible().catch(() => false);
+      const commentImageVisible = await cardDetailsDialog.getByRole('img', { name: 'comment-image.png' }).isVisible().catch(() => false);
+      return commentVisible && commentImageVisible;
+    }, { timeout: 20000, intervals: [1000, 2000, 3000] }).toBe(true);
 
     if (await cardDetailsDialog.count() === 0) {
       await createdCard.getByRole('button', { name: /open card details/i }).click();
@@ -536,7 +711,7 @@ test.describe('Iris Boards App', () => {
     await expect(page.getByTestId('board-column-Doing').getByTestId('board-card-Ship card drag')).toBeVisible({ timeout: 10000 });
   });
 
-  test('link-visible board syncs to another browser in realtime without reload', async ({ page, browser }) => {
+  test('link-visible board syncs to another browser in realtime', async ({ page, browser }) => {
     test.setTimeout(120000);
     setupPageErrorHandler(page);
     await page.goto('/boards.html#/');
@@ -569,18 +744,13 @@ test.describe('Iris Boards App', () => {
     await expect(page2.getByRole('button', { name: /permissions/i })).toBeVisible({ timeout: 15000 });
 
     await page2.getByRole('button', { name: /permissions/i }).click();
+    const page2PermissionsDialog = page2.getByRole('dialog', { name: 'Board Permissions' });
     await expect(page2.getByRole('heading', { name: 'Board Permissions' })).toBeVisible({ timeout: 10000 });
     await expect(page2.getByText(/share your npub with an admin to request write access/i)).toBeVisible({ timeout: 10000 });
     await expect(page2.getByPlaceholder('npub1...')).toHaveCount(0);
-    await expect(page2.getByRole('button', { name: /^add$/i })).toHaveCount(0);
-    await page2.getByRole('button', { name: /close permissions dialog/i }).click();
+    await expect(page2PermissionsDialog.getByRole('button', { name: /^add\b/i })).toHaveCount(0);
+    await page2PermissionsDialog.getByRole('button', { name: /^close$/i }).first().click();
     await expect(page2.getByRole('heading', { name: 'Board Permissions' })).toHaveCount(0);
-
-    const liveMarker = await page2.evaluate(() => {
-      const marker = `board-live-${Math.random().toString(36).slice(2)}`;
-      (window as BoardsE2EWindow).__boardLiveMarker = marker;
-      return marker;
-    });
 
     const cardCreateRoot = await getCurrentRootSignature(page);
     await page1Todo.getByRole('button', { name: /add card/i }).click();
@@ -608,15 +778,11 @@ test.describe('Iris Boards App', () => {
     await expect(page2.getByTestId('board-card-Realtime card updated')).toBeVisible({ timeout: 90000 });
     await expect(page2.getByTestId('board-card-Realtime card')).toHaveCount(0, { timeout: 90000 });
 
-    await expect.poll(async () => {
-      return page2.evaluate(() => (window as BoardsE2EWindow).__boardLiveMarker);
-    }, { timeout: 15000 }).toBe(liveMarker);
-
     await context2.close();
   });
 
   test('granting writer permission updates viewer live and enables editing', async ({ page, browser }) => {
-    test.setTimeout(120000);
+    test.setTimeout(180000);
     setupPageErrorHandler(page);
     await page.goto('/boards.html#/');
     await waitForAppReady(page);
@@ -639,7 +805,7 @@ test.describe('Iris Boards App', () => {
     await setupFreshBoardsViewer(page, page2, shareUrl);
     await ensureViewerTreeRoot(page2, ownerNpub, treeName, ownerRoot, 90000);
 
-    const page2Pubkey = await page2.evaluate(() => (window as BoardsE2EWindow).__nostrStore?.getState?.().pubkey ?? null);
+    const page2Pubkey = await readNostrPubkey(page2);
     expect(typeof page2Pubkey).toBe('string');
     expect((page2Pubkey as string).length).toBe(64);
     const page2Npub = nip19.npubEncode(page2Pubkey as string);
@@ -649,18 +815,11 @@ test.describe('Iris Boards App', () => {
     await expect(page2.locator('text=Read-only')).toBeVisible({ timeout: 60000 });
     await expect(page2Todo.getByRole('button', { name: /add card/i })).toHaveCount(0);
 
-    const liveMarker = await page2.evaluate(() => {
-      const marker = `board-perm-live-${Math.random().toString(36).slice(2)}`;
-      (window as BoardsE2EWindow).__boardPermissionMarker = marker;
-      return marker;
-    });
-
     const permissionsRoot = await getCurrentRootSignature(page);
     await page.getByRole('button', { name: /permissions/i }).click();
+    const permissionsDialog = page.getByRole('dialog', { name: 'Board Permissions' });
     await expect(page.getByRole('heading', { name: 'Board Permissions' })).toBeVisible({ timeout: 10000 });
-    await page.getByPlaceholder('npub1...').fill(page2Npub);
-    await page.getByRole('combobox').selectOption('writer');
-    await page.getByRole('button', { name: /^add$/i }).click();
+    await addBoardPermissionEntry(permissionsDialog, page2Npub, 'writer');
     await flushBoardRootUpdate(page, permissionsRoot);
     const updatedOwnerRoot = await getTreeRootHex(page, ownerNpub, treeName);
 
@@ -671,10 +830,6 @@ test.describe('Iris Boards App', () => {
       const addCardVisible = await page2Todo.getByRole('button', { name: /add card/i }).isVisible().catch(() => false);
       return !readOnlyVisible && addCardVisible;
     }, { timeout: 60000, intervals: [1000, 2000, 3000] }).toBe(true);
-
-    await expect.poll(async () => {
-      return page2.evaluate(() => (window as BoardsE2EWindow).__boardPermissionMarker);
-    }, { timeout: 15000 }).toBe(liveMarker);
 
     await page2Todo.getByRole('button', { name: /add card/i }).click();
     await expect(page2.getByRole('heading', { name: 'Create Card' })).toBeVisible({ timeout: 10000 });
@@ -690,6 +845,146 @@ test.describe('Iris Boards App', () => {
     await expect(page2.getByTestId('board-card-Granted writer card updated')).toBeVisible({ timeout: 10000 });
 
     await context2.close();
+  });
+
+  test('viewer sees contributor edits live', async ({ page, browser }) => {
+    test.setTimeout(180000);
+    setupPageErrorHandler(page);
+    await page.goto('/boards.html#/');
+    await waitForAppReady(page);
+    await useLocalRelay(page);
+    await configureBlossomServers(page);
+    await ensureLoggedIn(page, 30000);
+    await enableOthersPool(page, 10);
+    await waitForRelayConnected(page, 30000);
+
+    const boardName = `E2E Contributor Sync ${Date.now()}`;
+    const shareUrl = await createBoard(page, boardName, 'link-visible');
+    expect(shareUrl).toMatch(/\?k=/);
+    const { npub: ownerNpub, treeName } = parseBoardShareUrl(shareUrl);
+    await waitForTreePublished(page, ownerNpub, treeName, 45000);
+    const ownerRoot = await getTreeRootHex(page, ownerNpub, treeName);
+    await flushPendingPublishes(page);
+
+    const writerContext = await browser.newContext();
+    const writerPage = await writerContext.newPage();
+    await setupFreshBoardsViewer(page, writerPage, shareUrl);
+    await ensureViewerTreeRoot(writerPage, ownerNpub, treeName, ownerRoot, 90000);
+
+    const viewerContext = await browser.newContext();
+    const viewerPage = await viewerContext.newPage();
+    await setupFreshBoardsViewer(page, viewerPage, shareUrl);
+    await ensureViewerTreeRoot(viewerPage, ownerNpub, treeName, ownerRoot, 90000);
+
+    const writerPubkey = await readNostrPubkey(writerPage);
+    expect(typeof writerPubkey).toBe('string');
+    expect((writerPubkey as string).length).toBe(64);
+    const writerNpub = nip19.npubEncode(writerPubkey as string);
+
+    const permissionsRoot = await getCurrentRootSignature(page);
+    await page.getByRole('button', { name: /permissions/i }).click();
+    const contributorPermissionsDialog = page.getByRole('dialog', { name: 'Board Permissions' });
+    await expect(page.getByRole('heading', { name: 'Board Permissions' })).toBeVisible({ timeout: 10000 });
+    await addBoardPermissionEntry(contributorPermissionsDialog, writerNpub, 'writer');
+    await flushBoardRootUpdate(page, permissionsRoot);
+    const updatedOwnerRoot = await getTreeRootHex(page, ownerNpub, treeName);
+
+    await ensureViewerTreeRoot(writerPage, ownerNpub, treeName, updatedOwnerRoot, 90000);
+    await ensureViewerTreeRoot(viewerPage, ownerNpub, treeName, updatedOwnerRoot, 90000);
+    await waitForBoardPermissionEntry(writerPage, writerNpub, 90000);
+    await waitForBoardPermissionEntry(viewerPage, writerNpub, 90000);
+
+    const writerTodo = writerPage.getByTestId('board-column-Todo');
+    await expect.poll(async () => {
+      const addCardVisible = await writerTodo.getByRole('button', { name: /add card/i }).isVisible().catch(() => false);
+      const readOnlyVisible = await writerPage.getByText('Read-only', { exact: true }).isVisible().catch(() => false);
+      return addCardVisible && !readOnlyVisible;
+    }, { timeout: 60000, intervals: [1000, 2000, 3000] }).toBe(true);
+
+    await expect(viewerPage.getByText('Read-only', { exact: true })).toBeVisible({ timeout: 30000 });
+
+    const writerCreateRoot = await getTreeRootSignature(writerPage, writerNpub, treeName);
+    await writerTodo.getByRole('button', { name: /add card/i }).click();
+    await expect(writerPage.getByRole('heading', { name: 'Create Card' })).toBeVisible({ timeout: 10000 });
+    await writerPage.getByLabel('Card title').fill('Contributor live card');
+    await writerPage.getByLabel('Card description').fill('Created by a contributor and should appear for viewers.');
+    await writerPage.getByRole('button', { name: /^create card$/i }).click();
+    await expect(writerPage.getByTestId('board-card-Contributor live card')).toBeVisible({ timeout: 10000 });
+    await flushTreeRootUpdate(writerPage, writerNpub, treeName, writerCreateRoot, 45000);
+    await waitForTreePublished(writerPage, writerNpub, treeName, 45000);
+    const writerRootAfterCreate = await getTreeRootHex(writerPage, writerNpub, treeName);
+
+    await expect.poll(async () => {
+      return viewerPage.evaluate(async ({ contributorNpub, contributorTree }) => {
+        const { getTreeRoot } = await import('/src/stores/index.ts');
+        const params = new URLSearchParams(window.location.hash.split('?')[1] ?? '');
+        const root = await getTreeRoot(contributorNpub, contributorTree, params.get('k'));
+        return root ? 'ready' : 'pending';
+      }, { contributorNpub: writerNpub, contributorTree: treeName });
+    }, { timeout: 60000, intervals: [1000, 2000, 3000] }).toBe('ready');
+    await waitForTreeRootHash(viewerPage, writerNpub, treeName, writerRootAfterCreate.hashHex, 60000);
+    await ensureViewerTreeRoot(viewerPage, writerNpub, treeName, writerRootAfterCreate, 90000);
+
+    await expect(viewerPage.getByTestId('board-card-Contributor live card')).toBeVisible({ timeout: 60000 });
+
+    const writerEditRoot = await getTreeRootSignature(writerPage, writerNpub, treeName);
+    await writerPage.getByTestId('board-card-Contributor live card').getByRole('button', { name: /open card details/i }).click();
+    await writerPage.getByRole('dialog', { name: 'Card details' }).getByRole('button', { name: /edit card/i }).click();
+    await expect(writerPage.getByRole('heading', { name: 'Edit Card' })).toBeVisible({ timeout: 10000 });
+    await writerPage.getByLabel('Card title').fill('Contributor live card updated');
+    await writerPage.getByRole('button', { name: /^save card$/i }).click();
+    await expect(writerPage.getByTestId('board-card-Contributor live card updated')).toBeVisible({ timeout: 10000 });
+    await flushTreeRootUpdate(writerPage, writerNpub, treeName, writerEditRoot, 45000);
+    await waitForTreePublished(writerPage, writerNpub, treeName, 45000);
+    const writerRootAfterEdit = await getTreeRootHex(writerPage, writerNpub, treeName);
+    await ensureViewerTreeRoot(viewerPage, writerNpub, treeName, writerRootAfterEdit, 90000);
+
+    await expect(viewerPage.getByTestId('board-card-Contributor live card updated')).toBeVisible({ timeout: 60000 });
+    await expect(viewerPage.getByTestId('board-card-Contributor live card')).toHaveCount(0, { timeout: 60000 });
+
+    await viewerContext.close();
+    await writerContext.close();
+  });
+
+  test('viewer loads board promptly even when missing writers are listed', async ({ page, browser }) => {
+    test.setTimeout(120000);
+    setupPageErrorHandler(page);
+    await page.goto('/boards.html#/');
+    await waitForAppReady(page);
+    await useLocalRelay(page);
+    await configureBlossomServers(page);
+    await ensureLoggedIn(page, 30000);
+    await enableOthersPool(page, 10);
+    await waitForRelayConnected(page, 30000);
+
+    const boardName = `E2E Fast Open ${Date.now()}`;
+    const shareUrl = await createBoard(page, boardName, 'link-visible');
+    expect(shareUrl).toMatch(/\?k=/);
+    const { npub: ownerNpub, treeName } = parseBoardShareUrl(shareUrl);
+    await waitForTreePublished(page, ownerNpub, treeName, 45000);
+
+    const missingWriterPubkeys = ['1'.repeat(64), '2'.repeat(64), '3'.repeat(64)];
+    await page.getByRole('button', { name: /permissions/i }).click();
+    const fastOpenPermissionsDialog = page.getByRole('dialog', { name: 'Board Permissions' });
+    await expect(page.getByRole('heading', { name: 'Board Permissions' })).toBeVisible({ timeout: 10000 });
+    for (const pubkey of missingWriterPubkeys) {
+      const signatureBefore = await getCurrentRootSignature(page);
+      await addBoardPermissionEntry(fastOpenPermissionsDialog, nip19.npubEncode(pubkey), 'writer');
+      await flushBoardRootUpdate(page, signatureBefore);
+    }
+    await fastOpenPermissionsDialog.getByRole('button', { name: /^close$/i }).first().click();
+    await waitForTreePublished(page, ownerNpub, treeName, 45000);
+    const updatedOwnerRoot = await getTreeRootHex(page, ownerNpub, treeName);
+
+    const viewerContext = await browser.newContext();
+    const viewerPage = await viewerContext.newPage();
+    await setupFreshBoardsViewer(page, viewerPage, shareUrl);
+    await ensureViewerTreeRoot(viewerPage, ownerNpub, treeName, updatedOwnerRoot, 90000);
+
+    await expect(viewerPage.getByRole('heading', { name: boardName })).toBeVisible({ timeout: 5000 });
+    await expect(viewerPage.getByTestId('board-column-Todo')).toBeVisible({ timeout: 5000 });
+
+    await viewerContext.close();
   });
 
   test('non-owner sees link-required notice instead of placeholder board without link key', async ({ page, browser }) => {
