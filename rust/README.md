@@ -116,6 +116,7 @@ Push/pull git repos via hashtree:
 ```bash
 # Install (local path)
 cargo install --path crates/hashtree-cli
+cargo install --path crates/hashtree-cli --features fuse
 cargo install --path crates/hashtree-cashu-cli
 cargo install --path crates/git-remote-htree
 
@@ -194,6 +195,10 @@ npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm sirius
 htree add myfile.txt                    # Add file (CHK-encrypted, shareable)
 htree add mydir/ --unencrypted          # Add directory as raw plaintext
 htree add myfile.txt --publish mydata   # Add and publish to Nostr
+
+# Mount a published tree or subdirectory locally (requires build/install with --features fuse)
+htree mount htree://npub1.../mytree ~/mnt/mytree
+htree mount htree://npub1.../mytree/docs ~/mnt/docs
 
 # Push to Blossom servers
 htree push <hash>                       # Push to configured servers

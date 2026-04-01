@@ -6,8 +6,8 @@ use super::lists::{
 use super::resolve::{parse_published_target, resolve_cid_input, ParsedPublishedTarget};
 use super::run::{
     build_files_iris_to_url_for_add_route, build_files_iris_to_url_for_published_ref,
-    build_sites_iris_to_url_for_add_route, build_sites_iris_to_url_for_published_ref,
-    detect_site_entry_for_path, format_cid_for_display,
+    build_files_iris_to_url_for_published_target, build_sites_iris_to_url_for_add_route,
+    build_sites_iris_to_url_for_published_ref, detect_site_entry_for_path, format_cid_for_display,
 };
 use crate::app::args::{CashuCommands, CashuMintCommands, ReleaseCommands, SocialGraphCommands};
 use crate::app::args::{Cli, Commands};
@@ -204,6 +204,19 @@ fn test_build_files_iris_to_url_for_published_ref_encodes_tree_name_as_single_se
     assert_eq!(
         build_files_iris_to_url_for_published_ref("npub1owner", "apps/iris ui",),
         "https://files.iris.to/#/npub1owner/apps%2Firis%20ui"
+    );
+}
+
+#[test]
+fn test_build_files_iris_to_url_for_published_target_includes_path_and_link_key() {
+    assert_eq!(
+        build_files_iris_to_url_for_published_target(
+            "npub1owner",
+            "apps/iris ui",
+            Some("docs/Read me.md"),
+            Some("001122"),
+        ),
+        "https://files.iris.to/#/npub1owner/apps%2Firis%20ui/docs/Read%20me.md?k=001122"
     );
 }
 

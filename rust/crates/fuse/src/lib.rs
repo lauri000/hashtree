@@ -853,7 +853,7 @@ mod fuse_impl {
             _fh: u64,
             offset: i64,
             data: &[u8],
-            _write_flags: i32,
+            _write_flags: u32,
             _flags: i32,
             _lock_owner: Option<u64>,
             reply: ReplyWrite,
@@ -895,6 +895,7 @@ mod fuse_impl {
             parent: u64,
             name: &OsStr,
             _mode: u32,
+            _umask: u32,
             reply: ReplyEntry,
         ) {
             let name = match name.to_str() {
@@ -905,7 +906,7 @@ mod fuse_impl {
                 }
             };
 
-            match self.mkdir(parent, name) {
+            match HashtreeFuse::mkdir(self, parent, name) {
                 Ok(attr) => reply.entry(&TTL, &self.file_attr(&attr), 0),
                 Err(err) => reply.error(err.errno()),
             }
@@ -920,7 +921,7 @@ mod fuse_impl {
                 }
             };
 
-            match self.unlink(parent, name) {
+            match HashtreeFuse::unlink(self, parent, name) {
                 Ok(()) => reply.ok(),
                 Err(err) => reply.error(err.errno()),
             }
@@ -935,7 +936,7 @@ mod fuse_impl {
                 }
             };
 
-            match self.rmdir(parent, name) {
+            match HashtreeFuse::rmdir(self, parent, name) {
                 Ok(()) => reply.ok(),
                 Err(err) => reply.error(err.errno()),
             }
@@ -966,7 +967,7 @@ mod fuse_impl {
                 }
             };
 
-            match self.rename(parent, name, newparent, newname) {
+            match HashtreeFuse::rename(self, parent, name, newparent, newname) {
                 Ok(()) => reply.ok(),
                 Err(err) => reply.error(err.errno()),
             }

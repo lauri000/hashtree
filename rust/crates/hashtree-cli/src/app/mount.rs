@@ -1,13 +1,14 @@
 use anyhow::{Context, Result};
-use hashtree_cli::{
-    Config, HashtreeStore, NostrKeys, NostrResolverConfig, NostrRootResolver, RootResolver,
-};
+use async_trait::async_trait;
+use hashtree_cli::{Config, HashtreeStore, NostrResolverConfig, NostrRootResolver, RootResolver};
 use hashtree_fuse::{FsError as FuseFsError, HashtreeFuse, RootPublisher};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use super::mount_publish::{MountPublishQueue, PublishSink, MOUNT_PUBLISH_DEBOUNCE};
 use super::resolve::{parse_published_target, resolve_cid_input_with_opts, ResolveOptions};
+use super::run::build_files_iris_to_url_for_published_target;
 
 struct MountVisibility {
     visibility: hashtree_core::TreeVisibility,
@@ -90,64 +91,57 @@ fn parse_mount_visibility(
     })
 }
 
-struct NostrRootPublisher {
+struct NostrPublishSink {
     resolver: NostrRootResolver,
     key: String,
     visibility: hashtree_core::TreeVisibility,
     link_key: Option<[u8; 32]>,
-    store: Arc<HashtreeStore>,
-    pubkey_hex: String,
-    tree_name: String,
-    handle: tokio::runtime::Handle,
 }
 
-impl RootPublisher for NostrRootPublisher {
-    fn publish(&self, cid: &hashtree_core::Cid) -> Result<(), FuseFsError> {
-        let visibility = self.visibility;
-        let link_key = self.link_key;
-        let key = self.key.clone();
-        let resolver = &self.resolver;
-
-        let published = self
-            .handle
-            .block_on(async move {
-                match visibility {
-                    hashtree_core::TreeVisibility::Public => resolver.publish(&key, cid).await,
-                    hashtree_core::TreeVisibility::LinkVisible => {
-                        let Some(link_key) = link_key else {
-                            return Err(hashtree_cli::ResolverError::Other(
-                                "Missing link key".into(),
-                            ));
-                        };
-                        resolver.publish_shared(&key, cid, &link_key).await
-                    }
-                    hashtree_core::TreeVisibility::Private => {
-                        resolver.publish_private(&key, cid).await
-                    }
-                }
-            })
-            .map_err(|e| FuseFsError::Publish(e.to_string()))?;
+#[async_trait]
+impl PublishSink for NostrPublishSink {
+    async fn publish(&self, cid: &hashtree_core::Cid) -> Result<()> {
+        let published = match self.visibility {
+            hashtree_core::TreeVisibility::Public => self.resolver.publish(&self.key, cid).await,
+            hashtree_core::TreeVisibility::LinkVisible => {
+                let Some(link_key) = self.link_key else {
+                    anyhow::bail!("Missing link key");
+                };
+                self.resolver
+                    .publish_shared(&self.key, cid, &link_key)
+                    .await
+            }
+            hashtree_core::TreeVisibility::Private => {
+                self.resolver.publish_private(&self.key, cid).await
+            }
+        }
+        .context("Failed to publish mounted root")?;
 
         if !published {
-            return Err(FuseFsError::Publish("Publish returned false".into()));
+            anyhow::bail!("Publish returned false");
         }
 
-        let key_hex = cid.key.map(hex::encode);
-        let updated_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        self.store
-            .set_cached_root(
-                &self.pubkey_hex,
-                &self.tree_name,
-                &hashtree_core::to_hex(&cid.hash),
-                key_hex.as_deref(),
-                self.visibility.as_str(),
-                updated_at,
-            )
-            .map_err(|e| FuseFsError::Publish(e.to_string()))?;
+        Ok(())
+    }
+}
 
+struct QueueingRootPublisher<Sink, StoreT>
+where
+    Sink: PublishSink + 'static,
+    StoreT: hashtree_core::Store + 'static,
+{
+    queue: Arc<MountPublishQueue<Sink, StoreT>>,
+}
+
+impl<Sink, StoreT> RootPublisher for QueueingRootPublisher<Sink, StoreT>
+where
+    Sink: PublishSink + 'static,
+    StoreT: hashtree_core::Store + 'static,
+{
+    fn publish(&self, cid: &hashtree_core::Cid) -> Result<(), FuseFsError> {
+        self.queue
+            .enqueue(cid.clone())
+            .map_err(|e| FuseFsError::Publish(e.to_string()))?;
         Ok(())
     }
 }
@@ -173,7 +167,7 @@ pub(crate) async fn mount_fuse(
         link_key: mount_link_key,
     } = parse_mount_visibility(visibility, link_key, private, fragment)?;
 
-    let config = Config::load_or_default();
+    let config = Config::load().unwrap_or_default();
     let relays = if let Some(relays) = relays {
         relays.split(',').map(|s| s.trim().to_string()).collect()
     } else {
@@ -219,7 +213,8 @@ pub(crate) async fn mount_fuse(
         root_cid = path_cid;
     }
 
-    let publisher = if let Some(nostr_key) = nostr_key {
+    let link_key_hex = mount_link_key.map(hex::encode);
+    let publish_queue = if let Some(nostr_key) = nostr_key {
         let keys = hashtree_cli::config::read_keys().context("Failed to read nostr keys")?;
         let mut resolver_config = NostrResolverConfig::default();
         if let Some(relays) = opts.relays.clone() {
@@ -230,27 +225,87 @@ pub(crate) async fn mount_fuse(
             .await
             .context("Failed to create nostr resolver")?;
 
-        let published_target =
-            published_target.ok_or_else(|| anyhow::anyhow!("Invalid nostr key: {}", nostr_key))?;
+        let published_target = published_target
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Invalid nostr key: {}", nostr_key))?;
         let pubkey_bytes = hashtree_cli::config::parse_npub(&published_target.npub)?;
         if keys.public_key().to_bytes() != pubkey_bytes {
             anyhow::bail!("Nostr key does not match mounted npub");
         }
         let pubkey_hex = hex::encode(pubkey_bytes);
-
-        Some(Arc::new(NostrRootPublisher {
+        let mounted_path = published_target
+            .path
+            .as_deref()
+            .map(|path| {
+                path.split('/')
+                    .filter(|segment| !segment.is_empty())
+                    .map(|segment| segment.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let tree_name = published_target.tree_name.clone();
+        let visibility_str = mount_visibility.as_str().to_string();
+        let publish_sink = Arc::new(NostrPublishSink {
             resolver,
             key: nostr_key,
             visibility: mount_visibility,
             link_key: mount_link_key,
-            store: store.clone(),
-            pubkey_hex,
-            tree_name: published_target.tree_name,
-            handle: tokio::runtime::Handle::current(),
-        }) as Arc<dyn RootPublisher>)
+        });
+        let success_store = store.clone();
+        let success_hook = Arc::new(move |cid: &hashtree_core::Cid| {
+            let key_hex = cid.key.map(hex::encode);
+            let updated_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if let Err(error) = success_store.set_cached_root(
+                &pubkey_hex,
+                &tree_name,
+                &hashtree_core::to_hex(&cid.hash),
+                key_hex.as_deref(),
+                &visibility_str,
+                updated_at,
+            ) {
+                eprintln!("Failed to cache mounted root publish: {error}");
+            }
+        });
+
+        let queue = Arc::new(MountPublishQueue::new(
+            publish_sink,
+            store_arc.clone(),
+            resolved.cid.clone(),
+            mounted_path,
+            MOUNT_PUBLISH_DEBOUNCE,
+            Some(success_hook),
+        ));
+
+        Some(queue)
     } else {
         None
     };
+
+    println!("mounted {}", mountpoint.display());
+    if let Some(target) = published_target.as_ref() {
+        println!(
+            "  files: {}",
+            build_files_iris_to_url_for_published_target(
+                &target.npub,
+                &target.tree_name,
+                target.path.as_deref(),
+                link_key_hex.as_deref(),
+            )
+        );
+        println!(
+            "  publish: updates debounce for ~{} ms",
+            MOUNT_PUBLISH_DEBOUNCE.as_millis()
+        );
+    }
+
+    let publisher: Option<Arc<dyn RootPublisher>> = publish_queue.as_ref().map(|queue| {
+        Arc::new(QueueingRootPublisher {
+            queue: queue.clone(),
+        }) as Arc<dyn RootPublisher>
+    });
 
     let fs = HashtreeFuse::new_with_publisher(store_arc, root_cid, publisher)?;
     let mut options = vec![
@@ -262,5 +317,8 @@ pub(crate) async fn mount_fuse(
     }
 
     fs.mount(mountpoint, &options)?;
+    if let Some(queue) = publish_queue {
+        queue.shutdown().await?;
+    }
     Ok(())
 }

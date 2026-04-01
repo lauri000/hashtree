@@ -8,6 +8,9 @@ Hashtree daemon and CLI - content-addressed storage with P2P sync.
 # Full CLI install
 cargo install hashtree-cli
 
+# CLI with FUSE mount support
+cargo install hashtree-cli --features fuse
+
 # Without social graph
 cargo install hashtree-cli --no-default-features --features p2p
 
@@ -50,6 +53,10 @@ htree start --daemon                    # Start in background
 htree start --daemon --log-file /var/log/hashtree.log
 htree stop                              # Stop background daemon
 htree status                            # Check daemon status
+
+# FUSE mount (requires build/install with --features fuse)
+htree mount htree://npub1.../mytree ~/mnt/mytree
+htree mount htree://npub1.../mytree/docs ~/mnt/docs
 ```
 
 ## Social Graph

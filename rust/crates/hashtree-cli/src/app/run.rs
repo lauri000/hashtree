@@ -1432,9 +1432,41 @@ pub(crate) fn build_files_iris_to_url_for_published_ref(
     owner_npub: &str,
     ref_name: &str,
 ) -> String {
+    build_files_iris_to_url_for_published_target(owner_npub, ref_name, None, None)
+}
+
+pub(crate) fn build_files_iris_to_url_for_published_target(
+    owner_npub: &str,
+    ref_name: &str,
+    path: Option<&str>,
+    link_key: Option<&str>,
+) -> String {
     let owner = encode_hash_route_segment(owner_npub.trim());
     let reference = encode_hash_route_segment(ref_name.trim_matches('/'));
-    format!("{IRIS_FILES_WEB_BASE_URL}/#/{owner}/{reference}")
+    let mut url = format!("{IRIS_FILES_WEB_BASE_URL}/#/{owner}/{reference}");
+
+    if let Some(path) = path {
+        let encoded_path = path
+            .trim_matches('/')
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .map(encode_hash_route_segment)
+            .collect::<Vec<_>>()
+            .join("/");
+        if !encoded_path.is_empty() {
+            url.push('/');
+            url.push_str(&encoded_path);
+        }
+    }
+
+    if let Some(link_key) = link_key {
+        if !link_key.is_empty() {
+            url.push_str("?k=");
+            url.push_str(link_key);
+        }
+    }
+
+    url
 }
 
 pub(crate) fn build_sites_iris_to_url_for_add_route(route: &str) -> String {
