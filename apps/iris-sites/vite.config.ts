@@ -56,6 +56,13 @@ export default defineConfig({
   build: {
     modulePreload: false,
     reportCompressedSize: true,
+    rollupOptions: {
+      onLog(level, log, handler) {
+        const message = typeof log.message === 'string' ? log.message : '';
+        if (message.includes('Use of eval in') && message.includes('tseep')) return;
+        handler(level, log);
+      },
+    },
   },
   server: {
     port: 5178,
