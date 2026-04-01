@@ -175,29 +175,57 @@
 
 <style>
   .share-modal-backdrop {
+    --share-modal-backdrop-background: #09111a;
+    --share-modal-card-background: #111926;
+    --share-modal-card-background-top: #182537;
+    --share-modal-card-border: #304256;
+    --share-modal-card-shadow: rgba(0, 0, 0, 0.34);
+    --share-modal-panel-background: #0d1520;
+    --share-modal-panel-border: #27384c;
+    --share-modal-text: #f3f3f4;
+    --share-modal-muted-text: #aab6c7;
+    --share-modal-link-text: #a8d1ff;
+    --share-modal-button-background: #152131;
+    --share-modal-button-background-hover: #1b2a3d;
+    --share-modal-button-border: #31435a;
+    --share-modal-eyebrow: #8de1c0;
+    --share-modal-copy-success-text: #0a2c1f;
+    --share-modal-copy-success-border: #76d6ad;
+    --share-modal-copy-success-background: #c8f2de;
+    --share-modal-copy-ready-text: #5f4100;
+    --share-modal-copy-ready-border: #f0c35a;
+    --share-modal-copy-ready-background: #ffe8af;
+    --share-modal-loading-background-start: #ffffff;
+    --share-modal-loading-background-end: #e8edf3;
+    --share-modal-loading-spinner-track: rgba(17, 25, 38, 0.12);
+    --share-modal-loading-spinner-head: rgba(17, 25, 38, 0.78);
     position: fixed;
     inset: 0;
     z-index: 60;
     display: grid;
     place-items: center;
     padding: 20px;
-    background: rgba(2, 4, 8, 0.72);
-    backdrop-filter: blur(14px);
+    background: var(--share-modal-backdrop-background);
   }
 
   .share-modal-card {
     margin: 0;
+    position: relative;
+    inset: auto;
+    align-self: center;
+    justify-self: center;
     width: min(420px, calc(100vw - 24px));
+    max-height: calc(100vh - 40px);
     display: flex;
     flex-direction: column;
     gap: 16px;
     padding: 18px;
+    overflow: auto;
     border-radius: 24px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    background:
-      radial-gradient(circle at top, rgba(141, 225, 192, 0.12), transparent 55%),
-      rgba(6, 9, 17, 0.96);
-    box-shadow: 0 28px 80px rgba(0, 0, 0, 0.42);
+    border: 1px solid var(--share-modal-card-border);
+    background: linear-gradient(180deg, var(--share-modal-card-background-top) 0%, var(--share-modal-card-background) 100%);
+    color: var(--share-modal-text);
+    box-shadow: 0 28px 80px var(--share-modal-card-shadow);
   }
 
   .share-modal-header {
@@ -212,7 +240,7 @@
     font-size: 0.72rem;
     letter-spacing: 0.16em;
     text-transform: uppercase;
-    color: #8de1c0;
+    color: var(--share-modal-eyebrow);
   }
 
   .share-modal-title {
@@ -224,9 +252,9 @@
   .share-modal-close,
   .share-modal-copy-button,
   .share-modal-native-button {
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid var(--share-modal-button-border);
     border-radius: 12px;
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--share-modal-button-background);
     color: inherit;
     font: inherit;
     cursor: pointer;
@@ -256,14 +284,14 @@
   .share-modal-qr-loading {
     display: grid;
     place-items: center;
-    background: linear-gradient(180deg, #f5f5f5 0%, #e6e6e6 100%);
+    background: linear-gradient(180deg, var(--share-modal-loading-background-start) 0%, var(--share-modal-loading-background-end) 100%);
   }
 
   .share-modal-spinner {
     width: 32px;
     height: 32px;
-    border: 3px solid rgba(5, 5, 7, 0.12);
-    border-top-color: rgba(5, 5, 7, 0.8);
+    border: 3px solid var(--share-modal-loading-spinner-track);
+    border-top-color: var(--share-modal-loading-spinner-head);
     border-radius: 999px;
     animation: share-modal-spin 720ms linear infinite;
   }
@@ -274,8 +302,8 @@
     gap: 10px;
     padding: 14px;
     border-radius: 18px;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: var(--share-modal-panel-background);
+    border: 1px solid var(--share-modal-panel-border);
   }
 
   .share-modal-url-label {
@@ -283,14 +311,14 @@
     font-size: 0.76rem;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: rgba(243, 243, 244, 0.58);
+    color: var(--share-modal-muted-text);
   }
 
   .share-modal-url-text {
     font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
     font-size: 0.82rem;
     line-height: 1.5;
-    color: rgba(168, 209, 255, 0.96);
+    color: var(--share-modal-link-text);
     word-break: break-all;
   }
 
@@ -301,21 +329,50 @@
   }
 
   .share-modal-copy-button[data-state="copied"] {
-    color: #b9f5df;
-    border-color: rgba(110, 231, 183, 0.24);
-    background: rgba(110, 231, 183, 0.12);
+    color: var(--share-modal-copy-success-text);
+    border-color: var(--share-modal-copy-success-border);
+    background: var(--share-modal-copy-success-background);
   }
 
   .share-modal-copy-button[data-state="ready"] {
-    color: #ffe6a3;
-    border-color: rgba(251, 191, 36, 0.24);
-    background: rgba(251, 191, 36, 0.12);
+    color: var(--share-modal-copy-ready-text);
+    border-color: var(--share-modal-copy-ready-border);
+    background: var(--share-modal-copy-ready-background);
   }
 
   .share-modal-close:hover,
   .share-modal-copy-button:hover,
   .share-modal-native-button:hover {
-    background: rgba(255, 255, 255, 0.09);
+    background: var(--share-modal-button-background-hover);
+  }
+
+  @media (prefers-color-scheme: light) {
+    .share-modal-backdrop {
+      --share-modal-backdrop-background: #edf2f8;
+      --share-modal-card-background: #fdfefe;
+      --share-modal-card-background-top: #eef5fb;
+      --share-modal-card-border: #c7d6e4;
+      --share-modal-card-shadow: rgba(57, 73, 96, 0.18);
+      --share-modal-panel-background: #f3f7fb;
+      --share-modal-panel-border: #d7e1ec;
+      --share-modal-text: #0e1726;
+      --share-modal-muted-text: #5d6a7c;
+      --share-modal-link-text: #2457b2;
+      --share-modal-button-background: #f2f6fa;
+      --share-modal-button-background-hover: #e6edf5;
+      --share-modal-button-border: #c7d3df;
+      --share-modal-eyebrow: #0c8d70;
+      --share-modal-copy-success-text: #184c36;
+      --share-modal-copy-success-border: #8bcfb1;
+      --share-modal-copy-success-background: #d9f3e7;
+      --share-modal-copy-ready-text: #6e4f10;
+      --share-modal-copy-ready-border: #e0c16f;
+      --share-modal-copy-ready-background: #f9ebb9;
+      --share-modal-loading-background-start: #ffffff;
+      --share-modal-loading-background-end: #edf2f7;
+      --share-modal-loading-spinner-track: rgba(14, 23, 38, 0.12);
+      --share-modal-loading-spinner-head: rgba(14, 23, 38, 0.78);
+    }
   }
 
   @keyframes share-modal-spin {
