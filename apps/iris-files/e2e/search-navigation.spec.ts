@@ -214,11 +214,19 @@ test.describe('Search Result Navigation', () => {
     await page.goto(permalinkUrl);
 
     // Step 3: Wait for video to load - check heading, loading, player, or error state
-    const videoHeading = page.getByRole('heading', { level: 1 });
+    const videoHeading = page.getByTestId('video-title');
     const loadingEl = page.locator('[data-testid="video-loading"]');
     const videoPlayer = page.locator('[data-testid="video-player"]');
     const errorIndicator = page.locator('[data-testid="video-error"]');
-    await expect(videoHeading.or(loadingEl).or(videoPlayer).or(errorIndicator)).toBeVisible({ timeout: 15000 });
+    await expect.poll(async () => {
+      const [headingVisible, loadingVisible, playerVisible, errorVisible] = await Promise.all([
+        videoHeading.isVisible().catch(() => false),
+        loadingEl.isVisible().catch(() => false),
+        videoPlayer.isVisible().catch(() => false),
+        errorIndicator.isVisible().catch(() => false),
+      ]);
+      return headingVisible || loadingVisible || playerVisible || errorVisible;
+    }, { timeout: 15000, intervals: [250, 500, 1000] }).toBe(true);
 
     const loadingIndicator = page.locator('[data-testid="video-loading"]');
     await expect(loadingIndicator).not.toBeVisible({ timeout: 30000 });

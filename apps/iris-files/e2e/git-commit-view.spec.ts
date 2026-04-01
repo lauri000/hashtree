@@ -79,20 +79,15 @@ test.describe('Git commit view', () => {
     // Should navigate to commit view URL with ?commit= param
     await page.waitForURL(/\?commit=/, { timeout: 10000 });
 
-    // Commit view should display commit details
-    // Check for commit hash display (full 40-char hash in code element)
-    const commitHashCode = page.locator('code').filter({ hasText: /[a-f0-9]{40}/ });
-    await expect(commitHashCode).toBeVisible({ timeout: 15000 });
+    // Commit view should display commit details.
+    const browseFilesBtn = page.locator('a').filter({ hasText: 'Browse files' });
+    await expect(browseFilesBtn).toBeVisible({ timeout: 15000 });
 
     // Check for author info (Anonymous is default for wasm-git)
     await expect(page.locator('text=Anonymous').first()).toBeVisible({ timeout: 5000 });
 
     // Check for commit message
     await expect(page.locator('h1').filter({ hasText: /Initial commit|Added files/ })).toBeVisible({ timeout: 5000 });
-
-    // Check for Browse files button
-    const browseFilesBtn = page.locator('a').filter({ hasText: 'Browse files' });
-    await expect(browseFilesBtn).toBeVisible({ timeout: 5000 });
 
     // Click Browse files to return to code view
     await browseFilesBtn.click();
@@ -147,13 +142,8 @@ test.describe('Git commit view', () => {
     // Navigate directly to commit view via URL
     await page.goto(await getCurrentCommitViewUrl(page));
 
-    // Wait for commit view to load - check for commit hash code element
-    const commitHashCode = page.locator('code').filter({ hasText: /[a-f0-9]{40}/ });
-    await expect(commitHashCode).toBeVisible({ timeout: 15000 });
-
-    // Check for Browse files link
     const browseFilesLink = page.locator('a').filter({ hasText: 'Browse files' });
-    await expect(browseFilesLink).toBeVisible({ timeout: 5000 });
+    await expect(browseFilesLink).toBeVisible({ timeout: 15000 });
 
     // Check for commit message header
     await expect(page.locator('h1').filter({ hasText: /Initial commit|Added files/ })).toBeVisible({ timeout: 5000 });

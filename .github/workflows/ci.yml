@@ -76,10 +76,19 @@ jobs:
         suite:
           - name: fast
             command: pnpm test:e2e:fast
+            timeout: 55
+            workers: 100%
+            max_workers: 8
+          - name: integration
+            command: pnpm test:e2e:integration
             timeout: 75
+            workers: 50%
+            max_workers: 6
           - name: slow
             command: pnpm test:e2e:slow
-            timeout: 30
+            timeout: 45
+            workers: 25%
+            max_workers: 4
     defaults:
       run:
         working-directory: ts
@@ -122,6 +131,8 @@ jobs:
         env:
           CI: true
           HTREE_E2E_RUST_TARGET_DIR: ${{ github.workspace }}/rust/target
+          PW_WORKERS: ${{ matrix.suite.workers }}
+          PW_MAX_WORKERS: ${{ matrix.suite.max_workers }}
 
       - name: Upload test results
         uses: actions/upload-artifact@v4

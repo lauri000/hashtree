@@ -417,8 +417,8 @@ jobs:
         shell: bash
         run: |
           if [ "${{ steps.signing.outputs.enabled }}" != "true" ]; then
-            echo "release_ready=false" >> "${GITHUB_OUTPUT}"
-            echo "release_reason=macOS signing or notarization secrets were unavailable" >> "${GITHUB_OUTPUT}"
+            echo "release_ready=true" >> "${GITHUB_OUTPUT}"
+            echo "release_reason=macOS signing secrets unavailable; publishing unsigned macOS app artifact" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 

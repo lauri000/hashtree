@@ -10,6 +10,26 @@ const SUBFILE_NAME = 'file.txt';
 const README_NAME = 'README.md';
 const GENERIC_SIDEBAR_SELECTOR = '[data-testid="file-list"][aria-label="File list"]';
 const DIRECTORY_ACTIONS_ADD_FILES_SELECTOR = '[title="Add files"]';
+const SKIPPED_GIT_META_PREFIXES = [
+  '.git/hooks/',
+  '.git/logs/',
+];
+const SKIPPED_GIT_META_FILES = new Set([
+  '.git/COMMIT_EDITMSG',
+  '.git/description',
+]);
+
+function shouldSkipRepoEntry(relativePath: string): boolean {
+  if (!relativePath.startsWith('.git/')) {
+    return false;
+  }
+
+  if (SKIPPED_GIT_META_FILES.has(relativePath)) {
+    return true;
+  }
+
+  return SKIPPED_GIT_META_PREFIXES.some(prefix => relativePath.startsWith(prefix));
+}
 
 async function createTempGitRepo(): Promise<string> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'git-file-bar-'));
@@ -43,6 +63,10 @@ async function collectRepoFiles(rootDir: string, basePath = ''): Promise<Array<{
   for (const entry of entries) {
     const fullPath = path.join(rootDir, entry.name);
     const relativePath = basePath ? `${basePath}/${entry.name}` : entry.name;
+
+    if (shouldSkipRepoEntry(relativePath)) {
+      continue;
+    }
 
     if (entry.isDirectory()) {
       files.push(...await collectRepoFiles(fullPath, relativePath));

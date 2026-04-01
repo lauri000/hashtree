@@ -393,7 +393,8 @@ test.describe('iris-git <-> htree PR interop', () => {
   test.describe.configure({ mode: 'serial' });
   test.setTimeout(240000);
 
-  test.beforeAll(async () => {
+  test.beforeAll(async ({}, testInfo) => {
+    testInfo.setTimeout(240000);
     const rustLockFd = await acquireRustLock(240000);
     try {
       ensureRustGitBinaries();

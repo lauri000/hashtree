@@ -139,7 +139,7 @@ test.describe('Git commit status indicator', () => {
     await expect(historyModal).toBeVisible({ timeout: 5000 });
 
     // Find the commit hash link (should be a 7-character hash in monospace font)
-    const hashLink = historyModal.locator('a.font-mono, a span.font-mono').first();
+    const hashLink = historyModal.locator('a[href*="?commit="]').first();
     await expect(hashLink).toBeVisible({ timeout: 5000 });
 
     // Get the hash text

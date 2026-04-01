@@ -30,6 +30,25 @@ const slowSpecs = [
   'e2e/yjs-collaboration.spec.ts',
   'e2e/livestream-viewer.spec.ts',
 ];
+const integrationSpecs = [
+  'e2e/anchor-links.spec.ts',
+  'e2e/boards-app.spec.ts',
+  'e2e/compression.spec.ts',
+  'e2e/docs-image-collaboration.spec.ts',
+  'e2e/explorer.test.ts',
+  'e2e/git-basic.spec.ts',
+  'e2e/git-branch-compare.spec.ts',
+  'e2e/git-commit-status.spec.ts',
+  'e2e/git-commit-view.spec.ts',
+  'e2e/git-file-bar.spec.ts',
+  'e2e/git-perf.spec.ts',
+  'e2e/git-pr-interop.spec.ts',
+  'e2e/git-status-edit.spec.ts',
+  'e2e/link-visible-tree.spec.ts',
+  'e2e/nip34-pull-requests.spec.ts',
+  'e2e/search-navigation.spec.ts',
+  'e2e/viewer-actions.spec.ts',
+];
 const fastMode = process.env.E2E_FAST === '1';
 
 function hexToBytes(hex: string): Uint8Array {
@@ -60,7 +79,7 @@ const appBaseUrl = `http://localhost:${appPort}`;
  */
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: fastMode ? slowSpecs : undefined,
+  testIgnore: fastMode ? [...slowSpecs, ...integrationSpecs] : undefined,
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0, // Retry once on CI to handle flaky tests
