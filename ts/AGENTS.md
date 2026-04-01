@@ -31,28 +31,16 @@ You always:
 pnpm install      # Install dependencies
 pnpm test         # Run tests
 pnpm run build    # Build
-pnpm run dev      # Dev server
-pnpm run test:e2e # E2E tests
 ```
-
-## Dev Server
-- Check `lsof -i :5173` before starting - don't start if already running
 
 ## Structure
 - `packages/hashtree` - Core library
-- `../apps/iris-files` - Web/desktop app (Iris Files)
-- `e2e/` - Playwright tests
+- sibling app repos live outside this workspace (`../iris-apps`, `../iris-browser`, `../hashtree-cc`)
 
 ## Design
 - **Simple**: SHA256 + MessagePack, no multicodec/CID versioning
 - **Focused**: Merkle trees over key-value stores, nothing else
 - **Composable**: WebRTC/Nostr/Blossom are separate layers
-
-## App Principles
-- **Offline-first**: All ops succeed locally, sync when online
-- **Optimistic**: Never await network, fire-and-forget publishes
-- **Local source of truth**: `treeRootCache.ts` owns merkle roots
-- Avoid loading spinners
 
 ## Code Style
 - UnoCSS: use `b-` prefix for borders
@@ -66,19 +54,5 @@ pnpm run build > /dev/null
 ```
 
 ## Testing
-- Playwright runs its own dev server
-- Run tests selectively: `pnpm run test:e2e -- e2e/specific-file.spec.ts`
-- Always verify changes with e2e tests
-- Kill dev servers before tests to avoid port conflicts
-- Debug with Playwright scripts: use console logs, selectors, and screenshots to verify UI state
-- tauri has its own e2e-tauri tests
-
-### Test Rules
-- NEVER use `waitForTimeout()` - wait for specific conditions
-- Tests MUST pass with full parallelism
-- Use `disableOthersPool(page)` after `page.goto('/')`
-- Use `setupPageErrorHandler(page)` to filter relay errors
-- Use `test.slow()` for complex async operations
-- Multi-user WebRTC tests: users must follow each other, keep others pool at 0
-- Global timeout 30s, `test.slow()` triples to 90s
-- Full suite is slow - run specific tests when debugging: `pnpm run test:e2e -- e2e/specific.spec.ts`
+- Prefer package-level tests in this workspace
+- For app-level verification, switch to the relevant sibling repo instead of re-adding app assumptions here

@@ -36,7 +36,7 @@ The right integration points already exist:
 - [`MeshPeer`](/Users/sirius/src/hashtree/rust/crates/hashtree-cli/src/webrtc/session.rs)
   - only needed once Wi-Fi Aware becomes a real data transport
 - Existing Android bridge pattern:
-  - [`mobile_bluetooth.rs`](/Users/sirius/src/hashtree/apps/iris/src-tauri/src/mobile_bluetooth.rs)
+  - [`mobile_bluetooth.rs`](/Users/sirius/src/iris-browser/apps/iris/src-tauri/src/mobile_bluetooth.rs)
   - this should be the reference shape for an Android-only Wi-Fi Aware bridge, not copied verbatim
 
 ## Implemented So Far
@@ -134,8 +134,8 @@ Rust changes:
 Android bridge changes:
 
 - new Iris plugin, likely:
-  - `apps/iris/src-tauri/plugins/mobile-wifi-aware/android/...`
-  - `apps/iris/src-tauri/src/mobile_wifi_aware.rs`
+  - `../iris-browser/apps/iris/src-tauri/plugins/mobile-wifi-aware/android/...`
+  - `../iris-browser/apps/iris/src-tauri/src/mobile_wifi_aware.rs`
 - start only on Android when config enables it
 
 Acceptance:
@@ -216,9 +216,9 @@ Likely files to touch:
 - [`rust/crates/hashtree-cli/src/webrtc/local_bus.rs`](/Users/sirius/src/hashtree/rust/crates/hashtree-cli/src/webrtc/local_bus.rs)
 - `rust/crates/hashtree-cli/src/webrtc/wifi_aware.rs`
 - `rust/crates/hashtree-cli/src/webrtc/wifi_aware_peer.rs`
-- `apps/iris/src-tauri/src/mobile_wifi_aware.rs`
-- `apps/iris/src-tauri/plugins/mobile-wifi-aware/android/...`
-- [`apps/iris/src-tauri/src/lib.rs`](/Users/sirius/src/hashtree/apps/iris/src-tauri/src/lib.rs)
+- `../iris-browser/apps/iris/src-tauri/src/mobile_wifi_aware.rs`
+- `../iris-browser/apps/iris/src-tauri/plugins/mobile-wifi-aware/android/...`
+- [`apps/iris/src-tauri/src/lib.rs`](/Users/sirius/src/iris-browser/apps/iris/src-tauri/src/lib.rs)
 
 ## Testing Plan
 

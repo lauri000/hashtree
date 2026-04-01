@@ -6,9 +6,6 @@ const BUGS_URL = `${REPO_URL}?tab=issues`;
 
 const expectedJsonMetadata = new Map([
   ['ts/package.json', { repository: REPO_URL, homepage: `${REPO_URL}/ts`, bugs: BUGS_URL }],
-  ['apps/hashtree-cc/package.json', { repository: REPO_URL, homepage: `${REPO_URL}/apps/hashtree-cc`, bugs: BUGS_URL }],
-  ['apps/iris-files/package.json', { repository: REPO_URL, homepage: `${REPO_URL}/apps/iris-files`, bugs: BUGS_URL }],
-  ['apps/iris/package.json', { repository: REPO_URL, homepage: `${REPO_URL}/apps/iris`, bugs: BUGS_URL }],
   ['ts/packages/hashtree/package.json', { repository: REPO_URL, homepage: `${REPO_URL}/ts/packages/hashtree`, bugs: BUGS_URL }],
   ['ts/packages/hashtree-dexie/package.json', { repository: REPO_URL, homepage: `${REPO_URL}/ts/packages/hashtree-dexie`, bugs: BUGS_URL }],
   ['ts/packages/hashtree-git/package.json', { repository: REPO_URL, homepage: `${REPO_URL}/ts/packages/hashtree-git`, bugs: BUGS_URL }],
@@ -82,14 +79,6 @@ for (const entry of fs.readdirSync(path.resolve('rust/crates'), { withFileTypes:
   if (!fs.existsSync(path.resolve(dir, 'README.md'))) {
     errors.push(`${dir}/README.md: missing crate README`);
   }
-}
-
-const irisTauriCargo = fs.readFileSync(path.resolve('apps/iris/src-tauri/Cargo.toml'), 'utf8');
-if (!irisTauriCargo.includes(`repository = "${REPO_URL}"`)) {
-  errors.push('apps/iris/src-tauri/Cargo.toml: repository does not match hashtree repo URL');
-}
-if (!irisTauriCargo.includes(`homepage = "${REPO_URL}/apps/iris"`)) {
-  errors.push('apps/iris/src-tauri/Cargo.toml: missing homepage for the Iris app');
 }
 
 if (errors.length > 0) {

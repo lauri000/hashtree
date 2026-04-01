@@ -246,13 +246,13 @@ If you want the canonical hashtree/Homebrew release without touching the GitHub 
 ./publish_release.sh --version v<version> --skip-github
 ```
 
-When `apps/iris/scripts/local-release.mjs` is present, the same command also stages Iris desktop installers into the repo release. Skip that with:
+When a sibling `../iris-browser/apps/iris/scripts/local-release.mjs` checkout is present, the same command also stages Iris desktop installers into the repo release. Skip that with:
 
 ```bash
 ./publish_release.sh --version v<version> --skip-iris
 ```
 
-To limit the local Iris packaging pass to specific steps, forward the same step filters used by `apps/iris/scripts/local-release.mjs`:
+To limit the local Iris packaging pass to specific steps, forward the same step filters used by the sibling `iris-browser` release script:
 
 ```bash
 ./publish_release.sh --version v<version> --iris-only macos,linux

@@ -1,6 +1,7 @@
 # hashtree/ts
 
-TypeScript/JavaScript implementation of hashtree. Includes the core SDK packages and the Iris Files web app.
+TypeScript/JavaScript implementation of hashtree. This repo now contains the SDK
+packages only; the Iris app workspaces live in sibling repos.
 
 Part of the hashtree repository. See [../README.md](../README.md) for the project overview and [../rust/README.md](../rust/README.md) for the Rust CLI/daemon.
 
@@ -26,8 +27,7 @@ Blossom-compatible storage with chunking and directory structure. Merkle roots c
 - [`@hashtree/worker`](https://www.npmjs.com/package/@hashtree/worker) - Modular browser worker + WebRTC P2P controller/proxy helpers ([source](packages/hashtree-worker))
 
 **Internal packages:**
-- [`../apps/iris-files`](../apps/iris-files) - Web/desktop app with Nostr integration (Iris Files + Iris Video)
-- [`packages/ndk`](packages/ndk) - Nostr SDK used by the apps
+- [`packages/ndk`](packages/ndk) - Nostr SDK used by Iris apps
 - [`packages/ndk-cache`](packages/ndk-cache) - Cache layer for NDK
 
 ## Installation
@@ -148,29 +148,13 @@ is preserved (`1 + 1` fanout with `peerQueryDelay` hedge interval).
 
 **Request forwarding**: Peers forward requests they can't fulfill locally. HTL (Hops-To-Live, default `MAX_HTL`, currently 10) limits propagation depth. Uses Freenet-style probabilistic decrement—each peer randomly decides whether to decrement at HTL boundaries, making it harder to infer request origin.
 
-## Desktop App (Tauri)
+## Iris App Repos
 
-Iris Files can be built as a native desktop app using [Tauri](https://tauri.app/):
+The extracted app workspaces now live alongside this repo:
 
-```bash
-cd ../apps/iris-files
-
-# Install dependencies
-pnpm install
-
-# Development
-pnpm run tauri:dev
-
-# Build for distribution
-pnpm run tauri:build
-```
-
-Features:
-- Native window with system tray
-- Autostart on login (configurable in Settings)
-- Native file dialogs and notifications
-
-Requirements: [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) (Rust, platform-specific deps)
+- `../iris-apps` for portable Iris web apps and `iris-sites`
+- `../iris-browser` for the native desktop shell
+- `../hashtree-cc` for the landing page app
 
 ## Web Viewer
 
@@ -199,8 +183,6 @@ From `ts/`:
 pnpm install      # Install dependencies
 pnpm test         # Run tests
 pnpm run build    # Build
-pnpm run dev      # Dev server
-pnpm run test:e2e # E2E tests
 ```
 
 ## License

@@ -173,6 +173,10 @@ mod tests {
     fn peer_router_enabled_for_wifi_aware_only() {
         let mut config = Config::default();
         config.server.enable_webrtc = false;
+        config.server.enable_multicast = false;
+        config.server.max_multicast_peers = 0;
+        config.server.enable_bluetooth = false;
+        config.server.max_bluetooth_peers = 0;
         config.server.enable_wifi_aware = true;
         config.server.max_wifi_aware_peers = 2;
 

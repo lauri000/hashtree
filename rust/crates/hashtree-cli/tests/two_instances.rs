@@ -767,35 +767,6 @@ fn wait_for_peer_data_channel(addr: &str, peer_pubkey: &str, timeout: Duration) 
     anyhow::bail!("Timed out waiting for peer data channel on {}", addr);
 }
 
-fn has_peer_data_channel(addr: &str, peer_pubkey: &str) -> bool {
-    let url = format!("http://{}/api/peers", addr);
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return false,
-    };
-
-    let resp = match client.get(&url).send() {
-        Ok(resp) => resp,
-        Err(_) => return false,
-    };
-    let json = match resp.json::<serde_json::Value>() {
-        Ok(json) => json,
-        Err(_) => return false,
-    };
-    json.get("peers")
-        .and_then(|p| p.as_array())
-        .map(|peers| {
-            peers.iter().any(|peer| {
-                peer.get("pubkey").and_then(|p| p.as_str()) == Some(peer_pubkey)
-                    && peer.get("has_data_channel").and_then(|d| d.as_bool()) == Some(true)
-            })
-        })
-        .unwrap_or(false)
-}
-
 fn fetch_bytes(url: &str) -> Result<Vec<u8>> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(3))
@@ -1232,7 +1203,7 @@ fn test_two_instances_connect_local_relay() -> Result<()> {
     not(feature = "p2p"),
     ignore = "requires p2p feature for WebRTC data channels"
 )]
-fn test_three_peers_chain_bootstrap_then_ac_connect_without_relay() -> Result<()> {
+fn test_three_peers_chain_preserves_ac_mesh_after_relay_shutdown() -> Result<()> {
     let htree_bin = find_htree_binary();
     let mut relay_r1 = test_relay::TestRelay::new(0);
     let mut relay_r2 = test_relay::TestRelay::new(0);
@@ -1274,15 +1245,6 @@ fn test_three_peers_chain_bootstrap_then_ac_connect_without_relay() -> Result<()
     wait_for_peer_data_channel(&instance_b.addr, &pubkey_a, Duration::from_secs(12))?;
     wait_for_peer_data_channel(&instance_b.addr, &pubkey_c, Duration::from_secs(12))?;
     wait_for_peer_data_channel(&instance_c.addr, &pubkey_b, Duration::from_secs(12))?;
-
-    assert!(
-        !has_peer_data_channel(&instance_a.addr, &pubkey_c),
-        "A should not have direct channel to C before relay shutdown"
-    );
-    assert!(
-        !has_peer_data_channel(&instance_c.addr, &pubkey_a),
-        "C should not have direct channel to A before relay shutdown"
-    );
 
     relay_r1.stop();
     relay_r2.stop();

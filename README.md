@@ -58,17 +58,14 @@ That installs `htree`, `htree-cashu`, and `git-remote-htree`. After tapping, `br
 
 - `./publish_release.sh --version v<version>` is the primary release entrypoint. It publishes the canonical hashtree release, updates the Homebrew tap when the full macOS/Linux CLI set is present, and mirrors the same staged files to GitHub.
 - CLI release artifacts are assembled under `rust/dist/` by `rust/scripts/release_to_htree.sh`, which `./publish_release.sh` wraps.
-- The same repo release flow also stages Iris desktop installers from `apps/iris` when they are available locally.
+- When a sibling `../iris-browser` checkout is available locally, the same release flow can also stage Iris desktop installers from that repo.
 - Iris native release artifacts are assembled under `dist/iris-native/`.
 - Linux package-manager installs beyond Homebrew are not shipped yet.
 
 ## Current status
 
 - The core storage format, CHK encryption, CLI/daemon, and `git-remote-htree` are implemented and used across the Rust and TypeScript stacks.
-- `apps/iris` is the current native desktop shell. It embeds the htree daemon, loads `htree://` apps in isolated child webviews, and supports NIP-07 injection for compatible apps.
-- `apps/iris-files` is the main portable web-app workspace for files, git, video, docs, maps, boards, and related release tooling.
-- `apps/iris-sites` is the isolated web runtime for serving `htree://` sites in the browser.
-- `apps/hashtree-cc` is the landing page and file-sharing app.
+- The standalone app repos now live alongside this repo: `../iris-browser`, `../iris-apps`, and `../hashtree-cc`.
 - Packaging is still uneven: Cargo installs, release tarballs, and the Homebrew tap work today; `apt` style packaging is still pending.
 - The protocol is implemented, but the written spec is still a draft and nearby Bluetooth/Wi-Fi sync work is still in progress.
 
@@ -76,10 +73,10 @@ That installs `htree`, `htree-cashu`, and `git-remote-htree`. After tapping, `br
 
 - `rust/` - Rust CLI/daemon, git remote helper, and core crates. See [`rust/README.md`](rust/README.md).
 - `ts/` - TypeScript/JavaScript SDK packages. See [`ts/README.md`](ts/README.md).
-- `apps/iris/` - Native desktop shell built with Tauri. See [`apps/iris/README.md`](apps/iris/README.md).
-- `apps/iris-files/` - Main web-app workspace and release tooling. See [`apps/iris-files/README.md`](apps/iris-files/README.md).
-- `apps/iris-sites/` - Isolated runtime for portable `htree://` sites.
-- `apps/hashtree-cc/` - Landing page and file sharing app. See [`apps/hashtree-cc/README.md`](apps/hashtree-cc/README.md).
+- Sibling repos:
+  - `../iris-browser/` - Native desktop shell built with Tauri.
+  - `../iris-apps/` - Portable Iris web apps and the isolated site runtime.
+  - `../hashtree-cc/` - Landing page and file sharing app.
 
 ## Canonical remote
 
@@ -102,14 +99,13 @@ Hashtree is the canonical remote for this repository:
 
 - CLI + daemon + git remote: follow [`rust/README.md`](rust/README.md)
 - JS SDK packages: follow [`ts/README.md`](ts/README.md)
-- Native desktop shell: follow [`apps/iris/README.md`](apps/iris/README.md)
-- Portable web apps and release flows: follow [`apps/iris-files/README.md`](apps/iris-files/README.md)
+- Native desktop shell: follow the sibling `../iris-browser` repo
+- Portable web apps and release flows: follow the sibling `../iris-apps` repo
 
 ## Site Releases
 
 - Release all Cloudflare/hashtree static sites with `node ./scripts/release-sites.mjs`
-- Release only the Iris sites with `node ./apps/iris-files/scripts/release-site.mjs all`
-- Release only hashtree.cc with `node ./apps/hashtree-cc/scripts/release-site.mjs`
+- `scripts/release-sites.mjs` expects sibling `../iris-apps` and `../hashtree-cc` checkouts unless `IRIS_APPS_REPO_ROOT` and `HASHTREE_CC_REPO_ROOT` override them
 
 ## Mobile FFI (optional)
 

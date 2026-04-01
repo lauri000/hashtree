@@ -7,8 +7,8 @@ Usage: rust/scripts/release_to_htree.sh --version <version> [options]
 
 Builds local CLI release artifacts, stages a metadata-backed repo release
 directory, adds it to hashtree, then publishes it into a mutable release tree.
-When apps/iris is present, the same release also stages locally-built Iris
-desktop installers unless explicitly skipped.
+When a sibling iris-browser checkout is present, the same release also stages
+locally-built Iris desktop installers unless explicitly skipped.
 
 Options:
   --version <version>                 Release version label, for example: v0.2.3
@@ -354,7 +354,29 @@ TARGET_DIR="$(value_from_build_args --target-dir "${RUST_DIR}/target")"
 require_homebrew_archives_for_release "$OUTPUT_DIR"
 npub="$(current_npub)"
 RELEASE_STAGE_SCRIPT="${REPO_DIR}/scripts/stage_repo_release.mjs"
-IRIS_RELEASE_SCRIPT="${REPO_DIR}/apps/iris/scripts/local-release.mjs"
+
+resolve_iris_release_script() {
+    local candidate_root
+    for candidate_root in \
+        "${IRIS_BROWSER_REPO_ROOT:-}" \
+        "${REPO_DIR}/iris-browser" \
+        "${REPO_DIR}/../iris-browser" \
+        "${REPO_DIR}"
+    do
+        if [ -z "$candidate_root" ]; then
+            continue
+        fi
+
+        if [ -f "${candidate_root}/apps/iris/scripts/local-release.mjs" ]; then
+            printf '%s\n' "${candidate_root}/apps/iris/scripts/local-release.mjs"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+IRIS_RELEASE_SCRIPT="$(resolve_iris_release_script || true)"
 
 if [ -n "$npub" ]; then
     write_release_bootstrap_installer \
@@ -365,7 +387,7 @@ else
 fi
 
 if [ "$SKIP_IRIS" -eq 0 ]; then
-    if [ -f "$IRIS_RELEASE_SCRIPT" ]; then
+    if [ -n "$IRIS_RELEASE_SCRIPT" ] && [ -f "$IRIS_RELEASE_SCRIPT" ]; then
         require_command node
 
         if [ -z "$IRIS_STAGE_DIR" ]; then
@@ -386,7 +408,7 @@ if [ "$SKIP_IRIS" -eq 0 ]; then
 
         node "${IRIS_ARGS[@]}"
     else
-        echo "Warning: Iris release script not found at apps/iris/scripts/local-release.mjs; skipping Iris desktop assets." >&2
+        echo "Warning: Iris browser release script not found in a sibling iris-browser checkout; skipping Iris desktop assets." >&2
     fi
 fi
 

@@ -25,8 +25,8 @@ let relayProcess: ChildProcess | null = null;
 async function startLocalRelay(): Promise<void> {
   return new Promise((resolve, reject) => {
     const relayPathCandidates = [
+      join(__dirname, 'relay/index.js'),
       join(__dirname, '../../../e2e/relay/index.js'),
-      join(__dirname, '../../../../apps/iris-files/e2e/relay/index.js'),
     ];
     const relayPath = relayPathCandidates.find((candidate) => existsSync(candidate));
     if (!relayPath) {

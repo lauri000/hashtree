@@ -6,6 +6,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '..');
 
+function resolveRepoRoot(envKey, defaultName) {
+  const direct = process.env[envKey];
+  if (direct) {
+    return path.resolve(direct);
+  }
+  return path.resolve(repoRoot, '..', defaultName);
+}
+
 export function parseArgs(argv) {
   const args = [...argv].filter((arg, index) => !(arg === '--' && index === 0));
   let dryRun = false;
@@ -53,18 +61,20 @@ function appendSharedFlags(targetArgs, options) {
 }
 
 export function createReleaseCommands(options) {
+  const irisAppsRepoRoot = resolveRepoRoot('IRIS_APPS_REPO_ROOT', 'iris-apps');
+  const hashtreeCcRepoRoot = resolveRepoRoot('HASHTREE_CC_REPO_ROOT', 'hashtree-cc');
   return [
     {
       label: 'Release iris-files sites',
       command: process.execPath,
       args: appendSharedFlags(['apps/iris-files/scripts/release-site.mjs', 'all'], options),
-      cwd: repoRoot,
+      cwd: irisAppsRepoRoot,
     },
     {
       label: 'Release hashtree.cc',
       command: process.execPath,
       args: appendSharedFlags(['apps/hashtree-cc/scripts/release-site.mjs'], options),
-      cwd: repoRoot,
+      cwd: hashtreeCcRepoRoot,
     },
   ];
 }
@@ -91,15 +101,19 @@ function defaultRunner(step) {
 export function usage() {
   return `Usage: node ./scripts/release-sites.mjs [options]
 
-Run the repo's static-site releases sequentially:
-  1. apps/iris-files (all profiles)
-  2. apps/hashtree-cc
+Run the sibling static-site releases sequentially:
+  1. ../iris-apps (apps/iris-files all profiles)
+  2. ../hashtree-cc
 
 Options:
   --compatibility-date  Worker compatibility date override passed to each site release
   --skip-cloudflare     publish to hashtree only
   --skip-pages          alias for --skip-cloudflare
   --dry-run             print planned commands without running them
+
+Environment:
+  IRIS_APPS_REPO_ROOT   override the iris-apps checkout path
+  HASHTREE_CC_REPO_ROOT override the hashtree-cc checkout path
 `;
 }
 

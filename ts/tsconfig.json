@@ -11,7 +11,6 @@
     "jsx": "react-jsx"
   },
   "references": [
-    { "path": "./packages/hashtree" },
-    { "path": "../apps/iris-files" }
+    { "path": "./packages/hashtree" }
   ]
 }

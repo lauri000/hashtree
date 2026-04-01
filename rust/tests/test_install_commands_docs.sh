@@ -11,8 +11,11 @@ LEGACY_GITHUB_URL='https://github.com/mmalmi/hashtree/releases/latest/download/'
 FILES=(
     "${REPO_ROOT}/README.md"
     "${REPO_ROOT}/rust/crates/git-remote-htree/README.md"
-    "${REPO_ROOT}/apps/hashtree-cc/src/components/Developers.svelte"
 )
+
+if [ -f "${REPO_ROOT}/../hashtree-cc/apps/hashtree-cc/src/components/Developers.svelte" ]; then
+    FILES+=("${REPO_ROOT}/../hashtree-cc/apps/hashtree-cc/src/components/Developers.svelte")
+fi
 
 for file in "${FILES[@]}"; do
     grep -F "$INSTALL_CMD" "$file" >/dev/null || {
