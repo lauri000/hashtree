@@ -1117,10 +1117,7 @@ mod tests {
             .await;
 
         let handled = state
-            .handle_quote_response(
-                "peer-a",
-                quote_response(Some("https://mint-b.example"), 3),
-            )
+            .handle_quote_response("peer-a", quote_response(Some("https://mint-b.example"), 3))
             .await;
         assert!(handled);
 

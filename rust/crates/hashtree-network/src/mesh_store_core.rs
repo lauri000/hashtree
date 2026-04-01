@@ -1661,7 +1661,9 @@ mod tests {
 
         let mut selector = reader.peer_selector.write().await;
         selector.add_peer("npub1stable");
-        let stats = selector.get_stats("npub1stable").expect("restored peer stats");
+        let stats = selector
+            .get_stats("npub1stable")
+            .expect("restored peer stats");
         assert_eq!(stats.requests_sent, 1);
         assert_eq!(stats.successes, 1);
         assert_eq!(stats.cashu_paid_sat, 120);

@@ -694,7 +694,10 @@ impl Nip07State {
     }
 
     pub fn validate_any_token(&self, token: &str) -> bool {
-        self.session_tokens.read().values().any(|value| value == token)
+        self.session_tokens
+            .read()
+            .values()
+            .any(|value| value == token)
     }
 
     pub fn current_account(&self) -> Result<Option<Nip07AccountSummary>, String> {
@@ -4676,7 +4679,10 @@ mod tests {
             params.get("iris_htree_session").map(String::as_str),
             Some("session-token")
         );
-        assert_eq!(params.get("iris_htree_root").map(String::as_str), Some("deadbeef"));
+        assert_eq!(
+            params.get("iris_htree_root").map(String::as_str),
+            Some("deadbeef")
+        );
     }
 
     #[test]

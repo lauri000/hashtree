@@ -1056,10 +1056,7 @@ mod tests {
         )
         .to_event(&keys)?;
         relay
-            .ingest_trusted_event_from_bluetooth(
-                event.clone(),
-                Some("peer-a".to_string()),
-            )
+            .ingest_trusted_event_from_bluetooth(event.clone(), Some("peer-a".to_string()))
             .await?;
 
         let receipts = relay.bluetooth_received_events(10).await;
@@ -1123,10 +1120,7 @@ mod tests {
         )
         .to_event(&keys)?;
         relay
-            .ingest_trusted_event_from_bluetooth(
-                event.clone(),
-                Some("peer-a".to_string()),
-            )
+            .ingest_trusted_event_from_bluetooth(event.clone(), Some("peer-a".to_string()))
             .await?;
 
         let receipts = relay.bluetooth_received_events(10).await;
