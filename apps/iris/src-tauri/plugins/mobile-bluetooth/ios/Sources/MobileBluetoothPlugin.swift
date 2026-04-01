@@ -48,7 +48,7 @@ private let serviceUUID = CBUUID(string: "f18ef5f6-b7ee-4f40-b869-10a2d4f35932")
 private let rxUUID = CBUUID(string: "0bb5f5c9-6369-4511-a84f-4d4c14d8f8d4")
 private let txUUID = CBUUID(string: "4ec9c0c2-97c6-4f46-9fd1-927d699b2f6d")
 private let userDescriptionUUID = CBUUID(string: "2901")
-private let chunkBytes = 180
+private let chunkBytes = 64
 
 private final class FrameDecoder {
   private var buffer = [UInt8]()
@@ -81,6 +81,147 @@ private final class FrameDecoder {
     }
 
     return frames
+  }
+}
+
+private final class FrameWriteAccumulator {
+  private struct PendingWrite {
+    let buffer: Data
+    let receivedRanges: [ClosedRange<Int>]
+  }
+
+  private var pendingWrites = [String: PendingWrite]()
+
+  func append(address: String, offset: Int, chunk: Data) -> [DecodedFrame] {
+    guard !chunk.isEmpty else {
+      return []
+    }
+
+    let existing = pendingWrites[address]
+    let effectiveOffset = normalizedOffset(existing: existing, requestedOffset: offset)
+    let end = effectiveOffset + chunk.count
+    var combined = existing?.buffer ?? Data()
+    if combined.count < end {
+      combined.append(Data(repeating: 0, count: end - combined.count))
+    }
+    combined.replaceSubrange(effectiveOffset..<end, with: chunk)
+
+    var pending = PendingWrite(
+      buffer: combined,
+      receivedRanges: mergeRanges(existing?.receivedRanges ?? [], next: effectiveOffset...(end - 1))
+    )
+
+    var decoded = [DecodedFrame]()
+    while true {
+      guard let contiguousBytes = contiguousPrefixLength(pending.receivedRanges),
+        let frameLength = encodedFrameLength(buffer: pending.buffer, contiguousBytes: contiguousBytes),
+        contiguousBytes >= frameLength
+      else {
+        break
+      }
+
+      let frames = FrameDecoder().append(pending.buffer.prefix(frameLength))
+      guard frames.count == 1 else {
+        pendingWrites.removeValue(forKey: address)
+        return decoded
+      }
+      decoded.append(contentsOf: frames)
+
+      pending = trimPendingWrite(pending, consumedBytes: frameLength)
+      if pending.buffer.isEmpty {
+        pendingWrites.removeValue(forKey: address)
+        return decoded
+      }
+    }
+
+    pendingWrites[address] = pending
+    return decoded
+  }
+
+  func clear(address: String) {
+    pendingWrites.removeValue(forKey: address)
+  }
+
+  func clearAll() {
+    pendingWrites.removeAll()
+  }
+
+  private func contiguousPrefixLength(_ ranges: [ClosedRange<Int>]) -> Int? {
+    guard let first = ranges.first, first.lowerBound == 0 else {
+      return nil
+    }
+
+    var prefixEnd = first.upperBound
+    for range in ranges.dropFirst() {
+      if range.lowerBound > prefixEnd + 1 {
+        break
+      }
+      prefixEnd = max(prefixEnd, range.upperBound)
+    }
+    return prefixEnd + 1
+  }
+
+  private func normalizedOffset(existing: PendingWrite?, requestedOffset: Int) -> Int {
+    guard requestedOffset == 0 else {
+      return requestedOffset
+    }
+    guard let existing, let contiguousBytes = contiguousPrefixLength(existing.receivedRanges) else {
+      return 0
+    }
+    return contiguousBytes == existing.buffer.count ? existing.buffer.count : 0
+  }
+
+  private func encodedFrameLength(buffer: Data, contiguousBytes: Int) -> Int? {
+    guard contiguousBytes >= 5 else {
+      return nil
+    }
+    let header = [UInt8](buffer.dropFirst().prefix(4))
+    guard header.count == 4 else {
+      return nil
+    }
+    let payloadLength =
+      (Int(header[0]) << 24) | (Int(header[1]) << 16) | (Int(header[2]) << 8) | Int(header[3])
+    return payloadLength >= 0 ? 5 + payloadLength : nil
+  }
+
+  private func mergeRanges(_ existing: [ClosedRange<Int>], next: ClosedRange<Int>) -> [ClosedRange<Int>] {
+    let sorted = (existing + [next]).sorted { $0.lowerBound < $1.lowerBound }
+    guard var current = sorted.first else {
+      return []
+    }
+
+    var merged = [ClosedRange<Int>]()
+    for candidate in sorted.dropFirst() {
+      if candidate.lowerBound <= current.upperBound + 1 {
+        current = current.lowerBound...max(current.upperBound, candidate.upperBound)
+      } else {
+        merged.append(current)
+        current = candidate
+      }
+    }
+    merged.append(current)
+    return merged
+  }
+
+  private func trimPendingWrite(_ pending: PendingWrite, consumedBytes: Int) -> PendingWrite {
+    guard consumedBytes < pending.buffer.count else {
+      return PendingWrite(buffer: Data(), receivedRanges: [])
+    }
+
+    let trimmedBuffer = pending.buffer.dropFirst(consumedBytes)
+    let shiftedRanges = pending.receivedRanges.compactMap { range -> ClosedRange<Int>? in
+      let shiftedLower = range.lowerBound - consumedBytes
+      let shiftedUpper = range.upperBound - consumedBytes
+      guard shiftedUpper >= 0 else {
+        return nil
+      }
+      return max(0, shiftedLower)...shiftedUpper
+    }
+
+    let mergedShiftedRanges = shiftedRanges.reduce(into: [ClosedRange<Int>]()) { result, range in
+      result = mergeRanges(result, next: range)
+    }
+    return PendingWrite(buffer: Data(trimmedBuffer), receivedRanges: mergedShiftedRanges)
   }
 }
 
@@ -137,7 +278,7 @@ class MobileBluetoothPlugin: Plugin, CBPeripheralManagerDelegate {
   private var advertisingPending = false
   private var peers = [String: CBCentral]()
   private var readyPeers = Set<String>()
-  private var decoders = [String: FrameDecoder]()
+  private var writeAccumulator = FrameWriteAccumulator()
   private var drainedFrames = [FrameEvent]()
   private var pendingSends = [PendingSend]()
   private var pendingStartInvoke: Invoke?
@@ -283,9 +424,7 @@ class MobileBluetoothPlugin: Plugin, CBPeripheralManagerDelegate {
           continue
         }
 
-        let decoder = self.decoders[address] ?? FrameDecoder()
-        self.decoders[address] = decoder
-        for frame in decoder.append(value) {
+        for frame in self.writeAccumulator.append(address: address, offset: request.offset, chunk: value) {
           self.triggerFrame(address: address, kind: frame.kind, payload: frame.payload)
         }
       }
@@ -416,7 +555,7 @@ class MobileBluetoothPlugin: Plugin, CBPeripheralManagerDelegate {
     txCharacteristic = nil
     peers.removeAll()
     readyPeers.removeAll()
-    decoders.removeAll()
+    writeAccumulator.clearAll()
     drainedFrames.removeAll(keepingCapacity: false)
 
     if rejectPendingSends {
@@ -476,7 +615,6 @@ class MobileBluetoothPlugin: Plugin, CBPeripheralManagerDelegate {
     let address = self.address(for: central)
     if peers[address] == nil {
       peers[address] = central
-      decoders[address] = FrameDecoder()
       triggerAddress("peer-connected", address: address)
     } else {
       peers[address] = central
@@ -487,7 +625,7 @@ class MobileBluetoothPlugin: Plugin, CBPeripheralManagerDelegate {
   private func removePeer(address: String, notify: Bool) {
     peers.removeValue(forKey: address)
     readyPeers.remove(address)
-    decoders.removeValue(forKey: address)
+    writeAccumulator.clear(address: address)
     rejectPendingSends(for: address, message: "Bluetooth peer disconnected")
     if notify {
       triggerAddress("peer-disconnected", address: address)

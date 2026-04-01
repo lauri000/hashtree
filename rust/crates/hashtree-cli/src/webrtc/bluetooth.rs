@@ -25,7 +25,8 @@ pub const HTREE_BLE_RX_CHARACTERISTIC_UUID: &str = "0bb5f5c9-6369-4511-a84f-4d4c
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const HTREE_BLE_TX_CHARACTERISTIC_UUID: &str = "4ec9c0c2-97c6-4f46-9fd1-927d699b2f6d";
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub const HTREE_BLE_CHUNK_BYTES: usize = 180;
+// Keep BLE chunks comfortably below conservative cross-platform GATT write budgets.
+pub const HTREE_BLE_CHUNK_BYTES: usize = 64;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Configuration for the optional Bluetooth peer transport.
@@ -496,9 +497,21 @@ async fn handle_pending_link(
     if let Some(peer_hint) = link.peer_hint.as_deref() {
         debug!("Handling pending Bluetooth link {}", peer_hint);
     }
+    info!(
+        "Handling pending Bluetooth link direction={} local_hello_sent={}",
+        link.direction, link.local_hello_sent
+    );
     let remote_peer_id = receive_remote_hello(&link.link).await?;
+    info!(
+        "Received Bluetooth hello from {} while attaching pending link",
+        remote_peer_id.short()
+    );
     if !link.local_hello_sent {
         send_hello(&link.link, &context.my_peer_id).await?;
+        info!(
+            "Sent Bluetooth hello to {} while attaching pending link",
+            remote_peer_id.short()
+        );
     }
 
     let bluetooth_peer = super::BluetoothPeer::new(
@@ -841,6 +854,15 @@ mod macos {
                 }
             }
         }
+        if connect_timed_out && !peripheral.is_connected().await.unwrap_or(false) {
+            warn!(
+                "BLE peripheral {} never reached a connected state after timeout; retrying later",
+                peripheral_id
+            );
+            let _ = peripheral.disconnect().await;
+            return Ok(None);
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
         let mut rx_char = None;
         let mut tx_char = None;
         for attempt in 1..=8 {

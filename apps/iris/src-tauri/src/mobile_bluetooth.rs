@@ -142,11 +142,22 @@ where
         let mut events = self.state.bluetooth.subscribe();
         let reconcile_notify = Arc::new(Notify::new());
         let reconcile_notify_for_events = reconcile_notify.clone();
+        let state_for_events = self.state.clone();
+        let pending_tx_for_events = pending_tx.clone();
         tokio::spawn(async move {
             loop {
                 match events.recv().await {
                     Ok(event) => {
                         log_mobile_hint(&event);
+                        if let Err(error) = handle_mobile_event(
+                            state_for_events.clone(),
+                            &pending_tx_for_events,
+                            event,
+                        )
+                        .await
+                        {
+                            warn!("Mobile Bluetooth bridge event handling failed: {}", error);
+                        }
                         reconcile_notify_for_events.notify_one();
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -208,6 +219,13 @@ async fn reconcile_mobile_transport<R: Runtime>(
         .bluetooth
         .poll_transport()
         .map_err(anyhow::Error::msg)?;
+    if !snapshot.peers.is_empty() || !snapshot.frames.is_empty() {
+        info!(
+            "Mobile BLE reconcile snapshot: peers={} frames={}",
+            snapshot.peers.len(),
+            snapshot.frames.len()
+        );
+    }
     let connected_addresses = snapshot
         .peers
         .iter()
@@ -269,6 +287,12 @@ async fn handle_drained_frame<R: Runtime>(
             return Ok(());
         }
     };
+    info!(
+        "Mobile BLE drained frame from {} kind={} bytes={}",
+        address,
+        kind,
+        payload.len()
+    );
     let mut promote_on_frame = false;
     let frame = match kind.as_str() {
         "text" => match String::from_utf8(payload) {
@@ -317,6 +341,29 @@ fn log_mobile_hint(event: &MobileBluetoothEvent) {
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
+async fn handle_mobile_event<R: Runtime>(
+    state: Arc<BridgeState<R>>,
+    pending_tx: &mpsc::Sender<PendingBluetoothLink>,
+    event: MobileBluetoothEvent,
+) -> anyhow::Result<()> {
+    match event {
+        MobileBluetoothEvent::PeerConnected { address } => {
+            state.ensure_link(&address).await;
+        }
+        MobileBluetoothEvent::PeerReady { address } => {
+            state.ensure_link(&address).await;
+            emit_pending_link(state, pending_tx, address).await;
+        }
+        MobileBluetoothEvent::PeerDisconnected { address } => {
+            if let Some(link) = state.remove_link(&address).await {
+                let _ = link.close().await;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
 async fn emit_pending_link<R: Runtime>(
     state: Arc<BridgeState<R>>,
     pending_tx: &mpsc::Sender<PendingBluetoothLink>,
@@ -331,6 +378,7 @@ async fn emit_pending_link<R: Runtime>(
         return;
     }
     entry.pending_emitted = true;
+    info!("Emitting pending mobile BLE link for {}", address);
     let pending = PendingBluetoothLink {
         link: entry.link.clone() as Arc<dyn BluetoothLink>,
         direction: PeerDirection::Inbound,
@@ -339,7 +387,9 @@ async fn emit_pending_link<R: Runtime>(
         peer_hint: Some(address),
     };
     drop(links);
-    let _ = pending_tx.send(pending).await;
+    if pending_tx.send(pending).await.is_err() {
+        warn!("Failed to emit pending mobile BLE link");
+    }
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]

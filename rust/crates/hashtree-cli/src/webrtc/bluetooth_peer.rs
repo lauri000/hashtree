@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, Mutex};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::nostr_relay::NostrRelay;
 
@@ -278,6 +278,11 @@ impl BluetoothPeer {
             BluetoothFrame::Binary(payload) => payload.len() as u64,
         };
         if let Err(err) = self.link.send(frame).await {
+            warn!(
+                "[BluetoothPeer {}] Failed to send frame over BLE: {}",
+                self.peer_id.short(),
+                err
+            );
             let _ = self.link.close().await;
             return Err(err);
         }

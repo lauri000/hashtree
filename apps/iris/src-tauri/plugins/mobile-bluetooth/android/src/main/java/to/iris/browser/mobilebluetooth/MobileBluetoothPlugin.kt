@@ -48,7 +48,9 @@ private val RX_UUID: UUID = UUID.fromString("0bb5f5c9-6369-4511-a84f-4d4c14d8f8d
 private val TX_UUID: UUID = UUID.fromString("4ec9c0c2-97c6-4f46-9fd1-927d699b2f6d")
 private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 private val USER_DESCRIPTION_UUID: UUID = UUID.fromString("00002901-0000-1000-8000-00805f9b34fb")
-private const val CHUNK_BYTES: Int = 180
+// Keep chunks comfortably below conservative cross-platform BLE write budgets.
+private const val CHUNK_BYTES: Int = 64
+private const val RESTART_STACK_SETTLE_DELAY_MS: Long = 300
 private const val UNREADY_DISCONNECT_DELAY_MS: Long = 30000
 
 @InvokeArg
@@ -63,38 +65,7 @@ class SendArgs {
     lateinit var payloadBase64: String
 }
 
-private data class DecodedFrame(val kind: String, val payload: ByteArray)
-
 private data class QueuedFrame(val address: String, val kind: String, val payloadBase64: String)
-
-private class FrameDecoder {
-    private val buffer = ArrayList<Byte>()
-
-    fun append(chunk: ByteArray): List<DecodedFrame> {
-        val frames = mutableListOf<DecodedFrame>()
-        chunk.forEach { buffer.add(it) }
-        while (buffer.size >= 5) {
-            val header = ByteBuffer.wrap(byteArrayOf(buffer[1], buffer[2], buffer[3], buffer[4]))
-            val len = header.int
-            if (buffer.size < 5 + len) {
-                break
-            }
-            val kind = buffer[0].toInt()
-            val payload = ByteArray(len)
-            for (i in 0 until len) {
-                payload[i] = buffer[5 + i]
-            }
-            repeat(5 + len) { buffer.removeAt(0) }
-            frames.add(
-                DecodedFrame(
-                    if (kind == 1) "text" else "binary",
-                    payload,
-                )
-            )
-        }
-        return frames
-    }
-}
 
 private fun encodeFrame(kind: String, payload: ByteArray): ByteArray {
     val kindByte: Byte = if (kind == "text") 1 else 2
@@ -131,12 +102,12 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
     private var localPeerId: String = ""
     private val devices = ConcurrentHashMap<String, BluetoothDevice>()
     private val subscribed = ConcurrentHashMap.newKeySet<String>()
-    private val decoders = ConcurrentHashMap<String, FrameDecoder>()
+    private val writeAccumulator = FrameWriteAccumulator()
     private val peerActivityAtMs = ConcurrentHashMap<String, Long>()
     private val drainedFrames = ConcurrentLinkedQueue<QueuedFrame>()
     private val pendingDisconnects = ConcurrentHashMap<String, Runnable>()
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val advertiseCallback = object : AdvertiseCallback() {}
+    private var advertiseCallback: AdvertiseCallback? = null
     private var bluetoothActive = false
     private var acceptingConnections = false
     private var pendingStartupSweep: Runnable? = null
@@ -177,7 +148,7 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
             stopInternal()
             // Give Android's BLE stack a moment to release the previous server instance
             // before reopening it. Samsung devices in particular are prone to stale handles.
-            Thread.sleep(100)
+            Thread.sleep(RESTART_STACK_SETTLE_DELAY_MS)
             ensureBluetoothReady()
             startGattServerOrThrow()
             invoke.resolve()
@@ -282,8 +253,17 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
         Log.d(TAG, "Stopping Bluetooth advertiser and GATT server")
         acceptingConnections = false
         disconnectUnreadyDevices("stop")
+        devices.values.forEach { device ->
+            try {
+                gattServer?.cancelConnection(device)
+            } catch (_: Exception) {}
+        }
         try {
-            advertiser?.stopAdvertising(advertiseCallback)
+            advertiseCallback?.let { callback -> advertiser?.stopAdvertising(callback) }
+        } catch (_: Exception) {}
+        advertiseCallback = null
+        try {
+            gattServer?.clearServices()
         } catch (_: Exception) {}
         try {
             gattServer?.close()
@@ -292,8 +272,9 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
         txCharacteristic = null
         devices.clear()
         subscribed.clear()
-        decoders.clear()
+        writeAccumulator.clearAll()
         drainedFrames.clear()
+        peerActivityAtMs.clear()
         pendingStartupSweep?.let { mainHandler.removeCallbacks(it) }
         pendingStartupSweep = null
         pendingDisconnects.values.forEach { mainHandler.removeCallbacks(it) }
@@ -415,6 +396,33 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
         val serviceAdded = CountDownLatch(1)
         val serviceAddedOk = booleanArrayOf(false)
 
+        val advertiseCallback =
+            object : AdvertiseCallback() {
+                override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+                    if (this@MobileBluetoothPlugin.advertiseCallback !== this) {
+                        return
+                    }
+                    Log.i(TAG, "Bluetooth advertising started")
+                    acceptingConnections = true
+                    bluetoothActive = true
+                    scheduleStartupSweep()
+                }
+
+                override fun onStartFailure(errorCode: Int) {
+                    if (this@MobileBluetoothPlugin.advertiseCallback !== this) {
+                        return
+                    }
+                    Log.e(TAG, "Bluetooth advertising failed with code $errorCode")
+                    acceptingConnections = false
+                    bluetoothActive = false
+                    mainHandler.post {
+                        if (this@MobileBluetoothPlugin.advertiseCallback === this) {
+                            stopInternal()
+                        }
+                    }
+                }
+            }
+
         val serverCallback = object : BluetoothGattServerCallback() {
             override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
                 val address = device.address
@@ -430,7 +438,6 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
                     }
                     Log.d(TAG, "BLE device connected: $address")
                     devices[address] = device
-                    decoders[address] = FrameDecoder()
                     touchPeer(address)
                     scheduleUnreadyDisconnect(address, device, "startup-timeout")
                     triggerAddress("peer-connected", address)
@@ -470,9 +477,11 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
             ) {
                 touchPeer(device.address)
                 if (characteristic.uuid == RX_UUID) {
-                    Log.d(TAG, "Received BLE write from ${device.address} (${value.size} bytes)")
-                    val decoder = decoders.computeIfAbsent(device.address) { FrameDecoder() }
-                    decoder.append(value).forEach { frame ->
+                    Log.d(
+                        TAG,
+                        "Received BLE write from ${device.address} (${value.size} bytes, offset=$offset, prepared=$preparedWrite)"
+                    )
+                    writeAccumulator.append(device.address, offset, value).forEach { frame ->
                         triggerFrame(device.address, frame.kind, frame.payload)
                     }
                 }
@@ -563,6 +572,7 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
                 .addServiceData(ParcelUuid(SERVICE_UUID), advertisedPeerHintBytes())
                 .setIncludeDeviceName(false)
                 .build()
+        this.advertiseCallback = advertiseCallback
         advertiser?.startAdvertising(
             AdvertiseSettings.Builder()
                 .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
@@ -573,9 +583,6 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
             scanResponse,
             advertiseCallback,
         )
-        acceptingConnections = true
-        bluetoothActive = true
-        scheduleStartupSweep()
         Log.i(TAG, "Bluetooth advertising and GATT server started")
     }
 
@@ -605,10 +612,10 @@ class MobileBluetoothPlugin(private val activity: android.app.Activity) : Plugin
     private fun dropPeerState(address: String) {
         val hadDevice = devices.remove(address) != null
         val wasReady = subscribed.remove(address)
-        val hadDecoder = decoders.remove(address) != null
+        writeAccumulator.clear(address)
         peerActivityAtMs.remove(address)
         cancelPendingDisconnect(address)
-        if (hadDevice || wasReady || hadDecoder) {
+        if (hadDevice || wasReady) {
             triggerAddress("peer-disconnected", address)
         }
     }
