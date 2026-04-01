@@ -53,9 +53,9 @@ That installs `htree`, `htree-cashu`, and `git-remote-htree`. After tapping, `br
 
 ### Packaging status
 
-- CLI release artifacts are assembled under `rust/dist/` and published with `rust/scripts/release_to_htree.sh`.
+- `./publish_release.sh --version v<version>` is the primary release entrypoint. It publishes the canonical hashtree release, updates the Homebrew tap when the full macOS/Linux CLI set is present, and mirrors the same staged files to GitHub.
+- CLI release artifacts are assembled under `rust/dist/` by `rust/scripts/release_to_htree.sh`, which `./publish_release.sh` wraps.
 - The same repo release flow also stages Iris desktop installers from `apps/iris` when they are available locally.
-- The release script also updates the `homebrew-hashtree` tap when the full macOS/Linux CLI artifact set is present.
 - Iris native release artifacts are assembled under `dist/iris-native/`.
 - Linux package-manager installs beyond Homebrew are not shipped yet.
 
