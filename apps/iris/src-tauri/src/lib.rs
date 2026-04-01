@@ -87,8 +87,8 @@ impl DeepLinkState {
 
 const DEFAULT_MULTICAST_TOGGLE_MAX_PEERS: usize = 12;
 const DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS: usize = 6;
-const IRIS_BLUETOOTH_DEFAULTS_MARKER_FILE: &str = ".iris-bluetooth-defaults-v2";
-const IRIS_BLUETOOTH_DEFAULTS_MARKER_VERSION: &str = "v2\n";
+const IRIS_BLUETOOTH_DEFAULTS_MARKER_FILE: &str = ".iris-bluetooth-defaults-v3";
+const IRIS_BLUETOOTH_DEFAULTS_MARKER_VERSION: &str = "v3\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BluetoothDefaultPlatform {
@@ -119,21 +119,28 @@ fn bluetooth_enabled_by_default_for_platform(platform: BluetoothDefaultPlatform)
     )
 }
 
-fn apply_iris_bluetooth_defaults(
+fn apply_iris_transport_defaults(
     config: &mut hashtree_cli::Config,
     platform: BluetoothDefaultPlatform,
 ) -> bool {
-    if !bluetooth_enabled_by_default_for_platform(platform) {
-        return false;
+    let mut changed = false;
+
+    if !config.server.enable_multicast && config.server.max_multicast_peers == 0 {
+        config.server.enable_multicast = true;
+        config.server.max_multicast_peers = DEFAULT_MULTICAST_TOGGLE_MAX_PEERS;
+        changed = true;
     }
 
-    if config.server.enable_bluetooth || config.server.max_bluetooth_peers > 0 {
-        return false;
+    if bluetooth_enabled_by_default_for_platform(platform)
+        && !config.server.enable_bluetooth
+        && config.server.max_bluetooth_peers == 0
+    {
+        config.server.enable_bluetooth = true;
+        config.server.max_bluetooth_peers = DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS;
+        changed = true;
     }
 
-    config.server.enable_bluetooth = true;
-    config.server.max_bluetooth_peers = DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS;
-    true
+    changed
 }
 
 fn ensure_iris_default_network_config(paths: &IrisPaths) -> Result<(), String> {
@@ -153,10 +160,10 @@ fn ensure_iris_default_network_config_for_platform(
 
     let mut config = hashtree_cli::Config::load()
         .map_err(|error| format!("Failed to load config for Iris defaults: {}", error))?;
-    if apply_iris_bluetooth_defaults(&mut config, platform) {
+    if apply_iris_transport_defaults(&mut config, platform) {
         config
             .save()
-            .map_err(|error| format!("Failed to save Iris Bluetooth defaults: {}", error))?;
+            .map_err(|error| format!("Failed to save Iris transport defaults: {}", error))?;
     }
 
     std::fs::write(&marker_path, IRIS_BLUETOOTH_DEFAULTS_MARKER_VERSION)
@@ -1587,7 +1594,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_iris_bluetooth_defaults, apply_network_settings, apply_transport_settings,
+        apply_iris_transport_defaults, apply_network_settings, apply_transport_settings,
         bluetooth_enabled_by_default_for_platform, collect_supported_launch_deep_links,
         ensure_iris_default_network_config_for_platform, is_supported_launch_host,
         mobile_default_htree_paths, normalize_automation_startup_url,
@@ -1950,17 +1957,24 @@ mod tests {
     }
 
     #[test]
-    fn iris_bluetooth_defaults_enable_supported_platforms() {
+    fn iris_transport_defaults_enable_supported_platforms() {
         for platform in [
             BluetoothDefaultPlatform::Android,
             BluetoothDefaultPlatform::Ios,
             BluetoothDefaultPlatform::MacOs,
         ] {
             let mut config = hashtree_cli::Config::default();
-            let changed = apply_iris_bluetooth_defaults(&mut config, platform);
+            config.server.enable_multicast = false;
+            config.server.max_multicast_peers = 0;
+            let changed = apply_iris_transport_defaults(&mut config, platform);
 
             assert!(bluetooth_enabled_by_default_for_platform(platform));
             assert!(changed);
+            assert!(config.server.enable_multicast);
+            assert_eq!(
+                config.server.max_multicast_peers,
+                DEFAULT_MULTICAST_TOGGLE_MAX_PEERS
+            );
             assert!(config.server.enable_bluetooth);
             assert_eq!(
                 config.server.max_bluetooth_peers,
@@ -1970,26 +1984,35 @@ mod tests {
     }
 
     #[test]
-    fn iris_bluetooth_defaults_skip_unsupported_platforms_and_existing_choices() {
+    fn iris_transport_defaults_skip_unsupported_platforms_and_existing_choices() {
         let mut unsupported = hashtree_cli::Config::default();
-        let changed =
-            apply_iris_bluetooth_defaults(&mut unsupported, BluetoothDefaultPlatform::Other);
-        assert!(!changed);
+        unsupported.server.enable_multicast = false;
+        unsupported.server.max_multicast_peers = 0;
+        let changed = apply_iris_transport_defaults(&mut unsupported, BluetoothDefaultPlatform::Other);
+        assert!(changed);
         assert!(!unsupported.server.enable_bluetooth);
         assert_eq!(unsupported.server.max_bluetooth_peers, 0);
+        assert!(unsupported.server.enable_multicast);
+        assert_eq!(
+            unsupported.server.max_multicast_peers,
+            DEFAULT_MULTICAST_TOGGLE_MAX_PEERS
+        );
 
         let mut existing = hashtree_cli::Config::default();
+        existing.server.enable_multicast = true;
+        existing.server.max_multicast_peers = 9;
         existing.server.enable_bluetooth = true;
         existing.server.max_bluetooth_peers = 2;
-        let changed =
-            apply_iris_bluetooth_defaults(&mut existing, BluetoothDefaultPlatform::Android);
+        let changed = apply_iris_transport_defaults(&mut existing, BluetoothDefaultPlatform::Android);
         assert!(!changed);
+        assert!(existing.server.enable_multicast);
+        assert_eq!(existing.server.max_multicast_peers, 9);
         assert!(existing.server.enable_bluetooth);
         assert_eq!(existing.server.max_bluetooth_peers, 2);
     }
 
     #[test]
-    fn iris_bluetooth_defaults_reapply_after_marker_version_bump() {
+    fn iris_transport_defaults_reapply_after_marker_version_bump() {
         let _lock = env_lock().lock().expect("env lock");
         let temp = TempDir::new().expect("temp dir");
         let shell_data_dir = temp.path().join("iris-shell");
@@ -1999,7 +2022,7 @@ mod tests {
         std::fs::create_dir_all(&htree_config_dir).expect("create config dir");
         std::fs::create_dir_all(&htree_data_dir).expect("create data dir");
 
-        std::fs::write(shell_data_dir.join(".iris-bluetooth-defaults-v1"), b"v1\n")
+        std::fs::write(shell_data_dir.join(".iris-bluetooth-defaults-v2"), b"v2\n")
             .expect("write old marker");
 
         let _config_env = EnvVarGuard::set("HTREE_CONFIG_DIR", &htree_config_dir);
@@ -2016,6 +2039,11 @@ mod tests {
         .expect("apply Iris defaults");
 
         let config = hashtree_cli::Config::load().expect("load updated config");
+        assert!(config.server.enable_multicast);
+        assert_eq!(
+            config.server.max_multicast_peers,
+            DEFAULT_MULTICAST_TOGGLE_MAX_PEERS
+        );
         assert!(config.server.enable_bluetooth);
         assert_eq!(
             config.server.max_bluetooth_peers,
