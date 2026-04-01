@@ -357,3 +357,49 @@ async fn embedded_daemon_exposes_live_peer_router_controller() {
         .await
         .expect("disable router again");
 }
+
+#[cfg(feature = "p2p")]
+#[tokio::test]
+async fn embedded_daemon_peer_router_starts_for_bluetooth_only() {
+    let dir = TempDir::new().expect("temp dir");
+    let _lock = env_lock().lock().expect("env lock");
+    let _config_env = EnvVarGuard::set("HTREE_CONFIG_DIR", dir.path());
+    let _data_env = EnvVarGuard::set("HTREE_DATA_DIR", dir.path());
+
+    let data_dir = dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+    let mut config = hashtree_cli::Config::default();
+    config.storage.data_dir = data_dir.to_string_lossy().to_string();
+    config.server.enable_auth = false;
+    config.server.enable_webrtc = false;
+    config.server.enable_multicast = false;
+    config.server.max_multicast_peers = 0;
+    config.server.enable_bluetooth = true;
+    config.server.max_bluetooth_peers = 1;
+    config.server.stun_port = 0;
+    config.sync.enabled = false;
+    config.nostr.relays.clear();
+
+    let info = hashtree_cli::daemon::start_embedded(hashtree_cli::daemon::EmbeddedDaemonOptions {
+        config: config.clone(),
+        data_dir: data_dir.clone(),
+        bind_address: "127.0.0.1:0".to_string(),
+        relays: None,
+        extra_routes: None,
+        cors: None,
+    })
+    .await
+    .expect("start embedded daemon");
+
+    let controller = info
+        .peer_router_controller
+        .clone()
+        .expect("peer router controller");
+
+    let enabled = controller
+        .apply_config(&config)
+        .await
+        .expect("apply bluetooth-only config");
+    assert!(enabled, "bluetooth-only transport should start the router");
+}

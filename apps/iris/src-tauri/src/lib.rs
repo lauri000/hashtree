@@ -87,7 +87,8 @@ impl DeepLinkState {
 
 const DEFAULT_MULTICAST_TOGGLE_MAX_PEERS: usize = 12;
 const DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS: usize = 6;
-const IRIS_BLUETOOTH_DEFAULTS_MARKER_FILE: &str = ".iris-bluetooth-defaults-v1";
+const IRIS_BLUETOOTH_DEFAULTS_MARKER_FILE: &str = ".iris-bluetooth-defaults-v2";
+const IRIS_BLUETOOTH_DEFAULTS_MARKER_VERSION: &str = "v2\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BluetoothDefaultPlatform {
@@ -136,6 +137,13 @@ fn apply_iris_bluetooth_defaults(
 }
 
 fn ensure_iris_default_network_config(paths: &IrisPaths) -> Result<(), String> {
+    ensure_iris_default_network_config_for_platform(paths, current_bluetooth_default_platform())
+}
+
+fn ensure_iris_default_network_config_for_platform(
+    paths: &IrisPaths,
+    platform: BluetoothDefaultPlatform,
+) -> Result<(), String> {
     let marker_path = paths
         .shell_data_dir
         .join(IRIS_BLUETOOTH_DEFAULTS_MARKER_FILE);
@@ -145,13 +153,13 @@ fn ensure_iris_default_network_config(paths: &IrisPaths) -> Result<(), String> {
 
     let mut config = hashtree_cli::Config::load()
         .map_err(|error| format!("Failed to load config for Iris defaults: {}", error))?;
-    if apply_iris_bluetooth_defaults(&mut config, current_bluetooth_default_platform()) {
+    if apply_iris_bluetooth_defaults(&mut config, platform) {
         config
             .save()
             .map_err(|error| format!("Failed to save Iris Bluetooth defaults: {}", error))?;
     }
 
-    std::fs::write(&marker_path, b"v1\n")
+    std::fs::write(&marker_path, IRIS_BLUETOOTH_DEFAULTS_MARKER_VERSION)
         .map_err(|error| format!("Failed to persist Iris defaults marker: {}", error))?;
     Ok(())
 }
@@ -513,38 +521,39 @@ async fn start_daemon<R: tauri::Runtime + 'static>(
     let app_for_webview_bridge = app.clone();
     let app_for_authenticated_relay = app.clone();
     let app_for_authenticated_relay_slash = app.clone();
-    let extra_routes = Router::<AppState>::new()
-        .merge(backend_routes::router())
-        .route("/relay", any(relay_proxy::handle_relay_websocket))
-        .route(
-            "/__iris_relay",
-            get(move |state, query, ws| {
-                let app = app_for_authenticated_relay.clone();
-                async move {
-                    nip07::handle_authenticated_relay_websocket(app, state, query, ws).await
-                }
-            }),
-        )
-        .route(
-            "/__iris_relay/",
-            get(move |state, query, ws| {
-                let app = app_for_authenticated_relay_slash.clone();
-                async move {
-                    nip07::handle_authenticated_relay_websocket(app, state, query, ws).await
-                }
-            }),
-        )
-        .route(
-            "/__iris_nip07",
-            post(|body: Bytes| async move { nip07::handle_nip07_http_bridge(body).await }),
-        )
-        .route(
-            "/__iris_webview",
-            post(move |headers: HeaderMap, body: Bytes| {
-                let app = app_for_webview_bridge.clone();
-                async move { nip07::handle_webview_event_http_bridge(app, headers, body).await }
-            }),
-        );
+    let extra_routes =
+        Router::<AppState>::new()
+            .merge(backend_routes::router())
+            .route("/relay", any(relay_proxy::handle_relay_websocket))
+            .route(
+                "/__iris_relay",
+                get(move |state, query, ws| {
+                    let app = app_for_authenticated_relay.clone();
+                    async move {
+                        nip07::handle_authenticated_relay_websocket(app, state, query, ws).await
+                    }
+                }),
+            )
+            .route(
+                "/__iris_relay/",
+                get(move |state, query, ws| {
+                    let app = app_for_authenticated_relay_slash.clone();
+                    async move {
+                        nip07::handle_authenticated_relay_websocket(app, state, query, ws).await
+                    }
+                }),
+            )
+            .route(
+                "/__iris_nip07",
+                post(|body: Bytes| async move { nip07::handle_nip07_http_bridge(body).await }),
+            )
+            .route(
+                "/__iris_webview",
+                post(move |headers: HeaderMap, body: Bytes| {
+                    let app = app_for_webview_bridge.clone();
+                    async move { nip07::handle_webview_event_http_bridge(app, headers, body).await }
+                }),
+            );
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -1580,17 +1589,50 @@ mod tests {
     use super::{
         apply_iris_bluetooth_defaults, apply_network_settings, apply_transport_settings,
         bluetooth_enabled_by_default_for_platform, collect_supported_launch_deep_links,
-        is_supported_launch_host, mobile_default_htree_paths, normalize_automation_startup_url,
+        ensure_iris_default_network_config_for_platform, is_supported_launch_host,
+        mobile_default_htree_paths, normalize_automation_startup_url,
         normalize_supported_launch_deep_link, resolve_iris_paths,
         tray_connection_status_from_peers, tray_menu_spec, tray_primary_click_action,
         tray_status_text, BluetoothDefaultPlatform, DaemonBlossomServerSettings,
         DaemonNetworkSettings, DaemonTransportSettings, DesktopPlatform, IrisPaths,
         TrayConnectionStatus, TrayMenuItemSpec, TrayPeersResponse, TrayPrimaryClickAction,
         DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS, DEFAULT_MULTICAST_TOGGLE_MAX_PEERS,
+        IRIS_BLUETOOTH_DEFAULTS_MARKER_FILE,
     };
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     use super::{build_menu, developer_tools_accelerator};
+    use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+    use tempfile::TempDir;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     #[cfg_attr(target_os = "macos", ignore = "requires main thread for menu items")]
@@ -1944,6 +1986,44 @@ mod tests {
         assert!(!changed);
         assert!(existing.server.enable_bluetooth);
         assert_eq!(existing.server.max_bluetooth_peers, 2);
+    }
+
+    #[test]
+    fn iris_bluetooth_defaults_reapply_after_marker_version_bump() {
+        let _lock = env_lock().lock().expect("env lock");
+        let temp = TempDir::new().expect("temp dir");
+        let shell_data_dir = temp.path().join("iris-shell");
+        let htree_config_dir = temp.path().join("htree-config");
+        let htree_data_dir = temp.path().join("htree-data");
+        std::fs::create_dir_all(&shell_data_dir).expect("create shell data dir");
+        std::fs::create_dir_all(&htree_config_dir).expect("create config dir");
+        std::fs::create_dir_all(&htree_data_dir).expect("create data dir");
+
+        std::fs::write(shell_data_dir.join(".iris-bluetooth-defaults-v1"), b"v1\n")
+            .expect("write old marker");
+
+        let _config_env = EnvVarGuard::set("HTREE_CONFIG_DIR", &htree_config_dir);
+        let _data_env = EnvVarGuard::set("HTREE_DATA_DIR", &htree_data_dir);
+
+        ensure_iris_default_network_config_for_platform(
+            &IrisPaths {
+                shell_data_dir: shell_data_dir.clone(),
+                htree_config_dir,
+                htree_data_dir,
+            },
+            BluetoothDefaultPlatform::MacOs,
+        )
+        .expect("apply Iris defaults");
+
+        let config = hashtree_cli::Config::load().expect("load updated config");
+        assert!(config.server.enable_bluetooth);
+        assert_eq!(
+            config.server.max_bluetooth_peers,
+            DEFAULT_BLUETOOTH_TOGGLE_MAX_PEERS
+        );
+        assert!(shell_data_dir
+            .join(IRIS_BLUETOOTH_DEFAULTS_MARKER_FILE)
+            .exists());
     }
 
     #[test]
