@@ -27,11 +27,11 @@ source "$HOME/.cargo/env"
 # Git helper only (enables git clone/pull/push for htree:// URLs)
 cargo install git-remote-htree
 
+# CLI + daemon + mount support (default; requires system FUSE libraries)
+cargo install hashtree-cli
+
 # CLI + daemon + git helper + Cashu helper
 cargo install hashtree-cli git-remote-htree hashtree-cashu-cli
-
-# CLI + daemon + optional FUSE mount support
-cargo install hashtree-cli --features fuse
 
 # Minimal install without P2P/WebRTC/Cashu/git helper (smaller binary)
 cargo install hashtree-cli --no-default-features

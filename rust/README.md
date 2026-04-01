@@ -116,7 +116,6 @@ Push/pull git repos via hashtree:
 ```bash
 # Install (local path)
 cargo install --path crates/hashtree-cli
-cargo install --path crates/hashtree-cli --features fuse
 cargo install --path crates/hashtree-cashu-cli
 cargo install --path crates/git-remote-htree
 
@@ -196,7 +195,7 @@ htree add myfile.txt                    # Add file (CHK-encrypted, shareable)
 htree add mydir/ --unencrypted          # Add directory as raw plaintext
 htree add myfile.txt --publish mydata   # Add and publish to Nostr
 
-# Mount a published tree or subdirectory locally (requires build/install with --features fuse)
+# Mount a published tree or subdirectory locally
 htree mount htree://self/mytree          # mounts to ./mytree and errors if it already exists
 htree mount htree://npub1.../mytree ~/mnt/mytree
 htree mount htree://npub1.../mytree/docs ~/mnt/docs
