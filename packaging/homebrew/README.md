@@ -44,7 +44,7 @@ Then generate a bare tap repository:
 ```bash
 packaging/homebrew/create_tap.sh \
   --version v<version> \
-  --release-base-url https://upload.iris.to/<npub>/<release-tree>/v<version> \
+  --release-base-url https://upload.iris.to/<npub>/<release-tree>/v<version>/assets \
   --assets-dir rust/dist/hashtree-v<version> \
   --output-dir dist/homebrew-htree.git
 ```
@@ -84,7 +84,7 @@ The repo includes a helper for that flow:
 ```bash
 packaging/homebrew/publish_tap.sh \
   --version v<version> \
-  --release-base-url https://upload.iris.to/<npub>/releases%2Fhashtree/v<version> \
+  --release-base-url https://upload.iris.to/<npub>/releases%2Fhashtree/v<version>/assets \
   --assets-dir rust/dist/hashtree-v<version>
 ```
 

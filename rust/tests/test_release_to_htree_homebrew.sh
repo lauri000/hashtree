@@ -138,10 +138,10 @@ grep -F "htree_add:${TMPDIR}/release-stage" "${TMPDIR}/logs/calls.log" >/dev/nul
 test -f "${TMPDIR}/release-stage/release.json"
 test -f "${TMPDIR}/release-stage/notes.md"
 test -f "${TMPDIR}/release-stage/install.sh"
-test -f "${TMPDIR}/release-stage/assets/hashtree-aarch64-apple-darwin.sha256"
+test -f "${TMPDIR}/release-stage/assets/hashtree-aarch64-apple-darwin.tar.gz"
 
 grep -F "publish_release:v0.2.3 nhash1release releases/hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
-grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/releases%2Fhashtree/v0.2.3 --checksums-dir ${TMPDIR}/out --tap-repo homebrew-hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
+grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/releases%2Fhashtree/v0.2.3/assets --assets-dir ${TMPDIR}/out --tap-repo homebrew-hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
 test -f "${TMPDIR}/out/install.sh"
 grep -F 'BASE_URL="https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/releases%2Fhashtree/v0.2.3"' "${TMPDIR}/out/install.sh" >/dev/null
 grep -F 'ASSET_BASE_URL="${BASE_URL}/assets"' "${TMPDIR}/out/install.sh" >/dev/null

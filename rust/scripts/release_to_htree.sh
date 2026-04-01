@@ -425,7 +425,7 @@ if [ "$SKIP_HOMEBREW_TAP" -eq 0 ]; then
         if [ -z "$npub" ]; then
             echo "Warning: Could not determine current npub; skipping Homebrew tap update." >&2
         else
-            release_base_url="$(gateway_release_base_url "$npub" "$TREE_NAME" "$VERSION_PATH")"
+            release_base_url="$(gateway_release_base_url "$npub" "$TREE_NAME" "$VERSION_PATH")/assets"
             if ! "${HOMEBREW_PUBLISH_SCRIPT}" \
                 --version "$VERSION" \
                 --release-base-url "$release_base_url" \
