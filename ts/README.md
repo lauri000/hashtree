@@ -152,9 +152,9 @@ is preserved (`1 + 1` fanout with `peerQueryDelay` hedge interval).
 
 The extracted app workspaces now live alongside this repo:
 
-- `../iris-apps` for portable Iris web apps and `iris-sites`
-- `../iris-browser` for the native desktop shell
-- `../hashtree-cc` for the landing page app
+- [`iris-apps`](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-apps) for portable Iris web apps and `iris-sites`
+- [`iris-browser`](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-browser) for the native desktop shell
+- [`hashtree-cc`](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree-cc) for the landing page app
 
 ## Web Viewer
 

@@ -58,14 +58,14 @@ That installs `htree`, `htree-cashu`, and `git-remote-htree`. After tapping, `br
 
 - `./publish_release.sh --version v<version>` is the primary release entrypoint. It publishes the canonical hashtree release, updates the Homebrew tap when the full macOS/Linux CLI set is present, and mirrors the same staged files to GitHub.
 - CLI release artifacts are assembled under `rust/dist/` by `rust/scripts/release_to_htree.sh`, which `./publish_release.sh` wraps.
-- When a sibling `../iris-browser` checkout is available locally, the same release flow can also stage Iris desktop installers from that repo.
+- When a sibling [`iris-browser`](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-browser) checkout is available locally, the same release flow can also stage Iris desktop installers from that repo.
 - Iris native release artifacts are assembled under `dist/iris-native/`.
 - Linux package-manager installs beyond Homebrew are not shipped yet.
 
 ## Current status
 
 - The core storage format, CHK encryption, CLI/daemon, and `git-remote-htree` are implemented and used across the Rust and TypeScript stacks.
-- The standalone app repos now live alongside this repo: `../iris-browser`, `../iris-apps`, and `../hashtree-cc`.
+- The standalone app repos now live alongside this repo: [`iris-browser`](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-browser), [`iris-apps`](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-apps), and [`hashtree-cc`](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree-cc).
 - Packaging is still uneven: Cargo installs, release tarballs, and the Homebrew tap work today; `apt` style packaging is still pending.
 - The protocol is implemented, but the written spec is still a draft and nearby Bluetooth/Wi-Fi sync work is still in progress.
 
@@ -74,9 +74,9 @@ That installs `htree`, `htree-cashu`, and `git-remote-htree`. After tapping, `br
 - `rust/` - Rust CLI/daemon, git remote helper, and core crates. See [`rust/README.md`](rust/README.md).
 - `ts/` - TypeScript/JavaScript SDK packages. See [`ts/README.md`](ts/README.md).
 - Sibling repos:
-  - `../iris-browser/` - Native desktop shell built with Tauri.
-  - `../iris-apps/` - Portable Iris web apps and the isolated site runtime.
-  - `../hashtree-cc/` - Landing page and file sharing app.
+  - [`iris-browser`](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-browser) - Native desktop shell built with Tauri.
+  - [`iris-apps`](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-apps) - Portable Iris web apps and the isolated site runtime.
+  - [`hashtree-cc`](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree-cc) - Landing page and file sharing app.
 
 ## Canonical remote
 
@@ -99,8 +99,8 @@ Hashtree is the canonical remote for this repository:
 
 - CLI + daemon + git remote: follow [`rust/README.md`](rust/README.md)
 - JS SDK packages: follow [`ts/README.md`](ts/README.md)
-- Native desktop shell: follow the sibling `../iris-browser` repo
-- Portable web apps and release flows: follow the sibling `../iris-apps` repo
+- Native desktop shell: follow [`iris-browser`](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-browser)
+- Portable web apps and release flows: follow [`iris-apps`](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-apps)
 
 ## Site Releases
 
