@@ -179,7 +179,7 @@ Usage:
   git remote add htree htree://self/myrepo
   git push htree main
 
-More info: https://github.com/mmalmi/hashtree
+More info: https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree
 EOF
 }
 
@@ -205,7 +205,7 @@ Usage:
   htree cashu balance                 # inspect Cashu wallet
   git clone htree://npub1.../repo     # clone git repo
 
-More info: https://github.com/mmalmi/hashtree
+More info: https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree
 EOF
 }
 

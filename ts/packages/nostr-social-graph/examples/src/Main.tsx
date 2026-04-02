@@ -46,8 +46,8 @@ const Main = () => {
             <Explore pubKey={viewAs} selectedUser={selectedUser} />
             <Stats />
             <div className="text-sm text-gray-500 mt-4 flex flex-row gap-4">
-                <a href="https://github.com/mmalmi/nostr-social-graph" target="_blank" rel="noopener noreferrer" className="link">
-                    GitHub
+                <a href="https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/nostr-social-graph" target="_blank" rel="noopener noreferrer" className="link">
+                    Source
                 </a>
                 <a href="https://www.npmjs.com/package/nostr-social-graph" target="_blank" rel="noopener noreferrer" className="link">
                     npm

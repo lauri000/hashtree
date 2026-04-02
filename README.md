@@ -86,7 +86,7 @@ That installs `htree`, `htree-cashu`, and `git-remote-htree`. After tapping, `br
 Hashtree is the canonical remote for this repository:
 
 - `origin = htree://self/hashtree`
-- `github = git@github.com:mmalmi/hashtree.git`
+- Add mirrors on separate remotes only when you need them.
 
 ## Design highlights
 

@@ -1,11 +1,11 @@
 {
   "version": "0.2.4",
   "description": "Git over Nostr via Merkle trees",
-  "homepage": "https://github.com/mmalmi/hashtree",
+  "homepage": "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree",
   "license": "MIT",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/mmalmi/hashtree/releases/download/v0.2.4/hashtree-x86_64-pc-windows-msvc.zip",
+      "url": "https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/releases%2Fhashtree/v0.2.4/assets/hashtree-x86_64-pc-windows-msvc.zip",
       "hash": "REPLACE_WITH_SHA256"
     }
   },
@@ -17,9 +17,9 @@
   "autoupdate": {
     "architecture": {
       "64bit": {
-        "url": "https://github.com/mmalmi/hashtree/releases/download/v$version/hashtree-x86_64-pc-windows-msvc.zip",
+        "url": "https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/releases%2Fhashtree/v$version/assets/hashtree-x86_64-pc-windows-msvc.zip",
         "hash": {
-          "url": "https://github.com/mmalmi/hashtree/releases/download/v$version/hashtree-x86_64-pc-windows-msvc.sha256"
+          "url": "https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/releases%2Fhashtree/v$version/assets/hashtree-x86_64-pc-windows-msvc.sha256"
         }
       }
     }

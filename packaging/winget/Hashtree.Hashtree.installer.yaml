@@ -10,7 +10,7 @@ NestedInstallerFiles:
     PortableCommandAlias: git-remote-htree
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/mmalmi/hashtree/releases/download/v0.2.4/hashtree-x86_64-pc-windows-msvc.zip
+    InstallerUrl: https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/releases%2Fhashtree/v0.2.4/assets/hashtree-x86_64-pc-windows-msvc.zip
     InstallerSha256: REPLACE_WITH_SHA256
 ManifestType: installer
 ManifestVersion: 1.6.0
