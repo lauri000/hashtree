@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.2.21 - 2026-04-02
+
+Changes since the `0.2.20` crates.io release.
+
+### Improved
+
+- Improved `htree mount` ergonomics: FUSE now ships in the default `hashtree-cli` build, `htree mount` can derive a mountpoint from the target automatically, and owner aliases or hex pubkeys are normalized to `npub` targets before resolution.
+- Debounced mounted-root publishing and preserved sibling entries when mounting a published subdirectory, which reduces redundant Nostr publishes without clobbering the rest of the published tree.
+- Grouped the top-level `htree help` output by command category so storage, publishing, identity, and wallet flows are easier to discover.
+
+### Fixed
+
+- Fixed the FUSE adapter for current `fuser` callback signatures so mkdir, unlink, rmdir, rename, and write operations dispatch cleanly on newer builds.
+- Fixed the embedded daemon and mount publish path to keep default Blossom read-server behavior and related integration coverage intact after the FUSE follow-up changes.
+
+## 0.2.20 - 2026-04-01
+
+Changes since the `0.2.18` crates.io release.
+
+### Improved
+
+- Extracted the shared mesh routing core into the Rust networking crates and aligned the CLI, simulation, and TypeScript interop paths around the same signaling model.
+- Improved `git-remote-htree` and `hashtree-cli` pull-request interoperability, including better published-repo handling and PR listing coverage.
+- Improved Iris release defaults on supported platforms so Bluetooth-enabled builds and app release packaging behave more consistently.
+
+### Fixed
+
+- Fixed Iris Android release networking and Zapstore publishing regressions that were blocking the release pipeline.
+- Fixed several mobile Bluetooth startup and interoperability issues across the Rust networking stack.
+
 ## 0.2.18 - 2026-03-31
 
 Changes since the `0.2.17` crates.io release.
