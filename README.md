@@ -117,6 +117,7 @@ Hashtree is the canonical remote for this repository:
 
 - [`docs/HTS-01.md`](docs/HTS-01.md) - hashtree core protocol (draft)
 - [`docs/URL-ENCODING.md`](docs/URL-ENCODING.md) - concise routing rules for slash-containing tree names
+- [`docs/architecture.html`](docs/architecture.html) - visual overview of the current content, routing, and transport layers
 
 ## License
 

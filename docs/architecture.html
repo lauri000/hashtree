@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hashtree Architecture Overview</title>
+  <style>
+    :root {
+      --bg: #07141b;
+      --bg-soft: #10212b;
+      --panel: rgba(10, 24, 33, 0.78);
+      --panel-strong: rgba(14, 32, 44, 0.94);
+      --line: rgba(143, 193, 214, 0.34);
+      --line-strong: rgba(251, 197, 102, 0.62);
+      --text: #f2f7f9;
+      --muted: #a9bcc7;
+      --accent-a: #7ed4c0;
+      --accent-b: #fbc566;
+      --accent-c: #7ec8ff;
+      --accent-d: #ff8f6b;
+      --shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+      --radius: 24px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top left, rgba(126, 212, 192, 0.16), transparent 30%),
+        radial-gradient(circle at top right, rgba(251, 197, 102, 0.14), transparent 28%),
+        linear-gradient(180deg, #08141b 0%, #0c1d26 42%, #091017 100%);
+      color: var(--text);
+      font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+      background-size: 36px 36px;
+      mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent 90%);
+      pointer-events: none;
+    }
+
+    .page {
+      width: min(1100px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 64px 0 72px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .hero {
+      margin-bottom: 34px;
+    }
+
+    .eyebrow {
+      margin: 0 0 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+      font-size: 0.78rem;
+      color: var(--accent-a);
+    }
+
+    h1,
+    h2 {
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+      line-height: 1.02;
+      margin: 0;
+    }
+
+    h1 {
+      max-width: 13ch;
+      font-size: clamp(2.6rem, 6vw, 5.6rem);
+      letter-spacing: -0.03em;
+    }
+
+    .lede {
+      max-width: 760px;
+      margin: 18px 0 0;
+      font-size: clamp(1.05rem, 2vw, 1.3rem);
+      line-height: 1.65;
+      color: var(--muted);
+    }
+
+    .diagram,
+    .details {
+      background: linear-gradient(180deg, var(--panel) 0%, rgba(8, 18, 25, 0.88) 100%);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+    }
+
+    .diagram {
+      padding: 28px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .diagram::after {
+      content: "";
+      position: absolute;
+      inset: auto -80px -120px auto;
+      width: 240px;
+      height: 240px;
+      background: radial-gradient(circle, rgba(126, 200, 255, 0.18), transparent 68%);
+      pointer-events: none;
+    }
+
+    .mini-row,
+    .main-row {
+      display: grid;
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    .mini-row {
+      grid-template-columns: minmax(0, 1.05fr) 48px minmax(0, 1fr) 48px minmax(0, 0.95fr);
+      margin-bottom: 20px;
+    }
+
+    .main-row {
+      grid-template-columns: minmax(0, 1.2fr) 48px minmax(0, 1.2fr) 48px minmax(0, 1.15fr) 48px minmax(0, 1.05fr);
+      margin-bottom: 26px;
+    }
+
+    .node,
+    .mini-node,
+    .branch,
+    .note {
+      border-radius: 20px;
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      background: var(--panel-strong);
+      padding: 18px 18px 16px;
+      min-width: 0;
+    }
+
+    .node h2,
+    .branch h2,
+    .note h2,
+    .mini-node h2 {
+      font-size: 1.22rem;
+      margin-bottom: 8px;
+    }
+
+    .mini-node h2 {
+      font-size: 1rem;
+      font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+    }
+
+    .node p,
+    .branch p,
+    .note p,
+    .mini-node p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.56;
+    }
+
+    .node.api {
+      box-shadow: inset 0 0 0 1px rgba(126, 212, 192, 0.16);
+    }
+
+    .node.core,
+    .mini-node.resolver {
+      box-shadow: inset 0 0 0 1px rgba(126, 200, 255, 0.16);
+    }
+
+    .node.mesh,
+    .branch.signal {
+      box-shadow: inset 0 0 0 1px rgba(251, 197, 102, 0.18);
+    }
+
+    .node.router,
+    .branch.link {
+      box-shadow: inset 0 0 0 1px rgba(255, 143, 107, 0.18);
+    }
+
+    .mini-node.ref,
+    .branch.storage {
+      box-shadow: inset 0 0 0 1px rgba(126, 212, 192, 0.16);
+    }
+
+    .connector {
+      display: grid;
+      place-items: center;
+      color: var(--accent-b);
+      font-size: 1.5rem;
+      font-weight: 700;
+      min-height: 100%;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .tag {
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      background: rgba(255, 255, 255, 0.06);
+      color: #eff7fb;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      white-space: nowrap;
+    }
+
+    .fanout {
+      margin-top: 12px;
+      position: relative;
+      padding-top: 52px;
+    }
+
+    .fanout::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: calc(50% - 0.5px);
+      width: 1px;
+      height: 28px;
+      background: var(--line-strong);
+    }
+
+    .fanout::after {
+      content: "";
+      position: absolute;
+      top: 28px;
+      left: 16.666%;
+      right: 16.666%;
+      height: 1px;
+      background: var(--line-strong);
+    }
+
+    .fanout-label {
+      text-align: center;
+      color: var(--accent-b);
+      font-size: 0.88rem;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      margin: 0 0 18px;
+    }
+
+    .branch-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .branch h2 {
+      font-size: 1.08rem;
+      font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif;
+      font-weight: 700;
+    }
+
+    .branch .label {
+      display: inline-block;
+      margin-bottom: 10px;
+      font-size: 0.74rem;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--text);
+      opacity: 0.72;
+    }
+
+    .details {
+      margin-top: 26px;
+      padding: 24px;
+    }
+
+    .details-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .note {
+      min-height: 100%;
+    }
+
+    code {
+      font-family: "SFMono-Regular", "Menlo", "Monaco", "Courier New", monospace;
+      font-size: 0.92em;
+      background: rgba(255, 255, 255, 0.06);
+      padding: 0.12em 0.35em;
+      border-radius: 0.4em;
+    }
+
+    .footer {
+      margin-top: 18px;
+      color: rgba(242, 247, 249, 0.64);
+      font-size: 0.95rem;
+      line-height: 1.55;
+    }
+
+    @media (max-width: 980px) {
+      .mini-row,
+      .main-row,
+      .branch-grid,
+      .details-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .connector {
+        min-height: 28px;
+      }
+
+      .fanout {
+        padding-top: 0;
+      }
+
+      .fanout::before,
+      .fanout::after {
+        display: none;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .page {
+        width: min(100vw - 20px, 1100px);
+        padding-top: 36px;
+        padding-bottom: 40px;
+      }
+
+      .diagram,
+      .details {
+        padding: 18px;
+        border-radius: 20px;
+      }
+
+      h1 {
+        max-width: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <p class="eyebrow">hashtree</p>
+      <h1>Architecture Overview</h1>
+      <p class="lede">
+        Simple map of the current stack: API surfaces and published refs resolve into merkle roots,
+        the content core reads and writes by hash, and the mesh layer routes requests through a
+        transport-generic router that can swap signaling and direct-link implementations underneath.
+      </p>
+    </section>
+
+    <section class="diagram" aria-labelledby="diagram-title">
+      <h2 id="diagram-title" style="position:absolute;left:-9999px;">Architecture diagram</h2>
+
+      <div class="mini-row">
+        <article class="mini-node ref">
+          <h2>Published refs</h2>
+          <p>Mutable names like <code>npub/tree/path</code> and <code>htree://self/repo</code>.</p>
+        </article>
+        <div class="connector" aria-hidden="true">&rarr;</div>
+        <article class="mini-node resolver">
+          <h2>Resolver</h2>
+          <p><code>NostrRootResolver</code> turns refs into merkle roots and site entry paths.</p>
+        </article>
+        <div class="connector" aria-hidden="true">&rarr;</div>
+        <article class="mini-node core">
+          <h2>CIDs / merkle roots</h2>
+          <p>Immutable content IDs verify everything fetched from peers or servers.</p>
+        </article>
+      </div>
+
+      <div class="main-row">
+        <article class="node api">
+          <h2>API surface</h2>
+          <p>
+            User-facing entry points: the <code>htree</code> CLI, <code>git-remote-htree</code>,
+            Rust crates, TypeScript SDKs, and Iris app runtime.
+          </p>
+          <div class="tag-row">
+            <span class="tag">CLI</span>
+            <span class="tag">git remote</span>
+            <span class="tag">Rust</span>
+            <span class="tag">TypeScript</span>
+          </div>
+        </article>
+
+        <div class="connector" aria-hidden="true">&rarr;</div>
+
+        <article class="node core">
+          <h2>Content core</h2>
+          <p>
+            <code>HashTree</code> and the simple <code>Store</code> trait handle chunking,
+            MessagePack tree nodes, and CHK-encrypted content addressed by hash.
+          </p>
+          <div class="tag-row">
+            <span class="tag">chunking</span>
+            <span class="tag">CHK</span>
+            <span class="tag">Store get/put</span>
+          </div>
+        </article>
+
+        <div class="connector" aria-hidden="true">&rarr;</div>
+
+        <article class="node mesh">
+          <h2>Mesh layer</h2>
+          <p>
+            <code>MeshStore</code> is the thin production wrapper. <code>MeshStoreCore</code>
+            runs routed hash lookups and adaptive peer selection over any local store.
+          </p>
+          <div class="tag-row">
+            <span class="tag">local-first</span>
+            <span class="tag">peer selection</span>
+            <span class="tag">routed get(hash)</span>
+          </div>
+        </article>
+
+        <div class="connector" aria-hidden="true">&rarr;</div>
+
+        <article class="node router">
+          <h2>MeshRouter</h2>
+          <p>
+            Coordinates peer discovery and negotiated link setup, while keeping router logic
+            separate from the concrete transports below it.
+          </p>
+          <div class="tag-row">
+            <span class="tag">discovery</span>
+            <span class="tag">negotiation</span>
+            <span class="tag">transport-generic</span>
+          </div>
+        </article>
+      </div>
+
+      <div class="fanout">
+        <p class="fanout-label">Default production composition beneath the router</p>
+        <div class="branch-grid">
+          <article class="branch signal">
+            <span class="label">Signaling</span>
+            <h2><code>SignalingTransport</code></h2>
+            <p>
+              Production uses <code>NostrRelayTransport</code> over relays for discovery and
+              offer/answer exchange.
+            </p>
+          </article>
+
+          <article class="branch link">
+            <span class="label">Direct links</span>
+            <h2><code>PeerLinkFactory</code> + <code>PeerLink</code></h2>
+            <p>
+              Production uses <code>WebRtcPeerLinkFactory</code> and real WebRTC data channels for
+              peer-to-peer byte transport.
+            </p>
+          </article>
+
+          <article class="branch storage">
+            <span class="label">Backing data paths</span>
+            <h2>Local store + fallback stores</h2>
+            <p>
+              Local daemon storage answers first; peers, Blossom-compatible servers, and other
+              store backends fill in what is missing.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="details">
+      <div class="details-grid">
+        <article class="note">
+          <h2>What is fixed today</h2>
+          <p>
+            The current production pair is Nostr for signaling plus WebRTC for direct links. That
+            is the composition wired by the thin <code>MeshStore</code> wrapper in
+            <code>hashtree-network</code>.
+          </p>
+        </article>
+
+        <article class="note">
+          <h2>What stays swappable</h2>
+          <p>
+            The router and store core are intentionally generic. Nearby transports like Bluetooth,
+            LAN buses, or simulation can plug in by implementing the same signaling and peer-link
+            traits.
+          </p>
+        </article>
+
+        <article class="note">
+          <h2>Why the layering matters</h2>
+          <p>
+            Requests are addressed by hash, so content fetched from relays, peers, or servers is
+            verified locally. Mutable names only select roots; integrity still comes from content
+            addressing.
+          </p>
+        </article>
+      </div>
+
+      <p class="footer">
+        Source anchors: <code>README.md</code>, <code>rust/README.md</code>,
+        <code>rust/crates/hashtree-network/README.md</code>, and
+        <code>rust/crates/hashtree-network/src/store.rs</code>.
+      </p>
+    </section>
+  </main>
+</body>
+</html>
