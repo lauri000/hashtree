@@ -33,8 +33,11 @@ cargo install hashtree-cli
 # CLI + daemon + git helper + Cashu helper
 cargo install hashtree-cli git-remote-htree hashtree-cashu-cli
 
-# Minimal install without P2P/WebRTC/Cashu/git helper (smaller binary)
-cargo install hashtree-cli --no-default-features
+# Build without FUSE if local headers/libs are troublesome
+cargo install hashtree-cli --no-default-features --features p2p,lmdb
+
+# Add FUSE mount support explicitly when you want it
+cargo install hashtree-cli --no-default-features --features p2p,lmdb,fuse
 ```
 
 ### Local install from this repo
