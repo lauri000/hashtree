@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 700" font-family="monospace" font-size="15">
+  <style>
+    rect.layer    { rx: 5; }
+    rect.app      { fill: #1a3a2a; stroke: #40a060; stroke-width: 2; }
+    rect.resolve  { fill: #1a2a3a; stroke: #4080c0; stroke-width: 2; }
+    rect.core     { fill: #2a2040; stroke: #8060c0; stroke-width: 2; }
+    rect.mesh     { fill: #2e3a5e; stroke: #5080c0; stroke-width: 2; }
+    rect.xport    { fill: #2a1a1a; stroke: #c06040; stroke-width: 2; }
+    text          { fill: #e0e0e0; }
+    text.name     { font-size: 23px; font-weight: bold; }
+    text.desc     { font-size: 18px; fill: #a0a0b0; }
+    text.scope    { font-size: 17px; fill: #707080; font-style: italic; }
+    text.caption  { font-size: 18px; fill: #808090; font-style: italic; }
+  </style>
+
+  <rect width="900" height="650" fill="#0d1117" rx="10"/>
+
+  <rect x="50" y="25" width="800" height="92" class="layer app"/>
+  <text x="75" y="58" class="name">Application Layer Interface</text>
+  <text x="75" y="80" class="desc">htree CLI, Rust crates, TypeScript SDKs, and Iris apps</text>
+  <text x="75" y="100" class="desc">git-remote-htree, files/sites viewers, and shell integrations</text>
+
+  <rect x="50" y="138" width="800" height="118" class="layer resolve"/>
+  <text x="75" y="171" class="name">Publish + Resolve Layer</text>
+  <text x="75" y="193" class="desc">Mutable Nostr roots and htree:// addresses point at merkle trees</text>
+  <text x="75" y="213" class="desc">NostrRootResolver maps npub/tree/path and published refs to roots</text>
+  <text x="75" y="233" class="desc">Entry paths are traversed client-side after the root is resolved</text>
+  <text x="825" y="171" class="scope" text-anchor="end">mutable names</text>
+
+  <rect x="50" y="277" width="800" height="118" class="layer core"/>
+  <text x="75" y="310" class="name">Content-Addressed Core</text>
+  <text x="75" y="332" class="desc">HashTree writes deterministic MessagePack trees and chunked blobs</text>
+  <text x="75" y="352" class="desc">CHK encryption by default with a transport-agnostic Store abstraction</text>
+  <text x="75" y="372" class="desc">Integrity and deduplication come from the content hash / CID</text>
+  <text x="825" y="310" class="scope" text-anchor="end">verified by hash</text>
+
+  <rect x="50" y="416" width="800" height="118" class="layer mesh"/>
+  <text x="75" y="449" class="name">Mesh Retrieval Layer</text>
+  <text x="75" y="471" class="desc">MeshStoreCore routes hash requests over peers and local stores</text>
+  <text x="75" y="491" class="desc">MeshRouter composes SignalingTransport with PeerLink / PeerLinkFactory</text>
+  <text x="75" y="511" class="desc">Adaptive selection, hello discovery, offer/answer negotiation</text>
+  <text x="825" y="449" class="scope" text-anchor="end">transport-generic</text>
+
+  <rect x="50" y="555" width="800" height="74" class="layer xport"/>
+  <text x="75" y="588" class="name">Backing Media and Stores</text>
+  <text x="825" y="588" class="scope" text-anchor="end">(local, peer-to-peer, server)</text>
+  <text x="75" y="610" class="desc">Nostr relays, WebRTC data channels, local LMDB, Blossom, S3, memory</text>
+
+  <text x="450" y="678" text-anchor="middle" class="caption">hashtree layer stack - mutable refs on top, verified content in the middle, swappable transport underneath</text>
+</svg>

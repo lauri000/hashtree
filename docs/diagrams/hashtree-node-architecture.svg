@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 620" font-family="monospace" font-size="12">
+  <style>
+    rect.outer   { fill: #151525; stroke: #505070; stroke-width: 2; rx: 6; }
+    rect.layer   { rx: 4; }
+    rect.api     { fill: #1a3a2a; stroke: #40a060; stroke-width: 1.5; }
+    rect.resolve { fill: #1a2a3a; stroke: #4080c0; stroke-width: 1.5; }
+    rect.core    { fill: #2a2040; stroke: #8060c0; stroke-width: 1.5; }
+    rect.mesh    { fill: #2e3a5e; stroke: #5080c0; stroke-width: 1.5; }
+    rect.xport   { fill: #2a1a1a; stroke: #c06040; stroke-width: 1.5; }
+    rect.cat     { fill: none; stroke: #404060; stroke-width: 1; stroke-dasharray: 4,3; rx: 3; }
+    text         { fill: #e0e0e0; }
+    text.label   { font-size: 13px; font-weight: bold; }
+    text.sub     { font-size: 10px; fill: #909090; }
+    text.cat     { font-size: 9px; fill: #707090; font-style: italic; }
+    text.title   { font-size: 16px; font-weight: bold; }
+    text.subtitle{ font-size: 12px; fill: #909090; }
+    line.conn    { stroke: #606080; stroke-width: 1.5; }
+    line.peer    { stroke: #505060; stroke-width: 1; stroke-dasharray: 3,3; }
+  </style>
+
+  <rect width="860" height="620" fill="#0d1117" rx="8"/>
+
+  <text x="430" y="28" text-anchor="middle" class="title">hashtree Node Architecture</text>
+  <text x="430" y="46" text-anchor="middle" class="subtitle">Application interfaces, mutable refs, content-addressed core, and swappable transports</text>
+
+  <rect x="50" y="60" width="760" height="450" class="outer"/>
+  <text x="66" y="80" class="sub">hashtree node</text>
+
+  <rect x="175" y="92" width="220" height="54" class="layer api"/>
+  <text x="285" y="110" text-anchor="middle" class="label">HashTree API Surface</text>
+  <text x="285" y="124" text-anchor="middle" class="sub">htree CLI, Rust crates, TS SDK</text>
+  <text x="285" y="136" text-anchor="middle" class="sub">put/get/list/mount and app runtime</text>
+
+  <rect x="465" y="92" width="220" height="54" class="layer resolve"/>
+  <text x="575" y="110" text-anchor="middle" class="label">Git + Site Adapters</text>
+  <text x="575" y="124" text-anchor="middle" class="sub">git-remote-htree, files/sites viewers</text>
+  <text x="575" y="136" text-anchor="middle" class="sub">htree:// and npub/tree/path entry points</text>
+
+  <text x="285" y="76" text-anchor="middle" class="sub">Apps, CLI, and SDK users</text>
+  <text x="575" y="76" text-anchor="middle" class="sub">Git and web entry points</text>
+
+  <line x1="285" y1="80" x2="285" y2="92" class="conn"/>
+  <line x1="575" y1="80" x2="575" y2="92" class="conn"/>
+
+  <rect x="100" y="178" width="660" height="56" class="layer resolve"/>
+  <text x="430" y="199" text-anchor="middle" class="label">Publish + Resolve Layer</text>
+  <text x="430" y="214" text-anchor="middle" class="sub">NostrRootResolver, kind 30078 roots, published refs, tree-name lookup</text>
+  <text x="430" y="226" text-anchor="middle" class="sub">npub/tree/path and htree:// names resolve to merkle roots plus entry paths</text>
+
+  <line x1="285" y1="146" x2="285" y2="178" class="conn"/>
+  <line x1="575" y1="146" x2="575" y2="178" class="conn"/>
+
+  <rect x="100" y="258" width="660" height="56" class="layer core"/>
+  <text x="430" y="279" text-anchor="middle" class="label">Content-Addressed Core</text>
+  <text x="430" y="294" text-anchor="middle" class="sub">HashTree, deterministic MessagePack tree nodes, chunking, CHK, and simple Store APIs</text>
+  <text x="430" y="306" text-anchor="middle" class="sub">Integrity and deduplication come from the CID / merkle root, not from the transport</text>
+
+  <line x1="430" y1="234" x2="430" y2="258" class="conn"/>
+
+  <rect x="100" y="338" width="660" height="56" class="layer mesh"/>
+  <text x="430" y="359" text-anchor="middle" class="label">Mesh + Retrieval Layer</text>
+  <text x="430" y="374" text-anchor="middle" class="sub">MeshStore, MeshStoreCore, and MeshRouter handle routed lookups and adaptive peer selection</text>
+  <text x="430" y="386" text-anchor="middle" class="sub">Discovery, negotiation, and byte transport stay abstract behind shared traits</text>
+
+  <line x1="430" y1="314" x2="430" y2="338" class="conn"/>
+
+  <line x1="430" y1="394" x2="430" y2="418" class="conn"/>
+  <line x1="170" y1="418" x2="690" y2="418" class="conn"/>
+  <line x1="170" y1="418" x2="170" y2="440" class="conn"/>
+  <line x1="430" y1="418" x2="430" y2="440" class="conn"/>
+  <line x1="690" y1="418" x2="690" y2="440" class="conn"/>
+
+  <rect x="90" y="440" width="160" height="58" class="cat"/>
+  <text x="170" y="453" text-anchor="middle" class="cat">Naming / Signaling</text>
+  <rect x="102" y="460" width="136" height="28" class="layer xport"/>
+  <text x="170" y="474" text-anchor="middle" font-size="10" font-weight="bold" fill="#e0e0e0">Nostr relays</text>
+  <text x="170" y="484" text-anchor="middle" class="sub">publish, resolve, discovery</text>
+
+  <rect x="286" y="440" width="288" height="58" class="cat"/>
+  <text x="430" y="453" text-anchor="middle" class="cat">Direct peer links</text>
+  <rect x="298" y="460" width="100" height="28" class="layer xport"/>
+  <text x="348" y="474" text-anchor="middle" font-size="10" font-weight="bold" fill="#e0e0e0">WebRTC</text>
+  <text x="348" y="484" text-anchor="middle" class="sub">current</text>
+  <rect x="404" y="460" width="158" height="28" class="layer xport"/>
+  <text x="483" y="474" text-anchor="middle" font-size="10" font-weight="bold" fill="#e0e0e0">LAN / BLE / radio ...</text>
+  <text x="483" y="484" text-anchor="middle" class="sub">future</text>
+
+  <rect x="610" y="440" width="160" height="58" class="cat"/>
+  <text x="690" y="453" text-anchor="middle" class="cat">Backing stores</text>
+  <rect x="622" y="460" width="64" height="28" class="layer xport"/>
+  <text x="654" y="474" text-anchor="middle" font-size="10" font-weight="bold" fill="#e0e0e0">Local</text>
+  <text x="654" y="484" text-anchor="middle" class="sub">LMDB</text>
+  <rect x="692" y="460" width="66" height="28" class="layer xport"/>
+  <text x="725" y="474" text-anchor="middle" font-size="10" font-weight="bold" fill="#e0e0e0">Blossom</text>
+  <text x="725" y="484" text-anchor="middle" class="sub">S3 ...</text>
+
+  <text x="170" y="528" text-anchor="middle" class="sub">Mutable refs and relay signaling</text>
+  <line x1="170" y1="510" x2="170" y2="520" class="peer"/>
+
+  <text x="430" y="528" text-anchor="middle" class="sub">P2P peers</text>
+  <line x1="430" y1="510" x2="430" y2="520" class="peer"/>
+
+  <text x="690" y="528" text-anchor="middle" class="sub">Blob stores</text>
+  <line x1="690" y1="510" x2="690" y2="520" class="peer"/>
+
+  <rect x="50" y="548" width="760" height="54" fill="#151520" stroke="#404060" stroke-width="1" rx="4"/>
+
+  <rect x="70" y="566" width="24" height="14" class="layer api"/>
+  <text x="102" y="578" class="sub">Application interface</text>
+
+  <rect x="250" y="566" width="24" height="14" class="layer resolve"/>
+  <text x="282" y="578" class="sub">Mutable naming and resolution</text>
+
+  <rect x="470" y="566" width="24" height="14" class="layer core"/>
+  <text x="502" y="578" class="sub">Content-addressed core</text>
+
+  <rect x="650" y="566" width="24" height="14" class="layer mesh"/>
+  <text x="682" y="578" class="sub">Retrieval and routing</text>
+
+  <text x="430" y="596" text-anchor="middle" class="sub">Content integrity is verified by hash no matter which signaling, peer link, or store backend is used</text>
+</svg>

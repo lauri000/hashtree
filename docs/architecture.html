@@ -280,6 +280,46 @@
       padding: 24px;
     }
 
+    .panel-title {
+      margin: 0 0 8px;
+      font-size: 1.7rem;
+    }
+
+    .section-intro {
+      margin: 0 0 18px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .diagram-gallery {
+      display: grid;
+      gap: 20px;
+    }
+
+    .diagram-card {
+      margin: 0;
+    }
+
+    .diagram-card figcaption {
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+      font-size: 1.2rem;
+      margin-bottom: 10px;
+    }
+
+    .diagram-frame {
+      border-radius: 18px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(7, 15, 22, 0.92);
+      overflow: hidden;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+    }
+
+    .diagram-frame img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
     .details-grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -472,6 +512,36 @@
       </div>
     </section>
 
+    <section class="details" aria-labelledby="equivalents-title">
+      <h2 id="equivalents-title" class="panel-title">FIPS-style Equivalents</h2>
+      <p class="section-intro">
+        These two diagrams mirror the structure of the FIPS node-architecture and protocol-stack
+        SVGs, but they use the actual hashtree layers and current production composition.
+      </p>
+
+      <div class="diagram-gallery">
+        <figure class="diagram-card">
+          <figcaption>Node architecture</figcaption>
+          <div class="diagram-frame">
+            <img
+              src="diagrams/hashtree-node-architecture.svg"
+              alt="Diagram showing the hashtree node architecture from API surface and Git/site adapters down through publish and resolve, content core, mesh retrieval, and the underlying signaling, peer-link, and backing-store categories."
+            >
+          </div>
+        </figure>
+
+        <figure class="diagram-card">
+          <figcaption>Protocol stack</figcaption>
+          <div class="diagram-frame">
+            <img
+              src="diagrams/hashtree-protocol-stack.svg"
+              alt="Layered protocol stack diagram for hashtree showing application interfaces, publish and resolve, content-addressed core, mesh retrieval, and the backing media and stores underneath."
+            >
+          </div>
+        </figure>
+      </div>
+    </section>
+
     <section class="details">
       <div class="details-grid">
         <article class="note">
@@ -504,8 +574,9 @@
 
       <p class="footer">
         Source anchors: <code>README.md</code>, <code>rust/README.md</code>,
-        <code>rust/crates/hashtree-network/README.md</code>, and
-        <code>rust/crates/hashtree-network/src/store.rs</code>.
+        <code>rust/crates/hashtree-network/README.md</code>,
+        <code>rust/crates/hashtree-network/src/store.rs</code>, and
+        <code>rust/crates/hashtree-resolver/README.md</code>.
       </p>
     </section>
   </main>
