@@ -421,67 +421,67 @@
 
       <div class="main-row">
         <article class="node api">
-          <h2>API surface</h2>
+          <h2>Apps and adapters</h2>
           <p>
-            User-facing entry points: the <code>htree</code> CLI, <code>git-remote-htree</code>,
-            Rust crates, TypeScript SDKs, and Iris app runtime.
+            Top-level consumers of the stack: <code>htree</code>, <code>git-remote-htree</code>,
+            files/sites viewers, Iris apps, and other custom apps.
           </p>
           <div class="tag-row">
             <span class="tag">CLI</span>
             <span class="tag">git remote</span>
-            <span class="tag">Rust</span>
-            <span class="tag">TypeScript</span>
+            <span class="tag">site adapters</span>
+            <span class="tag">other apps</span>
           </div>
         </article>
 
         <div class="connector" aria-hidden="true">&rarr;</div>
 
         <article class="node core">
-          <h2>Content core</h2>
+          <h2>HashTree API surface</h2>
           <p>
-            <code>HashTree</code> and the simple <code>Store</code> trait handle chunking,
-            MessagePack tree nodes, and CHK-encrypted content addressed by hash.
+            Shared entry point used by those consumers: <code>put</code>, <code>get</code>,
+            traversal, mounting, and publish helpers built on the simple <code>Store</code> model.
           </p>
           <div class="tag-row">
-            <span class="tag">chunking</span>
-            <span class="tag">CHK</span>
-            <span class="tag">Store get/put</span>
+            <span class="tag">put/get</span>
+            <span class="tag">mount/list</span>
+            <span class="tag">publish helpers</span>
           </div>
         </article>
 
         <div class="connector" aria-hidden="true">&rarr;</div>
 
         <article class="node mesh">
-          <h2>Mesh layer</h2>
+          <h2>Content core</h2>
           <p>
-            <code>MeshStore</code> is the thin production wrapper. <code>MeshStoreCore</code>
-            runs routed hash lookups and adaptive peer selection over any local store.
+            <code>HashTree</code>, deterministic tree nodes, chunking, CHK, and content
+            addressing. Integrity comes from the CID / merkle root rather than the transport.
           </p>
           <div class="tag-row">
-            <span class="tag">local-first</span>
-            <span class="tag">peer selection</span>
-            <span class="tag">routed get(hash)</span>
+            <span class="tag">chunking</span>
+            <span class="tag">CHK</span>
+            <span class="tag">content addressing</span>
           </div>
         </article>
 
         <div class="connector" aria-hidden="true">&rarr;</div>
 
         <article class="node router">
-          <h2>MeshRouter</h2>
+          <h2>Mesh retrieval + router</h2>
           <p>
-            Coordinates peer discovery and negotiated link setup, while keeping router logic
-            separate from the concrete transports below it.
+            <code>MeshStore</code>, <code>MeshStoreCore</code>, and <code>MeshRouter</code>
+            handle routed lookups, discovery, negotiation, and transport-generic peer links.
           </p>
           <div class="tag-row">
-            <span class="tag">discovery</span>
-            <span class="tag">negotiation</span>
+            <span class="tag">local-first</span>
+            <span class="tag">peer selection</span>
             <span class="tag">transport-generic</span>
           </div>
         </article>
       </div>
 
       <div class="fanout">
-        <p class="fanout-label">Default production composition beneath the router</p>
+        <p class="fanout-label">Default production composition beneath the mesh router</p>
         <div class="branch-grid">
           <article class="branch signal">
             <span class="label">Signaling</span>
@@ -527,7 +527,7 @@
           <div class="diagram-frame">
             <img
               src="diagrams/hashtree-node-architecture.svg"
-              alt="Diagram showing the hashtree node architecture from API surface and Git/site adapters down through an optional publish and resolve layer, content core, mesh retrieval, and the underlying signaling, peer-link, and backing-store categories."
+              alt="Diagram showing the hashtree node architecture from apps and adapters down through the shared API surface, an optional publish and resolve layer, the content core, mesh retrieval, and the underlying signaling, peer-link, and backing-store categories."
             >
           </div>
         </figure>
@@ -537,7 +537,7 @@
           <div class="diagram-frame">
             <img
               src="diagrams/hashtree-protocol-stack.svg"
-              alt="Layered protocol stack diagram for hashtree showing application interfaces, an optional publish and resolve layer, the content-addressed core, mesh retrieval, and the backing media and stores underneath."
+              alt="Layered protocol stack diagram for hashtree showing apps and adapters on top of the API surface, then an optional publish and resolve layer, the content-addressed core, mesh retrieval, and the backing media and stores underneath."
             >
           </div>
         </figure>
