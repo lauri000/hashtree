@@ -34,7 +34,7 @@
   <rect x="465" y="92" width="220" height="54" class="layer resolve"/>
   <text x="575" y="110" text-anchor="middle" class="label">Git + Site Adapters</text>
   <text x="575" y="124" text-anchor="middle" class="sub">git-remote-htree, files/sites viewers</text>
-  <text x="575" y="136" text-anchor="middle" class="sub">htree:// and npub/tree/path entry points</text>
+  <text x="575" y="136" text-anchor="middle" class="sub">htree://, npub/tree/path, or direct nhash entry</text>
 
   <text x="285" y="76" text-anchor="middle" class="sub">Apps, CLI, and SDK users</text>
   <text x="575" y="76" text-anchor="middle" class="sub">Git and web entry points</text>
@@ -43,9 +43,9 @@
   <line x1="575" y1="80" x2="575" y2="92" class="conn"/>
 
   <rect x="100" y="178" width="660" height="56" class="layer resolve"/>
-  <text x="430" y="199" text-anchor="middle" class="label">Publish + Resolve Layer</text>
+  <text x="430" y="199" text-anchor="middle" class="label">Optional Publish + Resolve Layer</text>
   <text x="430" y="214" text-anchor="middle" class="sub">NostrRootResolver, kind 30078 roots, published refs, tree-name lookup</text>
-  <text x="430" y="226" text-anchor="middle" class="sub">npub/tree/path and htree:// names resolve to merkle roots plus entry paths</text>
+  <text x="430" y="226" text-anchor="middle" class="sub">Only needed for mutable names; direct nhash or CID access bypasses this step</text>
 
   <line x1="285" y1="146" x2="285" y2="178" class="conn"/>
   <line x1="575" y1="146" x2="575" y2="178" class="conn"/>
@@ -94,7 +94,7 @@
   <text x="725" y="474" text-anchor="middle" font-size="10" font-weight="bold" fill="#e0e0e0">Blossom</text>
   <text x="725" y="484" text-anchor="middle" class="sub">S3 ...</text>
 
-  <text x="170" y="528" text-anchor="middle" class="sub">Mutable refs and relay signaling</text>
+  <text x="170" y="528" text-anchor="middle" class="sub">Optional mutable refs and relay signaling</text>
   <line x1="170" y1="510" x2="170" y2="520" class="peer"/>
 
   <text x="430" y="528" text-anchor="middle" class="sub">P2P peers</text>
@@ -109,7 +109,7 @@
   <text x="102" y="578" class="sub">Application interface</text>
 
   <rect x="250" y="566" width="24" height="14" class="layer resolve"/>
-  <text x="282" y="578" class="sub">Mutable naming and resolution</text>
+  <text x="282" y="578" class="sub">Optional mutable naming and resolution</text>
 
   <rect x="470" y="566" width="24" height="14" class="layer core"/>
   <text x="502" y="578" class="sub">Content-addressed core</text>

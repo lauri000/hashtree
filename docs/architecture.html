@@ -392,9 +392,10 @@
       <p class="eyebrow">hashtree</p>
       <h1>Architecture Overview</h1>
       <p class="lede">
-        Simple map of the current stack: API surfaces and published refs resolve into merkle roots,
-        the content core reads and writes by hash, and the mesh layer routes requests through a
-        transport-generic router that can swap signaling and direct-link implementations underneath.
+        Simple map of the current stack: apps can enter through mutable refs or directly through
+        <code>nhash</code>/<code>CID</code> links, the content core reads and writes by hash, and
+        the mesh layer routes requests through a transport-generic router that can swap signaling
+        and direct-link implementations underneath.
       </p>
     </section>
 
@@ -403,13 +404,13 @@
 
       <div class="mini-row">
         <article class="mini-node ref">
-          <h2>Published refs</h2>
-          <p>Mutable names like <code>npub/tree/path</code> and <code>htree://self/repo</code>.</p>
+          <h2>Names or direct IDs</h2>
+          <p>Either mutable refs like <code>npub/tree/path</code> or direct <code>nhash</code>/<code>CID</code> links.</p>
         </article>
         <div class="connector" aria-hidden="true">&rarr;</div>
         <article class="mini-node resolver">
-          <h2>Resolver</h2>
-          <p><code>NostrRootResolver</code> turns refs into merkle roots and site entry paths.</p>
+          <h2>Resolver (optional)</h2>
+          <p><code>NostrRootResolver</code> is only needed for mutable refs; direct <code>nhash</code> skips it.</p>
         </article>
         <div class="connector" aria-hidden="true">&rarr;</div>
         <article class="mini-node core">
@@ -513,10 +514,11 @@
     </section>
 
     <section class="details" aria-labelledby="equivalents-title">
-      <h2 id="equivalents-title" class="panel-title">FIPS-style Equivalents</h2>
+      <h2 id="equivalents-title" class="panel-title">Reference Diagrams</h2>
       <p class="section-intro">
-        These two diagrams mirror the structure of the FIPS node-architecture and protocol-stack
-        SVGs, but they use the actual hashtree layers and current production composition.
+        These two diagrams show the hashtree node architecture and layer stack using the actual
+        current production composition. The mutable naming layer is marked optional because direct
+        <code>nhash</code>/<code>CID</code> access can bypass it entirely.
       </p>
 
       <div class="diagram-gallery">
@@ -525,7 +527,7 @@
           <div class="diagram-frame">
             <img
               src="diagrams/hashtree-node-architecture.svg"
-              alt="Diagram showing the hashtree node architecture from API surface and Git/site adapters down through publish and resolve, content core, mesh retrieval, and the underlying signaling, peer-link, and backing-store categories."
+              alt="Diagram showing the hashtree node architecture from API surface and Git/site adapters down through an optional publish and resolve layer, content core, mesh retrieval, and the underlying signaling, peer-link, and backing-store categories."
             >
           </div>
         </figure>
@@ -535,7 +537,7 @@
           <div class="diagram-frame">
             <img
               src="diagrams/hashtree-protocol-stack.svg"
-              alt="Layered protocol stack diagram for hashtree showing application interfaces, publish and resolve, content-addressed core, mesh retrieval, and the backing media and stores underneath."
+              alt="Layered protocol stack diagram for hashtree showing application interfaces, an optional publish and resolve layer, the content-addressed core, mesh retrieval, and the backing media and stores underneath."
             >
           </div>
         </figure>

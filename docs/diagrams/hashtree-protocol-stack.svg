@@ -21,11 +21,11 @@
   <text x="75" y="100" class="desc">git-remote-htree, files/sites viewers, and shell integrations</text>
 
   <rect x="50" y="138" width="800" height="118" class="layer resolve"/>
-  <text x="75" y="171" class="name">Publish + Resolve Layer</text>
+  <text x="75" y="171" class="name">Optional Publish + Resolve Layer</text>
   <text x="75" y="193" class="desc">Mutable Nostr roots and htree:// addresses point at merkle trees</text>
   <text x="75" y="213" class="desc">NostrRootResolver maps npub/tree/path and published refs to roots</text>
-  <text x="75" y="233" class="desc">Entry paths are traversed client-side after the root is resolved</text>
-  <text x="825" y="171" class="scope" text-anchor="end">mutable names</text>
+  <text x="75" y="233" class="desc">Direct nhash or CID access can bypass this layer entirely</text>
+  <text x="825" y="171" class="scope" text-anchor="end">mutable names only</text>
 
   <rect x="50" y="277" width="800" height="118" class="layer core"/>
   <text x="75" y="310" class="name">Content-Addressed Core</text>
@@ -46,5 +46,5 @@
   <text x="825" y="588" class="scope" text-anchor="end">(local, peer-to-peer, server)</text>
   <text x="75" y="610" class="desc">Nostr relays, WebRTC data channels, local LMDB, Blossom, S3, memory</text>
 
-  <text x="450" y="678" text-anchor="middle" class="caption">hashtree layer stack - mutable refs on top, verified content in the middle, swappable transport underneath</text>
+  <text x="450" y="678" text-anchor="middle" class="caption">hashtree layer stack - optional mutable names on top, verified content in the middle, swappable transport underneath</text>
 </svg>
