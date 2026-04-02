@@ -8,7 +8,7 @@ We are building a decentralized system independent of DNS, SSL certificates, web
 - Verify changes with unit or e2e tests. Don't ask the user to test. Don't assume code works - everything must be verified with tests.
 - Fix all errors you encounter, whether related to your changes or not.
 - Never run `git pull`/`git rebase` from `htree://self/*` (or a remote pointing there) because it is publish/storage, not an integration upstream.
-- If push to `htree://self/hashtree` is non-fast-forward, do not pull from that remote; resolve locally and update the hashtree remote via push strategy (for example `git push --force origin master`) only when needed.
+- If push to `htree://self/hashtree` is non-fast-forward, do not pull from that remote; resolve locally and update the hashtree remote via push strategy (for example `git push --force origin master`) only when needed. Release remote is also push only.
 - Commit after relevant tests (and build/lint if applicable) pass, then push to htree remote (`htree://self/hashtree`).
 - For frontend or TypeScript changes, verify unreleased work in the local dev app (`pnpm tauri dev` / localhost) or in an immutable released shell (`htree://nhash.../index.html`). Do not debug against the mutable `htree://npub.../<app>` shell until that app has actually been published, because it may still point to an older build.
 - When verifying `iris-files` apps inside the native Iris/Tauri shell, do not point native smoke or manual testing at an old mutable app shell by accident. First publish the freshly built app to hashtree (`htree add dist-<app> --publish <app>` or at least `htree add dist-<app>` and use the returned immutable `htree://nhash.../index.html` URL), then run the native verification against that exact URL.
