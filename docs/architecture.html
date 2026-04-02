@@ -488,8 +488,8 @@
             <span class="label">Signaling</span>
             <h2><code>SignalingTransport</code></h2>
             <p>
-              Production uses <code>NostrRelayTransport</code> over relays for discovery and
-              offer/answer exchange.
+              Production uses <code>NostrRelayTransport</code> over relays for WebRTC signaling
+              and peer discovery.
             </p>
           </article>
 
@@ -593,7 +593,7 @@
               <text x="170" y="517" text-anchor="middle" class="cat">Naming / Signaling</text>
               <rect x="102" y="524" width="136" height="28" class="layer xport"/>
               <text x="170" y="538" text-anchor="middle" font-size="10" font-weight="bold" fill="#e0e0e0">Nostr relays</text>
-              <text x="170" y="548" text-anchor="middle" class="sub">publish, resolve, discovery</text>
+              <text x="170" y="548" text-anchor="middle" class="sub">publish, resolve, WebRTC signaling</text>
               <rect x="286" y="504" width="288" height="58" class="cat"/>
               <text x="430" y="517" text-anchor="middle" class="cat">Direct peer links</text>
               <rect x="298" y="524" width="100" height="28" class="layer xport"/>
@@ -610,7 +610,7 @@
               <rect x="692" y="524" width="66" height="28" class="layer xport"/>
               <text x="725" y="538" text-anchor="middle" font-size="10" font-weight="bold" fill="#e0e0e0">Blossom</text>
               <text x="725" y="548" text-anchor="middle" class="sub">S3 ...</text>
-              <text x="170" y="592" text-anchor="middle" class="sub">Optional mutable refs and relay signaling</text>
+              <text x="170" y="592" text-anchor="middle" class="sub">Optional mutable refs and WebRTC signaling</text>
               <line x1="170" y1="574" x2="170" y2="584" class="peer"/>
               <text x="430" y="592" text-anchor="middle" class="sub">P2P peers</text>
               <line x1="430" y1="574" x2="430" y2="584" class="peer"/>
@@ -678,7 +678,7 @@
               <rect x="50" y="668" width="800" height="74" class="layer xport"/>
               <text x="75" y="701" class="name">Backing Media and Stores</text>
               <text x="825" y="701" class="scope" text-anchor="end">(local, peer-to-peer, server)</text>
-              <text x="75" y="723" class="desc">Nostr relays, WebRTC data channels, local LMDB, Blossom, S3, memory</text>
+              <text x="75" y="723" class="desc">Nostr relays for publish/resolve + WebRTC signaling, local LMDB, Blossom, S3, memory</text>
               <text x="450" y="790" text-anchor="middle" class="caption">hashtree layer stack - apps and adapters on top of the API, optional mutable names above verified content, swappable transport underneath</text>
             </svg>
           </div>

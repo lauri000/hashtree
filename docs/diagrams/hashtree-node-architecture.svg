@@ -81,7 +81,7 @@
   <text x="170" y="517" text-anchor="middle" class="cat">Naming / Signaling</text>
   <rect x="102" y="524" width="136" height="28" class="layer xport"/>
   <text x="170" y="538" text-anchor="middle" font-size="10" font-weight="bold" fill="#e0e0e0">Nostr relays</text>
-  <text x="170" y="548" text-anchor="middle" class="sub">publish, resolve, discovery</text>
+  <text x="170" y="548" text-anchor="middle" class="sub">publish, resolve, WebRTC signaling</text>
 
   <rect x="286" y="504" width="288" height="58" class="cat"/>
   <text x="430" y="517" text-anchor="middle" class="cat">Direct peer links</text>
@@ -101,7 +101,7 @@
   <text x="725" y="538" text-anchor="middle" font-size="10" font-weight="bold" fill="#e0e0e0">Blossom</text>
   <text x="725" y="548" text-anchor="middle" class="sub">S3 ...</text>
 
-  <text x="170" y="592" text-anchor="middle" class="sub">Optional mutable refs and relay signaling</text>
+  <text x="170" y="592" text-anchor="middle" class="sub">Optional mutable refs and WebRTC signaling</text>
   <line x1="170" y1="574" x2="170" y2="584" class="peer"/>
 
   <text x="430" y="592" text-anchor="middle" class="sub">P2P peers</text>
