@@ -8,9 +8,12 @@ use super::run::{
     build_files_iris_to_url_for_add_route, build_files_iris_to_url_for_published_ref,
     build_files_iris_to_url_for_published_target, build_sites_iris_to_url_for_add_route,
     build_sites_iris_to_url_for_published_ref, detect_site_entry_for_path, format_cid_for_display,
-    decide_local_mount_publish_disposition, find_existing_active_mount,
-    is_stale_mount_io_error, prepare_mount_target, should_warn_for_temporary_mountpoint,
-    warn_if_stun_unavailable, LocalMountPublishDisposition,
+    warn_if_stun_unavailable,
+};
+#[cfg(feature = "fuse")]
+use super::run::{
+    decide_local_mount_publish_disposition, find_existing_active_mount, is_stale_mount_io_error,
+    prepare_mount_target, should_warn_for_temporary_mountpoint, LocalMountPublishDisposition,
 };
 use crate::app::args::{CashuCommands, CashuMintCommands, ReleaseCommands, SocialGraphCommands};
 use crate::app::args::{Cli, Commands};

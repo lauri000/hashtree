@@ -526,7 +526,8 @@ impl NostrRootResolver {
         let event = EventBuilder::new(Kind::Custom(HASHTREE_KIND), "", tags);
 
         let client = self.client.clone();
-        let output = await_publish_result(async move { client.send_event_builder(event).await }).await?;
+        let output =
+            await_publish_result(async move { client.send_event_builder(event).await }).await?;
 
         Ok(publish_succeeded(output.success.len()))
     }
@@ -715,7 +716,8 @@ impl RootResolver for NostrRootResolver {
 
         // Publish
         let client = self.client.clone();
-        let output = await_publish_result(async move { client.send_event_builder(event).await }).await?;
+        let output =
+            await_publish_result(async move { client.send_event_builder(event).await }).await?;
 
         // Update local subscription state
         {
@@ -765,7 +767,8 @@ impl RootResolver for NostrRootResolver {
         let event = EventBuilder::new(Kind::Custom(HASHTREE_KIND), "", tags);
 
         let client = self.client.clone();
-        let output = await_publish_result(async move { client.send_event_builder(event).await }).await?;
+        let output =
+            await_publish_result(async move { client.send_event_builder(event).await }).await?;
 
         Ok(publish_succeeded(output.success.len()))
     }
@@ -997,8 +1000,8 @@ mod tests {
             #[allow(unreachable_code)]
             Ok::<(), &'static str>(())
         })
-            .await
-            .expect_err("panic should be converted to resolver error");
+        .await
+        .expect_err("panic should be converted to resolver error");
 
         match error {
             ResolverError::Other(message) => {

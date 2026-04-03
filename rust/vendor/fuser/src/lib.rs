@@ -5,6 +5,7 @@
 //! and unmount calls which are needed to establish a fd to talk to the kernel driver.
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
+#![allow(dead_code, unexpected_cfgs, unused_imports)]
 
 use libc::{c_int, ENOSYS, EPERM};
 use log::{debug, warn};

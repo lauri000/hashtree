@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.24 - 2026-04-04
+
+Changes since the `0.2.23` crates.io release.
+
+### Improved
+
+- Improved `htree mount` path handling so missing absolute mount paths are created automatically and long-lived mounts warn when they are placed under temporary directories.
+
+### Fixed
+
+- Fixed mounted FUSE filesystems on macOS so Finder writes succeed more reliably and `statfs` now reports usable disk and inode availability instead of a zero-capacity filesystem.
+- Fixed `hashtree-cli` test coverage for non-`fuse` builds by keeping fuse-only test imports gated behind the `fuse` feature.
+
 ## 0.2.23 - 2026-04-03
 
 Changes since the `0.2.22` crates.io release.
