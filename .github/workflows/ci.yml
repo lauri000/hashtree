@@ -102,6 +102,9 @@ jobs:
       - name: Run unit tests
         run: cargo test --workspace
 
+      - name: Build htree binary with fuse
+        run: cargo build -p hashtree-cli --bin htree --features fuse
+
   rust-integration-tests:
     name: Rust Integration Tests
     runs-on: ubuntu-latest

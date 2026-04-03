@@ -73,14 +73,14 @@ jobs:
         run: |
           cross build --release --target ${{ matrix.target }} -p git-remote-htree
           cross build --release --target ${{ matrix.target }} -p hashtree-cashu-cli
-          cross build --release --target ${{ matrix.target }} -p hashtree-cli
+          cross build --release --target ${{ matrix.target }} -p hashtree-cli --features fuse
 
       - name: Build (native)
         if: "!matrix.cross"
         run: |
           cargo build --release --target ${{ matrix.target }} -p git-remote-htree
           cargo build --release --target ${{ matrix.target }} -p hashtree-cashu-cli
-          cargo build --release --target ${{ matrix.target }} -p hashtree-cli
+          cargo build --release --target ${{ matrix.target }} -p hashtree-cli --features fuse
 
       - name: Package (Unix)
         if: runner.os != 'Windows'

@@ -30,6 +30,7 @@ EOF
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUST_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_DIR="$(cd "${RUST_DIR}/.." && pwd)"
+HTREE_RELEASE_FEATURES="hashtree-cli/fuse"
 
 VERSION=""
 OUTPUT_DIR=""
@@ -234,7 +235,8 @@ build_target() {
                 "$CROSS_BIN" build --release --target "$target" \
                     -p git-remote-htree \
                     -p hashtree-cashu-cli \
-                    -p hashtree-cli
+                    -p hashtree-cli \
+                    --features "$HTREE_RELEASE_FEATURES"
             )
             ;;
         x86_64-apple-darwin|aarch64-apple-darwin)
@@ -250,7 +252,8 @@ build_target() {
                 "$CARGO_BIN" build --release --target "$target" \
                     -p git-remote-htree \
                     -p hashtree-cashu-cli \
-                    -p hashtree-cli
+                    -p hashtree-cli \
+                    --features "$HTREE_RELEASE_FEATURES"
             )
             ;;
         x86_64-pc-windows-msvc)

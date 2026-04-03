@@ -93,9 +93,9 @@ PATH="${BIN_DIR}:$PATH" TEST_LOG_DIR="${LOG_DIR}" "${BUILD_SCRIPT}" \
 
 grep -Fx "target add aarch64-apple-darwin" "${LOG_DIR}/rustup.log" >/dev/null
 grep -F "env:${TARGET_DIR}" "${LOG_DIR}/cargo.log" >/dev/null
-grep -F "args:build --release --target aarch64-apple-darwin -p git-remote-htree -p hashtree-cashu-cli -p hashtree-cli" "${LOG_DIR}/cargo.log" >/dev/null
+grep -F "args:build --release --target aarch64-apple-darwin -p git-remote-htree -p hashtree-cashu-cli -p hashtree-cli --features hashtree-cli/fuse" "${LOG_DIR}/cargo.log" >/dev/null
 grep -F "env:${TARGET_DIR}" "${LOG_DIR}/cross.log" >/dev/null
-grep -F "args:build --release --target x86_64-unknown-linux-musl -p git-remote-htree -p hashtree-cashu-cli -p hashtree-cli" "${LOG_DIR}/cross.log" >/dev/null
+grep -F "args:build --release --target x86_64-unknown-linux-musl -p git-remote-htree -p hashtree-cashu-cli -p hashtree-cli --features hashtree-cli/fuse" "${LOG_DIR}/cross.log" >/dev/null
 
 test -f "${OUTPUT_DIR}/hashtree-aarch64-apple-darwin.tar.gz"
 test -f "${OUTPUT_DIR}/hashtree-x86_64-unknown-linux-musl.tar.gz"

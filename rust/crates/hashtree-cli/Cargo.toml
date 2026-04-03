@@ -103,7 +103,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rustls = { version = "0.23", features = ["ring"] }
 
 [features]
-default = ["p2p", "lmdb", "fuse"]
+default = ["p2p", "lmdb"]
 cashu = ["cashu-service/wallet"]
 p2p = ["dep:hashtree-network", "dep:webrtc"]
 stun = ["p2p", "dep:webrtc-stun"]
