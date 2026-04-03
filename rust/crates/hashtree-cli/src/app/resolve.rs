@@ -1,5 +1,8 @@
 use anyhow::{Context, Result};
-use hashtree_cli::{NostrKeys, NostrResolverConfig, NostrRootResolver, RootResolver};
+use hashtree_cli::config::parse_npub;
+use hashtree_cli::{HashtreeStore, NostrKeys, NostrResolverConfig, NostrRootResolver, RootResolver};
+use hashtree_core::Cid;
+use std::path::PathBuf;
 
 /// Resolved CID with optional path.
 pub(crate) struct ResolvedCid {
@@ -20,6 +23,7 @@ pub(crate) struct ResolveOptions {
     pub(crate) private: bool,
     pub(crate) relays: Option<Vec<String>>,
     pub(crate) secret_key: Option<NostrKeys>,
+    pub(crate) data_dir: Option<PathBuf>,
 }
 
 fn decode_target_segment(segment: &str) -> String {
@@ -158,13 +162,107 @@ pub(crate) async fn resolve_cid_input_with_opts(
                 });
             }
             Ok(None) => {
+                if let Some(cached) = resolve_cached_published_target(&parsed_target, opts)? {
+                    eprintln!(
+                        "Using cached root for {}: {}",
+                        key,
+                        hashtree_core::to_hex(&cached.cid.hash)
+                    );
+                    return Ok(cached);
+                }
                 anyhow::bail!("No content found for {}", key);
             }
             Err(e) => {
+                if let Some(cached) = resolve_cached_published_target(&parsed_target, opts)? {
+                    eprintln!(
+                        "Using cached root for {} after resolver error: {}",
+                        key,
+                        hashtree_core::to_hex(&cached.cid.hash)
+                    );
+                    return Ok(cached);
+                }
                 anyhow::bail!("Failed to resolve {}: {}", key, e);
             }
         }
     }
 
     anyhow::bail!("Invalid format. Use nhash1..., <hash>, <hash:key>, or npub1.../name")
+}
+
+fn resolve_cached_published_target(
+    parsed_target: &ParsedPublishedTarget,
+    opts: &ResolveOptions,
+) -> Result<Option<ResolvedCid>> {
+    let Some(data_dir) = opts.data_dir.as_deref() else {
+        return Ok(None);
+    };
+
+    let pubkey_hex = hex::encode(parse_npub(&parsed_target.npub)?);
+    let store = HashtreeStore::new(data_dir)?;
+    let Some(cached) = store.get_cached_root(&pubkey_hex, &parsed_target.tree_name)? else {
+        return Ok(None);
+    };
+
+    let cid = Cid {
+        hash: hashtree_core::from_hex(&cached.hash)
+            .map_err(|e| anyhow::anyhow!("Invalid cached root hash: {}", e))?,
+        key: match cached.key.as_deref() {
+            Some(key) => Some(
+                hashtree_core::from_hex(key)
+                    .map_err(|e| anyhow::anyhow!("Invalid cached root key: {}", e))?,
+            ),
+            None => None,
+        },
+    };
+
+    Ok(Some(ResolvedCid {
+        cid,
+        path: parsed_target.path.clone(),
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hashtree_cli::NostrToBech32;
+    use nostr_sdk::Keys;
+
+    #[test]
+    fn resolve_cached_published_target_returns_cached_cid() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = HashtreeStore::new(temp_dir.path()).unwrap();
+        let keys = Keys::generate();
+        let npub = NostrToBech32::to_bech32(&keys.public_key()).unwrap();
+        let pubkey_hex = hex::encode(keys.public_key().to_bytes());
+        let hash = "11".repeat(32);
+        let key = "22".repeat(32);
+        store
+            .set_cached_root(
+                &pubkey_hex,
+                "mount-test",
+                &hash,
+                Some(&key),
+                "public",
+                123,
+            )
+            .unwrap();
+
+        let parsed_target = ParsedPublishedTarget {
+            npub,
+            tree_name: "mount-test".to_string(),
+            path: Some("nested/file.txt".to_string()),
+        };
+        let opts = ResolveOptions {
+            data_dir: Some(temp_dir.path().to_path_buf()),
+            ..ResolveOptions::default()
+        };
+
+        let resolved = resolve_cached_published_target(&parsed_target, &opts)
+            .unwrap()
+            .expect("cached root");
+
+        assert_eq!(hashtree_core::to_hex(&resolved.cid.hash), hash);
+        assert_eq!(resolved.cid.key.map(hex::encode), Some(key));
+        assert_eq!(resolved.path.as_deref(), Some("nested/file.txt"));
+    }
 }

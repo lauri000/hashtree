@@ -25,12 +25,22 @@ use super::content::add_directory;
 use super::daemonize::{format_daemon_status, spawn_daemon, stop_daemon};
 use super::lists::{follow_user, list_following, list_muted, mute_user, update_profile};
 #[cfg(feature = "fuse")]
-use super::mount::mount_fuse;
+use super::mount::{mount_fuse, parse_mount_visibility};
+#[cfg(feature = "fuse")]
+use super::mount_registry::list_active_mounts;
+#[cfg(feature = "fuse")]
+use super::mount_target::normalize_mount_target_for_resolution;
 use super::mounts::print_active_mounts;
 use super::nostr_index::{run_socialgraph_index_from_cli, SocialGraphIndexOptions};
 use super::peers::{fetch_profile_name, list_peers};
 use super::release::publish_release_version;
+#[cfg(feature = "fuse")]
+use super::resolve::ResolveOptions;
 use super::resolve::resolve_cid_input;
+#[cfg(feature = "fuse")]
+use std::io;
+#[cfg(feature = "fuse")]
+use std::process::Command;
 use super::socialgraph::{
     run_socialgraph_filter, run_socialgraph_rebuild_profile_index, run_socialgraph_snapshot,
     run_socialgraph_stats, run_socialgraph_warm,
@@ -39,6 +49,260 @@ use super::util::chrono_humanize_timestamp;
 
 const IRIS_FILES_WEB_BASE_URL: &str = "https://files.iris.to";
 const IRIS_SITES_WEB_BASE_URL: &str = "https://sites.iris.to";
+
+#[cfg(feature = "fuse")]
+pub(crate) struct PreparedMountTarget {
+    pub(crate) target: String,
+    pub(crate) mountpoint: Option<PathBuf>,
+    pub(crate) local_dir: Option<PathBuf>,
+}
+
+#[cfg(feature = "fuse")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalMountPublishDisposition {
+    PublishLocalDir,
+    UseExistingPublishedTarget,
+}
+
+#[cfg(feature = "fuse")]
+pub(crate) fn prepare_mount_target(
+    target: &str,
+    mountpoint: Option<PathBuf>,
+) -> Result<PreparedMountTarget> {
+    let candidate = PathBuf::from(target);
+    if candidate.is_dir() {
+        let mount_source = if candidate.is_relative() {
+            std::env::current_dir()?.join(candidate)
+        } else {
+            candidate
+        };
+        let ref_name = mount_source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Cannot derive mount ref name from {}", target))?;
+
+        return Ok(PreparedMountTarget {
+            target: format!("htree://self/{ref_name}"),
+            mountpoint: Some(mountpoint.unwrap_or_else(|| mount_source.clone())),
+            local_dir: Some(mount_source),
+        });
+    }
+
+    Ok(PreparedMountTarget {
+        target: target.to_string(),
+        mountpoint,
+        local_dir: None,
+    })
+}
+
+#[cfg(feature = "fuse")]
+pub(crate) fn decide_local_mount_publish_disposition(
+    published_target_exists: bool,
+) -> LocalMountPublishDisposition {
+    if published_target_exists {
+        LocalMountPublishDisposition::UseExistingPublishedTarget
+    } else {
+        LocalMountPublishDisposition::PublishLocalDir
+    }
+}
+
+#[cfg(feature = "fuse")]
+pub(crate) fn find_existing_active_mount<'a>(
+    mounts: &'a [super::mount_registry::ActiveMount],
+    mountpoint: &Path,
+) -> Option<&'a super::mount_registry::ActiveMount> {
+    mounts.iter().find(|mount| mount.mountpoint == mountpoint)
+}
+
+#[cfg(feature = "fuse")]
+pub(crate) fn is_stale_mount_io_error(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(6)
+}
+
+#[cfg(feature = "fuse")]
+fn probe_mountpoint(path: &Path) -> io::Result<()> {
+    let mut entries = std::fs::read_dir(path)?;
+    if let Some(entry) = entries.next() {
+        entry?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "fuse")]
+fn clear_stale_mountpoint(path: &Path) -> Result<bool> {
+    let probe_error = match probe_mountpoint(path) {
+        Ok(()) => return Ok(false),
+        Err(error) if is_stale_mount_io_error(&error) => error,
+        Err(error) => return Err(error).with_context(|| format!("Failed to access {}", path.display())),
+    };
+
+    let umount = Command::new("umount").arg(path).status();
+    let unmounted = matches!(umount, Ok(status) if status.success());
+
+    let diskutil_unmounted = if unmounted {
+        true
+    } else {
+        matches!(
+            Command::new("diskutil")
+                .args(["unmount", "force"])
+                .arg(path)
+                .status(),
+            Ok(status) if status.success()
+        )
+    };
+
+    if !diskutil_unmounted {
+        return Err(probe_error).with_context(|| {
+            format!(
+                "Detected stale mountpoint at {} but automatic unmount failed",
+                path.display()
+            )
+        });
+    }
+
+    match probe_mountpoint(path) {
+        Ok(()) => Ok(true),
+        Err(error) if is_stale_mount_io_error(&error) => Err(error).with_context(|| {
+            format!(
+                "Detected stale mountpoint at {} but it is still not accessible after unmount",
+                path.display()
+            )
+        }),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Failed to verify recovered mountpoint {} after unmount",
+                path.display()
+            )
+        }),
+    }
+}
+
+#[cfg(feature = "fuse")]
+async fn published_mount_target_exists(
+    target: &str,
+    visibility: Option<String>,
+    link_key: Option<String>,
+    private: bool,
+    relays: Option<String>,
+    data_dir: &Path,
+) -> Result<bool> {
+    let normalized = normalize_mount_target_for_resolution(target)?;
+    let mount_visibility = parse_mount_visibility(visibility, link_key, private, None)?;
+    let mut opts = ResolveOptions::default();
+    opts.link_key = mount_visibility.link_key;
+    opts.private = mount_visibility.visibility == hashtree_core::TreeVisibility::Private;
+    opts.data_dir = Some(data_dir.to_path_buf());
+    if let Some(relays) = relays {
+        opts.relays = Some(relays.split(',').map(|s| s.trim().to_string()).collect());
+    }
+    if opts.private {
+        let keys =
+            hashtree_cli::config::read_keys().context("Private mounts require a local nsec key")?;
+        opts.secret_key = Some(keys);
+    }
+
+    match super::resolve::resolve_cid_input_with_opts(&normalized, &opts).await {
+        Ok(_) => Ok(true),
+        Err(error) if error.to_string().contains("No content found for ") => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(feature = "fuse")]
+async fn publish_local_mount_source(
+    dir_path: &Path,
+    target: &str,
+    visibility: Option<String>,
+    link_key: Option<String>,
+    private: bool,
+    relays: Option<String>,
+    data_dir: &Path,
+) -> Result<()> {
+    let store = HashtreeStore::new(data_dir)?;
+    let cid_str = store
+        .upload_dir_encrypted_with_options(dir_path, true)
+        .with_context(|| format!("Failed to add local mount source {}", dir_path.display()))?;
+    let cid = Cid::parse(&cid_str).context("Failed to parse local mount CID")?;
+
+    let (nsec_str, was_generated) = ensure_keys_string()?;
+    let keys = NostrKeys::parse(&nsec_str).context("Failed to parse nsec")?;
+    let npub = NostrToBech32::to_bech32(&keys.public_key()).context("Failed to encode npub")?;
+
+    let target_key = target.strip_prefix("htree://").unwrap_or(target);
+    let nostr_key = if let Some(suffix) = target_key.strip_prefix("self/") {
+        format!("{npub}/{suffix}")
+    } else {
+        target_key.to_string()
+    };
+    let expected_prefix = format!("{npub}/");
+    if !nostr_key.starts_with(&expected_prefix) {
+        anyhow::bail!("Local directory mounts can only publish to your own npub");
+    }
+
+    let mount_visibility = parse_mount_visibility(visibility, link_key, private, None)?;
+    let config = Config::load()?;
+    let resolver_relays = if let Some(relays) = relays {
+        relays.split(',').map(|s| s.trim().to_string()).collect()
+    } else {
+        config.nostr.relays.clone()
+    };
+
+    let resolver = NostrRootResolver::new(NostrResolverConfig {
+        relays: resolver_relays,
+        resolve_timeout: Duration::from_secs(5),
+        secret_key: Some(keys),
+    })
+    .await
+    .context("Failed to create Nostr resolver")?;
+
+    if was_generated {
+        println!("identity: {} (new)", npub);
+    }
+
+    let published = match mount_visibility.visibility {
+        hashtree_core::TreeVisibility::Public => resolver.publish(&nostr_key, &cid).await,
+        hashtree_core::TreeVisibility::LinkVisible => {
+            let Some(link_key) = mount_visibility.link_key else {
+                anyhow::bail!("Link-visible trees require a link key");
+            };
+            resolver.publish_shared(&nostr_key, &cid, &link_key).await
+        }
+        hashtree_core::TreeVisibility::Private => resolver.publish_private(&nostr_key, &cid).await,
+    }
+    .with_context(|| format!("Failed to publish local mount source {nostr_key}"))?;
+
+    let _ = resolver.stop().await;
+
+    if !published {
+        anyhow::bail!("Failed to publish local mount source {}", nostr_key);
+    }
+
+    let write_servers = config.blossom.all_write_servers();
+    if !write_servers.is_empty() {
+        background_blossom_push(&data_dir.to_path_buf(), &cid.to_string(), &write_servers)
+            .await
+            .context("Failed to push local mount source to configured file servers")?;
+    }
+
+    println!("published {}", nostr_key);
+    println!(
+        "  files: {}",
+        build_files_iris_to_url_for_published_ref(&npub, nostr_key[expected_prefix.len()..].trim())
+    );
+
+    Ok(())
+}
+
+pub(crate) fn warn_if_stun_unavailable(config: &mut Config) {
+    #[cfg(not(feature = "stun"))]
+    if config.server.enable_webrtc && config.server.stun_port > 0 {
+        eprintln!(
+            "warning: STUN server support is not built into this htree binary; disabling local STUN listener"
+        );
+        config.server.stun_port = 0;
+    }
+}
 
 pub(crate) async fn run() -> Result<()> {
     // Install rustls crypto provider (required for TLS connections)
@@ -72,6 +336,7 @@ pub(crate) async fn run() -> Result<()> {
             }
             // Load or create config
             let mut config = Config::load()?;
+            warn_if_stun_unavailable(&mut config);
 
             // Override relays if specified on command line
             if let Some(relays_str) = relays_override.as_deref() {
@@ -329,17 +594,6 @@ pub(crate) async fn run() -> Result<()> {
                     webrtc_state.clone(),
                 ),
             );
-            background_services_controller
-                .apply_config(&config)
-                .await
-                .context("Failed to start background services")?;
-
-            // Start background eviction task (runs every 5 minutes)
-            let eviction_handle = spawn_background_eviction_task(
-                Arc::clone(&store),
-                BACKGROUND_EVICTION_INTERVAL,
-                "daemon",
-            );
 
             // Print startup info
             println!("Starting hashtree daemon on {}", addr);
@@ -417,7 +671,28 @@ pub(crate) async fn run() -> Result<()> {
                 println!("Auth: disabled");
             }
 
-            server.run().await?;
+            let listener = tokio::net::TcpListener::bind(&addr)
+                .await
+                .with_context(|| format!("Failed to bind daemon listener {}", addr))?;
+            let server_handle = tokio::spawn(async move { server.run_with_listener(listener).await });
+
+            background_services_controller
+                .apply_config(&config)
+                .await
+                .context("Failed to start background services")?;
+
+            // Start background eviction task (runs every 5 minutes)
+            let eviction_handle = spawn_background_eviction_task(
+                Arc::clone(&store),
+                BACKGROUND_EVICTION_INTERVAL,
+                "daemon",
+            );
+
+            match server_handle.await {
+                Ok(Ok(_)) => {}
+                Ok(Err(err)) => return Err(err),
+                Err(err) => anyhow::bail!("Daemon server task failed: {}", err),
+            }
 
             // Shutdown social graph crawler
             // Shutdown background eviction
@@ -451,9 +726,58 @@ pub(crate) async fn run() -> Result<()> {
             relays,
             allow_other,
         } => {
+            let prepared = prepare_mount_target(&target, mountpoint)
+                .context("Failed to prepare mount target")?;
+            if let Some(path) = prepared.mountpoint.as_deref() {
+                if clear_stale_mountpoint(path)? {
+                    eprintln!("Recovered stale mountpoint at {}", path.display());
+                }
+                let active_mounts = list_active_mounts(&data_dir)?;
+                if let Some(existing) = find_existing_active_mount(&active_mounts, path) {
+                    println!("already mounted {}", path.display());
+                    println!("  target: {}", existing.target);
+                    println!("  cid: {}", existing.mounted_cid);
+                    if let Some(published) = existing.published_key.as_deref() {
+                        println!("  published: {}", published);
+                    }
+                    return Ok(());
+                }
+            }
+            if let Some(local_dir) = prepared.local_dir.as_deref() {
+                let published_target_exists = published_mount_target_exists(
+                    &prepared.target,
+                    visibility.clone(),
+                    link_key.clone(),
+                    private,
+                    relays.clone(),
+                    &data_dir,
+                )
+                .await?;
+
+                match decide_local_mount_publish_disposition(published_target_exists) {
+                    LocalMountPublishDisposition::PublishLocalDir => {
+                        publish_local_mount_source(
+                            local_dir,
+                            &prepared.target,
+                            visibility.clone(),
+                            link_key.clone(),
+                            private,
+                            relays.clone(),
+                            &data_dir,
+                        )
+                        .await?;
+                    }
+                    LocalMountPublishDisposition::UseExistingPublishedTarget => {
+                        eprintln!(
+                            "Published target already exists for {}; mounting existing tree without republishing local contents",
+                            prepared.target
+                        );
+                    }
+                }
+            }
             mount_fuse(
-                target,
-                mountpoint,
+                prepared.target,
+                prepared.mountpoint,
                 visibility,
                 link_key,
                 private,

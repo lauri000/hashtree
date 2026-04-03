@@ -19,6 +19,11 @@ pub(crate) trait PublishSink: Send + Sync {
     async fn publish(&self, cid: &Cid) -> Result<()>;
 }
 
+#[async_trait]
+pub(crate) trait PostPublishHook: Send + Sync {
+    async fn run(&self, cid: &Cid) -> Result<()>;
+}
+
 enum PublishRequest {
     Update(Cid),
     Shutdown(oneshot::Sender<Result<()>>),
@@ -45,6 +50,7 @@ where
         initial_published_root: Cid,
         mounted_path: Vec<String>,
         debounce: Duration,
+        post_publish_hook: Option<Arc<dyn PostPublishHook>>,
         success_hook: Option<SuccessHook>,
     ) -> Self {
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -69,6 +75,7 @@ where
                                         &current_published_root,
                                         &mounted_path,
                                         &mounted_root,
+                                        post_publish_hook.as_deref(),
                                         success_hook.as_ref(),
                                     ).await.map(|new_root| {
                                         current_published_root = new_root;
@@ -87,6 +94,7 @@ where
                                         &current_published_root,
                                         &mounted_path,
                                         &mounted_root,
+                                        post_publish_hook.as_deref(),
                                         success_hook.as_ref(),
                                     ).await.map(|new_root| {
                                         current_published_root = new_root;
@@ -111,6 +119,7 @@ where
                                 &current_published_root,
                                 &mounted_path,
                                 &mounted_root,
+                                post_publish_hook.as_deref(),
                                 success_hook.as_ref(),
                             ).await {
                                 Ok(new_root) => {
@@ -166,6 +175,7 @@ async fn publish_latest<Sink, StoreT>(
     current_published_root: &Cid,
     mounted_path: &[String],
     mounted_root: &Cid,
+    post_publish_hook: Option<&dyn PostPublishHook>,
     success_hook: Option<&SuccessHook>,
 ) -> Result<Cid>
 where
@@ -174,6 +184,9 @@ where
 {
     let published_root =
         rebuild_published_root(store, current_published_root, mounted_path, mounted_root).await?;
+    if let Some(hook) = post_publish_hook {
+        hook.run(&published_root).await?;
+    }
     sink.publish(&published_root).await?;
     if let Some(hook) = success_hook {
         hook(&published_root);
@@ -244,6 +257,30 @@ mod tests {
     #[async_trait]
     impl PublishSink for RecordingPublishSink {
         async fn publish(&self, cid: &Cid) -> Result<()> {
+            self.published.lock().unwrap().push(cid.clone());
+            Ok(())
+        }
+    }
+
+    struct RecordingPostPublishHook {
+        published: Mutex<Vec<Cid>>,
+    }
+
+    impl RecordingPostPublishHook {
+        fn new() -> Self {
+            Self {
+                published: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn published(&self) -> Vec<Cid> {
+            self.published.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl PostPublishHook for RecordingPostPublishHook {
+        async fn run(&self, cid: &Cid) -> Result<()> {
             self.published.lock().unwrap().push(cid.clone());
             Ok(())
         }
@@ -329,6 +366,7 @@ mod tests {
             Vec::new(),
             Duration::from_millis(25),
             None,
+            None,
         );
 
         let cid_a = Cid {
@@ -347,5 +385,35 @@ mod tests {
         queue.shutdown().await.unwrap();
 
         assert_eq!(sink.published(), vec![cid_b]);
+    }
+
+    #[tokio::test]
+    async fn debounced_mount_publisher_runs_post_publish_hook() {
+        let sink = Arc::new(RecordingPublishSink::new());
+        let hook = Arc::new(RecordingPostPublishHook::new());
+        let store = Arc::new(MemoryStore::new());
+        let root = empty_root(store.clone()).await;
+        let queue = MountPublishQueue::new(
+            sink.clone(),
+            store,
+            root,
+            Vec::new(),
+            Duration::from_millis(25),
+            Some(hook.clone()),
+            None,
+        );
+
+        let cid = Cid {
+            hash: [0x33; 32],
+            key: None,
+        };
+
+        queue.enqueue(cid.clone()).unwrap();
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        queue.shutdown().await.unwrap();
+
+        assert_eq!(hook.published(), vec![cid.clone()]);
+        assert_eq!(sink.published(), vec![cid]);
     }
 }

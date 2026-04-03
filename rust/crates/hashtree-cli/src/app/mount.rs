@@ -7,7 +7,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::mount_publish::{MountPublishQueue, PublishSink, MOUNT_PUBLISH_DEBOUNCE};
+use super::blossom::background_blossom_push;
+use super::mount_publish::{
+    MountPublishQueue, PostPublishHook, PublishSink, MOUNT_PUBLISH_DEBOUNCE,
+};
 use super::mount_registry::{register_active_mount, ActiveMount};
 use super::mount_target::{
     create_mountpoint_dir, derive_implicit_mountpoint, normalize_mount_target_for_resolution,
@@ -15,12 +18,12 @@ use super::mount_target::{
 use super::resolve::{parse_published_target, resolve_cid_input_with_opts, ResolveOptions};
 use super::run::{build_files_iris_to_url_for_published_target, format_cid_for_display};
 
-struct MountVisibility {
-    visibility: hashtree_core::TreeVisibility,
-    link_key: Option<[u8; 32]>,
+pub(crate) struct MountVisibility {
+    pub(crate) visibility: hashtree_core::TreeVisibility,
+    pub(crate) link_key: Option<[u8; 32]>,
 }
 
-fn parse_mount_visibility(
+pub(crate) fn parse_mount_visibility(
     visibility: Option<String>,
     link_key: Option<String>,
     private: bool,
@@ -101,6 +104,24 @@ struct NostrPublishSink {
     key: String,
     visibility: hashtree_core::TreeVisibility,
     link_key: Option<[u8; 32]>,
+}
+
+struct BlossomPostPublishHook {
+    data_dir: PathBuf,
+    write_servers: Vec<String>,
+}
+
+#[async_trait]
+impl PostPublishHook for BlossomPostPublishHook {
+    async fn run(&self, cid: &hashtree_core::Cid) -> Result<()> {
+        if self.write_servers.is_empty() {
+            return Ok(());
+        }
+
+        background_blossom_push(&self.data_dir, &cid.to_string(), &self.write_servers)
+            .await
+            .context("Failed to push mounted root to configured file servers")
+    }
 }
 
 #[async_trait]
@@ -237,6 +258,7 @@ pub(crate) async fn mount_fuse(
     opts.link_key = mount_link_key;
     opts.private = mount_visibility == hashtree_core::TreeVisibility::Private;
     opts.relays = Some(relays);
+    opts.data_dir = Some(data_dir.clone());
 
     if opts.private {
         let keys =
@@ -330,12 +352,23 @@ pub(crate) async fn mount_fuse(
             }
         });
 
+        let write_servers = config.blossom.all_write_servers();
+        let post_publish_hook = if write_servers.is_empty() {
+            None
+        } else {
+            Some(Arc::new(BlossomPostPublishHook {
+                data_dir: data_dir.clone(),
+                write_servers,
+            }) as Arc<dyn PostPublishHook>)
+        };
+
         let queue = Arc::new(MountPublishQueue::new(
             publish_sink,
             store_arc.clone(),
             resolved.cid.clone(),
             mounted_path,
             MOUNT_PUBLISH_DEBOUNCE,
+            post_publish_hook,
             Some(success_hook),
         ));
 

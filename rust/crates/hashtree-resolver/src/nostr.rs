@@ -119,6 +119,10 @@ fn is_newer_event(
     }
 }
 
+fn publish_succeeded(success_count: usize) -> bool {
+    success_count > 0
+}
+
 fn upsert_latest_by_d_tag<'a>(entries_by_d_tag: &mut HashMap<String, &'a Event>, event: &'a Event) {
     let Some(d_tag) = event_identifier(event) else {
         return;
@@ -506,7 +510,7 @@ impl NostrRootResolver {
             .await
             .map_err(|e| ResolverError::Network(e.to_string()))?;
 
-        Ok(!output.failed.is_empty() || !output.success.is_empty())
+        Ok(publish_succeeded(output.success.len()))
     }
 }
 
@@ -709,7 +713,7 @@ impl RootResolver for NostrRootResolver {
             }
         }
 
-        Ok(!output.failed.is_empty() || !output.success.is_empty())
+        Ok(publish_succeeded(output.success.len()))
     }
 
     async fn publish_shared(
@@ -751,7 +755,7 @@ impl RootResolver for NostrRootResolver {
             .await
             .map_err(|e| ResolverError::Network(e.to_string()))?;
 
-        Ok(!output.failed.is_empty() || !output.success.is_empty())
+        Ok(publish_succeeded(output.success.len()))
     }
 
     async fn list(&self, prefix: &str) -> Result<Vec<ResolverEntry>, ResolverError> {
@@ -1349,5 +1353,12 @@ mod tests {
                 started.elapsed()
             );
         });
+    }
+
+    #[test]
+    fn publish_succeeded_requires_at_least_one_successful_relay() {
+        assert!(!publish_succeeded(0));
+        assert!(publish_succeeded(1));
+        assert!(publish_succeeded(2));
     }
 }
