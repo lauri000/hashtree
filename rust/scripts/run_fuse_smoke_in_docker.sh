@@ -115,4 +115,4 @@ EOF
     -v "${HOST_CARGO_HOME}:/cargo-home" \
     -w /work/rust \
     "$DOCKER_RUST_IMAGE" \
-    sh -lc "$test_command"
+    bash -lc "$test_command"

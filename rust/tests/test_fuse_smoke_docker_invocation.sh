@@ -38,6 +38,7 @@ grep -F -- "-v ${SOURCE_REPO_DIR}:/work" "${LOG_DIR}/docker.log" >/dev/null
 grep -F -- "-v ${CARGO_HOME_DIR}:/cargo-home" "${LOG_DIR}/docker.log" >/dev/null
 grep -F -- "-w /work/rust" "${LOG_DIR}/docker.log" >/dev/null
 grep -F -- "rust:test" "${LOG_DIR}/docker.log" >/dev/null
+grep -F -- "bash -lc" "${LOG_DIR}/docker.log" >/dev/null
 grep -F -- "apt-get install -y --no-install-recommends fuse3 pkg-config libfuse3-dev" "${LOG_DIR}/docker.log" >/dev/null
 grep -F -- "cargo test -p hashtree-cli --features fuse --test fuse_mount_smoke -- --nocapture" "${LOG_DIR}/docker.log" >/dev/null
 
