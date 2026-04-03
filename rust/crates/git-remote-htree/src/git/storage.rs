@@ -22,7 +22,7 @@ use hashtree_fs::FsBlobStore;
 #[cfg(feature = "lmdb")]
 use hashtree_lmdb::LmdbBlobStore;
 use sha1::{Digest, Sha1};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
@@ -35,6 +35,29 @@ use super::{Error, Result};
 
 /// Box type for async recursion
 type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+#[derive(Default)]
+struct RefDirectory {
+    files: BTreeMap<String, String>,
+    dirs: BTreeMap<String, RefDirectory>,
+}
+
+impl RefDirectory {
+    fn insert(&mut self, parts: &[&str], value: String) {
+        let Some((name, rest)) = parts.split_first() else {
+            return;
+        };
+
+        if rest.is_empty() {
+            self.files.insert((*name).to_string(), value);
+        } else {
+            self.dirs
+                .entry((*name).to_string())
+                .or_default()
+                .insert(rest, value);
+        }
+    }
+}
 
 /// Runtime executor - either owns a runtime or reuses an existing one
 enum RuntimeExecutor {
@@ -899,51 +922,16 @@ impl GitStorage {
 
     /// Build the refs directory using HashTree
     async fn build_refs_dir(&self, refs: &HashMap<String, String>) -> Result<Cid> {
-        // Group refs by category (heads, tags, etc.)
-        let mut groups: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        let mut root = RefDirectory::default();
 
         for (ref_name, value) in refs {
             let parts: Vec<&str> = ref_name.split('/').collect();
             if parts.len() >= 3 && parts[0] == "refs" {
-                let category = parts[1].to_string();
-                let name = parts[2..].join("/");
-                groups
-                    .entry(category)
-                    .or_default()
-                    .push((name, value.clone()));
+                root.insert(&parts[1..], value.clone());
             }
         }
 
-        let mut ref_entries = Vec::new();
-
-        for (category, refs_in_category) in groups {
-            let mut cat_entries = Vec::new();
-            for (name, value) in refs_in_category {
-                // Use put() to get Cid with encryption key
-                let (cid, _size) = self
-                    .tree
-                    .put(value.as_bytes())
-                    .await
-                    .map_err(|e| Error::StorageError(format!("put ref: {}", e)))?;
-                debug!(
-                    "refs/{}/{} -> blob {}",
-                    category,
-                    name,
-                    hex::encode(cid.hash)
-                );
-                cat_entries.push(DirEntry::from_cid(name, &cid));
-            }
-
-            cat_entries.sort_by(|a, b| a.name.cmp(&b.name));
-
-            let cat_cid = self
-                .tree
-                .put_directory(cat_entries)
-                .await
-                .map_err(|e| Error::StorageError(format!("put {} dir: {}", category, e)))?;
-            debug!("refs/{} dir -> {}", category, hex::encode(cat_cid.hash));
-            ref_entries.push(DirEntry::from_cid(category, &cat_cid).with_link_type(LinkType::Dir));
-        }
+        let mut ref_entries = self.build_ref_entries_recursive(&root, "refs").await?;
 
         if ref_entries.is_empty() {
             // Return empty directory Cid
@@ -964,6 +952,42 @@ impl GitStorage {
             .map_err(|e| Error::StorageError(format!("put refs dir: {}", e)))?;
         debug!("refs dir -> {}", hex::encode(refs_cid.hash));
         Ok(refs_cid)
+    }
+
+    fn build_ref_entries_recursive<'a>(
+        &'a self,
+        dir: &'a RefDirectory,
+        prefix: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<DirEntry>>> {
+        Box::pin(async move {
+            let mut entries = Vec::new();
+
+            for (name, value) in &dir.files {
+                let (cid, size) = self
+                    .tree
+                    .put(value.as_bytes())
+                    .await
+                    .map_err(|e| Error::StorageError(format!("put ref: {}", e)))?;
+                debug!("{}/{} -> blob {}", prefix, name, hex::encode(cid.hash));
+                entries.push(DirEntry::from_cid(name, &cid).with_size(size));
+            }
+
+            for (name, child) in &dir.dirs {
+                let child_prefix = format!("{prefix}/{name}");
+                let child_entries = self
+                    .build_ref_entries_recursive(child, &child_prefix)
+                    .await?;
+                let child_cid =
+                    self.tree.put_directory(child_entries).await.map_err(|e| {
+                        Error::StorageError(format!("put {child_prefix} dir: {}", e))
+                    })?;
+                debug!("{} dir -> {}", child_prefix, hex::encode(child_cid.hash));
+                entries.push(DirEntry::from_cid(name, &child_cid).with_link_type(LinkType::Dir));
+            }
+
+            entries.sort_by(|a, b| a.name.cmp(&b.name));
+            Ok(entries)
+        })
     }
 
     /// Build git index file from tree entries
@@ -1541,6 +1565,49 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(packs.is_empty(), "objects/info/packs should be empty");
+    }
+
+    #[test]
+    fn test_build_tree_materializes_loose_refs_at_git_paths() {
+        let (storage, _temp) = create_test_storage();
+        let commit_oid = write_test_commit(&storage);
+
+        storage
+            .write_ref("refs/heads/master", &Ref::Direct(commit_oid))
+            .unwrap();
+        storage
+            .write_ref("refs/heads/codex/meshrouter-prod", &Ref::Direct(commit_oid))
+            .unwrap();
+        storage
+            .write_ref("refs/tags/v1.0.0", &Ref::Direct(commit_oid))
+            .unwrap();
+        storage
+            .write_ref("HEAD", &Ref::Symbolic("refs/heads/master".to_string()))
+            .unwrap();
+
+        let root_cid = storage.build_tree().unwrap();
+
+        for path in [
+            ".git/refs/heads/master",
+            ".git/refs/heads/codex/meshrouter-prod",
+            ".git/refs/tags/v1.0.0",
+        ] {
+            let ref_cid = storage
+                .runtime
+                .block_on(storage.tree.resolve_path(&root_cid, path))
+                .unwrap()
+                .unwrap_or_else(|| panic!("{path} should exist"));
+            let ref_value = storage
+                .runtime
+                .block_on(storage.tree.get(&ref_cid, None))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8(ref_value).unwrap(),
+                commit_oid.to_hex(),
+                "{path} should contain the ref target",
+            );
+        }
     }
 
     #[test]
