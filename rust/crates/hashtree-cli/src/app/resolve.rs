@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use hashtree_cli::config::parse_npub;
-use hashtree_cli::{HashtreeStore, NostrKeys, NostrResolverConfig, NostrRootResolver, RootResolver};
+use hashtree_cli::{
+    HashtreeStore, NostrKeys, NostrResolverConfig, NostrRootResolver, RootResolver,
+};
 use hashtree_core::Cid;
 use std::path::PathBuf;
 
@@ -237,14 +239,7 @@ mod tests {
         let hash = "11".repeat(32);
         let key = "22".repeat(32);
         store
-            .set_cached_root(
-                &pubkey_hex,
-                "mount-test",
-                &hash,
-                Some(&key),
-                "public",
-                123,
-            )
+            .set_cached_root(&pubkey_hex, "mount-test", &hash, Some(&key), "public", 123)
             .unwrap();
 
         let parsed_target = ParsedPublishedTarget {

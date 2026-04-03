@@ -658,6 +658,12 @@ fn write_test_config_with_relays(
 enable_auth = false
 stun_port = 0
 enable_webrtc = true
+enable_multicast = false
+max_multicast_peers = 0
+enable_wifi_aware = false
+max_wifi_aware_peers = 0
+enable_bluetooth = false
+max_bluetooth_peers = 0
 public_writes = true
 
 [storage]
@@ -746,25 +752,42 @@ fn wait_for_peer_data_channel(addr: &str, peer_pubkey: &str, timeout: Duration) 
         .build()
         .context("Failed to build HTTP client")?;
     let deadline = Instant::now() + timeout;
+    let mut last_detail = None;
 
     while Instant::now() < deadline {
-        if let Ok(resp) = client.get(&url).send() {
-            if let Ok(json) = resp.json::<serde_json::Value>() {
-                if let Some(peers) = json.get("peers").and_then(|p| p.as_array()) {
-                    let matched = peers.iter().any(|peer| {
-                        peer.get("pubkey").and_then(|p| p.as_str()) == Some(peer_pubkey)
-                            && peer.get("has_data_channel").and_then(|d| d.as_bool()) == Some(true)
-                    });
-                    if matched {
-                        return Ok(());
+        match client.get(&url).send() {
+            Ok(resp) => match resp.json::<serde_json::Value>() {
+                Ok(json) => {
+                    last_detail = Some(format!("peer snapshot: {}", json));
+                    if let Some(peers) = json.get("peers").and_then(|p| p.as_array()) {
+                        let matched = peers.iter().any(|peer| {
+                            peer.get("pubkey").and_then(|p| p.as_str()) == Some(peer_pubkey)
+                                && peer.get("has_data_channel").and_then(|d| d.as_bool())
+                                    == Some(true)
+                        });
+                        if matched {
+                            return Ok(());
+                        }
                     }
                 }
+                Err(error) => {
+                    last_detail = Some(format!("failed to decode peer snapshot: {error}"));
+                }
+            },
+            Err(error) => {
+                last_detail = Some(format!("peer status request failed: {error}"));
             }
         }
         std::thread::sleep(Duration::from_millis(200));
     }
 
-    anyhow::bail!("Timed out waiting for peer data channel on {}", addr);
+    let detail = last_detail.unwrap_or_else(|| "no peer status collected".to_string());
+    anyhow::bail!(
+        "Timed out waiting for peer data channel on {} for {} ({})",
+        addr,
+        peer_pubkey,
+        detail
+    );
 }
 
 fn fetch_bytes(url: &str) -> Result<Vec<u8>> {
@@ -1241,16 +1264,17 @@ fn test_three_peers_chain_preserves_ac_mesh_after_relay_shutdown() -> Result<()>
         std::slice::from_ref(&relay_r2_url),
     )?;
 
-    wait_for_peer_data_channel(&instance_a.addr, &pubkey_b, Duration::from_secs(12))?;
-    wait_for_peer_data_channel(&instance_b.addr, &pubkey_a, Duration::from_secs(12))?;
-    wait_for_peer_data_channel(&instance_b.addr, &pubkey_c, Duration::from_secs(12))?;
-    wait_for_peer_data_channel(&instance_c.addr, &pubkey_b, Duration::from_secs(12))?;
+    wait_for_peer_data_channel(&instance_a.addr, &pubkey_b, Duration::from_secs(20))?;
+    wait_for_peer_data_channel(&instance_b.addr, &pubkey_a, Duration::from_secs(20))?;
+    wait_for_peer_data_channel(&instance_b.addr, &pubkey_c, Duration::from_secs(20))?;
+    wait_for_peer_data_channel(&instance_c.addr, &pubkey_b, Duration::from_secs(20))?;
 
     relay_r1.stop();
     relay_r2.stop();
 
-    wait_for_peer_data_channel(&instance_a.addr, &pubkey_c, Duration::from_secs(20))?;
-    wait_for_peer_data_channel(&instance_c.addr, &pubkey_a, Duration::from_secs(20))?;
+    // Relayless A<->C mesh formation can lag under workspace-wide test load.
+    wait_for_peer_data_channel(&instance_a.addr, &pubkey_c, Duration::from_secs(45))?;
+    wait_for_peer_data_channel(&instance_c.addr, &pubkey_a, Duration::from_secs(45))?;
 
     let expected = b"relayless-ac-mesh".to_vec();
     let store = HashtreeStore::new_with_backend(

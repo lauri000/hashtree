@@ -34,18 +34,18 @@ use super::mounts::print_active_mounts;
 use super::nostr_index::{run_socialgraph_index_from_cli, SocialGraphIndexOptions};
 use super::peers::{fetch_profile_name, list_peers};
 use super::release::publish_release_version;
-#[cfg(feature = "fuse")]
-use super::resolve::ResolveOptions;
 use super::resolve::resolve_cid_input;
 #[cfg(feature = "fuse")]
-use std::io;
-#[cfg(feature = "fuse")]
-use std::process::Command;
+use super::resolve::ResolveOptions;
 use super::socialgraph::{
     run_socialgraph_filter, run_socialgraph_rebuild_profile_index, run_socialgraph_snapshot,
     run_socialgraph_stats, run_socialgraph_warm,
 };
 use super::util::chrono_humanize_timestamp;
+#[cfg(feature = "fuse")]
+use std::io;
+#[cfg(feature = "fuse")]
+use std::process::Command;
 
 const IRIS_FILES_WEB_BASE_URL: &str = "https://files.iris.to";
 const IRIS_SITES_WEB_BASE_URL: &str = "https://sites.iris.to";
@@ -134,7 +134,9 @@ fn clear_stale_mountpoint(path: &Path) -> Result<bool> {
     let probe_error = match probe_mountpoint(path) {
         Ok(()) => return Ok(false),
         Err(error) if is_stale_mount_io_error(&error) => error,
-        Err(error) => return Err(error).with_context(|| format!("Failed to access {}", path.display())),
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to access {}", path.display()))
+        }
     };
 
     let umount = Command::new("umount").arg(path).status();
@@ -674,7 +676,8 @@ pub(crate) async fn run() -> Result<()> {
             let listener = tokio::net::TcpListener::bind(&addr)
                 .await
                 .with_context(|| format!("Failed to bind daemon listener {}", addr))?;
-            let server_handle = tokio::spawn(async move { server.run_with_listener(listener).await });
+            let server_handle =
+                tokio::spawn(async move { server.run_with_listener(listener).await });
 
             background_services_controller
                 .apply_config(&config)

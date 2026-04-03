@@ -8,9 +8,12 @@ use super::run::{
     build_files_iris_to_url_for_add_route, build_files_iris_to_url_for_published_ref,
     build_files_iris_to_url_for_published_target, build_sites_iris_to_url_for_add_route,
     build_sites_iris_to_url_for_published_ref, detect_site_entry_for_path, format_cid_for_display,
-    decide_local_mount_publish_disposition, find_existing_active_mount,
-    is_stale_mount_io_error, prepare_mount_target, warn_if_stun_unavailable,
-    LocalMountPublishDisposition,
+    warn_if_stun_unavailable,
+};
+#[cfg(feature = "fuse")]
+use super::run::{
+    decide_local_mount_publish_disposition, find_existing_active_mount, is_stale_mount_io_error,
+    prepare_mount_target, LocalMountPublishDisposition,
 };
 use crate::app::args::{CashuCommands, CashuMintCommands, ReleaseCommands, SocialGraphCommands};
 use crate::app::args::{Cli, Commands};
@@ -20,6 +23,7 @@ use clap::{CommandFactory, Parser};
 use hashtree_cli::Config as AppConfig;
 use hashtree_core::{nhash_decode, Cid};
 use nostr::Kind;
+#[cfg(feature = "fuse")]
 use std::io;
 use std::path::PathBuf;
 
