@@ -1,19 +1,20 @@
 # Changelog
 
-## 0.2.21 - 2026-04-02
+## 0.2.22 - 2026-04-03
 
 Changes since the `0.2.20` crates.io release.
 
 ### Improved
 
-- Improved `htree mount` ergonomics: FUSE now ships in the default `hashtree-cli` build, `htree mount` can derive a mountpoint from the target automatically, and owner aliases or hex pubkeys are normalized to `npub` targets before resolution.
-- Debounced mounted-root publishing and preserved sibling entries when mounting a published subdirectory, which reduces redundant Nostr publishes without clobbering the rest of the published tree.
-- Grouped the top-level `htree help` output by command category so storage, publishing, identity, and wallet flows are easier to discover.
+- Improved `htree mount` ergonomics: mountpoints can be derived from targets automatically, owner aliases or hex pubkeys are normalized to `npub` targets before resolution, and mounted-root publishing preserves sibling entries while reducing redundant publishes.
+- Added `htree mounts` plus an active-mount registry so running mounts can be listed from the CLI in human or JSON form.
+- Kept `fuse` optional for crate consumers while still wiring release binaries and CI to build the mount-capable binaries explicitly, and split oversized server and git-remote helper modules into smaller internal components.
 
 ### Fixed
 
 - Fixed the FUSE adapter for current `fuser` callback signatures so mkdir, unlink, rmdir, rename, and write operations dispatch cleanly on newer builds.
-- Fixed the embedded daemon and mount publish path to keep default Blossom read-server behavior and related integration coverage intact after the FUSE follow-up changes.
+- Fixed the embedded daemon and non-`p2p` build path so `hashtree-cli` continues to work with `--no-default-features` after the FUSE-defaults change.
+- Added FUSE smoke coverage and active-mount lifecycle cleanup so mounted sessions are registered only while live and stale mount records are pruned automatically.
 
 ## 0.2.20 - 2026-04-01
 

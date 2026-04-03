@@ -233,7 +233,7 @@ impl NostrRootResolver {
         }
 
         let relay_count = self.config.relays.len();
-        let successful_relay_quorum = relay_count.min(DEFAULT_SUCCESSFUL_RELAY_QUORUM).max(1);
+        let successful_relay_quorum = relay_count.clamp(1, DEFAULT_SUCCESSFUL_RELAY_QUORUM);
         let soft_timeout = self
             .config
             .resolve_timeout

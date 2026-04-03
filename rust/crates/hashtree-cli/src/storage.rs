@@ -85,12 +85,12 @@ impl LocalStore {
     pub fn new_with_lmdb_map_size<P: AsRef<Path>>(
         path: P,
         backend: &StorageBackend,
-        map_size_bytes: Option<u64>,
+        _map_size_bytes: Option<u64>,
     ) -> Result<Self, StoreError> {
         match backend {
             StorageBackend::Fs => Ok(LocalStore::Fs(FsBlobStore::new(path)?)),
             #[cfg(feature = "lmdb")]
-            StorageBackend::Lmdb => match map_size_bytes {
+            StorageBackend::Lmdb => match _map_size_bytes {
                 Some(map_size_bytes) => {
                     let map_size = usize::try_from(map_size_bytes).map_err(|_| {
                         StoreError::Other("LMDB map size exceeds usize".to_string())
@@ -2593,7 +2593,9 @@ impl crate::webrtc::ContentStore for HashtreeStore {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "lmdb")]
     use super::*;
+    #[cfg(feature = "lmdb")]
     use tempfile::TempDir;
 
     #[cfg(feature = "lmdb")]

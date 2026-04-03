@@ -772,7 +772,7 @@ mod fuse_impl {
             };
             let uid = unsafe { libc::geteuid() };
             let gid = unsafe { libc::getegid() };
-            let blocks = (attr.size + 511) / 512;
+            let blocks = attr.size.div_ceil(512);
 
             FileAttr {
                 ino: attr.inode,

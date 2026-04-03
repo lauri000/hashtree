@@ -602,8 +602,6 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
 
     #[cfg(not(feature = "p2p"))]
     let webrtc_state: Option<Arc<crate::webrtc::WebRTCState>> = None;
-    #[cfg(not(feature = "p2p"))]
-    let peer_router_controller = None;
 
     let background_services_controller = Arc::new(EmbeddedBackgroundServicesController::new(
         keys.clone(),

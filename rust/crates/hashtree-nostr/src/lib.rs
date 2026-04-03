@@ -191,6 +191,7 @@ struct ExistingReplaceableEvent {
     cid: Cid,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 enum ReplaceableDecision {
     Accept {

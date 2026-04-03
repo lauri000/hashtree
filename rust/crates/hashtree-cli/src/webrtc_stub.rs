@@ -2,8 +2,11 @@
 //! Provides minimal types to allow code to compile without webrtc dependencies
 
 use anyhow::Result;
+use nostr::{nips::nip19::FromBech32, Alphabet, Event, Filter, Kind, PublicKey, SingleLetterTag};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -11,30 +14,90 @@ use tokio::sync::RwLock;
 /// Connection state stub
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
+    Discovered,
+    Connecting,
     Connected,
+    Failed,
     Disconnected,
 }
 
 /// Peer entry stub
 #[derive(Debug)]
 pub struct PeerEntry {
-    pub state: ConnectionState,
     pub peer_id: PeerId,
+    pub direction: PeerDirection,
+    pub state: ConnectionState,
+    pub last_seen: std::time::Instant,
     pub peer: Option<DummyPeer>,
     pub pool: PeerPool,
+    pub transport: PeerTransport,
+    pub signal_paths: BTreeSet<PeerSignalPath>,
     pub bytes_sent: u64,
     pub bytes_received: u64,
 }
 
 /// Peer ID stub
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PeerId {
     pub pubkey: String,
 }
 
 impl PeerId {
-    pub fn short(&self) -> &str {
-        &self.pubkey[..8.min(self.pubkey.len())]
+    pub fn new(pubkey: String) -> Self {
+        Self { pubkey }
+    }
+
+    pub fn short(&self) -> String {
+        self.pubkey[..8.min(self.pubkey.len())].to_string()
+    }
+}
+
+impl std::fmt::Display for PeerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.pubkey)
+    }
+}
+
+/// Direction of peer connection
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerDirection {
+    Inbound,
+    Outbound,
+}
+
+/// Peer transport stub
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerTransport {
+    WebRtc,
+    Bluetooth,
+}
+
+impl std::fmt::Display for PeerTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PeerTransport::WebRtc => f.write_str("webrtc"),
+            PeerTransport::Bluetooth => f.write_str("bluetooth"),
+        }
+    }
+}
+
+/// Signaling/discovery path stub
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PeerSignalPath {
+    Relay,
+    Multicast,
+    WifiAware,
+    Bluetooth,
+}
+
+impl std::fmt::Display for PeerSignalPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PeerSignalPath::Relay => f.write_str("relay"),
+            PeerSignalPath::Multicast => f.write_str("multicast"),
+            PeerSignalPath::WifiAware => f.write_str("wifi-aware"),
+            PeerSignalPath::Bluetooth => f.write_str("bluetooth"),
+        }
     }
 }
 
@@ -43,12 +106,22 @@ impl PeerId {
 pub struct DummyPeer;
 
 impl DummyPeer {
+    pub fn is_ready(&self) -> bool {
+        false
+    }
+
     pub fn has_data_channel(&self) -> bool {
         false
     }
+
     pub fn state(&self) -> &str {
         "Disabled"
     }
+
+    pub fn as_webrtc(&self) -> Option<&Self> {
+        None
+    }
+
     pub async fn request(&self, _hash: &str) -> Result<Option<Vec<u8>>> {
         Ok(None)
     }
@@ -57,7 +130,8 @@ impl DummyPeer {
 /// Peer pool stub
 #[derive(Debug, Clone, Copy)]
 pub enum PeerPool {
-    None,
+    Follows,
+    Other,
 }
 
 #[derive(Debug, Clone)]
@@ -75,17 +149,25 @@ pub struct PeerRootEvent {
 #[derive(Debug)]
 pub struct WebRTCState {
     pub peers: Arc<RwLock<HashMap<String, PeerEntry>>>,
+    bytes_sent: AtomicU64,
+    bytes_received: AtomicU64,
 }
 
 impl Default for WebRTCState {
     fn default() -> Self {
         Self {
             peers: Arc::new(RwLock::new(HashMap::new())),
+            bytes_sent: AtomicU64::new(0),
+            bytes_received: AtomicU64::new(0),
         }
     }
 }
 
 impl WebRTCState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Query peers for data - always returns None when P2P is disabled
     pub async fn query_peers_for_data(&self, _hash: &str) -> Option<Vec<u8>> {
         None
@@ -101,9 +183,26 @@ impl WebRTCState {
         None
     }
 
+    pub async fn record_sent(&self, peer_id: &str, bytes: u64) {
+        self.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
+        if let Some(entry) = self.peers.write().await.get_mut(peer_id) {
+            entry.bytes_sent += bytes;
+        }
+    }
+
+    pub async fn record_received(&self, peer_id: &str, bytes: u64) {
+        self.bytes_received.fetch_add(bytes, Ordering::Relaxed);
+        if let Some(entry) = self.peers.write().await.get_mut(peer_id) {
+            entry.bytes_received += bytes;
+        }
+    }
+
     /// Get bandwidth stats - always returns zeros when P2P is disabled
     pub fn get_bandwidth(&self) -> (u64, u64) {
-        (0, 0)
+        (
+            self.bytes_sent.load(Ordering::Relaxed),
+            self.bytes_received.load(Ordering::Relaxed),
+        )
     }
 
     /// Get mesh stats - always returns zeros when P2P is disabled
@@ -120,6 +219,100 @@ impl WebRTCState {
     ) -> Option<PeerRootEvent> {
         None
     }
+
+    pub async fn resolve_root_from_local_buses_with_source(
+        &self,
+        _owner_pubkey: &str,
+        _tree_name: &str,
+        _timeout: Duration,
+    ) -> Option<(&'static str, PeerRootEvent)> {
+        None
+    }
+}
+
+pub fn build_root_filter(owner_pubkey: &str, tree_name: &str) -> Option<Filter> {
+    let author = PublicKey::from_hex(owner_pubkey)
+        .or_else(|_| PublicKey::from_bech32(owner_pubkey))
+        .ok()?;
+    Some(
+        Filter::new()
+            .kind(Kind::Custom(30078))
+            .author(author)
+            .custom_tag(
+                SingleLetterTag::lowercase(Alphabet::D),
+                vec![tree_name.to_string()],
+            )
+            .custom_tag(
+                SingleLetterTag::lowercase(Alphabet::L),
+                vec!["hashtree".to_string()],
+            )
+            .limit(50),
+    )
+}
+
+pub fn pick_latest_event<'a, I>(events: I) -> Option<&'a Event>
+where
+    I: IntoIterator<Item = &'a Event>,
+{
+    events.into_iter().max_by(|a, b| {
+        let ordering = a.created_at.cmp(&b.created_at);
+        if ordering == std::cmp::Ordering::Equal {
+            a.id.cmp(&b.id)
+        } else {
+            ordering
+        }
+    })
+}
+
+pub fn root_event_from_peer(
+    event: &Event,
+    peer_id: &str,
+    tree_name: &str,
+) -> Option<PeerRootEvent> {
+    let mut tree_match = false;
+    let mut labeled = false;
+    let mut key = None;
+    let mut encrypted_key = None;
+    let mut self_encrypted_key = None;
+    let mut hash_tag = None;
+
+    for tag in &event.tags {
+        let slice = tag.as_slice();
+        if slice.len() < 2 {
+            continue;
+        }
+        match slice[0].as_str() {
+            "d" => tree_match = slice[1].as_str() == tree_name,
+            "l" => labeled = slice[1].as_str() == "hashtree",
+            "hash" => hash_tag = Some(slice[1].to_string()),
+            "key" => key = Some(slice[1].to_string()),
+            "encryptedKey" => encrypted_key = Some(slice[1].to_string()),
+            "selfEncryptedKey" => self_encrypted_key = Some(slice[1].to_string()),
+            _ => {}
+        }
+    }
+
+    if !tree_match || !labeled {
+        return None;
+    }
+
+    let hash = hash_tag.or_else(|| {
+        if event.content.is_empty() {
+            None
+        } else {
+            Some(event.content.clone())
+        }
+    })?;
+
+    Some(PeerRootEvent {
+        hash,
+        key,
+        encrypted_key,
+        self_encrypted_key,
+        event_id: event.id.to_hex(),
+        created_at: event.created_at.as_u64(),
+        peer_id: peer_id.to_string(),
+    })
 }
 
 /// Content store trait stub
@@ -156,6 +349,10 @@ pub mod types {
         pub h: Vec<u8>,
         #[serde(with = "serde_bytes")]
         pub d: Vec<u8>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub i: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub n: Option<u32>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
