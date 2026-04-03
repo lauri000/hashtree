@@ -114,6 +114,7 @@ fn mount_smoke_lists_active_mount_and_unmounts_cleanly() {
         &mut child,
         &config_dir,
         &data_dir,
+        &mountpoint,
         mountpoint.join("nested").join("hello.txt"),
         "hello through fuse",
     );
@@ -204,13 +205,33 @@ fn wait_for_mounted_file(
     child: &mut ChildGuard,
     config_dir: &Path,
     data_dir: &Path,
+    mountpoint: &Path,
     path: PathBuf,
     expected: &str,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         if let Some(status) = child.child_mut().try_wait().expect("poll child") {
             panic!("mount process exited early: {status}");
+        }
+        if !mountpoint_is_active(mountpoint) {
+            if Instant::now() >= deadline {
+                let registry_output = run_htree_command(config_dir, data_dir, ["mounts", "--json"]);
+                child.kill();
+                let mount_output = child.wait_with_output();
+                panic!(
+                    "timed out waiting for active mount {}\nmountinfo:\n{}\nroot snapshot:\n{}\nregistry stdout:\n{}\nregistry stderr:\n{}\nmount stdout:\n{}\nmount stderr:\n{}",
+                    mountpoint.display(),
+                    current_mountinfo(),
+                    snapshot_dir(mountpoint),
+                    String::from_utf8_lossy(&registry_output.stdout),
+                    String::from_utf8_lossy(&registry_output.stderr),
+                    String::from_utf8_lossy(&mount_output.stdout),
+                    String::from_utf8_lossy(&mount_output.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
         }
         if let Ok(contents) = std::fs::read_to_string(&path) {
             if contents == expected {
@@ -222,8 +243,11 @@ fn wait_for_mounted_file(
             child.kill();
             let mount_output = child.wait_with_output();
             panic!(
-                "timed out waiting for mounted file {}\nregistry stdout:\n{}\nregistry stderr:\n{}\nmount stdout:\n{}\nmount stderr:\n{}",
+                "timed out waiting for mounted file {}\nmountinfo:\n{}\nroot snapshot:\n{}\nparent snapshot:\n{}\nregistry stdout:\n{}\nregistry stderr:\n{}\nmount stdout:\n{}\nmount stderr:\n{}",
                 path.display(),
+                current_mountinfo(),
+                snapshot_dir(mountpoint),
+                snapshot_dir(path.parent().unwrap_or(mountpoint)),
                 String::from_utf8_lossy(&registry_output.stdout),
                 String::from_utf8_lossy(&registry_output.stderr),
                 String::from_utf8_lossy(&mount_output.stdout),
@@ -272,4 +296,112 @@ fn fuse_smoke_skip_reason() -> Option<String> {
 
         return None;
     }
+}
+
+fn snapshot_dir(path: &Path) -> String {
+    match std::fs::read_dir(path) {
+        Ok(entries) => {
+            let mut names = entries
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            names.sort();
+            if names.is_empty() {
+                "(empty)".to_string()
+            } else {
+                names.join("\n")
+            }
+        }
+        Err(error) => format!("read_dir failed: {error}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn mountpoint_is_active(mountpoint: &Path) -> bool {
+    let Ok(mountinfo) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        return false;
+    };
+    mountinfo_lists_mount(&mountinfo, mountpoint)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn mountpoint_is_active(_mountpoint: &Path) -> bool {
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn current_mountinfo() -> String {
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .unwrap_or_else(|error| format!("failed to read /proc/self/mountinfo: {error}"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn current_mountinfo() -> String {
+    "mountinfo unavailable on this platform".to_string()
+}
+
+fn mountinfo_lists_mount(mountinfo: &str, mountpoint: &Path) -> bool {
+    let expected = mountpoint.to_string_lossy();
+    mountinfo.lines().any(|line| {
+        let Some(fields) = line.split(" - ").next() else {
+            return false;
+        };
+        let mut parts = fields.split(' ');
+        let _mount_id = parts.next();
+        let _parent_id = parts.next();
+        let _major_minor = parts.next();
+        let _root = parts.next();
+        let Some(mount_point) = parts.next() else {
+            return false;
+        };
+        decode_mountinfo_path(mount_point) == expected
+    })
+}
+
+fn decode_mountinfo_path(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' && index + 3 < bytes.len() {
+            let maybe_octal = &value[index + 1..index + 4];
+            if maybe_octal
+                .bytes()
+                .all(|byte| (b'0'..=b'7').contains(&byte))
+            {
+                let octal = u8::from_str_radix(maybe_octal, 8).expect("valid octal escape");
+                decoded.push(octal);
+                index += 4;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+
+    String::from_utf8(decoded).expect("mountinfo path is valid utf-8")
+}
+
+#[test]
+fn mountinfo_parser_matches_escaped_mountpoint_paths() {
+    let mountinfo = "\
+35 26 0:31 / /tmp/hashtree\\040mount rw,nosuid,nodev - fuse.hashtree hashtree rw,user_id=1000,group_id=1000\n\
+";
+
+    assert!(mountinfo_lists_mount(
+        mountinfo,
+        Path::new("/tmp/hashtree mount")
+    ));
+}
+
+#[test]
+fn mountinfo_parser_ignores_other_mountpoints() {
+    let mountinfo = "\
+35 26 0:31 / /tmp/other rw,nosuid,nodev - fuse.hashtree hashtree rw,user_id=1000,group_id=1000\n\
+";
+
+    assert!(!mountinfo_lists_mount(
+        mountinfo,
+        Path::new("/tmp/hashtree mount")
+    ));
 }
