@@ -3,7 +3,7 @@ use anyhow::Context;
 use anyhow::Result;
 use std::path::PathBuf;
 
-use super::util::format_bytes;
+use super::util::{format_bytes, process_is_running};
 
 pub(crate) fn format_daemon_status(status: &serde_json::Value, include_header: bool) -> String {
     let mut lines = Vec::new();
@@ -209,16 +209,7 @@ pub(crate) fn write_pid_file(path: &std::path::Path, pid: u32) -> Result<()> {
 
 #[cfg(unix)]
 fn is_process_running(pid: i32) -> bool {
-    let result = unsafe { libc::kill(pid, 0) };
-    if result == 0 {
-        return true;
-    }
-    let err = std::io::Error::last_os_error();
-    match err.raw_os_error() {
-        Some(code) if code == libc::ESRCH => false,
-        Some(code) if code == libc::EPERM => true,
-        _ => false,
-    }
+    process_is_running(pid as u32)
 }
 
 #[cfg(unix)]

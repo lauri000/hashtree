@@ -374,6 +374,30 @@ fn test_cli_parses_mount_command_without_explicit_mountpoint() {
 }
 
 #[test]
+fn test_cli_parses_mounts_command() {
+    let cli = Cli::parse_from(["htree", "mounts"]);
+
+    match cli.command {
+        Commands::Mounts { json } => {
+            assert!(!json);
+        }
+        _ => panic!("expected mounts command"),
+    }
+}
+
+#[test]
+fn test_cli_parses_mounts_command_with_json_output() {
+    let cli = Cli::parse_from(["htree", "mounts", "--json"]);
+
+    match cli.command {
+        Commands::Mounts { json } => {
+            assert!(json);
+        }
+        _ => panic!("expected mounts command"),
+    }
+}
+
+#[test]
 fn test_cli_help_groups_commands_by_purpose() {
     let mut cmd = Cli::command();
     let help = cmd.render_long_help().to_string();
@@ -381,6 +405,7 @@ fn test_cli_help_groups_commands_by_purpose() {
     assert!(help.contains("Daemon Commands:"));
     assert!(help.contains("Content Commands:"));
     assert!(help.contains("Storage Commands:"));
+    assert!(help.contains("mounts       List active hashtree mounts"));
     assert!(help.contains("Publishing & Git Commands:"));
     assert!(help.contains("Identity & Social Commands:"));
     assert!(help.contains("Wallet Commands:"));

@@ -39,6 +39,29 @@ pub(crate) fn chrono_humanize_timestamp(ts: u64) -> String {
     }
 }
 
+#[cfg(unix)]
+pub(crate) fn process_is_running(pid: u32) -> bool {
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+
+    let result = unsafe { libc::kill(pid, 0) };
+    if result == 0 {
+        return true;
+    }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(code) if code == libc::ESRCH => false,
+        Some(code) if code == libc::EPERM => true,
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn process_is_running(_pid: u32) -> bool {
+    true
+}
+
 /// Calculate total size of a directory.
 #[allow(dead_code)]
 pub(crate) fn dir_size(path: &std::path::Path) -> Result<u64> {

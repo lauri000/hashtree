@@ -26,6 +26,7 @@ use super::daemonize::{format_daemon_status, spawn_daemon, stop_daemon};
 use super::lists::{follow_user, list_following, list_muted, mute_user, update_profile};
 #[cfg(feature = "fuse")]
 use super::mount::mount_fuse;
+use super::mounts::print_active_mounts;
 use super::nostr_index::{run_socialgraph_index_from_cli, SocialGraphIndexOptions};
 use super::peers::{fetch_profile_name, list_peers};
 use super::release::publish_release_version;
@@ -461,6 +462,9 @@ pub(crate) async fn run() -> Result<()> {
                 data_dir,
             )
             .await?;
+        }
+        Commands::Mounts { json } => {
+            print_active_mounts(&data_dir, json)?;
         }
         Commands::Add {
             path,

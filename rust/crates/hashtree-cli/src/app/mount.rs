@@ -5,13 +5,15 @@ use hashtree_fuse::{FsError as FuseFsError, HashtreeFuse, RootPublisher};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::mount_publish::{MountPublishQueue, PublishSink, MOUNT_PUBLISH_DEBOUNCE};
+use super::mount_registry::{register_active_mount, ActiveMount};
 use super::mount_target::{
     create_mountpoint_dir, derive_implicit_mountpoint, normalize_mount_target_for_resolution,
 };
 use super::resolve::{parse_published_target, resolve_cid_input_with_opts, ResolveOptions};
-use super::run::build_files_iris_to_url_for_published_target;
+use super::run::{build_files_iris_to_url_for_published_target, format_cid_for_display};
 
 struct MountVisibility {
     visibility: hashtree_core::TreeVisibility,
@@ -159,12 +161,15 @@ pub(crate) async fn mount_fuse(
     allow_other: bool,
     data_dir: PathBuf,
 ) -> Result<()> {
+    let current_dir = std::env::current_dir()?;
     let (mountpoint, implicit_mountpoint) = match mountpoint {
         Some(path) => (path, false),
-        None => (
-            derive_implicit_mountpoint(&std::env::current_dir()?, &target)?,
-            true,
-        ),
+        None => (derive_implicit_mountpoint(&current_dir, &target)?, true),
+    };
+    let mountpoint = if mountpoint.is_relative() {
+        current_dir.join(mountpoint)
+    } else {
+        mountpoint
     };
 
     let target = target.strip_prefix("htree://").unwrap_or(&target);
@@ -173,6 +178,7 @@ pub(crate) async fn mount_fuse(
         None => (target, None),
     };
     let base = normalize_mount_target_for_resolution(base)?;
+    let requested_target = base.clone();
 
     let MountVisibility {
         visibility: mount_visibility,
@@ -202,6 +208,7 @@ pub(crate) async fn mount_fuse(
     let nostr_key = published_target
         .as_ref()
         .map(|target| format!("{}/{}", target.npub, target.tree_name));
+    let visibility_str = mount_visibility.as_str().to_string();
 
     let max_size_bytes = config.storage.max_size_gb * 1024 * 1024 * 1024;
     let store = Arc::new(HashtreeStore::with_options(
@@ -226,7 +233,7 @@ pub(crate) async fn mount_fuse(
     }
 
     let link_key_hex = mount_link_key.map(hex::encode);
-    let publish_queue = if let Some(nostr_key) = nostr_key {
+    let publish_queue = if let Some(ref nostr_key) = nostr_key {
         let keys = hashtree_cli::config::read_keys().context("Failed to read nostr keys")?;
         let mut resolver_config = NostrResolverConfig::default();
         if let Some(relays) = opts.relays.clone() {
@@ -245,6 +252,7 @@ pub(crate) async fn mount_fuse(
             anyhow::bail!("Nostr key does not match mounted npub");
         }
         let pubkey_hex = hex::encode(pubkey_bytes);
+        let visibility_str_for_cache = visibility_str.clone();
         let mounted_path = published_target
             .path
             .as_deref()
@@ -256,10 +264,9 @@ pub(crate) async fn mount_fuse(
             })
             .unwrap_or_default();
         let tree_name = published_target.tree_name.clone();
-        let visibility_str = mount_visibility.as_str().to_string();
         let publish_sink = Arc::new(NostrPublishSink {
             resolver,
-            key: nostr_key,
+            key: nostr_key.clone(),
             visibility: mount_visibility,
             link_key: mount_link_key,
         });
@@ -275,7 +282,7 @@ pub(crate) async fn mount_fuse(
                 &tree_name,
                 &hashtree_core::to_hex(&cid.hash),
                 key_hex.as_deref(),
-                &visibility_str,
+                &visibility_str_for_cache,
                 updated_at,
             ) {
                 eprintln!("Failed to cache mounted root publish: {error}");
@@ -296,6 +303,53 @@ pub(crate) async fn mount_fuse(
         None
     };
 
+    let publisher: Option<Arc<dyn RootPublisher>> = publish_queue.as_ref().map(|queue| {
+        Arc::new(QueueingRootPublisher {
+            queue: queue.clone(),
+        }) as Arc<dyn RootPublisher>
+    });
+
+    let mounted_cid = format_cid_for_display(&root_cid);
+    let fs = HashtreeFuse::new_with_publisher(store_arc, root_cid, publisher)?;
+    let mut options = vec![
+        fuser::MountOption::FSName("hashtree".to_string()),
+        fuser::MountOption::DefaultPermissions,
+    ];
+    if allow_other {
+        options.push(fuser::MountOption::AllowOther);
+    }
+
+    if implicit_mountpoint {
+        create_mountpoint_dir(&mountpoint)?;
+    }
+
+    let mut session = match fuser::Session::new(fs, &mountpoint, &options) {
+        Ok(session) => session,
+        Err(error) => {
+            if implicit_mountpoint {
+                let _ = std::fs::remove_dir(&mountpoint);
+            }
+            return Err(error.into());
+        }
+    };
+
+    let registration = register_active_mount(
+        &data_dir,
+        &ActiveMount {
+            target: requested_target,
+            mountpoint: mountpoint.clone(),
+            mounted_cid,
+            visibility: visibility_str.clone(),
+            published_key: nostr_key.clone(),
+            allow_other,
+            pid: std::process::id(),
+            registered_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        },
+    )?;
+
     println!("mounted {}", mountpoint.display());
     if let Some(target) = published_target.as_ref() {
         println!(
@@ -313,30 +367,12 @@ pub(crate) async fn mount_fuse(
         );
     }
 
-    let publisher: Option<Arc<dyn RootPublisher>> = publish_queue.as_ref().map(|queue| {
-        Arc::new(QueueingRootPublisher {
-            queue: queue.clone(),
-        }) as Arc<dyn RootPublisher>
-    });
-
-    let fs = HashtreeFuse::new_with_publisher(store_arc, root_cid, publisher)?;
-    let mut options = vec![
-        fuser::MountOption::FSName("hashtree".to_string()),
-        fuser::MountOption::DefaultPermissions,
-    ];
-    if allow_other {
-        options.push(fuser::MountOption::AllowOther);
-    }
-
-    if implicit_mountpoint {
-        create_mountpoint_dir(&mountpoint)?;
-    }
-
-    let mount_result = fs.mount(mountpoint.clone(), &options);
-    if mount_result.is_err() && implicit_mountpoint {
+    let run_result = session.run();
+    if run_result.is_err() && implicit_mountpoint {
         let _ = std::fs::remove_dir(&mountpoint);
     }
-    mount_result?;
+    run_result?;
+    drop(registration);
     if let Some(queue) = publish_queue {
         queue.shutdown().await?;
     }

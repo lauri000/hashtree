@@ -32,6 +32,7 @@ Storage Commands:
   gc           Run garbage collection
   storage      Manage storage limits and eviction
   mount        Mount a hashtree via FUSE
+  mounts       List active hashtree mounts
 
 Publishing & Git Commands:
   publish      Publish a hash to Nostr under a ref name
@@ -78,6 +79,7 @@ Storage Commands:
   stats        Get storage statistics
   gc           Run garbage collection
   storage      Manage storage limits and eviction
+  mounts       List active hashtree mounts
 
 Publishing & Git Commands:
   publish      Publish a hash to Nostr under a ref name
@@ -271,6 +273,13 @@ pub(crate) enum Commands {
         /// Allow other users to access the mount
         #[arg(long)]
         allow_other: bool,
+    },
+
+    /// List active hashtree mounts
+    Mounts {
+        /// Print registry entries as JSON
+        #[arg(long)]
+        json: bool,
     },
 
     // ── Publishing & Git ────────────────────────────────────
