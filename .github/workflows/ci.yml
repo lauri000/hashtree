@@ -76,13 +76,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Linux system dependencies
+      - name: Ensure FUSE device is available
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            fuse3 \
-            pkg-config \
-            libfuse3-dev
+          sudo modprobe fuse || true
+          ls -l /dev/fuse
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -103,11 +100,8 @@ jobs:
       - name: Run unit tests
         run: cargo test --workspace
 
-      - name: Build htree binary with fuse
-        run: cargo build -p hashtree-cli --bin htree --features fuse
-
-      - name: Run FUSE mount smoke test
-        run: cargo test -p hashtree-cli --features fuse --test fuse_mount_smoke -- --nocapture
+      - name: Run FUSE mount smoke test in privileged Docker
+        run: bash scripts/run_fuse_smoke_in_docker.sh
 
   rust-integration-tests:
     name: Rust Integration Tests
