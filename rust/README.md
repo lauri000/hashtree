@@ -238,7 +238,13 @@ Publish the canonical repo release and mirror the same staged files to GitHub in
 
 That wraps `scripts/release_to_htree.sh`, reuses one staged release directory for both outputs, and keeps GitHub from drifting ahead of the hashtree/Homebrew publish path.
 
-On macOS this builds the macOS CLI artifacts locally, uses `cross` for the Linux musl CLI artifacts, and auto-builds the Windows x64 CLI binaries from a running Parallels Windows VM when available. You can still override that input explicitly with `--windows-artifacts-dir <shared-dir>`, or skip the VM step with `--skip-windows-vm`.
+On macOS this builds the macOS CLI artifacts locally, builds the Linux musl CLI artifacts in target-native Alpine Docker containers, and auto-builds the Windows x64 CLI binaries from a running Parallels Windows VM when available. The Linux Docker path is deliberate: the FUSE-enabled CLI needs target-native libfuse headers/libs for `pkg-config`, which the old `cross`-based release path did not provide reliably. You can still override the Windows input explicitly with `--windows-artifacts-dir <shared-dir>`, or skip the VM step with `--skip-windows-vm`.
+
+To backfill or verify a tagged release from an exact source snapshot, point the builder at a separate checkout or worktree:
+
+```bash
+rust/scripts/build_release_artifacts.sh --version v<version> --repo-dir /path/to/tagged/checkout --linux-builder docker
+```
 
 If you want the canonical hashtree/Homebrew release without touching the GitHub mirror:
 
@@ -258,7 +264,7 @@ To limit the local Iris packaging pass to specific steps, forward the same step 
 ./publish_release.sh --version v<version> --iris-only macos,linux
 ```
 
-When the release directory includes the full macOS/Linux CLI checksum set, the same script also updates the Homebrew tap at:
+When the release directory includes the full macOS/Linux CLI archive set, the same script also updates the Homebrew tap at:
 
 ```bash
 https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/homebrew-hashtree.git

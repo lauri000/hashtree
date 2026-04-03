@@ -18,8 +18,10 @@ mkdir -p \
 
 cp /Users/sirius/src/hashtree/rust/scripts/release_to_htree.sh "${REPO_ROOT}/rust/scripts/release_to_htree.sh"
 cp /Users/sirius/src/hashtree/rust/scripts/release_common.sh "${REPO_ROOT}/rust/scripts/release_common.sh"
+cp /Users/sirius/src/hashtree/rust/scripts/write_release_bootstrap_installer.sh "${REPO_ROOT}/rust/scripts/write_release_bootstrap_installer.sh"
 cp /Users/sirius/src/hashtree/scripts/stage_repo_release.mjs "${REPO_ROOT}/scripts/stage_repo_release.mjs"
 chmod +x "${REPO_ROOT}/rust/scripts/release_to_htree.sh"
+chmod +x "${REPO_ROOT}/rust/scripts/write_release_bootstrap_installer.sh"
 
 git init "${REPO_ROOT}" >/dev/null
 git -C "${REPO_ROOT}" remote add origin htree://self/hashtree

@@ -5,11 +5,8 @@ Hashtree daemon and CLI - content-addressed storage with P2P sync.
 ## Installation
 
 ```bash
-# Full CLI install with FUSE mount support by default
+# CLI + daemon (default cargo features; FUSE is optional)
 cargo install hashtree-cli
-
-# If local FUSE headers/libs are troublesome, build the CLI without it
-cargo install hashtree-cli --no-default-features --features p2p,lmdb
 
 # Add mount support explicitly when you want it
 cargo install hashtree-cli --no-default-features --features p2p,lmdb,fuse
@@ -23,6 +20,13 @@ cargo install hashtree-cli --no-default-features
 # Cashu wallet helper for `htree cashu ...`
 cargo install hashtree-cashu-cli
 ```
+
+For cargo installs, `fuse` is opt-in. Building with `--features p2p,lmdb,fuse` needs platform FUSE headers/libs:
+
+- Linux: typically `pkg-config` plus `libfuse3-dev` (or the distro equivalent).
+- macOS: install macFUSE first.
+
+The prebuilt macOS/Linux release binaries are built with `fuse` enabled.
 
 ## Commands
 

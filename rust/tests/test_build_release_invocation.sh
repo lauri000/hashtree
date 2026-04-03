@@ -12,11 +12,13 @@ cleanup() {
 trap cleanup EXIT
 
 BIN_DIR="${TMPDIR}/bin"
+SOURCE_REPO_DIR="${TMPDIR}/source-repo"
 TARGET_DIR="${TMPDIR}/custom-target"
 OUTPUT_DIR="${TMPDIR}/out"
 LOG_DIR="${TMPDIR}/logs"
 
-mkdir -p "$BIN_DIR" "$LOG_DIR"
+mkdir -p "$BIN_DIR" "$LOG_DIR" "${SOURCE_REPO_DIR}/rust"
+printf 'lockfile\n' >"${SOURCE_REPO_DIR}/rust/Cargo.lock"
 
 cat >"${BIN_DIR}/rustup" <<'EOF'
 #!/bin/bash
@@ -30,6 +32,7 @@ cat >"${BIN_DIR}/cargo" <<'EOF'
 set -euo pipefail
 
 printf 'env:%s\nargs:%s\n' "${CARGO_TARGET_DIR:-}" "$*" >>"${TEST_LOG_DIR}/cargo.log"
+printf 'pwd:%s\n' "$PWD" >>"${TEST_LOG_DIR}/cargo.log"
 
 target=""
 args=("$@")
@@ -59,6 +62,7 @@ cat >"${BIN_DIR}/cross" <<'EOF'
 set -euo pipefail
 
 printf 'env:%s\nargs:%s\n' "${CARGO_TARGET_DIR:-}" "$*" >>"${TEST_LOG_DIR}/cross.log"
+printf 'pwd:%s\n' "$PWD" >>"${TEST_LOG_DIR}/cross.log"
 
 target=""
 args=("$@")
@@ -85,17 +89,21 @@ chmod +x "${BIN_DIR}/cross"
 
 PATH="${BIN_DIR}:$PATH" TEST_LOG_DIR="${LOG_DIR}" "${BUILD_SCRIPT}" \
     --version v0.2.3 \
+    --repo-dir "${SOURCE_REPO_DIR}" \
     --output-dir "${OUTPUT_DIR}" \
     --target-dir "${TARGET_DIR}" \
     --targets "aarch64-apple-darwin,x86_64-unknown-linux-musl" \
+    --linux-builder cross \
     --cargo-bin cargo \
     --cross-bin cross
 
 grep -Fx "target add aarch64-apple-darwin" "${LOG_DIR}/rustup.log" >/dev/null
 grep -F "env:${TARGET_DIR}" "${LOG_DIR}/cargo.log" >/dev/null
-grep -F "args:build --release --target aarch64-apple-darwin -p git-remote-htree -p hashtree-cashu-cli -p hashtree-cli --features hashtree-cli/fuse" "${LOG_DIR}/cargo.log" >/dev/null
+grep -F "pwd:${SOURCE_REPO_DIR}/rust" "${LOG_DIR}/cargo.log" >/dev/null
+grep -F "args:build --release --target aarch64-apple-darwin -p git-remote-htree -p hashtree-cashu-cli -p hashtree-cli --features hashtree-cli/fuse --locked" "${LOG_DIR}/cargo.log" >/dev/null
 grep -F "env:${TARGET_DIR}" "${LOG_DIR}/cross.log" >/dev/null
-grep -F "args:build --release --target x86_64-unknown-linux-musl -p git-remote-htree -p hashtree-cashu-cli -p hashtree-cli --features hashtree-cli/fuse" "${LOG_DIR}/cross.log" >/dev/null
+grep -F "pwd:${SOURCE_REPO_DIR}/rust" "${LOG_DIR}/cross.log" >/dev/null
+grep -F "args:build --release --target x86_64-unknown-linux-musl -p git-remote-htree -p hashtree-cashu-cli -p hashtree-cli --features hashtree-cli/fuse --locked" "${LOG_DIR}/cross.log" >/dev/null
 
 test -f "${OUTPUT_DIR}/hashtree-aarch64-apple-darwin.tar.gz"
 test -f "${OUTPUT_DIR}/hashtree-x86_64-unknown-linux-musl.tar.gz"

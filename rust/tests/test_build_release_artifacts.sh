@@ -39,11 +39,8 @@ done
     --package-only
 
 test -f "${OUTPUT_DIR}/hashtree-aarch64-apple-darwin.tar.gz"
-test -f "${OUTPUT_DIR}/hashtree-aarch64-apple-darwin.sha256"
 test -f "${OUTPUT_DIR}/hashtree-x86_64-unknown-linux-musl.tar.gz"
-test -f "${OUTPUT_DIR}/hashtree-x86_64-unknown-linux-musl.sha256"
 test -f "${OUTPUT_DIR}/hashtree-x86_64-pc-windows-msvc.zip"
-test -f "${OUTPUT_DIR}/hashtree-x86_64-pc-windows-msvc.sha256"
 
 tar -tzf "${OUTPUT_DIR}/hashtree-aarch64-apple-darwin.tar.gz" | grep -Fx "hashtree/install.sh" >/dev/null
 tar -tzf "${OUTPUT_DIR}/hashtree-aarch64-apple-darwin.tar.gz" | grep -Fx "hashtree/htree" >/dev/null
@@ -88,8 +85,9 @@ if missing:
     raise SystemExit(f"missing files in windows zip: {sorted(missing)}")
 PY
 
-grep -F "hashtree-aarch64-apple-darwin.tar.gz" "${OUTPUT_DIR}/hashtree-aarch64-apple-darwin.sha256" >/dev/null
-grep -F "hashtree-x86_64-pc-windows-msvc.zip" "${OUTPUT_DIR}/hashtree-x86_64-pc-windows-msvc.sha256" >/dev/null
+test ! -e "${OUTPUT_DIR}/hashtree-aarch64-apple-darwin.sha256"
+test ! -e "${OUTPUT_DIR}/hashtree-x86_64-unknown-linux-musl.sha256"
+test ! -e "${OUTPUT_DIR}/hashtree-x86_64-pc-windows-msvc.sha256"
 
 RELATIVE_ROOT="${TMPDIR}/relative-output-check"
 mkdir -p "${RELATIVE_ROOT}"

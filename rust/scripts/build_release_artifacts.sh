@@ -10,6 +10,7 @@ workflow for the supported local targets, then writes them into a release direct
 
 Options:
   --version <version>                 Release version label, for example: v0.2.3
+  --repo-dir <dir>                   Repository root to build/package from (default: current checkout)
   --output-dir <dir>                 Output directory (default: rust/dist/hashtree-<version>)
   --target-dir <dir>                 Cargo target dir to read/write (default: rust/target)
   --targets <csv>                    Comma-separated targets to package
@@ -17,6 +18,9 @@ Options:
   --package-only                     Skip builds and package existing binaries only
   --cargo-bin <path>                 Cargo binary to use (default: cargo)
   --cross-bin <path>                 cross binary to use for Linux musl targets (default: cross)
+  --linux-builder <mode>             Linux musl builder: auto, cross, or docker (default: auto)
+  --docker-bin <path>                Docker binary to use for Linux docker builds (default: docker)
+  --docker-rust-image <image>        Rust Alpine image to use for Linux docker builds
   -h, --help                         Show this help
 
 Examples:
@@ -28,18 +32,23 @@ EOF
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUST_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-REPO_DIR="$(cd "${RUST_DIR}/.." && pwd)"
+DEFAULT_RUST_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DEFAULT_REPO_DIR="$(cd "${DEFAULT_RUST_DIR}/.." && pwd)"
 HTREE_RELEASE_FEATURES="hashtree-cli/fuse"
 
 VERSION=""
+REPO_DIR="${DEFAULT_REPO_DIR}"
+RUST_DIR="${DEFAULT_RUST_DIR}"
 OUTPUT_DIR=""
-TARGET_DIR="${RUST_DIR}/target"
+TARGET_DIR=""
 TARGETS_CSV=""
 WINDOWS_ARTIFACTS_DIR=""
 PACKAGE_ONLY=0
 CARGO_BIN="${CARGO_BIN:-cargo}"
 CROSS_BIN="${CROSS_BIN:-cross}"
+LINUX_BUILDER="${LINUX_BUILDER:-auto}"
+DOCKER_BIN="${DOCKER_BIN:-docker}"
+DOCKER_RUST_IMAGE="${DOCKER_RUST_IMAGE:-}"
 
 default_targets_csv() {
     case "$(uname -s)" in
@@ -61,6 +70,53 @@ require_command() {
         echo "Missing required command: $cmd" >&2
         exit 1
     fi
+}
+
+resolve_linux_builder() {
+    case "$LINUX_BUILDER" in
+        auto)
+            # Prefer target-native Alpine containers for Linux release artifacts.
+            # The FUSE-enabled CLI needs target-native libfuse headers/libs for
+            # pkg-config, which is exactly what broke the previous cross-based
+            # release path on both macOS and GitHub Actions.
+            if command -v "$DOCKER_BIN" >/dev/null 2>&1; then
+                printf '%s\n' docker
+            else
+                printf '%s\n' cross
+            fi
+            ;;
+        cross|docker)
+            printf '%s\n' "$LINUX_BUILDER"
+            ;;
+        *)
+            echo "Unsupported --linux-builder value: ${LINUX_BUILDER}" >&2
+            exit 1
+            ;;
+    esac
+}
+
+build_linux_target_with_docker() {
+    local target="$1"
+    local helper_script="${SCRIPT_DIR}/build_linux_release_target_docker.sh"
+    local args=(
+        --target "$target"
+        --repo-dir "$REPO_DIR"
+        --target-dir "$TARGET_DIR"
+        --docker-bin "$DOCKER_BIN"
+        --cargo-bin "$CARGO_BIN"
+    )
+
+    if [ ! -x "$helper_script" ]; then
+        echo "Missing Linux Docker build helper: ${helper_script}" >&2
+        exit 1
+    fi
+
+    if [ -n "$DOCKER_RUST_IMAGE" ]; then
+        args+=(--docker-rust-image "$DOCKER_RUST_IMAGE")
+    fi
+
+    echo "Building ${target} with Docker-native musl toolchain"
+    "$helper_script" "${args[@]}"
 }
 
 write_unix_install_script() {
@@ -221,23 +277,39 @@ ensure_rust_target() {
 
 build_target() {
     local target="$1"
+    local cargo_args=(
+        build
+        --release
+        --target "$target"
+        -p git-remote-htree
+        -p hashtree-cashu-cli
+        -p hashtree-cli
+        --features "$HTREE_RELEASE_FEATURES"
+    )
 
     if [ "$PACKAGE_ONLY" -eq 1 ]; then
         return
     fi
 
+    if [ -f "${RUST_DIR}/Cargo.lock" ]; then
+        cargo_args+=(--locked)
+    fi
+
     case "$target" in
         x86_64-unknown-linux-musl|aarch64-unknown-linux-musl)
-            require_command "$CROSS_BIN"
-            (
-                cd "$RUST_DIR"
-                export CARGO_TARGET_DIR="$TARGET_DIR"
-                "$CROSS_BIN" build --release --target "$target" \
-                    -p git-remote-htree \
-                    -p hashtree-cashu-cli \
-                    -p hashtree-cli \
-                    --features "$HTREE_RELEASE_FEATURES"
-            )
+            case "$(resolve_linux_builder)" in
+                docker)
+                    build_linux_target_with_docker "$target"
+                    ;;
+                cross)
+                    require_command "$CROSS_BIN"
+                    (
+                        cd "$RUST_DIR"
+                        export CARGO_TARGET_DIR="$TARGET_DIR"
+                        "$CROSS_BIN" "${cargo_args[@]}"
+                    )
+                    ;;
+            esac
             ;;
         x86_64-apple-darwin|aarch64-apple-darwin)
             if [ "$(uname -s)" != "Darwin" ]; then
@@ -249,11 +321,7 @@ build_target() {
             (
                 cd "$RUST_DIR"
                 export CARGO_TARGET_DIR="$TARGET_DIR"
-                "$CARGO_BIN" build --release --target "$target" \
-                    -p git-remote-htree \
-                    -p hashtree-cashu-cli \
-                    -p hashtree-cli \
-                    --features "$HTREE_RELEASE_FEATURES"
+                "$CARGO_BIN" "${cargo_args[@]}"
             )
             ;;
         x86_64-pc-windows-msvc)
@@ -336,6 +404,10 @@ while [ $# -gt 0 ]; do
             VERSION="${2:-}"
             shift 2
             ;;
+        --repo-dir)
+            REPO_DIR="${2:-}"
+            shift 2
+            ;;
         --output-dir)
             OUTPUT_DIR="${2:-}"
             shift 2
@@ -364,6 +436,18 @@ while [ $# -gt 0 ]; do
             CROSS_BIN="${2:-}"
             shift 2
             ;;
+        --linux-builder)
+            LINUX_BUILDER="${2:-}"
+            shift 2
+            ;;
+        --docker-bin)
+            DOCKER_BIN="${2:-}"
+            shift 2
+            ;;
+        --docker-rust-image)
+            DOCKER_RUST_IMAGE="${2:-}"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -382,6 +466,18 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
+REPO_DIR="$(cd "$REPO_DIR" && pwd)"
+RUST_DIR="${REPO_DIR}/rust"
+
+if [ ! -d "$RUST_DIR" ]; then
+    echo "Missing rust workspace in repo dir: ${RUST_DIR}" >&2
+    exit 1
+fi
+
+if [ -z "$TARGET_DIR" ]; then
+    TARGET_DIR="${RUST_DIR}/target"
+fi
+
 if [ -z "$TARGETS_CSV" ]; then
     TARGETS_CSV="$(default_targets_csv)"
 fi
@@ -397,6 +493,8 @@ fi
 
 mkdir -p "$(dirname "$OUTPUT_DIR")"
 OUTPUT_DIR="$(cd "$(dirname "$OUTPUT_DIR")" && pwd)/$(basename "$OUTPUT_DIR")"
+mkdir -p "$TARGET_DIR"
+TARGET_DIR="$(cd "$TARGET_DIR" && pwd)"
 
 require_command tar
 require_command python3
@@ -409,6 +507,7 @@ mkdir -p "$OUTPUT_DIR"
 echo "Release version: ${VERSION}"
 echo "Output dir: ${OUTPUT_DIR}"
 echo "Target dir: ${TARGET_DIR}"
+echo "Linux builder: $(resolve_linux_builder)"
 
 if [ "${#TARGETS[@]}" -gt 0 ] && [ -n "${TARGETS[0]}" ]; then
     echo "Targets: ${TARGETS[*]}"

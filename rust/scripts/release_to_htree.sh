@@ -18,6 +18,7 @@ Options:
   --skip-homebrew-tap                Skip updating the Homebrew tap
   --cargo-publish                    Publish Rust crates to crates.io after releasing artifacts
   --output-dir <dir>                 Release directory to create/use
+  --repo-dir <dir>                   Repository root to build/package from
   --target-dir <dir>                 Cargo target dir to read/write
   --targets <csv>                    Comma-separated targets to build/package
   --windows-artifacts-dir <dir>      Directory containing Windows .exe binaries from a VM
@@ -26,6 +27,9 @@ Options:
   --windows-shared-repo-path <path>  Override the repo path inside Parallels shared folders
   --windows-guest-repo-path <path>   Override the guest repo path used for the Windows build
   --package-only                     Skip builds and package existing binaries only
+  --linux-builder <mode>             Linux musl builder for release artifacts: auto, cross, or docker
+  --docker-bin <path>                Docker binary to use for Linux docker builds
+  --docker-rust-image <image>        Rust Alpine image to use for Linux docker builds
   --skip-iris                        Do not include Iris desktop assets in the repo release
   --skip-iris-verify                 Skip pnpm build/icon verification before Iris packaging
   --iris-only <csv>                  Limit Iris packaging steps to verify,macos,linux,windows
@@ -146,7 +150,7 @@ while [ $# -gt 0 ]; do
             RELEASE_STAGE_DIR="${2:-}"
             shift 2
             ;;
-        --output-dir|--target-dir|--targets|--windows-artifacts-dir|--cargo-bin|--cross-bin)
+        --output-dir|--repo-dir|--target-dir|--targets|--windows-artifacts-dir|--cargo-bin|--cross-bin|--linux-builder|--docker-bin|--docker-rust-image)
             BUILD_ARGS+=("$1" "${2:-}")
             shift 2
             ;;
@@ -229,77 +233,6 @@ EOF
     exit 1
 }
 
-write_release_bootstrap_installer() {
-    local path="$1"
-    local base_url="$2"
-
-    cat >"$path" <<EOF
-#!/bin/sh
-set -eu
-
-BASE_URL="${base_url}"
-ASSET_BASE_URL="\${BASE_URL}/assets"
-
-# This bootstrap is the trust root for curl|sh installs. Same-origin checksum
-# files would not improve security here, so it downloads the release archive
-# directly and delegates to the packaged installer.
-
-require_command() {
-    if ! command -v "\$1" >/dev/null 2>&1; then
-        echo "Missing required command: \$1" >&2
-        exit 1
-    fi
-}
-
-detect_arch() {
-    case "\$(uname -m)" in
-        arm64|aarch64)
-            printf '%s\n' aarch64
-            ;;
-        x86_64|amd64)
-            printf '%s\n' x86_64
-            ;;
-        *)
-            echo "Unsupported architecture: \$(uname -m)" >&2
-            exit 1
-            ;;
-    esac
-}
-
-detect_os() {
-    case "\$(uname -s)" in
-        Darwin)
-            printf '%s\n' apple-darwin
-            ;;
-        Linux)
-            printf '%s\n' unknown-linux-musl
-            ;;
-        *)
-            echo "Unsupported operating system: \$(uname -s)" >&2
-            exit 1
-            ;;
-    esac
-}
-
-require_command curl
-require_command tar
-require_command mktemp
-
-target="\$(detect_arch)-\$(detect_os)"
-archive="hashtree-\${target}.tar.gz"
-tmpdir="\$(mktemp -d 2>/dev/null || mktemp -d -t hashtree-install)"
-trap 'rm -rf "\$tmpdir"' EXIT HUP INT TERM
-
-curl -fsSL "\${ASSET_BASE_URL}/\${archive}" -o "\${tmpdir}/\${archive}"
-tar -xzf "\${tmpdir}/\${archive}" -C "\${tmpdir}"
-
-cd "\${tmpdir}/hashtree"
-exec ./install.sh "\$@"
-EOF
-
-    chmod +x "$path"
-}
-
 auto_build_windows_vm_artifacts() {
     local helper_script windows_output_dir
 
@@ -351,9 +284,11 @@ auto_build_windows_vm_artifacts
 
 OUTPUT_DIR="$(value_from_build_args --output-dir "${RUST_DIR}/dist/hashtree-${VERSION}")"
 TARGET_DIR="$(value_from_build_args --target-dir "${RUST_DIR}/target")"
+BUILD_REPO_DIR="$(value_from_build_args --repo-dir "${REPO_DIR}")"
 require_homebrew_archives_for_release "$OUTPUT_DIR"
 npub="$(current_npub)"
 RELEASE_STAGE_SCRIPT="${REPO_DIR}/scripts/stage_repo_release.mjs"
+RELEASE_BOOTSTRAP_SCRIPT="${SCRIPT_DIR}/write_release_bootstrap_installer.sh"
 
 resolve_iris_release_script() {
     local candidate_root
@@ -379,9 +314,14 @@ resolve_iris_release_script() {
 IRIS_RELEASE_SCRIPT="$(resolve_iris_release_script || true)"
 
 if [ -n "$npub" ]; then
-    write_release_bootstrap_installer \
-        "${OUTPUT_DIR}/install.sh" \
-        "$(gateway_release_base_url "$npub" "$TREE_NAME" "$VERSION_PATH")"
+    if [ ! -x "$RELEASE_BOOTSTRAP_SCRIPT" ]; then
+        echo "Missing release bootstrap helper: ${RELEASE_BOOTSTRAP_SCRIPT}" >&2
+        exit 1
+    fi
+
+    "${RELEASE_BOOTSTRAP_SCRIPT}" \
+        --path "${OUTPUT_DIR}/install.sh" \
+        --base-url "$(gateway_release_base_url "$npub" "$TREE_NAME" "$VERSION_PATH")"
 else
     echo "Warning: Could not determine current npub; skipping release installer generation." >&2
 fi
@@ -423,6 +363,7 @@ if [ -z "$RELEASE_STAGE_DIR" ]; then
     TEMP_DIRS+=("$RELEASE_STAGE_DIR")
 fi
 RELEASE_COMMIT="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || printf '%s\n' HEAD)"
+RELEASE_COMMIT="$(git -C "$BUILD_REPO_DIR" rev-parse HEAD 2>/dev/null || printf '%s\n' "$RELEASE_COMMIT")"
 STAGE_ARGS=(
     "$RELEASE_STAGE_SCRIPT"
     --tag "$VERSION"

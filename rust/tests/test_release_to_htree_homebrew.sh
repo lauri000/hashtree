@@ -12,6 +12,7 @@ mkdir -p \
     "${REPO_ROOT}/rust/scripts" \
     "${REPO_ROOT}/scripts" \
     "${REPO_ROOT}/packaging/homebrew" \
+    "${TMPDIR}/source-repo" \
     "${TMPDIR}/bin" \
     "${TMPDIR}/logs" \
     "${TMPDIR}/out" \
@@ -19,10 +20,23 @@ mkdir -p \
 
 cp /Users/sirius/src/hashtree/rust/scripts/release_to_htree.sh "${REPO_ROOT}/rust/scripts/release_to_htree.sh"
 cp /Users/sirius/src/hashtree/rust/scripts/release_common.sh "${REPO_ROOT}/rust/scripts/release_common.sh"
+cp /Users/sirius/src/hashtree/rust/scripts/write_release_bootstrap_installer.sh "${REPO_ROOT}/rust/scripts/write_release_bootstrap_installer.sh"
 cp /Users/sirius/src/hashtree/scripts/stage_repo_release.mjs "${REPO_ROOT}/scripts/stage_repo_release.mjs"
 chmod +x "${REPO_ROOT}/rust/scripts/release_to_htree.sh"
+chmod +x "${REPO_ROOT}/rust/scripts/write_release_bootstrap_installer.sh"
 git init "${REPO_ROOT}" >/dev/null
+git -C "${REPO_ROOT}" config user.name "Test User"
+git -C "${REPO_ROOT}" config user.email "test@example.com"
 git -C "${REPO_ROOT}" remote add origin htree://self/hashtree
+
+SOURCE_REPO="${TMPDIR}/source-repo"
+git init "${SOURCE_REPO}" >/dev/null
+git -C "${SOURCE_REPO}" config user.name "Source User"
+git -C "${SOURCE_REPO}" config user.email "source@example.com"
+printf 'tagged source\n' >"${SOURCE_REPO}/README.md"
+git -C "${SOURCE_REPO}" add README.md >/dev/null
+git -C "${SOURCE_REPO}" commit -m "Tagged source" >/dev/null
+SOURCE_COMMIT="$(git -C "${SOURCE_REPO}" rev-parse HEAD)"
 
 cat >"${REPO_ROOT}/rust/scripts/build_release_artifacts.sh" <<'EOF'
 #!/bin/bash
@@ -131,6 +145,7 @@ chmod +x "${TMPDIR}/bin/htree"
 PATH="${TMPDIR}/bin:$PATH" TEST_LOG_DIR="${TMPDIR}/logs" \
     "${REPO_ROOT}/rust/scripts/release_to_htree.sh" \
     --version v0.2.3 \
+    --repo-dir "${SOURCE_REPO}" \
     --output-dir "${TMPDIR}/out" \
     --release-stage-dir "${TMPDIR}/release-stage" >/dev/null
 
@@ -139,6 +154,7 @@ test -f "${TMPDIR}/release-stage/release.json"
 test -f "${TMPDIR}/release-stage/notes.md"
 test -f "${TMPDIR}/release-stage/install.sh"
 test -f "${TMPDIR}/release-stage/assets/hashtree-aarch64-apple-darwin.tar.gz"
+grep -F "\"commit\": \"${SOURCE_COMMIT}\"" "${TMPDIR}/release-stage/release.json" >/dev/null
 
 grep -F "publish_release:v0.2.3 nhash1release releases/hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
 grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/releases%2Fhashtree/v0.2.3/assets --assets-dir ${TMPDIR}/out --tap-repo homebrew-hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
