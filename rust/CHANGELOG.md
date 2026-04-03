@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.23 - 2026-04-03
+
+Changes since the `0.2.22` crates.io release.
+
+### Improved
+
+- Improved mount lifecycle behavior so `htree mount` waits for a live FUSE session before advertising, republishing mounted roots preserves sibling entries, and remounting stale targets recovers more predictably.
+- Improved Linux release engineering by building FUSE-enabled artifacts and smoke coverage inside privileged Docker, which matches the shipped Linux release environment more closely.
+
+### Fixed
+
+- Fixed nested Git ref export in `git-remote-htree`, so published `.git` trees materialize branch paths correctly for viewers and dumb-HTTP clones.
+- Fixed CI and non-`fuse` test coverage so `hashtree-cli` keeps fuse-only imports gated correctly and relayless mesh integration tests no longer pick up unrelated multicast peers from parallel jobs.
+
 ## 0.2.22 - 2026-04-03
 
 Changes since the `0.2.20` crates.io release.
