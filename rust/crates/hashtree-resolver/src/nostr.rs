@@ -20,6 +20,7 @@ use nostr_sdk::prelude::nip44;
 use nostr_sdk::prelude::*;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
@@ -121,6 +122,26 @@ fn is_newer_event(
 
 fn publish_succeeded(success_count: usize) -> bool {
     success_count > 0
+}
+
+async fn await_publish_result<F, T, E>(future: F) -> Result<T, ResolverError>
+where
+    F: Future<Output = Result<T, E>> + Send + 'static,
+    T: Send + 'static,
+    E: ToString + Send + 'static,
+{
+    let handle = tokio::spawn(future);
+    match handle.await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(ResolverError::Network(error.to_string())),
+        Err(error) if error.is_panic() => {
+            Err(ResolverError::Other("Nostr publish task panicked".into()))
+        }
+        Err(error) => Err(ResolverError::Other(format!(
+            "Nostr publish task failed: {}",
+            error
+        ))),
+    }
 }
 
 fn upsert_latest_by_d_tag<'a>(entries_by_d_tag: &mut HashMap<String, &'a Event>, event: &'a Event) {
@@ -504,11 +525,8 @@ impl NostrRootResolver {
 
         let event = EventBuilder::new(Kind::Custom(HASHTREE_KIND), "", tags);
 
-        let output = self
-            .client
-            .send_event_builder(event)
-            .await
-            .map_err(|e| ResolverError::Network(e.to_string()))?;
+        let client = self.client.clone();
+        let output = await_publish_result(async move { client.send_event_builder(event).await }).await?;
 
         Ok(publish_succeeded(output.success.len()))
     }
@@ -696,11 +714,8 @@ impl RootResolver for NostrRootResolver {
         let event = EventBuilder::new(Kind::Custom(HASHTREE_KIND), "", tags);
 
         // Publish
-        let output = self
-            .client
-            .send_event_builder(event)
-            .await
-            .map_err(|e| ResolverError::Network(e.to_string()))?;
+        let client = self.client.clone();
+        let output = await_publish_result(async move { client.send_event_builder(event).await }).await?;
 
         // Update local subscription state
         {
@@ -749,11 +764,8 @@ impl RootResolver for NostrRootResolver {
 
         let event = EventBuilder::new(Kind::Custom(HASHTREE_KIND), "", tags);
 
-        let output = self
-            .client
-            .send_event_builder(event)
-            .await
-            .map_err(|e| ResolverError::Network(e.to_string()))?;
+        let client = self.client.clone();
+        let output = await_publish_result(async move { client.send_event_builder(event).await }).await?;
 
         Ok(publish_succeeded(output.success.len()))
     }
@@ -976,6 +988,24 @@ mod tests {
         }
 
         true
+    }
+
+    #[tokio::test]
+    async fn publish_task_panic_is_reported_as_error() {
+        let error = await_publish_result(async move {
+            panic!("boom");
+            #[allow(unreachable_code)]
+            Ok::<(), &'static str>(())
+        })
+            .await
+            .expect_err("panic should be converted to resolver error");
+
+        match error {
+            ResolverError::Other(message) => {
+                assert!(message.contains("panicked"));
+            }
+            other => panic!("expected ResolverError::Other, got {other:?}"),
+        }
     }
 
     async fn handle_test_relay_connection(

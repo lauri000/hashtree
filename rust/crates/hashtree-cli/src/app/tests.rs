@@ -8,12 +8,9 @@ use super::run::{
     build_files_iris_to_url_for_add_route, build_files_iris_to_url_for_published_ref,
     build_files_iris_to_url_for_published_target, build_sites_iris_to_url_for_add_route,
     build_sites_iris_to_url_for_published_ref, detect_site_entry_for_path, format_cid_for_display,
-    warn_if_stun_unavailable,
-};
-#[cfg(feature = "fuse")]
-use super::run::{
-    decide_local_mount_publish_disposition, find_existing_active_mount, is_stale_mount_io_error,
-    prepare_mount_target, LocalMountPublishDisposition,
+    decide_local_mount_publish_disposition, find_existing_active_mount,
+    is_stale_mount_io_error, prepare_mount_target, should_warn_for_temporary_mountpoint,
+    warn_if_stun_unavailable, LocalMountPublishDisposition,
 };
 use crate::app::args::{CashuCommands, CashuMintCommands, ReleaseCommands, SocialGraphCommands};
 use crate::app::args::{Cli, Commands};
@@ -427,6 +424,21 @@ fn test_prepare_mount_target_preserves_explicit_mountpoint_for_local_source_dir(
     assert_eq!(prepared.target, "htree://self/source-dir");
     assert_eq!(prepared.mountpoint, Some(mountpoint));
     assert_eq!(prepared.local_dir, Some(source_dir));
+    assert!(!prepared.create_mountpoint);
+}
+
+#[cfg(feature = "fuse")]
+#[test]
+fn test_prepare_mount_target_uses_absolute_missing_path_as_mountpoint() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mount_path = temp_dir.path().join("mount-test");
+
+    let prepared = prepare_mount_target(mount_path.to_str().unwrap(), None).unwrap();
+
+    assert_eq!(prepared.target, "htree://self/mount-test");
+    assert_eq!(prepared.mountpoint, Some(mount_path));
+    assert_eq!(prepared.local_dir, None);
+    assert!(prepared.create_mountpoint);
 }
 
 #[cfg(feature = "fuse")]
@@ -482,6 +494,20 @@ fn test_find_existing_active_mount_matches_mountpoint() {
         .expect("matching mount");
     assert_eq!(found.target, "npub1example/mount-test");
     assert_eq!(found.mounted_cid, "nhash1match");
+}
+
+#[cfg(feature = "fuse")]
+#[test]
+fn test_should_warn_for_temporary_mountpoint_matches_temp_locations() {
+    assert!(should_warn_for_temporary_mountpoint(&PathBuf::from(
+        "/tmp/mount-test"
+    )));
+    assert!(should_warn_for_temporary_mountpoint(&PathBuf::from(
+        "/private/tmp/mount-test"
+    )));
+    assert!(!should_warn_for_temporary_mountpoint(&PathBuf::from(
+        "/Users/martti/mount-test"
+    )));
 }
 
 #[test]

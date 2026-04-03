@@ -736,11 +736,29 @@ mod fuse_impl {
         FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyCreate, ReplyData,
         ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyStatfs, ReplyWrite, Request,
     };
+    use std::ffi::CString;
     use std::ffi::OsStr;
     use std::path::Path;
     use std::time::{Duration, SystemTime};
 
     const TTL: Duration = Duration::from_secs(1);
+    const FALLBACK_BLOCK_SIZE: u32 = 4096;
+    const FALLBACK_TOTAL_BYTES: u64 = 1 << 40;
+    const FALLBACK_FREE_BYTES: u64 = 1 << 39;
+    const FALLBACK_TOTAL_FILES: u64 = 1_000_000;
+    const FALLBACK_FREE_FILES: u64 = 900_000;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct FsStats {
+        pub(crate) blocks: u64,
+        pub(crate) bfree: u64,
+        pub(crate) bavail: u64,
+        pub(crate) files: u64,
+        pub(crate) ffree: u64,
+        pub(crate) bsize: u32,
+        pub(crate) namelen: u32,
+        pub(crate) frsize: u32,
+    }
 
     impl FsError {
         fn errno(&self) -> i32 {
@@ -754,6 +772,47 @@ mod fuse_impl {
                 FsError::Tree(_) | FsError::Publish(_) => libc::EIO,
             }
         }
+    }
+
+    pub(crate) fn fallback_fs_stats() -> FsStats {
+        let blocks = FALLBACK_TOTAL_BYTES / u64::from(FALLBACK_BLOCK_SIZE);
+        let free_blocks = FALLBACK_FREE_BYTES / u64::from(FALLBACK_BLOCK_SIZE);
+        FsStats {
+            blocks,
+            bfree: free_blocks,
+            bavail: free_blocks,
+            files: FALLBACK_TOTAL_FILES,
+            ffree: FALLBACK_FREE_FILES,
+            bsize: FALLBACK_BLOCK_SIZE,
+            namelen: 255,
+            frsize: FALLBACK_BLOCK_SIZE,
+        }
+    }
+
+    fn host_fs_stats(path: &Path) -> Option<FsStats> {
+        let path = CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
+        let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+        let result = unsafe { libc::statfs(path.as_ptr(), stat.as_mut_ptr()) };
+        if result != 0 {
+            return None;
+        }
+
+        let stat = unsafe { stat.assume_init() };
+        let bsize = u32::try_from(stat.f_bsize).ok()?;
+        Some(FsStats {
+            blocks: stat.f_blocks,
+            bfree: stat.f_bfree,
+            bavail: stat.f_bavail,
+            files: stat.f_files,
+            ffree: stat.f_ffree,
+            bsize,
+            namelen: 255,
+            frsize: bsize,
+        })
+    }
+
+    pub(crate) fn current_fs_stats() -> FsStats {
+        host_fs_stats(Path::new("/")).unwrap_or_else(fallback_fs_stats)
     }
 
     impl<S: Store + Send + Sync + 'static> HashtreeFuse<S> {
@@ -1048,7 +1107,17 @@ mod fuse_impl {
         }
 
         fn statfs(&mut self, _req: &Request<'_>, _ino: u64, reply: ReplyStatfs) {
-            reply.statfs(0, 0, 0, 0, 0, 512, 255, 0);
+            let stats = current_fs_stats();
+            reply.statfs(
+                stats.blocks,
+                stats.bfree,
+                stats.bavail,
+                stats.files,
+                stats.ffree,
+                stats.bsize,
+                stats.namelen,
+                stats.frsize,
+            );
         }
     }
 }
@@ -1057,6 +1126,9 @@ mod fuse_impl {
 mod tests {
     use super::*;
     use hashtree_core::store::MemoryStore;
+
+    #[cfg(feature = "fuse")]
+    use super::fuse_impl::{current_fs_stats, fallback_fs_stats};
 
     struct RecordingPublisher {
         updates: Mutex<Vec<Cid>>,
@@ -1144,5 +1216,26 @@ mod tests {
         let updates = publisher.updates();
         assert!(!updates.is_empty());
         assert_eq!(updates.last().unwrap(), &fs.current_root());
+    }
+
+    #[cfg(feature = "fuse")]
+    #[test]
+    fn test_fallback_fs_stats_reports_free_space() {
+        let stats = fallback_fs_stats();
+        assert!(stats.blocks > 0);
+        assert!(stats.bfree > 0);
+        assert!(stats.bavail > 0);
+        assert!(stats.bsize > 0);
+        assert_eq!(stats.bfree, stats.bavail);
+    }
+
+    #[cfg(feature = "fuse")]
+    #[test]
+    fn test_current_fs_stats_reports_free_space() {
+        let stats = current_fs_stats();
+        assert!(stats.blocks > 0);
+        assert!(stats.bfree > 0);
+        assert!(stats.bavail > 0);
+        assert!(stats.bsize > 0);
     }
 }

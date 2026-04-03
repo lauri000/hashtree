@@ -55,6 +55,7 @@ pub(crate) struct PreparedMountTarget {
     pub(crate) target: String,
     pub(crate) mountpoint: Option<PathBuf>,
     pub(crate) local_dir: Option<PathBuf>,
+    pub(crate) create_mountpoint: bool,
 }
 
 #[cfg(feature = "fuse")]
@@ -70,7 +71,11 @@ pub(crate) fn prepare_mount_target(
     mountpoint: Option<PathBuf>,
 ) -> Result<PreparedMountTarget> {
     let candidate = PathBuf::from(target);
-    if candidate.is_dir() {
+    let is_filesystem_path = candidate.is_absolute()
+        || target.starts_with("./")
+        || target.starts_with("../")
+        || target.starts_with("~/");
+    if candidate.is_dir() || (is_filesystem_path && mountpoint.is_none()) {
         let mount_source = if candidate.is_relative() {
             std::env::current_dir()?.join(candidate)
         } else {
@@ -85,7 +90,8 @@ pub(crate) fn prepare_mount_target(
         return Ok(PreparedMountTarget {
             target: format!("htree://self/{ref_name}"),
             mountpoint: Some(mountpoint.unwrap_or_else(|| mount_source.clone())),
-            local_dir: Some(mount_source),
+            local_dir: mount_source.is_dir().then_some(mount_source.clone()),
+            create_mountpoint: !mount_source.exists(),
         });
     }
 
@@ -93,6 +99,7 @@ pub(crate) fn prepare_mount_target(
         target: target.to_string(),
         mountpoint,
         local_dir: None,
+        create_mountpoint: false,
     })
 }
 
@@ -113,6 +120,14 @@ pub(crate) fn find_existing_active_mount<'a>(
     mountpoint: &Path,
 ) -> Option<&'a super::mount_registry::ActiveMount> {
     mounts.iter().find(|mount| mount.mountpoint == mountpoint)
+}
+
+#[cfg(feature = "fuse")]
+pub(crate) fn should_warn_for_temporary_mountpoint(path: &Path) -> bool {
+    let temp_root = std::env::temp_dir();
+    path.starts_with(&temp_root)
+        || path.starts_with(Path::new("/tmp"))
+        || path.starts_with(Path::new("/private/tmp"))
 }
 
 #[cfg(feature = "fuse")]
@@ -732,6 +747,17 @@ pub(crate) async fn run() -> Result<()> {
             let prepared = prepare_mount_target(&target, mountpoint)
                 .context("Failed to prepare mount target")?;
             if let Some(path) = prepared.mountpoint.as_deref() {
+                if prepared.create_mountpoint {
+                    std::fs::create_dir(path).with_context(|| {
+                        format!("Failed to create mountpoint {}", path.display())
+                    })?;
+                }
+                if should_warn_for_temporary_mountpoint(path) {
+                    eprintln!(
+                        "warning: mounting under {} may be less reliable for long-lived published mounts; prefer a persistent path under your home directory",
+                        std::env::temp_dir().display()
+                    );
+                }
                 if clear_stale_mountpoint(path)? {
                     eprintln!("Recovered stale mountpoint at {}", path.display());
                 }
