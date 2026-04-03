@@ -1,5 +1,6 @@
 use super::auth::{AppState, CachedResolvedPathEntry, CachedTreeRootEntry, LookupResult};
 use super::mime::get_mime_type;
+pub(super) use super::peer_status::{daemon_status, webrtc_peers};
 use super::request_paths::{
     parse_api_resolve_request_path, parse_bare_npub_request_path, parse_mutable_htree_request_path,
     parse_resolve_request_path, parse_virtual_tree_root, request_virtual_tree_root,
@@ -8,8 +9,7 @@ use super::request_paths::{
 use super::ui::root_page;
 use crate::socialgraph;
 use crate::webrtc::{
-    build_root_filter, pick_latest_event, root_event_from_peer, ConnectionState, PeerRootEvent,
-    WebRTCState,
+    build_root_filter, pick_latest_event, root_event_from_peer, PeerRootEvent, WebRTCState,
 };
 use axum::{
     body::Body,
@@ -1154,92 +1154,7 @@ async fn htree_nhash_impl(
         }
     }
 
-    let mut effective_path = path.filter(|p| !p.is_empty());
-
-    let store = state.store.store_arc();
-    let tree = HashTree::new(HashTreeConfig::new(store).public());
-
-    if let Some(requested_path) = effective_path.clone() {
-        if is_thumbnail_request(&requested_path) {
-            match resolve_thumbnail_path(&state, &tree, &cid, &requested_path).await {
-                Ok(Some(resolved_path)) => {
-                    effective_path = Some(resolved_path);
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    return Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                        .body(Body::from(format!("Error: {}", e)))
-                        .unwrap();
-                }
-            }
-        }
-    }
-
-    let is_dir = match root_is_directory_with_fetch(&state, &tree, &cid).await {
-        Ok(value) => value,
-        Err(e) => {
-            return Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .body(Body::from(format!("Error: {}", e)))
-                .unwrap();
-        }
-    };
-
-    if is_dir {
-        match resolve_directory_target(&state, &tree, &cid, effective_path.clone()).await {
-            Ok(Some(DirectoryTarget::File { cid: entry, path })) => {
-                return serve_cid_with_range(
-                    &state,
-                    &entry,
-                    headers,
-                    true,
-                    is_localhost,
-                    Some(&path),
-                )
-                .await;
-            }
-            Ok(Some(DirectoryTarget::DirectoryListing { cid: listing_cid })) => {
-                return list_directory_json(&state, &listing_cid, true, is_localhost).await;
-            }
-            Ok(None) => {
-                return Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                    .body(Body::from("File not found"))
-                    .unwrap();
-            }
-            Err(e) => {
-                return Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                    .body(Body::from(format!("Error: {}", e)))
-                    .unwrap();
-            }
-        }
-    }
-
-    if let Some(path) = effective_path.clone() {
-        if path.contains('/') {
-            return Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .body(Body::from("Not found"))
-                .unwrap();
-        }
-    }
-
-    serve_cid_with_range(
-        &state,
-        &cid,
-        headers,
-        true,
-        is_localhost,
-        effective_path.as_deref(),
-    )
-    .await
+    serve_tree_root_response(&state, cid, path, headers, true, is_localhost).await
 }
 
 pub async fn htree_nhash(
@@ -1320,6 +1235,104 @@ fn find_thumbnail_entry_name(entries: &[TreeEntry]) -> Option<String> {
 
 fn is_thumbnail_request(path: &str) -> bool {
     path == "thumbnail" || path.ends_with("/thumbnail")
+}
+
+async fn serve_tree_root_response(
+    state: &AppState,
+    cid: Cid,
+    path: Option<String>,
+    headers: axum::http::HeaderMap,
+    is_immutable: bool,
+    is_localhost: bool,
+) -> Response<Body> {
+    let store = state.store.store_arc();
+    let tree = HashTree::new(HashTreeConfig::new(store).public());
+    let mut effective_path = path.filter(|value| !value.is_empty());
+
+    if let Some(requested_path) = effective_path.clone() {
+        if is_thumbnail_request(&requested_path) {
+            match resolve_thumbnail_path(state, &tree, &cid, &requested_path).await {
+                Ok(Some(resolved_path)) => {
+                    effective_path = Some(resolved_path);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    return Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .body(Body::from(format!("Error: {}", e)))
+                        .unwrap();
+                }
+            }
+        }
+    }
+
+    let is_dir = match root_is_directory_with_fetch(state, &tree, &cid).await {
+        Ok(value) => value,
+        Err(e) => {
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from(format!("Error: {}", e)))
+                .unwrap();
+        }
+    };
+
+    if is_dir {
+        match resolve_directory_target(state, &tree, &cid, effective_path.clone()).await {
+            Ok(Some(DirectoryTarget::File { cid: entry, path })) => {
+                return serve_cid_with_range(
+                    state,
+                    &entry,
+                    headers,
+                    is_immutable,
+                    is_localhost,
+                    Some(&path),
+                )
+                .await;
+            }
+            Ok(Some(DirectoryTarget::DirectoryListing { cid: listing_cid })) => {
+                return list_directory_json(state, &listing_cid, is_immutable, is_localhost).await;
+            }
+            Ok(None) => {
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from("File not found"))
+                    .unwrap();
+            }
+            Err(e) => {
+                return Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(Body::from(format!("Error: {}", e)))
+                    .unwrap();
+            }
+        }
+    }
+
+    if is_immutable
+        && effective_path
+            .as_deref()
+            .map(|requested_path| requested_path.contains('/'))
+            .unwrap_or(false)
+    {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(Body::from("Not found"))
+            .unwrap();
+    }
+
+    serve_cid_with_range(
+        state,
+        &cid,
+        headers,
+        is_immutable,
+        is_localhost,
+        effective_path.as_deref(),
+    )
+    .await
 }
 
 async fn resolve_thumbnail_path<S: Store>(
@@ -1483,80 +1496,7 @@ async fn htree_npub_impl(
         }
     }
 
-    let store = state.store.store_arc();
-    let tree = HashTree::new(HashTreeConfig::new(store).public());
-
-    let mut effective_path = path.filter(|p| !p.is_empty());
-    if let Some(path) = effective_path.clone() {
-        if path == "thumbnail" || path.ends_with("/thumbnail") {
-            match resolve_thumbnail_path(&state, &tree, &cid, &path).await {
-                Ok(Some(resolved_path)) => {
-                    effective_path = Some(resolved_path);
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    return Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                        .body(Body::from(format!("Error: {}", e)))
-                        .unwrap();
-                }
-            }
-        }
-    }
-
-    let is_dir = match root_is_directory_with_fetch(&state, &tree, &cid).await {
-        Ok(value) => value,
-        Err(e) => {
-            return Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .body(Body::from(format!("Error: {}", e)))
-                .unwrap();
-        }
-    };
-    if is_dir {
-        match resolve_directory_target(&state, &tree, &cid, effective_path.clone()).await {
-            Ok(Some(DirectoryTarget::File { cid: entry, path })) => {
-                return serve_cid_with_range(
-                    &state,
-                    &entry,
-                    headers,
-                    false,
-                    is_localhost,
-                    Some(&path),
-                )
-                .await;
-            }
-            Ok(Some(DirectoryTarget::DirectoryListing { cid: listing_cid })) => {
-                return list_directory_json(&state, &listing_cid, false, is_localhost).await;
-            }
-            Ok(None) => {
-                return Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                    .body(Body::from("File not found"))
-                    .unwrap();
-            }
-            Err(e) => {
-                return Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                    .body(Body::from(format!("Error: {}", e)))
-                    .unwrap();
-            }
-        }
-    }
-
-    serve_cid_with_range(
-        &state,
-        &cid,
-        headers,
-        false,
-        is_localhost,
-        effective_path.as_deref(),
-    )
-    .await
+    serve_tree_root_response(&state, cid, path, headers, false, is_localhost).await
 }
 
 pub async fn htree_npub(
@@ -2408,188 +2348,6 @@ pub async fn health_check() -> impl IntoResponse {
         .status(StatusCode::OK)
         .body(Body::from("ok"))
         .unwrap()
-}
-
-fn bluetooth_transport_enabled() -> bool {
-    crate::config::Config::load()
-        .map(|config| config.server.enable_bluetooth && config.server.max_bluetooth_peers > 0)
-        .unwrap_or(true)
-}
-
-fn peer_transport_visible(entry: &crate::webrtc::PeerEntry, bluetooth_enabled: bool) -> bool {
-    bluetooth_enabled || entry.transport != crate::webrtc::PeerTransport::Bluetooth
-}
-
-fn peer_transport_counts(
-    peers: &std::collections::HashMap<String, crate::webrtc::PeerEntry>,
-    bluetooth_enabled: bool,
-) -> serde_json::Value {
-    use crate::webrtc::PeerTransport;
-
-    let webrtc = peers
-        .values()
-        .filter(|entry| peer_transport_visible(entry, bluetooth_enabled))
-        .filter(|entry| entry.transport == PeerTransport::WebRtc)
-        .count();
-    let bluetooth = peers
-        .values()
-        .filter(|entry| peer_transport_visible(entry, bluetooth_enabled))
-        .filter(|entry| entry.transport == PeerTransport::Bluetooth)
-        .count();
-    json!({
-        "webrtc": webrtc,
-        "bluetooth": bluetooth,
-    })
-}
-
-fn peer_entry_json(id: &str, entry: &crate::webrtc::PeerEntry) -> serde_json::Value {
-    let rtc_state = entry
-        .peer
-        .as_ref()
-        .and_then(|p| p.as_webrtc().map(|peer| format!("{:?}", peer.state())));
-    let signal_paths: Vec<_> = entry
-        .signal_paths
-        .iter()
-        .map(|path| path.to_string())
-        .collect();
-
-    json!({
-        "id": id,
-        "peer_id": entry.peer_id.to_string(),
-        "pubkey": entry.peer_id.pubkey.clone(),
-        "state": format!("{:?}", entry.state),
-        "rtc_state": rtc_state,
-        "pool": format!("{:?}", entry.pool),
-        "transport": entry.transport.to_string(),
-        "signal_paths": signal_paths,
-        "connected": entry.state == crate::webrtc::ConnectionState::Connected,
-        "has_data_channel": entry.peer.as_ref().map(|p| p.is_ready()).unwrap_or(false),
-        "bytes_sent": entry.bytes_sent,
-        "bytes_received": entry.bytes_received,
-    })
-}
-
-/// Get connected mesh peers
-pub async fn webrtc_peers(State(state): State<AppState>) -> impl IntoResponse {
-    let Some(ref webrtc_state) = state.webrtc_peers else {
-        return Json(json!({
-            "enabled": false,
-            "transport_counts": {
-                "webrtc": 0,
-                "bluetooth": 0
-            },
-            "peers": []
-        }));
-    };
-
-    let peers = webrtc_state.peers.read().await;
-    let bluetooth_enabled = bluetooth_transport_enabled();
-    let (mesh_received, mesh_forwarded, mesh_dropped_duplicate) = webrtc_state.get_mesh_stats();
-    let peer_list: Vec<_> = peers
-        .iter()
-        .filter(|(_, entry)| peer_transport_visible(entry, bluetooth_enabled))
-        .map(|(id, entry)| peer_entry_json(id, entry))
-        .collect();
-
-    Json(json!({
-        "enabled": true,
-        "total": peer_list.len(),
-        "connected": peer_list.iter().filter(|p| p["connected"].as_bool().unwrap_or(false)).count(),
-        "with_data_channel": peer_list.iter().filter(|p| p["has_data_channel"].as_bool().unwrap_or(false)).count(),
-        "transport_counts": peer_transport_counts(&peers, bluetooth_enabled),
-        "mesh_received": mesh_received,
-        "mesh_forwarded": mesh_forwarded,
-        "mesh_dropped_duplicate": mesh_dropped_duplicate,
-        "peers": peer_list
-    }))
-}
-
-/// Daemon status endpoint - localhost only
-pub async fn daemon_status(
-    State(state): State<AppState>,
-    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
-) -> impl IntoResponse {
-    // Only allow localhost
-    let ip = connect_info.0.ip();
-    if !ip.is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "localhost only"})),
-        )
-            .into_response();
-    }
-
-    let bluetooth_received_events = match state.nostr_relay.as_ref() {
-        Some(relay) => relay.bluetooth_received_events(100).await,
-        None => Vec::new(),
-    };
-
-    // Mesh peers
-    let mesh = if let Some(ref webrtc_state) = state.webrtc_peers {
-        let peers = webrtc_state.peers.read().await;
-        let bluetooth_enabled = bluetooth_transport_enabled();
-        let connected = peers
-            .values()
-            .filter(|entry| peer_transport_visible(entry, bluetooth_enabled))
-            .filter(|e| e.state == ConnectionState::Connected)
-            .count();
-        let with_data_channel = peers
-            .values()
-            .filter(|entry| peer_transport_visible(entry, bluetooth_enabled))
-            .filter(|e| {
-                e.state == ConnectionState::Connected
-                    && e.peer.as_ref().map(|p| p.is_ready()).unwrap_or(false)
-            })
-            .count();
-        let (bytes_sent, bytes_received) = webrtc_state.get_bandwidth();
-        let (mesh_received, mesh_forwarded, mesh_dropped_duplicate) = webrtc_state.get_mesh_stats();
-        // Per-peer stats
-        let peer_stats: Vec<_> = peers
-            .iter()
-            .filter(|(_, entry)| peer_transport_visible(entry, bluetooth_enabled))
-            .map(|(id, entry)| peer_entry_json(id, entry))
-            .collect();
-        json!({
-            "enabled": true,
-            "total_peers": peer_stats.len(),
-            "connected": connected,
-            "with_data_channel": with_data_channel,
-            "transport_counts": peer_transport_counts(&peers, bluetooth_enabled),
-            "bytes_sent": bytes_sent,
-            "bytes_received": bytes_received,
-            "mesh_received": mesh_received,
-            "mesh_forwarded": mesh_forwarded,
-            "mesh_dropped_duplicate": mesh_dropped_duplicate,
-            "bluetooth_received_events": bluetooth_received_events,
-            "peers": peer_stats,
-        })
-    } else {
-        json!({
-            "enabled": false,
-            "bluetooth_received_events": bluetooth_received_events,
-        })
-    };
-
-    // Upstream servers
-    let upstream = json!({
-        "blossom_servers": state.upstream_blossom.len(),
-        "nostr_relays": state.nostr_relay_urls.len(),
-    });
-    let (relay_bytes_sent, relay_bytes_received) = state.ws_relay.upstream_relay_bandwidth();
-    let relay = json!({
-        "enabled": !state.nostr_relay_urls.is_empty(),
-        "bytes_sent": relay_bytes_sent,
-        "bytes_received": relay_bytes_received,
-    });
-
-    Json(json!({
-        "status": "running",
-        "mesh": mesh.clone(),
-        "webrtc": mesh,
-        "relay": relay,
-        "upstream": upstream,
-    }))
-    .into_response()
 }
 
 pub async fn garbage_collect(State(state): State<AppState>) -> impl IntoResponse {
