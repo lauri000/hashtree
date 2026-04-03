@@ -2,10 +2,10 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use hashtree_cli::{Config, HashtreeStore, NostrResolverConfig, NostrRootResolver, RootResolver};
 use hashtree_fuse::{FsError as FuseFsError, HashtreeFuse, RootPublisher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::mount_publish::{MountPublishQueue, PublishSink, MOUNT_PUBLISH_DEBOUNCE};
 use super::mount_registry::{register_active_mount, ActiveMount};
@@ -136,6 +136,47 @@ where
     StoreT: hashtree_core::Store + 'static,
 {
     queue: Arc<MountPublishQueue<Sink, StoreT>>,
+}
+
+const MOUNT_READY_TIMEOUT: Duration = Duration::from_secs(5);
+const MOUNT_READY_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+fn wait_for_mountpoint_ready(mountpoint: &Path) -> Result<()> {
+    wait_for_mountpoint_ready_with(mountpoint, MOUNT_READY_TIMEOUT, |path| {
+        let _ = std::fs::read_dir(path)?;
+        Ok(())
+    })
+}
+
+fn wait_for_mountpoint_ready_with<F>(
+    mountpoint: &Path,
+    timeout: Duration,
+    mut probe: F,
+) -> Result<()>
+where
+    F: FnMut(&Path) -> std::io::Result<()>,
+{
+    let deadline = Instant::now() + timeout;
+    let mut last_error = None;
+
+    loop {
+        match probe(mountpoint) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                let error_text = error.to_string();
+                if Instant::now() >= deadline {
+                    return Err(anyhow::anyhow!(
+                        "Timed out waiting for FUSE mount {} to become readable: {}",
+                        mountpoint.display(),
+                        last_error.unwrap_or(error_text),
+                    ));
+                }
+                last_error = Some(error_text);
+            }
+        }
+
+        std::thread::sleep(MOUNT_READY_POLL_INTERVAL);
+    }
 }
 
 impl<Sink, StoreT> RootPublisher for QueueingRootPublisher<Sink, StoreT>
@@ -323,7 +364,7 @@ pub(crate) async fn mount_fuse(
         create_mountpoint_dir(&mountpoint)?;
     }
 
-    let mut session = match fuser::Session::new(fs, &mountpoint, &options) {
+    let session = match fuser::Session::new(fs, &mountpoint, &options) {
         Ok(session) => session,
         Err(error) => {
             if implicit_mountpoint {
@@ -332,6 +373,23 @@ pub(crate) async fn mount_fuse(
             return Err(error.into());
         }
     };
+
+    let background = match session.spawn() {
+        Ok(background) => background,
+        Err(error) => {
+            if implicit_mountpoint {
+                let _ = std::fs::remove_dir(&mountpoint);
+            }
+            return Err(error.into());
+        }
+    };
+
+    if let Err(error) = wait_for_mountpoint_ready(&mountpoint) {
+        if implicit_mountpoint {
+            let _ = std::fs::remove_dir(&mountpoint);
+        }
+        return Err(error);
+    }
 
     let registration = register_active_mount(
         &data_dir,
@@ -367,7 +425,10 @@ pub(crate) async fn mount_fuse(
         );
     }
 
-    let run_result = session.run();
+    let run_result = background
+        .guard
+        .join()
+        .map_err(|_| anyhow::anyhow!("FUSE session thread panicked"))?;
     if run_result.is_err() && implicit_mountpoint {
         let _ = std::fs::remove_dir(&mountpoint);
     }
@@ -377,4 +438,41 @@ pub(crate) async fn mount_fuse(
         queue.shutdown().await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wait_for_mountpoint_ready_retries_until_probe_succeeds() {
+        let mountpoint = Path::new("/tmp/hashtree-ready");
+        let mut attempts = 0;
+
+        wait_for_mountpoint_ready_with(mountpoint, Duration::from_millis(200), |_| {
+            attempts += 1;
+            if attempts < 3 {
+                Err(std::io::Error::other("still starting"))
+            } else {
+                Ok(())
+            }
+        })
+        .expect("mountpoint becomes readable");
+
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn wait_for_mountpoint_ready_times_out_with_last_error() {
+        let mountpoint = Path::new("/tmp/hashtree-stuck");
+
+        let error = wait_for_mountpoint_ready_with(mountpoint, Duration::from_millis(1), |_| {
+            Err(std::io::Error::other("transport not ready"))
+        })
+        .expect_err("mountpoint should time out");
+
+        let message = error.to_string();
+        assert!(message.contains("Timed out waiting for FUSE mount"));
+        assert!(message.contains("transport not ready"));
+    }
 }
