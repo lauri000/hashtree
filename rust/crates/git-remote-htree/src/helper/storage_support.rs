@@ -5,8 +5,6 @@ use hashtree_fs::FsBlobStore;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-#[cfg(not(feature = "lmdb"))]
-use tracing::warn;
 
 pub(super) fn get_hashtree_data_dir() -> PathBuf {
     hashtree_config::get_data_dir()
@@ -48,7 +46,9 @@ pub(super) fn create_local_store(path: &Path) -> Result<Arc<dyn Store + Send + S
         })),
         #[cfg(not(feature = "lmdb"))]
         StorageBackend::Lmdb => {
-            warn!("LMDB backend requested but lmdb feature not enabled, using filesystem storage");
+            tracing::warn!(
+                "LMDB backend requested but lmdb feature not enabled, using filesystem storage"
+            );
             if max_size_bytes > 0 {
                 Ok(Arc::new(FsBlobStore::with_max_bytes(path, max_size_bytes)?))
             } else {
