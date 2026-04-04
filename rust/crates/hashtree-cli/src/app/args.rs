@@ -254,9 +254,9 @@ pub(crate) enum Commands {
     /// Mount a hashtree via FUSE
     #[cfg(feature = "fuse")]
     Mount {
-        /// Target to mount (nhash, npub/tree, or htree:// URL)
+        /// Target to mount (nhash, self/tree, npub/tree, or htree:// URL)
         target: String,
-        /// Mount point directory (defaults to a new ./<target-name> directory)
+        /// Mount point directory (defaults to a new ./<target-name> directory; explicit mountpoints may be missing or empty)
         mountpoint: Option<PathBuf>,
         /// Visibility: public, link-visible, or private
         #[arg(long)]

@@ -119,6 +119,54 @@ pub(crate) fn create_mountpoint_dir(mountpoint: &Path) -> Result<()> {
         .with_context(|| format!("Failed to create mountpoint {}", mountpoint.display()))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExplicitMountpointDisposition {
+    CreateDir,
+    UseExistingEmptyDir,
+}
+
+pub(crate) fn prepare_explicit_mountpoint(
+    mountpoint: &Path,
+) -> Result<ExplicitMountpointDisposition> {
+    if !mountpoint.exists() {
+        return Ok(ExplicitMountpointDisposition::CreateDir);
+    }
+
+    if !mountpoint.is_dir() {
+        anyhow::bail!("Mountpoint is not a directory: {}", mountpoint.display());
+    }
+
+    let mut entries = std::fs::read_dir(mountpoint)
+        .with_context(|| format!("Failed to inspect mountpoint {}", mountpoint.display()))?;
+    if let Some(entry) = entries.next() {
+        entry.with_context(|| format!("Failed to inspect mountpoint {}", mountpoint.display()))?;
+        anyhow::bail!(
+            "Explicit mountpoint must be an empty directory: {}",
+            mountpoint.display()
+        );
+    }
+
+    Ok(ExplicitMountpointDisposition::UseExistingEmptyDir)
+}
+
+pub(crate) fn reject_local_mount_target(target: &str, current_dir: &Path) -> Result<()> {
+    let candidate = PathBuf::from(target);
+    let looks_like_path = candidate.is_absolute()
+        || target.starts_with("./")
+        || target.starts_with("../")
+        || target.starts_with("~/")
+        || (!target.contains('/') && !target.contains('\\') && current_dir.join(target).exists());
+
+    if looks_like_path {
+        anyhow::bail!(
+            "mount target must be a hashtree ref, not a local path: {}. Use `htree mount self/<name> <mountpoint>`",
+            target
+        );
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,5 +219,77 @@ mod tests {
             .contains("Implicit mountpoint already exists"));
 
         fs::remove_dir(&mountpoint).unwrap();
+    }
+
+    #[test]
+    fn reject_local_mount_target_rejects_filesystem_paths() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let existing = temp_dir.path().join("drive");
+        fs::create_dir(&existing).unwrap();
+
+        let absolute_error =
+            reject_local_mount_target(existing.to_str().unwrap(), temp_dir.path()).unwrap_err();
+        assert!(absolute_error
+            .to_string()
+            .contains("mount target must be a hashtree ref"));
+
+        let relative_error = reject_local_mount_target("./drive", temp_dir.path()).unwrap_err();
+        assert!(relative_error
+            .to_string()
+            .contains("mount target must be a hashtree ref"));
+
+        let single_segment_error = reject_local_mount_target("drive", temp_dir.path()).unwrap_err();
+        assert!(single_segment_error
+            .to_string()
+            .contains("mount target must be a hashtree ref"));
+    }
+
+    #[test]
+    fn reject_local_mount_target_allows_published_refs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        reject_local_mount_target("self/drive", temp_dir.path()).unwrap();
+        reject_local_mount_target("npub1owner/drive", temp_dir.path()).unwrap();
+        reject_local_mount_target("htree://npub1owner/drive/docs", temp_dir.path()).unwrap();
+        reject_local_mount_target("nhash1example", temp_dir.path()).unwrap();
+    }
+
+    #[test]
+    fn prepare_explicit_mountpoint_allows_missing_or_empty_dirs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let missing = temp_dir.path().join("missing");
+        assert_eq!(
+            prepare_explicit_mountpoint(&missing).unwrap(),
+            ExplicitMountpointDisposition::CreateDir
+        );
+
+        fs::create_dir(&missing).unwrap();
+        assert_eq!(
+            prepare_explicit_mountpoint(&missing).unwrap(),
+            ExplicitMountpointDisposition::UseExistingEmptyDir
+        );
+    }
+
+    #[test]
+    fn prepare_explicit_mountpoint_rejects_nonempty_dir() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mountpoint = temp_dir.path().join("mountpoint");
+        fs::create_dir(&mountpoint).unwrap();
+        fs::write(mountpoint.join("existing.txt"), b"hello").unwrap();
+
+        let error = prepare_explicit_mountpoint(&mountpoint).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Explicit mountpoint must be an empty directory"));
+    }
+
+    #[test]
+    fn prepare_explicit_mountpoint_rejects_existing_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mountpoint = temp_dir.path().join("mountpoint");
+        fs::write(&mountpoint, b"hello").unwrap();
+
+        let error = prepare_explicit_mountpoint(&mountpoint).unwrap_err();
+        assert!(error.to_string().contains("Mountpoint is not a directory"));
     }
 }

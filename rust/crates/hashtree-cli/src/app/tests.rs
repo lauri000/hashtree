@@ -12,8 +12,7 @@ use super::run::{
 };
 #[cfg(feature = "fuse")]
 use super::run::{
-    decide_local_mount_publish_disposition, find_existing_active_mount, is_stale_mount_io_error,
-    prepare_mount_target, should_warn_for_temporary_mountpoint, LocalMountPublishDisposition,
+    find_existing_active_mount, is_stale_mount_io_error, should_warn_for_temporary_mountpoint,
 };
 use crate::app::args::{CashuCommands, CashuMintCommands, ReleaseCommands, SocialGraphCommands};
 use crate::app::args::{Cli, Commands};
@@ -397,64 +396,6 @@ fn test_cli_parses_mount_command_without_explicit_mountpoint() {
         }
         _ => panic!("expected mount command"),
     }
-}
-
-#[cfg(feature = "fuse")]
-#[test]
-fn test_prepare_mount_target_uses_existing_local_dir_as_source_and_mountpoint() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let source_dir = temp_dir.path().join("mount-test");
-    std::fs::create_dir(&source_dir).unwrap();
-
-    let prepared = prepare_mount_target(source_dir.to_str().unwrap(), None).unwrap();
-
-    assert_eq!(prepared.target, "htree://self/mount-test");
-    assert_eq!(prepared.mountpoint, Some(source_dir.clone()));
-    assert_eq!(prepared.local_dir, Some(source_dir));
-}
-
-#[cfg(feature = "fuse")]
-#[test]
-fn test_prepare_mount_target_preserves_explicit_mountpoint_for_local_source_dir() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let source_dir = temp_dir.path().join("source-dir");
-    let mountpoint = temp_dir.path().join("mount-here");
-    std::fs::create_dir(&source_dir).unwrap();
-
-    let prepared =
-        prepare_mount_target(source_dir.to_str().unwrap(), Some(mountpoint.clone())).unwrap();
-
-    assert_eq!(prepared.target, "htree://self/source-dir");
-    assert_eq!(prepared.mountpoint, Some(mountpoint));
-    assert_eq!(prepared.local_dir, Some(source_dir));
-    assert!(!prepared.create_mountpoint);
-}
-
-#[cfg(feature = "fuse")]
-#[test]
-fn test_prepare_mount_target_uses_absolute_missing_path_as_mountpoint() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let mount_path = temp_dir.path().join("mount-test");
-
-    let prepared = prepare_mount_target(mount_path.to_str().unwrap(), None).unwrap();
-
-    assert_eq!(prepared.target, "htree://self/mount-test");
-    assert_eq!(prepared.mountpoint, Some(mount_path));
-    assert_eq!(prepared.local_dir, None);
-    assert!(prepared.create_mountpoint);
-}
-
-#[cfg(feature = "fuse")]
-#[test]
-fn test_decide_local_mount_publish_disposition_uses_existing_published_target() {
-    assert_eq!(
-        decide_local_mount_publish_disposition(true),
-        LocalMountPublishDisposition::UseExistingPublishedTarget
-    );
-    assert_eq!(
-        decide_local_mount_publish_disposition(false),
-        LocalMountPublishDisposition::PublishLocalDir
-    );
 }
 
 #[cfg(feature = "fuse")]

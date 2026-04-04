@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.25 - 2026-04-04
+
+Changes since the `0.2.24` crates.io release.
+
+### Improved
+
+- Clarified `htree mount` semantics so the first argument is always a published hashtree target, while explicit mountpoints can reuse an existing empty directory or create a missing one for stable Drive-style folders such as `~/Hashtree`.
+
+### Fixed
+
+- Fixed `htree mount` path handling by rejecting filesystem-like targets that previously triggered ambiguous local publish behavior, and by refusing explicit non-empty mount directories that would otherwise hide user files behind the FUSE mount.
+
 ## 0.2.24 - 2026-04-04
 
 Changes since the `0.2.23` crates.io release.
