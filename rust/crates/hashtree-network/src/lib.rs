@@ -51,6 +51,7 @@ pub mod peer_selector;
 pub mod protocol;
 pub mod real_factory;
 pub mod root_events;
+pub mod runtime_control;
 pub mod runtime_peer;
 pub mod runtime_state;
 pub mod signaling;
@@ -96,6 +97,11 @@ pub use real_factory::WebRtcPeerLinkFactory;
 pub use root_events::{
     build_root_filter, hashtree_event_identifier, is_hashtree_labeled_event, pick_latest_event,
     root_event_from_peer, PeerRootEvent, HASHTREE_KIND, HASHTREE_LABEL,
+};
+pub use runtime_control::{
+    can_track_source_peer, cleanup_stale_peers, create_signaling_event, dispatch_signaling_message,
+    forward_mesh_frame_from_runtime, handle_peer_state_event, handle_signaling_event,
+    handle_signaling_message, PeerStateEvent,
 };
 pub use runtime_peer::{
     can_track_signal_path_peer, remember_peer_signal_path, ConnectionState, MeshPeerEntry,

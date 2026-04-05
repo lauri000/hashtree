@@ -4,11 +4,12 @@ pub use hashtree_network::{
     decrement_htl_with_policy, should_forward_htl, validate_mesh_frame, DataChunk, DataMessage,
     DataPayment, DataPaymentAck, DataQuoteRequest, DataQuoteResponse, DataRequest, DataResponse,
     HtlMode, HtlPolicy, IceCandidate, MeshNostrFrame, MeshNostrPayload, PeerDirection,
-    PeerHTLConfig, PeerId, PeerPool, PoolConfig, PoolSettings, RequestDispatchConfig,
-    SelectionStrategy, SignalingMessage, TimedSeenSet, BLOB_REQUEST_POLICY, DECREMENT_AT_MAX_PROB,
-    DECREMENT_AT_MIN_PROB, MAX_HTL, MESH_DEFAULT_HTL, MESH_EVENT_POLICY, MESH_MAX_HTL,
-    MESH_PROTOCOL, MESH_PROTOCOL_VERSION, MSG_TYPE_CHUNK, MSG_TYPE_PAYMENT, MSG_TYPE_PAYMENT_ACK,
-    MSG_TYPE_QUOTE_REQUEST, MSG_TYPE_QUOTE_RESPONSE, MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE,
+    PeerHTLConfig, PeerId, PeerPool, PeerStateEvent, PoolConfig, PoolSettings,
+    RequestDispatchConfig, SelectionStrategy, SignalingMessage, TimedSeenSet, BLOB_REQUEST_POLICY,
+    DECREMENT_AT_MAX_PROB, DECREMENT_AT_MIN_PROB, MAX_HTL, MESH_DEFAULT_HTL, MESH_EVENT_POLICY,
+    MESH_MAX_HTL, MESH_PROTOCOL, MESH_PROTOCOL_VERSION, MSG_TYPE_CHUNK, MSG_TYPE_PAYMENT,
+    MSG_TYPE_PAYMENT_ACK, MSG_TYPE_QUOTE_REQUEST, MSG_TYPE_QUOTE_RESPONSE, MSG_TYPE_REQUEST,
+    MSG_TYPE_RESPONSE,
 };
 
 /// Backward-compatible helper using blob-request policy.
@@ -111,17 +112,6 @@ pub struct PeerStatus {
     pub direction: PeerDirection,
     pub connected_at: Option<std::time::Instant>,
     pub pool: PeerPool,
-}
-
-/// Peer state change event for signaling layer notification
-#[derive(Debug, Clone)]
-pub enum PeerStateEvent {
-    /// Peer connection succeeded
-    Connected(PeerId),
-    /// Peer connection failed
-    Failed(PeerId),
-    /// Peer disconnected
-    Disconnected(PeerId),
 }
 
 /// Encode a request to wire format: [0x00][msgpack body]

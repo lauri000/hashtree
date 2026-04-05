@@ -12,13 +12,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use hashtree_network::{
-    can_track_signal_path_peer, decode_signaling_event, encode_signaling_event,
-    forward_mesh_frame_to_sessions as fanout_mesh_frame_to_sessions, remember_peer_signal_path,
-    resolve_root_from_peer_sessions as resolve_root_via_peer_sessions, run_hedged_waves,
-    sync_selector_peers, ClassifyRequest as SharedClassifyRequest, HedgedWaveAction,
-    IceCandidate as SharedIceCandidate, MeshPeerEntry as SharedPeerEntry, MeshRouter,
-    MeshRuntimeState, MeshSession, NostrRelayTransport, PeerClassifier as SharedPeerClassifier,
-    PeerLink as SharedPeerLink, PeerLinkFactory as SharedPeerLinkFactory, PeerSelector,
+    can_track_source_peer, resolve_root_from_peer_sessions as resolve_root_via_peer_sessions,
+    run_hedged_waves, sync_selector_peers, ClassifyRequest as SharedClassifyRequest,
+    HedgedWaveAction, IceCandidate as SharedIceCandidate, MeshPeerEntry as SharedPeerEntry,
+    MeshRouter, MeshRuntimeState, MeshSession, NostrRelayTransport,
+    PeerClassifier as SharedPeerClassifier, PeerLink as SharedPeerLink,
+    PeerLinkFactory as SharedPeerLinkFactory, PeerSelector,
     SignalingTransport as SharedSignalingTransport, TransportError as SharedTransportError,
 };
 pub use hashtree_network::{ConnectionState, PeerSignalPath, PeerTransport};
@@ -39,8 +38,7 @@ use super::session::MeshPeer;
 use super::types::{
     encode_quote_request, encode_request, validate_mesh_frame, DataQuoteRequest, DataRequest,
     MeshNostrFrame, MeshNostrPayload, PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus,
-    RequestDispatchConfig, SignalingMessage, TimedSeenSet, WebRTCConfig, MESH_DEFAULT_HTL,
-    WEBRTC_KIND,
+    RequestDispatchConfig, SignalingMessage, TimedSeenSet, WebRTCConfig, WEBRTC_KIND,
 };
 use super::wifi_aware::{mobile_wifi_aware_bridge, WifiAwareNostrBus, WIFI_AWARE_SOURCE};
 use crate::cashu_helper::CashuPaymentClient;
@@ -1259,15 +1257,7 @@ impl WebRTCManager {
         peer_key: &str,
         peers: &HashMap<String, PeerEntry>,
     ) -> bool {
-        let Some(max_peers) = self.local_bus_max_peers(source) else {
-            return true;
-        };
-        can_track_signal_path_peer(
-            PeerSignalPath::from_source_name(source),
-            max_peers,
-            peer_key,
-            peers,
-        )
+        can_track_source_peer(source, peer_key, peers, self.local_bus_max_peers(source))
     }
 }
 

@@ -241,59 +241,21 @@ impl WebRTCManager {
         msg: SignalingMessage,
         relay_transport: Option<&Arc<NostrRelayTransport>>,
     ) {
-        if !self.config.signaling_enabled {
-            debug!(
-                "Skipping signaling message {} because WebRTC signaling is disabled",
-                msg.msg_type()
-            );
-            return;
-        }
-
-        if let Some(relay_transport) = relay_transport {
-            if let Err(err) = relay_transport.publish(msg.clone()).await {
-                debug!(
-                    "Failed to publish signaling message {} via shared relay transport: {}",
-                    msg.msg_type(),
-                    err
-                );
-            }
-        }
-
-        let event = match Self::create_signaling_event(&self.keys, &msg).await {
-            Ok(event) => event,
-            Err(e) => {
-                debug!("Failed to create signaling event for mesh dispatch: {}", e);
-                return;
-            }
-        };
-
-        for bus in &self.local_buses {
-            if let Err(err) = bus.broadcast_event(&event).await {
-                debug!(
-                    "Failed to broadcast signaling event over {} ({}): {}",
-                    bus.source_name(),
-                    msg.msg_type(),
-                    err
-                );
-            }
-        }
-
-        let mut frame =
-            MeshNostrFrame::new_event(event, &self.my_peer_id.to_string(), MESH_DEFAULT_HTL);
-        if !self.mark_seen_frame_id(frame.frame_id.clone()).await {
-            self.state.record_mesh_duplicate_drop();
-            return;
-        }
-        if !self.mark_seen_event_id(frame.event().id.to_hex()).await {
-            self.state.record_mesh_duplicate_drop();
-            return;
-        }
-
-        // Keep the sender peer id stable even if this is forwarded later.
-        frame.sender_peer_id = self.my_peer_id.to_string();
-        let forwarded = self.forward_mesh_frame(&frame, None).await;
-        if forwarded > 0 {
-            self.state.record_mesh_forwarded(forwarded as u64);
+        if let Err(err) = hashtree_network::dispatch_signaling_message(
+            self.config.signaling_enabled,
+            &self.keys,
+            &self.my_peer_id,
+            &self.state.runtime,
+            relay_transport,
+            &self.local_buses,
+            &self.seen_frame_ids,
+            &self.seen_event_ids,
+            msg,
+            WEBRTC_KIND,
+        )
+        .await
+        {
+            debug!("Failed to dispatch signaling message: {}", err);
         }
     }
 
@@ -302,22 +264,12 @@ impl WebRTCManager {
         frame: &MeshNostrFrame,
         exclude_peer_id: Option<&str>,
     ) -> usize {
-        let peers = self.state.runtime.peers.read().await;
-        let peer_refs: Vec<(String, Arc<dyn MeshSession>)> = peers
-            .values()
-            .filter(|entry| entry.state == ConnectionState::Connected)
-            .filter_map(|entry| {
-                entry.peer.as_ref().map(|peer| {
-                    (
-                        entry.peer_id.to_string(),
-                        Arc::new(peer.clone()) as Arc<dyn MeshSession>,
-                    )
-                })
-            })
-            .collect();
-        drop(peers);
-
-        fanout_mesh_frame_to_sessions(peer_refs, frame, exclude_peer_id).await
+        hashtree_network::forward_mesh_frame_from_runtime(
+            &self.state.runtime,
+            frame,
+            exclude_peer_id,
+        )
+        .await
     }
 
     async fn handle_mesh_frame(&self, from_peer_id: PeerId, frame: MeshNostrFrame) {
@@ -373,21 +325,6 @@ impl WebRTCManager {
         }
     }
 
-    /// Create a signaling event
-    ///
-    /// For directed messages (offer, answer, candidate, candidates), use NIP-17 style
-    /// gift wrapping with ephemeral keys for privacy.
-    /// Hello messages use kind 25050 with #l: "hello" tag and peerId.
-    async fn create_signaling_event(keys: &Keys, msg: &SignalingMessage) -> Result<nostr::Event> {
-        encode_signaling_event(
-            keys,
-            msg.peer_id(),
-            msg,
-            Kind::Ephemeral(WEBRTC_KIND as u16),
-        )
-        .map_err(|e| anyhow::anyhow!(e.to_string()))
-    }
-
     /// Handle an incoming event
     ///
     /// Messages may be:
@@ -399,25 +336,17 @@ impl WebRTCManager {
         event: &nostr::Event,
         shared_router: Option<&Arc<SharedProductionRouter>>,
     ) -> Result<()> {
-        if !self.config.signaling_enabled {
-            return Ok(());
-        }
-
-        let Some(shared_router) = shared_router else {
-            return Ok(());
-        };
-
-        let Some(msg) = decode_signaling_event(
-            event,
-            &self.my_peer_id.to_string(),
-            &self.keys.public_key().to_hex(),
+        hashtree_network::handle_signaling_event(
+            self.config.signaling_enabled,
+            &self.my_peer_id,
             &self.keys,
-        ) else {
-            return Ok(());
-        };
-
-        self.handle_signaling_message(relay, msg, Some(shared_router))
-            .await
+            &self.state.runtime,
+            relay,
+            self.local_bus_max_peers(relay),
+            event,
+            shared_router,
+        )
+        .await
     }
 
     async fn handle_signaling_message(
@@ -426,184 +355,29 @@ impl WebRTCManager {
         msg: SignalingMessage,
         shared_router: Option<&Arc<SharedProductionRouter>>,
     ) -> Result<()> {
-        let Some(shared_router) = shared_router else {
-            return Ok(());
-        };
-
-        if matches!(
+        hashtree_network::handle_signaling_message(
+            &self.state.runtime,
+            source,
+            self.local_bus_max_peers(source),
             msg,
-            SignalingMessage::Hello { .. } | SignalingMessage::Offer { .. }
-        ) {
-            let peers = self.state.runtime.peers.read().await;
-            if !self.can_track_local_bus_peer(source, msg.peer_id(), &peers) {
-                return Ok(());
-            }
-        }
-
-        debug!(
-            "Received {} from {} via {}",
-            msg.msg_type(),
-            msg.peer_id(),
-            source
-        );
-        let peer_id = msg.peer_id().to_string();
-        shared_router
-            .handle_message(msg)
-            .await
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        remember_peer_signal_path(self.state.runtime.peers.as_ref(), &peer_id, source).await;
-
-        Ok(())
+            shared_router,
+        )
+        .await
     }
 
     /// Handle peer state change events from peer connections
     async fn handle_peer_state_event(&self, event: PeerStateEvent) {
-        match event {
-            PeerStateEvent::Connected(peer_id) => {
-                let peer_key = peer_id.to_string();
-                let mut emit_hello = false;
-                let mut peers = self.state.runtime.peers.write().await;
-                if let Some(entry) = peers.get_mut(&peer_key) {
-                    if entry.state != ConnectionState::Connected {
-                        info!("Peer {} connected (via state event)", peer_id.short());
-                        entry.state = ConnectionState::Connected;
-                        emit_hello = true;
-                        // Update connected count
-                        self.state
-                            .runtime
-                            .connected_count
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                }
-                drop(peers);
-                if emit_hello {
-                    if let Some(shared_router) = self.shared_router.as_ref() {
-                        let _ = shared_router.send_hello(Vec::new()).await;
-                    }
-                }
-            }
-            PeerStateEvent::Failed(peer_id) => {
-                let peer_key = peer_id.to_string();
-                info!(
-                    "Peer {} connection failed - removing from pool",
-                    peer_id.short()
-                );
-                let removed = {
-                    let mut peers = self.state.runtime.peers.write().await;
-                    peers.remove(&peer_key)
-                };
-                if let Some(entry) = removed {
-                    // Decrement connected count if was connected
-                    if entry.state == ConnectionState::Connected {
-                        self.state
-                            .runtime
-                            .connected_count
-                            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    // Close the peer connection if it exists
-                    if let Some(peer) = entry.peer {
-                        let _ = peer.close().await;
-                    }
-                }
-                if let Some(shared_router) = self.shared_router.as_ref() {
-                    if let Some(channel) = shared_router.remove_peer(&peer_key).await {
-                        channel.close().await;
-                    }
-                }
-            }
-            PeerStateEvent::Disconnected(peer_id) => {
-                let peer_key = peer_id.to_string();
-                info!("Peer {} disconnected - removing from pool", peer_id.short());
-                let removed = {
-                    let mut peers = self.state.runtime.peers.write().await;
-                    peers.remove(&peer_key)
-                };
-                if let Some(entry) = removed {
-                    // Decrement connected count if was connected
-                    if entry.state == ConnectionState::Connected {
-                        self.state
-                            .runtime
-                            .connected_count
-                            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    // Close the peer connection if it exists
-                    if let Some(peer) = entry.peer {
-                        let _ = peer.close().await;
-                    }
-                }
-                if let Some(shared_router) = self.shared_router.as_ref() {
-                    if let Some(channel) = shared_router.remove_peer(&peer_key).await {
-                        channel.close().await;
-                    }
-                }
-            }
-        }
+        hashtree_network::handle_peer_state_event(
+            &self.state.runtime,
+            event,
+            self.shared_router.as_ref(),
+        )
+        .await;
     }
 
     /// Cleanup stale peers and sync connection states (fallback, runs every 30s)
     async fn cleanup_stale_peers(&self) {
-        let mut peers = self.state.runtime.peers.write().await;
-        let mut connected_count = 0;
-        let mut to_remove = Vec::new();
-        let stale_timeout = Duration::from_secs(60); // Remove peers stuck in Discovered/Connecting for 60s
-
-        for (key, entry) in peers.iter_mut() {
-            if let Some(ref peer) = entry.peer {
-                // Sync connected state as fallback (in case event was missed)
-                if peer.is_connected() {
-                    if entry.state != ConnectionState::Connected {
-                        info!(
-                            "Peer {} is now connected (sync fallback)",
-                            entry.peer_id.short()
-                        );
-                        entry.state = ConnectionState::Connected;
-                    }
-                    connected_count += 1;
-                } else if entry.state == ConnectionState::Connected {
-                    info!(
-                        "Removing disconnected peer {} after transport closed",
-                        entry.peer_id.short()
-                    );
-                    to_remove.push(key.clone());
-                } else if entry.state == ConnectionState::Connecting
-                    && entry.last_seen.elapsed() > stale_timeout
-                {
-                    // Peer stuck in Connecting for too long - mark for removal
-                    info!(
-                        "Removing stale peer {} (stuck in Connecting for {:?})",
-                        entry.peer_id.short(),
-                        entry.last_seen.elapsed()
-                    );
-                    to_remove.push(key.clone());
-                }
-            } else if entry.state == ConnectionState::Discovered
-                && entry.last_seen.elapsed() > stale_timeout
-            {
-                // Discovered peer with no actual connection - remove
-                debug!("Removing stale discovered peer {}", entry.peer_id.short());
-                to_remove.push(key.clone());
-            }
-        }
-
-        // Remove stale peers
-        let mut removed_peers = Vec::new();
-        for key in to_remove {
-            if let Some(entry) = peers.remove(&key) {
-                removed_peers.push(entry);
-            }
-        }
-        drop(peers);
-
-        for entry in removed_peers {
-            if let Some(peer) = entry.peer {
-                let _ = peer.close().await;
-            }
-        }
-
-        self.state
-            .runtime
-            .connected_count
-            .store(connected_count, std::sync::atomic::Ordering::Relaxed);
+        hashtree_network::cleanup_stale_peers(&self.state.runtime, Duration::from_secs(60)).await;
     }
 }
 
