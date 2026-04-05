@@ -1,9 +1,10 @@
-use super::auth::{AppState, CachedResolvedPathEntry, CachedTreeRootEntry, LookupResult};
+use super::super::auth::{AppState, CachedResolvedPathEntry, CachedTreeRootEntry, LookupResult};
 use super::{list_directory_with_fetch, resolve_path_with_fetch};
 use crate::webrtc::{build_root_filter, pick_latest_event, root_event_from_peer, PeerRootEvent};
 use anyhow::Result;
-use hashtree_core::{from_hex, to_hex, Cid, HashTree, HashTreeConfig, LinkType, Store, TreeEntry};
+use hashtree_core::{from_hex, to_hex, Cid, HashTree, LinkType, Store, TreeEntry};
 use hashtree_resolver::nostr::NostrRootResolver;
+use hashtree_resolver::RootResolver;
 use std::collections::HashMap;
 use std::time::Duration;
 

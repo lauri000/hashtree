@@ -1,4 +1,5 @@
 use super::*;
+use crate::webrtc::WebRTCState;
 
 pub(super) async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool {
     let hash_hex = hex::encode(hash);

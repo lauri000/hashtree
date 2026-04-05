@@ -3,7 +3,8 @@ use crate::nostr_relay::{NostrRelay, NostrRelayConfig};
 use crate::socialgraph;
 use crate::storage::HashtreeStore;
 use crate::webrtc::{
-    ConnectionState, PeerDirection, PeerEntry, PeerPool, PeerSignalPath, PeerTransport, WebRTCState,
+    ConnectionState, PeerDirection, PeerEntry, PeerPool, PeerRootEvent, PeerSignalPath,
+    PeerTransport, WebRTCState,
 };
 use axum::{
     body::{to_bytes, Body},

@@ -1,4 +1,4 @@
-use super::auth::{AppState, CachedResolvedPathEntry, CachedTreeRootEntry, LookupResult};
+use super::auth::AppState;
 use super::mime::get_mime_type;
 pub(super) use super::peer_status::{daemon_status, webrtc_peers};
 use super::request_paths::{
