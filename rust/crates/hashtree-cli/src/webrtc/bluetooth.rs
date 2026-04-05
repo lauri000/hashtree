@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use std::collections::BTreeSet;
 #[cfg(target_os = "macos")]
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -8,14 +7,14 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use hashtree_network::TransportPeerRegistrar;
+
 use crate::nostr_relay::NostrRelay;
 
 use super::bluetooth_peer::{BluetoothFrame, BluetoothLink};
 use super::peer::ContentStore;
 use super::session::MeshPeer;
-use super::signaling::{
-    ConnectionState, PeerClassifier, PeerEntry, PeerSignalPath, PeerTransport, WebRTCState,
-};
+use super::signaling::{PeerClassifier, PeerSignalPath, PeerTransport, WebRTCState};
 use super::types::{MeshNostrFrame, PeerDirection, PeerId, PeerPool, PoolSettings};
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -85,10 +84,8 @@ fn mobile_bluetooth_bridge() -> Option<Arc<dyn MobileBluetoothBridge>> {
 
 #[derive(Clone)]
 pub struct BluetoothPeerRegistrar {
-    state: Arc<WebRTCState>,
-    peer_classifier: PeerClassifier,
-    pools: PoolSettings,
-    max_bluetooth_peers: usize,
+    pub state: Arc<WebRTCState>,
+    inner: TransportPeerRegistrar<MeshPeer>,
 }
 
 impl BluetoothPeerRegistrar {
@@ -99,37 +96,17 @@ impl BluetoothPeerRegistrar {
         max_bluetooth_peers: usize,
     ) -> Self {
         Self {
+            inner: TransportPeerRegistrar::new(
+                state.peers.clone(),
+                state.connected_count.clone(),
+                peer_classifier,
+                pools,
+                PeerTransport::Bluetooth,
+                PeerSignalPath::Bluetooth,
+                max_bluetooth_peers,
+            ),
             state,
-            peer_classifier,
-            pools,
-            max_bluetooth_peers,
         }
-    }
-
-    async fn pool_counts(&self) -> (usize, usize) {
-        let peers = self.state.peers.read().await;
-        let mut follows = 0usize;
-        let mut other = 0usize;
-        for entry in peers.values() {
-            if entry.state != ConnectionState::Connected {
-                continue;
-            }
-            match entry.pool {
-                PeerPool::Follows => follows += 1,
-                PeerPool::Other => other += 1,
-            }
-        }
-        (follows, other)
-    }
-
-    async fn bluetooth_peer_count(&self, peer_key: &str) -> usize {
-        let peers = self.state.peers.read().await;
-        peers
-            .values()
-            .filter(|entry| entry.transport == PeerTransport::Bluetooth)
-            .filter(|entry| entry.state == ConnectionState::Connected)
-            .filter(|entry| entry.peer_id.to_string() != peer_key)
-            .count()
     }
 
     pub async fn register_connected_peer(
@@ -138,110 +115,21 @@ impl BluetoothPeerRegistrar {
         direction: PeerDirection,
         peer: MeshPeer,
     ) -> bool {
-        let peer_key = peer_id.to_string();
-        let pool = (self.peer_classifier)(&peer_id.pubkey);
-        let (follows, other) = self.pool_counts().await;
-        let can_accept_pool = match pool {
-            PeerPool::Follows => follows < self.pools.follows.max_connections,
-            PeerPool::Other => other < self.pools.other.max_connections,
-        };
-        if !can_accept_pool {
+        let accepted = self
+            .inner
+            .register_connected_peer(peer_id.clone(), direction, peer)
+            .await;
+        if !accepted {
             warn!(
-                "Bluetooth peer {} rejected because pool {:?} is full",
-                peer_id.short(),
-                pool
-            );
-            return false;
-        }
-
-        if self.max_bluetooth_peers == 0
-            || self.bluetooth_peer_count(&peer_key).await >= self.max_bluetooth_peers
-        {
-            warn!(
-                "Bluetooth peer {} rejected because max_bluetooth_peers={} reached",
-                peer_id.short(),
-                self.max_bluetooth_peers
-            );
-            return false;
-        }
-
-        let mut peers = self.state.peers.write().await;
-        let duplicate_keys = peers
-            .iter()
-            .filter(|(key, entry)| {
-                key.as_str() != peer_key
-                    && entry.transport == PeerTransport::Bluetooth
-                    && entry.peer_id.pubkey == peer_id.pubkey
-            })
-            .map(|(key, _)| key.clone())
-            .collect::<Vec<_>>();
-        let was_connected = peers
-            .get(&peer_key)
-            .map(|entry| entry.state == ConnectionState::Connected)
-            .unwrap_or(false);
-        let replaced = peers.insert(
-            peer_key,
-            PeerEntry {
-                peer_id,
-                direction,
-                state: ConnectionState::Connected,
-                last_seen: Instant::now(),
-                peer: Some(peer),
-                pool,
-                transport: PeerTransport::Bluetooth,
-                signal_paths: BTreeSet::from([PeerSignalPath::Bluetooth]),
-                bytes_sent: 0,
-                bytes_received: 0,
-            },
-        );
-        let removed_duplicates = duplicate_keys
-            .into_iter()
-            .filter_map(|key| peers.remove(&key))
-            .collect::<Vec<_>>();
-        drop(peers);
-
-        if let Some(previous) = replaced.and_then(|entry| entry.peer) {
-            let _ = previous.close().await;
-        }
-        for duplicate in &removed_duplicates {
-            if let Some(peer) = duplicate.peer.as_ref() {
-                let _ = peer.close().await;
-            }
-        }
-
-        let removed_connected_duplicates = removed_duplicates
-            .iter()
-            .filter(|entry| entry.state == ConnectionState::Connected)
-            .count() as isize;
-        let connected_delta =
-            1isize - if was_connected { 1 } else { 0 } - removed_connected_duplicates;
-        if connected_delta > 0 {
-            self.state.connected_count.fetch_add(
-                connected_delta as usize,
-                std::sync::atomic::Ordering::Relaxed,
-            );
-        } else if connected_delta < 0 {
-            self.state.connected_count.fetch_sub(
-                (-connected_delta) as usize,
-                std::sync::atomic::Ordering::Relaxed,
+                "Bluetooth peer {} rejected by shared registrar",
+                peer_id.short()
             );
         }
-        true
+        accepted
     }
 
     pub async fn unregister_peer(&self, peer_id: &PeerId) {
-        let peer_key = peer_id.to_string();
-        let removed = self.state.peers.write().await.remove(&peer_key);
-        if let Some(entry) = removed {
-            if entry.state == ConnectionState::Connected {
-                self.state
-                    .connected_count
-                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            if let Some(peer) = entry.peer {
-                let _ = peer.close().await;
-            }
-        }
+        self.inner.unregister_peer(peer_id).await;
     }
 
     pub async fn unregister_bluetooth_peer_if_current(
@@ -249,33 +137,12 @@ impl BluetoothPeerRegistrar {
         peer_id: &PeerId,
         expected_peer: &Arc<super::BluetoothPeer>,
     ) {
-        let peer_key = peer_id.to_string();
-        let removed = {
-            let mut peers = self.state.peers.write().await;
-            let matches_current = peers
-                .get(&peer_key)
-                .and_then(|entry| entry.peer.as_ref())
-                .and_then(|peer| match peer {
-                    MeshPeer::Bluetooth(current) => Some(Arc::ptr_eq(current, expected_peer)),
-                    _ => None,
-                })
-                .unwrap_or(false);
-            if matches_current {
-                peers.remove(&peer_key)
-            } else {
-                None
-            }
-        };
-        if let Some(entry) = removed {
-            if entry.state == ConnectionState::Connected {
-                self.state
-                    .connected_count
-                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            if let Some(peer) = entry.peer {
-                let _ = peer.close().await;
-            }
-        }
+        self.inner
+            .unregister_peer_if(peer_id, |peer| match peer {
+                MeshPeer::Bluetooth(current) => Arc::ptr_eq(current, expected_peer),
+                _ => false,
+            })
+            .await;
     }
 }
 

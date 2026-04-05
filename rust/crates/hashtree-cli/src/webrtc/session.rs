@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use hashtree_network::MeshSession;
+use hashtree_network::{MeshSession, PeerTransport};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,7 +8,6 @@ use nostr::{Event, Filter};
 
 use super::bluetooth_peer::BluetoothPeer;
 use super::peer::Peer;
-use super::signaling::PeerTransport;
 use super::types::{MeshNostrFrame, PeerHTLConfig};
 
 #[derive(Clone)]

@@ -451,7 +451,7 @@ impl WebRTCManager {
             .handle_message(msg)
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        remember_peer_signal_path(self.state.as_ref(), &peer_id, source).await;
+        remember_peer_signal_path(self.state.peers.as_ref(), &peer_id, source).await;
 
         Ok(())
     }

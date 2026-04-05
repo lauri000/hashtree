@@ -12,15 +12,17 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use hashtree_network::{
-    decode_signaling_event, encode_signaling_event,
-    forward_mesh_frame_to_sessions as fanout_mesh_frame_to_sessions,
+    can_track_signal_path_peer, decode_signaling_event, encode_signaling_event,
+    forward_mesh_frame_to_sessions as fanout_mesh_frame_to_sessions, remember_peer_signal_path,
     resolve_root_from_local_buses_with_source as resolve_root_from_buses_with_source,
     resolve_root_from_peer_sessions as resolve_root_via_peer_sessions, run_hedged_waves,
     sync_selector_peers, ClassifyRequest as SharedClassifyRequest, HedgedWaveAction,
-    IceCandidate as SharedIceCandidate, MeshRouter, MeshSession, NostrRelayTransport,
-    PeerLink as SharedPeerLink, PeerLinkFactory as SharedPeerLinkFactory, PeerSelector,
+    IceCandidate as SharedIceCandidate, MeshPeerEntry as SharedPeerEntry, MeshRouter, MeshSession,
+    NostrRelayTransport, PeerClassifier as SharedPeerClassifier, PeerLink as SharedPeerLink,
+    PeerLinkFactory as SharedPeerLinkFactory, PeerSelector,
     SignalingTransport as SharedSignalingTransport, TransportError as SharedTransportError,
 };
+pub use hashtree_network::{ConnectionState, PeerSignalPath, PeerTransport};
 use nostr::{Keys, Kind};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -46,29 +48,8 @@ use crate::cashu_helper::CashuPaymentClient;
 use crate::nostr_relay::NostrRelay;
 
 /// Callback type for classifying peers into pools
-pub type PeerClassifier = Arc<dyn Fn(&str) -> PeerPool + Send + Sync>;
-
-/// Active data transport used for a peer session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum PeerTransport {
-    WebRtc,
-    Bluetooth,
-}
-
-impl PeerTransport {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            PeerTransport::WebRtc => "webrtc",
-            PeerTransport::Bluetooth => "bluetooth",
-        }
-    }
-}
-
-impl std::fmt::Display for PeerTransport {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str((*self).as_str())
-    }
-}
+pub type PeerClassifier = SharedPeerClassifier;
+pub type PeerEntry = SharedPeerEntry<MeshPeer>;
 
 fn bluetooth_nostr_only_mode() -> bool {
     matches!(
@@ -77,79 +58,10 @@ fn bluetooth_nostr_only_mode() -> bool {
     )
 }
 
-/// Signaling/discovery path through which a peer was seen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum PeerSignalPath {
-    Relay,
-    Multicast,
-    WifiAware,
-    Bluetooth,
-}
-
-impl PeerSignalPath {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            PeerSignalPath::Relay => "relay",
-            PeerSignalPath::Multicast => "multicast",
-            PeerSignalPath::WifiAware => WIFI_AWARE_SOURCE,
-            PeerSignalPath::Bluetooth => "bluetooth",
-        }
-    }
-
-    pub fn from_source_name(source: &str) -> Self {
-        match source {
-            "multicast" => PeerSignalPath::Multicast,
-            WIFI_AWARE_SOURCE => PeerSignalPath::WifiAware,
-            "bluetooth" => PeerSignalPath::Bluetooth,
-            _ => PeerSignalPath::Relay,
-        }
-    }
-}
-
-impl std::fmt::Display for PeerSignalPath {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str((*self).as_str())
-    }
-}
-
-/// Connection state for a peer
-#[derive(Debug, Clone, PartialEq)]
-pub enum ConnectionState {
-    Discovered,
-    Connecting,
-    Connected,
-    Failed,
-}
-
-impl std::fmt::Display for ConnectionState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConnectionState::Discovered => write!(f, "discovered"),
-            ConnectionState::Connecting => write!(f, "connecting"),
-            ConnectionState::Connected => write!(f, "connected"),
-            ConnectionState::Failed => write!(f, "failed"),
-        }
-    }
-}
-
-/// Peer entry in the manager
-pub struct PeerEntry {
-    pub peer_id: PeerId,
-    pub direction: PeerDirection,
-    pub state: ConnectionState,
-    pub last_seen: Instant,
-    pub peer: Option<MeshPeer>,
-    pub pool: PeerPool,
-    pub transport: PeerTransport,
-    pub signal_paths: BTreeSet<PeerSignalPath>,
-    pub bytes_sent: u64,
-    pub bytes_received: u64,
-}
-
 /// Shared state for the native mesh router.
 pub struct WebRTCState {
-    pub peers: RwLock<HashMap<String, PeerEntry>>,
-    pub connected_count: std::sync::atomic::AtomicUsize,
+    pub peers: Arc<RwLock<HashMap<String, PeerEntry>>>,
+    pub connected_count: Arc<std::sync::atomic::AtomicUsize>,
     /// Total bytes sent across all peers (cumulative)
     pub bytes_sent: std::sync::atomic::AtomicU64,
     /// Total bytes received across all peers (cumulative)
@@ -185,14 +97,6 @@ type ConnectedPeer = (
 );
 type ConnectedSession = (String, MeshPeer, PeerTransport);
 type SharedProductionRouter = MeshRouter<RouterSignalingBridge, SharedRouterPeerFactory>;
-
-async fn remember_peer_signal_path(state: &WebRTCState, peer_id: &str, source: &str) {
-    if let Some(entry) = state.peers.write().await.get_mut(peer_id) {
-        entry
-            .signal_paths
-            .insert(PeerSignalPath::from_source_name(source));
-    }
-}
 
 #[derive(Clone)]
 struct RouterSignalingBridge {
@@ -487,8 +391,8 @@ impl WebRTCState {
             CashuQuoteState::new(cashu_routing, peer_selector.clone(), payment_client)
         });
         Self {
-            peers: RwLock::new(HashMap::new()),
-            connected_count: std::sync::atomic::AtomicUsize::new(0),
+            peers: Arc::new(RwLock::new(HashMap::new())),
+            connected_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             bytes_sent: std::sync::atomic::AtomicU64::new(0),
             bytes_received: std::sync::atomic::AtomicU64::new(0),
             mesh_received: std::sync::atomic::AtomicU64::new(0),
@@ -1410,20 +1314,12 @@ impl WebRTCManager {
         let Some(max_peers) = self.local_bus_max_peers(source) else {
             return true;
         };
-        if peers.contains_key(peer_key) {
-            return true;
-        }
-        if max_peers == 0 {
-            return false;
-        }
-        let signal_path = PeerSignalPath::from_source_name(source);
-        peers
-            .values()
-            .filter(|entry| {
-                entry.signal_paths.contains(&signal_path) && entry.state != ConnectionState::Failed
-            })
-            .count()
-            < max_peers
+        can_track_signal_path_peer(
+            PeerSignalPath::from_source_name(source),
+            max_peers,
+            peer_key,
+            peers,
+        )
     }
 }
 

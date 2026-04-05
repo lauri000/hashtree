@@ -50,6 +50,7 @@ pub mod peer_selector;
 pub mod protocol;
 pub mod real_factory;
 pub mod root_events;
+pub mod runtime_peer;
 pub mod signaling;
 pub mod store;
 pub mod transport;
@@ -87,6 +88,10 @@ pub use real_factory::WebRtcPeerLinkFactory;
 pub use root_events::{
     build_root_filter, hashtree_event_identifier, is_hashtree_labeled_event, pick_latest_event,
     root_event_from_peer, PeerRootEvent, HASHTREE_KIND, HASHTREE_LABEL,
+};
+pub use runtime_peer::{
+    can_track_signal_path_peer, remember_peer_signal_path, ConnectionState, MeshPeerEntry,
+    PeerClassifier, PeerDirection, PeerSignalPath, PeerTransport, TransportPeerRegistrar,
 };
 pub use signaling::{MeshRouter, PeerEntry};
 pub use store::{MeshStore, MeshStoreError};

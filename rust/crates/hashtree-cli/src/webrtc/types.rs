@@ -4,7 +4,7 @@ use hashtree_network::DataMessage as SharedDataMessage;
 pub use hashtree_network::{
     decrement_htl_with_policy, should_forward_htl, validate_mesh_frame, DataQuoteRequest,
     DataQuoteResponse, DataRequest, DataResponse, HtlMode, HtlPolicy, IceCandidate, MeshNostrFrame,
-    MeshNostrPayload, PeerHTLConfig, PeerId, PeerPool, PoolConfig, PoolSettings,
+    MeshNostrPayload, PeerDirection, PeerHTLConfig, PeerId, PeerPool, PoolConfig, PoolSettings,
     RequestDispatchConfig, SelectionStrategy, SignalingMessage, TimedSeenSet, BLOB_REQUEST_POLICY,
     DECREMENT_AT_MAX_PROB, DECREMENT_AT_MIN_PROB, MAX_HTL, MESH_DEFAULT_HTL, MESH_EVENT_POLICY,
     MESH_MAX_HTL, MESH_PROTOCOL, MESH_PROTOCOL_VERSION, MSG_TYPE_QUOTE_REQUEST,
@@ -114,13 +114,6 @@ pub struct PeerStatus {
     pub pool: PeerPool,
 }
 
-/// Direction of peer connection
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PeerDirection {
-    Inbound,
-    Outbound,
-}
-
 /// Peer state change event for signaling layer notification
 #[derive(Debug, Clone)]
 pub enum PeerStateEvent {
@@ -130,15 +123,6 @@ pub enum PeerStateEvent {
     Failed(PeerId),
     /// Peer disconnected
     Disconnected(PeerId),
-}
-
-impl std::fmt::Display for PeerDirection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PeerDirection::Inbound => write!(f, "inbound"),
-            PeerDirection::Outbound => write!(f, "outbound"),
-        }
-    }
 }
 
 pub const MSG_TYPE_PAYMENT: u8 = 0x04;

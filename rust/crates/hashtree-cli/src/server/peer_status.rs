@@ -4,6 +4,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json},
 };
+use hashtree_network::MeshSession;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -46,7 +47,7 @@ fn peer_entry_json(id: &str, entry: &PeerEntry) -> Value {
     let rtc_state = entry
         .peer
         .as_ref()
-        .and_then(|peer| peer.as_webrtc().map(|peer| format!("{:?}", peer.state())));
+        .and_then(|peer| peer.transport_debug_state());
     let signal_paths: Vec<_> = entry
         .signal_paths
         .iter()
