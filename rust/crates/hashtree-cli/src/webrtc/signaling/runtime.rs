@@ -303,51 +303,21 @@ impl WebRTCManager {
         exclude_peer_id: Option<&str>,
     ) -> usize {
         let peers = self.state.peers.read().await;
-        let peer_refs: Vec<_> = peers
+        let peer_refs: Vec<(String, Arc<dyn MeshSession>)> = peers
             .values()
             .filter(|entry| entry.state == ConnectionState::Connected)
-            .filter(|entry| {
-                entry
-                    .peer
-                    .as_ref()
-                    .map(|peer| peer.is_ready())
-                    .unwrap_or(false)
-            })
-            .filter(|entry| {
-                exclude_peer_id
-                    .map(|exclude| exclude != entry.peer_id.to_string())
-                    .unwrap_or(true)
-            })
             .filter_map(|entry| {
                 entry.peer.as_ref().map(|peer| {
                     (
                         entry.peer_id.to_string(),
-                        entry.peer_id.short(),
-                        peer.clone(),
-                        peer.htl_config(),
+                        Arc::new(peer.clone()) as Arc<dyn MeshSession>,
                     )
                 })
             })
             .collect();
         drop(peers);
 
-        let mut forwarded = 0usize;
-        for (_peer_key, peer_short, peer, htl_cfg) in peer_refs {
-            let next_htl = decrement_htl_with_policy(frame.htl, &MESH_EVENT_POLICY, &htl_cfg);
-            if !should_forward_htl(next_htl) {
-                continue;
-            }
-
-            let mut outbound = frame.clone();
-            outbound.htl = next_htl;
-            if peer.send_mesh_frame_text(&outbound).await.is_ok() {
-                forwarded += 1;
-            } else {
-                debug!("Failed to forward mesh frame to {}", peer_short);
-            }
-        }
-
-        forwarded
+        fanout_mesh_frame_to_sessions(peer_refs, frame, exclude_peer_id).await
     }
 
     async fn handle_mesh_frame(&self, from_peer_id: PeerId, frame: MeshNostrFrame) {
@@ -698,7 +668,7 @@ mod tests {
         .to_event(&keys)
         .unwrap();
 
-        let parsed = root_event_from_peer(&event, "peer-a", "repo").unwrap();
+        let parsed = root_events::root_event_from_peer(&event, "peer-a", "repo").unwrap();
         let expected_encrypted = "11".repeat(32);
         assert_eq!(parsed.hash, hash);
         assert_eq!(parsed.peer_id, "peer-a");
@@ -727,7 +697,7 @@ mod tests {
         } else {
             event_b.id
         };
-        let picked = pick_latest_event([&event_a, &event_b]).unwrap();
+        let picked = root_events::pick_latest_event([&event_a, &event_b]).unwrap();
         assert_eq!(picked.id, expected);
     }
 

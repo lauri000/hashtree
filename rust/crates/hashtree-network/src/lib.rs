@@ -42,6 +42,7 @@
 
 pub mod channel;
 pub mod local_bus;
+pub mod mesh_session;
 pub mod mesh_store_core;
 pub mod mock;
 pub mod nostr;
@@ -56,6 +57,10 @@ pub mod types;
 
 pub use channel::{ChannelError, LatencyChannel, MockChannel, PeerChannel};
 pub use local_bus::{LocalNostrBus, SharedLocalNostrBus};
+pub use mesh_session::{
+    forward_mesh_frame_to_sessions, resolve_root_from_local_buses_with_source,
+    resolve_root_from_peer_sessions, MeshSession,
+};
 pub use mesh_store_core::{
     build_hedged_wave_plan, normalize_dispatch_config, run_hedged_waves, sync_selector_peers,
     DataPumpStats, HedgedWaveAction, MeshRoutingConfig, MeshStoreCore, ProductionMeshStore,

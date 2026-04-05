@@ -12,10 +12,13 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use hashtree_network::{
-    decode_signaling_event, encode_signaling_event, run_hedged_waves, sync_selector_peers,
-    ClassifyRequest as SharedClassifyRequest, HedgedWaveAction, IceCandidate as SharedIceCandidate,
-    MeshRouter, NostrRelayTransport, PeerLink as SharedPeerLink,
-    PeerLinkFactory as SharedPeerLinkFactory, PeerSelector,
+    decode_signaling_event, encode_signaling_event,
+    forward_mesh_frame_to_sessions as fanout_mesh_frame_to_sessions,
+    resolve_root_from_local_buses_with_source as resolve_root_from_buses_with_source,
+    resolve_root_from_peer_sessions as resolve_root_via_peer_sessions, run_hedged_waves,
+    sync_selector_peers, ClassifyRequest as SharedClassifyRequest, HedgedWaveAction,
+    IceCandidate as SharedIceCandidate, MeshRouter, MeshSession, NostrRelayTransport,
+    PeerLink as SharedPeerLink, PeerLinkFactory as SharedPeerLinkFactory, PeerSelector,
     SignalingTransport as SharedSignalingTransport, TransportError as SharedTransportError,
 };
 use nostr::{Keys, Kind};
@@ -30,16 +33,13 @@ use super::cashu::{CashuMintMetadataStore, CashuQuoteState, CashuRoutingConfig, 
 use super::local_bus::SharedLocalNostrBus;
 use super::multicast::MulticastNostrBus;
 use super::peer::{ContentStore, Peer, PendingRequest};
-use super::root_events::{
-    build_root_filter, hashtree_event_identifier, is_hashtree_labeled_event, pick_latest_event,
-    root_event_from_peer, PeerRootEvent,
-};
+use super::root_events::PeerRootEvent;
 use super::session::MeshPeer;
 use super::types::{
-    decrement_htl_with_policy, encode_quote_request, encode_request, should_forward_htl,
-    validate_mesh_frame, DataQuoteRequest, DataRequest, MeshNostrFrame, MeshNostrPayload,
-    PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus, RequestDispatchConfig,
-    SignalingMessage, TimedSeenSet, WebRTCConfig, MESH_DEFAULT_HTL, MESH_EVENT_POLICY, WEBRTC_KIND,
+    encode_quote_request, encode_request, validate_mesh_frame, DataQuoteRequest, DataRequest,
+    MeshNostrFrame, MeshNostrPayload, PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus,
+    RequestDispatchConfig, SignalingMessage, TimedSeenSet, WebRTCConfig, MESH_DEFAULT_HTL,
+    WEBRTC_KIND,
 };
 use super::wifi_aware::{mobile_wifi_aware_bridge, WifiAwareNostrBus, WIFI_AWARE_SOURCE};
 use crate::cashu_helper::CashuPaymentClient;
@@ -1061,9 +1061,7 @@ impl WebRTCState {
         tree_name: &str,
         per_peer_timeout: Duration,
     ) -> Option<PeerRootEvent> {
-        let filter = build_root_filter(owner_pubkey, tree_name)?;
-
-        let peer_refs: Vec<_> = {
+        let peer_refs: Vec<(String, Arc<dyn MeshSession>)> = {
             let peers = self.peers.read().await;
             peers
                 .values()
@@ -1073,59 +1071,24 @@ impl WebRTCState {
                 })
                 .filter_map(|entry| {
                     let peer = entry.peer.as_ref()?;
-                    if !peer.is_ready() {
-                        return None;
-                    }
-                    Some((entry.peer_id.short(), peer.clone()))
+                    Some((
+                        entry.peer_id.short(),
+                        Arc::new(peer.clone()) as Arc<dyn MeshSession>,
+                    ))
                 })
                 .collect()
         };
 
-        for (peer_short, peer) in peer_refs {
+        let resolved =
+            resolve_root_via_peer_sessions(peer_refs, owner_pubkey, tree_name, per_peer_timeout)
+                .await;
+        if let Some(root) = &resolved {
             debug!(
-                "Querying peer {} for root event {}/{}",
-                peer_short, owner_pubkey, tree_name
+                "Resolved {}/{} via peer {} event {}",
+                owner_pubkey, tree_name, root.peer_id, root.event_id
             );
-            let events = match peer
-                .query_nostr_events(vec![filter.clone()], per_peer_timeout)
-                .await
-            {
-                Ok(events) => events,
-                Err(e) => {
-                    debug!(
-                        "Peer {} Nostr query failed for {}/{}: {}",
-                        peer_short, owner_pubkey, tree_name, e
-                    );
-                    continue;
-                }
-            };
-            debug!(
-                "Peer {} returned {} Nostr event(s) for {}/{}",
-                peer_short,
-                events.len(),
-                owner_pubkey,
-                tree_name
-            );
-
-            let latest = pick_latest_event(events.iter().filter(|event| {
-                hashtree_event_identifier(event).as_deref() == Some(tree_name)
-                    && is_hashtree_labeled_event(event)
-            }));
-            if let Some(event) = latest {
-                if let Some(root) = root_event_from_peer(event, &peer_short, tree_name) {
-                    debug!(
-                        "Resolved {}/{} via peer {} event {}",
-                        owner_pubkey,
-                        tree_name,
-                        peer_short,
-                        event.id.to_hex()
-                    );
-                    return Some(root);
-                }
-            }
         }
-
-        None
+        resolved
     }
 
     pub async fn resolve_root_from_local_buses_with_source(
@@ -1135,12 +1098,7 @@ impl WebRTCState {
         timeout: Duration,
     ) -> Option<(&'static str, PeerRootEvent)> {
         let buses = self.local_buses.read().await.clone();
-        for bus in buses {
-            if let Some(root) = bus.query_root(owner_pubkey, tree_name, timeout).await {
-                return Some((bus.source_name(), root));
-            }
-        }
-        None
+        resolve_root_from_buses_with_source(buses, owner_pubkey, tree_name, timeout).await
     }
 
     pub async fn resolve_root_from_local_buses(

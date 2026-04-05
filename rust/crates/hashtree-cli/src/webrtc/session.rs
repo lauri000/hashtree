@@ -1,4 +1,6 @@
 use anyhow::Result;
+use async_trait::async_trait;
+use hashtree_network::MeshSession;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -97,6 +99,50 @@ impl MeshPeer {
     pub fn as_webrtc(&self) -> Option<&Arc<Peer>> {
         match self {
             Self::WebRtc(peer) => Some(peer),
+            Self::Bluetooth(_) => None,
+            #[cfg(test)]
+            Self::Mock(_) => None,
+        }
+    }
+}
+
+#[async_trait]
+impl MeshSession for MeshPeer {
+    fn is_ready(&self) -> bool {
+        Self::is_ready(self)
+    }
+
+    fn is_connected(&self) -> bool {
+        Self::is_connected(self)
+    }
+
+    fn htl_config(&self) -> PeerHTLConfig {
+        Self::htl_config(self)
+    }
+
+    async fn request(&self, hash_hex: &str, timeout: Duration) -> Result<Option<Vec<u8>>> {
+        Self::request(self, hash_hex, timeout).await
+    }
+
+    async fn query_nostr_events(
+        &self,
+        filters: Vec<Filter>,
+        timeout: Duration,
+    ) -> Result<Vec<Event>> {
+        Self::query_nostr_events(self, filters, timeout).await
+    }
+
+    async fn send_mesh_frame_text(&self, frame: &MeshNostrFrame) -> Result<()> {
+        Self::send_mesh_frame_text(self, frame).await
+    }
+
+    async fn close(&self) -> Result<()> {
+        Self::close(self).await
+    }
+
+    fn transport_debug_state(&self) -> Option<String> {
+        match self {
+            Self::WebRtc(peer) => Some(format!("{:?}", peer.state())),
             Self::Bluetooth(_) => None,
             #[cfg(test)]
             Self::Mock(_) => None,
