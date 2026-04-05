@@ -7,6 +7,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use super::add::build_files_iris_to_url_for_published_target;
 use super::blossom::background_blossom_push;
 use super::mount_publish::{
     MountPublishQueue, PostPublishHook, PublishSink, MOUNT_PUBLISH_DEBOUNCE,
@@ -16,7 +17,7 @@ use super::mount_target::{
     create_mountpoint_dir, derive_implicit_mountpoint, normalize_mount_target_for_resolution,
 };
 use super::resolve::{parse_published_target, resolve_cid_input_with_opts, ResolveOptions};
-use super::run::{build_files_iris_to_url_for_published_target, format_cid_for_display};
+use super::run::format_cid_for_display;
 
 pub(crate) struct MountVisibility {
     pub(crate) visibility: hashtree_core::TreeVisibility,

@@ -12,16 +12,16 @@ use hashtree_cli::{
 };
 use hashtree_core::{Cid, HashTree, HashTreeConfig, NHashData};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::add::run_add;
 use super::args::{
     Cli, Commands, PrCommands, ReleaseCommands, SocialGraphCommands, StorageCommands,
 };
-use super::blossom::{background_blossom_push, push_to_blossom};
+use super::blossom::push_to_blossom;
 use super::cashu_delegate::run_cashu_helper;
-use super::content::add_directory;
 use super::daemonize::{format_daemon_status, spawn_daemon, stop_daemon};
 use super::lists::{follow_user, list_following, list_muted, mute_user, update_profile};
 #[cfg(feature = "fuse")]
@@ -47,23 +47,20 @@ use std::io;
 #[cfg(feature = "fuse")]
 use std::process::Command;
 
-const IRIS_FILES_WEB_BASE_URL: &str = "https://files.iris.to";
-const IRIS_SITES_WEB_BASE_URL: &str = "https://sites.iris.to";
-
 #[cfg(feature = "fuse")]
 pub(crate) fn find_existing_active_mount<'a>(
     mounts: &'a [super::mount_registry::ActiveMount],
-    mountpoint: &Path,
+    mountpoint: &std::path::Path,
 ) -> Option<&'a super::mount_registry::ActiveMount> {
     mounts.iter().find(|mount| mount.mountpoint == mountpoint)
 }
 
 #[cfg(feature = "fuse")]
-pub(crate) fn should_warn_for_temporary_mountpoint(path: &Path) -> bool {
+pub(crate) fn should_warn_for_temporary_mountpoint(path: &std::path::Path) -> bool {
     let temp_root = std::env::temp_dir();
     path.starts_with(&temp_root)
-        || path.starts_with(Path::new("/tmp"))
-        || path.starts_with(Path::new("/private/tmp"))
+        || path.starts_with(std::path::Path::new("/tmp"))
+        || path.starts_with(std::path::Path::new("/private/tmp"))
 }
 
 #[cfg(feature = "fuse")]
@@ -72,7 +69,7 @@ pub(crate) fn is_stale_mount_io_error(error: &io::Error) -> bool {
 }
 
 #[cfg(feature = "fuse")]
-fn probe_mountpoint(path: &Path) -> io::Result<()> {
+fn probe_mountpoint(path: &std::path::Path) -> io::Result<()> {
     let mut entries = std::fs::read_dir(path)?;
     if let Some(entry) = entries.next() {
         entry?;
@@ -81,7 +78,7 @@ fn probe_mountpoint(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(feature = "fuse")]
-fn clear_stale_mountpoint(path: &Path) -> Result<bool> {
+fn clear_stale_mountpoint(path: &std::path::Path) -> Result<bool> {
     let probe_error = match probe_mountpoint(path) {
         Ok(()) => return Ok(false),
         Err(error) if is_stale_mount_io_error(&error) => error,
@@ -632,241 +629,16 @@ pub(crate) async fn run() -> Result<()> {
             publish,
             local,
         } => {
-            let is_dir = path.is_dir();
-
-            if only_hash {
-                // Use in-memory store for hash-only mode
-                use futures::io::AllowStdIo;
-                use hashtree_core::store::MemoryStore;
-                use hashtree_core::{to_hex, HashTree, HashTreeConfig};
-                use std::sync::Arc;
-
-                let store = Arc::new(MemoryStore::new());
-                // Use unified API: CHK encryption by default, .public() for raw plaintext blobs
-                let config = if unencrypted {
-                    HashTreeConfig::new(store.clone()).public()
-                } else {
-                    HashTreeConfig::new(store.clone())
-                };
-                let tree = HashTree::new(config);
-
-                if is_dir {
-                    // For directories, use the recursive helper
-                    let cid = add_directory(&tree, &path, !no_ignore).await?;
-                    println!("hash: {}", to_hex(&cid.hash));
-                    if let Some(key) = cid.key {
-                        println!("key:  {}", to_hex(&key));
-                    }
-                } else {
-                    let file = std::fs::File::open(&path).with_context(|| {
-                        format!("Failed to open file for hashing: {}", path.display())
-                    })?;
-                    let (cid, _size) = tree
-                        .put_stream(AllowStdIo::new(file))
-                        .await
-                        .map_err(|e| anyhow::anyhow!("Failed to hash file: {}", e))?;
-                    println!("hash: {}", to_hex(&cid.hash));
-                    if let Some(key) = cid.key {
-                        println!("key:  {}", to_hex(&key));
-                    }
-                }
-            } else {
-                // Store in local hashtree
-                use hashtree_core::{
-                    from_hex, key_from_hex, nhash_encode, nhash_encode_full, Cid, NHashData,
-                };
-
-                let store = HashtreeStore::new(&data_dir)?;
-                let site_entry = detect_site_entry_for_path(&path, is_dir);
-
-                // Store and capture cid/hash/key for potential publishing
-                let (cid_for_push, hash_hex, key_hex, display_root): (
-                    String,
-                    String,
-                    Option<String>,
-                    String,
-                ) = if unencrypted {
-                    let hash_hex = if is_dir {
-                        store
-                            .upload_dir_with_options(&path, !no_ignore)
-                            .context("Failed to add directory")?
-                    } else {
-                        store.upload_file(&path).context("Failed to add file")?
-                    };
-                    let hash = from_hex(&hash_hex).context("Invalid hash")?;
-                    let nhash = nhash_encode(&hash)
-                        .map_err(|e| anyhow::anyhow!("Failed to encode nhash: {}", e))?;
-                    (hash_hex.clone(), hash_hex, None, nhash)
-                } else {
-                    let cid_str = if is_dir {
-                        store
-                            .upload_dir_encrypted_with_options(&path, !no_ignore)
-                            .context("Failed to add directory")?
-                    } else {
-                        store
-                            .upload_file_encrypted(&path)
-                            .context("Failed to add file")?
-                    };
-                    // Parse cid_str which may be "hash" or "hash:key"
-                    let (hash_hex, key_hex) = if let Some((h, k)) = cid_str.split_once(':') {
-                        (h.to_string(), Some(k.to_string()))
-                    } else {
-                        (cid_str.clone(), None)
-                    };
-                    let hash = from_hex(&hash_hex).context("Invalid hash")?;
-                    let key = key_hex
-                        .as_ref()
-                        .map(|k| key_from_hex(k))
-                        .transpose()
-                        .map_err(|e| anyhow::anyhow!("Invalid key: {}", e))?;
-                    let nhash_data = NHashData {
-                        hash,
-                        decrypt_key: key,
-                    };
-                    let nhash = nhash_encode_full(&nhash_data)
-                        .map_err(|e| anyhow::anyhow!("Failed to encode nhash: {}", e))?;
-                    (cid_str, hash_hex, key_hex, nhash)
-                };
-
-                println!("added {}", path.display());
-                let display_route = if is_dir {
-                    display_root.clone()
-                } else {
-                    let filename = path
-                        .file_name()
-                        .map(|name| name.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    format!("{display_root}/{filename}")
-                };
-                println!("  url:   {}", display_route);
-                println!(
-                    "  files: {}",
-                    build_files_iris_to_url_for_add_route(&display_route)
-                );
-                if let Some(entry_path) = site_entry.as_deref() {
-                    let site_route = format!("{display_root}/{entry_path}");
-                    println!(
-                        "  site:  {}",
-                        build_sites_iris_to_url_for_add_route(&site_route)
-                    );
-                }
-                println!("  hash:  {}", hash_hex);
-                if let Some(ref k) = key_hex {
-                    println!("  key:   {}", k);
-                }
-
-                // Index tree for eviction tracking (own content = highest priority)
-                // Get user's npub as owner
-                let (nsec_str, _) = ensure_keys_string()?;
-                let keys = NostrKeys::parse(&nsec_str).context("Failed to parse nsec")?;
-                let npub = NostrToBech32::to_bech32(&keys.public_key())
-                    .context("Failed to encode npub")?;
-
-                let tree_name = path.file_name().map(|n| n.to_string_lossy().to_string());
-
-                // Build ref_key: "npub/filename"
-                let ref_key = tree_name.as_ref().map(|name| format!("{}/{}", npub, name));
-
-                let hash_bytes = from_hex(&hash_hex).context("Invalid hash")?;
-                if let Err(e) = store.index_tree(
-                    &hash_bytes,
-                    &npub,
-                    tree_name.as_deref(),
-                    hashtree_cli::PRIORITY_OWN,
-                    ref_key.as_deref(),
-                ) {
-                    tracing::warn!("Failed to index tree: {}", e);
-                }
-
-                let mut write_servers = Vec::new();
-                if !local {
-                    let config = Config::load()?;
-                    // Combine legacy servers with write_servers for pushing.
-                    write_servers = config.blossom.servers.clone();
-                    write_servers.extend(config.blossom.write_servers.clone());
-                    if !write_servers.is_empty() && publish.is_none() {
-                        let push_result =
-                            background_blossom_push(&data_dir, &cid_for_push, &write_servers).await;
-                        if let Err(e) = push_result {
-                            eprintln!("  file server push failed: {}", e);
-                        }
-                    }
-                }
-
-                // Publish to Nostr if --publish was specified.
-                if let Some(ref_name) = publish.as_deref() {
-                    let config = Config::load()?;
-
-                    // Ensure nsec exists (generate if needed)
-                    let (nsec_str, was_generated) = ensure_keys_string()?;
-
-                    // Create Keys using nostr-sdk's version (via NostrKeys re-export)
-                    let keys = NostrKeys::parse(&nsec_str).context("Failed to parse nsec")?;
-                    let npub = NostrToBech32::to_bech32(&keys.public_key())
-                        .context("Failed to encode npub")?;
-
-                    if was_generated {
-                        println!("  identity: {} (new)", npub);
-                    }
-
-                    let resolver_config = NostrResolverConfig {
-                        relays: config.nostr.relays.clone(),
-                        resolve_timeout: Duration::from_secs(5),
-                        secret_key: Some(keys),
-                    };
-
-                    let resolver = NostrRootResolver::new(resolver_config)
-                        .await
-                        .context("Failed to create Nostr resolver")?;
-
-                    let hash = from_hex(&hash_hex).context("Invalid hash")?;
-                    let key = key_hex
-                        .as_ref()
-                        .map(|k| key_from_hex(k))
-                        .transpose()
-                        .map_err(|e| anyhow::anyhow!("Invalid key: {}", e))?;
-                    let cid = Cid { hash, key };
-                    let nostr_key = format!("{}/{}", npub, ref_name);
-
-                    match resolver.publish(&nostr_key, &cid).await {
-                        Ok(_) => {
-                            println!("  published: {}", nostr_key);
-                            println!(
-                                "  files: {}",
-                                build_files_iris_to_url_for_published_ref(&npub, ref_name)
-                            );
-                            if let Some(entry_path) = site_entry.as_deref() {
-                                println!(
-                                    "  site:  {}",
-                                    build_sites_iris_to_url_for_published_ref(
-                                        &npub, ref_name, entry_path
-                                    )
-                                );
-                                let immutable_site_route = format!("{display_root}/{entry_path}");
-                                println!(
-                                    "  permalink: {}",
-                                    build_sites_iris_to_url_for_add_route(&immutable_site_route)
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("  publish failed: {}", e);
-                        }
-                    }
-
-                    let _ = resolver.stop().await;
-
-                    if !local && !write_servers.is_empty() {
-                        if let Err(err) =
-                            background_blossom_push(&data_dir, &cid_for_push, &write_servers)
-                                .await
-                                .context("Failed to push content to file servers")
-                        {
-                            eprintln!("  file server push failed: {}", err);
-                        }
-                    }
-                }
-            }
+            run_add(
+                data_dir.clone(),
+                path,
+                only_hash,
+                unencrypted,
+                no_ignore,
+                publish,
+                local,
+            )
+            .await?
         }
         Commands::Get {
             cid: cid_input,
@@ -1557,143 +1329,6 @@ pub(crate) fn format_cid_for_display(cid: &Cid) -> String {
         decrypt_key: cid.key,
     })
     .unwrap_or_else(|_| cid.to_string())
-}
-
-fn encode_hash_route_segment(segment: &str) -> String {
-    let mut encoded = String::with_capacity(segment.len());
-    for byte in segment.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                encoded.push(byte as char);
-            }
-            _ => {
-                encoded.push('%');
-                encoded.push_str(&format!("{byte:02X}"));
-            }
-        }
-    }
-    encoded
-}
-
-pub(crate) fn build_files_iris_to_url_for_add_route(route: &str) -> String {
-    let segments = route
-        .trim_matches('/')
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .map(encode_hash_route_segment)
-        .collect::<Vec<_>>();
-
-    if segments.is_empty() {
-        IRIS_FILES_WEB_BASE_URL.to_string()
-    } else {
-        format!("{IRIS_FILES_WEB_BASE_URL}/#/{}", segments.join("/"))
-    }
-}
-
-pub(crate) fn build_files_iris_to_url_for_published_ref(
-    owner_npub: &str,
-    ref_name: &str,
-) -> String {
-    build_files_iris_to_url_for_published_target(owner_npub, ref_name, None, None)
-}
-
-pub(crate) fn build_files_iris_to_url_for_published_target(
-    owner_npub: &str,
-    ref_name: &str,
-    path: Option<&str>,
-    link_key: Option<&str>,
-) -> String {
-    let owner = encode_hash_route_segment(owner_npub.trim());
-    let reference = encode_hash_route_segment(ref_name.trim_matches('/'));
-    let mut url = format!("{IRIS_FILES_WEB_BASE_URL}/#/{owner}/{reference}");
-
-    if let Some(path) = path {
-        let encoded_path = path
-            .trim_matches('/')
-            .split('/')
-            .filter(|segment| !segment.is_empty())
-            .map(encode_hash_route_segment)
-            .collect::<Vec<_>>()
-            .join("/");
-        if !encoded_path.is_empty() {
-            url.push('/');
-            url.push_str(&encoded_path);
-        }
-    }
-
-    if let Some(link_key) = link_key {
-        if !link_key.is_empty() {
-            url.push_str("?k=");
-            url.push_str(link_key);
-        }
-    }
-
-    url
-}
-
-pub(crate) fn build_sites_iris_to_url_for_add_route(route: &str) -> String {
-    let segments = route
-        .trim_matches('/')
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .map(encode_hash_route_segment)
-        .collect::<Vec<_>>();
-
-    if segments.is_empty() {
-        IRIS_SITES_WEB_BASE_URL.to_string()
-    } else {
-        format!("{IRIS_SITES_WEB_BASE_URL}/#/{}", segments.join("/"))
-    }
-}
-
-pub(crate) fn build_sites_iris_to_url_for_published_ref(
-    owner_npub: &str,
-    ref_name: &str,
-    entry_path: &str,
-) -> String {
-    let owner = encode_hash_route_segment(owner_npub.trim());
-    let reference = encode_hash_route_segment(ref_name.trim_matches('/'));
-    let entry = entry_path
-        .trim_matches('/')
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .map(encode_hash_route_segment)
-        .collect::<Vec<_>>()
-        .join("/");
-    format!("{IRIS_SITES_WEB_BASE_URL}/#/{owner}/{reference}/{entry}?reload=1")
-}
-
-pub(crate) fn detect_site_entry_for_path(path: &Path, is_dir: bool) -> Option<String> {
-    if is_dir {
-        let mut index_htm: Option<String> = None;
-        let entries = std::fs::read_dir(path).ok()?;
-        for entry in entries.flatten() {
-            let metadata = match entry.metadata() {
-                Ok(metadata) => metadata,
-                Err(_) => continue,
-            };
-            if metadata.is_dir() {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().to_string();
-            match name.to_ascii_lowercase().as_str() {
-                "index.html" => return Some(name),
-                "index.htm" => {
-                    if index_htm.is_none() {
-                        index_htm = Some(name);
-                    }
-                }
-                _ => {}
-            }
-        }
-        return index_htm;
-    }
-
-    let name = path.file_name()?.to_string_lossy().to_string();
-    match name.to_ascii_lowercase().rsplit_once('.') {
-        Some((_, "html" | "htm")) => Some(name),
-        _ => None,
-    }
 }
 
 async fn resolve_info_target(

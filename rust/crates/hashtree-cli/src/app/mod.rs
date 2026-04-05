@@ -1,3 +1,4 @@
+pub(crate) mod add;
 pub(crate) mod args;
 pub(crate) mod blossom;
 pub(crate) mod cashu_delegate;
