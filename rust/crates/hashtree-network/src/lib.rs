@@ -41,18 +41,21 @@
 //! ```
 
 pub mod channel;
+pub mod local_bus;
 pub mod mesh_store_core;
 pub mod mock;
 pub mod nostr;
 pub mod peer_selector;
 pub mod protocol;
 pub mod real_factory;
+pub mod root_events;
 pub mod signaling;
 pub mod store;
 pub mod transport;
 pub mod types;
 
 pub use channel::{ChannelError, LatencyChannel, MockChannel, PeerChannel};
+pub use local_bus::{LocalNostrBus, SharedLocalNostrBus};
 pub use mesh_store_core::{
     build_hedged_wave_plan, normalize_dispatch_config, run_hedged_waves, sync_selector_peers,
     DataPumpStats, HedgedWaveAction, MeshRoutingConfig, MeshStoreCore, ProductionMeshStore,
@@ -76,6 +79,10 @@ pub use protocol::{
     MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE,
 };
 pub use real_factory::WebRtcPeerLinkFactory;
+pub use root_events::{
+    build_root_filter, hashtree_event_identifier, is_hashtree_labeled_event, pick_latest_event,
+    root_event_from_peer, PeerRootEvent, HASHTREE_KIND, HASHTREE_LABEL,
+};
 pub use signaling::{MeshRouter, PeerEntry};
 pub use store::{MeshStore, MeshStoreError};
 pub use transport::{PeerLink, PeerLinkFactory, SignalingTransport, TransportError};

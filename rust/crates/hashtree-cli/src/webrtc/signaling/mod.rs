@@ -11,19 +11,18 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::{SinkExt, StreamExt};
 use hashtree_network::{
     decode_signaling_event, encode_signaling_event, run_hedged_waves, sync_selector_peers,
     ClassifyRequest as SharedClassifyRequest, HedgedWaveAction, IceCandidate as SharedIceCandidate,
-    MeshRouter, PeerLink as SharedPeerLink, PeerLinkFactory as SharedPeerLinkFactory, PeerSelector,
+    MeshRouter, NostrRelayTransport, PeerLink as SharedPeerLink,
+    PeerLinkFactory as SharedPeerLinkFactory, PeerSelector,
     SignalingTransport as SharedSignalingTransport, TransportError as SharedTransportError,
 };
-use nostr::{ClientMessage, Filter, JsonUtil, Keys, Kind, RelayMessage};
+use nostr::{Keys, Kind};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, RwLock};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
 use super::bluetooth::{BluetoothMesh, BluetoothPeerRegistrar, BluetoothRuntimeContext};
@@ -40,8 +39,7 @@ use super::types::{
     decrement_htl_with_policy, encode_quote_request, encode_request, should_forward_htl,
     validate_mesh_frame, DataQuoteRequest, DataRequest, MeshNostrFrame, MeshNostrPayload,
     PeerDirection, PeerId, PeerPool, PeerStateEvent, PeerStatus, RequestDispatchConfig,
-    SignalingMessage, TimedSeenSet, WebRTCConfig, HELLO_TAG, MESH_DEFAULT_HTL, MESH_EVENT_POLICY,
-    WEBRTC_KIND,
+    SignalingMessage, TimedSeenSet, WebRTCConfig, MESH_DEFAULT_HTL, MESH_EVENT_POLICY, WEBRTC_KIND,
 };
 use super::wifi_aware::{mobile_wifi_aware_bridge, WifiAwareNostrBus, WIFI_AWARE_SOURCE};
 use crate::cashu_helper::CashuPaymentClient;
@@ -1435,13 +1433,6 @@ impl WebRTCManager {
             other_connected,
             other_active,
         )
-    }
-
-    fn local_hello_message(&self) -> SignalingMessage {
-        SignalingMessage::Hello {
-            peer_id: self.my_peer_id.to_string(),
-            roots: Vec::new(),
-        }
     }
 
     fn local_bus_max_peers(&self, source: &str) -> Option<usize> {

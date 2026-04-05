@@ -9,6 +9,7 @@ impl WebRTCManager {
         );
 
         let (event_tx, mut event_rx) = mpsc::channel::<(String, nostr::Event)>(100);
+        let (relay_msg_tx, mut relay_msg_rx) = mpsc::channel::<SignalingMessage>(100);
 
         // Take the signaling receiver
         let mut signaling_rx = self
@@ -47,25 +48,30 @@ impl WebRTCManager {
             let _ = bluetooth.start(context).await;
         }
 
-        // Create a shared write channel for all relay tasks
-        let (relay_write_tx, _) = tokio::sync::broadcast::channel::<SignalingMessage>(100);
+        let relay_transport = if self.config.signaling_enabled {
+            let transport = Arc::new(NostrRelayTransport::new(
+                self.keys.clone(),
+                self.config.debug,
+            ));
+            transport
+                .connect(&self.config.relays)
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-        // Spawn relay connections
-        for relay_url in &self.config.relays {
-            let url = relay_url.clone();
-            let event_tx = event_tx.clone();
-            let shutdown_rx = self.shutdown_rx.clone();
-            let keys = self.keys.clone();
-            let relay_write_rx = relay_write_tx.subscribe();
-
+            let relay_reader = transport.clone();
+            let relay_msg_tx = relay_msg_tx.clone();
             tokio::spawn(async move {
-                if let Err(e) =
-                    Self::relay_task(url.clone(), event_tx, shutdown_rx, keys, relay_write_rx).await
-                {
-                    error!("Relay {} error: {}", url, e);
+                while let Some(msg) = relay_reader.recv().await {
+                    if relay_msg_tx.send(msg).await.is_err() {
+                        break;
+                    }
                 }
             });
-        }
+
+            Some(transport)
+        } else {
+            None
+        };
 
         if self.config.multicast.is_enabled() {
             if let Some(relay) = self.nostr_relay.clone() {
@@ -169,9 +175,6 @@ impl WebRTCManager {
         if self.config.signaling_enabled {
             if let Some(shared_router) = self.shared_router.as_ref() {
                 let _ = shared_router.send_hello(Vec::new()).await;
-            } else {
-                self.dispatch_signaling_message(self.local_hello_message(), &relay_write_tx)
-                    .await;
             }
         }
         loop {
@@ -180,6 +183,14 @@ impl WebRTCManager {
                     if *shutdown_rx.borrow() {
                         info!("WebRTC manager shutting down");
                         break;
+                    }
+                }
+                Some(msg) = relay_msg_rx.recv() => {
+                    if let Err(e) = self
+                        .handle_signaling_message("relay", msg, self.shared_router.as_ref())
+                        .await
+                    {
+                        debug!("Error handling relay signaling message: {}", e);
                     }
                 }
                 Some((relay, event)) = event_rx.recv() => {
@@ -191,11 +202,11 @@ impl WebRTCManager {
                     }
                 }
                 Some(msg) = signaling_rx.recv() => {
-                    self.dispatch_signaling_message(msg, &relay_write_tx).await;
+                    self.dispatch_signaling_message(msg, relay_transport.as_ref()).await;
                 }
                 Some(event) = state_event_rx.recv() => {
                     // Handle peer state events (connected, failed, disconnected)
-                    self.handle_peer_state_event(event, &relay_write_tx).await;
+                    self.handle_peer_state_event(event).await;
                 }
                 Some((from_peer_id, frame)) = mesh_frame_rx.recv() => {
                     self.handle_mesh_frame(from_peer_id, frame).await;
@@ -203,99 +214,11 @@ impl WebRTCManager {
                 _ = hello_ticker.tick(), if self.config.signaling_enabled => {
                     if let Some(shared_router) = self.shared_router.as_ref() {
                         let _ = shared_router.send_hello(Vec::new()).await;
-                    } else {
-                        self.dispatch_signaling_message(self.local_hello_message(), &relay_write_tx)
-                            .await;
                     }
                 }
                 _ = cleanup_interval.tick() => {
                     // Periodic cleanup of stale peers and state sync (fallback)
                     self.cleanup_stale_peers().await;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Connect to a single relay and handle messages
-    async fn relay_task(
-        url: String,
-        event_tx: mpsc::Sender<(String, nostr::Event)>,
-        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-        keys: Keys,
-        mut signaling_rx: tokio::sync::broadcast::Receiver<SignalingMessage>,
-    ) -> Result<()> {
-        info!("Connecting to relay: {}", url);
-
-        let (ws_stream, _) = connect_async(&url).await?;
-        let (mut write, mut read) = ws_stream.split();
-
-        // Subscribe to webrtc events - two filters:
-        // 1. Hello messages: kind 25050 with #l: "hello" tag
-        // 2. Directed messages: kind 25050 with #p tag (our pubkey)
-        let hello_filter = Filter::new()
-            .kind(Kind::Ephemeral(WEBRTC_KIND as u16))
-            .custom_tag(
-                nostr::SingleLetterTag::lowercase(nostr::Alphabet::L),
-                vec![HELLO_TAG],
-            )
-            .since(nostr::Timestamp::now() - Duration::from_secs(60));
-
-        let directed_filter = Filter::new()
-            .kind(Kind::Ephemeral(WEBRTC_KIND as u16))
-            .custom_tag(
-                nostr::SingleLetterTag::lowercase(nostr::Alphabet::P),
-                vec![keys.public_key().to_hex()],
-            )
-            .since(nostr::Timestamp::now() - Duration::from_secs(60));
-
-        let sub_id = nostr::SubscriptionId::generate();
-        let sub_msg = ClientMessage::req(sub_id.clone(), vec![hello_filter, directed_filter]);
-        write.send(Message::Text(sub_msg.as_json())).await?;
-
-        info!(
-            "Subscribed to {} for WebRTC events (kind {})",
-            url, WEBRTC_KIND
-        );
-
-        loop {
-            tokio::select! {
-                _ = shutdown_rx.changed() => {
-                    if *shutdown_rx.borrow() {
-                        break;
-                    }
-                }
-                // Handle outgoing signaling messages
-                Ok(signaling_msg) = signaling_rx.recv() => {
-                    info!("Sending {} via {}", signaling_msg.msg_type(), url);
-                    if let Ok(event) = Self::create_signaling_event(&keys, &signaling_msg).await {
-                        let event_id = event.id.to_string();
-                        let msg = ClientMessage::event(event);
-                        if write.send(Message::Text(msg.as_json())).await.is_ok() {
-                            info!("Sent {} to {} (event id: {})", signaling_msg.msg_type(), url, &event_id[..16]);
-                        }
-                    }
-                }
-                msg = read.next() => {
-                    match msg {
-                        Some(Ok(Message::Text(text))) => {
-                            if let Ok(RelayMessage::Event { event, .. }) =
-                                RelayMessage::from_json(&text)
-                            {
-                                let _ = event_tx.send((url.clone(), *event)).await;
-                            }
-                        }
-                        Some(Err(e)) => {
-                            error!("WebSocket error from {}: {}", url, e);
-                            break;
-                        }
-                        None => {
-                            warn!("WebSocket closed: {}", url);
-                            break;
-                        }
-                        _ => {}
-                    }
                 }
             }
         }
@@ -316,7 +239,7 @@ impl WebRTCManager {
     async fn dispatch_signaling_message(
         &self,
         msg: SignalingMessage,
-        relay_write_tx: &tokio::sync::broadcast::Sender<SignalingMessage>,
+        relay_transport: Option<&Arc<NostrRelayTransport>>,
     ) {
         if !self.config.signaling_enabled {
             debug!(
@@ -326,11 +249,14 @@ impl WebRTCManager {
             return;
         }
 
-        if relay_write_tx.send(msg.clone()).is_err() {
-            debug!(
-                "No relay subscribers for signaling message {}",
-                msg.msg_type()
-            );
+        if let Some(relay_transport) = relay_transport {
+            if let Err(err) = relay_transport.publish(msg.clone()).await {
+                debug!(
+                    "Failed to publish signaling message {} via shared relay transport: {}",
+                    msg.msg_type(),
+                    err
+                );
+            }
         }
 
         let event = match Self::create_signaling_event(&self.keys, &msg).await {
@@ -520,12 +446,26 @@ impl WebRTCManager {
             return Ok(());
         };
 
+        self.handle_signaling_message(relay, msg, Some(shared_router))
+            .await
+    }
+
+    async fn handle_signaling_message(
+        &self,
+        source: &str,
+        msg: SignalingMessage,
+        shared_router: Option<&Arc<SharedProductionRouter>>,
+    ) -> Result<()> {
+        let Some(shared_router) = shared_router else {
+            return Ok(());
+        };
+
         if matches!(
             msg,
             SignalingMessage::Hello { .. } | SignalingMessage::Offer { .. }
         ) {
             let peers = self.state.peers.read().await;
-            if !self.can_track_local_bus_peer(relay, msg.peer_id(), &peers) {
+            if !self.can_track_local_bus_peer(source, msg.peer_id(), &peers) {
                 return Ok(());
             }
         }
@@ -534,24 +474,20 @@ impl WebRTCManager {
             "Received {} from {} via {}",
             msg.msg_type(),
             msg.peer_id(),
-            relay
+            source
         );
         let peer_id = msg.peer_id().to_string();
         shared_router
             .handle_message(msg)
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        remember_peer_signal_path(self.state.as_ref(), &peer_id, relay).await;
+        remember_peer_signal_path(self.state.as_ref(), &peer_id, source).await;
 
         Ok(())
     }
 
     /// Handle peer state change events from peer connections
-    async fn handle_peer_state_event(
-        &self,
-        event: PeerStateEvent,
-        relay_write_tx: &tokio::sync::broadcast::Sender<SignalingMessage>,
-    ) {
+    async fn handle_peer_state_event(&self, event: PeerStateEvent) {
         match event {
             PeerStateEvent::Connected(peer_id) => {
                 let peer_key = peer_id.to_string();
@@ -572,9 +508,6 @@ impl WebRTCManager {
                 if emit_hello {
                     if let Some(shared_router) = self.shared_router.as_ref() {
                         let _ = shared_router.send_hello(Vec::new()).await;
-                    } else {
-                        self.dispatch_signaling_message(self.local_hello_message(), relay_write_tx)
-                            .await;
                     }
                 }
             }
@@ -974,14 +907,13 @@ mod tests {
             },
         );
 
-        let (relay_tx, _) = tokio::sync::broadcast::channel(4);
         manager
             .dispatch_signaling_message(
                 SignalingMessage::Hello {
                     peer_id: manager.my_peer_id.to_string(),
                     roots: Vec::new(),
                 },
-                &relay_tx,
+                None,
             )
             .await;
 
@@ -1013,12 +945,11 @@ mod tests {
             },
         );
 
-        let (relay_tx, _) = tokio::sync::broadcast::channel(4);
         let manager_for_task = manager.clone();
         let peer_id_for_task = peer_id.clone();
         let cleanup_task = tokio::spawn(async move {
             manager_for_task
-                .handle_peer_state_event(PeerStateEvent::Failed(peer_id_for_task), &relay_tx)
+                .handle_peer_state_event(PeerStateEvent::Failed(peer_id_for_task))
                 .await;
         });
 

@@ -10,6 +10,7 @@ description = "Mesh networking stack for hashtree: routing, signaling, peer link
 keywords = ["merkle", "webrtc", "p2p", "nostr", "hashtree"]
 
 [dependencies]
+anyhow.workspace = true
 hashtree-core.workspace = true
 webrtc.workspace = true
 nostr-sdk.workspace = true
