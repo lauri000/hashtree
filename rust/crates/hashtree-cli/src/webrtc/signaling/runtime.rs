@@ -302,7 +302,7 @@ impl WebRTCManager {
         frame: &MeshNostrFrame,
         exclude_peer_id: Option<&str>,
     ) -> usize {
-        let peers = self.state.peers.read().await;
+        let peers = self.state.runtime.peers.read().await;
         let peer_refs: Vec<(String, Arc<dyn MeshSession>)> = peers
             .values()
             .filter(|entry| entry.state == ConnectionState::Connected)
@@ -434,7 +434,7 @@ impl WebRTCManager {
             msg,
             SignalingMessage::Hello { .. } | SignalingMessage::Offer { .. }
         ) {
-            let peers = self.state.peers.read().await;
+            let peers = self.state.runtime.peers.read().await;
             if !self.can_track_local_bus_peer(source, msg.peer_id(), &peers) {
                 return Ok(());
             }
@@ -451,7 +451,7 @@ impl WebRTCManager {
             .handle_message(msg)
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        remember_peer_signal_path(self.state.peers.as_ref(), &peer_id, source).await;
+        remember_peer_signal_path(self.state.runtime.peers.as_ref(), &peer_id, source).await;
 
         Ok(())
     }
@@ -462,7 +462,7 @@ impl WebRTCManager {
             PeerStateEvent::Connected(peer_id) => {
                 let peer_key = peer_id.to_string();
                 let mut emit_hello = false;
-                let mut peers = self.state.peers.write().await;
+                let mut peers = self.state.runtime.peers.write().await;
                 if let Some(entry) = peers.get_mut(&peer_key) {
                     if entry.state != ConnectionState::Connected {
                         info!("Peer {} connected (via state event)", peer_id.short());
@@ -470,6 +470,7 @@ impl WebRTCManager {
                         emit_hello = true;
                         // Update connected count
                         self.state
+                            .runtime
                             .connected_count
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
@@ -488,13 +489,14 @@ impl WebRTCManager {
                     peer_id.short()
                 );
                 let removed = {
-                    let mut peers = self.state.peers.write().await;
+                    let mut peers = self.state.runtime.peers.write().await;
                     peers.remove(&peer_key)
                 };
                 if let Some(entry) = removed {
                     // Decrement connected count if was connected
                     if entry.state == ConnectionState::Connected {
                         self.state
+                            .runtime
                             .connected_count
                             .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                     }
@@ -513,13 +515,14 @@ impl WebRTCManager {
                 let peer_key = peer_id.to_string();
                 info!("Peer {} disconnected - removing from pool", peer_id.short());
                 let removed = {
-                    let mut peers = self.state.peers.write().await;
+                    let mut peers = self.state.runtime.peers.write().await;
                     peers.remove(&peer_key)
                 };
                 if let Some(entry) = removed {
                     // Decrement connected count if was connected
                     if entry.state == ConnectionState::Connected {
                         self.state
+                            .runtime
                             .connected_count
                             .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                     }
@@ -539,7 +542,7 @@ impl WebRTCManager {
 
     /// Cleanup stale peers and sync connection states (fallback, runs every 30s)
     async fn cleanup_stale_peers(&self) {
-        let mut peers = self.state.peers.write().await;
+        let mut peers = self.state.runtime.peers.write().await;
         let mut connected_count = 0;
         let mut to_remove = Vec::new();
         let stale_timeout = Duration::from_secs(60); // Remove peers stuck in Discovered/Connecting for 60s
@@ -598,6 +601,7 @@ impl WebRTCManager {
         }
 
         self.state
+            .runtime
             .connected_count
             .store(connected_count, std::sync::atomic::Ordering::Relaxed);
     }
@@ -774,7 +778,7 @@ mod tests {
         let data = b"offline-over-ble".to_vec();
         let hash_hex = hex::encode(hashtree_core::sha256(&data));
 
-        state.peers.write().await.insert(
+        state.runtime.peers.write().await.insert(
             "peer-a".to_string(),
             PeerEntry {
                 peer_id: PeerId::new("peer-a-pub".to_string()),
@@ -820,7 +824,7 @@ mod tests {
         let data = b"slow-offline-over-ble".to_vec();
         let hash_hex = hex::encode(hashtree_core::sha256(&data));
 
-        state.peers.write().await.insert(
+        state.runtime.peers.write().await.insert(
             "peer-a".to_string(),
             PeerEntry {
                 peer_id: PeerId::new("peer-a-pub".to_string()),
@@ -861,7 +865,7 @@ mod tests {
         let peer = MeshPeer::mock_for_tests(TestMeshPeer::with_response(None));
         let peer_ref = peer.mock_ref().expect("mock peer").clone();
 
-        manager.state.peers.write().await.insert(
+        manager.state.runtime.peers.write().await.insert(
             peer_key,
             PeerEntry {
                 peer_id,
@@ -897,7 +901,7 @@ mod tests {
         let peer_id = PeerId::new("peer-a-pub".to_string());
         let peer_key = peer_id.to_string();
 
-        manager.state.peers.write().await.insert(
+        manager.state.runtime.peers.write().await.insert(
             peer_key.clone(),
             PeerEntry {
                 peer_id: peer_id.clone(),
@@ -926,7 +930,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         let remaining = tokio::time::timeout(Duration::from_millis(50), async {
-            manager.state.peers.read().await.len()
+            manager.state.runtime.peers.read().await.len()
         })
         .await
         .expect("peer map read should not block on close");
@@ -958,7 +962,7 @@ mod tests {
         let peer_id = PeerId::new("peer-a-pub".to_string());
         let peer_key = peer_id.to_string();
 
-        manager.state.peers.write().await.insert(
+        manager.state.runtime.peers.write().await.insert(
             peer_key.clone(),
             PeerEntry {
                 peer_id,
@@ -995,7 +999,7 @@ mod tests {
         let manager_for_writer = manager.clone();
         let peer_key_for_writer = peer_key.clone();
         let writer_task = tokio::spawn(async move {
-            let mut peers = manager_for_writer.state.peers.write().await;
+            let mut peers = manager_for_writer.state.runtime.peers.write().await;
             if let Some(entry) = peers.get_mut(&peer_key_for_writer) {
                 entry.bytes_received += 1;
             }
@@ -1004,7 +1008,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         let status_count = tokio::time::timeout(Duration::from_millis(50), async {
-            manager.state.peers.read().await.len()
+            manager.state.runtime.peers.read().await.len()
         })
         .await
         .expect("peer map read should not block on root query");

@@ -71,7 +71,7 @@ fn peer_entry_json(id: &str, entry: &PeerEntry) -> Value {
 }
 
 async fn capture_mesh_snapshot(webrtc_state: &Arc<WebRTCState>) -> MeshSnapshot {
-    let peers = webrtc_state.peers.read().await;
+    let peers = webrtc_state.runtime.peers.read().await;
     let bluetooth_enabled = bluetooth_transport_enabled();
     let mut snapshot = MeshSnapshot::default();
 

@@ -97,8 +97,8 @@ impl BluetoothPeerRegistrar {
     ) -> Self {
         Self {
             inner: TransportPeerRegistrar::new(
-                state.peers.clone(),
-                state.connected_count.clone(),
+                state.runtime.peers.clone(),
+                state.runtime.connected_count.clone(),
                 peer_classifier,
                 pools,
                 PeerTransport::Bluetooth,
@@ -209,11 +209,12 @@ mod tests {
         );
 
         assert!(first_ref.is_closed());
-        let peers = state.peers.read().await;
+        let peers = state.runtime.peers.read().await;
         assert!(peers.contains_key(&second_peer_id.to_string()));
         assert_eq!(peers.len(), 1);
         assert_eq!(
             state
+                .runtime
                 .connected_count
                 .load(std::sync::atomic::Ordering::Relaxed),
             1
@@ -259,6 +260,7 @@ mod tests {
 
         assert!(accepted);
         assert!(state
+            .runtime
             .peers
             .read()
             .await
@@ -269,6 +271,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if !state
+                    .runtime
                     .peers
                     .read()
                     .await

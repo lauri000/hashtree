@@ -14,12 +14,11 @@ use async_trait::async_trait;
 use hashtree_network::{
     can_track_signal_path_peer, decode_signaling_event, encode_signaling_event,
     forward_mesh_frame_to_sessions as fanout_mesh_frame_to_sessions, remember_peer_signal_path,
-    resolve_root_from_local_buses_with_source as resolve_root_from_buses_with_source,
     resolve_root_from_peer_sessions as resolve_root_via_peer_sessions, run_hedged_waves,
     sync_selector_peers, ClassifyRequest as SharedClassifyRequest, HedgedWaveAction,
-    IceCandidate as SharedIceCandidate, MeshPeerEntry as SharedPeerEntry, MeshRouter, MeshSession,
-    NostrRelayTransport, PeerClassifier as SharedPeerClassifier, PeerLink as SharedPeerLink,
-    PeerLinkFactory as SharedPeerLinkFactory, PeerSelector,
+    IceCandidate as SharedIceCandidate, MeshPeerEntry as SharedPeerEntry, MeshRouter,
+    MeshRuntimeState, MeshSession, NostrRelayTransport, PeerClassifier as SharedPeerClassifier,
+    PeerLink as SharedPeerLink, PeerLinkFactory as SharedPeerLinkFactory, PeerSelector,
     SignalingTransport as SharedSignalingTransport, TransportError as SharedTransportError,
 };
 pub use hashtree_network::{ConnectionState, PeerSignalPath, PeerTransport};
@@ -60,18 +59,7 @@ fn bluetooth_nostr_only_mode() -> bool {
 
 /// Shared state for the native mesh router.
 pub struct WebRTCState {
-    pub peers: Arc<RwLock<HashMap<String, PeerEntry>>>,
-    pub connected_count: Arc<std::sync::atomic::AtomicUsize>,
-    /// Total bytes sent across all peers (cumulative)
-    pub bytes_sent: std::sync::atomic::AtomicU64,
-    /// Total bytes received across all peers (cumulative)
-    pub bytes_received: std::sync::atomic::AtomicU64,
-    /// Relayless mesh frames received and accepted.
-    pub mesh_received: std::sync::atomic::AtomicU64,
-    /// Relayless mesh frames forwarded to peers.
-    pub mesh_forwarded: std::sync::atomic::AtomicU64,
-    /// Relayless mesh frames/events dropped due to dedupe.
-    pub mesh_dropped_duplicate: std::sync::atomic::AtomicU64,
+    pub runtime: MeshRuntimeState<MeshPeer>,
     /// Shared peer selector used by live retrieval; aligned with simulation strategies.
     peer_selector: Arc<RwLock<PeerSelector>>,
     /// Hedged dispatch policy for retrieval requests.
@@ -80,9 +68,6 @@ pub struct WebRTCState {
     request_timeout: Duration,
     /// Shared Cashu quote negotiation policy/state.
     cashu_quotes: Arc<CashuQuoteState>,
-    /// Optional local buses such as multicast or BLE that carry signed Nostr
-    /// envelopes for nearby/offline peers.
-    local_buses: RwLock<Vec<SharedLocalNostrBus>>,
 }
 const SEEN_FRAME_CAP: usize = 4096;
 const SEEN_FRAME_TTL: Duration = Duration::from_secs(120);
@@ -188,7 +173,7 @@ impl SharedRouterPeerFactory {
             .await
             .insert(peer_key.clone(), peer.clone());
 
-        let mut peers = self.state.peers.write().await;
+        let mut peers = self.state.runtime.peers.write().await;
         peers.insert(
             peer_key,
             PeerEntry {
@@ -391,27 +376,20 @@ impl WebRTCState {
             CashuQuoteState::new(cashu_routing, peer_selector.clone(), payment_client)
         });
         Self {
-            peers: Arc::new(RwLock::new(HashMap::new())),
-            connected_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            bytes_sent: std::sync::atomic::AtomicU64::new(0),
-            bytes_received: std::sync::atomic::AtomicU64::new(0),
-            mesh_received: std::sync::atomic::AtomicU64::new(0),
-            mesh_forwarded: std::sync::atomic::AtomicU64::new(0),
-            mesh_dropped_duplicate: std::sync::atomic::AtomicU64::new(0),
+            runtime: MeshRuntimeState::new(),
             peer_selector,
             request_dispatch,
             request_timeout,
             cashu_quotes,
-            local_buses: RwLock::new(Vec::new()),
         }
     }
 
     pub async fn set_local_buses(&self, buses: Vec<SharedLocalNostrBus>) {
-        *self.local_buses.write().await = buses;
+        self.runtime.set_local_buses(buses).await;
     }
 
     pub async fn add_local_bus(&self, bus: SharedLocalNostrBus) {
-        self.local_buses.write().await.push(bus);
+        self.runtime.add_local_bus(bus).await;
     }
 
     pub async fn set_multicast_bus(&self, bus: Option<Arc<MulticastNostrBus>>) {
@@ -425,71 +403,38 @@ impl WebRTCState {
     /// Drop all live peer sessions and clear topology-specific state while
     /// keeping cumulative bandwidth counters intact.
     pub async fn reset_runtime_state(&self) {
-        self.set_local_buses(Vec::new()).await;
-        let peers = {
-            let mut peers = self.peers.write().await;
-            std::mem::take(&mut *peers)
-        };
-        self.connected_count
-            .store(0, std::sync::atomic::Ordering::Relaxed);
-        for entry in peers.into_values() {
-            if let Some(peer) = entry.peer {
-                let _ = peer.close().await;
-            }
-        }
+        self.runtime.reset().await;
     }
 
     /// Get current bandwidth stats (bytes sent/received)
     pub fn get_bandwidth(&self) -> (u64, u64) {
-        (
-            self.bytes_sent.load(std::sync::atomic::Ordering::Relaxed),
-            self.bytes_received
-                .load(std::sync::atomic::Ordering::Relaxed),
-        )
+        self.runtime.get_bandwidth()
     }
 
     pub fn get_mesh_stats(&self) -> (u64, u64, u64) {
-        (
-            self.mesh_received
-                .load(std::sync::atomic::Ordering::Relaxed),
-            self.mesh_forwarded
-                .load(std::sync::atomic::Ordering::Relaxed),
-            self.mesh_dropped_duplicate
-                .load(std::sync::atomic::Ordering::Relaxed),
-        )
+        self.runtime.get_mesh_stats()
     }
 
     pub fn record_mesh_received(&self) {
-        self.mesh_received
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.runtime.record_mesh_received();
     }
 
     pub fn record_mesh_forwarded(&self, count: u64) {
-        self.mesh_forwarded
-            .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+        self.runtime.record_mesh_forwarded(count);
     }
 
     pub fn record_mesh_duplicate_drop(&self) {
-        self.mesh_dropped_duplicate
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.runtime.record_mesh_duplicate_drop();
     }
 
     /// Record bytes sent (global + per-peer)
     pub async fn record_sent(&self, peer_id: &str, bytes: u64) {
-        self.bytes_sent
-            .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
-        if let Some(entry) = self.peers.write().await.get_mut(peer_id) {
-            entry.bytes_sent += bytes;
-        }
+        self.runtime.record_sent(peer_id, bytes).await;
     }
 
     /// Record bytes received (global + per-peer)
     pub async fn record_received(&self, peer_id: &str, bytes: u64) {
-        self.bytes_received
-            .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
-        if let Some(entry) = self.peers.write().await.get_mut(peer_id) {
-            entry.bytes_received += bytes;
-        }
+        self.runtime.record_received(peer_id, bytes).await;
     }
 
     /// Request content by hash from connected peers
@@ -508,7 +453,7 @@ impl WebRTCState {
     ) -> Option<(Vec<u8>, String)> {
         use super::types::BLOB_REQUEST_POLICY;
 
-        let peers = self.peers.read().await;
+        let peers = self.runtime.peers.read().await;
 
         let peer_refs: Vec<_> = peers
             .values()
@@ -719,7 +664,7 @@ impl WebRTCState {
                                 let rtt_ms = started.elapsed().as_millis() as u64;
                                 if hashtree_core::sha256(&data) == expected_hash {
                                     let should_record = {
-                                        let peers = self.peers.read().await;
+                                        let peers = self.runtime.peers.read().await;
                                         peers
                                             .get(&peer_id)
                                             .map(|entry| {
@@ -966,7 +911,7 @@ impl WebRTCState {
         per_peer_timeout: Duration,
     ) -> Option<PeerRootEvent> {
         let peer_refs: Vec<(String, Arc<dyn MeshSession>)> = {
-            let peers = self.peers.read().await;
+            let peers = self.runtime.peers.read().await;
             peers
                 .values()
                 .filter(|entry| entry.state == ConnectionState::Connected)
@@ -1001,8 +946,9 @@ impl WebRTCState {
         tree_name: &str,
         timeout: Duration,
     ) -> Option<(&'static str, PeerRootEvent)> {
-        let buses = self.local_buses.read().await.clone();
-        resolve_root_from_buses_with_source(buses, owner_pubkey, tree_name, timeout).await
+        self.runtime
+            .resolve_root_from_local_buses_with_source(owner_pubkey, tree_name, timeout)
+            .await
     }
 
     pub async fn resolve_root_from_local_buses(
@@ -1231,6 +1177,7 @@ impl WebRTCManager {
     /// Get connected peer count
     pub async fn connected_count(&self) -> usize {
         self.state
+            .runtime
             .connected_count
             .load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -1238,6 +1185,7 @@ impl WebRTCManager {
     /// Get all peer statuses
     pub async fn peer_statuses(&self) -> Vec<PeerStatus> {
         self.state
+            .runtime
             .peers
             .read()
             .await
@@ -1257,7 +1205,7 @@ impl WebRTCManager {
     /// Returns (follows_connected, follows_active, other_connected, other_active)
     /// "active" = Connected or Connecting (excludes Discovered and Failed)
     pub async fn get_pool_counts(&self) -> (usize, usize, usize, usize) {
-        let peers = self.state.peers.read().await;
+        let peers = self.state.runtime.peers.read().await;
         let mut follows_connected = 0;
         let mut follows_active = 0;
         let mut other_connected = 0;

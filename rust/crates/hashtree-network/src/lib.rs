@@ -51,6 +51,7 @@ pub mod protocol;
 pub mod real_factory;
 pub mod root_events;
 pub mod runtime_peer;
+pub mod runtime_state;
 pub mod signaling;
 pub mod store;
 pub mod transport;
@@ -93,6 +94,7 @@ pub use runtime_peer::{
     can_track_signal_path_peer, remember_peer_signal_path, ConnectionState, MeshPeerEntry,
     PeerClassifier, PeerDirection, PeerSignalPath, PeerTransport, TransportPeerRegistrar,
 };
+pub use runtime_state::MeshRuntimeState;
 pub use signaling::{MeshRouter, PeerEntry};
 pub use store::{MeshStore, MeshStoreError};
 pub use transport::{PeerLink, PeerLinkFactory, SignalingTransport, TransportError};

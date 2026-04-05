@@ -123,7 +123,7 @@ async fn sample_webrtc_state() -> Arc<WebRTCState> {
     );
     let peer_key = peer_id.to_string();
     let signal_paths = BTreeSet::from([PeerSignalPath::Relay, PeerSignalPath::Multicast]);
-    state.peers.write().await.insert(
+    state.runtime.peers.write().await.insert(
         peer_key.clone(),
         PeerEntry {
             peer_id,

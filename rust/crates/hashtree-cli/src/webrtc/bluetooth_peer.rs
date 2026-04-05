@@ -548,7 +548,7 @@ mod tests {
         let responder_id = PeerId::new("peer-b".to_string());
 
         for peer_id in [&requester_id, &responder_id] {
-            state.peers.write().await.insert(
+            state.runtime.peers.write().await.insert(
                 peer_id.to_string(),
                 PeerEntry {
                     peer_id: peer_id.clone(),
@@ -610,7 +610,7 @@ mod tests {
         .expect("response encoding")
         .len() as u64;
 
-        let peers = state.peers.read().await;
+        let peers = state.runtime.peers.read().await;
         let requester_stats = peers
             .get(&requester_id.to_string())
             .expect("requester stats");
