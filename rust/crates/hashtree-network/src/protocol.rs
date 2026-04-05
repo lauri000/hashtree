@@ -5,6 +5,9 @@
 //! - Response:       [0x01][msgpack: {h: bytes32, d: bytes, i?: u32, n?: u32}]
 //! - QuoteRequest:   [0x02][msgpack: {h: bytes32, p: u64, t: u32, m?: string}]
 //! - QuoteResponse:  [0x03][msgpack: {h: bytes32, a: bool, q?: u64, p?: u64, t?: u32, m?: string}]
+//! - Payment:        [0x04][msgpack: {h: bytes32, q: u64, c: u32, p: u64, m?: string, tok: string}]
+//! - PaymentAck:     [0x05][msgpack: {h: bytes32, q: u64, c: u32, a: bool, e?: string}]
+//! - Chunk:          [0x06][msgpack: {h: bytes32, q: u64, c: u32, n: u32, p: u64, d: bytes}]
 //!
 //! Fragmented responses include `i` (index) and `n` (total), unfragmented omit them.
 
@@ -24,6 +27,9 @@ pub const MSG_TYPE_REQUEST: u8 = 0x00;
 pub const MSG_TYPE_RESPONSE: u8 = 0x01;
 pub const MSG_TYPE_QUOTE_REQUEST: u8 = 0x02;
 pub const MSG_TYPE_QUOTE_RESPONSE: u8 = 0x03;
+pub const MSG_TYPE_PAYMENT: u8 = 0x04;
+pub const MSG_TYPE_PAYMENT_ACK: u8 = 0x05;
+pub const MSG_TYPE_CHUNK: u8 = 0x06;
 
 /// Fragment size for large data (32KB - safe limit for WebRTC)
 pub const FRAGMENT_SIZE: usize = 32 * 1024;
@@ -96,6 +102,44 @@ pub struct DataQuoteResponse {
     pub m: Option<String>,
 }
 
+/// Payment message body for chunk-by-chunk settlement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataPayment {
+    #[serde(with = "serde_bytes")]
+    pub h: Vec<u8>,
+    pub q: u64,
+    pub c: u32,
+    pub p: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub m: Option<String>,
+    pub tok: String,
+}
+
+/// Payment acknowledgement for quoted chunk settlement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataPaymentAck {
+    #[serde(with = "serde_bytes")]
+    pub h: Vec<u8>,
+    pub q: u64,
+    pub c: u32,
+    pub a: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub e: Option<String>,
+}
+
+/// Quoted data chunk delivered after payment negotiation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataChunk {
+    #[serde(with = "serde_bytes")]
+    pub h: Vec<u8>,
+    pub q: u64,
+    pub c: u32,
+    pub n: u32,
+    pub p: u64,
+    #[serde(with = "serde_bytes")]
+    pub d: Vec<u8>,
+}
+
 /// Parsed data message
 #[derive(Debug, Clone)]
 pub enum DataMessage {
@@ -103,6 +147,9 @@ pub enum DataMessage {
     Response(DataResponse),
     QuoteRequest(DataQuoteRequest),
     QuoteResponse(DataQuoteResponse),
+    Payment(DataPayment),
+    PaymentAck(DataPaymentAck),
+    Chunk(DataChunk),
 }
 
 /// Encode a request message to wire format
@@ -143,6 +190,33 @@ pub fn encode_quote_response(res: &DataQuoteResponse) -> Vec<u8> {
     result
 }
 
+/// Encode a payment message to wire format.
+pub fn encode_payment(req: &DataPayment) -> Vec<u8> {
+    let body = rmp_serde::to_vec_named(req).expect("Failed to encode payment");
+    let mut result = Vec::with_capacity(1 + body.len());
+    result.push(MSG_TYPE_PAYMENT);
+    result.extend(body);
+    result
+}
+
+/// Encode a payment acknowledgement to wire format.
+pub fn encode_payment_ack(res: &DataPaymentAck) -> Vec<u8> {
+    let body = rmp_serde::to_vec_named(res).expect("Failed to encode payment ack");
+    let mut result = Vec::with_capacity(1 + body.len());
+    result.push(MSG_TYPE_PAYMENT_ACK);
+    result.extend(body);
+    result
+}
+
+/// Encode a quoted data chunk to wire format.
+pub fn encode_chunk(chunk: &DataChunk) -> Vec<u8> {
+    let body = rmp_serde::to_vec_named(chunk).expect("Failed to encode chunk");
+    let mut result = Vec::with_capacity(1 + body.len());
+    result.push(MSG_TYPE_CHUNK);
+    result.extend(body);
+    result
+}
+
 /// Parse a wire format message
 pub fn parse_message(data: &[u8]) -> Option<DataMessage> {
     if data.len() < 2 {
@@ -165,6 +239,15 @@ pub fn parse_message(data: &[u8]) -> Option<DataMessage> {
         MSG_TYPE_QUOTE_RESPONSE => rmp_serde::from_slice::<DataQuoteResponse>(body)
             .ok()
             .map(DataMessage::QuoteResponse),
+        MSG_TYPE_PAYMENT => rmp_serde::from_slice::<DataPayment>(body)
+            .ok()
+            .map(DataMessage::Payment),
+        MSG_TYPE_PAYMENT_ACK => rmp_serde::from_slice::<DataPaymentAck>(body)
+            .ok()
+            .map(DataMessage::PaymentAck),
+        MSG_TYPE_CHUNK => rmp_serde::from_slice::<DataChunk>(body)
+            .ok()
+            .map(DataMessage::Chunk),
         _ => None,
     }
 }
@@ -429,5 +512,59 @@ mod tests {
         let bytes = hash_to_bytes(&hash);
         let back = bytes_to_hash(&bytes).unwrap();
         assert_eq!(hash, back);
+    }
+
+    #[test]
+    fn test_encode_decode_payment_ack_and_chunk() {
+        let payment = DataPayment {
+            h: vec![0x61; 32],
+            q: 9,
+            c: 1,
+            p: 3,
+            m: Some("https://mint.example".to_string()),
+            tok: "cashuBtoken".to_string(),
+        };
+        let payment_ack = DataPaymentAck {
+            h: vec![0x62; 32],
+            q: 9,
+            c: 1,
+            a: true,
+            e: None,
+        };
+        let chunk = DataChunk {
+            h: vec![0x63; 32],
+            q: 9,
+            c: 1,
+            n: 2,
+            p: 3,
+            d: vec![1, 2, 3],
+        };
+
+        match parse_message(&encode_payment(&payment)).unwrap() {
+            DataMessage::Payment(parsed) => {
+                assert_eq!(parsed.q, payment.q);
+                assert_eq!(parsed.p, payment.p);
+                assert_eq!(parsed.m, payment.m);
+            }
+            _ => panic!("Expected payment"),
+        }
+
+        match parse_message(&encode_payment_ack(&payment_ack)).unwrap() {
+            DataMessage::PaymentAck(parsed) => {
+                assert_eq!(parsed.q, payment_ack.q);
+                assert_eq!(parsed.c, payment_ack.c);
+                assert!(parsed.a);
+            }
+            _ => panic!("Expected payment ack"),
+        }
+
+        match parse_message(&encode_chunk(&chunk)).unwrap() {
+            DataMessage::Chunk(parsed) => {
+                assert_eq!(parsed.q, chunk.q);
+                assert_eq!(parsed.n, chunk.n);
+                assert_eq!(parsed.d, chunk.d);
+            }
+            _ => panic!("Expected chunk"),
+        }
     }
 }

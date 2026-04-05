@@ -11,6 +11,7 @@ keywords = ["merkle", "webrtc", "p2p", "nostr", "hashtree"]
 
 [dependencies]
 anyhow.workspace = true
+cashu-service = { workspace = true, default-features = false }
 hashtree-core.workspace = true
 webrtc.workspace = true
 nostr-sdk.workspace = true
@@ -33,3 +34,4 @@ tracing = "0.1"
 tokio = { version = "1", features = ["full", "rt-multi-thread", "macros"] }
 hashtree-sim = { path = "../hashtree-sim" }
 rustls = { version = "0.23", features = ["ring"] }
+tempfile.workspace = true

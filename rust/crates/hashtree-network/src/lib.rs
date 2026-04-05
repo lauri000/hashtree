@@ -40,6 +40,7 @@
 //! }
 //! ```
 
+pub mod cashu;
 pub mod channel;
 pub mod local_bus;
 pub mod mesh_session;
@@ -57,6 +58,10 @@ pub mod store;
 pub mod transport;
 pub mod types;
 
+pub use cashu::{
+    cashu_mint_metadata_path, CashuMintMetadataRecord, CashuMintMetadataStore, CashuQuoteState,
+    CashuRoutingConfig, ExpectedSettlement, NegotiatedQuote, CASHU_MINT_METADATA_VERSION,
+};
 pub use channel::{ChannelError, LatencyChannel, MockChannel, PeerChannel};
 pub use local_bus::{LocalNostrBus, SharedLocalNostrBus};
 pub use mesh_session::{
@@ -80,10 +85,12 @@ pub use peer_selector::{
 pub use protocol::{
     bytes_to_hash, create_fragment_response, create_quote_request, create_quote_response_available,
     create_quote_response_unavailable, create_request, create_request_with_quote, create_response,
-    encode_quote_request, encode_quote_response, encode_request, encode_response, hash_to_bytes,
-    hash_to_key, is_fragmented, parse_message, DataMessage, DataQuoteRequest, DataQuoteResponse,
-    DataRequest, DataResponse, FRAGMENT_SIZE, MSG_TYPE_QUOTE_REQUEST, MSG_TYPE_QUOTE_RESPONSE,
-    MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE,
+    encode_chunk, encode_payment, encode_payment_ack, encode_quote_request, encode_quote_response,
+    encode_request, encode_response, hash_to_bytes, hash_to_key, is_fragmented, parse_message,
+    DataChunk, DataMessage, DataPayment, DataPaymentAck, DataQuoteRequest, DataQuoteResponse,
+    DataRequest, DataResponse, FRAGMENT_SIZE, MSG_TYPE_CHUNK, MSG_TYPE_PAYMENT,
+    MSG_TYPE_PAYMENT_ACK, MSG_TYPE_QUOTE_REQUEST, MSG_TYPE_QUOTE_RESPONSE, MSG_TYPE_REQUEST,
+    MSG_TYPE_RESPONSE,
 };
 pub use real_factory::WebRtcPeerLinkFactory;
 pub use root_events::{
