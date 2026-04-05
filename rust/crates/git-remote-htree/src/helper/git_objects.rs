@@ -1,0 +1,205 @@
+use crate::git::object::ObjectType;
+use anyhow::{bail, Context, Result};
+use std::collections::HashSet;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::process::{Command, Stdio};
+use tracing::debug;
+
+use super::RemoteHelper;
+
+impl RemoteHelper {
+    /// Batch check which objects git already has (returns set of existing oids)
+    pub(super) fn git_batch_check_objects<'a>(
+        &self,
+        oids: impl Iterator<Item = &'a str>,
+    ) -> Result<HashSet<String>> {
+        let mut existing = HashSet::new();
+        let oids: Vec<_> = oids.collect();
+
+        // Process in chunks to avoid memory issues with huge repos
+        const BATCH_SIZE: usize = 1000;
+        for chunk in oids.chunks(BATCH_SIZE) {
+            let mut child = Command::new("git")
+                .args(["cat-file", "--batch-check=%(objectname)"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .context("Failed to spawn git cat-file")?;
+
+            {
+                let stdin = child.stdin.as_mut().context("Failed to open stdin")?;
+                for oid in chunk {
+                    writeln!(stdin, "{}", oid)?;
+                }
+            }
+
+            let output = child
+                .wait_with_output()
+                .context("Failed to read git cat-file output")?;
+
+            // Parse output - valid objects return just the oid, missing ones return "oid missing"
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let line = line.trim();
+                if line.len() == 40 && !line.contains(' ') {
+                    existing.insert(line.to_string());
+                }
+            }
+        }
+        Ok(existing)
+    }
+
+    /// Write loose object to local git object store.
+    /// The data is zlib-compressed loose object format.
+    pub(super) fn write_git_object(&self, oid: &str, data: &[u8]) -> Result<()> {
+        // Git objects are stored as .git/objects/xx/yy... where xx is first 2 chars
+        if oid.len() < 3 {
+            bail!("Invalid object id: {}", oid);
+        }
+
+        let git_dir = std::env::var("GIT_DIR").unwrap_or_else(|_| ".git".to_string());
+        let (dir_name, file_name) = oid.split_at(2);
+        let obj_dir = std::path::Path::new(&git_dir)
+            .join("objects")
+            .join(dir_name);
+        std::fs::create_dir_all(&obj_dir).context("Failed to create object directory")?;
+
+        let obj_path = obj_dir.join(file_name);
+        if obj_path.exists() {
+            return Ok(());
+        }
+
+        std::fs::write(&obj_path, data).context("Failed to write git object")?;
+        debug!("Wrote git object {} as loose object", oid);
+        Ok(())
+    }
+
+    /// List objects that need to be pushed (not on remote)
+    pub(super) fn list_objects_to_push(&self, sha: &str) -> Result<Vec<String>> {
+        self.list_objects_for_shas(&[sha.to_string()], &[])
+    }
+
+    pub(super) fn list_objects_for_shas(
+        &self,
+        include: &[String],
+        exclude: &[String],
+    ) -> Result<Vec<String>> {
+        if include.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut command = Command::new("git");
+        command.arg("rev-list").arg("--objects");
+        for sha in include {
+            command.arg(sha);
+        }
+        if !exclude.is_empty() {
+            command.arg("--not");
+            for sha in exclude {
+                command.arg(sha);
+            }
+        }
+
+        let output = command.output()?;
+        if !output.status.success() {
+            bail!("Failed to list objects");
+        }
+
+        let mut seen = HashSet::new();
+        let mut objects = Vec::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            // Format: <sha> [path]
+            if let Some(oid) = line.split_whitespace().next() {
+                let oid = oid.to_string();
+                if seen.insert(oid.clone()) {
+                    objects.push(oid);
+                }
+            }
+        }
+
+        Ok(objects)
+    }
+
+    /// Read multiple git objects using git cat-file --batch
+    /// Processes in batches to avoid pipe buffer deadlock
+    pub(super) fn read_git_objects_batch(
+        &self,
+        oids: &[String],
+    ) -> Result<Vec<(ObjectType, Vec<u8>)>> {
+        if oids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let total = oids.len();
+        let mut results = Vec::with_capacity(total);
+
+        // Process in batches of 100 to avoid pipe buffer issues
+        const BATCH_SIZE: usize = 100;
+
+        for (batch_idx, batch) in oids.chunks(BATCH_SIZE).enumerate() {
+            let mut child = Command::new("git")
+                .args(["cat-file", "--batch"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()?;
+
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("Failed to open stdout"))?;
+
+            // Write batch OIDs to stdin
+            for oid in batch {
+                writeln!(stdin, "{}", oid)?;
+            }
+            drop(stdin);
+
+            // Read responses
+            let mut reader = BufReader::new(stdout);
+
+            for (i, oid) in batch.iter().enumerate() {
+                let mut header = String::new();
+                reader.read_line(&mut header)?;
+                let header = header.trim();
+
+                let parts: Vec<&str> = header.split_whitespace().collect();
+                if parts.len() < 3 {
+                    bail!("Object not found or invalid header for {}: {}", oid, header);
+                }
+
+                let obj_type = match parts[1] {
+                    "blob" => ObjectType::Blob,
+                    "tree" => ObjectType::Tree,
+                    "commit" => ObjectType::Commit,
+                    "tag" => ObjectType::Tag,
+                    _ => bail!("Unknown object type: {}", parts[1]),
+                };
+
+                let size: usize = parts[2].parse()?;
+                let mut content = vec![0u8; size];
+                reader.read_exact(&mut content)?;
+
+                // Read trailing newline
+                let mut newline = [0u8; 1];
+                reader.read_exact(&mut newline)?;
+
+                results.push((obj_type, content));
+
+                // Progress indicator
+                let done = batch_idx * BATCH_SIZE + i + 1;
+                if done == 1 || done.is_multiple_of(100) || done == total {
+                    eprint!("\r  Reading objects: {}/{}", done, total);
+                    let _ = std::io::stderr().flush();
+                }
+            }
+
+            child.wait()?;
+        }
+
+        Ok(results)
+    }
+}
