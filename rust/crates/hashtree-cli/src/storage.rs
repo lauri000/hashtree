@@ -784,7 +784,7 @@ impl HashtreeStore {
     }
 
     /// Upload a directory and return its root hash (hex)
-    /// Respects .gitignore by default
+    /// Respects .gitignore and ignores common OS junk files by default.
     pub fn upload_dir<P: AsRef<Path>>(&self, dir_path: P) -> Result<String> {
         self.upload_dir_with_options(dir_path, true)
     }
@@ -822,19 +822,13 @@ impl HashtreeStore {
         current_path: &Path,
         respect_gitignore: bool,
     ) -> Result<Cid> {
-        use ignore::WalkBuilder;
         use std::collections::HashMap;
 
         // Build directory structure from flat file list - store full Cid with key
         let mut dir_contents: HashMap<String, Vec<(String, Cid)>> = HashMap::new();
         dir_contents.insert(String::new(), Vec::new()); // Root
 
-        let walker = WalkBuilder::new(current_path)
-            .git_ignore(respect_gitignore)
-            .git_global(respect_gitignore)
-            .git_exclude(respect_gitignore)
-            .hidden(false)
-            .build();
+        let walker = crate::ignore_rules::build_content_walker(current_path, respect_gitignore);
 
         for result in walker {
             let entry = result?;
@@ -953,7 +947,7 @@ impl HashtreeStore {
     }
 
     /// Upload a directory with CHK encryption, returns CID
-    /// Respects .gitignore by default
+    /// Respects .gitignore and ignores common OS junk files by default.
     pub fn upload_dir_encrypted<P: AsRef<Path>>(&self, dir_path: P) -> Result<String> {
         self.upload_dir_encrypted_with_options(dir_path, true)
     }

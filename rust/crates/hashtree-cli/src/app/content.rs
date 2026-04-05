@@ -7,20 +7,15 @@ pub(crate) async fn add_directory<S: hashtree_core::store::Store>(
     respect_gitignore: bool,
 ) -> Result<hashtree_core::Cid> {
     use futures::io::AllowStdIo;
+    use hashtree_cli::ignore_rules::build_content_walker;
     use hashtree_core::{DirEntry, LinkType};
-    use ignore::WalkBuilder;
     use std::collections::HashMap;
 
     // Collect files by their parent directory path
     let mut dir_contents: HashMap<String, Vec<(String, hashtree_core::Cid)>> = HashMap::new();
 
     // Use ignore crate for gitignore-aware walking
-    let walker = WalkBuilder::new(dir)
-        .git_ignore(respect_gitignore)
-        .git_global(respect_gitignore)
-        .git_exclude(respect_gitignore)
-        .hidden(false)
-        .build();
+    let walker = build_content_walker(dir, respect_gitignore);
 
     for result in walker {
         let entry = result?;

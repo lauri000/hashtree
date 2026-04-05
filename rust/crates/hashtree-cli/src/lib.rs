@@ -7,6 +7,7 @@ pub mod config;
 pub mod daemon;
 pub mod eviction;
 pub mod fetch;
+pub mod ignore_rules;
 pub mod nostr_mirror;
 pub mod nostr_relay;
 pub mod server;

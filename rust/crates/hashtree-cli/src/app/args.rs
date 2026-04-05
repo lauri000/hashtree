@@ -181,7 +181,7 @@ pub(crate) enum Commands {
         /// Store as raw plaintext blobs without CHK encryption
         #[arg(long = "unencrypted", alias = "public")]
         unencrypted: bool,
-        /// Include files ignored by .gitignore (default: respect .gitignore)
+        /// Include files ignored by .gitignore and common OS junk filters
         #[arg(long)]
         no_ignore: bool,
         /// Publish to Nostr under this ref name (e.g., "mydata" -> npub.../mydata)
