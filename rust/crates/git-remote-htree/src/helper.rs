@@ -6,6 +6,7 @@
 use crate::git::storage::GitStorage;
 use crate::runtime::block_on_result;
 use anyhow::{bail, Context, Result};
+use hashtree_core::{Cid, Store};
 use std::collections::HashMap;
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -91,6 +92,22 @@ struct PushSpec {
 struct FetchSpec {
     sha: String,
     name: String,
+}
+
+#[derive(Debug, Clone)]
+struct GitObjectLocation {
+    oid: String,
+    cid: Cid,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GitFetchStats {
+    enumerated: usize,
+    cached: usize,
+    written: usize,
+    enumerate_elapsed: Duration,
+    local_check_elapsed: Duration,
+    download_write_elapsed: Duration,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -302,39 +319,19 @@ impl RemoteHelper {
         let root_hash = self.nostr.get_cached_root_hash(&self.repo_name).cloned();
 
         if let Some(ref root) = root_hash {
-            // Fetch all git objects from the hashtree structure
-            let objects = self.fetch_all_git_objects(root)?;
-            info!("Loaded {} git objects from hashtree", objects.len());
+            let stats = self.fetch_git_objects_to_local_git(root)?;
+            info!(
+                "Fetched {} git objects from hashtree ({} new, {} cached)",
+                stats.enumerated, stats.written, stats.cached
+            );
 
-            // Batch check which objects git already has
-            let existing =
-                self.git_batch_check_objects(objects.iter().map(|(oid, _)| oid.as_str()))?;
-
-            // Filter to only objects git doesn't have
-            let to_write: Vec<_> = objects
-                .into_iter()
-                .filter(|(oid, _)| !existing.contains(oid))
-                .collect();
-
-            let total = to_write.len();
-            let skipped = existing.len();
-
-            if total == 0 {
-                eprintln!("  Writing to .git: 0 new, {} cached    ", skipped);
-            } else {
-                for (i, (oid, data)) in to_write.into_iter().enumerate() {
-                    self.write_git_object(&oid, &data)?;
-                    let count = i + 1;
-                    if count % 50 == 0 || count == total || count == 1 {
-                        eprint!("\r  Writing to .git: {}/{}    ", count, total);
-                        let _ = std::io::stderr().flush();
-                    }
-                }
-                if skipped > 0 {
-                    eprintln!("\r  Writing to .git: {} new, {} cached    ", total, skipped);
-                } else {
-                    eprintln!("\r  Writing to .git: {}/{}    ", total, total);
-                }
+            if self.is_slow() {
+                eprintln!(
+                    "  Fetch stages: enumerate {:?}, local-check {:?}, download+write {:?}",
+                    stats.enumerate_elapsed,
+                    stats.local_check_elapsed,
+                    stats.download_write_elapsed
+                );
             }
         } else {
             bail!("No root hash found for repository - cannot fetch");
@@ -363,43 +360,68 @@ impl RemoteHelper {
         block_on_result(self.fetch_git_objects_async(root_hash, encryption_key.as_ref()))
     }
 
-    /// Async implementation of git object fetching using HashTree helpers
-    async fn fetch_git_objects_async(
+    fn fetch_git_objects_to_local_git(&self, root_hash: &str) -> Result<GitFetchStats> {
+        let encryption_key = self
+            .nostr
+            .get_cached_encryption_key(&self.repo_name)
+            .cloned();
+
+        info!(
+            "fetch_git_objects_to_local_git: root={}, has encryption_key: {}, link_visible: {}",
+            &root_hash[..12],
+            encryption_key.is_some(),
+            self.url_secret.is_some()
+        );
+
+        block_on_result(self.fetch_git_objects_to_local_git_async(
+            root_hash,
+            encryption_key.as_ref(),
+        ))
+    }
+
+    fn build_cached_fetch_tree(
         &self,
-        root_hash: &str,
-        encryption_key: Option<&[u8; 32]>,
-    ) -> Result<Vec<(String, Vec<u8>)>> {
+    ) -> Result<(
+        hashtree_core::HashTree<cached_store::CachedStore>,
+        std::sync::Arc<dyn Store + Send + Sync>,
+    )> {
         use hashtree_blossom::BlossomStore;
-        use hashtree_core::{Cid, HashTree, HashTreeConfig};
+        use hashtree_core::{HashTree, HashTreeConfig};
 
         let blossom = self.nostr.blossom();
-        let mut objects = Vec::new();
-
-        // Log the servers being used
         let servers = blossom.read_servers().to_vec();
         info!(
             "Creating CachedStore with local + Blossom (servers: {:?})",
             servers
         );
 
-        // Create local blob store based on config
         let data_dir = get_hashtree_data_dir();
         let blobs_path = data_dir.join("blobs");
         let local_store =
             create_local_store(&blobs_path).context("Failed to create local blob store")?;
         let local_store_for_eviction = local_store.clone();
 
-        // Create Blossom store for remote fallback
         let blossom_store = BlossomStore::with_servers(
-            nostr::Keys::generate(), // Temporary keys for read-only ops
+            nostr::Keys::generate(),
             servers,
         );
 
-        // Create cached store: local first, then Blossom
         let store = cached_store::CachedStore::new(local_store, blossom_store);
         let tree = HashTree::new(HashTreeConfig::new(std::sync::Arc::new(store)));
+        Ok((tree, local_store_for_eviction))
+    }
 
-        // Parse root hash and create Cid with encryption key
+    async fn collect_git_object_locations_async(
+        &self,
+        root_hash: &str,
+        encryption_key: Option<&[u8; 32]>,
+    ) -> Result<(
+        hashtree_core::HashTree<cached_store::CachedStore>,
+        Vec<GitObjectLocation>,
+        std::sync::Arc<dyn Store + Send + Sync>,
+    )> {
+        let (tree, local_store_for_eviction) = self.build_cached_fetch_tree()?;
+
         let root_bytes = hex::decode(root_hash).context("Invalid root hash hex")?;
         let root_arr: [u8; 32] = root_bytes
             .try_into()
@@ -410,32 +432,27 @@ impl RemoteHelper {
             key: encryption_key.copied(),
         };
 
-        // Resolve .git/objects path
         let objects_cid = match tree.resolve_path(&root_cid, ".git/objects").await {
             Ok(Some(cid)) => cid,
             Ok(None) => {
                 warn!("No .git/objects directory found");
-                return Ok(objects);
+                return Ok((tree, Vec::new(), local_store_for_eviction));
             }
             Err(e) => {
                 warn!("Failed to resolve .git/objects: {}", e);
-                return Ok(objects);
+                return Ok((tree, Vec::new(), local_store_for_eviction));
             }
         };
 
         info!("Resolved .git/objects: {}", hex::encode(objects_cid.hash));
 
-        use futures::stream::{self, StreamExt};
         use hashtree_core::LinkType;
-        use std::io::Write;
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::sync::Arc as StdArc;
 
-        // Walk the objects tree with parallel fetching and progress reporting
         let progress = StdArc::new(AtomicUsize::new(0));
         let done = StdArc::new(AtomicBool::new(false));
 
-        // Spawn progress reporter
         let progress_clone = progress.clone();
         let done_clone = done.clone();
         let progress_task = tokio::spawn(async move {
@@ -465,12 +482,12 @@ impl RemoteHelper {
                 let _ = progress_task.await;
                 eprintln!("\r  Loading objects tree... failed: {}", e);
                 warn!("Failed to walk objects directory: {}", e);
-                return Ok(objects);
+                return Ok((tree, Vec::new(), local_store_for_eviction));
             }
         };
         done.store(true, Ordering::Relaxed);
         let _ = progress_task.await;
-        let walk_done_time = std::time::Instant::now();
+
         if self.is_slow() {
             eprintln!(
                 "\r  Loading objects tree... done ({} entries)        ",
@@ -478,46 +495,55 @@ impl RemoteHelper {
             );
         } else {
             eprint!("\r                                                        \r");
-            // Clear the line
         }
 
-        // Extract git objects from walk entries (files with 40 char hex names like "ab/cdef..." -> "abcdef...")
-        let mut fetch_tasks: Vec<(String, Cid)> = Vec::new();
+        let mut fetch_tasks: Vec<GitObjectLocation> = Vec::new();
         for entry in walk_entries {
-            // Skip directories
             if entry.link_type == LinkType::Dir {
                 continue;
             }
 
-            // Parse path like "ab/cdef1234..." into oid "abcdef1234..."
             let parts: Vec<&str> = entry.path.split('/').collect();
             if parts.len() == 2 && parts[0].len() == 2 && parts[1].len() == 38 {
                 if hex::decode(parts[0]).is_ok() && hex::decode(parts[1]).is_ok() {
-                    let oid = format!("{}{}", parts[0], parts[1]);
-                    let obj_cid = Cid {
+                    fetch_tasks.push(GitObjectLocation {
+                        oid: format!("{}{}", parts[0], parts[1]),
+                        cid: Cid {
+                            hash: entry.hash,
+                            key: entry.key,
+                        },
+                    });
+                }
+            } else if parts.len() == 1 && parts[0].len() == 40 && hex::decode(parts[0]).is_ok() {
+                fetch_tasks.push(GitObjectLocation {
+                    oid: parts[0].to_string(),
+                    cid: Cid {
                         hash: entry.hash,
                         key: entry.key,
-                    };
-                    fetch_tasks.push((oid, obj_cid));
-                }
-            } else if parts.len() == 1 && parts[0].len() == 40 {
-                // Flat layout: object files directly in objects/
-                if hex::decode(parts[0]).is_ok() {
-                    let oid = parts[0].to_string();
-                    let obj_cid = Cid {
-                        hash: entry.hash,
-                        key: entry.key,
-                    };
-                    fetch_tasks.push((oid, obj_cid));
-                }
+                    },
+                });
             }
         }
 
+        Ok((tree, fetch_tasks, local_store_for_eviction))
+    }
+
+    /// Async implementation of git object fetching using HashTree helpers
+    async fn fetch_git_objects_async(
+        &self,
+        root_hash: &str,
+        encryption_key: Option<&[u8; 32]>,
+    ) -> Result<Vec<(String, Vec<u8>)>> {
+        let mut objects = Vec::new();
+        let (tree, fetch_tasks, local_store_for_eviction) = self
+            .collect_git_object_locations_async(root_hash, encryption_key)
+            .await?;
+        use futures::stream::{self, StreamExt};
+        use std::io::Write;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
         let total_objects = fetch_tasks.len();
-        let prep_elapsed = walk_done_time.elapsed();
-        if self.is_slow() {
-            eprintln!("  Prepared {} objects in {:?}", total_objects, prep_elapsed);
-        }
 
         let downloaded = StdArc::new(AtomicUsize::new(0));
         let download_done = StdArc::new(AtomicBool::new(false));
@@ -544,14 +570,14 @@ impl RemoteHelper {
 
         // First pass: fetch all objects with normal timeout
         let results: Vec<FetchObjectResult> = stream::iter(fetch_tasks)
-            .map(|(oid, obj_cid)| {
+            .map(|location| {
                 let tree = &tree;
                 let downloaded = StdArc::clone(&downloaded);
                 async move {
-                    let result = match tree.get(&obj_cid, None).await {
-                        Ok(Some(content)) => Ok((oid, content)),
-                        Ok(None) => Err((oid, obj_cid)),
-                        Err(_) => Err((oid, obj_cid)),
+                    let result = match tree.get(&location.cid, None).await {
+                        Ok(Some(content)) => Ok((location.oid, content)),
+                        Ok(None) => Err((location.oid, location.cid)),
+                        Err(_) => Err((location.oid, location.cid)),
                     };
                     downloaded.fetch_add(1, Ordering::Relaxed);
                     result
@@ -637,6 +663,202 @@ impl RemoteHelper {
             }
         }
         Ok(objects)
+    }
+
+    async fn fetch_git_objects_to_local_git_async(
+        &self,
+        root_hash: &str,
+        encryption_key: Option<&[u8; 32]>,
+    ) -> Result<GitFetchStats> {
+        use futures::stream::{self, StreamExt};
+        use std::io::Write;
+        use tokio::sync::mpsc;
+
+        let enumerate_start = std::time::Instant::now();
+        let (tree, fetch_tasks, local_store_for_eviction) = self
+            .collect_git_object_locations_async(root_hash, encryption_key)
+            .await?;
+        let enumerate_elapsed = enumerate_start.elapsed();
+
+        let total_objects = fetch_tasks.len();
+        if self.is_slow() {
+            eprintln!("  Prepared {} objects in {:?}", total_objects, enumerate_elapsed);
+        }
+
+        let local_check_start = std::time::Instant::now();
+        let existing =
+            self.git_batch_check_objects(fetch_tasks.iter().map(|location| location.oid.as_str()))?;
+        let local_check_elapsed = local_check_start.elapsed();
+
+        let pending: Vec<GitObjectLocation> = fetch_tasks
+            .into_iter()
+            .filter(|location| !existing.contains(&location.oid))
+            .collect();
+        let total_to_write = pending.len();
+        let cached = existing.len();
+
+        if total_to_write == 0 {
+            eprintln!("  Writing to .git: 0 new, {} cached    ", cached);
+            match local_store_for_eviction.evict_if_needed().await {
+                Ok(freed) if freed > 0 => {
+                    info!(
+                        "Evicted {} bytes from shared git blob cache after fetch",
+                        freed
+                    );
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    warn!("Failed to evict shared git blob cache after fetch: {}", err);
+                }
+            }
+            return Ok(GitFetchStats {
+                enumerated: total_objects,
+                cached,
+                written: 0,
+                enumerate_elapsed,
+                local_check_elapsed,
+                download_write_elapsed: Duration::default(),
+            });
+        }
+
+        let transfer_start = std::time::Instant::now();
+        let mut completed = 0usize;
+        let mut queued_writes = 0usize;
+        let mut failed: Vec<(String, Cid)> = Vec::new();
+
+        const CONCURRENCY: usize = 20;
+        const WRITE_QUEUE_CAPACITY: usize = 256;
+        let git_dir = Self::git_dir_path();
+        let (write_tx, mut write_rx) = mpsc::channel::<(String, Vec<u8>)>(WRITE_QUEUE_CAPACITY);
+        let writer_task = tokio::spawn(async move {
+            let mut written = 0usize;
+            while let Some((oid, content)) = write_rx.recv().await {
+                let writer_git_dir = git_dir.clone();
+                tokio::task::spawn_blocking(move || {
+                    Self::write_git_object_to_dir(&writer_git_dir, &oid, &content)
+                })
+                .await
+                .context("git object writer task panicked")??;
+                written += 1;
+            }
+            Ok::<usize, anyhow::Error>(written)
+        });
+
+        let mut results = stream::iter(pending.into_iter().map(|location| {
+            let tree_ref = &tree;
+            async move {
+                match tree_ref.get(&location.cid, None).await {
+                    Ok(Some(content)) => Ok((location.oid, content)),
+                    Ok(None) => Err((location.oid, location.cid)),
+                    Err(_) => Err((location.oid, location.cid)),
+                }
+            }
+        }))
+        .buffer_unordered(CONCURRENCY);
+
+        while let Some(result) = results.next().await {
+            completed += 1;
+            match result {
+                Ok((oid, content)) => {
+                    write_tx
+                        .send((oid, content))
+                        .await
+                        .map_err(|_| anyhow::anyhow!("git object writer stopped unexpectedly"))?;
+                    queued_writes += 1;
+                }
+                Err((oid, cid)) => failed.push((oid, cid)),
+            }
+
+            if completed == 1 || completed.is_multiple_of(50) || completed == total_to_write {
+                eprint!("\r  Writing to .git: {}/{}    ", completed, total_to_write);
+                let _ = std::io::stderr().flush();
+            }
+        }
+
+        let mut missing_objects: Vec<(String, String)> = Vec::new();
+        if !failed.is_empty() {
+            eprintln!("\n  Retrying {} failed downloads...", failed.len());
+            for (i, (oid, obj_cid)) in failed.iter().enumerate() {
+                let hash_hex = hex::encode(obj_cid.hash);
+                eprint!("\r  Retrying {}/{}: {}...    ", i + 1, failed.len(), oid);
+                let _ = std::io::stderr().flush();
+
+                match tree.get(obj_cid, None).await {
+                    Ok(Some(content)) => {
+                        write_tx
+                            .send((oid.clone(), content))
+                            .await
+                            .map_err(|_| {
+                                anyhow::anyhow!("git object writer stopped unexpectedly")
+                            })?;
+                        queued_writes += 1;
+                    }
+                    Ok(None) => {
+                        eprintln!("\n  ERROR: Object {} not found (hash: {})", oid, hash_hex);
+                        missing_objects.push((oid.clone(), hash_hex));
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "\n  ERROR: Failed to fetch {}: {} (hash: {})",
+                            oid, e, hash_hex
+                        );
+                        missing_objects.push((oid.clone(), hash_hex));
+                    }
+                }
+            }
+            eprintln!(
+                "\r  Retried: {}/{} objects available        ",
+                queued_writes,
+                total_to_write
+            );
+        }
+
+        drop(write_tx);
+        let written = writer_task
+            .await
+            .context("failed to join git object writer task")??;
+
+        if !missing_objects.is_empty() {
+            let obj_list: Vec<String> = missing_objects
+                .iter()
+                .take(5)
+                .map(|(oid, hash)| format!("{} ({})", oid, hash))
+                .collect();
+            bail!(
+                "Failed to fetch {} required git objects:\n  {}",
+                missing_objects.len(),
+                obj_list.join("\n  ")
+            );
+        }
+
+        if cached > 0 {
+            eprintln!("\r  Writing to .git: {} new, {} cached    ", written, cached);
+        } else {
+            eprintln!("\r  Writing to .git: {}/{}    ", written, written);
+        }
+
+        let download_write_elapsed = transfer_start.elapsed();
+        match local_store_for_eviction.evict_if_needed().await {
+            Ok(freed) if freed > 0 => {
+                info!(
+                    "Evicted {} bytes from shared git blob cache after fetch",
+                    freed
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                warn!("Failed to evict shared git blob cache after fetch: {}", err);
+            }
+        }
+
+        Ok(GitFetchStats {
+            enumerated: total_objects,
+            cached,
+            written,
+            enumerate_elapsed,
+            local_check_elapsed,
+            download_write_elapsed,
+        })
     }
 }
 

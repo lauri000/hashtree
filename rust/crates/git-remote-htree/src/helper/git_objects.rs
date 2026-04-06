@@ -2,6 +2,7 @@ use crate::git::object::ObjectType;
 use anyhow::{bail, Context, Result};
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tracing::debug;
 
@@ -49,19 +50,20 @@ impl RemoteHelper {
         Ok(existing)
     }
 
-    /// Write loose object to local git object store.
+    pub(super) fn git_dir_path() -> PathBuf {
+        PathBuf::from(std::env::var("GIT_DIR").unwrap_or_else(|_| ".git".to_string()))
+    }
+
+    /// Write loose object to a git object store.
     /// The data is zlib-compressed loose object format.
-    pub(super) fn write_git_object(&self, oid: &str, data: &[u8]) -> Result<()> {
+    pub(super) fn write_git_object_to_dir(git_dir: &Path, oid: &str, data: &[u8]) -> Result<()> {
         // Git objects are stored as .git/objects/xx/yy... where xx is first 2 chars
         if oid.len() < 3 {
             bail!("Invalid object id: {}", oid);
         }
 
-        let git_dir = std::env::var("GIT_DIR").unwrap_or_else(|_| ".git".to_string());
         let (dir_name, file_name) = oid.split_at(2);
-        let obj_dir = std::path::Path::new(&git_dir)
-            .join("objects")
-            .join(dir_name);
+        let obj_dir = git_dir.join("objects").join(dir_name);
         std::fs::create_dir_all(&obj_dir).context("Failed to create object directory")?;
 
         let obj_path = obj_dir.join(file_name);
