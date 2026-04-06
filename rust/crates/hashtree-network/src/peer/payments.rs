@@ -1,8 +1,8 @@
-use super::{ContentStore, PeerId, PendingChunkPayment, PendingRequest};
-use crate::webrtc::cashu::{CashuQuoteState, ExpectedSettlement};
-use crate::webrtc::types::{
-    encode_chunk, encode_payment, hash_to_hex, DataChunk, DataPayment, DataPaymentAck,
-    DataQuoteRequest, DataQuoteResponse,
+use super::{ContentStore, PendingChunkPayment, PendingRequest};
+use crate::cashu::{CashuQuoteState, ExpectedSettlement};
+use crate::{
+    encode_chunk, encode_payment, hash_to_key, DataChunk, DataPayment, DataPaymentAck,
+    DataQuoteRequest, DataQuoteResponse, PeerId,
 };
 use bytes::Bytes;
 use std::collections::HashMap;
@@ -37,7 +37,7 @@ pub(super) async fn handle_quote_request_message(
         );
     }
 
-    let hash_hex = hash_to_hex(&req.h);
+    let hash_hex = hash_to_key(&req.h);
     let can_serve = if let Some(store) = store {
         match store.get(&hash_hex) {
             Ok(Some(_)) => true,
@@ -72,17 +72,8 @@ pub(super) async fn send_quoted_chunk(
     chunk: DataChunk,
     expected: ExpectedSettlement,
 ) -> bool {
-    let hash_hex = hash_to_hex(&chunk.h);
-    let wire = match encode_chunk(&chunk) {
-        Ok(wire) => wire,
-        Err(err) => {
-            warn!(
-                "[Peer {}] Failed to encode quoted chunk {} for quote {}: {}",
-                peer_short, chunk.c, chunk.q, err
-            );
-            return false;
-        }
-    };
+    let hash_hex = hash_to_key(&chunk.h);
+    let wire = encode_chunk(&chunk);
 
     if let Err(err) = dc.send(&Bytes::from(wire)).await {
         warn!(
@@ -126,7 +117,7 @@ pub(super) async fn process_chunk_message(
     cashu_quotes: Option<&Arc<CashuQuoteState>>,
     chunk: DataChunk,
 ) {
-    let hash_hex = hash_to_hex(&chunk.h);
+    let hash_hex = hash_to_key(&chunk.h);
     let Some(cashu_quotes) = cashu_quotes else {
         fail_pending_request(pending_requests, None, &hash_hex).await;
         return;
@@ -262,17 +253,7 @@ pub(super) async fn process_chunk_message(
                 m: Some(payment.mint_url.clone()),
                 tok: payment.token,
             };
-            let wire = match encode_payment(&payment_msg) {
-                Ok(wire) => wire,
-                Err(err) => {
-                    warn!(
-                        "[Peer {}] Failed to encode payment for chunk {} of {}: {}",
-                        peer_short, chunk.c, hash_hex, err
-                    );
-                    fail_pending_request(pending_requests, Some(cashu_quotes), &hash_hex).await;
-                    return;
-                }
-            };
+            let wire = encode_payment(&payment_msg);
             if let Err(err) = dc.send(&Bytes::from(wire)).await {
                 warn!(
                     "[Peer {}] Failed to send payment for chunk {} of {}: {}",
@@ -295,7 +276,7 @@ pub(super) async fn handle_payment_ack_message(
     let Some(cashu_quotes) = cashu_quotes else {
         return;
     };
-    let hash_hex = hash_to_hex(&ack.h);
+    let hash_hex = hash_to_key(&ack.h);
     let mut buffered_next = None;
     let mut completed = None;
     let mut failed = None;

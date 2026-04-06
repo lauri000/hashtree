@@ -365,7 +365,9 @@ pub(crate) async fn run() -> Result<()> {
                         cashu_payment_client,
                         cashu_mint_metadata,
                     );
-                    manager.set_nostr_relay(nostr_relay.clone());
+                    manager.set_nostr_relay(
+                        nostr_relay.clone() as hashtree_network::SharedMeshRelayClient
+                    );
 
                     // Get the WebRTC state before spawning (for HTTP handler to query peers)
                     let webrtc_state = manager.state();

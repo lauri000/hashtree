@@ -29,9 +29,13 @@ rmp-serde = "1.3"
 serde_bytes = "0.11.19"
 lazy_static = "1.4"
 tracing = "0.1"
+socket2 = "0.5"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "rt-multi-thread", "macros"] }
 hashtree-sim = { path = "../hashtree-sim" }
 rustls = { version = "0.23", features = ["ring"] }
 tempfile.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+btleplug = "0.11"

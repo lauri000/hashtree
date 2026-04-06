@@ -404,7 +404,8 @@ impl EmbeddedPeerRouterController {
             self.store.clone(),
             self.peer_classifier.clone(),
         );
-        manager.set_nostr_relay(self.nostr_relay.clone());
+        manager
+            .set_nostr_relay(self.nostr_relay.clone() as hashtree_network::SharedMeshRelayClient);
         let shutdown = manager.shutdown_signal();
         let join = tokio::spawn(async move {
             if let Err(err) = manager.run().await {

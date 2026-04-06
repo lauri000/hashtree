@@ -40,31 +40,48 @@
 //! }
 //! ```
 
+pub mod bluetooth;
+pub mod bluetooth_peer;
 pub mod cashu;
 pub mod channel;
 pub mod local_bus;
+pub mod manager;
 pub mod mesh_session;
 pub mod mesh_store_core;
 pub mod mock;
+pub mod multicast;
 pub mod nostr;
+pub mod peer;
 pub mod peer_selector;
 pub mod protocol;
 pub mod real_factory;
+pub mod relay_bridge;
 pub mod root_events;
 pub mod runtime_control;
 pub mod runtime_peer;
 pub mod runtime_state;
+pub mod session;
 pub mod signaling;
 pub mod store;
 pub mod transport;
 pub mod types;
+pub mod wifi_aware;
 
+pub use bluetooth::{
+    install_mobile_bluetooth_bridge, BluetoothBackendState, BluetoothConfig, BluetoothMesh,
+    BluetoothPeerRegistrar, BluetoothRuntimeContext, MobileBluetoothBridge, PendingBluetoothLink,
+};
+pub use bluetooth_peer::{BluetoothFrame, BluetoothLink, BluetoothPeer};
 pub use cashu::{
     cashu_mint_metadata_path, CashuMintMetadataRecord, CashuMintMetadataStore, CashuQuoteState,
     CashuRoutingConfig, ExpectedSettlement, NegotiatedQuote, CASHU_MINT_METADATA_VERSION,
 };
 pub use channel::{ChannelError, LatencyChannel, MockChannel, PeerChannel};
 pub use local_bus::{LocalNostrBus, SharedLocalNostrBus};
+pub use manager::{
+    PeerClassifier, PeerEntry as RuntimePeerEntry, PeerStatus, WebRTCConfig, WebRTCManager,
+    WebRTCState,
+};
 pub use mesh_session::{
     forward_mesh_frame_to_sessions, resolve_root_from_local_buses_with_source,
     resolve_root_from_peer_sessions, MeshSession,
@@ -78,7 +95,9 @@ pub use mock::{
     clear_channel_registry, MockConnectionFactory, MockDataChannel, MockLatencyMode, MockRelay,
     MockRelayTransport,
 };
+pub use multicast::{MulticastConfig, MulticastNostrBus};
 pub use nostr::{decode_signaling_event, encode_signaling_event, NostrRelayTransport};
+pub use peer::{ContentStore, Peer, PendingRequest};
 pub use peer_selector::{
     peer_principal, PeerMetadataSnapshot, PeerSelector, PeerStats, PersistedPeerMetadata,
     SelectionStrategy, SelectorSummary, PEER_METADATA_SNAPSHOT_VERSION,
@@ -94,6 +113,9 @@ pub use protocol::{
     MSG_TYPE_RESPONSE,
 };
 pub use real_factory::WebRtcPeerLinkFactory;
+pub use relay_bridge::{
+    MeshEventStore, MeshRelayClient, SharedMeshEventStore, SharedMeshRelayClient,
+};
 pub use root_events::{
     build_root_filter, hashtree_event_identifier, is_hashtree_labeled_event, pick_latest_event,
     root_event_from_peer, PeerRootEvent, HASHTREE_KIND, HASHTREE_LABEL,
@@ -105,9 +127,12 @@ pub use runtime_control::{
 };
 pub use runtime_peer::{
     can_track_signal_path_peer, remember_peer_signal_path, ConnectionState, MeshPeerEntry,
-    PeerClassifier, PeerDirection, PeerSignalPath, PeerTransport, TransportPeerRegistrar,
+    PeerDirection, PeerSignalPath, PeerTransport, TransportPeerRegistrar,
 };
 pub use runtime_state::MeshRuntimeState;
+pub use session::MeshPeer;
+#[cfg(test)]
+pub use session::TestMeshPeer;
 pub use signaling::{MeshRouter, PeerEntry};
 pub use store::{MeshStore, MeshStoreError};
 pub use transport::{PeerLink, PeerLinkFactory, SignalingTransport, TransportError};
@@ -119,4 +144,8 @@ pub use types::{
     TimedSeenSet, WebRTCStats, BLOB_REQUEST_POLICY, DATA_CHANNEL_LABEL, DECREMENT_AT_MAX_PROB,
     DECREMENT_AT_MIN_PROB, MAX_HTL, MESH_DEFAULT_HTL, MESH_EVENT_POLICY, MESH_MAX_HTL,
     MESH_PROTOCOL, MESH_PROTOCOL_VERSION, MESH_SIGNALING_EVENT_KIND, NOSTR_KIND_HASHTREE,
+};
+pub use wifi_aware::{
+    install_mobile_wifi_aware_bridge, mobile_wifi_aware_bridge, MobileWifiAwareBridge,
+    WifiAwareConfig, WifiAwareEvent, WifiAwareNostrBus, WIFI_AWARE_SOURCE,
 };

@@ -15,7 +15,6 @@ PEER_B_DIR="$WORK_DIR/peer-b"
 PAYLOAD_DIR="$WORK_DIR/payload"
 IMAGE_BUILD_DIR="$WORK_DIR/image"
 CARGO_TARGET_DIR="$WORK_DIR/cargo-target"
-CARGO_HOME_DIR="$WORK_DIR/cargo-home"
 HTREE_BIN="$CARGO_TARGET_DIR/release/htree"
 TREE_NAME="lan-tree"
 PAYLOAD_FILE="hello.txt"
@@ -26,8 +25,7 @@ mkdir -p \
     "$PEER_B_DIR/config" "$PEER_B_DIR/data" \
     "$PAYLOAD_DIR" \
     "$IMAGE_BUILD_DIR" \
-    "$CARGO_TARGET_DIR" \
-    "$CARGO_HOME_DIR"
+    "$CARGO_TARGET_DIR"
 printf '%s\n' "$PAYLOAD_TEXT" >"$PAYLOAD_DIR/$PAYLOAD_FILE"
 
 cleanup() {
@@ -150,12 +148,10 @@ echo "building docker image $IMAGE_TAG"
 docker run --rm \
     -v "$ROOT_DIR/rust:/app" \
     -v "$CARGO_TARGET_DIR:/cargo-target" \
-    -v "$CARGO_HOME_DIR:/cargo-home" \
     -w /app \
-    -e CARGO_HOME=/cargo-home \
     -e CARGO_TARGET_DIR=/cargo-target \
     rust:1-bookworm \
-    cargo build --release --package hashtree-cli --features s3
+    cargo build --locked --release --package hashtree-cli --features s3
 
 cp "$HTREE_BIN" "$IMAGE_BUILD_DIR/htree"
 cat >"$IMAGE_BUILD_DIR/Dockerfile" <<'EOF'

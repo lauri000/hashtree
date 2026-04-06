@@ -8,7 +8,7 @@ impl WebRTCManager {
             self.my_peer_id.short()
         );
 
-        let (event_tx, mut event_rx) = mpsc::channel::<(String, nostr::Event)>(100);
+        let (event_tx, mut event_rx) = mpsc::channel::<(String, nostr_sdk::nostr::Event)>(100);
         let (relay_msg_tx, mut relay_msg_rx) = mpsc::channel::<SignalingMessage>(100);
 
         // Take the signaling receiver
@@ -75,6 +75,7 @@ impl WebRTCManager {
 
         if self.config.multicast.is_enabled() {
             if let Some(relay) = self.nostr_relay.clone() {
+                let relay = relay as crate::SharedMeshEventStore;
                 match MulticastNostrBus::bind(
                     self.config.multicast.clone(),
                     self.keys.clone(),
@@ -106,6 +107,7 @@ impl WebRTCManager {
         if self.config.wifi_aware.is_enabled() {
             if let Some(relay) = self.nostr_relay.clone() {
                 if let Some(bridge) = mobile_wifi_aware_bridge() {
+                    let relay = relay as crate::SharedMeshEventStore;
                     let bus = WifiAwareNostrBus::new(
                         self.config.wifi_aware.clone(),
                         self.keys.clone(),
@@ -241,7 +243,7 @@ impl WebRTCManager {
         msg: SignalingMessage,
         relay_transport: Option<&Arc<NostrRelayTransport>>,
     ) {
-        if let Err(err) = hashtree_network::dispatch_signaling_message(
+        if let Err(err) = crate::dispatch_signaling_message(
             self.config.signaling_enabled,
             &self.keys,
             &self.my_peer_id,
@@ -251,7 +253,7 @@ impl WebRTCManager {
             &self.seen_frame_ids,
             &self.seen_event_ids,
             msg,
-            WEBRTC_KIND,
+            MESH_SIGNALING_EVENT_KIND as u64,
         )
         .await
         {
@@ -264,12 +266,7 @@ impl WebRTCManager {
         frame: &MeshNostrFrame,
         exclude_peer_id: Option<&str>,
     ) -> usize {
-        hashtree_network::forward_mesh_frame_from_runtime(
-            &self.state.runtime,
-            frame,
-            exclude_peer_id,
-        )
-        .await
+        crate::forward_mesh_frame_from_runtime(&self.state.runtime, frame, exclude_peer_id).await
     }
 
     async fn handle_mesh_frame(&self, from_peer_id: PeerId, frame: MeshNostrFrame) {
@@ -333,10 +330,10 @@ impl WebRTCManager {
     async fn handle_event(
         &self,
         relay: &str,
-        event: &nostr::Event,
+        event: &nostr_sdk::nostr::Event,
         shared_router: Option<&Arc<SharedProductionRouter>>,
     ) -> Result<()> {
-        hashtree_network::handle_signaling_event(
+        crate::handle_signaling_event(
             self.config.signaling_enabled,
             &self.my_peer_id,
             &self.keys,
@@ -355,7 +352,7 @@ impl WebRTCManager {
         msg: SignalingMessage,
         shared_router: Option<&Arc<SharedProductionRouter>>,
     ) -> Result<()> {
-        hashtree_network::handle_signaling_message(
+        crate::handle_signaling_message(
             &self.state.runtime,
             source,
             self.local_bus_max_peers(source),
@@ -367,17 +364,13 @@ impl WebRTCManager {
 
     /// Handle peer state change events from peer connections
     async fn handle_peer_state_event(&self, event: PeerStateEvent) {
-        hashtree_network::handle_peer_state_event(
-            &self.state.runtime,
-            event,
-            self.shared_router.as_ref(),
-        )
-        .await;
+        crate::handle_peer_state_event(&self.state.runtime, event, self.shared_router.as_ref())
+            .await;
     }
 
     /// Cleanup stale peers and sync connection states (fallback, runs every 30s)
     async fn cleanup_stale_peers(&self) {
-        hashtree_network::cleanup_stale_peers(&self.state.runtime, Duration::from_secs(60)).await;
+        crate::cleanup_stale_peers(&self.state.runtime, Duration::from_secs(60)).await;
     }
 }
 
@@ -394,14 +387,14 @@ pub struct PeerState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::webrtc::root_events::{self, PeerRootEvent};
-    use crate::webrtc::session::TestMeshPeer;
-    use crate::webrtc::SelectionStrategy;
+    use crate::root_events::{self, PeerRootEvent};
+    use crate::session::TestMeshPeer;
     use crate::LocalNostrBus;
+    use crate::SelectionStrategy;
+    use crate::{build_hedged_wave_plan, normalize_dispatch_config};
     use anyhow::Result as AnyResult;
     use async_trait::async_trait;
-    use hashtree_network::{build_hedged_wave_plan, normalize_dispatch_config};
-    use nostr::{EventBuilder, Keys, Tag};
+    use nostr_sdk::nostr::{EventBuilder, Keys, Tag};
     use std::time::Duration;
 
     struct TestLocalBus {
@@ -415,7 +408,7 @@ mod tests {
             self.source
         }
 
-        async fn broadcast_event(&self, _event: &nostr::Event) -> AnyResult<()> {
+        async fn broadcast_event(&self, _event: &nostr_sdk::nostr::Event) -> AnyResult<()> {
             Ok(())
         }
 
@@ -460,7 +453,7 @@ mod tests {
     #[test]
     fn pick_latest_event_prefers_higher_event_id_on_timestamp_tie() {
         let keys = Keys::generate();
-        let created_at = nostr::Timestamp::from_secs(1_700_000_000);
+        let created_at = nostr_sdk::nostr::Timestamp::from_secs(1_700_000_000);
         let event_a = EventBuilder::new(Kind::Custom(root_events::HASHTREE_KIND), "", [])
             .custom_created_at(created_at)
             .to_event(&keys)

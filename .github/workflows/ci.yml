@@ -154,3 +154,50 @@ jobs:
 
       - name: Run integration tests
         run: cargo test --workspace --tests
+
+  rust-e2e-smoke-tests:
+    name: Rust E2E Smoke Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      HTREE_E2E_RUST_TARGET_DIR: ${{ github.workspace }}/rust/target
+      CARGO_TARGET_DIR: ${{ github.workspace }}/rust/target
+    defaults:
+      run:
+        working-directory: scripts
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Reclaim runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ${{ env.HTREE_E2E_RUST_TARGET_DIR }}/
+          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-e2e-
+            ${{ runner.os }}-cargo-
+
+      - name: Build E2E binaries
+        run: |
+          cargo build --manifest-path ../rust/Cargo.toml -p hashtree-cli --bin htree --features p2p
+          cargo build --manifest-path ../rust/Cargo.toml --release -p hashtree-cli --bin htree
+          cargo build --manifest-path ../rust/Cargo.toml --release -p git-remote-htree
+
+      - name: Run offline LAN smoke test
+        run: ./test_offline_lan_webrtc.sh
