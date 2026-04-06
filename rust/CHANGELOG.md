@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.27 - 2026-04-06
+
+Changes since the `0.2.26` crates.io release.
+
+### Fixed
+
+- Fixed LMDB-backed local stores so configured size increases actually grow the map instead of leaving `git-remote-htree` and other bounded stores stuck at the default 10 GiB mapping.
+- Fixed local eviction behavior around uploads and mutable tree refs: `htree add` now runs quota eviction before and after indexing, superseded published roots are unpinned when refs move, and `git-remote-htree` evicts stale local blobs before building new trees so full stores recover without manual cleanup.
+- Fixed `hashtree-cli` test coverage for the current peer-router state shape so targeted CLI test runs compile cleanly again.
+
 ## 0.2.26 - 2026-04-06
 
 Changes since the `0.2.25` crates.io release.
