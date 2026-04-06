@@ -347,21 +347,31 @@ impl BlossomClient {
         &self,
         data: &[u8],
     ) -> Result<(String, usize), BlossomError> {
+        self.upload_to_selected_servers(data, &self.write_servers).await
+    }
+
+    /// Upload to the selected servers in parallel, returns (hash, success_count)
+    pub async fn upload_to_selected_servers(
+        &self,
+        data: &[u8],
+        servers: &[String],
+    ) -> Result<(String, usize), BlossomError> {
         use futures::future::join_all;
-        if self.write_servers.is_empty() {
+        if servers.is_empty() {
             return Err(BlossomError::NoServers);
         }
         let hash = compute_sha256(data);
         let auth = self.create_upload_auth(&hash).await?;
-        let uploads: Vec<_> = self
-            .write_servers
+        let uploads: Vec<_> = servers
             .iter()
             .map(|s| self.upload_to_server(s, data, &hash, &auth))
             .collect();
         let results = join_all(uploads).await;
         let ok_count = results.iter().filter(|r| r.is_ok()).count();
         if ok_count == 0 {
-            return Err(BlossomError::UploadFailed("all servers failed".to_string()));
+            return Err(BlossomError::UploadFailed(
+                "all selected servers failed".to_string(),
+            ));
         }
         Ok((hash, ok_count))
     }

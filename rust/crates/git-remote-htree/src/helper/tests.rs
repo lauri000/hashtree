@@ -6,7 +6,7 @@ use axum::{
     routing::put,
     Router,
 };
-use hashtree_core::{HashTree, HashTreeConfig, MemoryStore, Store};
+use hashtree_core::{collect_hashes, DirEntry, HashTree, HashTreeConfig, MemoryStore, Store};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,6 +22,7 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 struct CountingBlossomState {
     blobs: HashMap<String, Vec<u8>>,
     get_requests: usize,
+    head_requests: usize,
 }
 
 struct CountingBlossomServer {
@@ -90,6 +91,10 @@ impl CountingBlossomServer {
     fn get_request_count(&self) -> usize {
         self.state.lock().expect("state lock").get_requests
     }
+
+    fn get_head_request_count(&self) -> usize {
+        self.state.lock().expect("state lock").head_requests
+    }
 }
 
 impl Drop for CountingBlossomServer {
@@ -150,7 +155,8 @@ async fn head_blob(
             .unwrap();
     };
 
-    let state = state.lock().expect("state lock");
+    let mut state = state.lock().expect("state lock");
+    state.head_requests += 1;
     if let Some(data) = state.blobs.get(&hash) {
         return Response::builder()
             .status(StatusCode::OK)
@@ -806,6 +812,7 @@ fn test_push_to_file_servers_with_diff_does_not_fetch_old_tree_from_blossom() {
         None,
         Some(&hex::encode(old_cid.hash)),
         None,
+        true,
     );
 
     assert!(
@@ -817,5 +824,95 @@ fn test_push_to_file_servers_with_diff_does_not_fetch_old_tree_from_blossom() {
         fake_blossom.get_request_count(),
         0,
         "diff collection should not fetch the old tree from Blossom when it is missing locally"
+    );
+}
+
+#[test]
+fn test_push_to_file_servers_with_diff_trusts_sampled_old_tree_coverage() {
+    let _env_lock = ENV_LOCK.lock().expect("env lock");
+    let home = TempDir::new().expect("temp home");
+    let _home_guard = HomeGuard::set(home.path());
+    let fake_blossom = CountingBlossomServer::new();
+    write_test_config(home.path(), fake_blossom.base_url(), true);
+
+    let mut config = Config::default();
+    config.nostr.relays = vec![];
+    config.blossom.read_servers = vec![fake_blossom.base_url().to_string()];
+    config.blossom.write_servers = vec![fake_blossom.base_url().to_string()];
+
+    let helper = create_test_helper_with_config(config).expect("helper");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime");
+
+    let (old_cid, new_cid, old_hash_count) = rt.block_on(async {
+        let store = helper.storage.store().clone();
+        let tree = HashTree::new(HashTreeConfig::new(store.clone()).public());
+
+        let mut old_entries = Vec::new();
+        for idx in 0..64 {
+            let content = format!("old-file-{idx:02}-{}", "x".repeat(64));
+            let (file_cid, file_size) = tree
+                .put_file(content.as_bytes())
+                .await
+                .expect("write old file");
+            old_entries.push(DirEntry::from_cid(format!("file-{idx:02}.txt"), &file_cid).with_size(file_size));
+        }
+
+        let old_cid = tree
+            .put_directory(old_entries.clone())
+            .await
+            .expect("write old directory");
+        let old_hashes = collect_hashes(&tree, &old_cid, 32)
+            .await
+            .expect("collect old hashes");
+
+        let blossom = hashtree_blossom::BlossomClient::new_empty(nostr::Keys::generate())
+            .with_servers(vec![fake_blossom.base_url().to_string()]);
+        for hash in &old_hashes {
+            let data = store
+                .get(hash)
+                .await
+                .expect("read old blob")
+                .expect("old blob exists");
+            blossom.upload(&data).await.expect("upload old blob");
+        }
+
+        let (new_file_cid, new_file_size) = tree.put_file(b"new file").await.expect("write new file");
+        let mut new_entries = old_entries;
+        new_entries.push(DirEntry::from_cid("new.txt", &new_file_cid).with_size(new_file_size));
+        let new_cid = tree
+            .put_directory(new_entries)
+            .await
+            .expect("write new directory");
+
+        (old_cid, new_cid, old_hashes.len())
+    });
+
+    let result = helper.push_to_file_servers_with_diff(
+        &hex::encode(new_cid.hash),
+        None,
+        Some(&hex::encode(old_cid.hash)),
+        None,
+        true,
+    );
+
+    assert!(
+        result.failed.is_empty(),
+        "diff upload should succeed when old tree is already on blossom: {:?}",
+        result.failed
+    );
+    assert_eq!(
+        fake_blossom.get_request_count(),
+        0,
+        "push diff should not need GET requests when old tree is already local"
+    );
+    assert!(
+        fake_blossom.get_head_request_count()
+            <= old_hash_count.min(SERVER_COVERAGE_SAMPLE_SIZE),
+        "expected only sampled HEAD probes, got {} for {} old hashes",
+        fake_blossom.get_head_request_count(),
+        old_hash_count
     );
 }

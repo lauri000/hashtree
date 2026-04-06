@@ -128,7 +128,7 @@ impl RemoteHelper {
                     }
                 }
 
-                match self.push_objects(&sha, &spec.dst) {
+                match self.push_objects(&sha, &spec.dst, spec.force) {
                     Ok(()) => {
                         results.push(format!("ok {}", spec.dst));
                         pushed_refs.push((spec.dst, sha));
@@ -361,7 +361,7 @@ impl RemoteHelper {
     }
 
     /// Push all objects reachable from sha
-    pub(super) fn push_objects(&mut self, sha: &str, dst_ref: &str) -> Result<()> {
+    pub(super) fn push_objects(&mut self, sha: &str, dst_ref: &str, force_push: bool) -> Result<()> {
         eprint!("  Listing objects...");
         let _ = std::io::stderr().flush();
         let objects = self.list_objects_to_push(sha)?;
@@ -438,6 +438,7 @@ impl RemoteHelper {
             chk_key.as_ref(),
             old_root_hash.as_deref(),
             old_encryption_key.as_ref(),
+            !force_push,
         );
 
         let key_with_privacy = key_to_publish
@@ -603,6 +604,7 @@ impl RemoteHelper {
         encryption_key: Option<&[u8; 32]>,
         old_root_hash: Option<&str>,
         old_encryption_key: Option<&[u8; 32]>,
+        trust_server_old_tree_coverage: bool,
     ) -> BlossomResult {
         use hashtree_core::crypto::decrypt_chk;
         use hashtree_core::try_decode_tree_node;
@@ -653,6 +655,8 @@ impl RemoteHelper {
 
         let verbose = self.is_slow();
         let force_upload = self.config.blossom.force_upload;
+        let trust_server_old_tree_coverage =
+            trust_server_old_tree_coverage && !force_upload;
         let success = rt.block_on(async {
             use hashtree_core::{collect_hashes, Cid, HashTree, HashTreeConfig};
             use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -786,11 +790,17 @@ impl RemoteHelper {
                             let discovery_complete = Arc::clone(&discovery_complete);
                             let servers_needing_full = Arc::clone(&servers_needing_full);
                             async move {
-                                let result = if force_all_servers
-                                    || (from_old_tree && !servers_needing_full.is_empty())
-                                {
+                                let result = if force_all_servers {
                                     blossom
                                         .upload_to_all_servers(&data)
+                                        .await
+                                        .map(|(h, c)| (h, c > 0))
+                                } else if from_old_tree && !servers_needing_full.is_empty() {
+                                    blossom
+                                        .upload_to_selected_servers(
+                                            &data,
+                                            servers_needing_full.as_ref().as_slice(),
+                                        )
                                         .await
                                         .map(|(h, c)| (h, c > 0))
                                 } else {
@@ -862,35 +872,54 @@ impl RemoteHelper {
                 let discovered = discovered_total.load(Ordering::Relaxed);
                 let from_old_tree = old_hashes.contains(&hash);
 
-                let mut force_all_servers_for_hash =
-                    from_old_tree && !servers_needing_full.is_empty();
-                if from_old_tree && !force_all_servers_for_hash {
-                    let hash_hex = hex::encode(hash);
-                    let mut missing_on_any_server = false;
-                    for server in blossom.write_servers() {
-                        if !blossom.exists_on_server(&hash_hex, server).await {
-                            missing_on_any_server = true;
-                            break;
+                let mut force_all_servers_for_hash = false;
+                if from_old_tree {
+                    if trust_server_old_tree_coverage {
+                        if servers_needing_full.is_empty() {
+                            skipped_diff.fetch_add(1, Ordering::Relaxed);
+                            let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                            if count == 1 || count.is_multiple_of(10) {
+                                emit_upload_progress(upload_progress(
+                                    count,
+                                    discovered,
+                                    None,
+                                    uploaded.load(Ordering::Relaxed),
+                                    skipped_diff.load(Ordering::Relaxed),
+                                    skipped_server.load(Ordering::Relaxed),
+                                    failed.load(Ordering::Relaxed),
+                                    has_old_tree,
+                                ));
+                            }
+                            continue;
                         }
-                    }
-                    if !missing_on_any_server {
-                        skipped_diff.fetch_add(1, Ordering::Relaxed);
-                        let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                        if count == 1 || count.is_multiple_of(10) {
-                            emit_upload_progress(upload_progress(
-                                count,
-                                discovered,
-                                None,
-                                uploaded.load(Ordering::Relaxed),
-                                skipped_diff.load(Ordering::Relaxed),
-                                skipped_server.load(Ordering::Relaxed),
-                                failed.load(Ordering::Relaxed),
-                                has_old_tree,
-                            ));
+                    } else {
+                        let hash_hex = hex::encode(hash);
+                        let mut missing_on_any_server = false;
+                        for server in blossom.write_servers() {
+                            if !blossom.exists_on_server(&hash_hex, server).await {
+                                missing_on_any_server = true;
+                                break;
+                            }
                         }
-                        continue;
+                        if !missing_on_any_server {
+                            skipped_diff.fetch_add(1, Ordering::Relaxed);
+                            let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                            if count == 1 || count.is_multiple_of(10) {
+                                emit_upload_progress(upload_progress(
+                                    count,
+                                    discovered,
+                                    None,
+                                    uploaded.load(Ordering::Relaxed),
+                                    skipped_diff.load(Ordering::Relaxed),
+                                    skipped_server.load(Ordering::Relaxed),
+                                    failed.load(Ordering::Relaxed),
+                                    has_old_tree,
+                                ));
+                            }
+                            continue;
+                        }
+                        force_all_servers_for_hash = true;
                     }
-                    force_all_servers_for_hash = true;
                 }
 
                 let data = match store.get_sync(&hash) {
