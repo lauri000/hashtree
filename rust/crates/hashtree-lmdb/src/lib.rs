@@ -50,7 +50,10 @@ impl LmdbBlobStore {
 
     /// Open or create with a maximum logical storage size.
     pub fn with_max_bytes<P: AsRef<Path>>(path: P, max_bytes: u64) -> Result<Self, StoreError> {
-        let store = Self::new(path)?;
+        let requested_map_size = usize::try_from(max_bytes)
+            .unwrap_or(usize::MAX)
+            .max(DEFAULT_MAP_SIZE);
+        let store = Self::with_map_size(path, requested_map_size)?;
         store.max_bytes.store(max_bytes, Ordering::Relaxed);
         Ok(store)
     }
@@ -771,6 +774,22 @@ mod tests {
 
         store.set_max_bytes(0);
         assert!(store.max_bytes().is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_with_max_bytes_expands_lmdb_map_size() -> Result<(), StoreError> {
+        let temp = TempDir::new().unwrap();
+        let requested = (DEFAULT_MAP_SIZE as u64) + 64 * 1024 * 1024;
+        let store = LmdbBlobStore::with_max_bytes(temp.path().join("blobs"), requested)?;
+
+        assert!(
+            store.map_size_bytes() as u64 >= requested,
+            "expected LMDB map to grow to at least {requested} bytes, got {}",
+            store.map_size_bytes()
+        );
+        assert_eq!(store.max_bytes(), Some(requested));
 
         Ok(())
     }

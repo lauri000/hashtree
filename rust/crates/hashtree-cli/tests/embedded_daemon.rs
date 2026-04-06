@@ -348,7 +348,7 @@ async fn embedded_daemon_exposes_live_peer_router_controller() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
-        state.peers.read().await.is_empty(),
+        state.runtime.peers.read().await.is_empty(),
         "no peers expected in test"
     );
 

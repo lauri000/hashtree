@@ -647,6 +647,10 @@ impl GitStorage {
             }
         }
 
+        if let Err(err) = self.evict_if_needed() {
+            debug!("pre-build eviction skipped: {}", err);
+        }
+
         let objects = self
             .objects
             .read()
@@ -1211,7 +1215,7 @@ impl GitStorage {
 mod tests {
     use super::*;
     use hashtree_core::store::Store;
-    use hashtree_core::LinkType;
+    use hashtree_core::{sha256, LinkType};
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::path::Path;
@@ -1503,6 +1507,49 @@ mod tests {
 
         let after = local_total_bytes(&storage);
         assert!(after <= 1_024);
+    }
+
+    #[test]
+    fn test_build_tree_evicts_stale_blobs_before_writing_new_tree() {
+        let max_size_bytes = 16 * 1024;
+        let (storage, _temp) = create_test_storage_with_limit(max_size_bytes);
+
+        let stale_blobs = vec![
+            vec![b'x'; 7 * 1024],
+            vec![b'y'; 7 * 1024],
+            vec![b'z'; 7 * 1024],
+        ];
+        let stale_hashes: Vec<Hash> = stale_blobs.iter().map(|blob| sha256(blob)).collect();
+
+        for (hash, blob) in stale_hashes.iter().zip(stale_blobs) {
+            storage
+                .runtime
+                .block_on(storage.store().put(*hash, blob))
+                .unwrap();
+        }
+
+        let before = local_total_bytes(&storage);
+        assert!(before > max_size_bytes);
+
+        let commit_oid = write_test_commit(&storage);
+        storage
+            .write_ref("refs/heads/main", &Ref::Direct(commit_oid))
+            .unwrap();
+        storage
+            .write_ref("HEAD", &Ref::Symbolic("refs/heads/main".to_string()))
+            .unwrap();
+
+        storage.build_tree().unwrap();
+
+        let evicted_stale = stale_hashes
+            .iter()
+            .filter(|hash| !storage.runtime.block_on(storage.store().has(hash)).unwrap())
+            .count();
+
+        assert!(
+            evicted_stale > 0,
+            "expected build_tree preflight eviction to remove stale blobs before writing"
+        );
     }
 
     #[test]

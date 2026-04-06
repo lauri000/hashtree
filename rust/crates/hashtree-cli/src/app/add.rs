@@ -64,6 +64,9 @@ pub(crate) async fn run_add(
     }
 
     let store = HashtreeStore::new(&data_dir)?;
+    if let Err(e) = store.evict_if_needed() {
+        tracing::warn!("Pre-upload eviction check failed: {}", e);
+    }
     let site_entry = detect_site_entry_for_path(&path, is_dir);
 
     let (cid_for_push, hash_hex, key_hex, display_root): (String, String, Option<String>, String) =
@@ -152,6 +155,9 @@ pub(crate) async fn run_add(
         ref_key.as_deref(),
     ) {
         tracing::warn!("Failed to index tree: {}", e);
+    }
+    if let Err(e) = store.evict_if_needed() {
+        tracing::warn!("Post-upload eviction check failed: {}", e);
     }
 
     let mut write_servers = Vec::new();

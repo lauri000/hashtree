@@ -142,6 +142,7 @@ impl HashtreeStore {
                         .try_into()
                         .map_err(|_| anyhow::anyhow!("Invalid hash in tree_refs"))?;
                     drop(rtxn);
+                    let _ = self.unpin(&old_hash);
                     // Unindex old tree (will delete orphaned blobs)
                     let _ = self.unindex_tree(&old_hash);
                     tracing::debug!("Replaced old tree for ref {}", key);

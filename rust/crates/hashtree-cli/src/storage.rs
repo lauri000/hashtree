@@ -1534,4 +1534,57 @@ mod tests {
 
         Ok(())
     }
+
+    #[cfg(feature = "lmdb")]
+    #[test]
+    fn replacing_tree_ref_unpins_and_unindexes_superseded_root() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = HashtreeStore::with_options_and_backend(
+            temp.path(),
+            None,
+            LMDB_BLOB_MIN_MAP_SIZE_BYTES,
+            &StorageBackend::Lmdb,
+        )?;
+
+        let old_bytes = b"old published root";
+        let new_bytes = b"new published root";
+        let old_root = sha256(old_bytes);
+        let new_root = sha256(new_bytes);
+
+        store.put_blob(old_bytes)?;
+        store.pin(&old_root)?;
+        store.index_tree(
+            &old_root,
+            "owner",
+            Some("playlist"),
+            PRIORITY_OWN,
+            Some("npub1owner/playlist"),
+        )?;
+
+        assert!(store.is_pinned(&old_root)?);
+        assert!(store.get_tree_meta(&old_root)?.is_some());
+
+        store.put_blob(new_bytes)?;
+        store.pin(&new_root)?;
+        store.index_tree(
+            &new_root,
+            "owner",
+            Some("playlist"),
+            PRIORITY_OWN,
+            Some("npub1owner/playlist"),
+        )?;
+
+        assert!(
+            !store.is_pinned(&old_root)?,
+            "superseded root should be unpinned when ref is replaced"
+        );
+        assert!(
+            store.get_tree_meta(&old_root)?.is_none(),
+            "superseded root metadata should be removed when ref is replaced"
+        );
+        assert!(store.is_pinned(&new_root)?);
+        assert!(store.get_tree_meta(&new_root)?.is_some());
+
+        Ok(())
+    }
 }
