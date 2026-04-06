@@ -1,4 +1,4 @@
-import { generateRequestId } from '@hashtree/core';
+import { generateRequestId, type CID } from '@hashtree/core';
 import type {
   BlossomBandwidthState,
   BlossomServerConfig,
@@ -367,6 +367,17 @@ export class HashtreeWorkerClient {
       throw new Error(res.error || 'Connectivity probe failed');
     }
     return res.state;
+  }
+
+  async resolveRoot(npub: string, path?: string): Promise<CID | null> {
+    const res = await this.request({ type: 'resolveRoot', npub, path });
+    if (res.type !== 'cid') {
+      throw new Error('Unexpected response for resolveRoot');
+    }
+    if (res.error) {
+      throw new Error(res.error);
+    }
+    return res.cid ?? null;
   }
 
   onConnectivityUpdate(listener: (state: ConnectivityState) => void): () => void {

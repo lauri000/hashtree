@@ -1,3 +1,5 @@
+import type { CID } from '@hashtree/core';
+
 export interface BlossomServerConfig {
   url: string;
   read?: boolean;
@@ -7,6 +9,7 @@ export interface BlossomServerConfig {
 export interface WorkerConfig {
   storeName?: string;
   blossomServers?: BlossomServerConfig[];
+  relays?: string[];
   storageMaxBytes?: number;
   connectivityProbeIntervalMs?: number;
 }
@@ -78,7 +81,8 @@ export type WorkerRequest =
   | { type: 'setBlossomServers'; id: string; servers: BlossomServerConfig[] }
   | { type: 'setStorageMaxBytes'; id: string; maxBytes: number }
   | { type: 'getStorageStats'; id: string }
-  | { type: 'probeConnectivity'; id: string };
+  | { type: 'probeConnectivity'; id: string }
+  | { type: 'resolveRoot'; id: string; npub: string; path?: string };
 
 export type WorkerResponse =
   | { type: 'ready'; id: string }
@@ -87,6 +91,7 @@ export type WorkerResponse =
   | { type: 'blobStreamStarted'; id: string; streamId: string }
   | { type: 'blobStored'; id: string; hashHex: string; nhash: string }
   | { type: 'blob'; id: string; data?: Uint8Array; source?: BlobSource; error?: string }
+  | { type: 'cid'; id: string; cid?: CID; error?: string }
   | { type: 'void'; id: string; error?: string }
   | { type: 'storageStats'; id: string; items: number; bytes: number; maxBytes: number; error?: string }
   | { type: 'connectivity'; id: string; state?: ConnectivityState; error?: string }

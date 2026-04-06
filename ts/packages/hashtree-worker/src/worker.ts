@@ -23,6 +23,7 @@ import type {
 import { IdbBlobStorage } from './capabilities/idbStorage.js';
 import { BlossomTransport, DEFAULT_BLOSSOM_SERVERS } from './capabilities/blossomTransport.js';
 import { probeConnectivity } from './capabilities/connectivity.js';
+import { resolveRootPathFromRelays } from './capabilities/rootResolver.js';
 import { assertEncryptedUploadCid, markEncryptedHashes, shouldServeHashToPeer } from './privacyGuards.js';
 import { streamFileRangeChunks } from './mediaStreaming.js';
 
@@ -36,6 +37,7 @@ const ctx: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobal
 let storage: IdbBlobStorage | null = null;
 let blossom: BlossomTransport | null = null;
 let tree: HashTree | null = null;
+let nostrRelays: string[] = [];
 let probeInterval: ReturnType<typeof setInterval> | null = null;
 let probeIntervalMs = DEFAULT_CONNECTIVITY_PROBE_INTERVAL_MS;
 let p2pFetchCounter = 0;
@@ -143,6 +145,7 @@ function resetState(): void {
   peerShareableEncryptedHashes.clear();
   activePutBlobStreams.clear();
   blossomBandwidth = { ...EMPTY_BLOSSOM_BANDWIDTH };
+  nostrRelays = [];
 }
 
 async function markEncryptedTreeHashesAsPeerShareable(id: CID): Promise<void> {
@@ -444,6 +447,7 @@ function init(config: WorkerConfig): void {
   const storeName = config.storeName || DEFAULT_STORE_NAME;
   const maxBytes = config.storageMaxBytes || DEFAULT_STORAGE_MAX_BYTES;
   probeIntervalMs = config.connectivityProbeIntervalMs || DEFAULT_CONNECTIVITY_PROBE_INTERVAL_MS;
+  nostrRelays = config.relays ?? [];
 
   storage = new IdbBlobStorage(storeName, maxBytes);
   blossom = new BlossomTransport(
@@ -759,6 +763,21 @@ async function handleRequest(req: WorkerRequest): Promise<void> {
       }
       const state = await probeConnectivity(blossom.getServers());
       respond({ type: 'connectivity', id: req.id, state });
+      return;
+    }
+
+    case 'resolveRoot': {
+      if (!tree) {
+        respond({ type: 'cid', id: req.id, error: 'Worker not initialized' });
+        return;
+      }
+
+      try {
+        const cid = await resolveRootPathFromRelays(tree, nostrRelays, req.npub, req.path);
+        respond({ type: 'cid', id: req.id, cid: cid ?? undefined });
+      } catch (err) {
+        respond({ type: 'cid', id: req.id, error: getErrorMessage(err) });
+      }
       return;
     }
   }
