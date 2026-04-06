@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.26 - 2026-04-06
+
+Changes since the `0.2.25` crates.io release.
+
+### Improved
+
+- Moved the production mesh runtime, transport orchestration, peer/session logic, and Cashu-aware request plumbing out of `hashtree-cli` and into `hashtree-network`, so Bluetooth, multicast, Wi-Fi Aware, and WebRTC now sit behind the shared mesh runtime instead of a CLI-owned stack.
+- Tightened release coverage by wiring a real Rust E2E smoke job into CI and by keeping the offline LAN Docker verification path aligned with the locked Rust dependency graph used for releases.
+
 ## 0.2.25 - 2026-04-04
 
 Changes since the `0.2.24` crates.io release.
