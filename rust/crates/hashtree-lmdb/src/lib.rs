@@ -39,6 +39,7 @@ pub struct LmdbBlobStore {
     /// Maps SHA256 hash (32 bytes) → pin count (u32)
     pins: Database<Bytes, Bytes>,
     max_bytes: AtomicU64,
+    current_bytes: AtomicU64,
     next_order: AtomicU64,
 }
 
@@ -93,7 +94,7 @@ impl LmdbBlobStore {
         wtxn.commit()
             .map_err(|e| StoreError::Other(e.to_string()))?;
 
-        let next_order = {
+        let (next_order, current_bytes) = {
             let rtxn = env
                 .read_txn()
                 .map_err(|e| StoreError::Other(e.to_string()))?;
@@ -108,7 +109,16 @@ impl LmdbBlobStore {
                 })
                 .transpose()?
                 .unwrap_or(0);
-            next
+            let current = metadata
+                .iter(&rtxn)
+                .map_err(|e| StoreError::Other(e.to_string()))?
+                .map(|item| {
+                    item.map_err(|e| StoreError::Other(e.to_string()))
+                        .and_then(|(_, bytes)| Self::decode_blob_meta(bytes))
+                        .map(|meta| meta.size)
+                })
+                .try_fold(0u64, |total, size| size.map(|size| total.saturating_add(size)))?;
+            (next, current)
         };
 
         Ok(Self {
@@ -118,6 +128,7 @@ impl LmdbBlobStore {
             eviction_order,
             pins,
             max_bytes: AtomicU64::new(0),
+            current_bytes: AtomicU64::new(current_bytes),
             next_order: AtomicU64::new(next_order),
         })
     }
@@ -138,6 +149,105 @@ impl LmdbBlobStore {
 
     pub fn map_size_bytes(&self) -> usize {
         self.env.info().map_size
+    }
+
+    fn evict_before_write(&self, incoming_bytes: u64) -> Result<u64, StoreError> {
+        let max = self.max_bytes.load(Ordering::Relaxed);
+        if max == 0 {
+            return Ok(0);
+        }
+
+        let current = self.current_bytes.load(Ordering::Relaxed);
+        if current.saturating_add(incoming_bytes) <= max {
+            return Ok(0);
+        }
+
+        let target = if incoming_bytes >= max {
+            0
+        } else {
+            (max.saturating_mul(9) / 10).min(max.saturating_sub(incoming_bytes))
+        };
+        self.evict_to_target(current, target)
+    }
+
+    fn evict_for_write_pressure(&self, incoming_bytes: u64) -> Result<u64, StoreError> {
+        let current = self.current_bytes.load(Ordering::Relaxed);
+        if current == 0 {
+            return Ok(0);
+        }
+
+        let headroom = incoming_bytes.max(current / 10).max(1);
+        let target = current.saturating_sub(headroom);
+        self.evict_to_target(current, target)
+    }
+
+    fn is_map_full_error(err: &HeedError) -> bool {
+        matches!(err, HeedError::Mdb(MdbError::MapFull))
+    }
+
+    fn put_sync_attempt(&self, hash: Hash, data: &[u8]) -> std::result::Result<bool, HeedError> {
+        let mut wtxn = self.env.write_txn()?;
+        let inserted = match self
+            .blobs
+            .put_with_flags(&mut wtxn, PutFlags::NO_OVERWRITE, &hash, data)
+        {
+            Ok(()) => true,
+            Err(HeedError::Mdb(MdbError::KeyExist)) => false,
+            Err(err) => return Err(err),
+        };
+
+        if inserted {
+            let order = self.next_order.fetch_add(1, Ordering::Relaxed);
+            let meta = Self::encode_blob_meta(BlobMeta {
+                order,
+                size: data.len() as u64,
+            });
+            let order_key = Self::encode_order_key(order, &hash);
+            self.metadata.put(&mut wtxn, &hash, &meta)?;
+            self.eviction_order.put(&mut wtxn, &order_key, &())?;
+        }
+
+        wtxn.commit()?;
+        Ok(inserted)
+    }
+
+    fn put_many_sync_attempt(
+        &self,
+        items: &[(Hash, Vec<u8>)],
+    ) -> std::result::Result<(usize, u64), HeedError> {
+        let mut wtxn = self.env.write_txn()?;
+        let mut inserted = 0usize;
+        let mut inserted_bytes = 0u64;
+
+        for (hash, data) in items {
+            let inserted_blob =
+                match self
+                    .blobs
+                    .put_with_flags(&mut wtxn, PutFlags::NO_OVERWRITE, hash, data.as_slice())
+                {
+                    Ok(()) => true,
+                    Err(HeedError::Mdb(MdbError::KeyExist)) => false,
+                    Err(err) => return Err(err),
+                };
+
+            if !inserted_blob {
+                continue;
+            }
+
+            let order = self.next_order.fetch_add(1, Ordering::Relaxed);
+            let meta = Self::encode_blob_meta(BlobMeta {
+                order,
+                size: data.len() as u64,
+            });
+            let order_key = Self::encode_order_key(order, hash);
+            self.metadata.put(&mut wtxn, hash, &meta)?;
+            self.eviction_order.put(&mut wtxn, &order_key, &())?;
+            inserted += 1;
+            inserted_bytes = inserted_bytes.saturating_add(data.len() as u64);
+        }
+
+        wtxn.commit()?;
+        Ok((inserted, inserted_bytes))
     }
 
     /// Get storage statistics.
@@ -202,39 +312,28 @@ impl LmdbBlobStore {
 
     /// Sync put operation (for use in sync contexts).
     pub fn put_sync(&self, hash: Hash, data: &[u8]) -> Result<bool, StoreError> {
-        let mut wtxn = self
-            .env
-            .write_txn()
-            .map_err(|e| StoreError::Other(e.to_string()))?;
-        let inserted =
-            match self
-                .blobs
-                .put_with_flags(&mut wtxn, PutFlags::NO_OVERWRITE, &hash, data)
-            {
-                Ok(()) => true,
-                Err(HeedError::Mdb(MdbError::KeyExist)) => false,
+        let incoming_bytes = data.len() as u64;
+        self.evict_before_write(incoming_bytes)?;
+
+        let mut retried_after_eviction = false;
+        loop {
+            match self.put_sync_attempt(hash, data) {
+                Ok(inserted) => {
+                    if inserted {
+                        self.current_bytes.fetch_add(incoming_bytes, Ordering::Relaxed);
+                    }
+                    return Ok(inserted);
+                }
+                Err(err) if Self::is_map_full_error(&err) && !retried_after_eviction => {
+                    let freed = self.evict_for_write_pressure(incoming_bytes)?;
+                    if freed == 0 {
+                        return Err(StoreError::Other(err.to_string()));
+                    }
+                    retried_after_eviction = true;
+                }
                 Err(err) => return Err(StoreError::Other(err.to_string())),
-            };
-
-        if inserted {
-            let order = self.next_order.fetch_add(1, Ordering::Relaxed);
-            let meta = Self::encode_blob_meta(BlobMeta {
-                order,
-                size: data.len() as u64,
-            });
-            let order_key = Self::encode_order_key(order, &hash);
-            self.metadata
-                .put(&mut wtxn, &hash, &meta)
-                .map_err(|e| StoreError::Other(e.to_string()))?;
-            self.eviction_order
-                .put(&mut wtxn, &order_key, &())
-                .map_err(|e| StoreError::Other(e.to_string()))?;
+            }
         }
-
-        wtxn.commit()
-            .map_err(|e| StoreError::Other(e.to_string()))?;
-
-        Ok(inserted)
     }
 
     /// Sync batch put operation (for use in sync contexts).
@@ -243,50 +342,32 @@ impl LmdbBlobStore {
             return Ok(0);
         }
 
-        let mut wtxn = self
-            .env
-            .write_txn()
-            .map_err(|e| StoreError::Other(e.to_string()))?;
-        let mut inserted = 0usize;
+        let incoming_bytes = items
+            .iter()
+            .map(|(_, data)| data.len() as u64)
+            .fold(0u64, |total, size| total.saturating_add(size));
+        self.evict_before_write(incoming_bytes)?;
 
-        for (hash, data) in items {
-            let inserted_blob = match self.blobs.put_with_flags(
-                &mut wtxn,
-                PutFlags::NO_OVERWRITE,
-                hash,
-                data.as_slice(),
-            ) {
-                Ok(()) => true,
-                Err(HeedError::Mdb(MdbError::KeyExist)) => false,
+        let mut retried_after_eviction = false;
+        loop {
+            match self.put_many_sync_attempt(items) {
+                Ok((inserted, inserted_bytes)) => {
+                    if inserted_bytes > 0 {
+                        self.current_bytes
+                            .fetch_add(inserted_bytes, Ordering::Relaxed);
+                    }
+                    return Ok(inserted);
+                }
+                Err(err) if Self::is_map_full_error(&err) && !retried_after_eviction => {
+                    let freed = self.evict_for_write_pressure(incoming_bytes)?;
+                    if freed == 0 {
+                        return Err(StoreError::Other(err.to_string()));
+                    }
+                    retried_after_eviction = true;
+                }
                 Err(err) => return Err(StoreError::Other(err.to_string())),
-            };
-
-            if !inserted_blob {
-                continue;
             }
-
-            let order = self.next_order.fetch_add(1, Ordering::Relaxed);
-            let meta = Self::encode_blob_meta(BlobMeta {
-                order,
-                size: data.len() as u64,
-            });
-            let order_key = Self::encode_order_key(order, hash);
-            self.blobs
-                .put(&mut wtxn, hash, data.as_slice())
-                .map_err(|e| StoreError::Other(e.to_string()))?;
-            self.metadata
-                .put(&mut wtxn, hash, &meta)
-                .map_err(|e| StoreError::Other(e.to_string()))?;
-            self.eviction_order
-                .put(&mut wtxn, &order_key, &())
-                .map_err(|e| StoreError::Other(e.to_string()))?;
-            inserted += 1;
         }
-
-        wtxn.commit()
-            .map_err(|e| StoreError::Other(e.to_string()))?;
-
-        Ok(inserted)
     }
 
     /// Sync get operation (for use in sync contexts).
@@ -309,10 +390,13 @@ impl LmdbBlobStore {
             .env
             .write_txn()
             .map_err(|e| StoreError::Other(e.to_string()))?;
-        let (existed, _) = self.delete_blob_in_txn(&mut wtxn, hash)?;
+        let (existed, freed) = self.delete_blob_in_txn(&mut wtxn, hash)?;
 
         wtxn.commit()
             .map_err(|e| StoreError::Other(e.to_string()))?;
+        if freed > 0 {
+            self.current_bytes.fetch_sub(freed, Ordering::Relaxed);
+        }
 
         Ok(existed)
     }
@@ -399,6 +483,9 @@ impl LmdbBlobStore {
 
         wtxn.commit()
             .map_err(|e| StoreError::Other(e.to_string()))?;
+        if freed > 0 {
+            self.current_bytes.fetch_sub(freed, Ordering::Relaxed);
+        }
         Ok(freed)
     }
 
@@ -593,7 +680,7 @@ impl Store for LmdbBlobStore {
             return Ok(0);
         }
 
-        let current = self.stats()?.total_bytes;
+        let current = self.current_bytes.load(Ordering::Relaxed);
         if current <= max {
             return Ok(0);
         }
@@ -809,11 +896,11 @@ mod tests {
         store.put(h3, b"cccccccccc".to_vec()).await?;
 
         let freed = store.evict_if_needed().await?;
-        assert!(freed >= 10, "expected eviction to free at least one blob");
+        assert_eq!(freed, 0, "write path should have already evicted stale blobs");
 
         assert!(
             !store.has(&h1).await?,
-            "oldest blob should be evicted first"
+            "oldest blob should be evicted before the third write"
         );
         assert!(store.has(&h2).await?);
         assert!(store.has(&h3).await?);
@@ -839,16 +926,16 @@ mod tests {
 
         store.put(h1, b"aaaaaaaaaa".to_vec()).await?;
         store.put(h2, b"bbbbbbbbbb".to_vec()).await?;
-        store.put(h3, b"cccccccccc".to_vec()).await?;
         store.pin(&h1).await?;
+        store.put(h3, b"cccccccccc".to_vec()).await?;
 
         let freed = store.evict_if_needed().await?;
-        assert!(freed >= 10, "expected eviction to free at least one blob");
+        assert_eq!(freed, 0, "write path should have already evicted stale blobs");
 
         assert!(store.has(&h1).await?, "pinned blob must not be evicted");
         assert!(
             !store.has(&h2).await?,
-            "oldest unpinned blob should be evicted"
+            "oldest unpinned blob should be evicted before the third write"
         );
         assert!(store.has(&h3).await?);
 

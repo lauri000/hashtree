@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.28 - 2026-04-07
+
+Changes since the `0.2.27` crates.io release.
+
+### Fixed
+
+- Fixed shared LMDB cache pressure handling so bounded stores evict stale blobs on the write path instead of only after later cleanup passes. This keeps `git-remote-htree` and other shared-store writers from wedging and requiring a fresh `HTREE_DATA_DIR` workaround.
+- Added a real `git-remote-htree` regression test that fills a bounded shared LMDB cache and verifies new tree writes evict stale entries instead of letting the cache grow past its budget.
+
 ## 0.2.27 - 2026-04-06
 
 Changes since the `0.2.26` crates.io release.
