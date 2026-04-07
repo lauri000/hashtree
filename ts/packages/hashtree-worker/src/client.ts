@@ -4,6 +4,7 @@ import type {
   BlossomServerConfig,
   BlobSource,
   ConnectivityState,
+  RootResolveOptions,
   UploadProgressState,
   WorkerConfig,
   WorkerRequest,
@@ -37,6 +38,8 @@ export class HashtreeWorkerClient {
   private connectivityListeners = new Set<(state: ConnectivityState) => void>();
   private uploadProgressListeners = new Set<(progress: UploadProgressState) => void>();
   private blossomBandwidthListeners = new Set<(stats: BlossomBandwidthState) => void>();
+  private rootWatchListeners = new Map<string, (cid: CID | null) => void>();
+  private pendingRootWatchUpdates = new Map<string, CID | null>();
   private p2pFetchHandler: P2PFetchHandler | null = null;
 
   constructor(workerFactory: WorkerFactory, config: WorkerConfig = {}) {
@@ -110,6 +113,16 @@ export class HashtreeWorkerClient {
 
       if (message.type === 'blossomBandwidth') {
         this.blossomBandwidthListeners.forEach(listener => listener(message.stats));
+        return;
+      }
+
+      if (message.type === 'rootUpdate') {
+        const listener = this.rootWatchListeners.get(message.watchId);
+        if (listener) {
+          listener(message.cid ?? null);
+        } else {
+          this.pendingRootWatchUpdates.set(message.watchId, message.cid ?? null);
+        }
         return;
       }
 
@@ -369,8 +382,14 @@ export class HashtreeWorkerClient {
     return res.state;
   }
 
-  async resolveRoot(npub: string, path?: string): Promise<CID | null> {
-    const res = await this.request({ type: 'resolveRoot', npub, path });
+  async resolveRoot(npub: string, path?: string, options: RootResolveOptions = {}): Promise<CID | null> {
+    const res = await this.request({
+      type: 'resolveRoot',
+      npub,
+      path,
+      timeoutMs: options.timeoutMs,
+      settleMs: options.settleMs,
+    });
     if (res.type !== 'cid') {
       throw new Error('Unexpected response for resolveRoot');
     }
@@ -378,6 +397,52 @@ export class HashtreeWorkerClient {
       throw new Error(res.error);
     }
     return res.cid ?? null;
+  }
+
+  async watchRoot(
+    npub: string,
+    path: string | undefined,
+    listener: (cid: CID | null) => void,
+    options: RootResolveOptions = {},
+  ): Promise<() => Promise<void>> {
+    const res = await this.request({
+      type: 'watchRoot',
+      npub,
+      path,
+      timeoutMs: options.timeoutMs,
+      settleMs: options.settleMs,
+    });
+    if (res.type !== 'rootWatchStarted') {
+      throw new Error('Unexpected response for watchRoot');
+    }
+    if (res.error) {
+      throw new Error(res.error);
+    }
+
+    this.rootWatchListeners.set(res.watchId, listener);
+    const initialCid = res.cid ?? null;
+    listener(initialCid);
+    if (this.pendingRootWatchUpdates.has(res.watchId)) {
+      const pendingCid = this.pendingRootWatchUpdates.get(res.watchId) ?? null;
+      this.pendingRootWatchUpdates.delete(res.watchId);
+      listener(pendingCid);
+    }
+
+    return async () => {
+      this.rootWatchListeners.delete(res.watchId);
+      this.pendingRootWatchUpdates.delete(res.watchId);
+      try {
+        const stopRes = await this.request({ type: 'unwatchRoot', watchId: res.watchId });
+        if (stopRes.type !== 'void') {
+          throw new Error('Unexpected response for unwatchRoot');
+        }
+        if (stopRes.error) {
+          throw new Error(stopRes.error);
+        }
+      } catch {
+        // Ignore cleanup failures after local listener removal.
+      }
+    };
   }
 
   onConnectivityUpdate(listener: (state: ConnectivityState) => void): () => void {
@@ -411,6 +476,8 @@ export class HashtreeWorkerClient {
     } catch {
       // Ignore close errors.
     }
+    this.rootWatchListeners.clear();
+    this.pendingRootWatchUpdates.clear();
     this.worker?.terminate();
     this.worker = null;
     this.initPromise = null;

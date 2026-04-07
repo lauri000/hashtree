@@ -10,6 +10,7 @@ const ROOT: CID = {
 class FakeWorker {
   onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
+  private watchId = 'watch-1';
 
   postMessage(message: WorkerRequest, _transfer?: Transferable[]): void {
     if (message.type === 'init') {
@@ -19,6 +20,19 @@ class FakeWorker {
 
     if (message.type === 'resolveRoot') {
       this.emit({ type: 'cid', id: message.id, cid: ROOT });
+      return;
+    }
+
+    if (message.type === 'watchRoot') {
+      this.emit({ type: 'rootWatchStarted', id: message.id, watchId: this.watchId, cid: ROOT });
+      queueMicrotask(() => {
+        this.emit({ type: 'rootUpdate', watchId: this.watchId });
+      });
+      return;
+    }
+
+    if (message.type === 'unwatchRoot') {
+      this.emit({ type: 'void', id: message.id });
       return;
     }
 
@@ -40,6 +54,21 @@ describe('HashtreeWorkerClient resolveRoot', () => {
   it('returns CID results from the worker', async () => {
     const client = new HashtreeWorkerClient(FakeWorker as unknown as new () => Worker);
     await expect(client.resolveRoot('npub1example', 'audio-catalog/root.json')).resolves.toEqual(ROOT);
+    await client.close();
+  });
+
+  it('streams root updates from the worker', async () => {
+    const client = new HashtreeWorkerClient(FakeWorker as unknown as new () => Worker);
+    const updates: Array<CID | null> = [];
+    const unwatch = await client.watchRoot('npub1example', 'audio-catalog/root.json', (cid) => {
+      updates.push(cid);
+    });
+
+    await Promise.resolve();
+
+    expect(updates).toEqual([ROOT, null]);
+
+    await unwatch();
     await client.close();
   });
 });

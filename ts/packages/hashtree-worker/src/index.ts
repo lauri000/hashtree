@@ -5,6 +5,7 @@ export type {
   WorkerConfig,
   WorkerRequest,
   WorkerResponse,
+  RootResolveOptions,
   ConnectivityState,
   UploadProgressState,
   BlossomBandwidthState,

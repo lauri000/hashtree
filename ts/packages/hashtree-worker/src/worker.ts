@@ -23,7 +23,7 @@ import type {
 import { IdbBlobStorage } from './capabilities/idbStorage.js';
 import { BlossomTransport, DEFAULT_BLOSSOM_SERVERS } from './capabilities/blossomTransport.js';
 import { probeConnectivity } from './capabilities/connectivity.js';
-import { resolveRootPathFromRelays } from './capabilities/rootResolver.js';
+import { resolveRootPathFromRelays, watchRootPathFromRelays } from './capabilities/rootResolver.js';
 import { assertEncryptedUploadCid, markEncryptedHashes, shouldServeHashToPeer } from './privacyGuards.js';
 import { streamFileRangeChunks } from './mediaStreaming.js';
 
@@ -41,11 +41,13 @@ let nostrRelays: string[] = [];
 let probeInterval: ReturnType<typeof setInterval> | null = null;
 let probeIntervalMs = DEFAULT_CONNECTIVITY_PROBE_INTERVAL_MS;
 let p2pFetchCounter = 0;
+let rootWatchCounter = 0;
 const pendingP2PFetches = new Map<
   string,
   { resolve: (data: Uint8Array | null) => void; timeoutId: ReturnType<typeof setTimeout> }
 >();
 const peerShareableEncryptedHashes = new Set<string>();
+const activeRootWatches = new Map<string, { close: () => Promise<void> }>();
 let putBlobStreamCounter = 0;
 const activePutBlobStreams = new Map<string, {
   upload: boolean;
@@ -134,6 +136,10 @@ function resetState(): void {
     clearInterval(probeInterval);
     probeInterval = null;
   }
+  for (const watch of activeRootWatches.values()) {
+    void Promise.resolve(watch.close()).catch(() => undefined);
+  }
+  activeRootWatches.clear();
   storage?.close();
   storage = null;
   blossom = null;
@@ -176,6 +182,11 @@ function startConnectivityProbeLoop(): void {
 function nextP2PFetchRequestId(): string {
   p2pFetchCounter += 1;
   return `p2p_${Date.now()}_${p2pFetchCounter}`;
+}
+
+function nextRootWatchId(): string {
+  rootWatchCounter += 1;
+  return `root_${Date.now()}_${rootWatchCounter}`;
 }
 
 async function requestP2PBlob(hashHex: string): Promise<Uint8Array | null> {
@@ -773,11 +784,55 @@ async function handleRequest(req: WorkerRequest): Promise<void> {
       }
 
       try {
-        const cid = await resolveRootPathFromRelays(tree, nostrRelays, req.npub, req.path);
+        const cid = await resolveRootPathFromRelays(
+          tree,
+          nostrRelays,
+          req.npub,
+          req.path,
+          req.timeoutMs,
+          req.settleMs,
+        );
         respond({ type: 'cid', id: req.id, cid: cid ?? undefined });
       } catch (err) {
         respond({ type: 'cid', id: req.id, error: getErrorMessage(err) });
       }
+      return;
+    }
+
+    case 'watchRoot': {
+      if (!tree) {
+        respond({ type: 'rootWatchStarted', id: req.id, watchId: '', error: 'Worker not initialized' });
+        return;
+      }
+
+      const watchId = nextRootWatchId();
+      try {
+        const watch = await watchRootPathFromRelays(
+          tree,
+          nostrRelays,
+          req.npub,
+          req.path,
+          (cid) => {
+            respond({ type: 'rootUpdate', watchId, cid: cid ?? undefined });
+          },
+          req.timeoutMs,
+          req.settleMs,
+        );
+        activeRootWatches.set(watchId, { close: watch.close });
+        respond({ type: 'rootWatchStarted', id: req.id, watchId, cid: watch.initialCid ?? undefined });
+      } catch (err) {
+        respond({ type: 'rootWatchStarted', id: req.id, watchId: '', error: getErrorMessage(err) });
+      }
+      return;
+    }
+
+    case 'unwatchRoot': {
+      const watch = activeRootWatches.get(req.watchId);
+      activeRootWatches.delete(req.watchId);
+      if (watch) {
+        await Promise.resolve(watch.close()).catch(() => undefined);
+      }
+      respond({ type: 'void', id: req.id });
       return;
     }
   }

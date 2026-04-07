@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { toHex, type CID } from '@hashtree/core';
 
 const subscribeManyMock = vi.hoisted(() => vi.fn());
@@ -60,6 +60,10 @@ describe('rootResolver capability', () => {
     decodeMock.mockReset();
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('returns an exact tree match without resolving a subpath', async () => {
     decodeMock.mockReturnValue({ type: 'npub', data: PUBKEY });
     subscribeManyMock.mockImplementation((_relays, _filter, params) => {
@@ -114,5 +118,33 @@ describe('rootResolver capability', () => {
     );
     expect(toHex((resolvePath.mock.calls[0]![0] as CID).hash)).toBe(ROOT_HASH);
     expect(subscribeManyMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('waits for a newer slower-relay event instead of finishing on the first EOSE', async () => {
+    vi.useFakeTimers();
+    decodeMock.mockReturnValue({ type: 'npub', data: PUBKEY });
+    subscribeManyMock.mockImplementation((_relays, _filter, params) => {
+      params.onevent?.(makeEvent('audio-catalog/root.json', '5'.repeat(64), 100));
+      params.oneose?.();
+      setTimeout(() => {
+        params.onevent?.(makeEvent('audio-catalog/root.json', '6'.repeat(64), 200));
+      }, 20);
+      return { close: vi.fn() };
+    });
+
+    const resolvePromise = resolveRootPathFromRelays(
+      { resolvePath: vi.fn() },
+      ['wss://relay.example'],
+      NPUB,
+      'audio-catalog/root.json',
+      200,
+      50,
+    );
+
+    await vi.advanceTimersByTimeAsync(100);
+    const resolved = await resolvePromise;
+
+    expect(toHex(resolved!.hash)).toBe('6'.repeat(64));
+    expect(subscribeManyMock).toHaveBeenCalledTimes(1);
   });
 });

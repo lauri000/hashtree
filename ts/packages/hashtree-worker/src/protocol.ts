@@ -67,6 +67,11 @@ export interface BlobStreamStarted {
   streamId: string;
 }
 
+export interface RootResolveOptions {
+  timeoutMs?: number;
+  settleMs?: number;
+}
+
 export type WorkerRequest =
   | { type: 'init'; id: string; config: WorkerConfig }
   | { type: 'close'; id: string }
@@ -82,7 +87,9 @@ export type WorkerRequest =
   | { type: 'setStorageMaxBytes'; id: string; maxBytes: number }
   | { type: 'getStorageStats'; id: string }
   | { type: 'probeConnectivity'; id: string }
-  | { type: 'resolveRoot'; id: string; npub: string; path?: string };
+  | { type: 'resolveRoot'; id: string; npub: string; path?: string; timeoutMs?: number; settleMs?: number }
+  | { type: 'watchRoot'; id: string; npub: string; path?: string; timeoutMs?: number; settleMs?: number }
+  | { type: 'unwatchRoot'; id: string; watchId: string };
 
 export type WorkerResponse =
   | { type: 'ready'; id: string }
@@ -95,6 +102,8 @@ export type WorkerResponse =
   | { type: 'void'; id: string; error?: string }
   | { type: 'storageStats'; id: string; items: number; bytes: number; maxBytes: number; error?: string }
   | { type: 'connectivity'; id: string; state?: ConnectivityState; error?: string }
+  | { type: 'rootWatchStarted'; id: string; watchId: string; cid?: CID; error?: string }
+  | { type: 'rootUpdate'; watchId: string; cid?: CID }
   | { type: 'connectivityUpdate'; state: ConnectivityState }
   | { type: 'blossomBandwidth'; stats: BlossomBandwidthState }
   | { type: 'uploadProgress'; progress: UploadProgressState };
