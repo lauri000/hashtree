@@ -1,5 +1,5 @@
 /**
- * TreeRootRegistry - Single source of truth for tree root data
+ * TreeRootRegistry - Browser-side single source of truth for tree root data
  *
  * This module provides:
  * - Unified record format for all root data
@@ -8,7 +8,8 @@
  * - Local write tracking with dirty flag for publish throttling
  * - Pluggable persistence (localStorage by default)
  *
- * @see tree-root-caching-plan.md for architecture details
+ * This module lives under @hashtree/worker because it coordinates with worker
+ * updates and publish flows, but it runs on the app/main thread.
  */
 
 import type { Hash, TreeVisibility } from '@hashtree/core';

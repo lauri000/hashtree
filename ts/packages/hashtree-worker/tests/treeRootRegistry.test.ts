@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { fromHex, toHex } from '@hashtree/core';
-import { treeRootRegistry } from '../src/index';
+import { treeRootRegistry } from '../src/tree-root';
 
 const HASH_A = fromHex('11'.repeat(32));
 const HASH_B = fromHex('33'.repeat(32));
