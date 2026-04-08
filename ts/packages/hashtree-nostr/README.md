@@ -82,6 +82,44 @@ const resolver = createNostrRefResolver({
 const root = await resolver.resolve('npub1.../myfiles');
 ```
 
+## Signed Tree Snapshots
+
+For immutable permalinks, store a copy of the signed kind `30078` root event as a plain hashtree blob. The snapshot gives you one signed root even when relays do not answer, and you can still watch for newer events later.
+
+```typescript
+import {
+  cacheTreeEventSnapshot,
+  readTreeEventSnapshot,
+  fetchLatestTreeEventSnapshot,
+  watchLatestTreeEventSnapshot,
+} from '@hashtree/nostr';
+
+const snapshot = await cacheTreeEventSnapshot(store, nip19, signedRootEvent);
+const sameSnapshot = snapshot
+  ? await readTreeEventSnapshot(store, nip19, snapshot.snapshotCid)
+  : null;
+
+const latest = await fetchLatestTreeEventSnapshot(
+  { store, nip19, fetchEvents },
+  'npub1...owner',
+  'videos/demo',
+);
+
+const stop = watchLatestTreeEventSnapshot(
+  { store, nip19, fetchEvents, subscribeEvents },
+  'npub1...owner',
+  'videos/demo',
+  (nextSnapshot) => {
+    console.log(nextSnapshot.snapshotNhash, nextSnapshot.rootCid);
+  },
+);
+
+// later
+stop();
+```
+
+The library does not keep a global snapshot cache for you. It provides stateless helpers plus a live watcher; route caching and reuse policy stay with the app.
+
 ## License
 
 MIT

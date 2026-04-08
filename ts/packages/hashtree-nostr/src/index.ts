@@ -92,3 +92,18 @@ export {
   parseHashtreeRootEvent,
   type ParsedHashtreeRootEvent,
 } from './snapshot.js';
+
+export {
+  cacheTreeEventSnapshot,
+  readTreeEventSnapshot,
+  fetchLatestTreeEventSnapshot,
+  watchLatestTreeEventSnapshot,
+  compareTreeEventSnapshots,
+  isNewerTreeEventSnapshot,
+  snapshotMatchesRootCid,
+  resolveSnapshotRootCid,
+  type TreeEventSnapshotInfo,
+  type TreeEventSnapshotQuery,
+  type FetchLatestTreeEventSnapshotConfig,
+  type WatchTreeEventSnapshotsConfig,
+} from './treeEventSnapshots.js';
