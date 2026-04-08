@@ -5,6 +5,7 @@ const getNdk = vi.fn();
 const ndkSubscribe = vi.fn();
 const ndkUnsubscribe = vi.fn();
 const getCachedRoot = vi.fn();
+const getTreeRootCacheStore = vi.fn();
 const setCachedRoot = vi.fn();
 
 vi.mock('../src/iris/ndk', () => ({
@@ -15,6 +16,7 @@ vi.mock('../src/iris/ndk', () => ({
 
 vi.mock('../src/iris/treeRootCache', () => ({
   getCachedRoot,
+  getTreeRootCacheStore,
   setCachedRoot,
 }));
 
@@ -32,6 +34,7 @@ describe('tree root freshness', () => {
     ndkSubscribe.mockReset();
     ndkUnsubscribe.mockReset();
     getCachedRoot.mockReset();
+    getTreeRootCacheStore.mockReset();
     setCachedRoot.mockReset();
   });
 
@@ -62,6 +65,7 @@ describe('tree root freshness', () => {
       },
     });
     getCachedRoot.mockResolvedValue(null);
+    getTreeRootCacheStore.mockReturnValue(null);
     setCachedRoot.mockResolvedValue({
       applied: true,
       record: {

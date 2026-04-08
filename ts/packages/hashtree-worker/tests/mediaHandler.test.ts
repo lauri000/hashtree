@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { nhashEncode, type CID, type HashTree } from '@hashtree/core';
+import { HashTree, MemoryStore, nhashEncode, toHex, type CID, type HashTree } from '@hashtree/core';
+import { nip19 } from 'nostr-tools';
+import { storeTreeEventSnapshot } from '@hashtree/nostr';
 import { __test__, initMediaHandler, registerMediaPort } from '../src/iris/mediaHandler';
 
 const ROOT: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i), key: undefined };
@@ -459,6 +461,72 @@ describe('mediaHandler thumbnail aliases', () => {
     expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
       type: 'done',
       requestId: 'req_2',
+    }));
+  });
+
+  it('resolves immutable snapshot requests through the signed root-event snapshot', async () => {
+    const store = new MemoryStore();
+    const realTree = new HashTree({ store });
+    const html = new TextEncoder().encode('<!doctype html><html><body>snapshot ok</body></html>');
+    const { cid: fileCid, size } = await realTree.putFile(html, { unencrypted: true });
+    const { cid: rootCid } = await realTree.putDirectory([
+      { name: 'index.html', cid: fileCid, size },
+    ], { unencrypted: true });
+    const snapshot = await storeTreeEventSnapshot(store, nip19, {
+      id: '8'.repeat(64),
+      pubkey: '9'.repeat(64),
+      kind: 30078,
+      content: '',
+      tags: [
+        ['d', 'sites/snapshot'],
+        ['l', 'hashtree'],
+        ['hash', toHex(rootCid.hash)],
+      ],
+      created_at: 1_700_000_100,
+      sig: 'a'.repeat(128),
+    });
+
+    expect(snapshot?.snapshotNhash).toMatch(/^nhash1/);
+
+    const postMessage = vi.fn();
+    const port = {
+      onmessage: null,
+      postMessage,
+      start: vi.fn(),
+    } as unknown as MessagePort;
+
+    initMediaHandler(realTree);
+    registerMediaPort(port);
+
+    await port.onmessage?.({
+      data: {
+        type: 'hashtree-file',
+        requestId: 'req_snapshot',
+        nhash: snapshot!.snapshotNhash,
+        snapshot: true,
+        path: 'index.html',
+        start: 0,
+        mimeType: 'text/html',
+      },
+    } as MessageEvent);
+
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'headers',
+      requestId: 'req_snapshot',
+      status: 200,
+      headers: expect.objectContaining({
+        'Content-Length': String(html.length),
+        'Content-Type': 'text/html',
+      }),
+    }));
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'chunk',
+      requestId: 'req_snapshot',
+      data: html,
+    }), [html.buffer]);
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'done',
+      requestId: 'req_snapshot',
     }));
   });
 });

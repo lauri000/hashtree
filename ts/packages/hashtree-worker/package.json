@@ -1,6 +1,6 @@
 {
   "name": "@hashtree/worker",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "Modular browser worker for hashtree blob caching, tree-root state, and Blossom connectivity",
   "type": "module",
   "main": "dist/index.js",

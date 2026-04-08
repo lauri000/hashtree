@@ -29,6 +29,7 @@ export interface TreeRootInfo {
   visibility: TreeVisibility;
   labels?: string[];
   updatedAt: number;
+  snapshotNhash?: string;
   encryptedKey?: string;
   keyId?: string;
   selfEncryptedKey?: string;
@@ -211,7 +212,7 @@ export type WorkerResponse =
   | { type: 'blossomPushComplete'; treeName: string; pushed: number; skipped: number; failed: number }
 
   // Tree root updates (worker → main thread notification)
-  | { type: 'treeRootUpdate'; npub: string; treeName: string; hash: Uint8Array; key?: Uint8Array; visibility: TreeVisibility; labels?: string[]; updatedAt: number; encryptedKey?: string; keyId?: string; selfEncryptedKey?: string; selfEncryptedLinkKey?: string }
+  | { type: 'treeRootUpdate'; npub: string; treeName: string; hash: Uint8Array; key?: Uint8Array; visibility: TreeVisibility; labels?: string[]; updatedAt: number; snapshotNhash?: string; encryptedKey?: string; keyId?: string; selfEncryptedKey?: string; selfEncryptedLinkKey?: string }
   | { type: 'treeRootInfo'; id: string; record?: TreeRootInfo; error?: string }
 
   // SocialGraph responses

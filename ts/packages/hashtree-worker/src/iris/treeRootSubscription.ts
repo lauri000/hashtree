@@ -8,8 +8,9 @@
 
 import type { CID } from '@hashtree/core';
 import { SimplePool, type Event as NostrEvent } from 'nostr-tools';
+import { storeTreeEventSnapshot, type StoredNostrEvent } from '@hashtree/nostr';
 import { getNdk, subscribe as ndkSubscribe, unsubscribe as ndkUnsubscribe } from './ndk';
-import { getCachedRoot, setCachedRoot } from './treeRootCache';
+import { getCachedRoot, getTreeRootCacheStore, setCachedRoot } from './treeRootCache';
 import type { SignedEvent, TreeVisibility } from './protocol';
 import { nip19 } from 'nostr-tools';
 import { NDKSubscriptionCacheUsage } from 'ndk';
@@ -40,6 +41,7 @@ export interface TreeRootRecord {
   visibility: TreeVisibility;
   labels?: string[];
   updatedAt: number;
+  snapshotNhash?: string;
   encryptedKey?: string;
   keyId?: string;
   selfEncryptedKey?: string;
@@ -65,6 +67,20 @@ export interface ParsedTreeRootEvent {
   keyId?: string;
   selfEncryptedKey?: string;
   selfEncryptedLinkKey?: string;
+}
+
+async function storeSnapshotNhash(event: SignedEvent): Promise<string | undefined> {
+  const snapshotTarget = getTreeRootCacheStore();
+  if (!snapshotTarget) {
+    return undefined;
+  }
+
+  const snapshot = await storeTreeEventSnapshot(
+    snapshotTarget,
+    nip19,
+    event as StoredNostrEvent,
+  );
+  return snapshot?.snapshotNhash;
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
@@ -409,6 +425,7 @@ export async function resolveTreeRootNow(
       updatedAt: fetched.created_at,
       eventId: fetched.id,
       labels: parsed.labels,
+      snapshotNhash: await storeSnapshotNhash(fetched),
       encryptedKey: parsed.encryptedKey,
       keyId: parsed.keyId,
       selfEncryptedKey: parsed.selfEncryptedKey,
@@ -423,6 +440,7 @@ export async function resolveTreeRootNow(
         visibility: record.visibility,
         labels: record.labels,
         updatedAt: record.updatedAt,
+        snapshotNhash: record.snapshotNhash,
         encryptedKey: record.encryptedKey,
         keyId: record.keyId,
         selfEncryptedKey: record.selfEncryptedKey,
@@ -520,6 +538,7 @@ export async function handleTreeRootEvent(event: SignedEvent): Promise<void> {
     updatedAt: event.created_at,
     eventId: event.id,
     labels: parsed.labels,
+    snapshotNhash: await storeSnapshotNhash(event),
     encryptedKey: parsed.encryptedKey,
     keyId: parsed.keyId,
     selfEncryptedKey: parsed.selfEncryptedKey,

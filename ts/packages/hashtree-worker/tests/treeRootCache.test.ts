@@ -38,4 +38,21 @@ describe('treeRootCache', () => {
     expect(cached?.keyId).toBe('key-id-3');
     expect(cached?.selfEncryptedLinkKey).toBe('bb'.repeat(32));
   });
+
+  it('preserves same-hash snapshot metadata when a later cache sync omits it', async () => {
+    const npub = 'npub-worker-cache-snapshot';
+    const treeName = 'sites/worker-cache-snapshot';
+
+    await setCachedRoot(npub, treeName, { hash: HASH_A }, 'public', {
+      updatedAt: 100,
+      snapshotNhash: 'nhash1snapshotcache',
+    });
+
+    await setCachedRoot(npub, treeName, { hash: HASH_A }, 'public', {
+      updatedAt: 200,
+    });
+
+    const cached = await getCachedRootInfo(npub, treeName);
+    expect(cached?.snapshotNhash).toBe('nhash1snapshotcache');
+  });
 });

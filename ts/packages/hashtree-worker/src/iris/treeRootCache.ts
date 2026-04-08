@@ -24,6 +24,7 @@ interface CachedRoot {
   labels?: string[];
   updatedAt: number;       // Unix timestamp
   eventId?: string;        // Source event id for same-second tie-breaking
+  snapshotNhash?: string;  // Signed root-event snapshot permalink
   encryptedKey?: string;   // For link-visible trees
   keyId?: string;          // For link-visible trees
   selfEncryptedKey?: string; // For private trees
@@ -75,6 +76,10 @@ function notifyUpdate(npub: string, treeName: string, cid: CID | null): void {
  */
 export function initTreeRootCache(storeImpl: Store): void {
   store = storeImpl;
+}
+
+export function getTreeRootCacheStore(): Store | null {
+  return store;
 }
 
 /**
@@ -152,6 +157,7 @@ export async function setCachedRoot(
     updatedAt?: number;
     eventId?: string;
     labels?: string[];
+    snapshotNhash?: string;
     encryptedKey?: string;
     keyId?: string;
     selfEncryptedKey?: string;
@@ -175,6 +181,7 @@ export async function setCachedRoot(
     labels: options?.labels ?? existing?.labels,
     updatedAt,
     eventId: eventId ?? (sameHash ? existing?.eventId : undefined),
+    snapshotNhash: options?.snapshotNhash ?? (sameHash ? existing?.snapshotNhash : undefined),
     encryptedKey: options?.encryptedKey ?? (sameHash ? existing?.encryptedKey : undefined),
     keyId: options?.keyId ?? (sameHash ? existing?.keyId : undefined),
     selfEncryptedKey: options?.selfEncryptedKey ?? (sameHash ? existing?.selfEncryptedKey : undefined),
@@ -338,6 +345,7 @@ function cachedRootEquals(a: CachedRoot, b: CachedRoot): boolean {
     a.visibility === b.visibility &&
     labelsEqual(a.labels, b.labels) &&
     a.updatedAt === b.updatedAt &&
+    a.snapshotNhash === b.snapshotNhash &&
     a.encryptedKey === b.encryptedKey &&
     a.keyId === b.keyId &&
     a.selfEncryptedKey === b.selfEncryptedKey &&

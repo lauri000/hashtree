@@ -12,6 +12,7 @@ import { getCachedRoot, onCachedRootUpdate } from './treeRootCache';
 import { resolveTreeRootNow, subscribeToTreeRoots } from './treeRootSubscription';
 import { getErrorMessage } from './utils/errorMessage';
 import { nhashDecode, toHex } from '@hashtree/core';
+import { readTreeEventSnapshot, resolveSnapshotRootCid } from '@hashtree/nostr';
 import { nip19 } from 'nostr-tools';
 import { LRUCache } from './utils/lruCache';
 
@@ -66,6 +67,8 @@ interface SwFileRequest {
   requestId: string;
   npub?: string;
   nhash?: string;
+  snapshot?: boolean;
+  linkKey?: string | null;
   treeName?: string;
   path: string;
   start: number;
@@ -225,6 +228,18 @@ function sameCid(a: CID | null | undefined, b: CID | null | undefined): boolean 
   if (!a && !b) return true;
   if (!a || !b) return false;
   return cidCacheKey(a) === cidCacheKey(b);
+}
+
+async function resolveSnapshotRoot(nhash: string, linkKey?: string | null): Promise<CID | null> {
+  if (!tree) return null;
+
+  const snapshotCid = nhashDecode(nhash);
+  const snapshot = await readTreeEventSnapshot(tree, nip19, snapshotCid);
+  if (!snapshot) {
+    return null;
+  }
+
+  return resolveSnapshotRootCid(snapshot, linkKey);
 }
 
 /**
@@ -511,11 +526,13 @@ function watchTreeRootForStream(
 async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
   if (!tree || !mediaPort) return;
 
-  const { requestId, npub, nhash, treeName, path, start, end, rangeHeader, mimeType, download } = req;
+  const { requestId, npub, nhash, snapshot, linkKey, treeName, path, start, end, rangeHeader, mimeType, download } = req;
   logMediaDebug('sw:request', {
     requestId,
     npub: npub ?? null,
     nhash: nhash ?? null,
+    snapshot: !!snapshot,
+    hasLinkKey: !!linkKey,
     treeName: treeName ?? null,
     path,
     start,
@@ -529,8 +546,14 @@ async function handleSwFileRequest(req: SwFileRequest): Promise<void> {
     let resolvedEntry: ResolvedRootEntry | null = null;
 
     if (nhash) {
-      // Direct nhash request - decode to CID
-      const rootCid = nhashDecode(nhash);
+      // Direct nhash request - decode to CID or resolve signed snapshot permalink.
+      const rootCid = snapshot
+        ? await resolveSnapshotRoot(nhash, linkKey)
+        : nhashDecode(nhash);
+      if (!rootCid) {
+        sendSwError(requestId, snapshot ? 403 : 404, snapshot ? 'Tree snapshot could not be resolved' : `File not found: ${path}`);
+        return;
+      }
       resolvedEntry = await resolveEntryWithinRoot(rootCid, path || '', {
         allowSingleSegmentRootFallback: true,
         expectedMimeType: mimeType,
@@ -1169,6 +1192,7 @@ async function canListDirectory(rootCid: CID): Promise<boolean> {
 }
 
 export const __test__ = {
+  handleSwFileRequest,
   resolveCidWithinRoot,
   resolveMutableTreeEntry,
   normalizeAliasPath,

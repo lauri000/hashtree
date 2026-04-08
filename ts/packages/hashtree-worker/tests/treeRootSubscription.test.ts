@@ -1,4 +1,5 @@
-import { MemoryStore, toHex } from '@hashtree/core';
+import { MemoryStore, nhashDecode, toHex } from '@hashtree/core';
+import { readTreeEventSnapshot as readStoredTreeEventSnapshot } from '@hashtree/nostr';
 import { nip19 } from 'nostr-tools';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SignedEvent } from '../src/iris/protocol';
@@ -18,9 +19,12 @@ function buildEvent(overrides: Partial<SignedEvent>): SignedEvent {
   };
 }
 
+let store: MemoryStore;
+
 beforeEach(() => {
   clearMemoryCache();
-  initTreeRootCache(new MemoryStore());
+  store = new MemoryStore();
+  initTreeRootCache(store);
   setNotifyCallback(null as unknown as (npub: string, treeName: string, record: unknown) => void);
 });
 
@@ -192,5 +196,42 @@ describe('handleTreeRootEvent', () => {
     expect(toHex(cached!.hash)).toBe(highIdHash);
     expect(cached!.updatedAt).toBe(createdAt);
     expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('stores a signed root-event snapshot permalink when handling a valid event', async () => {
+    const notify = vi.fn();
+    setNotifyCallback(notify);
+
+    const treeName = 'sites/enshittifier';
+    const pubkey = 'c'.repeat(64);
+    const npub = nip19.npubEncode(pubkey);
+    const hash = '5'.repeat(64);
+    const event = buildEvent({
+      id: '6'.repeat(64),
+      pubkey,
+      created_at: 400,
+      sig: '7'.repeat(128),
+      tags: [
+        ['d', treeName],
+        ['l', 'hashtree'],
+        ['hash', hash],
+      ],
+    });
+
+    await handleTreeRootEvent(event);
+
+    const cached = await getCachedRootInfo(npub, treeName);
+    expect(cached?.snapshotNhash).toMatch(/^nhash1/);
+    expect(notify).toHaveBeenCalledWith(
+      npub,
+      treeName,
+      expect.objectContaining({
+        snapshotNhash: cached?.snapshotNhash,
+      }),
+    );
+    const restored = cached?.snapshotNhash
+      ? await readStoredTreeEventSnapshot(store, nip19, nhashDecode(cached.snapshotNhash))
+      : null;
+    expect(restored?.event.id).toBe(event.id);
   });
 });
