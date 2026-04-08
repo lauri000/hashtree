@@ -5,7 +5,7 @@ We are building a decentralized system independent of DNS, SSL certificates, web
 ## Shared Rules
 - TDD when it makes sense and changes are non-trivial: start with a failing test, then implement.
 - Keep tests deterministic; avoid flaky tests.
-- Verify changes with unit or e2e tests. Don't ask the user to test. Don't assume code works - everything must be verified with tests.
+- Verify changes with e2e tests. Don't ask the user to test. Don't assume code works - everything must be verified with tests. Unit testing is often useless, prefer e2e unless good reason.
 - Fix all errors you encounter, whether related to your changes or not.
 - Keep file sizes reasonable. If a file starts growing unwieldy, break it into smaller focused modules instead of letting it sprawl.
 - Never run `git pull`/`git rebase` from `htree://self/*` (or a remote pointing there) because it is publish/storage, not an integration upstream.
