@@ -19,6 +19,30 @@ export interface ParsedHashtreeRootEvent {
   selfEncryptedLinkKey?: string;
 }
 
+export interface SnapshotTreeLike {
+  putFile(
+    data: Uint8Array,
+    options?: { unencrypted?: boolean },
+  ): Promise<{ cid: CID; size: number }>;
+  readFileRange(id: CID, start: number, end?: number): Promise<Uint8Array | null>;
+}
+
+export type SnapshotTarget = Store | SnapshotTreeLike;
+
+function isSnapshotTreeLike(target: SnapshotTarget): target is SnapshotTreeLike {
+  return (
+    typeof (target as SnapshotTreeLike).putFile === 'function' &&
+    typeof (target as SnapshotTreeLike).readFileRange === 'function'
+  );
+}
+
+function getSnapshotTree(target: SnapshotTarget): SnapshotTreeLike {
+  if (isSnapshotTreeLike(target)) {
+    return target;
+  }
+  return new HashTree({ store: target });
+}
+
 function assertStringTags(tags: unknown): asserts tags is string[][] {
   if (!Array.isArray(tags)) {
     throw new Error('Nostr event tags must be an array');
@@ -100,17 +124,17 @@ export function decodeSignedNostrEventJson(data: Uint8Array): StoredNostrEvent {
   } as StoredNostrEvent);
 }
 
-export async function storeSignedNostrEventSnapshot(store: Store, event: StoredNostrEvent): Promise<CID> {
-  const tree = new HashTree({ store });
+export async function storeSignedNostrEventSnapshot(target: SnapshotTarget, event: StoredNostrEvent): Promise<CID> {
+  const tree = getSnapshotTree(target);
   return (await tree.putFile(encodeSignedNostrEventJson(event), { unencrypted: true })).cid;
 }
 
 export async function readSignedNostrEventSnapshot(
-  store: Store,
+  target: SnapshotTarget,
   snapshotCid: CID,
   maxBytes = MAX_SNAPSHOT_BYTES,
 ): Promise<StoredNostrEvent> {
-  const tree = new HashTree({ store });
+  const tree = getSnapshotTree(target);
   const bytes = await tree.readFileRange(snapshotCid, 0, maxBytes + 1);
   if (!bytes) {
     throw new Error('Signed Nostr event snapshot is missing');

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MemoryStore, nhashEncode } from '@hashtree/core';
+import { HashTree, MemoryStore, nhashEncode } from '@hashtree/core';
 import {
   decodeSignedNostrEventJson,
   encodeSignedNostrEventJson,
@@ -58,6 +58,17 @@ describe('Nostr event snapshots', () => {
     expect(snapshotCid.key).toBeUndefined();
     expect(restored).toEqual(event);
     expect(nhashEncode(snapshotCid)).toMatch(/^nhash1/);
+  });
+
+  it('accepts a HashTree target so caller controls write policy', async () => {
+    const store = new MemoryStore();
+    const tree = new HashTree({ store });
+    const event = makeEvent();
+
+    const snapshotCid = await storeSignedNostrEventSnapshot(tree, event);
+    const restored = await readSignedNostrEventSnapshot(tree, snapshotCid);
+
+    expect(restored).toEqual(event);
   });
 
   it('parses hashtree root events from signed event snapshots', () => {

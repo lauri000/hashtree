@@ -4,7 +4,6 @@ import {
   nhashEncode,
   toHex,
   type CID,
-  type Store,
 } from '@hashtree/core';
 import type { StoredNostrEvent } from './events.js';
 import type { Nip19Like, NostrFilter } from './resolver/nostr.js';
@@ -13,6 +12,7 @@ import {
   readSignedNostrEventSnapshot,
   storeSignedNostrEventSnapshot,
   type ParsedHashtreeRootEvent,
+  type SnapshotTarget,
 } from './snapshot.js';
 
 const DEFAULT_SNAPSHOT_FETCH_LIMIT = 20;
@@ -28,7 +28,7 @@ export interface TreeEventSnapshotQuery extends NostrFilter {
 }
 
 export interface FetchLatestTreeEventSnapshotConfig {
-  store: Store;
+  snapshotTarget: SnapshotTarget;
   nip19: Nip19Like;
   fetchEvents: (filter: TreeEventSnapshotQuery) => Promise<StoredNostrEvent[]>;
   snapshotFetchLimit?: number;
@@ -149,8 +149,8 @@ export async function resolveSnapshotRootCid(
   return null;
 }
 
-export async function cacheTreeEventSnapshot(
-  store: Store,
+export async function storeTreeEventSnapshot(
+  snapshotTarget: SnapshotTarget,
   nip19: Nip19Like,
   event: StoredNostrEvent,
 ): Promise<TreeEventSnapshotInfo | null> {
@@ -158,18 +158,18 @@ export async function cacheTreeEventSnapshot(
   if (!parsed) {
     return null;
   }
-  const snapshotCid = await storeSignedNostrEventSnapshot(store, parsed.event);
+  const snapshotCid = await storeSignedNostrEventSnapshot(snapshotTarget, parsed.event);
   return snapshotInfoFromParsed(parsed, snapshotCid, nip19);
 }
 
 export async function readTreeEventSnapshot(
-  store: Store,
+  snapshotTarget: SnapshotTarget,
   nip19: Nip19Like,
   snapshotCid: CID,
   maxBytes?: number,
 ): Promise<TreeEventSnapshotInfo | null> {
   try {
-    const event = await readSignedNostrEventSnapshot(store, snapshotCid, maxBytes);
+    const event = await readSignedNostrEventSnapshot(snapshotTarget, snapshotCid, maxBytes);
     const parsed = tryParseHashtreeRootEvent(event);
     if (!parsed) {
       return null;
@@ -214,7 +214,7 @@ export async function fetchLatestTreeEventSnapshot(
   }
 
   candidates.sort(compareEvents);
-  return cacheTreeEventSnapshot(config.store, config.nip19, candidates[candidates.length - 1]!);
+  return storeTreeEventSnapshot(config.snapshotTarget, config.nip19, candidates[candidates.length - 1]!);
 }
 
 export function watchLatestTreeEventSnapshot(
@@ -242,7 +242,7 @@ export function watchLatestTreeEventSnapshot(
       return;
     }
 
-    const snapshot = await cacheTreeEventSnapshot(config.store, config.nip19, event);
+    const snapshot = await storeTreeEventSnapshot(config.snapshotTarget, config.nip19, event);
     if (!snapshot) {
       return;
     }

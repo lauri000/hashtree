@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { MemoryStore, cid, fromHex, toHex } from '@hashtree/core';
+import { HashTree, MemoryStore, cid, fromHex, toHex } from '@hashtree/core';
 import {
-  cacheTreeEventSnapshot,
+  storeTreeEventSnapshot,
   fetchLatestTreeEventSnapshot,
   readTreeEventSnapshot,
   resolveSnapshotRootCid,
@@ -73,10 +73,11 @@ async function waitForLength(values: unknown[], expectedLength: number, timeoutM
 describe('tree event snapshots', () => {
   it('stores and reloads signed tree event snapshots', async () => {
     const store = new MemoryStore();
+    const tree = new HashTree({ store });
     const event = makeEvent();
 
-    const snapshot = await cacheTreeEventSnapshot(store, nip19, event);
-    const restored = snapshot ? await readTreeEventSnapshot(store, nip19, snapshot.snapshotCid) : null;
+    const snapshot = await storeTreeEventSnapshot(tree, nip19, event);
+    const restored = snapshot ? await readTreeEventSnapshot(tree, nip19, snapshot.snapshotCid) : null;
 
     expect(snapshot).not.toBeNull();
     expect(snapshot?.snapshotNhash).toMatch(/^nhash1/);
@@ -85,9 +86,12 @@ describe('tree event snapshots', () => {
   });
 
   it('fetches the latest snapshot by created_at and event id', async () => {
+    const store = new MemoryStore();
+    const tree = new HashTree({ store });
+
     const snapshot = await fetchLatestTreeEventSnapshot(
       {
-        store: new MemoryStore(),
+        snapshotTarget: tree,
         nip19,
         fetchEvents: async () => [
           makeEvent({
@@ -168,7 +172,7 @@ describe('tree event snapshots', () => {
 
     const stop = watchLatestTreeEventSnapshot(
       {
-        store,
+        snapshotTarget: store,
         nip19,
         fetchEvents: async () => [initial],
         subscribeEvents: (_filter, handler) => {

@@ -91,10 +91,12 @@ export {
   readSignedNostrEventSnapshot,
   parseHashtreeRootEvent,
   type ParsedHashtreeRootEvent,
+  type SnapshotTreeLike,
+  type SnapshotTarget,
 } from './snapshot.js';
 
 export {
-  cacheTreeEventSnapshot,
+  storeTreeEventSnapshot,
   readTreeEventSnapshot,
   fetchLatestTreeEventSnapshot,
   watchLatestTreeEventSnapshot,
