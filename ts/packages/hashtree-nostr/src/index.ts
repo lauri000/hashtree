@@ -109,3 +109,11 @@ export {
   type FetchLatestTreeEventSnapshotConfig,
   type WatchTreeEventSnapshotsConfig,
 } from './treeEventSnapshots.js';
+
+export {
+  buildTreeEventSnapshotPermalink,
+  parseTreeEventSnapshotPermalink,
+  normalizeTreeEventSnapshotLinkKey,
+  type TreeEventSnapshotPermalink,
+  type BuildTreeEventSnapshotPermalinkOptions,
+} from './treeEventSnapshotPermalinks.js';

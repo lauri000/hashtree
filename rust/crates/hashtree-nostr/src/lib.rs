@@ -1,9 +1,16 @@
 //! Hashtree-native Nostr event indexes.
 
 pub mod crawl;
+pub mod tree_event_snapshots;
 pub use crawl::{
     CrawlConfig, CrawlError, CrawlReport, EventSelectionPolicy, KindPriorityPolicy, NostrBridge,
     RelayFetchMode,
+};
+pub use tree_event_snapshots::{
+    compare_tree_event_snapshots, is_newer_tree_event_snapshot,
+    parse_tree_event_snapshot_permalink, read_tree_event_snapshot, resolve_snapshot_root_cid,
+    serialize_tree_event_snapshot_permalink, snapshot_matches_root_cid, store_tree_event_snapshot,
+    TreeEventSnapshotInfo, TreeEventSnapshotPermalink,
 };
 
 use std::collections::BTreeMap;

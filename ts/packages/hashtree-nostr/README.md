@@ -123,6 +123,24 @@ stop();
 
 The library does not keep a global snapshot cache for you. It provides stateless helpers plus a live watcher; route caching and reuse policy stay with the app. Pass a `HashTree` when you already have one controlling write policy, or a raw `Store` when the default wrapper is enough.
 
+Snapshot routes use the signed snapshot blob `nhash` plus a path and optional link key:
+
+```typescript
+import {
+  buildTreeEventSnapshotPermalink,
+  parseTreeEventSnapshotPermalink,
+} from '@hashtree/nostr';
+
+const href = buildTreeEventSnapshotPermalink({
+  snapshotNhash: snapshot.snapshotNhash,
+  path: ['index.html'],
+  linkKey: 'abcd...optional 64-hex link key',
+});
+// nhash1.../index.html?snapshot=1&k=...
+
+const parsed = parseTreeEventSnapshotPermalink(`htree://${href}`);
+```
+
 ## License
 
 MIT
