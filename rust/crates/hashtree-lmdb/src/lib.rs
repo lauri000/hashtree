@@ -117,7 +117,9 @@ impl LmdbBlobStore {
                         .and_then(|(_, bytes)| Self::decode_blob_meta(bytes))
                         .map(|meta| meta.size)
                 })
-                .try_fold(0u64, |total, size| size.map(|size| total.saturating_add(size)))?;
+                .try_fold(0u64, |total, size| {
+                    size.map(|size| total.saturating_add(size))
+                })?;
             (next, current)
         };
 
@@ -187,14 +189,15 @@ impl LmdbBlobStore {
 
     fn put_sync_attempt(&self, hash: Hash, data: &[u8]) -> std::result::Result<bool, HeedError> {
         let mut wtxn = self.env.write_txn()?;
-        let inserted = match self
-            .blobs
-            .put_with_flags(&mut wtxn, PutFlags::NO_OVERWRITE, &hash, data)
-        {
-            Ok(()) => true,
-            Err(HeedError::Mdb(MdbError::KeyExist)) => false,
-            Err(err) => return Err(err),
-        };
+        let inserted =
+            match self
+                .blobs
+                .put_with_flags(&mut wtxn, PutFlags::NO_OVERWRITE, &hash, data)
+            {
+                Ok(()) => true,
+                Err(HeedError::Mdb(MdbError::KeyExist)) => false,
+                Err(err) => return Err(err),
+            };
 
         if inserted {
             let order = self.next_order.fetch_add(1, Ordering::Relaxed);
@@ -220,15 +223,16 @@ impl LmdbBlobStore {
         let mut inserted_bytes = 0u64;
 
         for (hash, data) in items {
-            let inserted_blob =
-                match self
-                    .blobs
-                    .put_with_flags(&mut wtxn, PutFlags::NO_OVERWRITE, hash, data.as_slice())
-                {
-                    Ok(()) => true,
-                    Err(HeedError::Mdb(MdbError::KeyExist)) => false,
-                    Err(err) => return Err(err),
-                };
+            let inserted_blob = match self.blobs.put_with_flags(
+                &mut wtxn,
+                PutFlags::NO_OVERWRITE,
+                hash,
+                data.as_slice(),
+            ) {
+                Ok(()) => true,
+                Err(HeedError::Mdb(MdbError::KeyExist)) => false,
+                Err(err) => return Err(err),
+            };
 
             if !inserted_blob {
                 continue;
@@ -320,7 +324,8 @@ impl LmdbBlobStore {
             match self.put_sync_attempt(hash, data) {
                 Ok(inserted) => {
                     if inserted {
-                        self.current_bytes.fetch_add(incoming_bytes, Ordering::Relaxed);
+                        self.current_bytes
+                            .fetch_add(incoming_bytes, Ordering::Relaxed);
                     }
                     return Ok(inserted);
                 }
@@ -896,7 +901,10 @@ mod tests {
         store.put(h3, b"cccccccccc".to_vec()).await?;
 
         let freed = store.evict_if_needed().await?;
-        assert_eq!(freed, 0, "write path should have already evicted stale blobs");
+        assert_eq!(
+            freed, 0,
+            "write path should have already evicted stale blobs"
+        );
 
         assert!(
             !store.has(&h1).await?,
@@ -930,7 +938,10 @@ mod tests {
         store.put(h3, b"cccccccccc".to_vec()).await?;
 
         let freed = store.evict_if_needed().await?;
-        assert_eq!(freed, 0, "write path should have already evicted stale blobs");
+        assert_eq!(
+            freed, 0,
+            "write path should have already evicted stale blobs"
+        );
 
         assert!(store.has(&h1).await?, "pinned blob must not be evicted");
         assert!(

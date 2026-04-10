@@ -347,7 +347,8 @@ impl BlossomClient {
         &self,
         data: &[u8],
     ) -> Result<(String, usize), BlossomError> {
-        self.upload_to_selected_servers(data, &self.write_servers).await
+        self.upload_to_selected_servers(data, &self.write_servers)
+            .await
     }
 
     /// Upload to the selected servers in parallel, returns (hash, success_count)

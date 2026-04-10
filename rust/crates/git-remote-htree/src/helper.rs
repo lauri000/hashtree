@@ -373,10 +373,9 @@ impl RemoteHelper {
             self.url_secret.is_some()
         );
 
-        block_on_result(self.fetch_git_objects_to_local_git_async(
-            root_hash,
-            encryption_key.as_ref(),
-        ))
+        block_on_result(
+            self.fetch_git_objects_to_local_git_async(root_hash, encryption_key.as_ref()),
+        )
     }
 
     fn build_cached_fetch_tree(
@@ -401,10 +400,7 @@ impl RemoteHelper {
             create_local_store(&blobs_path).context("Failed to create local blob store")?;
         let local_store_for_eviction = local_store.clone();
 
-        let blossom_store = BlossomStore::with_servers(
-            nostr::Keys::generate(),
-            servers,
-        );
+        let blossom_store = BlossomStore::with_servers(nostr::Keys::generate(), servers);
 
         let store = cached_store::CachedStore::new(local_store, blossom_store);
         let tree = HashTree::new(HashTreeConfig::new(std::sync::Arc::new(store)));
@@ -682,7 +678,10 @@ impl RemoteHelper {
 
         let total_objects = fetch_tasks.len();
         if self.is_slow() {
-            eprintln!("  Prepared {} objects in {:?}", total_objects, enumerate_elapsed);
+            eprintln!(
+                "  Prepared {} objects in {:?}",
+                total_objects, enumerate_elapsed
+            );
         }
 
         let local_check_start = std::time::Instant::now();
@@ -785,12 +784,9 @@ impl RemoteHelper {
 
                 match tree.get(obj_cid, None).await {
                     Ok(Some(content)) => {
-                        write_tx
-                            .send((oid.clone(), content))
-                            .await
-                            .map_err(|_| {
-                                anyhow::anyhow!("git object writer stopped unexpectedly")
-                            })?;
+                        write_tx.send((oid.clone(), content)).await.map_err(|_| {
+                            anyhow::anyhow!("git object writer stopped unexpectedly")
+                        })?;
                         queued_writes += 1;
                     }
                     Ok(None) => {
@@ -808,8 +804,7 @@ impl RemoteHelper {
             }
             eprintln!(
                 "\r  Retried: {}/{} objects available        ",
-                queued_writes,
-                total_to_write
+                queued_writes, total_to_write
             );
         }
 
@@ -832,7 +827,10 @@ impl RemoteHelper {
         }
 
         if cached > 0 {
-            eprintln!("\r  Writing to .git: {} new, {} cached    ", written, cached);
+            eprintln!(
+                "\r  Writing to .git: {} new, {} cached    ",
+                written, cached
+            );
         } else {
             eprintln!("\r  Writing to .git: {}/{}    ", written, written);
         }

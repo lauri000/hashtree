@@ -66,13 +66,19 @@ fn test_git_storage_build_evicts_shared_lmdb_on_write_path() {
         payload(2, 5 * 1024),
         payload(3, 5 * 1024),
     ];
-    let stale_hashes: Vec<Hash> = stale_blobs.iter().map(|blob| compute_sha256(blob)).collect();
+    let stale_hashes: Vec<Hash> = stale_blobs
+        .iter()
+        .map(|blob| compute_sha256(blob))
+        .collect();
     for (hash, blob) in stale_hashes.iter().copied().zip(stale_blobs) {
         runtime.block_on(storage.store().put(hash, blob)).unwrap();
     }
 
     let before = local_total_bytes(&storage);
-    assert!(before <= max_size_bytes, "prefill should stay within cache budget");
+    assert!(
+        before <= max_size_bytes,
+        "prefill should stay within cache budget"
+    );
 
     let commit_oid = write_large_commit(&storage);
     storage

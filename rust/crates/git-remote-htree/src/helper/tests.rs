@@ -857,7 +857,9 @@ fn test_push_to_file_servers_with_diff_trusts_sampled_old_tree_coverage() {
                 .put_file(content.as_bytes())
                 .await
                 .expect("write old file");
-            old_entries.push(DirEntry::from_cid(format!("file-{idx:02}.txt"), &file_cid).with_size(file_size));
+            old_entries.push(
+                DirEntry::from_cid(format!("file-{idx:02}.txt"), &file_cid).with_size(file_size),
+            );
         }
 
         let old_cid = tree
@@ -879,7 +881,8 @@ fn test_push_to_file_servers_with_diff_trusts_sampled_old_tree_coverage() {
             blossom.upload(&data).await.expect("upload old blob");
         }
 
-        let (new_file_cid, new_file_size) = tree.put_file(b"new file").await.expect("write new file");
+        let (new_file_cid, new_file_size) =
+            tree.put_file(b"new file").await.expect("write new file");
         let mut new_entries = old_entries;
         new_entries.push(DirEntry::from_cid("new.txt", &new_file_cid).with_size(new_file_size));
         let new_cid = tree
@@ -909,8 +912,7 @@ fn test_push_to_file_servers_with_diff_trusts_sampled_old_tree_coverage() {
         "push diff should not need GET requests when old tree is already local"
     );
     assert!(
-        fake_blossom.get_head_request_count()
-            <= old_hash_count.min(SERVER_COVERAGE_SAMPLE_SIZE),
+        fake_blossom.get_head_request_count() <= old_hash_count.min(SERVER_COVERAGE_SAMPLE_SIZE),
         "expected only sampled HEAD probes, got {} for {} old hashes",
         fake_blossom.get_head_request_count(),
         old_hash_count

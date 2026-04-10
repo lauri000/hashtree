@@ -60,8 +60,7 @@ fn benchmark_label() -> String {
 
 fn benchmark_repo_name() -> String {
     let suffix = std::process::id();
-    std::env::var("HTREE_BENCH_REMOTE_REPO")
-        .unwrap_or_else(|_| format!("perf-clone-{}", suffix))
+    std::env::var("HTREE_BENCH_REMOTE_REPO").unwrap_or_else(|_| format!("perf-clone-{}", suffix))
 }
 
 fn env_lookup(env_vars: &[(String, String)], key: &str) -> String {
@@ -231,7 +230,11 @@ fn benchmark_large_repo_clone_local() {
     );
     println!("Initial publish completed in {:?}", push_elapsed);
 
-    let publisher_head = git_stdout(&source_repo_path, &publisher_env_vars, &["rev-parse", "HEAD"]);
+    let publisher_head = git_stdout(
+        &source_repo_path,
+        &publisher_env_vars,
+        &["rev-parse", "HEAD"],
+    );
     let clone_url = format!("htree://{}/{}", publisher_env.npub, remote_repo);
 
     let mut clone_runs = Vec::new();
@@ -239,15 +242,27 @@ fn benchmark_large_repo_clone_local() {
         let consumer_env = TestEnv::new(Some(&blossom_url), Some(&relay_url));
         let consumer_env_vars = consumer_env.env();
         let consumer_home = env_lookup(&consumer_env_vars, "HOME");
-        println!("Iteration {} consumer home: {}", iteration + 1, consumer_home);
+        println!(
+            "Iteration {} consumer home: {}",
+            iteration + 1,
+            consumer_home
+        );
 
         let clone_dir = TempDir::new().expect("create clone dir");
         let clone_path = clone_dir.path().join("clone");
 
         let clone_start = Instant::now();
         let clone_output = Command::new("git")
-            .args(["clone", &clone_url, clone_path.to_str().expect("clone path utf-8")])
-            .envs(consumer_env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .args([
+                "clone",
+                &clone_url,
+                clone_path.to_str().expect("clone path utf-8"),
+            ])
+            .envs(
+                consumer_env_vars
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str())),
+            )
             .output()
             .expect("run benchmark git clone");
         let clone_elapsed = clone_start.elapsed();
@@ -259,8 +274,7 @@ fn benchmark_large_repo_clone_local() {
             String::from_utf8_lossy(&clone_output.stderr),
         );
 
-        let cloned_head =
-            git_stdout(&clone_path, &consumer_env_vars, &["rev-parse", "HEAD"]);
+        let cloned_head = git_stdout(&clone_path, &consumer_env_vars, &["rev-parse", "HEAD"]);
         assert_eq!(
             publisher_head, cloned_head,
             "cloned HEAD should match published HEAD"

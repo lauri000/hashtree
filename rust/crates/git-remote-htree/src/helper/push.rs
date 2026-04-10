@@ -361,7 +361,12 @@ impl RemoteHelper {
     }
 
     /// Push all objects reachable from sha
-    pub(super) fn push_objects(&mut self, sha: &str, dst_ref: &str, force_push: bool) -> Result<()> {
+    pub(super) fn push_objects(
+        &mut self,
+        sha: &str,
+        dst_ref: &str,
+        force_push: bool,
+    ) -> Result<()> {
         eprint!("  Listing objects...");
         let _ = std::io::stderr().flush();
         let objects = self.list_objects_to_push(sha)?;
@@ -655,8 +660,7 @@ impl RemoteHelper {
 
         let verbose = self.is_slow();
         let force_upload = self.config.blossom.force_upload;
-        let trust_server_old_tree_coverage =
-            trust_server_old_tree_coverage && !force_upload;
+        let trust_server_old_tree_coverage = trust_server_old_tree_coverage && !force_upload;
         let success = rt.block_on(async {
             use hashtree_core::{collect_hashes, Cid, HashTree, HashTreeConfig};
             use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
