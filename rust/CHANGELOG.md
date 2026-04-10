@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.29 - 2026-04-10
+
+Changes since the `0.2.28` crates.io release.
+
+### Added
+
+- Added the new `hashtree-collection` crate to the published Rust crate graph, including collection index lifecycle support, search indexes, schema hooks, federated search helpers, and explicit reindex support.
+
+### Improved
+
+- Switched the Rust social-graph dependencies from pinned GitHub revisions to the published `nostr-social-graph` crates.io releases.
+- Improved `htree socialgraph stats` so the root prints as an `npub` and the reachability count is labeled more explicitly.
+- Trimmed the default relay set by removing `wss://offchain.pub`.
+
+### Fixed
+
+- Fixed `htree cat` for published tree paths by resolving file targets inside encrypted directories with their decrypt keys intact and by rejecting bare directory CIDs unless a file path is specified.
+
 ## 0.2.28 - 2026-04-07
 
 Changes since the `0.2.27` crates.io release.

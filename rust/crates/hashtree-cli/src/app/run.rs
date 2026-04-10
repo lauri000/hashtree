@@ -36,7 +36,7 @@ use super::mounts::print_active_mounts;
 use super::nostr_index::{run_socialgraph_index_from_cli, SocialGraphIndexOptions};
 use super::peers::{fetch_profile_name, list_peers};
 use super::release::publish_release_version;
-use super::resolve::resolve_cid_input;
+use super::resolve::{resolve_cid_input, ResolvedCid};
 use super::socialgraph::{
     run_socialgraph_filter, run_socialgraph_rebuild_profile_index, run_socialgraph_snapshot,
     run_socialgraph_stats, run_socialgraph_warm,
@@ -728,25 +728,17 @@ pub(crate) async fn run() -> Result<()> {
             }
         }
         Commands::Cat { cid: cid_input } => {
-            use hashtree_cli::{FetchConfig, Fetcher};
-            use hashtree_core::to_hex;
+            use std::io::Write;
 
             // Resolve npub/repo or htree:// URLs to CID
             let resolved = resolve_cid_input(&cid_input).await?;
-            let cid_hex = to_hex(&resolved.cid.hash);
 
             let store = Arc::new(HashtreeStore::new(&data_dir)?);
-
-            // Create fetcher (BlossomClient auto-loads servers from config)
             let fetcher = Fetcher::new(FetchConfig::default());
-
-            // Fetch file (local first, then Blossom)
-            if let Some(content) = fetcher.fetch_file(&store, None, &resolved.cid.hash).await? {
-                use std::io::Write;
-                std::io::stdout().write_all(&content)?;
-            } else {
-                anyhow::bail!("CID not found locally or on remote servers: {}", cid_hex);
-            }
+            let target_cid = resolve_cat_target_cid(&fetcher, &store, &resolved).await?;
+            let mut stdout = std::io::stdout().lock();
+            store.write_file_by_cid_to_writer(&target_cid, &mut stdout)?;
+            stdout.flush()?;
         }
         Commands::Pins => {
             let store = HashtreeStore::new(&data_dir)?;
@@ -1331,6 +1323,34 @@ pub(crate) fn format_cid_for_display(cid: &Cid) -> String {
         decrypt_key: cid.key,
     })
     .unwrap_or_else(|_| cid.to_string())
+}
+
+pub(crate) async fn resolve_cat_target_cid(
+    fetcher: &Fetcher,
+    store: &Arc<HashtreeStore>,
+    resolved: &ResolvedCid,
+) -> Result<Cid> {
+    let cid = resolved.cid.clone();
+    fetcher.fetch_cid_tree(store, None, &cid).await?;
+
+    let listing = store.get_directory_listing_by_cid(&cid)?;
+    if let Some(path) = resolved.path.as_deref() {
+        if listing.is_some() {
+            let resolved_cid = store
+                .resolve_path(&cid, path)?
+                .ok_or_else(|| anyhow::anyhow!("Path not found in directory: {}", path))?;
+            fetcher.fetch_cid_tree(store, None, &resolved_cid).await?;
+            return Ok(resolved_cid);
+        }
+
+        return Ok(cid);
+    }
+
+    if listing.is_some() {
+        anyhow::bail!("Cannot cat a directory; specify a file path or use `htree get`");
+    }
+
+    Ok(cid)
 }
 
 async fn resolve_info_target(

@@ -23,7 +23,6 @@ pub const DEFAULT_RELAYS: &[&str] = &[
     "wss://relay.damus.io",
     "wss://relay.snort.social",
     "wss://relay.primal.net",
-    "wss://offchain.pub",
     "wss://upload.iris.to/nostr",
 ];
 

@@ -8,18 +8,20 @@ use super::lists::{
     build_mute_list_event, load_mute_entries, update_hex_list_file,
     update_mute_list_file_with_status, MuteEntry, MuteUpdate,
 };
-use super::resolve::{parse_published_target, resolve_cid_input, ParsedPublishedTarget};
+use super::resolve::{
+    parse_published_target, resolve_cid_input, ParsedPublishedTarget, ResolvedCid,
+};
 #[cfg(feature = "fuse")]
 use super::run::{
     find_existing_active_mount, is_stale_mount_io_error, should_warn_for_temporary_mountpoint,
 };
-use super::run::{format_cid_for_display, warn_if_stun_unavailable};
+use super::run::{format_cid_for_display, resolve_cat_target_cid, warn_if_stun_unavailable};
 use crate::app::args::{CashuCommands, CashuMintCommands, ReleaseCommands, SocialGraphCommands};
 use crate::app::args::{Cli, Commands};
 #[cfg(feature = "fuse")]
 use crate::app::mount_registry::ActiveMount;
 use clap::{CommandFactory, Parser};
-use hashtree_cli::Config as AppConfig;
+use hashtree_cli::{Config as AppConfig, FetchConfig, Fetcher, HashtreeStore};
 use hashtree_core::{nhash_decode, Cid};
 use nostr::Kind;
 #[cfg(feature = "fuse")]
@@ -769,4 +771,63 @@ async fn test_resolve_hex_cid_without_key() {
     let resolved = resolve_cid_input(&hash_hex).await.unwrap();
     assert_eq!(resolved.cid.hash, hash);
     assert!(resolved.cid.key.is_none());
+}
+
+#[tokio::test]
+async fn test_resolve_cat_target_cid_resolves_tree_paths_with_decryption_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(HashtreeStore::new(tmp.path().join("store")).unwrap());
+
+    let site_dir = tmp.path().join("site");
+    std::fs::create_dir_all(&site_dir).unwrap();
+    let expected = br#"{"songs":9529}"#;
+    std::fs::write(site_dir.join("root.json"), expected).unwrap();
+
+    let root = store
+        .upload_dir_encrypted_with_options(&site_dir, true)
+        .expect("upload encrypted dir");
+    let resolved = ResolvedCid {
+        cid: Cid::parse(&root).expect("parse encrypted root cid"),
+        path: Some("root.json".to_string()),
+    };
+
+    let fetcher = Fetcher::new(FetchConfig::default());
+    let target = resolve_cat_target_cid(&fetcher, &store, &resolved)
+        .await
+        .expect("resolve cat target");
+
+    assert!(
+        target.key.is_some(),
+        "resolved file cid should preserve decrypt key"
+    );
+
+    let mut output = Vec::new();
+    store
+        .write_file_by_cid_to_writer(&target, &mut output)
+        .expect("stream decrypted file");
+    assert_eq!(output, expected);
+}
+
+#[tokio::test]
+async fn test_resolve_cat_target_cid_rejects_directories_without_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(HashtreeStore::new(tmp.path().join("store")).unwrap());
+
+    let site_dir = tmp.path().join("site");
+    std::fs::create_dir_all(&site_dir).unwrap();
+    std::fs::write(site_dir.join("index.html"), "<html></html>").unwrap();
+
+    let root = store
+        .upload_dir_encrypted_with_options(&site_dir, true)
+        .expect("upload encrypted dir");
+    let resolved = ResolvedCid {
+        cid: Cid::parse(&root).expect("parse encrypted root cid"),
+        path: None,
+    };
+
+    let fetcher = Fetcher::new(FetchConfig::default());
+    let err = resolve_cat_target_cid(&fetcher, &store, &resolved)
+        .await
+        .expect_err("catting a directory should fail");
+    assert!(err.to_string().contains("Cannot cat a directory"));
 }
