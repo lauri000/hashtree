@@ -1,10 +1,16 @@
 import { decode, encode } from '@msgpack/msgpack';
-import { CollectionSource, type CollectionManifest } from '@hashtree/collection';
+import {
+  CollectionSource,
+  serializeCollectionManifestMetadata,
+  type CollectionManifest,
+} from '@hashtree/collection';
 import { HashTree, LinkType, type CID, type Store, toHex, sha256 } from '@hashtree/core';
 import {
+  COLLECTION_MANIFEST_METADATA_FILE,
   collectionManifestToNostrEventManifest,
   createNostrEventCollectionWriter,
   DEFAULT_NOSTR_EVENT_COLLECTION_SOURCE_ID,
+  nostrEventCollectionManifestMetadata,
   nostrEventManifestToCollectionManifest,
 } from './eventCollection.js';
 import {
@@ -459,6 +465,7 @@ export class NostrEventStore {
 
   private async writeManifest(manifest: NostrEventManifest): Promise<CID | null> {
     const entries = [];
+    const rootMetadata = nostrEventCollectionManifestMetadata(manifest);
 
     if (manifest.byId) {
       entries.push({ name: MANIFEST_BY_ID, cid: manifest.byId, size: 0, type: LinkType.Dir });
@@ -487,6 +494,16 @@ export class NostrEventStore {
         cid: manifest.parameterizedReplaceable,
         size: 0,
         type: LinkType.Dir,
+      });
+    }
+    if (rootMetadata) {
+      const metadataBytes = serializeCollectionManifestMetadata(rootMetadata);
+      const { cid, size } = await this.tree.putFile(metadataBytes);
+      entries.push({
+        name: COLLECTION_MANIFEST_METADATA_FILE,
+        cid,
+        size,
+        type: LinkType.File,
       });
     }
 

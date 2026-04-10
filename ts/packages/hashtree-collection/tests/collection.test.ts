@@ -4,7 +4,10 @@ import { MemoryStore } from '@hashtree/core';
 import {
   CollectionSource,
   CollectionWriter,
+  collectionManifestMetadataFromManifest,
   federatedSearch,
+  parseCollectionManifestMetadata,
+  serializeCollectionManifestMetadata,
   type CollectionDefinition,
   normalizeCollectionItem,
 } from '../src/index.js';
@@ -183,6 +186,10 @@ describe('@hashtree/collection', () => {
           }
         },
       },
+      publishedSchema: {
+        itemFormat: 'example/song@1',
+        projectionFormat: 'example/song-index@1',
+      },
       getId: (song) => song.id,
       keyIndexes: [
         {
@@ -219,8 +226,40 @@ describe('@hashtree/collection', () => {
 
     const source = new CollectionSource(store, writer.manifest());
     expect(source.manifest.schemaVersion).toBe(2);
+    expect(source.manifest.publishedSchema).toEqual({
+      itemFormat: 'example/song@1',
+      projectionFormat: 'example/song-index@1',
+    });
     expect((await source.queryIndex('artist', { prefix: 'artist:ada' })).map((result) => result.key)).toEqual(['artist:ada']);
     expect((await source.search('songs', 'night')).map((result) => result.id)).toEqual(['song-c']);
+  });
+
+  it('serializes published collection manifest metadata in a shared root file format', async () => {
+    const metadata = collectionManifestMetadataFromManifest({
+      version: 1,
+      sourceId: 'npub1test/audio',
+      schemaVersion: 2,
+      updatedAt: 0,
+      itemCount: 1,
+      byIdRoot: null,
+      indexes: {},
+      publishedSchema: {
+        itemFormat: 'example/song@1',
+        projectionFormat: 'example/song-index@1',
+      },
+    });
+
+    expect(metadata).toEqual({
+      version: 1,
+      schemaVersion: 2,
+      publishedSchema: {
+        itemFormat: 'example/song@1',
+        projectionFormat: 'example/song-index@1',
+      },
+    });
+    expect(
+      parseCollectionManifestMetadata(serializeCollectionManifestMetadata(metadata!)),
+    ).toEqual(metadata);
   });
 
   it('supports shared search roots with derived entity targets', async () => {

@@ -55,6 +55,23 @@ This package currently gives you the projection/index side:
 
 It is compatible with a future codec/projection layer, where a source can declare an item format and clients can optionally decode richer item payloads when they know that format.
 
+## Published Metadata
+
+When a collection root is published as a hashtree directory, reserve
+`.collection-manifest.json` for collection-level metadata that peers can inspect
+without any local runtime hooks.
+
+Today that metadata is intentionally small:
+
+- `schemaVersion`
+- `publishedSchema.itemFormat`
+- `publishedSchema.projectionFormat`
+- optional `publishedSchema.schemaRef`
+
+The JSON shape is the same in TypeScript and Rust. Index names are expected to
+be meaningful enough on their own, so there is no extra per-index description
+layer by default.
+
 ## Schema
 
 `CollectionDefinition.schema` is intentionally a **local convenience**, not a universal contract.

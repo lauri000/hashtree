@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { HashTree, MemoryStore, sha256, toHex } from '@hashtree/core';
-import { NostrEventStore, type StoredNostrEvent } from '../src/events.js';
+import { loadCollectionManifestMetadata } from '@hashtree/collection';
+import {
+  COLLECTION_MANIFEST_METADATA_FILE,
+  NostrEventStore,
+  type StoredNostrEvent,
+} from '../src/index.js';
 
 async function makeEvent(
   overrides: Partial<Omit<StoredNostrEvent, 'id'>> & { id?: string } = {}
@@ -69,6 +74,26 @@ describe('NostrEventStore', () => {
 
     expect(names).toContain('by-id');
     expect(names).not.toContain('events_by_id');
+  });
+
+  it('publishes shared collection manifest metadata alongside event indexes', async () => {
+    const backing = new MemoryStore();
+    const store = new NostrEventStore(backing);
+    const tree = new HashTree({ store: backing });
+    const event = await makeEvent();
+
+    const root = await store.add(null, event);
+    const entries = await tree.listDirectory(root);
+
+    expect(entries.map((entry) => entry.name)).toContain(COLLECTION_MANIFEST_METADATA_FILE);
+    await expect(loadCollectionManifestMetadata(backing, root)).resolves.toEqual({
+      version: 1,
+      schemaVersion: 1,
+      publishedSchema: {
+        itemFormat: 'nostr/event@1',
+        projectionFormat: 'hashtree/nostr-event-index@1',
+      },
+    });
   });
 
   it('lists author feeds newest first', async () => {

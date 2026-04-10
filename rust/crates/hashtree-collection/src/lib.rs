@@ -13,6 +13,7 @@ mod definition;
 mod error;
 mod federated;
 mod helpers;
+mod manifest;
 mod schema;
 mod source;
 mod state;
@@ -20,12 +21,17 @@ mod writer;
 
 pub use definition::{
     default_search_prefix, CollectionDefinition, CollectionEntryContext,
-    CollectionKeyIndexDefinition, CollectionSearchEntry, CollectionSearchIndexDefinition,
+    CollectionKeyIndexDefinition, CollectionPublishedSchema, CollectionSearchEntry,
+    CollectionSearchIndexDefinition,
 };
 pub use error::CollectionError;
 pub use federated::{
     federated_search, FederatedCollectionSource, FederatedSearchHit, FederatedSearchOptions,
     FederatedSearchSourceHit,
+};
+pub use manifest::{
+    load_collection_manifest_metadata, CollectionManifestMetadata,
+    COLLECTION_MANIFEST_METADATA_FILE,
 };
 pub use schema::{
     get_collection_schema, get_schema_version, normalize_collection_item, CollectionSchema,

@@ -85,11 +85,16 @@ export {
 } from './events.js';
 
 export {
+  COLLECTION_MANIFEST_METADATA_FILE,
   DEFAULT_NOSTR_EVENT_COLLECTION_SOURCE_ID,
+  NOSTR_EVENT_ITEM_FORMAT,
+  NOSTR_EVENT_PROJECTION_FORMAT,
   collectionManifestToNostrEventManifest,
   createNostrEventCollectionDefinition,
   createNostrEventCollectionSource,
   createNostrEventCollectionWriter,
+  nostrEventCollectionManifestMetadata,
+  nostrEventCollectionRootMetadata,
   nostrEventManifestToCollectionManifest,
 } from './eventCollection.js';
 

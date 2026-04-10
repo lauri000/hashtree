@@ -5,11 +5,12 @@ use hashtree_core::{Cid, DirEntry, HashTree, HashTreeConfig, LinkType, Store};
 use hashtree_index::{BTree, BTreeOptions, SearchIndex};
 
 use crate::helpers::merge_search_index_options;
+use crate::manifest::write_collection_manifest_metadata;
 use crate::schema::normalize_typed_collection_item;
 use crate::{
     create_empty_collection_state, default_search_prefix, load_collection_state,
     CollectionDefinition, CollectionEntryContext, CollectionError, CollectionOptions,
-    CollectionState, CollectionWriteContext, MANIFEST_BY_ID,
+    CollectionState, CollectionWriteContext, COLLECTION_MANIFEST_METADATA_FILE, MANIFEST_BY_ID,
 };
 
 pub struct CollectionWriter<S: Store, T> {
@@ -110,6 +111,15 @@ impl<S: Store, T> CollectionWriter<S, T> {
             if let Some(cid) = self.state.search_root(index.name()) {
                 entries.push(DirEntry::from_cid(index.name(), cid).with_link_type(LinkType::Dir));
             }
+        }
+        if let Some((cid, size)) =
+            write_collection_manifest_metadata(&self.tree, &self.definition).await?
+        {
+            entries.push(
+                DirEntry::from_cid(COLLECTION_MANIFEST_METADATA_FILE, &cid)
+                    .with_size(size)
+                    .with_link_type(LinkType::File),
+            );
         }
 
         if entries.is_empty() {

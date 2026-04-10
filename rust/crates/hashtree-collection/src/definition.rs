@@ -18,6 +18,46 @@ pub fn default_search_prefix(name: &str) -> String {
     format!("{name}:")
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CollectionPublishedSchema {
+    item_format: Option<String>,
+    projection_format: Option<String>,
+    schema_ref: Option<Cid>,
+}
+
+impl CollectionPublishedSchema {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_item_format(mut self, item_format: impl Into<String>) -> Self {
+        self.item_format = Some(item_format.into());
+        self
+    }
+
+    pub fn with_projection_format(mut self, projection_format: impl Into<String>) -> Self {
+        self.projection_format = Some(projection_format.into());
+        self
+    }
+
+    pub fn with_schema_ref(mut self, schema_ref: Cid) -> Self {
+        self.schema_ref = Some(schema_ref);
+        self
+    }
+
+    pub fn item_format(&self) -> Option<&str> {
+        self.item_format.as_deref()
+    }
+
+    pub fn projection_format(&self) -> Option<&str> {
+        self.projection_format.as_deref()
+    }
+
+    pub fn schema_ref(&self) -> Option<&Cid> {
+        self.schema_ref.as_ref()
+    }
+}
+
 #[derive(Clone)]
 pub struct CollectionKeyIndexDefinition<T> {
     name: String,
@@ -211,6 +251,7 @@ pub(crate) struct MaterializedCollectionSearchEntry {
 #[derive(Clone)]
 pub struct CollectionDefinition<T> {
     schema: Option<CollectionSchema<T>>,
+    published_schema: Option<CollectionPublishedSchema>,
     get_id: CollectionIdFn<T>,
     key_indexes: Vec<CollectionKeyIndexDefinition<T>>,
     search_indexes: Vec<CollectionSearchIndexDefinition<T>>,
@@ -220,6 +261,7 @@ impl<T> CollectionDefinition<T> {
     pub fn new(get_id: impl Fn(&T) -> String + Send + Sync + 'static) -> Self {
         Self {
             schema: None,
+            published_schema: None,
             get_id: Arc::new(get_id),
             key_indexes: Vec::new(),
             search_indexes: Vec::new(),
@@ -233,6 +275,15 @@ impl<T> CollectionDefinition<T> {
 
     pub fn schema(&self) -> Option<&CollectionSchema<T>> {
         self.schema.as_ref()
+    }
+
+    pub fn with_published_schema(mut self, published_schema: CollectionPublishedSchema) -> Self {
+        self.published_schema = Some(published_schema);
+        self
+    }
+
+    pub fn published_schema(&self) -> Option<&CollectionPublishedSchema> {
+        self.published_schema.as_ref()
     }
 
     pub fn with_key_index(
@@ -276,6 +327,7 @@ impl<T> fmt::Debug for CollectionDefinition<T> {
                 "schema_version",
                 &self.schema.as_ref().map(|schema| schema.version()),
             )
+            .field("published_schema", &self.published_schema)
             .field("key_indexes", &self.key_indexes)
             .field("search_indexes", &self.search_indexes)
             .finish()

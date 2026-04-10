@@ -51,10 +51,17 @@ export interface CollectionSchema<T> {
   validate?: (value: T) => void;
 }
 
+export interface CollectionPublishedSchema {
+  itemFormat?: string;
+  projectionFormat?: string;
+  schemaRef?: SerializedCid | null;
+}
+
 export interface CollectionDefinition<T> {
   sourceId: string;
   schemaVersion?: number;
   schema?: CollectionSchema<T>;
+  publishedSchema?: CollectionPublishedSchema;
   getId: (item: T) => string;
   keyIndexes?: CollectionKeyIndexDefinition<T>[];
   searchIndexes?: CollectionSearchIndexDefinition<T>[];
@@ -82,6 +89,14 @@ export interface CollectionSearchManifestIndex {
 
 export type CollectionManifestIndex = CollectionKeyManifestIndex | CollectionSearchManifestIndex;
 
+export interface CollectionManifestMetadata {
+  version: 1;
+  schemaVersion: number;
+  publishedSchema?: CollectionPublishedSchema;
+}
+
+export type CollectionRootMetadata = CollectionManifestMetadata;
+
 export interface CollectionManifest {
   version: 1;
   sourceId: string;
@@ -90,6 +105,7 @@ export interface CollectionManifest {
   itemCount: number;
   byIdRoot: SerializedCid | null;
   indexes: Record<string, CollectionManifestIndex>;
+  publishedSchema?: CollectionPublishedSchema;
   metadata?: Record<string, unknown>;
 }
 

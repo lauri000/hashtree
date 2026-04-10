@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 use std::cell::RefCell;
 
 use hashtree_collection::{
-    load_collection_state, CollectionDefinition, CollectionOptions, CollectionSource,
-    CollectionState, CollectionWriter,
+    load_collection_state, CollectionDefinition, CollectionOptions, CollectionPublishedSchema,
+    CollectionSource, CollectionState, CollectionWriter,
 };
 use hashtree_core::{
     sha256, BufferedStore, Cid, HashTree, HashTreeConfig, HashTreeError, Store, TreeVisibility,
@@ -38,6 +38,8 @@ const MANIFEST_BY_TIME: &str = "by-time";
 const MANIFEST_BY_TAG: &str = "by-tag";
 const MANIFEST_REPLACEABLE: &str = "replaceable";
 const MANIFEST_PARAMETERIZED_REPLACEABLE: &str = "parameterized-replaceable";
+const NOSTR_EVENT_ITEM_FORMAT: &str = "nostr/event@1";
+const NOSTR_EVENT_PROJECTION_FORMAT: &str = "hashtree/nostr-event-index@1";
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -364,6 +366,11 @@ pub struct NostrEventStoreOptions {
 
 fn nostr_collection_definition() -> CollectionDefinition<StoredNostrEvent> {
     CollectionDefinition::new(|event: &StoredNostrEvent| event.id.clone())
+        .with_published_schema(
+            CollectionPublishedSchema::new()
+                .with_item_format(NOSTR_EVENT_ITEM_FORMAT)
+                .with_projection_format(NOSTR_EVENT_PROJECTION_FORMAT),
+        )
         .with_key_index(MANIFEST_BY_AUTHOR_TIME, |event| {
             vec![author_time_key(event)]
         })

@@ -438,9 +438,9 @@ fn manifest_root_matches_typescript_fixture() {
         assert_eq!(
             cid_to_pair(&root),
             (
-                "46d23c598097d7e13cef3c4aa4aea878596f9f5018ce5969d915e149311058e2".to_string(),
+                "c90483aa7c51ce19510cfb8f4b0304ec10f01ba67ff1b1266604180b85fbfb84".to_string(),
                 Some(
-                    "1589629f9c1c73084a91bdef7d032bb690d431e07483b3c5bfea39aa7ebf1ba0".to_string()
+                    "1c1ed8e66913e8060047b7c1a5be347396ae1be2b4340d75a804947565f2fbcc".to_string()
                 )
             )
         );

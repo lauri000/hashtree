@@ -3,8 +3,9 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { fromHex, MemoryStore, type CID } from '@hashtree/core';
+import { fromHex, HashTree, MemoryStore, type CID } from '@hashtree/core';
 import {
+  COLLECTION_MANIFEST_METADATA_FILE,
   MANIFEST_BY_AUTHOR_TIME,
   MANIFEST_BY_TAG,
   MANIFEST_PARAMETERIZED_REPLACEABLE,
@@ -85,7 +86,8 @@ describe('Rust Nostr interop', () => {
     expect(other).toBeDefined();
     expect(parameterizedWinner).toBeDefined();
 
-    const tsStore = new NostrEventStore(new MemoryStore());
+    const tsBacking = new MemoryStore();
+    const tsStore = new NostrEventStore(tsBacking);
     const tsRoot = await tsStore.build(null, fixture.events);
 
     expect(tsRoot).not.toBeNull();
@@ -96,6 +98,22 @@ describe('Rust Nostr interop', () => {
     const rustCollection = await rustStore.getCollectionSource(rustRoot);
 
     expect(await tsStore.getManifest(tsRoot)).toEqual(await rustStore.getManifest(rustRoot));
+
+    const tsTree = new HashTree({ store: tsBacking });
+    const rustTree = new HashTree({ store: rustBacking });
+    const tsMetadataEntry = (await tsTree.listDirectory(tsRoot!)).find(
+      (entry) => entry.name === COLLECTION_MANIFEST_METADATA_FILE,
+    );
+    const rustMetadataEntry = (await rustTree.listDirectory(rustRoot)).find(
+      (entry) => entry.name === COLLECTION_MANIFEST_METADATA_FILE,
+    );
+    expect(tsMetadataEntry).toBeDefined();
+    expect(rustMetadataEntry).toBeDefined();
+    expect(
+      JSON.parse(new TextDecoder().decode((await tsTree.readFile(tsMetadataEntry!.cid))!)),
+    ).toEqual(
+      JSON.parse(new TextDecoder().decode((await rustTree.readFile(rustMetadataEntry!.cid))!)),
+    );
 
     await expect(rustStore.getById(rustRoot, newer!.id)).resolves.toEqual(newer);
     await expect(rustStore.getById(rustRoot, staleProfile!.id)).resolves.toBeNull();

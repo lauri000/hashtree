@@ -27,4 +27,17 @@ hooks, and federated search helpers. It still stays focused on immutable
 collection/index mechanics rather than trying to become a general-purpose
 database layer.
 
+Published collection roots can include a reserved
+`.collection-manifest.json` file for small declarative metadata that peers can
+inspect directly. The JSON shape matches the TypeScript package and currently
+includes:
+
+- `schemaVersion`
+- `publishedSchema.itemFormat`
+- `publishedSchema.projectionFormat`
+- optional `publishedSchema.schemaRef`
+
+Index names are expected to be reasonably self-descriptive, so this metadata
+does not add a separate per-index description layer by default.
+
 Part of [hashtree](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree).

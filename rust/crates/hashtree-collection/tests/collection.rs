@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use hashtree_collection::{
-    federated_search, normalize_collection_item, CollectionDefinition, CollectionSchema,
-    CollectionSearchEntry, CollectionSearchIndexDefinition, CollectionSource,
-    CollectionWriteContext, CollectionWriter, FederatedCollectionSource, FederatedSearchOptions,
-    NormalizeCollectionItemOptions, MANIFEST_BY_ID,
+    federated_search, load_collection_manifest_metadata, normalize_collection_item,
+    CollectionDefinition, CollectionPublishedSchema, CollectionSchema, CollectionSearchEntry,
+    CollectionSearchIndexDefinition, CollectionSource, CollectionWriteContext, CollectionWriter,
+    FederatedCollectionSource, FederatedSearchOptions, NormalizeCollectionItemOptions,
+    COLLECTION_MANIFEST_METADATA_FILE, MANIFEST_BY_ID,
 };
 use hashtree_core::{Cid, HashTree, HashTreeConfig, MemoryStore};
 use hashtree_index::{SearchIndexOptions, SearchOptions};
@@ -175,6 +176,11 @@ fn migrating_song_definition() -> CollectionDefinition<MigratingSong> {
                     Ok(())
                 }),
         )
+        .with_published_schema(
+            CollectionPublishedSchema::new()
+                .with_item_format("example/song@1")
+                .with_projection_format("example/song-index@1"),
+        )
         .with_key_index("artist", |song| {
             vec![format!("artist:{}", song.artist.to_lowercase())]
         })
@@ -323,6 +329,49 @@ async fn previous_item_cleanup_and_root_reload_remove_stale_search_terms() {
             .map(|entry| entry.id)
             .collect::<Vec<_>>(),
         vec!["song-a".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn write_root_publishes_schema_metadata_when_declared() {
+    let store = Arc::new(MemoryStore::new());
+    let definition = migrating_song_definition();
+    let mut writer = CollectionWriter::new(Arc::clone(&store), definition);
+    let song = MigratingSong {
+        id: "song-c".to_string(),
+        title: "Lantern Bloom".to_string(),
+        artist: "Ada".to_string(),
+        tags: vec!["night".to_string()],
+    };
+
+    writer.put(&song, &cid_from_seed(42), None).await.unwrap();
+
+    let root = writer.write_root().await.unwrap().expect("collection root");
+    let tree = HashTree::new(HashTreeConfig::new(Arc::clone(&store)));
+    let names = tree
+        .list_directory(&root)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect::<Vec<_>>();
+    assert!(names
+        .iter()
+        .any(|name| name == COLLECTION_MANIFEST_METADATA_FILE));
+    let metadata = load_collection_manifest_metadata(Arc::clone(&store), Some(&root))
+        .await
+        .unwrap()
+        .expect("published metadata");
+
+    assert_eq!(metadata.version(), 1);
+    assert_eq!(metadata.schema_version(), 2);
+    assert_eq!(
+        metadata.published_schema().cloned(),
+        Some(
+            CollectionPublishedSchema::new()
+                .with_item_format("example/song@1")
+                .with_projection_format("example/song-index@1")
+        )
     );
 }
 

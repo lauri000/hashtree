@@ -1,7 +1,18 @@
-import type { CollectionDefinition, CollectionManifest, CollectionManifestIndex, CollectionState } from './types.js';
+import type {
+  CollectionDefinition,
+  CollectionManifest,
+  CollectionManifestMetadata,
+  CollectionManifestIndex,
+  CollectionState,
+  CID,
+  Store,
+} from './types.js';
 import { deserializeCid, serializeCid } from './cid.js';
 import { defaultSearchPrefix } from './helpers.js';
 import { getSchemaVersion } from './schema.js';
+import { HashTree } from '@hashtree/core';
+
+export const COLLECTION_MANIFEST_METADATA_FILE = '.collection-manifest.json';
 
 export function createEmptyCollectionState<T>(definition: CollectionDefinition<T>): CollectionState {
   return {
@@ -74,6 +85,55 @@ export function collectionManifestFromState<T>(
     itemCount: state.itemCount,
     byIdRoot: serializeCid(state.byIdRoot),
     indexes,
+    publishedSchema: definition.publishedSchema,
     metadata,
   };
+}
+
+export function collectionRootMetadataFromManifest(
+  manifest: CollectionManifest,
+): CollectionManifestMetadata | null {
+  if (manifest.schemaVersion === 1 && !manifest.publishedSchema) {
+    return null;
+  }
+
+  return {
+    version: 1,
+    schemaVersion: manifest.schemaVersion,
+    publishedSchema: manifest.publishedSchema,
+  };
+}
+
+export const collectionManifestMetadataFromManifest = collectionRootMetadataFromManifest;
+
+export function serializeCollectionManifestMetadata(metadata: CollectionManifestMetadata): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(metadata));
+}
+
+export function parseCollectionManifestMetadata(bytes: Uint8Array): CollectionManifestMetadata {
+  return JSON.parse(new TextDecoder().decode(bytes)) as CollectionManifestMetadata;
+}
+
+export async function loadCollectionManifestMetadata(
+  store: Store,
+  root: CID | null | undefined,
+): Promise<CollectionManifestMetadata | null> {
+  if (!root) {
+    return null;
+  }
+
+  const tree = new HashTree({ store });
+  const entry = (await tree.listDirectory(root)).find(
+    (candidate) => candidate.name === COLLECTION_MANIFEST_METADATA_FILE,
+  );
+  if (!entry) {
+    return null;
+  }
+
+  const bytes = await tree.readFile(entry.cid);
+  if (!bytes) {
+    return null;
+  }
+
+  return parseCollectionManifestMetadata(bytes);
 }

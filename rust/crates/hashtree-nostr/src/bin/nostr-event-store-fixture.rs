@@ -101,14 +101,7 @@ fn fixture_events() -> Vec<StoredNostrEvent> {
             r#"{"name":"stale profile"}"#,
             '4',
         ),
-        canonical_store_event(
-            &other_author,
-            40,
-            1,
-            Vec::new(),
-            "other",
-            '5',
-        ),
+        canonical_store_event(&other_author, 40, 1, Vec::new(), "other", '5'),
         canonical_store_event(
             &author,
             50,
@@ -128,14 +121,7 @@ fn fixture_events() -> Vec<StoredNostrEvent> {
             "draft alpha",
             '7',
         ),
-        canonical_store_event(
-            &author,
-            20,
-            1,
-            Vec::new(),
-            "newer",
-            '2',
-        ),
+        canonical_store_event(&author, 20, 1, Vec::new(), "newer", '2'),
         canonical_store_event(
             &parameterized_author,
             60,

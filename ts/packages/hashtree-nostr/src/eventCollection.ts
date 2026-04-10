@@ -1,11 +1,14 @@
 import {
+  COLLECTION_MANIFEST_METADATA_FILE,
   CollectionSource,
   CollectionWriter,
+  collectionManifestMetadataFromManifest,
   deserializeCid,
   serializeCid,
   type CollectionDefinition,
   type CollectionManifest,
   type CollectionManifestIndex,
+  type CollectionPublishedSchema,
 } from '@hashtree/collection';
 import type { Store } from '@hashtree/core';
 import {
@@ -32,6 +35,14 @@ import { validateEventShape } from './eventValidation.js';
 import type { NostrEventManifest, StoredNostrEvent } from './events.js';
 
 export const DEFAULT_NOSTR_EVENT_COLLECTION_SOURCE_ID = 'nostr-events';
+export const NOSTR_EVENT_ITEM_FORMAT = 'nostr/event@1';
+export const NOSTR_EVENT_PROJECTION_FORMAT = 'hashtree/nostr-event-index@1';
+export { COLLECTION_MANIFEST_METADATA_FILE };
+
+const NOSTR_EVENT_PUBLISHED_SCHEMA: CollectionPublishedSchema = {
+  itemFormat: NOSTR_EVENT_ITEM_FORMAT,
+  projectionFormat: NOSTR_EVENT_PROJECTION_FORMAT,
+};
 
 export function createNostrEventCollectionDefinition(
   sourceId: string = DEFAULT_NOSTR_EVENT_COLLECTION_SOURCE_ID,
@@ -44,6 +55,7 @@ export function createNostrEventCollectionDefinition(
         validateEventShape(event);
       },
     },
+    publishedSchema: NOSTR_EVENT_PUBLISHED_SCHEMA,
     getId: (event) => event.id,
     keyIndexes: [
       {
@@ -112,6 +124,7 @@ export function nostrEventManifestToCollectionManifest(
     itemCount,
     byIdRoot: serializeCid(manifest.byId),
     indexes,
+    publishedSchema: NOSTR_EVENT_PUBLISHED_SCHEMA,
   };
 }
 
@@ -161,3 +174,14 @@ export function createNostrEventCollectionWriter(
     nostrEventManifestToCollectionManifest(manifest, sourceId),
   );
 }
+
+export function nostrEventCollectionManifestMetadata(
+  manifest: NostrEventManifest,
+  sourceId: string = DEFAULT_NOSTR_EVENT_COLLECTION_SOURCE_ID,
+) {
+  return collectionManifestMetadataFromManifest(
+    nostrEventManifestToCollectionManifest(manifest, sourceId),
+  );
+}
+
+export const nostrEventCollectionRootMetadata = nostrEventCollectionManifestMetadata;
