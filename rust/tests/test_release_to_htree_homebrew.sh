@@ -171,7 +171,11 @@ grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/
 test -f "${TMPDIR}/out/install.sh"
 grep -F "BASE_URL=\"https://upload.iris.to/${README_NPUB}/releases%2Fhashtree/v0.2.3\"" "${TMPDIR}/out/install.sh" >/dev/null
 grep -F 'ASSET_BASE_URL="${BASE_URL}/assets"' "${TMPDIR}/out/install.sh" >/dev/null
-grep -F 'curl -fsSL "${ASSET_BASE_URL}/${archive}" -o "${tmpdir}/${archive}"' "${TMPDIR}/out/install.sh" >/dev/null
+grep -F "hashtree-install: error:" "${TMPDIR}/out/install.sh" >/dev/null
+grep -F 'fetch_http=$(curl -fSL -o "$fetch_out" -w '\''%{http_code}'\'' "$fetch_url") || fetch_rc=$?' "${TMPDIR}/out/install.sh" >/dev/null
+grep -F 'tar -tzf "$archive_path" >/dev/null 2>&1 || die "downloaded file is not a valid gzip tar archive: $archive_path (download may be corrupt)"' "${TMPDIR}/out/install.sh" >/dev/null
+grep -F '[ -d "$packaged_dir" ] || die "expected directory '\''hashtree/'\'' not found in archive (archive layout may have changed)"' "${TMPDIR}/out/install.sh" >/dev/null
+grep -F './install.sh "$@"' "${TMPDIR}/out/install.sh" >/dev/null
 
 PORT_FILE="${TMPDIR}/http-port"
 SERVER_LOG="${TMPDIR}/http-server.log"

@@ -54,10 +54,34 @@ ASSET_BASE_URL="\${BASE_URL}/assets"
 # files would not improve security here, so it downloads the release archive
 # directly and delegates to the packaged installer.
 
+log() {
+    printf 'hashtree-install: %s\n' "\$*" >&2
+}
+
+die() {
+    printf 'hashtree-install: error: %s\n' "\$*" >&2
+    exit 1
+}
+
+tmpdir=""
+
+on_exit() {
+    rc=\$?
+    if [ -n "\$tmpdir" ] && [ -d "\$tmpdir" ]; then
+        rm -rf "\$tmpdir"
+    fi
+    if [ "\$rc" -ne 0 ]; then
+        printf 'hashtree-install: install failed.\n' >&2
+        printf 'hashtree-install: this error is from the installer script (install.sh),\n' >&2
+        printf 'hashtree-install: not from the curl that downloaded this script.\n' >&2
+    fi
+}
+
+trap on_exit EXIT HUP INT TERM
+
 require_command() {
     if ! command -v "\$1" >/dev/null 2>&1; then
-        echo "Missing required command: \$1" >&2
-        exit 1
+        die "missing required command: \$1"
     fi
 }
 
@@ -70,8 +94,7 @@ detect_arch() {
             printf '%s\n' x86_64
             ;;
         *)
-            echo "Unsupported architecture: \$(uname -m)" >&2
-            exit 1
+            die "unsupported architecture: \$(uname -m)"
             ;;
     esac
 }
@@ -85,8 +108,58 @@ detect_os() {
             printf '%s\n' unknown-linux-musl
             ;;
         *)
-            echo "Unsupported operating system: \$(uname -s)" >&2
-            exit 1
+            die "unsupported operating system: \$(uname -s)"
+            ;;
+    esac
+}
+
+url_host() {
+    printf '%s\n' "\$1" | sed \
+        -e 's|^[a-zA-Z][a-zA-Z0-9+.-]*://||' \
+        -e 's|/.*||' \
+        -e 's|^[^@]*@||' \
+        -e 's|:.*||'
+}
+
+fetch() {
+    fetch_url=\$1
+    fetch_out=\$2
+    fetch_host=\$(url_host "\$fetch_url")
+    fetch_rc=0
+    fetch_http=\$(curl -fSL -o "\$fetch_out" -w '%{http_code}' "\$fetch_url") || fetch_rc=\$?
+
+    if [ "\$fetch_rc" -eq 0 ]; then
+        return 0
+    fi
+
+    case "\$fetch_rc" in
+        6)
+            die "could not resolve host '\$fetch_host' (fetching \$fetch_url) -- check DNS/network"
+            ;;
+        7)
+            die "could not connect to host '\$fetch_host' (fetching \$fetch_url) -- check network"
+            ;;
+        28)
+            die "timed out contacting '\$fetch_host' (fetching \$fetch_url)"
+            ;;
+        22)
+            case "\$fetch_http" in
+                404)
+                    die "release asset not found (HTTP 404): \$fetch_url -- the version may have been removed or renamed"
+                    ;;
+                401|403)
+                    die "access denied (HTTP \$fetch_http) fetching \$fetch_url"
+                    ;;
+                5*)
+                    die "server error (HTTP \$fetch_http) fetching \$fetch_url -- try again later"
+                    ;;
+                *)
+                    die "HTTP \$fetch_http fetching \$fetch_url"
+                    ;;
+            esac
+            ;;
+        *)
+            die "curl failed (exit \$fetch_rc) fetching \$fetch_url"
             ;;
     esac
 }
@@ -94,17 +167,34 @@ detect_os() {
 require_command curl
 require_command tar
 require_command mktemp
+require_command uname
+require_command sed
 
 target="\$(detect_arch)-\$(detect_os)"
 archive="hashtree-\${target}.tar.gz"
-tmpdir="\$(mktemp -d 2>/dev/null || mktemp -d -t hashtree-install)"
-trap 'rm -rf "\$tmpdir"' EXIT HUP INT TERM
+tmpdir=\$(mktemp -d 2>/dev/null || mktemp -d -t hashtree-install) || die "failed to create temporary directory"
+[ -d "\$tmpdir" ] || die "temporary directory was not created"
 
-curl -fsSL "\${ASSET_BASE_URL}/\${archive}" -o "\${tmpdir}/\${archive}"
-tar -xzf "\${tmpdir}/\${archive}" -C "\${tmpdir}"
+url="\${ASSET_BASE_URL}/\${archive}"
+archive_path="\${tmpdir}/\${archive}"
 
-cd "\${tmpdir}/hashtree"
-exec ./install.sh "\$@"
+log "downloading \${url}"
+fetch "\$url" "\$archive_path"
+
+[ -s "\$archive_path" ] || die "downloaded archive is empty or missing: \$archive_path"
+tar -tzf "\$archive_path" >/dev/null 2>&1 || die "downloaded file is not a valid gzip tar archive: \$archive_path (download may be corrupt)"
+tar -xzf "\$archive_path" -C "\$tmpdir" || die "failed to extract archive: \$archive_path"
+
+packaged_dir="\${tmpdir}/hashtree"
+packaged_installer="\${packaged_dir}/install.sh"
+
+[ -d "\$packaged_dir" ] || die "expected directory 'hashtree/' not found in archive (archive layout may have changed)"
+[ -f "\$packaged_installer" ] || die "packaged installer not found: hashtree/install.sh (archive layout may have changed)"
+[ -x "\$packaged_installer" ] || die "packaged installer is not executable: hashtree/install.sh"
+
+log "running packaged installer"
+cd "\$packaged_dir"
+./install.sh "\$@"
 EOF
 
 chmod +x "$PATH_ARG"
