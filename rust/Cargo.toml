@@ -68,8 +68,8 @@ clap = { version = "4.5", features = ["derive", "env"] }
 bytes = "1.0"
 toml = "0.8"
 lru = "0.12"
-nostr-social-graph = { version = "0.1.0", git = "https://github.com/mmalmi/nostr-social-graph", rev = "57213bb151578acbd512c050f0c5d89cbd021bae" }
-nostr-social-graph-heed = { version = "0.1.0", git = "https://github.com/mmalmi/nostr-social-graph", rev = "57213bb151578acbd512c050f0c5d89cbd021bae" }
+nostr-social-graph = "0.1.0"
+nostr-social-graph-heed = "0.1.0"
 
 [patch.crates-io]
 fuser = { path = "vendor/fuser" }
